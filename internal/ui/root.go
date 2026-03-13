@@ -28,6 +28,7 @@ const (
 	viewConfirmDelete
 	viewNewProject
 	viewConfirmDeleteProject
+	viewConfirmDestroy
 )
 
 type tab int
@@ -245,6 +246,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case viewConfirmDelete:
 		return m.handleConfirmDeleteKey(msg)
+	case viewConfirmDestroy:
+		return m.handleConfirmDestroyKey(msg)
 	case viewConfirmDeleteProject:
 		return m.handleConfirmDeleteProjectKey(msg)
 	default:
@@ -316,6 +319,12 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Prompt):
 		if t := m.tasklist.Selected(); t != nil && t.Status != model.StatusComplete {
 			m.current = viewPrompt
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Destroy):
+		if m.tasklist.Selected() != nil {
+			m.current = viewConfirmDestroy
 		}
 		return m, nil
 
@@ -477,6 +486,35 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Confirm):
+		if t := m.tasklist.Selected(); t != nil {
+			// Stop the agent session if running
+			if m.runner.HasSession(t.ID) {
+				_ = m.runner.Stop(t.ID)
+			}
+			// Remove worktree and delete branch
+			if t.Worktree != "" {
+				repoDir := agent.ResolveDir(t, m.cfg)
+				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+			} else if t.Branch != "" {
+				// No worktree but has a branch — try to delete it from project dir
+				if repoDir := agent.ResolveDir(t, m.cfg); repoDir != "" {
+					deleteBranch(repoDir, t.Branch)
+				}
+			}
+			_ = m.store.Delete(t.ID)
+			m.refreshTasks()
+		}
+		m.current = viewTaskList
+		return m, nil
+	default:
+		m.current = viewTaskList
+		return m, nil
+	}
+}
+
 func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -571,7 +609,7 @@ func (m Model) View() string {
 
 	// For overlay views, show them without the banner
 	switch m.current {
-	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDeleteProject:
+	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDeleteProject, viewConfirmDestroy:
 		var content string
 		switch m.current {
 		case viewHelp:
@@ -580,6 +618,8 @@ func (m Model) View() string {
 			content = m.promptView()
 		case viewConfirmDelete:
 			content = m.confirmDeleteView()
+		case viewConfirmDestroy:
+			content = m.confirmDestroyView()
 		case viewConfirmDeleteProject:
 			content = m.confirmDeleteProjectView()
 		}
@@ -821,6 +861,25 @@ func (m Model) confirmDeleteView() string {
 		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
 }
 
+func (m Model) confirmDestroyView() string {
+	t := m.tasklist.Selected()
+	if t == nil {
+		return ""
+	}
+	var details []string
+	details = append(details, "  "+m.theme.Normal.Render(t.Name))
+	if t.Worktree != "" {
+		details = append(details, "  "+m.theme.Dimmed.Render("worktree: "+t.Worktree))
+	}
+	if t.Branch != "" {
+		details = append(details, "  "+m.theme.Dimmed.Render("branch: "+t.Branch))
+	}
+	return m.theme.Title.Render("Destroy task?") + "\n" +
+		m.theme.Help.Render("  This will terminate the agent, remove the worktree and branch, and delete the task.") + "\n\n" +
+		strings.Join(details, "\n") + "\n\n" +
+		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
+}
+
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
@@ -893,6 +952,32 @@ func killStaleProcess(pid int) {
 	}
 	// Force-kill if it's still hanging around.
 	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// removeWorktreeAndBranch removes a git worktree and deletes its associated branch.
+// repoDir is the main repository directory used for branch deletion; if empty,
+// the worktree's parent directory is used as a fallback.
+func removeWorktreeAndBranch(worktreePath, branch, repoDir string) {
+	removeWorktree(worktreePath)
+	if branch == "" {
+		return
+	}
+	// Use main repo dir for branch deletion; fall back to worktree parent.
+	dir := repoDir
+	if dir == "" {
+		dir = filepath.Dir(worktreePath)
+	}
+	deleteBranch(dir, branch)
+}
+
+// deleteBranch force-deletes a local git branch.
+func deleteBranch(repoDir, branch string) {
+	if branch == "" || repoDir == "" {
+		return
+	}
+	cmd := exec.Command("git", "branch", "-D", branch)
+	cmd.Dir = repoDir
+	_ = cmd.Run()
 }
 
 func removeWorktree(worktreePath string) {

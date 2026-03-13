@@ -119,6 +119,84 @@ func TestPruneCompleted(t *testing.T) {
 	}
 }
 
+func TestDestroyCtrlD_ShowsConfirmation(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "my task",
+		Status: model.StatusInProgress,
+	}
+	m := testModel(t, task)
+
+	// Press ctrl+d
+	msg := tea.KeyMsg{Type: tea.KeyCtrlD}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewConfirmDestroy {
+		t.Errorf("expected viewConfirmDestroy, got %d", um.current)
+	}
+}
+
+func TestDestroyCtrlD_NoTaskSelected(t *testing.T) {
+	m := testModel(t) // no tasks
+
+	msg := tea.KeyMsg{Type: tea.KeyCtrlD}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList when no task selected, got %d", um.current)
+	}
+}
+
+func TestDestroyConfirm_DeletesTask(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "destroy me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+
+	// Enter confirm destroy state
+	m.current = viewConfirmDestroy
+
+	// Press y to confirm
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after confirm, got %d", um.current)
+	}
+	if _, err := um.store.Get("t1"); err == nil {
+		t.Error("expected task to be deleted after destroy confirm")
+	}
+}
+
+func TestDestroyCancel_KeepsTask(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "keep me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+
+	// Enter confirm destroy state
+	m.current = viewConfirmDestroy
+
+	// Press any other key to cancel
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after cancel, got %d", um.current)
+	}
+	if _, err := um.store.Get("t1"); err != nil {
+		t.Error("expected task to still exist after cancel")
+	}
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},
