@@ -27,6 +27,7 @@ type GitStatus struct {
 	diffText    string
 	loaded      bool
 	lastRefresh time.Time
+	focused     bool
 }
 
 func NewGitStatus(theme Theme) GitStatus {
@@ -67,13 +68,22 @@ func (g *GitStatus) NeedsRefresh() bool {
 	return time.Since(g.lastRefresh) > 3*time.Second
 }
 
+// SetFocused sets whether this panel has focus (changes border color).
+func (g *GitStatus) SetFocused(focused bool) {
+	g.focused = focused
+}
+
 func (g GitStatus) View() string {
 	innerW := max(g.width-4, 10) // padding inside border
 	innerH := max(g.height-2, 1) // border top/bottom
 
+	borderColor := "238"
+	if g.focused {
+		borderColor = "87"
+	}
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
+		BorderForeground(lipgloss.Color(borderColor)).
 		Width(g.width - 2).
 		Height(innerH)
 

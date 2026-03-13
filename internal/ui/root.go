@@ -29,6 +29,7 @@ const (
 	viewNewProject
 	viewConfirmDeleteProject
 	viewConfirmDestroy
+	viewAgent
 )
 
 type tab int
@@ -75,6 +76,7 @@ type Model struct {
 	newproject  NewProjectForm
 	preview     Preview
 	gitstatus   GitStatus
+	agentview   AgentView
 	current     view
 	activeTab   tab
 	width       int
@@ -93,6 +95,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 
 	pv := NewPreview(theme, runner)
 	gs := NewGitStatus(theme)
+	av := NewAgentView(theme, runner)
 
 	m := Model{
 		cfg:         cfg,
@@ -106,6 +109,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 		helpview:    hv,
 		preview:     pv,
 		gitstatus:   gs,
+		agentview:   av,
 		current:     viewTaskList,
 		activeTab:   tabTasks,
 	}
@@ -165,6 +169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
 		m.newproject.SetSize(msg.Width, msg.Height)
+		m.agentview.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case TickMsg:
@@ -175,27 +180,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
 		}))
-		if t := m.tasklist.Selected(); t != nil {
-			// Use explicit worktree path, or fall back to project path from config,
-			// or fall back to the running session's working directory.
-			dir := t.Worktree
-			if dir == "" {
-				dir = agent.ResolveDir(t, m.cfg)
-			}
-			if dir == "" {
-				dir = m.runner.WorkDir(t.ID)
-			}
-			// If we have a base dir, check for Claude Code worktrees
-			if dir != "" && t.Worktree == "" {
-				if wt := discoverClaudeWorktree(dir, t.ID); wt != "" {
-					t.Worktree = wt
-					_ = m.store.Update(t)
-					dir = wt
-				}
-			}
+		// In agent view, also schedule the fast refresh tick
+		if m.current == viewAgent {
+			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+				return AgentViewTickMsg{}
+			}))
+		}
+		if t := m.selectedTaskForGit(); t != nil {
+			dir := m.resolveTaskDir(t)
 			if dir != "" {
 				m.gitstatus.SetTask(t.ID)
 				if m.gitstatus.NeedsRefresh() {
+					taskID := t.ID
+					cmds = append(cmds, func() tea.Msg {
+						return FetchGitStatus(taskID, dir)
+					})
+				}
+				// Also refresh agent view's git status
+				if m.current == viewAgent && m.agentview.NeedsGitRefresh() {
 					taskID := t.ID
 					cmds = append(cmds, func() tea.Msg {
 						return FetchGitStatus(taskID, dir)
@@ -209,8 +211,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case AgentViewTickMsg:
+		// Fast tick for agent view — just triggers a re-render
+		if m.current == viewAgent {
+			var cmds []tea.Cmd
+			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+				return AgentViewTickMsg{}
+			}))
+			return m, tea.Batch(cmds...)
+		}
+		return m, nil
+
 	case GitStatusRefreshMsg:
 		m.gitstatus.Update(msg)
+		m.agentview.UpdateGitStatus(msg)
 		return m, nil
 
 	case SessionResumedMsg:
@@ -250,6 +264,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDestroyKey(msg)
 	case viewConfirmDeleteProject:
 		return m.handleConfirmDeleteProjectKey(msg)
+	case viewAgent:
+		return m.handleAgentViewKey(msg)
 	default:
 		// Tab switching with 1/2 keys
 		switch msg.String() {
@@ -265,6 +281,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.handleTaskListKey(msg)
 	}
+}
+
+func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if detach := m.agentview.HandleKey(msg); detach {
+		m.current = viewTaskList
+		m.refreshTasks()
+	}
+	return m, nil
 }
 
 func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -362,15 +386,13 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
-	// If session already exists in runner, reattach to it
-	if sess := m.runner.Get(t.ID); sess != nil {
-		attachCmd := &agent.AttachCmd{Session: sess, TaskName: t.Name}
-		return m, tea.Exec(attachCmd, func(err error) tea.Msg {
-			// err == nil means user detached; process may still be running
-			if err != nil {
-				return AgentFinishedMsg{TaskID: t.ID, Err: err}
-			}
-			return AgentDetachedMsg{TaskID: t.ID}
+	// If session already exists in runner, switch to agent view
+	if m.runner.Get(t.ID) != nil {
+		m.agentview.Enter(t.ID, t.Name)
+		m.agentview.SetSize(m.width, m.height)
+		m.current = viewAgent
+		return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+			return AgentViewTickMsg{}
 		})
 	}
 
@@ -381,8 +403,12 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
-	// Start a new session with current terminal dimensions
-	sess, err := m.runner.Start(t, m.cfg, uint16(m.height), uint16(m.width), resume)
+	// Start a new session — use agent view panel dimensions for PTY size
+	_, centerW, _ := m.agentview.splitWidths()
+	contentH := m.height - 1
+	ptyRows := uint16(max(contentH-4, 10))
+	ptyCols := uint16(max(centerW-4, 40))
+	sess, err := m.runner.Start(t, m.cfg, ptyRows, ptyCols, resume)
 	if err != nil {
 		m.statusbar.SetError(err.Error())
 		return m, nil
@@ -393,12 +419,11 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	_ = m.store.Update(t)
 	m.refreshTasks()
 
-	attachCmd := &agent.AttachCmd{Session: sess, TaskName: t.Name}
-	return m, tea.Exec(attachCmd, func(err error) tea.Msg {
-		if err != nil {
-			return AgentFinishedMsg{TaskID: t.ID, Err: err}
-		}
-		return AgentDetachedMsg{TaskID: t.ID}
+	m.agentview.Enter(t.ID, t.Name)
+	m.agentview.SetSize(m.width, m.height)
+	m.current = viewAgent
+	return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+		return AgentViewTickMsg{}
 	})
 }
 
@@ -411,9 +436,17 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 
 	t.AgentPID = 0
 
+	// If we're viewing this agent, return to task list
+	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
+		m.current = viewTaskList
+	}
+
 	if msg.Stopped {
 		// Explicitly stopped via Runner.Stop — mark for review
 		t.SetStatus(model.StatusInReview)
+	} else if t.Worktree != "" && !dirExists(t.Worktree) {
+		// Worktree removed — auto-complete
+		t.SetStatus(model.StatusComplete)
 	} else {
 		// Agent session exited on its own — task is complete
 		t.SetStatus(model.StatusComplete)
@@ -589,6 +622,36 @@ func (m *Model) refreshProjects() {
 	m.projectlist.SetProjects(m.cfg.Projects)
 }
 
+// selectedTaskForGit returns the task whose git status should be refreshed.
+func (m Model) selectedTaskForGit() *model.Task {
+	if m.current == viewAgent {
+		if t, err := m.store.Get(m.agentview.taskID); err == nil {
+			return t
+		}
+		return nil
+	}
+	return m.tasklist.Selected()
+}
+
+// resolveTaskDir finds the working directory for a task's git status.
+func (m Model) resolveTaskDir(t *model.Task) string {
+	dir := t.Worktree
+	if dir == "" {
+		dir = agent.ResolveDir(t, m.cfg)
+	}
+	if dir == "" {
+		dir = m.runner.WorkDir(t.ID)
+	}
+	if dir != "" && t.Worktree == "" {
+		if wt := discoverClaudeWorktree(dir, t.ID); wt != "" {
+			t.Worktree = wt
+			_ = m.store.Update(t)
+			dir = wt
+		}
+	}
+	return dir
+}
+
 func (m *Model) refreshTasks() {
 	tasks := m.store.Tasks()
 	running := m.runner.Running()
@@ -606,6 +669,11 @@ func (m Model) View() string {
 	// Status bar at the bottom
 	m.statusbar.SetProjectTab(m.activeTab == tabProjects)
 	bar := m.statusbar.View()
+
+	// Agent view: full-screen three-panel layout
+	if m.current == viewAgent {
+		return m.agentview.View()
+	}
 
 	// For overlay views, show them without the banner
 	switch m.current {
