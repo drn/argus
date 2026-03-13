@@ -49,6 +49,7 @@ type Model struct {
 	statusbar StatusBar
 	helpview  HelpView
 	newtask   NewTaskForm
+	preview   Preview
 	current   view
 	width     int
 	height    int
@@ -63,6 +64,8 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	sb := NewStatusBar(theme)
 	hv := NewHelpView(keys, theme)
 
+	pv := NewPreview(theme, runner)
+
 	m := Model{
 		cfg:       cfg,
 		store:     s,
@@ -72,6 +75,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 		tasklist:  tl,
 		statusbar: sb,
 		helpview:  hv,
+		preview:   pv,
 		current:   viewTaskList,
 	}
 	m.refreshTasks()
@@ -89,8 +93,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Reserve space: banner(7) + divider(2) + section header(1) + gap(1) + statusbar(1)
-		m.tasklist.SetSize(msg.Width, msg.Height-12)
+		leftWidth, rightWidth := m.splitWidths()
+		// Reserve space: section header(1) + gap(1) + statusbar(1)
+		contentHeight := msg.Height - 3
+		m.tasklist.SetSize(leftWidth, contentHeight)
+		m.preview.SetSize(rightWidth, contentHeight)
 		m.statusbar.SetWidth(msg.Width)
 		return m, nil
 
@@ -326,13 +333,20 @@ func (m Model) View() string {
 		return m.padToBottom(content, bar)
 	}
 
-	// Main task list view with banner
-	banner := renderBanner(m.width)
-	divider := m.renderDivider()
+	// Split layout: task list on left, agent preview on right
 	section := m.renderSectionHeader()
 	tasks := m.tasklist.View()
+	leftContent := section + "\n" + tasks
 
-	content := "\n" + banner + "\n\n" + divider + "\n" + section + "\n" + tasks
+	// Preview pane for selected task
+	var taskID string
+	if t := m.tasklist.Selected(); t != nil {
+		taskID = t.ID
+	}
+	rightContent := m.preview.View(taskID)
+
+	// Join horizontally
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
 	return m.padToBottom(content, bar)
 }
 
@@ -347,6 +361,20 @@ func (m Model) padToBottom(content, bar string) string {
 		padding = strings.Repeat("\n", contentHeight-contentLines)
 	}
 	return content + padding + "\n" + bar
+}
+
+// splitWidths returns the left (task list) and right (preview) pane widths.
+func (m Model) splitWidths() (int, int) {
+	// Give ~40% to task list, rest to preview. Minimum 30 for tasks.
+	left := m.width * 2 / 5
+	if left < 30 {
+		left = 30
+	}
+	if left > m.width-20 {
+		left = m.width - 20
+	}
+	right := m.width - left
+	return left, right
 }
 
 func (m Model) renderDivider() string {

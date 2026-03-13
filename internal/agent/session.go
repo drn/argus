@@ -197,6 +197,14 @@ func (s *Session) Stop() error {
 	return s.Signal(syscall.SIGTERM)
 }
 
+// RecentOutput returns the last n bytes from the ring buffer.
+// Safe to call concurrently.
+func (s *Session) RecentOutput() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Bytes()
+}
+
 // Resize sets the PTY window size.
 func (s *Session) Resize(rows, cols uint16) error {
 	return pty.Setsize(s.ptmx, &pty.Winsize{
