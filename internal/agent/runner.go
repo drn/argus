@@ -26,8 +26,9 @@ func NewRunner(onFinish func(taskID string, err error)) *Runner {
 }
 
 // Start launches a new agent session for the given task.
+// rows and cols set the initial PTY size (falls back to 80x24 if zero).
 // Returns an error if a session already exists for this task.
-func (r *Runner) Start(task *model.Task, cfg config.Config) (*Session, error) {
+func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16) (*Session, error) {
 	r.mu.Lock()
 	if _, exists := r.sessions[task.ID]; exists {
 		r.mu.Unlock()
@@ -42,7 +43,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config) (*Session, error) {
 		return nil, err
 	}
 
-	sess, err := StartSession(task.ID, cmd)
+	sess, err := StartSession(task.ID, cmd, rows, cols)
 	if err != nil {
 		return nil, err
 	}

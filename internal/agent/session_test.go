@@ -9,7 +9,7 @@ import (
 
 func TestStartSession_EchoCommand(t *testing.T) {
 	cmd := exec.Command("echo", "hello from pty")
-	sess, err := StartSession("test-1", cmd)
+	sess, err := StartSession("test-1", cmd, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestStartSession_EchoCommand(t *testing.T) {
 
 func TestStartSession_PID(t *testing.T) {
 	cmd := exec.Command("sleep", "10")
-	sess, err := StartSession("test-2", cmd)
+	sess, err := StartSession("test-2", cmd, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestStartSession_PID(t *testing.T) {
 
 func TestStartSession_Stop(t *testing.T) {
 	cmd := exec.Command("sleep", "60")
-	sess, err := StartSession("test-3", cmd)
+	sess, err := StartSession("test-3", cmd, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestStartSession_Stop(t *testing.T) {
 
 func TestStartSession_Detach_NotAttached(t *testing.T) {
 	cmd := exec.Command("sleep", "10")
-	sess, err := StartSession("test-4", cmd)
+	sess, err := StartSession("test-4", cmd, 24, 80)
 	if err != nil {
 		t.Fatal(err)
 	}

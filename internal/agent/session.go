@@ -27,10 +27,15 @@ type Session struct {
 	detachCh chan struct{}
 }
 
-// StartSession allocates a PTY, starts the command, and begins
-// reading output into a ring buffer.
-func StartSession(taskID string, cmd *exec.Cmd) (*Session, error) {
-	ptmx, err := pty.Start(cmd)
+// StartSession allocates a PTY with the given initial size, starts the command,
+// and begins reading output into a ring buffer.
+func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, error) {
+	size := &pty.Winsize{Rows: rows, Cols: cols}
+	if rows == 0 || cols == 0 {
+		size = &pty.Winsize{Rows: 24, Cols: 80}
+	}
+
+	ptmx, err := pty.StartWithSize(cmd, size)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +65,8 @@ func (s *Session) readLoop() {
 	for {
 		n, err := s.ptmx.Read(tmp)
 		if n > 0 {
-			chunk := tmp[:n]
+			chunk := make([]byte, n)
+			copy(chunk, tmp[:n])
 			s.mu.Lock()
 			s.buf.Write(chunk)
 			w := s.attachW
@@ -122,10 +128,9 @@ func (s *Session) Attach(stdin io.Reader, stdout io.Writer) error {
 	s.attached = true
 	s.detachCh = make(chan struct{})
 
-	// Replay buffered output so user sees recent context
+	// Replay buffered output so user sees recent context,
+	// then set tee writer — all under one lock so no data is lost.
 	replay := s.buf.Bytes()
-
-	// Set the tee writer so readLoop sends new output to stdout
 	s.attachW = stdout
 	s.mu.Unlock()
 
