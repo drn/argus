@@ -1,19 +1,25 @@
 package agent
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
+
+// headerHeight is the number of terminal rows reserved for the Argus header.
+const headerHeight = 1
 
 // AttachCmd implements tea.ExecCommand for attaching to a running session.
 // When executed by Bubble Tea, it takes over the terminal and splices I/O
 // with the session's PTY. Returns nil on detach, process error on exit.
 type AttachCmd struct {
-	Session *Session
-	stdin   io.Reader
-	stdout  io.Writer
+	Session  *Session
+	TaskName string
+	stdin    io.Reader
+	stdout   io.Writer
 }
 
 // SetStdin captures the reader provided by Bubble Tea.
@@ -54,13 +60,35 @@ func (a *AttachCmd) Run() error {
 		defer unix.IoctlSetTermios(fd, ioctlSetTermios, orig)
 	}
 
-	// Clear screen before attaching
-	a.stdout.Write([]byte("\x1b[2J\x1b[H"))
-
-	// Match PTY size to current terminal
-	if ws, wsErr := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ); wsErr == nil {
-		a.Session.Resize(ws.Row, ws.Col)
+	// Get terminal size
+	var rows, cols uint16
+	if ws, wsErr := unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ); wsErr == nil {
+		rows = ws.Row
+		cols = ws.Col
+	} else {
+		rows = 24
+		cols = 80
 	}
+
+	// Clear screen, draw header, set scroll region below header
+	hw := &headerWriter{
+		inner:    a.stdout,
+		taskName: a.TaskName,
+		cols:     int(cols),
+		rows:     int(rows),
+	}
+	a.stdout.Write([]byte("\x1b[2J\x1b[H")) // clear screen
+	hw.drawHeader()
+	// Set scroll region from row 2 to bottom, position cursor there
+	a.stdout.Write([]byte(fmt.Sprintf("\x1b[%d;%dr\x1b[%d;1H", headerHeight+1, rows, headerHeight+1)))
+
+	// Resize PTY to fit below header
+	a.Session.Resize(rows-headerHeight, cols)
+
+	// Restore full scroll region on exit
+	defer func() {
+		a.stdout.Write([]byte("\x1b[r"))
+	}()
 
 	// Use a detach-aware reader that watches for ctrl+q
 	dr := &detachReader{
@@ -68,7 +96,69 @@ func (a *AttachCmd) Run() error {
 		session: a.Session,
 	}
 
-	return a.Session.Attach(dr, a.stdout)
+	return a.Session.Attach(dr, hw)
+}
+
+// headerWriter wraps a writer and redraws the Argus header bar after each
+// write, ensuring the header persists even if the child clears the screen.
+type headerWriter struct {
+	inner    io.Writer
+	taskName string
+	cols     int
+	rows     int
+}
+
+func (hw *headerWriter) Write(p []byte) (int, error) {
+	n, err := hw.inner.Write(p)
+	// Save cursor, redraw header, restore scroll region, restore cursor
+	hw.inner.Write([]byte("\x1b7"))       // save cursor
+	hw.drawHeader()                       // redraw header at row 1
+	hw.inner.Write([]byte(fmt.Sprintf(    // re-establish scroll region
+		"\x1b[%d;%dr", headerHeight+1, hw.rows)))
+	hw.inner.Write([]byte("\x1b8")) // restore cursor
+	return n, err
+}
+
+func (hw *headerWriter) drawHeader() {
+	// Build header: " ARGUS │ <task> ····· ctrl+q detach "
+	label := " ARGUS "
+	sep := " │ "
+	task := hw.taskName
+	hint := " ctrl+q detach "
+
+	// Truncate task name if needed
+	fixed := len(label) + len(sep) + len(hint)
+	maxTask := hw.cols - fixed
+	if maxTask < 0 {
+		maxTask = 0
+	}
+	if len(task) > maxTask {
+		if maxTask > 3 {
+			task = task[:maxTask-3] + "..."
+		} else {
+			task = task[:maxTask]
+		}
+	}
+
+	// Pad middle to fill width
+	middle := task
+	padLen := hw.cols - fixed - len(task)
+	if padLen > 0 {
+		middle = task + strings.Repeat(" ", padLen)
+	}
+
+	// ANSI 256-color: bg=235, ARGUS in bold cyan(87), sep/task in 245, hint in 241
+	line := fmt.Sprintf(
+		"\x1b[1;1H\x1b[2K"+ // move to row 1, clear line
+			"\x1b[48;5;235m"+ // bg
+			"\x1b[1;38;5;87m%s"+ // bold cyan ARGUS
+			"\x1b[22;38;5;240m%s"+ // dim separator
+			"\x1b[38;5;252m%s"+ // normal task name
+			"\x1b[38;5;241m%s"+ // dim hint
+			"\x1b[0m", // reset
+		label, sep, middle, hint,
+	)
+	hw.inner.Write([]byte(line))
 }
 
 // detachReader wraps stdin and intercepts ctrl+q (0x11) to detach.

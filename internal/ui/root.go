@@ -210,7 +210,7 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	// If session already exists in runner, reattach to it
 	if sess := m.runner.Get(t.ID); sess != nil {
-		attachCmd := &agent.AttachCmd{Session: sess}
+		attachCmd := &agent.AttachCmd{Session: sess, TaskName: t.Name}
 		return m, tea.Exec(attachCmd, func(err error) tea.Msg {
 			// err == nil means user detached; process may still be running
 			if err != nil {
@@ -239,7 +239,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	_ = m.store.Update(t)
 	m.refreshTasks()
 
-	attachCmd := &agent.AttachCmd{Session: sess}
+	attachCmd := &agent.AttachCmd{Session: sess, TaskName: t.Name}
 	return m, tea.Exec(attachCmd, func(err error) tea.Msg {
 		if err != nil {
 			return AgentFinishedMsg{TaskID: t.ID, Err: err}
