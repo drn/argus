@@ -31,3 +31,6 @@ Thumbs.db
 
 # Claude Code worktrees (ephemeral, per-session)
 .claude/worktrees/
+
+# Git worktrees
+.worktrees/
