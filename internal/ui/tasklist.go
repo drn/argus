@@ -99,8 +99,7 @@ func (tl *TaskList) visibleRows() int {
 
 func (tl TaskList) View() string {
 	if len(tl.filtered) == 0 {
-		empty := tl.theme.Dimmed.Render("  No tasks. Press 'n' to create one.")
-		return empty
+		return "\n" + tl.theme.Dimmed.Render("    No tasks yet. Press [n] to create one.")
 	}
 
 	var b strings.Builder
@@ -114,21 +113,8 @@ func (tl TaskList) View() string {
 		t := tl.filtered[i]
 		selected := i == tl.cursor
 
-		// Status styling
-		var statusStyle lipgloss.Style
-		switch t.Status {
-		case model.StatusPending:
-			statusStyle = tl.theme.Pending
-		case model.StatusInProgress:
-			statusStyle = tl.theme.InProgress
-		case model.StatusInReview:
-			statusStyle = tl.theme.InReview
-		case model.StatusComplete:
-			statusStyle = tl.theme.Complete
-		}
-
+		statusStyle := tl.statusStyle(t.Status)
 		badge := statusStyle.Render(t.Status.Badge())
-		statusText := statusStyle.Render(t.Status.Display())
 
 		// Task name
 		nameStyle := tl.theme.Normal
@@ -138,31 +124,55 @@ func (tl TaskList) View() string {
 		if t.Status == model.StatusComplete {
 			nameStyle = tl.theme.Dimmed
 		}
-
 		name := nameStyle.Render(t.Name)
 
-		// First line: badge + name + status
-		line1 := fmt.Sprintf("  %s  %-*s %s",
-			badge,
-			tl.width-lipgloss.Width(statusText)-10,
-			name,
-			statusText,
-		)
-
-		// Second line: project + branch + elapsed
-		project := tl.theme.ProjectName.Render(t.Project)
-		branch := tl.theme.Dimmed.Render(t.Branch)
-		elapsed := tl.theme.Elapsed.Render(t.ElapsedString())
-		line2 := fmt.Sprintf("       %s  %s  %s", project, branch, elapsed)
-
+		// Cursor indicator
+		cursor := "  "
 		if selected {
-			// Highlight indicator
-			line1 = " ▸" + line1[2:]
+			cursor = tl.theme.Selected.Render(" >")
 		}
 
-		b.WriteString(line1 + "\n")
-		b.WriteString(line2 + "\n")
+		// Status label (right-aligned)
+		statusLabel := statusStyle.Render(t.Status.Display())
+		elapsed := ""
+		if e := t.ElapsedString(); e != "" {
+			elapsed = "  " + tl.theme.Elapsed.Render(e)
+		}
+		right := statusLabel + elapsed
+
+		// Build first line with padding between name and status
+		left := fmt.Sprintf("%s %s  %s", cursor, badge, name)
+		gap := tl.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+		if gap < 1 {
+			gap = 1
+		}
+		b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
+
+		// Second line: project + branch (subtle)
+		detail := "      "
+		if t.Project != "" {
+			detail += tl.theme.ProjectName.Render(t.Project)
+			if t.Branch != "" {
+				detail += tl.theme.Dimmed.Render(" / " + t.Branch)
+			}
+		} else if t.Branch != "" {
+			detail += tl.theme.Dimmed.Render(t.Branch)
+		}
+		b.WriteString(detail + "\n")
 	}
 
 	return b.String()
+}
+
+func (tl TaskList) statusStyle(s model.Status) lipgloss.Style {
+	switch s {
+	case model.StatusInProgress:
+		return tl.theme.InProgress
+	case model.StatusInReview:
+		return tl.theme.InReview
+	case model.StatusComplete:
+		return tl.theme.Complete
+	default:
+		return tl.theme.Pending
+	}
 }

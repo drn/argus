@@ -18,18 +18,19 @@ type Theme struct {
 	Help        lipgloss.Style
 	Border      lipgloss.Style
 	Badge       lipgloss.Style
+	Section     lipgloss.Style
+	Divider     lipgloss.Style
+	Error       lipgloss.Style
 }
 
 func DefaultTheme() Theme {
 	return Theme{
 		Title: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("99")).
-			Padding(0, 1),
+			Foreground(lipgloss.Color("87")),
 		StatusBar: lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("252")).
-			Padding(0, 1),
+			Background(lipgloss.Color("235")).
+			Foreground(lipgloss.Color("245")),
 		Selected: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("212")),
@@ -42,11 +43,11 @@ func DefaultTheme() Theme {
 		InProgress: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")),
 		InReview: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("117")),
+			Foreground(lipgloss.Color("81")),
 		Complete: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("78")),
 		ProjectName: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243")),
+			Foreground(lipgloss.Color("87")),
 		Elapsed: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243")),
 		Help: lipgloss.NewStyle().
@@ -56,5 +57,12 @@ func DefaultTheme() Theme {
 			BorderForeground(lipgloss.Color("238")),
 		Badge: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")),
+		Section: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("245")),
+		Divider: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("236")),
+		Error: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("203")),
 	}
 }

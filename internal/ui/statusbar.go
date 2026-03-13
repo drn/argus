@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/model"
@@ -36,27 +37,43 @@ func (sb *StatusBar) ClearError() {
 }
 
 func (sb StatusBar) View() string {
-	active := 0
-	pending := 0
-	complete := 0
-	for _, t := range sb.tasks {
-		switch t.Status {
-		case model.StatusInProgress:
-			active++
-		case model.StatusPending:
-			pending++
-		case model.StatusComplete:
-			complete++
-		}
-	}
-
 	var left string
 	if sb.errMsg != "" {
-		left = " ⚠ " + sb.errMsg
+		left = " " + sb.theme.Error.Render("! "+sb.errMsg)
 	} else {
+		active := 0
+		pending := 0
+		complete := 0
+		for _, t := range sb.tasks {
+			switch t.Status {
+			case model.StatusInProgress:
+				active++
+			case model.StatusPending:
+				pending++
+			case model.StatusComplete:
+				complete++
+			}
+		}
 		left = fmt.Sprintf(" %d active  %d pending  %d done", active, pending, complete)
 	}
-	right := " [n]ew [↵]attach [s]tatus [d]el [?]help [q]uit "
+
+	// Keybinding hints with highlighted keys
+	keys := []struct{ key, label string }{
+		{"n", "new"},
+		{"RET", "attach"},
+		{"s", "status"},
+		{"d", "del"},
+		{"p", "prompt"},
+		{"?", "help"},
+		{"q", "quit"},
+	}
+	var parts []string
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("87"))
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	for _, k := range keys {
+		parts = append(parts, keyStyle.Render(k.key)+labelStyle.Render(" "+k.label))
+	}
+	right := strings.Join(parts, "  ") + " "
 
 	gap := sb.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
