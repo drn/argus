@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
@@ -19,6 +20,8 @@ type NewTaskForm struct {
 	projects map[string]config.Project
 	done     bool
 	canceled bool
+	width    int
+	height   int
 }
 
 const (
@@ -127,10 +130,35 @@ func (f *NewTaskForm) Task() *model.Task {
 func (f *NewTaskForm) Done() bool     { return f.done }
 func (f *NewTaskForm) Canceled() bool { return f.canceled }
 
+func (f *NewTaskForm) SetSize(w, h int) {
+	f.width = w
+	f.height = h
+	// Set input widths to fit inside the modal
+	inputWidth := f.modalWidth() - 6 // account for border + padding
+	if inputWidth < 20 {
+		inputWidth = 20
+	}
+	for i := range f.inputs {
+		f.inputs[i].Width = inputWidth
+	}
+}
+
+func (f NewTaskForm) modalWidth() int {
+	w := f.width * 2 / 5
+	if w < 50 {
+		w = 50
+	}
+	if w > 80 {
+		w = 80
+	}
+	if w > f.width-4 {
+		w = f.width - 4
+	}
+	return w
+}
+
 func (f NewTaskForm) View() string {
 	var b strings.Builder
-	b.WriteString(f.theme.Title.Render("New Task"))
-	b.WriteString("\n\n")
 
 	labels := []string{"Project:", "Prompt:"}
 	for i, label := range labels {
@@ -138,10 +166,20 @@ func (f NewTaskForm) View() string {
 		if i == f.focused {
 			style = f.theme.Selected
 		}
-		b.WriteString("  " + style.Render(label) + "\n")
-		b.WriteString("  " + f.inputs[i].View() + "\n\n")
+		b.WriteString(style.Render(label) + "\n")
+		b.WriteString(f.inputs[i].View() + "\n\n")
 	}
 
-	b.WriteString(f.theme.Help.Render("  tab/shift+tab: navigate  enter: submit  esc: cancel"))
-	return b.String()
+	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  enter: submit  esc: cancel"))
+
+	mw := f.modalWidth()
+
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("87")).
+		Padding(1, 2).
+		Width(mw).
+		Render(f.theme.Title.Render("New Task") + "\n\n" + b.String())
+
+	return lipgloss.Place(f.width, f.height, lipgloss.Center, lipgloss.Center, modal)
 }
