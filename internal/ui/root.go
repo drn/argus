@@ -33,10 +33,16 @@ type AgentFinishedMsg struct {
 	Err    error
 }
 
+// AgentDetachedMsg is sent when the user detaches from a running agent.
+type AgentDetachedMsg struct {
+	TaskID string
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	cfg       config.Config
 	store     *store.Store
+	runner    *agent.Runner
 	keys      KeyMap
 	theme     Theme
 	tasklist  TaskList
@@ -49,7 +55,7 @@ type Model struct {
 	quitting  bool
 }
 
-func NewModel(cfg config.Config, s *store.Store) Model {
+func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	theme := DefaultTheme()
 	keys := DefaultKeyMap()
 
@@ -60,6 +66,7 @@ func NewModel(cfg config.Config, s *store.Store) Model {
 	m := Model{
 		cfg:       cfg,
 		store:     s,
+		runner:    runner,
 		keys:      keys,
 		theme:     theme,
 		tasklist:  tl,
@@ -95,6 +102,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
+
+	case AgentDetachedMsg:
+		// User detached — agent still running in background
+		m.refreshTasks()
+		return m, nil
 
 	case tea.KeyMsg:
 		m.statusbar.ClearError()
@@ -185,24 +197,36 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if t.AgentPID != 0 {
-		m.statusbar.SetError("agent already running")
-		return m, nil
+	// If session already exists, reattach to it
+	if sess := m.runner.Get(t.ID); sess != nil {
+		attachCmd := &agent.AttachCmd{Session: sess}
+		return m, tea.Exec(attachCmd, func(err error) tea.Msg {
+			// err == nil means user detached; process may still be running
+			if err != nil {
+				return AgentFinishedMsg{TaskID: t.ID, Err: err}
+			}
+			return AgentDetachedMsg{TaskID: t.ID}
+		})
 	}
 
-	cmd, err := agent.BuildCmd(t, m.cfg)
+	// Start a new session
+	sess, err := m.runner.Start(t, m.cfg)
 	if err != nil {
 		m.statusbar.SetError(err.Error())
 		return m, nil
 	}
 
+	t.AgentPID = sess.PID()
 	t.SetStatus(model.StatusInProgress)
 	_ = m.store.Update(t)
 	m.refreshTasks()
 
-	taskID := t.ID
-	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return AgentFinishedMsg{TaskID: taskID, Err: err}
+	attachCmd := &agent.AttachCmd{Session: sess}
+	return m, tea.Exec(attachCmd, func(err error) tea.Msg {
+		if err != nil {
+			return AgentFinishedMsg{TaskID: t.ID, Err: err}
+		}
+		return AgentDetachedMsg{TaskID: t.ID}
 	})
 }
 
@@ -213,8 +237,10 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	t.AgentPID = 0
 	if msg.Err != nil {
 		m.statusbar.SetError("agent error: " + msg.Err.Error())
+		_ = m.store.Update(t)
 	} else {
 		t.SetStatus(model.StatusInReview)
 		_ = m.store.Update(t)
