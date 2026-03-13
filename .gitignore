@@ -1,0 +1,30 @@
+# Binaries
+argus
+/cmd/argus/argus
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (user-specific)
+# ~/.config/argus/ is the config dir, not in repo
+
+# Context dir
+.context/
