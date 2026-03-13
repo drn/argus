@@ -20,7 +20,7 @@ func runnerTestConfig() config.Config {
 
 func TestRunner_StartAndGet(t *testing.T) {
 	finished := make(chan string, 1)
-	r := NewRunner(func(taskID string, err error) {
+	r := NewRunner(func(taskID string, err error, stopped bool) {
 		finished <- taskID
 	})
 
@@ -108,6 +108,71 @@ func TestRunner_StopAndRunning(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if r.HasSession("t3") {
 		t.Error("should be cleaned up after stop")
+	}
+}
+
+func TestRunner_StopSetsStopped(t *testing.T) {
+	type result struct {
+		taskID  string
+		err     error
+		stopped bool
+	}
+	finished := make(chan result, 1)
+	r := NewRunner(func(taskID string, err error, stopped bool) {
+		finished <- result{taskID, err, stopped}
+	})
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "t-stop", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.Stop("t-stop"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case res := <-finished:
+		if !res.stopped {
+			t.Error("expected stopped=true after explicit Stop")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestRunner_NaturalExitNotStopped(t *testing.T) {
+	type result struct {
+		taskID  string
+		stopped bool
+	}
+	finished := make(chan result, 1)
+	r := NewRunner(func(taskID string, err error, stopped bool) {
+		finished <- result{taskID, stopped}
+	})
+	cfg := runnerTestConfig() // "echo hello" exits naturally
+
+	task := &model.Task{ID: "t-natural", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case res := <-finished:
+		if res.stopped {
+			t.Error("expected stopped=false for natural exit")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
 	}
 }
 
