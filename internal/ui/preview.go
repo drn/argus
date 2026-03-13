@@ -44,7 +44,8 @@ func (p Preview) View(taskID string) string {
 	}
 
 	raw := sess.RecentOutput()
-	content := p.formatOutput(raw)
+	ptyCols, ptyRows := sess.PTYSize()
+	content := p.formatOutput(raw, ptyCols, ptyRows)
 	return border.Render(content)
 }
 
@@ -57,15 +58,22 @@ func (p Preview) emptyView(msg string) string {
 	return style.Render(msg)
 }
 
-func (p Preview) formatOutput(raw []byte) string {
+func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 	if len(raw) == 0 {
 		return ""
 	}
 
-	// The PTY output was generated for the full terminal width, so we
-	// interpret it with a wide virtual terminal, then crop to fit.
-	vtCols := 200
-	vtRows := 500
+	// Use the actual PTY dimensions so the vt10x interpretation matches
+	// what the child process was rendering for. Fall back to wide defaults
+	// if dimensions are unknown.
+	vtCols := ptyCols
+	vtRows := ptyRows
+	if vtCols < 40 {
+		vtCols = 200
+	}
+	if vtRows < 10 {
+		vtRows = 500
+	}
 	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
 

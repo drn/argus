@@ -25,6 +25,8 @@ type Session struct {
 	err      error
 	attached bool
 	detachCh chan struct{}
+	ptyCols  uint16 // current PTY width
+	ptyRows  uint16 // current PTY height
 }
 
 // StartSession allocates a PTY with the given initial size, starts the command,
@@ -33,6 +35,8 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 	size := &pty.Winsize{Rows: rows, Cols: cols}
 	if rows == 0 || cols == 0 {
 		size = &pty.Winsize{Rows: 24, Cols: 80}
+		rows = 24
+		cols = 80
 	}
 
 	ptmx, err := pty.StartWithSize(cmd, size)
@@ -47,6 +51,8 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		buf:      newRingBuffer(defaultBufSize),
 		done:     make(chan struct{}),
 		detachCh: make(chan struct{}),
+		ptyCols:  cols,
+		ptyRows:  rows,
 	}
 
 	// Single reader: PTY → ring buffer (+ attached writer when set)
@@ -207,8 +213,19 @@ func (s *Session) RecentOutput() []byte {
 
 // Resize sets the PTY window size.
 func (s *Session) Resize(rows, cols uint16) error {
+	s.mu.Lock()
+	s.ptyCols = cols
+	s.ptyRows = rows
+	s.mu.Unlock()
 	return pty.Setsize(s.ptmx, &pty.Winsize{
 		Rows: rows,
 		Cols: cols,
 	})
+}
+
+// PTYSize returns the current PTY dimensions (cols, rows).
+func (s *Session) PTYSize() (cols, rows int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int(s.ptyCols), int(s.ptyRows)
 }
