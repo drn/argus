@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
@@ -91,6 +92,31 @@ func TestSessionResumed_MissingTask(t *testing.T) {
 		t.Error("expected nil cmd for missing task")
 	}
 	_ = updated.(Model)
+}
+
+func TestPruneCompleted(t *testing.T) {
+	tasks := []*model.Task{
+		{ID: "t1", Name: "pending", Status: model.StatusPending},
+		{ID: "t2", Name: "done1", Status: model.StatusComplete},
+		{ID: "t3", Name: "in-progress", Status: model.StatusInProgress},
+		{ID: "t4", Name: "done2", Status: model.StatusComplete},
+	}
+	m := testModel(t, tasks...)
+
+	// Send ctrl+r
+	msg := tea.KeyMsg{Type: tea.KeyCtrlR}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	remaining := um.store.Tasks()
+	if len(remaining) != 2 {
+		t.Fatalf("expected 2 remaining tasks, got %d", len(remaining))
+	}
+	for _, r := range remaining {
+		if r.Status == model.StatusComplete {
+			t.Errorf("completed task %q should have been pruned", r.Name)
+		}
+	}
 }
 
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {

@@ -14,6 +14,7 @@ type KeyMap struct {
 	Filter    key.Binding
 	Prompt    key.Binding
 	Worktree  key.Binding
+	Prune     key.Binding
 	Up        key.Binding
 	Down      key.Binding
 	Confirm   key.Binding
@@ -62,6 +63,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("w"),
 			key.WithHelp("w", "worktree info"),
 		),
+		Prune: key.NewBinding(
+			key.WithKeys("ctrl+r"),
+			key.WithHelp("ctrl+r", "prune completed"),
+		),
 		Up: key.NewBinding(
 			key.WithKeys("up", "k"),
 			key.WithHelp("↑/k", "up"),
@@ -92,6 +97,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.New, k.Attach, k.Delete},
 		{k.StatusFwd, k.StatusRev, k.Prompt},
 		{k.Up, k.Down, k.Filter},
-		{k.Worktree, k.Help, k.Quit},
+		{k.Worktree, k.Prune, k.Help, k.Quit},
 	}
 }
