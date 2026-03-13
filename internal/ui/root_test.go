@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
@@ -238,6 +239,8 @@ func TestAgentFinished_SuccessMarksComplete(t *testing.T) {
 		SessionID: "sess-abc",
 		AgentPID:  100,
 	}
+	task.SetStatus(model.StatusInProgress) // sets StartedAt
+	task.StartedAt = task.StartedAt.Add(-time.Minute) // ran for a minute
 	m := testModel(t, task)
 
 	updated, _ := m.Update(AgentFinishedMsg{
@@ -253,6 +256,37 @@ func TestAgentFinished_SuccessMarksComplete(t *testing.T) {
 	}
 	if got.Status != model.StatusComplete {
 		t.Errorf("expected status Complete, got %v", got.Status)
+	}
+}
+
+func TestAgentFinished_QuickExitKeepsInProgress(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "quick exit task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	task.SetStatus(model.StatusInProgress) // sets StartedAt to now
+	m := testModel(t, task)
+
+	// Agent exits cleanly but almost immediately — should NOT mark complete
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	got, err := um.store.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusInProgress {
+		t.Errorf("expected status InProgress for quick exit, got %v", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("expected SessionID cleared on quick exit, got %q", got.SessionID)
 	}
 }
 

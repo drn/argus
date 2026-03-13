@@ -38,6 +38,12 @@ const (
 	tabProjects
 )
 
+// minAgentRunTime is the minimum time an agent must run before a clean exit
+// is treated as a successful completion. Exits faster than this are treated
+// as startup or configuration errors (the session ID is cleared so the user
+// can retry).
+const minAgentRunTime = 3 * time.Second
+
 // TickMsg is sent periodically to update elapsed times.
 type TickMsg struct{}
 
@@ -459,6 +465,10 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	} else if msg.Err != nil {
 		// Process exited with an error (e.g. failed resume, crash) —
 		// keep the task in progress so the user can retry.
+		t.SessionID = ""
+	} else if !t.StartedAt.IsZero() && time.Since(t.StartedAt) < minAgentRunTime {
+		// Agent exited too quickly — likely a startup or config error.
+		// Keep in progress so the user can retry.
 		t.SessionID = ""
 	} else if t.Worktree != "" && !dirExists(t.Worktree) {
 		// Worktree removed — auto-complete
