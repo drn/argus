@@ -20,13 +20,14 @@ go test ./internal/store/   # run tests for a single package
 
 **Elm Architecture (Model → Update → View)** via Bubble Tea. The entire UI is a single `tea.Program` with view switching.
 
-- `cmd/argus/main.go` — Entry point. Loads config, loads task store, creates agent runner, starts `tea.Program` with alt screen.
+- `cmd/argus/main.go` — Entry point. Opens SQLite database, creates agent runner, starts `tea.Program` with alt screen.
 - `internal/ui/root.go` — **Top-level Bubble Tea model**. Owns all sub-views and routes key events based on current view state (`viewTaskList`, `viewNewTask`, `viewHelp`, `viewPrompt`, `viewConfirmDelete`). This is the orchestration hub.
 - `internal/ui/tasklist.go` — Task list with cursor, scrolling, filtering. Not a `tea.Model` itself — it's a plain struct that `root.Model` drives.
 - `internal/ui/newtask.go` — New task form using `bubbles/textinput`. Has its own `Update` method but is called by root.
 - `internal/model/` — Core domain types. `Task` struct and `Status` enum with `pending → in_progress → in_review → complete` workflow. Status implements `encoding.TextMarshaler` for JSON serialization.
-- `internal/store/store.go` — JSON file persistence at `~/.config/argus/tasks.json`. Thread-safe with mutex. Auto-creates config dir on first write.
-- `internal/config/config.go` — TOML config from `~/.config/argus/config.toml`. Falls back to defaults if file missing. Defines backends (command templates), projects (repo registry), keybindings, and UI prefs.
+- `internal/db/` — SQLite-backed persistence at `~/.argus/data.sql`. Stores tasks, projects, backends, and config in a single database. Thread-safe with mutex. Auto-migrates from legacy JSON/TOML files on first run.
+- `internal/config/config.go` — Config struct types and defaults. Struct types (`Config`, `Backend`, `Project`, `Keybindings`, `UIConfig`) are used throughout the codebase as value types. The `db.DB.Config()` method assembles a `Config` from the database.
+- `internal/store/store.go` — Legacy JSON file persistence (superseded by `internal/db/`). Kept for reference but no longer imported by production code.
 - `internal/agent/` — Agent process management with PTY:
   - `agent.go` — Backend resolution and command building (`BuildCmd`). Supports `--session-id` for conversation pinning.
   - `session.go` — PTY-backed process session via `creack/pty`. Single `readLoop` goroutine tees output to ring buffer + attached writer. Supports attach/detach without stopping the process.
@@ -41,9 +42,9 @@ go test ./internal/store/   # run tests for a single package
 
 ## Config & Persistence
 
-- Config dir: `~/.config/argus/` (respects `XDG_CONFIG_HOME`)
-- Config format: TOML (`config.toml`)
-- Task persistence: JSON (`tasks.json`)
+- Data dir: `~/.argus/`
+- Database: SQLite (`data.sql`) via `modernc.org/sqlite` (pure Go, no CGO)
+- Legacy config dir: `~/.config/argus/` (respects `XDG_CONFIG_HOME`) — auto-migrated to SQLite on first run
 - Backends are command templates with prompt flag interpolation, not SDK integrations
 
 ## Key Learnings

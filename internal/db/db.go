@@ -1,0 +1,435 @@
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
+	_ "modernc.org/sqlite"
+)
+
+const schemaVersion = 1
+
+// DB is the SQLite-backed data store for tasks, projects, backends, and config.
+type DB struct {
+	conn *sql.DB
+	mu   sync.Mutex
+}
+
+// DataDir returns the argus data directory (~/.argus).
+func DataDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".argus")
+}
+
+// DefaultPath returns the default database path.
+func DefaultPath() string {
+	return filepath.Join(DataDir(), "data.sql")
+}
+
+// Open opens (or creates) the SQLite database at path.
+// It creates tables if needed and runs migrations from legacy files.
+func Open(path string) (*DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating data dir: %w", err)
+	}
+
+	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+
+	d := &DB{conn: conn}
+	if err := d.createTables(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if err := d.migrate(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return d, nil
+}
+
+// OpenInMemory creates an in-memory database for testing.
+func OpenInMemory() (*DB, error) {
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+
+	d := &DB{conn: conn}
+	if err := d.createTables(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	// Seed defaults for in-memory (no migration from files).
+	if err := d.seedDefaults(); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return d, nil
+}
+
+// Close closes the database connection.
+func (d *DB) Close() error {
+	return d.conn.Close()
+}
+
+func (d *DB) createTables() error {
+	ddl := `
+		CREATE TABLE IF NOT EXISTS schema_version (
+			version INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS tasks (
+			id         TEXT PRIMARY KEY,
+			name       TEXT NOT NULL,
+			status     TEXT NOT NULL DEFAULT 'pending',
+			project    TEXT NOT NULL DEFAULT '',
+			branch     TEXT NOT NULL DEFAULT '',
+			prompt     TEXT NOT NULL DEFAULT '',
+			backend    TEXT NOT NULL DEFAULT '',
+			worktree   TEXT NOT NULL DEFAULT '',
+			agent_pid  INTEGER NOT NULL DEFAULT 0,
+			session_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			started_at TEXT NOT NULL DEFAULT '',
+			ended_at   TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS projects (
+			name    TEXT PRIMARY KEY,
+			path    TEXT NOT NULL,
+			branch  TEXT NOT NULL DEFAULT '',
+			backend TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS backends (
+			name        TEXT PRIMARY KEY,
+			command     TEXT NOT NULL,
+			prompt_flag TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE IF NOT EXISTS config (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+	`
+	_, err := d.conn.Exec(ddl)
+	return err
+}
+
+// --- Tasks ---
+
+func (d *DB) Tasks() []*model.Task {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks ORDER BY created_at ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var tasks []*model.Task
+	for rows.Next() {
+		t := &model.Task{}
+		var status, createdAt, startedAt, endedAt string
+		if err := rows.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
+			continue
+		}
+		t.Status, _ = model.ParseStatus(status)
+		t.CreatedAt = parseTime(createdAt)
+		t.StartedAt = parseTime(startedAt)
+		t.EndedAt = parseTime(endedAt)
+		tasks = append(tasks, t)
+	}
+	return tasks
+}
+
+func (d *DB) Add(t *model.Task) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if t.ID == "" {
+		t.ID = generateID()
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now()
+	}
+
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID,
+		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
+	return err
+}
+
+func (d *DB) Update(t *model.Task) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID,
+		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", t.ID)
+	}
+	return nil
+}
+
+func (d *DB) Delete(id string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`DELETE FROM tasks WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
+func (d *DB) Get(id string) (*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	t := &model.Task{}
+	var status, createdAt, startedAt, endedAt string
+	err := d.conn.QueryRow(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks WHERE id=?`, id).
+		Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("task not found: %s", id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.Status, _ = model.ParseStatus(status)
+	t.CreatedAt = parseTime(createdAt)
+	t.StartedAt = parseTime(startedAt)
+	t.EndedAt = parseTime(endedAt)
+	return t, nil
+}
+
+func (d *DB) PruneCompleted() ([]*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Fetch completed tasks first
+	rows, err := d.conn.Query(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks WHERE status='complete'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pruned []*model.Task
+	for rows.Next() {
+		t := &model.Task{}
+		var status, createdAt, startedAt, endedAt string
+		if err := rows.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
+			continue
+		}
+		t.Status, _ = model.ParseStatus(status)
+		t.CreatedAt = parseTime(createdAt)
+		t.StartedAt = parseTime(startedAt)
+		t.EndedAt = parseTime(endedAt)
+		pruned = append(pruned, t)
+	}
+
+	if len(pruned) == 0 {
+		return nil, nil
+	}
+
+	_, err = d.conn.Exec(`DELETE FROM tasks WHERE status='complete'`)
+	if err != nil {
+		return nil, err
+	}
+	return pruned, nil
+}
+
+// --- Projects ---
+
+func (d *DB) Projects() map[string]config.Project {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT name, path, branch, backend FROM projects ORDER BY name`)
+	if err != nil {
+		return make(map[string]config.Project)
+	}
+	defer rows.Close()
+
+	projects := make(map[string]config.Project)
+	for rows.Next() {
+		var name string
+		var p config.Project
+		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend); err != nil {
+			continue
+		}
+		projects[name] = p
+	}
+	return projects
+}
+
+func (d *DB) SetProject(name string, p config.Project) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend) VALUES (?, ?, ?, ?)`,
+		name, p.Path, p.Branch, p.Backend)
+	return err
+}
+
+func (d *DB) DeleteProject(name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`DELETE FROM projects WHERE name=?`, name)
+	return err
+}
+
+// --- Backends ---
+
+func (d *DB) Backends() map[string]config.Backend {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT name, command, prompt_flag FROM backends ORDER BY name`)
+	if err != nil {
+		return make(map[string]config.Backend)
+	}
+	defer rows.Close()
+
+	backends := make(map[string]config.Backend)
+	for rows.Next() {
+		var name string
+		var b config.Backend
+		if err := rows.Scan(&name, &b.Command, &b.PromptFlag); err != nil {
+			continue
+		}
+		backends[name] = b
+	}
+	return backends
+}
+
+func (d *DB) SetBackend(name string, b config.Backend) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
+		name, b.Command, b.PromptFlag)
+	return err
+}
+
+// --- Config (assembles config.Config from DB) ---
+
+func (d *DB) Config() config.Config {
+	cfg := config.DefaultConfig()
+
+	// Load backends
+	cfg.Backends = d.Backends()
+
+	// Load projects
+	cfg.Projects = d.Projects()
+
+	// Load scalar config values
+	d.mu.Lock()
+	rows, err := d.conn.Query(`SELECT key, value FROM config`)
+	d.mu.Unlock()
+	if err != nil {
+		return cfg
+	}
+	defer rows.Close()
+
+	kv := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			continue
+		}
+		kv[k] = v
+	}
+
+	if v, ok := kv["defaults.backend"]; ok {
+		cfg.Defaults.Backend = v
+	}
+	if v, ok := kv["keybindings.new"]; ok {
+		cfg.Keybindings.New = v
+	}
+	if v, ok := kv["keybindings.attach"]; ok {
+		cfg.Keybindings.Attach = v
+	}
+	if v, ok := kv["keybindings.status"]; ok {
+		cfg.Keybindings.Status = v
+	}
+	if v, ok := kv["keybindings.delete"]; ok {
+		cfg.Keybindings.Delete = v
+	}
+	if v, ok := kv["keybindings.quit"]; ok {
+		cfg.Keybindings.Quit = v
+	}
+	if v, ok := kv["keybindings.help"]; ok {
+		cfg.Keybindings.Help = v
+	}
+	if v, ok := kv["keybindings.filter"]; ok {
+		cfg.Keybindings.Filter = v
+	}
+	if v, ok := kv["keybindings.prompt"]; ok {
+		cfg.Keybindings.Prompt = v
+	}
+	if v, ok := kv["keybindings.worktree"]; ok {
+		cfg.Keybindings.Worktree = v
+	}
+	if v, ok := kv["ui.theme"]; ok {
+		cfg.UI.Theme = v
+	}
+	if v, ok := kv["ui.show_elapsed"]; ok {
+		cfg.UI.ShowElapsed = v == "true"
+	}
+	if v, ok := kv["ui.show_icons"]; ok {
+		cfg.UI.ShowIcons = v == "true"
+	}
+	if v, ok := kv["ui.cleanup_worktrees"]; ok {
+		val := v == "true"
+		cfg.UI.CleanupWorktrees = &val
+	}
+
+	return cfg
+}
+
+func (d *DB) SetConfigValue(key, value string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, key, value)
+	return err
+}
+
+// --- Helpers ---
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
+func parseTime(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	t, _ := time.Parse(time.RFC3339Nano, s)
+	return t
+}
+
+func generateID() string {
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
