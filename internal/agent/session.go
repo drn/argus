@@ -20,10 +20,11 @@ type Session struct {
 
 	mu       sync.Mutex
 	buf      *ringBuffer
-	done     chan struct{} // closed when process exits
-	err      error        // exit error
+	attachW  io.Writer // when non-nil, readLoop tees output here
+	done     chan struct{}
+	err      error
 	attached bool
-	detachCh chan struct{} // signal to stop splice
+	detachCh chan struct{}
 }
 
 // StartSession allocates a PTY, starts the command, and begins
@@ -43,7 +44,7 @@ func StartSession(taskID string, cmd *exec.Cmd) (*Session, error) {
 		detachCh: make(chan struct{}),
 	}
 
-	// Background reader: PTY output → ring buffer
+	// Single reader: PTY → ring buffer (+ attached writer when set)
 	go s.readLoop()
 
 	// Background waiter: process exit
@@ -52,15 +53,21 @@ func StartSession(taskID string, cmd *exec.Cmd) (*Session, error) {
 	return s, nil
 }
 
-// readLoop copies PTY output into the ring buffer until EOF.
+// readLoop is the sole reader of the PTY. It always writes to the ring buffer,
+// and when a writer is attached, also tees output there.
 func (s *Session) readLoop() {
 	tmp := make([]byte, 4096)
 	for {
 		n, err := s.ptmx.Read(tmp)
 		if n > 0 {
+			chunk := tmp[:n]
 			s.mu.Lock()
-			s.buf.Write(tmp[:n])
+			s.buf.Write(chunk)
+			w := s.attachW
 			s.mu.Unlock()
+			if w != nil {
+				w.Write(chunk)
+			}
 		}
 		if err != nil {
 			return
@@ -114,31 +121,28 @@ func (s *Session) Attach(stdin io.Reader, stdout io.Writer) error {
 	}
 	s.attached = true
 	s.detachCh = make(chan struct{})
+
+	// Replay buffered output so user sees recent context
+	replay := s.buf.Bytes()
+
+	// Set the tee writer so readLoop sends new output to stdout
+	s.attachW = stdout
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
+		s.attachW = nil
 		s.attached = false
 		s.mu.Unlock()
 	}()
 
-	// Replay buffered output so user sees recent context
-	s.mu.Lock()
-	replay := s.buf.Bytes()
-	s.mu.Unlock()
 	if len(replay) > 0 {
 		stdout.Write(replay)
 	}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 1)
 
-	// PTY → stdout
-	go func() {
-		_, err := io.Copy(stdout, s.ptmx)
-		errCh <- err
-	}()
-
-	// stdin → PTY
+	// stdin → PTY (only direction we need a goroutine for)
 	go func() {
 		_, err := io.Copy(s.ptmx, stdin)
 		errCh <- err
@@ -150,7 +154,6 @@ func (s *Session) Attach(stdin io.Reader, stdout io.Writer) error {
 	case <-s.done:
 		return s.err
 	case err := <-errCh:
-		// Check if process exited
 		select {
 		case <-s.done:
 			return s.err
@@ -181,7 +184,7 @@ func (s *Session) Signal(sig os.Signal) error {
 	return s.Cmd.Process.Signal(sig)
 }
 
-// Stop sends SIGTERM, then SIGKILL if still alive after the channel fires.
+// Stop sends SIGTERM.
 func (s *Session) Stop() error {
 	if !s.Alive() {
 		return nil
