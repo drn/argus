@@ -42,9 +42,9 @@ func NewNewProjectForm(theme Theme) NewProjectForm {
 	inputs[projFieldPath] = pathInput
 
 	branchInput := textinput.New()
-	branchInput.Placeholder = "Default branch (e.g. main)"
+	branchInput.Placeholder = "Default branch (e.g. master)"
 	branchInput.CharLimit = 60
-	branchInput.SetValue("main")
+	branchInput.SetValue("master")
 	inputs[projFieldBranch] = branchInput
 
 	backendInput := textinput.New()
