@@ -5,8 +5,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/darrencheng/argus/internal/config"
-	"github.com/darrencheng/argus/internal/model"
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 )
 
 // NewTaskForm handles the new task creation UI.

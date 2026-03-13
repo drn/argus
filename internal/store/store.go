@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/darrencheng/argus/internal/config"
-	"github.com/darrencheng/argus/internal/model"
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 )
 
 // Store manages task persistence to a JSON file.

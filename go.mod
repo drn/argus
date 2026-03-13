@@ -1,4 +1,4 @@
-module github.com/darrencheng/argus
+module github.com/drn/argus
 
 go 1.24.10
 

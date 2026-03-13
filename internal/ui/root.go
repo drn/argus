@@ -6,9 +6,9 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/darrencheng/argus/internal/config"
-	"github.com/darrencheng/argus/internal/model"
-	"github.com/darrencheng/argus/internal/store"
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/store"
 )
 
 type view int
