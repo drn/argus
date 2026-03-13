@@ -14,12 +14,13 @@ type Runner struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	stopped  map[string]bool // tracks task IDs where Stop was explicitly called
-	onFinish func(taskID string, err error, stopped bool)
+	onFinish func(taskID string, err error, stopped bool, lastOutput []byte)
 }
 
 // NewRunner creates a Runner. The onFinish callback is called (in a goroutine)
-// when any managed session's process exits.
-func NewRunner(onFinish func(taskID string, err error, stopped bool)) *Runner {
+// when any managed session's process exits. lastOutput contains the final ring
+// buffer contents so callers can display error messages after the session is gone.
+func NewRunner(onFinish func(taskID string, err error, stopped bool, lastOutput []byte)) *Runner {
 	return &Runner{
 		sessions: make(map[string]*Session),
 		stopped:  make(map[string]bool),
@@ -56,13 +57,16 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	// Watch for process exit
 	go func() {
 		<-sess.Done()
+		// Capture last output before removing the session so callers
+		// can display error messages after the session is gone.
+		lastOutput := sess.RecentOutput()
 		r.mu.Lock()
 		delete(r.sessions, task.ID)
 		wasStopped := r.stopped[task.ID]
 		delete(r.stopped, task.ID)
 		r.mu.Unlock()
 		if r.onFinish != nil {
-			r.onFinish(task.ID, sess.Err(), wasStopped)
+			r.onFinish(task.ID, sess.Err(), wasStopped, lastOutput)
 		}
 	}()
 

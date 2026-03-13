@@ -43,6 +43,10 @@ type AgentView struct {
 	// Terminal render cache — avoids replaying entire ring buffer every tick
 	cachedWriteCount uint64
 	cachedTerminal   string
+
+	// lastOutput holds the final ring buffer contents from a finished session
+	// so we can display error output even after the session is removed.
+	lastOutput []byte
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -62,6 +66,15 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.focus = panelAgent
 	av.gitstatus.SetTask(taskID)
 	av.lastGitRefresh = time.Time{}
+	av.lastOutput = nil
+	av.cachedTerminal = ""
+	av.cachedWriteCount = 0
+}
+
+// SetLastOutput stores the final ring buffer from a finished session
+// so the terminal can still display output after the session is gone.
+func (av *AgentView) SetLastOutput(output []byte) {
+	av.lastOutput = output
 }
 
 func (av *AgentView) SetSize(w, h int) {
@@ -201,8 +214,12 @@ func (av *AgentView) renderTerminal(w, h int) string {
 
 	sess := av.runner.Get(av.taskID)
 	if sess == nil {
-		// Show cached terminal output if available so the user can see
+		// Show last output from the finished session so the user can see
 		// why the process exited (e.g. error messages from the agent).
+		if len(av.lastOutput) > 0 {
+			content := av.formatTerminalOutput(av.lastOutput, w, h)
+			return border.Render(content)
+		}
 		if av.cachedTerminal != "" {
 			return border.Render(av.cachedTerminal)
 		}
