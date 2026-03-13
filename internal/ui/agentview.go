@@ -39,6 +39,10 @@ type AgentView struct {
 
 	// Cached git status for file explorer
 	lastGitRefresh time.Time
+
+	// Terminal render cache — avoids replaying entire ring buffer every tick
+	cachedWriteCount uint64
+	cachedTerminal   string
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -61,6 +65,9 @@ func (av *AgentView) Enter(taskID, taskName string) {
 }
 
 func (av *AgentView) SetSize(w, h int) {
+	if av.width != w || av.height != h {
+		av.cachedTerminal = "" // invalidate cache on resize
+	}
 	av.width = w
 	av.height = h
 	leftW, centerW, rightW := av.splitWidths()
@@ -153,7 +160,7 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 }
 
 // View renders the three-panel layout.
-func (av AgentView) View() string {
+func (av *AgentView) View() string {
 	_, centerW, _ := av.splitWidths()
 	contentH := av.height - 1
 
@@ -180,7 +187,7 @@ func (av AgentView) View() string {
 	return content + "\n" + bar
 }
 
-func (av AgentView) renderTerminal(w, h int) string {
+func (av *AgentView) renderTerminal(w, h int) string {
 	borderColor := "238"
 	if av.focus == panelAgent {
 		borderColor = "87"
@@ -202,6 +209,12 @@ func (av AgentView) renderTerminal(w, h int) string {
 		return border.Render(empty.Render("Agent not running\n\nPress ctrl+q to return"))
 	}
 
+	// Check if output has changed before expensive vt10x replay
+	writeCount := sess.TotalWritten()
+	if writeCount == av.cachedWriteCount && av.cachedTerminal != "" {
+		return border.Render(av.cachedTerminal)
+	}
+
 	raw := sess.RecentOutput()
 	if len(raw) == 0 {
 		empty := av.theme.Dimmed.
@@ -213,6 +226,8 @@ func (av AgentView) renderTerminal(w, h int) string {
 	}
 
 	content := av.formatTerminalOutput(raw, w, h)
+	av.cachedWriteCount = writeCount
+	av.cachedTerminal = content
 	return border.Render(content)
 }
 
@@ -238,9 +253,17 @@ func (av AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string 
 	vt.Lock()
 	defer vt.Unlock()
 
+	// Get cursor position for rendering
+	cur := vt.Cursor()
+	curVisible := vt.CursorVisible()
+
 	var lines []string
 	for y := 0; y < vtRows; y++ {
-		line := renderLine(vt, y, vtCols)
+		cursorX := -1
+		if curVisible && y == cur.Y {
+			cursorX = cur.X
+		}
+		line := renderLine(vt, y, vtCols, cursorX)
 		lines = append(lines, line)
 	}
 

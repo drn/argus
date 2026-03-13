@@ -3,10 +3,11 @@ package agent
 // ringBuffer is a fixed-size circular byte buffer.
 // When full, new writes overwrite the oldest data.
 type ringBuffer struct {
-	data []byte
-	size int
-	pos  int
-	full bool
+	data  []byte
+	size  int
+	pos   int
+	full  bool
+	total uint64 // monotonic count of bytes written
 }
 
 func newRingBuffer(size int) *ringBuffer {
@@ -25,6 +26,12 @@ func (rb *ringBuffer) Write(p []byte) {
 			rb.full = true
 		}
 	}
+	rb.total += uint64(len(p))
+}
+
+// TotalWritten returns the monotonic count of bytes written to the buffer.
+func (rb *ringBuffer) TotalWritten() uint64 {
+	return rb.total
 }
 
 // Bytes returns the buffered data in order (oldest first).
