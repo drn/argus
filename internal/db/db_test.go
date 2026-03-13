@@ -422,6 +422,106 @@ func TestSeedDefaults_FixesPlaceholderBackend(t *testing.T) {
 	}
 }
 
+func TestFixupBackends_MissingDangerouslySkipPermissions(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Simulate an outdated backend missing --dangerously-skip-permissions
+	if err := d.SetBackend("claude", config.Backend{
+		Command:    "claude --worktree",
+		PromptFlag: "-p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// fixupBackends should correct both the command and prompt flag
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b, ok := backends["claude"]
+	if !ok {
+		t.Fatal("expected claude backend")
+	}
+	defaultCfg := config.DefaultConfig()
+	if b.Command != defaultCfg.Backends["claude"].Command {
+		t.Errorf("expected command %q, got %q", defaultCfg.Backends["claude"].Command, b.Command)
+	}
+	if b.PromptFlag != defaultCfg.Backends["claude"].PromptFlag {
+		t.Errorf("expected prompt_flag %q, got %q", defaultCfg.Backends["claude"].PromptFlag, b.PromptFlag)
+	}
+}
+
+func TestFixupBackends_SkipsCorrectConfig(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	defaultCfg := config.DefaultConfig()
+	want := defaultCfg.Backends["claude"]
+
+	// Set the correct defaults — fixupBackends should not change them
+	if err := d.SetBackend("claude", want); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	got := backends["claude"]
+	if got.Command != want.Command || got.PromptFlag != want.PromptFlag {
+		t.Errorf("fixupBackends should not modify correct config: got command=%q flag=%q", got.Command, got.PromptFlag)
+	}
+}
+
+func TestFixupBackends_RunsOnOpen(t *testing.T) {
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+
+	// First open — creates DB with correct defaults
+	d1, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Manually corrupt the backend to simulate an outdated config
+	if err := d1.SetBackend("claude", config.Backend{
+		Command:    "claude --worktree",
+		PromptFlag: "-p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d1.Close()
+
+	// Second open — fixupBackends should repair it
+	d2, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+
+	backends := d2.Backends()
+	b := backends["claude"]
+	defaultCfg := config.DefaultConfig()
+	if b.Command != defaultCfg.Backends["claude"].Command {
+		t.Errorf("expected command %q after reopen, got %q", defaultCfg.Backends["claude"].Command, b.Command)
+	}
+	if b.PromptFlag != "" {
+		t.Errorf("expected empty prompt_flag after reopen, got %q", b.PromptFlag)
+	}
+}
+
 func TestMigration_OnlyRunsOnce(t *testing.T) {
 	old := os.Getenv("XDG_CONFIG_HOME")
 	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
