@@ -36,9 +36,9 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16) (
 	}
 	r.mu.Unlock()
 
-	// Resume if the task already has a session ID from a previous run
-	resume := task.SessionID != ""
-	cmd, err := BuildCmd(task, cfg, resume)
+	// Always start fresh — reattach to existing PTY is handled by runner.Get
+	// before reaching here. Use session-id to pin the conversation.
+	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		return nil, err
 	}
