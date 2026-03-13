@@ -9,6 +9,7 @@ type KeyMap struct {
 	StatusFwd key.Binding
 	StatusRev key.Binding
 	Delete    key.Binding
+	Destroy   key.Binding
 	Quit      key.Binding
 	Help      key.Binding
 	Filter    key.Binding
@@ -42,6 +43,10 @@ func DefaultKeyMap() KeyMap {
 		Delete: key.NewBinding(
 			key.WithKeys("d"),
 			key.WithHelp("d", "delete"),
+		),
+		Destroy: key.NewBinding(
+			key.WithKeys("ctrl+d"),
+			key.WithHelp("ctrl+d", "destroy (kill+cleanup+delete)"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
@@ -94,7 +99,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 // FullHelp returns keybindings for the expanded help view.
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.New, k.Attach, k.Delete},
+		{k.New, k.Attach, k.Delete, k.Destroy},
 		{k.StatusFwd, k.StatusRev, k.Prompt},
 		{k.Up, k.Down, k.Filter},
 		{k.Worktree, k.Prune, k.Help, k.Quit},
