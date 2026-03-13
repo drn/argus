@@ -101,15 +101,8 @@ func (f *NewTaskForm) Task() *model.Task {
 	project := strings.TrimSpace(f.inputs[fieldProject].Value())
 	prompt := strings.TrimSpace(f.inputs[fieldPrompt].Value())
 
-	// Auto-generate name from prompt (truncate to 60 chars at word boundary)
-	name := prompt
-	if len(name) > 60 {
-		name = name[:60]
-		if i := strings.LastIndex(name, " "); i > 20 {
-			name = name[:i]
-		}
-		name += "…"
-	}
+	// Extract keywords from prompt as task name (e.g., "fix-auth-token-refresh")
+	name := model.GenerateNameFromPrompt(prompt)
 
 	branch := "main"
 	if p, ok := f.projects[project]; ok {
