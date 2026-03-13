@@ -66,3 +66,23 @@ func TestRingBuffer_Empty(t *testing.T) {
 		t.Errorf("Bytes() = %q", rb.Bytes())
 	}
 }
+
+func TestRingBuffer_TotalWritten(t *testing.T) {
+	rb := newRingBuffer(5)
+	if rb.TotalWritten() != 0 {
+		t.Errorf("TotalWritten() = %d, want 0", rb.TotalWritten())
+	}
+	rb.Write([]byte("abc"))
+	if rb.TotalWritten() != 3 {
+		t.Errorf("TotalWritten() = %d, want 3", rb.TotalWritten())
+	}
+	rb.Write([]byte("defgh"))
+	if rb.TotalWritten() != 8 {
+		t.Errorf("TotalWritten() = %d, want 8", rb.TotalWritten())
+	}
+	// TotalWritten keeps counting even after wrap
+	rb.Write([]byte("ij"))
+	if rb.TotalWritten() != 10 {
+		t.Errorf("TotalWritten() = %d, want 10", rb.TotalWritten())
+	}
+}

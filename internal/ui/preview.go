@@ -94,7 +94,7 @@ func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 
 	var lines []string
 	for y := 0; y < vtRows; y++ {
-		line := renderLine(vt, y, vtCols)
+		line := renderLine(vt, y, vtCols, -1)
 		lines = append(lines, line)
 	}
 
@@ -123,13 +123,15 @@ func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 }
 
 // renderLine builds a single line from the vt10x screen with ANSI colors.
-func renderLine(vt vt10x.Terminal, y, cols int) string {
+// cursorX is the column to render a cursor at (-1 for no cursor on this line).
+func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 	var b strings.Builder
 	var curFG, curBG vt10x.Color
 	var curMode int16
 	active := false // whether we have an active SGR state
 
 	// Find the last non-empty column to trim trailing spaces
+	// (extend to cursor position if cursor is on this line)
 	lastCol := -1
 	for x := cols - 1; x >= 0; x-- {
 		cell := vt.Cell(x, y)
@@ -142,6 +144,9 @@ func renderLine(vt vt10x.Terminal, y, cols int) string {
 			break
 		}
 	}
+	if cursorX > lastCol {
+		lastCol = cursorX
+	}
 
 	for x := 0; x <= lastCol; x++ {
 		cell := vt.Cell(x, y)
@@ -150,16 +155,24 @@ func renderLine(vt vt10x.Terminal, y, cols int) string {
 			ch = ' '
 		}
 
-		// Emit SGR sequence if attributes changed
-		if cell.FG != curFG || cell.BG != curBG || cell.Mode != curMode || !active {
-			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode))
-			curFG = cell.FG
-			curBG = cell.BG
-			curMode = cell.Mode
-			active = true
+		if x == cursorX {
+			// Render cursor cell with reverse video
+			b.WriteString("\x1b[7m")
+			b.WriteRune(ch)
+			b.WriteString("\x1b[27m")
+			// Force SGR re-emit on next cell
+			active = false
+		} else {
+			// Emit SGR sequence if attributes changed
+			if cell.FG != curFG || cell.BG != curBG || cell.Mode != curMode || !active {
+				b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode))
+				curFG = cell.FG
+				curBG = cell.BG
+				curMode = cell.Mode
+				active = true
+			}
+			b.WriteRune(ch)
 		}
-
-		b.WriteRune(ch)
 	}
 
 	// Reset at end of line if we emitted any SGR

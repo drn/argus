@@ -232,6 +232,14 @@ func (s *Session) RecentOutput() []byte {
 	return s.buf.Bytes()
 }
 
+// TotalWritten returns the monotonic count of bytes written to the ring buffer.
+// Safe to call concurrently. Used to detect new output without copying the buffer.
+func (s *Session) TotalWritten() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.TotalWritten()
+}
+
 // WorkDir returns the effective working directory of the session.
 // Returns Cmd.Dir if set, otherwise falls back to the process's inherited cwd.
 func (s *Session) WorkDir() string {

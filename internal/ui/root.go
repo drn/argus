@@ -75,7 +75,7 @@ type Model struct {
 	newproject  NewProjectForm
 	preview     Preview
 	gitstatus   GitStatus
-	agentview   AgentView
+	agentview   *AgentView
 	current     view
 	activeTab   tab
 	width       int
@@ -94,7 +94,8 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 
 	pv := NewPreview(theme, runner)
 	gs := NewGitStatus(theme)
-	av := NewAgentView(theme, runner)
+	avv := NewAgentView(theme, runner)
+	av := &avv
 
 	m := Model{
 		cfg:         cfg,
