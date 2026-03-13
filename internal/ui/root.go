@@ -48,9 +48,10 @@ type TickMsg struct{}
 
 // AgentFinishedMsg is sent when an agent process exits.
 type AgentFinishedMsg struct {
-	TaskID  string
-	Err     error
-	Stopped bool // true if the process was explicitly stopped via Runner.Stop
+	TaskID     string
+	Err        error
+	Stopped    bool   // true if the process was explicitly stopped via Runner.Stop
+	LastOutput []byte // final ring buffer contents for displaying errors
 }
 
 // AgentDetachedMsg is sent when the user detaches from a running agent.
@@ -486,6 +487,11 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	} else {
 		// Agent session exited on its own — task is complete
 		t.SetStatus(model.StatusComplete)
+	}
+
+	// Preserve last output so the agent view can display it after session cleanup.
+	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
+		m.agentview.SetLastOutput(msg.LastOutput)
 	}
 
 	// On normal completion or explicit stop, return to task list.

@@ -20,7 +20,7 @@ func runnerTestConfig() config.Config {
 
 func TestRunner_StartAndGet(t *testing.T) {
 	finished := make(chan string, 1)
-	r := NewRunner(func(taskID string, err error, stopped bool) {
+	r := NewRunner(func(taskID string, err error, stopped bool, _ []byte) {
 		finished <- taskID
 	})
 
@@ -118,7 +118,7 @@ func TestRunner_StopSetsStopped(t *testing.T) {
 		stopped bool
 	}
 	finished := make(chan result, 1)
-	r := NewRunner(func(taskID string, err error, stopped bool) {
+	r := NewRunner(func(taskID string, err error, stopped bool, _ []byte) {
 		finished <- result{taskID, err, stopped}
 	})
 	cfg := config.Config{
@@ -155,7 +155,7 @@ func TestRunner_NaturalExitNotStopped(t *testing.T) {
 		stopped bool
 	}
 	finished := make(chan result, 1)
-	r := NewRunner(func(taskID string, err error, stopped bool) {
+	r := NewRunner(func(taskID string, err error, stopped bool, _ []byte) {
 		finished <- result{taskID, stopped}
 	})
 	cfg := runnerTestConfig() // "echo hello" exits naturally
