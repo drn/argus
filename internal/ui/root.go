@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -307,6 +309,14 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Confirm):
 		if t := m.tasklist.Selected(); t != nil {
+			// Stop the agent session if running
+			if m.runner.HasSession(t.ID) {
+				_ = m.runner.Stop(t.ID)
+			}
+			// Clean up worktree if configured
+			if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
+				removeWorktree(t.Worktree)
+			}
 			_ = m.store.Delete(t.ID)
 			m.refreshTasks()
 		}
@@ -449,4 +459,21 @@ func (m Model) confirmDeleteView() string {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// removeWorktree removes a git worktree directory. It first tries
+// "git worktree remove" (which cleans up .git/worktrees metadata),
+// falling back to a plain directory removal if the git command fails.
+func removeWorktree(worktreePath string) {
+	if !dirExists(worktreePath) {
+		return
+	}
+	// Find the parent repo by looking for .git in the worktree's parent chain.
+	// Git worktree remove needs to run from within the main repo or the worktree itself.
+	cmd := exec.Command("git", "worktree", "remove", "--force", filepath.Clean(worktreePath))
+	cmd.Dir = filepath.Dir(worktreePath)
+	if err := cmd.Run(); err != nil {
+		// Fallback: just remove the directory
+		_ = os.RemoveAll(worktreePath)
+	}
 }

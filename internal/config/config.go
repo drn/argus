@@ -44,9 +44,19 @@ type Keybindings struct {
 }
 
 type UIConfig struct {
-	Theme       string `toml:"theme"`
-	ShowElapsed bool   `toml:"show_elapsed"`
-	ShowIcons   bool   `toml:"show_icons"`
+	Theme            string `toml:"theme"`
+	ShowElapsed      bool   `toml:"show_elapsed"`
+	ShowIcons        bool   `toml:"show_icons"`
+	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
+}
+
+// ShouldCleanupWorktrees returns whether worktrees should be auto-removed on task delete.
+// Defaults to true if not explicitly set.
+func (u UIConfig) ShouldCleanupWorktrees() bool {
+	if u.CleanupWorktrees == nil {
+		return true
+	}
+	return *u.CleanupWorktrees
 }
 
 // DefaultConfig returns a config with sensible defaults.
