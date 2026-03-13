@@ -656,16 +656,29 @@ func discoverClaudeWorktree(baseDir, _ string) string {
 	return ""
 }
 
-// killStaleProcess sends SIGTERM to a process if it's still alive.
-// Used to clean up orphaned agent processes from a previous Argus session.
+// killStaleProcess sends SIGTERM to a process if it's still alive and waits
+// briefly for it to exit. Used to clean up orphaned agent processes from a
+// previous Argus session before resuming with --resume.
 func killStaleProcess(pid int) {
 	if pid <= 0 {
 		return
 	}
 	// Signal 0 checks if the process exists without sending a signal.
-	if syscall.Kill(pid, 0) == nil {
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+	if syscall.Kill(pid, 0) != nil {
+		return // already dead
 	}
+	_ = syscall.Kill(pid, syscall.SIGTERM)
+
+	// Wait up to 2 seconds for the process to exit so that any session
+	// locks it holds are released before we start a new --resume process.
+	for i := 0; i < 20; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if syscall.Kill(pid, 0) != nil {
+			return // exited
+		}
+	}
+	// Force-kill if it's still hanging around.
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 func removeWorktree(worktreePath string) {

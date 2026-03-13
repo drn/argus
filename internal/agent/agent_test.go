@@ -187,10 +187,52 @@ func TestBuildCmd_Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Resume should use --resume and ignore the prompt
-	expected := "claude --dangerously-skip-permissions --worktree --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
+	// Resume should use --resume, strip --worktree, and ignore the prompt
+	expected := "claude --dangerously-skip-permissions --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Prompt:    "fix the bug",
+		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+		Worktree:  "/tmp/worktree-test",
+	}
+
+	cmd, err := BuildCmd(task, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume should set cmd.Dir to the existing worktree
+	if cmd.Dir != "/tmp/worktree-test" {
+		t.Errorf("expected Dir %q, got %q", "/tmp/worktree-test", cmd.Dir)
+	}
+}
+
+func TestStripWorktreeFlag(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"claude --worktree", "claude"},
+		{"claude --worktree --resume id", "claude --resume id"},
+		{"claude --dangerously-skip-permissions --worktree", "claude --dangerously-skip-permissions"},
+		{"claude -w", "claude"},
+		{"claude -w my-branch --resume id", "claude --resume id"},
+		{"claude --worktree=my-branch --resume id", "claude --resume id"},
+		{"claude --resume id", "claude --resume id"},
+		{"claude", "claude"},
+	}
+
+	for _, tt := range tests {
+		got := stripWorktreeFlag(tt.input)
+		if got != tt.expected {
+			t.Errorf("stripWorktreeFlag(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
 	}
 }
 
