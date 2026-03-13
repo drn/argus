@@ -12,17 +12,34 @@ import (
 // with the session's PTY. Returns nil on detach, process error on exit.
 type AttachCmd struct {
 	Session *Session
-	origTTY *unix.Termios
+	stdin   io.Reader
+	stdout  io.Writer
 }
+
+// SetStdin captures the reader provided by Bubble Tea.
+func (a *AttachCmd) SetStdin(r io.Reader) { a.stdin = r }
+
+// SetStdout captures the writer provided by Bubble Tea.
+func (a *AttachCmd) SetStdout(w io.Writer) { a.stdout = w }
+
+// SetStderr is required by tea.ExecCommand.
+func (a *AttachCmd) SetStderr(_ io.Writer) {}
 
 // Run is called by Bubble Tea's tea.Exec. It puts the terminal into raw mode,
 // resizes the PTY, and splices stdin/stdout until detach or process exit.
 func (a *AttachCmd) Run() error {
-	// Put terminal into raw mode
+	// Fall back to os std streams if Bubble Tea didn't provide them
+	if a.stdin == nil {
+		a.stdin = os.Stdin
+	}
+	if a.stdout == nil {
+		a.stdout = os.Stdout
+	}
+
+	// Put terminal into raw mode so keypresses pass through immediately
 	fd := int(os.Stdin.Fd())
-	orig, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
-	if err == nil {
-		a.origTTY = orig
+	orig, termErr := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	if termErr == nil {
 		raw := *orig
 		raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
 		raw.Oflag &^= unix.OPOST
@@ -31,6 +48,7 @@ func (a *AttachCmd) Run() error {
 		raw.Cc[unix.VMIN] = 1
 		raw.Cc[unix.VTIME] = 0
 		unix.IoctlSetTermios(fd, unix.TIOCSETA, &raw)
+		defer unix.IoctlSetTermios(fd, unix.TIOCSETA, orig)
 	}
 
 	// Match PTY size to current terminal
@@ -40,28 +58,18 @@ func (a *AttachCmd) Run() error {
 
 	// Use a detach-aware reader that watches for ctrl+a d
 	dr := &detachReader{
-		reader:  os.Stdin,
+		reader:  a.stdin,
 		session: a.Session,
 	}
 
-	return a.Session.Attach(dr, os.Stdout)
+	return a.Session.Attach(dr, a.stdout)
 }
-
-// SetStdin is required by tea.ExecCommand but we use os.Stdin directly
-// since we need the raw file descriptor.
-func (a *AttachCmd) SetStdin(_ io.Reader) {}
-
-// SetStdout is required by tea.ExecCommand.
-func (a *AttachCmd) SetStdout(_ io.Writer) {}
-
-// SetStderr is required by tea.ExecCommand.
-func (a *AttachCmd) SetStderr(_ io.Writer) {}
 
 // detachReader wraps stdin and intercepts the detach sequence (ctrl+a then d).
 type detachReader struct {
-	reader    io.Reader
-	session   *Session
-	sawCtrlA  bool
+	reader   io.Reader
+	session  *Session
+	sawCtrlA bool
 }
 
 func (dr *detachReader) Read(p []byte) (int, error) {
@@ -72,17 +80,13 @@ func (dr *detachReader) Read(p []byte) (int, error) {
 			if dr.sawCtrlA {
 				dr.sawCtrlA = false
 				if p[i] == 'd' {
-					// Detach: remove the ctrl+a and d from output,
-					// signal detach, and return what we have so far
 					dr.session.Detach()
-					// Return bytes before ctrl+a (which was in previous read)
 					copy(p[i:], p[i+1:])
 					return n - 1, io.EOF
 				}
 			}
 			if p[i] == 0x01 { // ctrl+a
 				dr.sawCtrlA = true
-				// Remove ctrl+a from buffer, pass through on next read if not 'd'
 				copy(p[i:], p[i+1:])
 				n--
 				i--
