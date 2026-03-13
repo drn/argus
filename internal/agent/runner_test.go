@@ -27,7 +27,7 @@ func TestRunner_StartAndGet(t *testing.T) {
 	task := &model.Task{ID: "t1", Name: "test"}
 	cfg := runnerTestConfig()
 
-	sess, err := r.Start(task, cfg, 24, 80)
+	sess, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,13 +67,13 @@ func TestRunner_DuplicateStart(t *testing.T) {
 	}
 
 	task := &model.Task{ID: "t2", Name: "test"}
-	sess, err := r.Start(task, cfg, 24, 80)
+	sess, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Stop()
 
-	_, err = r.Start(task, cfg, 24, 80)
+	_, err = r.Start(task, cfg, 24, 80, false)
 	if err == nil {
 		t.Error("expected error for duplicate start")
 	}
@@ -90,7 +90,7 @@ func TestRunner_StopAndRunning(t *testing.T) {
 	}
 
 	task := &model.Task{ID: "t3", Name: "test"}
-	_, err := r.Start(task, cfg, 24, 80)
+	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
 	}
