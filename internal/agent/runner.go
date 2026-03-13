@@ -35,7 +35,9 @@ func (r *Runner) Start(task *model.Task, cfg config.Config) (*Session, error) {
 	}
 	r.mu.Unlock()
 
-	cmd, err := BuildCmd(task, cfg)
+	// Resume if the task already has a session ID from a previous run
+	resume := task.SessionID != ""
+	cmd, err := BuildCmd(task, cfg, resume)
 	if err != nil {
 		return nil, err
 	}

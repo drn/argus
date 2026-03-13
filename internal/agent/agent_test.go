@@ -114,7 +114,7 @@ func TestBuildCmd(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Prompt: "fix the bug"}
 
-	cmd, err := BuildCmd(task, cfg)
+	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestBuildCmd_WithProject(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Project: "myapp", Prompt: "test"}
 
-	cmd, err := BuildCmd(task, cfg)
+	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Backend: "bare", Prompt: "do stuff"}
 
-	cmd, err := BuildCmd(task, cfg)
+	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +160,37 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 	// Empty PromptFlag means prompt is passed as positional arg
 	if cmd.Args[2] != "my-agent 'do stuff'" {
 		t.Errorf("expected command with positional prompt, got %q", cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_NewSessionWithID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
+
+	cmd, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := "claude --dangerously-skip-permissions --worktree --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
+	if cmd.Args[2] != expected {
+		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_Resume(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
+
+	cmd, err := BuildCmd(task, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume should use --resume and ignore the prompt
+	expected := "claude --dangerously-skip-permissions --worktree --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
+	if cmd.Args[2] != expected {
+		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
 }
 

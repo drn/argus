@@ -197,7 +197,7 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// If session already exists, reattach to it
+	// If session already exists in runner, reattach to it
 	if sess := m.runner.Get(t.ID); sess != nil {
 		attachCmd := &agent.AttachCmd{Session: sess}
 		return m, tea.Exec(attachCmd, func(err error) tea.Msg {
@@ -209,7 +209,12 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 		})
 	}
 
-	// Start a new session
+	// Generate a session ID for new sessions so we can resume after restart
+	if t.SessionID == "" {
+		t.SessionID = model.GenerateSessionID()
+	}
+
+	// Start a new session (uses --resume if SessionID already existed)
 	sess, err := m.runner.Start(t, m.cfg)
 	if err != nil {
 		m.statusbar.SetError(err.Error())
@@ -389,4 +394,3 @@ func (m Model) confirmDeleteView() string {
 		"  " + m.theme.Normal.Render(t.Name) + "\n\n" +
 		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
 }
-
