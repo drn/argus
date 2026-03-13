@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -328,6 +329,110 @@ func TestTabHeader_Centered(t *testing.T) {
 	// Header should be padded to full width (centered)
 	if len(header) < 40 {
 		t.Errorf("expected centered header to have padding, got len=%d", len(header))
+	}
+}
+
+func testModelWithProjects(t *testing.T, projects map[string]config.Project) Model {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	s := store.NewWithPath(path)
+	runner := agent.NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "echo", PromptFlag: ""},
+		},
+		Projects: projects,
+	}
+	return NewModel(cfg, s, runner)
+}
+
+func TestDeleteProject_EnterConfirms(t *testing.T) {
+	projects := map[string]config.Project{
+		"myproject": {Path: "/tmp/myproject"},
+	}
+	m := testModelWithProjects(t, projects)
+	m.activeTab = tabProjects
+	m.current = viewConfirmDeleteProject
+
+	// Press Enter to confirm
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after enter confirm, got %d", um.current)
+	}
+	if _, ok := um.cfg.Projects["myproject"]; ok {
+		t.Error("expected project to be deleted after enter confirm")
+	}
+}
+
+func TestDeleteProject_EscCancels(t *testing.T) {
+	projects := map[string]config.Project{
+		"myproject": {Path: "/tmp/myproject"},
+	}
+	m := testModelWithProjects(t, projects)
+	m.activeTab = tabProjects
+	m.current = viewConfirmDeleteProject
+
+	// Press Esc to cancel
+	msg := tea.KeyMsg{Type: tea.KeyEsc}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after esc cancel, got %d", um.current)
+	}
+	if _, ok := um.cfg.Projects["myproject"]; !ok {
+		t.Error("expected project to still exist after esc cancel")
+	}
+}
+
+func TestDeleteProject_YKeyNoLongerConfirms(t *testing.T) {
+	projects := map[string]config.Project{
+		"myproject": {Path: "/tmp/myproject"},
+	}
+	m := testModelWithProjects(t, projects)
+	m.activeTab = tabProjects
+	m.current = viewConfirmDeleteProject
+
+	// Press y — should cancel (no longer confirms)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after y key, got %d", um.current)
+	}
+	if _, ok := um.cfg.Projects["myproject"]; !ok {
+		t.Error("expected project to still exist — y should no longer confirm deletion")
+	}
+}
+
+func TestDeleteProject_ModalView(t *testing.T) {
+	projects := map[string]config.Project{
+		"myproject": {Path: "/tmp/myproject"},
+	}
+	m := testModelWithProjects(t, projects)
+	m.activeTab = tabProjects
+	m.current = viewConfirmDeleteProject
+	m.width = 80
+	m.height = 24
+
+	view := m.confirmDeleteProjectView()
+	if view == "" {
+		t.Fatal("expected non-empty modal view")
+	}
+	// Should contain project name and path
+	if !strings.Contains(view, "myproject") {
+		t.Error("expected modal to contain project name")
+	}
+	if !strings.Contains(view, "Delete project?") {
+		t.Error("expected modal to contain title")
+	}
+	if !strings.Contains(view, "[enter] confirm") {
+		t.Error("expected modal to show enter key hint")
 	}
 }
 
