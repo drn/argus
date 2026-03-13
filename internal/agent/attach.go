@@ -100,8 +100,10 @@ func (a *AttachCmd) Run() error {
 	return a.Session.Attach(dr, hw)
 }
 
-// headerWriter wraps a writer and redraws the Argus header bar after each
-// write, ensuring the header persists even if the child clears the screen.
+// headerWriter wraps a writer. It draws the Argus header once at attach time
+// but does NOT redraw on every write — doing so causes cursor-jumping
+// interference that corrupts the display, especially when the child process
+// uses an alternate screen buffer (e.g. Claude Code).
 type headerWriter struct {
 	inner    io.Writer
 	taskName string
@@ -110,14 +112,7 @@ type headerWriter struct {
 }
 
 func (hw *headerWriter) Write(p []byte) (int, error) {
-	n, err := hw.inner.Write(p)
-	// Save cursor, redraw header, restore scroll region, restore cursor
-	hw.inner.Write([]byte("\x1b7"))       // save cursor
-	hw.drawHeader()                       // redraw header at row 1
-	hw.inner.Write([]byte(fmt.Sprintf(    // re-establish scroll region
-		"\x1b[%d;%dr", headerHeight+1, hw.rows)))
-	hw.inner.Write([]byte("\x1b8")) // restore cursor
-	return n, err
+	return hw.inner.Write(p)
 }
 
 func (hw *headerWriter) drawHeader() {
