@@ -391,6 +391,37 @@ func TestMigration_NoLegacyFiles(t *testing.T) {
 	}
 }
 
+func TestSeedDefaults_FixesPlaceholderBackend(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Simulate a legacy config that had "echo" as the command
+	if err := d.SetBackend("claude", config.Backend{Command: "echo", PromptFlag: ""}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run seedDefaults — should fix the placeholder command
+	if err := d.runSeedDefaults(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b, ok := backends["claude"]
+	if !ok {
+		t.Fatal("expected claude backend")
+	}
+	if b.Command == "echo" {
+		t.Errorf("seedDefaults should have replaced placeholder 'echo' command, got %q", b.Command)
+	}
+	defaultCfg := config.DefaultConfig()
+	if b.Command != defaultCfg.Backends["claude"].Command {
+		t.Errorf("expected default command %q, got %q", defaultCfg.Backends["claude"].Command, b.Command)
+	}
+}
+
 func TestMigration_OnlyRunsOnce(t *testing.T) {
 	old := os.Getenv("XDG_CONFIG_HOME")
 	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
