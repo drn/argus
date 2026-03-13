@@ -107,6 +107,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gitstatus.SetSize(rightWidth, gitH)
 		m.preview.SetSize(rightWidth, previewH)
 		m.statusbar.SetWidth(msg.Width)
+		m.newtask.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case TickMsg:
@@ -182,6 +183,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.New):
 		m.newtask = NewNewTaskForm(m.theme, m.cfg.Projects)
+		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
 		return m, m.newtask.inputs[0].Focus()
 
@@ -370,11 +372,9 @@ func (m Model) View() string {
 
 	// For overlay views, show them without the banner
 	switch m.current {
-	case viewNewTask, viewHelp, viewPrompt, viewConfirmDelete:
+	case viewHelp, viewPrompt, viewConfirmDelete:
 		var content string
 		switch m.current {
-		case viewNewTask:
-			content = m.newtask.View()
 		case viewHelp:
 			content = m.helpview.View()
 		case viewPrompt:
@@ -401,6 +401,12 @@ func (m Model) View() string {
 
 	// Join horizontally
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+
+	// Overlay modal for new task form
+	if m.current == viewNewTask {
+		return m.newtask.View() + "\n" + bar
+	}
+
 	return m.padToBottom(content, bar)
 }
 
