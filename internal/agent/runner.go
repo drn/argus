@@ -27,8 +27,9 @@ func NewRunner(onFinish func(taskID string, err error)) *Runner {
 
 // Start launches a new agent session for the given task.
 // rows and cols set the initial PTY size (falls back to 80x24 if zero).
+// If resume is true, the agent reconnects to an existing conversation via --resume.
 // Returns an error if a session already exists for this task.
-func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16) (*Session, error) {
+func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (*Session, error) {
 	r.mu.Lock()
 	if _, exists := r.sessions[task.ID]; exists {
 		r.mu.Unlock()
@@ -36,9 +37,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16) (
 	}
 	r.mu.Unlock()
 
-	// Always start fresh — reattach to existing PTY is handled by runner.Get
-	// before reaching here. Use session-id to pin the conversation.
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, err := BuildCmd(task, cfg, resume)
 	if err != nil {
 		return nil, err
 	}

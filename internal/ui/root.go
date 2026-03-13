@@ -212,13 +212,15 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		})
 	}
 
-	// Generate a session ID for new sessions so we can resume after restart
-	if t.SessionID == "" {
+	// If the task already has a session ID, resume that conversation;
+	// otherwise generate a new one for a fresh start.
+	resume := t.SessionID != ""
+	if !resume {
 		t.SessionID = model.GenerateSessionID()
 	}
 
 	// Start a new session with current terminal dimensions
-	sess, err := m.runner.Start(t, m.cfg, uint16(m.height), uint16(m.width))
+	sess, err := m.runner.Start(t, m.cfg, uint16(m.height), uint16(m.width), resume)
 	if err != nil {
 		m.statusbar.SetError(err.Error())
 		return m, nil
