@@ -44,12 +44,15 @@ func (a *AttachCmd) Run() error {
 		defer term.Restore(fd, prev)
 	}
 
+	// Clear screen before attaching
+	a.stdout.Write([]byte("\x1b[2J\x1b[H"))
+
 	// Match PTY size to current terminal
 	if ws, wsErr := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ); wsErr == nil {
 		a.Session.Resize(ws.Row, ws.Col)
 	}
 
-	// Use a detach-aware reader that watches for ctrl+a d
+	// Use a detach-aware reader that watches for ctrl+q
 	dr := &detachReader{
 		reader:  a.stdin,
 		session: a.Session,
