@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/charmbracelet/x/term"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,22 +38,14 @@ func (a *AttachCmd) Run() error {
 	}
 
 	// Put terminal into raw mode so keypresses pass through immediately
-	fd := int(os.Stdin.Fd())
-	orig, termErr := unix.IoctlGetTermios(fd, unix.TIOCGETA)
-	if termErr == nil {
-		raw := *orig
-		raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
-		raw.Oflag &^= unix.OPOST
-		raw.Cflag |= unix.CS8
-		raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
-		raw.Cc[unix.VMIN] = 1
-		raw.Cc[unix.VTIME] = 0
-		unix.IoctlSetTermios(fd, unix.TIOCSETA, &raw)
-		defer unix.IoctlSetTermios(fd, unix.TIOCSETA, orig)
+	fd := os.Stdin.Fd()
+	prev, err := term.MakeRaw(fd)
+	if err == nil {
+		defer term.Restore(fd, prev)
 	}
 
 	// Match PTY size to current terminal
-	if ws, err := unix.IoctlGetWinsize(fd, unix.TIOCGWINSZ); err == nil {
+	if ws, wsErr := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ); wsErr == nil {
 		a.Session.Resize(ws.Row, ws.Col)
 	}
 
