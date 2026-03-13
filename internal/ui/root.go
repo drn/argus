@@ -295,6 +295,7 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) refreshTasks() {
 	tasks := m.store.Tasks()
 	m.tasklist.SetTasks(tasks)
+	m.tasklist.SetRunning(m.runner.Running())
 	m.statusbar.SetTasks(tasks)
 }
 

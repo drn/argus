@@ -18,10 +18,18 @@ type TaskList struct {
 	offset   int // scroll offset
 	filter   string
 	filtered []*model.Task
+	running  map[string]bool // task IDs with active agent sessions
 }
 
 func NewTaskList(theme Theme) TaskList {
-	return TaskList{theme: theme}
+	return TaskList{theme: theme, running: make(map[string]bool)}
+}
+
+func (tl *TaskList) SetRunning(ids []string) {
+	tl.running = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		tl.running[id] = true
+	}
 }
 
 func (tl *TaskList) SetTasks(tasks []*model.Task) {
@@ -133,7 +141,11 @@ func (tl TaskList) View() string {
 		}
 
 		// Status label (right-aligned)
-		statusLabel := statusStyle.Render(t.Status.Display())
+		displayText := t.Status.Display()
+		if t.Status == model.StatusInProgress && !tl.running[t.ID] {
+			displayText = "● idle"
+		}
+		statusLabel := statusStyle.Render(displayText)
 		elapsed := ""
 		if e := t.ElapsedString(); e != "" {
 			elapsed = "  " + tl.theme.Elapsed.Render(e)
