@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -80,7 +82,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.tasklist.SetSize(msg.Width, msg.Height-4) // reserve for title + statusbar
+		// Reserve space: banner(7) + divider(2) + section header(1) + gap(1) + statusbar(1)
+		m.tasklist.SetSize(msg.Width, msg.Height-12)
 		m.statusbar.SetWidth(msg.Width)
 		return m, nil
 
@@ -266,57 +269,73 @@ func (m Model) View() string {
 		return ""
 	}
 
-	var content string
-	switch m.current {
-	case viewNewTask:
-		content = m.newtask.View()
-	case viewHelp:
-		content = m.helpview.View()
-	case viewPrompt:
-		content = m.promptView()
-	case viewConfirmDelete:
-		content = m.confirmDeleteView()
-	default:
-		content = m.taskListView()
-	}
-
 	// Status bar at the bottom
 	bar := m.statusbar.View()
 
-	// Calculate available height for content
-	contentHeight := m.height - lipgloss.Height(bar) - 2
+	// For overlay views, show them without the banner
+	switch m.current {
+	case viewNewTask, viewHelp, viewPrompt, viewConfirmDelete:
+		var content string
+		switch m.current {
+		case viewNewTask:
+			content = m.newtask.View()
+		case viewHelp:
+			content = m.helpview.View()
+		case viewPrompt:
+			content = m.promptView()
+		case viewConfirmDelete:
+			content = m.confirmDeleteView()
+		}
+		return m.padToBottom(content, bar)
+	}
+
+	// Main task list view with banner
+	banner := renderBanner(m.width)
+	divider := m.renderDivider()
+	section := m.renderSectionHeader()
+	tasks := m.tasklist.View()
+
+	content := "\n" + banner + "\n\n" + divider + "\n" + section + "\n" + tasks
+	return m.padToBottom(content, bar)
+}
+
+func (m Model) padToBottom(content, bar string) string {
+	contentHeight := m.height - lipgloss.Height(bar) - 1
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
-
-	// Pad content to push status bar to bottom
 	contentLines := lipgloss.Height(content)
 	padding := ""
 	if contentLines < contentHeight {
-		for i := 0; i < contentHeight-contentLines; i++ {
-			padding += "\n"
-		}
+		padding = strings.Repeat("\n", contentHeight-contentLines)
 	}
-
 	return content + padding + "\n" + bar
 }
 
-func (m Model) taskListView() string {
+func (m Model) renderDivider() string {
+	if m.width < 1 {
+		return ""
+	}
+	line := strings.Repeat("─", m.width)
+	return m.theme.Divider.Render(line)
+}
+
+func (m Model) renderSectionHeader() string {
 	active := 0
+	total := len(m.store.Tasks())
 	for _, t := range m.store.Tasks() {
 		if t.Status == model.StatusInProgress {
 			active++
 		}
 	}
 
-	title := m.theme.Title.Render("Argus")
-	count := m.theme.Dimmed.Render("")
+	label := m.theme.Section.Render("  TASKS")
+	count := m.theme.Dimmed.Render(fmt.Sprintf("  %d total", total))
 	if active > 0 {
-		count = m.theme.InProgress.Render(" [" + itoa(active) + " active]")
+		count = m.theme.InProgress.Render(fmt.Sprintf("  %d active", active)) +
+			m.theme.Dimmed.Render(fmt.Sprintf("  %d total", total))
 	}
-
-	header := title + count + "\n\n"
-	return header + m.tasklist.View()
+	return label + count
 }
 
 func (m Model) promptView() string {
@@ -345,14 +364,3 @@ func (m Model) confirmDeleteView() string {
 		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
-}
