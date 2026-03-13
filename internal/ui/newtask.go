@@ -22,8 +22,7 @@ type NewTaskForm struct {
 }
 
 const (
-	fieldName = iota
-	fieldProject
+	fieldProject = iota
 	fieldPrompt
 	fieldCount
 )
@@ -31,14 +30,9 @@ const (
 func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm {
 	inputs := make([]textinput.Model, fieldCount)
 
-	nameInput := textinput.New()
-	nameInput.Placeholder = "Task name"
-	nameInput.Focus()
-	nameInput.CharLimit = 80
-	inputs[fieldName] = nameInput
-
 	projInput := textinput.New()
 	projInput.Placeholder = "Project (from config)"
+	projInput.Focus()
 	projInput.CharLimit = 40
 	if cwd, err := os.Getwd(); err == nil {
 		projInput.SetValue(filepath.Base(cwd))
@@ -46,7 +40,7 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm
 	inputs[fieldProject] = projInput
 
 	promptInput := textinput.New()
-	promptInput.Placeholder = "Prompt for the agent (optional)"
+	promptInput.Placeholder = "Prompt for the agent"
 	promptInput.CharLimit = 500
 	inputs[fieldPrompt] = promptInput
 
@@ -73,7 +67,7 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		case "enter":
 			if f.focused == fieldCount-1 {
 				// Submit on enter at last field
-				if strings.TrimSpace(f.inputs[fieldName].Value()) != "" {
+				if strings.TrimSpace(f.inputs[fieldPrompt].Value()) != "" {
 					f.done = true
 				}
 				return nil
@@ -101,9 +95,18 @@ func (f *NewTaskForm) focusCurrent() tea.Cmd {
 }
 
 func (f *NewTaskForm) Task() *model.Task {
-	name := strings.TrimSpace(f.inputs[fieldName].Value())
 	project := strings.TrimSpace(f.inputs[fieldProject].Value())
 	prompt := strings.TrimSpace(f.inputs[fieldPrompt].Value())
+
+	// Auto-generate name from prompt (truncate to 60 chars at word boundary)
+	name := prompt
+	if len(name) > 60 {
+		name = name[:60]
+		if i := strings.LastIndex(name, " "); i > 20 {
+			name = name[:i]
+		}
+		name += "…"
+	}
 
 	branch := "main"
 	if p, ok := f.projects[project]; ok {
@@ -129,7 +132,7 @@ func (f NewTaskForm) View() string {
 	b.WriteString(f.theme.Title.Render("New Task"))
 	b.WriteString("\n\n")
 
-	labels := []string{"Name:", "Project:", "Prompt:"}
+	labels := []string{"Project:", "Prompt:"}
 	for i, label := range labels {
 		style := f.theme.Dimmed
 		if i == f.focused {
