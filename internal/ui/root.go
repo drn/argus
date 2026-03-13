@@ -330,15 +330,13 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Err != nil {
-		// If the agent failed and had a session ID, clear it so the next
-		// attempt starts a fresh session instead of retrying a broken resume.
-		if t.SessionID != "" {
-			t.SessionID = ""
-			m.statusbar.SetError("session expired — press enter to start a new session")
-		} else {
-			m.statusbar.SetError("agent error: " + msg.Err.Error())
+		// Agent was aborted/crashed — clean up the task and worktree
+		if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
+			removeWorktree(t.Worktree)
 		}
-		_ = m.store.Update(t)
+		_ = m.store.Delete(t.ID)
+		m.refreshTasks()
+		return m, nil
 	} else {
 		t.SetStatus(model.StatusInReview)
 		_ = m.store.Update(t)
