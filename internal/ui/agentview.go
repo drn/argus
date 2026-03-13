@@ -201,6 +201,11 @@ func (av *AgentView) renderTerminal(w, h int) string {
 
 	sess := av.runner.Get(av.taskID)
 	if sess == nil {
+		// Show cached terminal output if available so the user can see
+		// why the process exited (e.g. error messages from the agent).
+		if av.cachedTerminal != "" {
+			return border.Render(av.cachedTerminal)
+		}
 		empty := av.theme.Dimmed.
 			Width(w - 4).
 			Height(innerH).
@@ -291,8 +296,12 @@ func (av AgentView) renderStatusBar() string {
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("87"))
 	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
-	// Left: task name
-	left := " " + av.theme.Normal.Render(av.taskName)
+	// Left: task name + status indicator
+	status := ""
+	if av.runner.Get(av.taskID) == nil {
+		status = labelStyle.Render(" (exited — ctrl+q to return)")
+	}
+	left := " " + av.theme.Normal.Render(av.taskName) + status
 
 	// Right: keybinding hints
 	keys := []struct{ key, label string }{

@@ -255,6 +255,82 @@ func TestAgentFinished_SuccessMarksComplete(t *testing.T) {
 	}
 }
 
+func TestAgentFinished_QuickExitStaysOnAgentView(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "quick exit task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	task.SetStatus(model.StatusInProgress) // sets StartedAt to now
+	m := testModel(t, task)
+	m.current = viewAgent
+	m.agentview.Enter("task-1", "quick exit task")
+
+	// Agent exits cleanly but almost immediately — should stay on agent view
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	if um.current != viewAgent {
+		t.Errorf("expected to stay on viewAgent after quick exit, got view %d", um.current)
+	}
+}
+
+func TestAgentFinished_ErrorStaysOnAgentView(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "error task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	m := testModel(t, task)
+	m.current = viewAgent
+	m.agentview.Enter("task-1", "error task")
+
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     errors.New("exit status 1"),
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	if um.current != viewAgent {
+		t.Errorf("expected to stay on viewAgent after error exit, got view %d", um.current)
+	}
+}
+
+func TestAgentFinished_NormalCompletionExitsAgentView(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "completed task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	task.SetStatus(model.StatusInProgress)
+	task.StartedAt = task.StartedAt.Add(-time.Minute) // ran for a minute
+	m := testModel(t, task)
+	m.current = viewAgent
+	m.agentview.Enter("task-1", "completed task")
+
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after normal completion, got view %d", um.current)
+	}
+}
+
 func TestAgentFinished_QuickExitKeepsInProgress(t *testing.T) {
 	task := &model.Task{
 		ID:        "task-1",
