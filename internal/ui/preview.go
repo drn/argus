@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/drn/argus/internal/agent"
 	"github.com/hinshun/vt10x"
 )
@@ -61,11 +62,11 @@ func (p Preview) formatOutput(raw []byte) string {
 		return ""
 	}
 
-	// Use a virtual terminal to interpret PTY output (cursor movements,
-	// screen clears, etc.) into a proper screen buffer.
-	cols := max(p.width-4, 20)
-	rows := max(p.height-4, 5)
-	vt := vt10x.New(vt10x.WithSize(cols, rows))
+	// The PTY output was generated for the full terminal width, so we
+	// interpret it with a wide virtual terminal, then crop to fit.
+	vtCols := 200
+	vtRows := 500
+	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
 
 	// Read the screen content from the virtual terminal
@@ -73,9 +74,9 @@ func (p Preview) formatOutput(raw []byte) string {
 	defer vt.Unlock()
 
 	var lines []string
-	for y := 0; y < rows; y++ {
+	for y := 0; y < vtRows; y++ {
 		var line strings.Builder
-		for x := 0; x < cols; x++ {
+		for x := 0; x < vtCols; x++ {
 			cell := vt.Cell(x, y)
 			if cell.Char == 0 {
 				line.WriteByte(' ')
@@ -89,6 +90,22 @@ func (p Preview) formatOutput(raw []byte) string {
 	// Trim trailing empty lines
 	for len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Available display area inside the border
+	dispW := max(p.width-4, 10)
+	dispH := max(p.height-4, 3)
+
+	// Take the tail (most recent output) and truncate lines to fit
+	if len(lines) > dispH {
+		lines = lines[len(lines)-dispH:]
+	}
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, dispW, "")
 	}
 
 	return strings.Join(lines, "\n")
