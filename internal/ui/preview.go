@@ -1,16 +1,12 @@
 package ui
 
 import (
-	"bytes"
-	"regexp"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/agent"
+	"github.com/hinshun/vt10x"
 )
-
-// ansiRe matches ANSI escape sequences (CSI, OSC, etc.)
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x1b]*(?:\x1b\\|\x07)|\x1b[()][0-9A-B]|\x1b\[[\?]?[0-9;]*[hlm]`)
 
 // Preview renders the agent output for the selected task.
 type Preview struct {
@@ -61,28 +57,38 @@ func (p Preview) emptyView(msg string) string {
 }
 
 func (p Preview) formatOutput(raw []byte) string {
-	// Strip ANSI escape sequences for clean preview
-	cleaned := ansiRe.ReplaceAll(raw, nil)
-
-	// Remove carriage returns
-	cleaned = bytes.ReplaceAll(cleaned, []byte("\r"), nil)
-
-	// Split into lines and take the last `height` lines
-	lines := strings.Split(string(cleaned), "\n")
-
-	maxLines := max(p.height-4, 1)
-
-	// Take last N lines
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
+	if len(raw) == 0 {
+		return ""
 	}
 
-	// Truncate long lines to fit width
-	maxWidth := max(p.width-6, 10)
-	for i, line := range lines {
-		if len(line) > maxWidth {
-			lines[i] = line[:maxWidth-1] + "…"
+	// Use a virtual terminal to interpret PTY output (cursor movements,
+	// screen clears, etc.) into a proper screen buffer.
+	cols := max(p.width-4, 20)
+	rows := max(p.height-4, 5)
+	vt := vt10x.New(vt10x.WithSize(cols, rows))
+	vt.Write(raw)
+
+	// Read the screen content from the virtual terminal
+	vt.Lock()
+	defer vt.Unlock()
+
+	var lines []string
+	for y := 0; y < rows; y++ {
+		var line strings.Builder
+		for x := 0; x < cols; x++ {
+			cell := vt.Cell(x, y)
+			if cell.Char == 0 {
+				line.WriteByte(' ')
+			} else {
+				line.WriteRune(cell.Char)
+			}
 		}
+		lines = append(lines, strings.TrimRight(line.String(), " "))
+	}
+
+	// Trim trailing empty lines
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
 
 	return strings.Join(lines, "\n")
