@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
 	"strings"
 	"time"
@@ -18,12 +19,13 @@ type GitStatusRefreshMsg struct {
 
 // GitStatus renders worktree git status and diff stat above the preview pane.
 type GitStatus struct {
-	theme      Theme
-	width      int
-	height     int
-	taskID     string
-	statusText string
-	diffText   string
+	theme       Theme
+	width       int
+	height      int
+	taskID      string
+	statusText  string
+	diffText    string
+	loaded      bool
 	lastRefresh time.Time
 }
 
@@ -41,6 +43,7 @@ func (g *GitStatus) Update(msg GitStatusRefreshMsg) {
 	if msg.TaskID == g.taskID {
 		g.statusText = msg.Status
 		g.diffText = msg.Diff
+		g.loaded = true
 		g.lastRefresh = time.Now()
 	}
 }
@@ -51,6 +54,7 @@ func (g *GitStatus) SetTask(taskID string) {
 		g.taskID = taskID
 		g.statusText = ""
 		g.diffText = ""
+		g.loaded = false
 		g.lastRefresh = time.Time{}
 	}
 }
@@ -77,8 +81,12 @@ func (g GitStatus) View() string {
 		return border.Render(g.theme.Dimmed.Render(" No worktree"))
 	}
 
-	if g.statusText == "" && g.diffText == "" {
+	if !g.loaded {
 		return border.Render(g.theme.Dimmed.Render(" Loading..."))
+	}
+
+	if g.statusText == "" && g.diffText == "" {
+		return border.Render(g.theme.Dimmed.Render(" Clean — no changes"))
 	}
 
 	var sections []string
@@ -168,8 +176,13 @@ func FetchGitStatus(taskID, worktree string) GitStatusRefreshMsg {
 }
 
 func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager"}, args...)...)
 	cmd.Dir = dir
+	cmd.Env = append(cmd.Environ(),
+		"GIT_TERMINAL_PROMPT=0", // prevent credential prompts from blocking
+	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &bytes.Buffer{}
