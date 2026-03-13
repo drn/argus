@@ -318,6 +318,23 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.current = viewPrompt
 		}
 		return m, nil
+
+	case key.Matches(msg, m.keys.Prune):
+		pruned, err := m.store.PruneCompleted()
+		if err != nil {
+			m.statusbar.SetError(err.Error())
+			return m, nil
+		}
+		for _, t := range pruned {
+			if m.runner.HasSession(t.ID) {
+				_ = m.runner.Stop(t.ID)
+			}
+			if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
+				removeWorktree(t.Worktree)
+			}
+		}
+		m.refreshTasks()
+		return m, nil
 	}
 
 	return m, nil

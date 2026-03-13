@@ -162,6 +162,55 @@ func TestStore_TasksReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestStore_PruneCompleted(t *testing.T) {
+	s := tmpStore(t)
+	_ = s.Load()
+
+	pending := &model.Task{Name: "pending", Status: model.StatusPending}
+	done1 := &model.Task{Name: "done1", Status: model.StatusComplete}
+	inProg := &model.Task{Name: "in progress", Status: model.StatusInProgress}
+	done2 := &model.Task{Name: "done2", Status: model.StatusComplete}
+	_ = s.Add(pending)
+	_ = s.Add(done1)
+	_ = s.Add(inProg)
+	_ = s.Add(done2)
+
+	pruned, err := s.PruneCompleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 2 {
+		t.Errorf("expected 2 pruned, got %d", len(pruned))
+	}
+	remaining := s.Tasks()
+	if len(remaining) != 2 {
+		t.Errorf("expected 2 remaining, got %d", len(remaining))
+	}
+	for _, r := range remaining {
+		if r.Status == model.StatusComplete {
+			t.Errorf("completed task %q should have been pruned", r.Name)
+		}
+	}
+}
+
+func TestStore_PruneCompleted_NoneToRemove(t *testing.T) {
+	s := tmpStore(t)
+	_ = s.Load()
+
+	_ = s.Add(&model.Task{Name: "pending", Status: model.StatusPending})
+
+	pruned, err := s.PruneCompleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != nil {
+		t.Errorf("expected nil pruned, got %d", len(pruned))
+	}
+	if len(s.Tasks()) != 1 {
+		t.Error("expected task count unchanged")
+	}
+}
+
 func TestStore_CreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "dir", "tasks.json")

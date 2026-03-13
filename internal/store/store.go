@@ -126,6 +126,30 @@ func (s *Store) Delete(id string) error {
 	return fmt.Errorf("task not found: %s", id)
 }
 
+// PruneCompleted removes all tasks with status "complete" and returns them.
+func (s *Store) PruneCompleted() ([]*model.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var pruned []*model.Task
+	var kept []*model.Task
+	for _, t := range s.tasks {
+		if t.Status == model.StatusComplete {
+			pruned = append(pruned, t)
+		} else {
+			kept = append(kept, t)
+		}
+	}
+	if len(pruned) == 0 {
+		return nil, nil
+	}
+	s.tasks = kept
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	return pruned, nil
+}
+
 // Get returns a task by ID.
 func (s *Store) Get(id string) (*model.Task, error) {
 	s.mu.Lock()
