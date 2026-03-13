@@ -309,7 +309,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newtask = NewNewTaskForm(m.theme, m.cfg.Projects)
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
-		return m, m.newtask.inputs[0].Focus()
+		return m, nil
 
 	case key.Matches(msg, m.keys.StatusFwd):
 		if t := m.tasklist.Selected(); t != nil {
