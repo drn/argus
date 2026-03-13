@@ -11,13 +11,14 @@ func TestStatusBar_TaskCounts(t *testing.T) {
 	sb := NewStatusBar(DefaultTheme())
 	sb.SetWidth(120)
 	sb.SetTasks([]*model.Task{
-		{Status: model.StatusInProgress},
-		{Status: model.StatusInProgress},
+		{ID: "a", Status: model.StatusInProgress},
+		{ID: "b", Status: model.StatusInProgress},
 		{Status: model.StatusPending},
 		{Status: model.StatusComplete},
 		{Status: model.StatusComplete},
 		{Status: model.StatusComplete},
 	})
+	sb.SetRunning([]string{"a", "b"})
 
 	v := sb.View()
 	if !strings.Contains(v, "2 active") {
