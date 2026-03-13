@@ -6,11 +6,15 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer
+
+// idleThreshold is how long without output before a session is considered idle.
+const idleThreshold = 3 * time.Second
 
 // Session manages a single agent process with PTY.
 type Session struct {
@@ -18,15 +22,16 @@ type Session struct {
 	Cmd    *exec.Cmd
 	ptmx   *os.File // PTY master
 
-	mu       sync.Mutex
-	buf      *ringBuffer
-	attachW  io.Writer // when non-nil, readLoop tees output here
-	done     chan struct{}
-	err      error
-	attached bool
-	detachCh chan struct{}
-	ptyCols  uint16 // current PTY width
-	ptyRows  uint16 // current PTY height
+	mu         sync.Mutex
+	buf        *ringBuffer
+	attachW    io.Writer // when non-nil, readLoop tees output here
+	done       chan struct{}
+	err        error
+	attached   bool
+	detachCh   chan struct{}
+	ptyCols    uint16    // current PTY width
+	ptyRows    uint16    // current PTY height
+	lastOutput time.Time // last time output was received from PTY
 }
 
 // StartSession allocates a PTY with the given initial size, starts the command,
@@ -75,6 +80,7 @@ func (s *Session) readLoop() {
 			copy(chunk, tmp[:n])
 			s.mu.Lock()
 			s.buf.Write(chunk)
+			s.lastOutput = time.Now()
 			w := s.attachW
 			s.mu.Unlock()
 			if w != nil {
@@ -112,6 +118,21 @@ func (s *Session) Alive() bool {
 	default:
 		return true
 	}
+}
+
+// IsIdle returns true if the session is alive but has not produced output recently,
+// indicating the agent is likely waiting for user input.
+func (s *Session) IsIdle() bool {
+	if !s.Alive() {
+		return false
+	}
+	s.mu.Lock()
+	last := s.lastOutput
+	s.mu.Unlock()
+	if last.IsZero() {
+		return false // still starting up
+	}
+	return time.Since(last) >= idleThreshold
 }
 
 // PID returns the process ID, or 0 if not started.

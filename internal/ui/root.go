@@ -670,8 +670,10 @@ func (m Model) resolveTaskDir(t *model.Task) string {
 func (m *Model) refreshTasks() {
 	tasks := m.store.Tasks()
 	running := m.runner.Running()
+	idle := m.runner.Idle()
 	m.tasklist.SetTasks(tasks)
 	m.tasklist.SetRunning(running)
+	m.tasklist.SetIdle(idle)
 	m.statusbar.SetTasks(tasks)
 	m.statusbar.SetRunning(running)
 }
