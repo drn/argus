@@ -28,3 +28,6 @@ Thumbs.db
 
 # Context dir
 .context/
+
+# Claude Code worktrees (ephemeral, per-session)
+.claude/worktrees/
