@@ -19,7 +19,7 @@ func TestDefaultKeyMap(t *testing.T) {
 		"Quit":    "q",
 		"Help":    "?",
 		"Filter":  "/",
-		"Confirm": "y",
+		"Confirm": "enter",
 		"Cancel":  "esc",
 	}
 

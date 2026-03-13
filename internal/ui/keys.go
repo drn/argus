@@ -91,8 +91,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("→", "next tab"),
 		),
 		Confirm: key.NewBinding(
-			key.WithKeys("y"),
-			key.WithHelp("y", "confirm"),
+			key.WithKeys("enter"),
+			key.WithHelp("↵", "confirm"),
 		),
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),
