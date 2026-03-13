@@ -53,6 +53,7 @@ type Model struct {
 	helpview  HelpView
 	newtask   NewTaskForm
 	preview   Preview
+	gitstatus GitStatus
 	current   view
 	width     int
 	height    int
@@ -68,6 +69,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	hv := NewHelpView(keys, theme)
 
 	pv := NewPreview(theme, runner)
+	gs := NewGitStatus(theme)
 
 	m := Model{
 		cfg:       cfg,
@@ -79,6 +81,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 		statusbar: sb,
 		helpview:  hv,
 		preview:   pv,
+		gitstatus: gs,
 		current:   viewTaskList,
 	}
 	m.refreshTasks()
@@ -100,15 +103,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reserve space: section header(1) + gap(1) + statusbar(1)
 		contentHeight := msg.Height - 3
 		m.tasklist.SetSize(leftWidth, contentHeight)
-		m.preview.SetSize(rightWidth, contentHeight)
+		gitH, previewH := m.splitRightHeights(contentHeight)
+		m.gitstatus.SetSize(rightWidth, gitH)
+		m.preview.SetSize(rightWidth, previewH)
 		m.statusbar.SetWidth(msg.Width)
 		return m, nil
 
 	case TickMsg:
-		// Just re-render for elapsed time updates
-		return m, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+		// Kick off git status refresh if needed
+		var cmds []tea.Cmd
+		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
-		})
+		}))
+		if t := m.tasklist.Selected(); t != nil && t.Worktree != "" {
+			m.gitstatus.SetTask(t.ID)
+			if m.gitstatus.NeedsRefresh() {
+				worktree := t.Worktree
+				taskID := t.ID
+				cmds = append(cmds, func() tea.Msg {
+					return FetchGitStatus(taskID, worktree)
+				})
+			}
+		} else {
+			m.gitstatus.SetTask("")
+		}
+		return m, tea.Batch(cmds...)
+
+	case GitStatusRefreshMsg:
+		m.gitstatus.Update(msg)
+		return m, nil
 
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
@@ -365,12 +388,14 @@ func (m Model) View() string {
 	tasks := m.tasklist.View()
 	leftContent := section + "\n" + tasks
 
-	// Preview pane for selected task
+	// Git status + Preview pane for selected task
 	var taskID string
 	if t := m.tasklist.Selected(); t != nil {
 		taskID = t.ID
 	}
-	rightContent := m.preview.View(taskID)
+	gitView := m.gitstatus.View()
+	previewView := m.preview.View(taskID)
+	rightContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
 
 	// Join horizontally
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
@@ -388,6 +413,23 @@ func (m Model) padToBottom(content, bar string) string {
 		padding = strings.Repeat("\n", contentHeight-contentLines)
 	}
 	return content + padding + "\n" + bar
+}
+
+// splitRightHeights returns the git status and preview pane heights.
+// Git status gets ~30% of the right pane, preview gets the rest.
+func (m Model) splitRightHeights(total int) (int, int) {
+	gitH := total * 3 / 10
+	if gitH < 5 {
+		gitH = 5
+	}
+	if gitH > 15 {
+		gitH = 15
+	}
+	previewH := total - gitH
+	if previewH < 5 {
+		previewH = 5
+	}
+	return gitH, previewH
 }
 
 // splitWidths returns the left (task list) and right (preview) pane widths.
