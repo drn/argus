@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/charmbracelet/x/term"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,11 +36,22 @@ func (a *AttachCmd) Run() error {
 		a.stdout = os.Stdout
 	}
 
-	// Put terminal into raw mode so keypresses pass through immediately
-	fd := os.Stdin.Fd()
-	prev, err := term.MakeRaw(fd)
+	// Set raw input (no echo, no canonical, no signals) but keep output
+	// processing (OPOST) so \n → \r\n conversion works. term.MakeRaw
+	// clears OPOST which causes garbled output from PTY children.
+	fd := int(os.Stdin.Fd())
+	orig, err := unix.IoctlGetTermios(fd, ioctlGetTermios)
 	if err == nil {
-		defer term.Restore(fd, prev)
+		raw := *orig
+		// Raw input flags
+		raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
+		raw.Cflag |= unix.CS8
+		raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
+		raw.Cc[unix.VMIN] = 1
+		raw.Cc[unix.VTIME] = 0
+		// Keep OPOST in Oflag — do NOT clear it
+		unix.IoctlSetTermios(fd, ioctlSetTermios, &raw)
+		defer unix.IoctlSetTermios(fd, ioctlSetTermios, orig)
 	}
 
 	// Clear screen before attaching
