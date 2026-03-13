@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -255,6 +256,15 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	}
 
 	t.AgentPID = 0
+
+	// If the worktree has been removed, auto-complete the task
+	if t.Worktree != "" && !dirExists(t.Worktree) {
+		t.SetStatus(model.StatusComplete)
+		_ = m.store.Update(t)
+		m.refreshTasks()
+		return m, nil
+	}
+
 	if msg.Err != nil {
 		m.statusbar.SetError("agent error: " + msg.Err.Error())
 		_ = m.store.Update(t)
@@ -427,4 +437,9 @@ func (m Model) confirmDeleteView() string {
 	return m.theme.Title.Render("Delete task?") + "\n\n" +
 		"  " + m.theme.Normal.Render(t.Name) + "\n\n" +
 		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
