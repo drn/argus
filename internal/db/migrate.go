@@ -50,18 +50,31 @@ func (d *DB) migrate() error {
 	return err
 }
 
+// runSeedDefaults is an exported wrapper for testing.
+func (d *DB) runSeedDefaults() error {
+	return d.seedDefaults()
+}
+
 // seedDefaults inserts the default backend and config values if they don't
 // already exist. Safe to call multiple times.
 func (d *DB) seedDefaults() error {
 	cfg := config.DefaultConfig()
 
-	// Default backend — only if no backends exist
-	var backendCount int
-	d.conn.QueryRow(`SELECT COUNT(*) FROM backends`).Scan(&backendCount)
-	if backendCount == 0 {
-		for name, b := range cfg.Backends {
-			if _, err := d.conn.Exec(`INSERT OR IGNORE INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
+	// Default backends — insert if missing, and fix placeholder commands
+	// (e.g. "echo") that may have been written by earlier development builds.
+	for name, b := range cfg.Backends {
+		var existing string
+		err := d.conn.QueryRow(`SELECT command FROM backends WHERE name=?`, name).Scan(&existing)
+		if err == sql.ErrNoRows {
+			// Backend doesn't exist — insert the default
+			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
 				name, b.Command, b.PromptFlag); err != nil {
+				return err
+			}
+		} else if err == nil && (existing == "echo" || existing == "cat" || existing == "true") {
+			// Backend exists but has a placeholder command — replace with default
+			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
+				b.Command, b.PromptFlag, name); err != nil {
 				return err
 			}
 		}
