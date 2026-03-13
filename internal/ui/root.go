@@ -140,8 +140,12 @@ func (m Model) Init() tea.Cmd {
 			if task.AgentPID > 0 {
 				killStaleProcess(task.AgentPID)
 				task.AgentPID = 0
-				_ = m.db.Update(task)
 			}
+
+			// Reset StartedAt before starting so the quick-exit check in
+			// handleAgentFinished uses the resume time, not the original start.
+			task.StartedAt = time.Now()
+			_ = m.db.Update(task)
 
 			cmds = append(cmds, func() tea.Msg {
 				sess, err := m.runner.Start(task, m.db.Config(), 24, 80, true)
@@ -418,6 +422,13 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
+	// Persist status and StartedAt BEFORE starting the process so that
+	// handleAgentFinished always sees fresh data even if the process exits
+	// immediately (race between Start returning and the wait goroutine).
+	t.SetStatus(model.StatusInProgress)
+	t.StartedAt = time.Now()
+	_ = m.db.Update(t)
+
 	// Start a new session — use agent view panel dimensions for PTY size
 	_, centerW, _ := m.agentview.splitWidths()
 	contentH := m.height - 1
@@ -430,10 +441,6 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	}
 
 	t.AgentPID = sess.PID()
-	t.SetStatus(model.StatusInProgress)
-	// Always reset StartedAt so the quick-exit check in handleAgentFinished
-	// uses the time this session was launched, not the original task start.
-	t.StartedAt = time.Now()
 	_ = m.db.Update(t)
 	m.refreshTasks()
 
