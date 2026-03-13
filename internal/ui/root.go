@@ -434,6 +434,9 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 
 	t.AgentPID = sess.PID()
 	t.SetStatus(model.StatusInProgress)
+	// Always reset StartedAt so the quick-exit check in handleAgentFinished
+	// uses the time this session was launched, not the original task start.
+	t.StartedAt = time.Now()
 	_ = m.store.Update(t)
 	m.refreshTasks()
 

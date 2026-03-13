@@ -290,6 +290,49 @@ func TestAgentFinished_QuickExitKeepsInProgress(t *testing.T) {
 	}
 }
 
+func TestAgentFinished_QuickExitOnRetryKeepsInProgress(t *testing.T) {
+	// Simulate a task that was started long ago (StartedAt in the past),
+	// then restarted. Without resetting StartedAt on re-launch, the quick
+	// exit check would see time.Since(StartedAt) > minAgentRunTime and
+	// incorrectly mark the task complete.
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "retried task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	task.SetStatus(model.StatusInProgress)
+	task.StartedAt = time.Now().Add(-10 * time.Minute) // started 10 min ago
+	m := testModel(t, task)
+
+	// Re-store with old StartedAt to simulate a previously started task
+	_ = m.store.Update(task)
+
+	// Now simulate what startOrAttach does: reset StartedAt to now
+	task.StartedAt = time.Now()
+	_ = m.store.Update(task)
+
+	// Agent exits cleanly but almost immediately — should NOT mark complete
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	got, err := um.store.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusInProgress {
+		t.Errorf("expected status InProgress for quick exit on retry, got %v", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("expected SessionID cleared on quick exit, got %q", got.SessionID)
+	}
+}
+
 func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
 	task := &model.Task{
 		ID:        "task-1",
