@@ -58,31 +58,20 @@ func (a *AttachCmd) Run() error {
 	return a.Session.Attach(dr, a.stdout)
 }
 
-// detachReader wraps stdin and intercepts the detach sequence (ctrl+a then d).
+// detachReader wraps stdin and intercepts ctrl+q (0x11) to detach.
 type detachReader struct {
-	reader   io.Reader
-	session  *Session
-	sawCtrlA bool
+	reader  io.Reader
+	session *Session
 }
 
 func (dr *detachReader) Read(p []byte) (int, error) {
 	n, err := dr.reader.Read(p)
 	if n > 0 {
-		// Scan for detach sequence: ctrl+a (0x01) followed by 'd'
 		for i := 0; i < n; i++ {
-			if dr.sawCtrlA {
-				dr.sawCtrlA = false
-				if p[i] == 'd' {
-					dr.session.Detach()
-					copy(p[i:], p[i+1:])
-					return n - 1, io.EOF
-				}
-			}
-			if p[i] == 0x01 { // ctrl+a
-				dr.sawCtrlA = true
+			if p[i] == 0x11 { // ctrl+q
+				dr.session.Detach()
 				copy(p[i:], p[i+1:])
-				n--
-				i--
+				return n - 1, io.EOF
 			}
 		}
 	}
