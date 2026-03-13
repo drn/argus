@@ -35,7 +35,6 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm
 
 	projInput := textinput.New()
 	projInput.Placeholder = "Project (from config)"
-	projInput.Focus()
 	projInput.CharLimit = 40
 	if cwd, err := os.Getwd(); err == nil {
 		projInput.SetValue(filepath.Base(cwd))
@@ -45,10 +44,12 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm
 	promptInput := textinput.New()
 	promptInput.Placeholder = "Prompt for the agent"
 	promptInput.CharLimit = 500
+	promptInput.Focus()
 	inputs[fieldPrompt] = promptInput
 
 	return NewTaskForm{
 		inputs:   inputs,
+		focused:  fieldPrompt,
 		theme:    theme,
 		projects: projects,
 	}
