@@ -60,7 +60,10 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 	cmdStr := backend.Command
 
 	if resume && task.SessionID != "" {
-		// Resume an existing session — no prompt needed
+		// Resume an existing session — no prompt needed.
+		// Strip --worktree/-w since the worktree already exists from the
+		// original session; passing it again would create a second one.
+		cmdStr = stripWorktreeFlag(cmdStr)
 		cmdStr += " --resume " + shellQuote(task.SessionID)
 	} else {
 		// New session — pin the session ID so we can resume later
@@ -78,11 +81,42 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
-	if dir := ResolveDir(task, cfg); dir != "" {
+	// For resume, prefer the task's existing worktree as the working
+	// directory so Claude Code finds the right project/session context.
+	dir := ResolveDir(task, cfg)
+	if resume && dir == "" && task.Worktree != "" {
+		dir = task.Worktree
+	}
+	if dir != "" {
 		cmd.Dir = dir
 	}
 
 	return cmd, nil
+}
+
+// stripWorktreeFlag removes --worktree / -w (and an optional value) from a
+// command string. The flag accepts an optional name argument, e.g.
+// "--worktree my-branch" or "-w my-branch". We remove both the flag and
+// any non-flag token that follows it.
+func stripWorktreeFlag(cmd string) string {
+	parts := strings.Fields(cmd)
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if p == "--worktree" || p == "-w" {
+			// Skip the flag; also skip a following non-flag argument if present.
+			if i+1 < len(parts) && !strings.HasPrefix(parts[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		// Handle --worktree=value
+		if strings.HasPrefix(p, "--worktree=") || strings.HasPrefix(p, "-w=") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, " ")
 }
 
 // shellQuote wraps a string in single quotes with proper escaping.
