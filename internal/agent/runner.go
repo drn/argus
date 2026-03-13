@@ -13,14 +13,16 @@ import (
 type Runner struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
-	onFinish func(taskID string, err error)
+	stopped  map[string]bool // tracks task IDs where Stop was explicitly called
+	onFinish func(taskID string, err error, stopped bool)
 }
 
 // NewRunner creates a Runner. The onFinish callback is called (in a goroutine)
 // when any managed session's process exits.
-func NewRunner(onFinish func(taskID string, err error)) *Runner {
+func NewRunner(onFinish func(taskID string, err error, stopped bool)) *Runner {
 	return &Runner{
 		sessions: make(map[string]*Session),
+		stopped:  make(map[string]bool),
 		onFinish: onFinish,
 	}
 }
@@ -56,9 +58,11 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		<-sess.Done()
 		r.mu.Lock()
 		delete(r.sessions, task.ID)
+		wasStopped := r.stopped[task.ID]
+		delete(r.stopped, task.ID)
 		r.mu.Unlock()
 		if r.onFinish != nil {
-			r.onFinish(task.ID, sess.Err())
+			r.onFinish(task.ID, sess.Err(), wasStopped)
 		}
 	}()
 
@@ -91,10 +95,14 @@ func (r *Runner) Detach(taskID string) {
 
 // Stop sends SIGTERM to a running session.
 func (r *Runner) Stop(taskID string) error {
-	sess := r.Get(taskID)
+	r.mu.Lock()
+	sess := r.sessions[taskID]
 	if sess == nil {
+		r.mu.Unlock()
 		return ErrSessionNotFound
 	}
+	r.stopped[taskID] = true
+	r.mu.Unlock()
 	return sess.Stop()
 }
 

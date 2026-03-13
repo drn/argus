@@ -27,9 +27,9 @@ func main() {
 	// Create runner — the onFinish callback sends a message to the tea.Program.
 	// We need to create the program first, so we use a closure that captures p.
 	var p *tea.Program
-	runner := agent.NewRunner(func(taskID string, err error) {
+	runner := agent.NewRunner(func(taskID string, err error, stopped bool) {
 		if p != nil {
-			p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err})
+			p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped})
 		}
 	})
 	defer runner.StopAll()

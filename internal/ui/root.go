@@ -32,8 +32,9 @@ type TickMsg struct{}
 
 // AgentFinishedMsg is sent when an agent process exits.
 type AgentFinishedMsg struct {
-	TaskID string
-	Err    error
+	TaskID  string
+	Err     error
+	Stopped bool // true if the process was explicitly stopped via Runner.Stop
 }
 
 // AgentDetachedMsg is sent when the user detaches from a running agent.
@@ -341,8 +342,8 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Err != nil {
-		// Agent was aborted/crashed — clean up the task and worktree
+	if msg.Err != nil || msg.Stopped {
+		// Agent was aborted/crashed/stopped — clean up the task and worktree
 		if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
 			removeWorktree(t.Worktree)
 		}
