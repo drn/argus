@@ -10,10 +10,11 @@ import (
 
 // StatusBar renders the bottom status bar.
 type StatusBar struct {
-	theme  Theme
-	width  int
-	tasks  []*model.Task
-	errMsg string
+	theme   Theme
+	width   int
+	tasks   []*model.Task
+	running map[string]bool
+	errMsg  string
 }
 
 func NewStatusBar(theme Theme) StatusBar {
@@ -26,6 +27,13 @@ func (sb *StatusBar) SetWidth(w int) {
 
 func (sb *StatusBar) SetTasks(tasks []*model.Task) {
 	sb.tasks = tasks
+}
+
+func (sb *StatusBar) SetRunning(ids []string) {
+	sb.running = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		sb.running[id] = true
+	}
 }
 
 func (sb *StatusBar) SetError(msg string) {
@@ -47,7 +55,9 @@ func (sb StatusBar) View() string {
 		for _, t := range sb.tasks {
 			switch t.Status {
 			case model.StatusInProgress:
-				active++
+				if sb.running[t.ID] {
+					active++
+				}
 			case model.StatusPending:
 				pending++
 			case model.StatusComplete:

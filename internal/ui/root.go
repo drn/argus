@@ -353,9 +353,11 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) refreshTasks() {
 	tasks := m.store.Tasks()
+	running := m.runner.Running()
 	m.tasklist.SetTasks(tasks)
-	m.tasklist.SetRunning(m.runner.Running())
+	m.tasklist.SetRunning(running)
 	m.statusbar.SetTasks(tasks)
+	m.statusbar.SetRunning(running)
 }
 
 func (m Model) View() string {
@@ -455,10 +457,14 @@ func (m Model) renderDivider() string {
 }
 
 func (m Model) renderSectionHeader() string {
+	running := make(map[string]bool)
+	for _, id := range m.runner.Running() {
+		running[id] = true
+	}
 	active := 0
 	total := len(m.store.Tasks())
 	for _, t := range m.store.Tasks() {
-		if t.Status == model.StatusInProgress {
+		if t.Status == model.StatusInProgress && running[t.ID] {
 			active++
 		}
 	}
