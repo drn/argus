@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 
@@ -91,6 +92,19 @@ func DefaultKeybindings() Keybindings {
 		Prompt:   "p",
 		Worktree: "w",
 	}
+}
+
+// Save writes the config to the standard path.
+func Save(cfg Config) error {
+	dir := ConfigDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "config.toml"), buf.Bytes(), 0o644)
 }
 
 // ConfigDir returns the argus config directory path.

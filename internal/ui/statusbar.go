@@ -10,11 +10,12 @@ import (
 
 // StatusBar renders the bottom status bar.
 type StatusBar struct {
-	theme   Theme
-	width   int
-	tasks   []*model.Task
-	running map[string]bool
-	errMsg  string
+	theme      Theme
+	width      int
+	tasks      []*model.Task
+	running    map[string]bool
+	errMsg     string
+	projectTab bool
 }
 
 func NewStatusBar(theme Theme) StatusBar {
@@ -34,6 +35,10 @@ func (sb *StatusBar) SetRunning(ids []string) {
 	for _, id := range ids {
 		sb.running[id] = true
 	}
+}
+
+func (sb *StatusBar) SetProjectTab(active bool) {
+	sb.projectTab = active
 }
 
 func (sb *StatusBar) SetError(msg string) {
@@ -68,14 +73,25 @@ func (sb StatusBar) View() string {
 	}
 
 	// Keybinding hints with highlighted keys
-	keys := []struct{ key, label string }{
-		{"n", "new"},
-		{"RET", "attach"},
-		{"s", "status"},
-		{"d", "del"},
-		{"p", "prompt"},
-		{"?", "help"},
-		{"q", "quit"},
+	var keys []struct{ key, label string }
+	if sb.projectTab {
+		keys = []struct{ key, label string }{
+			{"n", "new"},
+			{"d", "del"},
+			{"1", "tasks"},
+			{"?", "help"},
+			{"q", "quit"},
+		}
+	} else {
+		keys = []struct{ key, label string }{
+			{"n", "new"},
+			{"RET", "attach"},
+			{"s", "status"},
+			{"d", "del"},
+			{"2", "projects"},
+			{"?", "help"},
+			{"q", "quit"},
+		}
 	}
 	var parts []string
 	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("87"))
