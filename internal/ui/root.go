@@ -444,6 +444,10 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	if msg.Stopped {
 		// Explicitly stopped via Runner.Stop — mark for review
 		t.SetStatus(model.StatusInReview)
+	} else if msg.Err != nil {
+		// Process exited with an error (e.g. failed resume, crash) —
+		// keep the task in progress so the user can retry.
+		t.SessionID = ""
 	} else if t.Worktree != "" && !dirExists(t.Worktree) {
 		// Worktree removed — auto-complete
 		t.SetStatus(model.StatusComplete)

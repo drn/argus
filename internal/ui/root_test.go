@@ -197,6 +197,90 @@ func TestDestroyCancel_KeepsTask(t *testing.T) {
 	}
 }
 
+func TestAgentFinished_ErrorKeepsInProgress(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "resuming task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	m := testModel(t, task)
+
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     errors.New("exit status 1"),
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	got, err := um.store.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusInProgress {
+		t.Errorf("expected status InProgress, got %v", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("expected SessionID cleared on error, got %q", got.SessionID)
+	}
+	if got.AgentPID != 0 {
+		t.Errorf("expected AgentPID=0, got %d", got.AgentPID)
+	}
+}
+
+func TestAgentFinished_SuccessMarksComplete(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "finished task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	m := testModel(t, task)
+
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: false,
+	})
+	um := updated.(Model)
+
+	got, err := um.store.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusComplete {
+		t.Errorf("expected status Complete, got %v", got.Status)
+	}
+}
+
+func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
+	task := &model.Task{
+		ID:        "task-1",
+		Name:      "stopped task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		AgentPID:  100,
+	}
+	m := testModel(t, task)
+
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:  "task-1",
+		Err:     nil,
+		Stopped: true,
+	})
+	um := updated.(Model)
+
+	got, err := um.store.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusInReview {
+		t.Errorf("expected status InReview, got %v", got.Status)
+	}
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},
