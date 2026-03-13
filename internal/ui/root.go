@@ -619,8 +619,8 @@ func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Confirm):
+	switch msg.Type {
+	case tea.KeyEnter:
 		if entry := m.projectlist.Selected(); entry != nil {
 			delete(m.cfg.Projects, entry.Name)
 			_ = config.Save(m.cfg)
@@ -628,7 +628,11 @@ func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		}
 		m.current = viewTaskList
 		return m, nil
+	case tea.KeyEsc:
+		m.current = viewTaskList
+		return m, nil
 	default:
+		// Any other key cancels
 		m.current = viewTaskList
 		return m, nil
 	}
@@ -693,9 +697,14 @@ func (m Model) View() string {
 		return m.agentview.View()
 	}
 
+	// Project delete modal is fully placed (centered), render directly with status bar
+	if m.current == viewConfirmDeleteProject {
+		return m.confirmDeleteProjectView() + "\n" + bar
+	}
+
 	// For overlay views, show them without the banner
 	switch m.current {
-	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDeleteProject, viewConfirmDestroy:
+	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDestroy:
 		var content string
 		switch m.current {
 		case viewHelp:
@@ -706,8 +715,6 @@ func (m Model) View() string {
 			content = m.confirmDeleteView()
 		case viewConfirmDestroy:
 			content = m.confirmDestroyView()
-		case viewConfirmDeleteProject:
-			content = m.confirmDeleteProjectView()
 		}
 		return m.padToBottom(content, bar)
 	}
@@ -912,10 +919,30 @@ func (m Model) confirmDeleteProjectView() string {
 	if entry == nil {
 		return ""
 	}
-	return m.theme.Title.Render("Delete project?") + "\n\n" +
-		"  " + m.theme.Normal.Render(entry.Name) + "\n" +
-		"  " + m.theme.Dimmed.Render(entry.Project.Path) + "\n\n" +
-		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
+
+	// Build modal content
+	title := m.theme.Title.Render("Delete project?")
+	name := "  " + m.theme.Normal.Render(entry.Name)
+	path := "  " + m.theme.Dimmed.Render(entry.Project.Path)
+	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
+
+	body := title + "\n\n" + name + "\n" + path + "\n\n" + hint
+
+	// Render as a bordered modal centered on screen
+	modalWidth := 50
+	if m.width > 0 && modalWidth > m.width-4 {
+		modalWidth = m.width - 4
+	}
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1, 2).
+		Width(modalWidth).
+		Render(body)
+
+	// Center horizontally and vertically
+	centered := lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
+	return centered
 }
 
 func (m Model) confirmDeleteView() string {
