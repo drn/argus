@@ -112,7 +112,7 @@ func TestResolveDir(t *testing.T) {
 
 func TestBuildCmd(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Prompt: "fix the bug"}
+	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug"}
 
 	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestBuildCmd(t *testing.T) {
 	if args[0] != "sh" || args[1] != "-c" {
 		t.Errorf("expected sh -c, got %v", args[:2])
 	}
-	expected := "claude --dangerously-skip-permissions --worktree 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --worktree argus/fix-bug 'fix the bug'"
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
@@ -165,14 +165,14 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 
 func TestBuildCmd_NewSessionWithID(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
+	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
 
 	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	expected := "claude --dangerously-skip-permissions --worktree --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --worktree argus/fix-bug --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
@@ -210,6 +210,32 @@ func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
 	// Resume should set cmd.Dir to the existing worktree
 	if cmd.Dir != "/tmp/worktree-test" {
 		t.Errorf("expected Dir %q, got %q", "/tmp/worktree-test", cmd.Dir)
+	}
+}
+
+func TestInjectWorktreeName(t *testing.T) {
+	tests := []struct {
+		input    string
+		name     string
+		expected string
+	}{
+		{"claude --worktree", "argus/fix-bug", "claude --worktree argus/fix-bug"},
+		{"claude --worktree --resume id", "argus/fix-bug", "claude --worktree argus/fix-bug --resume id"},
+		{"claude --worktree old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
+		{"claude -w", "argus/fix-bug", "claude -w argus/fix-bug"},
+		{"claude -w old-name --flag", "argus/fix-bug", "claude -w argus/fix-bug --flag"},
+		{"claude --worktree=old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
+		{"claude -w=old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
+		{"claude --resume id", "argus/fix-bug", "claude --resume id"},
+		{"claude", "argus/fix-bug", "claude"},
+		{"claude --dangerously-skip-permissions --worktree", "argus/fix-bug", "claude --dangerously-skip-permissions --worktree argus/fix-bug"},
+	}
+
+	for _, tt := range tests {
+		got := injectWorktreeName(tt.input, tt.name)
+		if got != tt.expected {
+			t.Errorf("injectWorktreeName(%q, %q) = %q, want %q", tt.input, tt.name, got, tt.expected)
+		}
 	}
 }
 

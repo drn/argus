@@ -59,6 +59,11 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmdStr := backend.Command
 
+	// Inject the task name as the worktree name so worktrees match tasks (argus/<name>).
+	if !resume && task.Name != "" {
+		cmdStr = injectWorktreeName(cmdStr, "argus/"+task.Name)
+	}
+
 	if resume && task.SessionID != "" {
 		// Resume an existing session — no prompt needed.
 		// Strip --worktree/-w since the worktree already exists from the
@@ -112,6 +117,32 @@ func stripWorktreeFlag(cmd string) string {
 		}
 		// Handle --worktree=value
 		if strings.HasPrefix(p, "--worktree=") || strings.HasPrefix(p, "-w=") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, " ")
+}
+
+// injectWorktreeName finds the --worktree / -w flag in a command string
+// and ensures it has the given name as its argument. If the flag already
+// has a value, it is replaced. If the flag has no value, the name is inserted.
+// If the flag is absent, the command is returned unchanged.
+func injectWorktreeName(cmd, name string) string {
+	parts := strings.Fields(cmd)
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if p == "--worktree" || p == "-w" {
+			out = append(out, p, name)
+			// Skip an existing non-flag argument if present.
+			if i+1 < len(parts) && !strings.HasPrefix(parts[i+1], "-") {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(p, "--worktree=") || strings.HasPrefix(p, "-w=") {
+			out = append(out, "--worktree", name)
 			continue
 		}
 		out = append(out, p)
