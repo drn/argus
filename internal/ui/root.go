@@ -196,7 +196,10 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 	if t == nil {
 		return m, nil
 	}
+	return m.startOrAttach(t)
+}
 
+func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	// If session already exists in runner, reattach to it
 	if sess := m.runner.Get(t.ID); sess != nil {
 		attachCmd := &agent.AttachCmd{Session: sess}
@@ -268,7 +271,7 @@ func (m Model) handleNewTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = m.store.Add(task)
 		m.refreshTasks()
 		m.current = viewTaskList
-		return m, nil
+		return m.startOrAttach(task)
 	}
 
 	return m, cmd
