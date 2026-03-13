@@ -6,23 +6,17 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
-	"github.com/drn/argus/internal/config"
-	"github.com/drn/argus/internal/store"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/ui"
 )
 
 func main() {
-	cfg, err := config.Load()
+	database, err := db.Open(db.DefaultPath())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
 		os.Exit(1)
 	}
-
-	s := store.New()
-	if err := s.Load(); err != nil {
-		fmt.Fprintf(os.Stderr, "error loading tasks: %v\n", err)
-		os.Exit(1)
-	}
+	defer database.Close()
 
 	// Create runner — the onFinish callback sends a message to the tea.Program.
 	// We need to create the program first, so we use a closure that captures p.
@@ -32,7 +26,7 @@ func main() {
 			p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped})
 		}
 	})
-	m := ui.NewModel(cfg, s, runner)
+	m := ui.NewModel(database, runner)
 	p = tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)

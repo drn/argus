@@ -2,7 +2,6 @@ package ui
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,27 +9,24 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
-	"github.com/drn/argus/internal/store"
 )
 
 func testModel(t *testing.T, tasks ...*model.Task) Model {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tasks.json")
-	s := store.NewWithPath(path)
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
 	for _, task := range tasks {
-		if err := s.Add(task); err != nil {
+		if err := database.Add(task); err != nil {
 			t.Fatal(err)
 		}
 	}
 	runner := agent.NewRunner(nil)
-	cfg := config.Config{
-		Defaults: config.Defaults{Backend: "claude"},
-		Backends: map[string]config.Backend{
-			"claude": {Command: "echo", PromptFlag: ""},
-		},
-	}
-	return NewModel(cfg, s, runner)
+	return NewModel(database, runner)
 }
 
 func TestSessionResumed_Success(t *testing.T) {
@@ -45,7 +41,7 @@ func TestSessionResumed_Success(t *testing.T) {
 	updated, _ := m.Update(SessionResumedMsg{TaskID: "task-1", PID: 42})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +69,7 @@ func TestSessionResumed_Error_ClearsSession(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-2")
+	got, err := um.db.Get("task-2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +106,7 @@ func TestPruneCompleted(t *testing.T) {
 	updated, _ := m.Update(msg)
 	um := updated.(Model)
 
-	remaining := um.store.Tasks()
+	remaining := um.db.Tasks()
 	if len(remaining) != 2 {
 		t.Fatalf("expected 2 remaining tasks, got %d", len(remaining))
 	}
@@ -170,7 +166,7 @@ func TestDestroyConfirm_DeletesTask(t *testing.T) {
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after confirm, got %d", um.current)
 	}
-	if _, err := um.store.Get("t1"); err == nil {
+	if _, err := um.db.Get("t1"); err == nil {
 		t.Error("expected task to be deleted after destroy confirm")
 	}
 }
@@ -194,7 +190,7 @@ func TestDestroyCancel_KeepsTask(t *testing.T) {
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after cancel, got %d", um.current)
 	}
-	if _, err := um.store.Get("t1"); err != nil {
+	if _, err := um.db.Get("t1"); err != nil {
 		t.Error("expected task to still exist after cancel")
 	}
 }
@@ -216,7 +212,7 @@ func TestAgentFinished_ErrorKeepsInProgress(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +246,7 @@ func TestAgentFinished_SuccessMarksComplete(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +274,7 @@ func TestAgentFinished_QuickExitKeepsInProgress(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,11 +303,11 @@ func TestAgentFinished_QuickExitOnRetryKeepsInProgress(t *testing.T) {
 	m := testModel(t, task)
 
 	// Re-store with old StartedAt to simulate a previously started task
-	_ = m.store.Update(task)
+	_ = m.db.Update(task)
 
 	// Now simulate what startOrAttach does: reset StartedAt to now
 	task.StartedAt = time.Now()
-	_ = m.store.Update(task)
+	_ = m.db.Update(task)
 
 	// Agent exits cleanly but almost immediately — should NOT mark complete
 	updated, _ := m.Update(AgentFinishedMsg{
@@ -321,7 +317,7 @@ func TestAgentFinished_QuickExitOnRetryKeepsInProgress(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +346,7 @@ func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
 	})
 	um := updated.(Model)
 
-	got, err := um.store.Get("task-1")
+	got, err := um.db.Get("task-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,17 +407,20 @@ func TestTabHeader_Centered(t *testing.T) {
 
 func testModelWithProjects(t *testing.T, projects map[string]config.Project) Model {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tasks.json")
-	s := store.NewWithPath(path)
-	runner := agent.NewRunner(nil)
-	cfg := config.Config{
-		Defaults: config.Defaults{Backend: "claude"},
-		Backends: map[string]config.Backend{
-			"claude": {Command: "echo", PromptFlag: ""},
-		},
-		Projects: projects,
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return NewModel(cfg, s, runner)
+	t.Cleanup(func() { database.Close() })
+	for name, proj := range projects {
+		if err := database.SetProject(name, proj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner)
+	m.refreshProjects()
+	return m
 }
 
 func TestDeleteProject_EnterConfirms(t *testing.T) {
@@ -440,7 +439,7 @@ func TestDeleteProject_EnterConfirms(t *testing.T) {
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after enter confirm, got %d", um.current)
 	}
-	if _, ok := um.cfg.Projects["myproject"]; ok {
+	if _, ok := um.db.Projects()["myproject"]; ok {
 		t.Error("expected project to be deleted after enter confirm")
 	}
 }
@@ -461,7 +460,7 @@ func TestDeleteProject_EscCancels(t *testing.T) {
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after esc cancel, got %d", um.current)
 	}
-	if _, ok := um.cfg.Projects["myproject"]; !ok {
+	if _, ok := um.db.Projects()["myproject"]; !ok {
 		t.Error("expected project to still exist after esc cancel")
 	}
 }
@@ -482,7 +481,7 @@ func TestDeleteProject_YKeyNoLongerConfirms(t *testing.T) {
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after y key, got %d", um.current)
 	}
-	if _, ok := um.cfg.Projects["myproject"]; !ok {
+	if _, ok := um.db.Projects()["myproject"]; !ok {
 		t.Error("expected project to still exist — y should no longer confirm deletion")
 	}
 }
@@ -525,10 +524,10 @@ func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 
 	// Count how many resume commands Init would produce.
 	// Init returns tea.Batch of: 1 tick + N resume cmds.
-	// We can't inspect tea.Batch internals, so instead verify the store
+	// We can't inspect tea.Batch internals, so instead verify the DB
 	// state: only t1 qualifies (in_progress + has SessionID).
 	count := 0
-	for _, task := range m.store.Tasks() {
+	for _, task := range m.db.Tasks() {
 		if task.Status == model.StatusInProgress && task.SessionID != "" {
 			count++
 		}

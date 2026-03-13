@@ -12,9 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/agent"
-	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
-	"github.com/drn/argus/internal/store"
 )
 
 type view int
@@ -68,8 +67,7 @@ type SessionResumedMsg struct {
 
 // Model is the top-level Bubble Tea model.
 type Model struct {
-	cfg         config.Config
-	store       *store.Store
+	db          *db.DB
 	runner      *agent.Runner
 	keys        KeyMap
 	theme       Theme
@@ -89,7 +87,7 @@ type Model struct {
 	quitting    bool
 }
 
-func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
+func NewModel(database *db.DB, runner *agent.Runner) Model {
 	theme := DefaultTheme()
 	keys := DefaultKeyMap()
 
@@ -104,8 +102,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	av := &avv
 
 	m := Model{
-		cfg:         cfg,
-		store:       s,
+		db:          database,
 		runner:      runner,
 		keys:        keys,
 		theme:       theme,
@@ -133,7 +130,7 @@ func (m Model) Init() tea.Cmd {
 
 	// Resume sessions for in-progress tasks that have a saved session ID.
 	// Each resume runs in a background goroutine so the UI stays responsive.
-	for _, t := range m.store.Tasks() {
+	for _, t := range m.db.Tasks() {
 		if t.Status == model.StatusInProgress && t.SessionID != "" {
 			task := t // capture loop variable
 
@@ -143,11 +140,11 @@ func (m Model) Init() tea.Cmd {
 			if task.AgentPID > 0 {
 				killStaleProcess(task.AgentPID)
 				task.AgentPID = 0
-				_ = m.store.Update(task)
+				_ = m.db.Update(task)
 			}
 
 			cmds = append(cmds, func() tea.Msg {
-				sess, err := m.runner.Start(task, m.cfg, 24, 80, true)
+				sess, err := m.runner.Start(task, m.db.Config(), 24, 80, true)
 				if err != nil {
 					return SessionResumedMsg{TaskID: task.ID, Err: err}
 				}
@@ -324,7 +321,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.New):
-		m.newtask = NewNewTaskForm(m.theme, m.cfg.Projects)
+		m.newtask = NewNewTaskForm(m.theme, m.db.Projects())
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
 		return m, nil
@@ -332,7 +329,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.StatusFwd):
 		if t := m.tasklist.Selected(); t != nil {
 			t.SetStatus(t.Status.Next())
-			_ = m.store.Update(t)
+			_ = m.db.Update(t)
 			m.refreshTasks()
 		}
 		return m, nil
@@ -340,7 +337,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.StatusRev):
 		if t := m.tasklist.Selected(); t != nil {
 			t.SetStatus(t.Status.Prev())
-			_ = m.store.Update(t)
+			_ = m.db.Update(t)
 			m.refreshTasks()
 		}
 		return m, nil
@@ -371,7 +368,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.Prune):
-		pruned, err := m.store.PruneCompleted()
+		pruned, err := m.db.PruneCompleted()
 		if err != nil {
 			m.statusbar.SetError(err.Error())
 			return m, nil
@@ -380,7 +377,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.runner.HasSession(t.ID) {
 				_ = m.runner.Stop(t.ID)
 			}
-			if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
+			if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
 				removeWorktree(t.Worktree)
 			}
 		}
@@ -426,7 +423,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	contentH := m.height - 1
 	ptyRows := uint16(max(contentH-4, 10))
 	ptyCols := uint16(max(centerW-4, 40))
-	sess, err := m.runner.Start(t, m.cfg, ptyRows, ptyCols, resume)
+	sess, err := m.runner.Start(t, m.db.Config(), ptyRows, ptyCols, resume)
 	if err != nil {
 		m.statusbar.SetError(err.Error())
 		return m, nil
@@ -437,7 +434,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	// Always reset StartedAt so the quick-exit check in handleAgentFinished
 	// uses the time this session was launched, not the original task start.
 	t.StartedAt = time.Now()
-	_ = m.store.Update(t)
+	_ = m.db.Update(t)
 	m.refreshTasks()
 
 	m.agentview.Enter(t.ID, t.Name)
@@ -449,7 +446,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
-	t, err := m.store.Get(msg.TaskID)
+	t, err := m.db.Get(msg.TaskID)
 	if err != nil {
 		// Task was deleted while agent was running — silently ignore
 		return m, nil
@@ -480,14 +477,14 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		// Agent session exited on its own — task is complete
 		t.SetStatus(model.StatusComplete)
 	}
-	_ = m.store.Update(t)
+	_ = m.db.Update(t)
 
 	m.refreshTasks()
 	return m, nil
 }
 
 func (m Model) handleSessionResumed(msg SessionResumedMsg) (tea.Model, tea.Cmd) {
-	t, err := m.store.Get(msg.TaskID)
+	t, err := m.db.Get(msg.TaskID)
 	if err != nil {
 		return m, nil
 	}
@@ -496,10 +493,10 @@ func (m Model) handleSessionResumed(msg SessionResumedMsg) (tea.Model, tea.Cmd) 
 		// Resume failed — clear session ID so next manual start is fresh
 		t.SessionID = ""
 		t.AgentPID = 0
-		_ = m.store.Update(t)
+		_ = m.db.Update(t)
 	} else {
 		t.AgentPID = msg.PID
-		_ = m.store.Update(t)
+		_ = m.db.Update(t)
 	}
 
 	m.refreshTasks()
@@ -516,7 +513,7 @@ func (m Model) handleNewTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.newtask.Done() {
 		task := m.newtask.Task()
-		_ = m.store.Add(task)
+		_ = m.db.Add(task)
 		m.refreshTasks()
 		m.current = viewTaskList
 		return m.startOrAttach(task)
@@ -534,10 +531,10 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				_ = m.runner.Stop(t.ID)
 			}
 			// Clean up worktree if configured
-			if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
+			if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
 				removeWorktree(t.Worktree)
 			}
-			_ = m.store.Delete(t.ID)
+			_ = m.db.Delete(t.ID)
 			m.refreshTasks()
 		}
 		m.current = viewTaskList
@@ -557,16 +554,17 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				_ = m.runner.Stop(t.ID)
 			}
 			// Remove worktree and delete branch
+			cfg := m.db.Config()
 			if t.Worktree != "" {
-				repoDir := agent.ResolveDir(t, m.cfg)
+				repoDir := agent.ResolveDir(t, cfg)
 				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
 			} else if t.Branch != "" {
 				// No worktree but has a branch — try to delete it from project dir
-				if repoDir := agent.ResolveDir(t, m.cfg); repoDir != "" {
+				if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
 					deleteBranch(repoDir, t.Branch)
 				}
 			}
-			_ = m.store.Delete(t.ID)
+			_ = m.db.Delete(t.ID)
 			m.refreshTasks()
 		}
 		m.current = viewTaskList
@@ -621,8 +619,7 @@ func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.newproject.Done() {
 		name, proj := m.newproject.ProjectEntry()
-		m.cfg.Projects[name] = proj
-		_ = config.Save(m.cfg)
+		_ = m.db.SetProject(name, proj)
 		m.refreshProjects()
 		m.current = viewTaskList
 		return m, nil
@@ -635,8 +632,7 @@ func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	switch msg.Type {
 	case tea.KeyEnter:
 		if entry := m.projectlist.Selected(); entry != nil {
-			delete(m.cfg.Projects, entry.Name)
-			_ = config.Save(m.cfg)
+			_ = m.db.DeleteProject(entry.Name)
 			m.refreshProjects()
 		}
 		m.current = viewTaskList
@@ -652,13 +648,13 @@ func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 }
 
 func (m *Model) refreshProjects() {
-	m.projectlist.SetProjects(m.cfg.Projects)
+	m.projectlist.SetProjects(m.db.Projects())
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.
 func (m Model) selectedTaskForGit() *model.Task {
 	if m.current == viewAgent {
-		if t, err := m.store.Get(m.agentview.taskID); err == nil {
+		if t, err := m.db.Get(m.agentview.taskID); err == nil {
 			return t
 		}
 		return nil
@@ -670,7 +666,7 @@ func (m Model) selectedTaskForGit() *model.Task {
 func (m Model) resolveTaskDir(t *model.Task) string {
 	dir := t.Worktree
 	if dir == "" {
-		dir = agent.ResolveDir(t, m.cfg)
+		dir = agent.ResolveDir(t, m.db.Config())
 	}
 	if dir == "" {
 		dir = m.runner.WorkDir(t.ID)
@@ -678,7 +674,7 @@ func (m Model) resolveTaskDir(t *model.Task) string {
 	if dir != "" && t.Worktree == "" {
 		if wt := discoverClaudeWorktree(dir, t.ID); wt != "" {
 			t.Worktree = wt
-			_ = m.store.Update(t)
+			_ = m.db.Update(t)
 			dir = wt
 		}
 	}
@@ -686,7 +682,7 @@ func (m Model) resolveTaskDir(t *model.Task) string {
 }
 
 func (m *Model) refreshTasks() {
-	tasks := m.store.Tasks()
+	tasks := m.db.Tasks()
 	running := m.runner.Running()
 	idle := m.runner.Idle()
 	m.tasklist.SetTasks(tasks)
@@ -825,7 +821,7 @@ func (m Model) renderTabHeader() string {
 
 func (m Model) renderTasksView(tabHeader, bar string) string {
 	// Empty state: show banner centered on page
-	if len(m.store.Tasks()) == 0 {
+	if len(m.db.Tasks()) == 0 {
 		content := m.emptyStateView()
 		return m.padToBottom(content, bar)
 	}
