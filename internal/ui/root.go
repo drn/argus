@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/store"
@@ -23,6 +24,12 @@ const (
 
 // TickMsg is sent periodically to update elapsed times.
 type TickMsg struct{}
+
+// AgentFinishedMsg is sent when an agent process exits.
+type AgentFinishedMsg struct {
+	TaskID string
+	Err    error
+}
 
 // Model is the top-level Bubble Tea model.
 type Model struct {
@@ -83,7 +90,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return TickMsg{}
 		})
 
+	case AgentFinishedMsg:
+		return m.handleAgentFinished(msg)
+
 	case tea.KeyMsg:
+		m.statusbar.ClearError()
 		return m.handleKey(msg)
 	}
 
@@ -152,6 +163,9 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.current = viewHelp
 		return m, nil
 
+	case key.Matches(msg, m.keys.Attach):
+		return m.attachAgent()
+
 	case key.Matches(msg, m.keys.Prompt):
 		if m.tasklist.Selected() != nil {
 			m.current = viewPrompt
@@ -159,6 +173,56 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, nil
+}
+
+func (m Model) attachAgent() (tea.Model, tea.Cmd) {
+	t := m.tasklist.Selected()
+	if t == nil {
+		return m, nil
+	}
+
+	if t.Prompt == "" {
+		m.statusbar.SetError("no prompt set — press [p] to view/set prompt")
+		return m, nil
+	}
+
+	if t.AgentPID != 0 {
+		m.statusbar.SetError("agent already running")
+		return m, nil
+	}
+
+	cmd, err := agent.BuildCmd(t, m.cfg)
+	if err != nil {
+		m.statusbar.SetError(err.Error())
+		return m, nil
+	}
+
+	t.SetStatus(model.StatusInProgress)
+	_ = m.store.Update(t)
+	m.refreshTasks()
+
+	taskID := t.ID
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return AgentFinishedMsg{TaskID: taskID, Err: err}
+	})
+}
+
+func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
+	t, err := m.store.Get(msg.TaskID)
+	if err != nil {
+		// Task was deleted while agent was running — silently ignore
+		return m, nil
+	}
+
+	if msg.Err != nil {
+		m.statusbar.SetError("agent error: " + msg.Err.Error())
+	} else {
+		t.SetStatus(model.StatusInReview)
+		_ = m.store.Update(t)
+	}
+
+	m.refreshTasks()
 	return m, nil
 }
 

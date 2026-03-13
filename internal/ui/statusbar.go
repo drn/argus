@@ -12,6 +12,7 @@ type StatusBar struct {
 	theme  Theme
 	width  int
 	tasks  []*model.Task
+	errMsg string
 }
 
 func NewStatusBar(theme Theme) StatusBar {
@@ -24,6 +25,14 @@ func (sb *StatusBar) SetWidth(w int) {
 
 func (sb *StatusBar) SetTasks(tasks []*model.Task) {
 	sb.tasks = tasks
+}
+
+func (sb *StatusBar) SetError(msg string) {
+	sb.errMsg = msg
+}
+
+func (sb *StatusBar) ClearError() {
+	sb.errMsg = ""
 }
 
 func (sb StatusBar) View() string {
@@ -41,7 +50,12 @@ func (sb StatusBar) View() string {
 		}
 	}
 
-	left := fmt.Sprintf(" %d active  %d pending  %d done", active, pending, complete)
+	var left string
+	if sb.errMsg != "" {
+		left = " ⚠ " + sb.errMsg
+	} else {
+		left = fmt.Sprintf(" %d active  %d pending  %d done", active, pending, complete)
+	}
 	right := " [n]ew [↵]attach [s]tatus [d]el [?]help [q]uit "
 
 	gap := sb.width - lipgloss.Width(left) - lipgloss.Width(right)
