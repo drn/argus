@@ -1,12 +1,23 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/drn/argus/internal/agent"
 	"github.com/hinshun/vt10x"
+)
+
+// vt10x attribute bit flags (unexported in the library)
+const (
+	vtAttrReverse   = 1 << 0
+	vtAttrUnderline = 1 << 1
+	vtAttrBold      = 1 << 2
+	// attrGfx      = 1 << 3
+	vtAttrItalic = 1 << 4
+	// attrBlink    = 1 << 5
 )
 
 // Preview renders the agent output for the selected task.
@@ -77,26 +88,18 @@ func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
 
-	// Read the screen content from the virtual terminal
+	// Read the screen content from the virtual terminal with color info
 	vt.Lock()
 	defer vt.Unlock()
 
 	var lines []string
 	for y := 0; y < vtRows; y++ {
-		var line strings.Builder
-		for x := 0; x < vtCols; x++ {
-			cell := vt.Cell(x, y)
-			if cell.Char == 0 {
-				line.WriteByte(' ')
-			} else {
-				line.WriteRune(cell.Char)
-			}
-		}
-		lines = append(lines, strings.TrimRight(line.String(), " "))
+		line := renderLine(vt, y, vtCols)
+		lines = append(lines, line)
 	}
 
-	// Trim trailing empty lines
-	for len(lines) > 0 && lines[len(lines)-1] == "" {
+	// Trim trailing empty lines (check stripped version for emptiness)
+	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
@@ -113,8 +116,135 @@ func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 		lines = lines[len(lines)-dispH:]
 	}
 	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, dispW, "")
+		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// renderLine builds a single line from the vt10x screen with ANSI colors.
+func renderLine(vt vt10x.Terminal, y, cols int) string {
+	var b strings.Builder
+	var curFG, curBG vt10x.Color
+	var curMode int16
+	active := false // whether we have an active SGR state
+
+	// Find the last non-empty column to trim trailing spaces
+	lastCol := -1
+	for x := cols - 1; x >= 0; x-- {
+		cell := vt.Cell(x, y)
+		ch := cell.Char
+		if ch == 0 {
+			ch = ' '
+		}
+		if ch != ' ' || cell.FG != vt10x.DefaultFG || cell.BG != vt10x.DefaultBG || cell.Mode != 0 {
+			lastCol = x
+			break
+		}
+	}
+
+	for x := 0; x <= lastCol; x++ {
+		cell := vt.Cell(x, y)
+		ch := cell.Char
+		if ch == 0 {
+			ch = ' '
+		}
+
+		// Emit SGR sequence if attributes changed
+		if cell.FG != curFG || cell.BG != curBG || cell.Mode != curMode || !active {
+			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode))
+			curFG = cell.FG
+			curBG = cell.BG
+			curMode = cell.Mode
+			active = true
+		}
+
+		b.WriteRune(ch)
+	}
+
+	// Reset at end of line if we emitted any SGR
+	if active {
+		b.WriteString("\x1b[0m")
+	}
+
+	return b.String()
+}
+
+// buildSGR builds an ANSI SGR escape sequence for the given attributes.
+func buildSGR(fg, bg vt10x.Color, mode int16) string {
+	var params []string
+
+	// Reset first, then apply attributes
+	params = append(params, "0")
+
+	if mode&vtAttrBold != 0 {
+		params = append(params, "1")
+	}
+	if mode&vtAttrItalic != 0 {
+		params = append(params, "3")
+	}
+	if mode&vtAttrUnderline != 0 {
+		params = append(params, "4")
+	}
+	if mode&vtAttrReverse != 0 {
+		params = append(params, "7")
+	}
+
+	if fg != vt10x.DefaultFG {
+		params = append(params, fgColor(fg))
+	}
+	if bg != vt10x.DefaultBG {
+		params = append(params, bgColor(bg))
+	}
+
+	return "\x1b[" + strings.Join(params, ";") + "m"
+}
+
+// fgColor returns the SGR parameter string for a foreground color.
+func fgColor(c vt10x.Color) string {
+	n := uint32(c)
+	switch {
+	case n < 8:
+		return fmt.Sprintf("%d", 30+n)
+	case n < 16:
+		return fmt.Sprintf("%d", 90+n-8)
+	default:
+		return fmt.Sprintf("38;5;%d", n)
+	}
+}
+
+// bgColor returns the SGR parameter string for a background color.
+func bgColor(c vt10x.Color) string {
+	n := uint32(c)
+	switch {
+	case n < 8:
+		return fmt.Sprintf("%d", 40+n)
+	case n < 16:
+		return fmt.Sprintf("%d", 100+n-8)
+	default:
+		return fmt.Sprintf("48;5;%d", n)
+	}
+}
+
+// stripANSI removes ANSI escape sequences and trims whitespace for emptiness check.
+func stripANSI(s string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip CSI sequence
+			j := i + 2
+			for j < len(s) && !((s[j] >= 'A' && s[j] <= 'Z') || (s[j] >= 'a' && s[j] <= 'z')) {
+				j++
+			}
+			if j < len(s) {
+				j++ // skip final byte
+			}
+			i = j
+		} else {
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
