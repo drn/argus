@@ -123,7 +123,7 @@ func (f *NewTaskForm) Task() *model.Task {
 
 	name := model.GenerateNameFromPrompt(prompt)
 
-	branch := "main"
+	branch := "master"
 	if p, ok := f.projects[project]; ok {
 		if p.Branch != "" {
 			branch = p.Branch

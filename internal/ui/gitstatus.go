@@ -215,7 +215,7 @@ func findMergeBase(worktree string) string {
 		}
 	}
 	// Fallback: try common default branch names
-	for _, branch := range []string{"main", "master"} {
+	for _, branch := range []string{"master", "main"} {
 		if base, err := runGit(worktree, "merge-base", "HEAD", branch); err == nil {
 			if b := strings.TrimSpace(base); b != "" {
 				return b
