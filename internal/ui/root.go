@@ -442,6 +442,17 @@ func (m Model) View() string {
 		return m.padToBottom(content, bar)
 	}
 
+	// Overlay modal for new task form
+	if m.current == viewNewTask {
+		return m.newtask.View() + "\n" + bar
+	}
+
+	// Empty state: show banner centered on page
+	if len(m.store.Tasks()) == 0 {
+		content := m.emptyStateView()
+		return m.padToBottom(content, bar)
+	}
+
 	// Split layout: task list on left, agent preview on right
 	section := m.renderSectionHeader()
 	tasks := m.tasklist.View()
@@ -458,11 +469,6 @@ func (m Model) View() string {
 
 	// Join horizontally
 	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
-
-	// Overlay modal for new task form
-	if m.current == viewNewTask {
-		return m.newtask.View() + "\n" + bar
-	}
 
 	return m.padToBottom(content, bar)
 }
@@ -539,6 +545,24 @@ func (m Model) renderSectionHeader() string {
 			m.theme.Dimmed.Render(fmt.Sprintf("  %d total", total))
 	}
 	return label + count
+}
+
+func (m Model) emptyStateView() string {
+	banner := renderBanner(m.width)
+	hint := m.theme.Dimmed.Render("Press [n] to create your first task")
+	hint = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, hint)
+	block := banner + "\n\n" + hint
+
+	// Center vertically in the available content area
+	barHeight := 1
+	contentHeight := m.height - barHeight - 1
+	blockHeight := lipgloss.Height(block)
+	topPad := (contentHeight - blockHeight) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+
+	return strings.Repeat("\n", topPad) + block
 }
 
 func (m Model) promptView() string {
