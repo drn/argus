@@ -53,6 +53,10 @@ go test ./internal/store/   # run tests for a single package
 - `tea.ExecCommand.SetStdin/SetStdout` must capture and use Bubble Tea's `p.input`/`p.output` — don't hardcode `os.Stdin`/`os.Stdout`.
 - The single-reader-tee pattern (one goroutine reads PTY, tees to buffer + optional writer) is critical. Two goroutines reading the same fd causes data loss.
 
+## Development Rules
+
+- **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
+
 ## Planned but Not Yet Implemented
 
 - Git worktree integration (`internal/worktree/`) — Phase 3
