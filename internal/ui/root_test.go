@@ -512,6 +512,33 @@ func TestDeleteProject_ModalView(t *testing.T) {
 	}
 }
 
+func TestInit_ResetsStartedAtBeforeResume(t *testing.T) {
+	oldStart := time.Now().Add(-10 * time.Minute)
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "old task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-1",
+		StartedAt: oldStart,
+		AgentPID:  0,
+	}
+	m := testModel(t, task)
+
+	// Init() should reset StartedAt before launching the resume goroutine.
+	// We can't easily intercept the goroutine, but we can verify the DB
+	// was updated with a fresh StartedAt during Init().
+	_ = m.Init()
+
+	got, err := m.db.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// StartedAt should have been reset to approximately now, not 10 min ago
+	if time.Since(got.StartedAt) > 5*time.Second {
+		t.Errorf("expected StartedAt reset to ~now, but got %v ago", time.Since(got.StartedAt))
+	}
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},
