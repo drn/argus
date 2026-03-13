@@ -779,7 +779,7 @@ func (m Model) renderTabHeader() string {
 	activeStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("87")).
-		Underline(true)
+		Underline(false)
 	inactiveStyle := m.theme.Dimmed
 
 	tabs := []struct {
@@ -799,7 +799,7 @@ func (m Model) renderTabHeader() string {
 		}
 		parts = append(parts, style.Render("  "+t.label+" "))
 	}
-	header := strings.Join(parts, m.theme.Dimmed.Render("│"))
+	header := strings.Join(parts, "  ")
 	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, header)
 }
 
