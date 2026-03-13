@@ -143,10 +143,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return TickMsg{}
 		}))
 		if t := m.tasklist.Selected(); t != nil {
-			// Use explicit worktree path, or fall back to project path from config
+			// Use explicit worktree path, or fall back to project path from config,
+			// or fall back to the running session's working directory.
 			dir := t.Worktree
 			if dir == "" {
 				dir = agent.ResolveDir(t, m.cfg)
+			}
+			if dir == "" {
+				dir = m.runner.WorkDir(t.ID)
+			}
+			// If we have a base dir, check for Claude Code worktrees
+			if dir != "" && t.Worktree == "" {
+				if wt := discoverClaudeWorktree(dir, t.ID); wt != "" {
+					t.Worktree = wt
+					_ = m.store.Update(t)
+					dir = wt
+				}
 			}
 			if dir != "" {
 				m.gitstatus.SetTask(t.ID)
@@ -597,6 +609,47 @@ func dirExists(path string) bool {
 // removeWorktree removes a git worktree directory. It first tries
 // "git worktree remove" (which cleans up .git/worktrees metadata),
 // falling back to a plain directory removal if the git command fails.
+// discoverClaudeWorktree looks for a Claude Code worktree under baseDir/.claude/worktrees/.
+// It parses `git worktree list --porcelain` to find worktrees in that subdirectory.
+// Falls back to scanning the directory if git fails. Returns empty string if none found.
+func discoverClaudeWorktree(baseDir, _ string) string {
+	claudeWtDir := filepath.Join(baseDir, ".claude", "worktrees")
+	if !dirExists(claudeWtDir) {
+		return ""
+	}
+
+	// Try git worktree list first for accuracy
+	out, err := runGit(baseDir, "worktree", "list", "--porcelain")
+	if err == nil {
+		for _, block := range strings.Split(out, "\n\n") {
+			for _, line := range strings.Split(block, "\n") {
+				if strings.HasPrefix(line, "worktree ") {
+					wt := strings.TrimPrefix(line, "worktree ")
+					if strings.HasPrefix(wt, claudeWtDir+string(filepath.Separator)) || strings.HasPrefix(wt, claudeWtDir+"/") {
+						return wt
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: scan directory for worktree subdirs
+	entries, err := os.ReadDir(claudeWtDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			candidate := filepath.Join(claudeWtDir, e.Name())
+			// Verify it's a git worktree (has .git file)
+			if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
 func removeWorktree(worktreePath string) {
 	if !dirExists(worktreePath) {
 		return
