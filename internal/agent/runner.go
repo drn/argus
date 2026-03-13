@@ -123,6 +123,15 @@ func (r *Runner) Running() []string {
 	return ids
 }
 
+// WorkDir returns the effective working directory for a task's session.
+// Returns empty string if no session exists.
+func (r *Runner) WorkDir(taskID string) string {
+	if sess := r.Get(taskID); sess != nil {
+		return sess.WorkDir()
+	}
+	return ""
+}
+
 // HasSession returns true if a session exists for the task.
 func (r *Runner) HasSession(taskID string) bool {
 	r.mu.Lock()

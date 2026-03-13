@@ -211,6 +211,18 @@ func (s *Session) RecentOutput() []byte {
 	return s.buf.Bytes()
 }
 
+// WorkDir returns the effective working directory of the session.
+// Returns Cmd.Dir if set, otherwise falls back to the process's inherited cwd.
+func (s *Session) WorkDir() string {
+	if s.Cmd.Dir != "" {
+		return s.Cmd.Dir
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return ""
+}
+
 // Resize sets the PTY window size.
 func (s *Session) Resize(rows, cols uint16) error {
 	s.mu.Lock()
