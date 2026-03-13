@@ -116,14 +116,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
 		}))
-		if t := m.tasklist.Selected(); t != nil && t.Worktree != "" {
-			m.gitstatus.SetTask(t.ID)
-			if m.gitstatus.NeedsRefresh() {
-				worktree := t.Worktree
-				taskID := t.ID
-				cmds = append(cmds, func() tea.Msg {
-					return FetchGitStatus(taskID, worktree)
-				})
+		if t := m.tasklist.Selected(); t != nil {
+			// Use explicit worktree path, or fall back to project path from config
+			dir := t.Worktree
+			if dir == "" {
+				dir = agent.ResolveDir(t, m.cfg)
+			}
+			if dir != "" {
+				m.gitstatus.SetTask(t.ID)
+				if m.gitstatus.NeedsRefresh() {
+					taskID := t.ID
+					cmds = append(cmds, func() tea.Msg {
+						return FetchGitStatus(taskID, dir)
+					})
+				}
+			} else {
+				m.gitstatus.SetTask("")
 			}
 		} else {
 			m.gitstatus.SetTask("")
