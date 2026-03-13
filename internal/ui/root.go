@@ -280,7 +280,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.attachAgent()
 
 	case key.Matches(msg, m.keys.Prompt):
-		if m.tasklist.Selected() != nil {
+		if t := m.tasklist.Selected(); t != nil && t.Status != model.StatusComplete {
 			m.current = viewPrompt
 		}
 		return m, nil
@@ -292,6 +292,10 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 	t := m.tasklist.Selected()
 	if t == nil {
+		return m, nil
+	}
+	if t.Status == model.StatusComplete {
+		m.statusbar.SetError("cannot attach to a completed task")
 		return m, nil
 	}
 	return m.startOrAttach(t)
