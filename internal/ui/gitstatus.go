@@ -12,9 +12,11 @@ import (
 
 // GitStatusRefreshMsg carries the result of a background git status check.
 type GitStatusRefreshMsg struct {
-	TaskID string
-	Status string // git status --short output
-	Diff   string // git diff --stat output
+	TaskID      string
+	Status      string // git status --short output
+	Diff        string // git diff --stat (unstaged + staged) output
+	BranchDiff  string // git diff --stat against merge-base (committed changes)
+	BranchFiles string // git diff --name-status against merge-base (for file list)
 }
 
 // GitStatus renders worktree git status and diff stat above the preview pane.
@@ -22,10 +24,11 @@ type GitStatus struct {
 	theme       Theme
 	width       int
 	height      int
-	taskID      string
-	statusText  string
-	diffText    string
-	loaded      bool
+	taskID         string
+	statusText     string
+	diffText       string
+	branchDiffText string
+	loaded         bool
 	lastRefresh time.Time
 	focused     bool
 }
@@ -44,6 +47,7 @@ func (g *GitStatus) Update(msg GitStatusRefreshMsg) {
 	if msg.TaskID == g.taskID {
 		g.statusText = msg.Status
 		g.diffText = msg.Diff
+		g.branchDiffText = msg.BranchDiff
 		g.loaded = true
 		g.lastRefresh = time.Now()
 	}
@@ -55,6 +59,7 @@ func (g *GitStatus) SetTask(taskID string) {
 		g.taskID = taskID
 		g.statusText = ""
 		g.diffText = ""
+		g.branchDiffText = ""
 		g.loaded = false
 		g.lastRefresh = time.Time{}
 	}
@@ -95,7 +100,7 @@ func (g GitStatus) View() string {
 		return border.Render(g.theme.Dimmed.Render(" Loading..."))
 	}
 
-	if g.statusText == "" && g.diffText == "" {
+	if g.statusText == "" && g.diffText == "" && g.branchDiffText == "" {
 		return border.Render(g.theme.Dimmed.Render(" Clean — no changes"))
 	}
 
@@ -110,6 +115,12 @@ func (g GitStatus) View() string {
 	if g.diffText != "" {
 		header := g.theme.Section.Render("  DIFF")
 		lines := g.truncateLines(g.diffText, innerW, innerH-2)
+		sections = append(sections, header+"\n"+g.colorizeDiff(lines))
+	}
+
+	if g.branchDiffText != "" {
+		header := g.theme.Section.Render("  BRANCH")
+		lines := g.truncateLines(g.branchDiffText, innerW, innerH-2)
 		sections = append(sections, header+"\n"+g.colorizeDiff(lines))
 	}
 
@@ -177,12 +188,41 @@ func FetchGitStatus(taskID, worktree string) GitStatusRefreshMsg {
 		msg.Status = strings.TrimRight(out, "\n")
 	}
 
-	// git diff --stat
-	if out, err := runGit(worktree, "diff", "--stat"); err == nil {
+	// git diff HEAD --stat (unstaged + staged changes)
+	if out, err := runGit(worktree, "diff", "HEAD", "--stat"); err == nil {
 		msg.Diff = strings.TrimRight(out, "\n")
 	}
 
+	// git diff against merge-base with default branch (committed branch changes)
+	if base := findMergeBase(worktree); base != "" {
+		if out, err := runGit(worktree, "diff", "--stat", base+"..HEAD"); err == nil {
+			msg.BranchDiff = strings.TrimRight(out, "\n")
+		}
+		if out, err := runGit(worktree, "diff", "--name-status", base+"..HEAD"); err == nil {
+			msg.BranchFiles = strings.TrimRight(out, "\n")
+		}
+	}
+
 	return msg
+}
+
+// findMergeBase finds the merge-base between HEAD and the upstream or default branch.
+func findMergeBase(worktree string) string {
+	// Try upstream first
+	if base, err := runGit(worktree, "merge-base", "HEAD", "HEAD@{upstream}"); err == nil {
+		if b := strings.TrimSpace(base); b != "" {
+			return b
+		}
+	}
+	// Fallback: try common default branch names
+	for _, branch := range []string{"main", "master"} {
+		if base, err := runGit(worktree, "merge-base", "HEAD", branch); err == nil {
+			if b := strings.TrimSpace(base); b != "" {
+				return b
+			}
+		}
+	}
+	return ""
 }
 
 func runGit(dir string, args ...string) (string, error) {

@@ -81,7 +81,12 @@ func (av *AgentView) SetSize(w, h int) {
 func (av *AgentView) UpdateGitStatus(msg GitStatusRefreshMsg) {
 	if msg.TaskID == av.taskID {
 		av.gitstatus.Update(msg)
-		av.files.SetFiles(ParseGitStatus(msg.Status))
+		// Prefer uncommitted files; fall back to committed branch files
+		if files := ParseGitStatus(msg.Status); len(files) > 0 {
+			av.files.SetFiles(files)
+		} else {
+			av.files.SetFiles(ParseGitDiffNameStatus(msg.BranchFiles))
+		}
 		av.lastGitRefresh = time.Now()
 	}
 }
