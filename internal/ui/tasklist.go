@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/darrencheng/argus/internal/model"
+	"github.com/drn/argus/internal/model"
 )
 
 // TaskList renders the task list view.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/darrencheng/argus/internal/model"
+	"github.com/drn/argus/internal/model"
 )
 
 // StatusBar renders the bottom status bar.

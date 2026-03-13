@@ -7,7 +7,7 @@ Manage multiple Claude Code / Codex sessions with task tracking, git worktree is
 ## Install
 
 ```bash
-go install github.com/darrencheng/argus/cmd/argus@latest
+go install github.com/drn/argus/cmd/argus@latest
 ```
 
 ## Usage
