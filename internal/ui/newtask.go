@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -38,6 +40,9 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm
 	projInput := textinput.New()
 	projInput.Placeholder = "Project (from config)"
 	projInput.CharLimit = 40
+	if cwd, err := os.Getwd(); err == nil {
+		projInput.SetValue(filepath.Base(cwd))
+	}
 	inputs[fieldProject] = projInput
 
 	promptInput := textinput.New()

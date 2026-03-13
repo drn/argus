@@ -56,8 +56,12 @@ func BuildCmd(task *model.Task, cfg config.Config) (*exec.Cmd, error) {
 	}
 
 	cmdStr := backend.Command
-	if backend.PromptFlag != "" && task.Prompt != "" {
-		cmdStr += " " + backend.PromptFlag + " " + shellQuote(task.Prompt)
+	if task.Prompt != "" {
+		if backend.PromptFlag != "" {
+			cmdStr += " " + backend.PromptFlag + " " + shellQuote(task.Prompt)
+		} else {
+			cmdStr += " " + shellQuote(task.Prompt)
+		}
 	}
 
 	cmd := exec.Command("sh", "-c", cmdStr)
