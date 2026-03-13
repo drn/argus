@@ -241,3 +241,9 @@ func (s *Session) PTYSize() (cols, rows int) {
 	defer s.mu.Unlock()
 	return int(s.ptyCols), int(s.ptyRows)
 }
+
+// WriteInput writes raw bytes to the PTY master (stdin of the child process).
+// Used by the agent view to forward keyboard input without full Attach.
+func (s *Session) WriteInput(p []byte) (int, error) {
+	return s.ptmx.Write(p)
+}
