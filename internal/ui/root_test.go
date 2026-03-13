@@ -158,8 +158,8 @@ func TestDestroyConfirm_DeletesTask(t *testing.T) {
 	// Enter confirm destroy state
 	m.current = viewConfirmDestroy
 
-	// Press y to confirm
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+	// Press enter to confirm
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
 	updated, _ := m.Update(msg)
 	um := updated.(Model)
 
@@ -182,8 +182,8 @@ func TestDestroyCancel_KeepsTask(t *testing.T) {
 	// Enter confirm destroy state
 	m.current = viewConfirmDestroy
 
-	// Press any other key to cancel
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
+	// Press esc to cancel
+	msg := tea.KeyMsg{Type: tea.KeyEsc}
 	updated, _ := m.Update(msg)
 	um := updated.(Model)
 
@@ -192,6 +192,143 @@ func TestDestroyCancel_KeepsTask(t *testing.T) {
 	}
 	if _, err := um.db.Get("t1"); err != nil {
 		t.Error("expected task to still exist after cancel")
+	}
+}
+
+func TestDestroyIgnoresOtherKeys(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "keep me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDestroy
+
+	// Press 'n' — should be ignored (stay on modal)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewConfirmDestroy {
+		t.Errorf("expected to stay on viewConfirmDestroy, got %d", um.current)
+	}
+	if _, err := um.db.Get("t1"); err != nil {
+		t.Error("expected task to still exist")
+	}
+}
+
+func TestDeleteTask_EnterConfirms(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "delete me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDelete
+
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after enter confirm, got %d", um.current)
+	}
+	if _, err := um.db.Get("t1"); err == nil {
+		t.Error("expected task to be deleted after enter confirm")
+	}
+}
+
+func TestDeleteTask_EscCancels(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "keep me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDelete
+
+	msg := tea.KeyMsg{Type: tea.KeyEsc}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after esc cancel, got %d", um.current)
+	}
+	if _, err := um.db.Get("t1"); err != nil {
+		t.Error("expected task to still exist after esc cancel")
+	}
+}
+
+func TestDeleteTask_IgnoresOtherKeys(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "keep me",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDelete
+
+	// Press 'y' — should be ignored now (no longer confirms)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewConfirmDelete {
+		t.Errorf("expected to stay on viewConfirmDelete, got %d", um.current)
+	}
+	if _, err := um.db.Get("t1"); err != nil {
+		t.Error("expected task to still exist — y should no longer confirm deletion")
+	}
+}
+
+func TestDeleteTask_ModalView(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "my task",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDelete
+	m.width = 80
+	m.height = 24
+
+	view := m.confirmDeleteView()
+	if view == "" {
+		t.Fatal("expected non-empty modal view")
+	}
+	if !strings.Contains(view, "my task") {
+		t.Error("expected modal to contain task name")
+	}
+	if !strings.Contains(view, "Delete task?") {
+		t.Error("expected modal to contain title")
+	}
+	if !strings.Contains(view, "[enter] confirm") {
+		t.Error("expected modal to show enter key hint")
+	}
+}
+
+func TestDestroyTask_ModalView(t *testing.T) {
+	task := &model.Task{
+		ID:       "t1",
+		Name:     "my task",
+		Status:   model.StatusPending,
+		Worktree: "/tmp/wt",
+		Branch:   "feature-x",
+	}
+	m := testModel(t, task)
+	m.current = viewConfirmDestroy
+	m.width = 80
+	m.height = 24
+
+	view := m.confirmDestroyView()
+	if view == "" {
+		t.Fatal("expected non-empty modal view")
+	}
+	if !strings.Contains(view, "Destroy task?") {
+		t.Error("expected modal to contain title")
+	}
+	if !strings.Contains(view, "[enter] confirm") {
+		t.Error("expected modal to show enter key hint")
 	}
 }
 

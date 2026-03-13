@@ -546,8 +546,8 @@ func (m Model) handleNewTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Confirm):
+	switch msg.Type {
+	case tea.KeyEnter:
 		if t := m.tasklist.Selected(); t != nil {
 			// Stop the agent session if running
 			if m.runner.HasSession(t.ID) {
@@ -562,15 +562,18 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.current = viewTaskList
 		return m, nil
-	default:
+	case tea.KeyEsc:
 		m.current = viewTaskList
+		return m, nil
+	default:
+		// Only enter confirms, only esc cancels — ignore other keys
 		return m, nil
 	}
 }
 
 func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.keys.Confirm):
+	switch msg.Type {
+	case tea.KeyEnter:
 		if t := m.tasklist.Selected(); t != nil {
 			// Stop the agent session if running
 			if m.runner.HasSession(t.ID) {
@@ -592,8 +595,11 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.current = viewTaskList
 		return m, nil
-	default:
+	case tea.KeyEsc:
 		m.current = viewTaskList
+		return m, nil
+	default:
+		// Only enter confirms, only esc cancels — ignore other keys
 		return m, nil
 	}
 }
@@ -729,24 +735,25 @@ func (m Model) View() string {
 		return m.agentview.View()
 	}
 
-	// Project delete modal is fully placed (centered), render directly with status bar
-	if m.current == viewConfirmDeleteProject {
+	// Modals are fully placed (centered), render directly with status bar
+	switch m.current {
+	case viewConfirmDeleteProject:
 		return m.confirmDeleteProjectView() + "\n" + bar
+	case viewConfirmDelete:
+		return m.confirmDeleteView() + "\n" + bar
+	case viewConfirmDestroy:
+		return m.confirmDestroyView() + "\n" + bar
 	}
 
 	// For overlay views, show them without the banner
 	switch m.current {
-	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDestroy:
+	case viewHelp, viewPrompt:
 		var content string
 		switch m.current {
 		case viewHelp:
 			content = m.helpview.View()
 		case viewPrompt:
 			content = m.promptView()
-		case viewConfirmDelete:
-			content = m.confirmDeleteView()
-		case viewConfirmDestroy:
-			content = m.confirmDestroyView()
 		}
 		return m.padToBottom(content, bar)
 	}
@@ -982,9 +989,25 @@ func (m Model) confirmDeleteView() string {
 	if t == nil {
 		return ""
 	}
-	return m.theme.Title.Render("Delete task?") + "\n\n" +
-		"  " + m.theme.Normal.Render(t.Name) + "\n\n" +
-		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
+
+	title := m.theme.Title.Render("Delete task?")
+	name := "  " + m.theme.Normal.Render(t.Name)
+	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
+
+	body := title + "\n\n" + name + "\n\n" + hint
+
+	modalWidth := 50
+	if m.width > 0 && modalWidth > m.width-4 {
+		modalWidth = m.width - 4
+	}
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1, 2).
+		Width(modalWidth).
+		Render(body)
+
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
 }
 
 func (m Model) confirmDestroyView() string {
@@ -1000,10 +1023,26 @@ func (m Model) confirmDestroyView() string {
 	if t.Branch != "" {
 		details = append(details, "  "+m.theme.Dimmed.Render("branch: "+t.Branch))
 	}
-	return m.theme.Title.Render("Destroy task?") + "\n" +
-		m.theme.Help.Render("  This will terminate the agent, remove the worktree and branch, and delete the task.") + "\n\n" +
-		strings.Join(details, "\n") + "\n\n" +
-		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
+
+	title := m.theme.Title.Render("Destroy task?")
+	subtitle := m.theme.Help.Render("  This will terminate the agent, remove the worktree and branch, and delete the task.")
+	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
+
+	body := title + "\n" + subtitle + "\n\n" +
+		strings.Join(details, "\n") + "\n\n" + hint
+
+	modalWidth := 60
+	if m.width > 0 && modalWidth > m.width-4 {
+		modalWidth = m.width - 4
+	}
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1, 2).
+		Width(modalWidth).
+		Render(body)
+
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
 }
 
 func dirExists(path string) bool {
