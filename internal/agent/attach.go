@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -120,43 +121,86 @@ func (hw *headerWriter) Write(p []byte) (int, error) {
 }
 
 func (hw *headerWriter) drawHeader() {
-	// Build header: " ARGUS │ <task> ····· ctrl+q detach "
-	label := " ARGUS "
-	sep := " │ "
+	// Layout: " <task> ··· ◁〈❮ ARGUS ❯〉▷ ··· ctrl+q detach "
+	// ARGUS is centered with flame-like symbols on each side.
 	task := hw.taskName
-	hint := " ctrl+q detach "
+	hint := "ctrl+q detach"
 
-	// Truncate task name if needed
-	fixed := len(label) + len(sep) + len(hint)
-	maxTask := hw.cols - fixed
-	if maxTask < 0 {
-		maxTask = 0
+	// Flame symbols flanking ARGUS (outer → inner)
+	flameL := "░▒▓▞▚"
+	flameR := "▚▞▓▒░"
+	center := flameL + " ARGUS " + flameR
+	centerW := utf8.RuneCountInString(center)
+
+	// Left side: " <task> " — right side: " <hint> "
+	leftFixed := 2  // leading space + trailing space around task
+	rightFixed := 3 // spaces around hint + trailing space
+
+	// Width available for task and hint after center and padding
+	availSides := hw.cols - centerW - 2 // 2 for spaces flanking center
+	if availSides < 0 {
+		availSides = 0
 	}
-	if len(task) > maxTask {
-		if maxTask > 3 {
-			task = task[:maxTask-3] + "..."
+
+	// Split available space: left gets ~60%, right gets ~40%
+	leftAvail := availSides*6/10 - leftFixed
+	rightAvail := availSides - leftAvail - leftFixed - rightFixed
+	if leftAvail < 0 {
+		leftAvail = 0
+	}
+	if rightAvail < 0 {
+		rightAvail = 0
+	}
+
+	// Truncate task name
+	taskRunes := []rune(task)
+	if len(taskRunes) > leftAvail {
+		if leftAvail > 3 {
+			task = string(taskRunes[:leftAvail-3]) + "..."
 		} else {
-			task = task[:maxTask]
+			task = string(taskRunes[:leftAvail])
 		}
 	}
 
-	// Pad middle to fill width
-	middle := task
-	padLen := hw.cols - fixed - len(task)
-	if padLen > 0 {
-		middle = task + strings.Repeat(" ", padLen)
+	// Truncate hint
+	if utf8.RuneCountInString(hint) > rightAvail {
+		if rightAvail > 3 {
+			hintRunes := []rune(hint)
+			hint = string(hintRunes[:rightAvail-3]) + "..."
+		} else {
+			hint = string([]rune(hint)[:rightAvail])
+		}
 	}
 
-	// ANSI 256-color: bg=235, ARGUS in bold cyan(87), sep/task in 245, hint in 241
+	// Build left and right sections with padding
+	leftContent := " " + task + " "
+	rightContent := " " + hint + " "
+
+	leftPad := availSides/2 + 1 - utf8.RuneCountInString(leftContent)
+	rightPad := hw.cols - utf8.RuneCountInString(leftContent) - leftPad - centerW - utf8.RuneCountInString(rightContent)
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	if rightPad < 0 {
+		rightPad = 0
+	}
+
+	leftSide := leftContent + strings.Repeat(" ", leftPad)
+	rightSide := strings.Repeat(" ", rightPad) + rightContent
+
+	// ANSI 256-color: bg=235
+	// task in 252, flames gradient (208→196→87→196→208), ARGUS in bold cyan(87), hint in 241
 	line := fmt.Sprintf(
 		"\x1b[1;1H\x1b[2K"+ // move to row 1, clear line
 			"\x1b[48;5;235m"+ // bg
-			"\x1b[1;38;5;87m%s"+ // bold cyan ARGUS
-			"\x1b[22;38;5;240m%s"+ // dim separator
-			"\x1b[38;5;252m%s"+ // normal task name
-			"\x1b[38;5;241m%s"+ // dim hint
+			"\x1b[38;5;252m%s"+ // task (left side)
+			"\x1b[38;5;208m░▒\x1b[38;5;202m▓\x1b[38;5;196m▞\x1b[38;5;87m▚"+ // left flames (orange→red→cyan)
+			"\x1b[1;38;5;87m ARGUS "+ // bold cyan ARGUS
+			"\x1b[22;38;5;87m▚\x1b[38;5;196m▞\x1b[38;5;202m▓\x1b[38;5;208m▒░"+ // right flames (cyan→red→orange)
+			"\x1b[38;5;241m%s"+ // hint (right side)
+			"\x1b[K"+ // fill rest of line with bg color
 			"\x1b[0m", // reset
-		label, sep, middle, hint,
+		leftSide, rightSide,
 	)
 	hw.inner.Write([]byte(line))
 }
