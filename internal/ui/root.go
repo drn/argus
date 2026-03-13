@@ -26,6 +26,15 @@ const (
 	viewHelp
 	viewPrompt
 	viewConfirmDelete
+	viewNewProject
+	viewConfirmDeleteProject
+)
+
+type tab int
+
+const (
+	tabTasks tab = iota
+	tabProjects
 )
 
 // TickMsg is sent periodically to update elapsed times.
@@ -52,21 +61,24 @@ type SessionResumedMsg struct {
 
 // Model is the top-level Bubble Tea model.
 type Model struct {
-	cfg       config.Config
-	store     *store.Store
-	runner    *agent.Runner
-	keys      KeyMap
-	theme     Theme
-	tasklist  TaskList
-	statusbar StatusBar
-	helpview  HelpView
-	newtask   NewTaskForm
-	preview   Preview
-	gitstatus GitStatus
-	current   view
-	width     int
-	height    int
-	quitting  bool
+	cfg         config.Config
+	store       *store.Store
+	runner      *agent.Runner
+	keys        KeyMap
+	theme       Theme
+	tasklist    TaskList
+	projectlist ProjectList
+	statusbar   StatusBar
+	helpview    HelpView
+	newtask     NewTaskForm
+	newproject  NewProjectForm
+	preview     Preview
+	gitstatus   GitStatus
+	current     view
+	activeTab   tab
+	width       int
+	height      int
+	quitting    bool
 }
 
 func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
@@ -74,6 +86,7 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	keys := DefaultKeyMap()
 
 	tl := NewTaskList(theme)
+	pl := NewProjectList(theme)
 	sb := NewStatusBar(theme)
 	hv := NewHelpView(keys, theme)
 
@@ -81,19 +94,22 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 	gs := NewGitStatus(theme)
 
 	m := Model{
-		cfg:       cfg,
-		store:     s,
-		runner:    runner,
-		keys:      keys,
-		theme:     theme,
-		tasklist:  tl,
-		statusbar: sb,
-		helpview:  hv,
-		preview:   pv,
-		gitstatus: gs,
-		current:   viewTaskList,
+		cfg:         cfg,
+		store:       s,
+		runner:      runner,
+		keys:        keys,
+		theme:       theme,
+		tasklist:    tl,
+		projectlist: pl,
+		statusbar:   sb,
+		helpview:    hv,
+		preview:     pv,
+		gitstatus:   gs,
+		current:     viewTaskList,
+		activeTab:   tabTasks,
 	}
 	m.refreshTasks()
+	m.refreshProjects()
 	return m
 }
 
@@ -141,11 +157,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reserve space: section header(1) + gap(1) + statusbar(1)
 		contentHeight := msg.Height - 3
 		m.tasklist.SetSize(leftWidth, contentHeight)
+		m.projectlist.SetSize(leftWidth, contentHeight)
 		gitH, previewH := m.splitRightHeights(contentHeight)
 		m.gitstatus.SetSize(rightWidth, gitH)
 		m.preview.SetSize(rightWidth, previewH)
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
+		m.newproject.SetSize(msg.Width, msg.Height)
 		return m, nil
 
 	case TickMsg:
@@ -217,6 +235,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.current {
 	case viewNewTask:
 		return m.handleNewTaskKey(msg)
+	case viewNewProject:
+		return m.handleNewProjectKey(msg)
 	case viewHelp:
 		m.current = viewTaskList
 		return m, nil
@@ -225,7 +245,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case viewConfirmDelete:
 		return m.handleConfirmDeleteKey(msg)
+	case viewConfirmDeleteProject:
+		return m.handleConfirmDeleteProjectKey(msg)
 	default:
+		// Tab switching with 1/2 keys
+		switch msg.String() {
+		case "1":
+			m.activeTab = tabTasks
+			return m, nil
+		case "2":
+			m.activeTab = tabProjects
+			return m, nil
+		}
+		if m.activeTab == tabProjects {
+			return m.handleProjectListKey(msg)
+		}
 		return m.handleTaskListKey(msg)
 	}
 }
@@ -426,6 +460,80 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		m.quitting = true
+		return m, tea.Quit
+
+	case key.Matches(msg, m.keys.Up):
+		m.projectlist.CursorUp()
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		m.projectlist.CursorDown()
+		return m, nil
+
+	case key.Matches(msg, m.keys.New):
+		m.newproject = NewNewProjectForm(m.theme)
+		m.newproject.SetSize(m.width, m.height)
+		m.current = viewNewProject
+		return m, m.newproject.inputs[0].Focus()
+
+	case key.Matches(msg, m.keys.Delete):
+		if m.projectlist.Selected() != nil {
+			m.current = viewConfirmDeleteProject
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Help):
+		m.current = viewHelp
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd := m.newproject.Update(msg)
+
+	if m.newproject.Canceled() {
+		m.current = viewTaskList
+		return m, nil
+	}
+
+	if m.newproject.Done() {
+		name, proj := m.newproject.ProjectEntry()
+		m.cfg.Projects[name] = proj
+		_ = config.Save(m.cfg)
+		m.refreshProjects()
+		m.current = viewTaskList
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Confirm):
+		if entry := m.projectlist.Selected(); entry != nil {
+			delete(m.cfg.Projects, entry.Name)
+			_ = config.Save(m.cfg)
+			m.refreshProjects()
+		}
+		m.current = viewTaskList
+		return m, nil
+	default:
+		m.current = viewTaskList
+		return m, nil
+	}
+}
+
+func (m *Model) refreshProjects() {
+	m.projectlist.SetProjects(m.cfg.Projects)
+}
+
 func (m *Model) refreshTasks() {
 	tasks := m.store.Tasks()
 	running := m.runner.Running()
@@ -441,11 +549,12 @@ func (m Model) View() string {
 	}
 
 	// Status bar at the bottom
+	m.statusbar.SetProjectTab(m.activeTab == tabProjects)
 	bar := m.statusbar.View()
 
 	// For overlay views, show them without the banner
 	switch m.current {
-	case viewHelp, viewPrompt, viewConfirmDelete:
+	case viewHelp, viewPrompt, viewConfirmDelete, viewConfirmDeleteProject:
 		var content string
 		switch m.current {
 		case viewHelp:
@@ -454,39 +563,29 @@ func (m Model) View() string {
 			content = m.promptView()
 		case viewConfirmDelete:
 			content = m.confirmDeleteView()
+		case viewConfirmDeleteProject:
+			content = m.confirmDeleteProjectView()
 		}
 		return m.padToBottom(content, bar)
 	}
 
-	// Overlay modal for new task form
+	// Overlay modals
 	if m.current == viewNewTask {
 		return m.newtask.View() + "\n" + bar
 	}
-
-	// Empty state: show banner centered on page
-	if len(m.store.Tasks()) == 0 {
-		content := m.emptyStateView()
-		return m.padToBottom(content, bar)
+	if m.current == viewNewProject {
+		return m.newproject.View() + "\n" + bar
 	}
 
-	// Split layout: task list on left, agent preview on right
-	section := m.renderSectionHeader()
-	tasks := m.tasklist.View()
-	leftContent := section + "\n" + tasks
+	// Tab header
+	tabHeader := m.renderTabHeader()
 
-	// Git status + Preview pane for selected task
-	var taskID string
-	if t := m.tasklist.Selected(); t != nil {
-		taskID = t.ID
+	switch m.activeTab {
+	case tabProjects:
+		return m.renderProjectsView(tabHeader, bar)
+	default:
+		return m.renderTasksView(tabHeader, bar)
 	}
-	gitView := m.gitstatus.View()
-	previewView := m.preview.View(taskID)
-	rightContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
-
-	// Join horizontally
-	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
-
-	return m.padToBottom(content, bar)
 }
 
 func (m Model) padToBottom(content, bar string) string {
@@ -533,15 +632,102 @@ func (m Model) splitWidths() (int, int) {
 	return left, right
 }
 
-func (m Model) renderDivider() string {
-	if m.width < 1 {
-		return ""
+func (m Model) renderTabHeader() string {
+	activeStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("87")).
+		Underline(true)
+	inactiveStyle := m.theme.Dimmed
+
+	tabs := []struct {
+		label string
+		key   string
+		t     tab
+	}{
+		{"TASKS", "1", tabTasks},
+		{"PROJECTS", "2", tabProjects},
 	}
-	line := strings.Repeat("─", m.width)
-	return m.theme.Divider.Render(line)
+
+	var parts []string
+	for _, t := range tabs {
+		style := inactiveStyle
+		if t.t == m.activeTab {
+			style = activeStyle
+		}
+		parts = append(parts, style.Render("  "+t.label+" "))
+	}
+	return strings.Join(parts, m.theme.Dimmed.Render("│"))
 }
 
-func (m Model) renderSectionHeader() string {
+func (m Model) renderTasksView(tabHeader, bar string) string {
+	// Empty state: show banner centered on page
+	if len(m.store.Tasks()) == 0 {
+		content := m.emptyStateView()
+		return m.padToBottom(content, bar)
+	}
+
+	// Split layout: task list on left, agent preview on right
+	section := tabHeader + "  " + m.renderTaskCounts()
+	tasks := m.tasklist.View()
+	leftContent := section + "\n" + tasks
+
+	// Git status + Preview pane for selected task
+	var taskID string
+	if t := m.tasklist.Selected(); t != nil {
+		taskID = t.ID
+	}
+	gitView := m.gitstatus.View()
+	previewView := m.preview.View(taskID)
+	rightContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
+
+	// Join horizontally
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+
+	return m.padToBottom(content, bar)
+}
+
+func (m Model) renderProjectsView(tabHeader, bar string) string {
+	section := tabHeader + "  " + m.theme.Dimmed.Render(fmt.Sprintf("%d projects", len(m.cfg.Projects)))
+	projects := m.projectlist.View()
+	leftContent := section + "\n" + projects
+
+	// Right pane: project details for selected project
+	rightContent := m.renderProjectDetail()
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+	return m.padToBottom(content, bar)
+}
+
+func (m Model) renderProjectDetail() string {
+	entry := m.projectlist.Selected()
+	_, rightWidth := m.splitWidths()
+	contentHeight := m.height - 3
+
+	if entry == nil {
+		empty := m.theme.Dimmed.Render("  No project selected")
+		return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(empty)
+	}
+
+	var b strings.Builder
+	b.WriteString(m.theme.Title.Render("  "+entry.Name) + "\n\n")
+
+	fields := []struct{ label, value string }{
+		{"Path", entry.Project.Path},
+		{"Branch", entry.Project.Branch},
+		{"Backend", entry.Project.Backend},
+	}
+	for _, f := range fields {
+		val := f.value
+		if val == "" {
+			val = "(default)"
+		}
+		b.WriteString("  " + m.theme.Dimmed.Render(f.label+": ") + m.theme.Normal.Render(val) + "\n")
+	}
+
+	return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(b.String())
+}
+
+func (m Model) renderTaskCounts() string {
 	running := make(map[string]bool)
 	for _, id := range m.runner.Running() {
 		running[id] = true
@@ -553,15 +739,15 @@ func (m Model) renderSectionHeader() string {
 			active++
 		}
 	}
-
-	label := m.theme.Section.Render("  TASKS")
-	count := m.theme.Dimmed.Render(fmt.Sprintf("  %d total", total))
+	count := m.theme.Dimmed.Render(fmt.Sprintf("%d total", total))
 	if active > 0 {
-		count = m.theme.InProgress.Render(fmt.Sprintf("  %d active", active)) +
-			m.theme.Dimmed.Render(fmt.Sprintf("  %d total", total))
+		count = m.theme.InProgress.Render(fmt.Sprintf("%d active", active)) +
+			"  " + m.theme.Dimmed.Render(fmt.Sprintf("%d total", total))
 	}
-	return label + count
+	return count
 }
+
+
 
 func (m Model) emptyStateView() string {
 	banner := renderBanner(m.width)
@@ -595,6 +781,17 @@ func (m Model) promptView() string {
 
 	return title + "\n\n  " + prompt + "\n\n" +
 		m.theme.Help.Render("  Press any key to close")
+}
+
+func (m Model) confirmDeleteProjectView() string {
+	entry := m.projectlist.Selected()
+	if entry == nil {
+		return ""
+	}
+	return m.theme.Title.Render("Delete project?") + "\n\n" +
+		"  " + m.theme.Normal.Render(entry.Name) + "\n" +
+		"  " + m.theme.Dimmed.Render(entry.Project.Path) + "\n\n" +
+		m.theme.Help.Render("  [y] confirm  [any other key] cancel")
 }
 
 func (m Model) confirmDeleteView() string {
