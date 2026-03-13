@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/drn/argus/internal/config"
@@ -232,6 +233,51 @@ func (d *DB) importLegacyConfig() error {
 	for k, v := range kv {
 		if _, err := d.conn.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, k, v); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// fixupBackends runs on every Open and corrects known-outdated backend
+// configurations. This is separate from seedDefaults (which only runs during
+// migration) so that improvements to the default command propagate to
+// existing databases on the next startup.
+func (d *DB) fixupBackends() error {
+	cfg := config.DefaultConfig()
+
+	for name, want := range cfg.Backends {
+		var command, promptFlag string
+		err := d.conn.QueryRow(
+			`SELECT command, prompt_flag FROM backends WHERE name=?`, name,
+		).Scan(&command, &promptFlag)
+		if err != nil {
+			continue // backend doesn't exist — seedDefaults handles insertion
+		}
+
+		needsUpdate := false
+
+		// Fix: command references "claude" but is missing --dangerously-skip-permissions.
+		// This catches old defaults like "claude --worktree" that were persisted
+		// before the flag was added to DefaultConfig.
+		if strings.Contains(command, "claude") && !strings.Contains(command, "--dangerously-skip-permissions") {
+			needsUpdate = true
+		}
+
+		// Fix: prompt_flag is "-p" (print/non-interactive mode) when the
+		// default is empty (interactive mode). Print mode causes agents to
+		// process the prompt and exit instead of running interactively.
+		if promptFlag == "-p" && want.PromptFlag == "" {
+			needsUpdate = true
+		}
+
+		if needsUpdate {
+			if _, err := d.conn.Exec(
+				`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
+				want.Command, want.PromptFlag, name,
+			); err != nil {
+				return err
+			}
 		}
 	}
 

@@ -53,6 +53,7 @@ go test ./internal/store/   # run tests for a single package
 - Use `charmbracelet/x/term` for raw mode (cross-platform) instead of platform-specific ioctls (`TIOCGETA` is macOS-only, `TCGETS` is Linux-only).
 - `tea.ExecCommand.SetStdin/SetStdout` must capture and use Bubble Tea's `p.input`/`p.output` — don't hardcode `os.Stdin`/`os.Stdout`.
 - The single-reader-tee pattern (one goroutine reads PTY, tees to buffer + optional writer) is critical. Two goroutines reading the same fd causes data loss.
+- **Backend default config must be self-healing.** The default claude backend command MUST include `--dangerously-skip-permissions` and MUST NOT use `-p` as the prompt flag. `-p` puts Claude in non-interactive print mode (process prompt → exit), which silently breaks agent sessions — they show "waiting for output" then auto-complete. The `fixupBackends()` method in `internal/db/migrate.go` runs on every `Open()` to detect and repair outdated backend configs. Any change to `DefaultConfig()` backend values must be mirrored in `fixupBackends()` detection logic, or existing databases will retain stale values.
 
 ## Development Rules
 

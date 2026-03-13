@@ -53,6 +53,10 @@ func Open(path string) (*DB, error) {
 		conn.Close()
 		return nil, err
 	}
+	if err := d.fixupBackends(); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
