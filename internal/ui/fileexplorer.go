@@ -181,3 +181,24 @@ func ParseGitStatus(output string) []ChangedFile {
 	}
 	return files
 }
+
+// ParseGitDiffNameStatus parses `git diff --name-status` output into ChangedFile entries.
+func ParseGitDiffNameStatus(output string) []ChangedFile {
+	if output == "" {
+		return nil
+	}
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	var files []ChangedFile
+	for _, line := range lines {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		status := strings.TrimSpace(parts[0])
+		path := strings.TrimSpace(parts[1])
+		if path != "" {
+			files = append(files, ChangedFile{Status: status, Path: path})
+		}
+	}
+	return files
+}
