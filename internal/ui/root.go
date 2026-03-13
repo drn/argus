@@ -351,17 +351,13 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 
 	t.AgentPID = 0
 
-	// If the worktree has been removed, auto-complete the task
-	if t.Worktree != "" && !dirExists(t.Worktree) {
+	if msg.Stopped {
+		// Explicitly stopped via Runner.Stop — mark for review
+		t.SetStatus(model.StatusInReview)
+	} else {
+		// Agent session exited on its own — task is complete
 		t.SetStatus(model.StatusComplete)
-		_ = m.store.Update(t)
-		m.refreshTasks()
-		return m, nil
 	}
-
-	// Agent finished (clean exit or interrupted) — mark for review.
-	// Explicit task deletion is handled in handleConfirmDeleteKey.
-	t.SetStatus(model.StatusInReview)
 	_ = m.store.Update(t)
 
 	m.refreshTasks()
