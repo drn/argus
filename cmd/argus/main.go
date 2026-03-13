@@ -32,8 +32,6 @@ func main() {
 			p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped})
 		}
 	})
-	defer runner.StopAll()
-
 	m := ui.NewModel(cfg, s, runner)
 	p = tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

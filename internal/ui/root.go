@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -108,6 +109,16 @@ func (m Model) Init() tea.Cmd {
 	for _, t := range m.store.Tasks() {
 		if t.Status == model.StatusInProgress && t.SessionID != "" {
 			task := t // capture loop variable
+
+			// Kill any orphaned process from a previous Argus session.
+			// When Argus exits, PTY master fds close and children get SIGHUP,
+			// but we clean up any that might linger before resuming.
+			if task.AgentPID > 0 {
+				killStaleProcess(task.AgentPID)
+				task.AgentPID = 0
+				_ = m.store.Update(task)
+			}
+
 			cmds = append(cmds, func() tea.Msg {
 				sess, err := m.runner.Start(task, m.cfg, 24, 80, true)
 				if err != nil {
@@ -342,18 +353,10 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if msg.Err != nil || msg.Stopped {
-		// Agent was aborted/crashed/stopped — clean up the task and worktree
-		if t.Worktree != "" && m.cfg.UI.ShouldCleanupWorktrees() {
-			removeWorktree(t.Worktree)
-		}
-		_ = m.store.Delete(t.ID)
-		m.refreshTasks()
-		return m, nil
-	} else {
-		t.SetStatus(model.StatusInReview)
-		_ = m.store.Update(t)
-	}
+	// Agent finished (clean exit or interrupted) — mark for review.
+	// Explicit task deletion is handled in handleConfirmDeleteKey.
+	t.SetStatus(model.StatusInReview)
+	_ = m.store.Update(t)
 
 	m.refreshTasks()
 	return m, nil
@@ -649,6 +652,18 @@ func discoverClaudeWorktree(baseDir, _ string) string {
 		}
 	}
 	return ""
+}
+
+// killStaleProcess sends SIGTERM to a process if it's still alive.
+// Used to clean up orphaned agent processes from a previous Argus session.
+func killStaleProcess(pid int) {
+	if pid <= 0 {
+		return
+	}
+	// Signal 0 checks if the process exists without sending a signal.
+	if syscall.Kill(pid, 0) == nil {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
 }
 
 func removeWorktree(worktreePath string) {
