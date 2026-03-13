@@ -182,11 +182,6 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if t.Prompt == "" {
-		m.statusbar.SetError("no prompt set — press [p] to view/set prompt")
-		return m, nil
-	}
-
 	if t.AgentPID != 0 {
 		m.statusbar.SetError("agent already running")
 		return m, nil
