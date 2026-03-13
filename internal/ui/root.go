@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,13 +266,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
-		// Tab switching with 1/2 keys
+		// Tab switching with 1/2 keys or left/right arrows
 		switch msg.String() {
 		case "1":
 			m.activeTab = tabTasks
 			return m, nil
 		case "2":
 			m.activeTab = tabProjects
+			return m, nil
+		}
+		switch {
+		case key.Matches(msg, m.keys.TabLeft):
+			if m.activeTab > tabTasks {
+				m.activeTab--
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.TabRight):
+			if m.activeTab < tabProjects {
+				m.activeTab++
+			}
 			return m, nil
 		}
 		if m.activeTab == tabProjects {
@@ -785,7 +796,8 @@ func (m Model) renderTabHeader() string {
 		}
 		parts = append(parts, style.Render("  "+t.label+" "))
 	}
-	return strings.Join(parts, m.theme.Dimmed.Render("│"))
+	header := strings.Join(parts, m.theme.Dimmed.Render("│"))
+	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, header)
 }
 
 func (m Model) renderTasksView(tabHeader, bar string) string {
@@ -796,9 +808,8 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 	}
 
 	// Split layout: task list on left, agent preview on right
-	section := tabHeader + "  " + m.renderTaskCounts()
 	tasks := m.tasklist.View()
-	leftContent := section + "\n" + tasks
+	leftContent := tasks
 
 	// Git status + Preview pane for selected task
 	var taskID string
@@ -810,20 +821,21 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 	rightContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
 
 	// Join horizontally
-	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+	content := tabHeader + "\n" + body
 
 	return m.padToBottom(content, bar)
 }
 
 func (m Model) renderProjectsView(tabHeader, bar string) string {
-	section := tabHeader + "  " + m.theme.Dimmed.Render(fmt.Sprintf("%d projects", len(m.cfg.Projects)))
 	projects := m.projectlist.View()
-	leftContent := section + "\n" + projects
+	leftContent := projects
 
 	// Right pane: project details for selected project
 	rightContent := m.renderProjectDetail()
 
-	content := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
+	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
 }
 
@@ -854,26 +866,6 @@ func (m Model) renderProjectDetail() string {
 	}
 
 	return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(b.String())
-}
-
-func (m Model) renderTaskCounts() string {
-	running := make(map[string]bool)
-	for _, id := range m.runner.Running() {
-		running[id] = true
-	}
-	active := 0
-	total := len(m.store.Tasks())
-	for _, t := range m.store.Tasks() {
-		if t.Status == model.StatusInProgress && running[t.ID] {
-			active++
-		}
-	}
-	count := m.theme.Dimmed.Render(fmt.Sprintf("%d total", total))
-	if active > 0 {
-		count = m.theme.InProgress.Render(fmt.Sprintf("%d active", active)) +
-			"  " + m.theme.Dimmed.Render(fmt.Sprintf("%d total", total))
-	}
-	return count
 }
 
 

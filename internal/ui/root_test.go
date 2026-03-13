@@ -281,6 +281,56 @@ func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
 	}
 }
 
+func TestTabSwitching_LeftRightArrows(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending}
+	m := testModel(t, task)
+
+	// Start on tasks tab
+	if m.activeTab != tabTasks {
+		t.Fatalf("expected initial tab to be tabTasks")
+	}
+
+	// Right arrow → projects
+	msg := tea.KeyMsg{Type: tea.KeyRight}
+	updated, _ := m.Update(msg)
+	m = updated.(Model)
+	if m.activeTab != tabProjects {
+		t.Errorf("expected tabProjects after right arrow, got %d", m.activeTab)
+	}
+
+	// Right arrow again → should stay on projects (no wrap)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if m.activeTab != tabProjects {
+		t.Errorf("expected tabProjects after second right arrow, got %d", m.activeTab)
+	}
+
+	// Left arrow → tasks
+	msg = tea.KeyMsg{Type: tea.KeyLeft}
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if m.activeTab != tabTasks {
+		t.Errorf("expected tabTasks after left arrow, got %d", m.activeTab)
+	}
+
+	// Left arrow again → should stay on tasks (no wrap)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if m.activeTab != tabTasks {
+		t.Errorf("expected tabTasks after second left arrow, got %d", m.activeTab)
+	}
+}
+
+func TestTabHeader_Centered(t *testing.T) {
+	m := testModel(t)
+	m.width = 80
+	header := m.renderTabHeader()
+	// Header should be padded to full width (centered)
+	if len(header) < 40 {
+		t.Errorf("expected centered header to have padding, got len=%d", len(header))
+	}
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},

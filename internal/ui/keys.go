@@ -16,10 +16,12 @@ type KeyMap struct {
 	Prompt    key.Binding
 	Worktree  key.Binding
 	Prune     key.Binding
-	Up        key.Binding
-	Down      key.Binding
-	Confirm   key.Binding
-	Cancel    key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	TabLeft  key.Binding
+	TabRight key.Binding
+	Confirm  key.Binding
+	Cancel   key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -79,6 +81,14 @@ func DefaultKeyMap() KeyMap {
 		Down: key.NewBinding(
 			key.WithKeys("down", "j"),
 			key.WithHelp("↓/j", "down"),
+		),
+		TabLeft: key.NewBinding(
+			key.WithKeys("left"),
+			key.WithHelp("←", "prev tab"),
+		),
+		TabRight: key.NewBinding(
+			key.WithKeys("right"),
+			key.WithHelp("→", "next tab"),
 		),
 		Confirm: key.NewBinding(
 			key.WithKeys("y"),
