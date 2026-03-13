@@ -131,6 +131,19 @@ func (r *Runner) Running() []string {
 	return ids
 }
 
+// Idle returns the task IDs of sessions that are alive but waiting for input.
+func (r *Runner) Idle() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []string
+	for id, sess := range r.sessions {
+		if sess.IsIdle() {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // WorkDir returns the effective working directory for a task's session.
 // Returns empty string if no session exists.
 func (r *Runner) WorkDir(taskID string) string {

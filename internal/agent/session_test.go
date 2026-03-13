@@ -79,6 +79,51 @@ func TestStartSession_Stop(t *testing.T) {
 	}
 }
 
+func TestSession_IsIdle_AfterOutput(t *testing.T) {
+	// Start a command that produces output then goes silent
+	cmd := exec.Command("echo", "done")
+	sess, err := StartSession("idle-1", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for process to finish and output to be captured
+	select {
+	case <-sess.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for process")
+	}
+
+	// Dead session should not be idle
+	if sess.IsIdle() {
+		t.Error("dead session should not report idle")
+	}
+}
+
+func TestSession_IsIdle_LongRunning(t *testing.T) {
+	// Start a long-running process that produces no output after start
+	cmd := exec.Command("sleep", "60")
+	sess, err := StartSession("idle-2", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop()
+
+	// Immediately after start, lastOutput is zero → not idle (still starting)
+	if sess.IsIdle() {
+		t.Error("should not be idle immediately after start")
+	}
+
+	// Simulate output then wait for idle threshold
+	sess.mu.Lock()
+	sess.lastOutput = time.Now().Add(-4 * time.Second)
+	sess.mu.Unlock()
+
+	if !sess.IsIdle() {
+		t.Error("should be idle after no output for longer than threshold")
+	}
+}
+
 func TestStartSession_Detach_NotAttached(t *testing.T) {
 	cmd := exec.Command("sleep", "10")
 	sess, err := StartSession("test-4", cmd, 24, 80)
