@@ -208,8 +208,12 @@ func fgColor(c vt10x.Color) string {
 		return fmt.Sprintf("%d", 30+n)
 	case n < 16:
 		return fmt.Sprintf("%d", 90+n-8)
-	default:
+	case n < 256:
 		return fmt.Sprintf("38;5;%d", n)
+	default:
+		// vt10x stores RGB as r<<16 | g<<8 | b
+		r, g, b := (n>>16)&0xFF, (n>>8)&0xFF, n&0xFF
+		return fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
 	}
 }
 
@@ -221,8 +225,12 @@ func bgColor(c vt10x.Color) string {
 		return fmt.Sprintf("%d", 40+n)
 	case n < 16:
 		return fmt.Sprintf("%d", 100+n-8)
-	default:
+	case n < 256:
 		return fmt.Sprintf("48;5;%d", n)
+	default:
+		// vt10x stores RGB as r<<16 | g<<8 | b
+		r, g, b := (n>>16)&0xFF, (n>>8)&0xFF, n&0xFF
+		return fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
 	}
 }
 
