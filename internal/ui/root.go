@@ -436,6 +436,10 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	ptyCols := uint16(max(centerW-4, 40))
 	sess, err := m.runner.Start(t, m.db.Config(), ptyRows, ptyCols, resume)
 	if err != nil {
+		// Start failed — revert the session ID so the next attempt
+		// doesn't try to --resume a session that was never created.
+		t.SessionID = ""
+		_ = m.db.Update(t)
 		m.statusbar.SetError(err.Error())
 		return m, nil
 	}
@@ -461,10 +465,7 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 
 	t.AgentPID = 0
 
-	// If we're viewing this agent, return to task list
-	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
-		m.current = viewTaskList
-	}
+	quickExit := false
 
 	if msg.Stopped {
 		// Explicitly stopped via Runner.Stop — mark for review
@@ -473,16 +474,25 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		// Process exited with an error (e.g. failed resume, crash) —
 		// keep the task in progress so the user can retry.
 		t.SessionID = ""
+		quickExit = true
 	} else if !t.StartedAt.IsZero() && time.Since(t.StartedAt) < minAgentRunTime {
 		// Agent exited too quickly — likely a startup or config error.
 		// Keep in progress so the user can retry.
 		t.SessionID = ""
+		quickExit = true
 	} else if t.Worktree != "" && !dirExists(t.Worktree) {
 		// Worktree removed — auto-complete
 		t.SetStatus(model.StatusComplete)
 	} else {
 		// Agent session exited on its own — task is complete
 		t.SetStatus(model.StatusComplete)
+	}
+
+	// On normal completion or explicit stop, return to task list.
+	// On quick exit or error, stay on agent view so the user can see
+	// the terminal output (error messages, stack traces, etc.).
+	if m.current == viewAgent && m.agentview.taskID == msg.TaskID && !quickExit {
+		m.current = viewTaskList
 	}
 	_ = m.db.Update(t)
 
