@@ -214,8 +214,8 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
-	// Start a new session (uses --resume if SessionID already existed)
-	sess, err := m.runner.Start(t, m.cfg)
+	// Start a new session with current terminal dimensions
+	sess, err := m.runner.Start(t, m.cfg, uint16(m.height), uint16(m.width))
 	if err != nil {
 		m.statusbar.SetError(err.Error())
 		return m, nil
