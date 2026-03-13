@@ -149,6 +149,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TickMsg:
+		// Keep running state fresh so idle tasks display correctly.
+		m.refreshTasks()
 		// Kick off git status refresh if needed
 		var cmds []tea.Cmd
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
