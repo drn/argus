@@ -266,7 +266,14 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Err != nil {
-		m.statusbar.SetError("agent error: " + msg.Err.Error())
+		// If the agent failed and had a session ID, clear it so the next
+		// attempt starts a fresh session instead of retrying a broken resume.
+		if t.SessionID != "" {
+			t.SessionID = ""
+			m.statusbar.SetError("session expired — press enter to start a new session")
+		} else {
+			m.statusbar.SetError("agent error: " + msg.Err.Error())
+		}
 		_ = m.store.Update(t)
 	} else {
 		t.SetStatus(model.StatusInReview)
