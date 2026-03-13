@@ -41,6 +41,13 @@ type AgentDetachedMsg struct {
 	TaskID string
 }
 
+// SessionResumedMsg is sent when a background session resume completes.
+type SessionResumedMsg struct {
+	TaskID string
+	PID    int
+	Err    error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	cfg       config.Config
@@ -89,9 +96,28 @@ func NewModel(cfg config.Config, s *store.Store, runner *agent.Runner) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
-		return TickMsg{}
-	})
+	cmds := []tea.Cmd{
+		tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+			return TickMsg{}
+		}),
+	}
+
+	// Resume sessions for in-progress tasks that have a saved session ID.
+	// Each resume runs in a background goroutine so the UI stays responsive.
+	for _, t := range m.store.Tasks() {
+		if t.Status == model.StatusInProgress && t.SessionID != "" {
+			task := t // capture loop variable
+			cmds = append(cmds, func() tea.Msg {
+				sess, err := m.runner.Start(task, m.cfg, 24, 80, true)
+				if err != nil {
+					return SessionResumedMsg{TaskID: task.ID, Err: err}
+				}
+				return SessionResumedMsg{TaskID: task.ID, PID: sess.PID()}
+			})
+		}
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -141,6 +167,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case GitStatusRefreshMsg:
 		m.gitstatus.Update(msg)
 		return m, nil
+
+	case SessionResumedMsg:
+		return m.handleSessionResumed(msg)
 
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
@@ -312,6 +341,26 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 		_ = m.store.Update(t)
 	} else {
 		t.SetStatus(model.StatusInReview)
+		_ = m.store.Update(t)
+	}
+
+	m.refreshTasks()
+	return m, nil
+}
+
+func (m Model) handleSessionResumed(msg SessionResumedMsg) (tea.Model, tea.Cmd) {
+	t, err := m.store.Get(msg.TaskID)
+	if err != nil {
+		return m, nil
+	}
+
+	if msg.Err != nil {
+		// Resume failed — clear session ID so next manual start is fresh
+		t.SessionID = ""
+		t.AgentPID = 0
+		_ = m.store.Update(t)
+	} else {
+		t.AgentPID = msg.PID
 		_ = m.store.Update(t)
 	}
 
