@@ -959,8 +959,9 @@ func TestModel_ViewTaskList_EmptyState(t *testing.T) {
 func TestModel_ViewTaskList_WithTasks(t *testing.T) {
 	task := &model.Task{ID: "t1", Name: "my-task", Status: model.StatusPending}
 	m := testModel(t, task)
-	m.width = 120
-	m.height = 40
+	// Send WindowSizeMsg so tasklist gets proper dimensions for rendering.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
 	view := m.View()
 	if !strings.Contains(view, "my-task") {
 		t.Error("task list view should contain task name")
@@ -1061,22 +1062,31 @@ func TestModel_StatusRevert(t *testing.T) {
 
 func TestModel_CursorNavigation(t *testing.T) {
 	tasks := []*model.Task{
-		{ID: "t1", Name: "first", Status: model.StatusPending},
-		{ID: "t2", Name: "second", Status: model.StatusPending},
+		{ID: "t1", Name: "first", Status: model.StatusPending, Project: "proj"},
+		{ID: "t2", Name: "second", Status: model.StatusPending, Project: "proj"},
 	}
 	m := testModel(t, tasks...)
-	m.width = 120
-	m.height = 40
+	// Send WindowSizeMsg so tasklist gets proper dimensions.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
 
-	// Down
+	// Rows: [proj header, first, second]. Cursor starts on header.
+	// Down once → first task
 	msg := tea.KeyMsg{Type: tea.KeyDown}
-	updated, _ := m.Update(msg)
+	updated, _ = m.Update(msg)
 	um := updated.(Model)
-	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "second" {
-		t.Error("expected 'second' selected after down")
+	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "first" {
+		t.Error("expected 'first' selected after first down")
 	}
 
-	// Up
+	// Down again → second task
+	updated, _ = um.Update(msg)
+	um = updated.(Model)
+	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "second" {
+		t.Error("expected 'second' selected after second down")
+	}
+
+	// Up → back to first
 	msg = tea.KeyMsg{Type: tea.KeyUp}
 	updated, _ = um.Update(msg)
 	um = updated.(Model)
@@ -1318,15 +1328,18 @@ func TestScheduleGitRefresh_NoTaskReturnsNil(t *testing.T) {
 
 func TestCursorChange_TriggersGitRefresh(t *testing.T) {
 	tasks := []*model.Task{
-		{ID: "t1", Name: "first", Status: model.StatusPending},
-		{ID: "t2", Name: "second", Status: model.StatusPending},
+		{ID: "t1", Name: "first", Status: model.StatusPending, Project: "proj"},
+		{ID: "t2", Name: "second", Status: model.StatusPending, Project: "proj"},
 	}
 	m := testModel(t, tasks...)
+	// Send WindowSizeMsg so tasklist gets proper dimensions.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
 
-	// Pre-populate cache for second task
-	m.resolvedDirs["t2"] = "/tmp/second-worktree"
+	// Pre-populate cache for first task (cursor lands on it after one down from header)
+	m.resolvedDirs["t1"] = "/tmp/first-worktree"
 
-	// Move cursor down
+	// Move cursor down (from project header to first task)
 	msg := tea.KeyMsg{Type: tea.KeyDown}
 	_, cmd := m.Update(msg)
 
