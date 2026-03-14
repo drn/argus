@@ -871,7 +871,8 @@ func (m Model) View() string {
 }
 
 func (m Model) padToBottom(content, bar string) string {
-	contentHeight := m.height - lipgloss.Height(bar) - 1
+	barHeight := lipgloss.Height(bar)
+	contentHeight := m.height - barHeight
 	if contentHeight < 0 {
 		contentHeight = 0
 	}

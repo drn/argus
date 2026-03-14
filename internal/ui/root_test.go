@@ -863,6 +863,25 @@ func TestModel_PadToBottom(t *testing.T) {
 	}
 }
 
+func TestModel_PadToBottom_NoExtraLine(t *testing.T) {
+	m := testModel(t)
+	m.height = 20
+
+	bar := "status bar"
+	content := "line1\nline2"
+	result := m.padToBottom(content, bar)
+
+	// Total lines should equal m.height (content fills to height - barHeight, then bar)
+	lines := strings.Split(result, "\n")
+	if len(lines) != m.height {
+		t.Errorf("padToBottom produced %d lines, want %d", len(lines), m.height)
+	}
+	// Last line should be the bar
+	if lines[len(lines)-1] != bar {
+		t.Errorf("last line = %q, want %q", lines[len(lines)-1], bar)
+	}
+}
+
 func TestModel_WindowSizeMsg(t *testing.T) {
 	m := testModel(t)
 	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

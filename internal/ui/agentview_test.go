@@ -397,6 +397,57 @@ func TestAgentView_RenderStatusBar(t *testing.T) {
 	}
 }
 
+func TestAgentView_RenderStatusBar_FocusLabelCentered(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelAgent
+	bar := av.renderStatusBar()
+
+	// Strip ANSI to find the position of [TERMINAL]
+	plain := stripANSI(bar)
+	idx := strings.Index(plain, "[TERMINAL]")
+	if idx < 0 {
+		t.Fatal("expected [TERMINAL] in status bar")
+	}
+	// The label should be approximately centered. lipgloss styles may add
+	// extra padding characters, so we allow a small tolerance.
+	labelLen := len("[TERMINAL]")
+	labelCenter := idx + labelLen/2
+	barCenter := len(plain) / 2
+	if abs(labelCenter-barCenter) > 5 {
+		t.Errorf("[TERMINAL] not centered: label center=%d, bar center=%d (bar len=%d)",
+			labelCenter, barCenter, len(plain))
+	}
+
+	// [TERMINAL] should be closer to center than the task name on the left
+	taskIdx := strings.Index(plain, "test task")
+	if taskIdx >= 0 && idx <= taskIdx {
+		t.Error("[TERMINAL] should appear after the task name, not before")
+	}
+
+	// Verify for FILES panel too
+	av.focus = panelFiles
+	bar = av.renderStatusBar()
+	plain = stripANSI(bar)
+	idx = strings.Index(plain, "[FILES]")
+	if idx < 0 {
+		t.Fatal("expected [FILES] in status bar")
+	}
+	labelLen = len("[FILES]")
+	labelCenter = idx + labelLen/2
+	barCenter = len(plain) / 2
+	if abs(labelCenter-barCenter) > 5 {
+		t.Errorf("[FILES] not centered: label center=%d, bar center=%d (bar len=%d)",
+			labelCenter, barCenter, len(plain))
+	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 func TestAgentView_RenderStatusBar_Exited(t *testing.T) {
 	av := newTestAgentView()
 	// No session → should show "(exited — ctrl+q to return)"
