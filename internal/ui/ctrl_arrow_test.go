@@ -65,57 +65,50 @@ func TestAgentView_CtrlLeftRightWithAlt(t *testing.T) {
 	}
 }
 
-func TestAgentView_AltLeftRight(t *testing.T) {
+func TestAgentView_AltLeftRight_NoSwitch(t *testing.T) {
 	av := newTestAgentView()
 
-	// Alt+left should move to panelGit
+	// Alt+left should NOT switch panels (only ctrl+left does)
 	msg := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
 	detach := av.HandleKey(msg)
 	if detach {
 		t.Fatal("alt+left should not trigger detach")
 	}
-	if av.focus != panelGit {
-		t.Fatalf("focus after alt+left = %d, want panelGit(%d)", av.focus, panelGit)
+	if av.focus != panelAgent {
+		t.Fatalf("focus after alt+left = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 
-	// Reset to center
-	av.focus = panelAgent
-
-	// Alt+right should move to panelFiles
+	// Alt+right should NOT switch panels
 	msg2 := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
 	detach = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("alt+right should not trigger detach")
 	}
-	if av.focus != panelFiles {
-		t.Fatalf("focus after alt+right = %d, want panelFiles(%d)", av.focus, panelFiles)
+	if av.focus != panelAgent {
+		t.Fatalf("focus after alt+right = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 }
 
-func TestAgentView_PlainLeftRight(t *testing.T) {
+func TestAgentView_PlainLeftRight_NoSwitch(t *testing.T) {
 	av := newTestAgentView()
 
-	// Plain left arrow should switch panels (macOS captures ctrl+left for
-	// Mission Control, so plain arrows are the primary pane-switching keys).
+	// Plain left arrow should NOT switch panels (only ctrl+left does)
 	msg := tea.KeyMsg{Type: tea.KeyLeft}
 	detach := av.HandleKey(msg)
 	if detach {
 		t.Fatal("plain left should not trigger detach")
 	}
-	if av.focus != panelGit {
-		t.Fatalf("focus after plain left = %d, want panelGit(%d)", av.focus, panelGit)
+	if av.focus != panelAgent {
+		t.Fatalf("focus after plain left = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 
-	// Reset to center
-	av.focus = panelAgent
-
-	// Plain right arrow should move to panelFiles
+	// Plain right arrow should NOT switch panels
 	msg2 := tea.KeyMsg{Type: tea.KeyRight}
 	detach = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("plain right should not trigger detach")
 	}
-	if av.focus != panelFiles {
-		t.Fatalf("focus after plain right = %d, want panelFiles(%d)", av.focus, panelFiles)
+	if av.focus != panelAgent {
+		t.Fatalf("focus after plain right = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 }

@@ -291,6 +291,22 @@ func TestAgentView_HandleKey_CtrlRight(t *testing.T) {
 	}
 }
 
+func TestAgentView_HandleKey_PlainArrowsNoSwitch(t *testing.T) {
+	av := newTestAgentView()
+	// Start at center (panelAgent)
+	msg := tea.KeyMsg{Type: tea.KeyLeft}
+	av.HandleKey(msg)
+	if av.focus != panelAgent {
+		t.Errorf("plain left should not switch panel: focus = %d, want panelAgent", av.focus)
+	}
+
+	msg = tea.KeyMsg{Type: tea.KeyRight}
+	av.HandleKey(msg)
+	if av.focus != panelAgent {
+		t.Errorf("plain right should not switch panel: focus = %d, want panelAgent", av.focus)
+	}
+}
+
 func TestAgentView_HandleKey_FilePanelKeys(t *testing.T) {
 	av := newTestAgentView()
 	av.focus = panelFiles
