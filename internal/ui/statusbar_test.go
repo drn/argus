@@ -69,3 +69,39 @@ func TestStatusBar_Empty(t *testing.T) {
 		t.Error("expected 0 counts")
 	}
 }
+
+func TestStatusBar_ProjectTabKeys(t *testing.T) {
+	sb := NewStatusBar(DefaultTheme())
+	sb.SetWidth(120)
+	sb.SetTasks(nil)
+	sb.SetProjectTab(true)
+
+	v := sb.View()
+	// Project tab should show "tasks" key (to switch back) and "new"
+	if !strings.Contains(v, "tasks") {
+		t.Error("project tab should show 'tasks' key hint")
+	}
+	if !strings.Contains(v, "new") {
+		t.Error("project tab should show 'new' key hint")
+	}
+	// Should NOT show "attach" (tasks-only key)
+	if strings.Contains(v, "attach") {
+		t.Error("project tab should not show 'attach' key hint")
+	}
+}
+
+func TestStatusBar_TaskTabKeys(t *testing.T) {
+	sb := NewStatusBar(DefaultTheme())
+	sb.SetWidth(120)
+	sb.SetTasks(nil)
+	sb.SetProjectTab(false)
+
+	v := sb.View()
+	// Task tab should show "attach" and "projects"
+	if !strings.Contains(v, "attach") {
+		t.Error("task tab should show 'attach' key hint")
+	}
+	if !strings.Contains(v, "projects") {
+		t.Error("task tab should show 'projects' key hint")
+	}
+}

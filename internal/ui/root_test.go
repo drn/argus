@@ -752,6 +752,440 @@ func TestInit_ResetsStartedAtBeforeResume(t *testing.T) {
 	}
 }
 
+func TestModel_SplitWidths(t *testing.T) {
+	m := testModel(t)
+	m.width = 120
+
+	left, right := m.splitWidths()
+	if left+right != 120 {
+		t.Errorf("splitWidths total = %d, want 120", left+right)
+	}
+	if left < 30 {
+		t.Errorf("left = %d, want >= 30", left)
+	}
+	if right < 20 {
+		t.Errorf("right = %d, want >= 20", right)
+	}
+}
+
+func TestModel_SplitWidths_NarrowTerminal(t *testing.T) {
+	m := testModel(t)
+	m.width = 60
+
+	left, right := m.splitWidths()
+	if left+right != 60 {
+		t.Errorf("splitWidths total = %d, want 60", left+right)
+	}
+	if left < 30 {
+		t.Errorf("left should be at least 30, got %d", left)
+	}
+}
+
+func TestModel_SplitRightHeights(t *testing.T) {
+	m := testModel(t)
+
+	gitH, previewH := m.splitRightHeights(40)
+	if gitH+previewH < 40 {
+		t.Errorf("splitRightHeights total = %d, want >= 40", gitH+previewH)
+	}
+	if gitH < 5 {
+		t.Errorf("gitH = %d, want >= 5", gitH)
+	}
+	if gitH > 15 {
+		t.Errorf("gitH = %d, want <= 15", gitH)
+	}
+	if previewH < 5 {
+		t.Errorf("previewH = %d, want >= 5", previewH)
+	}
+}
+
+func TestModel_SplitRightHeights_Small(t *testing.T) {
+	m := testModel(t)
+	gitH, previewH := m.splitRightHeights(8)
+	if gitH < 5 {
+		t.Errorf("gitH = %d, want >= 5 (minimum)", gitH)
+	}
+	if previewH < 5 {
+		t.Errorf("previewH = %d, want >= 5 (minimum)", previewH)
+	}
+}
+
+func TestModel_ViewQuitting(t *testing.T) {
+	m := testModel(t)
+	m.quitting = true
+	view := m.View()
+	if view != "" {
+		t.Errorf("quitting view should be empty, got %q", view)
+	}
+}
+
+func TestModel_ViewHelp(t *testing.T) {
+	m := testModel(t)
+	m.current = viewHelp
+	m.width = 80
+	m.height = 24
+	view := m.View()
+	if !strings.Contains(view, "Keybindings") {
+		t.Error("help view should contain 'Keybindings'")
+	}
+}
+
+func TestModel_ViewPrompt(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "my task",
+		Status: model.StatusPending,
+		Prompt: "Fix the bug in parser",
+	}
+	m := testModel(t, task)
+	m.current = viewPrompt
+	m.width = 80
+	m.height = 24
+	view := m.View()
+	if !strings.Contains(view, "Fix the bug in parser") {
+		t.Error("prompt view should contain the task prompt")
+	}
+}
+
+func TestModel_PadToBottom(t *testing.T) {
+	m := testModel(t)
+	m.height = 20
+
+	bar := "status bar"
+	content := "line1\nline2"
+	result := m.padToBottom(content, bar)
+
+	if !strings.Contains(result, "line1") {
+		t.Error("padToBottom should contain original content")
+	}
+	if !strings.Contains(result, "status bar") {
+		t.Error("padToBottom should contain bar")
+	}
+}
+
+func TestModel_WindowSizeMsg(t *testing.T) {
+	m := testModel(t)
+	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	um := updated.(Model)
+	if um.width != 120 || um.height != 40 {
+		t.Errorf("width=%d height=%d, want 120x40", um.width, um.height)
+	}
+	if cmd != nil {
+		t.Error("WindowSizeMsg should return nil cmd")
+	}
+}
+
+func TestModel_HelpViewDismiss(t *testing.T) {
+	m := testModel(t)
+	m.current = viewHelp
+
+	// Any key should dismiss help view
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+	if um.current != viewTaskList {
+		t.Errorf("after key in help view: current = %d, want viewTaskList", um.current)
+	}
+}
+
+func TestModel_PromptViewDismiss(t *testing.T) {
+	m := testModel(t)
+	m.current = viewPrompt
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+	if um.current != viewTaskList {
+		t.Errorf("after key in prompt view: current = %d, want viewTaskList", um.current)
+	}
+}
+
+func TestModel_ViewNewTask(t *testing.T) {
+	m := testModel(t)
+	m.current = viewNewTask
+	m.newtask = NewNewTaskForm(m.theme, m.db.Projects())
+	m.newtask.SetSize(80, 24)
+	m.width = 80
+	m.height = 24
+	view := m.View()
+	if !strings.Contains(view, "New Task") {
+		t.Error("new task view should contain 'New Task'")
+	}
+}
+
+func TestModel_ViewNewProject(t *testing.T) {
+	m := testModel(t)
+	m.current = viewNewProject
+	m.newproject = NewNewProjectForm(m.theme)
+	m.newproject.SetSize(80, 24)
+	m.width = 80
+	m.height = 24
+	view := m.View()
+	if !strings.Contains(view, "New Project") {
+		t.Error("new project view should contain 'New Project'")
+	}
+}
+
+func TestModel_ViewTaskList_EmptyState(t *testing.T) {
+	m := testModel(t) // no tasks
+	m.width = 80
+	m.height = 24
+	view := m.View()
+	// Should show hint to create first task
+	if !strings.Contains(view, "create your first task") && !strings.Contains(view, "[n]") {
+		t.Error("empty state should show create task hint")
+	}
+}
+
+func TestModel_ViewTaskList_WithTasks(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "my-task", Status: model.StatusPending}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	view := m.View()
+	if !strings.Contains(view, "my-task") {
+		t.Error("task list view should contain task name")
+	}
+}
+
+func TestModel_ViewProjectsTab(t *testing.T) {
+	m := testModel(t)
+	m.activeTab = tabProjects
+	m.width = 120
+	m.height = 40
+	view := m.View()
+	if view == "" {
+		t.Error("projects tab view should not be empty")
+	}
+}
+
+func TestModel_ViewConfirmDelete_NoTask(t *testing.T) {
+	m := testModel(t)
+	m.current = viewConfirmDelete
+	m.width = 80
+	m.height = 24
+	view := m.confirmDeleteView()
+	if view != "" {
+		t.Error("confirmDeleteView with no task selected should be empty")
+	}
+}
+
+func TestModel_ViewConfirmDestroy_NoTask(t *testing.T) {
+	m := testModel(t)
+	m.current = viewConfirmDestroy
+	m.width = 80
+	m.height = 24
+	view := m.confirmDestroyView()
+	if view != "" {
+		t.Error("confirmDestroyView with no task should be empty")
+	}
+}
+
+func TestModel_ViewConfirmDeleteProject_NoProject(t *testing.T) {
+	m := testModel(t)
+	m.activeTab = tabProjects
+	m.current = viewConfirmDeleteProject
+	m.width = 80
+	m.height = 24
+	view := m.confirmDeleteProjectView()
+	if view != "" {
+		t.Error("confirmDeleteProjectView with no project should be empty")
+	}
+}
+
+func TestModel_PromptView_NoTask(t *testing.T) {
+	m := testModel(t)
+	view := m.promptView()
+	if view != "" {
+		t.Error("promptView with no task should be empty")
+	}
+}
+
+func TestModel_PromptView_EmptyPrompt(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "my-task", Status: model.StatusPending}
+	m := testModel(t, task)
+	view := m.promptView()
+	if !strings.Contains(view, "no prompt set") {
+		t.Error("promptView with empty prompt should show '(no prompt set)'")
+	}
+}
+
+func TestModel_StatusAdvance(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending}
+	m := testModel(t, task)
+
+	// Press 's' to advance status
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	got, _ := um.db.Get("t1")
+	if got.Status != model.StatusInProgress {
+		t.Errorf("expected StatusInProgress after advance, got %v", got.Status)
+	}
+}
+
+func TestModel_StatusRevert(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusInProgress}
+	m := testModel(t, task)
+
+	// Press 'S' to revert status
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	got, _ := um.db.Get("t1")
+	if got.Status != model.StatusPending {
+		t.Errorf("expected StatusPending after revert, got %v", got.Status)
+	}
+}
+
+func TestModel_CursorNavigation(t *testing.T) {
+	tasks := []*model.Task{
+		{ID: "t1", Name: "first", Status: model.StatusPending},
+		{ID: "t2", Name: "second", Status: model.StatusPending},
+	}
+	m := testModel(t, tasks...)
+	m.width = 120
+	m.height = 40
+
+	// Down
+	msg := tea.KeyMsg{Type: tea.KeyDown}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "second" {
+		t.Error("expected 'second' selected after down")
+	}
+
+	// Up
+	msg = tea.KeyMsg{Type: tea.KeyUp}
+	updated, _ = um.Update(msg)
+	um = updated.(Model)
+	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "first" {
+		t.Error("expected 'first' selected after up")
+	}
+}
+
+func TestModel_NewProjectKey(t *testing.T) {
+	m := testModel(t)
+	m.activeTab = tabProjects
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewNewProject {
+		t.Errorf("expected viewNewProject, got %d", um.current)
+	}
+}
+
+func TestModel_NewProjectCancel(t *testing.T) {
+	m := testModel(t)
+	m.activeTab = tabProjects
+	m.current = viewNewProject
+	m.newproject = NewNewProjectForm(m.theme)
+
+	msg := tea.KeyMsg{Type: tea.KeyEsc}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after cancel, got %d", um.current)
+	}
+}
+
+func TestModel_TabSwitching_NumberKeys(t *testing.T) {
+	m := testModel(t)
+
+	// Press '2' for projects
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+	if um.activeTab != tabProjects {
+		t.Errorf("expected tabProjects after '2', got %d", um.activeTab)
+	}
+
+	// Press '1' for tasks
+	msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}}
+	updated, _ = um.Update(msg)
+	um = updated.(Model)
+	if um.activeTab != tabTasks {
+		t.Errorf("expected tabTasks after '1', got %d", um.activeTab)
+	}
+}
+
+func TestModel_HelpKey(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending}
+	m := testModel(t, task)
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewHelp {
+		t.Errorf("expected viewHelp after '?', got %d", um.current)
+	}
+}
+
+func TestModel_DeleteKey_ShowsConfirmation(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending}
+	m := testModel(t, task)
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewConfirmDelete {
+		t.Errorf("expected viewConfirmDelete, got %d", um.current)
+	}
+}
+
+func TestModel_PromptKey(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending, Prompt: "fix bug"}
+	m := testModel(t, task)
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewPrompt {
+		t.Errorf("expected viewPrompt, got %d", um.current)
+	}
+}
+
+func TestModel_PromptKey_CompletedTask(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusComplete}
+	m := testModel(t, task)
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	// Should not open prompt view for completed task
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList for completed task, got %d", um.current)
+	}
+}
+
+func TestModel_AgentDetachedMsg(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusInProgress}
+	m := testModel(t, task)
+
+	updated, _ := m.Update(AgentDetachedMsg{TaskID: "t1"})
+	_ = updated.(Model)
+	// Should not panic, just refresh tasks
+}
+
+func TestModel_AgentFinished_MissingTask(t *testing.T) {
+	m := testModel(t)
+	// Should not panic when task doesn't exist
+	updated, cmd := m.Update(AgentFinishedMsg{TaskID: "nonexistent"})
+	if cmd != nil {
+		t.Error("expected nil cmd for missing task")
+	}
+	_ = updated.(Model)
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},

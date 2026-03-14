@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -187,5 +188,151 @@ func TestRunner_GetNotFound(t *testing.T) {
 	r := NewRunner(nil)
 	if r.Get("nonexistent") != nil {
 		t.Error("expected nil")
+	}
+}
+
+func TestRunner_Idle(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "idle-t1", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop("idle-t1")
+
+	// Immediately, no sessions should be idle (lastOutput is zero)
+	idle := r.Idle()
+	if len(idle) != 0 {
+		t.Errorf("expected no idle sessions, got %v", idle)
+	}
+
+	// Simulate the session having old output
+	sess := r.Get("idle-t1")
+	sess.mu.Lock()
+	sess.lastOutput = time.Now().Add(-5 * time.Second)
+	sess.mu.Unlock()
+
+	idle = r.Idle()
+	if len(idle) != 1 || idle[0] != "idle-t1" {
+		t.Errorf("expected [idle-t1], got %v", idle)
+	}
+}
+
+func TestRunner_WorkDir(t *testing.T) {
+	r := NewRunner(nil)
+
+	// No session → empty string
+	if dir := r.WorkDir("nonexistent"); dir != "" {
+		t.Errorf("expected empty, got %q", dir)
+	}
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "wd-t1", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop("wd-t1")
+
+	// Should return a non-empty working directory (falls back to cwd)
+	if dir := r.WorkDir("wd-t1"); dir == "" {
+		t.Error("expected non-empty WorkDir")
+	}
+}
+
+func TestRunner_HasSession_MoreCases(t *testing.T) {
+	r := NewRunner(nil)
+
+	// No sessions
+	if r.HasSession("x") {
+		t.Error("expected false for nonexistent")
+	}
+
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "hs-1", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop("hs-1")
+
+	if !r.HasSession("hs-1") {
+		t.Error("expected true for existing session")
+	}
+	if r.HasSession("hs-2") {
+		t.Error("expected false for different ID")
+	}
+}
+
+func TestRunner_StopAll(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task1 := &model.Task{ID: "sa-1", Name: "test1"}
+	task2 := &model.Task{ID: "sa-2", Name: "test2"}
+
+	_, err := r.Start(task1, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Start(task2, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	running := r.Running()
+	if len(running) != 2 {
+		t.Fatalf("expected 2 running, got %d", len(running))
+	}
+
+	r.StopAll()
+
+	// Wait for cleanup
+	time.Sleep(500 * time.Millisecond)
+
+	if len(r.Running()) != 0 {
+		t.Errorf("expected 0 running after StopAll, got %d", len(r.Running()))
+	}
+}
+
+func TestRunner_Detach_NoSession(t *testing.T) {
+	r := NewRunner(nil)
+	// Should not panic when detaching a nonexistent session
+	r.Detach("nonexistent")
+}
+
+func TestRunner_Attach_NoSession(t *testing.T) {
+	r := NewRunner(nil)
+	err := r.Attach("nonexistent", &bytes.Buffer{}, &bytes.Buffer{})
+	if err != ErrSessionNotFound {
+		t.Errorf("expected ErrSessionNotFound, got %v", err)
 	}
 }

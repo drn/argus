@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
@@ -18,6 +19,28 @@ func testDB(t *testing.T) *DB {
 	}
 	t.Cleanup(func() { d.Close() })
 	return d
+}
+
+// --- DataDir / DefaultPath tests ---
+
+func TestDataDir(t *testing.T) {
+	dir := DataDir()
+	if dir == "" {
+		t.Error("expected non-empty DataDir")
+	}
+	if !filepath.IsAbs(dir) {
+		t.Errorf("expected absolute path, got %q", dir)
+	}
+}
+
+func TestDefaultPath(t *testing.T) {
+	p := DefaultPath()
+	if p == "" {
+		t.Error("expected non-empty DefaultPath")
+	}
+	if filepath.Base(p) != "data.sql" {
+		t.Errorf("expected data.sql, got %q", filepath.Base(p))
+	}
 }
 
 // --- Task tests ---
@@ -519,6 +542,773 @@ func TestFixupBackends_RunsOnOpen(t *testing.T) {
 	}
 	if b.PromptFlag != "" {
 		t.Errorf("expected empty prompt_flag after reopen, got %q", b.PromptFlag)
+	}
+}
+
+// --- Config edge case tests ---
+
+func TestDB_Config_CleanupWorktrees(t *testing.T) {
+	d := testDB(t)
+
+	// Default: CleanupWorktrees should be nil (unset)
+	cfg := d.Config()
+	if cfg.UI.CleanupWorktrees != nil {
+		t.Error("expected CleanupWorktrees to be nil by default")
+	}
+	if !cfg.UI.ShouldCleanupWorktrees() {
+		t.Error("ShouldCleanupWorktrees should default to true")
+	}
+
+	// Set to true explicitly
+	if err := d.SetConfigValue("ui.cleanup_worktrees", "true"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if cfg.UI.CleanupWorktrees == nil {
+		t.Fatal("expected CleanupWorktrees to be set")
+	}
+	if !*cfg.UI.CleanupWorktrees {
+		t.Error("expected CleanupWorktrees to be true")
+	}
+
+	// Set to false
+	if err := d.SetConfigValue("ui.cleanup_worktrees", "false"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if cfg.UI.CleanupWorktrees == nil {
+		t.Fatal("expected CleanupWorktrees to be set")
+	}
+	if *cfg.UI.CleanupWorktrees {
+		t.Error("expected CleanupWorktrees to be false")
+	}
+	if cfg.UI.ShouldCleanupWorktrees() {
+		t.Error("ShouldCleanupWorktrees should return false when explicitly set to false")
+	}
+}
+
+func TestDB_Config_ShowElapsedFalse(t *testing.T) {
+	d := testDB(t)
+
+	// Default should be true
+	cfg := d.Config()
+	if !cfg.UI.ShowElapsed {
+		t.Error("expected ShowElapsed default true")
+	}
+
+	// Override to false
+	if err := d.SetConfigValue("ui.show_elapsed", "false"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if cfg.UI.ShowElapsed {
+		t.Error("expected ShowElapsed to be false after override")
+	}
+}
+
+func TestDB_Config_ShowIconsFalse(t *testing.T) {
+	d := testDB(t)
+
+	// Default should be true
+	cfg := d.Config()
+	if !cfg.UI.ShowIcons {
+		t.Error("expected ShowIcons default true")
+	}
+
+	// Override to false
+	if err := d.SetConfigValue("ui.show_icons", "false"); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if cfg.UI.ShowIcons {
+		t.Error("expected ShowIcons to be false after override")
+	}
+}
+
+// --- Tasks ordering test ---
+
+func TestDB_Tasks_OrderedByCreatedAt(t *testing.T) {
+	d := testDB(t)
+
+	now := time.Now()
+	t3 := &model.Task{ID: "t3", Name: "third", CreatedAt: now.Add(2 * time.Second)}
+	t1 := &model.Task{ID: "t1", Name: "first", CreatedAt: now}
+	t2 := &model.Task{ID: "t2", Name: "second", CreatedAt: now.Add(1 * time.Second)}
+
+	// Add in non-chronological order
+	_ = d.Add(t3)
+	_ = d.Add(t1)
+	_ = d.Add(t2)
+
+	tasks := d.Tasks()
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(tasks))
+	}
+	if tasks[0].Name != "first" {
+		t.Errorf("tasks[0] = %q, want first", tasks[0].Name)
+	}
+	if tasks[1].Name != "second" {
+		t.Errorf("tasks[1] = %q, want second", tasks[1].Name)
+	}
+	if tasks[2].Name != "third" {
+		t.Errorf("tasks[2] = %q, want third", tasks[2].Name)
+	}
+}
+
+// --- Time roundtrip tests ---
+
+func TestDB_TimeRoundtrip_ZeroTimes(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{
+		Name:      "zero times",
+		CreatedAt: time.Now(),
+		// StartedAt and EndedAt left as zero values
+	}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StartedAt.IsZero() {
+		t.Errorf("expected zero StartedAt, got %v", got.StartedAt)
+	}
+	if !got.EndedAt.IsZero() {
+		t.Errorf("expected zero EndedAt, got %v", got.EndedAt)
+	}
+}
+
+func TestDB_TimeRoundtrip_NonZeroTimes(t *testing.T) {
+	d := testDB(t)
+
+	now := time.Now()
+	started := now.Add(-10 * time.Minute)
+	ended := now.Add(-5 * time.Minute)
+
+	task := &model.Task{
+		Name:      "with times",
+		CreatedAt: now,
+		StartedAt: started,
+		EndedAt:   ended,
+	}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compare with nanosecond truncation from RFC3339Nano roundtrip
+	if got.CreatedAt.Sub(now).Abs() > time.Microsecond {
+		t.Errorf("CreatedAt mismatch: got %v, want %v", got.CreatedAt, now)
+	}
+	if got.StartedAt.Sub(started).Abs() > time.Microsecond {
+		t.Errorf("StartedAt mismatch: got %v, want %v", got.StartedAt, started)
+	}
+	if got.EndedAt.Sub(ended).Abs() > time.Microsecond {
+		t.Errorf("EndedAt mismatch: got %v, want %v", got.EndedAt, ended)
+	}
+}
+
+// --- Task with all fields ---
+
+func TestDB_TaskAllFields(t *testing.T) {
+	d := testDB(t)
+
+	now := time.Now()
+	task := &model.Task{
+		ID:        "full-task",
+		Name:      "full task",
+		Status:    model.StatusInProgress,
+		Project:   "myproject",
+		Branch:    "feature/test",
+		Prompt:    "implement the feature",
+		Backend:   "claude",
+		Worktree:  "/tmp/worktrees/full-task",
+		AgentPID:  12345,
+		SessionID: "sess-abc-123",
+		CreatedAt: now.Add(-1 * time.Hour),
+		StartedAt: now.Add(-30 * time.Minute),
+		EndedAt:   now,
+	}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get("full-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Name != "full task" {
+		t.Errorf("Name = %q", got.Name)
+	}
+	if got.Status != model.StatusInProgress {
+		t.Errorf("Status = %v", got.Status)
+	}
+	if got.Project != "myproject" {
+		t.Errorf("Project = %q", got.Project)
+	}
+	if got.Branch != "feature/test" {
+		t.Errorf("Branch = %q", got.Branch)
+	}
+	if got.Prompt != "implement the feature" {
+		t.Errorf("Prompt = %q", got.Prompt)
+	}
+	if got.Backend != "claude" {
+		t.Errorf("Backend = %q", got.Backend)
+	}
+	if got.Worktree != "/tmp/worktrees/full-task" {
+		t.Errorf("Worktree = %q", got.Worktree)
+	}
+	if got.AgentPID != 12345 {
+		t.Errorf("AgentPID = %d", got.AgentPID)
+	}
+	if got.SessionID != "sess-abc-123" {
+		t.Errorf("SessionID = %q", got.SessionID)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero")
+	}
+	if got.StartedAt.IsZero() {
+		t.Error("StartedAt should not be zero")
+	}
+	if got.EndedAt.IsZero() {
+		t.Error("EndedAt should not be zero")
+	}
+}
+
+// --- PruneCompleted returns worktree info ---
+
+func TestDB_PruneCompleted_ReturnsWorktreeInfo(t *testing.T) {
+	d := testDB(t)
+
+	_ = d.Add(&model.Task{Name: "done1", Status: model.StatusComplete, Worktree: "/tmp/wt/done1"})
+	_ = d.Add(&model.Task{Name: "done2", Status: model.StatusComplete, Worktree: "/tmp/wt/done2"})
+	_ = d.Add(&model.Task{Name: "active", Status: model.StatusInProgress, Worktree: "/tmp/wt/active"})
+
+	pruned, err := d.PruneCompleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 2 {
+		t.Fatalf("expected 2 pruned, got %d", len(pruned))
+	}
+
+	worktrees := make(map[string]bool)
+	for _, p := range pruned {
+		worktrees[p.Worktree] = true
+	}
+	if !worktrees["/tmp/wt/done1"] {
+		t.Error("expected /tmp/wt/done1 in pruned worktrees")
+	}
+	if !worktrees["/tmp/wt/done2"] {
+		t.Error("expected /tmp/wt/done2 in pruned worktrees")
+	}
+}
+
+// --- Multiple projects and backends in Config ---
+
+func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {
+	d := testDB(t)
+
+	// Add multiple projects
+	_ = d.SetProject("app1", config.Project{Path: "/home/user/app1", Branch: "main", Backend: "claude"})
+	_ = d.SetProject("app2", config.Project{Path: "/home/user/app2", Branch: "develop", Backend: "codex"})
+
+	// Add multiple backends
+	_ = d.SetBackend("codex", config.Backend{Command: "codex", PromptFlag: "--prompt"})
+	_ = d.SetBackend("custom", config.Backend{Command: "custom-agent", PromptFlag: "--input"})
+
+	cfg := d.Config()
+
+	// Verify projects
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(cfg.Projects))
+	}
+	if cfg.Projects["app1"].Path != "/home/user/app1" {
+		t.Errorf("app1 path = %q", cfg.Projects["app1"].Path)
+	}
+	if cfg.Projects["app1"].Branch != "main" {
+		t.Errorf("app1 branch = %q", cfg.Projects["app1"].Branch)
+	}
+	if cfg.Projects["app2"].Path != "/home/user/app2" {
+		t.Errorf("app2 path = %q", cfg.Projects["app2"].Path)
+	}
+	if cfg.Projects["app2"].Backend != "codex" {
+		t.Errorf("app2 backend = %q", cfg.Projects["app2"].Backend)
+	}
+
+	// Verify backends (claude default + codex + custom = 3)
+	if len(cfg.Backends) != 3 {
+		t.Fatalf("expected 3 backends, got %d", len(cfg.Backends))
+	}
+	if cfg.Backends["codex"].Command != "codex" {
+		t.Errorf("codex command = %q", cfg.Backends["codex"].Command)
+	}
+	if cfg.Backends["codex"].PromptFlag != "--prompt" {
+		t.Errorf("codex prompt_flag = %q", cfg.Backends["codex"].PromptFlag)
+	}
+	if cfg.Backends["custom"].Command != "custom-agent" {
+		t.Errorf("custom command = %q", cfg.Backends["custom"].Command)
+	}
+}
+
+// --- Config keybinding overrides ---
+
+func TestDB_Config_AllKeybindingOverrides(t *testing.T) {
+	d := testDB(t)
+
+	overrides := map[string]string{
+		"keybindings.attach":   "a",
+		"keybindings.status":   "x",
+		"keybindings.delete":   "D",
+		"keybindings.quit":     "Q",
+		"keybindings.help":     "h",
+		"keybindings.filter":   "f",
+		"keybindings.prompt":   "P",
+		"keybindings.worktree": "W",
+	}
+	for k, v := range overrides {
+		if err := d.SetConfigValue(k, v); err != nil {
+			t.Fatalf("SetConfigValue(%q, %q): %v", k, v, err)
+		}
+	}
+
+	cfg := d.Config()
+	if cfg.Keybindings.Attach != "a" {
+		t.Errorf("Attach = %q", cfg.Keybindings.Attach)
+	}
+	if cfg.Keybindings.Status != "x" {
+		t.Errorf("Status = %q", cfg.Keybindings.Status)
+	}
+	if cfg.Keybindings.Delete != "D" {
+		t.Errorf("Delete = %q", cfg.Keybindings.Delete)
+	}
+	if cfg.Keybindings.Quit != "Q" {
+		t.Errorf("Quit = %q", cfg.Keybindings.Quit)
+	}
+	if cfg.Keybindings.Help != "h" {
+		t.Errorf("Help = %q", cfg.Keybindings.Help)
+	}
+	if cfg.Keybindings.Filter != "f" {
+		t.Errorf("Filter = %q", cfg.Keybindings.Filter)
+	}
+	if cfg.Keybindings.Prompt != "P" {
+		t.Errorf("Prompt = %q", cfg.Keybindings.Prompt)
+	}
+	if cfg.Keybindings.Worktree != "W" {
+		t.Errorf("Worktree = %q", cfg.Keybindings.Worktree)
+	}
+}
+
+// --- Defaults.backend override ---
+
+func TestDB_Config_DefaultsBackendOverride(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.SetConfigValue("defaults.backend", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := d.Config()
+	if cfg.Defaults.Backend != "codex" {
+		t.Errorf("Defaults.Backend = %q, want codex", cfg.Defaults.Backend)
+	}
+}
+
+// --- Migration with full config fields ---
+
+func TestMigration_LegacyConfigAllKeybindings(t *testing.T) {
+	legacyDir := t.TempDir()
+	argusDir := filepath.Join(legacyDir, "argus")
+	os.MkdirAll(argusDir, 0o755)
+
+	configTOML := `
+[defaults]
+backend = "claude"
+
+[keybindings]
+new = "N"
+attach = "A"
+status = "S"
+delete = "X"
+quit = "Q"
+help = "H"
+filter = "F"
+prompt = "P"
+worktree = "W"
+
+[ui]
+theme = "monokai"
+show_elapsed = true
+show_icons = false
+cleanup_worktrees = false
+`
+	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(configTOML), 0o644)
+
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", legacyDir)
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	cfg := d.Config()
+
+	// Verify all keybindings
+	if cfg.Keybindings.New != "N" {
+		t.Errorf("New = %q", cfg.Keybindings.New)
+	}
+	if cfg.Keybindings.Attach != "A" {
+		t.Errorf("Attach = %q", cfg.Keybindings.Attach)
+	}
+	if cfg.Keybindings.Status != "S" {
+		t.Errorf("Status = %q", cfg.Keybindings.Status)
+	}
+	if cfg.Keybindings.Delete != "X" {
+		t.Errorf("Delete = %q", cfg.Keybindings.Delete)
+	}
+	if cfg.Keybindings.Quit != "Q" {
+		t.Errorf("Quit = %q", cfg.Keybindings.Quit)
+	}
+	if cfg.Keybindings.Help != "H" {
+		t.Errorf("Help = %q", cfg.Keybindings.Help)
+	}
+	if cfg.Keybindings.Filter != "F" {
+		t.Errorf("Filter = %q", cfg.Keybindings.Filter)
+	}
+	if cfg.Keybindings.Prompt != "P" {
+		t.Errorf("Prompt = %q", cfg.Keybindings.Prompt)
+	}
+	if cfg.Keybindings.Worktree != "W" {
+		t.Errorf("Worktree = %q", cfg.Keybindings.Worktree)
+	}
+
+	// Verify UI
+	if cfg.UI.Theme != "monokai" {
+		t.Errorf("Theme = %q", cfg.UI.Theme)
+	}
+	if !cfg.UI.ShowElapsed {
+		t.Error("expected ShowElapsed true")
+	}
+	if cfg.UI.ShowIcons {
+		t.Error("expected ShowIcons false")
+	}
+	if cfg.UI.CleanupWorktrees == nil {
+		t.Fatal("expected CleanupWorktrees to be set")
+	}
+	if *cfg.UI.CleanupWorktrees {
+		t.Error("expected CleanupWorktrees false")
+	}
+}
+
+func TestMigration_LegacyTasksWithAllFields(t *testing.T) {
+	legacyDir := t.TempDir()
+	argusDir := filepath.Join(legacyDir, "argus")
+	os.MkdirAll(argusDir, 0o755)
+
+	tasks := []*model.Task{
+		{
+			ID:        "t1",
+			Name:      "full task",
+			Status:    model.StatusInProgress,
+			Project:   "proj",
+			Branch:    "feat/x",
+			Prompt:    "do stuff",
+			Backend:   "claude",
+			Worktree:  "/tmp/wt/t1",
+			AgentPID:  999,
+			SessionID: "sess-1",
+		},
+	}
+	tasksJSON, _ := json.Marshal(tasks)
+	os.WriteFile(filepath.Join(argusDir, "tasks.json"), tasksJSON, 0o644)
+
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", legacyDir)
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	dbTasks := d.Tasks()
+	if len(dbTasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(dbTasks))
+	}
+	got := dbTasks[0]
+	if got.Project != "proj" {
+		t.Errorf("Project = %q", got.Project)
+	}
+	if got.Worktree != "/tmp/wt/t1" {
+		t.Errorf("Worktree = %q", got.Worktree)
+	}
+	if got.SessionID != "sess-1" {
+		t.Errorf("SessionID = %q", got.SessionID)
+	}
+}
+
+func TestMigration_LegacyMultipleProjects(t *testing.T) {
+	legacyDir := t.TempDir()
+	argusDir := filepath.Join(legacyDir, "argus")
+	os.MkdirAll(argusDir, 0o755)
+
+	configTOML := `
+[backends.codex]
+command = "codex"
+prompt_flag = "--prompt"
+
+[backends.custom]
+command = "my-agent"
+prompt_flag = "--input"
+
+[projects.app1]
+path = "/home/user/app1"
+branch = "main"
+backend = "codex"
+
+[projects.app2]
+path = "/home/user/app2"
+backend = "custom"
+`
+	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(configTOML), 0o644)
+
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", legacyDir)
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+	d, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	projects := d.Projects()
+	if len(projects) != 2 {
+		t.Fatalf("expected 2 projects, got %d", len(projects))
+	}
+	if projects["app1"].Branch != "main" {
+		t.Errorf("app1 branch = %q", projects["app1"].Branch)
+	}
+	if projects["app2"].Backend != "custom" {
+		t.Errorf("app2 backend = %q", projects["app2"].Backend)
+	}
+
+	backends := d.Backends()
+	if _, ok := backends["codex"]; !ok {
+		t.Error("codex backend missing")
+	}
+	if _, ok := backends["custom"]; !ok {
+		t.Error("custom backend missing")
+	}
+}
+
+func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
+	// Test that seedDefaults also fixes "cat" and "true" placeholder commands
+	for _, placeholder := range []string{"cat", "true"} {
+		t.Run(placeholder, func(t *testing.T) {
+			d, err := OpenInMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+
+			if err := d.SetBackend("claude", config.Backend{Command: placeholder, PromptFlag: ""}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := d.runSeedDefaults(); err != nil {
+				t.Fatal(err)
+			}
+
+			backends := d.Backends()
+			b := backends["claude"]
+			if b.Command == placeholder {
+				t.Errorf("seedDefaults should have replaced placeholder %q", placeholder)
+			}
+			defaultCfg := config.DefaultConfig()
+			if b.Command != defaultCfg.Backends["claude"].Command {
+				t.Errorf("expected %q, got %q", defaultCfg.Backends["claude"].Command, b.Command)
+			}
+		})
+	}
+}
+
+func TestSeedDefaults_SkipsNonPlaceholder(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Set a real custom command — seedDefaults should NOT overwrite it
+	customCmd := "my-custom-claude --special"
+	if err := d.SetBackend("claude", config.Backend{Command: customCmd, PromptFlag: "--p"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.runSeedDefaults(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	if backends["claude"].Command != customCmd {
+		t.Errorf("seedDefaults overwrote custom command: got %q", backends["claude"].Command)
+	}
+}
+
+func TestFixupBackends_FixesPromptFlagOnly(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Set correct command but wrong prompt flag
+	defaultCfg := config.DefaultConfig()
+	if err := d.SetBackend("claude", config.Backend{
+		Command:    defaultCfg.Backends["claude"].Command,
+		PromptFlag: "-p",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b := backends["claude"]
+	if b.PromptFlag != "" {
+		t.Errorf("expected empty prompt_flag, got %q", b.PromptFlag)
+	}
+}
+
+func TestFixupBackends_NonClaudeBackendUntouched(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Add a non-default backend
+	if err := d.SetBackend("codex", config.Backend{Command: "codex", PromptFlag: "-p"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	// codex is not in DefaultConfig, so fixupBackends should not touch it
+	backends := d.Backends()
+	if backends["codex"].PromptFlag != "-p" {
+		t.Errorf("codex prompt_flag should be untouched, got %q", backends["codex"].PromptFlag)
+	}
+}
+
+// --- Update with all fields ---
+
+func TestDB_UpdateAllFields(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "original"}
+	_ = d.Add(task)
+
+	now := time.Now()
+	task.Name = "updated"
+	task.Status = model.StatusComplete
+	task.Project = "proj"
+	task.Branch = "main"
+	task.Prompt = "updated prompt"
+	task.Backend = "codex"
+	task.Worktree = "/tmp/wt"
+	task.AgentPID = 42
+	task.SessionID = "sess-x"
+	task.StartedAt = now.Add(-1 * time.Hour)
+	task.EndedAt = now
+
+	if err := d.Update(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := d.Get(task.ID)
+	if got.Status != model.StatusComplete {
+		t.Errorf("Status = %v", got.Status)
+	}
+	if got.AgentPID != 42 {
+		t.Errorf("AgentPID = %d", got.AgentPID)
+	}
+	if got.Worktree != "/tmp/wt" {
+		t.Errorf("Worktree = %q", got.Worktree)
+	}
+	if got.EndedAt.IsZero() {
+		t.Error("EndedAt should not be zero")
+	}
+}
+
+// --- DeleteBackend is not exposed, but we can test SetBackend overwrites ---
+
+func TestDB_SetBackendOverwrites(t *testing.T) {
+	d := testDB(t)
+
+	_ = d.SetBackend("test", config.Backend{Command: "v1", PromptFlag: "--old"})
+	_ = d.SetBackend("test", config.Backend{Command: "v2", PromptFlag: "--new"})
+
+	backends := d.Backends()
+	if backends["test"].Command != "v2" {
+		t.Errorf("expected v2, got %q", backends["test"].Command)
+	}
+	if backends["test"].PromptFlag != "--new" {
+		t.Errorf("expected --new, got %q", backends["test"].PromptFlag)
+	}
+}
+
+// --- Empty tasks list ---
+
+func TestDB_Tasks_Empty(t *testing.T) {
+	d := testDB(t)
+	tasks := d.Tasks()
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks, got %d", len(tasks))
+	}
+}
+
+// --- PruneCompleted with all statuses ---
+
+func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
+	d := testDB(t)
+
+	_ = d.Add(&model.Task{Name: "pending", Status: model.StatusPending})
+	_ = d.Add(&model.Task{Name: "in_progress", Status: model.StatusInProgress})
+	_ = d.Add(&model.Task{Name: "in_review", Status: model.StatusInReview})
+	_ = d.Add(&model.Task{Name: "complete", Status: model.StatusComplete})
+
+	pruned, err := d.PruneCompleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 {
+		t.Errorf("expected 1 pruned, got %d", len(pruned))
+	}
+	if pruned[0].Name != "complete" {
+		t.Errorf("pruned wrong task: %q", pruned[0].Name)
+	}
+	remaining := d.Tasks()
+	if len(remaining) != 3 {
+		t.Errorf("expected 3 remaining, got %d", len(remaining))
 	}
 }
 
