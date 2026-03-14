@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -41,11 +42,9 @@ func (pl *ProjectList) SetProjects(projects map[string]config.Project) {
 }
 
 func sortProjects(entries []projectEntry) {
-	for i := 1; i < len(entries); i++ {
-		for j := i; j > 0 && entries[j].Name < entries[j-1].Name; j-- {
-			entries[j], entries[j-1] = entries[j-1], entries[j]
-		}
-	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
 }
 
 func (pl *ProjectList) SetSize(w, h int) {

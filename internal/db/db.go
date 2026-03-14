@@ -127,11 +127,33 @@ func (d *DB) createTables() error {
 
 // --- Tasks ---
 
+// taskColumns is the canonical column list for task queries.
+const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at`
+
+// scanner is implemented by both *sql.Row and *sql.Rows.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// scanTask reads a task from a row using the canonical column order.
+func scanTask(row scanner) (*model.Task, error) {
+	t := &model.Task{}
+	var status, createdAt, startedAt, endedAt string
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
+		return nil, err
+	}
+	t.Status, _ = model.ParseStatus(status)
+	t.CreatedAt = parseTime(createdAt)
+	t.StartedAt = parseTime(startedAt)
+	t.EndedAt = parseTime(endedAt)
+	return t, nil
+}
+
 func (d *DB) Tasks() []*model.Task {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks ORDER BY created_at ASC`)
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks ORDER BY created_at ASC`)
 	if err != nil {
 		return nil
 	}
@@ -139,16 +161,9 @@ func (d *DB) Tasks() []*model.Task {
 
 	var tasks []*model.Task
 	for rows.Next() {
-		t := &model.Task{}
-		var status, createdAt, startedAt, endedAt string
-		if err := rows.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
-			continue
+		if t, err := scanTask(rows); err == nil {
+			tasks = append(tasks, t)
 		}
-		t.Status, _ = model.ParseStatus(status)
-		t.CreatedAt = parseTime(createdAt)
-		t.StartedAt = parseTime(startedAt)
-		t.EndedAt = parseTime(endedAt)
-		tasks = append(tasks, t)
 	}
 	return tasks
 }
@@ -206,20 +221,14 @@ func (d *DB) Get(id string) (*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	t := &model.Task{}
-	var status, createdAt, startedAt, endedAt string
-	err := d.conn.QueryRow(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks WHERE id=?`, id).
-		Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt)
+	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE id=?`, id)
+	t, err := scanTask(row)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("task not found: %s", id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	t.Status, _ = model.ParseStatus(status)
-	t.CreatedAt = parseTime(createdAt)
-	t.StartedAt = parseTime(startedAt)
-	t.EndedAt = parseTime(endedAt)
 	return t, nil
 }
 
@@ -228,7 +237,7 @@ func (d *DB) PruneCompleted() ([]*model.Task, error) {
 	defer d.mu.Unlock()
 
 	// Fetch completed tasks first
-	rows, err := d.conn.Query(`SELECT id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at FROM tasks WHERE status='complete'`)
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete'`)
 	if err != nil {
 		return nil, err
 	}
@@ -236,16 +245,9 @@ func (d *DB) PruneCompleted() ([]*model.Task, error) {
 
 	var pruned []*model.Task
 	for rows.Next() {
-		t := &model.Task{}
-		var status, createdAt, startedAt, endedAt string
-		if err := rows.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
-			continue
+		if t, err := scanTask(rows); err == nil {
+			pruned = append(pruned, t)
 		}
-		t.Status, _ = model.ParseStatus(status)
-		t.CreatedAt = parseTime(createdAt)
-		t.StartedAt = parseTime(startedAt)
-		t.EndedAt = parseTime(endedAt)
-		pruned = append(pruned, t)
 	}
 
 	if len(pruned) == 0 {
@@ -344,16 +346,15 @@ func (d *DB) Config() config.Config {
 	// Load projects
 	cfg.Projects = d.Projects()
 
-	// Load scalar config values
+	// Load scalar config values — hold mutex through iteration
+	// to prevent concurrent writes while the rows cursor is open.
 	d.mu.Lock()
+	kv := make(map[string]string)
 	rows, err := d.conn.Query(`SELECT key, value FROM config`)
-	d.mu.Unlock()
 	if err != nil {
+		d.mu.Unlock()
 		return cfg
 	}
-	defer rows.Close()
-
-	kv := make(map[string]string)
 	for rows.Next() {
 		var k, v string
 		if err := rows.Scan(&k, &v); err != nil {
@@ -361,46 +362,47 @@ func (d *DB) Config() config.Config {
 		}
 		kv[k] = v
 	}
+	rows.Close()
+	d.mu.Unlock()
 
-	if v, ok := kv["defaults.backend"]; ok {
-		cfg.Defaults.Backend = v
+	// String config fields: map config key → pointer to struct field.
+	stringFields := []struct {
+		key  string
+		dest *string
+	}{
+		{"defaults.backend", &cfg.Defaults.Backend},
+		{"keybindings.new", &cfg.Keybindings.New},
+		{"keybindings.attach", &cfg.Keybindings.Attach},
+		{"keybindings.status", &cfg.Keybindings.Status},
+		{"keybindings.delete", &cfg.Keybindings.Delete},
+		{"keybindings.quit", &cfg.Keybindings.Quit},
+		{"keybindings.help", &cfg.Keybindings.Help},
+		{"keybindings.filter", &cfg.Keybindings.Filter},
+		{"keybindings.prompt", &cfg.Keybindings.Prompt},
+		{"keybindings.worktree", &cfg.Keybindings.Worktree},
+		{"ui.theme", &cfg.UI.Theme},
 	}
-	if v, ok := kv["keybindings.new"]; ok {
-		cfg.Keybindings.New = v
+	for _, f := range stringFields {
+		if v, ok := kv[f.key]; ok {
+			*f.dest = v
+		}
 	}
-	if v, ok := kv["keybindings.attach"]; ok {
-		cfg.Keybindings.Attach = v
+
+	// Bool config fields
+	boolFields := []struct {
+		key  string
+		dest *bool
+	}{
+		{"ui.show_elapsed", &cfg.UI.ShowElapsed},
+		{"ui.show_icons", &cfg.UI.ShowIcons},
 	}
-	if v, ok := kv["keybindings.status"]; ok {
-		cfg.Keybindings.Status = v
+	for _, f := range boolFields {
+		if v, ok := kv[f.key]; ok {
+			*f.dest = v == "true"
+		}
 	}
-	if v, ok := kv["keybindings.delete"]; ok {
-		cfg.Keybindings.Delete = v
-	}
-	if v, ok := kv["keybindings.quit"]; ok {
-		cfg.Keybindings.Quit = v
-	}
-	if v, ok := kv["keybindings.help"]; ok {
-		cfg.Keybindings.Help = v
-	}
-	if v, ok := kv["keybindings.filter"]; ok {
-		cfg.Keybindings.Filter = v
-	}
-	if v, ok := kv["keybindings.prompt"]; ok {
-		cfg.Keybindings.Prompt = v
-	}
-	if v, ok := kv["keybindings.worktree"]; ok {
-		cfg.Keybindings.Worktree = v
-	}
-	if v, ok := kv["ui.theme"]; ok {
-		cfg.UI.Theme = v
-	}
-	if v, ok := kv["ui.show_elapsed"]; ok {
-		cfg.UI.ShowElapsed = v == "true"
-	}
-	if v, ok := kv["ui.show_icons"]; ok {
-		cfg.UI.ShowIcons = v == "true"
-	}
+
+	// Optional bool (pointer) config fields
 	if v, ok := kv["ui.cleanup_worktrees"]; ok {
 		val := v == "true"
 		cfg.UI.CleanupWorktrees = &val

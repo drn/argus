@@ -17,16 +17,18 @@ func newRingBuffer(size int) *ringBuffer {
 	}
 }
 
-// Write appends data to the ring buffer.
+// Write appends data to the ring buffer using bulk copy operations.
 func (rb *ringBuffer) Write(p []byte) {
-	for _, b := range p {
-		rb.data[rb.pos] = b
-		rb.pos = (rb.pos + 1) % rb.size
-		if rb.pos == 0 {
+	rb.total += uint64(len(p))
+	for len(p) > 0 {
+		n := copy(rb.data[rb.pos:], p)
+		p = p[n:]
+		rb.pos += n
+		if rb.pos >= rb.size {
+			rb.pos = 0
 			rb.full = true
 		}
 	}
-	rb.total += uint64(len(p))
 }
 
 // TotalWritten returns the monotonic count of bytes written to the buffer.

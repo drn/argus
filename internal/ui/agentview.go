@@ -102,7 +102,6 @@ func (av *AgentView) SetSize(w, h int) {
 		ptyCols := uint16(max(centerW-4, 20))
 		sess.Resize(ptyRows, ptyCols)
 	}
-	_ = centerW // used in View
 }
 
 // UpdateGitStatus handles a git status refresh message.
@@ -545,131 +544,101 @@ func padHeight(s string, h int) string {
 	return strings.Join(lines, "\n")
 }
 
+// keyByteMap maps Bubble Tea key types to their raw terminal byte sequences.
+var keyByteMap = map[tea.KeyType][]byte{
+	tea.KeySpace:     {' '},
+	tea.KeyEnter:     {'\r'},
+	tea.KeyBackspace: {0x7f},
+	tea.KeyTab:       {'\t'},
+	tea.KeyShiftTab:  []byte("\x1b[Z"),
+	tea.KeyEscape:    {0x1b},
+	tea.KeyHome:      []byte("\x1b[H"),
+	tea.KeyEnd:       []byte("\x1b[F"),
+	tea.KeyPgUp:      []byte("\x1b[5~"),
+	tea.KeyPgDown:    []byte("\x1b[6~"),
+	tea.KeyDelete:    []byte("\x1b[3~"),
+	tea.KeyCtrlA:     {0x01},
+	tea.KeyCtrlB:     {0x02},
+	tea.KeyCtrlC:     {0x03},
+	tea.KeyCtrlD:     {0x04},
+	tea.KeyCtrlE:     {0x05},
+	tea.KeyCtrlF:     {0x06},
+	tea.KeyCtrlG:     {0x07},
+	tea.KeyCtrlH:     {0x08},
+	tea.KeyCtrlK:     {0x0b},
+	tea.KeyCtrlL:     {0x0c},
+	tea.KeyCtrlN:     {0x0e},
+	tea.KeyCtrlO:     {0x0f},
+	tea.KeyCtrlP:     {0x10},
+	tea.KeyCtrlR:     {0x12},
+	tea.KeyCtrlS:     {0x13},
+	tea.KeyCtrlT:     {0x14},
+	tea.KeyCtrlU:     {0x15},
+	tea.KeyCtrlV:     {0x16},
+	tea.KeyCtrlW:     {0x17},
+	tea.KeyCtrlX:     {0x18},
+	tea.KeyCtrlY:     {0x19},
+	tea.KeyCtrlZ:     {0x1a},
+	tea.KeyF1:        []byte("\x1bOP"),
+	tea.KeyF2:        []byte("\x1bOQ"),
+	tea.KeyF3:        []byte("\x1bOR"),
+	tea.KeyF4:        []byte("\x1bOS"),
+	tea.KeyF5:        []byte("\x1b[15~"),
+	tea.KeyF6:        []byte("\x1b[17~"),
+	tea.KeyF7:        []byte("\x1b[18~"),
+	tea.KeyF8:        []byte("\x1b[19~"),
+	tea.KeyF9:        []byte("\x1b[20~"),
+	tea.KeyF10:       []byte("\x1b[21~"),
+	tea.KeyF11:       []byte("\x1b[23~"),
+	tea.KeyF12:       []byte("\x1b[24~"),
+}
+
+// altArrowMap maps arrow key types to their Alt-modified escape sequences.
+var altArrowMap = map[tea.KeyType][]byte{
+	tea.KeyUp:    []byte("\x1b[1;3A"),
+	tea.KeyDown:  []byte("\x1b[1;3B"),
+	tea.KeyRight: []byte("\x1b[1;3C"),
+	tea.KeyLeft:  []byte("\x1b[1;3D"),
+}
+
+// arrowMap maps arrow key types to their standard escape sequences.
+var arrowMap = map[tea.KeyType][]byte{
+	tea.KeyUp:    []byte("\x1b[A"),
+	tea.KeyDown:  []byte("\x1b[B"),
+	tea.KeyRight: []byte("\x1b[C"),
+	tea.KeyLeft:  []byte("\x1b[D"),
+}
+
 // keyMsgToBytes converts a Bubble Tea key message to raw terminal bytes.
 func keyMsgToBytes(msg tea.KeyMsg) []byte {
-	switch msg.Type {
-	case tea.KeyRunes:
+	// Runes: raw character input, with Alt prefix when modifier is held
+	if msg.Type == tea.KeyRunes {
 		b := []byte(string(msg.Runes))
 		if msg.Alt {
-			// Option/Alt + key: prepend ESC so the PTY receives e.g. \x1bb (word back)
 			return append([]byte{0x1b}, b...)
 		}
 		return b
-	case tea.KeySpace:
-		return []byte{' '}
-	case tea.KeyEnter:
-		return []byte{'\r'}
-	case tea.KeyBackspace:
-		return []byte{0x7f}
-	case tea.KeyTab:
-		return []byte{'\t'}
-	case tea.KeyShiftTab:
-		return []byte("\x1b[Z")
-	case tea.KeyEscape:
-		return []byte{0x1b}
-	case tea.KeyUp:
-		if msg.Alt {
-			return []byte("\x1b[1;3A")
+	}
+
+	// Arrow keys with Alt modifier
+	if msg.Alt {
+		if b, ok := altArrowMap[msg.Type]; ok {
+			return b
 		}
-		return []byte("\x1b[A")
-	case tea.KeyDown:
-		if msg.Alt {
-			return []byte("\x1b[1;3B")
-		}
-		return []byte("\x1b[B")
-	case tea.KeyRight:
-		if msg.Alt {
-			return []byte("\x1b[1;3C")
-		}
-		return []byte("\x1b[C")
-	case tea.KeyLeft:
-		if msg.Alt {
-			return []byte("\x1b[1;3D")
-		}
-		return []byte("\x1b[D")
-	case tea.KeyHome:
-		return []byte("\x1b[H")
-	case tea.KeyEnd:
-		return []byte("\x1b[F")
-	case tea.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tea.KeyPgDown:
-		return []byte("\x1b[6~")
-	case tea.KeyDelete:
-		return []byte("\x1b[3~")
-	case tea.KeyCtrlA:
-		return []byte{0x01}
-	case tea.KeyCtrlB:
-		return []byte{0x02}
-	case tea.KeyCtrlC:
-		return []byte{0x03}
-	case tea.KeyCtrlD:
-		return []byte{0x04}
-	case tea.KeyCtrlE:
-		return []byte{0x05}
-	case tea.KeyCtrlF:
-		return []byte{0x06}
-	case tea.KeyCtrlG:
-		return []byte{0x07}
-	case tea.KeyCtrlH:
-		return []byte{0x08}
-	case tea.KeyCtrlK:
-		return []byte{0x0b}
-	case tea.KeyCtrlL:
-		return []byte{0x0c}
-	case tea.KeyCtrlN:
-		return []byte{0x0e}
-	case tea.KeyCtrlO:
-		return []byte{0x0f}
-	case tea.KeyCtrlP:
-		return []byte{0x10}
-	case tea.KeyCtrlR:
-		return []byte{0x12}
-	case tea.KeyCtrlS:
-		return []byte{0x13}
-	case tea.KeyCtrlT:
-		return []byte{0x14}
-	case tea.KeyCtrlU:
-		return []byte{0x15}
-	case tea.KeyCtrlV:
-		return []byte{0x16}
-	case tea.KeyCtrlW:
-		return []byte{0x17}
-	case tea.KeyCtrlX:
-		return []byte{0x18}
-	case tea.KeyCtrlY:
-		return []byte{0x19}
-	case tea.KeyCtrlZ:
-		return []byte{0x1a}
-	case tea.KeyF1:
-		return []byte("\x1bOP")
-	case tea.KeyF2:
-		return []byte("\x1bOQ")
-	case tea.KeyF3:
-		return []byte("\x1bOR")
-	case tea.KeyF4:
-		return []byte("\x1bOS")
-	case tea.KeyF5:
-		return []byte("\x1b[15~")
-	case tea.KeyF6:
-		return []byte("\x1b[17~")
-	case tea.KeyF7:
-		return []byte("\x1b[18~")
-	case tea.KeyF8:
-		return []byte("\x1b[19~")
-	case tea.KeyF9:
-		return []byte("\x1b[20~")
-	case tea.KeyF10:
-		return []byte("\x1b[21~")
-	case tea.KeyF11:
-		return []byte("\x1b[23~")
-	case tea.KeyF12:
-		return []byte("\x1b[24~")
+	}
+
+	// Arrow keys without modifier
+	if b, ok := arrowMap[msg.Type]; ok {
+		return b
+	}
+
+	// All other keys
+	if b, ok := keyByteMap[msg.Type]; ok {
+		return b
 	}
 
 	// Fallback: use the string representation
-	s := msg.String()
-	if s != "" {
+	if s := msg.String(); s != "" {
 		return []byte(s)
 	}
 	return nil

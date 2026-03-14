@@ -1,11 +1,8 @@
 package ui
 
 import (
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -1013,8 +1010,6 @@ func (m Model) renderProjectDetail() string {
 	return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(b.String())
 }
 
-
-
 func (m Model) emptyStateView() string {
 	banner := renderBanner(m.width)
 	hint := m.theme.Dimmed.Render("Press [n] to create your first task")
@@ -1049,35 +1044,32 @@ func (m Model) promptView() string {
 		m.theme.Help.Render("  Press any key to close")
 }
 
-func (m Model) confirmDeleteProjectView() string {
-	entry := m.projectlist.Selected()
-	if entry == nil {
-		return ""
-	}
-
-	// Build modal content
-	title := m.theme.Title.Render("Delete project?")
-	name := "  " + m.theme.Normal.Render(entry.Name)
-	path := "  " + m.theme.Dimmed.Render(entry.Project.Path)
-	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-
-	body := title + "\n\n" + name + "\n" + path + "\n\n" + hint
-
-	// Render as a bordered modal centered on screen
-	modalWidth := 50
-	if m.width > 0 && modalWidth > m.width-4 {
-		modalWidth = m.width - 4
+// renderCenteredModal renders a bordered modal centered on screen.
+func (m Model) renderCenteredModal(body string, preferredWidth int) string {
+	w := preferredWidth
+	if m.width > 0 && w > m.width-4 {
+		w = m.width - 4
 	}
 	modal := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("238")).
 		Padding(1, 2).
-		Width(modalWidth).
+		Width(w).
 		Render(body)
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
+}
 
-	// Center horizontally and vertically
-	centered := lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
-	return centered
+func (m Model) confirmDeleteProjectView() string {
+	entry := m.projectlist.Selected()
+	if entry == nil {
+		return ""
+	}
+	title := m.theme.Title.Render("Delete project?")
+	name := "  " + m.theme.Normal.Render(entry.Name)
+	path := "  " + m.theme.Dimmed.Render(entry.Project.Path)
+	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
+	body := title + "\n\n" + name + "\n" + path + "\n\n" + hint
+	return m.renderCenteredModal(body, 50)
 }
 
 func (m Model) confirmDeleteView() string {
@@ -1085,25 +1077,11 @@ func (m Model) confirmDeleteView() string {
 	if t == nil {
 		return ""
 	}
-
 	title := m.theme.Title.Render("Delete task?")
 	name := "  " + m.theme.Normal.Render(t.Name)
 	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-
 	body := title + "\n\n" + name + "\n\n" + hint
-
-	modalWidth := 50
-	if m.width > 0 && modalWidth > m.width-4 {
-		modalWidth = m.width - 4
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
-		Padding(1, 2).
-		Width(modalWidth).
-		Render(body)
-
-	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
+	return m.renderCenteredModal(body, 50)
 }
 
 func (m Model) confirmDestroyView() string {
@@ -1119,164 +1097,11 @@ func (m Model) confirmDestroyView() string {
 	if t.Branch != "" {
 		details = append(details, "  "+m.theme.Dimmed.Render("branch: "+t.Branch))
 	}
-
 	title := m.theme.Title.Render("Destroy task?")
 	subtitle := m.theme.Help.Render("  This will terminate the agent, remove the worktree and branch, and delete the task.")
 	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-
 	body := title + "\n" + subtitle + "\n\n" +
 		strings.Join(details, "\n") + "\n\n" + hint
-
-	modalWidth := 60
-	if m.width > 0 && modalWidth > m.width-4 {
-		modalWidth = m.width - 4
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
-		Padding(1, 2).
-		Width(modalWidth).
-		Render(body)
-
-	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
+	return m.renderCenteredModal(body, 60)
 }
 
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-// discoverClaudeWorktree looks for a Claude Code worktree under baseDir/.claude/worktrees/
-// that matches the given task name. Worktrees are created as "argus/<taskName>" so we first
-// check the expected path directly, then fall back to git worktree list and directory scan.
-func discoverClaudeWorktree(baseDir, taskName string) string {
-	claudeWtDir := filepath.Join(baseDir, ".claude", "worktrees")
-	if !dirExists(claudeWtDir) {
-		return ""
-	}
-
-	if taskName == "" {
-		return ""
-	}
-
-	// Fast path: check the expected path directly (argus/<task-name>).
-	expected := filepath.Join(claudeWtDir, "argus", taskName)
-	if _, err := os.Stat(filepath.Join(expected, ".git")); err == nil {
-		return expected
-	}
-
-	// Try git worktree list for accuracy
-	out, err := runGit(baseDir, "worktree", "list", "--porcelain")
-	if err == nil {
-		// First pass: look for a worktree matching the task name
-		for _, block := range strings.Split(out, "\n\n") {
-			for _, line := range strings.Split(block, "\n") {
-				if strings.HasPrefix(line, "worktree ") {
-					wt := strings.TrimPrefix(line, "worktree ")
-					if !strings.HasPrefix(wt, claudeWtDir+string(filepath.Separator)) && !strings.HasPrefix(wt, claudeWtDir+"/") {
-						continue
-					}
-					// Match: worktree path ends with /<taskName>
-					if filepath.Base(wt) == taskName {
-						return wt
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback: scan directory recursively for a worktree matching the task name
-	// Worktrees may be nested (e.g., .claude/worktrees/argus/<taskName>/)
-	return findWorktreeByName(claudeWtDir, taskName)
-}
-
-// findWorktreeByName recursively scans a directory for a git worktree whose
-// directory name matches the given task name. Returns empty string if not found.
-func findWorktreeByName(dir, taskName string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		candidate := filepath.Join(dir, e.Name())
-		if e.Name() == taskName {
-			// Verify it's a git worktree (has .git file)
-			if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
-				return candidate
-			}
-		}
-		// Recurse one level (worktrees are at .claude/worktrees/<repo>/<name>/)
-		if found := findWorktreeByName(candidate, taskName); found != "" {
-			return found
-		}
-	}
-	return ""
-}
-
-// killStaleProcess sends SIGTERM to a process if it's still alive and waits
-// briefly for it to exit. Used to clean up orphaned agent processes from a
-// previous Argus session before resuming with --resume.
-func killStaleProcess(pid int) {
-	if pid <= 0 {
-		return
-	}
-	// Signal 0 checks if the process exists without sending a signal.
-	if syscall.Kill(pid, 0) != nil {
-		return // already dead
-	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-
-	// Wait up to 2 seconds for the process to exit so that any session
-	// locks it holds are released before we start a new --resume process.
-	for i := 0; i < 20; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if syscall.Kill(pid, 0) != nil {
-			return // exited
-		}
-	}
-	// Force-kill if it's still hanging around.
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-}
-
-// removeWorktreeAndBranch removes a git worktree and deletes its associated branch.
-// repoDir is the main repository directory used for branch deletion; if empty,
-// the worktree's parent directory is used as a fallback.
-func removeWorktreeAndBranch(worktreePath, branch, repoDir string) {
-	removeWorktree(worktreePath)
-	if branch == "" {
-		return
-	}
-	// Use main repo dir for branch deletion; fall back to worktree parent.
-	dir := repoDir
-	if dir == "" {
-		dir = filepath.Dir(worktreePath)
-	}
-	deleteBranch(dir, branch)
-}
-
-// deleteBranch force-deletes a local git branch.
-func deleteBranch(repoDir, branch string) {
-	if branch == "" || repoDir == "" {
-		return
-	}
-	cmd := exec.Command("git", "branch", "-D", branch)
-	cmd.Dir = repoDir
-	_ = cmd.Run()
-}
-
-func removeWorktree(worktreePath string) {
-	if !dirExists(worktreePath) {
-		return
-	}
-	// Find the parent repo by looking for .git in the worktree's parent chain.
-	// Git worktree remove needs to run from within the main repo or the worktree itself.
-	cmd := exec.Command("git", "worktree", "remove", "--force", filepath.Clean(worktreePath))
-	cmd.Dir = filepath.Dir(worktreePath)
-	if err := cmd.Run(); err != nil {
-		// Fallback: just remove the directory
-		_ = os.RemoveAll(worktreePath)
-	}
-}

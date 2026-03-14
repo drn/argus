@@ -29,7 +29,6 @@ type NewTaskForm struct {
 const (
 	fieldProject = 0
 	fieldPrompt  = 1
-	fieldCount   = 2
 )
 
 func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm {
@@ -153,17 +152,7 @@ func (f *NewTaskForm) SetSize(w, h int) {
 }
 
 func (f NewTaskForm) modalWidth() int {
-	w := f.width * 2 / 5
-	if w < 50 {
-		w = 50
-	}
-	if w > 80 {
-		w = 80
-	}
-	if w > f.width-4 {
-		w = f.width - 4
-	}
-	return w
+	return clampModalWidth(f.width)
 }
 
 func (f NewTaskForm) View() string {
