@@ -158,10 +158,12 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 	if keyStr == "ctrl+q" {
 		return true
 	}
-	// Panel switching: ctrl+left/right or alt+left/right
+	// Panel switching: ctrl+left/right, alt+left/right, or plain left/right.
 	// Use type-based matching to handle terminals that set the Alt flag on
 	// ctrl+arrow sequences (urxvt sends \x1b[Od which parses as
 	// KeyCtrlLeft with Alt=true, producing "alt+ctrl+left").
+	// Plain left/right is supported because macOS captures ctrl+left/right
+	// for Mission Control, so those keys never reach the terminal.
 	switch msg.Type {
 	case tea.KeyCtrlLeft:
 		av.FocusLeft()
@@ -170,15 +172,11 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 		av.FocusRight()
 		return false
 	case tea.KeyLeft:
-		if msg.Alt {
-			av.FocusLeft()
-			return false
-		}
+		av.FocusLeft()
+		return false
 	case tea.KeyRight:
-		if msg.Alt {
-			av.FocusRight()
-			return false
-		}
+		av.FocusRight()
+		return false
 	}
 
 	// Panel-specific key handling
