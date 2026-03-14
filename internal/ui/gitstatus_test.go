@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os"
 	"testing"
 )
 
@@ -140,6 +141,46 @@ func TestParseGitDiffNameStatus(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFindWorktreeByName(t *testing.T) {
+	// Create a temp directory structure mimicking .claude/worktrees/
+	dir := t.TempDir()
+
+	// .claude/worktrees/argus/task-one/.git
+	taskOneDir := dir + "/argus/task-one"
+	if err := os.MkdirAll(taskOneDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskOneDir+"/.git", []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// .claude/worktrees/argus/task-two/.git
+	taskTwoDir := dir + "/argus/task-two"
+	if err := os.MkdirAll(taskTwoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskTwoDir+"/.git", []byte("gitdir: ..."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should find the correct worktree by name
+	got := findWorktreeByName(dir, "task-one")
+	if got != taskOneDir {
+		t.Errorf("findWorktreeByName(dir, 'task-one') = %q, want %q", got, taskOneDir)
+	}
+
+	got = findWorktreeByName(dir, "task-two")
+	if got != taskTwoDir {
+		t.Errorf("findWorktreeByName(dir, 'task-two') = %q, want %q", got, taskTwoDir)
+	}
+
+	// Non-existent task returns empty
+	got = findWorktreeByName(dir, "no-such-task")
+	if got != "" {
+		t.Errorf("findWorktreeByName(dir, 'no-such-task') = %q, want empty", got)
 	}
 }
 
