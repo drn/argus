@@ -23,10 +23,22 @@
 - Fixed by persisting a `vt10x.Terminal` on `AgentView` and feeding only new bytes (delta from `TotalWritten`). Full replay is now only used for scrollback mode.
 - Reset triggers: task switch, terminal resize, ring buffer wrap (when delta exceeds buffer capacity).
 
+### Polish Refactoring Session: 2026-03-14 (PR #90)
+- **ScrollState extraction**: Shared cursor/scroll logic extracted from TaskList/ProjectList/FileExplorer into `scrollstate.go` — 3 identical CursorUp/CursorDown/visibleRows implementations → 1
+- **VT10X rendering**: Shared terminal rendering (renderLine, buildSGR, sgrColor, stripANSI) extracted into `vtrender.go` with `replayVT10X()` helper. Preview uses it for full replay; AgentView uses it for scrollback mode (incremental path kept separate)
+- **fgColor/bgColor → sgrColor**: Merged two near-identical functions into parameterized `sgrColor(c, base)` where base=30 for FG, base=40 for BG
+- **File splits**: root.go views → root_views.go (1107→797 lines), key byte maps → keybytes.go, git commands → gitcmd.go
+- **Confirm handler dedup**: handleConfirmDeleteKey/handleConfirmDestroyKey → shared `handleConfirmAction(msg, cleanup func)`
+- **determinePostExitStatus**: Pure function extracted from handleAgentFinished for testability
+- **borderedPanel helper**: Extracted repeated lipgloss border construction into `borderedPanel(w, h, focused, content)`
+- **Idiom fixes**: `errors.Is(err, sql.ErrNoRows)` replacing `==` and string comparison; `io.Discard` replacing dead stderr buffer; named constants for terminal sizes and refresh intervals
+- Net: -738 lines across 23 files, 3-reviewer unanimous APPROVE
+
 ### Deferred Items for Future Sessions
-- Extract shared cursor/scroll logic from TaskList/ProjectList/FileExplorer
-- Add error handling for silently ignored `_ = m.db.Update()` calls
+- Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
 - Remove dead `store` package
-- Extract shared vt10x rendering from preview.go and agentview.go (note: agentview now has its own incremental path; preview still uses full replay which is fine for its read-only use case)
 - Define interfaces for DB and Runner to improve testability
+- Add dedicated tests for ScrollState, borderedPanel, determinePostExitStatus (currently covered transitively)
+- Goroutine leak in Session.Attach stdin copy (needs cancellation mechanism)
+- Document Detect() ordering constraint in project/detect.go to prevent future signature reordering regressions
