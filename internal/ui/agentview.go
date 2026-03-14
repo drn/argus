@@ -549,7 +549,12 @@ func padHeight(s string, h int) string {
 func keyMsgToBytes(msg tea.KeyMsg) []byte {
 	switch msg.Type {
 	case tea.KeyRunes:
-		return []byte(string(msg.Runes))
+		b := []byte(string(msg.Runes))
+		if msg.Alt {
+			// Option/Alt + key: prepend ESC so the PTY receives e.g. \x1bb (word back)
+			return append([]byte{0x1b}, b...)
+		}
+		return b
 	case tea.KeySpace:
 		return []byte{' '}
 	case tea.KeyEnter:

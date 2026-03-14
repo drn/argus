@@ -626,3 +626,55 @@ func TestKeyMsgToBytes_SpecialKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestKeyMsgToBytes_AltRunes(t *testing.T) {
+	// Option+b on macOS sends ESC b (word back in readline)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true}
+	got := keyMsgToBytes(msg)
+	want := []byte{0x1b, 'b'}
+	if string(got) != string(want) {
+		t.Errorf("Alt+b: got %q, want %q", got, want)
+	}
+
+	// Option+f on macOS sends ESC f (word forward in readline)
+	msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}, Alt: true}
+	got = keyMsgToBytes(msg)
+	want = []byte{0x1b, 'f'}
+	if string(got) != string(want) {
+		t.Errorf("Alt+f: got %q, want %q", got, want)
+	}
+
+	// Plain rune without Alt should not get ESC prefix
+	msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}
+	got = keyMsgToBytes(msg)
+	want = []byte{'b'}
+	if string(got) != string(want) {
+		t.Errorf("plain b: got %q, want %q", got, want)
+	}
+}
+
+func TestKeyMsgToBytes_AltArrows(t *testing.T) {
+	// Alt+Left should send modified CSI sequence
+	msg := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	got := keyMsgToBytes(msg)
+	want := []byte("\x1b[1;3D")
+	if string(got) != string(want) {
+		t.Errorf("Alt+Left: got %q, want %q", got, want)
+	}
+
+	// Alt+Right should send modified CSI sequence
+	msg = tea.KeyMsg{Type: tea.KeyRight, Alt: true}
+	got = keyMsgToBytes(msg)
+	want = []byte("\x1b[1;3C")
+	if string(got) != string(want) {
+		t.Errorf("Alt+Right: got %q, want %q", got, want)
+	}
+
+	// Plain Left without Alt
+	msg = tea.KeyMsg{Type: tea.KeyLeft}
+	got = keyMsgToBytes(msg)
+	want = []byte("\x1b[D")
+	if string(got) != string(want) {
+		t.Errorf("plain Left: got %q, want %q", got, want)
+	}
+}
