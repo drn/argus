@@ -213,6 +213,28 @@ func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
 	}
 }
 
+func TestBuildCmd_ResumeWithProjectAndWorktree(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Project:   "other",
+		Prompt:    "fix the bug",
+		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+		Worktree:  "/tmp/worktree-test",
+	}
+
+	cmd, err := BuildCmd(task, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume MUST use the worktree (not the project dir) because sessions
+	// are project-scoped in Claude Code — the session was created from the
+	// worktree directory, not the main project directory.
+	if cmd.Dir != "/tmp/worktree-test" {
+		t.Errorf("expected Dir %q (worktree), got %q (likely project path)", "/tmp/worktree-test", cmd.Dir)
+	}
+}
+
 func TestInjectWorktreeName(t *testing.T) {
 	tests := []struct {
 		input    string
