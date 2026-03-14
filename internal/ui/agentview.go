@@ -149,13 +149,27 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 	if keyStr == "ctrl+q" {
 		return true
 	}
-	if keyStr == "ctrl+left" {
+	// Panel switching: ctrl+left/right or alt+left/right
+	// Use type-based matching to handle terminals that set the Alt flag on
+	// ctrl+arrow sequences (urxvt sends \x1b[Od which parses as
+	// KeyCtrlLeft with Alt=true, producing "alt+ctrl+left").
+	switch msg.Type {
+	case tea.KeyCtrlLeft:
 		av.FocusLeft()
 		return false
-	}
-	if keyStr == "ctrl+right" {
+	case tea.KeyCtrlRight:
 		av.FocusRight()
 		return false
+	case tea.KeyLeft:
+		if msg.Alt {
+			av.FocusLeft()
+			return false
+		}
+	case tea.KeyRight:
+		if msg.Alt {
+			av.FocusRight()
+			return false
+		}
 	}
 
 	// Panel-specific key handling
@@ -386,7 +400,7 @@ func (av AgentView) renderStatusBar() string {
 	// Right: keybinding hints
 	keys := []struct{ key, label string }{
 		{"⇧↑/↓", "scroll"},
-		{"ctrl+←/→", "panel"},
+		{"ctrl/alt+←/→", "panel"},
 		{"ctrl+q", "detach"},
 	}
 	var parts []string
