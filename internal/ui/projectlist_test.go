@@ -9,8 +9,8 @@ import (
 
 func TestNewProjectList(t *testing.T) {
 	pl := NewProjectList(DefaultTheme())
-	if pl.cursor != 0 {
-		t.Errorf("initial cursor = %d, want 0", pl.cursor)
+	if pl.scroll.Cursor() != 0 {
+		t.Errorf("initial cursor = %d, want 0", pl.scroll.Cursor())
 	}
 	if pl.Selected() != nil {
 		t.Error("selected should be nil with no projects")
@@ -76,40 +76,40 @@ func TestProjectList_CursorUpDown(t *testing.T) {
 		"c": {Path: "/c"},
 	})
 
-	if pl.cursor != 0 {
-		t.Fatalf("initial cursor = %d", pl.cursor)
+	if pl.scroll.Cursor() != 0 {
+		t.Fatalf("initial cursor = %d", pl.scroll.Cursor())
 	}
 
 	pl.CursorDown()
-	if pl.cursor != 1 {
-		t.Errorf("cursor after down = %d, want 1", pl.cursor)
+	if pl.scroll.Cursor() != 1 {
+		t.Errorf("cursor after down = %d, want 1", pl.scroll.Cursor())
 	}
 
 	pl.CursorDown()
-	if pl.cursor != 2 {
-		t.Errorf("cursor after down x2 = %d, want 2", pl.cursor)
+	if pl.scroll.Cursor() != 2 {
+		t.Errorf("cursor after down x2 = %d, want 2", pl.scroll.Cursor())
 	}
 
 	// Past end
 	pl.CursorDown()
-	if pl.cursor != 2 {
-		t.Errorf("cursor after down at end = %d, want 2", pl.cursor)
+	if pl.scroll.Cursor() != 2 {
+		t.Errorf("cursor after down at end = %d, want 2", pl.scroll.Cursor())
 	}
 
 	pl.CursorUp()
-	if pl.cursor != 1 {
-		t.Errorf("cursor after up = %d, want 1", pl.cursor)
+	if pl.scroll.Cursor() != 1 {
+		t.Errorf("cursor after up = %d, want 1", pl.scroll.Cursor())
 	}
 
 	pl.CursorUp()
-	if pl.cursor != 0 {
-		t.Errorf("cursor after up x2 = %d, want 0", pl.cursor)
+	if pl.scroll.Cursor() != 0 {
+		t.Errorf("cursor after up x2 = %d, want 0", pl.scroll.Cursor())
 	}
 
 	// Before start
 	pl.CursorUp()
-	if pl.cursor != 0 {
-		t.Errorf("cursor after up at start = %d, want 0", pl.cursor)
+	if pl.scroll.Cursor() != 0 {
+		t.Errorf("cursor after up at start = %d, want 0", pl.scroll.Cursor())
 	}
 }
 
@@ -190,13 +190,13 @@ func TestProjectList_SetProjectsClampsClursor(t *testing.T) {
 	pl.SetProjects(map[string]config.Project{
 		"a": {}, "b": {}, "c": {},
 	})
-	pl.cursor = 2
+	pl.scroll.cursor = 2
 
 	// Set fewer projects
 	pl.SetProjects(map[string]config.Project{
 		"a": {},
 	})
-	if pl.cursor != 0 {
-		t.Errorf("cursor should be clamped to 0, got %d", pl.cursor)
+	if pl.scroll.Cursor() != 0 {
+		t.Errorf("cursor should be clamped to 0, got %d", pl.scroll.Cursor())
 	}
 }

@@ -16,6 +16,12 @@ const defaultBufSize = 256 * 1024 // 256KB ring buffer
 // idleThreshold is how long without output before a session is considered idle.
 const idleThreshold = 3 * time.Second
 
+// DefaultTermRows and DefaultTermCols are fallback PTY dimensions.
+const (
+	DefaultTermRows uint16 = 24
+	DefaultTermCols uint16 = 80
+)
+
 // Session manages a single agent process with PTY.
 type Session struct {
 	TaskID string
@@ -39,9 +45,9 @@ type Session struct {
 func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, error) {
 	size := &pty.Winsize{Rows: rows, Cols: cols}
 	if rows == 0 || cols == 0 {
-		size = &pty.Winsize{Rows: 24, Cols: 80}
-		rows = 24
-		cols = 80
+		size = &pty.Winsize{Rows: DefaultTermRows, Cols: DefaultTermCols}
+		rows = DefaultTermRows
+		cols = DefaultTermCols
 	}
 
 	ptmx, err := pty.StartWithSize(cmd, size)

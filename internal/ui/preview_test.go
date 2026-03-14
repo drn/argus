@@ -145,73 +145,69 @@ func TestBuildSGR_WithBGColor(t *testing.T) {
 	}
 }
 
-func TestFgColor_Standard(t *testing.T) {
-	// Colors 0-7: 30+n
-	result := fgColor(vt10x.Color(0))
+func TestSgrColor_FG_Standard(t *testing.T) {
+	result := sgrColor(vt10x.Color(0), 30)
 	if result != "30" {
-		t.Errorf("fgColor(0) = %q, want '30'", result)
+		t.Errorf("sgrColor(0, 30) = %q, want '30'", result)
 	}
-	result = fgColor(vt10x.Color(7))
+	result = sgrColor(vt10x.Color(7), 30)
 	if result != "37" {
-		t.Errorf("fgColor(7) = %q, want '37'", result)
+		t.Errorf("sgrColor(7, 30) = %q, want '37'", result)
 	}
 }
 
-func TestFgColor_Bright(t *testing.T) {
-	// Colors 8-15: 90+n-8
-	result := fgColor(vt10x.Color(8))
+func TestSgrColor_FG_Bright(t *testing.T) {
+	result := sgrColor(vt10x.Color(8), 30)
 	if result != "90" {
-		t.Errorf("fgColor(8) = %q, want '90'", result)
+		t.Errorf("sgrColor(8, 30) = %q, want '90'", result)
 	}
-	result = fgColor(vt10x.Color(15))
+	result = sgrColor(vt10x.Color(15), 30)
 	if result != "97" {
-		t.Errorf("fgColor(15) = %q, want '97'", result)
+		t.Errorf("sgrColor(15, 30) = %q, want '97'", result)
 	}
 }
 
-func TestFgColor_256(t *testing.T) {
-	// Colors 16-255: 38;5;n
-	result := fgColor(vt10x.Color(100))
+func TestSgrColor_FG_256(t *testing.T) {
+	result := sgrColor(vt10x.Color(100), 30)
 	if result != "38;5;100" {
-		t.Errorf("fgColor(100) = %q, want '38;5;100'", result)
+		t.Errorf("sgrColor(100, 30) = %q, want '38;5;100'", result)
 	}
 }
 
-func TestFgColor_RGB(t *testing.T) {
-	// Colors > 255: RGB r<<16|g<<8|b
-	rgb := vt10x.Color(0xFF8000) // r=255 g=128 b=0
-	result := fgColor(rgb)
+func TestSgrColor_FG_RGB(t *testing.T) {
+	rgb := vt10x.Color(0xFF8000)
+	result := sgrColor(rgb, 30)
 	if result != "38;2;255;128;0" {
-		t.Errorf("fgColor(RGB) = %q, want '38;2;255;128;0'", result)
+		t.Errorf("sgrColor(RGB, 30) = %q, want '38;2;255;128;0'", result)
 	}
 }
 
-func TestBgColor_Standard(t *testing.T) {
-	result := bgColor(vt10x.Color(0))
+func TestSgrColor_BG_Standard(t *testing.T) {
+	result := sgrColor(vt10x.Color(0), 40)
 	if result != "40" {
-		t.Errorf("bgColor(0) = %q, want '40'", result)
+		t.Errorf("sgrColor(0, 40) = %q, want '40'", result)
 	}
 }
 
-func TestBgColor_Bright(t *testing.T) {
-	result := bgColor(vt10x.Color(8))
+func TestSgrColor_BG_Bright(t *testing.T) {
+	result := sgrColor(vt10x.Color(8), 40)
 	if result != "100" {
-		t.Errorf("bgColor(8) = %q, want '100'", result)
+		t.Errorf("sgrColor(8, 40) = %q, want '100'", result)
 	}
 }
 
-func TestBgColor_256(t *testing.T) {
-	result := bgColor(vt10x.Color(200))
+func TestSgrColor_BG_256(t *testing.T) {
+	result := sgrColor(vt10x.Color(200), 40)
 	if result != "48;5;200" {
-		t.Errorf("bgColor(200) = %q, want '48;5;200'", result)
+		t.Errorf("sgrColor(200, 40) = %q, want '48;5;200'", result)
 	}
 }
 
-func TestBgColor_RGB(t *testing.T) {
-	rgb := vt10x.Color(0x102030) // r=16 g=32 b=48
-	result := bgColor(rgb)
+func TestSgrColor_BG_RGB(t *testing.T) {
+	rgb := vt10x.Color(0x102030)
+	result := sgrColor(rgb, 40)
 	if result != "48;2;16;32;48" {
-		t.Errorf("bgColor(RGB) = %q, want '48;2;16;32;48'", result)
+		t.Errorf("sgrColor(RGB, 40) = %q, want '48;2;16;32;48'", result)
 	}
 }
 

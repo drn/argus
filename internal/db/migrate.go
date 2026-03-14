@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func (d *DB) migrate() error {
 	if err == nil {
 		return nil // already migrated
 	}
-	if err != sql.ErrNoRows && err.Error() != "no rows in result set" {
+	if !errors.Is(err, sql.ErrNoRows) {
 		// Table exists but is empty — fall through to migrate.
 		// Any other error means we should check if it's just empty.
 		var count int

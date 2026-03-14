@@ -1,14 +1,12 @@
 package ui
 
 import (
-	"bytes"
-	"context"
-	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/lipgloss"
 )
+
+// gitRefreshInterval is how long between automatic git status refreshes.
+const gitRefreshInterval = 3 * time.Second
 
 // GitStatusRefreshMsg carries the result of a background git status check.
 type GitStatusRefreshMsg struct {
@@ -70,7 +68,7 @@ func (g *GitStatus) NeedsRefresh() bool {
 	if g.taskID == "" {
 		return false
 	}
-	return time.Since(g.lastRefresh) > 3*time.Second
+	return time.Since(g.lastRefresh) > gitRefreshInterval
 }
 
 // SetFocused sets whether this panel has focus (changes border color).
@@ -79,29 +77,23 @@ func (g *GitStatus) SetFocused(focused bool) {
 }
 
 func (g GitStatus) View() string {
-	innerW := max(g.width-4, 10) // padding inside border
-	innerH := max(g.height-2, 1) // border top/bottom
+	innerW := max(g.width-4, 10)
+	innerH := max(g.height-2, 1)
 
-	borderColor := "238"
-	if g.focused {
-		borderColor = "87"
+	renderPanel := func(content string) string {
+		return borderedPanel(g.width, g.height, g.focused, content)
 	}
-	border := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(borderColor)).
-		Width(g.width - 2).
-		Height(innerH)
 
 	if g.taskID == "" {
-		return border.Render(g.theme.Dimmed.Render(" No worktree"))
+		return renderPanel(g.theme.Dimmed.Render(" No worktree"))
 	}
 
 	if !g.loaded {
-		return border.Render(g.theme.Dimmed.Render(" Loading..."))
+		return renderPanel(g.theme.Dimmed.Render(" Loading..."))
 	}
 
 	if g.statusText == "" && g.diffText == "" && g.branchDiffText == "" {
-		return border.Render(g.theme.Dimmed.Render(" Clean — no changes"))
+		return renderPanel(g.theme.Dimmed.Render(" Clean — no changes"))
 	}
 
 	var sections []string
@@ -126,13 +118,12 @@ func (g GitStatus) View() string {
 
 	content := strings.Join(sections, "\n")
 
-	// Truncate to fit
 	contentLines := strings.Split(content, "\n")
 	if len(contentLines) > innerH {
 		contentLines = contentLines[:innerH]
 	}
 
-	return border.Render(strings.Join(contentLines, "\n"))
+	return renderPanel(strings.Join(contentLines, "\n"))
 }
 
 func (g GitStatus) truncateLines(text string, maxWidth, maxLines int) string {
@@ -174,68 +165,3 @@ func (g GitStatus) colorizeDiff(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// FetchGitStatus runs git commands in the given worktree directory.
-// Intended to be called from a tea.Cmd (off the main goroutine).
-func FetchGitStatus(taskID, worktree string) GitStatusRefreshMsg {
-	msg := GitStatusRefreshMsg{TaskID: taskID}
-
-	if worktree == "" {
-		return msg
-	}
-
-	// git status --short
-	if out, err := runGit(worktree, "status", "--short"); err == nil {
-		msg.Status = strings.TrimRight(out, "\n")
-	}
-
-	// git diff HEAD --stat (unstaged + staged changes)
-	if out, err := runGit(worktree, "diff", "HEAD", "--stat"); err == nil {
-		msg.Diff = strings.TrimRight(out, "\n")
-	}
-
-	// git diff against merge-base with default branch (committed branch changes)
-	if base := findMergeBase(worktree); base != "" {
-		if out, err := runGit(worktree, "diff", "--stat", base+"..HEAD"); err == nil {
-			msg.BranchDiff = strings.TrimRight(out, "\n")
-		}
-		if out, err := runGit(worktree, "diff", "--name-status", base+"..HEAD"); err == nil {
-			msg.BranchFiles = strings.TrimRight(out, "\n")
-		}
-	}
-
-	return msg
-}
-
-// findMergeBase finds the merge-base between HEAD and the upstream or default branch.
-func findMergeBase(worktree string) string {
-	// Try upstream first
-	if base, err := runGit(worktree, "merge-base", "HEAD", "HEAD@{upstream}"); err == nil {
-		if b := strings.TrimSpace(base); b != "" {
-			return b
-		}
-	}
-	// Fallback: try common default branch names
-	for _, branch := range []string{"master", "main"} {
-		if base, err := runGit(worktree, "merge-base", "HEAD", branch); err == nil {
-			if b := strings.TrimSpace(base); b != "" {
-				return b
-			}
-		}
-	}
-	return ""
-}
-
-func runGit(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-pager"}, args...)...)
-	cmd.Dir = dir
-	cmd.Env = append(cmd.Environ(),
-		"GIT_TERMINAL_PROMPT=0", // prevent credential prompts from blocking
-	)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &bytes.Buffer{}
-	err := cmd.Run()
-	return out.String(), err
-}

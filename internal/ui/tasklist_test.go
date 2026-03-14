@@ -124,7 +124,7 @@ func TestTaskList_ClearFilter(t *testing.T) {
 		}
 		count++
 		tl.CursorDown()
-		if tl.Selected() == nil || tl.cursor >= len(tl.filtered)-1 {
+		if tl.Selected() == nil || tl.scroll.Cursor() >= len(tl.filtered)-1 {
 			count++
 			break
 		}
@@ -144,8 +144,8 @@ func TestTaskList_SetTasks_ClampsCursor(t *testing.T) {
 
 	// Shrink to 1 task
 	tl.SetTasks([]*model.Task{{Name: "only one"}})
-	if tl.cursor != 0 {
-		t.Errorf("cursor should be clamped to 0, got %d", tl.cursor)
+	if tl.scroll.Cursor() != 0 {
+		t.Errorf("cursor should be clamped to 0, got %d", tl.scroll.Cursor())
 	}
 }
 

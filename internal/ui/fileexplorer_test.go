@@ -84,8 +84,8 @@ func TestParseGitDiffNameStatus_NoTab(t *testing.T) {
 
 func TestNewFileExplorer(t *testing.T) {
 	fe := NewFileExplorer(DefaultTheme())
-	if fe.cursor != 0 {
-		t.Errorf("initial cursor = %d, want 0", fe.cursor)
+	if fe.scroll.Cursor() != 0 {
+		t.Errorf("initial cursor = %d, want 0", fe.scroll.Cursor())
 	}
 	if len(fe.files) != 0 {
 		t.Errorf("initial files should be empty")
@@ -102,7 +102,7 @@ func TestFileExplorer_SetSize(t *testing.T) {
 
 func TestFileExplorer_SetFiles(t *testing.T) {
 	fe := NewFileExplorer(DefaultTheme())
-	fe.cursor = 5
+	fe.scroll.cursor = 5
 	files := []ChangedFile{
 		{Status: "M", Path: "a.go"},
 		{Status: "A", Path: "b.go"},
@@ -111,18 +111,17 @@ func TestFileExplorer_SetFiles(t *testing.T) {
 	if len(fe.files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(fe.files))
 	}
-	// Cursor should be clamped
-	if fe.cursor != 1 {
-		t.Errorf("cursor should be clamped to 1, got %d", fe.cursor)
+	if fe.scroll.Cursor() != 1 {
+		t.Errorf("cursor should be clamped to 1, got %d", fe.scroll.Cursor())
 	}
 }
 
 func TestFileExplorer_SetFiles_Empty(t *testing.T) {
 	fe := NewFileExplorer(DefaultTheme())
-	fe.cursor = 3
+	fe.scroll.cursor = 3
 	fe.SetFiles(nil)
-	if fe.cursor != 0 {
-		t.Errorf("cursor should be 0 for empty files, got %d", fe.cursor)
+	if fe.scroll.Cursor() != 0 {
+		t.Errorf("cursor should be 0 for empty files, got %d", fe.scroll.Cursor())
 	}
 }
 
@@ -136,35 +135,33 @@ func TestFileExplorer_CursorUpDown(t *testing.T) {
 	})
 
 	fe.CursorDown()
-	if fe.cursor != 1 {
-		t.Errorf("cursor after down = %d, want 1", fe.cursor)
+	if fe.scroll.Cursor() != 1 {
+		t.Errorf("cursor after down = %d, want 1", fe.scroll.Cursor())
 	}
 
 	fe.CursorDown()
-	if fe.cursor != 2 {
-		t.Errorf("cursor after down x2 = %d, want 2", fe.cursor)
+	if fe.scroll.Cursor() != 2 {
+		t.Errorf("cursor after down x2 = %d, want 2", fe.scroll.Cursor())
 	}
 
-	// Should not go past end
 	fe.CursorDown()
-	if fe.cursor != 2 {
-		t.Errorf("cursor after down at end = %d, want 2", fe.cursor)
+	if fe.scroll.Cursor() != 2 {
+		t.Errorf("cursor after down at end = %d, want 2", fe.scroll.Cursor())
 	}
 
 	fe.CursorUp()
-	if fe.cursor != 1 {
-		t.Errorf("cursor after up = %d, want 1", fe.cursor)
+	if fe.scroll.Cursor() != 1 {
+		t.Errorf("cursor after up = %d, want 1", fe.scroll.Cursor())
 	}
 
 	fe.CursorUp()
-	if fe.cursor != 0 {
-		t.Errorf("cursor after up x2 = %d, want 0", fe.cursor)
+	if fe.scroll.Cursor() != 0 {
+		t.Errorf("cursor after up x2 = %d, want 0", fe.scroll.Cursor())
 	}
 
-	// Should not go below 0
 	fe.CursorUp()
-	if fe.cursor != 0 {
-		t.Errorf("cursor after up at start = %d, want 0", fe.cursor)
+	if fe.scroll.Cursor() != 0 {
+		t.Errorf("cursor after up at start = %d, want 0", fe.scroll.Cursor())
 	}
 }
 

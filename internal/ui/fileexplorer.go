@@ -19,8 +19,7 @@ type FileExplorer struct {
 	width  int
 	height int
 	files  []ChangedFile
-	cursor int
-	offset int
+	scroll ScrollState
 }
 
 func NewFileExplorer(theme Theme) FileExplorer {
@@ -34,28 +33,15 @@ func (fe *FileExplorer) SetSize(w, h int) {
 
 func (fe *FileExplorer) SetFiles(files []ChangedFile) {
 	fe.files = files
-	if fe.cursor >= len(fe.files) {
-		fe.cursor = max(0, len(fe.files)-1)
-	}
+	fe.scroll.ClampCursor(len(fe.files))
 }
 
 func (fe *FileExplorer) CursorUp() {
-	if fe.cursor > 0 {
-		fe.cursor--
-		if fe.cursor < fe.offset {
-			fe.offset = fe.cursor
-		}
-	}
+	fe.scroll.CursorUp()
 }
 
 func (fe *FileExplorer) CursorDown() {
-	if fe.cursor < len(fe.files)-1 {
-		fe.cursor++
-		visible := fe.visibleRows()
-		if fe.cursor >= fe.offset+visible {
-			fe.offset = fe.cursor - visible + 1
-		}
-	}
+	fe.scroll.CursorDown(len(fe.files), fe.visibleRows())
 }
 
 func (fe *FileExplorer) visibleRows() int {
@@ -69,17 +55,10 @@ func (fe *FileExplorer) visibleRows() int {
 
 func (fe FileExplorer) View(focused bool) string {
 	innerW := max(fe.width-4, 10)
-	innerH := max(fe.height-2, 1)
 
-	borderColor := "238"
-	if focused {
-		borderColor = "87"
+	renderPanel := func(content string) string {
+		return borderedPanel(fe.width, fe.height, focused, content)
 	}
-	border := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(borderColor)).
-		Width(fe.width - 2).
-		Height(innerH)
 
 	header := fe.theme.Section.Render("  FILES")
 	if len(fe.files) > 0 {
@@ -88,21 +67,23 @@ func (fe FileExplorer) View(focused bool) string {
 
 	if len(fe.files) == 0 {
 		content := header + "\n" + fe.theme.Dimmed.Render("  No changes")
-		return border.Render(content)
+		return renderPanel(content)
 	}
 
 	var b strings.Builder
 	b.WriteString(header + "\n")
 
 	visible := fe.visibleRows()
-	end := fe.offset + visible
+	offset := fe.scroll.Offset()
+	cursor := fe.scroll.Cursor()
+	end := offset + visible
 	if end > len(fe.files) {
 		end = len(fe.files)
 	}
 
-	for i := fe.offset; i < end; i++ {
+	for i := offset; i < end; i++ {
 		f := fe.files[i]
-		selected := focused && i == fe.cursor
+		selected := focused && i == cursor
 
 		// Status indicator with color
 		statusStyle := fe.statusStyle(f.Status)
@@ -129,7 +110,7 @@ func (fe FileExplorer) View(focused bool) string {
 		b.WriteString(fmt.Sprintf("%s %s %s\n", cursor, indicator, nameStyle.Render(name)))
 	}
 
-	return border.Render(b.String())
+	return renderPanel(b.String())
 }
 
 func (fe FileExplorer) statusIcon(status string) string {

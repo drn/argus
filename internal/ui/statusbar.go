@@ -31,10 +31,7 @@ func (sb *StatusBar) SetTasks(tasks []*model.Task) {
 }
 
 func (sb *StatusBar) SetRunning(ids []string) {
-	sb.running = make(map[string]bool, len(ids))
-	for _, id := range ids {
-		sb.running[id] = true
-	}
+	sb.running = toStringSet(ids)
 }
 
 func (sb *StatusBar) SetProjectTab(active bool) {
