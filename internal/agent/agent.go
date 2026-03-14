@@ -86,10 +86,15 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
-	// For resume, prefer the task's existing worktree as the working
-	// directory so Claude Code finds the right project/session context.
+	// For resume, the working directory MUST match where the session was
+	// originally created. Sessions are project-scoped in Claude Code, so
+	// --resume only finds sessions stored under the CWD's project hash.
+	// Since sessions are created from the worktree (via --worktree flag),
+	// we must resume from the worktree, not the main project directory.
 	dir := ResolveDir(task, cfg)
-	if resume && dir == "" && task.Worktree != "" {
+	if resume && task.Worktree != "" {
+		dir = task.Worktree
+	} else if !resume && dir == "" && task.Worktree != "" {
 		dir = task.Worktree
 	}
 	if dir != "" {

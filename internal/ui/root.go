@@ -143,6 +143,18 @@ func (m Model) Init() tea.Cmd {
 				task.AgentPID = 0
 			}
 
+			// Backfill worktree path for tasks created before proactive
+			// worktree tracking was added. The session is stored under the
+			// worktree's project hash, so --resume needs the correct CWD.
+			if task.Worktree == "" && task.Name != "" {
+				if projDir := agent.ResolveDir(task, m.db.Config()); projDir != "" {
+					expected := filepath.Join(projDir, ".claude", "worktrees", "argus", task.Name)
+					if dirExists(expected) {
+						task.Worktree = expected
+					}
+				}
+			}
+
 			// Reset StartedAt before starting so the quick-exit check in
 			// handleAgentFinished uses the resume time, not the original start.
 			task.StartedAt = time.Now()
@@ -423,6 +435,16 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
+	// Proactively compute the expected worktree path for new sessions.
+	// Claude Code creates worktrees under <project>/.claude/worktrees/<name>,
+	// and sessions are scoped to that directory. We need to store this path
+	// so that resume can use the correct working directory.
+	if !resume && t.Name != "" && t.Worktree == "" {
+		if projDir := agent.ResolveDir(t, m.db.Config()); projDir != "" {
+			t.Worktree = filepath.Join(projDir, ".claude", "worktrees", "argus", t.Name)
+		}
+	}
+
 	// Persist status and StartedAt BEFORE starting the process so that
 	// handleAgentFinished always sees fresh data even if the process exits
 	// immediately (race between Start returning and the wait goroutine).
@@ -701,7 +723,7 @@ func (m Model) resolveTaskDir(t *model.Task) string {
 		dir = m.runner.WorkDir(t.ID)
 	}
 	if dir != "" && t.Worktree == "" {
-		if wt := discoverClaudeWorktree(dir, t.ID); wt != "" {
+		if wt := discoverClaudeWorktree(dir, t.Name); wt != "" {
 			t.Worktree = wt
 			_ = m.db.Update(t)
 			dir = wt
@@ -1054,15 +1076,24 @@ func dirExists(path string) bool {
 // "git worktree remove" (which cleans up .git/worktrees metadata),
 // falling back to a plain directory removal if the git command fails.
 // discoverClaudeWorktree looks for a Claude Code worktree under baseDir/.claude/worktrees/.
-// It parses `git worktree list --porcelain` to find worktrees in that subdirectory.
-// Falls back to scanning the directory if git fails. Returns empty string if none found.
-func discoverClaudeWorktree(baseDir, _ string) string {
+// When taskName is provided, it first looks for a worktree matching "argus/<taskName>"
+// (the naming convention used by Argus). Falls back to the first worktree found.
+func discoverClaudeWorktree(baseDir, taskName string) string {
 	claudeWtDir := filepath.Join(baseDir, ".claude", "worktrees")
 	if !dirExists(claudeWtDir) {
 		return ""
 	}
 
-	// Try git worktree list first for accuracy
+	// If we know the task name, check the expected path directly.
+	// Argus creates worktrees as argus/<task-name>.
+	if taskName != "" {
+		expected := filepath.Join(claudeWtDir, "argus", taskName)
+		if _, err := os.Stat(filepath.Join(expected, ".git")); err == nil {
+			return expected
+		}
+	}
+
+	// Try git worktree list for accuracy
 	out, err := runGit(baseDir, "worktree", "list", "--porcelain")
 	if err == nil {
 		for _, block := range strings.Split(out, "\n\n") {
