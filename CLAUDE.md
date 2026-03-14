@@ -22,6 +22,7 @@ go test ./internal/store/   # run tests for a single package
 
 - `cmd/argus/main.go` — Entry point. Opens SQLite database, creates agent runner, starts `tea.Program` with alt screen.
 - `internal/ui/root.go` — **Top-level Bubble Tea model**. Owns all sub-views and routes key events based on current view state (`viewTaskList`, `viewNewTask`, `viewHelp`, `viewPrompt`, `viewConfirmDelete`). This is the orchestration hub.
+- `internal/ui/worktree.go` — Git worktree discovery, cleanup, and process management helpers. Extracted from root.go to separate infrastructure concerns from UI logic.
 - `internal/ui/tasklist.go` — Task list with cursor, scrolling, filtering. Not a `tea.Model` itself — it's a plain struct that `root.Model` drives.
 - `internal/ui/newtask.go` — New task form using `bubbles/textinput`. Has its own `Update` method but is called by root.
 - `internal/model/` — Core domain types. `Task` struct and `Status` enum with `pending → in_progress → in_review → complete` workflow. Status implements `encoding.TextMarshaler` for JSON serialization.
@@ -83,14 +84,6 @@ go test ./internal/store/   # run tests for a single package
 ## Context Directory
 
 - `context/` stores durable cross-session knowledge checked into git
-- `context/knowledge/index.md` is the knowledge graph index
-- `context/research/` holds investigation notes and spike results
-- `context/plans/` holds strategic plans and proposals
-- Read `context/knowledge/index.md` when you need project history or domain context
-
-## Context Directory
-
-- `context/` stores durable cross-session knowledge, research, and plans
 - `context/knowledge/index.md` is the knowledge graph index — read it when you need project history or domain context
 - `context/research/` holds investigation notes and spike results
 - `context/plans/` holds strategic plans and proposals
