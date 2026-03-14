@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -296,17 +297,28 @@ func (av *AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string
 	dispH := max(panelH-4, 3)
 
 	sess := av.runner.Get(av.taskID)
-	vtCols, vtRows := dispW, dispH
+	vtCols := dispW
 	if sess != nil {
-		c, r := sess.PTYSize()
+		c, _ := sess.PTYSize()
 		if c > 0 {
 			vtCols = c
 		}
-		if r > 0 {
-			vtRows = r
-		}
 	}
 
+	// Size the virtual terminal tall enough to capture all content.
+	// Count newlines to estimate how many rows the output needs, then
+	// add the display height for the active screen area.
+	vtRows := dispH
+	if n := bytes.Count(raw, []byte{'\n'}); n > vtRows {
+		vtRows = n + dispH
+	}
+	// Also account for long lines that wrap.
+	if vtCols > 0 {
+		wrappedEstimate := len(raw)/vtCols + dispH
+		if wrappedEstimate > vtRows {
+			vtRows = wrappedEstimate
+		}
+	}
 	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
 
