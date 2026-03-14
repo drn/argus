@@ -132,17 +132,7 @@ func (f *NewProjectForm) SetSize(w, h int) {
 }
 
 func (f NewProjectForm) modalWidth() int {
-	w := f.width * 2 / 5
-	if w < 50 {
-		w = 50
-	}
-	if w > 80 {
-		w = 80
-	}
-	if w > f.width-4 {
-		w = f.width - 4
-	}
-	return w
+	return clampModalWidth(f.width)
 }
 
 func (f NewProjectForm) View() string {

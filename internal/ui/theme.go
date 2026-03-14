@@ -23,6 +23,22 @@ type Theme struct {
 	Error       lipgloss.Style
 }
 
+// clampModalWidth computes a modal width from the total terminal width,
+// clamping to a reasonable range (50–80, constrained to width-4).
+func clampModalWidth(totalWidth int) int {
+	w := totalWidth * 2 / 5
+	if w < 50 {
+		w = 50
+	}
+	if w > 80 {
+		w = 80
+	}
+	if w > totalWidth-4 {
+		w = totalWidth - 4
+	}
+	return w
+}
+
 func DefaultTheme() Theme {
 	return Theme{
 		Title: lipgloss.NewStyle().
