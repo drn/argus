@@ -147,3 +147,93 @@ func TestLoad_InvalidTOML(t *testing.T) {
 		t.Error("expected error for invalid TOML")
 	}
 }
+
+func TestSave(t *testing.T) {
+	dir := t.TempDir()
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", dir)
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	cfg := DefaultConfig()
+	cfg.Defaults.Backend = "test-backend"
+	cfg.Projects["myproject"] = Project{Path: "/tmp/myproject", Backend: "claude"}
+
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Verify file was written
+	path := filepath.Join(dir, "argus", "config.toml")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+
+	// Load it back and verify round-trip
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load() after Save() error: %v", err)
+	}
+	if loaded.Defaults.Backend != "test-backend" {
+		t.Errorf("round-trip backend = %q, want test-backend", loaded.Defaults.Backend)
+	}
+	if p, ok := loaded.Projects["myproject"]; !ok {
+		t.Error("myproject not found after round-trip")
+	} else if p.Path != "/tmp/myproject" {
+		t.Errorf("project path = %q, want /tmp/myproject", p.Path)
+	}
+}
+
+func TestShouldCleanupWorktrees(t *testing.T) {
+	// nil (default) should return true
+	ui := UIConfig{}
+	if !ui.ShouldCleanupWorktrees() {
+		t.Error("nil CleanupWorktrees should default to true")
+	}
+
+	// explicit true
+	tr := true
+	ui.CleanupWorktrees = &tr
+	if !ui.ShouldCleanupWorktrees() {
+		t.Error("explicit true should return true")
+	}
+
+	// explicit false
+	fa := false
+	ui.CleanupWorktrees = &fa
+	if ui.ShouldCleanupWorktrees() {
+		t.Error("explicit false should return false")
+	}
+}
+
+func TestLoad_NilMapsInitialized(t *testing.T) {
+	// A minimal TOML that doesn't define backends or projects maps
+	dir := t.TempDir()
+	argusDir := filepath.Join(dir, "argus")
+	os.MkdirAll(argusDir, 0o755)
+
+	tomlContent := `
+[defaults]
+backend = "custom"
+`
+	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(tomlContent), 0o644)
+
+	old := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("XDG_CONFIG_HOME", dir)
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Maps should be initialized even though TOML didn't define them
+	if cfg.Backends == nil {
+		t.Error("Backends map should be initialized after Load")
+	}
+	if cfg.Projects == nil {
+		t.Error("Projects map should be initialized after Load")
+	}
+	if cfg.Defaults.Backend != "custom" {
+		t.Errorf("backend = %q, want custom", cfg.Defaults.Backend)
+	}
+}

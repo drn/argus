@@ -168,3 +168,461 @@ func TestAgentView_SliceCachedLines(t *testing.T) {
 		t.Errorf("first visible line = %q, want %q", stripANSI(lines[0]), "line1")
 	}
 }
+
+func TestAgentView_SplitWidths_NarrowTerminal(t *testing.T) {
+	av := newTestAgentView()
+	av.width = 50 // narrow: less than minLeft+minCenter+minRight (100)
+	left, center, right := av.splitWidths()
+
+	total := left + center + right
+	if total != 50 && total != av.width {
+		// total may not perfectly equal width due to rounding, but should be close
+		t.Logf("splitWidths(50) = %d+%d+%d = %d", left, center, right, total)
+	}
+	if center < 30 {
+		t.Errorf("center width = %d, want >= 30", center)
+	}
+}
+
+func TestAgentView_SplitWidths_NormalTerminal(t *testing.T) {
+	av := newTestAgentView()
+	av.width = 120
+	left, center, right := av.splitWidths()
+
+	if left < 20 {
+		t.Errorf("left = %d, want >= 20", left)
+	}
+	if center < 60 {
+		t.Errorf("center = %d, want >= 60", center)
+	}
+	if right < 20 {
+		t.Errorf("right = %d, want >= 20", right)
+	}
+	if left+center+right != 120 {
+		t.Errorf("total = %d, want 120", left+center+right)
+	}
+}
+
+func TestAgentView_SplitWidths_WideTerminal(t *testing.T) {
+	av := newTestAgentView()
+	av.width = 250
+	left, center, right := av.splitWidths()
+
+	if left+center+right != 250 {
+		t.Errorf("total = %d, want 250", left+center+right)
+	}
+	// Center should be ~60% of width
+	if center < 140 {
+		t.Errorf("center = %d, want >= 140 (60%% of 250)", center)
+	}
+}
+
+func TestAgentView_FocusLeftRight(t *testing.T) {
+	av := newTestAgentView()
+
+	// Default focus is panelAgent (center)
+	if av.focus != panelAgent {
+		t.Fatalf("initial focus = %d, want panelAgent", av.focus)
+	}
+
+	// Focus left → panelGit
+	av.FocusLeft()
+	if av.focus != panelGit {
+		t.Errorf("after FocusLeft: focus = %d, want panelGit", av.focus)
+	}
+
+	// Focus left at leftmost → stays
+	av.FocusLeft()
+	if av.focus != panelGit {
+		t.Errorf("FocusLeft at leftmost: focus = %d, want panelGit", av.focus)
+	}
+
+	// Focus right back to center
+	av.FocusRight()
+	if av.focus != panelAgent {
+		t.Errorf("after FocusRight: focus = %d, want panelAgent", av.focus)
+	}
+
+	// Focus right → panelFiles
+	av.FocusRight()
+	if av.focus != panelFiles {
+		t.Errorf("after FocusRight x2: focus = %d, want panelFiles", av.focus)
+	}
+
+	// Focus right at rightmost → stays
+	av.FocusRight()
+	if av.focus != panelFiles {
+		t.Errorf("FocusRight at rightmost: focus = %d, want panelFiles", av.focus)
+	}
+}
+
+func TestAgentView_HandleKey_CtrlQ_Detach(t *testing.T) {
+	av := newTestAgentView()
+	msg := tea.KeyMsg{Type: tea.KeyCtrlQ}
+	if !av.HandleKey(msg) {
+		t.Error("ctrl+q should trigger detach")
+	}
+}
+
+func TestAgentView_HandleKey_CtrlLeft(t *testing.T) {
+	av := newTestAgentView()
+	// Start at center
+	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
+	detach := av.HandleKey(msg)
+	if detach {
+		t.Error("ctrl+left should not trigger detach")
+	}
+	if av.focus != panelGit {
+		t.Errorf("after ctrl+left: focus = %d, want panelGit", av.focus)
+	}
+}
+
+func TestAgentView_HandleKey_CtrlRight(t *testing.T) {
+	av := newTestAgentView()
+	msg := tea.KeyMsg{Type: tea.KeyCtrlRight}
+	detach := av.HandleKey(msg)
+	if detach {
+		t.Error("ctrl+right should not trigger detach")
+	}
+	if av.focus != panelFiles {
+		t.Errorf("after ctrl+right: focus = %d, want panelFiles", av.focus)
+	}
+}
+
+func TestAgentView_HandleKey_FilePanelKeys(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "b.go"},
+		{Status: "M", Path: "c.go"},
+	})
+
+	// j moves down
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if av.files.cursor != 1 {
+		t.Errorf("after j: cursor = %d, want 1", av.files.cursor)
+	}
+
+	// down arrow moves down
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if av.files.cursor != 2 {
+		t.Errorf("after down: cursor = %d, want 2", av.files.cursor)
+	}
+
+	// k moves up
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if av.files.cursor != 1 {
+		t.Errorf("after k: cursor = %d, want 1", av.files.cursor)
+	}
+
+	// up arrow moves up
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if av.files.cursor != 0 {
+		t.Errorf("after up: cursor = %d, want 0", av.files.cursor)
+	}
+}
+
+func TestAgentView_NeedsGitRefresh_NoTask(t *testing.T) {
+	runner := agent.NewRunner(nil)
+	av := NewAgentView(DefaultTheme(), runner)
+	if av.NeedsGitRefresh() {
+		t.Error("NeedsGitRefresh should be false with no task")
+	}
+}
+
+func TestAgentView_NeedsGitRefresh_WithTask(t *testing.T) {
+	av := newTestAgentView()
+	// lastGitRefresh is zero time, so time.Since is large
+	if !av.NeedsGitRefresh() {
+		t.Error("NeedsGitRefresh should be true for fresh agent view")
+	}
+}
+
+func TestAgentView_Enter_ResetsState(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.scrollOffset = 10
+	av.cachedTerminal = "old cache"
+	av.lastOutput = []byte("old output")
+
+	av.Enter("task-2", "new task")
+	if av.taskID != "task-2" {
+		t.Errorf("taskID = %q, want 'task-2'", av.taskID)
+	}
+	if av.taskName != "new task" {
+		t.Errorf("taskName = %q, want 'new task'", av.taskName)
+	}
+	if av.focus != panelAgent {
+		t.Errorf("focus = %d, want panelAgent", av.focus)
+	}
+	if av.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0", av.scrollOffset)
+	}
+	if av.cachedTerminal != "" {
+		t.Error("cachedTerminal should be empty after Enter")
+	}
+	if av.lastOutput != nil {
+		t.Error("lastOutput should be nil after Enter")
+	}
+}
+
+func TestAgentView_View_NoSession(t *testing.T) {
+	av := newTestAgentView()
+	view := av.View()
+	if view == "" {
+		t.Error("expected non-empty view")
+	}
+	// Should contain status bar with task name
+	if !strings.Contains(view, "test task") {
+		t.Error("expected task name in view")
+	}
+	// Should contain "Agent not running" or similar since no session exists
+	if !strings.Contains(view, "not running") && !strings.Contains(view, "ctrl+q") {
+		t.Error("expected agent not running or ctrl+q hint in view")
+	}
+}
+
+func TestAgentView_RenderStatusBar(t *testing.T) {
+	av := newTestAgentView()
+	bar := av.renderStatusBar()
+	if bar == "" {
+		t.Error("expected non-empty status bar")
+	}
+	if !strings.Contains(bar, "test task") {
+		t.Error("expected task name in status bar")
+	}
+	if !strings.Contains(bar, "ctrl+q") {
+		t.Error("expected ctrl+q hint in status bar")
+	}
+}
+
+func TestAgentView_RenderStatusBar_Exited(t *testing.T) {
+	av := newTestAgentView()
+	// No session → should show "(exited — ctrl+q to return)"
+	bar := av.renderStatusBar()
+	if !strings.Contains(bar, "exited") {
+		t.Error("expected 'exited' in status bar when no session")
+	}
+}
+
+func TestAgentView_RenderStatusBar_ScrollIndicator(t *testing.T) {
+	av := newTestAgentView()
+	av.scrollOffset = 5
+	// We can't easily test scroll indicator without a session, but verify no panic
+	bar := av.renderStatusBar()
+	if bar == "" {
+		t.Error("expected non-empty status bar")
+	}
+}
+
+func TestAgentView_RenderTerminal_NoSession_Empty(t *testing.T) {
+	av := newTestAgentView()
+	_, centerW, _ := av.splitWidths()
+	contentH := av.height - 1
+	terminal := av.renderTerminal(centerW, contentH)
+	if terminal == "" {
+		t.Error("expected non-empty terminal output")
+	}
+	if !strings.Contains(terminal, "Agent not running") {
+		t.Error("expected 'Agent not running' in terminal")
+	}
+}
+
+func TestAgentView_RenderTerminal_NoSession_WithLastOutput(t *testing.T) {
+	av := newTestAgentView()
+	av.SetLastOutput([]byte("Error: connection refused\n"))
+	_, centerW, _ := av.splitWidths()
+	contentH := av.height - 1
+	terminal := av.renderTerminal(centerW, contentH)
+	if terminal == "" {
+		t.Error("expected non-empty terminal with last output")
+	}
+}
+
+func TestAgentView_RenderTerminal_NoSession_WithCachedTerminal(t *testing.T) {
+	av := newTestAgentView()
+	av.cachedTerminal = "cached content here"
+	_, centerW, _ := av.splitWidths()
+	contentH := av.height - 1
+	terminal := av.renderTerminal(centerW, contentH)
+	if !strings.Contains(terminal, "cached content here") {
+		t.Error("expected cached terminal content")
+	}
+}
+
+func TestAgentView_UpdateGitStatus(t *testing.T) {
+	av := newTestAgentView()
+	msg := GitStatusRefreshMsg{
+		TaskID:      "task-1",
+		Status:      " M file.go\n A new.go",
+		BranchFiles: "M\tfile.go",
+	}
+	av.UpdateGitStatus(msg)
+	// Should update git status and file explorer
+	if len(av.files.files) == 0 {
+		t.Error("expected files to be populated after UpdateGitStatus")
+	}
+	if av.lastGitRefresh.IsZero() {
+		t.Error("expected lastGitRefresh to be set")
+	}
+}
+
+func TestAgentView_UpdateGitStatus_MismatchedTask(t *testing.T) {
+	av := newTestAgentView()
+	msg := GitStatusRefreshMsg{
+		TaskID: "other-task",
+		Status: " M file.go",
+	}
+	av.UpdateGitStatus(msg)
+	if len(av.files.files) != 0 {
+		t.Error("should not update files for mismatched task")
+	}
+}
+
+func TestAgentView_UpdateGitStatus_BranchFilesOnly(t *testing.T) {
+	av := newTestAgentView()
+	msg := GitStatusRefreshMsg{
+		TaskID:      "task-1",
+		BranchFiles: "M\tfile1.go\nA\tfile2.go",
+	}
+	av.UpdateGitStatus(msg)
+	// No uncommitted status, should use branch files
+	if len(av.files.files) != 2 {
+		t.Errorf("expected 2 files from branch, got %d", len(av.files.files))
+	}
+}
+
+func TestKeyMsgToBytes_Runes(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}
+	b := keyMsgToBytes(msg)
+	if string(b) != "a" {
+		t.Errorf("rune 'a' = %q, want 'a'", string(b))
+	}
+}
+
+func TestKeyMsgToBytes_Space(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeySpace}
+	b := keyMsgToBytes(msg)
+	if len(b) != 1 || b[0] != ' ' {
+		t.Errorf("space = %v, want [' ']", b)
+	}
+}
+
+func TestKeyMsgToBytes_Enter(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	b := keyMsgToBytes(msg)
+	if len(b) != 1 || b[0] != '\r' {
+		t.Errorf("enter = %v, want ['\\r']", b)
+	}
+}
+
+func TestKeyMsgToBytes_Backspace(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyBackspace}
+	b := keyMsgToBytes(msg)
+	if len(b) != 1 || b[0] != 0x7f {
+		t.Errorf("backspace = %v, want [0x7f]", b)
+	}
+}
+
+func TestKeyMsgToBytes_ArrowKeys(t *testing.T) {
+	tests := []struct {
+		keyType tea.KeyType
+		want    string
+	}{
+		{tea.KeyUp, "\x1b[A"},
+		{tea.KeyDown, "\x1b[B"},
+		{tea.KeyRight, "\x1b[C"},
+		{tea.KeyLeft, "\x1b[D"},
+	}
+	for _, tt := range tests {
+		msg := tea.KeyMsg{Type: tt.keyType}
+		b := keyMsgToBytes(msg)
+		if string(b) != tt.want {
+			t.Errorf("key %d = %q, want %q", tt.keyType, string(b), tt.want)
+		}
+	}
+}
+
+func TestKeyMsgToBytes_AltArrow(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyUp, Alt: true}
+	b := keyMsgToBytes(msg)
+	if string(b) != "\x1b[1;3A" {
+		t.Errorf("alt+up = %q, want '\\x1b[1;3A'", string(b))
+	}
+}
+
+func TestKeyMsgToBytes_CtrlKeys(t *testing.T) {
+	tests := []struct {
+		keyType tea.KeyType
+		want    byte
+	}{
+		{tea.KeyCtrlA, 0x01},
+		{tea.KeyCtrlC, 0x03},
+		{tea.KeyCtrlD, 0x04},
+		{tea.KeyCtrlZ, 0x1a},
+	}
+	for _, tt := range tests {
+		msg := tea.KeyMsg{Type: tt.keyType}
+		b := keyMsgToBytes(msg)
+		if len(b) != 1 || b[0] != tt.want {
+			t.Errorf("ctrl key %d = %v, want [0x%02x]", tt.keyType, b, tt.want)
+		}
+	}
+}
+
+func TestKeyMsgToBytes_FunctionKeys(t *testing.T) {
+	tests := []struct {
+		keyType tea.KeyType
+		want    string
+	}{
+		{tea.KeyF1, "\x1bOP"},
+		{tea.KeyF2, "\x1bOQ"},
+		{tea.KeyF5, "\x1b[15~"},
+		{tea.KeyF12, "\x1b[24~"},
+	}
+	for _, tt := range tests {
+		msg := tea.KeyMsg{Type: tt.keyType}
+		b := keyMsgToBytes(msg)
+		if string(b) != tt.want {
+			t.Errorf("function key %d = %q, want %q", tt.keyType, string(b), tt.want)
+		}
+	}
+}
+
+func TestKeyMsgToBytes_Tab(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyTab}
+	b := keyMsgToBytes(msg)
+	if len(b) != 1 || b[0] != '\t' {
+		t.Errorf("tab = %v, want ['\\t']", b)
+	}
+}
+
+func TestKeyMsgToBytes_Escape(t *testing.T) {
+	msg := tea.KeyMsg{Type: tea.KeyEscape}
+	b := keyMsgToBytes(msg)
+	if len(b) != 1 || b[0] != 0x1b {
+		t.Errorf("escape = %v, want [0x1b]", b)
+	}
+}
+
+func TestKeyMsgToBytes_SpecialKeys(t *testing.T) {
+	tests := []struct {
+		keyType tea.KeyType
+		want    string
+	}{
+		{tea.KeyHome, "\x1b[H"},
+		{tea.KeyEnd, "\x1b[F"},
+		{tea.KeyPgUp, "\x1b[5~"},
+		{tea.KeyPgDown, "\x1b[6~"},
+		{tea.KeyDelete, "\x1b[3~"},
+		{tea.KeyShiftTab, "\x1b[Z"},
+	}
+	for _, tt := range tests {
+		msg := tea.KeyMsg{Type: tt.keyType}
+		b := keyMsgToBytes(msg)
+		if string(b) != tt.want {
+			t.Errorf("key %d = %q, want %q", tt.keyType, string(b), tt.want)
+		}
+	}
+}

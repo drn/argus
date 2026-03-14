@@ -60,7 +60,32 @@ go test ./internal/store/   # run tests for a single package
 
 ## Development Rules
 
+### Testing Requirements
+
 - **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
+- **Run `go test ./... -cover` after writing tests** to verify coverage improved. Aim for ≥80% coverage on any package you touch.
+- **Test file placement:** Tests go in `*_test.go` files in the same package (not `_test` suffix packages). Use the existing `testModel(t)`, `testDB(t)`, and similar helpers.
+- **What to test:**
+  - All exported functions and methods
+  - Pure logic functions (parsers, state transitions, builders) — these are easy to test, no excuses
+  - View/render functions — verify they return non-empty output and contain expected content strings
+  - Edge cases: nil inputs, empty collections, boundary values, error paths
+  - State machines: status transitions, cursor navigation, focus cycling
+- **What's okay to skip:** Functions requiring a real terminal (raw mode, ioctl), functions that shell out to external processes (git commands, process management), and `cmd/argus/main.go` (entry point)
+- **Testing patterns in this codebase:**
+  - `db.OpenInMemory()` for database tests (no filesystem needed)
+  - `agent.NewRunner(nil)` for UI tests that need a runner but don't start processes
+  - `exec.Command("echo", "hello")` or `exec.Command("sleep", "10")` for agent/session tests
+  - `DefaultTheme()` for any UI component tests
+  - Table-driven tests with `[]struct{ input, expected }` for functions with many cases
+
+## Context Directory
+
+- `context/` stores durable cross-session knowledge checked into git
+- `context/knowledge/index.md` is the knowledge graph index
+- `context/research/` holds investigation notes and spike results
+- `context/plans/` holds strategic plans and proposals
+- Read `context/knowledge/index.md` when you need project history or domain context
 
 ## Context Directory
 

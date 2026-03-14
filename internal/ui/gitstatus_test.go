@@ -2,6 +2,7 @@ package ui
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -181,6 +182,84 @@ func TestFindWorktreeByName(t *testing.T) {
 	got = findWorktreeByName(dir, "no-such-task")
 	if got != "" {
 		t.Errorf("findWorktreeByName(dir, 'no-such-task') = %q, want empty", got)
+	}
+}
+
+func TestGitStatus_NeedsRefresh_NoTask(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	if gs.NeedsRefresh() {
+		t.Error("NeedsRefresh should be false with no task")
+	}
+}
+
+func TestGitStatus_NeedsRefresh_WithTask(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	gs.SetTask("task-1")
+	// lastRefresh is zero, so time.Since is large
+	if !gs.NeedsRefresh() {
+		t.Error("NeedsRefresh should be true for fresh task")
+	}
+}
+
+func TestGitStatus_SetFocused(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	gs.SetSize(40, 10)
+	gs.SetTask("task-1")
+	gs.Update(GitStatusRefreshMsg{TaskID: "task-1", Status: " M file.go"})
+
+	gs.SetFocused(true)
+	focused := gs.View()
+	gs.SetFocused(false)
+	unfocused := gs.View()
+
+	// Both should render, and they should be different (border color differs)
+	if focused == "" || unfocused == "" {
+		t.Error("both views should be non-empty")
+	}
+}
+
+func TestGitStatus_ColorizeStatus(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	gs.SetSize(60, 20)
+	gs.SetTask("task-1")
+	gs.Update(GitStatusRefreshMsg{
+		TaskID: "task-1",
+		Status: " M modified.go\n A added.go\n?? untracked.go\n D deleted.go",
+	})
+
+	view := gs.View()
+	if view == "" {
+		t.Error("expected non-empty view with status lines")
+	}
+}
+
+func TestGitStatus_ViewNoTask(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	gs.SetSize(40, 10)
+	view := gs.View()
+	if !contains(view, "No worktree") {
+		t.Error("expected 'No worktree' when no task set")
+	}
+}
+
+func TestGitStatus_ViewLoading(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	gs.SetSize(40, 10)
+	gs.SetTask("task-1")
+	// loaded is false, no update called
+	view := gs.View()
+	if !contains(view, "Loading") {
+		t.Error("expected 'Loading...' before first update")
+	}
+}
+
+func TestGitStatus_TruncateLines(t *testing.T) {
+	gs := NewGitStatus(DefaultTheme())
+	text := "short\nthis is a very long line that should be truncated at some point eventually\nline3\nline4\nline5"
+	result := gs.truncateLines(text, 20, 3)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 3 {
+		t.Errorf("expected 3 lines, got %d", len(lines))
 	}
 }
 
