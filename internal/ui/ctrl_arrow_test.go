@@ -92,14 +92,30 @@ func TestAgentView_AltLeftRight(t *testing.T) {
 	}
 }
 
-func TestAgentView_PlainLeftRightNotIntercepted(t *testing.T) {
+func TestAgentView_PlainLeftRight(t *testing.T) {
 	av := newTestAgentView()
 
-	// Plain left arrow (no modifier) should NOT switch panels —
-	// it should be forwarded to the PTY when terminal is focused.
+	// Plain left arrow should switch panels (macOS captures ctrl+left for
+	// Mission Control, so plain arrows are the primary pane-switching keys).
 	msg := tea.KeyMsg{Type: tea.KeyLeft}
-	av.HandleKey(msg)
-	if av.focus != panelAgent {
-		t.Fatalf("focus after plain left = %d, want panelAgent(%d) (should not change)", av.focus, panelAgent)
+	detach := av.HandleKey(msg)
+	if detach {
+		t.Fatal("plain left should not trigger detach")
+	}
+	if av.focus != panelGit {
+		t.Fatalf("focus after plain left = %d, want panelGit(%d)", av.focus, panelGit)
+	}
+
+	// Reset to center
+	av.focus = panelAgent
+
+	// Plain right arrow should move to panelFiles
+	msg2 := tea.KeyMsg{Type: tea.KeyRight}
+	detach = av.HandleKey(msg2)
+	if detach {
+		t.Fatal("plain right should not trigger detach")
+	}
+	if av.focus != panelFiles {
+		t.Fatalf("focus after plain right = %d, want panelFiles(%d)", av.focus, panelFiles)
 	}
 }
