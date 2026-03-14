@@ -716,6 +716,17 @@ func (m Model) selectedTaskForGit() *model.Task {
 // resolveTaskDir finds the working directory for a task's git status.
 func (m Model) resolveTaskDir(t *model.Task) string {
 	dir := t.Worktree
+
+	// Validate stored worktree: must exist and match the task name.
+	if dir != "" {
+		if !dirExists(dir) || filepath.Base(dir) != t.Name {
+			// Stale or mismatched — clear and re-discover.
+			t.Worktree = ""
+			_ = m.db.Update(t)
+			dir = ""
+		}
+	}
+
 	if dir == "" {
 		dir = agent.ResolveDir(t, m.db.Config())
 	}
@@ -1072,35 +1083,38 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// removeWorktree removes a git worktree directory. It first tries
-// "git worktree remove" (which cleans up .git/worktrees metadata),
-// falling back to a plain directory removal if the git command fails.
-// discoverClaudeWorktree looks for a Claude Code worktree under baseDir/.claude/worktrees/.
-// When taskName is provided, it first looks for a worktree matching "argus/<taskName>"
-// (the naming convention used by Argus). Falls back to the first worktree found.
+// discoverClaudeWorktree looks for a Claude Code worktree under baseDir/.claude/worktrees/
+// that matches the given task name. Worktrees are created as "argus/<taskName>" so we first
+// check the expected path directly, then fall back to git worktree list and directory scan.
 func discoverClaudeWorktree(baseDir, taskName string) string {
 	claudeWtDir := filepath.Join(baseDir, ".claude", "worktrees")
 	if !dirExists(claudeWtDir) {
 		return ""
 	}
 
-	// If we know the task name, check the expected path directly.
-	// Argus creates worktrees as argus/<task-name>.
-	if taskName != "" {
-		expected := filepath.Join(claudeWtDir, "argus", taskName)
-		if _, err := os.Stat(filepath.Join(expected, ".git")); err == nil {
-			return expected
-		}
+	if taskName == "" {
+		return ""
+	}
+
+	// Fast path: check the expected path directly (argus/<task-name>).
+	expected := filepath.Join(claudeWtDir, "argus", taskName)
+	if _, err := os.Stat(filepath.Join(expected, ".git")); err == nil {
+		return expected
 	}
 
 	// Try git worktree list for accuracy
 	out, err := runGit(baseDir, "worktree", "list", "--porcelain")
 	if err == nil {
+		// First pass: look for a worktree matching the task name
 		for _, block := range strings.Split(out, "\n\n") {
 			for _, line := range strings.Split(block, "\n") {
 				if strings.HasPrefix(line, "worktree ") {
 					wt := strings.TrimPrefix(line, "worktree ")
-					if strings.HasPrefix(wt, claudeWtDir+string(filepath.Separator)) || strings.HasPrefix(wt, claudeWtDir+"/") {
+					if !strings.HasPrefix(wt, claudeWtDir+string(filepath.Separator)) && !strings.HasPrefix(wt, claudeWtDir+"/") {
+						continue
+					}
+					// Match: worktree path ends with /<taskName>
+					if filepath.Base(wt) == taskName {
 						return wt
 					}
 				}
@@ -1108,18 +1122,32 @@ func discoverClaudeWorktree(baseDir, taskName string) string {
 		}
 	}
 
-	// Fallback: scan directory for worktree subdirs
-	entries, err := os.ReadDir(claudeWtDir)
+	// Fallback: scan directory recursively for a worktree matching the task name
+	// Worktrees may be nested (e.g., .claude/worktrees/argus/<taskName>/)
+	return findWorktreeByName(claudeWtDir, taskName)
+}
+
+// findWorktreeByName recursively scans a directory for a git worktree whose
+// directory name matches the given task name. Returns empty string if not found.
+func findWorktreeByName(dir, taskName string) string {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
 	for _, e := range entries {
-		if e.IsDir() {
-			candidate := filepath.Join(claudeWtDir, e.Name())
+		if !e.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(dir, e.Name())
+		if e.Name() == taskName {
 			// Verify it's a git worktree (has .git file)
 			if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
 				return candidate
 			}
+		}
+		// Recurse one level (worktrees are at .claude/worktrees/<repo>/<name>/)
+		if found := findWorktreeByName(candidate, taskName); found != "" {
+			return found
 		}
 	}
 	return ""
