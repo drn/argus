@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -133,7 +132,7 @@ func (av *AgentView) NeedsGitRefresh() bool {
 	if av.taskID == "" {
 		return false
 	}
-	return time.Since(av.lastGitRefresh) > 3*time.Second
+	return time.Since(av.lastGitRefresh) > gitRefreshInterval
 }
 
 // FocusLeft moves focus to the left panel.
@@ -402,68 +401,15 @@ func (av *AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string
 		}
 	}
 
-	// Size the virtual terminal tall enough to capture all content.
-	// Count newlines to estimate how many rows the output needs, then
-	// add the display height for the active screen area.
-	vtRows := dispH
-	if n := bytes.Count(raw, []byte{'\n'}); n > vtRows {
-		vtRows = n + dispH
-	}
-	// Also account for long lines that wrap.
-	if vtCols > 0 {
-		wrappedEstimate := len(raw)/vtCols + dispH
-		if wrappedEstimate > vtRows {
-			vtRows = wrappedEstimate
-		}
-	}
-	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
-	vt.Write(raw)
-
-	vt.Lock()
-	defer vt.Unlock()
-
-	// Get cursor position for rendering
-	cur := vt.Cursor()
-	curVisible := vt.CursorVisible()
-
-	var lines []string
-	for y := 0; y < vtRows; y++ {
-		cursorX := -1
-		if curVisible && y == cur.Y {
-			cursorX = cur.X
-		}
-		line := renderLine(vt, y, vtCols, cursorX)
-		lines = append(lines, line)
-	}
-
-	// Trim trailing empty lines
-	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
+	vtRows := estimateVTRows(raw, vtCols, dispH)
+	lines := replayVT10X(raw, vtCols, vtRows, true)
 
 	if len(lines) == 0 {
 		return ""
 	}
 
-	// Cache all lines for scrollback
 	av.cachedLines = lines
-
-	// Apply scroll offset: select a window into the lines
-	end := len(lines) - av.scrollOffset
-	if end < 0 {
-		end = 0
-	}
-	start := end - dispH
-	if start < 0 {
-		start = 0
-	}
-	visible := lines[start:end]
-
-	for i, line := range visible {
-		visible[i] = ansi.Truncate(line, dispW, "\x1b[0m")
-	}
-
-	return strings.Join(visible, "\n")
+	return av.windowLines(lines, dispW, dispH)
 }
 
 func (av AgentView) renderStatusBar() string {
@@ -526,9 +472,8 @@ func (av AgentView) renderStatusBar() string {
 	return bar
 }
 
-// sliceCachedLines selects the visible window from cachedLines using scrollOffset.
-func (av *AgentView) sliceCachedLines(dispW, dispH int) string {
-	lines := av.cachedLines
+// windowLines applies scroll offset to select a visible window, then truncates.
+func (av *AgentView) windowLines(lines []string, dispW, dispH int) string {
 	if len(lines) == 0 {
 		return ""
 	}
@@ -546,6 +491,11 @@ func (av *AgentView) sliceCachedLines(dispW, dispH int) string {
 		result[i] = ansi.Truncate(line, dispW, "\x1b[0m")
 	}
 	return strings.Join(result, "\n")
+}
+
+// sliceCachedLines selects the visible window from cachedLines using scrollOffset.
+func (av *AgentView) sliceCachedLines(dispW, dispH int) string {
+	return av.windowLines(av.cachedLines, dispW, dispH)
 }
 
 // terminalDisplaySize returns the usable display dimensions inside the terminal panel.
@@ -633,102 +583,3 @@ func padHeight(s string, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// keyByteMap maps Bubble Tea key types to their raw terminal byte sequences.
-var keyByteMap = map[tea.KeyType][]byte{
-	tea.KeySpace:     {' '},
-	tea.KeyEnter:     {'\r'},
-	tea.KeyBackspace: {0x7f},
-	tea.KeyTab:       {'\t'},
-	tea.KeyShiftTab:  []byte("\x1b[Z"),
-	tea.KeyEscape:    {0x1b},
-	tea.KeyHome:      []byte("\x1b[H"),
-	tea.KeyEnd:       []byte("\x1b[F"),
-	tea.KeyPgUp:      []byte("\x1b[5~"),
-	tea.KeyPgDown:    []byte("\x1b[6~"),
-	tea.KeyDelete:    []byte("\x1b[3~"),
-	tea.KeyCtrlA:     {0x01},
-	tea.KeyCtrlB:     {0x02},
-	tea.KeyCtrlC:     {0x03},
-	tea.KeyCtrlD:     {0x04},
-	tea.KeyCtrlE:     {0x05},
-	tea.KeyCtrlF:     {0x06},
-	tea.KeyCtrlG:     {0x07},
-	tea.KeyCtrlH:     {0x08},
-	tea.KeyCtrlK:     {0x0b},
-	tea.KeyCtrlL:     {0x0c},
-	tea.KeyCtrlN:     {0x0e},
-	tea.KeyCtrlO:     {0x0f},
-	tea.KeyCtrlP:     {0x10},
-	tea.KeyCtrlR:     {0x12},
-	tea.KeyCtrlS:     {0x13},
-	tea.KeyCtrlT:     {0x14},
-	tea.KeyCtrlU:     {0x15},
-	tea.KeyCtrlV:     {0x16},
-	tea.KeyCtrlW:     {0x17},
-	tea.KeyCtrlX:     {0x18},
-	tea.KeyCtrlY:     {0x19},
-	tea.KeyCtrlZ:     {0x1a},
-	tea.KeyF1:        []byte("\x1bOP"),
-	tea.KeyF2:        []byte("\x1bOQ"),
-	tea.KeyF3:        []byte("\x1bOR"),
-	tea.KeyF4:        []byte("\x1bOS"),
-	tea.KeyF5:        []byte("\x1b[15~"),
-	tea.KeyF6:        []byte("\x1b[17~"),
-	tea.KeyF7:        []byte("\x1b[18~"),
-	tea.KeyF8:        []byte("\x1b[19~"),
-	tea.KeyF9:        []byte("\x1b[20~"),
-	tea.KeyF10:       []byte("\x1b[21~"),
-	tea.KeyF11:       []byte("\x1b[23~"),
-	tea.KeyF12:       []byte("\x1b[24~"),
-}
-
-// altArrowMap maps arrow key types to their Alt-modified escape sequences.
-var altArrowMap = map[tea.KeyType][]byte{
-	tea.KeyUp:    []byte("\x1b[1;3A"),
-	tea.KeyDown:  []byte("\x1b[1;3B"),
-	tea.KeyRight: []byte("\x1b[1;3C"),
-	tea.KeyLeft:  []byte("\x1b[1;3D"),
-}
-
-// arrowMap maps arrow key types to their standard escape sequences.
-var arrowMap = map[tea.KeyType][]byte{
-	tea.KeyUp:    []byte("\x1b[A"),
-	tea.KeyDown:  []byte("\x1b[B"),
-	tea.KeyRight: []byte("\x1b[C"),
-	tea.KeyLeft:  []byte("\x1b[D"),
-}
-
-// keyMsgToBytes converts a Bubble Tea key message to raw terminal bytes.
-func keyMsgToBytes(msg tea.KeyMsg) []byte {
-	// Runes: raw character input, with Alt prefix when modifier is held
-	if msg.Type == tea.KeyRunes {
-		b := []byte(string(msg.Runes))
-		if msg.Alt {
-			return append([]byte{0x1b}, b...)
-		}
-		return b
-	}
-
-	// Arrow keys with Alt modifier
-	if msg.Alt {
-		if b, ok := altArrowMap[msg.Type]; ok {
-			return b
-		}
-	}
-
-	// Arrow keys without modifier
-	if b, ok := arrowMap[msg.Type]; ok {
-		return b
-	}
-
-	// All other keys
-	if b, ok := keyByteMap[msg.Type]; ok {
-		return b
-	}
-
-	// Fallback: use the string representation
-	if s := msg.String(); s != "" {
-		return []byte(s)
-	}
-	return nil
-}

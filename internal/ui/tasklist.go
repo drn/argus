@@ -11,11 +11,10 @@ import (
 // TaskList renders the task list view.
 type TaskList struct {
 	tasks    []*model.Task
-	cursor   int
+	scroll   ScrollState
 	theme    Theme
 	width    int
 	height   int
-	offset   int // scroll offset
 	filter   string
 	filtered []*model.Task
 	running  map[string]bool // task IDs with active agent sessions
@@ -27,25 +26,17 @@ func NewTaskList(theme Theme) TaskList {
 }
 
 func (tl *TaskList) SetRunning(ids []string) {
-	tl.running = make(map[string]bool, len(ids))
-	for _, id := range ids {
-		tl.running[id] = true
-	}
+	tl.running = toStringSet(ids)
 }
 
 func (tl *TaskList) SetIdle(ids []string) {
-	tl.idle = make(map[string]bool, len(ids))
-	for _, id := range ids {
-		tl.idle[id] = true
-	}
+	tl.idle = toStringSet(ids)
 }
 
 func (tl *TaskList) SetTasks(tasks []*model.Task) {
 	tl.tasks = tasks
 	tl.applyFilter()
-	if tl.cursor >= len(tl.filtered) {
-		tl.cursor = max(0, len(tl.filtered)-1)
-	}
+	tl.scroll.ClampCursor(len(tl.filtered))
 }
 
 func (tl *TaskList) SetSize(w, h int) {
@@ -54,30 +45,20 @@ func (tl *TaskList) SetSize(w, h int) {
 }
 
 func (tl *TaskList) CursorUp() {
-	if tl.cursor > 0 {
-		tl.cursor--
-		if tl.cursor < tl.offset {
-			tl.offset = tl.cursor
-		}
-	}
+	tl.scroll.CursorUp()
 }
 
 func (tl *TaskList) CursorDown() {
-	if tl.cursor < len(tl.filtered)-1 {
-		tl.cursor++
-		visible := tl.visibleRows()
-		if tl.cursor >= tl.offset+visible {
-			tl.offset = tl.cursor - visible + 1
-		}
-	}
+	tl.scroll.CursorDown(len(tl.filtered), tl.visibleRows())
 }
 
 func (tl *TaskList) Selected() *model.Task {
 	if len(tl.filtered) == 0 {
 		return nil
 	}
-	if tl.cursor >= 0 && tl.cursor < len(tl.filtered) {
-		return tl.filtered[tl.cursor]
+	c := tl.scroll.Cursor()
+	if c >= 0 && c < len(tl.filtered) {
+		return tl.filtered[c]
 	}
 	return nil
 }
@@ -85,8 +66,7 @@ func (tl *TaskList) Selected() *model.Task {
 func (tl *TaskList) SetFilter(f string) {
 	tl.filter = f
 	tl.applyFilter()
-	tl.cursor = 0
-	tl.offset = 0
+	tl.scroll.Reset()
 }
 
 func (tl *TaskList) applyFilter() {
@@ -120,14 +100,16 @@ func (tl TaskList) View() string {
 
 	var b strings.Builder
 	visible := tl.visibleRows()
-	end := tl.offset + visible
+	offset := tl.scroll.Offset()
+	cursor := tl.scroll.Cursor()
+	end := offset + visible
 	if end > len(tl.filtered) {
 		end = len(tl.filtered)
 	}
 
-	for i := tl.offset; i < end; i++ {
+	for i := offset; i < end; i++ {
 		t := tl.filtered[i]
-		selected := i == tl.cursor
+		selected := i == cursor
 
 		statusStyle := tl.statusStyle(t.Status)
 		badge := statusStyle.Render(t.Status.Badge())

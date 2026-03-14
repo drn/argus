@@ -12,11 +12,10 @@ import (
 // ProjectList renders the project list view.
 type ProjectList struct {
 	projects []projectEntry
-	cursor   int
+	scroll   ScrollState
 	theme    Theme
 	width    int
 	height   int
-	offset   int
 }
 
 // projectEntry is a flattened project for display.
@@ -36,9 +35,7 @@ func (pl *ProjectList) SetProjects(projects map[string]config.Project) {
 	}
 	// Sort alphabetically for stable ordering
 	sortProjects(pl.projects)
-	if pl.cursor >= len(pl.projects) {
-		pl.cursor = max(0, len(pl.projects)-1)
-	}
+	pl.scroll.ClampCursor(len(pl.projects))
 }
 
 func sortProjects(entries []projectEntry) {
@@ -53,30 +50,20 @@ func (pl *ProjectList) SetSize(w, h int) {
 }
 
 func (pl *ProjectList) CursorUp() {
-	if pl.cursor > 0 {
-		pl.cursor--
-		if pl.cursor < pl.offset {
-			pl.offset = pl.cursor
-		}
-	}
+	pl.scroll.CursorUp()
 }
 
 func (pl *ProjectList) CursorDown() {
-	if pl.cursor < len(pl.projects)-1 {
-		pl.cursor++
-		visible := pl.visibleRows()
-		if pl.cursor >= pl.offset+visible {
-			pl.offset = pl.cursor - visible + 1
-		}
-	}
+	pl.scroll.CursorDown(len(pl.projects), pl.visibleRows())
 }
 
 func (pl *ProjectList) Selected() *projectEntry {
 	if len(pl.projects) == 0 {
 		return nil
 	}
-	if pl.cursor >= 0 && pl.cursor < len(pl.projects) {
-		return &pl.projects[pl.cursor]
+	c := pl.scroll.Cursor()
+	if c >= 0 && c < len(pl.projects) {
+		return &pl.projects[c]
 	}
 	return nil
 }
@@ -97,14 +84,16 @@ func (pl ProjectList) View() string {
 
 	var b strings.Builder
 	visible := pl.visibleRows()
-	end := pl.offset + visible
+	offset := pl.scroll.Offset()
+	cursor := pl.scroll.Cursor()
+	end := offset + visible
 	if end > len(pl.projects) {
 		end = len(pl.projects)
 	}
 
-	for i := pl.offset; i < end; i++ {
+	for i := offset; i < end; i++ {
 		entry := pl.projects[i]
-		selected := i == pl.cursor
+		selected := i == cursor
 
 		// Project name
 		nameStyle := pl.theme.Normal

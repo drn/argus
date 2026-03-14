@@ -302,26 +302,26 @@ func TestAgentView_HandleKey_FilePanelKeys(t *testing.T) {
 
 	// j moves down
 	av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-	if av.files.cursor != 1 {
-		t.Errorf("after j: cursor = %d, want 1", av.files.cursor)
+	if av.files.scroll.Cursor() != 1 {
+		t.Errorf("after j: cursor = %d, want 1", av.files.scroll.Cursor())
 	}
 
 	// down arrow moves down
 	av.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
-	if av.files.cursor != 2 {
-		t.Errorf("after down: cursor = %d, want 2", av.files.cursor)
+	if av.files.scroll.Cursor() != 2 {
+		t.Errorf("after down: cursor = %d, want 2", av.files.scroll.Cursor())
 	}
 
 	// k moves up
 	av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-	if av.files.cursor != 1 {
-		t.Errorf("after k: cursor = %d, want 1", av.files.cursor)
+	if av.files.scroll.Cursor() != 1 {
+		t.Errorf("after k: cursor = %d, want 1", av.files.scroll.Cursor())
 	}
 
 	// up arrow moves up
 	av.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
-	if av.files.cursor != 0 {
-		t.Errorf("after up: cursor = %d, want 0", av.files.cursor)
+	if av.files.scroll.Cursor() != 0 {
+		t.Errorf("after up: cursor = %d, want 0", av.files.scroll.Cursor())
 	}
 }
 

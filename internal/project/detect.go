@@ -1,6 +1,9 @@
 package project
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 // projectSignature maps a file marker to its icon and language.
 type projectSignature struct {
@@ -25,25 +28,25 @@ var signatures = []projectSignature{
 	{".git", "\ue725", ""},
 }
 
-// DetectIcon returns a Nerd Font icon based on project files found at the given path.
-func DetectIcon(path string) string {
+// Detect returns the Nerd Font icon and language name for the project at path.
+// Does a single pass over signatures, returning the first match.
+func Detect(path string) (icon, lang string) {
 	for _, s := range signatures {
-		if _, err := os.Stat(path + "/" + s.file); err == nil {
-			return s.icon
+		if _, err := os.Stat(filepath.Join(path, s.file)); err == nil {
+			return s.icon, s.lang
 		}
 	}
-	return "\uf115" // folder icon fallback
+	return "\uf115", "" // folder icon fallback
+}
+
+// DetectIcon returns a Nerd Font icon based on project files found at the given path.
+func DetectIcon(path string) string {
+	icon, _ := Detect(path)
+	return icon
 }
 
 // DetectLanguage returns a language name based on project files.
 func DetectLanguage(path string) string {
-	for _, s := range signatures {
-		if s.lang == "" {
-			continue
-		}
-		if _, err := os.Stat(path + "/" + s.file); err == nil {
-			return s.lang
-		}
-	}
-	return ""
+	_, lang := Detect(path)
+	return lang
 }

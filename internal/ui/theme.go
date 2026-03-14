@@ -39,6 +39,30 @@ func clampModalWidth(totalWidth int) int {
 	return w
 }
 
+// toStringSet converts a string slice to a lookup map.
+func toStringSet(ids []string) map[string]bool {
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	return m
+}
+
+// borderedPanel creates a rounded-border panel with focus-aware border color.
+func borderedPanel(w, h int, focused bool, content string) string {
+	borderColor := "238"
+	if focused {
+		borderColor = "87"
+	}
+	innerH := max(h-2, 1)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(borderColor)).
+		Width(w - 2).
+		Height(innerH).
+		Render(content)
+}
+
 func DefaultTheme() Theme {
 	return Theme{
 		Title: lipgloss.NewStyle().

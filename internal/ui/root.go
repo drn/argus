@@ -2,12 +2,10 @@ package ui
 
 import (
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -484,46 +482,42 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	})
 }
 
+// determinePostExitStatus decides what status a task should have after its
+// agent process exits. Returns the new status and whether it was a quick exit
+// (error/too-fast) that should keep the agent view open.
+func determinePostExitStatus(msg AgentFinishedMsg, t *model.Task) (newStatus model.Status, clearSession bool, quickExit bool) {
+	if msg.Stopped {
+		return model.StatusInReview, false, false
+	}
+	if msg.Err != nil {
+		return t.Status, true, true
+	}
+	if !t.StartedAt.IsZero() && time.Since(t.StartedAt) < minAgentRunTime {
+		return t.Status, true, true
+	}
+	if t.Worktree != "" && !dirExists(t.Worktree) {
+		return model.StatusComplete, false, false
+	}
+	return model.StatusComplete, false, false
+}
+
 func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	t, err := m.db.Get(msg.TaskID)
 	if err != nil {
-		// Task was deleted while agent was running — silently ignore
 		return m, nil
 	}
 
 	t.AgentPID = 0
-
-	quickExit := false
-
-	if msg.Stopped {
-		// Explicitly stopped via Runner.Stop — mark for review
-		t.SetStatus(model.StatusInReview)
-	} else if msg.Err != nil {
-		// Process exited with an error (e.g. failed resume, crash) —
-		// keep the task in progress so the user can retry.
+	newStatus, clearSession, quickExit := determinePostExitStatus(msg, t)
+	t.SetStatus(newStatus)
+	if clearSession {
 		t.SessionID = ""
-		quickExit = true
-	} else if !t.StartedAt.IsZero() && time.Since(t.StartedAt) < minAgentRunTime {
-		// Agent exited too quickly — likely a startup or config error.
-		// Keep in progress so the user can retry.
-		t.SessionID = ""
-		quickExit = true
-	} else if t.Worktree != "" && !dirExists(t.Worktree) {
-		// Worktree removed — auto-complete
-		t.SetStatus(model.StatusComplete)
-	} else {
-		// Agent session exited on its own — task is complete
-		t.SetStatus(model.StatusComplete)
 	}
 
-	// Preserve last output so the agent view can display it after session cleanup.
 	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
 		m.agentview.SetLastOutput(msg.LastOutput)
 	}
 
-	// On normal completion or explicit stop, return to task list.
-	// On quick exit or error, stay on agent view so the user can see
-	// the terminal output (error messages, stack traces, etc.).
 	if m.current == viewAgent && m.agentview.taskID == msg.TaskID && !quickExit {
 		m.current = viewTaskList
 	}
@@ -572,18 +566,16 @@ func (m Model) handleNewTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleConfirmAction handles enter/esc for confirmation dialogs.
+// The cleanup function is called with the selected task on confirmation.
+func (m Model) handleConfirmAction(msg tea.KeyMsg, cleanup func(*model.Task)) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
 		if t := m.tasklist.Selected(); t != nil {
-			// Stop the agent session if running
 			if m.runner.HasSession(t.ID) {
 				_ = m.runner.Stop(t.ID)
 			}
-			// Clean up worktree if configured
-			if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
-				removeWorktree(t.Worktree)
-			}
+			cleanup(t)
 			_ = m.db.Delete(t.ID)
 			m.refreshTasks()
 		}
@@ -593,42 +585,30 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.current = viewTaskList
 		return m, nil
 	default:
-		// Only enter confirms, only esc cancels — ignore other keys
 		return m, nil
 	}
 }
 
-func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEnter:
-		if t := m.tasklist.Selected(); t != nil {
-			// Stop the agent session if running
-			if m.runner.HasSession(t.ID) {
-				_ = m.runner.Stop(t.ID)
-			}
-			// Remove worktree and delete branch
-			cfg := m.db.Config()
-			if t.Worktree != "" {
-				repoDir := agent.ResolveDir(t, cfg)
-				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
-			} else if t.Branch != "" {
-				// No worktree but has a branch — try to delete it from project dir
-				if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
-					deleteBranch(repoDir, t.Branch)
-				}
-			}
-			_ = m.db.Delete(t.ID)
-			m.refreshTasks()
+func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	return m.handleConfirmAction(msg, func(t *model.Task) {
+		if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
+			removeWorktree(t.Worktree)
 		}
-		m.current = viewTaskList
-		return m, nil
-	case tea.KeyEsc:
-		m.current = viewTaskList
-		return m, nil
-	default:
-		// Only enter confirms, only esc cancels — ignore other keys
-		return m, nil
-	}
+	})
+}
+
+func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	return m.handleConfirmAction(msg, func(t *model.Task) {
+		cfg := m.db.Config()
+		if t.Worktree != "" {
+			repoDir := agent.ResolveDir(t, cfg)
+			removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+		} else if t.Branch != "" {
+			if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
+				deleteBranch(repoDir, t.Branch)
+			}
+		}
+	})
 }
 
 func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -814,295 +794,4 @@ func (m *Model) refreshTasks() {
 	m.statusbar.SetRunning(running)
 }
 
-func (m Model) View() string {
-	if m.quitting {
-		return ""
-	}
-
-	// Status bar at the bottom
-	m.statusbar.SetProjectTab(m.activeTab == tabProjects)
-	bar := m.statusbar.View()
-
-	// Agent view: full-screen three-panel layout
-	if m.current == viewAgent {
-		return m.agentview.View()
-	}
-
-	// Modals are fully placed (centered), render directly with status bar
-	switch m.current {
-	case viewConfirmDeleteProject:
-		return m.confirmDeleteProjectView() + "\n" + bar
-	case viewConfirmDelete:
-		return m.confirmDeleteView() + "\n" + bar
-	case viewConfirmDestroy:
-		return m.confirmDestroyView() + "\n" + bar
-	}
-
-	// For overlay views, show them without the banner
-	switch m.current {
-	case viewHelp, viewPrompt:
-		var content string
-		switch m.current {
-		case viewHelp:
-			content = m.helpview.View()
-		case viewPrompt:
-			content = m.promptView()
-		}
-		return m.padToBottom(content, bar)
-	}
-
-	// Overlay modals
-	if m.current == viewNewTask {
-		return m.newtask.View() + "\n" + bar
-	}
-	if m.current == viewNewProject {
-		return m.newproject.View() + "\n" + bar
-	}
-
-	// Tab header
-	tabHeader := m.renderTabHeader()
-
-	switch m.activeTab {
-	case tabProjects:
-		return m.renderProjectsView(tabHeader, bar)
-	default:
-		return m.renderTasksView(tabHeader, bar)
-	}
-}
-
-func (m Model) padToBottom(content, bar string) string {
-	barHeight := lipgloss.Height(bar)
-	contentHeight := m.height - barHeight
-	if contentHeight < 0 {
-		contentHeight = 0
-	}
-	contentLines := lipgloss.Height(content)
-	padding := ""
-	if contentLines < contentHeight {
-		padding = strings.Repeat("\n", contentHeight-contentLines)
-	}
-	return content + padding + "\n" + bar
-}
-
-// splitRightHeights returns the git status and preview pane heights.
-// Git status gets ~30% of the right pane, preview gets the rest.
-func (m Model) splitRightHeights(total int) (int, int) {
-	gitH := total * 3 / 10
-	if gitH < 5 {
-		gitH = 5
-	}
-	if gitH > 15 {
-		gitH = 15
-	}
-	previewH := total - gitH
-	if previewH < 5 {
-		previewH = 5
-	}
-	return gitH, previewH
-}
-
-// splitWidths returns the left (task list) and right (preview) pane widths.
-func (m Model) splitWidths() (int, int) {
-	// Give ~40% to task list, rest to preview. Minimum 30 for tasks.
-	left := m.width * 2 / 5
-	if left < 30 {
-		left = 30
-	}
-	if left > m.width-20 {
-		left = m.width - 20
-	}
-	right := m.width - left
-	return left, right
-}
-
-func (m Model) renderTabHeader() string {
-	activeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("87")).
-		Underline(false)
-	inactiveStyle := m.theme.Dimmed
-
-	tabs := []struct {
-		label string
-		key   string
-		t     tab
-	}{
-		{"TASKS", "1", tabTasks},
-		{"PROJECTS", "2", tabProjects},
-	}
-
-	var parts []string
-	for _, t := range tabs {
-		style := inactiveStyle
-		if t.t == m.activeTab {
-			style = activeStyle
-		}
-		parts = append(parts, style.Render("  "+t.label+" "))
-	}
-	header := strings.Join(parts, "  ")
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, header)
-}
-
-func (m Model) renderTasksView(tabHeader, bar string) string {
-	// Empty state: show banner centered on page
-	if len(m.db.Tasks()) == 0 {
-		content := m.emptyStateView()
-		return m.padToBottom(content, bar)
-	}
-
-	// Split layout: task list on left, agent preview on right
-	tasks := m.tasklist.View()
-	leftContent := tasks
-
-	// Git status + Preview pane for selected task
-	var taskID string
-	if t := m.tasklist.Selected(); t != nil {
-		taskID = t.ID
-	}
-	gitView := m.gitstatus.View()
-	previewView := m.preview.View(taskID)
-	rightContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
-
-	// Join horizontally
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
-	content := tabHeader + "\n" + body
-
-	return m.padToBottom(content, bar)
-}
-
-func (m Model) renderProjectsView(tabHeader, bar string) string {
-	projects := m.projectlist.View()
-	leftContent := projects
-
-	// Right pane: project details for selected project
-	rightContent := m.renderProjectDetail()
-
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftContent, rightContent)
-	content := tabHeader + "\n" + body
-	return m.padToBottom(content, bar)
-}
-
-func (m Model) renderProjectDetail() string {
-	entry := m.projectlist.Selected()
-	_, rightWidth := m.splitWidths()
-	contentHeight := m.height - 3
-
-	if entry == nil {
-		empty := m.theme.Dimmed.Render("  No project selected")
-		return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(empty)
-	}
-
-	var b strings.Builder
-	b.WriteString(m.theme.Title.Render("  "+entry.Name) + "\n\n")
-
-	fields := []struct{ label, value string }{
-		{"Path", entry.Project.Path},
-		{"Branch", entry.Project.Branch},
-		{"Backend", entry.Project.Backend},
-	}
-	for _, f := range fields {
-		val := f.value
-		if val == "" {
-			val = "(default)"
-		}
-		b.WriteString("  " + m.theme.Dimmed.Render(f.label+": ") + m.theme.Normal.Render(val) + "\n")
-	}
-
-	return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(b.String())
-}
-
-func (m Model) emptyStateView() string {
-	banner := renderBanner(m.width)
-	hint := m.theme.Dimmed.Render("Press [n] to create your first task")
-	hint = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, hint)
-	block := banner + "\n\n" + hint
-
-	// Center vertically in the available content area
-	barHeight := 1
-	contentHeight := m.height - barHeight - 1
-	blockHeight := lipgloss.Height(block)
-	topPad := (contentHeight - blockHeight) / 2
-	if topPad < 0 {
-		topPad = 0
-	}
-
-	return strings.Repeat("\n", topPad) + block
-}
-
-func (m Model) promptView() string {
-	t := m.tasklist.Selected()
-	if t == nil {
-		return ""
-	}
-
-	title := m.theme.Title.Render("Prompt: " + t.Name)
-	prompt := t.Prompt
-	if prompt == "" {
-		prompt = m.theme.Dimmed.Render("(no prompt set)")
-	}
-
-	return title + "\n\n  " + prompt + "\n\n" +
-		m.theme.Help.Render("  Press any key to close")
-}
-
-// renderCenteredModal renders a bordered modal centered on screen.
-func (m Model) renderCenteredModal(body string, preferredWidth int) string {
-	w := preferredWidth
-	if m.width > 0 && w > m.width-4 {
-		w = m.width - 4
-	}
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
-		Padding(1, 2).
-		Width(w).
-		Render(body)
-	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
-}
-
-func (m Model) confirmDeleteProjectView() string {
-	entry := m.projectlist.Selected()
-	if entry == nil {
-		return ""
-	}
-	title := m.theme.Title.Render("Delete project?")
-	name := "  " + m.theme.Normal.Render(entry.Name)
-	path := "  " + m.theme.Dimmed.Render(entry.Project.Path)
-	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-	body := title + "\n\n" + name + "\n" + path + "\n\n" + hint
-	return m.renderCenteredModal(body, 50)
-}
-
-func (m Model) confirmDeleteView() string {
-	t := m.tasklist.Selected()
-	if t == nil {
-		return ""
-	}
-	title := m.theme.Title.Render("Delete task?")
-	name := "  " + m.theme.Normal.Render(t.Name)
-	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-	body := title + "\n\n" + name + "\n\n" + hint
-	return m.renderCenteredModal(body, 50)
-}
-
-func (m Model) confirmDestroyView() string {
-	t := m.tasklist.Selected()
-	if t == nil {
-		return ""
-	}
-	var details []string
-	details = append(details, "  "+m.theme.Normal.Render(t.Name))
-	if t.Worktree != "" {
-		details = append(details, "  "+m.theme.Dimmed.Render("worktree: "+t.Worktree))
-	}
-	if t.Branch != "" {
-		details = append(details, "  "+m.theme.Dimmed.Render("branch: "+t.Branch))
-	}
-	title := m.theme.Title.Render("Destroy task?")
-	subtitle := m.theme.Help.Render("  This will terminate the agent, remove the worktree and branch, and delete the task.")
-	hint := m.theme.Help.Render("  [enter] confirm  [esc] cancel")
-	body := title + "\n" + subtitle + "\n\n" +
-		strings.Join(details, "\n") + "\n\n" + hint
-	return m.renderCenteredModal(body, 60)
-}
 
