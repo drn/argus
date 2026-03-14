@@ -776,3 +776,85 @@ func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 		t.Errorf("expected 1 task eligible for resume, got %d", count)
 	}
 }
+
+func TestResolveTaskDirMsg_CachesDir(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "cached-task",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+
+	// Simulate receiving an async ResolveTaskDirMsg
+	updated, _ := m.Update(ResolveTaskDirMsg{TaskID: "t1", Dir: "/tmp/worktree"})
+	um := updated.(Model)
+
+	// The resolved dir should be cached
+	if dir, ok := um.resolvedDirs["t1"]; !ok || dir != "/tmp/worktree" {
+		t.Errorf("expected cached dir /tmp/worktree, got %q (ok=%v)", dir, ok)
+	}
+
+	// The task's Worktree field should be persisted to the DB
+	got, err := um.db.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Worktree != "/tmp/worktree" {
+		t.Errorf("expected task Worktree=/tmp/worktree, got %q", got.Worktree)
+	}
+}
+
+func TestScheduleGitRefresh_UsesCachedDir(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "cached-task",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+
+	// Pre-populate the cache
+	m.resolvedDirs["t1"] = "/tmp/worktree"
+
+	// scheduleGitRefresh should use the cached dir and return a command
+	cmd := m.scheduleGitRefresh()
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd when dir is cached")
+	}
+
+	// Execute the command and verify it produces a GitStatusRefreshMsg
+	msg := cmd()
+	if gsMsg, ok := msg.(GitStatusRefreshMsg); !ok {
+		t.Errorf("expected GitStatusRefreshMsg, got %T", msg)
+	} else if gsMsg.TaskID != "t1" {
+		t.Errorf("expected task ID t1, got %q", gsMsg.TaskID)
+	}
+}
+
+func TestScheduleGitRefresh_NoTaskReturnsNil(t *testing.T) {
+	m := testModel(t) // no tasks
+
+	cmd := m.scheduleGitRefresh()
+	if cmd != nil {
+		t.Error("expected nil cmd when no tasks")
+	}
+}
+
+func TestCursorChange_TriggersGitRefresh(t *testing.T) {
+	tasks := []*model.Task{
+		{ID: "t1", Name: "first", Status: model.StatusPending},
+		{ID: "t2", Name: "second", Status: model.StatusPending},
+	}
+	m := testModel(t, tasks...)
+
+	// Pre-populate cache for second task
+	m.resolvedDirs["t2"] = "/tmp/second-worktree"
+
+	// Move cursor down
+	msg := tea.KeyMsg{Type: tea.KeyDown}
+	_, cmd := m.Update(msg)
+
+	// Should return a command (git refresh triggered by cursor change)
+	if cmd == nil {
+		t.Error("expected non-nil cmd on cursor change with cached dir")
+	}
+}

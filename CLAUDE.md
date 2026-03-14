@@ -40,6 +40,8 @@ go test ./internal/store/   # run tests for a single package
 
 **Agent pattern:** A single `readLoop` goroutine is the sole reader of the PTY master fd. It always writes to the ring buffer, and when a writer is attached (via `session.attachW`), also tees output there. This avoids competing readers on the same fd. The detach key (`ctrl+q`) is intercepted by `detachReader` wrapping stdin.
 
+**Git status pattern:** Git operations (worktree discovery, diff, status) must **never** run synchronously on the UI thread. The `resolvedDirs` cache on `Model` stores task ID → worktree dir mappings. On cache hit, `scheduleGitRefresh()` kicks off `FetchGitStatus` as a `tea.Cmd`. On cache miss, it fires `resolveTaskDirAsync()` which returns a `ResolveTaskDirMsg` — only then does the git status fetch begin. This two-phase async pattern keeps the UI responsive. Maps are reference types in Go, so the cache works correctly even through Bubble Tea's value-receiver `Update` method.
+
 ## Config & Persistence
 
 - Data dir: `~/.argus/`
@@ -53,11 +55,19 @@ go test ./internal/store/   # run tests for a single package
 - Use `charmbracelet/x/term` for raw mode (cross-platform) instead of platform-specific ioctls (`TIOCGETA` is macOS-only, `TCGETS` is Linux-only).
 - `tea.ExecCommand.SetStdin/SetStdout` must capture and use Bubble Tea's `p.input`/`p.output` — don't hardcode `os.Stdin`/`os.Stdout`.
 - The single-reader-tee pattern (one goroutine reads PTY, tees to buffer + optional writer) is critical. Two goroutines reading the same fd causes data loss.
+- **Never run git commands or filesystem discovery synchronously in `Update()`.** Even fast git commands take 50-500ms which freezes the entire TUI. Use `tea.Cmd` to run them in background goroutines and deliver results via messages. Cache resolved paths in a `map` on the model to avoid repeated lookups.
 - **Backend default config must be self-healing.** The default claude backend command MUST include `--dangerously-skip-permissions` and MUST NOT use `-p` as the prompt flag. `-p` puts Claude in non-interactive print mode (process prompt → exit), which silently breaks agent sessions — they show "waiting for output" then auto-complete. The `fixupBackends()` method in `internal/db/migrate.go` runs on every `Open()` to detect and repair outdated backend configs. Any change to `DefaultConfig()` backend values must be mirrored in `fixupBackends()` detection logic, or existing databases will retain stale values.
 
 ## Development Rules
 
 - **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
+
+## Context Directory
+
+- `context/` stores durable cross-session knowledge, research, and plans
+- `context/knowledge/index.md` is the knowledge graph index — read it when you need project history or domain context
+- `context/research/` holds investigation notes and spike results
+- `context/plans/` holds strategic plans and proposals
 
 ## Planned but Not Yet Implemented
 
