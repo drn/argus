@@ -1257,6 +1257,30 @@ func TestResolveTaskDirMsg_CachesDir(t *testing.T) {
 	}
 }
 
+func TestScheduleGitRefresh_SetsTaskIDOnGitStatus(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "test-task",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+	m.resolvedDirs["t1"] = "/tmp/worktree"
+
+	// scheduleGitRefresh is called through Update on a value receiver copy.
+	// The gitstatus.taskID must persist because gitstatus is a pointer.
+	_ = m.scheduleGitRefresh()
+
+	if m.gitstatus.taskID != "t1" {
+		t.Errorf("expected gitstatus.taskID=%q after scheduleGitRefresh, got %q", "t1", m.gitstatus.taskID)
+	}
+
+	// Verify GitStatusRefreshMsg is accepted (taskID matches)
+	m.gitstatus.Update(GitStatusRefreshMsg{TaskID: "t1", Status: "M file.go"})
+	if !m.gitstatus.loaded {
+		t.Error("expected gitstatus.loaded=true after Update with matching taskID")
+	}
+}
+
 func TestScheduleGitRefresh_UsesCachedDir(t *testing.T) {
 	task := &model.Task{
 		ID:     "t1",

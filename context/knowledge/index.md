@@ -4,7 +4,7 @@ Structured knowledge for cross-session persistence. Each file covers a topic/dom
 
 | File | Topic | Key Entities | Last Updated |
 |------|-------|-------------|-------------|
-| code-quality.md | Refactoring patterns and deferred items | ScrollState, vtrender.go, sgrColor, borderedPanel, file splits, deferred items | 2026-03-14 |
+| code-quality.md | Refactoring patterns and deferred items | ScrollState, vtrender.go, sgrColor, borderedPanel, file splits, GitStatus pointer bug, deferred items | 2026-03-14 |
 
 ## Coverage Map
 

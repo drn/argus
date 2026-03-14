@@ -80,7 +80,7 @@ type Model struct {
 	newtask     NewTaskForm
 	newproject  NewProjectForm
 	preview     Preview
-	gitstatus   GitStatus
+	gitstatus   *GitStatus
 	agentview   *AgentView
 	current      view
 	activeTab    tab
@@ -115,7 +115,7 @@ func NewModel(database *db.DB, runner *agent.Runner) Model {
 		statusbar:   sb,
 		helpview:    hv,
 		preview:     pv,
-		gitstatus:   gs,
+		gitstatus:   &gs,
 		agentview:   av,
 		current:     viewTaskList,
 		activeTab:   tabTasks,
