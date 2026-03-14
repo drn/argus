@@ -39,6 +39,16 @@ func (s *ScrollState) Cursor() int { return s.cursor }
 // Offset returns the current scroll offset.
 func (s *ScrollState) Offset() int { return s.offset }
 
+// SetCursor sets the cursor to a specific position.
+func (s *ScrollState) SetCursor(pos int) {
+	s.cursor = pos
+}
+
+// SetOffset sets the scroll offset directly.
+func (s *ScrollState) SetOffset(off int) {
+	s.offset = off
+}
+
 // Reset sets cursor and offset to zero.
 func (s *ScrollState) Reset() {
 	s.cursor = 0

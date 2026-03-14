@@ -2,13 +2,32 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/model"
 )
 
-// TaskList renders the task list view.
+// rowKind distinguishes project header rows from task rows in the flattened list.
+type rowKind int
+
+const (
+	rowProject rowKind = iota
+	rowTask
+)
+
+// row represents a single navigable row in the task list — either a project
+// header or a task nested under it.
+type row struct {
+	kind    rowKind
+	project string
+	task    *model.Task // nil for project headers
+}
+
+const uncategorized = "Uncategorized"
+
+// TaskList renders the task list view with collapsible project folders.
 type TaskList struct {
 	tasks    []*model.Task
 	scroll   ScrollState
@@ -19,6 +38,8 @@ type TaskList struct {
 	filtered []*model.Task
 	running  map[string]bool // task IDs with active agent sessions
 	idle     map[string]bool // task IDs with sessions waiting for input
+	rows     []row           // flattened display rows (headers + tasks)
+	expanded string          // currently expanded project name
 }
 
 func NewTaskList(theme Theme) TaskList {
@@ -36,7 +57,8 @@ func (tl *TaskList) SetIdle(ids []string) {
 func (tl *TaskList) SetTasks(tasks []*model.Task) {
 	tl.tasks = tasks
 	tl.applyFilter()
-	tl.scroll.ClampCursor(len(tl.filtered))
+	tl.buildRows()
+	tl.scroll.ClampCursor(len(tl.rows))
 }
 
 func (tl *TaskList) SetSize(w, h int) {
@@ -46,19 +68,29 @@ func (tl *TaskList) SetSize(w, h int) {
 
 func (tl *TaskList) CursorUp() {
 	tl.scroll.CursorUp()
+	tl.autoExpand()
 }
 
 func (tl *TaskList) CursorDown() {
-	tl.scroll.CursorDown(len(tl.filtered), tl.visibleRows())
+	tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+	tl.autoExpand()
 }
 
 func (tl *TaskList) Selected() *model.Task {
-	if len(tl.filtered) == 0 {
+	if len(tl.rows) == 0 {
 		return nil
 	}
 	c := tl.scroll.Cursor()
-	if c >= 0 && c < len(tl.filtered) {
-		return tl.filtered[c]
+	if c < 0 || c >= len(tl.rows) {
+		return nil
+	}
+	r := tl.rows[c]
+	if r.kind == rowTask {
+		return r.task
+	}
+	// On a project header — return the first task in the expanded project.
+	if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+		return tl.rows[c+1].task
 	}
 	return nil
 }
@@ -66,6 +98,24 @@ func (tl *TaskList) Selected() *model.Task {
 func (tl *TaskList) SetFilter(f string) {
 	tl.filter = f
 	tl.applyFilter()
+	// Reset expanded if the currently expanded project has no tasks after filtering.
+	if tl.expanded != "" {
+		found := false
+		for _, t := range tl.filtered {
+			p := t.Project
+			if p == "" {
+				p = uncategorized
+			}
+			if p == tl.expanded {
+				found = true
+				break
+			}
+		}
+		if !found {
+			tl.expanded = ""
+		}
+	}
+	tl.buildRows()
 	tl.scroll.Reset()
 }
 
@@ -84,17 +134,134 @@ func (tl *TaskList) applyFilter() {
 	}
 }
 
-func (tl *TaskList) visibleRows() int {
-	// Each task takes 2 lines (name + details)
-	rows := tl.height / 2
-	if rows < 1 {
-		rows = 1
+// projectGroup holds tasks belonging to a single project along with a
+// priority used for sort ordering.
+type projectGroup struct {
+	name     string
+	tasks    []*model.Task
+	priority int // lower = higher in the list
+}
+
+// buildRows groups filtered tasks by project and builds the flattened row list.
+func (tl *TaskList) buildRows() {
+	// Group tasks by project.
+	groupMap := make(map[string][]*model.Task)
+	var order []string
+	for _, t := range tl.filtered {
+		proj := t.Project
+		if proj == "" {
+			proj = uncategorized
+		}
+		if _, exists := groupMap[proj]; !exists {
+			order = append(order, proj)
+		}
+		groupMap[proj] = append(groupMap[proj], t)
 	}
-	return rows
+
+	// Build sortable groups with priority.
+	groups := make([]projectGroup, 0, len(order))
+	for _, name := range order {
+		tasks := groupMap[name]
+		pri := projectPriority(tasks)
+		if name == uncategorized {
+			pri += 100 // push to bottom within its tier
+		}
+		groups = append(groups, projectGroup{name: name, tasks: tasks, priority: pri})
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].priority != groups[j].priority {
+			return groups[i].priority < groups[j].priority
+		}
+		return groups[i].name < groups[j].name
+	})
+
+	// If nothing is expanded yet, expand the first project.
+	if tl.expanded == "" && len(groups) > 0 {
+		tl.expanded = groups[0].name
+	}
+
+	tl.rows = nil
+	for _, g := range groups {
+		tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
+		if g.name == tl.expanded {
+			for _, t := range g.tasks {
+				tl.rows = append(tl.rows, row{kind: rowTask, project: g.name, task: t})
+			}
+		}
+	}
+}
+
+// projectPriority returns a sort key: 0 for in-progress, 1 for pending, 2 for all-complete.
+func projectPriority(tasks []*model.Task) int {
+	hasInProgress := false
+	hasPending := false
+	for _, t := range tasks {
+		switch t.Status {
+		case model.StatusInProgress:
+			hasInProgress = true
+		case model.StatusPending:
+			hasPending = true
+		}
+	}
+	if hasInProgress {
+		return 0
+	}
+	if hasPending {
+		return 1
+	}
+	return 2
+}
+
+// autoExpand checks if the cursor moved to a different project and rebuilds
+// the row list with that project expanded.
+func (tl *TaskList) autoExpand() {
+	if len(tl.rows) == 0 {
+		return
+	}
+	c := tl.scroll.Cursor()
+	if c < 0 || c >= len(tl.rows) {
+		return
+	}
+	target := tl.rows[c].project
+	if target == tl.expanded {
+		return
+	}
+
+	// Remember what the cursor is pointing at so we can restore it.
+	currentRow := tl.rows[c]
+	tl.expanded = target
+	tl.buildRows()
+	tl.restoreCursor(currentRow)
+}
+
+// restoreCursor finds the row matching currentRow in the rebuilt rows slice
+// and positions the cursor there.
+func (tl *TaskList) restoreCursor(target row) {
+	for i, r := range tl.rows {
+		if r.kind == target.kind && r.project == target.project {
+			if r.kind == rowProject || r.task == target.task {
+				tl.scroll.SetCursor(i)
+				// Ensure offset is reasonable after cursor jump.
+				visible := tl.visibleRows()
+				if i < tl.scroll.Offset() {
+					tl.scroll.SetOffset(i)
+				} else if i >= tl.scroll.Offset()+visible {
+					tl.scroll.SetOffset(i - visible + 1)
+				}
+				return
+			}
+		}
+	}
+	tl.scroll.ClampCursor(len(tl.rows))
+}
+
+func (tl *TaskList) visibleRows() int {
+	// Each row takes 1-2 lines; use 2 as upper bound for scroll calculations.
+	return max(tl.height/2, 1)
 }
 
 func (tl TaskList) View() string {
-	if len(tl.filtered) == 0 {
+	if len(tl.rows) == 0 {
 		return "\n" + tl.theme.Dimmed.Render("    No tasks yet. Press [n] to create one.")
 	}
 
@@ -102,68 +269,94 @@ func (tl TaskList) View() string {
 	visible := tl.visibleRows()
 	offset := tl.scroll.Offset()
 	cursor := tl.scroll.Cursor()
-	end := offset + visible
-	if end > len(tl.filtered) {
-		end = len(tl.filtered)
-	}
+	end := min(offset+visible, len(tl.rows))
 
 	for i := offset; i < end; i++ {
-		t := tl.filtered[i]
+		r := tl.rows[i]
 		selected := i == cursor
 
-		statusStyle := tl.statusStyle(t.Status)
-		badge := statusStyle.Render(t.Status.Badge())
-
-		// Task name
-		nameStyle := tl.theme.Normal
-		if selected {
-			nameStyle = tl.theme.Selected
+		if r.kind == rowProject {
+			tl.renderProjectHeader(&b, r.project, selected)
+		} else {
+			tl.renderTaskRow(&b, r.task, selected)
 		}
-		if t.Status == model.StatusComplete {
-			nameStyle = tl.theme.Dimmed
-		}
-		name := nameStyle.Render(t.Name)
-
-		// Cursor indicator
-		cursor := "  "
-		if selected {
-			cursor = tl.theme.Selected.Render(" >")
-		}
-
-		// Status label (right-aligned)
-		displayText := t.Status.Display()
-		if t.Status == model.StatusInProgress && (!tl.running[t.ID] || tl.idle[t.ID]) {
-			displayText = "● idle"
-		}
-		statusLabel := statusStyle.Render(displayText)
-		elapsed := ""
-		if e := t.ElapsedString(); e != "" {
-			elapsed = "  " + tl.theme.Elapsed.Render(e)
-		}
-		right := statusLabel + elapsed
-
-		// Build first line with padding between name and status
-		left := fmt.Sprintf("%s %s  %s", cursor, badge, name)
-		gap := tl.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-		if gap < 1 {
-			gap = 1
-		}
-		b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
-
-		// Second line: project + branch (subtle)
-		detail := "      "
-		if t.Project != "" {
-			detail += tl.theme.ProjectName.Render(t.Project)
-			if t.Branch != "" {
-				detail += tl.theme.Dimmed.Render(" / " + t.Branch)
-			}
-		} else if t.Branch != "" {
-			detail += tl.theme.Dimmed.Render(t.Branch)
-		}
-		b.WriteString(detail + "\n")
 	}
 
 	return b.String()
+}
+
+func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selected bool) {
+	chevron := "▸"
+	if project == tl.expanded {
+		chevron = "▾"
+	}
+
+	// Count tasks in this project.
+	count := 0
+	for _, t := range tl.filtered {
+		p := t.Project
+		if p == "" {
+			p = uncategorized
+		}
+		if p == project {
+			count++
+		}
+	}
+
+	nameStyle := tl.theme.Section
+	chevronStyle := tl.theme.Dimmed
+	cursorStr := "  "
+	if selected {
+		nameStyle = tl.theme.Selected
+		chevronStyle = tl.theme.Selected
+		cursorStr = tl.theme.Selected.Render(" >")
+	}
+
+	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
+	line := fmt.Sprintf("%s %s %s%s", cursorStr, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
+	b.WriteString(line + "\n")
+}
+
+func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected bool) {
+	statusStyle := tl.statusStyle(t.Status)
+	badge := statusStyle.Render(t.Status.Badge())
+
+	nameStyle := tl.theme.Normal
+	if selected {
+		nameStyle = tl.theme.Selected
+	}
+	if t.Status == model.StatusComplete {
+		nameStyle = tl.theme.Dimmed
+	}
+	name := nameStyle.Render(t.Name)
+
+	cursorStr := "    "
+	if selected {
+		cursorStr = tl.theme.Selected.Render("   >")
+	}
+
+	// Status label (right-aligned)
+	displayText := t.Status.Display()
+	if t.Status == model.StatusInProgress && (!tl.running[t.ID] || tl.idle[t.ID]) {
+		displayText = "● idle"
+	}
+	statusLabel := statusStyle.Render(displayText)
+	elapsed := ""
+	if e := t.ElapsedString(); e != "" {
+		elapsed = "  " + tl.theme.Elapsed.Render(e)
+	}
+	right := statusLabel + elapsed
+
+	left := fmt.Sprintf("%s %s  %s", cursorStr, badge, name)
+	gap := max(tl.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
+	b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
+
+	// Second line: branch only (project shown in header)
+	detail := "        "
+	if t.Branch != "" {
+		detail += tl.theme.Dimmed.Render(t.Branch)
+	}
+	b.WriteString(detail + "\n")
 }
 
 func (tl TaskList) statusStyle(s model.Status) lipgloss.Style {
