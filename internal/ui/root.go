@@ -59,6 +59,12 @@ type AgentDetachedMsg struct {
 	TaskID string
 }
 
+// ResolveTaskDirMsg carries the result of async worktree directory resolution.
+type ResolveTaskDirMsg struct {
+	TaskID string
+	Dir    string
+}
+
 // SessionResumedMsg is sent when a background session resume completes.
 type SessionResumedMsg struct {
 	TaskID string
@@ -81,11 +87,12 @@ type Model struct {
 	preview     Preview
 	gitstatus   GitStatus
 	agentview   *AgentView
-	current     view
-	activeTab   tab
-	width       int
-	height      int
-	quitting    bool
+	current      view
+	activeTab    tab
+	width        int
+	height       int
+	quitting     bool
+	resolvedDirs map[string]string // taskID → resolved worktree dir (cache)
 }
 
 func NewModel(database *db.DB, runner *agent.Runner) Model {
@@ -103,10 +110,11 @@ func NewModel(database *db.DB, runner *agent.Runner) Model {
 	av := &avv
 
 	m := Model{
-		db:          database,
-		runner:      runner,
-		keys:        keys,
-		theme:       theme,
+		db:           database,
+		runner:       runner,
+		keys:         keys,
+		theme:        theme,
+		resolvedDirs: make(map[string]string),
 		tasklist:    tl,
 		projectlist: pl,
 		statusbar:   sb,
@@ -151,6 +159,7 @@ func (m Model) Init() tea.Cmd {
 					expected := filepath.Join(projDir, ".claude", "worktrees", "argus", task.Name)
 					if dirExists(expected) {
 						task.Worktree = expected
+						m.resolvedDirs[task.ID] = expected
 					}
 				}
 			}
@@ -195,41 +204,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TickMsg:
 		// Keep running state fresh so idle tasks display correctly.
 		m.refreshTasks()
-		// Kick off git status refresh if needed
 		var cmds []tea.Cmd
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
 		}))
-		// In agent view, also schedule the fast refresh tick
 		if m.current == viewAgent {
 			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 				return AgentViewTickMsg{}
 			}))
 		}
-		if t := m.selectedTaskForGit(); t != nil {
-			dir := m.resolveTaskDir(t)
-			if dir != "" {
-				m.gitstatus.SetTask(t.ID)
-				if m.gitstatus.NeedsRefresh() {
-					taskID := t.ID
-					cmds = append(cmds, func() tea.Msg {
-						return FetchGitStatus(taskID, dir)
-					})
-				}
-				// Also refresh agent view's git status
-				if m.current == viewAgent && m.agentview.NeedsGitRefresh() {
-					taskID := t.ID
-					cmds = append(cmds, func() tea.Msg {
-						return FetchGitStatus(taskID, dir)
-					})
-				}
-			} else {
-				m.gitstatus.SetTask("")
-			}
-		} else {
-			m.gitstatus.SetTask("")
+		if cmd := m.scheduleGitRefresh(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
+
+	case ResolveTaskDirMsg:
+		if msg.Dir != "" {
+			m.resolvedDirs[msg.TaskID] = msg.Dir
+			// Persist discovered worktree to the task record.
+			if t, err := m.db.Get(msg.TaskID); err == nil && t.Worktree == "" {
+				t.Worktree = msg.Dir
+				_ = m.db.Update(t)
+			}
+		}
+		// Now that we have the dir, kick off git status fetch
+		if t := m.selectedTaskForGit(); t != nil && t.ID == msg.TaskID && msg.Dir != "" {
+			m.gitstatus.SetTask(t.ID)
+			taskID := t.ID
+			dir := msg.Dir
+			return m, func() tea.Msg {
+				return FetchGitStatus(taskID, dir)
+			}
+		}
+		return m, nil
 
 	case AgentViewTickMsg:
 		// Fast tick for agent view — just triggers a re-render
@@ -331,11 +338,11 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Up):
 		m.tasklist.CursorUp()
-		return m, nil
+		return m, m.scheduleGitRefresh()
 
 	case key.Matches(msg, m.keys.Down):
 		m.tasklist.CursorDown()
-		return m, nil
+		return m, m.scheduleGitRefresh()
 
 	case key.Matches(msg, m.keys.New):
 		m.newtask = NewNewTaskForm(m.theme, m.db.Projects())
@@ -442,6 +449,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	if !resume && t.Name != "" && t.Worktree == "" {
 		if projDir := agent.ResolveDir(t, m.db.Config()); projDir != "" {
 			t.Worktree = filepath.Join(projDir, ".claude", "worktrees", "argus", t.Name)
+			m.resolvedDirs[t.ID] = t.Worktree
 		}
 	}
 
@@ -713,34 +721,89 @@ func (m Model) selectedTaskForGit() *model.Task {
 	return m.tasklist.Selected()
 }
 
-// resolveTaskDir finds the working directory for a task's git status.
-func (m Model) resolveTaskDir(t *model.Task) string {
+// scheduleGitRefresh checks the selected task and returns a tea.Cmd to
+// refresh git status asynchronously. Directory resolution is cached; on a
+// cache miss the slow discovery runs in a background goroutine.
+func (m Model) scheduleGitRefresh() tea.Cmd {
+	t := m.selectedTaskForGit()
+	if t == nil {
+		m.gitstatus.SetTask("")
+		return nil
+	}
+
+	// Fast path: dir already cached.
+	if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
+		m.gitstatus.SetTask(t.ID)
+		needsMain := m.gitstatus.NeedsRefresh()
+		needsAgent := m.current == viewAgent && m.agentview.NeedsGitRefresh()
+		if needsMain || needsAgent {
+			taskID := t.ID
+			return func() tea.Msg {
+				return FetchGitStatus(taskID, dir)
+			}
+		}
+		return nil
+	}
+
+	// Try cheap resolution first (stored worktree, project config, runner).
+	dir := m.resolveTaskDirFast(t)
+	if dir != "" {
+		m.resolvedDirs[t.ID] = dir
+		m.gitstatus.SetTask(t.ID)
+		taskID := t.ID
+		return func() tea.Msg {
+			return FetchGitStatus(taskID, dir)
+		}
+	}
+
+	// Slow path: need to discover worktree — run async.
+	// Compute the base dir cheaply (project path or runner work dir).
+	baseDir := agent.ResolveDir(t, m.db.Config())
+	if baseDir == "" {
+		baseDir = m.runner.WorkDir(t.ID)
+	}
+	if baseDir == "" {
+		m.gitstatus.SetTask("")
+		return nil
+	}
+	taskID := t.ID
+	taskName := t.Name
+	return func() tea.Msg {
+		return resolveTaskDirAsync(taskID, taskName, baseDir)
+	}
+}
+
+// resolveTaskDirFast returns the task's working directory using only cheap
+// lookups (cached worktree path, project config, runner). Returns "" if the
+// directory cannot be determined without running git commands.
+func (m Model) resolveTaskDirFast(t *model.Task) string {
 	dir := t.Worktree
 
 	// Validate stored worktree: must exist and match the task name.
 	if dir != "" {
 		if !dirExists(dir) || filepath.Base(dir) != t.Name {
-			// Stale or mismatched — clear and re-discover.
 			t.Worktree = ""
 			_ = m.db.Update(t)
+			delete(m.resolvedDirs, t.ID)
 			dir = ""
 		}
 	}
 
-	if dir == "" {
-		dir = agent.ResolveDir(t, m.db.Config())
+	if dir != "" {
+		return dir
 	}
-	if dir == "" {
-		dir = m.runner.WorkDir(t.ID)
+
+	// No stored worktree — can't resolve without async discovery.
+	return ""
+}
+
+// resolveTaskDirAsync performs the slow worktree discovery off the main thread.
+func resolveTaskDirAsync(taskID, taskName, baseDir string) ResolveTaskDirMsg {
+	dir := baseDir
+	if wt := discoverClaudeWorktree(baseDir, taskName); wt != "" {
+		dir = wt
 	}
-	if dir != "" && t.Worktree == "" {
-		if wt := discoverClaudeWorktree(dir, t.Name); wt != "" {
-			t.Worktree = wt
-			_ = m.db.Update(t)
-			dir = wt
-		}
-	}
-	return dir
+	return ResolveTaskDirMsg{TaskID: taskID, Dir: dir}
 }
 
 func (m *Model) refreshTasks() {
