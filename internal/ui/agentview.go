@@ -53,6 +53,12 @@ type AgentView struct {
 	// lastOutput holds the final ring buffer contents from a finished session
 	// so we can display error output even after the session is removed.
 	lastOutput []byte
+
+	// Persistent vt10x terminal for incremental rendering (avoids full replay)
+	vtTerm     vt10x.Terminal
+	vtFedTotal uint64 // monotonic byte count fed to vtTerm
+	vtCols     int    // vtTerm column count
+	vtRows     int    // vtTerm row count
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -77,6 +83,8 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.cachedWriteCount = 0
 	av.scrollOffset = 0
 	av.cachedLines = nil
+	av.vtTerm = nil
+	av.vtFedTotal = 0
 }
 
 // SetLastOutput stores the final ring buffer from a finished session
@@ -88,6 +96,8 @@ func (av *AgentView) SetLastOutput(output []byte) {
 func (av *AgentView) SetSize(w, h int) {
 	if av.width != w || av.height != h {
 		av.cachedTerminal = "" // invalidate cache on resize
+		av.vtTerm = nil        // force vt10x re-creation
+		av.vtFedTotal = 0
 	}
 	av.width = w
 	av.height = h
@@ -298,11 +308,87 @@ func (av *AgentView) renderTerminal(w, h int) string {
 		return border.Render(empty.Render("Waiting for output..."))
 	}
 
-	content := av.formatTerminalOutput(raw, w, h)
+	var content string
+	if av.scrollOffset > 0 {
+		// Scrollback mode: full replay (only triggered by scroll events)
+		content = av.formatTerminalOutput(raw, w, h)
+	} else {
+		// Normal follow-tail mode: incremental feed to persistent vt10x
+		content = av.renderIncremental(sess, raw, writeCount, w, h)
+	}
 	av.cachedWriteCount = writeCount
 	av.cachedScrollOff = av.scrollOffset
 	av.cachedTerminal = content
 	return border.Render(content)
+}
+
+// renderIncremental feeds only new bytes to a persistent vt10x terminal,
+// avoiding the O(buffer_size) full replay on every render tick.
+func (av *AgentView) renderIncremental(sess *agent.Session, raw []byte, totalWritten uint64, panelW, panelH int) string {
+	dispW := max(panelW-4, 10)
+	dispH := max(panelH-4, 3)
+
+	ptyCols, ptyRows := sess.PTYSize()
+	if ptyCols < 20 {
+		ptyCols = 80
+	}
+	if ptyRows < 5 {
+		ptyRows = dispH
+	}
+
+	// Initialize or reset vt10x if dimensions changed
+	if av.vtTerm == nil || av.vtCols != ptyCols || av.vtRows != ptyRows {
+		av.vtTerm = vt10x.New(vt10x.WithSize(ptyCols, ptyRows))
+		av.vtFedTotal = 0
+		av.vtCols = ptyCols
+		av.vtRows = ptyRows
+	}
+
+	// Feed only new bytes to the persistent terminal
+	newBytes := totalWritten - av.vtFedTotal
+	if newBytes > uint64(len(raw)) {
+		// Ring buffer wrapped past what we've seen — full reset
+		av.vtTerm = vt10x.New(vt10x.WithSize(ptyCols, ptyRows))
+		av.vtTerm.Write(raw)
+	} else if newBytes > 0 {
+		av.vtTerm.Write(raw[len(raw)-int(newBytes):])
+	}
+	av.vtFedTotal = totalWritten
+
+	// Render current screen from persistent vt10x
+	av.vtTerm.Lock()
+	defer av.vtTerm.Unlock()
+
+	cur := av.vtTerm.Cursor()
+	curVisible := av.vtTerm.CursorVisible()
+
+	lines := make([]string, 0, ptyRows)
+	for y := 0; y < ptyRows; y++ {
+		cursorX := -1
+		if curVisible && y == cur.Y {
+			cursorX = cur.X
+		}
+		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX))
+	}
+
+	// Trim trailing empty lines
+	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Take tail if more lines than display height
+	if len(lines) > dispH {
+		lines = lines[len(lines)-dispH:]
+	}
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func (av *AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string {
