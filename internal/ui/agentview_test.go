@@ -2,8 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
@@ -541,6 +543,101 @@ func TestAgentView_UpdateGitStatus_BranchFilesOnly(t *testing.T) {
 	// No uncommitted status, should use branch files
 	if len(av.files.files) != 2 {
 		t.Errorf("expected 2 files from branch, got %d", len(av.files.files))
+	}
+}
+
+func TestAgentView_RenderIncremental_FeedsOnlyNewBytes(t *testing.T) {
+	av := newTestAgentView()
+
+	// Simulate a session by calling renderIncremental directly with fake data.
+	// We create a real session with a short-lived command.
+	cmd := exec.Command("echo", "hello world")
+	sess, err := agent.StartSession("inc-task", cmd, 30, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop()
+
+	// Wait for output
+	for i := 0; i < 100; i++ {
+		if sess.TotalWritten() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if sess.TotalWritten() == 0 {
+		t.Fatal("no output from session")
+	}
+
+	raw := sess.RecentOutput()
+	total := sess.TotalWritten()
+
+	// First call — initializes vtTerm
+	out1 := av.renderIncremental(sess, raw, total, 120, 39)
+	if av.vtTerm == nil {
+		t.Fatal("expected vtTerm to be initialized after first render")
+	}
+	if av.vtFedTotal != total {
+		t.Errorf("vtFedTotal = %d, want %d", av.vtFedTotal, total)
+	}
+	if out1 == "" {
+		t.Fatal("expected non-empty output from first render")
+	}
+	if !strings.Contains(stripANSI(out1), "hello") {
+		t.Errorf("output should contain 'hello', got %q", stripANSI(out1))
+	}
+
+	// Second call with same data — vtTerm should be reused (no reset)
+	vtBefore := av.vtTerm
+	out2 := av.renderIncremental(sess, raw, total, 120, 39)
+	if av.vtTerm != vtBefore {
+		t.Error("vtTerm should be reused when dimensions haven't changed")
+	}
+	if out2 == "" {
+		t.Fatal("expected non-empty output from second render")
+	}
+
+	// Simulate new bytes by bumping totalWritten (appending to raw)
+	extraRaw := append(raw, []byte("extra line\r\n")...)
+	extraTotal := total + 12
+	out3 := av.renderIncremental(sess, extraRaw, extraTotal, 120, 39)
+	if av.vtFedTotal != extraTotal {
+		t.Errorf("vtFedTotal = %d, want %d", av.vtFedTotal, extraTotal)
+	}
+	if out3 == "" {
+		t.Fatal("expected non-empty output after incremental feed")
+	}
+}
+
+func TestAgentView_RenderIncremental_FullResetOnBufferWrap(t *testing.T) {
+	av := newTestAgentView()
+
+	cmd := exec.Command("echo", "wrap test")
+	sess, err := agent.StartSession("wrap-task", cmd, 30, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop()
+
+	for i := 0; i < 100; i++ {
+		if sess.TotalWritten() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	raw := sess.RecentOutput()
+	total := sess.TotalWritten()
+
+	// First render
+	av.renderIncremental(sess, raw, total, 120, 39)
+
+	// Simulate a huge jump in totalWritten (buffer wrapped far past what we've seen)
+	// newBytes would exceed len(raw), forcing a full reset
+	hugeTotal := total + uint64(len(raw)) + 10000
+	av.renderIncremental(sess, raw, hugeTotal, 120, 39)
+	if av.vtFedTotal != hugeTotal {
+		t.Errorf("vtFedTotal = %d, want %d after wrap reset", av.vtFedTotal, hugeTotal)
 	}
 }
 
