@@ -408,7 +408,7 @@ func (av AgentView) renderStatusBar() string {
 	}
 	right := strings.Join(parts, "  ") + " "
 
-	// Focus indicator
+	// Focus indicator — truly centered on the bar
 	var focusLabel string
 	switch av.focus {
 	case panelGit:
@@ -420,14 +420,19 @@ func (av AgentView) renderStatusBar() string {
 	}
 	center := av.theme.Section.Render(" [" + focusLabel + "] ")
 
-	gap1 := av.width - lipgloss.Width(left) - lipgloss.Width(center) - lipgloss.Width(right)
-	leftGap := gap1 / 2
-	rightGap := gap1 - leftGap
-	if leftGap < 0 {
-		leftGap = 0
+	centerW := lipgloss.Width(center)
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+
+	// Place center at the true midpoint of the bar
+	centerStart := (av.width - centerW) / 2
+	leftGap := centerStart - leftW
+	if leftGap < 1 {
+		leftGap = 1
 	}
-	if rightGap < 0 {
-		rightGap = 0
+	rightGap := av.width - leftW - leftGap - centerW - rightW
+	if rightGap < 1 {
+		rightGap = 1
 	}
 
 	bar := av.theme.StatusBar.
