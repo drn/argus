@@ -41,8 +41,13 @@ type AgentView struct {
 	lastGitRefresh time.Time
 
 	// Terminal render cache — avoids replaying entire ring buffer every tick
-	cachedWriteCount uint64
-	cachedTerminal   string
+	cachedWriteCount  uint64
+	cachedTerminal    string
+	cachedScrollOff   int // scroll offset when cache was generated
+
+	// Scrollback support
+	scrollOffset int // lines scrolled up from bottom (0 = follow tail)
+	cachedLines  []string // cached rendered lines for scrolling without re-parsing
 
 	// lastOutput holds the final ring buffer contents from a finished session
 	// so we can display error output even after the session is removed.
@@ -69,6 +74,8 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.lastOutput = nil
 	av.cachedTerminal = ""
 	av.cachedWriteCount = 0
+	av.scrollOffset = 0
+	av.cachedLines = nil
 }
 
 // SetLastOutput stores the final ring buffer from a finished session
@@ -153,6 +160,27 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 	// Panel-specific key handling
 	switch av.focus {
 	case panelAgent:
+		// Scrollback keys (shift+up/down/pgup/pgdown) are intercepted
+		_, _, dispH := av.terminalDisplaySize()
+		switch keyStr {
+		case "shift+up":
+			av.scrollUp(1)
+			return false
+		case "shift+down":
+			av.scrollDown(1)
+			return false
+		case "shift+pgup":
+			av.scrollUp(dispH)
+			return false
+		case "shift+pgdown":
+			av.scrollDown(dispH)
+			return false
+		case "shift+end":
+			av.scrollOffset = 0
+			return false
+		}
+		// Any other key sent to PTY resets scroll to follow tail
+		av.scrollOffset = 0
 		// Forward all other keys to the PTY
 		if sess := av.runner.Get(av.taskID); sess != nil {
 			if b := keyMsgToBytes(msg); len(b) > 0 {
@@ -233,8 +261,17 @@ func (av *AgentView) renderTerminal(w, h int) string {
 
 	// Check if output has changed before expensive vt10x replay
 	writeCount := sess.TotalWritten()
-	if writeCount == av.cachedWriteCount && av.cachedTerminal != "" {
+	if writeCount == av.cachedWriteCount && av.scrollOffset == av.cachedScrollOff && av.cachedTerminal != "" {
 		return border.Render(av.cachedTerminal)
+	}
+	// If only scroll changed but output is the same, re-slice cached lines
+	if writeCount == av.cachedWriteCount && len(av.cachedLines) > 0 {
+		dispW := max(w-4, 10)
+		dispH := max(h-4, 3)
+		content := av.sliceCachedLines(dispW, dispH)
+		av.cachedScrollOff = av.scrollOffset
+		av.cachedTerminal = content
+		return border.Render(content)
 	}
 
 	raw := sess.RecentOutput()
@@ -249,11 +286,12 @@ func (av *AgentView) renderTerminal(w, h int) string {
 
 	content := av.formatTerminalOutput(raw, w, h)
 	av.cachedWriteCount = writeCount
+	av.cachedScrollOff = av.scrollOffset
 	av.cachedTerminal = content
 	return border.Render(content)
 }
 
-func (av AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string {
+func (av *AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string {
 	dispW := max(panelW-4, 10)
 	dispH := max(panelH-4, 3)
 
@@ -298,15 +336,25 @@ func (av AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string 
 		return ""
 	}
 
-	// Take the tail and truncate
-	if len(lines) > dispH {
-		lines = lines[len(lines)-dispH:]
+	// Cache all lines for scrollback
+	av.cachedLines = lines
+
+	// Apply scroll offset: select a window into the lines
+	end := len(lines) - av.scrollOffset
+	if end < 0 {
+		end = 0
 	}
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")
+	start := end - dispH
+	if start < 0 {
+		start = 0
+	}
+	visible := lines[start:end]
+
+	for i, line := range visible {
+		visible[i] = ansi.Truncate(line, dispW, "\x1b[0m")
 	}
 
-	return strings.Join(lines, "\n")
+	return strings.Join(visible, "\n")
 }
 
 func (av AgentView) renderStatusBar() string {
@@ -317,13 +365,16 @@ func (av AgentView) renderStatusBar() string {
 	status := ""
 	if av.runner.Get(av.taskID) == nil {
 		status = labelStyle.Render(" (exited — ctrl+q to return)")
+	} else if av.scrollOffset > 0 {
+		status = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(
+			fmt.Sprintf(" [SCROLL -%d]", av.scrollOffset))
 	}
 	left := " " + av.theme.Normal.Render(av.taskName) + status
 
 	// Right: keybinding hints
 	keys := []struct{ key, label string }{
-		{"ctrl+←", "panel left"},
-		{"ctrl+→", "panel right"},
+		{"⇧↑/↓", "scroll"},
+		{"ctrl+←/→", "panel"},
 		{"ctrl+q", "detach"},
 	}
 	var parts []string
@@ -359,6 +410,59 @@ func (av AgentView) renderStatusBar() string {
 		Render(left + fmt.Sprintf("%*s", leftGap, "") + center + fmt.Sprintf("%*s", rightGap, "") + right)
 
 	return bar
+}
+
+// sliceCachedLines selects the visible window from cachedLines using scrollOffset.
+func (av *AgentView) sliceCachedLines(dispW, dispH int) string {
+	lines := av.cachedLines
+	if len(lines) == 0 {
+		return ""
+	}
+	end := len(lines) - av.scrollOffset
+	if end < 0 {
+		end = 0
+	}
+	start := end - dispH
+	if start < 0 {
+		start = 0
+	}
+	visible := lines[start:end]
+	result := make([]string, len(visible))
+	for i, line := range visible {
+		result[i] = ansi.Truncate(line, dispW, "\x1b[0m")
+	}
+	return strings.Join(result, "\n")
+}
+
+// terminalDisplaySize returns the usable display dimensions inside the terminal panel.
+func (av *AgentView) terminalDisplaySize() (dispW, dispH int, centerW int) {
+	_, cw, _ := av.splitWidths()
+	contentH := av.height - 1
+	return max(cw-4, 10), max(contentH-4, 3), cw
+}
+
+// scrollUp scrolls the terminal view up by n lines.
+func (av *AgentView) scrollUp(n int) {
+	maxScroll := 0
+	if len(av.cachedLines) > 0 {
+		_, dispH, _ := av.terminalDisplaySize()
+		maxScroll = len(av.cachedLines) - dispH
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+	}
+	av.scrollOffset += n
+	if av.scrollOffset > maxScroll {
+		av.scrollOffset = maxScroll
+	}
+}
+
+// scrollDown scrolls the terminal view down by n lines (toward tail).
+func (av *AgentView) scrollDown(n int) {
+	av.scrollOffset -= n
+	if av.scrollOffset < 0 {
+		av.scrollOffset = 0
+	}
 }
 
 // splitWidths returns left, center, right panel widths.
