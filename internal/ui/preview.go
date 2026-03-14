@@ -156,10 +156,10 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 		}
 
 		if x == cursorX {
-			// Render cursor cell with reverse video
-			b.WriteString("\x1b[7m")
+			// Render cursor cell with reverse video, preserving cell colors
+			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode|vtAttrReverse))
 			b.WriteRune(ch)
-			b.WriteString("\x1b[27m")
+			b.WriteString("\x1b[0m")
 			// Force SGR re-emit on next cell
 			active = false
 		} else {

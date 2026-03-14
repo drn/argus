@@ -32,8 +32,8 @@ func TestRenderLine_WithCursor(t *testing.T) {
 
 	// Cursor at position 2 (on the 'l')
 	line := renderLine(vt, 0, 20, 2)
-	// Should contain reverse video escape for the cursor
-	if !strings.Contains(line, "\x1b[7m") {
+	// Should contain reverse video attribute (;7 in SGR sequence)
+	if !strings.Contains(line, ";7m") && !strings.Contains(line, ";7;") {
 		t.Error("renderLine with cursor should contain reverse video escape")
 	}
 }
@@ -47,7 +47,7 @@ func TestRenderLine_CursorBeyondText(t *testing.T) {
 	// Cursor at position 5, beyond "hi" (at position 2 would be after text)
 	line := renderLine(vt, 0, 20, 5)
 	// Should still render cursor (extends lastCol)
-	if !strings.Contains(line, "\x1b[7m") {
+	if !strings.Contains(line, ";7m") && !strings.Contains(line, ";7;") {
 		t.Error("renderLine with cursor beyond text should still render cursor")
 	}
 }
