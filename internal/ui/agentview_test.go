@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -114,6 +115,31 @@ func TestAgentView_ShiftEndResetsScroll(t *testing.T) {
 	av.HandleKey(msg)
 	if av.scrollOffset != 0 {
 		t.Fatalf("scrollOffset after typing = %d, want 0 (should reset on input)", av.scrollOffset)
+	}
+}
+
+func TestAgentView_FormatTerminalOutputCapturesScrollback(t *testing.T) {
+	av := newTestAgentView()
+
+	// Generate terminal output with many more lines than display height.
+	// Each "line\n" produces one row in the virtual terminal.
+	var buf []byte
+	numLines := 200
+	for i := 0; i < numLines; i++ {
+		buf = append(buf, []byte(fmt.Sprintf("line %03d\r\n", i))...)
+	}
+
+	av.formatTerminalOutput(buf, 120, 40)
+
+	// The display area is about 36 lines (40 - 4), but cachedLines should
+	// capture much more than that thanks to the scrollback multiplier.
+	_, dispH, _ := av.terminalDisplaySize()
+	if len(av.cachedLines) <= dispH {
+		t.Fatalf("cachedLines = %d, want > %d (display height); scrollback not working", len(av.cachedLines), dispH)
+	}
+	// Should capture most of the lines we wrote
+	if len(av.cachedLines) < numLines/2 {
+		t.Fatalf("cachedLines = %d, want at least %d; not enough scrollback", len(av.cachedLines), numLines/2)
 	}
 }
 
