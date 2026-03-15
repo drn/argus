@@ -1070,20 +1070,17 @@ func TestModel_CursorNavigation(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
-	// Rows: [proj header, first, second]. Cursor starts on header.
-	// Down once → first task
+	// Rows: [proj header, first, second]. Cursor starts on first task (skips header).
+	if sel := m.tasklist.Selected(); sel == nil || sel.Name != "first" {
+		t.Error("expected 'first' selected initially (cursor skips project header)")
+	}
+
+	// Down → second task
 	msg := tea.KeyMsg{Type: tea.KeyDown}
 	updated, _ = m.Update(msg)
 	um := updated.(Model)
-	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "first" {
-		t.Error("expected 'first' selected after first down")
-	}
-
-	// Down again → second task
-	updated, _ = um.Update(msg)
-	um = updated.(Model)
 	if sel := um.tasklist.Selected(); sel == nil || sel.Name != "second" {
-		t.Error("expected 'second' selected after second down")
+		t.Error("expected 'second' selected after down")
 	}
 
 	// Up → back to first
@@ -1336,10 +1333,10 @@ func TestCursorChange_TriggersGitRefresh(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
 
-	// Pre-populate cache for first task (cursor lands on it after one down from header)
-	m.resolvedDirs["t1"] = "/tmp/first-worktree"
+	// Cursor starts on first task (skips header). Cache second task so moving down triggers refresh.
+	m.resolvedDirs["t2"] = "/tmp/second-worktree"
 
-	// Move cursor down (from project header to first task)
+	// Move cursor down (from first task to second task)
 	msg := tea.KeyMsg{Type: tea.KeyDown}
 	_, cmd := m.Update(msg)
 
