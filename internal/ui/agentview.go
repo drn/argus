@@ -498,6 +498,19 @@ func (av *AgentView) terminalDisplaySize() (dispW, dispH int, centerW int) {
 	return max(cw-4, 10), max(contentH-4, 3), cw
 }
 
+// HandleMouse processes mouse events for scrolling.
+func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
+	if av.focus != panelAgent {
+		return
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		av.scrollUp(3)
+	case tea.MouseButtonWheelDown:
+		av.scrollDown(3)
+	}
+}
+
 // scrollUp scrolls the terminal view up by n lines.
 func (av *AgentView) scrollUp(n int) {
 	maxScroll := 0

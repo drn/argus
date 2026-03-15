@@ -261,6 +261,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 
+	case tea.MouseMsg:
+		if m.current == viewAgent {
+			m.agentview.HandleMouse(msg)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		m.statusbar.ClearError()
 		return m.handleKey(msg)
