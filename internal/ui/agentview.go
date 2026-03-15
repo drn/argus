@@ -435,7 +435,7 @@ func (av *AgentView) renderTerminal(w, h int) string {
 			Height(innerH).
 			AlignHorizontal(lipgloss.Center).
 			AlignVertical(lipgloss.Center)
-		return border.Render(empty.Render("Agent not running\n\nPress ctrl+q to return"))
+		return border.Render(empty.Render("Agent not running\n\nPress ^q to return"))
 	}
 
 	// Check if output has changed before expensive vt10x replay
@@ -638,7 +638,7 @@ func (av AgentView) renderStatusBar() string {
 	// Left: task name + status indicator
 	status := ""
 	if av.runner.Get(av.taskID) == nil {
-		status = labelStyle.Render(" (exited — ctrl+q to return)")
+		status = labelStyle.Render(" (exited — ^q to return)")
 	} else if av.scrollOffset > 0 {
 		status = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(
 			fmt.Sprintf(" [SCROLL -%d]", av.scrollOffset))
@@ -658,7 +658,7 @@ func (av AgentView) renderStatusBar() string {
 			{"⌘↑/↓", "task"},
 			{"⇧↑/↓", "scroll"},
 			{"⌘←/→", "panel"},
-			{"ctrl+q", "detach"},
+			{"^q", "detach"},
 		}
 	}
 	var parts []string
@@ -683,7 +683,9 @@ func (av AgentView) renderStatusBar() string {
 
 	centerW := lipgloss.Width(center)
 	leftW := lipgloss.Width(left)
-	rightW := lipgloss.Width(right)
+	// ⌘ renders as 2 cells in most terminals but go-runewidth reports 1.
+	// Count occurrences and add the extra width so the gap math is correct.
+	rightW := lipgloss.Width(right) + strings.Count(right, "⌘")
 
 	// Place center at the true midpoint of the bar
 	centerStart := (av.width - centerW) / 2

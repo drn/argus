@@ -105,6 +105,12 @@
 - Fix: Call `SetHeight(maxPromptLines)` BEFORE `textarea.Update()` so `repositionView()` has enough headroom (max=9 instead of max=0) and doesn't scroll. Then shrink back to the actual visual line count afterward.
 - **Pattern:** For any auto-resizing textarea, always expand height before `Update()` and shrink after. `SetHeight()` never calls `repositionView()`, so the viewport scroll offset can become stale.
 
+### Unicode Width Mismatch — ⌘ Symbol (2026-03-14)
+- `⌘` (U+2318, PLACE OF INTEREST SIGN) renders as 2 cells in most terminal emulators (iTerm2, Ghostty, Terminal.app) but `go-runewidth` v0.0.19 reports `RuneWidth('⌘') == 1`.
+- Lipgloss uses `go-runewidth` for `Width()`, so any layout math using `lipgloss.Width()` on strings containing `⌘` underestimates by 1 per occurrence.
+- Fix: add `strings.Count(s, "⌘")` to the computed width. Applied in `renderStatusBar()` for the `right` hints string.
+- **Pattern:** When adding Unicode symbols to TUI layouts, verify `runewidth.RuneWidth(r)` against actual terminal rendering. Common offenders: miscellaneous symbols block (U+2300–U+23FF), dingbats, and emoji.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go

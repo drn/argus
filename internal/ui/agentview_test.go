@@ -434,8 +434,8 @@ func TestAgentView_View_NoSession(t *testing.T) {
 		t.Error("expected task name in view")
 	}
 	// Should contain "Agent not running" or similar since no session exists
-	if !strings.Contains(view, "not running") && !strings.Contains(view, "ctrl+q") {
-		t.Error("expected agent not running or ctrl+q hint in view")
+	if !strings.Contains(view, "not running") && !strings.Contains(view, "^q") {
+		t.Error("expected agent not running or ^q hint in view")
 	}
 }
 
@@ -448,7 +448,7 @@ func TestAgentView_RenderStatusBar(t *testing.T) {
 	if !strings.Contains(bar, "test task") {
 		t.Error("expected task name in status bar")
 	}
-	if !strings.Contains(bar, "ctrl+q") {
+	if !strings.Contains(bar, "^q") {
 		t.Error("expected ctrl+q hint in status bar")
 	}
 }
