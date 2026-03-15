@@ -119,13 +119,27 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
-			// Let textarea handle up arrow for multi-line navigation
+			// Move to project field if cursor is on the first visual line
+			li := f.promptInput.LineInfo()
+			if f.promptInput.Line() == 0 && li.RowOffset == 0 {
+				f.focused = fieldProject
+				f.promptInput.Blur()
+				return nil
+			}
+			// Otherwise let textarea handle up arrow for multi-line navigation
 		case "down":
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
-			// Let textarea handle down arrow for multi-line navigation
+			// Move to project field if cursor is on the last visual line
+			li := f.promptInput.LineInfo()
+			if f.promptInput.Line() == f.promptInput.LineCount()-1 && li.RowOffset == li.Height-1 {
+				f.focused = fieldProject
+				f.promptInput.Blur()
+				return nil
+			}
+			// Otherwise let textarea handle down arrow for multi-line navigation
 		case "enter":
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
@@ -158,27 +172,19 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 }
 
 // visualLineCount returns the total number of visual lines in the textarea,
-// accounting for soft wraps. LineCount() only counts hard newlines.
+// accounting for soft wraps. For single hard lines (the normal case since
+// enter is disabled), uses LineInfo().Height which is computed by the
+// textarea's own internal memoizedWrap — guaranteed to match rendering.
+// For multi-line pasted content, returns maxPromptLines to let the textarea
+// handle scrolling rather than approximate the line count.
 func (f *NewTaskForm) visualLineCount() int {
-	w := f.promptInput.Width()
-	if w <= 0 {
-		return f.promptInput.LineCount()
-	}
-	value := f.promptInput.Value()
-	if value == "" {
+	if f.promptInput.Value() == "" {
 		return 1
 	}
-	total := 0
-	for _, line := range strings.Split(value, "\n") {
-		// Each hard line takes at least 1 visual line, plus extra for wraps
-		lineLen := len([]rune(line))
-		if lineLen == 0 {
-			total++
-		} else {
-			total += (lineLen + w - 1) / w
-		}
+	if f.promptInput.LineCount() > 1 {
+		return maxPromptLines
 	}
-	return total
+	return f.promptInput.LineInfo().Height
 }
 
 func (f *NewTaskForm) SelectedProject() string {
