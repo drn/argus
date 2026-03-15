@@ -791,6 +791,26 @@ func TestKeyMsgToBytes_SpecialKeys(t *testing.T) {
 	}
 }
 
+func TestKeyMsgToBytes_AltBackspace(t *testing.T) {
+	// Option+Delete on macOS sends Alt+Backspace → ESC + DEL (delete word backward)
+	msg := tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}
+	got := keyMsgToBytes(msg)
+	want := []byte{0x1b, 0x7f}
+	if string(got) != string(want) {
+		t.Errorf("Alt+Backspace: got %q, want %q", got, want)
+	}
+}
+
+func TestKeyMsgToBytes_AltDelete(t *testing.T) {
+	// Alt+Forward Delete → ESC + delete sequence (delete word forward)
+	msg := tea.KeyMsg{Type: tea.KeyDelete, Alt: true}
+	got := keyMsgToBytes(msg)
+	want := append([]byte{0x1b}, []byte("\x1b[3~")...)
+	if string(got) != string(want) {
+		t.Errorf("Alt+Delete: got %q, want %q", got, want)
+	}
+}
+
 func TestKeyMsgToBytes_AltRunes(t *testing.T) {
 	// Option+b on macOS sends ESC b (word back in readline)
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}, Alt: true}
