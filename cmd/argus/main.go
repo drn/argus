@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/rpc/jsonrpc"
 	"os"
+	"os/exec"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
@@ -40,14 +42,19 @@ func runTUI() {
 	}
 	defer database.Close()
 
-	// Try to connect to daemon; if that fails, fall back to in-process runner.
 	var runner agent.SessionProvider
 	var p *tea.Program
+	var daemonConnected bool
 
 	sockPath := daemon.DefaultSocketPath()
 	client, err := dclient.Connect(sockPath)
 	if err != nil {
-		// No daemon running — use in-process runner (original behavior).
+		// No daemon running — auto-start one and retry.
+		client, err = autoStartDaemon(sockPath)
+	}
+
+	if err != nil {
+		// Daemon failed to start — fall back to in-process runner.
 		inProc := agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
 			if p != nil {
 				p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped, LastOutput: lastOutput})
@@ -55,7 +62,8 @@ func runTUI() {
 		})
 		runner = inProc
 	} else {
-		// Daemon is running — use client as session provider.
+		// Connected to daemon.
+		daemonConnected = true
 		client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
 			if p != nil {
 				var exitErr error
@@ -74,12 +82,47 @@ func runTUI() {
 		defer client.Close()
 	}
 
-	m := ui.NewModel(database, runner)
+	m := ui.NewModel(database, runner, daemonConnected)
 	p = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// autoStartDaemon launches the daemon as a background process and waits
+// for it to be ready. Returns a connected client or an error.
+func autoStartDaemon(sockPath string) (*dclient.Client, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve executable: %w", err)
+	}
+
+	cmd := exec.Command(exe, "daemon")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	// Detach from parent process group so the daemon survives TUI exit.
+	cmd.SysProcAttr = daemonSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start daemon: %w", err)
+	}
+	// Release the child process so it isn't reaped when we exit.
+	cmd.Process.Release()
+
+	// Poll for the socket to become available.
+	const (
+		pollInterval = 50 * time.Millisecond
+		maxWait      = 3 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		if client, err := dclient.Connect(sockPath); err == nil {
+			return client, nil
+		}
+	}
+
+	return nil, fmt.Errorf("daemon did not become ready within %s", maxWait)
 }
 
 func runDaemon() {
