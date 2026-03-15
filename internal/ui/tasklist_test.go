@@ -517,7 +517,60 @@ func TestTaskList_taskStatusIcon_InProgressVariants(t *testing.T) {
 	}
 }
 
-func TestTaskList_renderProjectHeader_StatusIcons(t *testing.T) {
+func TestTaskList_projectStatusIcon(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+
+	tests := []struct {
+		name     string
+		statuses []model.Status
+		wantIcon string
+	}{
+		{"all pending", []model.Status{model.StatusPending, model.StatusPending}, model.StatusPending.Display()},
+		{"all complete", []model.Status{model.StatusComplete, model.StatusComplete}, model.StatusComplete.Display()},
+		{"has in_progress", []model.Status{model.StatusPending, model.StatusInProgress}, "\uF186"}, // moon (not running)
+		{"has in_review", []model.Status{model.StatusPending, model.StatusInReview}, model.StatusInReview.Display()},
+		{"in_progress beats in_review", []model.Status{model.StatusInReview, model.StatusInProgress}, "\uF186"},
+		{"mixed pending+complete", []model.Status{model.StatusPending, model.StatusComplete}, model.StatusComplete.Display()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var tasks []*model.Task
+			for i, s := range tt.statuses {
+				tasks = append(tasks, &model.Task{ID: fmt.Sprintf("t%d", i), Status: s})
+			}
+			icon := tl.projectStatusIcon(tasks)
+			if !strings.Contains(icon, tt.wantIcon) {
+				t.Errorf("expected icon to contain %q, got %q", tt.wantIcon, icon)
+			}
+		})
+	}
+}
+
+func TestTaskList_projectStatusIcon_InProgressAnimation(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+
+	tasks := []*model.Task{
+		{ID: "t1", Status: model.StatusInProgress},
+		{ID: "t2", Status: model.StatusPending},
+	}
+
+	// Not running → moon
+	icon := tl.projectStatusIcon(tasks)
+	if !strings.Contains(icon, "\uF186") {
+		t.Error("expected moon icon when in-progress task not running")
+	}
+
+	// Running and active, tickEven → alternate icon
+	tl.SetRunning([]string{"t1"})
+	tl.tickEven = true
+	icon = tl.projectStatusIcon(tasks)
+	if !strings.Contains(icon, model.StatusInProgress.DisplayAlt()) {
+		t.Error("expected alternate icon for active running task on even tick")
+	}
+}
+
+func TestTaskList_renderProjectHeader_SingleIcon(t *testing.T) {
 	tl := NewTaskList(DefaultTheme())
 	tl.SetSize(80, 40)
 	tasks := []*model.Task{
@@ -530,39 +583,13 @@ func TestTaskList_renderProjectHeader_StatusIcons(t *testing.T) {
 	tl.renderProjectHeader(&b, "alpha", false)
 	output := b.String()
 
-	// Should contain the pending and complete display glyphs.
-	pendingGlyph := model.StatusPending.Display()
-	completeGlyph := model.StatusComplete.Display()
-	if !strings.Contains(output, pendingGlyph) {
-		t.Errorf("expected pending glyph %q in header output", pendingGlyph)
+	// Mixed pending+complete → dimmed check icon (single icon, not per-task).
+	checkGlyph := model.StatusComplete.Display()
+	if !strings.Contains(output, checkGlyph) {
+		t.Errorf("expected check glyph %q in header output", checkGlyph)
 	}
-	if !strings.Contains(output, completeGlyph) {
-		t.Errorf("expected complete glyph %q in header output", completeGlyph)
-	}
-}
-
-func TestTaskList_renderProjectHeader_Truncation(t *testing.T) {
-	tl := NewTaskList(DefaultTheme())
-	tl.SetSize(120, 60)
-
-	// Create 10 tasks (>8 triggers truncation).
-	tasks := make([]*model.Task, 10)
-	for i := range tasks {
-		tasks[i] = &model.Task{
-			ID:      fmt.Sprintf("t%d", i),
-			Name:    fmt.Sprintf("Task %d", i),
-			Project: "big",
-			Status:  model.StatusPending,
-		}
-	}
-	tl.SetTasks(tasks)
-
-	var b strings.Builder
-	tl.renderProjectHeader(&b, "big", false)
-	output := b.String()
-
-	if !strings.Contains(output, "…") {
-		t.Error("expected ellipsis in header for >8 tasks")
+	if strings.Contains(output, "…") {
+		t.Error("should not contain ellipsis — no longer using per-task icons")
 	}
 }
 
