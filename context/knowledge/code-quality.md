@@ -146,6 +146,12 @@
 - `BuildCmd` no longer falls back to `ResolveDir()` when `Worktree` is empty — every task must have a worktree.
 - **Pattern:** Infrastructure prerequisites (worktree, branch) must be validated BEFORE persisting a record. Silent error swallowing on infrastructure setup creates subtle state corruption that compounds with async handlers.
 
+### PanelLayout Width Enforcement Bug (2026-03-15)
+- `PanelLayout.Render()` only pads height via `padHeight()` — it does NOT enforce column widths on panels.
+- The task list view's left pane was rendering as raw text without `borderedPanel`, so it collapsed to content width instead of filling its 20% allocation.
+- Fix: wrapped task list content in `borderedPanel(widths[0], contentHeight, false, ...)` in `renderTasksView()`, and adjusted `tasklist.SetSize()` to subtract 2 from each dimension for the border.
+- **Pattern:** Every panel passed to `PanelLayout.Render()` must enforce its own width. `borderedPanel` does this internally (`Width(w-2)` + border = `w` total). Panels without borders need explicit `lipgloss.NewStyle().Width(w)`.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
