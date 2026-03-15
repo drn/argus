@@ -17,7 +17,7 @@ func testProjects() map[string]config.Project {
 
 func TestNewTaskForm_ProjectListSorted(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 
 	if len(f.projectNames) != 3 {
 		t.Fatalf("expected 3 project names, got %d", len(f.projectNames))
@@ -32,7 +32,7 @@ func TestNewTaskForm_ProjectListSorted(t *testing.T) {
 
 func TestNewTaskForm_DefaultSelectsFirst(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 
 	if got := f.SelectedProject(); got != "alpha" {
 		t.Errorf("SelectedProject() = %q, want %q", got, "alpha")
@@ -41,7 +41,7 @@ func TestNewTaskForm_DefaultSelectsFirst(t *testing.T) {
 
 func TestNewTaskForm_RightCyclesForward(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 	f.focused = fieldProject
 
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -63,7 +63,7 @@ func TestNewTaskForm_RightCyclesForward(t *testing.T) {
 
 func TestNewTaskForm_LeftCyclesBackward(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 	f.focused = fieldProject
 
 	// Wraps to last
@@ -80,7 +80,7 @@ func TestNewTaskForm_LeftCyclesBackward(t *testing.T) {
 
 func TestNewTaskForm_TabNavigatesBetweenFields(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 
 	// Starts on prompt
 	if f.focused != fieldPrompt {
@@ -102,7 +102,7 @@ func TestNewTaskForm_TabNavigatesBetweenFields(t *testing.T) {
 
 func TestNewTaskForm_EnterOnProjectMovesToPrompt(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 	f.focused = fieldProject
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -113,7 +113,7 @@ func TestNewTaskForm_EnterOnProjectMovesToPrompt(t *testing.T) {
 
 func TestNewTaskForm_TaskUsesBranchFromProject(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 	f.focused = fieldProject
 
 	// Select bravo (has branch "develop")
@@ -134,7 +134,7 @@ func TestNewTaskForm_TaskUsesBranchFromProject(t *testing.T) {
 
 func TestNewTaskForm_EmptyProjects(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, map[string]config.Project{})
+	f := NewNewTaskForm(theme, map[string]config.Project{}, "")
 
 	if got := f.SelectedProject(); got != "" {
 		t.Errorf("SelectedProject() with no projects = %q, want empty", got)
@@ -152,7 +152,7 @@ func TestNewTaskForm_EmptyProjects(t *testing.T) {
 
 func TestNewTaskForm_EscCancels(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if !f.Canceled() {
@@ -162,7 +162,7 @@ func TestNewTaskForm_EscCancels(t *testing.T) {
 
 func TestNewTaskForm_SubmitRequiresPrompt(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects())
+	f := NewNewTaskForm(theme, testProjects(), "")
 
 	// Enter with empty prompt should not submit
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -175,5 +175,21 @@ func TestNewTaskForm_SubmitRequiresPrompt(t *testing.T) {
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !f.Done() {
 		t.Error("expected Done() to be true after enter with prompt")
+	}
+}
+
+func TestNewTaskForm_DefaultProject(t *testing.T) {
+	theme := DefaultTheme()
+
+	// Default to "bravo" — should be index 1 in sorted list [alpha, bravo, charlie]
+	f := NewNewTaskForm(theme, testProjects(), "bravo")
+	if got := f.SelectedProject(); got != "bravo" {
+		t.Errorf("SelectedProject() = %q, want %q", got, "bravo")
+	}
+
+	// Unknown project falls back to first
+	f2 := NewNewTaskForm(theme, testProjects(), "unknown")
+	if got := f2.SelectedProject(); got != "alpha" {
+		t.Errorf("SelectedProject() with unknown default = %q, want %q", got, "alpha")
 	}
 }
