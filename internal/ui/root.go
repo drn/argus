@@ -360,7 +360,11 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.scheduleGitRefresh()
 
 	case key.Matches(msg, m.keys.New):
-		m.newtask = NewNewTaskForm(m.theme, m.db.Projects())
+		defaultProject := ""
+		if t := m.tasklist.Selected(); t != nil {
+			defaultProject = t.Project
+		}
+		m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), defaultProject)
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
 		return m, nil

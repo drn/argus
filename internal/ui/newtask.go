@@ -31,7 +31,7 @@ const (
 	fieldPrompt  = 1
 )
 
-func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm {
+func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string) NewTaskForm {
 	promptInput := textinput.New()
 	promptInput.Placeholder = "Prompt for the agent"
 	promptInput.CharLimit = 500
@@ -44,10 +44,21 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project) NewTaskForm
 	}
 	sort.Strings(names)
 
+	// Default to the project the cursor is currently on
+	idx := 0
+	if defaultProject != "" {
+		for i, n := range names {
+			if n == defaultProject {
+				idx = i
+				break
+			}
+		}
+	}
+
 	return NewTaskForm{
 		promptInput:  promptInput,
 		projectNames: names,
-		projectIdx:   0,
+		projectIdx:   idx,
 		focused:      fieldPrompt,
 		theme:        theme,
 		projects:     projects,

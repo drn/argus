@@ -922,7 +922,7 @@ func TestModel_PromptViewDismiss(t *testing.T) {
 func TestModel_ViewNewTask(t *testing.T) {
 	m := testModel(t)
 	m.current = viewNewTask
-	m.newtask = NewNewTaskForm(m.theme, m.db.Projects())
+	m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), "")
 	m.newtask.SetSize(80, 24)
 	m.width = 80
 	m.height = 24
