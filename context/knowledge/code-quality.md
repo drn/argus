@@ -130,6 +130,13 @@
 - Fixed with `cell.Mode ^ vtAttrReverse` (XOR) — toggles reverse for both normal and reverse cells. No explicit colors needed; SGR reverse with defaults inherits the terminal's fg/bg, producing the expected white cursor on dark backgrounds.
 - **Pattern:** When vt10x stores pre-swapped attributes, always toggle (XOR) rather than set (OR) to avoid double-application.
 
+### Shared PanelLayout Extraction (2026-03-15)
+- Agent view and task list view both had independent three-panel layout implementations with duplicated width-splitting logic. Agent used 60/20/20, task list used 30/40/30, with different compression strategies.
+- Extracted `PanelLayout` struct to `panellayout.go`: configurable per-panel percentage + minimum width, right-to-left compression, remainder absorption for rounding, `Render()` handles `padHeight` + `JoinHorizontal`.
+- Both views now use identical 20/60/20 ratios for visual consistency. The `padHeight` utility was also moved here from `agentview.go` since it's shared.
+- Sub-views (`gitstatus`, `fileexplorer`, `taskdetail`) own their own borders via `borderedPanel()` — the layout struct does NOT wrap content in borders. `renderTerminal`/`renderDiffPanel` in agent view build their own borders inline.
+- **Pattern:** When extracting shared layout, don't try to unify border rendering if sub-views already manage their own borders. The shared layer should only handle geometry (widths, heights, padding, joining).
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go

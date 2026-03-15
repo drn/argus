@@ -217,23 +217,21 @@ func TestAgentView_SliceCachedLines(t *testing.T) {
 
 func TestAgentView_SplitWidths_NarrowTerminal(t *testing.T) {
 	av := newTestAgentView()
-	av.width = 50 // narrow: less than minLeft+minCenter+minRight (100)
-	left, center, right := av.splitWidths()
+	av.layout.SetSize(50, 39)
+	widths := av.layout.SplitWidths()
+	left, center, right := widths[0], widths[1], widths[2]
 
 	total := left + center + right
-	if total != 50 && total != av.width {
-		// total may not perfectly equal width due to rounding, but should be close
-		t.Logf("splitWidths(50) = %d+%d+%d = %d", left, center, right, total)
-	}
-	if center < 30 {
-		t.Errorf("center width = %d, want >= 30", center)
+	if total != 50 {
+		t.Errorf("splitWidths(50) = %d+%d+%d = %d, want 50", left, center, right, total)
 	}
 }
 
 func TestAgentView_SplitWidths_NormalTerminal(t *testing.T) {
 	av := newTestAgentView()
-	av.width = 120
-	left, center, right := av.splitWidths()
+	av.layout.SetSize(120, 39)
+	widths := av.layout.SplitWidths()
+	left, center, right := widths[0], widths[1], widths[2]
 
 	if left < 20 {
 		t.Errorf("left = %d, want >= 20", left)
@@ -251,8 +249,9 @@ func TestAgentView_SplitWidths_NormalTerminal(t *testing.T) {
 
 func TestAgentView_SplitWidths_WideTerminal(t *testing.T) {
 	av := newTestAgentView()
-	av.width = 250
-	left, center, right := av.splitWidths()
+	av.layout.SetSize(250, 39)
+	widths := av.layout.SplitWidths()
+	left, center, right := widths[0], widths[1], widths[2]
 
 	if left+center+right != 250 {
 		t.Errorf("total = %d, want 250", left+center+right)
@@ -525,9 +524,9 @@ func TestAgentView_RenderStatusBar_ScrollIndicator(t *testing.T) {
 
 func TestAgentView_RenderTerminal_NoSession_Empty(t *testing.T) {
 	av := newTestAgentView()
-	_, centerW, _ := av.splitWidths()
-	contentH := av.height - 1
-	terminal := av.renderTerminal(centerW, contentH)
+	widths := av.layout.SplitWidths()
+	contentH := av.layout.Height()
+	terminal := av.renderTerminal(widths[1], contentH)
 	if terminal == "" {
 		t.Error("expected non-empty terminal output")
 	}
@@ -539,9 +538,9 @@ func TestAgentView_RenderTerminal_NoSession_Empty(t *testing.T) {
 func TestAgentView_RenderTerminal_NoSession_WithLastOutput(t *testing.T) {
 	av := newTestAgentView()
 	av.SetLastOutput([]byte("Error: connection refused\n"))
-	_, centerW, _ := av.splitWidths()
-	contentH := av.height - 1
-	terminal := av.renderTerminal(centerW, contentH)
+	widths := av.layout.SplitWidths()
+	contentH := av.layout.Height()
+	terminal := av.renderTerminal(widths[1], contentH)
 	if terminal == "" {
 		t.Error("expected non-empty terminal with last output")
 	}
@@ -550,9 +549,9 @@ func TestAgentView_RenderTerminal_NoSession_WithLastOutput(t *testing.T) {
 func TestAgentView_RenderTerminal_NoSession_WithCachedTerminal(t *testing.T) {
 	av := newTestAgentView()
 	av.cachedTerminal = "cached content here"
-	_, centerW, _ := av.splitWidths()
-	contentH := av.height - 1
-	terminal := av.renderTerminal(centerW, contentH)
+	widths := av.layout.SplitWidths()
+	contentH := av.layout.Height()
+	terminal := av.renderTerminal(widths[1], contentH)
 	if !strings.Contains(terminal, "cached content here") {
 		t.Error("expected cached terminal content")
 	}
