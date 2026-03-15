@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -435,6 +436,133 @@ func TestTaskList_AdjacentTask_Empty(t *testing.T) {
 	tl.SetTasks(nil)
 	if tl.AdjacentTask("any", +1) != nil {
 		t.Error("expected nil for empty list")
+	}
+}
+
+func TestTaskList_projectTasks(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{Name: "A1", Project: "alpha"},
+		{Name: "A2", Project: "alpha"},
+		{Name: "B1", Project: "beta"},
+		{Name: "No Project", Project: ""},
+	}
+	tl.SetTasks(tasks)
+
+	got := tl.projectTasks("alpha")
+	if len(got) != 2 {
+		t.Errorf("expected 2 alpha tasks, got %d", len(got))
+	}
+
+	got = tl.projectTasks("beta")
+	if len(got) != 1 {
+		t.Errorf("expected 1 beta task, got %d", len(got))
+	}
+
+	got = tl.projectTasks(uncategorized)
+	if len(got) != 1 {
+		t.Errorf("expected 1 uncategorized task, got %d", len(got))
+	}
+
+	got = tl.projectTasks("nonexistent")
+	if len(got) != 0 {
+		t.Errorf("expected 0 tasks for nonexistent project, got %d", len(got))
+	}
+}
+
+func TestTaskList_taskStatusIcon(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+
+	statuses := []model.Status{
+		model.StatusPending,
+		model.StatusInProgress,
+		model.StatusInReview,
+		model.StatusComplete,
+	}
+	for _, s := range statuses {
+		task := &model.Task{ID: "t1", Status: s}
+		icon := tl.taskStatusIcon(task)
+		if icon == "" {
+			t.Errorf("expected non-empty icon for status %v", s)
+		}
+	}
+}
+
+func TestTaskList_taskStatusIcon_InProgressVariants(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+
+	// Not running → moon icon
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+	icon := tl.taskStatusIcon(task)
+	if !strings.Contains(icon, "\uF186") {
+		t.Error("expected moon icon for non-running in-progress task")
+	}
+
+	// Running but idle → moon icon
+	tl.SetRunning([]string{"t1"})
+	tl.SetIdle([]string{"t1"})
+	icon = tl.taskStatusIcon(task)
+	if !strings.Contains(icon, "\uF186") {
+		t.Error("expected moon icon for idle in-progress task")
+	}
+
+	// Running and active, tickEven=true → alternate icon
+	tl.SetIdle(nil)
+	tl.tickEven = true
+	icon = tl.taskStatusIcon(task)
+	if strings.Contains(icon, "\uF186") {
+		t.Error("expected alternate icon for active running task on even tick")
+	}
+}
+
+func TestTaskList_renderProjectHeader_StatusIcons(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "A1", Project: "alpha", Status: model.StatusPending},
+		{ID: "t2", Name: "A2", Project: "alpha", Status: model.StatusComplete},
+	}
+	tl.SetTasks(tasks)
+
+	var b strings.Builder
+	tl.renderProjectHeader(&b, "alpha", false)
+	output := b.String()
+
+	// Should contain the pending and complete display glyphs.
+	pendingGlyph := model.StatusPending.Display()
+	completeGlyph := model.StatusComplete.Display()
+	if !strings.Contains(output, pendingGlyph) {
+		t.Errorf("expected pending glyph %q in header output", pendingGlyph)
+	}
+	if !strings.Contains(output, completeGlyph) {
+		t.Errorf("expected complete glyph %q in header output", completeGlyph)
+	}
+}
+
+func TestTaskList_renderProjectHeader_Truncation(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(120, 60)
+
+	// Create 10 tasks (>8 triggers truncation).
+	tasks := make([]*model.Task, 10)
+	for i := range tasks {
+		tasks[i] = &model.Task{
+			ID:      fmt.Sprintf("t%d", i),
+			Name:    fmt.Sprintf("Task %d", i),
+			Project: "big",
+			Status:  model.StatusPending,
+		}
+	}
+	tl.SetTasks(tasks)
+
+	var b strings.Builder
+	tl.renderProjectHeader(&b, "big", false)
+	output := b.String()
+
+	if !strings.Contains(output, "…") {
+		t.Error("expected ellipsis in header for >8 tasks")
 	}
 }
 
