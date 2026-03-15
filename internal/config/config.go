@@ -1,13 +1,5 @@
 package config
 
-import (
-	"bytes"
-	"os"
-	"path/filepath"
-
-	"github.com/BurntSushi/toml"
-)
-
 // Config is the top-level configuration.
 type Config struct {
 	Defaults    Defaults           `toml:"defaults"`
@@ -92,54 +84,4 @@ func DefaultKeybindings() Keybindings {
 		Prompt:   "p",
 		Worktree: "w",
 	}
-}
-
-// Save writes the config to the standard path.
-func Save(cfg Config) error {
-	dir := ConfigDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, "config.toml"), buf.Bytes(), 0o644)
-}
-
-// ConfigDir returns the argus config directory path.
-func ConfigDir() string {
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, "argus")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "argus")
-}
-
-// Load reads the config from the standard path, falling back to defaults.
-func Load() (Config, error) {
-	cfg := DefaultConfig()
-	path := filepath.Join(ConfigDir(), "config.toml")
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
-		return cfg, err
-	}
-
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return cfg, err
-	}
-
-	// Ensure maps are initialized
-	if cfg.Backends == nil {
-		cfg.Backends = make(map[string]Backend)
-	}
-	if cfg.Projects == nil {
-		cfg.Projects = make(map[string]Project)
-	}
-
-	return cfg, nil
 }

@@ -2,20 +2,14 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/drn/argus/internal/config"
-	"github.com/drn/argus/internal/model"
 )
 
-// migrate checks if the database has been initialized. If not, it imports
-// data from the legacy JSON/TOML files and seeds defaults.
+// migrate checks if the database has been initialized. If not, it seeds defaults.
 func (d *DB) migrate() error {
 	var version int
 	err := d.conn.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&version)
@@ -23,31 +17,19 @@ func (d *DB) migrate() error {
 		return nil // already migrated
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		// Table exists but is empty — fall through to migrate.
-		// Any other error means we should check if it's just empty.
 		var count int
 		if countErr := d.conn.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&count); countErr != nil {
 			return fmt.Errorf("checking schema version: %w", err)
 		}
 		if count > 0 {
-			return nil // has a version, skip migration
+			return nil
 		}
 	}
 
-	// Import from legacy files
-	if err := d.importLegacyTasks(); err != nil {
-		return fmt.Errorf("importing tasks: %w", err)
-	}
-	if err := d.importLegacyConfig(); err != nil {
-		return fmt.Errorf("importing config: %w", err)
-	}
-
-	// Ensure defaults exist
 	if err := d.seedDefaults(); err != nil {
 		return err
 	}
 
-	// Mark migration complete
 	_, err = d.conn.Exec(`INSERT INTO schema_version (version) VALUES (?)`, schemaVersion)
 	return err
 }
@@ -68,13 +50,11 @@ func (d *DB) seedDefaults() error {
 		var existing string
 		err := d.conn.QueryRow(`SELECT command FROM backends WHERE name=?`, name).Scan(&existing)
 		if err == sql.ErrNoRows {
-			// Backend doesn't exist — insert the default
 			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
 				name, b.Command, b.PromptFlag); err != nil {
 				return err
 			}
 		} else if err == nil && (existing == "echo" || existing == "cat" || existing == "true") {
-			// Backend exists but has a placeholder command — replace with default
 			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
 				b.Command, b.PromptFlag, name); err != nil {
 				return err
@@ -111,135 +91,6 @@ func (d *DB) seedDefaults() error {
 	return nil
 }
 
-// importLegacyTasks reads tasks from ~/.config/argus/tasks.json.
-func (d *DB) importLegacyTasks() error {
-	path := filepath.Join(config.ConfigDir(), "tasks.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	var tasks []*model.Task
-	if err := json.Unmarshal(data, &tasks); err != nil {
-		return nil // skip corrupted file
-	}
-
-	for _, t := range tasks {
-		_, err := d.conn.Exec(`INSERT OR IGNORE INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			t.ID, t.Name, t.Status, t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID,
-			formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// legacyConfig mirrors config.Config for TOML parsing during migration.
-type legacyConfig struct {
-	Defaults    config.Defaults            `toml:"defaults"`
-	Backends    map[string]config.Backend  `toml:"backends"`
-	Projects    map[string]config.Project  `toml:"projects"`
-	Keybindings config.Keybindings         `toml:"keybindings"`
-	UI          legacyUIConfig             `toml:"ui"`
-}
-
-type legacyUIConfig struct {
-	Theme            string `toml:"theme"`
-	ShowElapsed      *bool  `toml:"show_elapsed"`
-	ShowIcons        *bool  `toml:"show_icons"`
-	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
-}
-
-// importLegacyConfig reads config from ~/.config/argus/config.toml.
-func (d *DB) importLegacyConfig() error {
-	path := filepath.Join(config.ConfigDir(), "config.toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-
-	var cfg legacyConfig
-	if err := toml.Unmarshal(data, &cfg); err != nil {
-		return nil // skip corrupted file
-	}
-
-	// Import backends
-	for name, b := range cfg.Backends {
-		if _, err := d.conn.Exec(`INSERT OR IGNORE INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
-			name, b.Command, b.PromptFlag); err != nil {
-			return err
-		}
-	}
-
-	// Import projects
-	for name, p := range cfg.Projects {
-		if _, err := d.conn.Exec(`INSERT OR IGNORE INTO projects (name, path, branch, backend) VALUES (?, ?, ?, ?)`,
-			name, p.Path, p.Branch, p.Backend); err != nil {
-			return err
-		}
-	}
-
-	// Import config values
-	kv := map[string]string{}
-	if cfg.Defaults.Backend != "" {
-		kv["defaults.backend"] = cfg.Defaults.Backend
-	}
-	if cfg.Keybindings.New != "" {
-		kv["keybindings.new"] = cfg.Keybindings.New
-	}
-	if cfg.Keybindings.Attach != "" {
-		kv["keybindings.attach"] = cfg.Keybindings.Attach
-	}
-	if cfg.Keybindings.Status != "" {
-		kv["keybindings.status"] = cfg.Keybindings.Status
-	}
-	if cfg.Keybindings.Delete != "" {
-		kv["keybindings.delete"] = cfg.Keybindings.Delete
-	}
-	if cfg.Keybindings.Quit != "" {
-		kv["keybindings.quit"] = cfg.Keybindings.Quit
-	}
-	if cfg.Keybindings.Help != "" {
-		kv["keybindings.help"] = cfg.Keybindings.Help
-	}
-	if cfg.Keybindings.Filter != "" {
-		kv["keybindings.filter"] = cfg.Keybindings.Filter
-	}
-	if cfg.Keybindings.Prompt != "" {
-		kv["keybindings.prompt"] = cfg.Keybindings.Prompt
-	}
-	if cfg.Keybindings.Worktree != "" {
-		kv["keybindings.worktree"] = cfg.Keybindings.Worktree
-	}
-	if cfg.UI.Theme != "" {
-		kv["ui.theme"] = cfg.UI.Theme
-	}
-	if cfg.UI.ShowElapsed != nil {
-		kv["ui.show_elapsed"] = fmt.Sprintf("%t", *cfg.UI.ShowElapsed)
-	}
-	if cfg.UI.ShowIcons != nil {
-		kv["ui.show_icons"] = fmt.Sprintf("%t", *cfg.UI.ShowIcons)
-	}
-	if cfg.UI.CleanupWorktrees != nil {
-		kv["ui.cleanup_worktrees"] = fmt.Sprintf("%t", *cfg.UI.CleanupWorktrees)
-	}
-
-	for k, v := range kv {
-		if _, err := d.conn.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, k, v); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // fixupBackends runs on every Open and corrects known-outdated backend
 // configurations. This is separate from seedDefaults (which only runs during
 // migration) so that improvements to the default command propagate to
@@ -259,15 +110,12 @@ func (d *DB) fixupBackends() error {
 		needsUpdate := false
 
 		// Fix: command references "claude" but is missing --dangerously-skip-permissions.
-		// This catches old defaults like "claude --worktree" that were persisted
-		// before the flag was added to DefaultConfig.
 		if strings.Contains(command, "claude") && !strings.Contains(command, "--dangerously-skip-permissions") {
 			needsUpdate = true
 		}
 
 		// Fix: prompt_flag is "-p" (print/non-interactive mode) when the
-		// default is empty (interactive mode). Print mode causes agents to
-		// process the prompt and exit instead of running interactively.
+		// default is empty (interactive mode).
 		if promptFlag == "-p" && want.PromptFlag == "" {
 			needsUpdate = true
 		}

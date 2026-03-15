@@ -13,7 +13,7 @@ go build ./...              # build all packages
 go build -o argus ./cmd/argus/  # build binary
 go vet ./...                # lint
 go test ./...               # run all tests
-go test ./internal/store/   # run tests for a single package
+go test ./internal/db/      # run tests for a single package
 ```
 
 ## Architecture
@@ -26,9 +26,8 @@ go test ./internal/store/   # run tests for a single package
 - `internal/ui/tasklist.go` — Task list with collapsible project folders, cursor, scrolling, filtering. Tasks are grouped by project name into a flattened row list (project headers + task rows). Only one project is expanded at a time — auto-expands when the cursor enters a project, auto-collapses others. Not a `tea.Model` itself — it's a plain struct that `root.Model` drives.
 - `internal/ui/newtask.go` — New task form using `bubbles/textinput`. Has its own `Update` method but is called by root.
 - `internal/model/` — Core domain types. `Task` struct and `Status` enum with `pending → in_progress → in_review → complete` workflow. Status implements `encoding.TextMarshaler` for JSON serialization.
-- `internal/db/` — SQLite-backed persistence at `~/.argus/data.sql`. Stores tasks, projects, backends, and config in a single database. Thread-safe with mutex. Auto-migrates from legacy JSON/TOML files on first run.
+- `internal/db/` — SQLite-backed persistence at `~/.argus/data.sql`. Stores tasks, projects, backends, and config in a single database. Thread-safe with mutex. Seeds defaults on first run.
 - `internal/config/config.go` — Config struct types and defaults. Struct types (`Config`, `Backend`, `Project`, `Keybindings`, `UIConfig`) are used throughout the codebase as value types. The `db.DB.Config()` method assembles a `Config` from the database.
-- `internal/store/store.go` — Legacy JSON file persistence (superseded by `internal/db/`). Kept for reference but no longer imported by production code.
 - `internal/agent/` — Agent process management with PTY:
   - `agent.go` — Backend resolution and command building (`BuildCmd`). Supports `--session-id` for conversation pinning.
   - `session.go` — PTY-backed process session via `creack/pty`. Single `readLoop` goroutine tees output to ring buffer + attached writer. Supports attach/detach without stopping the process.
@@ -47,8 +46,13 @@ go test ./internal/store/   # run tests for a single package
 
 - Data dir: `~/.argus/`
 - Database: SQLite (`data.sql`) via `modernc.org/sqlite` (pure Go, no CGO)
-- Legacy config dir: `~/.config/argus/` (respects `XDG_CONFIG_HOME`) — auto-migrated to SQLite on first run
 - Backends are command templates with prompt flag interpolation, not SDK integrations
+
+## Breaking Changes Policy
+
+- Only one user (the author) — breaking changes are fine, no backwards compatibility needed
+- No legacy migration code — if a schema change requires data migration, write a one-off script
+- `internal/store/` (legacy JSON persistence) and `config.toml` support have been removed
 
 ## Key Learnings
 

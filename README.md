@@ -15,7 +15,7 @@ Manage multiple Claude Code / Codex sessions with task tracking, git worktree is
 - **Tabbed UI** — Switch between Tasks and Projects views
 - **Filtering** — Search tasks by name or project
 - **Configurable backends** — Define command templates for any LLM CLI tool
-- **Customizable keybindings** — Remap every key via TOML config
+- **Customizable keybindings** — Remap every key via SQLite config
 
 ## Install
 
@@ -56,41 +56,6 @@ argus
 | `ctrl+q` | Detach from agent |
 | `ctrl+←` / `ctrl+→` | Switch panels |
 
-## Configuration
+## Data
 
-Copy `config.example.toml` to `~/.config/argus/config.toml` and edit to your setup.
-
-```toml
-[defaults]
-backend = "claude"
-
-[backends.claude]
-command = "claude --dangerously-skip-permissions"
-prompt_flag = "-p"
-
-[backends.codex]
-command = "codex --quiet"
-prompt_flag = ""
-
-[projects.api]
-path = "~/code/my-project/api"
-branch = "main"
-backend = "claude"
-
-[projects.web]
-path = "~/code/my-project/web"
-branch = "main"
-
-[keybindings]
-new = "n"
-attach = "enter"
-delete = "d"
-filter = "/"
-
-[ui]
-theme = "default"
-show_elapsed = true
-show_icons = true
-```
-
-Tasks are persisted in `~/.config/argus/tasks.json`.
+All state (tasks, projects, backends, keybindings, UI settings) is persisted in SQLite at `~/.argus/data.sql`.
