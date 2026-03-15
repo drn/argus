@@ -24,11 +24,27 @@ func TestStatus_String(t *testing.T) {
 }
 
 func TestStatus_Display(t *testing.T) {
-	if got := StatusPending.Display(); got != "◻ pending" {
+	if got := StatusPending.Display(); got != "\uF10C" {
 		t.Errorf("Pending.Display() = %q", got)
+	}
+	if got := StatusComplete.Display(); got != "\uF00C" {
+		t.Errorf("Complete.Display() = %q", got)
 	}
 	if got := Status(99).Display(); got != "unknown(99)" {
 		t.Errorf("out-of-range Display() = %q", got)
+	}
+}
+
+func TestStatus_DisplayAlt(t *testing.T) {
+	if got := StatusInProgress.DisplayAlt(); got != "\uF192" {
+		t.Errorf("InProgress.DisplayAlt() = %q, want dot-circle-o", got)
+	}
+	// Non-animated statuses return same as Display
+	if got := StatusPending.DisplayAlt(); got != "\uF10C" {
+		t.Errorf("Pending.DisplayAlt() = %q", got)
+	}
+	if got := Status(99).DisplayAlt(); got != "unknown(99)" {
+		t.Errorf("out-of-range DisplayAlt() = %q", got)
 	}
 }
 

@@ -40,10 +40,15 @@ type TaskList struct {
 	idle     map[string]bool // task IDs with sessions waiting for input
 	rows     []row           // flattened display rows (headers + tasks)
 	expanded string          // currently expanded project name
+	tickEven bool            // toggles each tick for status icon animation
 }
 
 func NewTaskList(theme Theme) TaskList {
 	return TaskList{theme: theme, running: make(map[string]bool), idle: make(map[string]bool)}
+}
+
+func (tl *TaskList) Tick() {
+	tl.tickEven = !tl.tickEven
 }
 
 func (tl *TaskList) SetRunning(ids []string) {
@@ -446,8 +451,12 @@ func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected boo
 
 	// Status label (right-aligned)
 	displayText := t.Status.Display()
-	if t.Status == model.StatusInProgress && (!tl.running[t.ID] || tl.idle[t.ID]) {
-		displayText = "● idle"
+	if t.Status == model.StatusInProgress {
+		if !tl.running[t.ID] || tl.idle[t.ID] {
+			displayText = "\uF186" // moon: idle
+		} else if tl.tickEven {
+			displayText = t.Status.DisplayAlt() // animate between circle-o and dot-circle-o
+		}
 	}
 	statusLabel := statusStyle.Render(displayText)
 	elapsed := ""
