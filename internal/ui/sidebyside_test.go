@@ -86,9 +86,9 @@ func TestRenderSideBySide_Separator(t *testing.T) {
 	}
 }
 
-func TestRenderSideBySideHeader(t *testing.T) {
+func TestRenderDiffHeader(t *testing.T) {
 	theme := DefaultTheme()
-	header := RenderSideBySideHeader("main.go", 0, 5, theme)
+	header := RenderDiffHeader("main.go", 0, 5, "split", theme)
 	if !strings.Contains(header, "DIFF") {
 		t.Error("expected 'DIFF' in header")
 	}
@@ -97,6 +97,9 @@ func TestRenderSideBySideHeader(t *testing.T) {
 	}
 	if !strings.Contains(header, "[1/5]") {
 		t.Error("expected file count in header")
+	}
+	if !strings.Contains(header, "split") {
+		t.Error("expected mode label in header")
 	}
 }
 

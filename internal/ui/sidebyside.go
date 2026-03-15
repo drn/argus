@@ -162,9 +162,117 @@ func truncatePlain(s string, maxW int) string {
 	return string(runes[:maxW])
 }
 
-// RenderSideBySideHeader renders the header line for the diff panel.
-func RenderSideBySideHeader(filename string, fileIdx, fileCount int, theme Theme) string {
+// RenderDiffHeader renders the header line for the diff panel with mode indicator.
+func RenderDiffHeader(filename string, fileIdx, fileCount int, mode string, theme Theme) string {
 	return theme.Section.Render("  DIFF") +
 		theme.Dimmed.Render(" "+filename) +
-		theme.Dimmed.Render(fmt.Sprintf("  [%d/%d]", fileIdx+1, fileCount))
+		theme.Dimmed.Render(fmt.Sprintf("  [%d/%d]", fileIdx+1, fileCount)) +
+		theme.Dimmed.Render("  "+mode)
+}
+
+// RenderUnifiedLines builds syntax-highlighted unified diff lines from a ParsedDiff.
+// Each line includes the +/- prefix and line numbers. Returns pre-rendered ANSI strings.
+func RenderUnifiedLines(pd ParsedDiff, filename string) []string {
+	if len(pd.Hunks) == 0 {
+		return nil
+	}
+
+	removedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	addedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
+	lineNumStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
+	hunkHeaderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
+	dividerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
+
+	// Collect all line contents for batch highlighting
+	var allContents []string
+	type lineRef struct {
+		hunkIdx int
+		lineIdx int
+		isHunk  bool // true = hunk header or separator
+	}
+	var refs []lineRef
+
+	for hi, hunk := range pd.Hunks {
+		if hi > 0 {
+			refs = append(refs, lineRef{isHunk: true})
+			allContents = append(allContents, "───")
+		}
+		refs = append(refs, lineRef{isHunk: true})
+		allContents = append(allContents, hunk.Header)
+		for li := range hunk.Lines {
+			refs = append(refs, lineRef{hunkIdx: hi, lineIdx: li})
+			allContents = append(allContents, hunk.Lines[li].Content)
+		}
+	}
+
+	highlighted := HighlightLines(allContents, filename)
+
+	var result []string
+	for i, ref := range refs {
+		hl := highlighted[i]
+
+		if ref.isHunk {
+			if allContents[i] == "───" {
+				result = append(result, dividerStyle.Render("───"))
+			} else {
+				result = append(result, hunkHeaderStyle.Render(allContents[i]))
+			}
+			continue
+		}
+
+		dl := pd.Hunks[ref.hunkIdx].Lines[ref.lineIdx]
+		oldNum := FormatLineNum(dl.OldNum, lineNumWidth)
+		newNum := FormatLineNum(dl.NewNum, lineNumWidth)
+		nums := lineNumStyle.Render(oldNum) + " " + lineNumStyle.Render(newNum)
+
+		switch dl.Type {
+		case DiffRemoved:
+			prefix := removedStyle.Render("-")
+			var content string
+			if hl == dl.Content {
+				content = removedStyle.Render(dl.Content)
+			} else {
+				content = hl
+			}
+			result = append(result, nums+" "+prefix+content)
+		case DiffAdded:
+			prefix := addedStyle.Render("+")
+			var content string
+			if hl == dl.Content {
+				content = addedStyle.Render(dl.Content)
+			} else {
+				content = hl
+			}
+			result = append(result, nums+" "+prefix+content)
+		default:
+			result = append(result, nums+"  "+hl)
+		}
+	}
+
+	return result
+}
+
+// RenderUnified renders the unified diff view for the given visible window.
+func RenderUnified(lines []string, dispW, visibleH, scrollOff int) string {
+	if len(lines) == 0 {
+		return "(no diff)"
+	}
+
+	end := scrollOff + visibleH
+	if end > len(lines) {
+		end = len(lines)
+	}
+	start := scrollOff
+	if start > end {
+		start = end
+	}
+
+	var b strings.Builder
+	for i := start; i < end; i++ {
+		b.WriteString(ansi.Truncate(lines[i], dispW, "\x1b[0m"))
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
