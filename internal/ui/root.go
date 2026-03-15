@@ -81,6 +81,7 @@ type Model struct {
 	newproject  NewProjectForm
 	preview     Preview
 	gitstatus   *GitStatus
+	detail      TaskDetail
 	agentview   *AgentView
 	current      view
 	activeTab    tab
@@ -102,6 +103,7 @@ func NewModel(database *db.DB, runner *agent.Runner) Model {
 
 	pv := NewPreview(theme, runner)
 	gs := NewGitStatus(theme)
+	dt := NewTaskDetail(theme)
 	avv := NewAgentView(theme, runner)
 	av := &avv
 
@@ -117,6 +119,7 @@ func NewModel(database *db.DB, runner *agent.Runner) Model {
 		helpview:    hv,
 		preview:     pv,
 		gitstatus:   &gs,
+		detail:      dt,
 		agentview:   av,
 		current:     viewTaskList,
 		activeTab:   tabTasks,
@@ -178,14 +181,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		leftWidth, rightWidth := m.splitWidths()
 		// Reserve space: section header(1) + gap(1) + statusbar(1)
 		contentHeight := msg.Height - 3
-		m.tasklist.SetSize(leftWidth, contentHeight)
-		m.projectlist.SetSize(leftWidth, contentHeight)
-		gitH, previewH := m.splitRightHeights(contentHeight)
-		m.gitstatus.SetSize(rightWidth, gitH)
-		m.preview.SetSize(rightWidth, previewH)
+
+		// Tasks tab: three-panel layout
+		leftW, centerW, rightW := m.splitThreeWidths()
+		m.tasklist.SetSize(leftW, contentHeight)
+		gitH, previewH := m.splitCenterHeights(contentHeight)
+		m.gitstatus.SetSize(centerW, gitH)
+		m.preview.SetSize(centerW, previewH)
+		m.detail.SetSize(rightW, contentHeight)
+
+		// Projects tab still uses two-panel split
+		m.projectlist.SetSize(leftW, contentHeight)
+
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
 		m.newproject.SetSize(msg.Width, msg.Height)

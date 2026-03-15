@@ -781,12 +781,12 @@ func TestModel_SplitWidths_NarrowTerminal(t *testing.T) {
 	}
 }
 
-func TestModel_SplitRightHeights(t *testing.T) {
+func TestModel_SplitCenterHeights(t *testing.T) {
 	m := testModel(t)
 
-	gitH, previewH := m.splitRightHeights(40)
+	gitH, previewH := m.splitCenterHeights(40)
 	if gitH+previewH < 40 {
-		t.Errorf("splitRightHeights total = %d, want >= 40", gitH+previewH)
+		t.Errorf("splitCenterHeights total = %d, want >= 40", gitH+previewH)
 	}
 	if gitH < 5 {
 		t.Errorf("gitH = %d, want >= 5", gitH)
@@ -799,9 +799,9 @@ func TestModel_SplitRightHeights(t *testing.T) {
 	}
 }
 
-func TestModel_SplitRightHeights_Small(t *testing.T) {
+func TestModel_SplitCenterHeights_Small(t *testing.T) {
 	m := testModel(t)
-	gitH, previewH := m.splitRightHeights(8)
+	gitH, previewH := m.splitCenterHeights(8)
 	if gitH < 5 {
 		t.Errorf("gitH = %d, want >= 5 (minimum)", gitH)
 	}
