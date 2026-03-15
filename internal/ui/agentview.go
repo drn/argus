@@ -227,6 +227,8 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		// Sidebar navigation (no-op for now, git status is read-only)
 	case panelFiles:
 		switch keyStr {
+		case "esc":
+			av.focus = panelAgent
 		case "up", "k":
 			av.files.CursorUp()
 		case "down", "j":
@@ -306,6 +308,7 @@ func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
 	switch keyStr {
 	case "esc", "q":
 		av.exitDiffMode()
+		av.focus = panelAgent
 	case "up", "k":
 		// Move to previous file and show its diff
 		av.files.CursorUp()
