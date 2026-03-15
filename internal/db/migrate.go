@@ -120,6 +120,13 @@ func (d *DB) fixupBackends() error {
 			needsUpdate = true
 		}
 
+		// Fix: command still has --worktree flag from when Argus delegated
+		// worktree creation to Claude Code. Argus now creates worktrees
+		// itself and sets cmd.Dir instead.
+		if strings.Contains(command, "--worktree") || strings.Contains(command, " -w") {
+			needsUpdate = true
+		}
+
 		if needsUpdate {
 			if _, err := d.conn.Exec(
 				`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,

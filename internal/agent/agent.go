@@ -59,16 +59,8 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmdStr := backend.Command
 
-	// Inject the task name as the worktree name so worktrees match tasks (argus/<name>).
-	if !resume && task.Name != "" {
-		cmdStr = injectWorktreeName(cmdStr, "argus/"+task.Name)
-	}
-
 	if resume && task.SessionID != "" {
 		// Resume an existing session — no prompt needed.
-		// Strip --worktree/-w since the worktree already exists from the
-		// original session; passing it again would create a second one.
-		cmdStr = stripWorktreeFlag(cmdStr)
 		cmdStr += " --resume " + shellQuote(task.SessionID)
 	} else {
 		// New session — pin the session ID so we can resume later
@@ -86,73 +78,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
-	// For resume, the working directory MUST match where the session was
-	// originally created. Sessions are project-scoped in Claude Code, so
-	// --resume only finds sessions stored under the CWD's project hash.
-	// Since sessions are created from the worktree (via --worktree flag),
-	// we must resume from the worktree, not the main project directory.
-	dir := ResolveDir(task, cfg)
-	if resume && task.Worktree != "" {
-		dir = task.Worktree
-	} else if !resume && dir == "" && task.Worktree != "" {
-		dir = task.Worktree
+	// Use worktree as working directory if available, otherwise project dir.
+	// For resume, this MUST match the original session's CWD.
+	dir := task.Worktree
+	if dir == "" {
+		dir = ResolveDir(task, cfg)
 	}
 	if dir != "" {
 		cmd.Dir = dir
 	}
 
 	return cmd, nil
-}
-
-// stripWorktreeFlag removes --worktree / -w (and an optional value) from a
-// command string. The flag accepts an optional name argument, e.g.
-// "--worktree my-branch" or "-w my-branch". We remove both the flag and
-// any non-flag token that follows it.
-func stripWorktreeFlag(cmd string) string {
-	parts := strings.Fields(cmd)
-	var out []string
-	for i := 0; i < len(parts); i++ {
-		p := parts[i]
-		if p == "--worktree" || p == "-w" {
-			// Skip the flag; also skip a following non-flag argument if present.
-			if i+1 < len(parts) && !strings.HasPrefix(parts[i+1], "-") {
-				i++
-			}
-			continue
-		}
-		// Handle --worktree=value
-		if strings.HasPrefix(p, "--worktree=") || strings.HasPrefix(p, "-w=") {
-			continue
-		}
-		out = append(out, p)
-	}
-	return strings.Join(out, " ")
-}
-
-// injectWorktreeName finds the --worktree / -w flag in a command string
-// and ensures it has the given name as its argument. If the flag already
-// has a value, it is replaced. If the flag has no value, the name is inserted.
-// If the flag is absent, the command is returned unchanged.
-func injectWorktreeName(cmd, name string) string {
-	parts := strings.Fields(cmd)
-	var out []string
-	for i := 0; i < len(parts); i++ {
-		p := parts[i]
-		if p == "--worktree" || p == "-w" {
-			out = append(out, p, name)
-			// Skip an existing non-flag argument if present.
-			if i+1 < len(parts) && !strings.HasPrefix(parts[i+1], "-") {
-				i++
-			}
-			continue
-		}
-		if strings.HasPrefix(p, "--worktree=") || strings.HasPrefix(p, "-w=") {
-			out = append(out, "--worktree", name)
-			continue
-		}
-		out = append(out, p)
-	}
-	return strings.Join(out, " ")
 }
 
 // shellQuote wraps a string in single quotes with proper escaping.

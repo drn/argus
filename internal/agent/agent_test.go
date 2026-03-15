@@ -11,7 +11,7 @@ func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude --dangerously-skip-permissions --worktree", PromptFlag: ""},
+			"claude": {Command: "claude --dangerously-skip-permissions", PromptFlag: ""},
 			"codex":  {Command: "codex", PromptFlag: "--prompt"},
 			"bare":   {Command: "my-agent", PromptFlag: ""},
 		},
@@ -30,8 +30,8 @@ func TestResolveBackend_DefaultFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "claude --dangerously-skip-permissions --worktree" {
-		t.Errorf("expected claude --worktree command, got %q", b.Command)
+	if b.Command != "claude --dangerously-skip-permissions" {
+		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
 
@@ -56,8 +56,8 @@ func TestResolveBackend_TaskOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "claude --dangerously-skip-permissions --worktree" {
-		t.Errorf("expected claude --worktree command, got %q", b.Command)
+	if b.Command != "claude --dangerously-skip-permissions" {
+		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestResolveBackend_ProjectWithoutBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Falls back to default since project "other" has no backend
-	if b.Command != "claude --dangerously-skip-permissions --worktree" {
-		t.Errorf("expected claude --worktree command, got %q", b.Command)
+	if b.Command != "claude --dangerously-skip-permissions" {
+		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestBuildCmd(t *testing.T) {
 	if args[0] != "sh" || args[1] != "-c" {
 		t.Errorf("expected sh -c, got %v", args[:2])
 	}
-	expected := "claude --dangerously-skip-permissions --worktree argus/fix-bug 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions 'fix the bug'"
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
@@ -172,7 +172,7 @@ func TestBuildCmd_NewSessionWithID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := "claude --dangerously-skip-permissions --worktree argus/fix-bug --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
@@ -187,7 +187,7 @@ func TestBuildCmd_Resume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Resume should use --resume, strip --worktree, and ignore the prompt
+	// Resume should use --resume and ignore the prompt
 	expected := "claude --dangerously-skip-permissions --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
@@ -235,52 +235,42 @@ func TestBuildCmd_ResumeWithProjectAndWorktree(t *testing.T) {
 	}
 }
 
-func TestInjectWorktreeName(t *testing.T) {
-	tests := []struct {
-		input    string
-		name     string
-		expected string
-	}{
-		{"claude --worktree", "argus/fix-bug", "claude --worktree argus/fix-bug"},
-		{"claude --worktree --resume id", "argus/fix-bug", "claude --worktree argus/fix-bug --resume id"},
-		{"claude --worktree old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
-		{"claude -w", "argus/fix-bug", "claude -w argus/fix-bug"},
-		{"claude -w old-name --flag", "argus/fix-bug", "claude -w argus/fix-bug --flag"},
-		{"claude --worktree=old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
-		{"claude -w=old-name", "argus/fix-bug", "claude --worktree argus/fix-bug"},
-		{"claude --resume id", "argus/fix-bug", "claude --resume id"},
-		{"claude", "argus/fix-bug", "claude"},
-		{"claude --dangerously-skip-permissions --worktree", "argus/fix-bug", "claude --dangerously-skip-permissions --worktree argus/fix-bug"},
+func TestBuildCmd_WorktreeDir(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Name:     "fix-bug",
+		Prompt:   "fix the bug",
+		Worktree: "/tmp/test-worktree",
 	}
 
-	for _, tt := range tests {
-		got := injectWorktreeName(tt.input, tt.name)
-		if got != tt.expected {
-			t.Errorf("injectWorktreeName(%q, %q) = %q, want %q", tt.input, tt.name, got, tt.expected)
-		}
+	cmd, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When Worktree is set, cmd.Dir should use it
+	if cmd.Dir != "/tmp/test-worktree" {
+		t.Errorf("expected Dir %q, got %q", "/tmp/test-worktree", cmd.Dir)
 	}
 }
 
-func TestStripWorktreeFlag(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"claude --worktree", "claude"},
-		{"claude --worktree --resume id", "claude --resume id"},
-		{"claude --dangerously-skip-permissions --worktree", "claude --dangerously-skip-permissions"},
-		{"claude -w", "claude"},
-		{"claude -w my-branch --resume id", "claude --resume id"},
-		{"claude --worktree=my-branch --resume id", "claude --resume id"},
-		{"claude --resume id", "claude --resume id"},
-		{"claude", "claude"},
+func TestBuildCmd_WorktreeOverridesProject(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Project:  "other",
+		Name:     "fix-bug",
+		Prompt:   "fix the bug",
+		Worktree: "/tmp/test-worktree",
 	}
 
-	for _, tt := range tests {
-		got := stripWorktreeFlag(tt.input)
-		if got != tt.expected {
-			t.Errorf("stripWorktreeFlag(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
+	cmd, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Worktree takes precedence over project path
+	if cmd.Dir != "/tmp/test-worktree" {
+		t.Errorf("expected Dir %q (worktree), got %q", "/tmp/test-worktree", cmd.Dir)
 	}
 }
 

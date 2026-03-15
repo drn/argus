@@ -76,8 +76,14 @@
 ### Worktree Removal Safety Guard (2026-03-14)
 - `removeWorktree()` had an unsafe `os.RemoveAll` fallback: if `git worktree remove --force` failed (e.g., path was the main working tree, not a real worktree), it would delete the entire directory — potentially the root project.
 - Three call sites funneled through `removeWorktree`: task delete (`handleConfirmDeleteKey`), task destroy (`handleConfirmDestroyKey` via `removeWorktreeAndBranch`), and prune.
-- Fixed by adding `isWorktreeSubdir()` which checks the path contains `/.claude/worktrees/` before allowing any removal operation. If the path isn't inside the expected worktree directory structure, `removeWorktree` is a no-op.
+- Fixed by adding `isWorktreeSubdir()` which checks the path contains `/.argus/worktrees/` or `/.claude/worktrees/` (legacy) before allowing any removal operation. If the path isn't inside the expected worktree directory structure, `removeWorktree` is a no-op.
 - **Pattern:** Any cleanup function that uses `os.RemoveAll` on a path derived from user data (stored in DB, passed as argument) must validate the path is within the expected directory hierarchy before deletion.
+
+### Self-Managed Worktrees (2026-03-14)
+- Argus now creates worktrees itself via `git worktree add` instead of delegating to Claude Code's `--worktree` flag. This makes worktree support backend-agnostic (works with Codex, any agent).
+- Worktree location: `~/.argus/worktrees/<project>/<task>` (centralized). Branch naming: `argus/<task>`.
+- `removeWorktree(path, repoDir)` requires the main repo dir because `~/.argus/worktrees/` is outside the git repo — git can't find repo metadata from there. Without repoDir, `git worktree remove` fails silently and falls through to `os.RemoveAll`, leaving stale entries in `.git/worktrees/`.
+- Full cleanup on delete/destroy: worktree removal + local branch delete + remote branch delete. Both `handleConfirmDeleteKey` and `handleConfirmDestroyKey` now do identical cleanup.
 
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)

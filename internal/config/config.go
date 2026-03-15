@@ -58,7 +58,7 @@ func DefaultConfig() Config {
 		Defaults: Defaults{Backend: "claude"},
 		Backends: map[string]Backend{
 			"claude": {
-				Command:    "claude --dangerously-skip-permissions --worktree",
+				Command:    "claude --dangerously-skip-permissions",
 				PromptFlag: "",
 			},
 		},
