@@ -117,6 +117,14 @@
 - **Powerline separators:** `\ue0b0` (right-facing full chevron) for smooth active tab transitions. Defined in `~/.dots/cmd/tmux-status/separator/root.go`.
 - **Pattern:** When styling Argus UI elements that sit adjacent to tmux chrome, use the tmux C1/C2/C3 palette to maintain visual continuity. The color constants are in `~/.dots/cmd/tmux-status/color/root.go`.
 
+### Zero-Dimension View() Panic (2026-03-15)
+- Bubble Tea calls `View()` before delivering the first `WindowSizeMsg`. At this point `m.width` and `m.height` are both 0.
+- `renderTasksView` computed `contentHeight := m.height - 3` (= -3) and passed it to `padHeight()`, which did `lines[:h]` — panic on negative slice bound.
+- Introduced by `bc55e7d` ("Add three-panel layout to task list view") which added `padHeight` calls without the guard that `padToBottom` already had.
+- The zero-dimension test (`TestModel_ViewZeroDimensions`) also caught two latent panics: `NewTaskForm.View()` (textarea nil pointer at zero value) and `NewProjectForm.View()` (empty inputs slice at zero value).
+- **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every `View()` on a form struct must guard against zero-valued state (uninitialized by constructor).
+- **Prevention:** `TestModel_ViewZeroDimensions` covers all 10 view paths with `width=0, height=0`. New views must add a subtest.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
