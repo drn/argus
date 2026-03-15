@@ -238,8 +238,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ResolveTaskDirMsg:
 		if msg.Dir != "" {
 			m.resolvedDirs[msg.TaskID] = msg.Dir
-			// Persist discovered worktree to the task record.
-			if t, err := m.db.Get(msg.TaskID); err == nil && t.Worktree == "" {
+			// Persist discovered worktree only if it's actually inside the
+			// worktree directory — never persist the project dir as a worktree.
+			if t, err := m.db.Get(msg.TaskID); err == nil && t.Worktree == "" && isWorktreeSubdir(msg.Dir) {
 				t.Worktree = msg.Dir
 				_ = m.db.Update(t)
 			}
@@ -532,16 +533,9 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
-	// Create a git worktree for new sessions so the agent works in isolation.
-	if !resume && t.Name != "" && t.Worktree == "" {
-		if projDir := agent.ResolveDir(t, m.db.Config()); projDir != "" {
-			wt, err := agent.CreateWorktree(projDir, t.Project, t.Name, t.Branch)
-			if err == nil {
-				t.Worktree = wt
-				t.Branch = "argus/" + t.Name
-				m.resolvedDirs[t.ID] = wt
-			}
-		}
+	// Cache the worktree dir (already set during task creation).
+	if t.Worktree != "" {
+		m.resolvedDirs[t.ID] = t.Worktree
 	}
 
 	// Persist status and StartedAt BEFORE starting the process so that
@@ -672,6 +666,23 @@ func (m Model) handleNewTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.newtask.Done() {
 		task := m.newtask.Task()
+
+		// Create worktree BEFORE persisting the task. If this fails, keep
+		// the form open with the error so the user can retry.
+		projDir := agent.ResolveDir(task, m.db.Config())
+		if projDir == "" {
+			m.newtask.SetError("no project directory configured")
+			return m, nil
+		}
+		wt, finalName, wtErr := agent.CreateWorktree(projDir, task.Project, task.Name, task.Branch)
+		if wtErr != nil {
+			m.newtask.SetError(wtErr.Error())
+			return m, nil
+		}
+		task.Worktree = wt
+		task.Name = finalName
+		task.Branch = "argus/" + finalName
+
 		_ = m.db.Add(task)
 		m.refreshTasks()
 		m.current = viewTaskList

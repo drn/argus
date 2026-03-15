@@ -137,6 +137,15 @@
 - Sub-views (`gitstatus`, `fileexplorer`, `taskdetail`) own their own borders via `borderedPanel()` — the layout struct does NOT wrap content in borders. `renderTerminal`/`renderDiffPanel` in agent view build their own borders inline.
 - **Pattern:** When extracting shared layout, don't try to unify border rendering if sub-views already manage their own borders. The shared layer should only handle geometry (widths, heights, padding, joining).
 
+### Worktree-First Task Creation Regression Fix (2026-03-15)
+- Commit `58a6789` ("Self-managed worktrees") introduced a regression: `CreateWorktree` errors were silently swallowed in `startOrAttach`, so failed worktree creation fell through to running agents in the main project directory.
+- Compounding bug: `ResolveTaskDirMsg` handler persisted the project directory path as `t.Worktree` in the DB (no validation). On restart, `startOrAttach` saw `t.Worktree != ""` and skipped worktree creation — permanently stuck.
+- Fix: moved worktree creation from `startOrAttach` to `handleNewTaskKey`, BEFORE `db.Add()`. If creation fails, the task form stays open with the error message (new `SetError()` method on `NewTaskForm`). Task is never persisted without a valid worktree.
+- `CreateWorktree` now returns `(wtPath, finalName, err)` and handles name conflicts by appending `-1`, `-2`, ... `-99` suffixes.
+- `ResolveTaskDirMsg` handler now guards with `isWorktreeSubdir()` before persisting `msg.Dir` as `t.Worktree`.
+- `BuildCmd` no longer falls back to `ResolveDir()` when `Worktree` is empty — every task must have a worktree.
+- **Pattern:** Infrastructure prerequisites (worktree, branch) must be validated BEFORE persisting a record. Silent error swallowing on infrastructure setup creates subtle state corruption that compounds with async handlers.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go

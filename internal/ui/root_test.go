@@ -1288,6 +1288,7 @@ func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 }
 
 func TestResolveTaskDirMsg_CachesDir(t *testing.T) {
+	wtDir := "/home/user/.argus/worktrees/proj/cached-task"
 	task := &model.Task{
 		ID:     "t1",
 		Name:   "cached-task",
@@ -1295,13 +1296,13 @@ func TestResolveTaskDirMsg_CachesDir(t *testing.T) {
 	}
 	m := testModel(t, task)
 
-	// Simulate receiving an async ResolveTaskDirMsg
-	updated, _ := m.Update(ResolveTaskDirMsg{TaskID: "t1", Dir: "/tmp/worktree"})
+	// Simulate receiving an async ResolveTaskDirMsg with a valid worktree path.
+	updated, _ := m.Update(ResolveTaskDirMsg{TaskID: "t1", Dir: wtDir})
 	um := updated.(Model)
 
 	// The resolved dir should be cached
-	if dir, ok := um.resolvedDirs["t1"]; !ok || dir != "/tmp/worktree" {
-		t.Errorf("expected cached dir /tmp/worktree, got %q (ok=%v)", dir, ok)
+	if dir, ok := um.resolvedDirs["t1"]; !ok || dir != wtDir {
+		t.Errorf("expected cached dir %s, got %q (ok=%v)", wtDir, dir, ok)
 	}
 
 	// The task's Worktree field should be persisted to the DB
@@ -1309,8 +1310,34 @@ func TestResolveTaskDirMsg_CachesDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Worktree != "/tmp/worktree" {
-		t.Errorf("expected task Worktree=/tmp/worktree, got %q", got.Worktree)
+	if got.Worktree != wtDir {
+		t.Errorf("expected task Worktree=%s, got %q", wtDir, got.Worktree)
+	}
+}
+
+func TestResolveTaskDirMsg_RejectsProjectDir(t *testing.T) {
+	task := &model.Task{
+		ID:     "t1",
+		Name:   "cached-task",
+		Status: model.StatusPending,
+	}
+	m := testModel(t, task)
+
+	// A non-worktree path should be cached for git status but NOT persisted
+	// as the task's Worktree.
+	updated, _ := m.Update(ResolveTaskDirMsg{TaskID: "t1", Dir: "/home/user/project"})
+	um := updated.(Model)
+
+	if dir, ok := um.resolvedDirs["t1"]; !ok || dir != "/home/user/project" {
+		t.Errorf("expected cached dir, got %q (ok=%v)", dir, ok)
+	}
+
+	got, err := um.db.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Worktree != "" {
+		t.Errorf("expected empty Worktree for non-worktree dir, got %q", got.Worktree)
 	}
 }
 

@@ -132,15 +132,15 @@ func TestBuildCmd(t *testing.T) {
 
 func TestBuildCmd_WithProject(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Project: "myapp", Prompt: "test"}
+	task := &model.Task{Project: "myapp", Prompt: "test", Worktree: "/home/user/.argus/worktrees/myapp/fix-bug"}
 
 	cmd, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if cmd.Dir != "/home/user/myapp" {
-		t.Errorf("expected dir /home/user/myapp, got %q", cmd.Dir)
+	if cmd.Dir != "/home/user/.argus/worktrees/myapp/fix-bug" {
+		t.Errorf("expected dir from worktree, got %q", cmd.Dir)
 	}
 	// Should use codex backend from project
 	if cmd.Args[2] != "codex --prompt 'test'" {

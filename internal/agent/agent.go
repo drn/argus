@@ -78,14 +78,10 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 
-	// Use worktree as working directory if available, otherwise project dir.
-	// For resume, this MUST match the original session's CWD.
-	dir := task.Worktree
-	if dir == "" {
-		dir = ResolveDir(task, cfg)
-	}
-	if dir != "" {
-		cmd.Dir = dir
+	// Use worktree as working directory. Every task must have a worktree
+	// set during creation — there is no fallback to the project directory.
+	if task.Worktree != "" {
+		cmd.Dir = task.Worktree
 	}
 
 	return cmd, nil

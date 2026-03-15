@@ -68,9 +68,12 @@ func TestCreateWorktree(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath, finalName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+	if finalName != "fix-bug" {
+		t.Errorf("expected finalName %q, got %q", "fix-bug", finalName)
 	}
 
 	// Verify worktree was created.
@@ -96,13 +99,17 @@ func TestCreateWorktree(t *testing.T) {
 		t.Errorf("expected branch 'argus/fix-bug' to exist, got: %s", out)
 	}
 
-	// Calling CreateWorktree again should be idempotent.
-	wtPath2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	// Creating again with same name should get -1 suffix.
+	wtPath2, finalName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("second CreateWorktree failed: %v", err)
 	}
-	if wtPath2 != wtPath {
-		t.Errorf("expected same path on second call, got %q vs %q", wtPath2, wtPath)
+	if finalName2 != "fix-bug-1" {
+		t.Errorf("expected finalName %q, got %q", "fix-bug-1", finalName2)
+	}
+	expected2 := filepath.Join(tmpHome, ".argus", "worktrees", "testproject", "fix-bug-1")
+	if wtPath2 != expected2 {
+		t.Errorf("expected path %q, got %q", expected2, wtPath2)
 	}
 }
 
@@ -142,7 +149,7 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, err := CreateWorktree(repoDir, "testproject", "my-task", "")
+	wtPath, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with existing branch failed: %v", err)
 	}
