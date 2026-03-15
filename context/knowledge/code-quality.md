@@ -172,5 +172,4 @@
 - Document Detect() ordering constraint in project/detect.go to prevent future signature reordering regressions
 - Improve `internal/daemon` test coverage from 45% to ≥80% (missing: stream handler, WriteInput/Resize RPCs, error paths, concurrent stream/RPC, session exit notification)
 - Improve `internal/daemon/client` test coverage from 46% to ≥80% (missing: Get() with existing remote session, session exit callback, stream reconnection, error handling)
-- Daemon auto-start: `ensureDaemon()` was removed as dead code. Re-implement when E2E validation is complete — the TUI currently falls back to in-process silently.
 - Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)
