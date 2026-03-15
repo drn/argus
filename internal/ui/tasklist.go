@@ -59,6 +59,7 @@ func (tl *TaskList) SetTasks(tasks []*model.Task) {
 	tl.applyFilter()
 	tl.buildRows()
 	tl.scroll.ClampCursor(len(tl.rows))
+	tl.skipToFirstTask()
 }
 
 func (tl *TaskList) SetSize(w, h int) {
@@ -67,13 +68,82 @@ func (tl *TaskList) SetSize(w, h int) {
 }
 
 func (tl *TaskList) CursorUp() {
-	tl.scroll.CursorUp()
-	tl.autoExpand()
+	tl.moveCursor(-1)
 }
 
 func (tl *TaskList) CursorDown() {
-	tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+	tl.moveCursor(1)
+}
+
+// moveCursor moves the cursor in the given direction (+1 down, -1 up),
+// skipping project header rows so the cursor always lands on a task.
+// When navigating up into a new project, the cursor lands on the last task
+// of that project rather than the first.
+func (tl *TaskList) moveCursor(dir int) {
+	if len(tl.rows) == 0 {
+		return
+	}
+
+	prev := tl.scroll.Cursor()
+
+	// Step 1: Move one position in the given direction.
+	if dir > 0 {
+		tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+	} else {
+		tl.scroll.CursorUp()
+	}
 	tl.autoExpand()
+
+	c := tl.scroll.Cursor()
+	if c < 0 || c >= len(tl.rows) || tl.rows[c].kind == rowTask {
+		return // Already on a task row.
+	}
+
+	// On a project header — skip it.
+	if dir > 0 {
+		// Going down: move to the first task below this header.
+		if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+			tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+		}
+	} else {
+		// Going up: expand the project above and land on its last task.
+		if c > 0 {
+			tl.scroll.CursorUp()
+			tl.autoExpand()
+			c = tl.scroll.Cursor()
+			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+				// Find the last task row in this expanded project.
+				lastTask := -1
+				for i := c + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
+					lastTask = i
+				}
+				if lastTask >= 0 {
+					tl.scroll.SetCursor(lastTask)
+					visible := tl.visibleRows()
+					if lastTask >= tl.scroll.Offset()+visible {
+						tl.scroll.SetOffset(lastTask - visible + 1)
+					}
+				}
+			}
+		} else {
+			// At the top (row 0) and it's a project header — stay on the previous task.
+			tl.scroll.SetCursor(prev)
+		}
+	}
+}
+
+// skipToFirstTask moves the cursor to the first task row if it's currently on
+// a project header. Used after building/resetting the row list.
+func (tl *TaskList) skipToFirstTask() {
+	c := tl.scroll.Cursor()
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+		for i := c; i < len(tl.rows); i++ {
+			if tl.rows[i].kind == rowTask {
+				tl.scroll.SetCursor(i)
+				return
+			}
+		}
+	}
 }
 
 func (tl *TaskList) Selected() *model.Task {
@@ -117,6 +187,7 @@ func (tl *TaskList) SetFilter(f string) {
 	}
 	tl.buildRows()
 	tl.scroll.Reset()
+	tl.skipToFirstTask()
 }
 
 func (tl *TaskList) applyFilter() {

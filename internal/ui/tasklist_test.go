@@ -46,17 +46,14 @@ func TestTaskList_CursorNavigation(t *testing.T) {
 	tl.SetSize(80, 40)
 	tl.SetTasks(testTasks())
 
-	// Cursor starts at row 0 (first project header).
-	// Moving down should enter the expanded project's tasks.
-	tl.CursorDown()
-	got := tl.Selected()
-	if got == nil {
-		t.Fatal("expected task after cursor down")
-	}
-	// Should be on a task row now.
+	// Cursor starts on the first task (skips project header).
 	c := tl.scroll.Cursor()
 	if tl.rows[c].kind != rowTask {
-		t.Error("expected cursor on a task row after one down")
+		t.Error("expected cursor to start on a task row, not a project header")
+	}
+	got := tl.Selected()
+	if got == nil {
+		t.Fatal("expected task selected initially")
 	}
 }
 
@@ -76,11 +73,10 @@ func TestTaskList_AutoExpand(t *testing.T) {
 		t.Fatal("expected a project to be expanded")
 	}
 
-	// Navigate down past the first project's tasks to the next project header.
+	// Navigate down past the first project's tasks into the next project.
 	for i := 0; i < 20; i++ {
 		tl.CursorDown()
-		c := tl.scroll.Cursor()
-		if c < len(tl.rows) && tl.rows[c].kind == rowProject && tl.rows[c].project != firstProject {
+		if tl.expanded != firstProject {
 			break
 		}
 	}
@@ -119,13 +115,14 @@ func TestTaskList_SelectedOnHeader(t *testing.T) {
 	}
 	tl.SetTasks(tasks)
 
-	// Cursor is on the project header.
-	if tl.rows[0].kind != rowProject {
-		t.Fatal("expected first row to be project header")
-	}
+	// Cursor skips project header, lands directly on the task.
 	got := tl.Selected()
 	if got == nil || got.Name != "Task 1" {
-		t.Error("Selected() on header should return first task in project")
+		t.Error("expected Task 1 selected")
+	}
+	c := tl.scroll.Cursor()
+	if tl.rows[c].kind != rowTask {
+		t.Error("cursor should be on a task row, not the project header")
 	}
 }
 
@@ -283,6 +280,67 @@ func TestTaskList_SetTasks_ClampsCursor(t *testing.T) {
 	tl.SetTasks([]*model.Task{{Name: "only one", Project: "solo"}})
 	if tl.scroll.Cursor() >= len(tl.rows) {
 		t.Errorf("cursor should be clamped, got %d with %d rows", tl.scroll.Cursor(), len(tl.rows))
+	}
+}
+
+func TestTaskList_CursorSkipsProjectHeaders(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{Name: "A1", Project: "alpha", Status: model.StatusInProgress},
+		{Name: "A2", Project: "alpha", Status: model.StatusInProgress},
+		{Name: "B1", Project: "beta", Status: model.StatusPending},
+	}
+	tl.SetTasks(tasks)
+
+	// Cursor should never land on a project header during navigation.
+	for i := 0; i < 10; i++ {
+		c := tl.scroll.Cursor()
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+			t.Errorf("cursor on project header at step %d (row %d)", i, c)
+		}
+		tl.CursorDown()
+	}
+
+	for i := 0; i < 10; i++ {
+		c := tl.scroll.Cursor()
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+			t.Errorf("cursor on project header at up step %d (row %d)", i, c)
+		}
+		tl.CursorUp()
+	}
+}
+
+func TestTaskList_CursorUpAcrossProjects(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{Name: "A1", Project: "alpha", Status: model.StatusInProgress},
+		{Name: "A2", Project: "alpha", Status: model.StatusInProgress},
+		{Name: "B1", Project: "beta", Status: model.StatusPending},
+	}
+	tl.SetTasks(tasks)
+
+	// Navigate down to B1.
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+		if sel := tl.Selected(); sel != nil && sel.Name == "B1" {
+			break
+		}
+	}
+	if sel := tl.Selected(); sel == nil || sel.Name != "B1" {
+		t.Fatal("expected to reach B1")
+	}
+
+	// Press up — should go to A2 (last task in alpha), not A1.
+	tl.CursorUp()
+	sel := tl.Selected()
+	if sel == nil || sel.Name != "A2" {
+		name := "<nil>"
+		if sel != nil {
+			name = sel.Name
+		}
+		t.Errorf("expected A2 (last task in alpha) when going up from beta, got %s", name)
 	}
 }
 
