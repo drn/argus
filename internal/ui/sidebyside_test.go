@@ -3,8 +3,6 @@ package ui
 import (
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRenderSideBySide_BasicOutput(t *testing.T) {
@@ -108,9 +106,7 @@ func TestRenderDiffHeader(t *testing.T) {
 func TestFormatSideContent_Removed(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	removedBgStyle := lipgloss.NewStyle()
-	addedBgStyle := lipgloss.NewStyle()
-	result := formatSideContent("old code", "old code", DiffRemoved, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
+	result := formatSideContent("old code", "old code", DiffRemoved, 20, removedStyle, addedStyle, "", "")
 	if !strings.Contains(result, "-") {
 		t.Error("removed line should have '-' prefix")
 	}
@@ -119,9 +115,7 @@ func TestFormatSideContent_Removed(t *testing.T) {
 func TestFormatSideContent_Added(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	removedBgStyle := lipgloss.NewStyle()
-	addedBgStyle := lipgloss.NewStyle()
-	result := formatSideContent("new code", "new code", DiffAdded, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
+	result := formatSideContent("new code", "new code", DiffAdded, 20, removedStyle, addedStyle, "", "")
 	if !strings.Contains(result, "+") {
 		t.Error("added line should have '+' prefix")
 	}
@@ -130,9 +124,7 @@ func TestFormatSideContent_Added(t *testing.T) {
 func TestFormatSideContent_Context(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	removedBgStyle := lipgloss.NewStyle()
-	addedBgStyle := lipgloss.NewStyle()
-	result := formatSideContent("same", "same", DiffContext, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
+	result := formatSideContent("same", "same", DiffContext, 20, removedStyle, addedStyle, "", "")
 	if result == "" {
 		t.Error("context line should not be empty")
 	}
@@ -154,6 +146,67 @@ func TestTruncatePlain(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("truncatePlain(%q, %d) = %q, want %q", tc.input, tc.maxW, got, tc.want)
 		}
+	}
+}
+
+func TestInjectBg(t *testing.T) {
+	bg := "\x1b[48;2;61;16;18m"
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			"no resets",
+			"\x1b[38;5;81mfunc",
+			bg + "\x1b[38;5;81mfunc\x1b[0m",
+		},
+		{
+			"one reset",
+			"\x1b[38;5;81mfunc\x1b[0m foo",
+			bg + "\x1b[38;5;81mfunc\x1b[0m" + bg + " foo\x1b[0m",
+		},
+		{
+			"multiple resets",
+			"\x1b[38;5;81mfunc\x1b[0m \x1b[38;5;166mFoo\x1b[0m",
+			bg + "\x1b[38;5;81mfunc\x1b[0m" + bg + " \x1b[38;5;166mFoo\x1b[0m" + bg + "\x1b[0m",
+		},
+		{
+			"plain text",
+			"hello",
+			bg + "hello\x1b[0m",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := injectBg(tc.input, bg)
+			if got != tc.want {
+				t.Errorf("injectBg(%q, bg)\n  got  %q\n  want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatSideContent_HighlightedWithBg(t *testing.T) {
+	removedStyle := DefaultTheme().Error
+	addedStyle := DefaultTheme().Complete
+	removedBgEsc := "\x1b[48;2;61;16;18m"
+	addedBgEsc := "\x1b[48;2;13;51;23m"
+
+	// Simulate syntax-highlighted text (highlighted != raw)
+	raw := "func Foo()"
+	highlighted := "\x1b[38;5;81mfunc\x1b[0m \x1b[38;5;166mFoo\x1b[0m()"
+
+	// Removed line with highlighting should have bg injected
+	result := formatSideContent(highlighted, raw, DiffRemoved, 30, removedStyle, addedStyle, removedBgEsc, addedBgEsc)
+	if !strings.Contains(result, removedBgEsc) {
+		t.Error("removed highlighted line should contain background escape")
+	}
+
+	// Added line with highlighting should have bg injected
+	result = formatSideContent(highlighted, raw, DiffAdded, 30, removedStyle, addedStyle, removedBgEsc, addedBgEsc)
+	if !strings.Contains(result, addedBgEsc) {
+		t.Error("added highlighted line should contain background escape")
 	}
 }
 
