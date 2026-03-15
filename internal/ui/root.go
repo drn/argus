@@ -181,8 +181,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Reserve space: section header(1) + gap(1) + statusbar(1)
-		contentHeight := msg.Height - 3
+		// Reserve space: tab header(1) + statusbar(1)
+		contentHeight := msg.Height - 2
 
 		// Tasks tab: three-panel layout
 		leftW, centerW, rightW := m.splitThreeWidths()

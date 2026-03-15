@@ -170,7 +170,7 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 		return m.padToBottom(content, bar)
 	}
 
-	contentHeight := m.height - 3
+	contentHeight := m.height - 2
 
 	tasks := m.tasklist.View()
 	selected := m.tasklist.Selected()
@@ -203,7 +203,7 @@ func (m Model) renderProjectsView(tabHeader, bar string) string {
 func (m Model) renderProjectDetail() string {
 	entry := m.projectlist.Selected()
 	_, rightWidth := m.splitWidths()
-	contentHeight := m.height - 3
+	contentHeight := m.height - 2
 
 	if entry == nil {
 		empty := m.theme.Dimmed.Render("  No project selected")
