@@ -86,8 +86,9 @@ type Model struct {
 	activeTab    tab
 	width        int
 	height       int
-	quitting     bool
-	resolvedDirs map[string]string // taskID → resolved worktree dir (cache)
+	quitting        bool
+	agentTickActive bool              // true while the 100ms AgentViewTickMsg chain is running
+	resolvedDirs    map[string]string // taskID → resolved worktree dir (cache)
 }
 
 func NewModel(database *db.DB, runner *agent.Runner) Model {
@@ -197,17 +198,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TickMsg:
-		// Keep running state fresh so idle tasks display correctly.
-		m.refreshTasks()
-		m.tasklist.Tick()
 		var cmds []tea.Cmd
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
 		}))
-		if m.current == viewAgent {
-			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
-				return AgentViewTickMsg{}
-			}))
+		// Skip task list refresh while in agent view — it's not visible
+		// and the SQL query + runner lock is wasted work. The agent view
+		// has its own 100ms tick chain managed by enterAgentView().
+		if m.current != viewAgent {
+			m.refreshTasks()
+			m.tasklist.Tick()
 		}
 		if cmd := m.scheduleGitRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -239,14 +239,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentViewTickMsg:
-		// Fast tick for agent view — just triggers a re-render
+		// Fast tick for agent view — just triggers a re-render.
+		// The chain stops itself when we leave agent view and clears
+		// the flag so startOrAttach can restart it next time.
 		if m.current == viewAgent {
-			var cmds []tea.Cmd
-			cmds = append(cmds, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+			return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 				return AgentViewTickMsg{}
-			}))
-			return m, tea.Batch(cmds...)
+			})
 		}
+		m.agentTickActive = false
 		return m, nil
 
 	case GitStatusRefreshMsg:
@@ -273,12 +274,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
-		return m, nil
-
-	case tea.MouseMsg:
-		if m.current == viewAgent {
-			m.agentview.HandleMouse(msg)
-		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -468,15 +463,7 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	// If session already exists in runner, switch to agent view
 	if m.runner.Get(t.ID) != nil {
-		m.agentview.Enter(t.ID, t.Name)
-		m.agentview.SetSize(m.width, m.height)
-		if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
-			m.agentview.SetWorktreeDir(dir)
-		}
-		m.current = viewAgent
-		return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
-			return AgentViewTickMsg{}
-		})
+		return m, m.enterAgentView(t.ID, t.Name)
 	}
 
 	// If the task already has a session ID, resume that conversation;
@@ -523,13 +510,28 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	_ = m.db.Update(t)
 	m.refreshTasks()
 
-	m.agentview.Enter(t.ID, t.Name)
+	return m, m.enterAgentView(t.ID, t.Name)
+}
+
+// enterAgentView is the single entry point for switching to agent view.
+// It initializes the agent view state and starts the 100ms tick chain
+// (if not already running). All agent view entry must go through here
+// to prevent tick accumulation from multiple start points.
+func (m *Model) enterAgentView(taskID, taskName string) tea.Cmd {
+	m.agentview.Enter(taskID, taskName)
 	m.agentview.SetSize(m.width, m.height)
-	if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
+	if dir, ok := m.resolvedDirs[taskID]; ok && dir != "" {
 		m.agentview.SetWorktreeDir(dir)
 	}
 	m.current = viewAgent
-	return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+	// Start the 100ms tick chain if not already running. The chain
+	// self-perpetuates via the AgentViewTickMsg handler and stops
+	// itself when m.current leaves viewAgent.
+	if m.agentTickActive {
+		return nil
+	}
+	m.agentTickActive = true
+	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 		return AgentViewTickMsg{}
 	})
 }

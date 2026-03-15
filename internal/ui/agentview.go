@@ -247,6 +247,16 @@ func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
 		case tea.MouseButtonWheelDown:
 			av.diffScrollDown(3)
 		}
+		return
+	}
+	if av.focus != panelAgent {
+		return
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		av.scrollUp(3)
+	case tea.MouseButtonWheelDown:
+		av.scrollDown(3)
 	}
 }
 
@@ -701,19 +711,6 @@ func (av *AgentView) terminalDisplaySize() (dispW, dispH int, centerW int) {
 	_, cw, _ := av.splitWidths()
 	contentH := av.height - 1
 	return max(cw-4, 10), max(contentH-4, 3), cw
-}
-
-// HandleMouse processes mouse events for scrolling.
-func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
-	if av.focus != panelAgent {
-		return
-	}
-	switch msg.Button {
-	case tea.MouseButtonWheelUp:
-		av.scrollUp(3)
-	case tea.MouseButtonWheelDown:
-		av.scrollDown(3)
-	}
 }
 
 // scrollUp scrolls the terminal view up by n lines.
