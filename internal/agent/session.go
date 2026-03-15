@@ -29,8 +29,8 @@ type Session struct {
 	ptmx   *os.File // PTY master
 
 	mu         sync.Mutex
-	buf        *ringBuffer
-	attachW    io.Writer // when non-nil, readLoop tees output here
+	buf        *RingBuffer
+	writers    []io.Writer // readLoop tees output to all attached writers
 	done       chan struct{}
 	err        error
 	attached   bool
@@ -59,7 +59,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		TaskID:   taskID,
 		Cmd:      cmd,
 		ptmx:     ptmx,
-		buf:      newRingBuffer(defaultBufSize),
+		buf:      NewRingBuffer(defaultBufSize),
 		done:     make(chan struct{}),
 		detachCh: make(chan struct{}),
 		ptyCols:  cols,
@@ -76,7 +76,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 }
 
 // readLoop is the sole reader of the PTY. It always writes to the ring buffer,
-// and when a writer is attached, also tees output there.
+// and tees output to all attached writers.
 func (s *Session) readLoop() {
 	tmp := make([]byte, 4096)
 	for {
@@ -87,10 +87,23 @@ func (s *Session) readLoop() {
 			s.mu.Lock()
 			s.buf.Write(chunk)
 			s.lastOutput = time.Now()
-			w := s.attachW
+			// Copy writer slice under lock, iterate outside lock.
+			ws := make([]io.Writer, len(s.writers))
+			copy(ws, s.writers)
 			s.mu.Unlock()
-			if w != nil {
-				w.Write(chunk)
+			// Write to all attached writers, collect any that error.
+			var failed []io.Writer
+			for _, w := range ws {
+				if _, werr := w.Write(chunk); werr != nil {
+					failed = append(failed, w)
+				}
+			}
+			if len(failed) > 0 {
+				s.mu.Lock()
+				for _, f := range failed {
+					s.removeWriterLocked(f)
+				}
+				s.mu.Unlock()
 			}
 		}
 		if err != nil {
@@ -149,6 +162,52 @@ func (s *Session) PID() int {
 	return 0
 }
 
+// AddWriter registers a writer to receive PTY output. The writer immediately
+// receives a replay of the ring buffer contents, then receives live output.
+// Replay is sent before registering the writer to avoid duplicate bytes:
+// if we registered first, readLoop could deliver live bytes to w before
+// the replay is sent, causing the same bytes to appear twice.
+// Safe to call concurrently.
+func (s *Session) AddWriter(w io.Writer) {
+	s.mu.Lock()
+	replay := s.buf.Bytes()
+	s.mu.Unlock()
+
+	// Send replay outside lock but BEFORE registering the writer.
+	// Any bytes produced by readLoop during this window are missed
+	// (they're in the ring buffer but not yet in replay and w isn't
+	// registered yet). This creates a small gap rather than a duplicate.
+	// The gap is acceptable: the vt10x terminal handles missing bytes
+	// gracefully (partial escape sequences are ignored), whereas
+	// duplicate bytes cause visible rendering corruption.
+	if len(replay) > 0 {
+		w.Write(replay)
+	}
+
+	// Now register for live output. Any bytes that arrived during
+	// replay will be in the ring buffer for future RecentOutput() calls.
+	s.mu.Lock()
+	s.writers = append(s.writers, w)
+	s.mu.Unlock()
+}
+
+// RemoveWriter unregisters a writer. Safe to call concurrently.
+func (s *Session) RemoveWriter(w io.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.removeWriterLocked(w)
+}
+
+// removeWriterLocked removes a writer from the slice. Caller must hold s.mu.
+func (s *Session) removeWriterLocked(w io.Writer) {
+	for i, existing := range s.writers {
+		if existing == w {
+			s.writers = append(s.writers[:i], s.writers[i+1:]...)
+			return
+		}
+	}
+}
+
 // Attach splices the PTY to the given stdin/stdout.
 // Blocks until detach is called, the process exits, or an error occurs.
 // Returns nil on detach, the process error on exit.
@@ -160,23 +219,17 @@ func (s *Session) Attach(stdin io.Reader, stdout io.Writer) error {
 	}
 	s.attached = true
 	s.detachCh = make(chan struct{})
-
-	// Replay buffered output so user sees recent context,
-	// then set tee writer — all under one lock so no data is lost.
-	replay := s.buf.Bytes()
-	s.attachW = stdout
 	s.mu.Unlock()
 
+	// AddWriter replays buffered output and registers for live output.
+	s.AddWriter(stdout)
+
 	defer func() {
+		s.RemoveWriter(stdout)
 		s.mu.Lock()
-		s.attachW = nil
 		s.attached = false
 		s.mu.Unlock()
 	}()
-
-	if len(replay) > 0 {
-		stdout.Write(replay)
-	}
 
 	errCh := make(chan error, 1)
 

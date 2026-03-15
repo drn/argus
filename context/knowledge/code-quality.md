@@ -152,11 +152,25 @@
 - Fix: wrapped task list content in `borderedPanel(widths[0], contentHeight, false, ...)` in `renderTasksView()`, and adjusted `tasklist.SetSize()` to subtract 2 from each dimension for the border.
 - **Pattern:** Every panel passed to `PanelLayout.Render()` must enforce its own width. `borderedPanel` does this internally (`Width(w-2)` + border = `w` total). Panels without borders need explicit `lipgloss.NewStyle().Width(w)`.
 
+### Daemon Architecture Implementation (2026-03-15)
+- **SessionProvider/SessionHandle interfaces** (`iface.go`): Decouples UI from concrete `*Runner`/`*Session`. UI code depends only on interfaces, enabling both in-process and daemon-backed implementations.
+- **Multi-writer pattern** (`session.go`): Replaced single `attachW io.Writer` with `writers []io.Writer` slice. `readLoop` copies slice under lock, iterates outside lock. Failed writers auto-removed. `AddWriter()` sends replay BEFORE registering the writer to avoid duplicate bytes (replay-then-register, not register-then-replay). `Attach()`/`Detach()` use AddWriter/RemoveWriter internally. `AddWriter`/`RemoveWriter` are on the `SessionHandle` interface so daemon stream handler doesn't need type assertions.
+- **Nil-interface gotcha**: `Runner.Get()` returns `SessionHandle` (interface). Map lookups on missing keys return `nil *Session`, which becomes a non-nil interface. Fixed with explicit nil check before returning.
+- **RingBuffer exported** (`RingBuffer`/`NewRingBuffer`): Used by both in-process sessions and daemon client's local buffer.
+- **Daemon IPC**: Unix socket with first-byte dispatch ('R' = JSON-RPC, 'S' = raw stream). `net/rpc/jsonrpc` codec for structured calls. Raw byte streaming for PTY output with ring buffer replay.
+- **Client `SessionProvider`**: `RemoteSession` has a local `RingBuffer` populated by a stream reader goroutine. RPC calls for WriteInput/Resize/SessionStatus. `Done()` channel closed on stream EOF.
+- **ExitInfo pattern**: Daemon caches `ExitInfo{Err, Stopped, LastOutput}` in `onFinish` callback. Client calls `Daemon.GetExitInfo` RPC (consume-once) when stream closes, then passes real values to `AgentFinishedMsg`. Without this, daemon mode silently marks crashed/stopped sessions as successful completions because `Err`/`Stopped` default to zero values.
+- **Test gotcha**: `db.OpenInMemory()` seeds the default "claude" backend. Tests that create sessions with custom backends must set `task.Backend` explicitly — otherwise `ResolveBackend` falls through to the default claude backend and launches a real Claude Code process.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
 - Remove dead `store` package
-- Define interfaces for DB and Runner to improve testability
+- Define interface for DB to improve testability (Runner interfaces done — `SessionProvider`/`SessionHandle` in `iface.go`)
 - Add dedicated tests for ScrollState, borderedPanel, determinePostExitStatus (currently covered transitively)
 - Goroutine leak in Session.Attach stdin copy (needs cancellation mechanism)
 - Document Detect() ordering constraint in project/detect.go to prevent future signature reordering regressions
+- Improve `internal/daemon` test coverage from 45% to ≥80% (missing: stream handler, WriteInput/Resize RPCs, error paths, concurrent stream/RPC, session exit notification)
+- Improve `internal/daemon/client` test coverage from 46% to ≥80% (missing: Get() with existing remote session, session exit callback, stream reconnection, error handling)
+- Daemon auto-start: `ensureDaemon()` was removed as dead code. Re-implement when E2E validation is complete — the TUI currently falls back to in-process silently.
+- Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)

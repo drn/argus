@@ -76,7 +76,7 @@ type PruneDoneMsg struct {
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
-	runner      *agent.Runner
+	runner      agent.SessionProvider
 	keys        KeyMap
 	theme       Theme
 	tasklist    TaskList
@@ -102,7 +102,7 @@ type Model struct {
 	pruneTotal int // total worktrees being cleaned up
 }
 
-func NewModel(database *db.DB, runner *agent.Runner) Model {
+func NewModel(database *db.DB, runner agent.SessionProvider) Model {
 	theme := DefaultTheme()
 	keys := DefaultKeyMap()
 
@@ -151,40 +151,46 @@ func (m Model) Init() tea.Cmd {
 		}),
 	}
 
-	// Resume sessions for in-progress tasks that have a saved session ID.
-	// Each resume runs in a background goroutine so the UI stays responsive.
-	for _, t := range m.db.Tasks() {
-		if t.Status == model.StatusInProgress && t.SessionID != "" {
-			task := t // capture loop variable
+	// Check if the runner already has sessions (e.g., daemon client discovered them).
+	// If so, just sync state — don't try to resume.
+	daemonRunning := len(m.runner.Running()) > 0
 
-			// Kill any orphaned process from a previous Argus session.
-			// When Argus exits, PTY master fds close and children get SIGHUP,
-			// but we clean up any that might linger before resuming.
-			if task.AgentPID > 0 {
-				killStaleProcess(task.AgentPID)
-				task.AgentPID = 0
-			}
+	if !daemonRunning {
+		// Resume sessions for in-progress tasks that have a saved session ID.
+		// Each resume runs in a background goroutine so the UI stays responsive.
+		for _, t := range m.db.Tasks() {
+			if t.Status == model.StatusInProgress && t.SessionID != "" {
+				task := t // capture loop variable
 
-			// Backfill worktree path for tasks that don't have one stored.
-			if task.Worktree == "" && task.Name != "" && task.Project != "" {
-				if wt := discoverWorktree(task.Project, task.Name); wt != "" {
-					task.Worktree = wt
-					m.resolvedDirs[task.ID] = wt
+				// Kill any orphaned process from a previous Argus session.
+				// When Argus exits, PTY master fds close and children get SIGHUP,
+				// but we clean up any that might linger before resuming.
+				if task.AgentPID > 0 {
+					killStaleProcess(task.AgentPID)
+					task.AgentPID = 0
 				}
-			}
 
-			// Reset StartedAt before starting so the quick-exit check in
-			// handleAgentFinished uses the resume time, not the original start.
-			task.StartedAt = time.Now()
-			_ = m.db.Update(task)
-
-			cmds = append(cmds, func() tea.Msg {
-				sess, err := m.runner.Start(task, m.db.Config(), 24, 80, true)
-				if err != nil {
-					return SessionResumedMsg{TaskID: task.ID, Err: err}
+				// Backfill worktree path for tasks that don't have one stored.
+				if task.Worktree == "" && task.Name != "" && task.Project != "" {
+					if wt := discoverWorktree(task.Project, task.Name); wt != "" {
+						task.Worktree = wt
+						m.resolvedDirs[task.ID] = wt
+					}
 				}
-				return SessionResumedMsg{TaskID: task.ID, PID: sess.PID()}
-			})
+
+				// Reset StartedAt before starting so the quick-exit check in
+				// handleAgentFinished uses the resume time, not the original start.
+				task.StartedAt = time.Now()
+				_ = m.db.Update(task)
+
+				cmds = append(cmds, func() tea.Msg {
+					sess, err := m.runner.Start(task, m.db.Config(), 24, 80, true)
+					if err != nil {
+						return SessionResumedMsg{TaskID: task.ID, Err: err}
+					}
+					return SessionResumedMsg{TaskID: task.ID, PID: sess.PID()}
+				})
+			}
 		}
 	}
 

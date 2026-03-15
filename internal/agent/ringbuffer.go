@@ -1,8 +1,8 @@
 package agent
 
-// ringBuffer is a fixed-size circular byte buffer.
+// RingBuffer is a fixed-size circular byte buffer.
 // When full, new writes overwrite the oldest data.
-type ringBuffer struct {
+type RingBuffer struct {
 	data  []byte
 	size  int
 	pos   int
@@ -10,15 +10,16 @@ type ringBuffer struct {
 	total uint64 // monotonic count of bytes written
 }
 
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
+// NewRingBuffer creates a ring buffer of the given size.
+func NewRingBuffer(size int) *RingBuffer {
+	return &RingBuffer{
 		data: make([]byte, size),
 		size: size,
 	}
 }
 
 // Write appends data to the ring buffer using bulk copy operations.
-func (rb *ringBuffer) Write(p []byte) {
+func (rb *RingBuffer) Write(p []byte) {
 	rb.total += uint64(len(p))
 	for len(p) > 0 {
 		n := copy(rb.data[rb.pos:], p)
@@ -32,12 +33,12 @@ func (rb *ringBuffer) Write(p []byte) {
 }
 
 // TotalWritten returns the monotonic count of bytes written to the buffer.
-func (rb *ringBuffer) TotalWritten() uint64 {
+func (rb *RingBuffer) TotalWritten() uint64 {
 	return rb.total
 }
 
 // Bytes returns the buffered data in order (oldest first).
-func (rb *ringBuffer) Bytes() []byte {
+func (rb *RingBuffer) Bytes() []byte {
 	if !rb.full {
 		return append([]byte(nil), rb.data[:rb.pos]...)
 	}
@@ -49,7 +50,7 @@ func (rb *ringBuffer) Bytes() []byte {
 }
 
 // Len returns the number of bytes stored.
-func (rb *ringBuffer) Len() int {
+func (rb *RingBuffer) Len() int {
 	if rb.full {
 		return rb.size
 	}
@@ -57,7 +58,7 @@ func (rb *ringBuffer) Len() int {
 }
 
 // Reset clears the buffer.
-func (rb *ringBuffer) Reset() {
+func (rb *RingBuffer) Reset() {
 	rb.pos = 0
 	rb.full = false
 }

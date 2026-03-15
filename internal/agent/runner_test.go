@@ -214,8 +214,8 @@ func TestRunner_Idle(t *testing.T) {
 		t.Errorf("expected no idle sessions, got %v", idle)
 	}
 
-	// Simulate the session having old output
-	sess := r.Get("idle-t1")
+	// Simulate the session having old output (cast to concrete type for test)
+	sess := r.Get("idle-t1").(*Session)
 	sess.mu.Lock()
 	sess.lastOutput = time.Now().Add(-5 * time.Second)
 	sess.mu.Unlock()

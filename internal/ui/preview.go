@@ -11,12 +11,12 @@ import (
 // Preview renders the agent output for the selected task.
 type Preview struct {
 	theme  Theme
-	runner *agent.Runner
+	runner agent.SessionProvider
 	width  int
 	height int
 }
 
-func NewPreview(theme Theme, runner *agent.Runner) Preview {
+func NewPreview(theme Theme, runner agent.SessionProvider) Preview {
 	return Preview{theme: theme, runner: runner}
 }
 

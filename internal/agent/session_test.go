@@ -35,7 +35,7 @@ func TestStartSession_EchoCommand(t *testing.T) {
 	// Give readLoop time to capture output
 	time.Sleep(50 * time.Millisecond)
 
-	output := string(sess.buf.Bytes())
+	output := string(sess.RecentOutput())
 	if !strings.Contains(output, "hello from pty") {
 		t.Errorf("expected output to contain 'hello from pty', got %q", output)
 	}
@@ -498,6 +498,67 @@ func TestSession_Attach_StdinEOF(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for attach to return after stdin EOF")
+	}
+}
+
+func TestSession_MultiWriter(t *testing.T) {
+	cmd := exec.Command("echo", "multi-writer-test")
+	sess, err := StartSession("mw-1", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf1, buf2 bytes.Buffer
+	sess.AddWriter(&buf1)
+	sess.AddWriter(&buf2)
+
+	// Wait for process to exit and output to propagate
+	select {
+	case <-sess.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Both writers should have received the replay + any live output
+	if !strings.Contains(buf1.String(), "multi-writer-test") {
+		t.Errorf("writer 1 missing output: %q", buf1.String())
+	}
+	if !strings.Contains(buf2.String(), "multi-writer-test") {
+		t.Errorf("writer 2 missing output: %q", buf2.String())
+	}
+}
+
+func TestSession_RemoveWriter(t *testing.T) {
+	// Use cat which echoes stdin to stdout, producing observable output.
+	cmd := exec.Command("cat")
+	sess, err := StartSession("rw-1", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop()
+
+	var buf bytes.Buffer
+	sess.AddWriter(&buf)
+
+	// Write some input so cat echoes it — this produces output
+	// that the writer receives.
+	sess.WriteInput([]byte("before\n"))
+	time.Sleep(100 * time.Millisecond)
+
+	if buf.Len() == 0 {
+		t.Fatal("expected writer to receive output before removal")
+	}
+
+	// Now remove the writer and send more input.
+	sess.RemoveWriter(&buf)
+	initialLen := buf.Len()
+
+	sess.WriteInput([]byte("after-removal\n"))
+	time.Sleep(100 * time.Millisecond)
+
+	if buf.Len() > initialLen {
+		t.Error("writer received output after removal")
 	}
 }
 
