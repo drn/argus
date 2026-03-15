@@ -370,8 +370,8 @@ func (tl *TaskList) restoreCursor(target row) {
 }
 
 func (tl *TaskList) visibleRows() int {
-	// Each row takes 1-2 lines; use 2 as upper bound for scroll calculations.
-	return max(tl.height/2, 1)
+	// Each row takes 1 line.
+	return max(tl.height, 1)
 }
 
 func (tl TaskList) View() string {
@@ -433,7 +433,17 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 
 func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected bool) {
 	statusStyle := tl.statusStyle(t.Status)
-	badge := statusStyle.Render(t.Status.Badge())
+
+	// Status icon (displayed to the left of the task name)
+	displayText := t.Status.Display()
+	if t.Status == model.StatusInProgress {
+		if !tl.running[t.ID] || tl.idle[t.ID] {
+			displayText = "\uF186" // moon: idle
+		} else if tl.tickEven {
+			displayText = t.Status.DisplayAlt() // animate between circle-o and dot-circle-o
+		}
+	}
+	icon := statusStyle.Render(displayText)
 
 	nameStyle := tl.theme.Normal
 	if selected {
@@ -449,32 +459,13 @@ func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected boo
 		cursorStr = tl.theme.Selected.Render("   >")
 	}
 
-	// Status label (right-aligned)
-	displayText := t.Status.Display()
-	if t.Status == model.StatusInProgress {
-		if !tl.running[t.ID] || tl.idle[t.ID] {
-			displayText = "\uF186" // moon: idle
-		} else if tl.tickEven {
-			displayText = t.Status.DisplayAlt() // animate between circle-o and dot-circle-o
-		}
-	}
-	statusLabel := statusStyle.Render(displayText)
+	// Duration in parentheses immediately after name
 	elapsed := ""
 	if e := t.ElapsedString(); e != "" {
-		elapsed = "  " + tl.theme.Elapsed.Render(e)
+		elapsed = " " + tl.theme.Elapsed.Render("("+e+")")
 	}
-	right := statusLabel + elapsed
 
-	left := fmt.Sprintf("%s %s  %s", cursorStr, badge, name)
-	gap := max(tl.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
-	b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
-
-	// Second line: branch only (project shown in header)
-	detail := "        "
-	if t.Branch != "" {
-		detail += tl.theme.Dimmed.Render(t.Branch)
-	}
-	b.WriteString(detail + "\n")
+	b.WriteString(fmt.Sprintf("%s %s  %s%s\n", cursorStr, icon, name, elapsed))
 }
 
 func (tl TaskList) statusStyle(s model.Status) lipgloss.Style {
