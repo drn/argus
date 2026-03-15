@@ -20,10 +20,10 @@ var statusNames = [...]string{
 }
 
 var statusDisplay = [...]string{
-	"◻ pending",
-	"⏳ progress",
-	"👀 review",
-	"✓ complete",
+	"\uF10C",
+	"\uF10C",
+	"\uF06E",
+	"\uF00C",
 }
 
 var statusBadges = [...]string{
@@ -40,9 +40,25 @@ func (s Status) String() string {
 	return fmt.Sprintf("unknown(%d)", int(s))
 }
 
+// statusDisplayAlt holds the alternate animation frame for statuses that animate.
+var statusDisplayAlt = [...]string{
+	"\uF10C",
+	"\uF192", // dot-circle-o: alternate frame for in_progress
+	"\uF06E",
+	"\uF00C",
+}
+
 func (s Status) Display() string {
 	if int(s) < len(statusDisplay) {
 		return statusDisplay[s]
+	}
+	return s.String()
+}
+
+// DisplayAlt returns the alternate animation frame for the status icon.
+func (s Status) DisplayAlt() string {
+	if int(s) < len(statusDisplayAlt) {
+		return statusDisplayAlt[s]
 	}
 	return s.String()
 }

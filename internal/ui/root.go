@@ -199,6 +199,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TickMsg:
 		// Keep running state fresh so idle tasks display correctly.
 		m.refreshTasks()
+		m.tasklist.Tick()
 		var cmds []tea.Cmd
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
