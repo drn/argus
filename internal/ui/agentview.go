@@ -125,8 +125,8 @@ func (av *AgentView) SetSize(w, h int) {
 	}
 	av.width = w
 	av.height = h
-	// Reserve 1 for status bar
-	contentH := h - 1
+	// Reserve 1 for header + 1 for status bar
+	contentH := h - 2
 	av.layout.SetSize(w, contentH)
 	widths := av.layout.SplitWidths()
 	av.gitstatus.SetSize(widths[0], contentH)
@@ -347,7 +347,7 @@ func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (av *AgentView) diffVisibleRows() int {
-	contentH := av.height - 1
+	contentH := av.height - 2
 	rows := contentH - 4
 	if rows < 3 {
 		rows = 3
@@ -386,6 +386,8 @@ func (av *AgentView) View() string {
 	centerW := widths[1]
 	contentH := av.layout.Height()
 
+	header := av.renderHeader()
+
 	// Left panel: git status
 	av.gitstatus.SetFocused(av.focus == panelGit)
 	leftView := av.gitstatus.View()
@@ -406,7 +408,31 @@ func (av *AgentView) View() string {
 	// Status bar
 	bar := av.renderStatusBar()
 
-	return content + "\n" + bar
+	return header + "\n" + content + "\n" + bar
+}
+
+// renderHeader renders a centered tab-style header with the task name.
+func (av *AgentView) renderHeader() string {
+	const (
+		baseBg   = "236"
+		activeFg = "236"
+		activeBg = "103"
+		chevron  = "\ue0b0"
+	)
+
+	bg := lipgloss.Color(baseBg)
+	abg := lipgloss.Color(activeBg)
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Foreground(bg).Background(abg).Render(chevron))
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(activeFg)).Background(abg).Render(" " + av.taskName + " "))
+	b.WriteString(lipgloss.NewStyle().Foreground(abg).Background(bg).Render(chevron))
+
+	tabContent := b.String()
+	return lipgloss.NewStyle().
+		Background(bg).
+		Width(av.width).
+		Render(lipgloss.PlaceHorizontal(av.width, lipgloss.Center, tabContent, lipgloss.WithWhitespaceBackground(bg)))
 }
 
 func (av *AgentView) renderTerminal(w, h int) string {
