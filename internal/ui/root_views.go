@@ -170,13 +170,24 @@ func (m Model) renderProjectDetail() string {
 	contentHeight := m.height - 2
 
 	if entry == nil {
-		empty := m.theme.Dimmed.Render("  No project selected")
-		return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(empty)
+		return borderedPanel(rightWidth, contentHeight, false,
+			m.theme.Dimmed.Render(" No project selected"))
 	}
 
-	var b strings.Builder
-	b.WriteString(m.theme.Title.Render("  "+entry.Name) + "\n\n")
+	innerW := max(rightWidth-4, 10)
+	innerH := max(contentHeight-2, 1)
 
+	var b strings.Builder
+
+	// Title
+	name := entry.Name
+	if len(name) > innerW-2 {
+		name = name[:innerW-5] + "..."
+	}
+	b.WriteString(m.theme.Title.Render(" "+name) + "\n\n")
+
+	// Configuration section
+	b.WriteString(m.theme.Section.Render("  CONFIG") + "\n")
 	fields := []struct{ label, value string }{
 		{"Path", entry.Project.Path},
 		{"Branch", entry.Project.Branch},
@@ -190,7 +201,110 @@ func (m Model) renderProjectDetail() string {
 		b.WriteString("  " + m.theme.Dimmed.Render(f.label+": ") + m.theme.Normal.Render(val) + "\n")
 	}
 
-	return lipgloss.NewStyle().Width(rightWidth).Height(contentHeight).Render(b.String())
+	// Task summary section
+	sc := m.projectlist.TaskCounts(entry.Name)
+	total := sc.Total()
+
+	b.WriteString("\n" + m.theme.Section.Render("  TASKS") + "\n")
+
+	if total == 0 {
+		b.WriteString("  " + m.theme.Dimmed.Render("No tasks yet. Press [1] to switch to tasks.") + "\n")
+	} else {
+		// Status breakdown
+		statuses := []struct {
+			label string
+			count int
+			style lipgloss.Style
+		}{
+			{"Pending", sc.Pending, m.theme.Pending},
+			{"In Progress", sc.InProgress, m.theme.InProgress},
+			{"In Review", sc.InReview, m.theme.InReview},
+			{"Complete", sc.Complete, m.theme.Complete},
+		}
+		for _, s := range statuses {
+			if s.count > 0 {
+				b.WriteString(fmt.Sprintf("  %s  %s\n",
+					s.style.Render(fmt.Sprintf("%2d", s.count)),
+					m.theme.Normal.Render(s.label)))
+			}
+		}
+
+		// Visual progress bar
+		barWidth := innerW - 4
+		if barWidth > 0 && total > 0 {
+			b.WriteString("\n")
+			bar := m.renderStatusBar(sc, barWidth)
+			b.WriteString("  " + bar + "\n")
+			// Progress percentage
+			pct := 0
+			if total > 0 {
+				pct = sc.Complete * 100 / total
+			}
+			b.WriteString("  " + m.theme.Dimmed.Render(fmt.Sprintf("%d%% complete", pct)) + "\n")
+		}
+	}
+
+	content := strings.TrimRight(b.String(), "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) > innerH {
+		lines = lines[:innerH]
+		content = strings.Join(lines, "\n")
+	}
+
+	return borderedPanel(rightWidth, contentHeight, false, content)
+}
+
+// renderStatusBar renders a horizontal progress bar with colored segments.
+func (m Model) renderStatusBar(sc statusCounts, width int) string {
+	total := sc.Total()
+	if total == 0 || width <= 0 {
+		return ""
+	}
+
+	// Calculate proportional widths
+	segments := []struct {
+		count int
+		ch    string
+		color string
+	}{
+		{sc.Complete, "█", "78"},   // green
+		{sc.InReview, "█", "81"},   // blue
+		{sc.InProgress, "█", "214"}, // orange
+		{sc.Pending, "░", "245"},   // gray
+	}
+
+	// Find the last non-zero segment index for remainder assignment
+	lastNonZero := -1
+	for i, seg := range segments {
+		if seg.count > 0 {
+			lastNonZero = i
+		}
+	}
+
+	var bar strings.Builder
+	remaining := width
+	for i, seg := range segments {
+		if seg.count == 0 {
+			continue
+		}
+		w := seg.count * width / total
+		if w < 1 {
+			w = 1
+		}
+		// Last non-zero segment gets any remaining width to avoid gaps
+		if i == lastNonZero {
+			w = remaining
+		}
+		if w <= 0 {
+			continue
+		}
+		remaining -= w
+		bar.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color(seg.color)).
+			Render(strings.Repeat(seg.ch, w)))
+	}
+
+	return bar.String()
 }
 
 func (m Model) emptyStateView() string {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 )
 
 func TestNewProjectList(t *testing.T) {
@@ -161,18 +162,37 @@ func TestProjectList_ViewWithEntries(t *testing.T) {
 	if !strings.Contains(view, "myproject") {
 		t.Error("view should contain project name")
 	}
-	if !strings.Contains(view, "claude") {
-		t.Error("view should contain backend name")
-	}
 	if !strings.Contains(view, "/home/user/myproject") {
 		t.Error("view should contain project path")
 	}
 	if !strings.Contains(view, "main") {
 		t.Error("view should contain branch name")
 	}
+	// Should show "no tasks" since no tasks were set
+	if !strings.Contains(view, "no tasks") {
+		t.Error("view should show 'no tasks' when project has no tasks")
+	}
 }
 
-func TestProjectList_ViewDefaultBackend(t *testing.T) {
+func TestProjectList_ViewWithTaskCounts(t *testing.T) {
+	pl := NewProjectList(DefaultTheme())
+	pl.SetSize(80, 40)
+	pl.SetProjects(map[string]config.Project{
+		"myproject": {Path: "/tmp/proj"},
+	})
+	pl.SetTasks([]*model.Task{
+		{Project: "myproject", Status: model.StatusPending},
+		{Project: "myproject", Status: model.StatusInProgress},
+		{Project: "myproject", Status: model.StatusComplete},
+	})
+
+	view := pl.View()
+	if !strings.Contains(view, "3 tasks") {
+		t.Error("view should show task count badge")
+	}
+}
+
+func TestProjectList_ViewNoTasksLabel(t *testing.T) {
 	pl := NewProjectList(DefaultTheme())
 	pl.SetSize(80, 40)
 	pl.SetProjects(map[string]config.Project{
@@ -180,8 +200,8 @@ func TestProjectList_ViewDefaultBackend(t *testing.T) {
 	})
 
 	view := pl.View()
-	if !strings.Contains(view, "default") {
-		t.Error("view should show 'default' when backend is empty")
+	if !strings.Contains(view, "no tasks") {
+		t.Error("view should show 'no tasks' when project has no tasks")
 	}
 }
 
@@ -198,5 +218,73 @@ func TestProjectList_SetProjectsClampsClursor(t *testing.T) {
 	})
 	if pl.scroll.Cursor() != 0 {
 		t.Errorf("cursor should be clamped to 0, got %d", pl.scroll.Cursor())
+	}
+}
+
+func TestProjectList_SetTasks(t *testing.T) {
+	pl := NewProjectList(DefaultTheme())
+	pl.SetProjects(map[string]config.Project{
+		"alpha": {Path: "/a"},
+		"bravo": {Path: "/b"},
+	})
+
+	tasks := []*model.Task{
+		{Project: "alpha", Status: model.StatusPending},
+		{Project: "alpha", Status: model.StatusInProgress},
+		{Project: "alpha", Status: model.StatusComplete},
+		{Project: "bravo", Status: model.StatusInReview},
+	}
+	pl.SetTasks(tasks)
+
+	ac := pl.TaskCounts("alpha")
+	if ac.Pending != 1 || ac.InProgress != 1 || ac.Complete != 1 || ac.Total() != 3 {
+		t.Errorf("alpha counts = %+v, want 1/1/0/1", ac)
+	}
+
+	bc := pl.TaskCounts("bravo")
+	if bc.InReview != 1 || bc.Total() != 1 {
+		t.Errorf("bravo counts = %+v, want 0/0/1/0", bc)
+	}
+
+	// Unknown project should return zero counts
+	uc := pl.TaskCounts("unknown")
+	if uc.Total() != 0 {
+		t.Errorf("unknown project should have 0 tasks, got %d", uc.Total())
+	}
+}
+
+func TestProjectList_MiniStatus(t *testing.T) {
+	pl := NewProjectList(DefaultTheme())
+	pl.SetSize(80, 40)
+	pl.SetProjects(map[string]config.Project{
+		"proj": {Path: "/tmp"},
+	})
+	pl.SetTasks([]*model.Task{
+		{Project: "proj", Status: model.StatusPending},
+		{Project: "proj", Status: model.StatusPending},
+		{Project: "proj", Status: model.StatusInProgress},
+	})
+
+	view := pl.View()
+	// Should contain status indicators (○ for pending, ● for in-progress)
+	if !strings.Contains(view, "○") {
+		t.Error("view should contain pending status indicator")
+	}
+	if !strings.Contains(view, "●") {
+		t.Error("view should contain in-progress status indicator")
+	}
+}
+
+func TestStatusCounts_Total(t *testing.T) {
+	sc := statusCounts{Pending: 2, InProgress: 1, InReview: 3, Complete: 4}
+	if sc.Total() != 10 {
+		t.Errorf("Total() = %d, want 10", sc.Total())
+	}
+}
+
+func TestStatusCounts_Total_Zero(t *testing.T) {
+	sc := statusCounts{}
+	if sc.Total() != 0 {
+		t.Errorf("Total() = %d, want 0", sc.Total())
 	}
 }
