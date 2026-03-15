@@ -318,11 +318,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Cmd+Up/Down (sent as Alt+Up/Down by terminals) switches to adjacent task.
+	if msg.Alt {
+		switch msg.Type {
+		case tea.KeyUp:
+			return m.switchAgentTask(-1)
+		case tea.KeyDown:
+			return m.switchAgentTask(+1)
+		}
+	}
+
 	if detach := m.agentview.HandleKey(msg); detach {
 		m.current = viewTaskList
 		m.refreshTasks()
 	}
 	return m, nil
+}
+
+// switchAgentTask navigates to the adjacent task's agent view (dir: -1=prev, +1=next).
+func (m Model) switchAgentTask(dir int) (tea.Model, tea.Cmd) {
+	next := m.tasklist.AdjacentTask(m.agentview.taskID, dir)
+	if next == nil {
+		return m, nil
+	}
+	return m.startOrAttach(next)
 }
 
 func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

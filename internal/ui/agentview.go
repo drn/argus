@@ -420,6 +420,7 @@ func (av AgentView) renderStatusBar() string {
 
 	// Right: keybinding hints
 	keys := []struct{ key, label string }{
+		{"⌘↑/↓", "task"},
 		{"⇧↑/↓", "scroll"},
 		{"ctrl+←/→", "panel"},
 		{"ctrl+q", "detach"},
