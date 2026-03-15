@@ -1099,6 +1099,45 @@ func TestAgentView_Enter_ResetsDiffMode(t *testing.T) {
 	}
 }
 
+func TestAgentView_DiffMode_LongLinesWrap(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "test.go"},
+	})
+
+	// Create a line longer than the panel width (120 - 4 border = 116 display)
+	longLine := "+" + strings.Repeat("x", 200)
+	av.diffLines = []string{longLine, " short"}
+
+	// Wrap to a narrow width to make the test deterministic
+	wrapped := av.wrapDiffLines(40)
+	if len(wrapped) < 3 {
+		t.Errorf("expected long line to wrap into multiple visual lines, got %d lines", len(wrapped))
+	}
+	// Verify the view renders without truncation
+	view := av.View()
+	if view == "" {
+		t.Fatal("expected non-empty view with wrapped lines")
+	}
+}
+
+func TestAgentView_DiffMode_WrapCacheInvalidation(t *testing.T) {
+	av := newTestAgentView()
+	av.diffLines = []string{strings.Repeat("a", 100)}
+
+	w1 := av.wrapDiffLines(50)
+	w2 := av.wrapDiffLines(50) // should return cached
+	if len(w1) != len(w2) {
+		t.Fatal("cache should return same result for same width")
+	}
+
+	w3 := av.wrapDiffLines(30) // different width → re-wrap
+	if len(w3) <= len(w1) {
+		t.Error("narrower width should produce more wrapped lines")
+	}
+}
+
 func TestFileExplorer_SelectedFile(t *testing.T) {
 	fe := NewFileExplorer(DefaultTheme())
 
