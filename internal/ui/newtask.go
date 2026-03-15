@@ -5,7 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/drn/argus/internal/config"
@@ -14,7 +15,7 @@ import (
 
 // NewTaskForm handles the new task creation UI.
 type NewTaskForm struct {
-	promptInput  textinput.Model
+	promptInput  textarea.Model
 	projectNames []string
 	projectIdx   int
 	focused      int // 0 = project, 1 = prompt
@@ -31,10 +32,25 @@ const (
 	fieldPrompt  = 1
 )
 
+// maxPromptLines is the maximum number of visible lines for the prompt textarea.
+const maxPromptLines = 10
+
 func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string) NewTaskForm {
-	promptInput := textinput.New()
+	promptInput := textarea.New()
 	promptInput.Placeholder = "Prompt for the agent"
 	promptInput.CharLimit = 500
+	promptInput.ShowLineNumbers = false
+	promptInput.Prompt = ""
+	promptInput.SetHeight(1)
+	promptInput.MaxHeight = maxPromptLines
+	promptInput.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	promptInput.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	promptInput.FocusedStyle.Base = lipgloss.NewStyle()
+	promptInput.BlurredStyle.Base = lipgloss.NewStyle()
+	promptInput.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	promptInput.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	// Disable enter key — we handle submit ourselves
+	promptInput.KeyMap.InsertNewline = key.NewBinding(key.WithDisabled())
 	promptInput.Focus()
 
 	// Build sorted project name list
@@ -72,7 +88,7 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		case "esc":
 			f.canceled = true
 			return nil
-		case "tab", "down":
+		case "tab":
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
@@ -80,7 +96,7 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			f.focused = fieldProject
 			f.promptInput.Blur()
 			return nil
-		case "shift+tab", "up":
+		case "shift+tab":
 			if f.focused == fieldPrompt {
 				f.focused = fieldProject
 				f.promptInput.Blur()
@@ -98,6 +114,18 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 				f.projectIdx = (f.projectIdx + 1) % len(f.projectNames)
 				return nil
 			}
+		case "up":
+			if f.focused == fieldProject {
+				f.focused = fieldPrompt
+				return f.promptInput.Focus()
+			}
+			// Let textarea handle up arrow for multi-line navigation
+		case "down":
+			if f.focused == fieldProject {
+				f.focused = fieldPrompt
+				return f.promptInput.Focus()
+			}
+			// Let textarea handle down arrow for multi-line navigation
 		case "enter":
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
@@ -114,6 +142,15 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	if f.focused == fieldPrompt {
 		var cmd tea.Cmd
 		f.promptInput, cmd = f.promptInput.Update(msg)
+		// Auto-resize textarea height based on content
+		lines := f.promptInput.LineCount()
+		if lines < 1 {
+			lines = 1
+		}
+		if lines > maxPromptLines {
+			lines = maxPromptLines
+		}
+		f.promptInput.SetHeight(lines)
 		return cmd
 	}
 
@@ -155,11 +192,16 @@ func (f *NewTaskForm) Canceled() bool { return f.canceled }
 func (f *NewTaskForm) SetSize(w, h int) {
 	f.width = w
 	f.height = h
-	inputWidth := f.modalWidth() - 6
+	// Guard against zero-valued form (textarea not initialized via constructor).
+	// projects is nil when zero-valued but always a valid map when constructed.
+	if f.projects == nil {
+		return
+	}
+	inputWidth := f.modalWidth() - 4
 	if inputWidth < 20 {
 		inputWidth = 20
 	}
-	f.promptInput.Width = inputWidth
+	f.promptInput.SetWidth(inputWidth)
 }
 
 func (f NewTaskForm) modalWidth() int {
@@ -185,7 +227,7 @@ func (f NewTaskForm) View() string {
 	b.WriteString(promptStyle.Render("Prompt:") + "\n")
 	b.WriteString(f.promptInput.View() + "\n\n")
 
-	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  \u2190/\u2192: select project  enter: submit  esc: cancel"))
+	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  ←/→: select project  enter: submit  esc: cancel"))
 
 	mw := f.modalWidth()
 
@@ -207,8 +249,8 @@ func (f NewTaskForm) renderProjectSelector() string {
 	arrow := f.theme.Dimmed
 	selected := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("87"))
 
-	left := arrow.Render("\u25c0 ")
-	right := arrow.Render(" \u25b6")
+	left := arrow.Render("◀ ")
+	right := arrow.Render(" ▶")
 	name := selected.Render(f.projectNames[f.projectIdx])
 
 	counter := f.theme.Dimmed.Render(
