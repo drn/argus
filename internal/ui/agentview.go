@@ -715,17 +715,19 @@ func (av *AgentView) terminalDisplaySize() (dispW, dispH int, centerW int) {
 
 // scrollUp scrolls the terminal view up by n lines.
 func (av *AgentView) scrollUp(n int) {
-	maxScroll := 0
+	av.scrollOffset += n
+	// Clamp to max only when cachedLines is populated. When empty (incremental
+	// render mode), allow scrollOffset to grow so the next View() triggers
+	// formatTerminalOutput which populates cachedLines.
 	if len(av.cachedLines) > 0 {
 		_, dispH, _ := av.terminalDisplaySize()
-		maxScroll = len(av.cachedLines) - dispH
+		maxScroll := len(av.cachedLines) - dispH
 		if maxScroll < 0 {
 			maxScroll = 0
 		}
-	}
-	av.scrollOffset += n
-	if av.scrollOffset > maxScroll {
-		av.scrollOffset = maxScroll
+		if av.scrollOffset > maxScroll {
+			av.scrollOffset = maxScroll
+		}
 	}
 }
 

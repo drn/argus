@@ -85,6 +85,12 @@
 - `removeWorktree(path, repoDir)` requires the main repo dir because `~/.argus/worktrees/` is outside the git repo — git can't find repo metadata from there. Without repoDir, `git worktree remove` fails silently and falls through to `os.RemoveAll`, leaving stale entries in `.git/worktrees/`.
 - Full cleanup on delete/destroy: worktree removal + local branch delete + remote branch delete. Both `handleConfirmDeleteKey` and `handleConfirmDestroyKey` now do identical cleanup.
 
+### Scroll Offset Chicken-and-Egg Bug (2026-03-14)
+- `scrollUp()` clamped `scrollOffset` to `maxScroll` computed from `cachedLines`. When `cachedLines` was empty (incremental render mode — the default during live agent output), `maxScroll` was 0, so `scrollOffset` was immediately clamped back to 0.
+- But `cachedLines` is only populated by `formatTerminalOutput()`, which is only called when `scrollOffset > 0`. Result: mouse wheel scrolling had zero effect — the offset could never escape 0.
+- Fix: skip the max clamp when `cachedLines` is empty. Let `scrollOffset` grow freely; the next `View()` sees `scrollOffset > 0`, calls `formatTerminalOutput`, populates `cachedLines`, and subsequent scrolls clamp correctly. The `windowLines()` function already handles over-scroll gracefully.
+- **Pattern:** When state A gates computation B, and computation B produces the data needed to validate state A, don't validate A before B has run. Let A be temporarily "wrong" so B can bootstrap, then validate on the next cycle.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
