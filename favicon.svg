@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <defs>
+    <linearGradient id="a4-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <radialGradient id="a4-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#34D399" stop-opacity="0.35"/>
+      <stop offset="50%" stop-color="#059669" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="a4-eye-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#6EE7B7" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#34D399" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Ambient -->
+  <circle cx="100" cy="100" r="85" fill="url(#a4-glow)"/>
+  <!-- Shield shape — guardian motif -->
+  <path d="M 100 30 L 160 55 L 160 115 Q 160 155 100 180 Q 40 155 40 115 L 40 55 Z" fill="none" stroke="url(#a4-grad)" stroke-width="2.5" opacity="0.8"/>
+  <!-- Inner shield -->
+  <path d="M 100 45 L 148 65 L 148 112 Q 148 145 100 167 Q 52 145 52 112 L 52 65 Z" fill="none" stroke="#34D399" stroke-width="1.2" opacity="0.3"/>
+  <!-- Central all-seeing eye -->
+  <path d="M 65 100 Q 100 70 135 100 Q 100 130 65 100 Z" fill="none" stroke="url(#a4-grad)" stroke-width="2" opacity="0.8"/>
+  <circle cx="100" cy="100" r="14" fill="url(#a4-eye-glow)"/>
+  <circle cx="100" cy="100" r="6" fill="#34D399" opacity="0.95"/>
+  <circle cx="97" cy="97" r="2" fill="#A7F3D0" opacity="0.6"/>
+  <!-- Three smaller eyes above — watching agents -->
+  <circle cx="80" cy="62" r="6" fill="url(#a4-eye-glow)" opacity="0.7"/>
+  <circle cx="80" cy="62" r="2.5" fill="#34D399" opacity="0.8"/>
+  <circle cx="100" cy="55" r="6" fill="url(#a4-eye-glow)" opacity="0.7"/>
+  <circle cx="100" cy="55" r="2.5" fill="#34D399" opacity="0.8"/>
+  <circle cx="120" cy="62" r="6" fill="url(#a4-eye-glow)" opacity="0.7"/>
+  <circle cx="120" cy="62" r="2.5" fill="#34D399" opacity="0.8"/>
+  <!-- Two smaller eyes below -->
+  <circle cx="85" cy="138" r="5" fill="url(#a4-eye-glow)" opacity="0.5"/>
+  <circle cx="85" cy="138" r="2" fill="#34D399" opacity="0.7"/>
+  <circle cx="115" cy="138" r="5" fill="url(#a4-eye-glow)" opacity="0.5"/>
+  <circle cx="115" cy="138" r="2" fill="#34D399" opacity="0.7"/>
+</svg>
