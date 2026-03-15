@@ -254,11 +254,11 @@ func TestNewTaskForm_VisualLineCount(t *testing.T) {
 		t.Errorf("long text (%d chars, width %d): visualLineCount() = %d, want 3", len(longText), inputWidth, got)
 	}
 
-	// Hard newlines + soft wraps combined
+	// Hard newlines (pasted text) — returns maxPromptLines to let textarea scroll
 	mixedText := strings.Repeat("b", inputWidth+1) + "\nshort"
 	f.promptInput.SetValue(mixedText)
 	got = f.visualLineCount()
-	if got != 3 {
-		t.Errorf("mixed: visualLineCount() = %d, want 3 (2 wrapped + 1 short)", got)
+	if got != maxPromptLines {
+		t.Errorf("mixed: visualLineCount() = %d, want %d (maxPromptLines for pasted multi-line)", got, maxPromptLines)
 	}
 }
