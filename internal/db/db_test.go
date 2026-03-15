@@ -1,8 +1,6 @@
 package db
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -307,95 +305,7 @@ func TestDB_SetConfigValue(t *testing.T) {
 
 // --- Migration tests ---
 
-func TestMigration_FromLegacyFiles(t *testing.T) {
-	// Set up legacy files in a temp dir
-	legacyDir := t.TempDir()
-	argusDir := filepath.Join(legacyDir, "argus")
-	os.MkdirAll(argusDir, 0o755)
-
-	// Legacy tasks.json
-	tasks := []*model.Task{
-		{ID: "t1", Name: "task one", Status: model.StatusPending},
-		{ID: "t2", Name: "task two", Status: model.StatusInProgress},
-	}
-	tasksJSON, _ := json.Marshal(tasks)
-	os.WriteFile(filepath.Join(argusDir, "tasks.json"), tasksJSON, 0o644)
-
-	// Legacy config.toml
-	configTOML := `
-[defaults]
-backend = "codex"
-
-[backends.codex]
-command = "codex"
-prompt_flag = "--prompt"
-
-[projects.myapp]
-path = "/home/user/myapp"
-backend = "codex"
-
-[keybindings]
-new = "a"
-
-[ui]
-theme = "dark"
-show_elapsed = false
-`
-	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(configTOML), 0o644)
-
-	// Point XDG to temp dir so migration finds legacy files
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", legacyDir)
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
-	// Open a new database — should auto-migrate
-	dbPath := filepath.Join(t.TempDir(), "data.sql")
-	d, err := Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	// Verify tasks were imported
-	dbTasks := d.Tasks()
-	if len(dbTasks) != 2 {
-		t.Fatalf("expected 2 tasks, got %d", len(dbTasks))
-	}
-
-	// Verify projects were imported
-	projects := d.Projects()
-	if _, ok := projects["myapp"]; !ok {
-		t.Error("myapp project not imported")
-	}
-
-	// Verify config was imported
-	cfg := d.Config()
-	if cfg.Defaults.Backend != "codex" {
-		t.Errorf("default backend = %q, want codex", cfg.Defaults.Backend)
-	}
-	if cfg.Keybindings.New != "a" {
-		t.Errorf("keybinding new = %q, want a", cfg.Keybindings.New)
-	}
-	if cfg.UI.Theme != "dark" {
-		t.Errorf("theme = %q, want dark", cfg.UI.Theme)
-	}
-	if cfg.UI.ShowElapsed {
-		t.Error("ShowElapsed should be false")
-	}
-
-	// Verify backends were imported
-	backends := d.Backends()
-	if _, ok := backends["codex"]; !ok {
-		t.Error("codex backend not imported")
-	}
-}
-
-func TestMigration_NoLegacyFiles(t *testing.T) {
-	// Point XDG to empty temp dir
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
+func TestMigration_FreshDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.sql")
 	d, err := Open(dbPath)
 	if err != nil {
@@ -506,10 +416,6 @@ func TestFixupBackends_SkipsCorrectConfig(t *testing.T) {
 }
 
 func TestFixupBackends_RunsOnOpen(t *testing.T) {
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
 	dbPath := filepath.Join(t.TempDir(), "data.sql")
 
 	// First open — creates DB with correct defaults
@@ -920,200 +826,6 @@ func TestDB_Config_DefaultsBackendOverride(t *testing.T) {
 	}
 }
 
-// --- Migration with full config fields ---
-
-func TestMigration_LegacyConfigAllKeybindings(t *testing.T) {
-	legacyDir := t.TempDir()
-	argusDir := filepath.Join(legacyDir, "argus")
-	os.MkdirAll(argusDir, 0o755)
-
-	configTOML := `
-[defaults]
-backend = "claude"
-
-[keybindings]
-new = "N"
-attach = "A"
-status = "S"
-delete = "X"
-quit = "Q"
-help = "H"
-filter = "F"
-prompt = "P"
-worktree = "W"
-
-[ui]
-theme = "monokai"
-show_elapsed = true
-show_icons = false
-cleanup_worktrees = false
-`
-	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(configTOML), 0o644)
-
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", legacyDir)
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
-	dbPath := filepath.Join(t.TempDir(), "data.sql")
-	d, err := Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	cfg := d.Config()
-
-	// Verify all keybindings
-	if cfg.Keybindings.New != "N" {
-		t.Errorf("New = %q", cfg.Keybindings.New)
-	}
-	if cfg.Keybindings.Attach != "A" {
-		t.Errorf("Attach = %q", cfg.Keybindings.Attach)
-	}
-	if cfg.Keybindings.Status != "S" {
-		t.Errorf("Status = %q", cfg.Keybindings.Status)
-	}
-	if cfg.Keybindings.Delete != "X" {
-		t.Errorf("Delete = %q", cfg.Keybindings.Delete)
-	}
-	if cfg.Keybindings.Quit != "Q" {
-		t.Errorf("Quit = %q", cfg.Keybindings.Quit)
-	}
-	if cfg.Keybindings.Help != "H" {
-		t.Errorf("Help = %q", cfg.Keybindings.Help)
-	}
-	if cfg.Keybindings.Filter != "F" {
-		t.Errorf("Filter = %q", cfg.Keybindings.Filter)
-	}
-	if cfg.Keybindings.Prompt != "P" {
-		t.Errorf("Prompt = %q", cfg.Keybindings.Prompt)
-	}
-	if cfg.Keybindings.Worktree != "W" {
-		t.Errorf("Worktree = %q", cfg.Keybindings.Worktree)
-	}
-
-	// Verify UI
-	if cfg.UI.Theme != "monokai" {
-		t.Errorf("Theme = %q", cfg.UI.Theme)
-	}
-	if !cfg.UI.ShowElapsed {
-		t.Error("expected ShowElapsed true")
-	}
-	if cfg.UI.ShowIcons {
-		t.Error("expected ShowIcons false")
-	}
-	if cfg.UI.CleanupWorktrees == nil {
-		t.Fatal("expected CleanupWorktrees to be set")
-	}
-	if *cfg.UI.CleanupWorktrees {
-		t.Error("expected CleanupWorktrees false")
-	}
-}
-
-func TestMigration_LegacyTasksWithAllFields(t *testing.T) {
-	legacyDir := t.TempDir()
-	argusDir := filepath.Join(legacyDir, "argus")
-	os.MkdirAll(argusDir, 0o755)
-
-	tasks := []*model.Task{
-		{
-			ID:        "t1",
-			Name:      "full task",
-			Status:    model.StatusInProgress,
-			Project:   "proj",
-			Branch:    "feat/x",
-			Prompt:    "do stuff",
-			Backend:   "claude",
-			Worktree:  "/tmp/wt/t1",
-			AgentPID:  999,
-			SessionID: "sess-1",
-		},
-	}
-	tasksJSON, _ := json.Marshal(tasks)
-	os.WriteFile(filepath.Join(argusDir, "tasks.json"), tasksJSON, 0o644)
-
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", legacyDir)
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
-	dbPath := filepath.Join(t.TempDir(), "data.sql")
-	d, err := Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	dbTasks := d.Tasks()
-	if len(dbTasks) != 1 {
-		t.Fatalf("expected 1 task, got %d", len(dbTasks))
-	}
-	got := dbTasks[0]
-	if got.Project != "proj" {
-		t.Errorf("Project = %q", got.Project)
-	}
-	if got.Worktree != "/tmp/wt/t1" {
-		t.Errorf("Worktree = %q", got.Worktree)
-	}
-	if got.SessionID != "sess-1" {
-		t.Errorf("SessionID = %q", got.SessionID)
-	}
-}
-
-func TestMigration_LegacyMultipleProjects(t *testing.T) {
-	legacyDir := t.TempDir()
-	argusDir := filepath.Join(legacyDir, "argus")
-	os.MkdirAll(argusDir, 0o755)
-
-	configTOML := `
-[backends.codex]
-command = "codex"
-prompt_flag = "--prompt"
-
-[backends.custom]
-command = "my-agent"
-prompt_flag = "--input"
-
-[projects.app1]
-path = "/home/user/app1"
-branch = "main"
-backend = "codex"
-
-[projects.app2]
-path = "/home/user/app2"
-backend = "custom"
-`
-	os.WriteFile(filepath.Join(argusDir, "config.toml"), []byte(configTOML), 0o644)
-
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", legacyDir)
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
-	dbPath := filepath.Join(t.TempDir(), "data.sql")
-	d, err := Open(dbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Close()
-
-	projects := d.Projects()
-	if len(projects) != 2 {
-		t.Fatalf("expected 2 projects, got %d", len(projects))
-	}
-	if projects["app1"].Branch != "main" {
-		t.Errorf("app1 branch = %q", projects["app1"].Branch)
-	}
-	if projects["app2"].Backend != "custom" {
-		t.Errorf("app2 backend = %q", projects["app2"].Backend)
-	}
-
-	backends := d.Backends()
-	if _, ok := backends["codex"]; !ok {
-		t.Error("codex backend missing")
-	}
-	if _, ok := backends["custom"]; !ok {
-		t.Error("custom backend missing")
-	}
-}
 
 func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
 	// Test that seedDefaults also fixes "cat" and "true" placeholder commands
@@ -1313,10 +1025,6 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 }
 
 func TestMigration_OnlyRunsOnce(t *testing.T) {
-	old := os.Getenv("XDG_CONFIG_HOME")
-	os.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	defer os.Setenv("XDG_CONFIG_HOME", old)
-
 	dbPath := filepath.Join(t.TempDir(), "data.sql")
 
 	// First open — runs migration
@@ -1327,8 +1035,7 @@ func TestMigration_OnlyRunsOnce(t *testing.T) {
 	_ = d1.Add(&model.Task{ID: "t1", Name: "added after migration"})
 	d1.Close()
 
-	// Second open — should NOT re-run migration (which would not re-add tasks
-	// due to INSERT OR IGNORE, but the version check should prevent it entirely)
+	// Second open — should NOT re-run migration
 	d2, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)

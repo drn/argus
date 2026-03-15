@@ -34,7 +34,7 @@ func DefaultPath() string {
 }
 
 // Open opens (or creates) the SQLite database at path.
-// It creates tables if needed and runs migrations from legacy files.
+// It creates tables if needed, seeds defaults, and fixes outdated backends.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("creating data dir: %w", err)
