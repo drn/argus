@@ -60,11 +60,13 @@ type AgentView struct {
 	vtRows     int    // vtTerm row count
 
 	// Diff viewer state
-	diffMode       bool     // true when viewing a file's diff
-	diffContent    string   // raw colorized diff output
-	diffLines      []string // split lines for scrolling
-	diffScrollOff  int      // scroll offset within diff
-	worktreeDir    string   // resolved worktree directory for git commands
+	diffMode         bool     // true when viewing a file's diff
+	diffContent      string   // raw colorized diff output
+	diffLines        []string // split lines for scrolling
+	diffScrollOff    int      // scroll offset within diff
+	worktreeDir      string   // resolved worktree directory for git commands
+	diffWrappedLines []string // diffLines wrapped to panel width (visual lines)
+	diffWrapWidth    int      // width used to compute diffWrappedLines
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -282,6 +284,8 @@ func (av *AgentView) UpdateFileDiff(msg FileDiffMsg) {
 	av.diffMode = true
 	av.diffContent = msg.Diff
 	av.diffScrollOff = 0
+	av.diffWrappedLines = nil
+	av.diffWrapWidth = 0
 	if msg.Diff == "" {
 		av.diffLines = []string{"(no diff)"}
 	} else {
@@ -298,7 +302,23 @@ func (av *AgentView) exitDiffMode() {
 	av.diffMode = false
 	av.diffContent = ""
 	av.diffLines = nil
+	av.diffWrappedLines = nil
+	av.diffWrapWidth = 0
 	av.diffScrollOff = 0
+}
+
+// wrapDiffLines wraps diffLines to the given width, caching the result.
+func (av *AgentView) wrapDiffLines(width int) []string {
+	if width == av.diffWrapWidth && av.diffWrappedLines != nil {
+		return av.diffWrappedLines
+	}
+	av.diffWrapWidth = width
+	av.diffWrappedLines = nil
+	for _, line := range av.diffLines {
+		wrapped := ansi.Hardwrap(line, width, false)
+		av.diffWrappedLines = append(av.diffWrappedLines, strings.Split(wrapped, "\n")...)
+	}
+	return av.diffWrappedLines
 }
 
 func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
@@ -340,7 +360,11 @@ func (av *AgentView) diffScrollUp(n int) {
 }
 
 func (av *AgentView) diffScrollDown(n int) {
-	maxOff := len(av.diffLines) - av.diffVisibleRows()
+	lines := av.diffWrappedLines
+	if lines == nil {
+		lines = av.diffLines
+	}
+	maxOff := len(lines) - av.diffVisibleRows()
 	if maxOff < 0 {
 		maxOff = 0
 	}
@@ -490,9 +514,12 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 		visibleH = 1
 	}
 
+	// Use wrapped visual lines for rendering
+	wrapped := av.wrapDiffLines(dispW)
+
 	end := av.diffScrollOff + visibleH
-	if end > len(av.diffLines) {
-		end = len(av.diffLines)
+	if end > len(wrapped) {
+		end = len(wrapped)
 	}
 	start := av.diffScrollOff
 	if start > end {
@@ -502,10 +529,7 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 	var b strings.Builder
 	b.WriteString(header + "\n")
 	for i := start; i < end; i++ {
-		line := av.diffLines[i]
-		// Truncate to panel width (ANSI-aware)
-		line = ansi.Truncate(line, dispW, "\x1b[0m")
-		b.WriteString(line)
+		b.WriteString(wrapped[i])
 		if i < end-1 {
 			b.WriteString("\n")
 		}

@@ -91,6 +91,13 @@
 - Fix: skip the max clamp when `cachedLines` is empty. Let `scrollOffset` grow freely; the next `View()` sees `scrollOffset > 0`, calls `formatTerminalOutput`, populates `cachedLines`, and subsequent scrolls clamp correctly. The `windowLines()` function already handles over-scroll gracefully.
 - **Pattern:** When state A gates computation B, and computation B produces the data needed to validate state A, don't validate A before B has run. Let A be temporarily "wrong" so B can bootstrap, then validate on the next cycle.
 
+### Diff Panel Line Wrapping (2026-03-14)
+- The diff viewer was using `ansi.Truncate()` to clip long lines to panel width. This silently hid content — long lines (e.g., markdown tables, long strings) went off-screen with no indication.
+- Fixed by switching to `ansi.Hardwrap()` from the same `charmbracelet/x/ansi` package. Hardwrap inserts newlines at the width boundary while preserving ANSI escape sequences.
+- Wrapped lines are cached in `diffWrappedLines` with `diffWrapWidth` tracking the width used. Cache invalidated on: new diff load (`UpdateFileDiff`), exit diff mode (`exitDiffMode`), or width change (detected in `wrapDiffLines`).
+- Scrolling (`diffScrollUp`/`diffScrollDown`) operates on wrapped visual lines, not source lines. `diffScrollDown` falls back to `diffLines` length if `diffWrappedLines` hasn't been computed yet.
+- **Future:** Side-by-side diff view and syntax highlighting are planned. Will require parsing structured diffs (e.g., `go-gitdiff` or `sourcegraph/go-diff`) and per-language highlighting (e.g., `chroma`).
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
