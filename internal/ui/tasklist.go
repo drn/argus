@@ -399,23 +399,43 @@ func (tl TaskList) View() string {
 	return b.String()
 }
 
-func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selected bool) {
-	chevron := "▸"
-	if project == tl.expanded {
-		chevron = "▾"
-	}
-
-	// Count tasks in this project.
-	count := 0
+// projectTasks returns the filtered tasks belonging to the given project name.
+func (tl TaskList) projectTasks(project string) []*model.Task {
+	var tasks []*model.Task
 	for _, t := range tl.filtered {
 		p := t.Project
 		if p == "" {
 			p = uncategorized
 		}
 		if p == project {
-			count++
+			tasks = append(tasks, t)
 		}
 	}
+	return tasks
+}
+
+// taskStatusIcon returns the styled status icon for a task, including
+// animation logic for in-progress tasks (running/idle/tick).
+func (tl TaskList) taskStatusIcon(t *model.Task) string {
+	displayText := t.Status.Display()
+	if t.Status == model.StatusInProgress {
+		if !tl.running[t.ID] || tl.idle[t.ID] {
+			displayText = "\uF186" // moon: idle
+		} else if tl.tickEven {
+			displayText = t.Status.DisplayAlt()
+		}
+	}
+	return tl.statusStyle(t.Status).Render(displayText)
+}
+
+func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selected bool) {
+	chevron := "▸"
+	if project == tl.expanded {
+		chevron = "▾"
+	}
+
+	tasks := tl.projectTasks(project)
+	count := len(tasks)
 
 	nameStyle := tl.theme.Section
 	chevronStyle := tl.theme.Dimmed
@@ -427,23 +447,31 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 	}
 
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	line := fmt.Sprintf("%s %s %s%s", cursorStr, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
-	b.WriteString(line + "\n")
+	left := fmt.Sprintf("%s %s %s%s", cursorStr, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
+
+	// Build right-aligned status icon summary.
+	var icons strings.Builder
+	if count > 8 {
+		for _, t := range tasks[:4] {
+			icons.WriteString(tl.taskStatusIcon(t))
+		}
+		icons.WriteString(tl.theme.Dimmed.Render("…"))
+		for _, t := range tasks[count-3:] {
+			icons.WriteString(tl.taskStatusIcon(t))
+		}
+	} else {
+		for _, t := range tasks {
+			icons.WriteString(tl.taskStatusIcon(t))
+		}
+	}
+	right := icons.String()
+
+	gap := max(tl.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
+	b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
 }
 
 func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected bool) {
-	statusStyle := tl.statusStyle(t.Status)
-
-	// Status icon (displayed to the left of the task name)
-	displayText := t.Status.Display()
-	if t.Status == model.StatusInProgress {
-		if !tl.running[t.ID] || tl.idle[t.ID] {
-			displayText = "\uF186" // moon: idle
-		} else if tl.tickEven {
-			displayText = t.Status.DisplayAlt() // animate between circle-o and dot-circle-o
-		}
-	}
-	icon := statusStyle.Render(displayText)
+	icon := tl.taskStatusIcon(t)
 
 	nameStyle := tl.theme.Normal
 	if selected {
