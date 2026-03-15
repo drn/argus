@@ -19,6 +19,13 @@ var statusNames = [...]string{
 	"complete",
 }
 
+var statusDisplayNames = [...]string{
+	"Pending",
+	"In Progress",
+	"In Review",
+	"Complete",
+}
+
 var statusDisplay = [...]string{
 	"\uF10C",
 	"\uF10C",
@@ -46,6 +53,14 @@ var statusDisplayAlt = [...]string{
 	"\uF192", // dot-circle-o: alternate frame for in_progress
 	"\uF06E",
 	"\uF00C",
+}
+
+// DisplayName returns a human-readable name like "In Progress".
+func (s Status) DisplayName() string {
+	if int(s) < len(statusDisplayNames) {
+		return statusDisplayNames[s]
+	}
+	return s.String()
 }
 
 func (s Status) Display() string {

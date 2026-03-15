@@ -45,7 +45,7 @@ func (d TaskDetail) View(t *model.Task, running bool) string {
 
 	// Status with running/idle indicator
 	statusStyle := d.statusStyle(t.Status)
-	statusLabel := t.Status.String()
+	statusLabel := t.Status.DisplayName()
 	if t.Status == model.StatusInProgress {
 		if running {
 			statusLabel += " (running)"
