@@ -383,6 +383,61 @@ func TestTaskList_ExpandedProjectRemoved(t *testing.T) {
 	}
 }
 
+func TestTaskList_AdjacentTask(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Task A1", Project: "alpha"},
+		{ID: "t2", Name: "Task A2", Project: "alpha"},
+		{ID: "t3", Name: "Task B1", Project: "beta"},
+	}
+	tl.SetTasks(tasks)
+
+	// Next from first task
+	next := tl.AdjacentTask("t1", +1)
+	if next == nil || next.ID != "t2" {
+		t.Errorf("expected t2 after t1, got %v", next)
+	}
+
+	// Next from second task
+	next = tl.AdjacentTask("t2", +1)
+	if next == nil || next.ID != "t3" {
+		t.Errorf("expected t3 after t2, got %v", next)
+	}
+
+	// Next from last task — should be nil
+	next = tl.AdjacentTask("t3", +1)
+	if next != nil {
+		t.Errorf("expected nil after last task, got %v", next)
+	}
+
+	// Prev from last task
+	prev := tl.AdjacentTask("t3", -1)
+	if prev == nil || prev.ID != "t2" {
+		t.Errorf("expected t2 before t3, got %v", prev)
+	}
+
+	// Prev from first task — should be nil
+	prev = tl.AdjacentTask("t1", -1)
+	if prev != nil {
+		t.Errorf("expected nil before first task, got %v", prev)
+	}
+
+	// Unknown task ID
+	unknown := tl.AdjacentTask("nonexistent", +1)
+	if unknown != nil {
+		t.Errorf("expected nil for unknown task, got %v", unknown)
+	}
+}
+
+func TestTaskList_AdjacentTask_Empty(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetTasks(nil)
+	if tl.AdjacentTask("any", +1) != nil {
+		t.Error("expected nil for empty list")
+	}
+}
+
 func TestTaskList_View_Empty(t *testing.T) {
 	tl := NewTaskList(DefaultTheme())
 	tl.SetTasks(nil)

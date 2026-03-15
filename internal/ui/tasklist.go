@@ -165,6 +165,30 @@ func (tl *TaskList) Selected() *model.Task {
 	return nil
 }
 
+// AdjacentTask returns the next (dir=+1) or previous (dir=-1) task relative
+// to the given task ID, using the filtered task ordering. Returns nil if there
+// is no adjacent task in that direction.
+func (tl *TaskList) AdjacentTask(taskID string, dir int) *model.Task {
+	if len(tl.filtered) == 0 {
+		return nil
+	}
+	idx := -1
+	for i, t := range tl.filtered {
+		if t.ID == taskID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil
+	}
+	next := idx + dir
+	if next < 0 || next >= len(tl.filtered) {
+		return nil
+	}
+	return tl.filtered[next]
+}
+
 func (tl *TaskList) SetFilter(f string) {
 	tl.filter = f
 	tl.applyFilter()

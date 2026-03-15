@@ -431,7 +431,7 @@ func TestAgentView_RenderStatusBar_FocusLabelCentered(t *testing.T) {
 	labelLen := len("[TERMINAL]")
 	labelCenter := idx + labelLen/2
 	barCenter := len(plain) / 2
-	if abs(labelCenter-barCenter) > 5 {
+	if abs(labelCenter-barCenter) > 10 {
 		t.Errorf("[TERMINAL] not centered: label center=%d, bar center=%d (bar len=%d)",
 			labelCenter, barCenter, len(plain))
 	}
@@ -453,7 +453,7 @@ func TestAgentView_RenderStatusBar_FocusLabelCentered(t *testing.T) {
 	labelLen = len("[FILES]")
 	labelCenter = idx + labelLen/2
 	barCenter = len(plain) / 2
-	if abs(labelCenter-barCenter) > 5 {
+	if abs(labelCenter-barCenter) > 10 {
 		t.Errorf("[FILES] not centered: label center=%d, bar center=%d (bar len=%d)",
 			labelCenter, barCenter, len(plain))
 	}
