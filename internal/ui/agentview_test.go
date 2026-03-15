@@ -126,6 +126,16 @@ func TestAgentView_MouseWheelScrolls(t *testing.T) {
 	}
 }
 
+func TestAgentView_MouseWheelEmptyCachedLines(t *testing.T) {
+	av := newTestAgentView()
+	// cachedLines is empty (incremental render mode) — scrollUp must still
+	// increase scrollOffset so the next View() triggers formatTerminalOutput.
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if av.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after wheel up with empty cachedLines = %d, want 3", av.scrollOffset)
+	}
+}
+
 func TestAgentView_MouseWheelIgnoredWhenNotAgentPanel(t *testing.T) {
 	av := newTestAgentView()
 	av.cachedLines = make([]string, 100)
