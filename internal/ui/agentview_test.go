@@ -106,6 +106,40 @@ func TestAgentView_ShiftDownKeyScrolls(t *testing.T) {
 	}
 }
 
+func TestAgentView_MouseWheelScrolls(t *testing.T) {
+	av := newTestAgentView()
+	av.cachedLines = make([]string, 100)
+	for i := range av.cachedLines {
+		av.cachedLines[i] = "line"
+	}
+
+	// Mouse wheel up scrolls up by 3
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if av.scrollOffset != 3 {
+		t.Fatalf("scrollOffset after wheel up = %d, want 3", av.scrollOffset)
+	}
+
+	// Mouse wheel down scrolls back down by 3
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if av.scrollOffset != 0 {
+		t.Fatalf("scrollOffset after wheel down = %d, want 0", av.scrollOffset)
+	}
+}
+
+func TestAgentView_MouseWheelIgnoredWhenNotAgentPanel(t *testing.T) {
+	av := newTestAgentView()
+	av.cachedLines = make([]string, 100)
+	for i := range av.cachedLines {
+		av.cachedLines[i] = "line"
+	}
+	av.focus = panelGit
+
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if av.scrollOffset != 0 {
+		t.Fatalf("scrollOffset should stay 0 when git panel focused, got %d", av.scrollOffset)
+	}
+}
+
 func TestAgentView_ShiftEndResetsScroll(t *testing.T) {
 	av := newTestAgentView()
 	av.scrollOffset = 10
