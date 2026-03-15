@@ -84,10 +84,16 @@ func keyMsgToBytes(msg tea.KeyMsg) []byte {
 	}
 
 	if b, ok := arrowMap[msg.Type]; ok {
+		if msg.Alt {
+			return append([]byte{0x1b}, b...)
+		}
 		return b
 	}
 
 	if b, ok := keyByteMap[msg.Type]; ok {
+		if msg.Alt {
+			return append([]byte{0x1b}, b...)
+		}
 		return b
 	}
 
