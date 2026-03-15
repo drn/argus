@@ -148,8 +148,9 @@ func (av *AgentView) NeedsGitRefresh() bool {
 }
 
 // FocusLeft moves focus to the left panel.
+// The git status panel is not focusable, so the leftmost stop is panelAgent.
 func (av *AgentView) FocusLeft() {
-	if av.focus > panelGit {
+	if av.focus > panelAgent {
 		av.focus--
 	}
 }
@@ -180,17 +181,16 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		return false, av.handleDiffKey(msg)
 	}
 
-	// Panel switching: ctrl+left/right only.
-	// Use type-based matching to handle terminals that set the Alt flag on
-	// ctrl+arrow sequences (urxvt sends \x1b[Od which parses as
-	// KeyCtrlLeft with Alt=true, producing "alt+ctrl+left").
-	switch msg.Type {
-	case tea.KeyCtrlLeft:
-		av.FocusLeft()
-		return false, nil
-	case tea.KeyCtrlRight:
-		av.FocusRight()
-		return false, nil
+	// Panel switching: Cmd+left/right (sent as Alt+left/right by terminals).
+	if msg.Alt {
+		switch msg.Type {
+		case tea.KeyLeft:
+			av.FocusLeft()
+			return false, nil
+		case tea.KeyRight:
+			av.FocusRight()
+			return false, nil
+		}
 	}
 
 	// Panel-specific key handling
@@ -223,8 +223,6 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 				sess.WriteInput(b)
 			}
 		}
-	case panelGit:
-		// Sidebar navigation (no-op for now, git status is read-only)
 	case panelFiles:
 		switch keyStr {
 		case "esc":
@@ -635,7 +633,7 @@ func (av AgentView) renderStatusBar() string {
 		keys = []struct{ key, label string }{
 			{"⌘↑/↓", "task"},
 			{"⇧↑/↓", "scroll"},
-			{"ctrl+←/→", "panel"},
+			{"⌘←/→", "panel"},
 			{"ctrl+q", "detach"},
 		}
 	}
@@ -651,8 +649,6 @@ func (av AgentView) renderStatusBar() string {
 		focusLabel = "DIFF"
 	} else {
 		switch av.focus {
-		case panelGit:
-			focusLabel = "GIT STATUS"
 		case panelAgent:
 			focusLabel = "TERMINAL"
 		case panelFiles:

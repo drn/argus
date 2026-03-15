@@ -6,7 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestAgentView_CtrlLeftRight(t *testing.T) {
+func TestAgentView_CmdLeftRight(t *testing.T) {
 	av := newTestAgentView()
 
 	// Initial focus should be panelAgent (center)
@@ -14,100 +14,69 @@ func TestAgentView_CtrlLeftRight(t *testing.T) {
 		t.Fatalf("initial focus = %d, want panelAgent(%d)", av.focus, panelAgent)
 	}
 
-	// Ctrl+left should move to panelGit
-	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
+	// Cmd+right (alt+right) should move to panelFiles
+	msg := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
 	detach, _ := av.HandleKey(msg)
 	if detach {
-		t.Fatal("ctrl+left should not trigger detach")
-	}
-	if av.focus != panelGit {
-		t.Fatalf("focus after ctrl+left = %d, want panelGit(%d)", av.focus, panelGit)
-	}
-
-	// Reset to center
-	av.focus = panelAgent
-
-	// Ctrl+right should move to panelFiles
-	msg2 := tea.KeyMsg{Type: tea.KeyCtrlRight}
-	detach, _ = av.HandleKey(msg2)
-	if detach {
-		t.Fatal("ctrl+right should not trigger detach")
+		t.Fatal("cmd+right should not trigger detach")
 	}
 	if av.focus != panelFiles {
-		t.Fatalf("focus after ctrl+right = %d, want panelFiles(%d)", av.focus, panelFiles)
+		t.Fatalf("focus after cmd+right = %d, want panelFiles(%d)", av.focus, panelFiles)
+	}
+
+	// Cmd+left (alt+left) should move back to panelAgent
+	msg2 := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	detach, _ = av.HandleKey(msg2)
+	if detach {
+		t.Fatal("cmd+left should not trigger detach")
+	}
+	if av.focus != panelAgent {
+		t.Fatalf("focus after cmd+left = %d, want panelAgent(%d)", av.focus, panelAgent)
 	}
 }
 
-func TestAgentView_CtrlLeftRightWithAlt(t *testing.T) {
+func TestAgentView_CmdLeft_DoesNotFocusGitPanel(t *testing.T) {
 	av := newTestAgentView()
 
-	// Ctrl+left with Alt flag (urxvt sends \x1b[Od → KeyCtrlLeft + Alt)
-	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft, Alt: true}
-	detach, _ := av.HandleKey(msg)
-	if detach {
-		t.Fatal("alt+ctrl+left should not trigger detach")
-	}
-	if av.focus != panelGit {
-		t.Fatalf("focus after alt+ctrl+left = %d, want panelGit(%d)", av.focus, panelGit)
-	}
-
-	// Reset to center
-	av.focus = panelAgent
-
-	// Ctrl+right with Alt flag
-	msg2 := tea.KeyMsg{Type: tea.KeyCtrlRight, Alt: true}
-	detach, _ = av.HandleKey(msg2)
-	if detach {
-		t.Fatal("alt+ctrl+right should not trigger detach")
-	}
-	if av.focus != panelFiles {
-		t.Fatalf("focus after alt+ctrl+right = %d, want panelFiles(%d)", av.focus, panelFiles)
-	}
-}
-
-func TestAgentView_AltLeftRight_NoSwitch(t *testing.T) {
-	av := newTestAgentView()
-
-	// Alt+left should NOT switch panels (only ctrl+left does)
+	// From panelAgent, cmd+left should NOT move to panelGit
 	msg := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
-	detach, _ := av.HandleKey(msg)
-	if detach {
-		t.Fatal("alt+left should not trigger detach")
-	}
+	av.HandleKey(msg)
 	if av.focus != panelAgent {
-		t.Fatalf("focus after alt+left = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
+		t.Fatalf("focus after cmd+left from panelAgent = %d, want panelAgent(%d) (git panel not focusable)", av.focus, panelAgent)
+	}
+}
+
+func TestAgentView_CtrlLeftRight_NoSwitch(t *testing.T) {
+	av := newTestAgentView()
+
+	// Ctrl+left should NOT switch panels (old binding removed)
+	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
+	av.HandleKey(msg)
+	if av.focus != panelAgent {
+		t.Fatalf("focus after ctrl+left = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 
-	// Alt+right should NOT switch panels
-	msg2 := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
-	detach, _ = av.HandleKey(msg2)
-	if detach {
-		t.Fatal("alt+right should not trigger detach")
-	}
+	// Ctrl+right should NOT switch panels
+	msg2 := tea.KeyMsg{Type: tea.KeyCtrlRight}
+	av.HandleKey(msg2)
 	if av.focus != panelAgent {
-		t.Fatalf("focus after alt+right = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
+		t.Fatalf("focus after ctrl+right = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 }
 
 func TestAgentView_PlainLeftRight_NoSwitch(t *testing.T) {
 	av := newTestAgentView()
 
-	// Plain left arrow should NOT switch panels (only ctrl+left does)
+	// Plain left arrow should NOT switch panels
 	msg := tea.KeyMsg{Type: tea.KeyLeft}
-	detach, _ := av.HandleKey(msg)
-	if detach {
-		t.Fatal("plain left should not trigger detach")
-	}
+	av.HandleKey(msg)
 	if av.focus != panelAgent {
 		t.Fatalf("focus after plain left = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
 
 	// Plain right arrow should NOT switch panels
 	msg2 := tea.KeyMsg{Type: tea.KeyRight}
-	detach, _ = av.HandleKey(msg2)
-	if detach {
-		t.Fatal("plain right should not trigger detach")
-	}
+	av.HandleKey(msg2)
 	if av.focus != panelAgent {
 		t.Fatalf("focus after plain right = %d, want panelAgent(%d) (should not switch)", av.focus, panelAgent)
 	}
