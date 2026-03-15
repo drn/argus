@@ -48,7 +48,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Destroy: key.NewBinding(
 			key.WithKeys("ctrl+d"),
-			key.WithHelp("ctrl+d", "destroy (kill+cleanup+delete)"),
+			key.WithHelp("^d", "destroy (kill+cleanup+delete)"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
@@ -72,7 +72,7 @@ func DefaultKeyMap() KeyMap {
 		),
 		Prune: key.NewBinding(
 			key.WithKeys("ctrl+r"),
-			key.WithHelp("ctrl+r", "prune completed"),
+			key.WithHelp("^r", "prune completed"),
 		),
 		Up: key.NewBinding(
 			key.WithKeys("up", "k"),
