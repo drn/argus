@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -245,6 +247,12 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 			av.files.CursorDown()
 		case "enter":
 			return false, av.openFileDiff()
+		case "o":
+			return false, av.openInFinder()
+		case "e":
+			return false, av.openInEditor()
+		case "t":
+			return false, av.openTerminal()
 		}
 	}
 	return false, nil
@@ -283,6 +291,44 @@ func (av *AgentView) openFileDiff() tea.Cmd {
 	path := f.Path
 	return func() tea.Msg {
 		return FetchFileDiff(taskID, dir, path)
+	}
+}
+
+// openInFinder opens Finder to the selected file's location.
+func (av *AgentView) openInFinder() tea.Cmd {
+	f := av.files.SelectedFile()
+	if f == nil || av.worktreeDir == "" {
+		return nil
+	}
+	fullPath := filepath.Join(av.worktreeDir, f.Path)
+	return func() tea.Msg {
+		exec.Command("open", "-R", fullPath).Start()
+		return nil
+	}
+}
+
+// openInEditor opens a new tmux tab with nvim editing the selected file.
+func (av *AgentView) openInEditor() tea.Cmd {
+	f := av.files.SelectedFile()
+	if f == nil || av.worktreeDir == "" {
+		return nil
+	}
+	fullPath := filepath.Join(av.worktreeDir, f.Path)
+	return func() tea.Msg {
+		exec.Command("tmux", "new-window", "nvim", fullPath).Start()
+		return nil
+	}
+}
+
+// openTerminal opens a new tmux tab cd'd to the worktree directory.
+func (av *AgentView) openTerminal() tea.Cmd {
+	if av.worktreeDir == "" {
+		return nil
+	}
+	dir := av.worktreeDir
+	return func() tea.Msg {
+		exec.Command("tmux", "new-window", "-c", dir).Start()
+		return nil
 	}
 }
 

@@ -948,6 +948,77 @@ func TestAgentView_FilesPanelEscRefocusesAgent(t *testing.T) {
 	}
 }
 
+func TestAgentView_FilesPanelOpenKeys(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.worktreeDir = "/tmp/test-worktree"
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "main.go"},
+	})
+
+	// "o" returns a command (open in finder)
+	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd == nil {
+		t.Error("expected non-nil cmd for 'o' key")
+	}
+
+	// "e" returns a command (open in editor)
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd == nil {
+		t.Error("expected non-nil cmd for 'e' key")
+	}
+
+	// "t" returns a command (open terminal)
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if cmd == nil {
+		t.Error("expected non-nil cmd for 't' key")
+	}
+}
+
+func TestAgentView_FilesPanelOpenKeys_NilWithoutWorktree(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.worktreeDir = ""
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "main.go"},
+	})
+
+	// All keys return nil when no worktree dir
+	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd != nil {
+		t.Error("expected nil cmd for 'o' with no worktree dir")
+	}
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd != nil {
+		t.Error("expected nil cmd for 'e' with no worktree dir")
+	}
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if cmd != nil {
+		t.Error("expected nil cmd for 't' with no worktree dir")
+	}
+}
+
+func TestAgentView_FilesPanelOpenKeys_NilWithNoFile(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.worktreeDir = "/tmp/test-worktree"
+	// No files set
+
+	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	if cmd != nil {
+		t.Error("expected nil cmd for 'o' with no files")
+	}
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd != nil {
+		t.Error("expected nil cmd for 'e' with no files")
+	}
+	// "t" should still work — it only needs worktreeDir, not a selected file
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if cmd == nil {
+		t.Error("expected non-nil cmd for 't' even with no files")
+	}
+}
+
 func TestAgentView_DiffMode_CtrlQExitsDiff(t *testing.T) {
 	av := newTestAgentView()
 	av.diffMode = true
