@@ -140,8 +140,29 @@ func TestPruneCompleted_WithWorktrees_ShowsModal(t *testing.T) {
 		t.Error("expected non-nil cmd for async cleanup")
 	}
 
-	// Simulate PruneDoneMsg
-	updated, _ = um.Update(PruneDoneMsg{Count: 2})
+	// Simulate iterative progress — first worktree done, one remaining
+	updated, cmd = um.Update(PruneProgressMsg{
+		Current:   1,
+		Total:     2,
+		Remaining: []*model.Task{{ID: "t3", Name: "done2", Status: model.StatusComplete, Worktree: "/tmp/fake-wt-2"}},
+	})
+	um = updated.(Model)
+	if um.current != viewPruning {
+		t.Errorf("expected viewPruning during progress, got %d", um.current)
+	}
+	if um.pruneCurrent != 1 {
+		t.Errorf("expected pruneCurrent=1, got %d", um.pruneCurrent)
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd for next cleanup step")
+	}
+
+	// Simulate final progress — all done
+	updated, _ = um.Update(PruneProgressMsg{
+		Current:   2,
+		Total:     2,
+		Remaining: nil,
+	})
 	um = updated.(Model)
 	if um.current != viewTaskList {
 		t.Errorf("expected viewTaskList after prune done, got %d", um.current)
@@ -164,6 +185,14 @@ func TestPruneView_Renders(t *testing.T) {
 	}
 	if !strings.Contains(v, "3") {
 		t.Error("pruneView should show the worktree count")
+	}
+
+	// With progress, should show "(2/5)" format
+	m.pruneCurrent = 2
+	m.pruneTotal = 5
+	v = m.View()
+	if !strings.Contains(v, "2/5") {
+		t.Error("pruneView with progress should show '2/5'")
 	}
 }
 

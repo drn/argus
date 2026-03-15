@@ -269,9 +269,13 @@ func (m Model) pruneView() string {
 	// Spinner-like dots that animate with the 1s tick
 	dots := []string{".", "..", "..."}
 	dotIdx := int(time.Now().UnixMilli()/500) % len(dots)
-	status := "  " + m.theme.Normal.Render(
-		fmt.Sprintf("Cleaning up %d worktree(s)%s", m.pruneTotal, dots[dotIdx]),
-	)
+	var statusText string
+	if m.pruneCurrent == 0 {
+		statusText = fmt.Sprintf("Cleaning up %d worktree(s)%s", m.pruneTotal, dots[dotIdx])
+	} else {
+		statusText = fmt.Sprintf("Cleaning up worktrees (%d/%d)%s", m.pruneCurrent, m.pruneTotal, dots[dotIdx])
+	}
+	status := "  " + m.theme.Normal.Render(statusText)
 	hint := m.theme.Help.Render("  Removing worktrees and branches")
 	body := title + "\n\n" + status + "\n\n" + hint
 	return m.renderCenteredModal(body, 50)

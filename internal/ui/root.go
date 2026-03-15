@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 )
@@ -68,6 +69,14 @@ type SessionResumedMsg struct {
 	Err    error
 }
 
+// PruneProgressMsg signals that one worktree was cleaned; remaining work follows.
+type PruneProgressMsg struct {
+	Current   int           // 1-based index of the one just completed
+	Total     int           // total worktrees to clean
+	Remaining []*model.Task // tasks still to clean
+	Cfg       config.Config // config snapshot for resolving dirs
+}
+
 // PruneDoneMsg signals that all prune cleanup is finished.
 type PruneDoneMsg struct {
 	Count int
@@ -100,7 +109,8 @@ type Model struct {
 	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
 
 	// Prune progress state (shown in viewPruning modal)
-	pruneTotal int // total worktrees being cleaned up
+	pruneTotal   int // total worktrees being cleaned up
+	pruneCurrent int // number completed so far (0 = starting)
 }
 
 // NewModel creates the top-level model. Set daemonConnected to true when the
@@ -306,6 +316,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
 
+	case PruneProgressMsg:
+		m.pruneCurrent = msg.Current
+		if len(msg.Remaining) == 0 {
+			// All done.
+			m.current = viewTaskList
+			m.refreshTasks()
+			return m, nil
+		}
+		// Clean next worktree.
+		return m, pruneNextCmd(msg.Current, msg.Total, msg.Remaining, msg.Cfg)
+
 	case PruneDoneMsg:
 		m.current = viewTaskList
 		m.refreshTasks()
@@ -505,20 +526,30 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Show progress modal and run cleanup async.
+		// Show progress modal and run cleanup iteratively.
 		m.pruneTotal = len(toClean)
+		m.pruneCurrent = 0
 		m.current = viewPruning
 
-		return m, func() tea.Msg {
-			for _, t := range toClean {
-				repoDir := agent.ResolveDir(t, cfg)
-				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
-			}
-			return PruneDoneMsg{Count: len(toClean)}
-		}
+		return m, pruneNextCmd(0, len(toClean), toClean, cfg)
 	}
 
 	return m, nil
+}
+
+// pruneNextCmd cleans one worktree and returns a PruneProgressMsg with the remainder.
+func pruneNextCmd(done, total int, remaining []*model.Task, cfg config.Config) tea.Cmd {
+	return func() tea.Msg {
+		t := remaining[0]
+		repoDir := agent.ResolveDir(t, cfg)
+		removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+		return PruneProgressMsg{
+			Current:   done + 1,
+			Total:     total,
+			Remaining: remaining[1:],
+			Cfg:       cfg,
+		}
+	}
 }
 
 func (m Model) attachAgent() (tea.Model, tea.Cmd) {
