@@ -60,13 +60,11 @@ type AgentView struct {
 	vtRows     int    // vtTerm row count
 
 	// Diff viewer state
-	diffMode         bool     // true when viewing a file's diff
-	diffContent      string   // raw colorized diff output
-	diffLines        []string // split lines for scrolling
-	diffScrollOff    int      // scroll offset within diff
-	worktreeDir      string   // resolved worktree directory for git commands
-	diffWrappedLines []string // diffLines wrapped to panel width (visual lines)
-	diffWrapWidth    int      // width used to compute diffWrappedLines
+	diffMode      bool              // true when viewing a file's diff
+	diffRows      []SideBySideLine  // parsed side-by-side rows
+	diffScrollOff int               // scroll offset within diff
+	worktreeDir   string            // resolved worktree directory for git commands
+	diffFileName  string            // current file being diffed (for highlighting)
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -94,10 +92,10 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.vtTerm = nil
 	av.vtFedTotal = 0
 	av.diffMode = false
-	av.diffContent = ""
-	av.diffLines = nil
+	av.diffRows = nil
 	av.diffScrollOff = 0
 	av.worktreeDir = ""
+	av.diffFileName = ""
 }
 
 // SetLastOutput stores the final ring buffer from a finished session
@@ -282,14 +280,13 @@ func (av *AgentView) UpdateFileDiff(msg FileDiffMsg) {
 		return
 	}
 	av.diffMode = true
-	av.diffContent = msg.Diff
 	av.diffScrollOff = 0
-	av.diffWrappedLines = nil
-	av.diffWrapWidth = 0
+	av.diffFileName = msg.FilePath
 	if msg.Diff == "" {
-		av.diffLines = []string{"(no diff)"}
+		av.diffRows = nil
 	} else {
-		av.diffLines = strings.Split(msg.Diff, "\n")
+		pd := ParseUnifiedDiff(msg.Diff)
+		av.diffRows = BuildSideBySide(pd)
 	}
 }
 
@@ -300,25 +297,9 @@ func (av *AgentView) SetWorktreeDir(dir string) {
 
 func (av *AgentView) exitDiffMode() {
 	av.diffMode = false
-	av.diffContent = ""
-	av.diffLines = nil
-	av.diffWrappedLines = nil
-	av.diffWrapWidth = 0
+	av.diffRows = nil
 	av.diffScrollOff = 0
-}
-
-// wrapDiffLines wraps diffLines to the given width, caching the result.
-func (av *AgentView) wrapDiffLines(width int) []string {
-	if width == av.diffWrapWidth && av.diffWrappedLines != nil {
-		return av.diffWrappedLines
-	}
-	av.diffWrapWidth = width
-	av.diffWrappedLines = nil
-	for _, line := range av.diffLines {
-		wrapped := ansi.Hardwrap(line, width, false)
-		av.diffWrappedLines = append(av.diffWrappedLines, strings.Split(wrapped, "\n")...)
-	}
-	return av.diffWrappedLines
+	av.diffFileName = ""
 }
 
 func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
@@ -360,11 +341,7 @@ func (av *AgentView) diffScrollUp(n int) {
 }
 
 func (av *AgentView) diffScrollDown(n int) {
-	lines := av.diffWrappedLines
-	if lines == nil {
-		lines = av.diffLines
-	}
-	maxOff := len(lines) - av.diffVisibleRows()
+	maxOff := len(av.diffRows) - av.diffVisibleRows()
 	if maxOff < 0 {
 		maxOff = 0
 	}
@@ -486,7 +463,7 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 		Width(w - 2).
 		Height(innerH)
 
-	if len(av.diffLines) == 0 {
+	if len(av.diffRows) == 0 {
 		empty := av.theme.Dimmed.
 			Width(w - 4).
 			Height(innerH).
@@ -499,43 +476,21 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 	dispH := max(h-4, 3)
 
 	// Header
-	fileName := ""
+	fileName := av.diffFileName
 	if f := av.files.SelectedFile(); f != nil {
 		fileName = f.Path
 	}
-	header := av.theme.Section.Render("  DIFF") +
-		av.theme.Dimmed.Render(" " + fileName) +
-		av.theme.Dimmed.Render(fmt.Sprintf("  [%d/%d]", av.files.scroll.Cursor()+1, av.files.FileCount()))
-	headerLines := 1
+	header := RenderSideBySideHeader(fileName, av.files.scroll.Cursor(), av.files.FileCount(), av.theme)
 
-	// Visible diff lines
-	visibleH := dispH - headerLines
+	// Visible diff rows (minus header)
+	visibleH := dispH - 1
 	if visibleH < 1 {
 		visibleH = 1
 	}
 
-	// Use wrapped visual lines for rendering
-	wrapped := av.wrapDiffLines(dispW)
+	content := RenderSideBySide(av.diffRows, fileName, dispW, visibleH, av.diffScrollOff, av.theme)
 
-	end := av.diffScrollOff + visibleH
-	if end > len(wrapped) {
-		end = len(wrapped)
-	}
-	start := av.diffScrollOff
-	if start > end {
-		start = end
-	}
-
-	var b strings.Builder
-	b.WriteString(header + "\n")
-	for i := start; i < end; i++ {
-		b.WriteString(wrapped[i])
-		if i < end-1 {
-			b.WriteString("\n")
-		}
-	}
-
-	return border.Render(b.String())
+	return border.Render(header + "\n" + content)
 }
 
 // renderIncremental feeds only new bytes to a persistent vt10x terminal,

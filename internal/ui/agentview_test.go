@@ -916,17 +916,17 @@ func TestAgentView_DiffMode_EnterOpensAndEscCloses(t *testing.T) {
 		t.Fatal("enter on file should return a non-nil cmd")
 	}
 
-	// Simulate diff result
+	// Simulate diff result with a proper unified diff
 	av.UpdateFileDiff(FileDiffMsg{
 		TaskID:   "task-1",
 		FilePath: "a.go",
-		Diff:     "+added line\n-removed line\n context",
+		Diff:     "--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,3 @@\n+added line\n-removed line\n context",
 	})
 	if !av.diffMode {
 		t.Fatal("expected diffMode to be true after UpdateFileDiff")
 	}
-	if len(av.diffLines) != 3 {
-		t.Errorf("expected 3 diff lines, got %d", len(av.diffLines))
+	if len(av.diffRows) == 0 {
+		t.Error("expected non-empty diffRows after UpdateFileDiff")
 	}
 
 	// Escape exits diff mode and refocuses on agent panel
@@ -952,7 +952,7 @@ func TestAgentView_FilesPanelEscRefocusesAgent(t *testing.T) {
 func TestAgentView_DiffMode_CtrlQExitsDiff(t *testing.T) {
 	av := newTestAgentView()
 	av.diffMode = true
-	av.diffLines = []string{"line1"}
+	av.diffRows = []SideBySideLine{{LeftNum: 1, LeftText: "line1", RightNum: 1, RightText: "line1"}}
 
 	// ctrl+q in diff mode should exit diff, not detach
 	detach, _ := av.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlQ})
@@ -974,7 +974,7 @@ func TestAgentView_DiffMode_UpDownSwitchFiles(t *testing.T) {
 		{Status: "M", Path: "c.go"},
 	})
 	av.diffMode = true
-	av.diffLines = []string{"old diff"}
+	av.diffRows = []SideBySideLine{{LeftNum: 1, LeftText: "old diff"}}
 
 	// Down arrow should move cursor and return a cmd
 	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
@@ -998,12 +998,12 @@ func TestAgentView_DiffMode_UpDownSwitchFiles(t *testing.T) {
 func TestAgentView_DiffMode_ScrollUpDown(t *testing.T) {
 	av := newTestAgentView()
 	av.diffMode = true
-	// Create many lines
-	lines := make([]string, 100)
-	for i := range lines {
-		lines[i] = "line"
+	// Create many rows
+	rows := make([]SideBySideLine, 100)
+	for i := range rows {
+		rows[i] = SideBySideLine{LeftNum: i + 1, LeftText: "line", RightNum: i + 1, RightText: "line"}
 	}
-	av.diffLines = lines
+	av.diffRows = rows
 
 	av.diffScrollDown(5)
 	if av.diffScrollOff != 5 {
@@ -1025,11 +1025,11 @@ func TestAgentView_DiffMode_ScrollUpDown(t *testing.T) {
 func TestAgentView_DiffMode_MouseWheel(t *testing.T) {
 	av := newTestAgentView()
 	av.diffMode = true
-	lines := make([]string, 100)
-	for i := range lines {
-		lines[i] = "line"
+	rows := make([]SideBySideLine, 100)
+	for i := range rows {
+		rows[i] = SideBySideLine{LeftNum: i + 1, LeftText: "line", RightNum: i + 1, RightText: "line"}
 	}
-	av.diffLines = lines
+	av.diffRows = rows
 
 	// Wheel down
 	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
@@ -1059,7 +1059,10 @@ func TestAgentView_DiffMode_RenderDiffPanel(t *testing.T) {
 	av.files.SetFiles([]ChangedFile{
 		{Status: "M", Path: "test.go"},
 	})
-	av.diffLines = []string{"+added", "-removed", " context"}
+	av.diffRows = []SideBySideLine{
+		{LeftNum: 1, LeftText: "removed", LeftType: DiffRemoved, RightNum: 1, RightText: "added", RightType: DiffAdded},
+		{LeftNum: 2, LeftText: "context", LeftType: DiffContext, RightNum: 2, RightText: "context", RightType: DiffContext},
+	}
 
 	view := av.View()
 	if view == "" {
@@ -1080,61 +1083,22 @@ func TestAgentView_DiffMode_EmptyDiff(t *testing.T) {
 	if !av.diffMode {
 		t.Fatal("expected diffMode even for empty diff")
 	}
-	if len(av.diffLines) != 1 || av.diffLines[0] != "(no diff)" {
-		t.Errorf("expected '(no diff)' placeholder, got %v", av.diffLines)
+	if len(av.diffRows) != 0 {
+		t.Errorf("expected empty diffRows for empty diff, got %d rows", len(av.diffRows))
 	}
 }
 
 func TestAgentView_Enter_ResetsDiffMode(t *testing.T) {
 	av := newTestAgentView()
 	av.diffMode = true
-	av.diffLines = []string{"old"}
+	av.diffRows = []SideBySideLine{{LeftNum: 1, LeftText: "old"}}
 
 	av.Enter("task-2", "new task")
 	if av.diffMode {
 		t.Fatal("Enter should reset diffMode")
 	}
-	if av.diffLines != nil {
-		t.Fatal("Enter should clear diffLines")
-	}
-}
-
-func TestAgentView_DiffMode_LongLinesWrap(t *testing.T) {
-	av := newTestAgentView()
-	av.diffMode = true
-	av.files.SetFiles([]ChangedFile{
-		{Status: "M", Path: "test.go"},
-	})
-
-	// Create a line longer than the panel width (120 - 4 border = 116 display)
-	longLine := "+" + strings.Repeat("x", 200)
-	av.diffLines = []string{longLine, " short"}
-
-	// Wrap to a narrow width to make the test deterministic
-	wrapped := av.wrapDiffLines(40)
-	if len(wrapped) < 3 {
-		t.Errorf("expected long line to wrap into multiple visual lines, got %d lines", len(wrapped))
-	}
-	// Verify the view renders without truncation
-	view := av.View()
-	if view == "" {
-		t.Fatal("expected non-empty view with wrapped lines")
-	}
-}
-
-func TestAgentView_DiffMode_WrapCacheInvalidation(t *testing.T) {
-	av := newTestAgentView()
-	av.diffLines = []string{strings.Repeat("a", 100)}
-
-	w1 := av.wrapDiffLines(50)
-	w2 := av.wrapDiffLines(50) // should return cached
-	if len(w1) != len(w2) {
-		t.Fatal("cache should return same result for same width")
-	}
-
-	w3 := av.wrapDiffLines(30) // different width → re-wrap
-	if len(w3) <= len(w1) {
-		t.Error("narrower width should produce more wrapped lines")
+	if av.diffRows != nil {
+		t.Fatal("Enter should clear diffRows")
 	}
 }
 
