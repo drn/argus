@@ -111,6 +111,12 @@
 - Fix: add `strings.Count(s, "⌘")` to the computed width. Applied in `renderStatusBar()` for the `right` hints string.
 - **Pattern:** When adding Unicode symbols to TUI layouts, verify `runewidth.RuneWidth(r)` against actual terminal rendering. Common offenders: miscellaneous symbols block (U+2300–U+23FF), dingbats, and emoji.
 
+### Tmux-Matched Tab Header (2026-03-14)
+- Tab header restyled to blend with the user's tmux status bar. Colors sourced from `~/.dots/cmd/tmux-status/color/root.go`.
+- **Key color mapping:** base background `colour236` (tmux C3), active tab `fg=236 bg=103` (tmux C1 — purple/lavender), inactive text `colour244` (tmux C3 fg).
+- **Powerline separators:** `\ue0b0` (right-facing full chevron) for smooth active tab transitions. Defined in `~/.dots/cmd/tmux-status/separator/root.go`.
+- **Pattern:** When styling Argus UI elements that sit adjacent to tmux chrome, use the tmux C1/C2/C3 palette to maintain visual continuity. The color constants are in `~/.dots/cmd/tmux-status/color/root.go`.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go

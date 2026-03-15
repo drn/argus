@@ -123,31 +123,45 @@ func (m Model) splitThreeWidths() (int, int, int) {
 }
 
 func (m Model) renderTabHeader() string {
-	activeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("87")).
-		Underline(false)
-	inactiveStyle := m.theme.Dimmed
+	const (
+		baseBg   = "236" // tmux C3 background
+		activeFg = "236" // dark text on active tab
+		activeBg = "103" // tmux C1 purple/lavender
+		inFg     = "244" // tmux C3 text
+		chevron  = "\ue0b0"
+	)
+
+	bg := lipgloss.Color(baseBg)
+	abg := lipgloss.Color(activeBg)
+
+	activeText := lipgloss.NewStyle().Foreground(lipgloss.Color(activeFg)).Background(abg)
+	inactiveText := lipgloss.NewStyle().Foreground(lipgloss.Color(inFg)).Background(bg)
 
 	tabs := []struct {
 		label string
-		key   string
 		t     tab
 	}{
-		{"TASKS", "1", tabTasks},
-		{"PROJECTS", "2", tabProjects},
+		{"Tasks", tabTasks},
+		{"Projects", tabProjects},
 	}
 
-	var parts []string
+	var b strings.Builder
 	for _, t := range tabs {
-		style := inactiveStyle
 		if t.t == m.activeTab {
-			style = activeStyle
+			// transition: base → active
+			b.WriteString(lipgloss.NewStyle().Foreground(bg).Background(abg).Render(chevron))
+			b.WriteString(activeText.Render(" " + t.label + " "))
+			// transition: active → base
+			b.WriteString(lipgloss.NewStyle().Foreground(abg).Background(bg).Render(chevron))
+		} else {
+			b.WriteString(inactiveText.Render("  " + t.label + " "))
 		}
-		parts = append(parts, style.Render("  "+t.label+" "))
 	}
-	header := strings.Join(parts, "  ")
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, header)
+
+	return lipgloss.NewStyle().
+		Background(bg).
+		Width(m.width).
+		Render(b.String())
 }
 
 func (m Model) renderTasksView(tabHeader, bar string) string {
