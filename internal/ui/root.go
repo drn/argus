@@ -22,6 +22,7 @@ const (
 	viewNewProject
 	viewConfirmDeleteProject
 	viewConfirmDestroy
+	viewPruning
 	viewAgent
 )
 
@@ -67,6 +68,11 @@ type SessionResumedMsg struct {
 	Err    error
 }
 
+// PruneDoneMsg signals that all prune cleanup is finished.
+type PruneDoneMsg struct {
+	Count int
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -90,6 +96,9 @@ type Model struct {
 	quitting        bool
 	agentTickActive bool              // true while the 100ms AgentViewTickMsg chain is running
 	resolvedDirs    map[string]string // taskID → resolved worktree dir (cache)
+
+	// Prune progress state (shown in viewPruning modal)
+	pruneTotal int // total worktrees being cleaned up
 }
 
 func NewModel(database *db.DB, runner *agent.Runner) Model {
@@ -275,6 +284,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
 
+	case PruneDoneMsg:
+		m.current = viewTaskList
+		m.refreshTasks()
+		return m, nil
+
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
@@ -306,6 +320,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDestroyKey(msg)
 	case viewConfirmDeleteProject:
 		return m.handleConfirmDeleteProjectKey(msg)
+	case viewPruning:
+		// Absorb all keys while pruning — no interaction allowed.
+		return m, nil
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
@@ -437,18 +454,46 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusbar.SetError(err.Error())
 			return m, nil
 		}
-		cfg := m.db.Config()
+		if len(pruned) == 0 {
+			return m, nil
+		}
+
+		// Stop sessions synchronously (fast, in-process).
 		for _, t := range pruned {
 			if m.runner.HasSession(t.ID) {
 				_ = m.runner.Stop(t.ID)
 			}
-			if t.Worktree != "" && cfg.UI.ShouldCleanupWorktrees() {
+		}
+
+		// Check if any worktree cleanup is needed.
+		cfg := m.db.Config()
+		needsCleanup := cfg.UI.ShouldCleanupWorktrees()
+		var toClean []*model.Task
+		if needsCleanup {
+			for _, t := range pruned {
+				if t.Worktree != "" {
+					toClean = append(toClean, t)
+				}
+			}
+		}
+
+		if len(toClean) == 0 {
+			// No worktree cleanup needed — just refresh immediately.
+			m.refreshTasks()
+			return m, nil
+		}
+
+		// Show progress modal and run cleanup async.
+		m.pruneTotal = len(toClean)
+		m.current = viewPruning
+
+		return m, func() tea.Msg {
+			for _, t := range toClean {
 				repoDir := agent.ResolveDir(t, cfg)
 				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
 			}
+			return PruneDoneMsg{Count: len(toClean)}
 		}
-		m.refreshTasks()
-		return m, nil
 	}
 
 	return m, nil

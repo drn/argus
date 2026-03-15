@@ -117,6 +117,56 @@ func TestPruneCompleted(t *testing.T) {
 	}
 }
 
+func TestPruneCompleted_WithWorktrees_ShowsModal(t *testing.T) {
+	tasks := []*model.Task{
+		{ID: "t1", Name: "pending", Status: model.StatusPending},
+		{ID: "t2", Name: "done1", Status: model.StatusComplete, Worktree: "/tmp/fake-wt-1"},
+		{ID: "t3", Name: "done2", Status: model.StatusComplete, Worktree: "/tmp/fake-wt-2"},
+	}
+	m := testModel(t, tasks...)
+
+	msg := tea.KeyMsg{Type: tea.KeyCtrlR}
+	updated, cmd := m.Update(msg)
+	um := updated.(Model)
+
+	// Should switch to pruning view with a background cmd
+	if um.current != viewPruning {
+		t.Errorf("expected viewPruning, got %d", um.current)
+	}
+	if um.pruneTotal != 2 {
+		t.Errorf("expected pruneTotal=2, got %d", um.pruneTotal)
+	}
+	if cmd == nil {
+		t.Error("expected non-nil cmd for async cleanup")
+	}
+
+	// Simulate PruneDoneMsg
+	updated, _ = um.Update(PruneDoneMsg{Count: 2})
+	um = updated.(Model)
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after prune done, got %d", um.current)
+	}
+}
+
+func TestPruneView_Renders(t *testing.T) {
+	m := testModel(t, &model.Task{ID: "t1", Name: "task", Status: model.StatusPending})
+	m.current = viewPruning
+	m.pruneTotal = 3
+	// Deliver a WindowSizeMsg so the modal has dimensions
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	v := m.View()
+	if v == "" {
+		t.Error("pruneView should not be empty")
+	}
+	if !strings.Contains(v, "Pruning") {
+		t.Error("pruneView should contain 'Pruning'")
+	}
+	if !strings.Contains(v, "3") {
+		t.Error("pruneView should show the worktree count")
+	}
+}
+
 func TestDestroyCtrlD_ShowsConfirmation(t *testing.T) {
 	task := &model.Task{
 		ID:     "t1",
@@ -1415,6 +1465,7 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		{"confirmDeleteProject", func(m *Model) { m.current = viewConfirmDeleteProject }},
 		{"newTask", func(m *Model) { m.current = viewNewTask }},
 		{"newProject", func(m *Model) { m.current = viewNewProject }},
+		{"pruning", func(m *Model) { m.current = viewPruning; m.pruneTotal = 3 }},
 	}
 	for _, tc := range views {
 		t.Run(tc.name, func(t *testing.T) {

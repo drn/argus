@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -25,6 +27,8 @@ func (m Model) View() string {
 		return m.confirmDeleteView() + "\n" + bar
 	case viewConfirmDestroy:
 		return m.confirmDestroyView() + "\n" + bar
+	case viewPruning:
+		return m.pruneView() + "\n" + bar
 	case viewHelp:
 		return m.padToBottom(m.helpview.View(), bar)
 	case viewPrompt:
@@ -158,10 +162,9 @@ func (m Model) renderTabHeader() string {
 		}
 	}
 
-	return lipgloss.NewStyle().
-		Background(bg).
-		Width(m.width).
-		Render(b.String())
+	tabContent := b.String()
+	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, tabContent,
+		lipgloss.WithWhitespaceBackground(bg))
 }
 
 func (m Model) renderTasksView(tabHeader, bar string) string {
@@ -320,4 +323,17 @@ func (m Model) confirmDestroyView() string {
 	body := title + "\n" + subtitle + "\n\n" +
 		strings.Join(details, "\n") + "\n\n" + hint
 	return m.renderCenteredModal(body, 60)
+}
+
+func (m Model) pruneView() string {
+	title := m.theme.Title.Render("Pruning completed tasks")
+	// Spinner-like dots that animate with the 1s tick
+	dots := []string{".", "..", "..."}
+	dotIdx := int(time.Now().UnixMilli()/500) % len(dots)
+	status := "  " + m.theme.Normal.Render(
+		fmt.Sprintf("Cleaning up %d worktree(s)%s", m.pruneTotal, dots[dotIdx]),
+	)
+	hint := m.theme.Help.Render("  Removing worktrees and branches")
+	body := title + "\n\n" + status + "\n\n" + hint
+	return m.renderCenteredModal(body, 50)
 }
