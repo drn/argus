@@ -97,8 +97,10 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 		}
 
 		if x == cursorX {
-			// Render cursor cell with reverse video, preserving cell colors
-			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode|vtAttrReverse))
+			// Toggle reverse to show cursor. XOR (not OR) because vt10x
+			// pre-swaps FG/BG for reverse-video cells — toggling off
+			// reverse for those cells produces the correct visual inversion.
+			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode^vtAttrReverse))
 			b.WriteRune(ch)
 			b.WriteString("\x1b[0m")
 			active = false

@@ -4,7 +4,7 @@ Structured knowledge for cross-session persistence. Each file covers a topic/dom
 
 | File | Topic | Key Entities | Last Updated |
 |------|-------|-------------|-------------|
-| code-quality.md | Refactoring patterns and deferred items | ScrollState, vtrender.go, sgrColor, borderedPanel, file splits, GitStatus pointer bug, cursor skip-header, Alt modifier keyMsgToBytes, textarea zero-value trap, textarea viewport scroll bug, worktree removal safety guard, self-managed worktrees, scroll-offset chicken-and-egg, diff panel line wrapping, ⌘ runewidth mismatch, tmux color palette, zero-dimension View() panic, deferred items | 2026-03-15 |
+| code-quality.md | Refactoring patterns and deferred items | ScrollState, vtrender.go, sgrColor, borderedPanel, file splits, GitStatus pointer bug, cursor skip-header, Alt modifier keyMsgToBytes, textarea zero-value trap, textarea viewport scroll bug, worktree removal safety guard, self-managed worktrees, scroll-offset chicken-and-egg, diff panel line wrapping, ⌘ runewidth mismatch, tmux color palette, zero-dimension View() panic, vt10x cursor XOR reverse, deferred items | 2026-03-15 |
 
 ## Coverage Map
 

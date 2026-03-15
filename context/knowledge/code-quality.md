@@ -125,6 +125,11 @@
 - **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every `View()` on a form struct must guard against zero-valued state (uninitialized by constructor).
 - **Prevention:** `TestModel_ViewZeroDimensions` covers all 10 view paths with `width=0, height=0`. New views must add a subtest.
 
+### vt10x Cursor Reverse-Bit Fix (2026-03-15)
+- Cursor rendering used `cell.Mode | vtAttrReverse` (OR) which double-reversed already-reverse cells, making cursor invisible on them. Separately, replacing default colors with hardcoded black/white (colors 0/15) produced a black cursor on dark terminals instead of inheriting the terminal's theme.
+- Fixed with `cell.Mode ^ vtAttrReverse` (XOR) — toggles reverse for both normal and reverse cells. No explicit colors needed; SGR reverse with defaults inherits the terminal's fg/bg, producing the expected white cursor on dark backgrounds.
+- **Pattern:** When vt10x stores pre-swapped attributes, always toggle (XOR) rather than set (OR) to avoid double-application.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
