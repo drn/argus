@@ -138,7 +138,11 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 		return m.padToBottom(content, bar)
 	}
 
-	tasks := m.tasklist.View()
+	widths := m.taskLayout.SplitWidths()
+	contentHeight := m.taskLayout.Height()
+	tasksContent := m.tasklist.View()
+	tasksPanel := borderedPanel(widths[0], contentHeight, false, tasksContent)
+
 	selected := m.tasklist.Selected()
 	var taskID string
 	if selected != nil {
@@ -151,7 +155,7 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 	isRunning := selected != nil && m.runner.HasSession(selected.ID)
 	detailView := m.detail.View(selected, isRunning)
 
-	body := m.taskLayout.Render([]string{tasks, centerContent, detailView})
+	body := m.taskLayout.Render([]string{tasksPanel, centerContent, detailView})
 	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
 }

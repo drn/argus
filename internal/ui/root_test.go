@@ -1018,6 +1018,31 @@ func TestModel_ViewTaskList_WithTasks(t *testing.T) {
 	}
 }
 
+func TestModel_ViewTaskList_LeftPaneBorderedWidth(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "x", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	width := 200
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 40})
+	m = updated.(Model)
+
+	// The left pane should be rendered via borderedPanel which enforces
+	// the allocated width. Verify the task list panel content is present
+	// inside a bordered panel (rounded border uses ╭ top-left corner).
+	widths := m.taskLayout.SplitWidths()
+	leftW := widths[0]
+	if leftW < width*20/100 {
+		t.Errorf("left panel width %d is less than 20%% of %d", leftW, width)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "╭") {
+		t.Error("task list view should contain bordered panel (rounded border)")
+	}
+	if !strings.Contains(view, "x") {
+		t.Error("task list view should contain task name")
+	}
+}
+
 func TestModel_ViewProjectsTab(t *testing.T) {
 	m := testModel(t)
 	m.activeTab = tabProjects

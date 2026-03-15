@@ -202,7 +202,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Tasks tab: three-panel layout
 		m.taskLayout.SetSize(msg.Width, contentHeight)
 		widths := m.taskLayout.SplitWidths()
-		m.tasklist.SetSize(widths[0], contentHeight)
+		m.tasklist.SetSize(widths[0]-2, contentHeight-2)
 		gitH, previewH := m.splitCenterHeights(contentHeight)
 		m.gitstatus.SetSize(widths[1], gitH)
 		m.preview.SetSize(widths[1], previewH)
