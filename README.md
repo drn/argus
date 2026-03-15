@@ -1,3 +1,5 @@
+<p align="center"><img src="favicon.svg" width="120"></p>
+
 # Argus
 
 Terminal-native LLM code orchestrator built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
