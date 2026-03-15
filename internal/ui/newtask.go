@@ -142,8 +142,8 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	if f.focused == fieldPrompt {
 		var cmd tea.Cmd
 		f.promptInput, cmd = f.promptInput.Update(msg)
-		// Auto-resize textarea height based on content
-		lines := f.promptInput.LineCount()
+		// Auto-resize textarea height based on visual lines (including soft wraps)
+		lines := f.visualLineCount()
 		if lines < 1 {
 			lines = 1
 		}
@@ -155,6 +155,30 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	}
 
 	return nil
+}
+
+// visualLineCount returns the total number of visual lines in the textarea,
+// accounting for soft wraps. LineCount() only counts hard newlines.
+func (f *NewTaskForm) visualLineCount() int {
+	w := f.promptInput.Width()
+	if w <= 0 {
+		return f.promptInput.LineCount()
+	}
+	value := f.promptInput.Value()
+	if value == "" {
+		return 1
+	}
+	total := 0
+	for _, line := range strings.Split(value, "\n") {
+		// Each hard line takes at least 1 visual line, plus extra for wraps
+		lineLen := len([]rune(line))
+		if lineLen == 0 {
+			total++
+		} else {
+			total += (lineLen + w - 1) / w
+		}
+	}
+	return total
 }
 
 func (f *NewTaskForm) SelectedProject() string {

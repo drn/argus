@@ -227,3 +227,38 @@ func TestNewTaskForm_TextareaWrapsAndExpands(t *testing.T) {
 		t.Error("View() missing 'New Task' title")
 	}
 }
+
+func TestNewTaskForm_VisualLineCount(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "")
+	f.SetSize(80, 40) // modal width ~32, input width ~28
+
+	// Empty value = 1 visual line
+	f.promptInput.SetValue("")
+	if got := f.visualLineCount(); got != 1 {
+		t.Errorf("empty: visualLineCount() = %d, want 1", got)
+	}
+
+	// Short text that fits in one line
+	f.promptInput.SetValue("hello")
+	if got := f.visualLineCount(); got != 1 {
+		t.Errorf("short: visualLineCount() = %d, want 1", got)
+	}
+
+	// Long text that should soft-wrap
+	inputWidth := f.promptInput.Width()
+	longText := strings.Repeat("a", inputWidth*2+5)
+	f.promptInput.SetValue(longText)
+	got := f.visualLineCount()
+	if got != 3 {
+		t.Errorf("long text (%d chars, width %d): visualLineCount() = %d, want 3", len(longText), inputWidth, got)
+	}
+
+	// Hard newlines + soft wraps combined
+	mixedText := strings.Repeat("b", inputWidth+1) + "\nshort"
+	f.promptInput.SetValue(mixedText)
+	got = f.visualLineCount()
+	if got != 3 {
+		t.Errorf("mixed: visualLineCount() = %d, want 3 (2 wrapped + 1 short)", got)
+	}
+}

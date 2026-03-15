@@ -66,11 +66,12 @@
 
 ### New Task Modal: textinput → textarea (2026-03-14)
 - Replaced `textinput.Model` (single-line, horizontal scroll) with `textarea.Model` (multi-line, word wrap) for the prompt field in the new task modal.
-- Textarea starts at height 1 and auto-resizes up to `maxPromptLines` (10) based on `LineCount()` after each `Update()`. Modal grows vertically to fit.
+- Textarea starts at height 1 and auto-resizes up to `maxPromptLines` (10) based on visual line count after each `Update()`. Modal grows vertically to fit.
 - Enter key submits the form (newline insertion disabled via `key.NewBinding(key.WithDisabled())` on `KeyMap.InsertNewline`).
 - Up/down arrows in prompt field pass through to textarea for multi-line cursor navigation instead of switching fields.
 - Tab/shift+tab still switch between project selector and prompt field.
 - **Zero-value trap:** `textarea.Model` has internal pointers (`viewport`, `style`) that panic on `SetWidth`/`SetHeight` when the struct is zero-valued. Root model calls `newtask.SetSize()` on `WindowSizeMsg` before the form is opened (constructed). Fixed with a nil guard checking `f.projects == nil` (always non-nil when constructed via `NewNewTaskForm`, nil at zero value).
+- **Soft-wrap line count trap:** `textarea.LineCount()` only counts hard newlines (`\n`). A long single line that soft-wraps to 3 visual lines still reports `LineCount() == 1`. Auto-resize must use a custom `visualLineCount()` that divides each hard line's rune length by the textarea width to compute actual visual lines. Without this, the modal stays at height 1 while wrapped text scrolls internally.
 
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
