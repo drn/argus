@@ -303,28 +303,28 @@ func TestAgentView_HandleKey_CtrlQ_Detach(t *testing.T) {
 	}
 }
 
-func TestAgentView_HandleKey_CmdLeft(t *testing.T) {
+func TestAgentView_HandleKey_CtrlLeft(t *testing.T) {
 	av := newTestAgentView()
-	// Cmd+left from panelAgent should stay (git panel not focusable)
-	msg := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	// Ctrl+left from panelAgent should stay (git panel not focusable)
+	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
 	detach, _ := av.HandleKey(msg)
 	if detach {
-		t.Error("cmd+left should not trigger detach")
+		t.Error("ctrl+left should not trigger detach")
 	}
 	if av.focus != panelAgent {
-		t.Errorf("after cmd+left from panelAgent: focus = %d, want panelAgent (git not focusable)", av.focus)
+		t.Errorf("after ctrl+left from panelAgent: focus = %d, want panelAgent (git not focusable)", av.focus)
 	}
 }
 
-func TestAgentView_HandleKey_CmdRight(t *testing.T) {
+func TestAgentView_HandleKey_CtrlRight(t *testing.T) {
 	av := newTestAgentView()
-	msg := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
+	msg := tea.KeyMsg{Type: tea.KeyCtrlRight}
 	detach, _ := av.HandleKey(msg)
 	if detach {
-		t.Error("cmd+right should not trigger detach")
+		t.Error("ctrl+right should not trigger detach")
 	}
 	if av.focus != panelFiles {
-		t.Errorf("after cmd+right: focus = %d, want panelFiles", av.focus)
+		t.Errorf("after ctrl+right: focus = %d, want panelFiles", av.focus)
 	}
 }
 

@@ -195,16 +195,14 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		return false, av.handleDiffKey(msg)
 	}
 
-	// Panel switching: Cmd+left/right (sent as Alt+left/right by terminals).
-	if msg.Alt {
-		switch msg.Type {
-		case tea.KeyLeft:
-			av.FocusLeft()
-			return false, nil
-		case tea.KeyRight:
-			av.FocusRight()
-			return false, nil
-		}
+	// Panel switching: Ctrl+left/right.
+	switch msg.Type {
+	case tea.KeyCtrlLeft:
+		av.FocusLeft()
+		return false, nil
+	case tea.KeyCtrlRight:
+		av.FocusRight()
+		return false, nil
 	}
 
 	// Panel-specific key handling
@@ -674,7 +672,7 @@ func (av AgentView) renderStatusBar() string {
 		keys = []struct{ key, label string }{
 			{"⌘↑/↓", "task"},
 			{"⇧↑/↓", "scroll"},
-			{"⌘←/→", "panel"},
+			{"C-←/→", "panel"},
 			{"^q", "detach"},
 		}
 	}
