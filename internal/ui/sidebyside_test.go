@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRenderSideBySide_BasicOutput(t *testing.T) {
@@ -106,7 +108,9 @@ func TestRenderDiffHeader(t *testing.T) {
 func TestFormatSideContent_Removed(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	result := formatSideContent("old code", "old code", DiffRemoved, 20, removedStyle, addedStyle)
+	removedBgStyle := lipgloss.NewStyle()
+	addedBgStyle := lipgloss.NewStyle()
+	result := formatSideContent("old code", "old code", DiffRemoved, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
 	if !strings.Contains(result, "-") {
 		t.Error("removed line should have '-' prefix")
 	}
@@ -115,7 +119,9 @@ func TestFormatSideContent_Removed(t *testing.T) {
 func TestFormatSideContent_Added(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	result := formatSideContent("new code", "new code", DiffAdded, 20, removedStyle, addedStyle)
+	removedBgStyle := lipgloss.NewStyle()
+	addedBgStyle := lipgloss.NewStyle()
+	result := formatSideContent("new code", "new code", DiffAdded, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
 	if !strings.Contains(result, "+") {
 		t.Error("added line should have '+' prefix")
 	}
@@ -124,7 +130,9 @@ func TestFormatSideContent_Added(t *testing.T) {
 func TestFormatSideContent_Context(t *testing.T) {
 	removedStyle := DefaultTheme().Error
 	addedStyle := DefaultTheme().Complete
-	result := formatSideContent("same", "same", DiffContext, 20, removedStyle, addedStyle)
+	removedBgStyle := lipgloss.NewStyle()
+	addedBgStyle := lipgloss.NewStyle()
+	result := formatSideContent("same", "same", DiffContext, 20, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
 	if result == "" {
 		t.Error("context line should not be empty")
 	}
