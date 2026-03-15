@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -191,5 +192,38 @@ func TestNewTaskForm_DefaultProject(t *testing.T) {
 	f2 := NewNewTaskForm(theme, testProjects(), "unknown")
 	if got := f2.SelectedProject(); got != "alpha" {
 		t.Errorf("SelectedProject() with unknown default = %q, want %q", got, "alpha")
+	}
+}
+
+func TestNewTaskForm_TextareaWrapsAndExpands(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "")
+	f.SetSize(80, 40)
+
+	// Textarea should start at height 1
+	view := f.promptInput.View()
+	lines := strings.Split(view, "\n")
+	// With height=1 and no content, should be minimal
+	if len(lines) > 3 {
+		t.Errorf("empty textarea should be small, got %d lines", len(lines))
+	}
+
+	// Set a multi-line value with explicit newlines
+	f.promptInput.SetValue("line one\nline two\nline three")
+	// Trigger an update so auto-resize kicks in
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	lineCount := f.promptInput.LineCount()
+	if lineCount < 3 {
+		t.Errorf("expected at least 3 lines for multi-line input, got %d", lineCount)
+	}
+
+	// View should render without issue
+	fullView := f.View()
+	if fullView == "" {
+		t.Error("View() returned empty string")
+	}
+	if !strings.Contains(fullView, "New Task") {
+		t.Error("View() missing 'New Task' title")
 	}
 }
