@@ -69,22 +69,22 @@ func FetchFileDiff(taskID, worktree, filePath string) FileDiffMsg {
 		return msg
 	}
 
-	// Try uncommitted diff first (staged + unstaged)
-	if out, err := runGit(worktree, "diff", "--color=always", "HEAD", "--", filePath); err == nil && out != "" {
+	// Try uncommitted diff first (staged + unstaged) — raw output for parsing
+	if out, err := runGit(worktree, "diff", "HEAD", "--", filePath); err == nil && out != "" {
 		msg.Diff = out
 		return msg
 	}
 
 	// Fall back to branch diff (committed changes vs merge-base)
 	if base := findMergeBase(worktree); base != "" {
-		if out, err := runGit(worktree, "diff", "--color=always", base+"..HEAD", "--", filePath); err == nil {
+		if out, err := runGit(worktree, "diff", base+"..HEAD", "--", filePath); err == nil {
 			msg.Diff = out
 		}
 	}
 
 	// For untracked files, show the file contents as an "added" diff
 	if msg.Diff == "" {
-		if out, err := runGit(worktree, "diff", "--color=always", "--no-index", "/dev/null", filePath); err == nil || out != "" {
+		if out, err := runGit(worktree, "diff", "--no-index", "/dev/null", filePath); err == nil || out != "" {
 			msg.Diff = out
 		}
 	}
