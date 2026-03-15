@@ -32,9 +32,9 @@ func TestRenderLine_WithCursor(t *testing.T) {
 
 	// Cursor at position 2 (on the 'l')
 	line := renderLine(vt, 0, 20, 2)
-	// Cursor uses reverse video (SGR 7) to inherit terminal default colors
-	if !strings.Contains(line, ";7") {
-		t.Errorf("renderLine with cursor should use reverse video (;7), got %q", line)
+	// Cursor uses bare reverse video (\x1b[0;7m) with default colors
+	if !strings.Contains(line, "\x1b[0;7m") {
+		t.Errorf("renderLine with cursor should contain \\x1b[0;7m, got %q", line)
 	}
 }
 
@@ -46,9 +46,9 @@ func TestRenderLine_CursorBeyondText(t *testing.T) {
 
 	// Cursor at position 5, beyond "hi" (at position 2 would be after text)
 	line := renderLine(vt, 0, 20, 5)
-	// Should still render cursor with reverse video (extends lastCol)
-	if !strings.Contains(line, ";7") {
-		t.Errorf("renderLine with cursor beyond text should use reverse video (;7), got %q", line)
+	// Should still render cursor with bare reverse video (extends lastCol)
+	if !strings.Contains(line, "\x1b[0;7m") {
+		t.Errorf("renderLine with cursor beyond text should contain \\x1b[0;7m, got %q", line)
 	}
 }
 
@@ -65,6 +65,24 @@ func TestRenderLine_CursorOnReverseCell(t *testing.T) {
 	// Cursor cell must differ from non-cursor cell on reverse text
 	if lineWithCursor == lineNoCursor {
 		t.Error("cursor on reverse-video cell should produce different output than no cursor")
+	}
+	// Cursor must use bare reverse with default colors
+	if !strings.Contains(lineWithCursor, "\x1b[0;7m") {
+		t.Errorf("cursor on reverse cell should use \\x1b[0;7m, got %q", lineWithCursor)
+	}
+}
+
+func TestRenderLine_CursorOnExplicitColorCell(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 5))
+	// Write text with explicit white FG (what Claude Code typically emits)
+	vt.Write([]byte("\x1b[37mhello\x1b[0m"))
+	vt.Lock()
+	defer vt.Unlock()
+
+	line := renderLine(vt, 0, 20, 0)
+	// Cursor must use bare reverse — NOT include cell's explicit color 37
+	if !strings.Contains(line, "\x1b[0;7m") {
+		t.Errorf("cursor on explicit-color cell should use \\x1b[0;7m, got %q", line)
 	}
 }
 
