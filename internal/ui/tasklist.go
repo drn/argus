@@ -428,6 +428,49 @@ func (tl TaskList) taskStatusIcon(t *model.Task) string {
 	return tl.statusStyle(t.Status).Render(displayText)
 }
 
+// projectStatusIcon returns a single styled icon summarizing the aggregate
+// status of all tasks in a project. Priority: in_progress > in_review > all
+// complete > mixed (partial) > all pending.
+func (tl TaskList) projectStatusIcon(tasks []*model.Task) string {
+	var hasInProgress, hasInReview, hasPending, hasComplete bool
+	var allInProgressIdle bool = true
+
+	for _, t := range tasks {
+		switch t.Status {
+		case model.StatusInProgress:
+			hasInProgress = true
+			if tl.running[t.ID] && !tl.idle[t.ID] {
+				allInProgressIdle = false
+			}
+		case model.StatusInReview:
+			hasInReview = true
+		case model.StatusComplete:
+			hasComplete = true
+		default:
+			hasPending = true
+		}
+	}
+
+	switch {
+	case hasInProgress:
+		displayText := model.StatusInProgress.Display()
+		if allInProgressIdle {
+			displayText = "\uF186" // moon: all in-progress tasks idle
+		} else if tl.tickEven {
+			displayText = model.StatusInProgress.DisplayAlt()
+		}
+		return tl.statusStyle(model.StatusInProgress).Render(displayText)
+	case hasInReview:
+		return tl.statusStyle(model.StatusInReview).Render(model.StatusInReview.Display())
+	case hasComplete && !hasPending:
+		return tl.statusStyle(model.StatusComplete).Render(model.StatusComplete.Display())
+	case hasComplete && hasPending:
+		return tl.theme.Dimmed.Render(model.StatusComplete.Display())
+	default:
+		return tl.statusStyle(model.StatusPending).Render(model.StatusPending.Display())
+	}
+}
+
 func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selected bool) {
 	chevron := "▸"
 	if project == tl.expanded {
@@ -446,28 +489,9 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 		cursorStr = tl.theme.Selected.Render(" >")
 	}
 
+	icon := tl.projectStatusIcon(tasks)
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	left := fmt.Sprintf("%s %s %s%s", cursorStr, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
-
-	// Build right-aligned status icon summary.
-	var icons strings.Builder
-	if count > 8 {
-		for _, t := range tasks[:4] {
-			icons.WriteString(tl.taskStatusIcon(t))
-		}
-		icons.WriteString(tl.theme.Dimmed.Render("…"))
-		for _, t := range tasks[count-3:] {
-			icons.WriteString(tl.taskStatusIcon(t))
-		}
-	} else {
-		for _, t := range tasks {
-			icons.WriteString(tl.taskStatusIcon(t))
-		}
-	}
-	right := icons.String()
-
-	gap := max(tl.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
-	b.WriteString(left + strings.Repeat(" ", gap) + right + "\n")
+	b.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursorStr, icon, chevronStyle.Render(chevron), nameStyle.Render(project), countStr))
 }
 
 func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected bool) {
