@@ -147,16 +147,11 @@ func (m Model) Init() tea.Cmd {
 				task.AgentPID = 0
 			}
 
-			// Backfill worktree path for tasks created before proactive
-			// worktree tracking was added. The session is stored under the
-			// worktree's project hash, so --resume needs the correct CWD.
-			if task.Worktree == "" && task.Name != "" {
-				if projDir := agent.ResolveDir(task, m.db.Config()); projDir != "" {
-					expected := filepath.Join(projDir, ".claude", "worktrees", "argus", task.Name)
-					if dirExists(expected) {
-						task.Worktree = expected
-						m.resolvedDirs[task.ID] = expected
-					}
+			// Backfill worktree path for tasks that don't have one stored.
+			if task.Worktree == "" && task.Name != "" && task.Project != "" {
+				if wt := discoverWorktree(task.Project, task.Name); wt != "" {
+					task.Worktree = wt
+					m.resolvedDirs[task.ID] = wt
 				}
 			}
 
@@ -433,12 +428,14 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusbar.SetError(err.Error())
 			return m, nil
 		}
+		cfg := m.db.Config()
 		for _, t := range pruned {
 			if m.runner.HasSession(t.ID) {
 				_ = m.runner.Stop(t.ID)
 			}
-			if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
-				removeWorktree(t.Worktree)
+			if t.Worktree != "" && cfg.UI.ShouldCleanupWorktrees() {
+				repoDir := agent.ResolveDir(t, cfg)
+				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
 			}
 		}
 		m.refreshTasks()
@@ -473,14 +470,15 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		t.SessionID = model.GenerateSessionID()
 	}
 
-	// Proactively compute the expected worktree path for new sessions.
-	// Claude Code creates worktrees under <project>/.claude/worktrees/<name>,
-	// and sessions are scoped to that directory. We need to store this path
-	// so that resume can use the correct working directory.
+	// Create a git worktree for new sessions so the agent works in isolation.
 	if !resume && t.Name != "" && t.Worktree == "" {
 		if projDir := agent.ResolveDir(t, m.db.Config()); projDir != "" {
-			t.Worktree = filepath.Join(projDir, ".claude", "worktrees", "argus", t.Name)
-			m.resolvedDirs[t.ID] = t.Worktree
+			wt, err := agent.CreateWorktree(projDir, t.Project, t.Name, t.Branch)
+			if err == nil {
+				t.Worktree = wt
+				t.Branch = "argus/" + t.Name
+				m.resolvedDirs[t.ID] = wt
+			}
 		}
 	}
 
@@ -645,8 +643,15 @@ func (m Model) handleConfirmAction(msg tea.KeyMsg, cleanup func(*model.Task)) (t
 
 func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.handleConfirmAction(msg, func(t *model.Task) {
-		if t.Worktree != "" && m.db.Config().UI.ShouldCleanupWorktrees() {
-			removeWorktree(t.Worktree)
+		cfg := m.db.Config()
+		if t.Worktree != "" && cfg.UI.ShouldCleanupWorktrees() {
+			repoDir := agent.ResolveDir(t, cfg)
+			removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+		} else if t.Branch != "" {
+			if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
+				deleteBranch(repoDir, t.Branch)
+				deleteRemoteBranch(repoDir, t.Branch)
+			}
 		}
 	})
 }
@@ -660,6 +665,7 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if t.Branch != "" {
 			if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
 				deleteBranch(repoDir, t.Branch)
+				deleteRemoteBranch(repoDir, t.Branch)
 			}
 		}
 	})
@@ -802,8 +808,9 @@ func (m Model) scheduleGitRefresh() tea.Cmd {
 	}
 	taskID := t.ID
 	taskName := t.Name
+	projectName := t.Project
 	return func() tea.Msg {
-		return resolveTaskDirAsync(taskID, taskName, baseDir)
+		return resolveTaskDirAsync(taskID, taskName, projectName, baseDir)
 	}
 }
 
@@ -831,10 +838,10 @@ func (m Model) resolveTaskDirFast(t *model.Task) string {
 	return ""
 }
 
-// resolveTaskDirAsync performs the slow worktree discovery off the main thread.
-func resolveTaskDirAsync(taskID, taskName, baseDir string) ResolveTaskDirMsg {
+// resolveTaskDirAsync performs worktree discovery off the main thread.
+func resolveTaskDirAsync(taskID, taskName, projectName, baseDir string) ResolveTaskDirMsg {
 	dir := baseDir
-	if wt := discoverClaudeWorktree(baseDir, taskName); wt != "" {
+	if wt := discoverWorktree(projectName, taskName); wt != "" {
 		dir = wt
 	}
 	return ResolveTaskDirMsg{TaskID: taskID, Dir: dir}
