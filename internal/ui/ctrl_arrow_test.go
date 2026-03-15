@@ -16,7 +16,7 @@ func TestAgentView_CtrlLeftRight(t *testing.T) {
 
 	// Ctrl+left should move to panelGit
 	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Fatal("ctrl+left should not trigger detach")
 	}
@@ -29,7 +29,7 @@ func TestAgentView_CtrlLeftRight(t *testing.T) {
 
 	// Ctrl+right should move to panelFiles
 	msg2 := tea.KeyMsg{Type: tea.KeyCtrlRight}
-	detach = av.HandleKey(msg2)
+	detach, _ = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("ctrl+right should not trigger detach")
 	}
@@ -43,7 +43,7 @@ func TestAgentView_CtrlLeftRightWithAlt(t *testing.T) {
 
 	// Ctrl+left with Alt flag (urxvt sends \x1b[Od → KeyCtrlLeft + Alt)
 	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft, Alt: true}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Fatal("alt+ctrl+left should not trigger detach")
 	}
@@ -56,7 +56,7 @@ func TestAgentView_CtrlLeftRightWithAlt(t *testing.T) {
 
 	// Ctrl+right with Alt flag
 	msg2 := tea.KeyMsg{Type: tea.KeyCtrlRight, Alt: true}
-	detach = av.HandleKey(msg2)
+	detach, _ = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("alt+ctrl+right should not trigger detach")
 	}
@@ -70,7 +70,7 @@ func TestAgentView_AltLeftRight_NoSwitch(t *testing.T) {
 
 	// Alt+left should NOT switch panels (only ctrl+left does)
 	msg := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Fatal("alt+left should not trigger detach")
 	}
@@ -80,7 +80,7 @@ func TestAgentView_AltLeftRight_NoSwitch(t *testing.T) {
 
 	// Alt+right should NOT switch panels
 	msg2 := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
-	detach = av.HandleKey(msg2)
+	detach, _ = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("alt+right should not trigger detach")
 	}
@@ -94,7 +94,7 @@ func TestAgentView_PlainLeftRight_NoSwitch(t *testing.T) {
 
 	// Plain left arrow should NOT switch panels (only ctrl+left does)
 	msg := tea.KeyMsg{Type: tea.KeyLeft}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Fatal("plain left should not trigger detach")
 	}
@@ -104,7 +104,7 @@ func TestAgentView_PlainLeftRight_NoSwitch(t *testing.T) {
 
 	// Plain right arrow should NOT switch panels
 	msg2 := tea.KeyMsg{Type: tea.KeyRight}
-	detach = av.HandleKey(msg2)
+	detach, _ = av.HandleKey(msg2)
 	if detach {
 		t.Fatal("plain right should not trigger detach")
 	}

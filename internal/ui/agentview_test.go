@@ -81,7 +81,7 @@ func TestAgentView_ShiftUpKeyScrolls(t *testing.T) {
 	}
 
 	msg := tea.KeyMsg{Type: tea.KeyShiftUp}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Fatal("shift+up should not trigger detach")
 	}
@@ -295,7 +295,7 @@ func TestAgentView_FocusLeftRight(t *testing.T) {
 func TestAgentView_HandleKey_CtrlQ_Detach(t *testing.T) {
 	av := newTestAgentView()
 	msg := tea.KeyMsg{Type: tea.KeyCtrlQ}
-	if !av.HandleKey(msg) {
+	if detach, _ := av.HandleKey(msg); !detach {
 		t.Error("ctrl+q should trigger detach")
 	}
 }
@@ -304,7 +304,7 @@ func TestAgentView_HandleKey_CtrlLeft(t *testing.T) {
 	av := newTestAgentView()
 	// Start at center
 	msg := tea.KeyMsg{Type: tea.KeyCtrlLeft}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Error("ctrl+left should not trigger detach")
 	}
@@ -316,7 +316,7 @@ func TestAgentView_HandleKey_CtrlLeft(t *testing.T) {
 func TestAgentView_HandleKey_CtrlRight(t *testing.T) {
 	av := newTestAgentView()
 	msg := tea.KeyMsg{Type: tea.KeyCtrlRight}
-	detach := av.HandleKey(msg)
+	detach, _ := av.HandleKey(msg)
 	if detach {
 		t.Error("ctrl+right should not trigger detach")
 	}
@@ -894,5 +894,218 @@ func TestKeyMsgToBytes_AltArrows(t *testing.T) {
 	want = []byte("\x1b[D")
 	if string(got) != string(want) {
 		t.Errorf("plain Left: got %q, want %q", got, want)
+	}
+}
+
+func TestAgentView_DiffMode_EnterOpensAndEscCloses(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.worktreeDir = "/tmp/test-worktree"
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+	})
+
+	// Enter should return a cmd (we can't execute it without a real git repo)
+	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on file should return a non-nil cmd")
+	}
+
+	// Simulate diff result
+	av.UpdateFileDiff(FileDiffMsg{
+		TaskID:   "task-1",
+		FilePath: "a.go",
+		Diff:     "+added line\n-removed line\n context",
+	})
+	if !av.diffMode {
+		t.Fatal("expected diffMode to be true after UpdateFileDiff")
+	}
+	if len(av.diffLines) != 3 {
+		t.Errorf("expected 3 diff lines, got %d", len(av.diffLines))
+	}
+
+	// Escape exits diff mode
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyEscape})
+	if av.diffMode {
+		t.Fatal("expected diffMode to be false after escape")
+	}
+}
+
+func TestAgentView_DiffMode_CtrlQExitsDiff(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	av.diffLines = []string{"line1"}
+
+	// ctrl+q in diff mode should exit diff, not detach
+	detach, _ := av.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if detach {
+		t.Fatal("ctrl+q in diff mode should exit diff, not detach")
+	}
+	if av.diffMode {
+		t.Fatal("expected diffMode to be false after ctrl+q")
+	}
+}
+
+func TestAgentView_DiffMode_UpDownSwitchFiles(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.worktreeDir = "/tmp/test-worktree"
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "b.go"},
+		{Status: "M", Path: "c.go"},
+	})
+	av.diffMode = true
+	av.diffLines = []string{"old diff"}
+
+	// Down arrow should move cursor and return a cmd
+	_, cmd := av.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd == nil {
+		t.Fatal("down in diff mode should return a cmd to fetch next file's diff")
+	}
+	if av.files.scroll.Cursor() != 1 {
+		t.Errorf("cursor should be 1, got %d", av.files.scroll.Cursor())
+	}
+
+	// Up arrow
+	_, cmd = av.HandleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if cmd == nil {
+		t.Fatal("up in diff mode should return a cmd")
+	}
+	if av.files.scroll.Cursor() != 0 {
+		t.Errorf("cursor should be 0, got %d", av.files.scroll.Cursor())
+	}
+}
+
+func TestAgentView_DiffMode_ScrollUpDown(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	// Create many lines
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	av.diffLines = lines
+
+	av.diffScrollDown(5)
+	if av.diffScrollOff != 5 {
+		t.Errorf("diffScrollOff after down(5) = %d, want 5", av.diffScrollOff)
+	}
+
+	av.diffScrollUp(3)
+	if av.diffScrollOff != 2 {
+		t.Errorf("diffScrollOff after up(3) = %d, want 2", av.diffScrollOff)
+	}
+
+	// Scroll up past top
+	av.diffScrollUp(100)
+	if av.diffScrollOff != 0 {
+		t.Errorf("diffScrollOff should clamp to 0, got %d", av.diffScrollOff)
+	}
+}
+
+func TestAgentView_DiffMode_MouseWheel(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	av.diffLines = lines
+
+	// Wheel down
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if av.diffScrollOff != 3 {
+		t.Errorf("diffScrollOff after wheel down = %d, want 3", av.diffScrollOff)
+	}
+
+	// Wheel up
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if av.diffScrollOff != 0 {
+		t.Errorf("diffScrollOff after wheel up = %d, want 0", av.diffScrollOff)
+	}
+}
+
+func TestAgentView_DiffMode_MouseWheel_NotInDiffMode(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = false
+
+	// Mouse wheel should be no-op when not in diff mode
+	av.HandleMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	// No crash = pass
+}
+
+func TestAgentView_DiffMode_RenderDiffPanel(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	av.files.SetFiles([]ChangedFile{
+		{Status: "M", Path: "test.go"},
+	})
+	av.diffLines = []string{"+added", "-removed", " context"}
+
+	view := av.View()
+	if view == "" {
+		t.Fatal("expected non-empty view in diff mode")
+	}
+	if !strings.Contains(view, "DIFF") {
+		t.Error("expected DIFF header in diff panel")
+	}
+}
+
+func TestAgentView_DiffMode_EmptyDiff(t *testing.T) {
+	av := newTestAgentView()
+	av.UpdateFileDiff(FileDiffMsg{
+		TaskID:   "task-1",
+		FilePath: "empty.go",
+		Diff:     "",
+	})
+	if !av.diffMode {
+		t.Fatal("expected diffMode even for empty diff")
+	}
+	if len(av.diffLines) != 1 || av.diffLines[0] != "(no diff)" {
+		t.Errorf("expected '(no diff)' placeholder, got %v", av.diffLines)
+	}
+}
+
+func TestAgentView_Enter_ResetsDiffMode(t *testing.T) {
+	av := newTestAgentView()
+	av.diffMode = true
+	av.diffLines = []string{"old"}
+
+	av.Enter("task-2", "new task")
+	if av.diffMode {
+		t.Fatal("Enter should reset diffMode")
+	}
+	if av.diffLines != nil {
+		t.Fatal("Enter should clear diffLines")
+	}
+}
+
+func TestFileExplorer_SelectedFile(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+
+	// No files → nil
+	if fe.SelectedFile() != nil {
+		t.Error("expected nil with no files")
+	}
+
+	fe.SetFiles([]ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+	})
+
+	f := fe.SelectedFile()
+	if f == nil {
+		t.Fatal("expected non-nil selected file")
+	}
+	if f.Path != "a.go" {
+		t.Errorf("expected a.go, got %s", f.Path)
+	}
+
+	fe.CursorDown()
+	f = fe.SelectedFile()
+	if f == nil || f.Path != "b.go" {
+		t.Errorf("expected b.go after CursorDown, got %v", f)
 	}
 }

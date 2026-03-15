@@ -222,6 +222,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				t.Worktree = msg.Dir
 				_ = m.db.Update(t)
 			}
+			// Set worktree dir on agent view immediately.
+			if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
+				m.agentview.SetWorktreeDir(msg.Dir)
+			}
 		}
 		// Now that we have the dir, kick off git status fetch
 		if t := m.selectedTaskForGit(); t != nil && t.ID == msg.TaskID && msg.Dir != "" {
@@ -248,6 +252,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case GitStatusRefreshMsg:
 		m.gitstatus.Update(msg)
 		m.agentview.UpdateGitStatus(msg)
+		return m, nil
+
+	case FileDiffMsg:
+		m.agentview.UpdateFileDiff(msg)
+		return m, nil
+
+	case tea.MouseMsg:
+		if m.current == viewAgent {
+			m.agentview.HandleMouse(msg)
+		}
 		return m, nil
 
 	case SessionResumedMsg:
@@ -335,11 +349,13 @@ func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if detach := m.agentview.HandleKey(msg); detach {
+	detach, cmd := m.agentview.HandleKey(msg)
+	if detach {
 		m.current = viewTaskList
 		m.refreshTasks()
+		return m, nil
 	}
-	return m, nil
+	return m, cmd
 }
 
 // switchAgentTask navigates to the adjacent task's agent view (dir: -1=prev, +1=next).
@@ -454,6 +470,9 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	if m.runner.Get(t.ID) != nil {
 		m.agentview.Enter(t.ID, t.Name)
 		m.agentview.SetSize(m.width, m.height)
+		if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
+			m.agentview.SetWorktreeDir(dir)
+		}
 		m.current = viewAgent
 		return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 			return AgentViewTickMsg{}
@@ -506,6 +525,9 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 
 	m.agentview.Enter(t.ID, t.Name)
 	m.agentview.SetSize(m.width, m.height)
+	if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
+		m.agentview.SetWorktreeDir(dir)
+	}
 	m.current = viewAgent
 	return m, tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
 		return AgentViewTickMsg{}
@@ -741,6 +763,9 @@ func (m Model) scheduleGitRefresh() tea.Cmd {
 	// Fast path: dir already cached.
 	if dir, ok := m.resolvedDirs[t.ID]; ok && dir != "" {
 		m.gitstatus.SetTask(t.ID)
+		if m.current == viewAgent && m.agentview.taskID == t.ID {
+			m.agentview.SetWorktreeDir(dir)
+		}
 		needsMain := m.gitstatus.NeedsRefresh()
 		needsAgent := m.current == viewAgent && m.agentview.NeedsGitRefresh()
 		if needsMain || needsAgent {
