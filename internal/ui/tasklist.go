@@ -246,7 +246,21 @@ func (tl *TaskList) buildRows() {
 		return groups[i].name < groups[j].name
 	})
 
-	// If nothing is expanded yet, expand the first project.
+	// Reset expanded if the project no longer exists (e.g. all its tasks were pruned).
+	if tl.expanded != "" {
+		found := false
+		for _, g := range groups {
+			if g.name == tl.expanded {
+				found = true
+				break
+			}
+		}
+		if !found {
+			tl.expanded = ""
+		}
+	}
+
+	// If nothing is expanded, expand the first project.
 	if tl.expanded == "" && len(groups) > 0 {
 		tl.expanded = groups[0].name
 	}
