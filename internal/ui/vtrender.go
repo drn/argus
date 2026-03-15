@@ -97,10 +97,11 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 		}
 
 		if x == cursorX {
-			// Toggle reverse to show cursor. XOR (not OR) because vt10x
-			// pre-swaps FG/BG for reverse-video cells — toggling off
-			// reverse for those cells produces the correct visual inversion.
-			b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode^vtAttrReverse))
+			// Bare reverse with default colors — let the terminal's theme
+			// determine cursor color. Passing cell colors through buildSGR
+			// breaks because vt10x pre-swaps FG/BG for reverse cells,
+			// turning DefaultBG/DefaultFG sentinels into near-black RGB.
+			b.WriteString("\x1b[0;7m")
 			b.WriteRune(ch)
 			b.WriteString("\x1b[0m")
 			active = false
