@@ -123,8 +123,19 @@ func deleteBranch(repoDir, branch string) {
 	_ = cmd.Run()
 }
 
+// isWorktreeSubdir returns true if the given path is inside a .claude/worktrees/
+// directory, which is the expected location for Claude Code worktrees. This
+// prevents accidental deletion of the root project directory.
+func isWorktreeSubdir(worktreePath string) bool {
+	cleaned := filepath.Clean(worktreePath)
+	return strings.Contains(cleaned, string(filepath.Separator)+".claude"+string(filepath.Separator)+"worktrees"+string(filepath.Separator))
+}
+
 func removeWorktree(worktreePath string) {
 	if !dirExists(worktreePath) {
+		return
+	}
+	if !isWorktreeSubdir(worktreePath) {
 		return
 	}
 	cmd := exec.Command("git", "worktree", "remove", "--force", filepath.Clean(worktreePath))

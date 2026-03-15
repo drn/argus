@@ -73,6 +73,12 @@
 - **Zero-value trap:** `textarea.Model` has internal pointers (`viewport`, `style`) that panic on `SetWidth`/`SetHeight` when the struct is zero-valued. Root model calls `newtask.SetSize()` on `WindowSizeMsg` before the form is opened (constructed). Fixed with a nil guard checking `f.projects == nil` (always non-nil when constructed via `NewNewTaskForm`, nil at zero value).
 - **Soft-wrap line count trap:** `textarea.LineCount()` only counts hard newlines (`\n`). A long single line that soft-wraps to 3 visual lines still reports `LineCount() == 1`. Auto-resize must use a custom `visualLineCount()` that divides each hard line's rune length by the textarea width to compute actual visual lines. Without this, the modal stays at height 1 while wrapped text scrolls internally.
 
+### Worktree Removal Safety Guard (2026-03-14)
+- `removeWorktree()` had an unsafe `os.RemoveAll` fallback: if `git worktree remove --force` failed (e.g., path was the main working tree, not a real worktree), it would delete the entire directory — potentially the root project.
+- Three call sites funneled through `removeWorktree`: task delete (`handleConfirmDeleteKey`), task destroy (`handleConfirmDestroyKey` via `removeWorktreeAndBranch`), and prune.
+- Fixed by adding `isWorktreeSubdir()` which checks the path contains `/.claude/worktrees/` before allowing any removal operation. If the path isn't inside the expected worktree directory structure, `removeWorktree` is a no-op.
+- **Pattern:** Any cleanup function that uses `os.RemoveAll` on a path derived from user data (stored in DB, passed as argument) must validate the path is within the expected directory hierarchy before deletion.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
