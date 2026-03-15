@@ -935,10 +935,23 @@ func TestAgentView_DiffMode_EnterOpensAndEscCloses(t *testing.T) {
 		t.Errorf("expected 3 diff lines, got %d", len(av.diffLines))
 	}
 
-	// Escape exits diff mode
+	// Escape exits diff mode and refocuses on agent panel
 	av.HandleKey(tea.KeyMsg{Type: tea.KeyEscape})
 	if av.diffMode {
 		t.Fatal("expected diffMode to be false after escape")
+	}
+	if av.focus != panelAgent {
+		t.Errorf("expected focus on panelAgent after escape, got %d", av.focus)
+	}
+}
+
+func TestAgentView_FilesPanelEscRefocusesAgent(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyEscape})
+	if av.focus != panelAgent {
+		t.Errorf("expected focus on panelAgent after escape from files panel, got %d", av.focus)
 	}
 }
 
