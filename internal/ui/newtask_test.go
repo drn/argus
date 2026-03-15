@@ -228,6 +228,49 @@ func TestNewTaskForm_TextareaWrapsAndExpands(t *testing.T) {
 	}
 }
 
+// TestNewTaskForm_WordWrapHeightTransitions tests that height updates correctly
+// when typing real words that trigger word wrapping (not character wrapping).
+// Verifies heights increase monotonically and all content stays visible.
+func TestNewTaskForm_WordWrapHeightTransitions(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "")
+	f.SetSize(80, 40)
+
+	words := strings.Fields("implement a new feature that allows users to search through their task history and filter by project name and status")
+
+	prevHeight := 1
+	totalChars := 0
+	for _, word := range words {
+		if totalChars > 0 {
+			f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+			totalChars++
+		}
+		for _, ch := range word {
+			f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+			totalChars++
+		}
+
+		h := f.promptInput.Height()
+		if h != prevHeight {
+			if h < prevHeight {
+				t.Errorf("height decreased from %d to %d at %d chars", prevHeight, h, totalChars)
+			}
+			if h > prevHeight+1 {
+				t.Errorf("height jumped from %d to %d (skipped) at %d chars", prevHeight, h, totalChars)
+			}
+			prevHeight = h
+		}
+	}
+
+	// Every word in the value should appear in the view (no clipping)
+	view := f.promptInput.View()
+	for _, word := range strings.Fields(f.promptInput.Value()) {
+		if !strings.Contains(view, word) {
+			t.Errorf("word %q not found in view — content may be clipped", word)
+		}
+	}
+}
+
 func TestNewTaskForm_VisualLineCount(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "")

@@ -154,9 +154,15 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	}
 
 	if f.focused == fieldPrompt {
+		// Set height to max BEFORE Update so repositionView() inside
+		// textarea.Update() doesn't scroll the viewport. With height=1,
+		// a newly wrapped line causes repositionView to scroll down to
+		// follow the cursor, and the subsequent SetHeight(2) doesn't
+		// reset the scroll offset — hiding the first line.
+		f.promptInput.SetHeight(maxPromptLines)
 		var cmd tea.Cmd
 		f.promptInput, cmd = f.promptInput.Update(msg)
-		// Auto-resize textarea height based on visual lines (including soft wraps)
+		// Shrink height back to fit the actual visual line count
 		lines := f.visualLineCount()
 		if lines < 1 {
 			lines = 1
