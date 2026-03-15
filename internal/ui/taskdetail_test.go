@@ -158,7 +158,7 @@ func TestSplitThreeWidths(t *testing.T) {
 			name:  "wide terminal",
 			width: 200,
 			wantLeft: func(left int) bool {
-				return left >= 25
+				return left >= 20
 			},
 			wantMin: func(l, c, r int) bool {
 				return l+c+r == 200
@@ -168,7 +168,7 @@ func TestSplitThreeWidths(t *testing.T) {
 			name:  "medium terminal",
 			width: 120,
 			wantLeft: func(left int) bool {
-				return left >= 25
+				return left >= 20
 			},
 			wantMin: func(l, c, r int) bool {
 				return l+c+r == 120
@@ -179,8 +179,9 @@ func TestSplitThreeWidths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := testModel(t)
-			m.width = tt.width
-			left, center, right := m.splitThreeWidths()
+			m.taskLayout.SetSize(tt.width, 40)
+			widths := m.taskLayout.SplitWidths()
+			left, center, right := widths[0], widths[1], widths[2]
 			if !tt.wantLeft(left) {
 				t.Errorf("left = %d, failed check", left)
 			}

@@ -89,6 +89,7 @@ type Model struct {
 	gitstatus   *GitStatus
 	detail      TaskDetail
 	agentview   *AgentView
+	taskLayout  PanelLayout
 	current      view
 	activeTab    tab
 	width        int
@@ -130,6 +131,11 @@ func NewModel(database *db.DB, runner *agent.Runner) Model {
 		gitstatus:   &gs,
 		detail:      dt,
 		agentview:   av,
+		taskLayout: NewPanelLayout([]PanelConfig{
+			{Pct: 20, Min: 20},
+			{Pct: 60, Min: 60},
+			{Pct: 20, Min: 20},
+		}),
 		current:     viewTaskList,
 		activeTab:   tabTasks,
 	}
@@ -194,15 +200,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		contentHeight := msg.Height - 2
 
 		// Tasks tab: three-panel layout
-		leftW, centerW, rightW := m.splitThreeWidths()
-		m.tasklist.SetSize(leftW, contentHeight)
+		m.taskLayout.SetSize(msg.Width, contentHeight)
+		widths := m.taskLayout.SplitWidths()
+		m.tasklist.SetSize(widths[0], contentHeight)
 		gitH, previewH := m.splitCenterHeights(contentHeight)
-		m.gitstatus.SetSize(centerW, gitH)
-		m.preview.SetSize(centerW, previewH)
-		m.detail.SetSize(rightW, contentHeight)
+		m.gitstatus.SetSize(widths[1], gitH)
+		m.preview.SetSize(widths[1], previewH)
+		m.detail.SetSize(widths[2], contentHeight)
 
 		// Projects tab still uses two-panel split
-		m.projectlist.SetSize(leftW, contentHeight)
+		projLeft, _ := m.splitWidths()
+		m.projectlist.SetSize(projLeft, contentHeight)
 
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
@@ -544,7 +552,8 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	_ = m.db.Update(t)
 
 	// Start a new session — use agent view panel dimensions for PTY size
-	_, centerW, _ := m.agentview.splitWidths()
+	avWidths := m.agentview.layout.SplitWidths()
+	centerW := avWidths[1]
 	contentH := m.height - 1
 	ptyRows := uint16(max(contentH-4, 10))
 	ptyCols := uint16(max(centerW-4, 40))

@@ -31,6 +31,7 @@ type AgentView struct {
 	taskID   string
 	taskName string
 	focus    AgentPanel
+	layout   PanelLayout
 	width    int
 	height   int
 
@@ -76,6 +77,11 @@ func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
 		runner:    runner,
 		focus:     panelAgent,
 		diffSplit: true,
+		layout: NewPanelLayout([]PanelConfig{
+			{Pct: 20, Min: 20},
+			{Pct: 60, Min: 60},
+			{Pct: 20, Min: 20},
+		}),
 		gitstatus: NewGitStatus(theme),
 		files:     NewFileExplorer(theme),
 	}
@@ -119,15 +125,16 @@ func (av *AgentView) SetSize(w, h int) {
 	}
 	av.width = w
 	av.height = h
-	leftW, centerW, rightW := av.splitWidths()
 	// Reserve 1 for status bar
 	contentH := h - 1
-	av.gitstatus.SetSize(leftW, contentH)
-	av.files.SetSize(rightW, contentH)
+	av.layout.SetSize(w, contentH)
+	widths := av.layout.SplitWidths()
+	av.gitstatus.SetSize(widths[0], contentH)
+	av.files.SetSize(widths[2], contentH)
 	// Resize PTY to match center panel (minus border)
 	if sess := av.runner.Get(av.taskID); sess != nil {
 		ptyRows := uint16(max(contentH-2, 5))
-		ptyCols := uint16(max(centerW-4, 20))
+		ptyCols := uint16(max(widths[1]-4, 20))
 		sess.Resize(ptyRows, ptyCols)
 	}
 }
@@ -375,8 +382,9 @@ func (av *AgentView) diffScrollDown(n int) {
 
 // View renders the three-panel layout.
 func (av *AgentView) View() string {
-	_, centerW, _ := av.splitWidths()
-	contentH := av.height - 1
+	widths := av.layout.SplitWidths()
+	centerW := widths[1]
+	contentH := av.layout.Height()
 
 	// Left panel: git status
 	av.gitstatus.SetFocused(av.focus == panelGit)
@@ -393,12 +401,7 @@ func (av *AgentView) View() string {
 	// Right panel: file explorer
 	rightView := av.files.View(av.focus == panelFiles)
 
-	// Ensure all panels are the right height
-	leftView = padHeight(leftView, contentH)
-	centerView = padHeight(centerView, contentH)
-	rightView = padHeight(rightView, contentH)
-
-	content := lipgloss.JoinHorizontal(lipgloss.Top, leftView, centerView, rightView)
+	content := av.layout.Render([]string{leftView, centerView, rightView})
 
 	// Status bar
 	bar := av.renderStatusBar()
@@ -725,8 +728,9 @@ func (av *AgentView) sliceCachedLines(dispW, dispH int) string {
 
 // terminalDisplaySize returns the usable display dimensions inside the terminal panel.
 func (av *AgentView) terminalDisplaySize() (dispW, dispH int, centerW int) {
-	_, cw, _ := av.splitWidths()
-	contentH := av.height - 1
+	widths := av.layout.SplitWidths()
+	cw := widths[1]
+	contentH := av.layout.Height()
 	return max(cw-4, 10), max(contentH-4, 3), cw
 }
 
@@ -756,60 +760,5 @@ func (av *AgentView) scrollDown(n int) {
 	}
 }
 
-// splitWidths returns left, center, right panel widths.
-// Center gets ~60%, left and right split the remainder, with min widths.
-func (av AgentView) splitWidths() (int, int, int) {
-	minLeft := 20
-	minCenter := 60
-	minRight := 20
 
-	// If terminal is too narrow, compress proportionally
-	if av.width < minLeft+minCenter+minRight {
-		center := av.width * 6 / 10
-		if center < 30 {
-			center = 30
-		}
-		side := (av.width - center) / 2
-		if side < 10 {
-			side = 10
-		}
-		right := av.width - center - side
-		if right < 0 {
-			right = 0
-		}
-		return side, center, right
-	}
-
-	center := av.width * 6 / 10
-	if center < minCenter {
-		center = minCenter
-	}
-	remaining := av.width - center
-	left := remaining / 2
-	right := remaining - left
-	if left < minLeft {
-		left = minLeft
-		right = remaining - left
-	}
-	if right < minRight {
-		right = minRight
-		left = remaining - right
-	}
-	return left, center, right
-}
-
-// padHeight ensures a rendered string fills exactly h lines.
-func padHeight(s string, h int) string {
-	if h <= 0 {
-		return ""
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) >= h {
-		return strings.Join(lines[:h], "\n")
-	}
-	for len(lines) < h {
-		lines = append(lines, "")
-	}
-	return strings.Join(lines, "\n")
-}
 

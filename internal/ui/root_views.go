@@ -90,41 +90,6 @@ func (m Model) splitWidths() (int, int) {
 	return left, right
 }
 
-// splitThreeWidths returns widths for the three-panel task list layout.
-// Left: 30%, Center: 40%, Right: 30%.
-func (m Model) splitThreeWidths() (int, int, int) {
-	left := m.width * 30 / 100
-	if left < 25 {
-		left = 25
-	}
-	right := m.width * 30 / 100
-	if right < 20 {
-		right = 20
-	}
-	center := m.width - left - right
-	if center < 30 {
-		center = 30
-	}
-	// If total exceeds width, compress proportionally
-	total := left + center + right
-	if total > m.width {
-		// Give center priority, shrink right first
-		excess := total - m.width
-		if right-excess >= 10 {
-			right -= excess
-		} else {
-			right = 10
-			excess = left + center + right - m.width
-			if left-excess >= 15 {
-				left -= excess
-			} else {
-				left = 15
-				center = m.width - left - right
-			}
-		}
-	}
-	return left, center, right
-}
 
 func (m Model) renderTabHeader() string {
 	const (
@@ -173,8 +138,6 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 		return m.padToBottom(content, bar)
 	}
 
-	contentHeight := m.height - 2
-
 	tasks := m.tasklist.View()
 	selected := m.tasklist.Selected()
 	var taskID string
@@ -184,13 +147,11 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 	gitView := m.gitstatus.View()
 	previewView := m.preview.View(taskID)
 	centerContent := lipgloss.JoinVertical(lipgloss.Left, gitView, previewView)
-	centerContent = padHeight(centerContent, contentHeight)
 
 	isRunning := selected != nil && m.runner.HasSession(selected.ID)
 	detailView := m.detail.View(selected, isRunning)
-	detailView = padHeight(detailView, contentHeight)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, tasks, centerContent, detailView)
+	body := m.taskLayout.Render([]string{tasks, centerContent, detailView})
 	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
 }
