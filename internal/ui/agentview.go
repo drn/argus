@@ -27,7 +27,7 @@ type AgentViewTickMsg struct{}
 // AgentView renders a three-panel layout: git status | agent terminal | file explorer.
 type AgentView struct {
 	theme    Theme
-	runner   *agent.Runner
+	runner   agent.SessionProvider
 	taskID   string
 	taskName string
 	focus    AgentPanel
@@ -71,7 +71,7 @@ type AgentView struct {
 	diffFileName  string            // current file being diffed (for highlighting)
 }
 
-func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
+func NewAgentView(theme Theme, runner agent.SessionProvider) AgentView {
 	return AgentView{
 		theme:     theme,
 		runner:    runner,
@@ -554,7 +554,7 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 
 // renderIncremental feeds only new bytes to a persistent vt10x terminal,
 // avoiding the O(buffer_size) full replay on every render tick.
-func (av *AgentView) renderIncremental(sess *agent.Session, raw []byte, totalWritten uint64, panelW, panelH int) string {
+func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, totalWritten uint64, panelW, panelH int) string {
 	dispW := max(panelW-4, 10)
 	dispH := max(panelH-4, 3)
 

@@ -1,0 +1,197 @@
+package daemon
+
+import (
+	"encoding/json"
+	"net"
+	"net/rpc"
+	"net/rpc/jsonrpc"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
+)
+
+func testDaemon(t *testing.T) (*Daemon, string) {
+	t.Helper()
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	d := New(database)
+
+	// Use a temp socket path.
+	sockPath := filepath.Join(t.TempDir(), "test.sock")
+
+	return d, sockPath
+}
+
+func dialRPC(t *testing.T, sockPath string) *rpc.Client {
+	t.Helper()
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	// Send RPC prefix byte.
+	conn.Write([]byte("R"))
+	client := jsonrpc.NewClient(conn)
+	t.Cleanup(func() { client.Close() })
+	return client
+}
+
+func dialStream(t *testing.T, sockPath string, taskID string) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial stream: %v", err)
+	}
+	// Send stream prefix byte.
+	conn.Write([]byte("S"))
+	// Send stream header.
+	enc := json.NewEncoder(conn)
+	if err := enc.Encode(StreamHeader{TaskID: taskID}); err != nil {
+		conn.Close()
+		t.Fatalf("encode header: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+func TestDaemon_Ping(t *testing.T) {
+	d, sockPath := testDaemon(t)
+
+	go d.Serve(sockPath)
+	t.Cleanup(func() { d.Shutdown() })
+
+	// Wait for socket to appear.
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+	var resp PongResp
+	if err := client.Call("Daemon.Ping", &Empty{}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.OK {
+		t.Error("expected Ping to return OK=true")
+	}
+}
+
+func TestDaemon_ListSessions_Empty(t *testing.T) {
+	d, sockPath := testDaemon(t)
+
+	go d.Serve(sockPath)
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+	var resp ListResp
+	if err := client.Call("Daemon.ListSessions", &Empty{}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Sessions) != 0 {
+		t.Errorf("expected 0 sessions, got %d", len(resp.Sessions))
+	}
+}
+
+func TestDaemon_StartAndStop(t *testing.T) {
+	d, sockPath := testDaemon(t)
+
+	// Seed a backend config.
+	d.db.SetBackend("test", config.Backend{Command: "sleep 60"})
+	d.db.SetConfigValue("default.backend", "test")
+
+	go d.Serve(sockPath)
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+
+	// Start a session.
+	var startResp StartResp
+	err := client.Call("Daemon.StartSession", &StartReq{
+		TaskID:  "t1",
+		Backend: "test",
+		Rows:    24,
+		Cols:    80,
+	}, &startResp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startResp.PID == 0 {
+		t.Error("expected non-zero PID")
+	}
+
+	// List sessions.
+	var listResp ListResp
+	if err := client.Call("Daemon.ListSessions", &Empty{}, &listResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(listResp.Sessions))
+	}
+	if listResp.Sessions[0].TaskID != "t1" {
+		t.Errorf("expected task t1, got %q", listResp.Sessions[0].TaskID)
+	}
+
+	// Stop session.
+	var stopResp StatusResp
+	if err := client.Call("Daemon.StopSession", &TaskIDReq{TaskID: "t1"}, &stopResp); err != nil {
+		t.Fatal(err)
+	}
+	if !stopResp.OK {
+		t.Errorf("expected OK, got error: %s", stopResp.Error)
+	}
+
+	// Wait for cleanup.
+	time.Sleep(200 * time.Millisecond)
+
+	// Session should be gone.
+	var listResp2 ListResp
+	if err := client.Call("Daemon.ListSessions", &Empty{}, &listResp2); err != nil {
+		t.Fatal(err)
+	}
+	if len(listResp2.Sessions) != 0 {
+		t.Errorf("expected 0 sessions after stop, got %d", len(listResp2.Sessions))
+	}
+}
+
+func TestDaemon_Shutdown(t *testing.T) {
+	d, sockPath := testDaemon(t)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- d.Serve(sockPath)
+	}()
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+	var resp StatusResp
+	if err := client.Call("Daemon.Shutdown", &Empty{}, &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Serve returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Serve to return")
+	}
+}
+
+func waitForSocket(t *testing.T, sockPath string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sockPath); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("socket %s did not appear", sockPath)
+}

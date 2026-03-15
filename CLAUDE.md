@@ -20,7 +20,7 @@ go test ./internal/db/      # run tests for a single package
 
 **Elm Architecture (Model → Update → View)** via Bubble Tea. The entire UI is a single `tea.Program` with view switching.
 
-- `cmd/argus/main.go` — Entry point. Opens SQLite database, creates agent runner, starts `tea.Program` with alt screen and mouse cell motion.
+- `cmd/argus/main.go` — Entry point. Parses subcommands (`daemon`, `daemon stop`), opens SQLite database. In TUI mode: tries daemon client first, falls back to in-process runner. Starts `tea.Program` with alt screen and mouse cell motion.
 - `internal/ui/root.go` — **Top-level Bubble Tea model**. Owns all sub-views and routes key events based on current view state (`viewTaskList`, `viewNewTask`, `viewHelp`, `viewPrompt`, `viewConfirmDelete`). This is the orchestration hub.
 - `internal/ui/worktree.go` — Git worktree discovery, cleanup, and process management helpers. Extracted from root.go to separate infrastructure concerns from UI logic.
 - `internal/ui/tasklist.go` — Task list with collapsible project folders, cursor, scrolling, filtering. Tasks are grouped by project name into a flattened row list (project headers + task rows). Only one project is expanded at a time — auto-expands when the cursor enters a project, auto-collapses others. Cursor navigation skips project header rows entirely (`moveCursor`) — the cursor always lands on a task row, never a header. When navigating up across projects, cursor lands on the *last* task of the previous project. Not a `tea.Model` itself — it's a plain struct that `root.Model` drives.
@@ -32,15 +32,27 @@ go test ./internal/db/      # run tests for a single package
 - `internal/agent/` — Agent process management with PTY:
   - `agent.go` — Backend resolution and command building (`BuildCmd`). Supports `--session-id` for conversation pinning.
   - `worktree.go` — Git worktree creation under `~/.argus/worktrees/<project>/<task>` with `argus/<task>` branch naming.
-  - `session.go` — PTY-backed process session via `creack/pty`. Single `readLoop` goroutine tees output to ring buffer + attached writer. Supports attach/detach without stopping the process.
-  - `runner.go` — Multi-session manager keyed by task ID. Start/Stop/Get/Attach/Detach. Auto-cleans up on process exit, fires `onFinish` callback.
+  - `iface.go` — `SessionProvider` (manages sessions) and `SessionHandle` (single session) interfaces. UI code depends only on these interfaces, enabling both in-process and daemon-backed implementations.
+  - `session.go` — PTY-backed process session via `creack/pty`. Single `readLoop` goroutine tees output to ring buffer + all attached writers. Multi-writer support via `AddWriter`/`RemoveWriter` for fan-out to multiple consumers. Supports attach/detach without stopping the process.
+  - `runner.go` — Multi-session manager keyed by task ID. Implements `SessionProvider`. Start/Stop/Get/Attach/Detach. Auto-cleans up on process exit, fires `onFinish` callback.
   - `attach.go` — `AttachCmd` implements `tea.ExecCommand` for Bubble Tea integration. Sets raw terminal mode, resizes PTY, uses detachReader to intercept `ctrl+q` for detach.
-  - `ringbuffer.go` — Fixed-size circular buffer for output replay on reattach.
+  - `ringbuffer.go` — Exported `RingBuffer` — fixed-size circular buffer for output replay on reattach. Used by both in-process sessions and daemon client's local buffer.
   - `errors.go` — Sentinel errors.
+- `internal/daemon/` — Daemon architecture for persistent agent sessions:
+  - `daemon.go` — `Daemon` struct: owns Runner, accepts Unix socket connections, dispatches RPC vs stream (first byte 'R'/'S'). PID file at `~/.argus/daemon.pid`. Signal handling (SIGTERM/SIGINT → graceful shutdown).
+  - `types.go` — Shared RPC request/response types (`StartReq`, `SessionInfo`, `StreamHeader`, etc.).
+  - `rpc.go` — `RPCService` implementing JSON-RPC methods: Ping, StartSession, StopSession, StopAll, SessionStatus, ListSessions, WriteInput, Resize, Shutdown.
+  - `stream.go` — Output streaming handler. Client sends `StreamHeader` JSON, daemon calls `AddWriter(conn)` on the session. Raw bytes flow until session exit or client disconnect.
+- `internal/daemon/client/` — TUI-side daemon client:
+  - `client.go` — `Client` implementing `SessionProvider` via JSON-RPC to daemon. Manages `RemoteSession` lifecycle.
+  - `handle.go` — `RemoteSession` implementing `SessionHandle`. Local `RingBuffer` populated by stream reader. RPC calls for WriteInput, Resize, PTYSize, etc.
+  - `stream.go` — Goroutine reads raw bytes from daemon stream connection into local ring buffer.
 
 **Key pattern:** Sub-views (`TaskList`, `StatusBar`, `HelpView`) are plain structs with `View() string` methods — not independent `tea.Model`s. Only `NewTaskForm` has its own `Update` because it manages text input focus. Root model coordinates everything.
 
-**Agent pattern:** A single `readLoop` goroutine is the sole reader of the PTY master fd. It always writes to the ring buffer, and when a writer is attached (via `session.attachW`), also tees output there. This avoids competing readers on the same fd. The detach key (`ctrl+q`) is intercepted by `detachReader` wrapping stdin.
+**Agent pattern:** A single `readLoop` goroutine is the sole reader of the PTY master fd. It always writes to the ring buffer, and tees output to all attached writers (via `session.writers` slice). Writers are copied under lock before iterating; errored writers are removed automatically. `AddWriter(w)` replays the ring buffer then registers for live output. `Attach()`/`Detach()` use AddWriter/RemoveWriter internally. The detach key (`ctrl+q`) is intercepted by `detachReader` wrapping stdin.
+
+**Daemon pattern:** The daemon (`argus daemon`) owns the Runner and PTY sessions. The TUI connects via Unix socket (`~/.argus/daemon.sock`). First byte on each connection selects the protocol: 'R' for JSON-RPC (request/response), 'S' for output streaming (raw bytes). The TUI's `Client` implements `SessionProvider` so the UI code is identical whether running in-process or via daemon. Sessions survive TUI restarts — the daemon keeps PTY fds alive until explicit stop or shutdown.
 
 **Task/worktree lifecycle:** New task form submission → `handleNewTaskKey` creates worktree BEFORE persisting the task: `agent.CreateWorktree(projDir, project, taskName, branch)` creates worktree at `~/.argus/worktrees/<project>/<task>` with branch `argus/<task>`. If worktree creation fails, the task is NOT created — the form stays open with the error message. On name conflict (directory exists), `CreateWorktree` auto-suffixes with `-1`, `-2`, etc. Only after worktree succeeds: `db.Add(task)` → `startOrAttach` generates session ID → `runner.Start` builds command with `cmd.Dir = t.Worktree` → captures PID in DB. On delete/destroy: stops agent → `removeWorktreeAndBranch(path, branch, repoDir)` removes worktree (via `git worktree remove` from repoDir) → deletes local branch → deletes remote branch → removes from DB.
 
@@ -84,6 +96,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **All panels in `PanelLayout.Render()` must enforce their own width.** `PanelLayout.Render()` only pads height and joins horizontally — it does NOT enforce column widths. If a panel's content is narrower than its allocated width, the panel collapses to content width and the layout breaks visually. Every panel passed to `Render()` must use `borderedPanel(width, height, ...)` or `lipgloss.NewStyle().Width(w)` to fill its allocation. The agent view panels already do this via `borderedPanel`; the task list view's left pane was missing it.
 - **Worktree creation must succeed before task persistence.** Never `db.Add(task)` without a valid worktree. If `CreateWorktree` fails, keep the new task form open with the error — do NOT fall back to running in the project directory or delegating to `--worktree`. The `ResolveTaskDirMsg` handler must only persist paths that pass `isWorktreeSubdir()` to prevent project directories from being saved as `t.Worktree`. `CreateWorktree` returns `(wtPath, finalName, err)` — the `finalName` may differ from the input if name conflicts required a `-1`, `-2` suffix.
+- **Map lookups returning `*T` become non-nil interfaces.** When a method returns an interface (e.g., `Get(id) SessionHandle`) and the underlying implementation uses a map (`sessions[id]`), a missing key returns `nil *Session`. Assigning this to an interface gives a **non-nil interface** with a nil concrete value — `== nil` checks fail. The `Get` method must explicitly check `if sess == nil { return nil }` before returning. This applies to any method on Runner/Client that returns `SessionHandle`.
+- **`AddWriter` must replay before registering.** When adding a writer to a session, send the ring buffer replay BEFORE appending the writer to the `writers` slice. If you register first, `readLoop` can deliver live bytes to the writer before replay is sent, causing duplicate data. The correct order is: snapshot replay → send replay → register writer. This creates a small gap (bytes produced during replay are missed) rather than duplicates. Gaps are handled gracefully by vt10x (partial escape sequences ignored); duplicates cause visible rendering corruption.
 
 ## Development Rules
 

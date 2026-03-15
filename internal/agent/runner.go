@@ -32,7 +32,7 @@ func NewRunner(onFinish func(taskID string, err error, stopped bool, lastOutput 
 // rows and cols set the initial PTY size (falls back to 80x24 if zero).
 // If resume is true, the agent reconnects to an existing conversation via --resume.
 // Returns an error if a session already exists for this task.
-func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (*Session, error) {
+func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (SessionHandle, error) {
 	r.mu.Lock()
 	if _, exists := r.sessions[task.ID]; exists {
 		r.mu.Unlock()
@@ -74,16 +74,20 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 }
 
 // Get returns the session for a task, or nil if not found.
-func (r *Runner) Get(taskID string) *Session {
+func (r *Runner) Get(taskID string) SessionHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.sessions[taskID]
+	sess := r.sessions[taskID]
+	if sess == nil {
+		return nil
+	}
+	return sess
 }
 
 // Attach connects stdin/stdout to a running session's PTY.
 // Blocks until detach or process exit.
 func (r *Runner) Attach(taskID string, stdin io.Reader, stdout io.Writer) error {
-	sess := r.Get(taskID)
+	sess := r.getSession(taskID)
 	if sess == nil {
 		return ErrSessionNotFound
 	}
@@ -92,9 +96,16 @@ func (r *Runner) Attach(taskID string, stdin io.Reader, stdout io.Writer) error 
 
 // Detach disconnects from a running session without stopping it.
 func (r *Runner) Detach(taskID string) {
-	if sess := r.Get(taskID); sess != nil {
+	if sess := r.getSession(taskID); sess != nil {
 		sess.Detach()
 	}
+}
+
+// getSession returns the concrete *Session for internal use (e.g., Attach/Detach).
+func (r *Runner) getSession(taskID string) *Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sessions[taskID]
 }
 
 // Stop sends SIGTERM to a running session.

@@ -6,7 +6,7 @@ import (
 )
 
 func TestRingBuffer_Basic(t *testing.T) {
-	rb := newRingBuffer(10)
+	rb := NewRingBuffer(10)
 	rb.Write([]byte("hello"))
 
 	if rb.Len() != 5 {
@@ -18,7 +18,7 @@ func TestRingBuffer_Basic(t *testing.T) {
 }
 
 func TestRingBuffer_Wrap(t *testing.T) {
-	rb := newRingBuffer(5)
+	rb := NewRingBuffer(5)
 	rb.Write([]byte("abcde"))   // fills buffer
 	rb.Write([]byte("fg"))      // overwrites a, b
 
@@ -32,7 +32,7 @@ func TestRingBuffer_Wrap(t *testing.T) {
 }
 
 func TestRingBuffer_LargeWrite(t *testing.T) {
-	rb := newRingBuffer(4)
+	rb := NewRingBuffer(4)
 	rb.Write([]byte("abcdefgh")) // 2x buffer size
 
 	if rb.Len() != 4 {
@@ -45,7 +45,7 @@ func TestRingBuffer_LargeWrite(t *testing.T) {
 }
 
 func TestRingBuffer_Reset(t *testing.T) {
-	rb := newRingBuffer(10)
+	rb := NewRingBuffer(10)
 	rb.Write([]byte("data"))
 	rb.Reset()
 
@@ -58,7 +58,7 @@ func TestRingBuffer_Reset(t *testing.T) {
 }
 
 func TestRingBuffer_Empty(t *testing.T) {
-	rb := newRingBuffer(10)
+	rb := NewRingBuffer(10)
 	if rb.Len() != 0 {
 		t.Errorf("Len() = %d", rb.Len())
 	}
@@ -68,7 +68,7 @@ func TestRingBuffer_Empty(t *testing.T) {
 }
 
 func TestRingBuffer_TotalWritten(t *testing.T) {
-	rb := newRingBuffer(5)
+	rb := NewRingBuffer(5)
 	if rb.TotalWritten() != 0 {
 		t.Errorf("TotalWritten() = %d, want 0", rb.TotalWritten())
 	}
