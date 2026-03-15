@@ -185,6 +185,27 @@ func TestFindWorktreeByName(t *testing.T) {
 	}
 }
 
+func TestIsWorktreeSubdir(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/home/user/project/.claude/worktrees/argus/my-task", true},
+		{"/home/user/project/.claude/worktrees/other/task", true},
+		{"/home/user/project", false},
+		{"/home/user/project/.claude", false},
+		{"/home/user/project/.claude/worktrees", false}, // no trailing component
+		{"", false},
+		{"/tmp/.claude/worktrees/argus/task", true},
+	}
+	for _, tt := range tests {
+		got := isWorktreeSubdir(tt.path)
+		if got != tt.want {
+			t.Errorf("isWorktreeSubdir(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
 func TestGitStatus_NeedsRefresh_NoTask(t *testing.T) {
 	gs := NewGitStatus(DefaultTheme())
 	if gs.NeedsRefresh() {
