@@ -98,6 +98,13 @@
 - Scrolling (`diffScrollUp`/`diffScrollDown`) operates on wrapped visual lines, not source lines. `diffScrollDown` falls back to `diffLines` length if `diffWrappedLines` hasn't been computed yet.
 - **Future:** Side-by-side diff view and syntax highlighting are planned. Will require parsing structured diffs (e.g., `go-gitdiff` or `sourcegraph/go-diff`) and per-language highlighting (e.g., `chroma`).
 
+### Textarea Viewport Scroll Bug in Auto-Resize (2026-03-14)
+- When the textarea's prompt input wraps to a new visual line, the first line disappears. The modal only grows after the 2nd wrap.
+- Root cause chain: `textarea.Update()` calls `repositionView()` at the end (line 1087 of bubbles textarea.go). With viewport height=1, the cursor on visual line 2 causes `repositionView()` to scroll down (`YOffset=1`). Then `SetHeight(2)` expands `viewport.Height` but does NOT reset `YOffset`. Result: viewport shows lines 1-2 instead of 0-1, hiding the first line.
+- Additional factor: the textarea's `wrap()` function (line 1445) uses `>=` instead of `>` for width comparison, so text that exactly fills the width wraps to the next line.
+- Fix: Call `SetHeight(maxPromptLines)` BEFORE `textarea.Update()` so `repositionView()` has enough headroom (max=9 instead of max=0) and doesn't scroll. Then shrink back to the actual visual line count afterward.
+- **Pattern:** For any auto-resizing textarea, always expand height before `Update()` and shrink after. `SetHeight()` never calls `repositionView()`, so the viewport scroll offset can become stale.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
