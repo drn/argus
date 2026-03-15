@@ -229,6 +229,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.current != viewAgent {
 			m.refreshTasks()
 			m.tasklist.Tick()
+			if m.activeTab == tabProjects {
+				m.projectlist.SetTasks(m.db.Tasks())
+			}
 		}
 		if cmd := m.scheduleGitRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -819,6 +822,7 @@ func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 
 func (m *Model) refreshProjects() {
 	m.projectlist.SetProjects(m.db.Projects())
+	m.projectlist.SetTasks(m.db.Tasks())
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.
