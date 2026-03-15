@@ -136,6 +136,10 @@ func (f NewProjectForm) modalWidth() int {
 }
 
 func (f NewProjectForm) View() string {
+	// Guard against zero-valued form (inputs not initialized via constructor).
+	if len(f.inputs) == 0 {
+		return ""
+	}
 	var b strings.Builder
 
 	labels := []string{"Name:", "Path:", "Branch:", "Backend:"}

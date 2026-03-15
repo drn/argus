@@ -763,6 +763,9 @@ func (av AgentView) splitWidths() (int, int, int) {
 
 // padHeight ensures a rendered string fills exactly h lines.
 func padHeight(s string, h int) string {
+	if h <= 0 {
+		return ""
+	}
 	lines := strings.Split(s, "\n")
 	if len(lines) >= h {
 		return strings.Join(lines[:h], "\n")

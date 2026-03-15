@@ -245,6 +245,10 @@ func (f NewTaskForm) modalWidth() int {
 }
 
 func (f NewTaskForm) View() string {
+	// Guard against zero-valued form (textarea not initialized via constructor).
+	if f.projects == nil {
+		return ""
+	}
 	var b strings.Builder
 
 	// Project selector

@@ -245,3 +245,17 @@ func TestPadHeight_Longer(t *testing.T) {
 		t.Error("truncated lines should be the first 3")
 	}
 }
+
+func TestPadHeight_NegativeHeight(t *testing.T) {
+	result := padHeight("a\nb\nc", -3)
+	if result != "" {
+		t.Errorf("padHeight negative: got %q, want empty string", result)
+	}
+}
+
+func TestPadHeight_ZeroHeight(t *testing.T) {
+	result := padHeight("a\nb\nc", 0)
+	if result != "" {
+		t.Errorf("padHeight zero: got %q, want empty string", result)
+	}
+}

@@ -1395,6 +1395,43 @@ func TestSwitchAgentTask_NilWhenNoPrev(t *testing.T) {
 	}
 }
 
+// TestModel_ViewZeroDimensions ensures every View() path survives the initial
+// render before WindowSizeMsg arrives (width=0, height=0). Bubble Tea calls
+// View() before the first WindowSizeMsg, so all paths must handle zero
+// dimensions without panicking.
+func TestModel_ViewZeroDimensions(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "task", Status: model.StatusPending, Project: "proj"}
+	views := []struct {
+		name  string
+		setup func(m *Model)
+	}{
+		{"taskList", func(m *Model) {}},
+		{"taskListEmpty", func(m *Model) {}},
+		{"projects", func(m *Model) { m.activeTab = tabProjects }},
+		{"help", func(m *Model) { m.current = viewHelp }},
+		{"prompt", func(m *Model) { m.current = viewPrompt }},
+		{"confirmDelete", func(m *Model) { m.current = viewConfirmDelete }},
+		{"confirmDestroy", func(m *Model) { m.current = viewConfirmDestroy }},
+		{"confirmDeleteProject", func(m *Model) { m.current = viewConfirmDeleteProject }},
+		{"newTask", func(m *Model) { m.current = viewNewTask }},
+		{"newProject", func(m *Model) { m.current = viewNewProject }},
+	}
+	for _, tc := range views {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Model
+			if tc.name == "taskListEmpty" {
+				m = testModel(t)
+			} else {
+				m = testModel(t, task)
+			}
+			// width=0, height=0 — no WindowSizeMsg delivered yet
+			tc.setup(&m)
+			// Must not panic
+			_ = m.View()
+		})
+	}
+}
+
 func TestCursorChange_TriggersGitRefresh(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "first", Status: model.StatusPending, Project: "proj"},
