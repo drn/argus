@@ -58,6 +58,13 @@ type AgentView struct {
 	vtFedTotal uint64 // monotonic byte count fed to vtTerm
 	vtCols     int    // vtTerm column count
 	vtRows     int    // vtTerm row count
+
+	// Diff viewer state
+	diffMode       bool     // true when viewing a file's diff
+	diffContent    string   // raw colorized diff output
+	diffLines      []string // split lines for scrolling
+	diffScrollOff  int      // scroll offset within diff
+	worktreeDir    string   // resolved worktree directory for git commands
 }
 
 func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
@@ -84,6 +91,11 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.cachedLines = nil
 	av.vtTerm = nil
 	av.vtFedTotal = 0
+	av.diffMode = false
+	av.diffContent = ""
+	av.diffLines = nil
+	av.diffScrollOff = 0
+	av.worktreeDir = ""
 }
 
 // SetLastOutput stores the final ring buffer from a finished session
@@ -149,14 +161,25 @@ func (av *AgentView) FocusRight() {
 	}
 }
 
-// HandleKey processes a key event. Returns true if the user wants to detach.
-func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
+// HandleKey processes a key event. Returns detach=true if the user wants to
+// detach, and optionally a tea.Cmd (e.g. to fetch a file diff).
+func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 	keyStr := msg.String()
 
 	// Global agent view keys (regardless of focus)
 	if keyStr == "ctrl+q" {
-		return true
+		if av.diffMode {
+			av.exitDiffMode()
+			return false, nil
+		}
+		return true, nil
 	}
+
+	// In diff mode, handle keys for scrolling / navigation
+	if av.diffMode {
+		return false, av.handleDiffKey(msg)
+	}
+
 	// Panel switching: ctrl+left/right only.
 	// Use type-based matching to handle terminals that set the Alt flag on
 	// ctrl+arrow sequences (urxvt sends \x1b[Od which parses as
@@ -164,10 +187,10 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 	switch msg.Type {
 	case tea.KeyCtrlLeft:
 		av.FocusLeft()
-		return false
+		return false, nil
 	case tea.KeyCtrlRight:
 		av.FocusRight()
-		return false
+		return false, nil
 	}
 
 	// Panel-specific key handling
@@ -178,19 +201,19 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 		switch keyStr {
 		case "shift+up":
 			av.scrollUp(1)
-			return false
+			return false, nil
 		case "shift+down":
 			av.scrollDown(1)
-			return false
+			return false, nil
 		case "shift+pgup":
 			av.scrollUp(dispH)
-			return false
+			return false, nil
 		case "shift+pgdown":
 			av.scrollDown(dispH)
-			return false
+			return false, nil
 		case "shift+end":
 			av.scrollOffset = 0
-			return false
+			return false, nil
 		}
 		// Any other key sent to PTY resets scroll to follow tail
 		av.scrollOffset = 0
@@ -208,9 +231,112 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool) {
 			av.files.CursorUp()
 		case "down", "j":
 			av.files.CursorDown()
+		case "enter":
+			return false, av.openFileDiff()
 		}
 	}
-	return false
+	return false, nil
+}
+
+// HandleMouse processes mouse events (scroll wheel).
+func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
+	if av.diffMode {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			av.diffScrollUp(3)
+		case tea.MouseButtonWheelDown:
+			av.diffScrollDown(3)
+		}
+	}
+}
+
+// openFileDiff starts an async fetch of the selected file's diff.
+func (av *AgentView) openFileDiff() tea.Cmd {
+	f := av.files.SelectedFile()
+	if f == nil || av.worktreeDir == "" {
+		return nil
+	}
+	taskID := av.taskID
+	dir := av.worktreeDir
+	path := f.Path
+	return func() tea.Msg {
+		return FetchFileDiff(taskID, dir, path)
+	}
+}
+
+// UpdateFileDiff handles the result of an async file diff fetch.
+func (av *AgentView) UpdateFileDiff(msg FileDiffMsg) {
+	if msg.TaskID != av.taskID {
+		return
+	}
+	av.diffMode = true
+	av.diffContent = msg.Diff
+	av.diffScrollOff = 0
+	if msg.Diff == "" {
+		av.diffLines = []string{"(no diff)"}
+	} else {
+		av.diffLines = strings.Split(msg.Diff, "\n")
+	}
+}
+
+// SetWorktreeDir sets the resolved worktree directory for git commands.
+func (av *AgentView) SetWorktreeDir(dir string) {
+	av.worktreeDir = dir
+}
+
+func (av *AgentView) exitDiffMode() {
+	av.diffMode = false
+	av.diffContent = ""
+	av.diffLines = nil
+	av.diffScrollOff = 0
+}
+
+func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
+	keyStr := msg.String()
+	switch keyStr {
+	case "esc", "q":
+		av.exitDiffMode()
+	case "up", "k":
+		// Move to previous file and show its diff
+		av.files.CursorUp()
+		return av.openFileDiff()
+	case "down", "j":
+		// Move to next file and show its diff
+		av.files.CursorDown()
+		return av.openFileDiff()
+	case "shift+up", "pgup":
+		av.diffScrollUp(av.diffVisibleRows())
+	case "shift+down", "pgdown":
+		av.diffScrollDown(av.diffVisibleRows())
+	}
+	return nil
+}
+
+func (av *AgentView) diffVisibleRows() int {
+	contentH := av.height - 1
+	rows := contentH - 4
+	if rows < 3 {
+		rows = 3
+	}
+	return rows
+}
+
+func (av *AgentView) diffScrollUp(n int) {
+	av.diffScrollOff -= n
+	if av.diffScrollOff < 0 {
+		av.diffScrollOff = 0
+	}
+}
+
+func (av *AgentView) diffScrollDown(n int) {
+	maxOff := len(av.diffLines) - av.diffVisibleRows()
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	av.diffScrollOff += n
+	if av.diffScrollOff > maxOff {
+		av.diffScrollOff = maxOff
+	}
 }
 
 // View renders the three-panel layout.
@@ -222,8 +348,13 @@ func (av *AgentView) View() string {
 	av.gitstatus.SetFocused(av.focus == panelGit)
 	leftView := av.gitstatus.View()
 
-	// Center panel: agent terminal
-	centerView := av.renderTerminal(centerW, contentH)
+	// Center panel: diff viewer or agent terminal
+	var centerView string
+	if av.diffMode {
+		centerView = av.renderDiffPanel(centerW, contentH)
+	} else {
+		centerView = av.renderTerminal(centerW, contentH)
+	}
 
 	// Right panel: file explorer
 	rightView := av.files.View(av.focus == panelFiles)
@@ -309,6 +440,67 @@ func (av *AgentView) renderTerminal(w, h int) string {
 	av.cachedScrollOff = av.scrollOffset
 	av.cachedTerminal = content
 	return border.Render(content)
+}
+
+func (av *AgentView) renderDiffPanel(w, h int) string {
+	borderColor := "87" // always focused when viewing diff
+	innerH := max(h-2, 1)
+	border := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(borderColor)).
+		Width(w - 2).
+		Height(innerH)
+
+	if len(av.diffLines) == 0 {
+		empty := av.theme.Dimmed.
+			Width(w - 4).
+			Height(innerH).
+			AlignHorizontal(lipgloss.Center).
+			AlignVertical(lipgloss.Center)
+		return border.Render(empty.Render("No diff available"))
+	}
+
+	dispW := max(w-4, 10)
+	dispH := max(h-4, 3)
+
+	// Header
+	fileName := ""
+	if f := av.files.SelectedFile(); f != nil {
+		fileName = f.Path
+	}
+	header := av.theme.Section.Render("  DIFF") +
+		av.theme.Dimmed.Render(" " + fileName) +
+		av.theme.Dimmed.Render(fmt.Sprintf("  [%d/%d]", av.files.scroll.Cursor()+1, av.files.FileCount()))
+	headerLines := 1
+
+	// Visible diff lines
+	visibleH := dispH - headerLines
+	if visibleH < 1 {
+		visibleH = 1
+	}
+
+	end := av.diffScrollOff + visibleH
+	if end > len(av.diffLines) {
+		end = len(av.diffLines)
+	}
+	start := av.diffScrollOff
+	if start > end {
+		start = end
+	}
+
+	var b strings.Builder
+	b.WriteString(header + "\n")
+	for i := start; i < end; i++ {
+		line := av.diffLines[i]
+		// Truncate to panel width (ANSI-aware)
+		line = ansi.Truncate(line, dispW, "\x1b[0m")
+		b.WriteString(line)
+		if i < end-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	return border.Render(b.String())
 }
 
 // renderIncremental feeds only new bytes to a persistent vt10x terminal,
@@ -419,11 +611,20 @@ func (av AgentView) renderStatusBar() string {
 	left := " " + av.theme.Normal.Render(av.taskName) + status
 
 	// Right: keybinding hints
-	keys := []struct{ key, label string }{
-		{"⌘↑/↓", "task"},
-		{"⇧↑/↓", "scroll"},
-		{"ctrl+←/→", "panel"},
-		{"ctrl+q", "detach"},
+	var keys []struct{ key, label string }
+	if av.diffMode {
+		keys = []struct{ key, label string }{
+			{"↑/↓", "file"},
+			{"scroll", "navigate"},
+			{"esc", "close"},
+		}
+	} else {
+		keys = []struct{ key, label string }{
+			{"⌘↑/↓", "task"},
+			{"⇧↑/↓", "scroll"},
+			{"ctrl+←/→", "panel"},
+			{"ctrl+q", "detach"},
+		}
 	}
 	var parts []string
 	for _, k := range keys {
@@ -433,13 +634,17 @@ func (av AgentView) renderStatusBar() string {
 
 	// Focus indicator — truly centered on the bar
 	var focusLabel string
-	switch av.focus {
-	case panelGit:
-		focusLabel = "GIT STATUS"
-	case panelAgent:
-		focusLabel = "TERMINAL"
-	case panelFiles:
-		focusLabel = "FILES"
+	if av.diffMode {
+		focusLabel = "DIFF"
+	} else {
+		switch av.focus {
+		case panelGit:
+			focusLabel = "GIT STATUS"
+		case panelAgent:
+			focusLabel = "TERMINAL"
+		case panelFiles:
+			focusLabel = "FILES"
+		}
 	}
 	center := av.theme.Section.Render(" [" + focusLabel + "] ")
 

@@ -44,6 +44,20 @@ func (fe *FileExplorer) CursorDown() {
 	fe.scroll.CursorDown(len(fe.files), fe.visibleRows())
 }
 
+// SelectedFile returns the currently selected file, or nil if none.
+func (fe *FileExplorer) SelectedFile() *ChangedFile {
+	c := fe.scroll.Cursor()
+	if c < 0 || c >= len(fe.files) {
+		return nil
+	}
+	return &fe.files[c]
+}
+
+// FileCount returns the number of files.
+func (fe *FileExplorer) FileCount() int {
+	return len(fe.files)
+}
+
 func (fe *FileExplorer) visibleRows() int {
 	// Reserve 3 for border + header
 	rows := fe.height - 3

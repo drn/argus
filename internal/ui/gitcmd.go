@@ -55,6 +55,43 @@ func findMergeBase(worktree string) string {
 	return ""
 }
 
+// FileDiffMsg carries the result of an async file diff fetch.
+type FileDiffMsg struct {
+	TaskID   string
+	FilePath string
+	Diff     string
+}
+
+// FetchFileDiff runs git diff for a specific file and returns colorized output.
+func FetchFileDiff(taskID, worktree, filePath string) FileDiffMsg {
+	msg := FileDiffMsg{TaskID: taskID, FilePath: filePath}
+	if worktree == "" || filePath == "" {
+		return msg
+	}
+
+	// Try uncommitted diff first (staged + unstaged)
+	if out, err := runGit(worktree, "diff", "--color=always", "HEAD", "--", filePath); err == nil && out != "" {
+		msg.Diff = out
+		return msg
+	}
+
+	// Fall back to branch diff (committed changes vs merge-base)
+	if base := findMergeBase(worktree); base != "" {
+		if out, err := runGit(worktree, "diff", "--color=always", base+"..HEAD", "--", filePath); err == nil {
+			msg.Diff = out
+		}
+	}
+
+	// For untracked files, show the file contents as an "added" diff
+	if msg.Diff == "" {
+		if out, err := runGit(worktree, "diff", "--color=always", "--no-index", "/dev/null", filePath); err == nil || out != "" {
+			msg.Diff = out
+		}
+	}
+
+	return msg
+}
+
 func runGit(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
