@@ -23,6 +23,24 @@ func TestStatus_String(t *testing.T) {
 	}
 }
 
+func TestStatus_DisplayName(t *testing.T) {
+	tests := []struct {
+		s    Status
+		want string
+	}{
+		{StatusPending, "Pending"},
+		{StatusInProgress, "In Progress"},
+		{StatusInReview, "In Review"},
+		{StatusComplete, "Complete"},
+		{Status(99), "unknown(99)"},
+	}
+	for _, tt := range tests {
+		if got := tt.s.DisplayName(); got != tt.want {
+			t.Errorf("Status(%d).DisplayName() = %q, want %q", tt.s, got, tt.want)
+		}
+	}
+}
+
 func TestStatus_Display(t *testing.T) {
 	if got := StatusPending.Display(); got != "\uF10C" {
 		t.Errorf("Pending.Display() = %q", got)

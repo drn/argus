@@ -27,7 +27,7 @@ func TestTaskDetailView(t *testing.T) {
 
 	checks := []string{
 		"fix-login-bug",
-		"in_progress",
+		"In Progress",
 		"running",
 		"myapp",
 		"argus/fix-login-bug",
