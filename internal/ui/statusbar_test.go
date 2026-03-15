@@ -70,23 +70,23 @@ func TestStatusBar_Empty(t *testing.T) {
 	}
 }
 
-func TestStatusBar_ProjectTabKeys(t *testing.T) {
+func TestStatusBar_SettingsTabKeys(t *testing.T) {
 	sb := NewStatusBar(DefaultTheme())
 	sb.SetWidth(120)
 	sb.SetTasks(nil)
-	sb.SetProjectTab(true)
+	sb.SetSettingsTab(true)
 
 	v := sb.View()
-	// Project tab should show "tasks" key (to switch back) and "new"
+	// Settings tab should show "tasks" key (to switch back) and "new project"
 	if !strings.Contains(v, "tasks") {
-		t.Error("project tab should show 'tasks' key hint")
+		t.Error("settings tab should show 'tasks' key hint")
 	}
-	if !strings.Contains(v, "new") {
-		t.Error("project tab should show 'new' key hint")
+	if !strings.Contains(v, "new project") {
+		t.Error("settings tab should show 'new project' key hint")
 	}
 	// Should NOT show "attach" (tasks-only key)
 	if strings.Contains(v, "attach") {
-		t.Error("project tab should not show 'attach' key hint")
+		t.Error("settings tab should not show 'attach' key hint")
 	}
 }
 
@@ -94,14 +94,14 @@ func TestStatusBar_TaskTabKeys(t *testing.T) {
 	sb := NewStatusBar(DefaultTheme())
 	sb.SetWidth(120)
 	sb.SetTasks(nil)
-	sb.SetProjectTab(false)
+	sb.SetSettingsTab(false)
 
 	v := sb.View()
-	// Task tab should show "attach" and "projects"
+	// Task tab should show "attach" and "settings"
 	if !strings.Contains(v, "attach") {
 		t.Error("task tab should show 'attach' key hint")
 	}
-	if !strings.Contains(v, "projects") {
-		t.Error("task tab should show 'projects' key hint")
+	if !strings.Contains(v, "settings") {
+		t.Error("task tab should show 'settings' key hint")
 	}
 }

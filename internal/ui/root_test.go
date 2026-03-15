@@ -26,7 +26,7 @@ func testModel(t *testing.T, tasks ...*model.Task) Model {
 		}
 	}
 	runner := agent.NewRunner(nil)
-	return NewModel(database, runner)
+	return NewModel(database, runner, false)
 }
 
 func TestSessionResumed_Success(t *testing.T) {
@@ -631,15 +631,15 @@ func TestTabSwitching_LeftRightArrows(t *testing.T) {
 	msg := tea.KeyMsg{Type: tea.KeyRight}
 	updated, _ := m.Update(msg)
 	m = updated.(Model)
-	if m.activeTab != tabProjects {
-		t.Errorf("expected tabProjects after right arrow, got %d", m.activeTab)
+	if m.activeTab != tabSettings {
+		t.Errorf("expected tabSettings after right arrow, got %d", m.activeTab)
 	}
 
 	// Right arrow again → should stay on projects (no wrap)
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
-	if m.activeTab != tabProjects {
-		t.Errorf("expected tabProjects after second right arrow, got %d", m.activeTab)
+	if m.activeTab != tabSettings {
+		t.Errorf("expected tabSettings after second right arrow, got %d", m.activeTab)
 	}
 
 	// Left arrow → tasks
@@ -681,8 +681,8 @@ func testModelWithProjects(t *testing.T, projects map[string]config.Project) Mod
 		}
 	}
 	runner := agent.NewRunner(nil)
-	m := NewModel(database, runner)
-	m.refreshProjects()
+	m := NewModel(database, runner, false)
+	m.refreshSettings()
 	return m
 }
 
@@ -691,7 +691,9 @@ func TestDeleteProject_EnterConfirms(t *testing.T) {
 		"myproject": {Path: "/tmp/myproject"},
 	}
 	m := testModelWithProjects(t, projects)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
+	// Navigate cursor to the project row (past status section).
+	m.settings.CursorDown()
 	m.current = viewConfirmDeleteProject
 
 	// Press Enter to confirm
@@ -712,7 +714,8 @@ func TestDeleteProject_EscCancels(t *testing.T) {
 		"myproject": {Path: "/tmp/myproject"},
 	}
 	m := testModelWithProjects(t, projects)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
+	m.settings.CursorDown()
 	m.current = viewConfirmDeleteProject
 
 	// Press Esc to cancel
@@ -733,7 +736,8 @@ func TestDeleteProject_YKeyNoLongerConfirms(t *testing.T) {
 		"myproject": {Path: "/tmp/myproject"},
 	}
 	m := testModelWithProjects(t, projects)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
+	m.settings.CursorDown()
 	m.current = viewConfirmDeleteProject
 
 	// Press y — should cancel (no longer confirms)
@@ -754,7 +758,8 @@ func TestDeleteProject_ModalView(t *testing.T) {
 		"myproject": {Path: "/tmp/myproject"},
 	}
 	m := testModelWithProjects(t, projects)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
+	m.settings.CursorDown()
 	m.current = viewConfirmDeleteProject
 	m.width = 80
 	m.height = 24
@@ -1045,7 +1050,7 @@ func TestModel_ViewTaskList_LeftPaneBorderedWidth(t *testing.T) {
 
 func TestModel_ViewProjectsTab(t *testing.T) {
 	m := testModel(t)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
 	m.width = 120
 	m.height = 40
 	view := m.View()
@@ -1078,7 +1083,7 @@ func TestModel_ViewConfirmDestroy_NoTask(t *testing.T) {
 
 func TestModel_ViewConfirmDeleteProject_NoProject(t *testing.T) {
 	m := testModel(t)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
 	m.current = viewConfirmDeleteProject
 	m.width = 80
 	m.height = 24
@@ -1169,7 +1174,9 @@ func TestModel_CursorNavigation(t *testing.T) {
 
 func TestModel_NewProjectKey(t *testing.T) {
 	m := testModel(t)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
+	// Navigate cursor to a project row so 'n' opens the new project form.
+	m.settings.CursorDown()
 
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
 	updated, _ := m.Update(msg)
@@ -1182,7 +1189,7 @@ func TestModel_NewProjectKey(t *testing.T) {
 
 func TestModel_NewProjectCancel(t *testing.T) {
 	m := testModel(t)
-	m.activeTab = tabProjects
+	m.activeTab = tabSettings
 	m.current = viewNewProject
 	m.newproject = NewNewProjectForm(m.theme)
 
@@ -1202,8 +1209,8 @@ func TestModel_TabSwitching_NumberKeys(t *testing.T) {
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}}
 	updated, _ := m.Update(msg)
 	um := updated.(Model)
-	if um.activeTab != tabProjects {
-		t.Errorf("expected tabProjects after '2', got %d", um.activeTab)
+	if um.activeTab != tabSettings {
+		t.Errorf("expected tabSettings after '2', got %d", um.activeTab)
 	}
 
 	// Press '1' for tasks
@@ -1509,7 +1516,7 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 	}{
 		{"taskList", func(m *Model) {}},
 		{"taskListEmpty", func(m *Model) {}},
-		{"projects", func(m *Model) { m.activeTab = tabProjects }},
+		{"projects", func(m *Model) { m.activeTab = tabSettings }},
 		{"help", func(m *Model) { m.current = viewHelp }},
 		{"prompt", func(m *Model) { m.current = viewPrompt }},
 		{"confirmDelete", func(m *Model) { m.current = viewConfirmDelete }},

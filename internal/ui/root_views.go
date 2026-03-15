@@ -13,7 +13,7 @@ func (m Model) View() string {
 		return ""
 	}
 
-	m.statusbar.SetProjectTab(m.activeTab == tabProjects)
+	m.statusbar.SetSettingsTab(m.activeTab == tabSettings)
 	bar := m.statusbar.View()
 
 	if m.current == viewAgent {
@@ -41,8 +41,8 @@ func (m Model) View() string {
 
 	tabHeader := m.renderTabHeader()
 	switch m.activeTab {
-	case tabProjects:
-		return m.renderProjectsView(tabHeader, bar)
+	case tabSettings:
+		return m.renderSettingsView(tabHeader, bar)
 	default:
 		return m.renderTasksView(tabHeader, bar)
 	}
@@ -77,7 +77,7 @@ func (m Model) splitCenterHeights(total int) (int, int) {
 	return gitH, previewH
 }
 
-// splitWidths returns a two-panel split for the projects tab.
+// splitWidths returns a two-panel split for the settings tab.
 func (m Model) splitWidths() (int, int) {
 	left := m.width * 2 / 5
 	if left < 30 {
@@ -111,7 +111,7 @@ func (m Model) renderTabHeader() string {
 		t     tab
 	}{
 		{"Tasks", tabTasks},
-		{"Projects", tabProjects},
+		{"Settings", tabSettings},
 	}
 
 	var b strings.Builder
@@ -160,155 +160,15 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 	return m.padToBottom(content, bar)
 }
 
-func (m Model) renderProjectsView(tabHeader, bar string) string {
-	projects := m.projectlist.View()
-	rightContent := m.renderProjectDetail()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, projects, rightContent)
+func (m Model) renderSettingsView(tabHeader, bar string) string {
+	leftWidth, rightWidth := m.splitWidths()
+	contentHeight := m.height - 2
+	leftContent := m.settings.View()
+	leftPanel := borderedPanel(leftWidth, contentHeight, false, leftContent)
+	rightPanel := m.settings.RenderDetail(rightWidth, contentHeight)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
 	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
-}
-
-func (m Model) renderProjectDetail() string {
-	entry := m.projectlist.Selected()
-	_, rightWidth := m.splitWidths()
-	contentHeight := m.height - 2
-
-	if entry == nil {
-		return borderedPanel(rightWidth, contentHeight, false,
-			m.theme.Dimmed.Render(" No project selected"))
-	}
-
-	innerW := max(rightWidth-4, 10)
-	innerH := max(contentHeight-2, 1)
-
-	var b strings.Builder
-
-	// Title
-	name := entry.Name
-	if len(name) > innerW-2 {
-		name = name[:innerW-5] + "..."
-	}
-	b.WriteString(m.theme.Title.Render(" "+name) + "\n\n")
-
-	// Configuration section
-	b.WriteString(m.theme.Section.Render("  CONFIG") + "\n")
-	fields := []struct{ label, value string }{
-		{"Path", entry.Project.Path},
-		{"Branch", entry.Project.Branch},
-		{"Backend", entry.Project.Backend},
-	}
-	for _, f := range fields {
-		val := f.value
-		if val == "" {
-			val = "(default)"
-		}
-		b.WriteString("  " + m.theme.Dimmed.Render(f.label+": ") + m.theme.Normal.Render(val) + "\n")
-	}
-
-	// Task summary section
-	sc := m.projectlist.TaskCounts(entry.Name)
-	total := sc.Total()
-
-	b.WriteString("\n" + m.theme.Section.Render("  TASKS") + "\n")
-
-	if total == 0 {
-		b.WriteString("  " + m.theme.Dimmed.Render("No tasks yet. Press [1] to switch to tasks.") + "\n")
-	} else {
-		// Status breakdown
-		statuses := []struct {
-			label string
-			count int
-			style lipgloss.Style
-		}{
-			{"Pending", sc.Pending, m.theme.Pending},
-			{"In Progress", sc.InProgress, m.theme.InProgress},
-			{"In Review", sc.InReview, m.theme.InReview},
-			{"Complete", sc.Complete, m.theme.Complete},
-		}
-		for _, s := range statuses {
-			if s.count > 0 {
-				b.WriteString(fmt.Sprintf("  %s  %s\n",
-					s.style.Render(fmt.Sprintf("%2d", s.count)),
-					m.theme.Normal.Render(s.label)))
-			}
-		}
-
-		// Visual progress bar
-		barWidth := innerW - 4
-		if barWidth > 0 && total > 0 {
-			b.WriteString("\n")
-			bar := m.renderStatusBar(sc, barWidth)
-			b.WriteString("  " + bar + "\n")
-			// Progress percentage
-			pct := 0
-			if total > 0 {
-				pct = sc.Complete * 100 / total
-			}
-			b.WriteString("  " + m.theme.Dimmed.Render(fmt.Sprintf("%d%% complete", pct)) + "\n")
-		}
-	}
-
-	content := strings.TrimRight(b.String(), "\n")
-	lines := strings.Split(content, "\n")
-	if len(lines) > innerH {
-		lines = lines[:innerH]
-		content = strings.Join(lines, "\n")
-	}
-
-	return borderedPanel(rightWidth, contentHeight, false, content)
-}
-
-// renderStatusBar renders a horizontal progress bar with colored segments.
-func (m Model) renderStatusBar(sc statusCounts, width int) string {
-	total := sc.Total()
-	if total == 0 || width <= 0 {
-		return ""
-	}
-
-	// Calculate proportional widths
-	segments := []struct {
-		count int
-		ch    string
-		color string
-	}{
-		{sc.Complete, "█", "78"},   // green
-		{sc.InReview, "█", "81"},   // blue
-		{sc.InProgress, "█", "214"}, // orange
-		{sc.Pending, "░", "245"},   // gray
-	}
-
-	// Find the last non-zero segment index for remainder assignment
-	lastNonZero := -1
-	for i, seg := range segments {
-		if seg.count > 0 {
-			lastNonZero = i
-		}
-	}
-
-	var bar strings.Builder
-	remaining := width
-	for i, seg := range segments {
-		if seg.count == 0 {
-			continue
-		}
-		w := seg.count * width / total
-		if w < 1 {
-			w = 1
-		}
-		// Last non-zero segment gets any remaining width to avoid gaps
-		if i == lastNonZero {
-			w = remaining
-		}
-		if w <= 0 {
-			continue
-		}
-		remaining -= w
-		bar.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color(seg.color)).
-			Render(strings.Repeat(seg.ch, w)))
-	}
-
-	return bar.String()
 }
 
 func (m Model) emptyStateView() string {
@@ -359,7 +219,7 @@ func (m Model) renderCenteredModal(body string, preferredWidth int) string {
 }
 
 func (m Model) confirmDeleteProjectView() string {
-	entry := m.projectlist.Selected()
+	entry := m.settings.SelectedProject()
 	if entry == nil {
 		return ""
 	}

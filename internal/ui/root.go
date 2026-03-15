@@ -30,7 +30,7 @@ type tab int
 
 const (
 	tabTasks tab = iota
-	tabProjects
+	tabSettings
 )
 
 // minAgentRunTime is the minimum time an agent must run before a clean exit
@@ -80,7 +80,7 @@ type Model struct {
 	keys        KeyMap
 	theme       Theme
 	tasklist    TaskList
-	projectlist ProjectList
+	settings    SettingsView
 	statusbar   StatusBar
 	helpview    HelpView
 	newtask     NewTaskForm
@@ -94,20 +94,23 @@ type Model struct {
 	activeTab    tab
 	width        int
 	height       int
-	quitting        bool
-	agentTickActive bool              // true while the 100ms AgentViewTickMsg chain is running
-	resolvedDirs    map[string]string // taskID → resolved worktree dir (cache)
+	quitting           bool
+	agentTickActive    bool              // true while the 100ms AgentViewTickMsg chain is running
+	daemonConnected    bool              // true when connected to daemon (sessions persist)
+	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
 
 	// Prune progress state (shown in viewPruning modal)
 	pruneTotal int // total worktrees being cleaned up
 }
 
-func NewModel(database *db.DB, runner agent.SessionProvider) Model {
+// NewModel creates the top-level model. Set daemonConnected to true when the
+// TUI is backed by a daemon process (sessions persist across restarts).
+func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected bool) Model {
 	theme := DefaultTheme()
 	keys := DefaultKeyMap()
 
 	tl := NewTaskList(theme)
-	pl := NewProjectList(theme)
+	sv := NewSettingsView(theme)
 	sb := NewStatusBar(theme)
 	hv := NewHelpView(keys, theme)
 
@@ -118,13 +121,14 @@ func NewModel(database *db.DB, runner agent.SessionProvider) Model {
 	av := &avv
 
 	m := Model{
-		db:           database,
-		runner:       runner,
-		keys:         keys,
-		theme:        theme,
-		resolvedDirs: make(map[string]string),
+		db:              database,
+		runner:          runner,
+		keys:            keys,
+		theme:           theme,
+		daemonConnected: daemonConnected,
+		resolvedDirs:    make(map[string]string),
 		tasklist:    tl,
-		projectlist: pl,
+		settings:    sv,
 		statusbar:   sb,
 		helpview:    hv,
 		preview:     pv,
@@ -140,7 +144,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider) Model {
 		activeTab:   tabTasks,
 	}
 	m.refreshTasks()
-	m.refreshProjects()
+	m.refreshSettings()
 	return m
 }
 
@@ -214,9 +218,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.SetSize(widths[1], previewH)
 		m.detail.SetSize(widths[2], contentHeight)
 
-		// Projects tab still uses two-panel split
-		projLeft, _ := m.splitWidths()
-		m.projectlist.SetSize(projLeft, contentHeight)
+		// Settings tab uses two-panel split
+		settingsLeft, _ := m.splitWidths()
+		m.settings.SetSize(settingsLeft, contentHeight)
 
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
@@ -235,8 +239,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.current != viewAgent {
 			m.refreshTasks()
 			m.tasklist.Tick()
-			if m.activeTab == tabProjects {
-				m.projectlist.SetTasks(m.db.Tasks())
+			if m.activeTab == tabSettings {
+				m.settings.SetTasks(m.db.Tasks())
 			}
 		}
 		if cmd := m.scheduleGitRefresh(); cmd != nil {
@@ -350,7 +354,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.activeTab = tabTasks
 			return m, nil
 		case "2":
-			m.activeTab = tabProjects
+			m.activeTab = tabSettings
 			return m, nil
 		}
 		switch {
@@ -360,13 +364,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.TabRight):
-			if m.activeTab < tabProjects {
+			if m.activeTab < tabSettings {
 				m.activeTab++
 			}
 			return m, nil
 		}
-		if m.activeTab == tabProjects {
-			return m.handleProjectListKey(msg)
+		if m.activeTab == tabSettings {
+			return m.handleSettingsKey(msg)
 		}
 		return m.handleTaskListKey(msg)
 	}
@@ -754,28 +758,33 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	})
 }
 
-func (m Model) handleProjectListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 		m.quitting = true
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keys.Up):
-		m.projectlist.CursorUp()
+		m.settings.CursorUp()
 		return m, nil
 
 	case key.Matches(msg, m.keys.Down):
-		m.projectlist.CursorDown()
+		m.settings.CursorDown()
 		return m, nil
 
 	case key.Matches(msg, m.keys.New):
-		m.newproject = NewNewProjectForm(m.theme)
-		m.newproject.SetSize(m.width, m.height)
-		m.current = viewNewProject
-		return m, m.newproject.inputs[0].Focus()
+		// Only allow new project creation when on a project row (or section).
+		sel := m.settings.Selected()
+		if sel == nil || sel.kind == settingsRowProject {
+			m.newproject = NewNewProjectForm(m.theme)
+			m.newproject.SetSize(m.width, m.height)
+			m.current = viewNewProject
+			return m, m.newproject.inputs[0].Focus()
+		}
+		return m, nil
 
 	case key.Matches(msg, m.keys.Delete):
-		if m.projectlist.Selected() != nil {
+		if m.settings.SelectedProject() != nil {
 			m.current = viewConfirmDeleteProject
 		}
 		return m, nil
@@ -799,7 +808,7 @@ func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.newproject.Done() {
 		name, proj := m.newproject.ProjectEntry()
 		_ = m.db.SetProject(name, proj)
-		m.refreshProjects()
+		m.refreshSettings()
 		m.current = viewTaskList
 		return m, nil
 	}
@@ -810,9 +819,9 @@ func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		if entry := m.projectlist.Selected(); entry != nil {
+		if entry := m.settings.SelectedProject(); entry != nil {
 			_ = m.db.DeleteProject(entry.Name)
-			m.refreshProjects()
+			m.refreshSettings()
 		}
 		m.current = viewTaskList
 		return m, nil
@@ -826,9 +835,15 @@ func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	}
 }
 
-func (m *Model) refreshProjects() {
-	m.projectlist.SetProjects(m.db.Projects())
-	m.projectlist.SetTasks(m.db.Tasks())
+func (m *Model) refreshSettings() {
+	var warnings []string
+	if !m.daemonConnected {
+		warnings = append(warnings, "In-process mode: sessions won't persist")
+	}
+	m.settings.SetWarnings(warnings)
+	m.settings.SetProjects(m.db.Projects())
+	m.settings.SetBackends(m.db.Backends())
+	m.settings.SetTasks(m.db.Tasks())
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.
