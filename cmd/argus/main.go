@@ -27,7 +27,7 @@ func main() {
 		}
 	})
 	m := ui.NewModel(database, runner)
-	p = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(ui.SuperToAltFilter))
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
