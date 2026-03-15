@@ -61,7 +61,10 @@ type AgentView struct {
 
 	// Diff viewer state
 	diffMode      bool              // true when viewing a file's diff
-	diffRows      []SideBySideLine  // parsed side-by-side rows
+	diffSplit     bool              // true = side-by-side, false = unified
+	diffParsed    ParsedDiff        // parsed diff structure (for both views)
+	diffRows      []SideBySideLine  // side-by-side rows (computed from diffParsed)
+	diffUnified   []string          // unified view lines (highlighted, computed from diffParsed)
 	diffScrollOff int               // scroll offset within diff
 	worktreeDir   string            // resolved worktree directory for git commands
 	diffFileName  string            // current file being diffed (for highlighting)
@@ -72,6 +75,7 @@ func NewAgentView(theme Theme, runner *agent.Runner) AgentView {
 		theme:     theme,
 		runner:    runner,
 		focus:     panelAgent,
+		diffSplit: true,
 		gitstatus: NewGitStatus(theme),
 		files:     NewFileExplorer(theme),
 	}
@@ -92,7 +96,10 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.vtTerm = nil
 	av.vtFedTotal = 0
 	av.diffMode = false
+	av.diffSplit = true
+	av.diffParsed = ParsedDiff{}
 	av.diffRows = nil
+	av.diffUnified = nil
 	av.diffScrollOff = 0
 	av.worktreeDir = ""
 	av.diffFileName = ""
@@ -283,10 +290,13 @@ func (av *AgentView) UpdateFileDiff(msg FileDiffMsg) {
 	av.diffScrollOff = 0
 	av.diffFileName = msg.FilePath
 	if msg.Diff == "" {
+		av.diffParsed = ParsedDiff{}
 		av.diffRows = nil
+		av.diffUnified = nil
 	} else {
-		pd := ParseUnifiedDiff(msg.Diff)
-		av.diffRows = BuildSideBySide(pd)
+		av.diffParsed = ParseUnifiedDiff(msg.Diff)
+		av.diffRows = BuildSideBySide(av.diffParsed)
+		av.diffUnified = RenderUnifiedLines(av.diffParsed, msg.FilePath)
 	}
 }
 
@@ -297,7 +307,9 @@ func (av *AgentView) SetWorktreeDir(dir string) {
 
 func (av *AgentView) exitDiffMode() {
 	av.diffMode = false
+	av.diffParsed = ParsedDiff{}
 	av.diffRows = nil
+	av.diffUnified = nil
 	av.diffScrollOff = 0
 	av.diffFileName = ""
 }
@@ -320,6 +332,9 @@ func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
 		av.diffScrollUp(av.diffVisibleRows())
 	case "shift+down", "pgdown":
 		av.diffScrollDown(av.diffVisibleRows())
+	case "s":
+		av.diffSplit = !av.diffSplit
+		av.diffScrollOff = 0
 	}
 	return nil
 }
@@ -340,8 +355,15 @@ func (av *AgentView) diffScrollUp(n int) {
 	}
 }
 
+func (av *AgentView) diffLineCount() int {
+	if av.diffSplit {
+		return len(av.diffRows)
+	}
+	return len(av.diffUnified)
+}
+
 func (av *AgentView) diffScrollDown(n int) {
-	maxOff := len(av.diffRows) - av.diffVisibleRows()
+	maxOff := av.diffLineCount() - av.diffVisibleRows()
 	if maxOff < 0 {
 		maxOff = 0
 	}
@@ -463,7 +485,8 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 		Width(w - 2).
 		Height(innerH)
 
-	if len(av.diffRows) == 0 {
+	lineCount := av.diffLineCount()
+	if lineCount == 0 {
 		empty := av.theme.Dimmed.
 			Width(w - 4).
 			Height(innerH).
@@ -480,7 +503,11 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 	if f := av.files.SelectedFile(); f != nil {
 		fileName = f.Path
 	}
-	header := RenderSideBySideHeader(fileName, av.files.scroll.Cursor(), av.files.FileCount(), av.theme)
+	modeLabel := "split"
+	if !av.diffSplit {
+		modeLabel = "unified"
+	}
+	header := RenderDiffHeader(fileName, av.files.scroll.Cursor(), av.files.FileCount(), modeLabel, av.theme)
 
 	// Visible diff rows (minus header)
 	visibleH := dispH - 1
@@ -488,7 +515,12 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 		visibleH = 1
 	}
 
-	content := RenderSideBySide(av.diffRows, fileName, dispW, visibleH, av.diffScrollOff, av.theme)
+	var content string
+	if av.diffSplit {
+		content = RenderSideBySide(av.diffRows, fileName, dispW, visibleH, av.diffScrollOff, av.theme)
+	} else {
+		content = RenderUnified(av.diffUnified, dispW, visibleH, av.diffScrollOff)
+	}
 
 	return border.Render(header + "\n" + content)
 }
@@ -606,6 +638,7 @@ func (av AgentView) renderStatusBar() string {
 		keys = []struct{ key, label string }{
 			{"↑/↓", "file"},
 			{"scroll", "navigate"},
+			{"s", "split/unified"},
 			{"esc", "close"},
 		}
 	} else {
@@ -625,7 +658,11 @@ func (av AgentView) renderStatusBar() string {
 	// Focus indicator — truly centered on the bar
 	var focusLabel string
 	if av.diffMode {
-		focusLabel = "DIFF"
+		if av.diffSplit {
+			focusLabel = "DIFF SPLIT"
+		} else {
+			focusLabel = "DIFF UNIFIED"
+		}
 	} else {
 		switch av.focus {
 		case panelAgent:
