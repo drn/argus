@@ -23,6 +23,7 @@ type NewTaskForm struct {
 	projects     map[string]config.Project
 	done         bool
 	canceled     bool
+	errMsg       string
 	width        int
 	height       int
 }
@@ -84,6 +85,8 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Clear error on any keypress
+		f.errMsg = ""
 		switch msg.String() {
 		case "esc":
 			f.canceled = true
@@ -225,6 +228,13 @@ func (f *NewTaskForm) Task() *model.Task {
 func (f *NewTaskForm) Done() bool     { return f.done }
 func (f *NewTaskForm) Canceled() bool { return f.canceled }
 
+// SetError sets an error message to display in the form and resets the
+// done flag so the form remains open for the user to retry.
+func (f *NewTaskForm) SetError(msg string) {
+	f.errMsg = msg
+	f.done = false
+}
+
 func (f *NewTaskForm) SetSize(w, h int) {
 	f.width = w
 	f.height = h
@@ -266,6 +276,11 @@ func (f NewTaskForm) View() string {
 	}
 	b.WriteString(promptStyle.Render("Prompt:") + "\n")
 	b.WriteString(f.promptInput.View() + "\n\n")
+
+	if f.errMsg != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+		b.WriteString(errStyle.Render("Error: "+f.errMsg) + "\n\n")
+	}
 
 	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  ←/→: select project  enter: submit  esc: cancel"))
 
