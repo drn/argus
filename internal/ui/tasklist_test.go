@@ -344,6 +344,45 @@ func TestTaskList_CursorUpAcrossProjects(t *testing.T) {
 	}
 }
 
+func TestTaskList_ExpandedProjectRemoved(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+
+	// Start with two projects. Force alpha expanded by setting it before SetTasks.
+	tl.expanded = "alpha"
+	tasks := []*model.Task{
+		{Name: "A1", Project: "alpha", Status: model.StatusComplete},
+		{Name: "A2", Project: "alpha", Status: model.StatusComplete},
+		{Name: "B1", Project: "beta", Status: model.StatusPending},
+	}
+	tl.SetTasks(tasks)
+
+	if tl.expanded != "alpha" {
+		t.Fatalf("expected alpha expanded, got %q", tl.expanded)
+	}
+
+	// Simulate pruning: remove all alpha tasks, only beta remains.
+	tl.SetTasks([]*model.Task{
+		{Name: "B1", Project: "beta", Status: model.StatusPending},
+	})
+
+	// The expanded project should switch to beta (the only remaining project).
+	if tl.expanded != "beta" {
+		t.Errorf("expected beta expanded after alpha removed, got %q", tl.expanded)
+	}
+
+	// Beta's tasks should be visible in rows.
+	taskRows := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskRows++
+		}
+	}
+	if taskRows != 1 {
+		t.Errorf("expected 1 visible task row, got %d", taskRows)
+	}
+}
+
 func TestTaskList_View_Empty(t *testing.T) {
 	tl := NewTaskList(DefaultTheme())
 	tl.SetTasks(nil)
