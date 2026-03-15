@@ -162,6 +162,14 @@
 - **ExitInfo pattern**: Daemon caches `ExitInfo{Err, Stopped, LastOutput}` in `onFinish` callback. Client calls `Daemon.GetExitInfo` RPC (consume-once) when stream closes, then passes real values to `AgentFinishedMsg`. Without this, daemon mode silently marks crashed/stopped sessions as successful completions because `Err`/`Stopped` default to zero values.
 - **Test gotcha**: `db.OpenInMemory()` seeds the default "claude" backend. Tests that create sessions with custom backends must set `task.Backend` explicitly — otherwise `ResolveBackend` falls through to the default claude backend and launches a real Claude Code process.
 
+### Chroma Background Color Compositing Fix (2026-03-15)
+- Syntax-highlighted diff lines (added/removed) lost their red/green background color after the first token. Only the first word of each line had the correct background.
+- Root cause: Chroma's `writeToken()` emits `\033[0m` (full SGR reset) after every token — by design, so pagers can render lines independently. When the highlighted string was wrapped with `lipgloss.Style.Render()` (which sets background at start, resets at end), the first internal `\033[0m` from chroma cleared the background for all subsequent tokens.
+- Chroma has no option to preserve an outer background — `clearBackground()` in the formatter intentionally strips style background colors. The `terminal256` and `terminal16m` formatters both use the same `writeToken()` with full resets.
+- Fix: `injectBg(s, bgEsc)` — prepends the background escape, replaces all `\033[0m` with `\033[0m<bgEsc>`, and appends `\033[0m`. Applied in `formatSideContent` (side-by-side) and `RenderUnifiedLines` (unified).
+- Replaced `removedBgStyle`/`addedBgStyle` (lipgloss.Style) with raw escape strings (`removedBgEsc`/`addedBgEsc`) since lipgloss `Render()` can't handle this pattern.
+- **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset. Do NOT use lipgloss `.Render()` wrapping — it only sets the background once at the start.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go

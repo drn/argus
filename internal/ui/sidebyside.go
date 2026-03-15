@@ -40,8 +40,8 @@ func RenderSideBySide(rows []SideBySideLine, filename string, totalW, visibleH, 
 	// Styles for diff line backgrounds
 	removedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Background(lipgloss.Color("#3d1012"))
 	addedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Background(lipgloss.Color("#0d3317"))
-	removedBgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#3d1012"))
-	addedBgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#0d3317"))
+	removedBgEsc := "\x1b[48;2;61;16;18m"  // #3d1012
+	addedBgEsc := "\x1b[48;2;13;51;23m"    // #0d3317
 	lineNumStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
 	dividerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
 	hunkHeaderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
@@ -85,11 +85,11 @@ func RenderSideBySide(rows []SideBySideLine, filename string, totalW, visibleH, 
 
 		// Left side
 		leftNumStr := lineNumStyle.Render(FormatLineNum(row.LeftNum, lineNumWidth))
-		leftContent := formatSideContent(leftH, row.LeftText, row.LeftType, contentW, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
+		leftContent := formatSideContent(leftH, row.LeftText, row.LeftType, contentW, removedStyle, addedStyle, removedBgEsc, addedBgEsc)
 
 		// Right side
 		rightNumStr := lineNumStyle.Render(FormatLineNum(row.RightNum, lineNumWidth))
-		rightContent := formatSideContent(rightH, row.RightText, row.RightType, contentW, removedStyle, addedStyle, removedBgStyle, addedBgStyle)
+		rightContent := formatSideContent(rightH, row.RightText, row.RightType, contentW, removedStyle, addedStyle, removedBgEsc, addedBgEsc)
 
 		b.WriteString(leftNumStr)
 		b.WriteString(" ")
@@ -107,7 +107,7 @@ func RenderSideBySide(rows []SideBySideLine, filename string, totalW, visibleH, 
 }
 
 // formatSideContent renders one side of a diff line with appropriate coloring.
-func formatSideContent(highlighted, raw string, lineType DiffLineType, width int, removedStyle, addedStyle, removedBgStyle, addedBgStyle lipgloss.Style) string {
+func formatSideContent(highlighted, raw string, lineType DiffLineType, width int, removedStyle, addedStyle lipgloss.Style, removedBgEsc, addedBgEsc string) string {
 	if raw == "" && lineType == DiffContext {
 		// Blank padding
 		return strings.Repeat(" ", width+1)
@@ -123,15 +123,15 @@ func formatSideContent(highlighted, raw string, lineType DiffLineType, width int
 			// No highlighting — apply removal color to whole line
 			content = removedStyle.Render(truncatePlain(raw, width-1))
 		} else {
-			// Syntax-highlighted: wrap with background only
-			content = removedBgStyle.Render(ansi.Truncate(highlighted, width-1, "\x1b[0m"))
+			// Syntax-highlighted: inject background after every reset so it persists across tokens
+			content = injectBg(ansi.Truncate(highlighted, width-1, "\x1b[0m"), removedBgEsc)
 		}
 	case DiffAdded:
 		prefix = addedStyle.Render("+")
 		if highlighted == raw {
 			content = addedStyle.Render(truncatePlain(raw, width-1))
 		} else {
-			content = addedBgStyle.Render(ansi.Truncate(highlighted, width-1, "\x1b[0m"))
+			content = injectBg(ansi.Truncate(highlighted, width-1, "\x1b[0m"), addedBgEsc)
 		}
 	default:
 		prefix = " "
@@ -159,6 +159,12 @@ func formatSideContent(highlighted, raw string, lineType DiffLineType, width int
 	}
 
 	return prefix + content + padStr
+}
+
+// injectBg re-applies a background ANSI escape after every reset (\x1b[0m) in the
+// string so the background color persists across syntax-highlighted tokens.
+func injectBg(s string, bgEsc string) string {
+	return bgEsc + strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+bgEsc) + "\x1b[0m"
 }
 
 // truncatePlain truncates a plain (no ANSI) string to maxW visible characters.
@@ -191,8 +197,8 @@ func RenderUnifiedLines(pd ParsedDiff, filename string) []string {
 
 	removedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Background(lipgloss.Color("#3d1012"))
 	addedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("78")).Background(lipgloss.Color("#0d3317"))
-	removedBgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#3d1012"))
-	addedBgStyle := lipgloss.NewStyle().Background(lipgloss.Color("#0d3317"))
+	removedBgEsc := "\x1b[48;2;61;16;18m"  // #3d1012
+	addedBgEsc := "\x1b[48;2;13;51;23m"    // #0d3317
 	lineNumStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("239"))
 	hunkHeaderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
 	dividerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("236"))
@@ -246,8 +252,8 @@ func RenderUnifiedLines(pd ParsedDiff, filename string) []string {
 			if hl == dl.Content {
 				content = removedStyle.Render(dl.Content)
 			} else {
-				// Syntax-highlighted: wrap with background
-				content = removedBgStyle.Render(hl)
+				// Syntax-highlighted: inject background after every reset so it persists
+				content = injectBg(hl, removedBgEsc)
 			}
 			result = append(result, nums+" "+prefix+content)
 		case DiffAdded:
@@ -256,7 +262,7 @@ func RenderUnifiedLines(pd ParsedDiff, filename string) []string {
 			if hl == dl.Content {
 				content = addedStyle.Render(dl.Content)
 			} else {
-				content = addedBgStyle.Render(hl)
+				content = injectBg(hl, addedBgEsc)
 			}
 			result = append(result, nums+" "+prefix+content)
 		default:
