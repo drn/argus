@@ -896,6 +896,16 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case msg.Type == tea.KeyEnter || msg.Type == tea.KeySpace:
+		sel := m.settings.Selected()
+		if sel != nil && sel.kind == settingsRowSandbox {
+			cfg := m.db.Config()
+			_ = m.db.SetSandboxEnabled(!cfg.Sandbox.Enabled)
+			agent.ResetSandboxCache()
+			m.refreshSettings()
+		}
+		return m, nil
+
 	case key.Matches(msg, m.keys.Delete):
 		if m.settings.SelectedProject() != nil {
 			m.current = viewConfirmDeleteProject
@@ -958,9 +968,10 @@ func (m *Model) refreshSettings() {
 	m.settings.SetBackends(m.db.Backends())
 	m.settings.SetTasks(m.db.Tasks())
 	cfg := m.db.Config()
-	// Only probe srt availability if sandbox is enabled — the check may
-	// invoke npx which is slow on first run. No point probing when disabled.
-	available := cfg.Sandbox.Enabled && agent.IsSandboxAvailable()
+	// IsSandboxAvailable() is cached via sync.Once — only slow on the first call.
+	// Always probe so the settings view shows correct install status regardless of
+	// whether sandbox is currently enabled.
+	available := agent.IsSandboxAvailable()
 	m.settings.SetSandboxConfig(
 		cfg.Sandbox.Enabled,
 		available,
