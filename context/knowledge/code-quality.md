@@ -204,6 +204,8 @@
 1. **Triple-slash path:** `"//" + "/absolute/path"` → `"///absolute/path"`. Fix: `"//" + strings.TrimPrefix(path, "/")` in `normalizeSrtPath`.
 2. **npx --yes at startup:** Original implementation used `npx --yes` (auto-installs packages). Fix: use `--no` flag, add 5s timeout, cache via `sync.Once`. Now called unconditionally in `refreshSettings()` since caching makes repeated calls free.
 3. **Tests validated buggy format:** Test expected values matched the triple-slash bug, so tests passed despite incorrect behavior. Lesson: always validate test expectations against the external spec, not just internal consistency.
+4. **Missing `allowPty: true`:** srt blocks PTY operations by default on macOS (`allowPty` defaults to `false` in `SandboxRuntimeConfigSchema`). Since Argus runs agents via PTY, the sandbox silently blocked terminal I/O — agent view showed "Waiting for output..." indefinitely. Fix: set `AllowPty: true` in `srtSettings` struct. Lesson: when integrating srt, read the full Zod schema in `sandbox-config.js` for security-default fields that need explicit opt-in.
+5. **Settings cursor navigation off-by-one in tests:** Two sandbox config form tests used 2 `CursorDown()` calls instead of 3 (forgot UX logs row between daemon logs and sandbox). One panicked on `inputs[0]` access; the other silently tested a no-op path. Lesson: always assert cursor position before acting on it in settings tests.
 
 ### Config Persistence
 - Sandbox config stored as `sandbox.enabled`, `sandbox.allowed_domains`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
