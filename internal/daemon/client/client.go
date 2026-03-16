@@ -15,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // rpcTimeout is the maximum time to wait for any single RPC call to the daemon.
@@ -84,6 +85,7 @@ func (c *Client) Close() error {
 
 // Start requests the daemon to start a session and opens a stream for its output.
 func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (agent.SessionHandle, error) {
+	uxlog.Log("client.Start: task=%s session=%s resume=%v", task.ID, task.SessionID, resume)
 	req := &daemon.StartReq{
 		TaskID:    task.ID,
 		SessionID: task.SessionID,
@@ -99,9 +101,11 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 
 	var resp daemon.StartResp
 	if err := c.call("Daemon.StartSession", req, &resp); err != nil {
+		uxlog.Log("client.Start: RPC FAILED task=%s err=%v", task.ID, err)
 		return nil, err
 	}
 
+	uxlog.Log("client.Start: success task=%s pid=%d", task.ID, resp.PID)
 	rs := c.getOrCreateSession(task.ID)
 	rs.mu.Lock()
 	rs.pid = resp.PID
@@ -222,6 +226,7 @@ func (c *Client) call(method string, args, reply any) error {
 	case err := <-ch:
 		return err
 	case <-time.After(rpcTimeout):
+		uxlog.Log("client.call: RPC TIMEOUT method=%s", method)
 		return ErrRPCTimeout
 	}
 }
@@ -295,6 +300,7 @@ func WaitForShutdown(sockPath string, timeout time.Duration) {
 // removeSession cleans up a session from the client's map, queries exit info
 // from the daemon, and fires the callback.
 func (c *Client) removeSession(taskID string) {
+	uxlog.Log("client.removeSession: task=%s", taskID)
 	c.mu.Lock()
 	delete(c.sessions, taskID)
 	fn := c.onSessionExit
@@ -303,7 +309,9 @@ func (c *Client) removeSession(taskID string) {
 	if fn != nil {
 		// Query exit info from daemon before firing callback.
 		var info daemon.ExitInfo
-		c.call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
+		err := c.call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
+		uxlog.Log("client.removeSession: task=%s exitInfo err=%v rpcErr=%v stopped=%v lastOutput=%d bytes",
+			taskID, info.Err, err, info.Stopped, len(info.LastOutput))
 		fn(taskID, info)
 	}
 }

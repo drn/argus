@@ -19,6 +19,7 @@ const (
 	settingsRowBackend                         // backend item
 	settingsRowSandbox                         // sandbox config item
 	settingsRowDaemonLogs                      // daemon logs item
+	settingsRowUXLogs                          // UX debug logs item
 )
 
 type settingsRow struct {
@@ -139,8 +140,9 @@ func (sv *SettingsView) rebuildRows() {
 		}
 	}
 
-	// DAEMON LOGS row (in STATUS section)
+	// Log viewer rows (in STATUS section)
 	sv.rows = append(sv.rows, settingsRow{kind: settingsRowDaemonLogs, label: "Daemon Logs", key: "_logs"})
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowUXLogs, label: "UX Logs", key: "_uxlogs"})
 
 	// SANDBOX section
 	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "SANDBOX"})
@@ -342,6 +344,8 @@ func (sv SettingsView) View() string {
 				}
 			case settingsRowDaemonLogs:
 				icon = "  "
+			case settingsRowUXLogs:
+				icon = "  "
 			case settingsRowProject:
 				icon = "  "
 			case settingsRowBackend:
@@ -374,6 +378,8 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 		content = sv.renderSandboxDetail(innerW)
 	case settingsRowDaemonLogs:
 		content = sv.renderDaemonLogsDetail(innerW)
+	case settingsRowUXLogs:
+		content = sv.renderUXLogsDetail(innerW)
 	case settingsRowProject:
 		content = sv.renderProjectDetail(sel, innerW)
 	case settingsRowBackend:
@@ -395,6 +401,16 @@ func (sv SettingsView) renderDaemonLogsDetail(_ int) string {
 	var b strings.Builder
 	b.WriteString(sv.theme.Title.Render(" Daemon Logs") + "\n\n")
 	b.WriteString("  " + sv.theme.Dimmed.Render("View recent daemon log output.") + "\n\n")
+	b.WriteString("  " + sv.theme.Help.Render("Press [enter] to open log viewer") + "\n")
+	return b.String()
+}
+
+func (sv SettingsView) renderUXLogsDetail(_ int) string {
+	var b strings.Builder
+	b.WriteString(sv.theme.Title.Render(" UX Logs") + "\n\n")
+	b.WriteString("  " + sv.theme.Dimmed.Render("View TUI debug log output.") + "\n")
+	b.WriteString("  " + sv.theme.Dimmed.Render("Tracks task starts, exits, status") + "\n")
+	b.WriteString("  " + sv.theme.Dimmed.Render("transitions, and daemon client events.") + "\n\n")
 	b.WriteString("  " + sv.theme.Help.Render("Press [enter] to open log viewer") + "\n")
 	return b.String()
 }

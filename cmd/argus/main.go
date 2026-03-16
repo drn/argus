@@ -16,6 +16,7 @@ import (
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/ui"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 func main() {
@@ -45,6 +46,13 @@ func main() {
 }
 
 func runTUI() {
+	// Initialize UX debug log (separate from daemon log).
+	if err := uxlog.Init(uxlog.Path(db.DataDir())); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot open ux log: %v\n", err)
+	}
+	defer uxlog.Close()
+	uxlog.Log("=== argus TUI starting ===")
+
 	database, err := db.Open(db.DefaultPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
@@ -60,11 +68,13 @@ func runTUI() {
 	client, err := dclient.Connect(sockPath)
 	if err != nil {
 		// No daemon running — auto-start one and retry.
+		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
 		client, err = dclient.AutoStart(sockPath)
 	}
 
 	if err != nil {
 		// Daemon failed to start — fall back to in-process runner.
+		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
 		inProc := agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
 			if p != nil {
 				p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped, LastOutput: lastOutput})
@@ -73,6 +83,7 @@ func runTUI() {
 		runner = inProc
 	} else {
 		// Connected to daemon.
+		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
 		client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
 			if p != nil {

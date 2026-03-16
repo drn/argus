@@ -234,3 +234,16 @@
 - `autoStartDaemon` moved from `cmd/argus/main.go` to `dclient.AutoStart()` for reuse by TUI restart
 - `daemonSysProcAttr` platform files moved from `cmd/argus/` to `internal/daemon/client/`
 - `WaitForShutdown(sockPath, timeout)` polls until socket file disappears
+
+### Stream Failure ≠ Process Exit Bug (2026-03-16)
+- Tasks were being auto-completed when the TUI's stream connection to the daemon dropped, even though the agent processes were still running on the daemon side.
+- Root cause: `connectStream` (stream.go) calls `removeSession` on any stream error/EOF. `removeSession` calls `Daemon.GetExitInfo` RPC — but if the process is still alive, `exitInfos[taskID]` doesn't exist (only populated by `onFinish`), so `GetExitInfo` returns empty `ExitInfo{Err: "", Stopped: false}`. The TUI's `onSessionExit` callback fires `AgentFinishedMsg{Err: nil, Stopped: false}`, and `determinePostExitStatus` sees a clean exit after >3 seconds → `StatusComplete`.
+- **Fix needed:** `removeSession` must call `Daemon.SessionStatus` to check if the process is still alive. If alive, reconnect the stream instead of firing the exit callback. Only fire `onSessionExit` when the process has actually exited.
+- Daemon logs showed no restarts — confirming this is a TUI-side issue, not a daemon issue.
+
+### UX Debug Logging (2026-03-16)
+- Added `internal/uxlog` package — file-based logger writing to `~/.argus/ux.log`, separate from daemon's `daemon.log`.
+- Thread-safe (mutex-guarded), no-op if `Init()` not called, idempotent init.
+- Log points cover: `startOrAttach` (entry/failure/success), `handleAgentFinished` (all msg fields + status decision), `handleSessionResumed`, `DaemonRestartedMsg`, `Init()` session resume, daemon client `Start`/`removeSession`/stream connect/disconnect, RPC timeouts.
+- Viewable in Settings → UX Logs row (same modal viewer pattern as Daemon Logs).
+- **Pattern:** When adding a new log viewer row to Settings, the `rebuildRows()` row order determines cursor navigation. Tests that navigate past log rows need `CursorDown()` calls for each new row.
