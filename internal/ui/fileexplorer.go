@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -11,6 +12,14 @@ import (
 type ChangedFile struct {
 	Status string // e.g. "M", "A", "D", "??"
 	Path   string
+	IsDir  bool // true if this entry is a directory (trailing / in git status)
+}
+
+// displayRow is a flattened row in the file explorer, which may be a top-level
+// file/dir or a child of an expanded directory.
+type displayRow struct {
+	ChangedFile
+	indent int // 0 = top-level, 1+ = child of expanded dir
 }
 
 // FileExplorer displays changed files in a scrollable sidebar.
@@ -20,10 +29,19 @@ type FileExplorer struct {
 	height int
 	files  []ChangedFile
 	scroll ScrollState
+
+	// Directory expansion state
+	expanded    map[string]bool          // dir path -> expanded
+	dirChildren map[string][]ChangedFile // dir path -> child files
+	rows        []displayRow             // flattened display rows
 }
 
 func NewFileExplorer(theme Theme) FileExplorer {
-	return FileExplorer{theme: theme}
+	return FileExplorer{
+		theme:       theme,
+		expanded:    make(map[string]bool),
+		dirChildren: make(map[string][]ChangedFile),
+	}
 }
 
 func (fe *FileExplorer) SetSize(w, h int) {
@@ -33,7 +51,63 @@ func (fe *FileExplorer) SetSize(w, h int) {
 
 func (fe *FileExplorer) SetFiles(files []ChangedFile) {
 	fe.files = files
-	fe.scroll.ClampCursor(len(fe.files))
+	// Prune expansion state for directories no longer in the file list
+	currentDirs := make(map[string]bool, len(files))
+	for _, f := range files {
+		if f.IsDir {
+			currentDirs[f.Path] = true
+		}
+	}
+	for path := range fe.expanded {
+		if !currentDirs[path] {
+			delete(fe.expanded, path)
+			delete(fe.dirChildren, path)
+		}
+	}
+	fe.buildDisplayRows()
+	fe.scroll.ClampCursor(len(fe.rows))
+}
+
+// ToggleDir toggles the expansion of a directory. Returns true if the directory
+// needs its children fetched (newly expanded with no cached children).
+func (fe *FileExplorer) ToggleDir(dirPath string) bool {
+	if fe.expanded[dirPath] {
+		// Collapse
+		fe.expanded[dirPath] = false
+		fe.buildDisplayRows()
+		fe.scroll.ClampCursor(len(fe.rows))
+		return false
+	}
+	// Expand
+	fe.expanded[dirPath] = true
+	if _, ok := fe.dirChildren[dirPath]; ok {
+		// Already have children cached
+		fe.buildDisplayRows()
+		fe.scroll.ClampCursor(len(fe.rows))
+		return false
+	}
+	return true // caller needs to fetch children
+}
+
+// SetDirChildren sets the children for an expanded directory and rebuilds rows.
+func (fe *FileExplorer) SetDirChildren(dirPath string, children []ChangedFile) {
+	fe.dirChildren[dirPath] = children
+	fe.buildDisplayRows()
+	fe.scroll.ClampCursor(len(fe.rows))
+}
+
+func (fe *FileExplorer) buildDisplayRows() {
+	fe.rows = nil
+	for _, f := range fe.files {
+		fe.rows = append(fe.rows, displayRow{ChangedFile: f, indent: 0})
+		if f.IsDir && fe.expanded[f.Path] {
+			if children, ok := fe.dirChildren[f.Path]; ok {
+				for _, child := range children {
+					fe.rows = append(fe.rows, displayRow{ChangedFile: child, indent: 1})
+				}
+			}
+		}
+	}
 }
 
 func (fe *FileExplorer) CursorUp() {
@@ -41,21 +115,35 @@ func (fe *FileExplorer) CursorUp() {
 }
 
 func (fe *FileExplorer) CursorDown() {
-	fe.scroll.CursorDown(len(fe.files), fe.visibleRows())
+	fe.scroll.CursorDown(len(fe.rows), fe.visibleRows())
+}
+
+// SelectedRow returns the currently selected display row, or nil if none.
+func (fe *FileExplorer) SelectedRow() *displayRow {
+	c := fe.scroll.Cursor()
+	if c < 0 || c >= len(fe.rows) {
+		return nil
+	}
+	return &fe.rows[c]
 }
 
 // SelectedFile returns the currently selected file, or nil if none.
 func (fe *FileExplorer) SelectedFile() *ChangedFile {
-	c := fe.scroll.Cursor()
-	if c < 0 || c >= len(fe.files) {
+	row := fe.SelectedRow()
+	if row == nil {
 		return nil
 	}
-	return &fe.files[c]
+	return &row.ChangedFile
 }
 
-// FileCount returns the number of files.
+// FileCount returns the number of top-level files.
 func (fe *FileExplorer) FileCount() int {
 	return len(fe.files)
+}
+
+// DisplayRowCount returns the total number of visible rows (including expanded children).
+func (fe *FileExplorer) DisplayRowCount() int {
+	return len(fe.rows)
 }
 
 func (fe *FileExplorer) visibleRows() int {
@@ -79,7 +167,7 @@ func (fe FileExplorer) View(focused bool) string {
 		header += fe.theme.Dimmed.Render(fmt.Sprintf(" (%d)", len(fe.files)))
 	}
 
-	if len(fe.files) == 0 {
+	if len(fe.rows) == 0 {
 		content := header + "\n" + fe.theme.Dimmed.Render("  No changes")
 		return renderPanel(content)
 	}
@@ -91,37 +179,81 @@ func (fe FileExplorer) View(focused bool) string {
 	offset := fe.scroll.Offset()
 	cursor := fe.scroll.Cursor()
 	end := offset + visible
-	if end > len(fe.files) {
-		end = len(fe.files)
+	if end > len(fe.rows) {
+		end = len(fe.rows)
 	}
 
 	for i := offset; i < end; i++ {
-		f := fe.files[i]
+		row := fe.rows[i]
 		selected := focused && i == cursor
-
-		// Status indicator with color
-		statusStyle := fe.statusStyle(f.Status)
-		indicator := statusStyle.Render(fe.statusIcon(f.Status))
-
-		// File path (just the filename, not full path)
-		name := f.Path
-		// Truncate to fit
-		maxNameW := innerW - 6
-		if len(name) > maxNameW && maxNameW > 3 {
-			name = "…" + name[len(name)-maxNameW+1:]
-		}
 
 		nameStyle := fe.theme.Normal
 		if selected {
 			nameStyle = fe.theme.Selected
 		}
 
-		cursor := "  "
+		cursorStr := "  "
 		if selected {
-			cursor = fe.theme.Selected.Render(" ▸")
+			cursorStr = fe.theme.Selected.Render(" ▸")
 		}
 
-		b.WriteString(fmt.Sprintf("%s %s %s\n", cursor, indicator, nameStyle.Render(name)))
+		if row.IsDir {
+			// Directory row with expand/collapse indicator
+			arrow := "▶"
+			if fe.expanded[row.Path] {
+				arrow = "▼"
+			}
+			dirName := strings.TrimSuffix(row.Path, "/")
+			// Truncate to fit
+			maxNameW := innerW - 8
+			if len(dirName) > maxNameW && maxNameW > 3 {
+				dirName = "…" + dirName[len(dirName)-maxNameW+1:]
+			}
+
+			statusStyle := fe.statusStyle(row.Status)
+			indicator := statusStyle.Render(fe.statusIcon(row.Status))
+
+			arrowStyle := fe.theme.Dimmed
+			if selected {
+				arrowStyle = fe.theme.Selected
+			}
+
+			b.WriteString(fmt.Sprintf("%s %s %s %s\n",
+				cursorStr,
+				indicator,
+				arrowStyle.Render(arrow),
+				nameStyle.Render(dirName+"/"),
+			))
+		} else if row.indent > 0 {
+			// Child file of expanded directory — indented
+			statusStyle := fe.statusStyle(row.Status)
+			indicator := statusStyle.Render(fe.statusIcon(row.Status))
+
+			// Show just the filename (relative to parent dir)
+			name := filepath.Base(row.Path)
+			maxNameW := innerW - 10 // extra indent
+			if len(name) > maxNameW && maxNameW > 3 {
+				name = "…" + name[len(name)-maxNameW+1:]
+			}
+
+			b.WriteString(fmt.Sprintf("%s   %s %s\n",
+				cursorStr,
+				indicator,
+				nameStyle.Render(name),
+			))
+		} else {
+			// Regular file row (unchanged from before)
+			statusStyle := fe.statusStyle(row.Status)
+			indicator := statusStyle.Render(fe.statusIcon(row.Status))
+
+			name := row.Path
+			maxNameW := innerW - 6
+			if len(name) > maxNameW && maxNameW > 3 {
+				name = "…" + name[len(name)-maxNameW+1:]
+			}
+
+			b.WriteString(fmt.Sprintf("%s %s %s\n", cursorStr, indicator, nameStyle.Render(name)))
+		}
 	}
 
 	return renderPanel(b.String())
@@ -171,7 +303,8 @@ func ParseGitStatus(output string) []ChangedFile {
 		status := strings.TrimSpace(line[:2])
 		path := strings.TrimSpace(line[3:])
 		if path != "" {
-			files = append(files, ChangedFile{Status: status, Path: path})
+			isDir := strings.HasSuffix(path, "/")
+			files = append(files, ChangedFile{Status: status, Path: path, IsDir: isDir})
 		}
 	}
 	return files
@@ -192,7 +325,8 @@ func ParseGitDiffNameStatus(output string) []ChangedFile {
 		status := strings.TrimSpace(parts[0])
 		path := strings.TrimSpace(parts[1])
 		if path != "" {
-			files = append(files, ChangedFile{Status: status, Path: path})
+			isDir := strings.HasSuffix(path, "/")
+			files = append(files, ChangedFile{Status: status, Path: path, IsDir: isDir})
 		}
 	}
 	return files

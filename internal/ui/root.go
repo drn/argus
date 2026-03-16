@@ -371,6 +371,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agentview.UpdateFileDiff(msg)
 		return m, nil
 
+	case DirFilesMsg:
+		m.agentview.UpdateDirFiles(msg)
+		return m, nil
+
 	case tea.MouseMsg:
 		if m.current == viewAgent {
 			m.agentview.HandleMouse(msg)

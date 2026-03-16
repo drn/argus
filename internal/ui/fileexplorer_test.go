@@ -227,6 +227,236 @@ func TestFileExplorer_StatusIcon(t *testing.T) {
 	}
 }
 
+func TestParseGitStatus_DetectsDirectories(t *testing.T) {
+	input := "?? newdir/\n M file.go\n"
+	files := ParseGitStatus(input)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+	if !files[0].IsDir {
+		t.Error("expected newdir/ to be detected as directory")
+	}
+	if files[0].Path != "newdir/" {
+		t.Errorf("expected path 'newdir/', got %q", files[0].Path)
+	}
+	if files[1].IsDir {
+		t.Error("expected file.go to not be a directory")
+	}
+}
+
+func TestFileExplorer_ToggleDir_Expand(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "newdir/", IsDir: true},
+		{Status: "M", Path: "file.go"},
+	})
+
+	// Initially 2 display rows
+	if fe.DisplayRowCount() != 2 {
+		t.Fatalf("expected 2 display rows, got %d", fe.DisplayRowCount())
+	}
+
+	// Toggle expand with no cached children — should return true (needs fetch)
+	needsFetch := fe.ToggleDir("newdir/")
+	if !needsFetch {
+		t.Error("expected ToggleDir to return true for new expansion")
+	}
+
+	// Set children
+	fe.SetDirChildren("newdir/", []ChangedFile{
+		{Status: "A", Path: "newdir/a.go"},
+		{Status: "A", Path: "newdir/b.go"},
+	})
+
+	// Now should have 4 display rows
+	if fe.DisplayRowCount() != 4 {
+		t.Fatalf("expected 4 display rows after expansion, got %d", fe.DisplayRowCount())
+	}
+
+	// Verify the display rows
+	rows := fe.rows
+	if !rows[0].IsDir || rows[0].Path != "newdir/" {
+		t.Errorf("row 0 should be dir, got %+v", rows[0])
+	}
+	if rows[1].Path != "newdir/a.go" || rows[1].indent != 1 {
+		t.Errorf("row 1 should be indented child, got %+v", rows[1])
+	}
+	if rows[2].Path != "newdir/b.go" || rows[2].indent != 1 {
+		t.Errorf("row 2 should be indented child, got %+v", rows[2])
+	}
+	if rows[3].Path != "file.go" || rows[3].indent != 0 {
+		t.Errorf("row 3 should be top-level file, got %+v", rows[3])
+	}
+}
+
+func TestFileExplorer_ToggleDir_Collapse(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "newdir/", IsDir: true},
+		{Status: "M", Path: "file.go"},
+	})
+
+	// Expand and set children
+	fe.ToggleDir("newdir/")
+	fe.SetDirChildren("newdir/", []ChangedFile{
+		{Status: "A", Path: "newdir/a.go"},
+	})
+	if fe.DisplayRowCount() != 3 {
+		t.Fatalf("expected 3 rows after expand, got %d", fe.DisplayRowCount())
+	}
+
+	// Collapse
+	needsFetch := fe.ToggleDir("newdir/")
+	if needsFetch {
+		t.Error("collapse should not need fetch")
+	}
+	if fe.DisplayRowCount() != 2 {
+		t.Fatalf("expected 2 rows after collapse, got %d", fe.DisplayRowCount())
+	}
+}
+
+func TestFileExplorer_ToggleDir_ReexpandUsesCachedChildren(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "dir/", IsDir: true},
+	})
+
+	// First expand — needs fetch
+	needsFetch := fe.ToggleDir("dir/")
+	if !needsFetch {
+		t.Error("first expand should need fetch")
+	}
+	fe.SetDirChildren("dir/", []ChangedFile{
+		{Status: "A", Path: "dir/x.go"},
+	})
+
+	// Collapse
+	fe.ToggleDir("dir/")
+
+	// Re-expand — should use cached children
+	needsFetch = fe.ToggleDir("dir/")
+	if needsFetch {
+		t.Error("re-expand should use cached children, not need fetch")
+	}
+	if fe.DisplayRowCount() != 2 {
+		t.Fatalf("expected 2 rows after re-expand, got %d", fe.DisplayRowCount())
+	}
+}
+
+func TestFileExplorer_CursorNavigatesExpandedDir(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "dir/", IsDir: true},
+		{Status: "M", Path: "file.go"},
+	})
+
+	fe.ToggleDir("dir/")
+	fe.SetDirChildren("dir/", []ChangedFile{
+		{Status: "A", Path: "dir/child.go"},
+	})
+	// rows: dir/, dir/child.go, file.go
+
+	fe.CursorDown() // -> dir/child.go
+	row := fe.SelectedRow()
+	if row == nil || row.Path != "dir/child.go" {
+		t.Errorf("expected cursor on dir/child.go, got %+v", row)
+	}
+
+	fe.CursorDown() // -> file.go
+	row = fe.SelectedRow()
+	if row == nil || row.Path != "file.go" {
+		t.Errorf("expected cursor on file.go, got %+v", row)
+	}
+}
+
+func TestFileExplorer_ViewExpandedDir(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "newdir/", IsDir: true},
+	})
+	fe.ToggleDir("newdir/")
+	fe.SetDirChildren("newdir/", []ChangedFile{
+		{Status: "A", Path: "newdir/hello.go"},
+	})
+
+	view := fe.View(true)
+	if !strings.Contains(view, "▼") {
+		t.Error("expanded dir should show ▼ indicator")
+	}
+	if !strings.Contains(view, "hello.go") {
+		t.Error("expanded dir should show child file")
+	}
+}
+
+func TestFileExplorer_ViewCollapsedDir(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "newdir/", IsDir: true},
+	})
+
+	view := fe.View(true)
+	if !strings.Contains(view, "▶") {
+		t.Error("collapsed dir should show ▶ indicator")
+	}
+}
+
+func TestFileExplorer_SelectedFileOnChild(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "dir/", IsDir: true},
+	})
+	fe.ToggleDir("dir/")
+	fe.SetDirChildren("dir/", []ChangedFile{
+		{Status: "A", Path: "dir/child.go"},
+	})
+
+	fe.CursorDown() // -> dir/child.go
+	f := fe.SelectedFile()
+	if f == nil {
+		t.Fatal("expected non-nil SelectedFile on child")
+	}
+	if f.Path != "dir/child.go" {
+		t.Errorf("expected path dir/child.go, got %q", f.Path)
+	}
+	if f.IsDir {
+		t.Error("child file should not be a directory")
+	}
+}
+
+func TestFileExplorer_SetFiles_PrunesStaleExpansion(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "dir/", IsDir: true},
+	})
+	fe.ToggleDir("dir/")
+	fe.SetDirChildren("dir/", []ChangedFile{
+		{Status: "A", Path: "dir/child.go"},
+	})
+
+	// New file list without the directory — stale state should be pruned
+	fe.SetFiles([]ChangedFile{
+		{Status: "M", Path: "other.go"},
+	})
+
+	if _, ok := fe.expanded["dir/"]; ok {
+		t.Error("stale expanded entry should be pruned")
+	}
+	if _, ok := fe.dirChildren["dir/"]; ok {
+		t.Error("stale dirChildren entry should be pruned")
+	}
+	if fe.DisplayRowCount() != 1 {
+		t.Errorf("expected 1 display row, got %d", fe.DisplayRowCount())
+	}
+}
+
 func TestFileExplorer_StatusStyle(t *testing.T) {
 	theme := DefaultTheme()
 	fe := NewFileExplorer(theme)
