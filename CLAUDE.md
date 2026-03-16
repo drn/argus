@@ -133,6 +133,7 @@ go test ./internal/db/      # run tests for a single package
   - `exec.Command("echo", "hello")` or `exec.Command("sleep", "10")` for agent/session tests
   - `DefaultTheme()` for any UI component tests
   - Table-driven tests with `[]struct{ input, expected }` for functions with many cases
+  - **Keep daemon client test names short** — macOS Unix socket paths have a 104-byte limit. `t.TempDir()` + long test name exceeds it → `connect: invalid argument`. Use short names like `TestAlive_Dead` not `TestIsSessionAlive_DeadSession`.
 
 ## Context Directory
 
