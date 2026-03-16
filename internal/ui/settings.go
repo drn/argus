@@ -133,7 +133,7 @@ func (sv *SettingsView) rebuildRows() {
 	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "STATUS"})
 	if len(sv.warnings) == 0 {
 		// No warnings — still show an "all good" row
-		sv.rows = append(sv.rows, settingsRow{kind: settingsRowWarning, label: "All systems nominal", key: "_ok"})
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowWarning, label: "System status", key: "_ok"})
 	} else {
 		for i, w := range sv.warnings {
 			sv.rows = append(sv.rows, settingsRow{kind: settingsRowWarning, label: w, key: fmt.Sprintf("_warn_%d", i)})
@@ -469,7 +469,7 @@ func (sv SettingsView) renderWarningDetail(sel *settingsRow, _ int) string {
 
 	if sel.key == "_ok" {
 		b.WriteString(sv.theme.Title.Render(" System Status") + "\n\n")
-		b.WriteString(sv.theme.Complete.Render("  All systems nominal") + "\n\n")
+		b.WriteString(sv.theme.Complete.Render("  System status") + "\n\n")
 		b.WriteString("  " + sv.theme.Dimmed.Render("Daemon is running. Sessions will persist") + "\n")
 		b.WriteString("  " + sv.theme.Dimmed.Render("across TUI restarts.") + "\n\n")
 		b.WriteString("  " + sv.theme.Dimmed.Render("Press [r] to restart the daemon.") + "\n")

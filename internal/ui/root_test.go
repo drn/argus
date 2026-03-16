@@ -1874,7 +1874,7 @@ func TestSettingsKey_RestartDaemon_WithDaemon(t *testing.T) {
 func TestSettingsWarningDetail_ShowsRestartHint(t *testing.T) {
 	sv := NewSettingsView(DefaultTheme())
 	sv.SetSize(40, 30)
-	sv.SetWarnings(nil) // no warnings = "All systems nominal"
+	sv.SetWarnings(nil) // no warnings = "System status"
 	sv.SetProjects(nil)
 	sv.SetBackends(nil)
 
