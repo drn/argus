@@ -144,6 +144,8 @@ go test ./internal/db/      # run tests for a single package
 - `context/research/` holds investigation notes and spike results
 - `context/plans/` holds strategic plans and proposals
 
+- **`git worktree add` requires a valid local ref or remote-tracking ref as the start point.** If the project config stores just `"master"` but the repo only has `origin/master` (no local branch), `git worktree add -b argus/task <path> master` fails with `fatal: not a valid object name: 'master'`. `resolveStartPoint()` in `worktree.go` resolves this by checking `git rev-parse --verify` and falling back to `upstream/<branch>` then `origin/<branch>`. The new project form also auto-detects the remote default branch (preferring `upstream` over `origin`) when the user enters a repo path, so new projects get the full ref like `upstream/master` by default.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

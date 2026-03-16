@@ -113,6 +113,88 @@ func TestCreateWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateWorktree_RemoteBranch(t *testing.T) {
+	// Test that CreateWorktree falls back to origin/<branch> when the local
+	// branch doesn't exist (e.g., a bare clone with only remote-tracking refs).
+	upstreamDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = upstreamDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(upstreamDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = upstreamDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	// Clone into a repo, then delete the local default branch so only
+	// the origin remote-tracking branch exists.
+	repoDir := t.TempDir()
+	cloneCmd := exec.Command("git", "clone", upstreamDir, repoDir)
+	if out, err := cloneCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %s\n%s", err, out)
+	}
+	// Detect the default branch name (could be master or main depending on git config).
+	detectCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	detectCmd.Dir = repoDir
+	defaultBranchBytes, err := detectCmd.Output()
+	if err != nil {
+		t.Fatalf("detecting default branch: %v", err)
+	}
+	defaultBranch := strings.TrimSpace(string(defaultBranchBytes))
+	// Create a different branch and delete local default branch so only origin/<branch> exists.
+	for _, args := range [][]string{
+		{"checkout", "-b", "other"},
+		{"branch", "-d", defaultBranch},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// baseBranch=defaultBranch should resolve to origin/<defaultBranch>.
+	wtPath, finalName, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
+	if err != nil {
+		t.Fatalf("CreateWorktree with remote branch failed: %v", err)
+	}
+	if finalName != "remote-test" {
+		t.Errorf("expected finalName %q, got %q", "remote-test", finalName)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath)
+	}
+}
+
+func TestResolveStartPoint(t *testing.T) {
+	// HEAD should always be returned as-is.
+	if got := resolveStartPoint("/nonexistent", "HEAD"); got != "HEAD" {
+		t.Errorf("expected HEAD, got %q", got)
+	}
+}
+
 func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	// Test the fallback path where the branch already exists but worktree doesn't.
 	repoDir := t.TempDir()

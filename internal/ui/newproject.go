@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -42,7 +43,7 @@ func NewNewProjectForm(theme Theme) NewProjectForm {
 	inputs[projFieldPath] = pathInput
 
 	branchInput := textinput.New()
-	branchInput.Placeholder = "Default branch (e.g. master)"
+	branchInput.Placeholder = "Base branch (e.g. origin/master)"
 	branchInput.CharLimit = 60
 	branchInput.SetValue("master")
 	inputs[projFieldBranch] = branchInput
@@ -61,17 +62,34 @@ func NewNewProjectForm(theme Theme) NewProjectForm {
 
 func (f *NewProjectForm) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
+	case detectBranchMsg:
+		// Auto-fill branch field if user hasn't manually changed it.
+		cur := strings.TrimSpace(f.inputs[projFieldBranch].Value())
+		if msg.branch != "" && (cur == "master" || cur == "main" || cur == "") {
+			f.inputs[projFieldBranch].SetValue(msg.branch)
+		}
+		return nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
 			f.canceled = true
 			return nil
 		case "tab", "down":
+			prev := f.focused
 			f.focused = (f.focused + 1) % projFieldCount
-			return f.focusCurrent()
+			cmds := []tea.Cmd{f.focusCurrent()}
+			if prev == projFieldPath {
+				cmds = append(cmds, f.detectDefaultBranch())
+			}
+			return tea.Batch(cmds...)
 		case "shift+tab", "up":
+			prev := f.focused
 			f.focused = (f.focused - 1 + projFieldCount) % projFieldCount
-			return f.focusCurrent()
+			cmds := []tea.Cmd{f.focusCurrent()}
+			if prev == projFieldPath {
+				cmds = append(cmds, f.detectDefaultBranch())
+			}
+			return tea.Batch(cmds...)
 		case "enter":
 			if f.focused == projFieldCount-1 {
 				// Submit on enter at last field
@@ -89,6 +107,56 @@ func (f *NewProjectForm) Update(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	f.inputs[f.focused], cmd = f.inputs[f.focused].Update(msg)
 	return cmd
+}
+
+type detectBranchMsg struct{ branch string }
+
+// detectDefaultBranch returns a tea.Cmd that detects the default remote branch
+// for the path currently entered in the form.
+func (f *NewProjectForm) detectDefaultBranch() tea.Cmd {
+	path := strings.TrimSpace(f.inputs[projFieldPath].Value())
+	if path == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		return detectBranchMsg{branch: detectRemoteDefaultBranch(path)}
+	}
+}
+
+// detectRemoteDefaultBranch returns a ref like "upstream/master" for the given repo path.
+// Prefers upstream over origin. Falls back to "" if detection fails.
+func detectRemoteDefaultBranch(repoDir string) string {
+	// Try each remote in priority order: upstream first, then origin.
+	for _, remote := range []string{"upstream", "origin"} {
+		// Try symbolic-ref first (set by clone, or `git remote set-head <remote> --auto`).
+		cmd := exec.Command("git", "symbolic-ref", "refs/remotes/"+remote+"/HEAD")
+		cmd.Dir = repoDir
+		if out, err := cmd.Output(); err == nil {
+			ref := strings.TrimSpace(string(out))
+			// refs/remotes/upstream/master → upstream/master
+			ref = strings.TrimPrefix(ref, "refs/remotes/")
+			if ref != "" {
+				return ref
+			}
+		}
+
+		// Fallback: query the remote directly.
+		cmd = exec.Command("git", "ls-remote", "--symref", remote, "HEAD")
+		cmd.Dir = repoDir
+		if out, err := cmd.Output(); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "ref:") && strings.Contains(line, "HEAD") {
+					parts := strings.Fields(line)
+					if len(parts) >= 2 {
+						branch := strings.TrimPrefix(parts[1], "refs/heads/")
+						return remote + "/" + branch
+					}
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 func (f *NewProjectForm) focusCurrent() tea.Cmd {
