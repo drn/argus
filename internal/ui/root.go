@@ -32,6 +32,7 @@ const (
 	viewPruning
 	viewAgent
 	viewSandboxInstall
+	viewSandboxConfig
 	viewDaemonRestart
 	viewDaemonLogs
 )
@@ -120,7 +121,8 @@ type Model struct {
 	statusbar   StatusBar
 	helpview    HelpView
 	newtask     NewTaskForm
-	newproject  NewProjectForm
+	newproject    NewProjectForm
+	sandboxconfig SandboxConfigForm // sandbox settings editor
 	preview     Preview
 	gitstatus   *GitStatus
 	detail      TaskDetail
@@ -300,6 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
 		m.newproject.SetSize(msg.Width, msg.Height)
+		m.sandboxconfig.SetSize(msg.Width, msg.Height)
 		m.agentview.SetSize(msg.Width, msg.Height)
 		return m, nil
 
@@ -510,6 +513,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case viewSandboxInstall:
 		return m.handleSandboxInstallKey(msg)
+	case viewSandboxConfig:
+		return m.handleSandboxConfigKey(msg)
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
@@ -987,6 +992,41 @@ func (m Model) handleSandboxInstallKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) handleSandboxConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd := m.sandboxconfig.Update(msg)
+
+	if m.sandboxconfig.Canceled() {
+		m.current = viewTaskList
+		return m, nil
+	}
+
+	if m.sandboxconfig.Done() {
+		enabled, domains, denyRead, extraWrite := m.sandboxconfig.Result()
+		var saveErr error
+		if err := m.db.SetSandboxEnabled(enabled); err != nil {
+			saveErr = err
+		}
+		if err := m.db.SetConfigValue("sandbox.allowed_domains", domains); err != nil {
+			saveErr = err
+		}
+		if err := m.db.SetConfigValue("sandbox.deny_read", denyRead); err != nil {
+			saveErr = err
+		}
+		if err := m.db.SetConfigValue("sandbox.extra_write", extraWrite); err != nil {
+			saveErr = err
+		}
+		if saveErr != nil {
+			m.statusbar.SetError("failed to save sandbox config")
+		}
+		agent.ResetSandboxCache()
+		m.refreshSettings()
+		m.current = viewTaskList
+		return m, nil
+	}
+
+	return m, cmd
+}
+
 func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -1016,9 +1056,16 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		sel := m.settings.Selected()
 		if sel != nil && sel.kind == settingsRowSandbox {
 			cfg := m.db.Config()
-			_ = m.db.SetSandboxEnabled(!cfg.Sandbox.Enabled)
-			agent.ResetSandboxCache()
-			m.refreshSettings()
+			m.sandboxconfig = NewSandboxConfigForm(
+				m.theme,
+				cfg.Sandbox.Enabled,
+				cfg.Sandbox.AllowedDomains,
+				cfg.Sandbox.DenyRead,
+				cfg.Sandbox.ExtraWrite,
+			)
+			m.sandboxconfig.SetSize(m.width, m.height)
+			m.current = viewSandboxConfig
+			return m, m.sandboxconfig.FocusFirst()
 		}
 		if sel != nil && sel.kind == settingsRowDaemonLogs {
 			return m, m.loadDaemonLogsCmd()

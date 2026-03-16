@@ -1598,6 +1598,10 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		{"sandboxInstalling", func(m *Model) { m.current = viewSandboxInstall; m.sandboxInstalling = true }},
 		{"sandboxInstallDone", func(m *Model) { m.current = viewSandboxInstall; m.sandboxInstallResult = "Installed" }},
 		{"daemonRestart", func(m *Model) { m.current = viewDaemonRestart; m.daemonRestarting = true }},
+		{"sandboxConfig", func(m *Model) {
+			m.sandboxconfig = NewSandboxConfigForm(m.theme, false, nil, nil, nil)
+			m.current = viewSandboxConfig
+		}},
 		{"daemonLogs", func(m *Model) { m.current = viewDaemonLogs; m.daemonLogLines = []string{"test log line"} }},
 	}
 	for _, tc := range views {

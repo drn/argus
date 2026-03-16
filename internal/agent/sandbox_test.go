@@ -34,12 +34,8 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !settings.Sandbox.Enabled {
-		t.Error("expected sandbox.enabled=true")
-	}
-
 	// Check allowWrite contains worktree and /tmp
-	aw := settings.Sandbox.Filesystem.AllowWrite
+	aw := settings.Filesystem.AllowWrite
 	if !containsString(aw, "//home/user/.argus/worktrees/myapp/fix-bug") {
 		t.Errorf("allowWrite missing worktree path, got %v", aw)
 	}
@@ -48,7 +44,7 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 	}
 
 	// Check denyRead contains credential dirs
-	dr := settings.Sandbox.Filesystem.DenyRead
+	dr := settings.Filesystem.DenyRead
 	for _, expected := range []string{"~/.ssh", "~/.gnupg", "~/.aws", "~/.kube"} {
 		if !containsString(dr, expected) {
 			t.Errorf("denyRead missing %q, got %v", expected, dr)
@@ -56,7 +52,7 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 	}
 
 	// Check default allowed domains
-	ad := settings.Sandbox.Network.AllowedDomains
+	ad := settings.Network.AllowedDomains
 	for _, expected := range []string{"api.anthropic.com", "statsig.anthropic.com", "sentry.io"} {
 		if !containsString(ad, expected) {
 			t.Errorf("allowedDomains missing %q, got %v", expected, ad)
@@ -91,7 +87,7 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 	}
 
 	// Custom domains should be merged with defaults
-	ad := settings.Sandbox.Network.AllowedDomains
+	ad := settings.Network.AllowedDomains
 	if !containsString(ad, "github.com") {
 		t.Errorf("allowedDomains missing github.com, got %v", ad)
 	}
@@ -100,13 +96,13 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 	}
 
 	// Custom deny read paths
-	dr := settings.Sandbox.Filesystem.DenyRead
+	dr := settings.Filesystem.DenyRead
 	if !containsString(dr, "//secrets") {
 		t.Errorf("denyRead missing /secrets, got %v", dr)
 	}
 
 	// Custom extra write paths
-	aw := settings.Sandbox.Filesystem.AllowWrite
+	aw := settings.Filesystem.AllowWrite
 	if !containsString(aw, "~/.npm") {
 		t.Errorf("allowWrite missing ~/.npm, got %v", aw)
 	}
@@ -160,14 +156,14 @@ func TestGenerateSandboxConfig_NoDuplicateDomains(t *testing.T) {
 
 	// Count occurrences of api.anthropic.com
 	count := 0
-	for _, d := range settings.Sandbox.Network.AllowedDomains {
+	for _, d := range settings.Network.AllowedDomains {
 		if d == "api.anthropic.com" {
 			count++
 		}
 	}
 	if count != 1 {
 		t.Errorf("api.anthropic.com should appear once, got %d times in %v",
-			count, settings.Sandbox.Network.AllowedDomains)
+			count, settings.Network.AllowedDomains)
 	}
 }
 

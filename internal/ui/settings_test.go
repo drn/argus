@@ -358,7 +358,7 @@ func TestModel_DaemonConnectedWarning(t *testing.T) {
 	}
 }
 
-func TestModel_SandboxToggle(t *testing.T) {
+func TestModel_SandboxConfigForm(t *testing.T) {
 	database, err := db.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -386,29 +386,107 @@ func TestModel_SandboxToggle(t *testing.T) {
 		t.Error("expected sandbox disabled initially")
 	}
 
-	// Press Enter to toggle on
+	// Press Enter to open sandbox config form
 	enterMsg := tea.KeyMsg{Type: tea.KeyEnter}
 	updated, _ := m.handleSettingsKey(enterMsg)
 	m = updated.(Model)
 
-	cfg = m.db.Config()
-	if !cfg.Sandbox.Enabled {
-		t.Error("expected sandbox enabled after Enter toggle")
+	if m.current != viewSandboxConfig {
+		t.Fatalf("expected viewSandboxConfig, got %d", m.current)
 	}
 
-	// Press Enter again to toggle off.
-	// After the first toggle, refreshSettings rebuilds rows but the cursor index
-	// is preserved, so it should still be on the sandbox row.
-	sel = m.settings.Selected()
-	if sel == nil || sel.kind != settingsRowSandbox {
-		t.Fatalf("expected cursor still on sandbox row after first toggle, got %v", sel)
-	}
-	updated, _ = m.handleSettingsKey(enterMsg)
+	// Toggle enabled via ctrl+e
+	updated, _ = m.handleSandboxConfigKey(tea.KeyMsg{Type: tea.KeyCtrlE})
 	m = updated.(Model)
 
+	if !m.sandboxconfig.enabled {
+		t.Error("expected sandbox enabled after ctrl+e in form")
+	}
+
+	// Navigate to last field and submit
+	m.sandboxconfig.focused = sbFieldExtraWrite
+	updated, _ = m.handleSandboxConfigKey(enterMsg)
+	m = updated.(Model)
+
+	if m.current != viewTaskList {
+		t.Fatalf("expected viewTaskList after submit, got %d", m.current)
+	}
+
 	cfg = m.db.Config()
+	if !cfg.Sandbox.Enabled {
+		t.Error("expected sandbox enabled after form submit")
+	}
+}
+
+func TestModel_SandboxConfigFormCancel(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	agent.ResetSandboxCache()
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, true)
+	m.activeTab = tabSettings
+	m.width = 120
+	m.height = 40
+	m.refreshSettings()
+
+	// Navigate to sandbox row and open form
+	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // sandbox
+	updated, _ := m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Toggle enabled then cancel — should NOT persist
+	m.handleSandboxConfigKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+	updated, _ = m.handleSandboxConfigKey(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(Model)
+
+	if m.current != viewTaskList {
+		t.Fatalf("expected viewTaskList after cancel, got %d", m.current)
+	}
+
+	cfg := m.db.Config()
 	if cfg.Sandbox.Enabled {
-		t.Error("expected sandbox disabled after second Enter toggle")
+		t.Error("expected sandbox still disabled after cancel")
+	}
+}
+
+func TestModel_SandboxConfigFormDomains(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	agent.ResetSandboxCache()
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, true)
+	m.activeTab = tabSettings
+	m.width = 120
+	m.height = 40
+	m.refreshSettings()
+
+	// Navigate to sandbox row and open form
+	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // sandbox
+	updated, _ := m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	// Type domains into the first field
+	m.sandboxconfig.inputs[sbFieldDomains].SetValue("github.com,npmjs.org")
+
+	// Submit from last field
+	m.sandboxconfig.focused = sbFieldExtraWrite
+	updated, _ = m.handleSandboxConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+
+	cfg := m.db.Config()
+	if len(cfg.Sandbox.AllowedDomains) != 2 {
+		t.Fatalf("expected 2 domains, got %d: %v", len(cfg.Sandbox.AllowedDomains), cfg.Sandbox.AllowedDomains)
+	}
+	if cfg.Sandbox.AllowedDomains[0] != "github.com" {
+		t.Errorf("expected github.com, got %q", cfg.Sandbox.AllowedDomains[0])
 	}
 }
 
