@@ -154,6 +154,11 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			}
 			return nil
 		}
+		if f.focused == fieldPrompt {
+			if applyWordNavTextarea(msg, &f.promptInput, f.adjustPromptHeight) {
+				return nil
+			}
+		}
 	}
 
 	if f.focused == fieldPrompt {
@@ -166,18 +171,23 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		var cmd tea.Cmd
 		f.promptInput, cmd = f.promptInput.Update(msg)
 		// Shrink height back to fit the actual visual line count
-		lines := f.visualLineCount()
-		if lines < 1 {
-			lines = 1
-		}
-		if lines > maxPromptLines {
-			lines = maxPromptLines
-		}
-		f.promptInput.SetHeight(lines)
+		f.adjustPromptHeight()
 		return cmd
 	}
 
 	return nil
+}
+
+// adjustPromptHeight resizes the prompt textarea to fit its current content.
+func (f *NewTaskForm) adjustPromptHeight() {
+	lines := f.visualLineCount()
+	if lines < 1 {
+		lines = 1
+	}
+	if lines > maxPromptLines {
+		lines = maxPromptLines
+	}
+	f.promptInput.SetHeight(lines)
 }
 
 // visualLineCount returns the total number of visual lines in the textarea,

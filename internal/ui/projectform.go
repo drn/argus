@@ -153,6 +153,9 @@ func (f *ProjectForm) Update(msg tea.Msg) tea.Cmd {
 			f.focused = f.nextField()
 			return f.focusCurrent()
 		}
+		if applyWordNavTextinput(msg, &f.inputs[f.focused]) {
+			return nil
+		}
 	}
 
 	var cmd tea.Cmd

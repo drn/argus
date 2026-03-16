@@ -76,6 +76,12 @@ func (f *SandboxConfigForm) Update(msg tea.Msg) tea.Cmd {
 		}
 	}
 
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if applyWordNavTextinput(keyMsg, &f.inputs[f.focused]) {
+			return nil
+		}
+	}
+
 	var cmd tea.Cmd
 	f.inputs[f.focused], cmd = f.inputs[f.focused].Update(msg)
 	return cmd
