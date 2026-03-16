@@ -39,7 +39,7 @@ const maxPromptLines = 10
 func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string) NewTaskForm {
 	promptInput := textarea.New()
 	promptInput.Placeholder = "Prompt for the agent"
-	promptInput.CharLimit = 500
+	promptInput.CharLimit = 0 // no limit
 	promptInput.ShowLineNumbers = false
 	promptInput.Prompt = ""
 	promptInput.SetHeight(1)
