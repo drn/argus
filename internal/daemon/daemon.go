@@ -11,8 +11,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
@@ -97,6 +99,9 @@ func (d *Daemon) Runner() *agent.Runner {
 // Serve starts listening on the given socket path and accepts connections.
 // Blocks until Shutdown is called or the listener is closed.
 func (d *Daemon) Serve(sockPath string) error {
+	// Kill any existing daemon process before taking over the socket.
+	killExistingDaemon(DefaultPIDPath())
+
 	// Remove stale socket file.
 	os.Remove(sockPath)
 
@@ -216,9 +221,10 @@ func (d *Daemon) Shutdown() {
 
 	d.runner.StopAll()
 
-	// Clean up socket and PID files.
-	os.Remove(DefaultSocketPath())
-	os.Remove(DefaultPIDPath())
+	// Only clean up socket and PID files if we still own them.
+	// A newer daemon may have already replaced these files — removing them
+	// would break the newer daemon's stream connections.
+	removeIfOwnedByPID(DefaultSocketPath(), DefaultPIDPath(), os.Getpid())
 }
 
 // writePIDFile atomically writes the current process PID to a file.
@@ -228,4 +234,66 @@ func writePIDFile(path string) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// readPIDFile reads the PID from a PID file. Returns 0 if the file
+// doesn't exist or can't be parsed.
+func readPIDFile(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// killExistingDaemon reads the PID file and kills the existing daemon
+// process if it's still alive. Waits briefly for it to exit.
+func killExistingDaemon(pidPath string) {
+	pid := readPIDFile(pidPath)
+	if pid == 0 || pid == os.Getpid() {
+		return
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+
+	// Check if process is alive (signal 0 doesn't kill, just checks).
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return // process already dead
+	}
+
+	log.Printf("killing existing daemon pid=%d", pid)
+	_ = proc.Signal(syscall.SIGTERM)
+
+	// Wait up to 2 seconds for it to exit.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return // exited
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Force kill if still alive.
+	log.Printf("force-killing daemon pid=%d", pid)
+	_ = proc.Signal(syscall.SIGKILL)
+}
+
+// removeIfOwnedByPID removes the socket and PID files only if the PID file
+// still contains our PID. Prevents a zombie daemon from deleting a newer
+// daemon's socket.
+func removeIfOwnedByPID(sockPath, pidPath string, ourPID int) {
+	currentPID := readPIDFile(pidPath)
+	if currentPID != ourPID {
+		log.Printf("skipping file cleanup: PID file has %d, we are %d", currentPID, ourPID)
+		return
+	}
+	os.Remove(sockPath)
+	os.Remove(pidPath)
 }
