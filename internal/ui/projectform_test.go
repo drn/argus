@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewProjectForm_Defaults(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	if f.Done() {
 		t.Error("new form should not be done")
 	}
@@ -21,7 +21,7 @@ func TestNewProjectForm_Defaults(t *testing.T) {
 }
 
 func TestNewProjectForm_EscCancels(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	f.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if !f.Canceled() {
 		t.Error("esc should cancel the form")
@@ -29,7 +29,7 @@ func TestNewProjectForm_EscCancels(t *testing.T) {
 }
 
 func TestNewProjectForm_TabNavigation(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Tab: name -> path
 	f.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -57,7 +57,7 @@ func TestNewProjectForm_TabNavigation(t *testing.T) {
 }
 
 func TestNewProjectForm_ShiftTabNavigation(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Shift+tab: name -> wraps to backend
 	f.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
@@ -73,7 +73,7 @@ func TestNewProjectForm_ShiftTabNavigation(t *testing.T) {
 }
 
 func TestNewProjectForm_EnterSubmits(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Set required fields
 	f.inputs[projFieldName].SetValue("myproject")
@@ -89,7 +89,7 @@ func TestNewProjectForm_EnterSubmits(t *testing.T) {
 }
 
 func TestNewProjectForm_EnterWithoutNameDoesNotSubmit(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Only set path, not name
 	f.inputs[projFieldPath].SetValue("/tmp/myproject")
@@ -102,7 +102,7 @@ func TestNewProjectForm_EnterWithoutNameDoesNotSubmit(t *testing.T) {
 }
 
 func TestNewProjectForm_EnterWithoutPathDoesNotSubmit(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Only set name, not path
 	f.inputs[projFieldName].SetValue("myproject")
@@ -115,7 +115,7 @@ func TestNewProjectForm_EnterWithoutPathDoesNotSubmit(t *testing.T) {
 }
 
 func TestNewProjectForm_EnterOnNonLastFieldAdvances(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	f.focused = projFieldName
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -125,7 +125,7 @@ func TestNewProjectForm_EnterOnNonLastFieldAdvances(t *testing.T) {
 }
 
 func TestNewProjectForm_ProjectEntry(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	f.inputs[projFieldName].SetValue("testproj")
 	f.inputs[projFieldPath].SetValue("/home/user/testproj")
 	f.inputs[projFieldBranch].SetValue("develop")
@@ -147,14 +147,14 @@ func TestNewProjectForm_ProjectEntry(t *testing.T) {
 }
 
 func TestNewProjectForm_DefaultBranch(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	if f.inputs[projFieldBranch].Value() != "master" {
 		t.Errorf("default branch = %q, want 'master'", f.inputs[projFieldBranch].Value())
 	}
 }
 
 func TestNewProjectForm_SetSize(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	f.SetSize(120, 40)
 	if f.width != 120 || f.height != 40 {
 		t.Errorf("SetSize(120,40) gave width=%d height=%d", f.width, f.height)
@@ -168,7 +168,7 @@ func TestNewProjectForm_SetSize(t *testing.T) {
 }
 
 func TestNewProjectForm_ModalWidth(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Small width: should be at least 50
 	f.width = 60
@@ -184,7 +184,7 @@ func TestNewProjectForm_ModalWidth(t *testing.T) {
 }
 
 func TestNewProjectForm_DetectBranchMsg(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// Default is "master" — detectBranchMsg should override it.
 	f.Update(detectBranchMsg{branch: "origin/main"})
@@ -194,7 +194,7 @@ func TestNewProjectForm_DetectBranchMsg(t *testing.T) {
 }
 
 func TestNewProjectForm_DetectBranchMsg_NoOverrideCustom(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 
 	// User manually set a custom branch — should NOT be overridden.
 	f.inputs[projFieldBranch].SetValue("develop")
@@ -213,7 +213,7 @@ func TestDetectRemoteDefaultBranch_BadPath(t *testing.T) {
 }
 
 func TestNewProjectForm_View(t *testing.T) {
-	f := NewNewProjectForm(DefaultTheme())
+	f := NewProjectForm(DefaultTheme())
 	f.SetSize(100, 30)
 
 	view := f.View()

@@ -28,6 +28,7 @@ const (
 	viewPrompt
 	viewConfirmDelete
 	viewNewProject
+	viewEditProject
 	viewConfirmDeleteProject
 	viewConfirmDestroy
 	viewPruning
@@ -123,7 +124,7 @@ type Model struct {
 	statusbar   StatusBar
 	helpview    HelpView
 	newtask     NewTaskForm
-	newproject    NewProjectForm
+	projectform   ProjectForm
 	sandboxconfig SandboxConfigForm // sandbox settings editor
 	preview     Preview
 	gitstatus   *GitStatus
@@ -316,7 +317,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
-		m.newproject.SetSize(msg.Width, msg.Height)
+		m.projectform.SetSize(msg.Width, msg.Height)
 		m.sandboxconfig.SetSize(msg.Width, msg.Height)
 		m.agentview.SetSize(msg.Width, msg.Height)
 		return m, nil
@@ -521,8 +522,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case detectBranchMsg:
-		if m.current == viewNewProject {
-			cmd := m.newproject.Update(msg)
+		if m.current == viewNewProject || m.current == viewEditProject {
+			cmd := m.projectform.Update(msg)
 			return m, cmd
 		}
 		return m, nil
@@ -541,6 +542,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleNewTaskKey(msg)
 	case viewNewProject:
 		return m.handleNewProjectKey(msg)
+	case viewEditProject:
+		return m.handleEditProjectKey(msg)
 	case viewHelp:
 		m.current = viewTaskList
 		return m, nil
@@ -1073,10 +1076,21 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only allow new project creation when on a project row (or section).
 		sel := m.settings.Selected()
 		if sel == nil || sel.kind == settingsRowProject {
-			m.newproject = NewNewProjectForm(m.theme)
-			m.newproject.SetSize(m.width, m.height)
+			m.projectform = NewProjectForm(m.theme)
+			m.projectform.SetSize(m.width, m.height)
 			m.current = viewNewProject
-			return m, m.newproject.inputs[0].Focus()
+			return m, m.projectform.inputs[0].Focus()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Edit):
+		// Edit the selected project.
+		if entry := m.settings.SelectedProject(); entry != nil {
+			m.projectform = NewProjectForm(m.theme)
+			m.projectform.SetSize(m.width, m.height)
+			m.projectform.LoadProject(entry.Name, entry.Project)
+			m.current = viewEditProject
+			return m, m.projectform.inputs[projFieldPath].Focus()
 		}
 		return m, nil
 
@@ -1147,18 +1161,41 @@ func (m Model) restartDaemonCmd() tea.Cmd {
 }
 
 func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	cmd := m.newproject.Update(msg)
+	cmd := m.projectform.Update(msg)
 
-	if m.newproject.Canceled() {
+	if m.projectform.Canceled() {
 		m.current = viewTaskList
+		m.activeTab = tabSettings
 		return m, nil
 	}
 
-	if m.newproject.Done() {
-		name, proj := m.newproject.ProjectEntry()
+	if m.projectform.Done() {
+		name, proj := m.projectform.ProjectEntry()
 		_ = m.db.SetProject(name, proj)
 		m.refreshSettings()
 		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m Model) handleEditProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd := m.projectform.Update(msg)
+
+	if m.projectform.Canceled() {
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	if m.projectform.Done() {
+		name, proj := m.projectform.ProjectEntry()
+		_ = m.db.SetProject(name, proj)
+		m.refreshSettings()
+		m.current = viewTaskList
+		m.activeTab = tabSettings
 		return m, nil
 	}
 

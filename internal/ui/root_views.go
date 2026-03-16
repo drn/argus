@@ -41,8 +41,8 @@ func (m Model) View() string {
 		return m.padToBottom(m.promptView(), bar)
 	case viewNewTask:
 		return m.newtask.View() + "\n" + bar
-	case viewNewProject:
-		return m.newproject.View() + "\n" + bar
+	case viewNewProject, viewEditProject:
+		return m.projectform.View() + "\n" + bar
 	case viewSandboxConfig:
 		return m.sandboxconfig.View() + "\n" + bar
 	}

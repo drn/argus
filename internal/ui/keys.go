@@ -8,6 +8,7 @@ type KeyMap struct {
 	Attach    key.Binding
 	StatusFwd key.Binding
 	StatusRev key.Binding
+	Edit      key.Binding
 	Delete    key.Binding
 	Destroy   key.Binding
 	Quit      key.Binding
@@ -42,6 +43,10 @@ func DefaultKeyMap() KeyMap {
 		StatusRev: key.NewBinding(
 			key.WithKeys("S"),
 			key.WithHelp("S", "revert status"),
+		),
+		Edit: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "edit"),
 		),
 		Delete: key.NewBinding(
 			key.WithKeys("d"),
