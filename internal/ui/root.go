@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +62,7 @@ type AgentFinishedMsg struct {
 	Err        error
 	Stopped    bool   // true if the process was explicitly stopped via Runner.Stop
 	LastOutput []byte // final ring buffer contents for displaying errors
+	StreamLost bool   // true when stream lost, not a real process exit
 }
 
 // AgentDetachedMsg is sent when the user detaches from a running agent.
@@ -144,6 +146,7 @@ type Model struct {
 	agentTickActive    bool              // true while the 100ms AgentViewTickMsg chain is running
 	daemonConnected    bool              // true when connected to daemon (sessions persist)
 	daemonRestarting   bool              // true while daemon restart is in progress
+	daemonFailures     int               // consecutive daemon ping failures
 	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
 
 	// Prune progress state (shown in viewPruning modal)
@@ -351,6 +354,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+		// Daemon health check — auto-restart if N consecutive ping failures.
+		if m.daemonConnected && !m.daemonRestarting {
+			if client, ok := m.runner.(*dclient.Client); ok {
+				if err := client.Ping(); err != nil {
+					m.daemonFailures++
+					uxlog.Log("TickMsg: daemon ping failed (attempt %d) err=%v", m.daemonFailures, err)
+					if m.daemonFailures >= 3 {
+						uxlog.Log("TickMsg: daemon unresponsive, auto-restarting")
+						m.daemonFailures = 0
+						m.daemonRestarting = true
+						return m, m.restartDaemonCmd()
+					}
+				} else {
+					m.daemonFailures = 0
+				}
+			}
+		}
 		return m, tea.Batch(cmds...)
 
 	case ResolveTaskDirMsg:
@@ -451,6 +471,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DaemonRestartedMsg:
 		m.daemonRestarting = false
+		m.daemonFailures = 0
 		uxlog.Log("DaemonRestartedMsg: err=%v hasClient=%v", msg.Err, msg.Client != nil)
 		if msg.Err != nil {
 			m.daemonConnected = false
@@ -473,6 +494,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Err:        exitErr,
 					Stopped:    info.Stopped,
 					LastOutput: info.LastOutput,
+					StreamLost: info.StreamLost,
 				})
 			})
 		}
@@ -884,8 +906,15 @@ func determinePostExitStatus(msg AgentFinishedMsg, t *model.Task) (newStatus mod
 }
 
 func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
-	uxlog.Log("handleAgentFinished: task=%s err=%v stopped=%v lastOutput=%d bytes",
-		msg.TaskID, msg.Err, msg.Stopped, len(msg.LastOutput))
+	uxlog.Log("handleAgentFinished: task=%s err=%v stopped=%v streamLost=%v lastOutput=%d bytes",
+		msg.TaskID, msg.Err, msg.Stopped, msg.StreamLost, len(msg.LastOutput))
+
+	if msg.StreamLost {
+		uxlog.Log("handleAgentFinished: stream lost task=%s — keeping InProgress", msg.TaskID)
+		m.statusbar.SetError(fmt.Sprintf("stream lost for task %s — press Enter to reconnect", msg.TaskID))
+		m.refreshTasks()
+		return m, nil
+	}
 
 	t, err := m.db.Get(msg.TaskID)
 	if err != nil {

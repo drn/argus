@@ -1406,6 +1406,36 @@ func TestModel_AgentFinished_MissingTask(t *testing.T) {
 	_ = updated.(Model)
 }
 
+func TestHandleAgentFinished_StreamLost(t *testing.T) {
+	task := &model.Task{
+		ID:        "t-stream-lost",
+		Name:      "stream-lost-task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-abc",
+		StartedAt: time.Now().Add(-10 * time.Second),
+	}
+	m := testModel(t, task)
+
+	// Send StreamLost=true — task should remain InProgress.
+	updated, _ := m.Update(AgentFinishedMsg{
+		TaskID:     "t-stream-lost",
+		StreamLost: true,
+	})
+	um := updated.(Model)
+
+	got, err := um.db.Get("t-stream-lost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusInProgress {
+		t.Errorf("expected InProgress, got %s", got.Status)
+	}
+	// SessionID should be preserved (stream loss is not a real exit).
+	if got.SessionID != "sess-abc" {
+		t.Errorf("expected SessionID to be preserved, got %q", got.SessionID)
+	}
+}
+
 func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	tasks := []*model.Task{
 		{ID: "t1", Name: "in-progress with session", Status: model.StatusInProgress, SessionID: "sess-1"},

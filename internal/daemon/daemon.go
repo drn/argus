@@ -36,6 +36,7 @@ type ExitInfo struct {
 	Err        string
 	Stopped    bool
 	LastOutput []byte
+	StreamLost bool // true when stream disconnected but process exit not confirmed
 }
 
 // Daemon manages agent sessions and exposes them over a Unix socket.

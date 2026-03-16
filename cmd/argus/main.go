@@ -96,6 +96,7 @@ func runTUI() {
 					Err:        exitErr,
 					Stopped:    info.Stopped,
 					LastOutput: info.LastOutput,
+					StreamLost: info.StreamLost,
 				})
 			}
 		})

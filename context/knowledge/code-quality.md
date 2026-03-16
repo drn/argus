@@ -203,7 +203,7 @@
 - Goroutine leak in Session.Attach stdin copy (needs cancellation mechanism)
 - Document Detect() ordering constraint in project/detect.go to prevent future signature reordering regressions
 - Improve `internal/daemon` test coverage from 45% to ≥80% (missing: stream handler, WriteInput/Resize RPCs, error paths, concurrent stream/RPC, session exit notification)
-- Improve `internal/daemon/client` test coverage from 46% to ≥80% (missing: Get() with existing remote session, session exit callback, stream reconnection, error handling)
+- Improve `internal/daemon/client` test coverage to ≥80% (Get() race + StreamLost + DaemonDown tests added 2026-03-16; remaining: stream reconnection on live process, concurrent stream/RPC paths)
 - Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)
 
 ## Sandbox Architecture (2026-03-15)
@@ -255,9 +255,23 @@
 ### Stream Failure ≠ Process Exit Bug (2026-03-16)
 - Tasks were being auto-completed when the TUI's stream connection to the daemon dropped, even though the agent processes were still running on the daemon side.
 - Root cause: `connectStream` (stream.go) calls `removeSession` on any stream error/EOF. `removeSession` calls `Daemon.GetExitInfo` RPC — but if the process is still alive, `exitInfos[taskID]` doesn't exist (only populated by `onFinish`), so `GetExitInfo` returns empty `ExitInfo{Err: "", Stopped: false}`. The TUI's `onSessionExit` callback fires `AgentFinishedMsg{Err: nil, Stopped: false}`, and `determinePostExitStatus` sees a clean exit after >3 seconds → `StatusComplete`.
-- **Fix (PR #155):** `connectStream` refactored into `streamOnce` + retry loop. On stream EOF/error, calls `Daemon.SessionStatus` to check if the process is still alive. If alive, retries stream connection up to `maxStreamRetries` (3) with 500ms backoff. Only calls `removeSession` (which fires `onSessionExit`) when the process has actually exited or retries are exhausted. `isSessionAlive()` helper returns false if the RPC fails (daemon may be down — safe default).
+- **Fix (PR #155):** `connectStream` refactored into `streamOnce` + retry loop. On stream EOF/error, calls `Daemon.SessionStatus` to check if the process is still alive. If alive, retries stream connection up to `maxStreamRetries` (3) with 500ms backoff. Only calls `removeSession` when the process has actually exited. Introduced three residual bugs fixed in the next round (see below).
 - Daemon logs showed no restarts — confirming this is a TUI-side issue, not a daemon issue.
 - **Test gotcha:** Unix socket paths on macOS have a 104-byte limit. Test names that include `t.TempDir()` can exceed this — keep test names short (e.g., `TestAlive_Dead` not `TestIsSessionAlive_DeadSession`). Symptom: `connect: invalid argument` error on `net.Dial("unix", ...)`.
+
+### Residual Stream/Daemon Connectivity Fixes (2026-03-16)
+
+Three bugs remained after PR #155:
+
+**1. Retry exhaustion auto-completed tasks.** After 3 failed stream retries, `connectStream` called `removeSession` → `GetExitInfo` returned empty (process still alive) → task marked `Complete`. Fix: on retry exhaustion, call `removeSessionStreamLost` instead of `removeSession`. This fires `AgentFinishedMsg{StreamLost: true}`, and `handleAgentFinished` returns early keeping the task `InProgress`.
+
+**2. Daemon crash auto-completed tasks.** `isSessionAlive()` returned `false` on RPC failure (daemon unreachable) → `streamOnce` returned `processExited=true` → auto-complete. Fix: `isSessionAlive()` now returns `(alive bool, daemonReachable bool)`. When `daemonReachable=false`, `streamOnce` returns `(false, true)` (daemonDown). `connectStream` routes to `removeSessionStreamLost` on daemon down — can't confirm process exit, so keep `InProgress`.
+
+**3. `client.Get()` race created ghost `RemoteSession`.** During the narrow window between `onFinish()` firing and `delete(r.sessions, taskID)` in the runner, `SessionStatus` returns `{Alive: false, PID: non-zero}`. The original condition `!info.Alive && info.PID == 0` failed → `Get()` created a new `RemoteSession` with its own `connectStream` goroutine → second `AgentFinishedMsg` for the same task. Fix: use `!info.Alive` alone — PID is irrelevant for `Get()`.
+
+**`StreamLost` flag** added to both `daemon.ExitInfo` and `ui.AgentFinishedMsg`. `handleAgentFinished` short-circuits on `StreamLost=true`: logs, sets status bar error ("stream lost for task X — press Enter to reconnect"), calls `refreshTasks()`, returns without touching task status.
+
+**Daemon health check** added to TickMsg handler: type-asserts `m.runner` to `*dclient.Client` and calls `Ping()` each tick. Three consecutive failures (`m.daemonFailures >= 3`) trigger `restartDaemonCmd()`. `daemonFailures` resets on successful ping or `DaemonRestartedMsg`.
 
 
 ### Daemon Cleanup Race & Zombie Prevention (2026-03-16)
