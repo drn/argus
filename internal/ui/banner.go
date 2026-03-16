@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -83,17 +84,58 @@ func renderBanner(width int) string {
 	return b.String()
 }
 
+// RGB color for gradient interpolation.
+type rgb struct{ r, g, b uint8 }
+
+var (
+	rgbCyan = rgb{95, 255, 255}  // color 87
+	rgbPink = rgb{255, 135, 215} // color 212
+	rgbDim  = rgb{98, 98, 98}    // color 241
+)
+
+// lerpRGB linearly interpolates between two colors. t in [0,1].
+func lerpRGB(a, b rgb, t float64) rgb {
+	return rgb{
+		r: uint8(float64(a.r) + t*(float64(b.r)-float64(a.r))),
+		g: uint8(float64(a.g) + t*(float64(b.g)-float64(a.g))),
+		b: uint8(float64(a.b) + t*(float64(b.b)-float64(a.b))),
+	}
+}
+
+// renderGradientDashes renders a dash pattern with per-character color gradient.
+func renderGradientDashes(pattern string, from, to rgb) string {
+	n := len(pattern)
+	if n == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		ch := pattern[i]
+		if ch == ' ' {
+			b.WriteByte(' ')
+			continue
+		}
+		t := float64(i) / float64(max(n-1, 1))
+		c := lerpRGB(from, to, t)
+		fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%dm%c\x1b[0m", c.r, c.g, c.b, ch)
+	}
+	return b.String()
+}
+
 // renderFadingAccent draws two fading dashes from center with a hexagon accent.
-// The left side fades in the left color, the right side in the right color.
-func renderFadingAccent(width int, left, right lipgloss.Color) string {
+// Each side has a per-character color gradient: dim at edges, bright near center.
+func renderFadingAccent(width int, left, _ lipgloss.Color) string {
 	sideLen := max((width-bannerWidth)/2-2, 3)
 
 	// Build fading dashes: sparse near edges, dense near center
-	leftDashes := fadeDashes(sideLen, false)
-	rightDashes := fadeDashes(sideLen, true)
+	leftPattern := fadeDashes(sideLen, false)
+	rightPattern := fadeDashes(sideLen, true)
 
-	leftStyled := lipgloss.NewStyle().Foreground(left).Render(leftDashes)
-	rightStyled := lipgloss.NewStyle().Foreground(right).Render(rightDashes)
+	// Left: dim gray → cyan (edge → center)
+	leftStyled := renderGradientDashes(leftPattern, rgbDim, rgbCyan)
+	// Right: pink → dim gray (center → edge)
+	rightStyled := renderGradientDashes(rightPattern, rgbPink, rgbDim)
+
 	hex := lipgloss.NewStyle().Foreground(left).Render("⬡")
 
 	line := leftStyled + " " + hex + " " + rightStyled
