@@ -111,12 +111,14 @@ func TestDaemon_StartAndStop(t *testing.T) {
 	client := dialRPC(t, sockPath)
 
 	// Start a session.
+	wtDir := t.TempDir()
 	var startResp StartResp
 	err := client.Call("Daemon.StartSession", &StartReq{
-		TaskID:  "t1",
-		Backend: "test",
-		Rows:    24,
-		Cols:    80,
+		TaskID:   "t1",
+		Backend:  "test",
+		Worktree: wtDir,
+		Rows:     24,
+		Cols:     80,
 	}, &startResp)
 	if err != nil {
 		t.Fatal(err)

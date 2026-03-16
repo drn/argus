@@ -66,7 +66,7 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 	}
 	defer c.Close()
 
-	task := &model.Task{ID: "t1", Name: "test-task", Backend: "test"}
+	task := &model.Task{ID: "t1", Name: "test-task", Backend: "test", Worktree: t.TempDir()}
 	sess, err := c.Start(task, config.Config{}, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestClient_SessionExitCallback(t *testing.T) {
 		exitCh <- taskID
 	})
 
-	task := &model.Task{ID: "t-exit", Name: "exit-test", Backend: "test"}
+	task := &model.Task{ID: "t-exit", Name: "exit-test", Backend: "test", Worktree: t.TempDir()}
 	_, err = c.Start(task, config.Config{}, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestAlive_Dead(t *testing.T) {
 	defer c.Close()
 
 	// Create a session for a quick-exit command.
-	task := &model.Task{ID: "t-dead", Name: "dead-test", Backend: "test"}
+	task := &model.Task{ID: "t-dead", Name: "dead-test", Backend: "test", Worktree: t.TempDir()}
 	_, err = c.Start(task, config.Config{}, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)

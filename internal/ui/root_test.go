@@ -2,6 +2,8 @@ package ui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -647,13 +649,42 @@ func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
 	}
 }
 
+func TestStartOrAttach_BlocksWithoutWorktree(t *testing.T) {
+	task := &model.Task{
+		ID:     "task-1",
+		Name:   "no-worktree task",
+		Status: model.StatusPending,
+		// No Worktree set — should be blocked by the early guard.
+	}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+
+	result, _ := m.startOrAttach(task)
+	um := result.(Model)
+
+	got, err := um.db.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Task should remain Pending — never set to InProgress.
+	if got.Status != model.StatusPending {
+		t.Errorf("expected status Pending (blocked by worktree guard), got %v", got.Status)
+	}
+	// SessionID should not have been generated.
+	if got.SessionID != "" {
+		t.Errorf("expected no SessionID, got %q", got.SessionID)
+	}
+}
+
 func TestStartOrAttach_FailureRevertsStatus(t *testing.T) {
 	task := &model.Task{
-		ID:      "task-1",
-		Name:    "failing task",
-		Status:  model.StatusPending,
-		Project: "proj",
-		Backend: "nonexistent-backend", // backend not in config → Start fails
+		ID:       "task-1",
+		Name:     "failing task",
+		Status:   model.StatusPending,
+		Project:  "proj",
+		Backend:  "nonexistent-backend", // backend not in config → Start fails
+		Worktree: t.TempDir(),
 	}
 	m := testModel(t, task)
 	m.width = 120
@@ -853,13 +884,20 @@ func TestDeleteProject_ModalView(t *testing.T) {
 
 func TestInit_ResetsStartedAtBeforeResume(t *testing.T) {
 	oldStart := time.Now().Add(-10 * time.Minute)
+	// Worktree must pass isWorktreeSubdir() check (contains /.argus/worktrees/).
+	wtDir := filepath.Join(t.TempDir(), ".argus", "worktrees", "proj", "old-task")
+	if err := os.MkdirAll(wtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	task := &model.Task{
 		ID:        "t1",
 		Name:      "old task",
+		Project:   "proj",
 		Status:    model.StatusInProgress,
 		SessionID: "sess-1",
 		StartedAt: oldStart,
 		AgentPID:  0,
+		Worktree:  wtDir,
 	}
 	m := testModel(t, task)
 
@@ -1390,6 +1428,38 @@ func TestInit_ResumesOnlyInProgressWithSessionID(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 task eligible for resume, got %d", count)
+	}
+}
+
+func TestInit_RevertsTaskWithoutWorktree(t *testing.T) {
+	// A task that is InProgress with a SessionID but no worktree
+	// should be reverted to Pending by Init() (not queued for resume).
+	task := &model.Task{
+		ID:        "t-no-wt",
+		Name:      "orphaned task",
+		Status:    model.StatusInProgress,
+		SessionID: "sess-orphan",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}
+	m := testModel(t, task)
+
+	// Init runs the resume logic. Since the task has no Worktree
+	// and discoverWorktree will find nothing (no project set), it
+	// should be reverted to Pending with SessionID and StartedAt cleared.
+	m.Init()
+
+	got, err := m.db.Get("t-no-wt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusPending {
+		t.Errorf("expected status reverted to Pending, got %v", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("expected SessionID cleared, got %q", got.SessionID)
+	}
+	if got.StartedAt != (time.Time{}) {
+		t.Errorf("expected StartedAt cleared, got %v", got.StartedAt)
 	}
 }
 
