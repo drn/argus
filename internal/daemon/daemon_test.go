@@ -184,6 +184,84 @@ func TestDaemon_Shutdown(t *testing.T) {
 	}
 }
 
+func TestReadPIDFile(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("missing file", func(t *testing.T) {
+		if got := readPIDFile(filepath.Join(dir, "nope.pid")); got != 0 {
+			t.Errorf("expected 0 for missing file, got %d", got)
+		}
+	})
+
+	t.Run("valid pid", func(t *testing.T) {
+		p := filepath.Join(dir, "valid.pid")
+		os.WriteFile(p, []byte("12345\n"), 0644)
+		if got := readPIDFile(p); got != 12345 {
+			t.Errorf("expected 12345, got %d", got)
+		}
+	})
+
+	t.Run("invalid content", func(t *testing.T) {
+		p := filepath.Join(dir, "bad.pid")
+		os.WriteFile(p, []byte("notanumber"), 0644)
+		if got := readPIDFile(p); got != 0 {
+			t.Errorf("expected 0 for invalid content, got %d", got)
+		}
+	})
+}
+
+func TestRemoveIfOwnedByPID(t *testing.T) {
+	t.Run("removes when owned", func(t *testing.T) {
+		dir := t.TempDir()
+		sock := filepath.Join(dir, "d.sock")
+		pid := filepath.Join(dir, "d.pid")
+		os.WriteFile(sock, []byte("x"), 0644)
+		os.WriteFile(pid, []byte("999"), 0644)
+
+		removeIfOwnedByPID(sock, pid, 999)
+
+		if _, err := os.Stat(sock); !os.IsNotExist(err) {
+			t.Error("socket should have been removed")
+		}
+		if _, err := os.Stat(pid); !os.IsNotExist(err) {
+			t.Error("pid file should have been removed")
+		}
+	})
+
+	t.Run("skips when not owned", func(t *testing.T) {
+		dir := t.TempDir()
+		sock := filepath.Join(dir, "d.sock")
+		pid := filepath.Join(dir, "d.pid")
+		os.WriteFile(sock, []byte("x"), 0644)
+		os.WriteFile(pid, []byte("888"), 0644)
+
+		removeIfOwnedByPID(sock, pid, 999) // different PID
+
+		if _, err := os.Stat(sock); os.IsNotExist(err) {
+			t.Error("socket should NOT have been removed")
+		}
+		if _, err := os.Stat(pid); os.IsNotExist(err) {
+			t.Error("pid file should NOT have been removed")
+		}
+	})
+}
+
+func TestKillExistingDaemon_DeadProcess(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "d.pid")
+
+	// Write a PID that almost certainly doesn't exist.
+	os.WriteFile(pidPath, []byte("2000000000"), 0644)
+
+	// Should not panic — process is dead, killExistingDaemon returns early.
+	killExistingDaemon(pidPath)
+}
+
+func TestKillExistingDaemon_NoPIDFile(t *testing.T) {
+	// Should not panic when PID file doesn't exist.
+	killExistingDaemon(filepath.Join(t.TempDir(), "nope.pid"))
+}
+
 func waitForSocket(t *testing.T, sockPath string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

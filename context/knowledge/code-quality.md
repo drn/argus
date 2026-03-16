@@ -258,6 +258,27 @@
 - **Test gotcha:** Unix socket paths on macOS have a 104-byte limit. Test names that include `t.TempDir()` can exceed this — keep test names short (e.g., `TestAlive_Dead` not `TestIsSessionAlive_DeadSession`). Symptom: `connect: invalid argument` error on `net.Dial("unix", ...)`.
 
 
+### Daemon Cleanup Race & Zombie Prevention (2026-03-16)
+
+Three bugs discovered in daemon lifecycle management:
+
+1. **Zombie daemons**: `Shutdown()` ran on a goroutine (signal/RPC handler). After closing `d.done` and the listener, `Serve()` returned on the main goroutine → `main()` exited → Shutdown goroutine killed mid-cleanup. `StopAll()` never completed. Old daemons stayed alive, blocked in `Accept()` on a deleted socket inode — unreachable but consuming resources. 11 zombie daemons observed.
+
+2. **Socket theft**: Old daemon's `Shutdown()` unconditionally called `os.Remove(DefaultSocketPath())`. If the old daemon was slow to die, it could delete the new daemon's socket file.
+
+3. **SIGTERM swallowed**: After Shutdown via RPC, the signal handler goroutine exited (saw `d.done`), but `signal.Notify` was still active. Go caught subsequent SIGTERMs into the buffered `sigCh` channel that nobody read. `killExistingDaemon`'s SIGTERM was silently ignored → 2s timeout → SIGKILL escalation every time.
+
+**Fixes:**
+- `cleanup()` runs on Serve's goroutine (main goroutine), not Shutdown's. `Shutdown()` only signals (closes `d.done` + listener). Serve's accept-loop exit path calls `d.cleanup()` which does `StopAll` + `removeIfOwnedByPID`. This ensures cleanup completes before `main()` returns.
+- `signal.Stop(sigCh)` called after signal handler goroutine exits, restoring default SIGTERM behavior so `killExistingDaemon` works.
+- `killExistingDaemon(pidPath)` at start of `Serve()` kills the PID-file daemon before binding.
+- `removeIfOwnedByPID(sockPath, pidPath, ourPID)` checks PID file ownership before removing files.
+- `sockPath` and `pidPath` stored on Daemon struct, derived from the `sockPath` parameter to `Serve()`. This prevents tests from touching `~/.argus/` — the PID path is `filepath.Dir(sockPath)/daemon.pid`, so temp dirs in tests stay isolated.
+
+**Key invariant**: `killExistingDaemon` waits for the old daemon to die before returning, so the new daemon never writes its PID while the old daemon is alive. This makes the TOCTOU window in `removeIfOwnedByPID` unexploitable.
+
+**Full flow documentation**: `context/research/daemon-lifecycle-flows.md`
+
 ### UX Debug Logging (2026-03-16)
 - Added `internal/uxlog` package — file-based logger writing to `~/.argus/ux.log`, separate from daemon's `daemon.log`.
 - Thread-safe (mutex-guarded), no-op if `Init()` not called, idempotent init.

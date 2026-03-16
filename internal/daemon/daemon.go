@@ -48,6 +48,8 @@ type Daemon struct {
 	mu        sync.Mutex
 	done      chan struct{}
 	ready     chan struct{} // closed when Serve has set listener (or failed)
+	sockPath  string        // set by Serve, used by cleanup
+	pidPath   string        // set by Serve, used by cleanup
 }
 
 // New creates a new Daemon.
@@ -99,8 +101,14 @@ func (d *Daemon) Runner() *agent.Runner {
 // Serve starts listening on the given socket path and accepts connections.
 // Blocks until Shutdown is called or the listener is closed.
 func (d *Daemon) Serve(sockPath string) error {
+	// Derive PID path from socket path so tests using temp dirs don't
+	// touch ~/.argus/ and accidentally kill a real running daemon.
+	pidPath := filepath.Join(filepath.Dir(sockPath), "daemon.pid")
+	d.sockPath = sockPath
+	d.pidPath = pidPath
+
 	// Kill any existing daemon process before taking over the socket.
-	killExistingDaemon(DefaultPIDPath())
+	killExistingDaemon(pidPath)
 
 	// Remove stale socket file.
 	os.Remove(sockPath)
@@ -114,9 +122,6 @@ func (d *Daemon) Serve(sockPath string) error {
 	d.listener = ln
 	d.mu.Unlock()
 	close(d.ready)
-
-	// Write PID file.
-	pidPath := DefaultPIDPath()
 	if err := writePIDFile(pidPath); err != nil {
 		ln.Close()
 		return fmt.Errorf("pid file: %w", err)
@@ -139,6 +144,10 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.Shutdown()
 		case <-d.done:
 		}
+		// Restore default signal handling so a subsequent SIGTERM from
+		// killExistingDaemon (new daemon starting) terminates the process
+		// instead of being swallowed by the buffered sigCh channel.
+		signal.Stop(sigCh)
 	}()
 
 	log.Printf("daemon listening on %s (pid %d)", sockPath, os.Getpid())
@@ -148,6 +157,12 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			select {
 			case <-d.done:
+				// Run cleanup on the main goroutine so it completes before
+				// the process exits. Shutdown() only signals — it does not
+				// do cleanup, because it runs on a different goroutine
+				// (signal handler or RPC handler) that gets killed when
+				// main() returns.
+				d.cleanup()
 				return nil // clean shutdown
 			default:
 				return fmt.Errorf("accept: %w", err)
@@ -198,7 +213,10 @@ func (d *Daemon) unregisterStream(taskID string, conn net.Conn) {
 	}
 }
 
-// Shutdown gracefully stops the daemon.
+// Shutdown signals the daemon to stop. It closes the done channel and the
+// listener, causing the Serve accept loop to exit. Actual cleanup (StopAll,
+// file removal) happens in Serve's exit path on the main goroutine — this
+// ensures cleanup completes before the process exits.
 func (d *Daemon) Shutdown() {
 	select {
 	case <-d.done:
@@ -206,8 +224,6 @@ func (d *Daemon) Shutdown() {
 	default:
 		close(d.done)
 	}
-
-	log.Println("daemon shutting down...")
 
 	// Wait for Serve to have set the listener (or failed to start).
 	<-d.ready
@@ -218,13 +234,20 @@ func (d *Daemon) Shutdown() {
 	if ln != nil {
 		ln.Close()
 	}
+}
 
+// cleanup runs on the main goroutine (Serve's exit path) to ensure it
+// completes before the process exits. If Shutdown ran these on its goroutine
+// (signal/RPC handler), main() could return from Serve() first, killing
+// the cleanup goroutine and leaving zombie agent processes + stale files.
+func (d *Daemon) cleanup() {
+	log.Println("daemon shutting down...")
 	d.runner.StopAll()
 
 	// Only clean up socket and PID files if we still own them.
 	// A newer daemon may have already replaced these files — removing them
 	// would break the newer daemon's stream connections.
-	removeIfOwnedByPID(DefaultSocketPath(), DefaultPIDPath(), os.Getpid())
+	removeIfOwnedByPID(d.sockPath, d.pidPath, os.Getpid())
 }
 
 // writePIDFile atomically writes the current process PID to a file.
