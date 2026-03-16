@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/rpc/jsonrpc"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -23,11 +22,21 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "daemon":
-			if len(os.Args) > 2 && os.Args[2] == "stop" {
-				runDaemonStop()
-				return
+			sub := "start"
+			if len(os.Args) > 2 {
+				sub = os.Args[2]
 			}
-			runDaemon()
+			switch sub {
+			case "start":
+				runDaemon()
+			case "stop":
+				runDaemonStop()
+			case "restart":
+				runDaemonRestart()
+			default:
+				fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", sub)
+				os.Exit(1)
+			}
 			return
 		}
 	}
@@ -51,7 +60,7 @@ func runTUI() {
 	client, err := dclient.Connect(sockPath)
 	if err != nil {
 		// No daemon running — auto-start one and retry.
-		client, err = autoStartDaemon(sockPath)
+		client, err = dclient.AutoStart(sockPath)
 	}
 
 	if err != nil {
@@ -85,45 +94,15 @@ func runTUI() {
 
 	m := ui.NewModel(database, runner, daemonConnected)
 	p = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m.SetProgram(p)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// autoStartDaemon launches the daemon as a background process and waits
-// for it to be ready. Returns a connected client or an error.
-func autoStartDaemon(sockPath string) (*dclient.Client, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("resolve executable: %w", err)
+	// If a daemon restart occurred, close the new client.
+	if rc := m.RestartedClient(); rc != nil {
+		rc.Close()
 	}
-
-	cmd := exec.Command(exe, "daemon")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	// Detach from parent process group so the daemon survives TUI exit.
-	cmd.SysProcAttr = daemonSysProcAttr()
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start daemon: %w", err)
-	}
-	// Release the child process so it isn't reaped when we exit.
-	cmd.Process.Release()
-
-	// Poll for the socket to become available.
-	const (
-		pollInterval = 50 * time.Millisecond
-		maxWait      = 3 * time.Second
-	)
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
-		time.Sleep(pollInterval)
-		if client, err := dclient.Connect(sockPath); err == nil {
-			return client, nil
-		}
-	}
-
-	return nil, fmt.Errorf("daemon did not become ready within %s", maxWait)
 }
 
 func runDaemon() {
@@ -154,19 +133,19 @@ func runDaemon() {
 	}
 }
 
-func runDaemonStop() {
-	sockPath := daemon.DefaultSocketPath()
+// stopDaemon sends a shutdown RPC to the daemon. Returns (true, nil) if the
+// daemon was stopped, (false, nil) if it wasn't running, or (false, err) on
+// unexpected failures.
+func stopDaemon(sockPath string) (bool, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot connect to daemon: %v\n", err)
-		os.Exit(1)
+		// Can't connect — daemon probably not running.
+		return false, nil
 	}
 	defer conn.Close()
 
-	// Send RPC prefix byte.
 	if _, err := conn.Write([]byte("R")); err != nil {
-		fmt.Fprintf(os.Stderr, "write error: %v\n", err)
-		os.Exit(1)
+		return false, fmt.Errorf("write error: %w", err)
 	}
 
 	client := jsonrpc.NewClient(conn)
@@ -174,9 +153,40 @@ func runDaemonStop() {
 
 	var resp daemon.StatusResp
 	if err := client.Call("Daemon.Shutdown", &daemon.Empty{}, &resp); err != nil {
-		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
+		return false, fmt.Errorf("shutdown error: %w", err)
+	}
+	return true, nil
+}
+
+func runDaemonStop() {
+	sockPath := daemon.DefaultSocketPath()
+	stopped, err := stopDaemon(sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("daemon stopped")
+	if stopped {
+		fmt.Println("daemon stopped")
+	} else {
+		fmt.Println("no daemon running")
+	}
+}
+
+func runDaemonRestart() {
+	sockPath := daemon.DefaultSocketPath()
+	stopped, err := stopDaemon(sockPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stop failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if stopped {
+		// Wait for socket cleanup before starting the new daemon.
+		dclient.WaitForShutdown(sockPath, 3*time.Second)
+		fmt.Println("daemon stopped, starting new instance...")
+	} else {
+		fmt.Println("no daemon running, starting new instance...")
+	}
+	runDaemon()
 }
 

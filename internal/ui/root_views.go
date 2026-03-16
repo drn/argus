@@ -31,6 +31,8 @@ func (m Model) View() string {
 		return m.pruneView() + "\n" + bar
 	case viewSandboxInstall:
 		return m.sandboxInstallView() + "\n" + bar
+	case viewDaemonRestart:
+		return m.daemonRestartView() + "\n" + bar
 	case viewHelp:
 		return m.padToBottom(m.helpview.View(), bar)
 	case viewPrompt:
@@ -279,6 +281,16 @@ func (m Model) pruneView() string {
 	}
 	status := "  " + m.theme.Normal.Render(statusText)
 	hint := m.theme.Help.Render("  Removing worktrees and branches")
+	body := title + "\n\n" + status + "\n\n" + hint
+	return m.renderCenteredModal(body, 50)
+}
+
+func (m Model) daemonRestartView() string {
+	title := m.theme.Title.Render("Restarting Daemon")
+	dots := []string{".", "..", "..."}
+	dotIdx := int(time.Now().UnixMilli()/500) % len(dots)
+	status := "  " + m.theme.Normal.Render("Stopping sessions and restarting"+dots[dotIdx])
+	hint := m.theme.Help.Render("  Please wait")
 	body := title + "\n\n" + status + "\n\n" + hint
 	return m.renderCenteredModal(body, 50)
 }

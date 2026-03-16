@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
+	"os"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -149,6 +151,19 @@ func (c *Client) StopAll() {
 	_ = c.call("Daemon.StopAll", &daemon.Empty{}, &resp)
 }
 
+// Shutdown asks the daemon to shut down gracefully.
+func (c *Client) Shutdown() error {
+	var resp daemon.StatusResp
+	err := c.call("Daemon.Shutdown", &daemon.Empty{}, &resp)
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
 // Running returns task IDs of running sessions.
 func (c *Client) Running() []string {
 	var resp daemon.ListResp
@@ -228,6 +243,53 @@ func (c *Client) getOrCreateSession(taskID string) *RemoteSession {
 	go rs.connectStream(c.sockPath)
 
 	return rs
+}
+
+// AutoStart launches the daemon as a background process and waits for it to
+// be ready. Returns a connected client or an error.
+func AutoStart(sockPath string) (*Client, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve executable: %w", err)
+	}
+
+	cmd := exec.Command(exe, "daemon", "start")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	// Detach from parent process group so the daemon survives TUI exit.
+	cmd.SysProcAttr = daemonSysProcAttr()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start daemon: %w", err)
+	}
+	// Release the child process so it isn't reaped when we exit.
+	cmd.Process.Release()
+
+	// Poll for the socket to become available.
+	const (
+		pollInterval = 50 * time.Millisecond
+		maxWait      = 3 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		if client, err := Connect(sockPath); err == nil {
+			return client, nil
+		}
+	}
+
+	return nil, fmt.Errorf("daemon did not become ready within %s", maxWait)
+}
+
+// WaitForShutdown polls until the daemon socket is gone (up to timeout).
+func WaitForShutdown(sockPath string, timeout time.Duration) {
+	const pollInterval = 50 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sockPath); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // removeSession cleans up a session from the client's map, queries exit info

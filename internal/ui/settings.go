@@ -439,7 +439,8 @@ func (sv SettingsView) renderWarningDetail(sel *settingsRow, _ int) string {
 		b.WriteString(sv.theme.Title.Render(" System Status") + "\n\n")
 		b.WriteString(sv.theme.Complete.Render("  All systems nominal") + "\n\n")
 		b.WriteString("  " + sv.theme.Dimmed.Render("Daemon is running. Sessions will persist") + "\n")
-		b.WriteString("  " + sv.theme.Dimmed.Render("across TUI restarts.") + "\n")
+		b.WriteString("  " + sv.theme.Dimmed.Render("across TUI restarts.") + "\n\n")
+		b.WriteString("  " + sv.theme.Dimmed.Render("Press [r] to restart the daemon.") + "\n")
 	} else {
 		b.WriteString(sv.theme.Title.Render(" Warning") + "\n\n")
 		b.WriteString("  " + sv.theme.Error.Render(sel.label) + "\n\n")

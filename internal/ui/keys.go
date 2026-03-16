@@ -16,12 +16,13 @@ type KeyMap struct {
 	Prompt    key.Binding
 	Worktree  key.Binding
 	Prune     key.Binding
-	Up       key.Binding
-	Down     key.Binding
-	TabLeft  key.Binding
-	TabRight key.Binding
-	Confirm  key.Binding
-	Cancel   key.Binding
+	RestartDaemon key.Binding
+	Up            key.Binding
+	Down          key.Binding
+	TabLeft       key.Binding
+	TabRight      key.Binding
+	Confirm       key.Binding
+	Cancel        key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -74,6 +75,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+r"),
 			key.WithHelp("^r", "prune completed"),
 		),
+		RestartDaemon: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "restart daemon"),
+		),
 		Up: key.NewBinding(
 			key.WithKeys("up", "k"),
 			key.WithHelp("↑/k", "up"),
@@ -112,6 +117,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.New, k.Attach, k.Delete, k.Destroy},
 		{k.StatusFwd, k.StatusRev, k.Prompt},
 		{k.Up, k.Down, k.Filter},
-		{k.Worktree, k.Prune, k.Help, k.Quit},
+		{k.Worktree, k.Prune, k.RestartDaemon, k.Help, k.Quit},
 	}
 }
