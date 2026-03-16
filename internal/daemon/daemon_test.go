@@ -186,7 +186,7 @@ func TestDaemon_Shutdown(t *testing.T) {
 
 func waitForSocket(t *testing.T, sockPath string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sockPath); err == nil {
 			return

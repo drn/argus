@@ -31,7 +31,7 @@ func testSetup(t *testing.T) (*daemon.Daemon, string) {
 	t.Cleanup(func() { d.Shutdown() })
 
 	// Wait for socket.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(sockPath); err == nil {
 			break

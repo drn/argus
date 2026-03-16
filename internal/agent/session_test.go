@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -529,6 +530,25 @@ func TestSession_MultiWriter(t *testing.T) {
 	}
 }
 
+// syncBuffer is a thread-safe bytes.Buffer for use in tests where
+// readLoop writes concurrently with test goroutine reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) Len() int {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Len()
+}
+
 func TestSession_RemoveWriter(t *testing.T) {
 	// Use cat which echoes stdin to stdout, producing observable output.
 	cmd := exec.Command("cat")
@@ -538,7 +558,7 @@ func TestSession_RemoveWriter(t *testing.T) {
 	}
 	defer sess.Stop()
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	sess.AddWriter(&buf)
 
 	// Write some input so cat echoes it — this produces output

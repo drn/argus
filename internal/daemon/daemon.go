@@ -45,6 +45,7 @@ type Daemon struct {
 	exitInfos map[string]ExitInfo    // taskID → cached exit info (brief)
 	mu        sync.Mutex
 	done      chan struct{}
+	ready     chan struct{} // closed when Serve has set listener (or failed)
 }
 
 // New creates a new Daemon.
@@ -54,6 +55,7 @@ func New(database *db.DB) *Daemon {
 		streams:   make(map[string][]net.Conn),
 		exitInfos: make(map[string]ExitInfo),
 		done:      make(chan struct{}),
+		ready:     make(chan struct{}),
 	}
 
 	// Create runner with onFinish callback that caches exit info and
@@ -96,9 +98,13 @@ func (d *Daemon) Serve(sockPath string) error {
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
+		close(d.ready) // unblock Shutdown even on listen failure
 		return fmt.Errorf("listen: %w", err)
 	}
+	d.mu.Lock()
 	d.listener = ln
+	d.mu.Unlock()
+	close(d.ready)
 
 	// Write PID file.
 	pidPath := DefaultPIDPath()
@@ -192,8 +198,14 @@ func (d *Daemon) Shutdown() {
 
 	log.Println("daemon shutting down...")
 
-	if d.listener != nil {
-		d.listener.Close()
+	// Wait for Serve to have set the listener (or failed to start).
+	<-d.ready
+
+	d.mu.Lock()
+	ln := d.listener
+	d.mu.Unlock()
+	if ln != nil {
+		ln.Close()
 	}
 
 	d.runner.StopAll()
