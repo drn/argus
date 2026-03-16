@@ -29,7 +29,10 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	defer vt.Unlock()
 
 	cur := vt.Cursor()
-	showCursor := cursorVisible && vt.CursorVisible()
+	// Always show cursor regardless of CursorVisible() — TUI agents like
+	// Claude Code hide the hardware cursor (\x1b[?25l) but we still want
+	// to show the cursor position in the agent view.
+	showCursor := cursorVisible
 
 	var lines []string
 	for y := 0; y < vtRows; y++ {
