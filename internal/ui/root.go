@@ -877,6 +877,14 @@ func (m *Model) refreshSettings() {
 	m.settings.SetProjects(m.db.Projects())
 	m.settings.SetBackends(m.db.Backends())
 	m.settings.SetTasks(m.db.Tasks())
+	cfg := m.db.Config()
+	m.settings.SetSandboxConfig(
+		cfg.Sandbox.Enabled,
+		agent.IsSandboxAvailable(),
+		cfg.Sandbox.AllowedDomains,
+		cfg.Sandbox.DenyRead,
+		cfg.Sandbox.ExtraWrite,
+	)
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.

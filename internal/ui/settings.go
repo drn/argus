@@ -17,6 +17,7 @@ const (
 	settingsRowWarning                         // warning item
 	settingsRowProject                         // project item
 	settingsRowBackend                         // backend item
+	settingsRowSandbox                         // sandbox config item
 )
 
 type settingsRow struct {
@@ -27,15 +28,20 @@ type settingsRow struct {
 
 // SettingsView renders the settings tab with sections for status, projects, and backends.
 type SettingsView struct {
-	rows       []settingsRow
-	scroll     ScrollState
-	theme      Theme
-	width      int
-	height     int
-	warnings   []string
-	projects   []projectEntry
-	backends   []backendEntry
-	taskCounts map[string]statusCounts
+	rows             []settingsRow
+	scroll           ScrollState
+	theme            Theme
+	width            int
+	height           int
+	warnings         []string
+	projects         []projectEntry
+	backends         []backendEntry
+	taskCounts       map[string]statusCounts
+	sandboxEnabled   bool
+	sandboxAvailable bool
+	sandboxDomains   []string
+	sandboxDenyRead  []string
+	sandboxExtraWrite []string
 }
 
 type backendEntry struct {
@@ -108,6 +114,16 @@ func (sv *SettingsView) TaskCounts(name string) statusCounts {
 	return sv.taskCounts[name]
 }
 
+// SetSandboxConfig updates the sandbox display state.
+func (sv *SettingsView) SetSandboxConfig(enabled, available bool, domains, denyRead, extraWrite []string) {
+	sv.sandboxEnabled = enabled
+	sv.sandboxAvailable = available
+	sv.sandboxDomains = domains
+	sv.sandboxDenyRead = denyRead
+	sv.sandboxExtraWrite = extraWrite
+	sv.rebuildRows()
+}
+
 func (sv *SettingsView) rebuildRows() {
 	sv.rows = nil
 
@@ -120,6 +136,14 @@ func (sv *SettingsView) rebuildRows() {
 		for i, w := range sv.warnings {
 			sv.rows = append(sv.rows, settingsRow{kind: settingsRowWarning, label: w, key: fmt.Sprintf("_warn_%d", i)})
 		}
+	}
+
+	// SANDBOX section
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "SANDBOX"})
+	if sv.sandboxEnabled {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowSandbox, label: "Enabled", key: "_sandbox"})
+	} else {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowSandbox, label: "Disabled", key: "_sandbox"})
 	}
 
 	// PROJECTS section
@@ -306,6 +330,12 @@ func (sv SettingsView) View() string {
 				} else {
 					icon = "  "
 				}
+			case settingsRowSandbox:
+				if sv.sandboxEnabled {
+					icon = "  "
+				} else {
+					icon = "  "
+				}
 			case settingsRowProject:
 				icon = "  "
 			case settingsRowBackend:
@@ -334,6 +364,8 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 	switch sel.kind {
 	case settingsRowWarning:
 		content = sv.renderWarningDetail(sel, innerW)
+	case settingsRowSandbox:
+		content = sv.renderSandboxDetail(innerW)
 	case settingsRowProject:
 		content = sv.renderProjectDetail(sel, innerW)
 	case settingsRowBackend:
@@ -349,6 +381,55 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 	}
 
 	return borderedPanel(rightWidth, contentHeight, false, content)
+}
+
+func (sv SettingsView) renderSandboxDetail(_ int) string {
+	var b strings.Builder
+
+	b.WriteString(sv.theme.Title.Render(" Sandbox") + "\n\n")
+
+	// Status
+	if sv.sandboxEnabled {
+		b.WriteString("  " + sv.theme.Complete.Render("Enabled") + "\n")
+	} else {
+		b.WriteString("  " + sv.theme.Dimmed.Render("Disabled") + "\n")
+	}
+
+	// Availability
+	if sv.sandboxAvailable {
+		b.WriteString("  " + sv.theme.Complete.Render("srt installed") + "\n")
+	} else {
+		b.WriteString("  " + sv.theme.Error.Render("srt not found") + "\n")
+		b.WriteString("  " + sv.theme.Dimmed.Render("Install: npm i -g @anthropic-ai/sandbox-runtime") + "\n")
+	}
+
+	// Allowed domains
+	b.WriteString("\n" + sv.theme.Section.Render("  NETWORK") + "\n")
+	if len(sv.sandboxDomains) == 0 {
+		b.WriteString("  " + sv.theme.Dimmed.Render("(defaults only)") + "\n")
+	} else {
+		for _, d := range sv.sandboxDomains {
+			b.WriteString("  " + sv.theme.Normal.Render(d) + "\n")
+		}
+	}
+
+	// Deny read
+	if len(sv.sandboxDenyRead) > 0 {
+		b.WriteString("\n" + sv.theme.Section.Render("  DENY READ") + "\n")
+		for _, p := range sv.sandboxDenyRead {
+			b.WriteString("  " + sv.theme.Normal.Render(p) + "\n")
+		}
+	}
+
+	// Extra write
+	if len(sv.sandboxExtraWrite) > 0 {
+		b.WriteString("\n" + sv.theme.Section.Render("  EXTRA WRITE") + "\n")
+		for _, p := range sv.sandboxExtraWrite {
+			b.WriteString("  " + sv.theme.Normal.Render(p) + "\n")
+		}
+	}
+
+	return b.String()
 }
 
 func (sv SettingsView) renderWarningDetail(sel *settingsRow, _ int) string {

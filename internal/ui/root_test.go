@@ -751,8 +751,9 @@ func TestDeleteProject_EnterConfirms(t *testing.T) {
 	}
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
-	// Navigate cursor to the project row (past status section).
-	m.settings.CursorDown()
+	// Navigate cursor to the project row (past status and sandbox sections).
+	m.settings.CursorDown() // sandbox
+	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
 
 	// Press Enter to confirm
@@ -774,7 +775,8 @@ func TestDeleteProject_EscCancels(t *testing.T) {
 	}
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
-	m.settings.CursorDown()
+	m.settings.CursorDown() // sandbox
+	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
 
 	// Press Esc to cancel
@@ -796,7 +798,8 @@ func TestDeleteProject_YKeyNoLongerConfirms(t *testing.T) {
 	}
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
-	m.settings.CursorDown()
+	m.settings.CursorDown() // sandbox
+	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
 
 	// Press y — should cancel (no longer confirms)
@@ -818,7 +821,8 @@ func TestDeleteProject_ModalView(t *testing.T) {
 	}
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
-	m.settings.CursorDown()
+	m.settings.CursorDown() // sandbox
+	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
 	m.width = 80
 	m.height = 24
@@ -1235,7 +1239,8 @@ func TestModel_NewProjectKey(t *testing.T) {
 	m := testModel(t)
 	m.activeTab = tabSettings
 	// Navigate cursor to a project row so 'n' opens the new project form.
-	m.settings.CursorDown()
+	m.settings.CursorDown() // sandbox
+	m.settings.CursorDown() // project (or "(no projects)" placeholder)
 
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}
 	updated, _ := m.Update(msg)

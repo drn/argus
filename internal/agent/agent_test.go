@@ -114,7 +114,7 @@ func TestBuildCmd(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug"}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestBuildCmd_WithProject(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Project: "myapp", Prompt: "test", Worktree: "/home/user/.argus/worktrees/myapp/fix-bug"}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Backend: "bare", Prompt: "do stuff"}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestBuildCmd_NewSessionWithID(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestBuildCmd_Resume(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
 
-	cmd, err := BuildCmd(task, cfg, true)
+	cmd, _, err := BuildCmd(task, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
 		Worktree:  "/tmp/worktree-test",
 	}
 
-	cmd, err := BuildCmd(task, cfg, true)
+	cmd, _, err := BuildCmd(task, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestBuildCmd_ResumeWithProjectAndWorktree(t *testing.T) {
 		Worktree:  "/tmp/worktree-test",
 	}
 
-	cmd, err := BuildCmd(task, cfg, true)
+	cmd, _, err := BuildCmd(task, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestBuildCmd_WorktreeDir(t *testing.T) {
 		Worktree: "/tmp/test-worktree",
 	}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestBuildCmd_WorktreeOverridesProject(t *testing.T) {
 		Worktree: "/tmp/test-worktree",
 	}
 
-	cmd, err := BuildCmd(task, cfg, false)
+	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
