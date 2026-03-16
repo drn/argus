@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"io"
+	"log"
 	"sync"
 
 	"github.com/drn/argus/internal/config"
@@ -40,18 +41,26 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 	r.mu.Unlock()
 
+	log.Printf("runner.Start: task=%s session=%s resume=%v pty=%dx%d dir=%s",
+		task.ID, task.SessionID, resume, cols, rows, task.Worktree)
+
 	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
 	if err != nil {
+		log.Printf("runner.Start: BuildCmd FAILED task=%s err=%v", task.ID, err)
 		return nil, err
 	}
+	log.Printf("runner.Start: cmd=%v dir=%s", cmd.Args, cmd.Dir)
 
 	sess, err := StartSession(task.ID, cmd, rows, cols)
 	if err != nil {
+		log.Printf("runner.Start: StartSession FAILED task=%s err=%v", task.ID, err)
 		if sandboxCleanup != nil {
 			sandboxCleanup()
 		}
 		return nil, err
 	}
+
+	log.Printf("runner.Start: OK task=%s pid=%d", task.ID, sess.PID())
 
 	r.mu.Lock()
 	r.sessions[task.ID] = sess
@@ -64,6 +73,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	// re-enters the runner (e.g., HasSession).
 	go func() {
 		<-sess.Done()
+		log.Printf("runner: process exited task=%s pid=%d", task.ID, sess.PID())
 		// Clean up sandbox config temp file
 		if sandboxCleanup != nil {
 			sandboxCleanup()
@@ -77,6 +87,9 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		wasStopped := r.stopped[task.ID]
 		delete(r.stopped, task.ID)
 		r.mu.Unlock()
+
+		log.Printf("runner: exit details task=%s err=%v stopped=%v lastOutput=%d bytes",
+			task.ID, exitErr, wasStopped, len(lastOutput))
 
 		// Fire callback while session is still in the map.
 		if r.onFinish != nil {
@@ -137,6 +150,7 @@ func (r *Runner) Stop(taskID string) error {
 	}
 	r.stopped[taskID] = true
 	r.mu.Unlock()
+	log.Printf("runner.Stop: task=%s pid=%d", taskID, sess.PID())
 	return sess.Stop()
 }
 
@@ -149,6 +163,7 @@ func (r *Runner) StopAll() {
 	}
 	r.mu.Unlock()
 
+	log.Printf("runner.StopAll: stopping %d sessions", len(ids))
 	for _, id := range ids {
 		r.Stop(id)
 	}
