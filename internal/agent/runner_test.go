@@ -177,6 +177,39 @@ func TestRunner_NaturalExitNotStopped(t *testing.T) {
 	}
 }
 
+func TestRunner_OnFinishFiresBeforeRemoval(t *testing.T) {
+	// Verify onFinish is called while the session is still visible via Get(),
+	// so that consumers (like daemon exit info cache) can populate data before
+	// the session becomes invisible.
+	sessionVisibleDuringCallback := make(chan bool, 1)
+	var r *Runner
+	r = NewRunner(func(taskID string, err error, stopped bool, _ []byte) {
+		sessionVisibleDuringCallback <- r.HasSession(taskID)
+	})
+	cfg := runnerTestConfig() // "echo hello" exits quickly
+
+	task := &model.Task{ID: "t-order", Name: "test"}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case visible := <-sessionVisibleDuringCallback:
+		if !visible {
+			t.Error("expected session to still be visible during onFinish callback")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for onFinish")
+	}
+
+	// After callback completes, session should be removed
+	time.Sleep(50 * time.Millisecond)
+	if r.HasSession("t-order") {
+		t.Error("session should be removed after onFinish completes")
+	}
+}
+
 func TestRunner_StopNotFound(t *testing.T) {
 	r := NewRunner(nil)
 	if err := r.Stop("nonexistent"); err != ErrSessionNotFound {

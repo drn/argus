@@ -43,7 +43,7 @@ func (rs *RemoteSession) PID() int {
 
 func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
 	var resp daemon.StatusResp
-	err := rs.client.rpc.Call("Daemon.WriteInput", &daemon.WriteReq{
+	err := rs.client.call("Daemon.WriteInput", &daemon.WriteReq{
 		TaskID: rs.taskID,
 		Data:   p,
 	}, &resp)
@@ -58,7 +58,7 @@ func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
 
 func (rs *RemoteSession) Resize(rows, cols uint16) error {
 	var resp daemon.StatusResp
-	err := rs.client.rpc.Call("Daemon.Resize", &daemon.ResizeReq{
+	err := rs.client.call("Daemon.Resize", &daemon.ResizeReq{
 		TaskID: rs.taskID,
 		Rows:   rows,
 		Cols:   cols,
@@ -139,7 +139,7 @@ func (rs *RemoteSession) updateInfo(info daemon.SessionInfo) {
 // refreshInfo fetches session info from the daemon.
 func (rs *RemoteSession) refreshInfo() {
 	var info daemon.SessionInfo
-	if err := rs.client.rpc.Call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: rs.taskID}, &info); err != nil {
+	if err := rs.client.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: rs.taskID}, &info); err != nil {
 		return
 	}
 	rs.updateInfo(info)

@@ -54,20 +54,32 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	r.sessions[task.ID] = sess
 	r.mu.Unlock()
 
-	// Watch for process exit
+	// Watch for process exit. The onFinish callback is fired while the
+	// session is still in the map so consumers (e.g., daemon exit info
+	// cache) are populated before the session becomes invisible to Get().
+	// The callback runs OUTSIDE the lock to avoid deadlocking if it
+	// re-enters the runner (e.g., HasSession).
 	go func() {
 		<-sess.Done()
 		// Capture last output before removing the session so callers
 		// can display error messages after the session is gone.
 		lastOutput := sess.RecentOutput()
+		exitErr := sess.Err()
+
 		r.mu.Lock()
-		delete(r.sessions, task.ID)
 		wasStopped := r.stopped[task.ID]
 		delete(r.stopped, task.ID)
 		r.mu.Unlock()
+
+		// Fire callback while session is still in the map.
 		if r.onFinish != nil {
-			r.onFinish(task.ID, sess.Err(), wasStopped, lastOutput)
+			r.onFinish(task.ID, exitErr, wasStopped, lastOutput)
 		}
+
+		// Now remove the session so Get() returns nil.
+		r.mu.Lock()
+		delete(r.sessions, task.ID)
+		r.mu.Unlock()
 	}()
 
 	return sess, nil

@@ -1,17 +1,26 @@
 package client
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
 	"sync"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/model"
 )
+
+// rpcTimeout is the maximum time to wait for any single RPC call to the daemon.
+// Prevents the TUI from hanging indefinitely if the daemon crashes.
+const rpcTimeout = 5 * time.Second
+
+// ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
+var ErrRPCTimeout = errors.New("daemon RPC call timed out")
 
 // Compile-time assertion.
 var _ agent.SessionProvider = (*Client)(nil)
@@ -87,12 +96,14 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 
 	var resp daemon.StartResp
-	if err := c.rpc.Call("Daemon.StartSession", req, &resp); err != nil {
+	if err := c.call("Daemon.StartSession", req, &resp); err != nil {
 		return nil, err
 	}
 
 	rs := c.getOrCreateSession(task.ID)
+	rs.mu.Lock()
 	rs.pid = resp.PID
+	rs.mu.Unlock()
 	return rs, nil
 }
 
@@ -107,7 +118,7 @@ func (c *Client) Get(taskID string) agent.SessionHandle {
 
 	// Check with daemon if session exists.
 	var info daemon.SessionInfo
-	if err := c.rpc.Call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
+	if err := c.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
 		return nil
 	}
 	if !info.Alive && info.PID == 0 {
@@ -122,7 +133,7 @@ func (c *Client) Get(taskID string) agent.SessionHandle {
 // Stop stops a session via RPC.
 func (c *Client) Stop(taskID string) error {
 	var resp daemon.StatusResp
-	if err := c.rpc.Call("Daemon.StopSession", &daemon.TaskIDReq{TaskID: taskID}, &resp); err != nil {
+	if err := c.call("Daemon.StopSession", &daemon.TaskIDReq{TaskID: taskID}, &resp); err != nil {
 		return err
 	}
 	if resp.Error != "" {
@@ -135,13 +146,13 @@ func (c *Client) Stop(taskID string) error {
 // StopAll is typically called during shutdown where there's no recovery path.
 func (c *Client) StopAll() {
 	var resp daemon.StatusResp
-	_ = c.rpc.Call("Daemon.StopAll", &daemon.Empty{}, &resp)
+	_ = c.call("Daemon.StopAll", &daemon.Empty{}, &resp)
 }
 
 // Running returns task IDs of running sessions.
 func (c *Client) Running() []string {
 	var resp daemon.ListResp
-	if err := c.rpc.Call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
+	if err := c.call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
 		return nil
 	}
 	ids := make([]string, 0, len(resp.Sessions))
@@ -156,7 +167,7 @@ func (c *Client) Running() []string {
 // Idle returns task IDs of idle sessions.
 func (c *Client) Idle() []string {
 	var resp daemon.ListResp
-	if err := c.rpc.Call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
+	if err := c.call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
 		return nil
 	}
 	var ids []string
@@ -171,7 +182,7 @@ func (c *Client) Idle() []string {
 // HasSession returns true if a session exists for the task.
 func (c *Client) HasSession(taskID string) bool {
 	var info daemon.SessionInfo
-	if err := c.rpc.Call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
+	if err := c.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
 		return false
 	}
 	return info.Alive || info.PID != 0
@@ -180,10 +191,24 @@ func (c *Client) HasSession(taskID string) bool {
 // WorkDir returns the working directory of a session.
 func (c *Client) WorkDir(taskID string) string {
 	var info daemon.SessionInfo
-	if err := c.rpc.Call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
+	if err := c.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
 		return ""
 	}
 	return info.WorkDir
+}
+
+// call wraps c.rpc.Call with a timeout so the TUI never hangs indefinitely
+// if the daemon crashes. The goroutine may outlive the timeout but will
+// unblock once the OS delivers a connection error on the dead socket.
+func (c *Client) call(method string, args, reply any) error {
+	ch := make(chan error, 1)
+	go func() { ch <- c.rpc.Call(method, args, reply) }()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(rpcTimeout):
+		return ErrRPCTimeout
+	}
 }
 
 // getOrCreateSession returns an existing RemoteSession or creates a new one
@@ -216,7 +241,7 @@ func (c *Client) removeSession(taskID string) {
 	if fn != nil {
 		// Query exit info from daemon before firing callback.
 		var info daemon.ExitInfo
-		c.rpc.Call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
+		c.call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
 		fn(taskID, info)
 	}
 }
