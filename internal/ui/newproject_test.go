@@ -183,6 +183,35 @@ func TestNewProjectForm_ModalWidth(t *testing.T) {
 	}
 }
 
+func TestNewProjectForm_DetectBranchMsg(t *testing.T) {
+	f := NewNewProjectForm(DefaultTheme())
+
+	// Default is "master" — detectBranchMsg should override it.
+	f.Update(detectBranchMsg{branch: "origin/main"})
+	if got := f.inputs[projFieldBranch].Value(); got != "origin/main" {
+		t.Errorf("branch after detectBranchMsg = %q, want %q", got, "origin/main")
+	}
+}
+
+func TestNewProjectForm_DetectBranchMsg_NoOverrideCustom(t *testing.T) {
+	f := NewNewProjectForm(DefaultTheme())
+
+	// User manually set a custom branch — should NOT be overridden.
+	f.inputs[projFieldBranch].SetValue("develop")
+	f.Update(detectBranchMsg{branch: "origin/main"})
+	if got := f.inputs[projFieldBranch].Value(); got != "develop" {
+		t.Errorf("branch should remain %q, got %q", "develop", got)
+	}
+}
+
+func TestDetectRemoteDefaultBranch_BadPath(t *testing.T) {
+	// Non-existent directory should return empty string, not panic.
+	result := detectRemoteDefaultBranch("/nonexistent/path")
+	if result != "" {
+		t.Errorf("expected empty string for bad path, got %q", result)
+	}
+}
+
 func TestNewProjectForm_View(t *testing.T) {
 	f := NewNewProjectForm(DefaultTheme())
 	f.SetSize(100, 30)

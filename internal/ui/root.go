@@ -513,6 +513,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 
+	case detectBranchMsg:
+		if m.current == viewNewProject {
+			cmd := m.newproject.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		m.statusbar.ClearError()
 		return m.handleKey(msg)

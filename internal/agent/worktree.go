@@ -9,6 +9,34 @@ import (
 	"github.com/drn/argus/internal/db"
 )
 
+// resolveStartPoint checks whether ref is a valid git ref in the given repo.
+// If not, it tries origin/<ref> and upstream/<ref> as fallbacks.
+// Returns the first valid ref found, or the original ref if none resolve.
+func resolveStartPoint(repoDir, ref string) string {
+	// HEAD is always valid.
+	if ref == "HEAD" {
+		return ref
+	}
+	// Check if the ref exists locally (local branch, tag, etc.).
+	if isValidRef(repoDir, ref) {
+		return ref
+	}
+	// Try remote-tracking branches.
+	for _, remote := range []string{"upstream", "origin"} {
+		candidate := remote + "/" + ref
+		if isValidRef(repoDir, candidate) {
+			return candidate
+		}
+	}
+	return ref
+}
+
+func isValidRef(repoDir, ref string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref)
+	cmd.Dir = repoDir
+	return cmd.Run() == nil
+}
+
 // WorktreeDir returns the deterministic worktree path for a task:
 // ~/.argus/worktrees/<projectName>/<taskName>
 func WorktreeDir(projectName, taskName string) string {
@@ -23,6 +51,10 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
+
+	// Resolve baseBranch to a valid ref. If the local branch doesn't exist,
+	// try remote-tracking branches (origin/<branch>, upstream/<branch>).
+	baseBranch = resolveStartPoint(projectPath, baseBranch)
 
 	// Try the base name first, then -1, -2, ... up to 99.
 	candidate := taskName
