@@ -91,4 +91,40 @@ func TestRenderFadingAccent(t *testing.T) {
 	if !strings.Contains(result, "⬡") {
 		t.Error("fading accent should contain hexagon")
 	}
+	// Should contain true-color escape sequences from gradient
+	if !strings.Contains(result, "\x1b[38;2;") {
+		t.Error("fading accent should contain true-color gradient escapes")
+	}
+}
+
+func TestLerpRGB(t *testing.T) {
+	a := rgb{0, 0, 0}
+	b := rgb{100, 200, 50}
+	mid := lerpRGB(a, b, 0.5)
+	if mid.r != 50 || mid.g != 100 || mid.b != 25 {
+		t.Errorf("lerpRGB midpoint = %v, want {50 100 25}", mid)
+	}
+	start := lerpRGB(a, b, 0.0)
+	if start != a {
+		t.Errorf("lerpRGB at t=0 = %v, want %v", start, a)
+	}
+	end := lerpRGB(a, b, 1.0)
+	if end != b {
+		t.Errorf("lerpRGB at t=1 = %v, want %v", end, b)
+	}
+}
+
+func TestRenderGradientDashes(t *testing.T) {
+	result := renderGradientDashes("-- -", rgb{0, 0, 0}, rgb{255, 255, 255})
+	if !strings.Contains(result, "\x1b[38;2;") {
+		t.Error("should contain true-color escapes for dash characters")
+	}
+	// Spaces should not have color escapes
+	if strings.Contains(result, "\x1b[38;2;") && !strings.Contains(result, "-") {
+		t.Error("should still contain dash characters")
+	}
+	// Empty pattern
+	if renderGradientDashes("", rgb{0, 0, 0}, rgb{255, 255, 255}) != "" {
+		t.Error("empty pattern should return empty string")
+	}
 }
