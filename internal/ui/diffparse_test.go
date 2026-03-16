@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestParseUnifiedDiff_Basic(t *testing.T) {
@@ -260,6 +262,62 @@ func TestCollectRun(t *testing.T) {
 	run = collectRun(lines, 0, DiffAdded)
 	if len(run) != 0 {
 		t.Errorf("collectRun mismatch: got %d, want 0", len(run))
+	}
+}
+
+func TestExpandTabs(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"no tabs", "no tabs"},
+		{"\tindented", "  indented"},
+		{"\t\tdouble", "    double"},
+		{"mid\ttab", "mid  tab"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		got := expandTabs(tc.input)
+		if got != tc.want {
+			t.Errorf("expandTabs(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseUnifiedDiff_TabsExpanded(t *testing.T) {
+	raw := "--- a/main.go\n+++ b/main.go\n@@ -1,3 +1,3 @@\n \tline1\n-\told\n+\tnew\n \tline3"
+	pd := ParseUnifiedDiff(raw)
+	if len(pd.Hunks) != 1 {
+		t.Fatalf("expected 1 hunk, got %d", len(pd.Hunks))
+	}
+	for _, dl := range pd.Hunks[0].Lines {
+		if strings.Contains(dl.Content, "\t") {
+			t.Errorf("Content should not contain tabs after parsing, got %q", dl.Content)
+		}
+	}
+}
+
+func TestRenderSideBySide_ConsistentDividerPosition(t *testing.T) {
+	// Diff with tabs — after expansion, divider must be at the same column on every row
+	raw := "--- a/main.go\n+++ b/main.go\n@@ -1,3 +1,4 @@\n \tline1\n+\tinserted\n \tline2\n \tline3"
+	pd := ParseUnifiedDiff(raw)
+	rows := BuildSideBySide(pd)
+	theme := DefaultTheme()
+	output := RenderSideBySide(rows, "main.go", 100, 20, 0, theme)
+
+	lines := strings.Split(output, "\n")
+	divPos := -1
+	for i, line := range lines {
+		stripped := ansi.Strip(line)
+		pos := strings.Index(stripped, "│")
+		if pos < 0 {
+			continue // hunk header or separator
+		}
+		if divPos == -1 {
+			divPos = pos
+		} else if pos != divPos {
+			t.Errorf("line %d: divider at col %d, expected %d\n  %q", i, pos, divPos, stripped)
+		}
 	}
 }
 

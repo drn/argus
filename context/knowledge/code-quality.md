@@ -173,6 +173,12 @@
 - Replaced `removedBgStyle`/`addedBgStyle` (lipgloss.Style) with raw escape strings (`removedBgEsc`/`addedBgEsc`) since lipgloss `Render()` can't handle this pattern.
 - **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset. Do NOT use lipgloss `.Render()` wrapping — it only sets the background once at the start.
 
+### Tab Characters Break Width Math (2026-03-15)
+- `ansi.StringWidth("\t")` returns **0** — tabs are zero-width in charmbracelet's width calculations (`ansi.StringWidth`, `ansi.Truncate`, `lipgloss.Width`). Terminals render them as 1-8 columns.
+- This caused the side-by-side diff divider (`│`) to shift position between rows: lines with tabs got too much padding (width underestimated), lines without tabs were correct.
+- **Fix:** `expandTabs()` in `diffparse.go` converts tabs to 2 spaces during parsing, before any width calculation or rendering.
+- **Pattern:** Any UI panel that renders external text (diff content, file previews, terminal output) must expand tabs to spaces before computing widths. The `vt10x` terminal emulator handles its own tab stops, so this only applies to non-vt10x rendering paths.
+
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
 - Handle `os.UserHomeDir()` errors in db.go and config.go
