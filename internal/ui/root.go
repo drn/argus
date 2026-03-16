@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/daemon"
+	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 )
@@ -28,6 +31,7 @@ const (
 	viewPruning
 	viewAgent
 	viewSandboxInstall
+	viewDaemonRestart
 )
 
 type tab int
@@ -91,6 +95,12 @@ type SandboxInstallMsg struct {
 	Output  string
 }
 
+// DaemonRestartedMsg carries the result of a daemon restart attempt.
+type DaemonRestartedMsg struct {
+	Client *dclient.Client
+	Err    error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -115,6 +125,7 @@ type Model struct {
 	quitting           bool
 	agentTickActive    bool              // true while the 100ms AgentViewTickMsg chain is running
 	daemonConnected    bool              // true when connected to daemon (sessions persist)
+	daemonRestarting   bool              // true while daemon restart is in progress
 	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
 
 	// Prune progress state (shown in viewPruning modal)
@@ -125,6 +136,15 @@ type Model struct {
 	sandboxInstallPending *model.Task // task to start after install completes
 	sandboxInstalling     bool        // true while npm install is running
 	sandboxInstallResult  string      // install output or error
+
+	// program is set by SetProgram so daemon restart can register
+	// OnSessionExit on the new client. Shared via pointer indirection
+	// so Bubble Tea's value-receiver copies all see the same reference.
+	program **tea.Program
+
+	// restartedClient holds the new daemon client after a restart so
+	// runTUI can close it on exit. Shared via pointer indirection.
+	restartedClient **dclient.Client
 }
 
 // NewModel creates the top-level model. Set daemonConnected to true when the
@@ -151,6 +171,8 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 		theme:           theme,
 		daemonConnected: daemonConnected,
 		resolvedDirs:    make(map[string]string),
+		program:         new(*tea.Program),
+		restartedClient: new(*dclient.Client),
 		tasklist:    tl,
 		settings:    sv,
 		statusbar:   sb,
@@ -170,6 +192,23 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 	m.refreshTasks()
 	m.refreshSettings()
 	return m
+}
+
+// RestartedClient returns the daemon client created during a restart, or nil.
+// Called by runTUI after the program exits to ensure proper cleanup.
+func (m Model) RestartedClient() *dclient.Client {
+	if m.restartedClient == nil {
+		return nil
+	}
+	return *m.restartedClient
+}
+
+// SetProgram stores the tea.Program reference so daemon restart can register
+// the OnSessionExit callback on the new client. The `program` field is a
+// double-pointer allocated in NewModel, so all Bubble Tea value copies
+// share the same underlying *tea.Program slot.
+func (m *Model) SetProgram(p *tea.Program) {
+	*m.program = p
 }
 
 func (m Model) Init() tea.Cmd {
@@ -257,18 +296,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
 			return TickMsg{}
 		}))
-		// Skip task list refresh while in agent view — it's not visible
-		// and the SQL query + runner lock is wasted work. The agent view
-		// has its own 100ms tick chain managed by enterAgentView().
-		if m.current != viewAgent {
+		// Skip task list refresh while in agent view or daemon restart —
+		// in agent view it's not visible, during restart the runner is
+		// being swapped and RPCs would timeout against the dead socket.
+		if m.current != viewAgent && !m.daemonRestarting {
 			m.refreshTasks()
 			m.tasklist.Tick()
 			if m.activeTab == tabSettings {
 				m.settings.SetTasks(m.db.Tasks())
 			}
 		}
-		if cmd := m.scheduleGitRefresh(); cmd != nil {
-			cmds = append(cmds, cmd)
+		if !m.daemonRestarting {
+			if cmd := m.scheduleGitRefresh(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 
@@ -358,6 +399,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case DaemonRestartedMsg:
+		m.daemonRestarting = false
+		if msg.Err != nil {
+			m.daemonConnected = false
+			m.statusbar.SetError("daemon restart failed: " + msg.Err.Error())
+			m.current = viewTaskList
+			m.refreshSettings()
+			return m, nil
+		}
+		// Swap runner to new daemon client. Don't close the old client
+		// here — runTUI's defer client.Close() handles that.
+		if msg.Client != nil && *m.program != nil {
+			p := *m.program
+			msg.Client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+				var exitErr error
+				if info.Err != "" {
+					exitErr = errors.New(info.Err)
+				}
+				p.Send(AgentFinishedMsg{
+					TaskID:     taskID,
+					Err:        exitErr,
+					Stopped:    info.Stopped,
+					LastOutput: info.LastOutput,
+				})
+			})
+		}
+		m.runner = msg.Client
+		m.daemonConnected = true
+		m.preview.runner = msg.Client
+		m.agentview.runner = msg.Client
+		*m.restartedClient = msg.Client
+
+		// Reset in-progress tasks — daemon restart killed all sessions.
+		for _, t := range m.db.Tasks() {
+			if t.Status == model.StatusInProgress {
+				t.SetStatus(model.StatusPending)
+				t.SessionID = ""
+				t.AgentPID = 0
+				t.StartedAt = time.Time{}
+				_ = m.db.Update(t)
+			}
+		}
+		m.current = viewTaskList
+		m.refreshTasks()
+		m.refreshSettings()
+		return m, nil
+
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
@@ -389,8 +477,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDestroyKey(msg)
 	case viewConfirmDeleteProject:
 		return m.handleConfirmDeleteProjectKey(msg)
-	case viewPruning:
-		// Absorb all keys while pruning — no interaction allowed.
+	case viewPruning, viewDaemonRestart:
+		// Absorb all keys while pruning or restarting — no interaction allowed.
 		return m, nil
 	case viewSandboxInstall:
 		return m.handleSandboxInstallKey(msg)
@@ -912,12 +1000,42 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case key.Matches(msg, m.keys.RestartDaemon):
+		if !m.daemonConnected {
+			m.statusbar.SetError("no daemon to restart (running in-process)")
+			return m, nil
+		}
+		m.daemonRestarting = true
+		m.current = viewDaemonRestart
+		return m, m.restartDaemonCmd()
+
 	case key.Matches(msg, m.keys.Help):
 		m.current = viewHelp
 		return m, nil
 	}
 
 	return m, nil
+}
+
+// restartDaemonCmd returns a tea.Cmd that shuts down the current daemon,
+// waits for cleanup, starts a new one, and returns a DaemonRestartedMsg.
+func (m Model) restartDaemonCmd() tea.Cmd {
+	sockPath := daemon.DefaultSocketPath()
+	client, ok := m.runner.(*dclient.Client)
+	return func() tea.Msg {
+		// Shut down the current daemon.
+		if ok {
+			_ = client.Shutdown()
+		}
+		dclient.WaitForShutdown(sockPath, 3*time.Second)
+
+		// Start a new daemon.
+		newClient, err := dclient.AutoStart(sockPath)
+		if err != nil {
+			return DaemonRestartedMsg{Err: err}
+		}
+		return DaemonRestartedMsg{Client: newClient}
+	}
 }
 
 func (m Model) handleNewProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

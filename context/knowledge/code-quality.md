@@ -209,3 +209,27 @@
 - Sandbox config stored as `sandbox.enabled`, `sandbox.allowed_domains`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
 - List values stored as CSV (comma-separated). Known limitation: paths with commas would break.
 - `SetSandboxEnabled(bool)` convenience method on DB; other values via `SetConfigValue`
+
+## Daemon Restart Feature (2026-03-15)
+
+### CLI Subcommands
+- `argus daemon start` (also bare `argus daemon`) — starts daemon in foreground
+- `argus daemon stop` — idempotent: prints "no daemon running" if not running (exit 0)
+- `argus daemon restart` — stop + wait for socket cleanup + start in foreground
+- `stopDaemon()` returns `(bool, error)` — the bool distinguishes "stopped" from "not running"
+
+### TUI Restart Flow
+- Settings tab → `r` key → `viewDaemonRestart` modal → `restartDaemonCmd()` (goroutine) → `DaemonRestartedMsg`
+- `daemonRestarting` flag suppresses `refreshTasks()` and `scheduleGitRefresh()` during restart to avoid RPC timeouts against dead socket
+- Handler swaps `m.runner`, `m.preview.runner`, `m.agentview.runner`, resets in-progress tasks to Pending
+
+### Double-Pointer Pattern for Shared State
+- `program **tea.Program` and `restartedClient **dclient.Client` use double-pointer indirection
+- **Critical:** Must be allocated in `NewModel` (`new(*tea.Program)`) so the outer pointer exists before `tea.NewProgram` copies the model
+- `SetProgram(p)` writes through: `*m.program = p` — all BT value copies share the same inner slot
+- `RestartedClient()` getter lets `runTUI` close the post-restart client on exit
+
+### AutoStart Extraction
+- `autoStartDaemon` moved from `cmd/argus/main.go` to `dclient.AutoStart()` for reuse by TUI restart
+- `daemonSysProcAttr` platform files moved from `cmd/argus/` to `internal/daemon/client/`
+- `WaitForShutdown(sockPath, timeout)` polls until socket file disappears
