@@ -16,6 +16,7 @@ import (
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 type view int
@@ -34,6 +35,7 @@ const (
 	viewSandboxInstall
 	viewDaemonRestart
 	viewDaemonLogs
+	viewUXLogs
 )
 
 type tab int
@@ -109,6 +111,12 @@ type DaemonLogsMsg struct {
 	Err   error
 }
 
+// UXLogsMsg carries the loaded UX log lines.
+type UXLogsMsg struct {
+	Lines []string
+	Err   error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -148,6 +156,10 @@ type Model struct {
 	// Daemon log viewer state
 	daemonLogLines  []string // lines of the daemon log file
 	daemonLogOffset int      // scroll offset for log viewer
+
+	// UX log viewer state
+	uxLogLines  []string // lines of the UX log file
+	uxLogOffset int      // scroll offset for log viewer
 
 	// program is set by SetProgram so daemon restart can register
 	// OnSessionExit on the new client. Shared via pointer indirection
@@ -234,12 +246,15 @@ func (m Model) Init() tea.Cmd {
 	// If so, just sync state — don't try to resume.
 	daemonRunning := len(m.runner.Running()) > 0
 
+	uxlog.Log("Init: daemonRunning=%v, resuming in-progress tasks...", daemonRunning)
+
 	if !daemonRunning {
 		// Resume sessions for in-progress tasks that have a saved session ID.
 		// Each resume runs in a background goroutine so the UI stays responsive.
 		for _, t := range m.db.Tasks() {
 			if t.Status == model.StatusInProgress && t.SessionID != "" {
 				task := t // capture loop variable
+				uxlog.Log("Init: resuming task %s (%s) session=%s", task.ID, task.Name, task.SessionID)
 
 				// Kill any orphaned process from a previous Argus session.
 				// When Argus exits, PTY master fds close and children get SIGHUP,
@@ -382,6 +397,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.current == viewDaemonLogs {
 			m.handleDaemonLogsMouse(msg)
 		}
+		if m.current == viewUXLogs {
+			m.handleUXLogsMouse(msg)
+		}
 		return m, nil
 
 	case SessionResumedMsg:
@@ -420,6 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DaemonRestartedMsg:
 		m.daemonRestarting = false
+		uxlog.Log("DaemonRestartedMsg: err=%v hasClient=%v", msg.Err, msg.Client != nil)
 		if msg.Err != nil {
 			m.daemonConnected = false
 			m.statusbar.SetError("daemon restart failed: " + msg.Err.Error())
@@ -476,6 +495,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.current = viewDaemonLogs
 		return m, nil
 
+	case UXLogsMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError("failed to read UX log: " + msg.Err.Error())
+			return m, nil
+		}
+		m.uxLogLines = msg.Lines
+		m.uxLogOffset = max(0, len(msg.Lines)-m.daemonLogVisibleLines())
+		m.current = viewUXLogs
+		return m, nil
+
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
@@ -509,6 +538,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDeleteProjectKey(msg)
 	case viewDaemonLogs:
 		return m.handleDaemonLogsKey(msg)
+	case viewUXLogs:
+		return m.handleUXLogsKey(msg)
 	case viewPruning, viewDaemonRestart:
 		// Absorb all keys while pruning or restarting — no interaction allowed.
 		return m, nil
@@ -713,14 +744,19 @@ func (m Model) attachAgent() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
+	uxlog.Log("startOrAttach: task=%s (%s) status=%s session=%s worktree=%s",
+		t.ID, t.Name, t.Status, t.SessionID, t.Worktree)
+
 	// If session already exists in runner, switch to agent view
 	if m.runner.Get(t.ID) != nil {
+		uxlog.Log("startOrAttach: session already exists for %s, attaching", t.ID)
 		return m, m.enterAgentView(t.ID, t.Name)
 	}
 
 	// If sandbox is enabled but srt is not installed, show install modal
 	cfg := m.db.Config()
 	if cfg.Sandbox.Enabled && !agent.IsSandboxAvailable() {
+		uxlog.Log("startOrAttach: sandbox not available, showing install modal for %s", t.ID)
 		m.sandboxInstallPending = t
 		m.sandboxInstalling = false
 		m.sandboxInstallResult = ""
@@ -734,6 +770,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	if !resume {
 		t.SessionID = model.GenerateSessionID()
 	}
+	uxlog.Log("startOrAttach: resume=%v session=%s", resume, t.SessionID)
 
 	// Cache the worktree dir (already set during task creation).
 	if t.Worktree != "" {
@@ -753,10 +790,12 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	contentH := m.height - 1
 	ptyRows := uint16(max(contentH-4, 10))
 	ptyCols := uint16(max(centerW-4, 40))
+	uxlog.Log("startOrAttach: starting session pty=%dx%d", ptyCols, ptyRows)
 	sess, err := m.runner.Start(t, m.db.Config(), ptyRows, ptyCols, resume)
 	if err != nil {
 		// Start failed — revert status and session ID so the task
 		// doesn't appear as "in progress" with no running agent.
+		uxlog.Log("startOrAttach: START FAILED task=%s err=%v", t.ID, err)
 		t.SetStatus(model.StatusPending)
 		t.SessionID = ""
 		t.StartedAt = time.Time{}
@@ -765,6 +804,7 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	uxlog.Log("startOrAttach: started task=%s pid=%d", t.ID, sess.PID())
 	t.AgentPID = sess.PID()
 	_ = m.db.Update(t)
 	m.refreshTasks()
@@ -815,13 +855,22 @@ func determinePostExitStatus(msg AgentFinishedMsg, t *model.Task) (newStatus mod
 }
 
 func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
+	uxlog.Log("handleAgentFinished: task=%s err=%v stopped=%v lastOutput=%d bytes",
+		msg.TaskID, msg.Err, msg.Stopped, len(msg.LastOutput))
+
 	t, err := m.db.Get(msg.TaskID)
 	if err != nil {
+		uxlog.Log("handleAgentFinished: db.Get failed task=%s err=%v", msg.TaskID, err)
 		return m, nil
 	}
 
+	uxlog.Log("handleAgentFinished: task=%s currentStatus=%s startedAt=%v age=%v worktree=%s",
+		t.ID, t.Status, t.StartedAt, time.Since(t.StartedAt), t.Worktree)
+
 	t.AgentPID = 0
 	newStatus, clearSession, quickExit := determinePostExitStatus(msg, t)
+	uxlog.Log("handleAgentFinished: task=%s newStatus=%s clearSession=%v quickExit=%v",
+		t.ID, newStatus, clearSession, quickExit)
 	t.SetStatus(newStatus)
 	if clearSession {
 		t.SessionID = ""
@@ -841,17 +890,22 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleSessionResumed(msg SessionResumedMsg) (tea.Model, tea.Cmd) {
+	uxlog.Log("handleSessionResumed: task=%s err=%v pid=%d", msg.TaskID, msg.Err, msg.PID)
+
 	t, err := m.db.Get(msg.TaskID)
 	if err != nil {
+		uxlog.Log("handleSessionResumed: db.Get failed task=%s err=%v", msg.TaskID, err)
 		return m, nil
 	}
 
 	if msg.Err != nil {
 		// Resume failed — clear session ID so next manual start is fresh
+		uxlog.Log("handleSessionResumed: RESUME FAILED task=%s err=%v", t.ID, msg.Err)
 		t.SessionID = ""
 		t.AgentPID = 0
 		_ = m.db.Update(t)
 	} else {
+		uxlog.Log("handleSessionResumed: task=%s pid=%d", t.ID, msg.PID)
 		t.AgentPID = msg.PID
 		_ = m.db.Update(t)
 	}
@@ -1026,6 +1080,9 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if sel != nil && sel.kind == settingsRowDaemonLogs {
 			return m, m.loadDaemonLogsCmd()
+		}
+		if sel != nil && sel.kind == settingsRowUXLogs {
+			return m, m.loadUXLogsCmd()
 		}
 		return m, nil
 
@@ -1351,6 +1408,103 @@ func (m *Model) handleDaemonLogsMouse(msg tea.MouseMsg) {
 		m.daemonLogOffset += 3
 		if m.daemonLogOffset > maxOff {
 			m.daemonLogOffset = maxOff
+		}
+	}
+}
+
+// loadUXLogsCmd returns a tea.Cmd that reads the UX log file.
+func (m Model) loadUXLogsCmd() tea.Cmd {
+	return func() tea.Msg {
+		logPath := filepath.Join(db.DataDir(), "ux.log")
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			return UXLogsMsg{Err: err}
+		}
+		lines := strings.Split(string(data), "\n")
+		if len(lines) > 1000 {
+			lines = lines[len(lines)-1000:]
+		}
+		return UXLogsMsg{Lines: lines}
+	}
+}
+
+func (m Model) handleUXLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape, tea.KeyEnter:
+		m.uxLogLines = nil
+		m.uxLogOffset = 0
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	case tea.KeyUp:
+		if m.uxLogOffset > 0 {
+			m.uxLogOffset--
+		}
+		return m, nil
+	case tea.KeyDown:
+		maxOff := len(m.uxLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.uxLogOffset < maxOff {
+			m.uxLogOffset++
+		}
+		return m, nil
+	case tea.KeyPgUp:
+		m.uxLogOffset -= m.daemonLogVisibleLines()
+		if m.uxLogOffset < 0 {
+			m.uxLogOffset = 0
+		}
+		return m, nil
+	case tea.KeyPgDown:
+		m.uxLogOffset += m.daemonLogVisibleLines()
+		maxOff := len(m.uxLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.uxLogOffset > maxOff {
+			m.uxLogOffset = maxOff
+		}
+		return m, nil
+	case tea.KeyHome:
+		m.uxLogOffset = 0
+		return m, nil
+	case tea.KeyEnd:
+		maxOff := len(m.uxLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		m.uxLogOffset = maxOff
+		return m, nil
+	}
+
+	if msg.String() == "q" {
+		m.uxLogLines = nil
+		m.uxLogOffset = 0
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *Model) handleUXLogsMouse(msg tea.MouseMsg) {
+	visible := m.daemonLogVisibleLines()
+	maxOff := len(m.uxLogLines) - visible
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.uxLogOffset -= 3
+		if m.uxLogOffset < 0 {
+			m.uxLogOffset = 0
+		}
+	case tea.MouseButtonWheelDown:
+		m.uxLogOffset += 3
+		if m.uxLogOffset > maxOff {
+			m.uxLogOffset = maxOff
 		}
 	}
 }

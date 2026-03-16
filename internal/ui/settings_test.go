@@ -95,21 +95,29 @@ func TestSettingsView_CursorNavigation(t *testing.T) {
 		t.Errorf("expected cursor to be on daemon logs row after first down, got kind %d", sel.kind)
 	}
 
+	// Move down — should land on UX logs row
+	sv.CursorDown()
+	sel = sv.Selected()
+	if sel == nil || sel.kind != settingsRowUXLogs {
+		t.Errorf("expected cursor to be on UX logs row after second down, got kind %d", sel.kind)
+	}
+
 	// Move down — should land on sandbox row (skipping section header)
 	sv.CursorDown()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowSandbox {
-		t.Errorf("expected cursor to be on sandbox row after second down, got kind %d", sel.kind)
+		t.Errorf("expected cursor to be on sandbox row after third down, got kind %d", sel.kind)
 	}
 
 	// Move down again — should land on a project row (skipping section header)
 	sv.CursorDown()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowProject {
-		t.Error("expected cursor to be on a project row after third down")
+		t.Error("expected cursor to be on a project row after fourth down")
 	}
 
-	// Move up three times — should go back to status row
+	// Move up four times — should go back to status row
+	sv.CursorUp()
 	sv.CursorUp()
 	sv.CursorUp()
 	sv.CursorUp()
@@ -130,6 +138,7 @@ func TestSettingsView_SelectedProject(t *testing.T) {
 
 	// Move past daemon logs and sandbox to project row
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // project
 	proj := sv.SelectedProject()
@@ -152,6 +161,7 @@ func TestSettingsView_SelectedBackend(t *testing.T) {
 
 	// Move past status, daemon logs, sandbox, and empty projects to backend row
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects) placeholder
 	sv.CursorDown() // claude backend
@@ -187,6 +197,7 @@ func TestSettingsView_RenderDetail_Project(t *testing.T) {
 	sv.SetBackends(nil)
 
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // move to project
 	detail := sv.RenderDetail(60, 20)
@@ -208,6 +219,7 @@ func TestSettingsView_RenderDetail_Backend(t *testing.T) {
 	})
 
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects)
 	sv.CursorDown() // claude backend
@@ -275,6 +287,7 @@ func TestSettingsView_SandboxDetail(t *testing.T) {
 
 	// Navigate to sandbox row
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown() // sandbox row
 	detail := sv.RenderDetail(60, 20)
 	if !strings.Contains(detail, "Sandbox") {
@@ -299,6 +312,7 @@ func TestSettingsView_SandboxDetailUnavailable(t *testing.T) {
 
 	// Navigate to sandbox row
 	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
 	sv.CursorDown()
 	detail := sv.RenderDetail(60, 20)
 	if !strings.Contains(detail, "srt not found") {
@@ -374,6 +388,7 @@ func TestModel_SandboxToggle(t *testing.T) {
 
 	// Navigate to sandbox row (down from initial "All systems nominal")
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	sel := m.settings.Selected()
 	if sel == nil || sel.kind != settingsRowSandbox {
@@ -650,6 +665,143 @@ func TestModel_DaemonLogsClose(t *testing.T) {
 	}
 	if m.daemonLogLines != nil {
 		t.Error("expected daemonLogLines to be nil after close")
+	}
+}
+
+func TestSettingsView_UXLogsRow(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetProjects(nil)
+	sv.SetBackends(nil)
+
+	// Navigate past daemon logs to UX logs row
+	sv.CursorDown() // daemon logs
+	sv.CursorDown() // UX logs
+	sel := sv.Selected()
+	if sel == nil || sel.kind != settingsRowUXLogs {
+		t.Fatal("expected cursor on UX logs row")
+	}
+
+	detail := sv.RenderDetail(60, 20)
+	if !strings.Contains(detail, "UX Logs") {
+		t.Error("expected 'UX Logs' in detail panel")
+	}
+	if !strings.Contains(detail, "enter") {
+		t.Error("expected enter hint in detail panel")
+	}
+}
+
+func TestModel_UXLogsView(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewUXLogs
+	m.width = 80
+	m.height = 24
+	m.uxLogLines = []string{
+		"2026/03/16 10:00:00.000 startOrAttach: task=t1",
+		"2026/03/16 10:00:01.000 handleAgentFinished: task=t1",
+	}
+	m.uxLogOffset = 0
+
+	view := m.View()
+	if !strings.Contains(view, "UX Logs") {
+		t.Error("expected 'UX Logs' title")
+	}
+	if !strings.Contains(view, "startOrAttach") {
+		t.Error("expected log content in view")
+	}
+}
+
+func TestModel_UXLogsScroll(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewUXLogs
+	m.width = 80
+	m.height = 24
+
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("ux log line %d", i)
+	}
+	m.uxLogLines = lines
+	m.uxLogOffset = 0
+
+	// Scroll down
+	updated, _ := m.handleUXLogsKey(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(Model)
+	if m.uxLogOffset != 1 {
+		t.Errorf("expected offset 1 after down, got %d", m.uxLogOffset)
+	}
+
+	// Scroll up
+	updated, _ = m.handleUXLogsKey(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(Model)
+	if m.uxLogOffset != 0 {
+		t.Errorf("expected offset 0 after up, got %d", m.uxLogOffset)
+	}
+
+	// Page down
+	updated, _ = m.handleUXLogsKey(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	if m.uxLogOffset == 0 {
+		t.Error("expected offset > 0 after page down")
+	}
+}
+
+func TestModel_UXLogsClose(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewUXLogs
+	m.width = 80
+	m.height = 24
+	m.uxLogLines = []string{"line 1"}
+
+	// Escape should close
+	updated, _ := m.handleUXLogsKey(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(Model)
+	if m.current != viewTaskList {
+		t.Errorf("expected viewTaskList after esc, got %d", m.current)
+	}
+	if m.activeTab != tabSettings {
+		t.Error("expected settings tab after closing UX logs")
+	}
+	if m.uxLogLines != nil {
+		t.Error("expected uxLogLines to be nil after close")
+	}
+}
+
+func TestModel_UXLogsMsg_Error(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(UXLogsMsg{Err: fmt.Errorf("open ux.log: no such file")})
+	m = updated.(Model)
+
+	if m.current == viewUXLogs {
+		t.Error("should not switch to viewUXLogs on error")
 	}
 }
 

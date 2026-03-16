@@ -35,6 +35,8 @@ func (m Model) View() string {
 		return m.daemonRestartView() + "\n" + bar
 	case viewDaemonLogs:
 		return m.daemonLogsView() + "\n" + bar
+	case viewUXLogs:
+		return m.uxLogsView() + "\n" + bar
 	case viewHelp:
 		return m.padToBottom(m.helpview.View(), bar)
 	case viewPrompt:
@@ -328,6 +330,59 @@ func (m Model) daemonLogsView() string {
 		logContent.WriteString("  " + m.theme.Dimmed.Render(line) + "\n")
 	}
 	// Pad remaining lines
+	rendered := end - start
+	for i := rendered; i < visible; i++ {
+		logContent.WriteString("\n")
+	}
+
+	hint := m.theme.Help.Render("  [esc/enter/q] close  [↑↓] scroll  [pgup/pgdn] page  [home/end] jump")
+
+	body := title + scrollInfo + "\n\n" + logContent.String() + "\n" + hint
+	w := m.width * 8 / 10
+	if w < 40 {
+		w = 40
+	}
+	if m.width > 0 && w > m.width-4 {
+		w = m.width - 4
+	}
+
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1, 2).
+		Width(w).
+		Render(body)
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
+}
+
+func (m Model) uxLogsView() string {
+	visible := m.daemonLogVisibleLines() // same sizing
+	totalLines := len(m.uxLogLines)
+
+	title := m.theme.Title.Render("UX Logs")
+
+	var scrollInfo string
+	if totalLines > visible {
+		end := m.uxLogOffset + visible
+		if end > totalLines {
+			end = totalLines
+		}
+		scrollInfo = m.theme.Dimmed.Render(fmt.Sprintf("  lines %d-%d of %d", m.uxLogOffset+1, end, totalLines))
+	}
+
+	var logContent strings.Builder
+	end := m.uxLogOffset + visible
+	if end > totalLines {
+		end = totalLines
+	}
+	start := m.uxLogOffset
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < end; i++ {
+		line := m.uxLogLines[i]
+		logContent.WriteString("  " + m.theme.Dimmed.Render(line) + "\n")
+	}
 	rendered := end - start
 	for i := rendered; i < visible; i++ {
 		logContent.WriteString("\n")

@@ -753,6 +753,7 @@ func TestDeleteProject_EnterConfirms(t *testing.T) {
 	m.activeTab = tabSettings
 	// Navigate cursor to the project row (past status and sandbox sections).
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
@@ -777,6 +778,7 @@ func TestDeleteProject_EscCancels(t *testing.T) {
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
@@ -801,6 +803,7 @@ func TestDeleteProject_YKeyNoLongerConfirms(t *testing.T) {
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
@@ -825,6 +828,7 @@ func TestDeleteProject_ModalView(t *testing.T) {
 	m := testModelWithProjects(t, projects)
 	m.activeTab = tabSettings
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	m.settings.CursorDown() // project
 	m.current = viewConfirmDeleteProject
@@ -1244,6 +1248,7 @@ func TestModel_NewProjectKey(t *testing.T) {
 	m.activeTab = tabSettings
 	// Navigate cursor to a project row so 'n' opens the new project form.
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	m.settings.CursorDown() // project (or "(no projects)" placeholder)
 
@@ -1599,6 +1604,7 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		{"sandboxInstallDone", func(m *Model) { m.current = viewSandboxInstall; m.sandboxInstallResult = "Installed" }},
 		{"daemonRestart", func(m *Model) { m.current = viewDaemonRestart; m.daemonRestarting = true }},
 		{"daemonLogs", func(m *Model) { m.current = viewDaemonLogs; m.daemonLogLines = []string{"test log line"} }},
+		{"uxLogs", func(m *Model) { m.current = viewUXLogs; m.uxLogLines = []string{"test ux log line"} }},
 	}
 	for _, tc := range views {
 		t.Run(tc.name, func(t *testing.T) {
