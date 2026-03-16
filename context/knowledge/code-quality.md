@@ -196,12 +196,13 @@
 ### Design Decisions
 - **Tool choice:** `@anthropic-ai/sandbox-runtime` (srt) over raw Seatbelt or nono — battle-tested (powers Claude Code itself), cross-platform (macOS Seatbelt + Linux bubblewrap), simple CLI wrapper
 - **Injection point:** `BuildCmd()` wraps the shell command string with `srt --settings <tempfile> -- <original>`. PTY, daemon, attach/detach unchanged.
-- **Opt-in:** `cfg.Sandbox.Enabled` defaults to `false`. Detection gated on enabled flag to avoid startup latency.
+- **Opt-in:** `cfg.Sandbox.Enabled` defaults to `false`. Toggle via Enter/Space on the sandbox row in settings.
+- **Availability detection:** `IsSandboxAvailable()` is cached via `sync.Once` — first call probes `exec.LookPath("srt")` then `npx --no @anthropic-ai/sandbox-runtime --version` with 5s timeout. All subsequent calls return the cached result. Called unconditionally in `refreshSettings()` so the settings view always shows accurate install status. `ResetSandboxCache()` clears the cache after toggle so re-detection occurs.
 - **Cleanup lifecycle:** `BuildCmd` returns `(cmd, cleanup, error)`. Cleanup called on `StartSession` failure OR on `session.Done()` in the exit-watch goroutine. No double-free, no leak.
 
 ### Key Bugs Caught in Review
 1. **Triple-slash path:** `"//" + "/absolute/path"` → `"///absolute/path"`. Fix: `"//" + strings.TrimPrefix(path, "/")` in `normalizeSrtPath`.
-2. **npx --yes at startup:** `IsSandboxAvailable()` called unconditionally in `refreshSettings()` with `npx --yes` (auto-installs npm packages). Fix: gate on `cfg.Sandbox.Enabled`, use `--no` flag, add 5s timeout.
+2. **npx --yes at startup:** Original implementation used `npx --yes` (auto-installs packages). Fix: use `--no` flag, add 5s timeout, cache via `sync.Once`. Now called unconditionally in `refreshSettings()` since caching makes repeated calls free.
 3. **Tests validated buggy format:** Test expected values matched the triple-slash bug, so tests passed despite incorrect behavior. Lesson: always validate test expectations against the external spec, not just internal consistency.
 
 ### Config Persistence

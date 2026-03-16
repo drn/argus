@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -339,6 +340,59 @@ func TestModel_DaemonConnectedWarning(t *testing.T) {
 	}
 	if !strings.Contains(view2, "All systems nominal") {
 		t.Error("expected 'All systems nominal' when daemon connected")
+	}
+}
+
+func TestModel_SandboxToggle(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	agent.ResetSandboxCache()
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, true)
+	m.activeTab = tabSettings
+	m.width = 120
+	m.height = 40
+	m.refreshSettings()
+
+	// Navigate to sandbox row (down from initial "All systems nominal")
+	m.settings.CursorDown()
+	sel := m.settings.Selected()
+	if sel == nil || sel.kind != settingsRowSandbox {
+		t.Fatalf("expected cursor on sandbox row, got %v", sel)
+	}
+
+	// Sandbox should start disabled
+	cfg := m.db.Config()
+	if cfg.Sandbox.Enabled {
+		t.Error("expected sandbox disabled initially")
+	}
+
+	// Press Enter to toggle on
+	enterMsg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.handleSettingsKey(enterMsg)
+	m = updated.(Model)
+
+	cfg = m.db.Config()
+	if !cfg.Sandbox.Enabled {
+		t.Error("expected sandbox enabled after Enter toggle")
+	}
+
+	// Press Enter again to toggle off.
+	// After the first toggle, refreshSettings rebuilds rows but the cursor index
+	// is preserved, so it should still be on the sandbox row.
+	sel = m.settings.Selected()
+	if sel == nil || sel.kind != settingsRowSandbox {
+		t.Fatalf("expected cursor still on sandbox row after first toggle, got %v", sel)
+	}
+	updated, _ = m.handleSettingsKey(enterMsg)
+	m = updated.(Model)
+
+	cfg = m.db.Config()
+	if cfg.Sandbox.Enabled {
+		t.Error("expected sandbox disabled after second Enter toggle")
 	}
 }
 
