@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,7 +32,6 @@ const (
 	viewConfirmDestroy
 	viewPruning
 	viewAgent
-	viewSandboxInstall
 	viewSandboxConfig
 	viewDaemonRestart
 	viewDaemonLogs
@@ -96,12 +94,6 @@ type PruneDoneMsg struct {
 	Count int
 }
 
-// SandboxInstallMsg carries the result of an async srt install.
-type SandboxInstallMsg struct {
-	Success bool
-	Output  string
-}
-
 // DaemonRestartedMsg carries the result of a daemon restart attempt.
 type DaemonRestartedMsg struct {
 	Client *dclient.Client
@@ -152,11 +144,6 @@ type Model struct {
 	// Prune progress state (shown in viewPruning modal)
 	pruneTotal   int // total worktrees being cleaned up
 	pruneCurrent int // number completed so far (0 = starting)
-
-	// Sandbox install modal state
-	sandboxInstallPending *model.Task // task to start after install completes
-	sandboxInstalling     bool        // true while npm install is running
-	sandboxInstallResult  string      // install output or error
 
 	// Daemon log viewer state
 	daemonLogLines  []string // lines of the daemon log file
@@ -457,18 +444,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 
-	case SandboxInstallMsg:
-		m.sandboxInstalling = false
-		if msg.Success {
-			m.sandboxInstallResult = "Installed successfully"
-			// Reset the cache so IsSandboxAvailable() rechecks
-			agent.ResetSandboxCache()
-			m.refreshSettings()
-		} else {
-			m.sandboxInstallResult = "Install failed: " + msg.Output
-		}
-		return m, nil
-
 	case DaemonRestartedMsg:
 		m.daemonRestarting = false
 		m.daemonFailures = 0
@@ -585,8 +560,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewPruning, viewDaemonRestart:
 		// Absorb all keys while pruning or restarting — no interaction allowed.
 		return m, nil
-	case viewSandboxInstall:
-		return m.handleSandboxInstallKey(msg)
 	case viewSandboxConfig:
 		return m.handleSandboxConfigKey(msg)
 	case viewAgent:
@@ -801,17 +774,6 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	if t.Worktree == "" {
 		uxlog.Log("startOrAttach: BLOCKED task=%s has no worktree", t.ID)
 		m.statusbar.SetError("task has no worktree — delete and recreate it")
-		return m, nil
-	}
-
-	// If sandbox is enabled but srt is not installed, show install modal
-	cfg := m.db.Config()
-	if cfg.Sandbox.Enabled && !agent.IsSandboxAvailable() {
-		uxlog.Log("startOrAttach: sandbox not available, showing install modal for %s", t.ID)
-		m.sandboxInstallPending = t
-		m.sandboxInstalling = false
-		m.sandboxInstallResult = ""
-		m.current = viewSandboxInstall
 		return m, nil
 	}
 
@@ -1061,48 +1023,6 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	})
 }
 
-func (m Model) handleSandboxInstallKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.sandboxInstalling {
-		// Absorb all keys while installing
-		return m, nil
-	}
-
-	switch msg.Type {
-	case tea.KeyEnter:
-		if m.sandboxInstallResult != "" {
-			// Install finished (success or failure) — close modal
-			if agent.IsSandboxAvailable() && m.sandboxInstallPending != nil {
-				// srt is now available — start the pending task
-				t := m.sandboxInstallPending
-				m.sandboxInstallPending = nil
-				m.current = viewTaskList
-				return m.startOrAttach(t)
-			}
-			m.sandboxInstallPending = nil
-			m.current = viewTaskList
-			return m, nil
-		}
-		// User confirmed install — run npm install asynchronously
-		m.sandboxInstalling = true
-		m.sandboxInstallResult = ""
-		return m, func() tea.Msg {
-			out, err := exec.Command("npm", "install", "-g", "@anthropic-ai/sandbox-runtime").CombinedOutput()
-			if err != nil {
-				return SandboxInstallMsg{Success: false, Output: strings.TrimSpace(string(out))}
-			}
-			return SandboxInstallMsg{Success: true, Output: strings.TrimSpace(string(out))}
-		}
-	case tea.KeyEsc:
-		// Close modal — if pending task, start it unsandboxed
-		// (BuildCmd gracefully falls through when srt unavailable)
-		m.sandboxInstallPending = nil
-		m.current = viewTaskList
-		return m, nil
-	default:
-		return m, nil
-	}
-}
-
 func (m Model) handleSandboxConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cmd := m.sandboxconfig.Update(msg)
 
@@ -1112,12 +1032,9 @@ func (m Model) handleSandboxConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.sandboxconfig.Done() {
-		enabled, domains, denyRead, extraWrite := m.sandboxconfig.Result()
+		enabled, denyRead, extraWrite := m.sandboxconfig.Result()
 		var saveErr error
 		if err := m.db.SetSandboxEnabled(enabled); err != nil {
-			saveErr = err
-		}
-		if err := m.db.SetConfigValue("sandbox.allowed_domains", domains); err != nil {
 			saveErr = err
 		}
 		if err := m.db.SetConfigValue("sandbox.deny_read", denyRead); err != nil {
@@ -1170,7 +1087,6 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sandboxconfig = NewSandboxConfigForm(
 				m.theme,
 				cfg.Sandbox.Enabled,
-				cfg.Sandbox.AllowedDomains,
 				cfg.Sandbox.DenyRead,
 				cfg.Sandbox.ExtraWrite,
 			)
@@ -1285,7 +1201,6 @@ func (m *Model) refreshSettings() {
 	m.settings.SetSandboxConfig(
 		cfg.Sandbox.Enabled,
 		available,
-		cfg.Sandbox.AllowedDomains,
 		cfg.Sandbox.DenyRead,
 		cfg.Sandbox.ExtraWrite,
 	)

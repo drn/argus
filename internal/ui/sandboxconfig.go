@@ -21,21 +21,14 @@ type SandboxConfigForm struct {
 }
 
 const (
-	sbFieldDomains = iota
-	sbFieldDenyRead
+	sbFieldDenyRead  = iota
 	sbFieldExtraWrite
-	sbFieldCount
+	sbFieldCount = 2
 )
 
 // NewSandboxConfigForm creates a sandbox config editor, pre-populated with current values.
-func NewSandboxConfigForm(theme Theme, enabled bool, domains, denyRead, extraWrite []string) SandboxConfigForm {
+func NewSandboxConfigForm(theme Theme, enabled bool, denyRead, extraWrite []string) SandboxConfigForm {
 	inputs := make([]textinput.Model, sbFieldCount)
-
-	domainsInput := textinput.New()
-	domainsInput.Placeholder = "Comma-separated domains (e.g. github.com,npmjs.org)"
-	domainsInput.CharLimit = 500
-	domainsInput.SetValue(strings.Join(domains, ","))
-	inputs[sbFieldDomains] = domainsInput
 
 	denyInput := textinput.New()
 	denyInput.Placeholder = "Comma-separated paths (e.g. /secrets,~/.private)"
@@ -51,7 +44,7 @@ func NewSandboxConfigForm(theme Theme, enabled bool, domains, denyRead, extraWri
 
 	return SandboxConfigForm{
 		inputs:  inputs,
-		focused: sbFieldDomains,
+		focused: sbFieldDenyRead,
 		enabled: enabled,
 		theme:   theme,
 	}
@@ -101,9 +94,8 @@ func (f *SandboxConfigForm) focusCurrent() tea.Cmd {
 }
 
 // Result returns the edited sandbox config values.
-func (f *SandboxConfigForm) Result() (enabled bool, domains, denyRead, extraWrite string) {
+func (f *SandboxConfigForm) Result() (enabled bool, denyRead, extraWrite string) {
 	return f.enabled,
-		strings.TrimSpace(f.inputs[sbFieldDomains].Value()),
 		strings.TrimSpace(f.inputs[sbFieldDenyRead].Value()),
 		strings.TrimSpace(f.inputs[sbFieldExtraWrite].Value())
 }
@@ -146,7 +138,7 @@ func (f SandboxConfigForm) View() string {
 	b.WriteString(f.theme.Dimmed.Render("Sandbox: ") + enabledLabel)
 	b.WriteString(f.theme.Dimmed.Render("  (ctrl+e to toggle)") + "\n\n")
 
-	labels := []string{"Allowed Domains:", "Deny Read:", "Extra Write:"}
+	labels := []string{"Deny Read:", "Extra Write:"}
 	for i, label := range labels {
 		style := f.theme.Dimmed
 		if i == f.focused {

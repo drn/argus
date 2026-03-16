@@ -46,10 +46,9 @@ type UIConfig struct {
 
 // SandboxConfig controls OS-level sandboxing of agent processes.
 type SandboxConfig struct {
-	Enabled        bool     `toml:"enabled"`
-	AllowedDomains []string `toml:"allowed_domains"`
-	DenyRead       []string `toml:"deny_read"`
-	ExtraWrite     []string `toml:"extra_write"`
+	Enabled    bool     `toml:"enabled"`
+	DenyRead   []string `toml:"deny_read"`
+	ExtraWrite []string `toml:"extra_write"`
 }
 
 // ShouldCleanupWorktrees returns whether worktrees should be auto-removed on task delete.

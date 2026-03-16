@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 	cfg := config.Config{}
 	worktree := "/home/user/.argus/worktrees/myapp/fix-bug"
 
-	path, cleanup, err := GenerateSandboxConfig(worktree, cfg)
+	path, params, cleanup, err := GenerateSandboxConfig(worktree, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,55 +27,55 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile := string(data)
 
-	var settings srtSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatal(err)
+	// Profile must reference WORKTREE and HOME params
+	if !strings.Contains(profile, `(param "WORKTREE")`) {
+		t.Errorf("profile missing WORKTREE param reference:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(param "HOME")`) {
+		t.Errorf("profile missing HOME param reference:\n%s", profile)
 	}
 
-	// Check allowWrite contains worktree and /tmp
-	aw := settings.Filesystem.AllowWrite
-	if !containsString(aw, "//home/user/.argus/worktrees/myapp/fix-bug") {
-		t.Errorf("allowWrite missing worktree path, got %v", aw)
-	}
-	if !containsString(aw, "//tmp") {
-		t.Errorf("allowWrite missing /tmp, got %v", aw)
-	}
-
-	// Check denyRead contains credential dirs
-	dr := settings.Filesystem.DenyRead
-	for _, expected := range []string{"~/.ssh", "~/.gnupg", "~/.aws", "~/.kube"} {
-		if !containsString(dr, expected) {
-			t.Errorf("denyRead missing %q, got %v", expected, dr)
+	// Profile must deny default credential dirs
+	for _, expected := range []string{"/.ssh", "/.aws", "/.gnupg", "/.kube"} {
+		if !strings.Contains(profile, expected) {
+			t.Errorf("profile missing deny for %q:\n%s", expected, profile)
 		}
 	}
 
-	// Check default allowed domains
-	ad := settings.Network.AllowedDomains
-	for _, expected := range []string{"api.anthropic.com", "statsig.anthropic.com", "sentry.io"} {
-		if !containsString(ad, expected) {
-			t.Errorf("allowedDomains missing %q, got %v", expected, ad)
+	// Params must contain HOME and WORKTREE
+	hasHome := false
+	hasWorktree := false
+	for _, p := range params {
+		if strings.HasPrefix(p, "HOME=") {
+			hasHome = true
+		}
+		if strings.HasPrefix(p, "WORKTREE=") {
+			hasWorktree = true
 		}
 	}
-
-	// PTY access must be enabled — srt blocks PTY by default on macOS,
-	// which prevents the agent process from producing any terminal output.
-	if !settings.AllowPty {
-		t.Error("allowPty must be true for agent sessions to work via PTY")
+	if !hasHome {
+		t.Errorf("params missing HOME=..., got %v", params)
+	}
+	if !hasWorktree {
+		t.Errorf("params missing WORKTREE=..., got %v", params)
+	}
+	if !containsString(params, "WORKTREE="+worktree) {
+		t.Errorf("params WORKTREE mismatch, got %v", params)
 	}
 }
 
 func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 	cfg := config.Config{
 		Sandbox: config.SandboxConfig{
-			AllowedDomains: []string{"github.com", "npmjs.org"},
-			DenyRead:       []string{"/secrets"},
-			ExtraWrite:     []string{"~/.npm", "/var/cache"},
+			DenyRead:   []string{"/secrets"},
+			ExtraWrite: []string{"~/.npm", "/var/cache"},
 		},
 	}
 	worktree := "/tmp/wt"
 
-	path, cleanup, err := GenerateSandboxConfig(worktree, cfg)
+	path, _, cleanup, err := GenerateSandboxConfig(worktree, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,40 +85,28 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	profile := string(data)
 
-	var settings srtSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatal(err)
+	// Custom deny read path should appear as deny line
+	if !strings.Contains(profile, `(deny file-read*`) {
+		t.Errorf("profile missing deny file-read* rule:\n%s", profile)
 	}
-
-	// Custom domains should be merged with defaults
-	ad := settings.Network.AllowedDomains
-	if !containsString(ad, "github.com") {
-		t.Errorf("allowedDomains missing github.com, got %v", ad)
-	}
-	if !containsString(ad, "api.anthropic.com") {
-		t.Errorf("allowedDomains missing default api.anthropic.com, got %v", ad)
+	if !strings.Contains(profile, "/secrets") {
+		t.Errorf("profile missing custom deny path /secrets:\n%s", profile)
 	}
 
-	// Custom deny read paths
-	dr := settings.Filesystem.DenyRead
-	if !containsString(dr, "//secrets") {
-		t.Errorf("denyRead missing /secrets, got %v", dr)
+	// Custom extra write paths should appear as allow-write lines
+	if !strings.Contains(profile, "/var/cache") {
+		t.Errorf("profile missing extra write path /var/cache:\n%s", profile)
 	}
-
-	// Custom extra write paths
-	aw := settings.Filesystem.AllowWrite
-	if !containsString(aw, "~/.npm") {
-		t.Errorf("allowWrite missing ~/.npm, got %v", aw)
-	}
-	if !containsString(aw, "//var/cache") {
-		t.Errorf("allowWrite missing /var/cache, got %v", aw)
+	if !strings.Contains(profile, ".npm") {
+		t.Errorf("profile missing extra write path ~/.npm:\n%s", profile)
 	}
 }
 
 func TestGenerateSandboxConfig_Cleanup(t *testing.T) {
 	cfg := config.Config{}
-	path, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+	path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,86 +124,30 @@ func TestGenerateSandboxConfig_Cleanup(t *testing.T) {
 	}
 }
 
-func TestGenerateSandboxConfig_NoDuplicateDomains(t *testing.T) {
-	cfg := config.Config{
-		Sandbox: config.SandboxConfig{
-			AllowedDomains: []string{"api.anthropic.com", "custom.io"},
-		},
-	}
+func TestWrapWithSandbox(t *testing.T) {
+	params := []string{"HOME=/Users/testuser", "WORKTREE=/tmp/wt"}
+	profilePath := "/tmp/argus-sandbox-12345.sb"
+	cmdStr := "claude --dangerously-skip-permissions"
 
-	path, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
+	result := WrapWithSandbox(cmdStr, profilePath, params)
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	if !strings.HasPrefix(result, sandboxExecPath) {
+		t.Errorf("expected prefix %q, got %q", sandboxExecPath, result)
 	}
-
-	var settings srtSettings
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(result, "-D 'HOME=/Users/testuser'") {
+		t.Errorf("expected HOME param, got %q", result)
 	}
-
-	// Count occurrences of api.anthropic.com
-	count := 0
-	for _, d := range settings.Network.AllowedDomains {
-		if d == "api.anthropic.com" {
-			count++
-		}
+	if !strings.Contains(result, "-D 'WORKTREE=/tmp/wt'") {
+		t.Errorf("expected WORKTREE param, got %q", result)
 	}
-	if count != 1 {
-		t.Errorf("api.anthropic.com should appear once, got %d times in %v",
-			count, settings.Network.AllowedDomains)
+	if !strings.Contains(result, "-f '/tmp/argus-sandbox-12345.sb'") {
+		t.Errorf("expected profile path, got %q", result)
 	}
-}
-
-func TestWrapWithSandbox_NpxFallback(t *testing.T) {
-	// When srtPath is "npx", should use npx invocation
-	oldPath := srtPath
-	srtPath = "npx"
-	defer func() { srtPath = oldPath }()
-
-	result := WrapWithSandbox("claude --dangerously-skip-permissions", "/tmp/sandbox.json")
-	if !strings.HasPrefix(result, "npx @anthropic-ai/sandbox-runtime") {
-		t.Errorf("expected npx prefix, got %q", result)
+	if !strings.Contains(result, "sh -c") {
+		t.Errorf("expected sh -c, got %q", result)
 	}
-	if !strings.Contains(result, "--settings '/tmp/sandbox.json'") {
-		t.Errorf("expected settings path, got %q", result)
-	}
-	if !strings.Contains(result, "-- claude --dangerously-skip-permissions") {
-		t.Errorf("expected original command after --, got %q", result)
-	}
-}
-
-func TestWrapWithSandbox_DirectBinary(t *testing.T) {
-	oldPath := srtPath
-	srtPath = "/usr/local/bin/srt"
-	defer func() { srtPath = oldPath }()
-
-	result := WrapWithSandbox("claude", "/tmp/sandbox.json")
-	if !strings.HasPrefix(result, "'/usr/local/bin/srt'") {
-		t.Errorf("expected direct binary path, got %q", result)
-	}
-}
-
-func TestNormalizeSrtPath(t *testing.T) {
-	tests := []struct {
-		input, expected string
-	}{
-		{"~/.ssh", "~/.ssh"},
-		{"//tmp", "//tmp"},
-		{"/usr/local", "//usr/local"},
-		{"./relative", "./relative"},
-		{"  /spaced  ", "//spaced"},
-	}
-	for _, tt := range tests {
-		got := normalizeSrtPath(tt.input)
-		if got != tt.expected {
-			t.Errorf("normalizeSrtPath(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
+	if !strings.Contains(result, cmdStr) {
+		t.Errorf("expected original command in output, got %q", result)
 	}
 }
 
@@ -235,7 +166,7 @@ func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	}
 
 	// No sandbox wrapping when disabled
-	if strings.Contains(cmd.Args[2], "sandbox-runtime") {
+	if strings.Contains(cmd.Args[2], "sandbox-exec") {
 		t.Errorf("sandbox should not be in command when disabled: %q", cmd.Args[2])
 	}
 	if cleanup != nil {

@@ -7,17 +7,13 @@ import (
 )
 
 func TestSandboxConfigForm_NewPrePopulated(t *testing.T) {
-	domains := []string{"github.com", "npmjs.org"}
 	deny := []string{"/secrets"}
 	extra := []string{"~/.npm"}
 
-	f := NewSandboxConfigForm(DefaultTheme(), true, domains, deny, extra)
+	f := NewSandboxConfigForm(DefaultTheme(), true, deny, extra)
 
 	if !f.enabled {
 		t.Error("expected enabled=true")
-	}
-	if f.inputs[sbFieldDomains].Value() != "github.com,npmjs.org" {
-		t.Errorf("unexpected domains: %q", f.inputs[sbFieldDomains].Value())
 	}
 	if f.inputs[sbFieldDenyRead].Value() != "/secrets" {
 		t.Errorf("unexpected deny read: %q", f.inputs[sbFieldDenyRead].Value())
@@ -28,7 +24,7 @@ func TestSandboxConfigForm_NewPrePopulated(t *testing.T) {
 }
 
 func TestSandboxConfigForm_Toggle(t *testing.T) {
-	f := NewSandboxConfigForm(DefaultTheme(), false, nil, nil, nil)
+	f := NewSandboxConfigForm(DefaultTheme(), false, nil, nil)
 
 	if f.enabled {
 		t.Error("expected disabled initially")
@@ -47,7 +43,7 @@ func TestSandboxConfigForm_Toggle(t *testing.T) {
 }
 
 func TestSandboxConfigForm_Cancel(t *testing.T) {
-	f := NewSandboxConfigForm(DefaultTheme(), true, nil, nil, nil)
+	f := NewSandboxConfigForm(DefaultTheme(), true, nil, nil)
 	f.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if !f.Canceled() {
 		t.Error("expected canceled after esc")
@@ -55,7 +51,7 @@ func TestSandboxConfigForm_Cancel(t *testing.T) {
 }
 
 func TestSandboxConfigForm_SubmitOnLastField(t *testing.T) {
-	f := NewSandboxConfigForm(DefaultTheme(), true, []string{"github.com"}, nil, nil)
+	f := NewSandboxConfigForm(DefaultTheme(), true, []string{"/secrets"}, nil)
 	f.SetSize(120, 40)
 
 	// Navigate to last field
@@ -67,14 +63,11 @@ func TestSandboxConfigForm_SubmitOnLastField(t *testing.T) {
 		t.Error("expected done after enter on last field")
 	}
 
-	enabled, domains, denyRead, extraWrite := f.Result()
+	enabled, denyRead, extraWrite := f.Result()
 	if !enabled {
 		t.Error("expected enabled=true in result")
 	}
-	if domains != "github.com" {
-		t.Errorf("unexpected domains: %q", domains)
-	}
-	if denyRead != "" {
+	if denyRead != "/secrets" {
 		t.Errorf("unexpected deny read: %q", denyRead)
 	}
 	if extraWrite != "" {
@@ -83,28 +76,28 @@ func TestSandboxConfigForm_SubmitOnLastField(t *testing.T) {
 }
 
 func TestSandboxConfigForm_TabNavigation(t *testing.T) {
-	f := NewSandboxConfigForm(DefaultTheme(), false, nil, nil, nil)
+	f := NewSandboxConfigForm(DefaultTheme(), false, nil, nil)
 	f.SetSize(120, 40)
 
-	if f.focused != sbFieldDomains {
-		t.Errorf("expected initial focus on domains, got %d", f.focused)
-	}
-
-	// Tab moves forward
-	f.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if f.focused != sbFieldDenyRead {
-		t.Errorf("expected focus on deny read after tab, got %d", f.focused)
+		t.Errorf("expected initial focus on deny read, got %d", f.focused)
 	}
 
-	// Shift+tab moves back
+	// Tab moves forward to extra write
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if f.focused != sbFieldExtraWrite {
+		t.Errorf("expected focus on extra write after tab, got %d", f.focused)
+	}
+
+	// Shift+tab moves back to deny read
 	f.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if f.focused != sbFieldDomains {
-		t.Errorf("expected focus back on domains, got %d", f.focused)
+	if f.focused != sbFieldDenyRead {
+		t.Errorf("expected focus back on deny read, got %d", f.focused)
 	}
 }
 
 func TestSandboxConfigForm_View(t *testing.T) {
-	f := NewSandboxConfigForm(DefaultTheme(), true, []string{"example.com"}, nil, nil)
+	f := NewSandboxConfigForm(DefaultTheme(), true, nil, nil)
 	f.SetSize(120, 40)
 
 	v := f.View()

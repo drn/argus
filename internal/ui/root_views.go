@@ -29,8 +29,6 @@ func (m Model) View() string {
 		return m.confirmDestroyView() + "\n" + bar
 	case viewPruning:
 		return m.pruneView() + "\n" + bar
-	case viewSandboxInstall:
-		return m.sandboxInstallView() + "\n" + bar
 	case viewDaemonRestart:
 		return m.daemonRestartView() + "\n" + bar
 	case viewDaemonLogs:
@@ -410,33 +408,4 @@ func (m Model) uxLogsView() string {
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
 }
 
-func (m Model) sandboxInstallView() string {
-	title := m.theme.Title.Render("Sandbox Required")
 
-	if m.sandboxInstalling {
-		dots := []string{".", "..", "..."}
-		dotIdx := int(time.Now().UnixMilli()/500) % len(dots)
-		status := "  " + m.theme.Normal.Render("Installing @anthropic-ai/sandbox-runtime"+dots[dotIdx])
-		hint := m.theme.Help.Render("  npm install -g @anthropic-ai/sandbox-runtime")
-		body := title + "\n\n" + status + "\n\n" + hint
-		return m.renderCenteredModal(body, 58)
-	}
-
-	if m.sandboxInstallResult != "" {
-		var status string
-		if strings.HasPrefix(m.sandboxInstallResult, "Install failed") {
-			status = "  " + m.theme.Error.Render(m.sandboxInstallResult)
-		} else {
-			status = "  " + m.theme.Complete.Render(m.sandboxInstallResult)
-		}
-		hint := m.theme.Help.Render("  [enter] continue  [esc] close")
-		body := title + "\n\n" + status + "\n\n" + hint
-		return m.renderCenteredModal(body, 58)
-	}
-
-	desc := "  " + m.theme.Normal.Render("Sandbox is enabled but srt is not installed.")
-	desc2 := "  " + m.theme.Normal.Render("Install @anthropic-ai/sandbox-runtime globally?")
-	hint := m.theme.Help.Render("  [enter] install  [esc] skip (run unsandboxed)")
-	body := title + "\n\n" + desc + "\n" + desc2 + "\n\n" + hint
-	return m.renderCenteredModal(body, 58)
-}

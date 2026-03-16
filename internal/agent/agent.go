@@ -81,9 +81,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// Wrap with sandbox if enabled and available
 	var sandboxCleanup func()
 	if cfg.Sandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
-		settingsPath, cleanup, serr := GenerateSandboxConfig(task.Worktree, cfg)
+		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, cfg)
 		if serr == nil {
-			cmdStr = WrapWithSandbox(cmdStr, settingsPath)
+			cmdStr = WrapWithSandbox(cmdStr, profilePath, params)
 			sandboxCleanup = cleanup
 		}
 		// If sandbox config generation fails, fall through to unsandboxed
