@@ -62,8 +62,8 @@ func TestSettingsView_NoWarnings(t *testing.T) {
 	sv.SetBackends(nil)
 
 	view := sv.View()
-	if !strings.Contains(view, "All systems nominal") {
-		t.Error("expected 'All systems nominal' when no warnings")
+	if !strings.Contains(view, "System status") {
+		t.Error("expected 'System status' when no warnings")
 	}
 }
 
@@ -367,8 +367,8 @@ func TestModel_DaemonConnectedWarning(t *testing.T) {
 	if strings.Contains(view2, "In-process mode") {
 		t.Error("should not show in-process warning when daemon connected")
 	}
-	if !strings.Contains(view2, "All systems nominal") {
-		t.Error("expected 'All systems nominal' when daemon connected")
+	if !strings.Contains(view2, "System status") {
+		t.Error("expected 'System status' when daemon connected")
 	}
 }
 
