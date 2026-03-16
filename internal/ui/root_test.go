@@ -1589,6 +1589,9 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		{"newTask", func(m *Model) { m.current = viewNewTask }},
 		{"newProject", func(m *Model) { m.current = viewNewProject }},
 		{"pruning", func(m *Model) { m.current = viewPruning; m.pruneTotal = 3 }},
+		{"sandboxInstall", func(m *Model) { m.current = viewSandboxInstall }},
+		{"sandboxInstalling", func(m *Model) { m.current = viewSandboxInstall; m.sandboxInstalling = true }},
+		{"sandboxInstallDone", func(m *Model) { m.current = viewSandboxInstall; m.sandboxInstallResult = "Installed" }},
 	}
 	for _, tc := range views {
 		t.Run(tc.name, func(t *testing.T) {

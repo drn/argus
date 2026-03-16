@@ -341,3 +341,81 @@ func TestModel_DaemonConnectedWarning(t *testing.T) {
 		t.Error("expected 'All systems nominal' when daemon connected")
 	}
 }
+
+func TestSandboxInstallView_Prompt(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Sandbox Required") {
+		t.Error("expected 'Sandbox Required' title")
+	}
+	if !strings.Contains(view, "install") {
+		t.Error("expected install prompt")
+	}
+}
+
+func TestSandboxInstallView_Installing(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstalling = true
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Installing") {
+		t.Error("expected 'Installing' status")
+	}
+}
+
+func TestSandboxInstallView_Success(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstallResult = "Installed successfully"
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Installed successfully") {
+		t.Error("expected success message")
+	}
+}
+
+func TestSandboxInstallView_Failure(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstallResult = "Install failed: permission denied"
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Install failed") {
+		t.Error("expected failure message")
+	}
+}
