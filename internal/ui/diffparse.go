@@ -89,21 +89,21 @@ func ParseUnifiedDiff(raw string) ParsedDiff {
 		if strings.HasPrefix(line, "-") {
 			currentHunk.Lines = append(currentHunk.Lines, DiffLine{
 				Type:    DiffRemoved,
-				Content: line[1:],
+				Content: expandTabs(line[1:]),
 				OldNum:  oldNum,
 			})
 			oldNum++
 		} else if strings.HasPrefix(line, "+") {
 			currentHunk.Lines = append(currentHunk.Lines, DiffLine{
 				Type:    DiffAdded,
-				Content: line[1:],
+				Content: expandTabs(line[1:]),
 				NewNum:  newNum,
 			})
 			newNum++
 		} else if strings.HasPrefix(line, " ") {
 			currentHunk.Lines = append(currentHunk.Lines, DiffLine{
 				Type:    DiffContext,
-				Content: line[1:],
+				Content: expandTabs(line[1:]),
 				OldNum:  oldNum,
 				NewNum:  newNum,
 			})
@@ -246,6 +246,11 @@ func collectRun(lines []DiffLine, i int, t DiffLineType) []DiffLine {
 		i++
 	}
 	return run
+}
+
+// expandTabs replaces tab characters with spaces. Uses 2-space tab width.
+func expandTabs(s string) string {
+	return strings.ReplaceAll(s, "\t", "  ")
 }
 
 // FormatLineNum formats a line number for display, or blank if 0.
