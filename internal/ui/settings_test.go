@@ -271,7 +271,7 @@ func TestSettingsView_SandboxSection(t *testing.T) {
 func TestSettingsView_SandboxEnabled(t *testing.T) {
 	sv := NewSettingsView(DefaultTheme())
 	sv.SetSize(40, 30)
-	sv.SetSandboxConfig(true, true, []string{"api.example.com"}, nil, nil)
+	sv.SetSandboxConfig(true, true, nil, nil)
 
 	view := sv.View()
 	if !strings.Contains(view, "Enabled") {
@@ -283,7 +283,7 @@ func TestSettingsView_SandboxDetail(t *testing.T) {
 	sv := NewSettingsView(DefaultTheme())
 	sv.SetSize(40, 30)
 	sv.SetWarnings(nil)
-	sv.SetSandboxConfig(true, true, []string{"github.com"}, []string{"/secrets"}, []string{"~/.cache"})
+	sv.SetSandboxConfig(true, true, []string{"/secrets"}, []string{"~/.cache"})
 
 	// Navigate to sandbox row
 	sv.CursorDown() // daemon logs
@@ -296,11 +296,8 @@ func TestSettingsView_SandboxDetail(t *testing.T) {
 	if !strings.Contains(detail, "Enabled") {
 		t.Error("expected 'Enabled' in detail")
 	}
-	if !strings.Contains(detail, "srt installed") {
-		t.Error("expected 'srt installed' in detail")
-	}
-	if !strings.Contains(detail, "github.com") {
-		t.Error("expected domain in detail")
+	if !strings.Contains(detail, "sandbox-exec available") {
+		t.Error("expected 'sandbox-exec available' in detail")
 	}
 }
 
@@ -308,15 +305,15 @@ func TestSettingsView_SandboxDetailUnavailable(t *testing.T) {
 	sv := NewSettingsView(DefaultTheme())
 	sv.SetSize(40, 30)
 	sv.SetWarnings(nil)
-	sv.SetSandboxConfig(true, false, nil, nil, nil)
+	sv.SetSandboxConfig(true, false, nil, nil)
 
 	// Navigate to sandbox row
 	sv.CursorDown() // daemon logs
 	sv.CursorDown() // UX logs
 	sv.CursorDown()
 	detail := sv.RenderDetail(60, 20)
-	if !strings.Contains(detail, "srt not found") {
-		t.Error("expected 'srt not found' in detail")
+	if !strings.Contains(detail, "sandbox-exec not found") {
+		t.Error("expected 'sandbox-exec not found' in detail")
 	}
 }
 
@@ -469,7 +466,7 @@ func TestModel_SandboxConfigFormCancel(t *testing.T) {
 	}
 }
 
-func TestModel_SandboxConfigFormDomains(t *testing.T) {
+func TestModel_SandboxConfigFormDenyRead(t *testing.T) {
 	database, err := db.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -490,8 +487,8 @@ func TestModel_SandboxConfigFormDomains(t *testing.T) {
 	updated, _ := m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
 
-	// Type domains into the first field
-	m.sandboxconfig.inputs[sbFieldDomains].SetValue("github.com,npmjs.org")
+	// Type deny read paths into the first field
+	m.sandboxconfig.inputs[sbFieldDenyRead].SetValue("/secrets,/private")
 
 	// Submit from last field
 	m.sandboxconfig.focused = sbFieldExtraWrite
@@ -499,11 +496,11 @@ func TestModel_SandboxConfigFormDomains(t *testing.T) {
 	m = updated.(Model)
 
 	cfg := m.db.Config()
-	if len(cfg.Sandbox.AllowedDomains) != 2 {
-		t.Fatalf("expected 2 domains, got %d: %v", len(cfg.Sandbox.AllowedDomains), cfg.Sandbox.AllowedDomains)
+	if len(cfg.Sandbox.DenyRead) != 2 {
+		t.Fatalf("expected 2 deny read paths, got %d: %v", len(cfg.Sandbox.DenyRead), cfg.Sandbox.DenyRead)
 	}
-	if cfg.Sandbox.AllowedDomains[0] != "github.com" {
-		t.Errorf("expected github.com, got %q", cfg.Sandbox.AllowedDomains[0])
+	if cfg.Sandbox.DenyRead[0] != "/secrets" {
+		t.Errorf("expected /secrets, got %q", cfg.Sandbox.DenyRead[0])
 	}
 }
 
@@ -917,80 +914,4 @@ func TestModel_DaemonLogsMouseScroll(t *testing.T) {
 	}
 }
 
-func TestSandboxInstallView_Prompt(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { database.Close() })
-	runner := agent.NewRunner(nil)
-	m := NewModel(database, runner, false)
-	m.current = viewSandboxInstall
-	m.width = 80
-	m.height = 24
 
-	view := m.View()
-	if !strings.Contains(view, "Sandbox Required") {
-		t.Error("expected 'Sandbox Required' title")
-	}
-	if !strings.Contains(view, "install") {
-		t.Error("expected install prompt")
-	}
-}
-
-func TestSandboxInstallView_Installing(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { database.Close() })
-	runner := agent.NewRunner(nil)
-	m := NewModel(database, runner, false)
-	m.current = viewSandboxInstall
-	m.sandboxInstalling = true
-	m.width = 80
-	m.height = 24
-
-	view := m.View()
-	if !strings.Contains(view, "Installing") {
-		t.Error("expected 'Installing' status")
-	}
-}
-
-func TestSandboxInstallView_Success(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { database.Close() })
-	runner := agent.NewRunner(nil)
-	m := NewModel(database, runner, false)
-	m.current = viewSandboxInstall
-	m.sandboxInstallResult = "Installed successfully"
-	m.width = 80
-	m.height = 24
-
-	view := m.View()
-	if !strings.Contains(view, "Installed successfully") {
-		t.Error("expected success message")
-	}
-}
-
-func TestSandboxInstallView_Failure(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { database.Close() })
-	runner := agent.NewRunner(nil)
-	m := NewModel(database, runner, false)
-	m.current = viewSandboxInstall
-	m.sandboxInstallResult = "Install failed: permission denied"
-	m.width = 80
-	m.height = 24
-
-	view := m.View()
-	if !strings.Contains(view, "Install failed") {
-		t.Error("expected failure message")
-	}
-}

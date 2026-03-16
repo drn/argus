@@ -1106,21 +1106,6 @@ func TestDB_SandboxConfig(t *testing.T) {
 	}
 }
 
-func TestDB_SandboxConfig_Domains(t *testing.T) {
-	d := testDB(t)
-
-	if err := d.SetConfigValue("sandbox.allowed_domains", "github.com,npmjs.org"); err != nil {
-		t.Fatal(err)
-	}
-	cfg := d.Config()
-	if len(cfg.Sandbox.AllowedDomains) != 2 {
-		t.Fatalf("expected 2 domains, got %d: %v", len(cfg.Sandbox.AllowedDomains), cfg.Sandbox.AllowedDomains)
-	}
-	if cfg.Sandbox.AllowedDomains[0] != "github.com" {
-		t.Errorf("expected github.com, got %q", cfg.Sandbox.AllowedDomains[0])
-	}
-}
-
 func TestDB_SandboxConfig_Paths(t *testing.T) {
 	d := testDB(t)
 

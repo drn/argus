@@ -414,9 +414,6 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["sandbox.enabled"]; ok {
 		cfg.Sandbox.Enabled = v == "true"
 	}
-	if v, ok := kv["sandbox.allowed_domains"]; ok && v != "" {
-		cfg.Sandbox.AllowedDomains = splitCSV(v)
-	}
 	if v, ok := kv["sandbox.deny_read"]; ok && v != "" {
 		cfg.Sandbox.DenyRead = splitCSV(v)
 	}

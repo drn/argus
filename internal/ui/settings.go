@@ -39,10 +39,9 @@ type SettingsView struct {
 	projects         []projectEntry
 	backends         []backendEntry
 	taskCounts       map[string]statusCounts
-	sandboxEnabled   bool
-	sandboxAvailable bool
-	sandboxDomains   []string
-	sandboxDenyRead  []string
+	sandboxEnabled    bool
+	sandboxAvailable  bool
+	sandboxDenyRead   []string
 	sandboxExtraWrite []string
 }
 
@@ -117,10 +116,9 @@ func (sv *SettingsView) TaskCounts(name string) statusCounts {
 }
 
 // SetSandboxConfig updates the sandbox display state.
-func (sv *SettingsView) SetSandboxConfig(enabled, available bool, domains, denyRead, extraWrite []string) {
+func (sv *SettingsView) SetSandboxConfig(enabled, available bool, denyRead, extraWrite []string) {
 	sv.sandboxEnabled = enabled
 	sv.sandboxAvailable = available
-	sv.sandboxDomains = domains
 	sv.sandboxDenyRead = denyRead
 	sv.sandboxExtraWrite = extraWrite
 	sv.rebuildRows()
@@ -429,20 +427,9 @@ func (sv SettingsView) renderSandboxDetail(_ int) string {
 
 	// Availability
 	if sv.sandboxAvailable {
-		b.WriteString("  " + sv.theme.Complete.Render("srt installed") + "\n")
+		b.WriteString("  " + sv.theme.Complete.Render("sandbox-exec available") + "\n")
 	} else {
-		b.WriteString("  " + sv.theme.Error.Render("srt not found") + "\n")
-		b.WriteString("  " + sv.theme.Dimmed.Render("Install: npm i -g @anthropic-ai/sandbox-runtime") + "\n")
-	}
-
-	// Allowed domains
-	b.WriteString("\n" + sv.theme.Section.Render("  NETWORK") + "\n")
-	if len(sv.sandboxDomains) == 0 {
-		b.WriteString("  " + sv.theme.Dimmed.Render("(defaults only)") + "\n")
-	} else {
-		for _, d := range sv.sandboxDomains {
-			b.WriteString("  " + sv.theme.Normal.Render(d) + "\n")
-		}
+		b.WriteString("  " + sv.theme.Error.Render("sandbox-exec not found") + "\n")
 	}
 
 	// Deny read

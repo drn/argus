@@ -1,191 +1,153 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/drn/argus/internal/config"
 )
 
-// srtDetectTimeout is the maximum time to wait for npx to check srt availability.
-const srtDetectTimeout = 5 * time.Second
+// sandboxExecPath is the canonical path to macOS sandbox-exec.
+const sandboxExecPath = "/usr/bin/sandbox-exec"
 
-// srtBinary is the resolved path to the sandbox-runtime binary.
-// Cached after the first successful lookup.
 var (
-	srtOnce   sync.Once
-	srtPath   string
-	srtExists bool
+	sandboxOnce   sync.Once
+	sandboxExists bool
 )
 
-// defaultDenyRead lists credential directories that are always blocked.
-var defaultDenyRead = []string{
-	"~/.ssh",
-	"~/.gnupg",
-	"~/.aws",
-	"~/.kube",
-	"~/.config/gcloud",
-}
+// sandboxProfileBase is the base SBPL profile template for sandbox-exec.
+// It denies everything by default and selectively allows what agents need.
+const sandboxProfileBase = `(version 1)
+(deny default)
+(allow process*)
+(allow signal)
+(allow mach*)
+(allow ipc*)
+(allow sysctl*)
+(allow system*)
+(allow job-creation)
+(allow network*)
+(allow file-read*)
+(deny file-read* (subpath (string-append (param "HOME") "/.ssh")))
+(deny file-read* (subpath (string-append (param "HOME") "/.gnupg")))
+(deny file-read* (subpath (string-append (param "HOME") "/.aws")))
+(deny file-read* (subpath (string-append (param "HOME") "/.kube")))
+(deny file-read* (subpath (string-append (param "HOME") "/.config/gcloud")))
+(allow file-ioctl)
+(allow file-write* (subpath (param "WORKTREE")))
+(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (literal "/dev/null"))
+`
 
-// defaultAllowedDomains lists domains needed for Claude Code to function.
-var defaultAllowedDomains = []string{
-	"api.anthropic.com",
-	"statsig.anthropic.com",
-	"sentry.io",
-}
-
-// srtSettings mirrors the JSON structure expected by @anthropic-ai/sandbox-runtime v1.0.0.
-// Fields are top-level (not nested under "sandbox").
-type srtSettings struct {
-	Network    srtNetwork    `json:"network"`
-	Filesystem srtFilesystem `json:"filesystem"`
-	AllowPty   bool          `json:"allowPty"`
-}
-
-type srtFilesystem struct {
-	AllowWrite []string `json:"allowWrite"`
-	DenyRead   []string `json:"denyRead"`
-	DenyWrite  []string `json:"denyWrite"`
-}
-
-type srtNetwork struct {
-	AllowedDomains []string `json:"allowedDomains"`
-	DeniedDomains  []string `json:"deniedDomains"`
-}
-
-// IsSandboxAvailable checks whether the sandbox-runtime (srt) binary is installed.
-// The result is cached after the first call. Only checks locally installed binaries —
-// does not download or install anything.
+// IsSandboxAvailable checks whether sandbox-exec is available on this system.
+// The result is cached after the first call.
 func IsSandboxAvailable() bool {
-	srtOnce.Do(func() {
-		// Try direct binary first (fastest)
-		if p, err := exec.LookPath("srt"); err == nil {
-			srtPath = p
-			srtExists = true
+	sandboxOnce.Do(func() {
+		// Check canonical macOS path first
+		if _, err := os.Stat(sandboxExecPath); err == nil {
+			sandboxExists = true
 			return
 		}
-		// Try npx resolution with a short timeout — does NOT auto-install (no --yes).
-		// This only succeeds if the package is already in the local npx cache.
-		ctx, cancel := context.WithTimeout(context.Background(), srtDetectTimeout)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "npx", "--no", "@anthropic-ai/sandbox-runtime", "--version").CombinedOutput()
-		if err == nil && len(out) > 0 {
-			srtPath = "npx"
-			srtExists = true
+		// Fallback: check PATH
+		if _, err := exec.LookPath("sandbox-exec"); err == nil {
+			sandboxExists = true
 		}
 	})
-	return srtExists
+	return sandboxExists
 }
 
 // ResetSandboxCache clears the cached sandbox availability. For testing only.
 func ResetSandboxCache() {
-	srtOnce = sync.Once{}
-	srtPath = ""
-	srtExists = false
+	sandboxOnce = sync.Once{}
+	sandboxExists = false
 }
 
-// GenerateSandboxConfig creates a temporary srt settings file for a task.
-// The worktreePath is granted write access. The projectDir (if set) is read-only.
-// Returns the path to the temp file and a cleanup function.
-func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, func(), error) {
-	// Build allowWrite: worktree + /tmp + any user-configured extra paths.
-	// srt uses "//" prefix for absolute paths (e.g., "//home/user/wt" = /home/user/wt).
-	allowWrite := []string{
-		normalizeSrtPath(worktreePath),
-		"//tmp",
-	}
-	for _, p := range cfg.Sandbox.ExtraWrite {
-		allowWrite = append(allowWrite, normalizeSrtPath(p))
+// GenerateSandboxConfig creates a temporary SBPL profile file for a task.
+// The worktreePath is granted write access. Custom deny/allow paths from cfg
+// are appended to the base profile.
+// Returns the profile path, params slice (HOME=..., WORKTREE=...), cleanup func, and error.
+func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, []string, func(), error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("getting home dir: %w", err)
 	}
 
-	// Build denyRead: defaults + any user-configured deny paths
-	denyRead := make([]string, len(defaultDenyRead))
-	copy(denyRead, defaultDenyRead)
+	var profile strings.Builder
+	profile.WriteString(sandboxProfileBase)
+
+	// Append user-configured deny read paths
 	for _, p := range cfg.Sandbox.DenyRead {
-		denyRead = append(denyRead, normalizeSrtPath(p))
-	}
-
-	// Build allowedDomains: defaults + user-configured
-	domains := make([]string, len(defaultAllowedDomains))
-	copy(domains, defaultAllowedDomains)
-	for _, d := range cfg.Sandbox.AllowedDomains {
-		d = strings.TrimSpace(d)
-		if d != "" && !containsString(domains, d) {
-			domains = append(domains, d)
+		p = expandHomePath(strings.TrimSpace(p), homeDir)
+		if p != "" {
+			profile.WriteString(fmt.Sprintf("(deny file-read* (subpath %s))\n", sbplQuote(p)))
 		}
 	}
 
-	settings := srtSettings{
-		Filesystem: srtFilesystem{
-			AllowWrite: allowWrite,
-			DenyRead:   denyRead,
-			DenyWrite:  []string{},
-		},
-		Network: srtNetwork{
-			AllowedDomains: domains,
-			DeniedDomains:  []string{},
-		},
-		AllowPty: true,
+	// Append user-configured extra write paths
+	for _, p := range cfg.Sandbox.ExtraWrite {
+		p = expandHomePath(strings.TrimSpace(p), homeDir)
+		if p != "" {
+			profile.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", sbplQuote(p)))
+		}
 	}
 
-	data, err := json.MarshalIndent(settings, "", "  ")
+	f, err := os.CreateTemp("", "argus-sandbox-*.sb")
 	if err != nil {
-		return "", nil, err
-	}
-
-	f, err := os.CreateTemp("", "argus-sandbox-*.json")
-	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	path := f.Name()
 
-	if _, err := f.Write(data); err != nil {
+	if _, err := f.WriteString(profile.String()); err != nil {
 		f.Close()
 		os.Remove(path)
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	f.Close()
+
+	params := []string{
+		"HOME=" + homeDir,
+		"WORKTREE=" + worktreePath,
+	}
 
 	cleanup := func() {
 		os.Remove(path)
 	}
 
-	return path, cleanup, nil
+	return path, params, cleanup, nil
 }
 
-// WrapWithSandbox prepends the srt command to the given command string.
-func WrapWithSandbox(cmdStr, settingsPath string) string {
-	if srtPath == "npx" {
-		return "npx @anthropic-ai/sandbox-runtime --settings " + shellQuote(settingsPath) + " -- " + cmdStr
+// WrapWithSandbox wraps cmdStr with the sandbox-exec invocation.
+// params is a slice of "KEY=value" strings passed as -D flags.
+func WrapWithSandbox(cmdStr, profilePath string, params []string) string {
+	var b strings.Builder
+	b.WriteString(sandboxExecPath)
+	for _, p := range params {
+		b.WriteString(" -D ")
+		b.WriteString(shellQuote(p))
 	}
-	return shellQuote(srtPath) + " --settings " + shellQuote(settingsPath) + " -- " + cmdStr
+	b.WriteString(" -f ")
+	b.WriteString(shellQuote(profilePath))
+	b.WriteString(" sh -c ")
+	b.WriteString(shellQuote(cmdStr))
+	return b.String()
 }
 
-// normalizeSrtPath converts a path to srt's path format.
-// Absolute paths get "//" prefix (e.g., /home/user → //home/user).
-// "~/" paths stay as-is. Already-prefixed "//" paths are unchanged.
-func normalizeSrtPath(p string) string {
-	p = strings.TrimSpace(p)
-	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "//") {
-		return p
-	}
-	if strings.HasPrefix(p, "/") {
-		// Strip leading "/" so "/home/user" becomes "//home/user" (not "///home/user")
-		return "//" + strings.TrimPrefix(p, "/")
+// expandHomePath replaces a leading "~/" with the actual home directory.
+func expandHomePath(p, homeDir string) string {
+	if strings.HasPrefix(p, "~/") {
+		return homeDir + p[1:]
 	}
 	return p
 }
 
-func containsString(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
+// sbplQuote wraps a string in SBPL double-quotes with minimal escaping.
+func sbplQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
 }
+
