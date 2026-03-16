@@ -61,7 +61,13 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 	if !hasWorktree {
 		t.Errorf("params missing WORKTREE=..., got %v", params)
 	}
-	if !containsString(params, "WORKTREE="+worktree) {
+	found := false
+	for _, p := range params {
+		if p == "WORKTREE="+worktree {
+			found = true
+		}
+	}
+	if !found {
 		t.Errorf("params WORKTREE mismatch, got %v", params)
 	}
 }

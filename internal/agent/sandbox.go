@@ -151,11 +151,3 @@ func sbplQuote(s string) string {
 	return `"` + s + `"`
 }
 
-func containsString(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}

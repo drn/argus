@@ -51,7 +51,7 @@ func ResolveDir(task *model.Task, cfg config.Config) string {
 // BuildCmd constructs the exec.Cmd for running an agent on a task.
 // If the task has a SessionID, the command uses --resume to reconnect.
 // If resume is false and SessionID is set, it uses --session-id for a new session with a known ID.
-// When sandbox is enabled and available, the command is wrapped with srt.
+// When sandbox is enabled and available, the command is wrapped with sandbox-exec.
 // The returned cleanup function removes the sandbox config temp file (nil if no sandbox).
 func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func(), error) {
 	backend, err := ResolveBackend(task, cfg)
