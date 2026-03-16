@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"log"
 	"net"
 )
 
@@ -13,14 +14,17 @@ func (d *Daemon) handleStream(conn net.Conn) {
 	var header StreamHeader
 	dec := json.NewDecoder(conn)
 	if err := dec.Decode(&header); err != nil {
+		log.Printf("stream: header decode error: %v", err)
 		return
 	}
 
 	sess := d.runner.Get(header.TaskID)
 	if sess == nil {
+		log.Printf("stream: session not found task=%s", header.TaskID)
 		return
 	}
 
+	log.Printf("stream: connected task=%s", header.TaskID)
 	d.registerStream(header.TaskID, conn)
 	defer d.unregisterStream(header.TaskID, conn)
 
@@ -34,11 +38,11 @@ func (d *Daemon) handleStream(conn net.Conn) {
 	// so a read will block until the connection is closed.
 	select {
 	case <-sess.Done():
-		// Session exited — the onFinish callback closes the connection.
+		log.Printf("stream: session exited task=%s", header.TaskID)
 	case <-d.done:
-		// Daemon shutting down.
+		log.Printf("stream: daemon shutting down task=%s", header.TaskID)
 	case <-waitForClose(conn):
-		// Client disconnected.
+		log.Printf("stream: client disconnected task=%s", header.TaskID)
 	}
 }
 

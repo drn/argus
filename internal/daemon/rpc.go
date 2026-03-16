@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"log"
+
 	"github.com/drn/argus/internal/model"
 )
 
@@ -17,6 +19,9 @@ func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
 
 // StartSession starts a new agent session.
 func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
+	log.Printf("rpc.StartSession: task=%s session=%s project=%s resume=%v pty=%dx%d worktree=%s",
+		req.TaskID, req.SessionID, req.Project, req.Resume, req.Cols, req.Rows, req.Worktree)
+
 	task := &model.Task{
 		ID:        req.TaskID,
 		SessionID: req.SessionID,
@@ -30,25 +35,32 @@ func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 	cfg := s.daemon.db.Config()
 	sess, err := s.daemon.runner.Start(task, cfg, req.Rows, req.Cols, req.Resume)
 	if err != nil {
+		log.Printf("rpc.StartSession: FAILED task=%s err=%v", req.TaskID, err)
 		return err
 	}
 	resp.PID = sess.PID()
+	log.Printf("rpc.StartSession: OK task=%s pid=%d", req.TaskID, resp.PID)
 	return nil
 }
 
 // StopSession stops a running session.
 func (s *RPCService) StopSession(req *TaskIDReq, resp *StatusResp) error {
+	log.Printf("rpc.StopSession: task=%s", req.TaskID)
 	if err := s.daemon.runner.Stop(req.TaskID); err != nil {
+		log.Printf("rpc.StopSession: FAILED task=%s err=%v", req.TaskID, err)
 		resp.Error = err.Error()
 		return nil
 	}
+	log.Printf("rpc.StopSession: OK task=%s", req.TaskID)
 	resp.OK = true
 	return nil
 }
 
 // StopAll stops all running sessions.
 func (s *RPCService) StopAll(_ *Empty, resp *StatusResp) error {
+	log.Printf("rpc.StopAll")
 	s.daemon.runner.StopAll()
+	log.Printf("rpc.StopAll: OK")
 	resp.OK = true
 	return nil
 }
@@ -144,6 +156,7 @@ func (s *RPCService) GetExitInfo(req *TaskIDReq, resp *ExitInfo) error {
 
 // Shutdown initiates a graceful daemon shutdown.
 func (s *RPCService) Shutdown(_ *Empty, resp *StatusResp) error {
+	log.Printf("rpc.Shutdown: requested")
 	resp.OK = true
 	go s.daemon.Shutdown()
 	return nil

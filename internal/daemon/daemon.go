@@ -61,6 +61,9 @@ func New(database *db.DB) *Daemon {
 	// Create runner with onFinish callback that caches exit info and
 	// notifies stream clients by closing their connections.
 	d.runner = agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
+		log.Printf("session exited: task=%s stopped=%v err=%v lastOutput=%d bytes",
+			taskID, stopped, err, len(lastOutput))
+
 		var errStr string
 		if err != nil {
 			errStr = err.Error()
@@ -77,6 +80,7 @@ func New(database *db.DB) *Daemon {
 		d.mu.Unlock()
 
 		// Signal stream EOF to all connected clients by closing their connections.
+		log.Printf("session exited: task=%s closing %d stream clients", taskID, len(conns))
 		for _, conn := range conns {
 			conn.Close()
 		}
@@ -164,6 +168,8 @@ func (d *Daemon) handleConn(conn net.Conn, server *rpc.Server) {
 		server.ServeCodec(jsonrpc.NewServerCodec(conn))
 	case 'S':
 		d.handleStream(conn)
+	default:
+		log.Printf("conn: unknown prefix byte 0x%02x", prefix[0])
 	}
 }
 
