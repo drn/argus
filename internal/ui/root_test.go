@@ -1677,7 +1677,6 @@ func TestDaemonRestarted_ResetsInProgressTasks(t *testing.T) {
 	for _, task := range m.db.Tasks() {
 		if task.Status == model.StatusInProgress {
 			task.SetStatus(model.StatusPending)
-			task.SessionID = ""
 			task.AgentPID = 0
 			task.StartedAt = time.Time{}
 			_ = m.db.Update(task)
@@ -1695,8 +1694,8 @@ func TestDaemonRestarted_ResetsInProgressTasks(t *testing.T) {
 	if t1.Status != model.StatusPending {
 		t.Errorf("expected task t1 status=Pending, got %v", t1.Status)
 	}
-	if t1.SessionID != "" {
-		t.Errorf("expected empty SessionID, got %q", t1.SessionID)
+	if t1.SessionID != "sess-1" {
+		t.Errorf("expected SessionID preserved, got %q", t1.SessionID)
 	}
 	if t1.AgentPID != 0 {
 		t.Errorf("expected AgentPID=0, got %d", t1.AgentPID)

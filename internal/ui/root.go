@@ -432,10 +432,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		*m.restartedClient = msg.Client
 
 		// Reset in-progress tasks — daemon restart killed all sessions.
+		// Keep SessionID so re-launching the task resumes the conversation
+		// via --resume (Claude Code persists session state to disk).
 		for _, t := range m.db.Tasks() {
 			if t.Status == model.StatusInProgress {
 				t.SetStatus(model.StatusPending)
-				t.SessionID = ""
 				t.AgentPID = 0
 				t.StartedAt = time.Time{}
 				_ = m.db.Update(t)
