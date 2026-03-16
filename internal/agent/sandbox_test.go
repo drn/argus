@@ -40,7 +40,7 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 
 	// Check allowWrite contains worktree and /tmp
 	aw := settings.Sandbox.Filesystem.AllowWrite
-	if !containsString(aw, "///home/user/.argus/worktrees/myapp/fix-bug") {
+	if !containsString(aw, "//home/user/.argus/worktrees/myapp/fix-bug") {
 		t.Errorf("allowWrite missing worktree path, got %v", aw)
 	}
 	if !containsString(aw, "//tmp") {
@@ -101,7 +101,7 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 
 	// Custom deny read paths
 	dr := settings.Sandbox.Filesystem.DenyRead
-	if !containsString(dr, "///secrets") {
+	if !containsString(dr, "//secrets") {
 		t.Errorf("denyRead missing /secrets, got %v", dr)
 	}
 
@@ -110,7 +110,7 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 	if !containsString(aw, "~/.npm") {
 		t.Errorf("allowWrite missing ~/.npm, got %v", aw)
 	}
-	if !containsString(aw, "///var/cache") {
+	if !containsString(aw, "//var/cache") {
 		t.Errorf("allowWrite missing /var/cache, got %v", aw)
 	}
 }
@@ -206,9 +206,9 @@ func TestNormalizeSrtPath(t *testing.T) {
 	}{
 		{"~/.ssh", "~/.ssh"},
 		{"//tmp", "//tmp"},
-		{"/usr/local", "///usr/local"},
+		{"/usr/local", "//usr/local"},
 		{"./relative", "./relative"},
-		{"  /spaced  ", "///spaced"},
+		{"  /spaced  ", "//spaced"},
 	}
 	for _, tt := range tests {
 		got := normalizeSrtPath(tt.input)

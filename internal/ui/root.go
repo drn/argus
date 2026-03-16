@@ -878,9 +878,12 @@ func (m *Model) refreshSettings() {
 	m.settings.SetBackends(m.db.Backends())
 	m.settings.SetTasks(m.db.Tasks())
 	cfg := m.db.Config()
+	// Only probe srt availability if sandbox is enabled — the check may
+	// invoke npx which is slow on first run. No point probing when disabled.
+	available := cfg.Sandbox.Enabled && agent.IsSandboxAvailable()
 	m.settings.SetSandboxConfig(
 		cfg.Sandbox.Enabled,
-		agent.IsSandboxAvailable(),
+		available,
 		cfg.Sandbox.AllowedDomains,
 		cfg.Sandbox.DenyRead,
 		cfg.Sandbox.ExtraWrite,

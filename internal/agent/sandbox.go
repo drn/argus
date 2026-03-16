@@ -1,15 +1,19 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/drn/argus/internal/config"
 )
+
+// srtDetectTimeout is the maximum time to wait for npx to check srt availability.
+const srtDetectTimeout = 5 * time.Second
 
 // srtBinary is the resolved path to the sandbox-runtime binary.
 // Cached after the first successful lookup.
@@ -56,17 +60,21 @@ type srtNetwork struct {
 }
 
 // IsSandboxAvailable checks whether the sandbox-runtime (srt) binary is installed.
-// The result is cached after the first call.
+// The result is cached after the first call. Only checks locally installed binaries —
+// does not download or install anything.
 func IsSandboxAvailable() bool {
 	srtOnce.Do(func() {
-		// Try direct binary first (faster than npx)
+		// Try direct binary first (fastest)
 		if p, err := exec.LookPath("srt"); err == nil {
 			srtPath = p
 			srtExists = true
 			return
 		}
-		// Try npx resolution
-		out, err := exec.Command("npx", "--yes", "@anthropic-ai/sandbox-runtime", "--version").CombinedOutput()
+		// Try npx resolution with a short timeout — does NOT auto-install (no --yes).
+		// This only succeeds if the package is already in the local npx cache.
+		ctx, cancel := context.WithTimeout(context.Background(), srtDetectTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "npx", "--no", "@anthropic-ai/sandbox-runtime", "--version").CombinedOutput()
 		if err == nil && len(out) > 0 {
 			srtPath = "npx"
 			srtExists = true
@@ -86,9 +94,10 @@ func ResetSandboxCache() {
 // The worktreePath is granted write access. The projectDir (if set) is read-only.
 // Returns the path to the temp file and a cleanup function.
 func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, func(), error) {
-	// Build allowWrite: worktree + /tmp + any user-configured extra paths
+	// Build allowWrite: worktree + /tmp + any user-configured extra paths.
+	// srt uses "//" prefix for absolute paths (e.g., "//home/user/wt" = /home/user/wt).
 	allowWrite := []string{
-		"//" + worktreePath,
+		normalizeSrtPath(worktreePath),
 		"//tmp",
 	}
 	for _, p := range cfg.Sandbox.ExtraWrite {
@@ -159,14 +168,16 @@ func WrapWithSandbox(cmdStr, settingsPath string) string {
 }
 
 // normalizeSrtPath converts a path to srt's path format.
-// Absolute paths get "//" prefix, "~" paths stay as-is.
+// Absolute paths get "//" prefix (e.g., /home/user → //home/user).
+// "~/" paths stay as-is. Already-prefixed "//" paths are unchanged.
 func normalizeSrtPath(p string) string {
 	p = strings.TrimSpace(p)
 	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "//") {
 		return p
 	}
-	if filepath.IsAbs(p) {
-		return "//" + p
+	if strings.HasPrefix(p, "/") {
+		// Strip leading "/" so "/home/user" becomes "//home/user" (not "///home/user")
+		return "//" + strings.TrimPrefix(p, "/")
 	}
 	return p
 }
