@@ -176,7 +176,11 @@ func TestAlive_Dead(t *testing.T) {
 
 	// Create a RemoteSession to test isSessionAlive against a dead process.
 	rs := &RemoteSession{taskID: "t-dead", client: c}
-	if rs.isSessionAlive() {
+	alive, reachable := rs.isSessionAlive()
+	if !reachable {
+		t.Error("expected daemon to be reachable")
+	}
+	if alive {
 		t.Error("expected isSessionAlive to return false for exited process")
 	}
 }
@@ -193,7 +197,109 @@ func TestAlive_NoSession(t *testing.T) {
 	// isSessionAlive for a session that never existed should return false.
 	// SessionStatus returns empty info (Alive=false, PID=0) for unknown task IDs.
 	rs := &RemoteSession{taskID: "nonexistent", client: c}
-	if rs.isSessionAlive() {
+	alive, reachable := rs.isSessionAlive()
+	if !reachable {
+		t.Error("expected daemon to be reachable")
+	}
+	if alive {
 		t.Error("expected isSessionAlive to return false for nonexistent session")
+	}
+}
+
+func TestGet_ExitingSession(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Start a quick-exit session.
+	task := &model.Task{ID: "t-get-exit", Name: "get-exit-test", Backend: "test", Worktree: t.TempDir()}
+	_, err = c.Start(task, config.Config{}, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for process to exit.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var info daemon.SessionInfo
+		if e := c.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: "t-get-exit"}, &info); e == nil && !info.Alive {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Remove from local sessions map so Get() queries the daemon.
+	c.mu.Lock()
+	delete(c.sessions, "t-get-exit")
+	c.mu.Unlock()
+
+	// Get() should return nil because !info.Alive, even if PID != 0.
+	handle := c.Get("t-get-exit")
+	if handle != nil {
+		t.Error("expected Get() to return nil for exited session")
+	}
+}
+
+func TestStreamLost_RemoveSession(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	exitCh := make(chan daemon.ExitInfo, 1)
+	c.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+		exitCh <- info
+	})
+
+	// Manually add a session to the map.
+	c.mu.Lock()
+	c.sessions["t-stream-lost"] = newRemoteSession("t-stream-lost", c)
+	c.mu.Unlock()
+
+	// Call removeSessionStreamLost — should fire StreamLost=true.
+	c.removeSessionStreamLost("t-stream-lost")
+
+	select {
+	case info := <-exitCh:
+		if !info.StreamLost {
+			t.Error("expected StreamLost=true in exit info")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for stream lost callback")
+	}
+
+	// Session should be removed from map.
+	c.mu.Lock()
+	_, exists := c.sessions["t-stream-lost"]
+	c.mu.Unlock()
+	if exists {
+		t.Error("expected session to be removed from map")
+	}
+}
+
+func TestAlive_DaemonDown(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Close the client's RPC connection to simulate daemon being unreachable.
+	c.rpc.Close()
+
+	rs := &RemoteSession{taskID: "t-daemon-down", client: c}
+	alive, reachable := rs.isSessionAlive()
+	if reachable {
+		t.Error("expected daemon to be unreachable after closing RPC connection")
+	}
+	if alive {
+		t.Error("expected alive=false when daemon is unreachable")
 	}
 }

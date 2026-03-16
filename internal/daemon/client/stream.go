@@ -17,7 +17,8 @@ const maxStreamRetries = 3
 // Reads raw bytes and writes them to the local ring buffer. If the stream drops
 // but the daemon reports the session is still alive, retries up to maxStreamRetries
 // times before giving up. Calls removeSession only when the process has actually
-// exited or retries are exhausted.
+// exited. Calls removeSessionStreamLost when retries are exhausted or the daemon
+// is unreachable.
 func (rs *RemoteSession) connectStream(sockPath string) {
 	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
 		if attempt > 0 {
@@ -25,7 +26,14 @@ func (rs *RemoteSession) connectStream(sockPath string) {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		exited := rs.streamOnce(sockPath)
+		exited, daemonDown := rs.streamOnce(sockPath)
+		if daemonDown {
+			// Can't reach daemon — stream lost, not a confirmed process exit.
+			uxlog.Log("stream: daemon unreachable task=%s, treating as stream lost", rs.taskID)
+			rs.close()
+			rs.client.removeSessionStreamLost(rs.taskID)
+			return
+		}
 		if exited {
 			// Process actually exited — fire the exit callback.
 			rs.close()
@@ -45,28 +53,38 @@ func (rs *RemoteSession) connectStream(sockPath string) {
 		}
 	}
 
-	// Exhausted retries — treat as exit to avoid silently losing the session.
-	uxlog.Log("stream: exhausted %d retries task=%s, treating as exit", maxStreamRetries, rs.taskID)
+	// Exhausted retries — stream lost, not a confirmed process exit.
+	uxlog.Log("stream: exhausted %d retries task=%s, treating as stream lost", maxStreamRetries, rs.taskID)
 	rs.close()
-	rs.client.removeSession(rs.taskID)
+	rs.client.removeSessionStreamLost(rs.taskID)
 }
 
 // streamOnce opens a single stream connection and reads until EOF or error.
-// Returns true if the process has exited (should fire exit callback),
-// false if the stream dropped but the process is still alive (should retry).
-func (rs *RemoteSession) streamOnce(sockPath string) (processExited bool) {
+// Returns (processExited, daemonDown):
+//   - (true, false)  — process has exited, fire exit callback
+//   - (false, false) — stream dropped but process still alive, should retry
+//   - (false, true)  — daemon is unreachable, treat as stream lost
+func (rs *RemoteSession) streamOnce(sockPath string) (processExited, daemonDown bool) {
 	uxlog.Log("stream: connecting task=%s", rs.taskID)
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		uxlog.Log("stream: DIAL FAILED task=%s err=%v", rs.taskID, err)
-		return !rs.isSessionAlive()
+		alive, reachable := rs.isSessionAlive()
+		if !reachable {
+			return false, true
+		}
+		return !alive, false
 	}
 	defer conn.Close()
 
 	// Send stream prefix byte.
 	if _, err := conn.Write([]byte("S")); err != nil {
 		uxlog.Log("stream: WRITE PREFIX FAILED task=%s err=%v", rs.taskID, err)
-		return !rs.isSessionAlive()
+		alive, reachable := rs.isSessionAlive()
+		if !reachable {
+			return false, true
+		}
+		return !alive, false
 	}
 
 	// Send stream header to subscribe to this session's output.
@@ -75,7 +93,11 @@ func (rs *RemoteSession) streamOnce(sockPath string) (processExited bool) {
 		TaskID: rs.taskID,
 	}); err != nil {
 		uxlog.Log("stream: ENCODE HEADER FAILED task=%s err=%v", rs.taskID, err)
-		return !rs.isSessionAlive()
+		alive, reachable := rs.isSessionAlive()
+		if !reachable {
+			return false, true
+		}
+		return !alive, false
 	}
 
 	uxlog.Log("stream: connected task=%s", rs.taskID)
@@ -96,17 +118,22 @@ func (rs *RemoteSession) streamOnce(sockPath string) (processExited bool) {
 	}
 
 	// Stream ended — check if the process actually exited.
-	return !rs.isSessionAlive()
+	alive, reachable := rs.isSessionAlive()
+	if !reachable {
+		return false, true
+	}
+	return !alive, false
 }
 
 // isSessionAlive checks with the daemon whether the session's process is
-// still running. Returns false if the RPC fails (daemon may be down).
-func (rs *RemoteSession) isSessionAlive() bool {
+// still running. Returns (alive, daemonReachable). If the RPC fails, daemon
+// may be down — returns (false, false).
+func (rs *RemoteSession) isSessionAlive() (alive bool, daemonReachable bool) {
 	var info daemon.SessionInfo
 	if err := rs.client.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: rs.taskID}, &info); err != nil {
-		uxlog.Log("stream: SessionStatus RPC failed task=%s err=%v (assuming dead)", rs.taskID, err)
-		return false
+		uxlog.Log("stream: SessionStatus RPC failed task=%s err=%v (daemon unreachable)", rs.taskID, err)
+		return false, false
 	}
 	uxlog.Log("stream: SessionStatus task=%s alive=%v pid=%d", rs.taskID, info.Alive, info.PID)
-	return info.Alive
+	return info.Alive, true
 }

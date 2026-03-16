@@ -127,7 +127,7 @@ func (c *Client) Get(taskID string) agent.SessionHandle {
 	if err := c.call("Daemon.SessionStatus", &daemon.TaskIDReq{TaskID: taskID}, &info); err != nil {
 		return nil
 	}
-	if !info.Alive && info.PID == 0 {
+	if !info.Alive {
 		return nil
 	}
 
@@ -294,6 +294,26 @@ func WaitForShutdown(sockPath string, timeout time.Duration) {
 			return
 		}
 		time.Sleep(pollInterval)
+	}
+}
+
+// Ping verifies the daemon is responsive. Returns nil on success.
+func (c *Client) Ping() error {
+	var resp daemon.PongResp
+	return c.call("Daemon.Ping", &daemon.Empty{}, &resp)
+}
+
+// removeSessionStreamLost cleans up a session from the client's map and fires
+// the callback with StreamLost=true. Used when stream retries are exhausted or
+// the daemon is unreachable — the process may still be alive.
+func (c *Client) removeSessionStreamLost(taskID string) {
+	uxlog.Log("client.removeSessionStreamLost: task=%s", taskID)
+	c.mu.Lock()
+	delete(c.sessions, taskID)
+	fn := c.onSessionExit
+	c.mu.Unlock()
+	if fn != nil {
+		fn(taskID, daemon.ExitInfo{StreamLost: true})
 	}
 }
 
