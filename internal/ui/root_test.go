@@ -1099,8 +1099,8 @@ func TestModel_ViewNewTask(t *testing.T) {
 func TestModel_ViewNewProject(t *testing.T) {
 	m := testModel(t)
 	m.current = viewNewProject
-	m.newproject = NewNewProjectForm(m.theme)
-	m.newproject.SetSize(80, 24)
+	m.projectform = NewProjectForm(m.theme)
+	m.projectform.SetSize(80, 24)
 	m.width = 80
 	m.height = 24
 	view := m.View()
@@ -1303,7 +1303,7 @@ func TestModel_NewProjectCancel(t *testing.T) {
 	m := testModel(t)
 	m.activeTab = tabSettings
 	m.current = viewNewProject
-	m.newproject = NewNewProjectForm(m.theme)
+	m.projectform = NewProjectForm(m.theme)
 
 	msg := tea.KeyMsg{Type: tea.KeyEsc}
 	updated, _ := m.Update(msg)
@@ -1698,6 +1698,12 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		{"confirmDeleteProject", func(m *Model) { m.current = viewConfirmDeleteProject }},
 		{"newTask", func(m *Model) { m.current = viewNewTask }},
 		{"newProject", func(m *Model) { m.current = viewNewProject }},
+		{"editProject", func(m *Model) {
+			f := NewProjectForm(m.theme)
+			f.LoadProject("proj", config.Project{Path: "/tmp/proj", Branch: "master"})
+			m.projectform = f
+			m.current = viewEditProject
+		}},
 		{"pruning", func(m *Model) { m.current = viewPruning; m.pruneTotal = 3 }},
 		{"daemonRestart", func(m *Model) { m.current = viewDaemonRestart; m.daemonRestarting = true }},
 		{"sandboxConfig", func(m *Model) {

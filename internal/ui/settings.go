@@ -515,6 +515,8 @@ func (sv SettingsView) renderProjectDetail(sel *settingsRow, innerW int) string 
 	sc := sv.taskCounts[entry.Name]
 	total := sc.Total()
 
+	b.WriteString("\n" + sv.theme.Help.Render("  [e] edit  [d] delete") + "\n")
+
 	b.WriteString("\n" + sv.theme.Section.Render("  TASKS") + "\n")
 
 	if total == 0 {

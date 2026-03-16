@@ -10,15 +10,17 @@ import (
 	"github.com/drn/argus/internal/config"
 )
 
-// NewProjectForm handles the new project creation UI.
-type NewProjectForm struct {
-	inputs   []textinput.Model
-	focused  int
-	theme    Theme
-	done     bool
-	canceled bool
-	width    int
-	height   int
+// NewProjectForm handles the new project creation and editing UI.
+type ProjectForm struct {
+	inputs       []textinput.Model
+	focused      int
+	theme        Theme
+	done         bool
+	canceled     bool
+	width        int
+	height       int
+	editMode     bool   // true when editing an existing project
+	originalName string // project name being edited (read-only in edit mode)
 }
 
 const (
@@ -29,7 +31,7 @@ const (
 	projFieldCount
 )
 
-func NewNewProjectForm(theme Theme) NewProjectForm {
+func NewProjectForm(theme Theme) ProjectForm {
 	inputs := make([]textinput.Model, projFieldCount)
 
 	nameInput := textinput.New()
@@ -53,14 +55,63 @@ func NewNewProjectForm(theme Theme) NewProjectForm {
 	backendInput.CharLimit = 40
 	inputs[projFieldBackend] = backendInput
 
-	return NewProjectForm{
+	return ProjectForm{
 		inputs:  inputs,
 		focused: projFieldName,
 		theme:   theme,
 	}
 }
 
-func (f *NewProjectForm) Update(msg tea.Msg) tea.Cmd {
+// LoadProject switches the form into edit mode, pre-populating all fields
+// with the existing project's values. The name field becomes read-only.
+func (f *ProjectForm) LoadProject(name string, proj config.Project) {
+	f.editMode = true
+	f.originalName = name
+	f.inputs[projFieldName].SetValue(name)
+	f.inputs[projFieldPath].SetValue(proj.Path)
+	f.inputs[projFieldBranch].SetValue(proj.Branch)
+	f.inputs[projFieldBackend].SetValue(proj.Backend)
+	// Start focus on path since name is read-only in edit mode.
+	f.focused = projFieldPath
+}
+
+// nextField returns the next field index in the tab order.
+func (f *ProjectForm) nextField() int {
+	if f.editMode {
+		// Cycle through path → branch → backend → path.
+		switch f.focused {
+		case projFieldPath:
+			return projFieldBranch
+		case projFieldBranch:
+			return projFieldBackend
+		default:
+			return projFieldPath
+		}
+	}
+	return (f.focused + 1) % projFieldCount
+}
+
+// prevField returns the previous field index in the tab order.
+func (f *ProjectForm) prevField() int {
+	if f.editMode {
+		switch f.focused {
+		case projFieldPath:
+			return projFieldBackend
+		case projFieldBranch:
+			return projFieldPath
+		default:
+			return projFieldBranch
+		}
+	}
+	return (f.focused - 1 + projFieldCount) % projFieldCount
+}
+
+// lastField returns the last editable field index (the submit-on-enter field).
+func (f *ProjectForm) lastField() int {
+	return projFieldBackend // same in both modes
+}
+
+func (f *ProjectForm) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case detectBranchMsg:
 		// Auto-fill branch field if user hasn't manually changed it.
@@ -76,30 +127,30 @@ func (f *NewProjectForm) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		case "tab", "down":
 			prev := f.focused
-			f.focused = (f.focused + 1) % projFieldCount
+			f.focused = f.nextField()
 			cmds := []tea.Cmd{f.focusCurrent()}
-			if prev == projFieldPath {
+			if prev == projFieldPath && !f.editMode {
 				cmds = append(cmds, f.detectDefaultBranch())
 			}
 			return tea.Batch(cmds...)
 		case "shift+tab", "up":
 			prev := f.focused
-			f.focused = (f.focused - 1 + projFieldCount) % projFieldCount
+			f.focused = f.prevField()
 			cmds := []tea.Cmd{f.focusCurrent()}
-			if prev == projFieldPath {
+			if prev == projFieldPath && !f.editMode {
 				cmds = append(cmds, f.detectDefaultBranch())
 			}
 			return tea.Batch(cmds...)
 		case "enter":
-			if f.focused == projFieldCount-1 {
+			if f.focused == f.lastField() {
 				// Submit on enter at last field
-				if strings.TrimSpace(f.inputs[projFieldName].Value()) != "" &&
-					strings.TrimSpace(f.inputs[projFieldPath].Value()) != "" {
+				nameOK := f.editMode || strings.TrimSpace(f.inputs[projFieldName].Value()) != ""
+				if nameOK && strings.TrimSpace(f.inputs[projFieldPath].Value()) != "" {
 					f.done = true
 				}
 				return nil
 			}
-			f.focused++
+			f.focused = f.nextField()
 			return f.focusCurrent()
 		}
 	}
@@ -113,7 +164,7 @@ type detectBranchMsg struct{ branch string }
 
 // detectDefaultBranch returns a tea.Cmd that detects the default remote branch
 // for the path currently entered in the form.
-func (f *NewProjectForm) detectDefaultBranch() tea.Cmd {
+func (f *ProjectForm) detectDefaultBranch() tea.Cmd {
 	path := strings.TrimSpace(f.inputs[projFieldPath].Value())
 	if path == "" {
 		return nil
@@ -159,7 +210,7 @@ func detectRemoteDefaultBranch(repoDir string) string {
 	return ""
 }
 
-func (f *NewProjectForm) focusCurrent() tea.Cmd {
+func (f *ProjectForm) focusCurrent() tea.Cmd {
 	cmds := make([]tea.Cmd, len(f.inputs))
 	for i := range f.inputs {
 		if i == f.focused {
@@ -171,8 +222,11 @@ func (f *NewProjectForm) focusCurrent() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (f *NewProjectForm) ProjectEntry() (string, config.Project) {
+func (f *ProjectForm) ProjectEntry() (string, config.Project) {
 	name := strings.TrimSpace(f.inputs[projFieldName].Value())
+	if f.editMode {
+		name = f.originalName
+	}
 	path := strings.TrimSpace(f.inputs[projFieldPath].Value())
 	branch := strings.TrimSpace(f.inputs[projFieldBranch].Value())
 	backend := strings.TrimSpace(f.inputs[projFieldBackend].Value())
@@ -184,10 +238,10 @@ func (f *NewProjectForm) ProjectEntry() (string, config.Project) {
 	}
 }
 
-func (f *NewProjectForm) Done() bool     { return f.done }
-func (f *NewProjectForm) Canceled() bool { return f.canceled }
+func (f *ProjectForm) Done() bool     { return f.done }
+func (f *ProjectForm) Canceled() bool { return f.canceled }
 
-func (f *NewProjectForm) SetSize(w, h int) {
+func (f *ProjectForm) SetSize(w, h int) {
 	f.width = w
 	f.height = h
 	inputWidth := f.modalWidth() - 6
@@ -199,11 +253,11 @@ func (f *NewProjectForm) SetSize(w, h int) {
 	}
 }
 
-func (f NewProjectForm) modalWidth() int {
+func (f ProjectForm) modalWidth() int {
 	return clampModalWidth(f.width)
 }
 
-func (f NewProjectForm) View() string {
+func (f ProjectForm) View() string {
 	// Guard against zero-valued form (inputs not initialized via constructor).
 	if len(f.inputs) == 0 {
 		return ""
@@ -212,6 +266,12 @@ func (f NewProjectForm) View() string {
 
 	labels := []string{"Name:", "Path:", "Branch:", "Backend:"}
 	for i, label := range labels {
+		if f.editMode && i == projFieldName {
+			// In edit mode, name is read-only — show as a label, not an input.
+			b.WriteString(f.theme.Dimmed.Render(label) + "\n")
+			b.WriteString(f.theme.Normal.Render(f.originalName) + "\n\n")
+			continue
+		}
 		style := f.theme.Dimmed
 		if i == f.focused {
 			style = f.theme.Selected
@@ -224,12 +284,17 @@ func (f NewProjectForm) View() string {
 
 	mw := f.modalWidth()
 
+	title := "New Project"
+	if f.editMode {
+		title = "Edit Project"
+	}
+
 	modal := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("87")).
 		Padding(1, 2).
 		Width(mw).
-		Render(f.theme.Title.Render("New Project") + "\n\n" + b.String())
+		Render(f.theme.Title.Render(title) + "\n\n" + b.String())
 
 	return lipgloss.Place(f.width, f.height, lipgloss.Center, lipgloss.Center, modal)
 }
