@@ -114,6 +114,11 @@ func (d *DB) fixupBackends() error {
 			needsUpdate = true
 		}
 
+		// Fix: command references "codex" but is missing --yolo.
+		if strings.Contains(command, "codex") && !strings.Contains(command, "--yolo") {
+			needsUpdate = true
+		}
+
 		// Fix: prompt_flag is "-p" (print/non-interactive mode) when the
 		// default is empty (interactive mode).
 		if promptFlag == "-p" && want.PromptFlag == "" {

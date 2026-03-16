@@ -389,6 +389,36 @@ func TestFixupBackends_MissingDangerouslySkipPermissions(t *testing.T) {
 	}
 }
 
+func TestFixupBackends_MissingYolo(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Simulate a codex backend added manually without --yolo
+	if err := d.SetBackend("codex", config.Backend{
+		Command:    "codex",
+		PromptFlag: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b, ok := backends["codex"]
+	if !ok {
+		t.Fatal("expected codex backend")
+	}
+	defaultCfg := config.DefaultConfig()
+	if b.Command != defaultCfg.Backends["codex"].Command {
+		t.Errorf("expected command %q, got %q", defaultCfg.Backends["codex"].Command, b.Command)
+	}
+}
+
 func TestFixupBackends_SkipsCorrectConfig(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
@@ -916,7 +946,7 @@ func TestFixupBackends_NonClaudeBackendUntouched(t *testing.T) {
 	defer d.Close()
 
 	// Add a non-default backend
-	if err := d.SetBackend("codex", config.Backend{Command: "codex", PromptFlag: "-p"}); err != nil {
+	if err := d.SetBackend("gemini", config.Backend{Command: "gemini", PromptFlag: "-p"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -924,10 +954,10 @@ func TestFixupBackends_NonClaudeBackendUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// codex is not in DefaultConfig, so fixupBackends should not touch it
+	// gemini is not in DefaultConfig, so fixupBackends should not touch it
 	backends := d.Backends()
-	if backends["codex"].PromptFlag != "-p" {
-		t.Errorf("codex prompt_flag should be untouched, got %q", backends["codex"].PromptFlag)
+	if backends["gemini"].PromptFlag != "-p" {
+		t.Errorf("gemini prompt_flag should be untouched, got %q", backends["gemini"].PromptFlag)
 	}
 }
 
