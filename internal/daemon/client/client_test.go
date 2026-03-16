@@ -123,3 +123,77 @@ func TestClient_StopAll(t *testing.T) {
 	// StopAll should not panic with no sessions.
 	c.StopAll()
 }
+
+func TestClient_SessionExitCallback(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	exitCh := make(chan string, 1)
+	c.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+		exitCh <- taskID
+	})
+
+	task := &model.Task{ID: "t-exit", Name: "exit-test", Backend: "test"}
+	_, err = c.Start(task, config.Config{}, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "echo hello" exits quickly — callback should fire.
+	select {
+	case id := <-exitCh:
+		if id != "t-exit" {
+			t.Errorf("expected task ID 't-exit', got %q", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for session exit callback")
+	}
+}
+
+func TestAlive_Dead(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Create a session for a quick-exit command.
+	task := &model.Task{ID: "t-dead", Name: "dead-test", Backend: "test"}
+	_, err = c.Start(task, config.Config{}, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for process to exit.
+	time.Sleep(1 * time.Second)
+
+	// Create a RemoteSession to test isSessionAlive against a dead process.
+	rs := &RemoteSession{taskID: "t-dead", client: c}
+	if rs.isSessionAlive() {
+		t.Error("expected isSessionAlive to return false for exited process")
+	}
+}
+
+func TestAlive_NoSession(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// isSessionAlive for a session that never existed should return false.
+	// SessionStatus returns empty info (Alive=false, PID=0) for unknown task IDs.
+	rs := &RemoteSession{taskID: "nonexistent", client: c}
+	if rs.isSessionAlive() {
+		t.Error("expected isSessionAlive to return false for nonexistent session")
+	}
+}
