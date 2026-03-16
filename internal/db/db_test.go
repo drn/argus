@@ -1047,3 +1047,65 @@ func TestMigration_OnlyRunsOnce(t *testing.T) {
 		t.Errorf("expected 1 task, got %d", len(tasks))
 	}
 }
+
+func TestDB_SandboxConfig(t *testing.T) {
+	d := testDB(t)
+
+	// Default: sandbox disabled
+	cfg := d.Config()
+	if cfg.Sandbox.Enabled {
+		t.Error("expected sandbox disabled by default")
+	}
+
+	// Enable sandbox
+	if err := d.SetSandboxEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if !cfg.Sandbox.Enabled {
+		t.Error("expected sandbox enabled after SetSandboxEnabled(true)")
+	}
+
+	// Disable sandbox
+	if err := d.SetSandboxEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	cfg = d.Config()
+	if cfg.Sandbox.Enabled {
+		t.Error("expected sandbox disabled after SetSandboxEnabled(false)")
+	}
+}
+
+func TestDB_SandboxConfig_Domains(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.SetConfigValue("sandbox.allowed_domains", "github.com,npmjs.org"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := d.Config()
+	if len(cfg.Sandbox.AllowedDomains) != 2 {
+		t.Fatalf("expected 2 domains, got %d: %v", len(cfg.Sandbox.AllowedDomains), cfg.Sandbox.AllowedDomains)
+	}
+	if cfg.Sandbox.AllowedDomains[0] != "github.com" {
+		t.Errorf("expected github.com, got %q", cfg.Sandbox.AllowedDomains[0])
+	}
+}
+
+func TestDB_SandboxConfig_Paths(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.SetConfigValue("sandbox.deny_read", "/secrets,~/.private"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetConfigValue("sandbox.extra_write", "~/.npm,/tmp/build"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := d.Config()
+	if len(cfg.Sandbox.DenyRead) != 2 {
+		t.Fatalf("expected 2 deny_read paths, got %d", len(cfg.Sandbox.DenyRead))
+	}
+	if len(cfg.Sandbox.ExtraWrite) != 2 {
+		t.Fatalf("expected 2 extra_write paths, got %d", len(cfg.Sandbox.ExtraWrite))
+	}
+}

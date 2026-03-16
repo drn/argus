@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -25,6 +27,7 @@ const (
 	viewConfirmDestroy
 	viewPruning
 	viewAgent
+	viewSandboxInstall
 )
 
 type tab int
@@ -82,6 +85,12 @@ type PruneDoneMsg struct {
 	Count int
 }
 
+// SandboxInstallMsg carries the result of an async srt install.
+type SandboxInstallMsg struct {
+	Success bool
+	Output  string
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -111,6 +120,11 @@ type Model struct {
 	// Prune progress state (shown in viewPruning modal)
 	pruneTotal   int // total worktrees being cleaned up
 	pruneCurrent int // number completed so far (0 = starting)
+
+	// Sandbox install modal state
+	sandboxInstallPending *model.Task // task to start after install completes
+	sandboxInstalling     bool        // true while npm install is running
+	sandboxInstallResult  string      // install output or error
 }
 
 // NewModel creates the top-level model. Set daemonConnected to true when the
@@ -332,6 +346,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 
+	case SandboxInstallMsg:
+		m.sandboxInstalling = false
+		if msg.Success {
+			m.sandboxInstallResult = "Installed successfully"
+			// Reset the cache so IsSandboxAvailable() rechecks
+			agent.ResetSandboxCache()
+			m.refreshSettings()
+		} else {
+			m.sandboxInstallResult = "Install failed: " + msg.Output
+		}
+		return m, nil
+
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
@@ -366,6 +392,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewPruning:
 		// Absorb all keys while pruning — no interaction allowed.
 		return m, nil
+	case viewSandboxInstall:
+		return m.handleSandboxInstallKey(msg)
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
@@ -568,6 +596,16 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	// If session already exists in runner, switch to agent view
 	if m.runner.Get(t.ID) != nil {
 		return m, m.enterAgentView(t.ID, t.Name)
+	}
+
+	// If sandbox is enabled but srt is not installed, show install modal
+	cfg := m.db.Config()
+	if cfg.Sandbox.Enabled && !agent.IsSandboxAvailable() {
+		m.sandboxInstallPending = t
+		m.sandboxInstalling = false
+		m.sandboxInstallResult = ""
+		m.current = viewSandboxInstall
+		return m, nil
 	}
 
 	// If the task already has a session ID, resume that conversation;
@@ -791,6 +829,48 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	})
 }
 
+func (m Model) handleSandboxInstallKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.sandboxInstalling {
+		// Absorb all keys while installing
+		return m, nil
+	}
+
+	switch msg.Type {
+	case tea.KeyEnter:
+		if m.sandboxInstallResult != "" {
+			// Install finished (success or failure) — close modal
+			if agent.IsSandboxAvailable() && m.sandboxInstallPending != nil {
+				// srt is now available — start the pending task
+				t := m.sandboxInstallPending
+				m.sandboxInstallPending = nil
+				m.current = viewTaskList
+				return m.startOrAttach(t)
+			}
+			m.sandboxInstallPending = nil
+			m.current = viewTaskList
+			return m, nil
+		}
+		// User confirmed install — run npm install asynchronously
+		m.sandboxInstalling = true
+		m.sandboxInstallResult = ""
+		return m, func() tea.Msg {
+			out, err := exec.Command("npm", "install", "-g", "@anthropic-ai/sandbox-runtime").CombinedOutput()
+			if err != nil {
+				return SandboxInstallMsg{Success: false, Output: strings.TrimSpace(string(out))}
+			}
+			return SandboxInstallMsg{Success: true, Output: strings.TrimSpace(string(out))}
+		}
+	case tea.KeyEsc:
+		// Close modal — if pending task, start it unsandboxed
+		// (BuildCmd gracefully falls through when srt unavailable)
+		m.sandboxInstallPending = nil
+		m.current = viewTaskList
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
 func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -877,6 +957,17 @@ func (m *Model) refreshSettings() {
 	m.settings.SetProjects(m.db.Projects())
 	m.settings.SetBackends(m.db.Backends())
 	m.settings.SetTasks(m.db.Tasks())
+	cfg := m.db.Config()
+	// Only probe srt availability if sandbox is enabled — the check may
+	// invoke npx which is slow on first run. No point probing when disabled.
+	available := cfg.Sandbox.Enabled && agent.IsSandboxAvailable()
+	m.settings.SetSandboxConfig(
+		cfg.Sandbox.Enabled,
+		available,
+		cfg.Sandbox.AllowedDomains,
+		cfg.Sandbox.DenyRead,
+		cfg.Sandbox.ExtraWrite,
+	)
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.

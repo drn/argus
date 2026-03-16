@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -409,7 +410,34 @@ func (d *DB) Config() config.Config {
 		cfg.UI.CleanupWorktrees = &val
 	}
 
+	// Sandbox config
+	if v, ok := kv["sandbox.enabled"]; ok {
+		cfg.Sandbox.Enabled = v == "true"
+	}
+	if v, ok := kv["sandbox.allowed_domains"]; ok && v != "" {
+		cfg.Sandbox.AllowedDomains = splitCSV(v)
+	}
+	if v, ok := kv["sandbox.deny_read"]; ok && v != "" {
+		cfg.Sandbox.DenyRead = splitCSV(v)
+	}
+	if v, ok := kv["sandbox.extra_write"]; ok && v != "" {
+		cfg.Sandbox.ExtraWrite = splitCSV(v)
+	}
+
 	return cfg
+}
+
+// splitCSV splits a comma-separated string into trimmed non-empty parts.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func (d *DB) SetConfigValue(key, value string) error {
@@ -418,6 +446,15 @@ func (d *DB) SetConfigValue(key, value string) error {
 
 	_, err := d.conn.Exec(`INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)`, key, value)
 	return err
+}
+
+// SetSandboxEnabled toggles sandbox mode.
+func (d *DB) SetSandboxEnabled(enabled bool) error {
+	v := "false"
+	if enabled {
+		v = "true"
+	}
+	return d.SetConfigValue("sandbox.enabled", v)
 }
 
 // --- Helpers ---

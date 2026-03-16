@@ -40,13 +40,16 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	}
 	r.mu.Unlock()
 
-	cmd, err := BuildCmd(task, cfg, resume)
+	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
 	if err != nil {
 		return nil, err
 	}
 
 	sess, err := StartSession(task.ID, cmd, rows, cols)
 	if err != nil {
+		if sandboxCleanup != nil {
+			sandboxCleanup()
+		}
 		return nil, err
 	}
 
@@ -61,6 +64,10 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	// re-enters the runner (e.g., HasSession).
 	go func() {
 		<-sess.Done()
+		// Clean up sandbox config temp file
+		if sandboxCleanup != nil {
+			sandboxCleanup()
+		}
 		// Capture last output before removing the session so callers
 		// can display error messages after the session is gone.
 		lastOutput := sess.RecentOutput()

@@ -7,6 +7,7 @@ type Config struct {
 	Projects    map[string]Project `toml:"projects"`
 	Keybindings Keybindings        `toml:"keybindings"`
 	UI          UIConfig           `toml:"ui"`
+	Sandbox     SandboxConfig      `toml:"sandbox"`
 }
 
 type Defaults struct {
@@ -41,6 +42,14 @@ type UIConfig struct {
 	ShowElapsed      bool   `toml:"show_elapsed"`
 	ShowIcons        bool   `toml:"show_icons"`
 	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
+}
+
+// SandboxConfig controls OS-level sandboxing of agent processes.
+type SandboxConfig struct {
+	Enabled        bool     `toml:"enabled"`
+	AllowedDomains []string `toml:"allowed_domains"`
+	DenyRead       []string `toml:"deny_read"`
+	ExtraWrite     []string `toml:"extra_write"`
 }
 
 // ShouldCleanupWorktrees returns whether worktrees should be auto-removed on task delete.

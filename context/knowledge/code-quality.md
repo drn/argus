@@ -190,3 +190,21 @@
 - Improve `internal/daemon` test coverage from 45% to ≥80% (missing: stream handler, WriteInput/Resize RPCs, error paths, concurrent stream/RPC, session exit notification)
 - Improve `internal/daemon/client` test coverage from 46% to ≥80% (missing: Get() with existing remote session, session exit callback, stream reconnection, error handling)
 - Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)
+
+## Sandbox Architecture (2026-03-15)
+
+### Design Decisions
+- **Tool choice:** `@anthropic-ai/sandbox-runtime` (srt) over raw Seatbelt or nono — battle-tested (powers Claude Code itself), cross-platform (macOS Seatbelt + Linux bubblewrap), simple CLI wrapper
+- **Injection point:** `BuildCmd()` wraps the shell command string with `srt --settings <tempfile> -- <original>`. PTY, daemon, attach/detach unchanged.
+- **Opt-in:** `cfg.Sandbox.Enabled` defaults to `false`. Detection gated on enabled flag to avoid startup latency.
+- **Cleanup lifecycle:** `BuildCmd` returns `(cmd, cleanup, error)`. Cleanup called on `StartSession` failure OR on `session.Done()` in the exit-watch goroutine. No double-free, no leak.
+
+### Key Bugs Caught in Review
+1. **Triple-slash path:** `"//" + "/absolute/path"` → `"///absolute/path"`. Fix: `"//" + strings.TrimPrefix(path, "/")` in `normalizeSrtPath`.
+2. **npx --yes at startup:** `IsSandboxAvailable()` called unconditionally in `refreshSettings()` with `npx --yes` (auto-installs npm packages). Fix: gate on `cfg.Sandbox.Enabled`, use `--no` flag, add 5s timeout.
+3. **Tests validated buggy format:** Test expected values matched the triple-slash bug, so tests passed despite incorrect behavior. Lesson: always validate test expectations against the external spec, not just internal consistency.
+
+### Config Persistence
+- Sandbox config stored as `sandbox.enabled`, `sandbox.allowed_domains`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
+- List values stored as CSV (comma-separated). Known limitation: paths with commas would break.
+- `SetSandboxEnabled(bool)` convenience method on DB; other values via `SetConfigValue`

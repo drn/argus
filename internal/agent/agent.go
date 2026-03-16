@@ -51,10 +51,12 @@ func ResolveDir(task *model.Task, cfg config.Config) string {
 // BuildCmd constructs the exec.Cmd for running an agent on a task.
 // If the task has a SessionID, the command uses --resume to reconnect.
 // If resume is false and SessionID is set, it uses --session-id for a new session with a known ID.
-func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, error) {
+// When sandbox is enabled and available, the command is wrapped with srt.
+// The returned cleanup function removes the sandbox config temp file (nil if no sandbox).
+func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func(), error) {
 	backend, err := ResolveBackend(task, cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	cmdStr := backend.Command
@@ -76,6 +78,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 		}
 	}
 
+	// Wrap with sandbox if enabled and available
+	var sandboxCleanup func()
+	if cfg.Sandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
+		settingsPath, cleanup, serr := GenerateSandboxConfig(task.Worktree, cfg)
+		if serr == nil {
+			cmdStr = WrapWithSandbox(cmdStr, settingsPath)
+			sandboxCleanup = cleanup
+		}
+		// If sandbox config generation fails, fall through to unsandboxed
+	}
+
 	cmd := exec.Command("sh", "-c", cmdStr)
 
 	// Use worktree as working directory. Every task must have a worktree
@@ -84,7 +97,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, erro
 		cmd.Dir = task.Worktree
 	}
 
-	return cmd, nil
+	return cmd, sandboxCleanup, nil
 }
 
 // shellQuote wraps a string in single quotes with proper escaping.

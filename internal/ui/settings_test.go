@@ -86,14 +86,22 @@ func TestSettingsView_CursorNavigation(t *testing.T) {
 		t.Errorf("expected initial selection to be warning row, got kind %d", sel.kind)
 	}
 
-	// Move down — should land on a project row (skipping section header)
+	// Move down — should land on sandbox row (skipping section header)
+	sv.CursorDown()
+	sel = sv.Selected()
+	if sel == nil || sel.kind != settingsRowSandbox {
+		t.Errorf("expected cursor to be on sandbox row after first down, got kind %d", sel.kind)
+	}
+
+	// Move down again — should land on a project row (skipping section header)
 	sv.CursorDown()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowProject {
-		t.Error("expected cursor to be on a project row after down")
+		t.Error("expected cursor to be on a project row after second down")
 	}
 
-	// Move up — should go back to status row
+	// Move up twice — should go back to status row
+	sv.CursorUp()
 	sv.CursorUp()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowWarning {
@@ -110,8 +118,9 @@ func TestSettingsView_SelectedProject(t *testing.T) {
 	})
 	sv.SetBackends(nil)
 
-	// Move to project row
-	sv.CursorDown()
+	// Move past sandbox to project row
+	sv.CursorDown() // sandbox
+	sv.CursorDown() // project
 	proj := sv.SelectedProject()
 	if proj == nil {
 		t.Fatal("expected a selected project")
@@ -130,7 +139,8 @@ func TestSettingsView_SelectedBackend(t *testing.T) {
 		"claude": {Command: "claude --skip"},
 	})
 
-	// Move past status and empty projects to backend row
+	// Move past status, sandbox, and empty projects to backend row
+	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects) placeholder
 	sv.CursorDown() // claude backend
 	be := sv.SelectedBackend()
@@ -164,6 +174,7 @@ func TestSettingsView_RenderDetail_Project(t *testing.T) {
 	})
 	sv.SetBackends(nil)
 
+	sv.CursorDown() // sandbox
 	sv.CursorDown() // move to project
 	detail := sv.RenderDetail(60, 20)
 	if !strings.Contains(detail, "argus") {
@@ -183,6 +194,7 @@ func TestSettingsView_RenderDetail_Backend(t *testing.T) {
 		"claude": {Command: "claude --skip"},
 	})
 
+	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects)
 	sv.CursorDown() // claude backend
 	detail := sv.RenderDetail(60, 20)
@@ -211,6 +223,70 @@ func TestSettingsView_TaskCounts(t *testing.T) {
 	}
 	if sc.Total() != 3 {
 		t.Errorf("expected total 3, got %d", sc.Total())
+	}
+}
+
+func TestSettingsView_SandboxSection(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetProjects(nil)
+	sv.SetBackends(nil)
+
+	view := sv.View()
+	if !strings.Contains(view, "SANDBOX") {
+		t.Error("expected SANDBOX section header")
+	}
+	if !strings.Contains(view, "Disabled") {
+		t.Error("expected 'Disabled' when sandbox not configured")
+	}
+}
+
+func TestSettingsView_SandboxEnabled(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetSandboxConfig(true, true, []string{"api.example.com"}, nil, nil)
+
+	view := sv.View()
+	if !strings.Contains(view, "Enabled") {
+		t.Error("expected 'Enabled' in view")
+	}
+}
+
+func TestSettingsView_SandboxDetail(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetSandboxConfig(true, true, []string{"github.com"}, []string{"/secrets"}, []string{"~/.cache"})
+
+	// Navigate to sandbox row
+	sv.CursorDown() // sandbox row
+	detail := sv.RenderDetail(60, 20)
+	if !strings.Contains(detail, "Sandbox") {
+		t.Error("expected 'Sandbox' in detail")
+	}
+	if !strings.Contains(detail, "Enabled") {
+		t.Error("expected 'Enabled' in detail")
+	}
+	if !strings.Contains(detail, "srt installed") {
+		t.Error("expected 'srt installed' in detail")
+	}
+	if !strings.Contains(detail, "github.com") {
+		t.Error("expected domain in detail")
+	}
+}
+
+func TestSettingsView_SandboxDetailUnavailable(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetSandboxConfig(true, false, nil, nil, nil)
+
+	// Navigate to sandbox row
+	sv.CursorDown()
+	detail := sv.RenderDetail(60, 20)
+	if !strings.Contains(detail, "srt not found") {
+		t.Error("expected 'srt not found' in detail")
 	}
 }
 
@@ -263,5 +339,83 @@ func TestModel_DaemonConnectedWarning(t *testing.T) {
 	}
 	if !strings.Contains(view2, "All systems nominal") {
 		t.Error("expected 'All systems nominal' when daemon connected")
+	}
+}
+
+func TestSandboxInstallView_Prompt(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Sandbox Required") {
+		t.Error("expected 'Sandbox Required' title")
+	}
+	if !strings.Contains(view, "install") {
+		t.Error("expected install prompt")
+	}
+}
+
+func TestSandboxInstallView_Installing(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstalling = true
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Installing") {
+		t.Error("expected 'Installing' status")
+	}
+}
+
+func TestSandboxInstallView_Success(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstallResult = "Installed successfully"
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Installed successfully") {
+		t.Error("expected success message")
+	}
+}
+
+func TestSandboxInstallView_Failure(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewSandboxInstall
+	m.sandboxInstallResult = "Install failed: permission denied"
+	m.width = 80
+	m.height = 24
+
+	view := m.View()
+	if !strings.Contains(view, "Install failed") {
+		t.Error("expected failure message")
 	}
 }
