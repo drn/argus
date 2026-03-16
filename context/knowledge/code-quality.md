@@ -238,8 +238,10 @@
 ### Stream Failure ≠ Process Exit Bug (2026-03-16)
 - Tasks were being auto-completed when the TUI's stream connection to the daemon dropped, even though the agent processes were still running on the daemon side.
 - Root cause: `connectStream` (stream.go) calls `removeSession` on any stream error/EOF. `removeSession` calls `Daemon.GetExitInfo` RPC — but if the process is still alive, `exitInfos[taskID]` doesn't exist (only populated by `onFinish`), so `GetExitInfo` returns empty `ExitInfo{Err: "", Stopped: false}`. The TUI's `onSessionExit` callback fires `AgentFinishedMsg{Err: nil, Stopped: false}`, and `determinePostExitStatus` sees a clean exit after >3 seconds → `StatusComplete`.
-- **Fix needed:** `removeSession` must call `Daemon.SessionStatus` to check if the process is still alive. If alive, reconnect the stream instead of firing the exit callback. Only fire `onSessionExit` when the process has actually exited.
+- **Fix (PR #155):** `connectStream` refactored into `streamOnce` + retry loop. On stream EOF/error, calls `Daemon.SessionStatus` to check if the process is still alive. If alive, retries stream connection up to `maxStreamRetries` (3) with 500ms backoff. Only calls `removeSession` (which fires `onSessionExit`) when the process has actually exited or retries are exhausted. `isSessionAlive()` helper returns false if the RPC fails (daemon may be down — safe default).
 - Daemon logs showed no restarts — confirming this is a TUI-side issue, not a daemon issue.
+- **Test gotcha:** Unix socket paths on macOS have a 104-byte limit. Test names that include `t.TempDir()` can exceed this — keep test names short (e.g., `TestAlive_Dead` not `TestIsSessionAlive_DeadSession`). Symptom: `connect: invalid argument` error on `net.Dial("unix", ...)`.
+
 
 ### UX Debug Logging (2026-03-16)
 - Added `internal/uxlog` package — file-based logger writing to `~/.argus/ux.log`, separate from daemon's `daemon.log`.
