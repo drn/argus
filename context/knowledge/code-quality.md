@@ -206,24 +206,24 @@
 - Improve `internal/daemon/client` test coverage to ≥80% (Get() race + StreamLost + DaemonDown tests added 2026-03-16; remaining: stream reconnection on live process, concurrent stream/RPC paths)
 - Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)
 
-## Sandbox Architecture (2026-03-15)
+## Sandbox Architecture (2026-03-16, updated from srt to sandbox-exec)
 
 ### Design Decisions
-- **Tool choice:** `@anthropic-ai/sandbox-runtime` (srt) over raw Seatbelt or nono — battle-tested (powers Claude Code itself), cross-platform (macOS Seatbelt + Linux bubblewrap), simple CLI wrapper
-- **Injection point:** `BuildCmd()` wraps the shell command string with `srt --settings <tempfile> -- <original>`. PTY, daemon, attach/detach unchanged.
-- **Opt-in:** `cfg.Sandbox.Enabled` defaults to `false`. Toggle via Enter/Space on the sandbox row in settings.
-- **Availability detection:** `IsSandboxAvailable()` is cached via `sync.Once` — first call probes `exec.LookPath("srt")` then `npx --no @anthropic-ai/sandbox-runtime --version` with 5s timeout. All subsequent calls return the cached result. Called unconditionally in `refreshSettings()` so the settings view always shows accurate install status. `ResetSandboxCache()` clears the cache after toggle so re-detection occurs.
-- **Cleanup lifecycle:** `BuildCmd` returns `(cmd, cleanup, error)`. Cleanup called on `StartSession` failure OR on `session.Done()` in the exit-watch goroutine. No double-free, no leak.
+- **Tool choice (current):** macOS `sandbox-exec` (`/usr/bin/sandbox-exec`) — always available, no install. Originally srt was chosen but found incompatible with argus's PTY-based sessions (PR #165). sandbox-exec is macOS-only (acceptable since argus is single-user macOS).
+- **Injection point:** `BuildCmd()` wraps the shell command string: `sandbox-exec -D 'HOME=...' -D 'WORKTREE=...' -f /tmp/profile.sb sh -c 'original cmd'`. The double-sh (outer from `exec.Command("sh", "-c", ...)` + inner from `WrapWithSandbox`) is intentional — standard argus invocation pattern.
+- **Opt-in:** `cfg.Sandbox.Enabled` defaults to `false`. Toggle via Enter on the sandbox row in settings.
+- **Availability detection:** `IsSandboxAvailable()` is cached via `sync.Once` — checks `os.Stat("/usr/bin/sandbox-exec")` then `exec.LookPath` fallback. Instant (syscall only). Called unconditionally in `refreshSettings()`. `ResetSandboxCache()` clears for testing.
+- **Cleanup lifecycle:** `BuildCmd` returns `(cmd, cleanup, error)`. Cleanup removes the temp `.sb` profile. Called on `StartSession` failure OR on `session.Done()` in the exit-watch goroutine. No double-free, no leak.
 
-### Key Bugs Caught in Review
-1. **Triple-slash path:** `"//" + "/absolute/path"` → `"///absolute/path"`. Fix: `"//" + strings.TrimPrefix(path, "/")` in `normalizeSrtPath`.
-2. **npx --yes at startup:** Original implementation used `npx --yes` (auto-installs packages). Fix: use `--no` flag, add 5s timeout, cache via `sync.Once`. Now called unconditionally in `refreshSettings()` since caching makes repeated calls free.
-3. **Tests validated buggy format:** Test expected values matched the triple-slash bug, so tests passed despite incorrect behavior. Lesson: always validate test expectations against the external spec, not just internal consistency.
-4. **Missing `allowPty: true`:** srt blocks PTY operations by default on macOS (`allowPty` defaults to `false` in `SandboxRuntimeConfigSchema`). Since Argus runs agents via PTY, the sandbox silently blocked terminal I/O — agent view showed "Waiting for output..." indefinitely. Fix: set `AllowPty: true` in `srtSettings` struct. Lesson: when integrating srt, read the full Zod schema in `sandbox-config.js` for security-default fields that need explicit opt-in.
-5. **Settings cursor navigation off-by-one in tests:** Two sandbox config form tests used 2 `CursorDown()` calls instead of 3 (forgot UX logs row between daemon logs and sandbox). One panicked on `inputs[0]` access; the other silently tested a no-op path. Lesson: always assert cursor position before acting on it in settings tests.
+### SBPL Profile Gotchas
+1. **`/tmp` symlink breaks deny rules.** macOS `/tmp` → `/private/tmp`. A deny rule like `(deny file-read* (subpath "/tmp/foo"))` does NOT block access to `/private/tmp/foo` because the kernel resolves the symlink before matching. Always use real paths in deny rules. The credential deny rules use `(string-append (param "HOME") "/.ssh")` where HOME = `/Users/username` — a real, non-symlinked path that works correctly.
+2. **`(allow file-read*)` + `(deny file-read* (subpath X))` works correctly for real paths.** The broad allow does NOT override the subpath deny when using real paths. This was empirically verified. The pattern in argus's `sandboxProfileBase` is correct and effective for credential dir protection.
+3. **No domain-level network filtering.** `(allow network*)` permits all outbound connections. srt used a proxy-based domain allowlist; sandbox-exec has no equivalent. This is an intentional tradeoff — write isolation and credential read protection are achieved; network egress is not restricted.
+4. **Profile must allow `file-ioctl`.** Without this, PTY operations fail. Claude Code inherits the PTY fd before the sandbox is applied, so no `open()` on the PTY device is needed — but ioctl for terminal control still requires the rule.
 
 ### Config Persistence
-- Sandbox config stored as `sandbox.enabled`, `sandbox.allowed_domains`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
+- Sandbox config stored as `sandbox.enabled`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
+- `sandbox.allowed_domains` key was used by srt; now orphaned in existing DBs but harmlessly ignored
 - List values stored as CSV (comma-separated). Known limitation: paths with commas would break.
 - `SetSandboxEnabled(bool)` convenience method on DB; other values via `SetConfigValue`
 
