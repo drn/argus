@@ -58,6 +58,12 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 			t.Errorf("allowedDomains missing %q, got %v", expected, ad)
 		}
 	}
+
+	// PTY access must be enabled — srt blocks PTY by default on macOS,
+	// which prevents the agent process from producing any terminal output.
+	if !settings.AllowPty {
+		t.Error("allowPty must be true for agent sessions to work via PTY")
+	}
 }
 
 func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {

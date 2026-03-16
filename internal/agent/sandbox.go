@@ -44,6 +44,7 @@ var defaultAllowedDomains = []string{
 type srtSettings struct {
 	Network    srtNetwork    `json:"network"`
 	Filesystem srtFilesystem `json:"filesystem"`
+	AllowPty   bool          `json:"allowPty"`
 }
 
 type srtFilesystem struct {
@@ -129,6 +130,7 @@ func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, func
 			AllowedDomains: domains,
 			DeniedDomains:  []string{},
 		},
+		AllowPty: true,
 	}
 
 	data, err := json.MarshalIndent(settings, "", "  ")

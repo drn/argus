@@ -449,6 +449,7 @@ func TestModel_SandboxConfigFormCancel(t *testing.T) {
 
 	// Navigate to sandbox row and open form
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	updated, _ := m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
@@ -484,6 +485,7 @@ func TestModel_SandboxConfigFormDomains(t *testing.T) {
 
 	// Navigate to sandbox row and open form
 	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // UX logs
 	m.settings.CursorDown() // sandbox
 	updated, _ := m.handleSettingsKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
