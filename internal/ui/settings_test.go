@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -87,21 +88,29 @@ func TestSettingsView_CursorNavigation(t *testing.T) {
 		t.Errorf("expected initial selection to be warning row, got kind %d", sel.kind)
 	}
 
+	// Move down — should land on daemon logs row
+	sv.CursorDown()
+	sel = sv.Selected()
+	if sel == nil || sel.kind != settingsRowDaemonLogs {
+		t.Errorf("expected cursor to be on daemon logs row after first down, got kind %d", sel.kind)
+	}
+
 	// Move down — should land on sandbox row (skipping section header)
 	sv.CursorDown()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowSandbox {
-		t.Errorf("expected cursor to be on sandbox row after first down, got kind %d", sel.kind)
+		t.Errorf("expected cursor to be on sandbox row after second down, got kind %d", sel.kind)
 	}
 
 	// Move down again — should land on a project row (skipping section header)
 	sv.CursorDown()
 	sel = sv.Selected()
 	if sel == nil || sel.kind != settingsRowProject {
-		t.Error("expected cursor to be on a project row after second down")
+		t.Error("expected cursor to be on a project row after third down")
 	}
 
-	// Move up twice — should go back to status row
+	// Move up three times — should go back to status row
+	sv.CursorUp()
 	sv.CursorUp()
 	sv.CursorUp()
 	sel = sv.Selected()
@@ -119,7 +128,8 @@ func TestSettingsView_SelectedProject(t *testing.T) {
 	})
 	sv.SetBackends(nil)
 
-	// Move past sandbox to project row
+	// Move past daemon logs and sandbox to project row
+	sv.CursorDown() // daemon logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // project
 	proj := sv.SelectedProject()
@@ -140,7 +150,8 @@ func TestSettingsView_SelectedBackend(t *testing.T) {
 		"claude": {Command: "claude --skip"},
 	})
 
-	// Move past status, sandbox, and empty projects to backend row
+	// Move past status, daemon logs, sandbox, and empty projects to backend row
+	sv.CursorDown() // daemon logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects) placeholder
 	sv.CursorDown() // claude backend
@@ -175,6 +186,7 @@ func TestSettingsView_RenderDetail_Project(t *testing.T) {
 	})
 	sv.SetBackends(nil)
 
+	sv.CursorDown() // daemon logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // move to project
 	detail := sv.RenderDetail(60, 20)
@@ -195,6 +207,7 @@ func TestSettingsView_RenderDetail_Backend(t *testing.T) {
 		"claude": {Command: "claude --skip"},
 	})
 
+	sv.CursorDown() // daemon logs
 	sv.CursorDown() // sandbox
 	sv.CursorDown() // (no projects)
 	sv.CursorDown() // claude backend
@@ -261,6 +274,7 @@ func TestSettingsView_SandboxDetail(t *testing.T) {
 	sv.SetSandboxConfig(true, true, []string{"github.com"}, []string{"/secrets"}, []string{"~/.cache"})
 
 	// Navigate to sandbox row
+	sv.CursorDown() // daemon logs
 	sv.CursorDown() // sandbox row
 	detail := sv.RenderDetail(60, 20)
 	if !strings.Contains(detail, "Sandbox") {
@@ -284,6 +298,7 @@ func TestSettingsView_SandboxDetailUnavailable(t *testing.T) {
 	sv.SetSandboxConfig(true, false, nil, nil, nil)
 
 	// Navigate to sandbox row
+	sv.CursorDown() // daemon logs
 	sv.CursorDown()
 	detail := sv.RenderDetail(60, 20)
 	if !strings.Contains(detail, "srt not found") {
@@ -358,7 +373,8 @@ func TestModel_SandboxToggle(t *testing.T) {
 	m.refreshSettings()
 
 	// Navigate to sandbox row (down from initial "All systems nominal")
-	m.settings.CursorDown()
+	m.settings.CursorDown() // daemon logs
+	m.settings.CursorDown() // sandbox
 	sel := m.settings.Selected()
 	if sel == nil || sel.kind != settingsRowSandbox {
 		t.Fatalf("expected cursor on sandbox row, got %v", sel)
@@ -393,6 +409,279 @@ func TestModel_SandboxToggle(t *testing.T) {
 	cfg = m.db.Config()
 	if cfg.Sandbox.Enabled {
 		t.Error("expected sandbox disabled after second Enter toggle")
+	}
+}
+
+func TestSettingsView_DaemonLogsRow(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetProjects(nil)
+	sv.SetBackends(nil)
+
+	view := sv.View()
+	if !strings.Contains(view, "Daemon Logs") {
+		t.Error("expected 'Daemon Logs' row in settings view")
+	}
+}
+
+func TestSettingsView_DaemonLogsDetail(t *testing.T) {
+	sv := NewSettingsView(DefaultTheme())
+	sv.SetSize(40, 30)
+	sv.SetWarnings(nil)
+	sv.SetProjects(nil)
+	sv.SetBackends(nil)
+
+	// Navigate to daemon logs row (down from status "all good")
+	sv.CursorDown() // daemon logs row
+	sel := sv.Selected()
+	if sel == nil || sel.kind != settingsRowDaemonLogs {
+		t.Fatal("expected cursor on daemon logs row")
+	}
+
+	detail := sv.RenderDetail(60, 20)
+	if !strings.Contains(detail, "Daemon Logs") {
+		t.Error("expected 'Daemon Logs' in detail panel")
+	}
+	if !strings.Contains(detail, "enter") {
+		t.Error("expected enter hint in detail panel")
+	}
+}
+
+func TestModel_DaemonLogsView(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+	m.daemonLogLines = []string{
+		"2026-03-15 daemon listening on /tmp/daemon.sock",
+		"2026-03-15 session started: task-1",
+		"2026-03-15 session finished: task-1",
+	}
+	m.daemonLogOffset = 0
+
+	view := m.View()
+	if !strings.Contains(view, "Daemon Logs") {
+		t.Error("expected 'Daemon Logs' title")
+	}
+	if !strings.Contains(view, "daemon listening") {
+		t.Error("expected log content in view")
+	}
+	if !strings.Contains(view, "esc") {
+		t.Error("expected close hint")
+	}
+}
+
+func TestModel_DaemonLogsScroll(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+
+	// Generate enough lines to require scrolling
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("log line %d", i)
+	}
+	m.daemonLogLines = lines
+	m.daemonLogOffset = 0
+
+	// Scroll down
+	downMsg := tea.KeyMsg{Type: tea.KeyDown}
+	updated, _ := m.handleDaemonLogsKey(downMsg)
+	m = updated.(Model)
+	if m.daemonLogOffset != 1 {
+		t.Errorf("expected offset 1 after down, got %d", m.daemonLogOffset)
+	}
+
+	// Scroll up
+	upMsg := tea.KeyMsg{Type: tea.KeyUp}
+	updated, _ = m.handleDaemonLogsKey(upMsg)
+	m = updated.(Model)
+	if m.daemonLogOffset != 0 {
+		t.Errorf("expected offset 0 after up, got %d", m.daemonLogOffset)
+	}
+
+	// Can't scroll past top
+	updated, _ = m.handleDaemonLogsKey(upMsg)
+	m = updated.(Model)
+	if m.daemonLogOffset != 0 {
+		t.Errorf("expected offset to stay 0, got %d", m.daemonLogOffset)
+	}
+
+	// Page down
+	pgDownMsg := tea.KeyMsg{Type: tea.KeyPgDown}
+	updated, _ = m.handleDaemonLogsKey(pgDownMsg)
+	m = updated.(Model)
+	if m.daemonLogOffset == 0 {
+		t.Error("expected offset > 0 after page down")
+	}
+}
+
+func TestModel_DaemonLogsMsg_Error(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.activeTab = tabSettings
+	m.width = 80
+	m.height = 24
+
+	// Simulate a failed log read (file not found)
+	updated, _ := m.Update(DaemonLogsMsg{Err: fmt.Errorf("open daemon.log: no such file or directory")})
+	m = updated.(Model)
+
+	// Should NOT switch to log viewer
+	if m.current == viewDaemonLogs {
+		t.Error("should not switch to viewDaemonLogs on error")
+	}
+}
+
+func TestModel_DaemonLogsClose_QKey(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+	m.daemonLogLines = []string{"line 1"}
+
+	// q should close
+	qMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
+	updated, _ := m.handleDaemonLogsKey(qMsg)
+	m = updated.(Model)
+	if m.current != viewTaskList {
+		t.Errorf("expected viewTaskList after q, got %d", m.current)
+	}
+	if m.activeTab != tabSettings {
+		t.Error("expected settings tab after closing logs via q")
+	}
+}
+
+func TestModel_DaemonLogsScroll_AllKeys(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+
+	lines := make([]string, 200)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("log line %d", i)
+	}
+	m.daemonLogLines = lines
+	visible := m.daemonLogVisibleLines()
+
+	// End key — jump to bottom
+	updated, _ := m.handleDaemonLogsKey(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(Model)
+	expectedEnd := len(lines) - visible
+	if m.daemonLogOffset != expectedEnd {
+		t.Errorf("expected offset %d after End, got %d", expectedEnd, m.daemonLogOffset)
+	}
+
+	// Home key — jump to top
+	updated, _ = m.handleDaemonLogsKey(tea.KeyMsg{Type: tea.KeyHome})
+	m = updated.(Model)
+	if m.daemonLogOffset != 0 {
+		t.Errorf("expected offset 0 after Home, got %d", m.daemonLogOffset)
+	}
+
+	// PgDown then PgUp
+	updated, _ = m.handleDaemonLogsKey(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(Model)
+	afterPgDown := m.daemonLogOffset
+	if afterPgDown != visible {
+		t.Errorf("expected offset %d after PgDown, got %d", visible, afterPgDown)
+	}
+	updated, _ = m.handleDaemonLogsKey(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(Model)
+	if m.daemonLogOffset != 0 {
+		t.Errorf("expected offset 0 after PgUp, got %d", m.daemonLogOffset)
+	}
+}
+
+func TestModel_DaemonLogsClose(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+	m.daemonLogLines = []string{"line 1"}
+
+	// Escape should close
+	escMsg := tea.KeyMsg{Type: tea.KeyEscape}
+	updated, _ := m.handleDaemonLogsKey(escMsg)
+	m = updated.(Model)
+	if m.current != viewTaskList {
+		t.Errorf("expected viewTaskList after esc, got %d", m.current)
+	}
+	if m.activeTab != tabSettings {
+		t.Error("expected settings tab after closing logs")
+	}
+	if m.daemonLogLines != nil {
+		t.Error("expected daemonLogLines to be nil after close")
+	}
+}
+
+func TestModel_DaemonLogsMouseScroll(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	runner := agent.NewRunner(nil)
+	m := NewModel(database, runner, false)
+	m.current = viewDaemonLogs
+	m.width = 80
+	m.height = 24
+
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("log line %d", i)
+	}
+	m.daemonLogLines = lines
+	m.daemonLogOffset = 10
+
+	// Mouse wheel down
+	m.handleDaemonLogsMouse(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	if m.daemonLogOffset != 13 {
+		t.Errorf("expected offset 13 after wheel down, got %d", m.daemonLogOffset)
+	}
+
+	// Mouse wheel up
+	m.handleDaemonLogsMouse(tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	if m.daemonLogOffset != 10 {
+		t.Errorf("expected offset 10 after wheel up, got %d", m.daemonLogOffset)
 	}
 }
 

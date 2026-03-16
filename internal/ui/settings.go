@@ -18,6 +18,7 @@ const (
 	settingsRowProject                         // project item
 	settingsRowBackend                         // backend item
 	settingsRowSandbox                         // sandbox config item
+	settingsRowDaemonLogs                      // daemon logs item
 )
 
 type settingsRow struct {
@@ -137,6 +138,9 @@ func (sv *SettingsView) rebuildRows() {
 			sv.rows = append(sv.rows, settingsRow{kind: settingsRowWarning, label: w, key: fmt.Sprintf("_warn_%d", i)})
 		}
 	}
+
+	// DAEMON LOGS row (in STATUS section)
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowDaemonLogs, label: "Daemon Logs", key: "_logs"})
 
 	// SANDBOX section
 	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "SANDBOX"})
@@ -336,6 +340,8 @@ func (sv SettingsView) View() string {
 				} else {
 					icon = "  "
 				}
+			case settingsRowDaemonLogs:
+				icon = "  "
 			case settingsRowProject:
 				icon = "  "
 			case settingsRowBackend:
@@ -366,6 +372,8 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 		content = sv.renderWarningDetail(sel, innerW)
 	case settingsRowSandbox:
 		content = sv.renderSandboxDetail(innerW)
+	case settingsRowDaemonLogs:
+		content = sv.renderDaemonLogsDetail(innerW)
 	case settingsRowProject:
 		content = sv.renderProjectDetail(sel, innerW)
 	case settingsRowBackend:
@@ -381,6 +389,14 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 	}
 
 	return borderedPanel(rightWidth, contentHeight, false, content)
+}
+
+func (sv SettingsView) renderDaemonLogsDetail(_ int) string {
+	var b strings.Builder
+	b.WriteString(sv.theme.Title.Render(" Daemon Logs") + "\n\n")
+	b.WriteString("  " + sv.theme.Dimmed.Render("View recent daemon log output.") + "\n\n")
+	b.WriteString("  " + sv.theme.Help.Render("Press [enter] to open log viewer") + "\n")
+	return b.String()
 }
 
 func (sv SettingsView) renderSandboxDetail(_ int) string {

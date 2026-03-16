@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ const (
 	viewAgent
 	viewSandboxInstall
 	viewDaemonRestart
+	viewDaemonLogs
 )
 
 type tab int
@@ -101,6 +103,12 @@ type DaemonRestartedMsg struct {
 	Err    error
 }
 
+// DaemonLogsMsg carries the loaded daemon log lines.
+type DaemonLogsMsg struct {
+	Lines []string
+	Err   error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -136,6 +144,10 @@ type Model struct {
 	sandboxInstallPending *model.Task // task to start after install completes
 	sandboxInstalling     bool        // true while npm install is running
 	sandboxInstallResult  string      // install output or error
+
+	// Daemon log viewer state
+	daemonLogLines  []string // lines of the daemon log file
+	daemonLogOffset int      // scroll offset for log viewer
 
 	// program is set by SetProgram so daemon restart can register
 	// OnSessionExit on the new client. Shared via pointer indirection
@@ -363,6 +375,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.current == viewAgent {
 			m.agentview.HandleMouse(msg)
 		}
+		if m.current == viewDaemonLogs {
+			m.handleDaemonLogsMouse(msg)
+		}
 		return m, nil
 
 	case SessionResumedMsg:
@@ -447,6 +462,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshSettings()
 		return m, nil
 
+	case DaemonLogsMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError("failed to read daemon log: " + msg.Err.Error())
+			return m, nil
+		}
+		m.daemonLogLines = msg.Lines
+		m.daemonLogOffset = max(0, len(msg.Lines)-m.daemonLogVisibleLines())
+		m.current = viewDaemonLogs
+		return m, nil
+
 	case AgentDetachedMsg:
 		// User detached — agent still running in background
 		m.refreshTasks()
@@ -478,6 +503,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmDestroyKey(msg)
 	case viewConfirmDeleteProject:
 		return m.handleConfirmDeleteProjectKey(msg)
+	case viewDaemonLogs:
+		return m.handleDaemonLogsKey(msg)
 	case viewPruning, viewDaemonRestart:
 		// Absorb all keys while pruning or restarting — no interaction allowed.
 		return m, nil
@@ -993,6 +1020,9 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			agent.ResetSandboxCache()
 			m.refreshSettings()
 		}
+		if sel != nil && sel.kind == settingsRowDaemonLogs {
+			return m, m.loadDaemonLogsCmd()
+		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Delete):
@@ -1211,4 +1241,112 @@ func (m *Model) refreshTasks() {
 	m.statusbar.SetRunning(running)
 }
 
+// loadDaemonLogsCmd returns a tea.Cmd that reads the daemon log file.
+func (m Model) loadDaemonLogsCmd() tea.Cmd {
+	return func() tea.Msg {
+		logPath := filepath.Join(db.DataDir(), "daemon.log")
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			return DaemonLogsMsg{Err: err}
+		}
+		lines := strings.Split(string(data), "\n")
+		// Cap to last 1000 lines to keep memory reasonable.
+		if len(lines) > 1000 {
+			lines = lines[len(lines)-1000:]
+		}
+		return DaemonLogsMsg{Lines: lines}
+	}
+}
 
+// daemonLogVisibleLines returns the number of log lines visible in the modal.
+func (m Model) daemonLogVisibleLines() int {
+	// Modal height is ~80% of screen, minus borders/padding/title/hint.
+	h := m.height * 8 / 10
+	h -= 6 // title, hint, padding, borders
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
+func (m Model) handleDaemonLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape, tea.KeyEnter:
+		m.daemonLogLines = nil
+		m.daemonLogOffset = 0
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	case tea.KeyUp:
+		if m.daemonLogOffset > 0 {
+			m.daemonLogOffset--
+		}
+		return m, nil
+	case tea.KeyDown:
+		maxOff := len(m.daemonLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.daemonLogOffset < maxOff {
+			m.daemonLogOffset++
+		}
+		return m, nil
+	case tea.KeyPgUp:
+		m.daemonLogOffset -= m.daemonLogVisibleLines()
+		if m.daemonLogOffset < 0 {
+			m.daemonLogOffset = 0
+		}
+		return m, nil
+	case tea.KeyPgDown:
+		m.daemonLogOffset += m.daemonLogVisibleLines()
+		maxOff := len(m.daemonLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.daemonLogOffset > maxOff {
+			m.daemonLogOffset = maxOff
+		}
+		return m, nil
+	case tea.KeyHome:
+		m.daemonLogOffset = 0
+		return m, nil
+	case tea.KeyEnd:
+		maxOff := len(m.daemonLogLines) - m.daemonLogVisibleLines()
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		m.daemonLogOffset = maxOff
+		return m, nil
+	}
+
+	// q also closes
+	if msg.String() == "q" {
+		m.daemonLogLines = nil
+		m.daemonLogOffset = 0
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *Model) handleDaemonLogsMouse(msg tea.MouseMsg) {
+	visible := m.daemonLogVisibleLines()
+	maxOff := len(m.daemonLogLines) - visible
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.daemonLogOffset -= 3
+		if m.daemonLogOffset < 0 {
+			m.daemonLogOffset = 0
+		}
+	case tea.MouseButtonWheelDown:
+		m.daemonLogOffset += 3
+		if m.daemonLogOffset > maxOff {
+			m.daemonLogOffset = maxOff
+		}
+	}
+}

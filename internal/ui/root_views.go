@@ -33,6 +33,8 @@ func (m Model) View() string {
 		return m.sandboxInstallView() + "\n" + bar
 	case viewDaemonRestart:
 		return m.daemonRestartView() + "\n" + bar
+	case viewDaemonLogs:
+		return m.daemonLogsView() + "\n" + bar
 	case viewHelp:
 		return m.padToBottom(m.helpview.View(), bar)
 	case viewPrompt:
@@ -293,6 +295,62 @@ func (m Model) daemonRestartView() string {
 	hint := m.theme.Help.Render("  Please wait")
 	body := title + "\n\n" + status + "\n\n" + hint
 	return m.renderCenteredModal(body, 50)
+}
+
+func (m Model) daemonLogsView() string {
+	visible := m.daemonLogVisibleLines()
+	totalLines := len(m.daemonLogLines)
+
+	title := m.theme.Title.Render("Daemon Logs")
+
+	// Scroll indicator
+	var scrollInfo string
+	if totalLines > visible {
+		end := m.daemonLogOffset + visible
+		if end > totalLines {
+			end = totalLines
+		}
+		scrollInfo = m.theme.Dimmed.Render(fmt.Sprintf("  lines %d-%d of %d", m.daemonLogOffset+1, end, totalLines))
+	}
+
+	// Build log content
+	var logContent strings.Builder
+	end := m.daemonLogOffset + visible
+	if end > totalLines {
+		end = totalLines
+	}
+	start := m.daemonLogOffset
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < end; i++ {
+		line := m.daemonLogLines[i]
+		logContent.WriteString("  " + m.theme.Dimmed.Render(line) + "\n")
+	}
+	// Pad remaining lines
+	rendered := end - start
+	for i := rendered; i < visible; i++ {
+		logContent.WriteString("\n")
+	}
+
+	hint := m.theme.Help.Render("  [esc/enter/q] close  [↑↓] scroll  [pgup/pgdn] page  [home/end] jump")
+
+	body := title + scrollInfo + "\n\n" + logContent.String() + "\n" + hint
+	w := m.width * 8 / 10
+	if w < 40 {
+		w = 40
+	}
+	if m.width > 0 && w > m.width-4 {
+		w = m.width - 4
+	}
+
+	modal := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(1, 2).
+		Width(w).
+		Render(body)
+	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center, modal)
 }
 
 func (m Model) sandboxInstallView() string {
