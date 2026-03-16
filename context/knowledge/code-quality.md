@@ -130,6 +130,12 @@
 - Fixed with `cell.Mode ^ vtAttrReverse` (XOR) — toggles reverse for both normal and reverse cells. No explicit colors needed; SGR reverse with defaults inherits the terminal's fg/bg, producing the expected white cursor on dark backgrounds.
 - **Pattern:** When vt10x stores pre-swapped attributes, always toggle (XOR) rather than set (OR) to avoid double-application.
 
+### vt10x CursorVisible Gate Removal (2026-03-16)
+- Despite correct `\x1b[0;7m` cursor rendering logic, cursor was never visible because both `renderIncremental` and `replayVT10X` gated cursor rendering on `vt.CursorVisible()`.
+- Claude Code (built with Ink) hides the hardware cursor (`\x1b[?25l`) — standard for TUI apps. vt10x correctly tracks this, so `CursorVisible()` returned `false`, and `cursorX` was always `-1` (no cursor rendered on any line).
+- Fixed by removing the `CursorVisible()` check in both paths — cursor position is always passed to `renderLine()`.
+- **Pattern:** When embedding a TUI app's output inside another TUI, ignore the child's cursor visibility state — the parent always wants to show cursor position. `CursorVisible()` is only meaningful when directly driving a physical terminal.
+
 ### Shared PanelLayout Extraction (2026-03-15)
 - Agent view and task list view both had independent three-panel layout implementations with duplicated width-splitting logic. Agent used 60/20/20, task list used 30/40/30, with different compression strategies.
 - Extracted `PanelLayout` struct to `panellayout.go`: configurable per-panel percentage + minimum width, right-to-left compression, remainder absorption for rounding, `Render()` handles `padHeight` + `JoinHorizontal`.

@@ -661,12 +661,11 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 	defer av.vtTerm.Unlock()
 
 	cur := av.vtTerm.Cursor()
-	curVisible := av.vtTerm.CursorVisible()
 
 	lines := make([]string, 0, ptyRows)
 	for y := 0; y < ptyRows; y++ {
 		cursorX := -1
-		if curVisible && y == cur.Y {
+		if y == cur.Y {
 			cursorX = cur.X
 		}
 		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX))
