@@ -39,24 +39,22 @@ var defaultAllowedDomains = []string{
 	"sentry.io",
 }
 
-// srtSettings mirrors the JSON structure expected by @anthropic-ai/sandbox-runtime.
+// srtSettings mirrors the JSON structure expected by @anthropic-ai/sandbox-runtime v1.0.0.
+// Fields are top-level (not nested under "sandbox").
 type srtSettings struct {
-	Sandbox srtSandbox `json:"sandbox"`
-}
-
-type srtSandbox struct {
-	Enabled    bool          `json:"enabled"`
-	Filesystem srtFilesystem `json:"filesystem"`
 	Network    srtNetwork    `json:"network"`
+	Filesystem srtFilesystem `json:"filesystem"`
 }
 
 type srtFilesystem struct {
 	AllowWrite []string `json:"allowWrite"`
 	DenyRead   []string `json:"denyRead"`
+	DenyWrite  []string `json:"denyWrite"`
 }
 
 type srtNetwork struct {
 	AllowedDomains []string `json:"allowedDomains"`
+	DeniedDomains  []string `json:"deniedDomains"`
 }
 
 // IsSandboxAvailable checks whether the sandbox-runtime (srt) binary is installed.
@@ -122,15 +120,14 @@ func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, func
 	}
 
 	settings := srtSettings{
-		Sandbox: srtSandbox{
-			Enabled: true,
-			Filesystem: srtFilesystem{
-				AllowWrite: allowWrite,
-				DenyRead:   denyRead,
-			},
-			Network: srtNetwork{
-				AllowedDomains: domains,
-			},
+		Filesystem: srtFilesystem{
+			AllowWrite: allowWrite,
+			DenyRead:   denyRead,
+			DenyWrite:  []string{},
+		},
+		Network: srtNetwork{
+			AllowedDomains: domains,
+			DeniedDomains:  []string{},
 		},
 	}
 

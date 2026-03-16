@@ -58,6 +58,45 @@ argus
 | `ctrl+q` | Detach from agent |
 | `ctrl+←` / `ctrl+→` | Switch panels |
 
+## Sandbox
+
+Argus can run agent processes inside [`@anthropic-ai/sandbox-runtime`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime) (srt) for OS-level filesystem and network isolation. When enabled, each agent session gets a temporary config file that restricts what the process can read, write, and access over the network.
+
+### Requirements
+
+Install the sandbox runtime globally:
+
+```bash
+npm i -g @anthropic-ai/sandbox-runtime
+```
+
+### Configuration
+
+All sandbox settings are managed in the **Settings tab** (`2` key). Navigate to the **Sandbox** row and press `Enter` to open the configuration form:
+
+| Setting | Description |
+|---------|-------------|
+| Enabled | Master toggle (`ctrl+e` in the form) |
+| Allowed Domains | Extra network domains to permit (comma-separated, e.g. `github.com,registry.npmjs.org`) |
+| Deny Read | Extra paths to block reads from (comma-separated, e.g. `/secrets,~/.private`) |
+| Extra Write | Extra paths to allow writes to (comma-separated, e.g. `~/.npm,/var/cache`) |
+
+### Built-in defaults
+
+These are always applied and don't need to be configured:
+
+**Network (always allowed):**
+- `api.anthropic.com`, `statsig.anthropic.com`, `sentry.io`
+
+**Filesystem (always denied read):**
+- `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
+
+**Filesystem (always allowed write):**
+- The task's worktree directory
+- `/tmp`
+
+Settings are persisted in `~/.argus/data.sql`.
+
 ## Data
 
 All state (tasks, projects, backends, keybindings, UI settings) is persisted in SQLite at `~/.argus/data.sql`.

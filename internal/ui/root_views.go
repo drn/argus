@@ -45,6 +45,8 @@ func (m Model) View() string {
 		return m.newtask.View() + "\n" + bar
 	case viewNewProject:
 		return m.newproject.View() + "\n" + bar
+	case viewSandboxConfig:
+		return m.sandboxconfig.View() + "\n" + bar
 	}
 
 	tabHeader := m.renderTabHeader()
