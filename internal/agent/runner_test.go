@@ -25,7 +25,7 @@ func TestRunner_StartAndGet(t *testing.T) {
 		finished <- taskID
 	})
 
-	task := &model.Task{ID: "t1", Name: "test"}
+	task := &model.Task{ID: "t1", Name: "test", Worktree: t.TempDir()}
 	cfg := runnerTestConfig()
 
 	sess, err := r.Start(task, cfg, 24, 80, false)
@@ -67,7 +67,7 @@ func TestRunner_DuplicateStart(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "t2", Name: "test"}
+	task := &model.Task{ID: "t2", Name: "test", Worktree: t.TempDir()}
 	sess, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestRunner_StopAndRunning(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "t3", Name: "test"}
+	task := &model.Task{ID: "t3", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestRunner_StopSetsStopped(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "t-stop", Name: "test"}
+	task := &model.Task{ID: "t-stop", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestRunner_NaturalExitNotStopped(t *testing.T) {
 	})
 	cfg := runnerTestConfig() // "echo hello" exits naturally
 
-	task := &model.Task{ID: "t-natural", Name: "test"}
+	task := &model.Task{ID: "t-natural", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +188,7 @@ func TestRunner_OnFinishFiresBeforeRemoval(t *testing.T) {
 	})
 	cfg := runnerTestConfig() // "echo hello" exits quickly
 
-	task := &model.Task{ID: "t-order", Name: "test"}
+	task := &model.Task{ID: "t-order", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestRunner_Idle(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "idle-t1", Name: "test"}
+	task := &model.Task{ID: "idle-t1", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestRunner_WorkDir(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "wd-t1", Name: "test"}
+	task := &model.Task{ID: "wd-t1", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -304,7 +304,7 @@ func TestRunner_HasSession_MoreCases(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task := &model.Task{ID: "hs-1", Name: "test"}
+	task := &model.Task{ID: "hs-1", Name: "test", Worktree: t.TempDir()}
 	_, err := r.Start(task, cfg, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -329,8 +329,8 @@ func TestRunner_StopAll(t *testing.T) {
 		Projects: make(map[string]config.Project),
 	}
 
-	task1 := &model.Task{ID: "sa-1", Name: "test1"}
-	task2 := &model.Task{ID: "sa-2", Name: "test2"}
+	task1 := &model.Task{ID: "sa-1", Name: "test1", Worktree: t.TempDir()}
+	task2 := &model.Task{ID: "sa-2", Name: "test2", Worktree: t.TempDir()}
 
 	_, err := r.Start(task1, cfg, 24, 80, false)
 	if err != nil {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -110,9 +111,22 @@ func TestResolveDir(t *testing.T) {
 	}
 }
 
-func TestBuildCmd(t *testing.T) {
+func TestBuildCmd_NoWorktree(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug"}
+
+	_, _, err := BuildCmd(task, cfg, false)
+	if err == nil {
+		t.Fatal("expected error when Worktree is empty")
+	}
+	if !strings.Contains(err.Error(), "no worktree set") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildCmd(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
@@ -150,7 +164,7 @@ func TestBuildCmd_WithProject(t *testing.T) {
 
 func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Backend: "bare", Prompt: "do stuff"}
+	task := &model.Task{Backend: "bare", Prompt: "do stuff", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
@@ -165,7 +179,7 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 
 func TestBuildCmd_NewSessionWithID(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
+	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
@@ -180,7 +194,7 @@ func TestBuildCmd_NewSessionWithID(t *testing.T) {
 
 func TestBuildCmd_Resume(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee"}
+	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, true)
 	if err != nil {

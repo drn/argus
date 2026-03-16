@@ -274,6 +274,16 @@ func (m Model) Init() tea.Cmd {
 					}
 				}
 
+				// If we still have no worktree, don't resume — revert to pending.
+				if task.Worktree == "" {
+					uxlog.Log("Init: no worktree for task %s (%s), reverting to pending", task.ID, task.Name)
+					task.SetStatus(model.StatusPending)
+					task.SessionID = ""
+					task.StartedAt = time.Time{}
+					_ = m.db.Update(task)
+					continue
+				}
+
 				// Reset StartedAt before starting so the quick-exit check in
 				// handleAgentFinished uses the resume time, not the original start.
 				task.StartedAt = time.Now()
@@ -763,6 +773,13 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	if m.runner.Get(t.ID) != nil {
 		uxlog.Log("startOrAttach: session already exists for %s, attaching", t.ID)
 		return m, m.enterAgentView(t.ID, t.Name)
+	}
+
+	// Never start an agent without worktree isolation.
+	if t.Worktree == "" {
+		uxlog.Log("startOrAttach: BLOCKED task=%s has no worktree", t.ID)
+		m.statusbar.SetError("task has no worktree — delete and recreate it")
+		return m, nil
 	}
 
 	// If sandbox is enabled but srt is not installed, show install modal

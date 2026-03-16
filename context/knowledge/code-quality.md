@@ -149,7 +149,9 @@
 - Fix: moved worktree creation from `startOrAttach` to `handleNewTaskKey`, BEFORE `db.Add()`. If creation fails, the task form stays open with the error message (new `SetError()` method on `NewTaskForm`). Task is never persisted without a valid worktree.
 - `CreateWorktree` now returns `(wtPath, finalName, err)` and handles name conflicts by appending `-1`, `-2`, ... `-99` suffixes.
 - `ResolveTaskDirMsg` handler now guards with `isWorktreeSubdir()` before persisting `msg.Dir` as `t.Worktree`.
-- `BuildCmd` no longer falls back to `ResolveDir()` when `Worktree` is empty — every task must have a worktree.
+- `BuildCmd` no longer falls back to `ResolveDir()` when `Worktree` is empty — every task must have a worktree. As of 2026-03-16, `BuildCmd` returns a hard error (`"task %q has no worktree set"`) when `Worktree` is empty.
+- Defense-in-depth enforcement (2026-03-16): worktree requirement is now checked at four layers: (a) task creation (`CreateWorktree` before `db.Add`), (b) `Init()` resume path (revert to Pending if no worktree found), (c) `startOrAttach()` early guard with user-visible error, (d) `BuildCmd` hard error return. Each layer catches independently.
+- `Init()` revert for worktree-less tasks: clears `SessionID`, `StartedAt`, and sets `StatusPending`. This differs from `DaemonRestartedMsg` (which preserves `SessionID`) because a missing worktree means the session cannot run at all.
 - **Pattern:** Infrastructure prerequisites (worktree, branch) must be validated BEFORE persisting a record. Silent error swallowing on infrastructure setup creates subtle state corruption that compounds with async handlers.
 
 ### Remote Branch Resolution for Worktrees (2026-03-16)

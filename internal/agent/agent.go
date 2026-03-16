@@ -89,13 +89,19 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		// If sandbox config generation fails, fall through to unsandboxed
 	}
 
-	cmd := exec.Command("sh", "-c", cmdStr)
-
-	// Use worktree as working directory. Every task must have a worktree
-	// set during creation — there is no fallback to the project directory.
-	if task.Worktree != "" {
-		cmd.Dir = task.Worktree
+	// Every task must have a worktree — never run in the project directory.
+	if task.Worktree == "" {
+		// sandboxCleanup is currently always nil here (sandbox block above
+		// guards on task.Worktree != ""), but we clean up defensively in case
+		// that guard is relaxed in the future.
+		if sandboxCleanup != nil {
+			sandboxCleanup()
+		}
+		return nil, nil, fmt.Errorf("task %q has no worktree set — refusing to start without worktree isolation", task.Name)
 	}
+
+	cmd := exec.Command("sh", "-c", cmdStr)
+	cmd.Dir = task.Worktree
 
 	return cmd, sandboxCleanup, nil
 }
