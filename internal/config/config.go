@@ -70,6 +70,10 @@ func DefaultConfig() Config {
 				Command:    "claude --dangerously-skip-permissions",
 				PromptFlag: "",
 			},
+			"codex": {
+				Command:    "codex --yolo",
+				PromptFlag: "",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),
