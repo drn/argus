@@ -222,6 +222,7 @@
 - Settings tab → `r` key → `viewDaemonRestart` modal → `restartDaemonCmd()` (goroutine) → `DaemonRestartedMsg`
 - `daemonRestarting` flag suppresses `refreshTasks()` and `scheduleGitRefresh()` during restart to avoid RPC timeouts against dead socket
 - Handler swaps `m.runner`, `m.preview.runner`, `m.agentview.runner`, resets in-progress tasks to Pending
+- **SessionID preserved on restart** — Claude Code's `--session-id` persists conversation state to disk. The handler clears `AgentPID` and `StartedAt` but keeps `SessionID` so re-launching uses `--resume` to continue the conversation
 
 ### Double-Pointer Pattern for Shared State
 - `program **tea.Program` and `restartedClient **dclient.Client` use double-pointer indirection
