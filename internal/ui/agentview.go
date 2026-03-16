@@ -246,6 +246,9 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		case "down", "j":
 			av.files.CursorDown()
 		case "enter":
+			if row := av.files.SelectedRow(); row != nil && row.IsDir {
+				return false, av.toggleDir(row.Path)
+			}
 			return false, av.openFileDiff()
 		case "o":
 			return false, av.openInFinder()
@@ -278,6 +281,28 @@ func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
 	case tea.MouseButtonWheelDown:
 		av.scrollDown(3)
 	}
+}
+
+// toggleDir toggles a directory's expansion state. If newly expanded and
+// children haven't been fetched yet, returns a command to fetch them.
+func (av *AgentView) toggleDir(dirPath string) tea.Cmd {
+	needsFetch := av.files.ToggleDir(dirPath)
+	if !needsFetch {
+		return nil
+	}
+	taskID := av.taskID
+	dir := av.worktreeDir
+	return func() tea.Msg {
+		return FetchDirFiles(taskID, dir, dirPath)
+	}
+}
+
+// UpdateDirFiles handles the result of a directory file listing.
+func (av *AgentView) UpdateDirFiles(msg DirFilesMsg) {
+	if msg.TaskID != av.taskID {
+		return
+	}
+	av.files.SetDirChildren(msg.DirPath, msg.Files)
 }
 
 // openFileDiff starts an async fetch of the selected file's diff.
