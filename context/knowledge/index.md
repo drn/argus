@@ -13,3 +13,4 @@ Which context files are captured in knowledge:
 | Context File | Knowledge File(s) | Coverage |
 |-------------|-------------------|----------|
 | context/plans/daemon-architecture.md | code-quality.md (Daemon Architecture section) | Implementation patterns, IPC design, gotchas |
+| context/plans/sandbox-worktrees.md | code-quality.md (Sandbox section) | srt integration, BuildCmd signature, sandbox config lifecycle |
