@@ -145,12 +145,12 @@ func (av *AgentView) SetSize(w, h int) {
 func (av *AgentView) UpdateGitStatus(msg GitStatusRefreshMsg) {
 	if msg.TaskID == av.taskID {
 		av.gitstatus.Update(msg)
-		// Prefer uncommitted files; fall back to committed branch files
-		if files := ParseGitStatus(msg.Status); len(files) > 0 {
-			av.files.SetFiles(files)
-		} else {
-			av.files.SetFiles(ParseGitDiffNameStatus(msg.BranchFiles))
-		}
+		// Show all changes on the branch: merge committed files (base) with
+		// uncommitted changes (overlay). Uncommitted status wins on conflict.
+		av.files.SetFiles(MergeChangedFiles(
+			ParseGitDiffNameStatus(msg.BranchFiles),
+			ParseGitStatus(msg.Status),
+		))
 		av.lastGitRefresh = time.Now()
 	}
 }

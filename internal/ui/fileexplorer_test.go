@@ -472,3 +472,62 @@ func TestFileExplorer_StatusStyle(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeChangedFiles_Empty(t *testing.T) {
+	if got := MergeChangedFiles(nil, nil); got != nil {
+		t.Errorf("expected nil for both-nil inputs, got %v", got)
+	}
+}
+
+func TestMergeChangedFiles_BaseOnly(t *testing.T) {
+	base := []ChangedFile{{Status: "M", Path: "a.go"}, {Status: "A", Path: "b.go"}}
+	got := MergeChangedFiles(base, nil)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(got))
+	}
+}
+
+func TestMergeChangedFiles_OverlayOnly(t *testing.T) {
+	overlay := []ChangedFile{{Status: "??", Path: "new.go"}}
+	got := MergeChangedFiles(nil, overlay)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(got))
+	}
+}
+
+func TestMergeChangedFiles_OverlayWinsOnConflict(t *testing.T) {
+	base := []ChangedFile{
+		{Status: "A", Path: "b.go"},
+		{Status: "M", Path: "a.go"},
+	}
+	overlay := []ChangedFile{
+		{Status: "MM", Path: "b.go"}, // conflict — should win
+		{Status: "??", Path: "c.go"},
+	}
+	got := MergeChangedFiles(base, overlay)
+	// a.go (base), b.go (overlay wins), c.go (overlay) = 3
+	if len(got) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(got))
+	}
+	// sorted: a.go, b.go, c.go
+	if got[0].Path != "a.go" || got[1].Path != "b.go" || got[2].Path != "c.go" {
+		t.Errorf("unexpected order: %v", got)
+	}
+	if got[1].Status != "MM" {
+		t.Errorf("expected b.go status=MM (overlay wins), got %q", got[1].Status)
+	}
+}
+
+func TestMergeChangedFiles_SortedByPath(t *testing.T) {
+	base := []ChangedFile{{Status: "M", Path: "z.go"}, {Status: "A", Path: "a.go"}}
+	overlay := []ChangedFile{{Status: "??", Path: "m.go"}}
+	got := MergeChangedFiles(base, overlay)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].Path < got[i-1].Path {
+			t.Errorf("not sorted at index %d: %q < %q", i, got[i].Path, got[i-1].Path)
+		}
+	}
+}

@@ -301,3 +301,8 @@ Three bugs discovered in daemon lifecycle management:
 - Log points cover: `startOrAttach` (entry/failure/success), `handleAgentFinished` (all msg fields + status decision), `handleSessionResumed`, `DaemonRestartedMsg`, `Init()` session resume, daemon client `Start`/`removeSession`/stream connect/disconnect, RPC timeouts.
 - Viewable in Settings → UX Logs row (same modal viewer pattern as Daemon Logs).
 - **Pattern:** When adding a new log viewer row to Settings, the `rebuildRows()` row order determines cursor navigation. Tests that navigate past log rows need `CursorDown()` calls for each new row.
+
+### Agent View File Explorer: Merge Committed + Uncommitted (2026-03-16)
+- **Problem**: `UpdateGitStatus` used if/else: show uncommitted files (`git status --short`) if any, *else* show committed branch files (`git diff --name-status base..HEAD`). Caused blank right-panel whenever the working tree was momentarily clean between agent commits — committed changes existed but the else branch was never reached when uncommitted changes were absent.
+- **Fix**: `MergeChangedFiles(base, overlay []ChangedFile)` in `fileexplorer.go` — merges two file lists, overlay wins on path conflict, result sorted by path. `UpdateGitStatus` calls `MergeChangedFiles(ParseGitDiffNameStatus(msg.BranchFiles), ParseGitStatus(msg.Status))` unconditionally.
+- **Rule**: The files panel should always show ALL changes on the branch (committed + uncommitted). Never use if/else to choose one source over the other — always merge.
