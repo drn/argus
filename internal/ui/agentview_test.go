@@ -565,12 +565,37 @@ func TestAgentView_UpdateGitStatus(t *testing.T) {
 		BranchFiles: "M\tfile.go",
 	}
 	av.UpdateGitStatus(msg)
-	// Should update git status and file explorer
-	if len(av.files.files) == 0 {
-		t.Error("expected files to be populated after UpdateGitStatus")
+	// Should merge committed and uncommitted files (file.go + new.go = 2)
+	if len(av.files.files) != 2 {
+		t.Errorf("expected 2 merged files, got %d", len(av.files.files))
 	}
 	if av.lastGitRefresh.IsZero() {
 		t.Error("expected lastGitRefresh to be set")
+	}
+}
+
+func TestAgentView_UpdateGitStatus_MergesBothSources(t *testing.T) {
+	av := newTestAgentView()
+	// committed: a.go, b.go; uncommitted: b.go (different status), c.go
+	msg := GitStatusRefreshMsg{
+		TaskID:      "task-1",
+		BranchFiles: "M\ta.go\nA\tb.go",
+		Status:      " M b.go\n?? c.go",
+	}
+	av.UpdateGitStatus(msg)
+	// Result: a.go (committed), b.go (uncommitted wins), c.go (uncommitted) = 3
+	if len(av.files.files) != 3 {
+		t.Errorf("expected 3 merged files, got %d", len(av.files.files))
+	}
+	// b.go should have uncommitted status " M" not committed "A"
+	var bStatus string
+	for _, f := range av.files.files {
+		if f.Path == "b.go" {
+			bStatus = f.Status
+		}
+	}
+	if bStatus != "M" {
+		t.Errorf("expected b.go status=M (uncommitted wins), got %q", bStatus)
 	}
 }
 
@@ -593,7 +618,7 @@ func TestAgentView_UpdateGitStatus_BranchFilesOnly(t *testing.T) {
 		BranchFiles: "M\tfile1.go\nA\tfile2.go",
 	}
 	av.UpdateGitStatus(msg)
-	// No uncommitted status, should use branch files
+	// No uncommitted status — branch files are still shown
 	if len(av.files.files) != 2 {
 		t.Errorf("expected 2 files from branch, got %d", len(av.files.files))
 	}

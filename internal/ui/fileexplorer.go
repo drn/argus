@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -330,4 +331,29 @@ func ParseGitDiffNameStatus(output string) []ChangedFile {
 		}
 	}
 	return files
+}
+
+// MergeChangedFiles merges two file lists into a single deduplicated, sorted slice.
+// Files in overlay take precedence over files in base when the same path appears in both.
+// This is used to combine committed branch files (base) with uncommitted changes (overlay)
+// so the file explorer always shows the full picture of what changed on the branch.
+func MergeChangedFiles(base, overlay []ChangedFile) []ChangedFile {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	seen := make(map[string]ChangedFile, len(base)+len(overlay))
+	for _, f := range base {
+		seen[f.Path] = f
+	}
+	for _, f := range overlay {
+		seen[f.Path] = f // overlay wins on conflict
+	}
+	result := make([]ChangedFile, 0, len(seen))
+	for _, f := range seen {
+		result = append(result, f)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Path < result[j].Path
+	})
+	return result
 }
