@@ -647,6 +647,36 @@ func TestAgentFinished_StoppedMarksInReview(t *testing.T) {
 	}
 }
 
+func TestStartOrAttach_FailureRevertsStatus(t *testing.T) {
+	task := &model.Task{
+		ID:      "task-1",
+		Name:    "failing task",
+		Status:  model.StatusPending,
+		Project: "proj",
+		Backend: "nonexistent-backend", // backend not in config → Start fails
+	}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+
+	result, _ := m.startOrAttach(task)
+	um := result.(Model)
+
+	got, err := um.db.Get("task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.StatusPending {
+		t.Errorf("expected status reverted to Pending on Start failure, got %v", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("expected SessionID cleared on Start failure, got %q", got.SessionID)
+	}
+	if got.StartedAt != (time.Time{}) {
+		t.Errorf("expected StartedAt cleared on Start failure, got %v", got.StartedAt)
+	}
+}
+
 func TestTabSwitching_LeftRightArrows(t *testing.T) {
 	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusPending}
 	m := testModel(t, task)

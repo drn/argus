@@ -8,6 +8,7 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -126,6 +127,21 @@ func autoStartDaemon(sockPath string) (*dclient.Client, error) {
 }
 
 func runDaemon() {
+	// Log to file since the daemon runs detached with no terminal.
+	// Ensure data dir exists before opening the log (it may not on fresh install).
+	if err := os.MkdirAll(db.DataDir(), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "cannot create data dir: %v\n", err)
+		os.Exit(1)
+	}
+	logPath := filepath.Join(db.DataDir(), "daemon.log")
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot open daemon log: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+	log.SetOutput(logFile)
+
 	database, err := db.Open(db.DefaultPath())
 	if err != nil {
 		log.Fatalf("error opening database: %v", err)

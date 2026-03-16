@@ -597,9 +597,11 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 	ptyCols := uint16(max(centerW-4, 40))
 	sess, err := m.runner.Start(t, m.db.Config(), ptyRows, ptyCols, resume)
 	if err != nil {
-		// Start failed — revert the session ID so the next attempt
-		// doesn't try to --resume a session that was never created.
+		// Start failed — revert status and session ID so the task
+		// doesn't appear as "in progress" with no running agent.
+		t.SetStatus(model.StatusPending)
 		t.SessionID = ""
+		t.StartedAt = time.Time{}
 		_ = m.db.Update(t)
 		m.statusbar.SetError(err.Error())
 		return m, nil
