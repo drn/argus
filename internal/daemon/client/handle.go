@@ -9,7 +9,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 )
 
-const defaultBufSize = 256 * 1024 // 256KB ring buffer, same as agent
+const defaultBufSize = 0 // unbounded: keep all output for full scrollback
 
 // Compile-time assertion.
 var _ agent.SessionHandle = (*RemoteSession)(nil)

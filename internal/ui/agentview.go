@@ -598,8 +598,26 @@ func (av *AgentView) renderTerminal(w, h int) string {
 
 	var content string
 	if av.scrollOffset > 0 {
-		// Scrollback mode: full replay (only triggered by scroll events)
+		// Scrollback mode: full replay (only triggered by scroll events).
+		// Capture old line count so we can anchor the view at an absolute
+		// position — when new lines arrive, increment scrollOffset to
+		// compensate so the displayed content stays fixed (tmux-style).
+		oldLineCount := len(av.cachedLines)
 		content = av.formatTerminalOutput(raw, w, h)
+		if oldLineCount > 0 {
+			delta := len(av.cachedLines) - oldLineCount
+			if delta > 0 {
+				av.scrollOffset += delta
+				_, dispH, _ := av.terminalDisplaySize()
+				maxScroll := len(av.cachedLines) - dispH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if av.scrollOffset > maxScroll {
+					av.scrollOffset = maxScroll
+				}
+			}
+		}
 	} else {
 		// Normal follow-tail mode: incremental feed to persistent vt10x
 		content = av.renderIncremental(sess, raw, writeCount, w, h)

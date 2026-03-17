@@ -11,7 +11,7 @@ import (
 	"github.com/creack/pty"
 )
 
-const defaultBufSize = 256 * 1024 // 256KB ring buffer
+const defaultBufSize = 0 // unbounded: keep all output for full scrollback
 
 // idleThreshold is how long without output before a session is considered idle.
 const idleThreshold = 3 * time.Second

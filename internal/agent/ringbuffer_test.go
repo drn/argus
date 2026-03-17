@@ -67,6 +67,57 @@ func TestRingBuffer_Empty(t *testing.T) {
 	}
 }
 
+func TestRingBuffer_Unbounded(t *testing.T) {
+	rb := NewRingBuffer(0)
+
+	if rb.Len() != 0 {
+		t.Errorf("Len() = %d, want 0", rb.Len())
+	}
+
+	rb.Write([]byte("hello"))
+	rb.Write([]byte(" world"))
+
+	if rb.Len() != 11 {
+		t.Errorf("Len() = %d, want 11", rb.Len())
+	}
+	if !bytes.Equal(rb.Bytes(), []byte("hello world")) {
+		t.Errorf("Bytes() = %q, want %q", rb.Bytes(), "hello world")
+	}
+	if rb.TotalWritten() != 11 {
+		t.Errorf("TotalWritten() = %d, want 11", rb.TotalWritten())
+	}
+}
+
+func TestRingBuffer_Unbounded_NeverWraps(t *testing.T) {
+	rb := NewRingBuffer(0)
+	// Write more data than a fixed 256KB buffer would hold
+	big := make([]byte, 1024*1024) // 1MB
+	for i := range big {
+		big[i] = byte(i % 256)
+	}
+	rb.Write(big)
+
+	if rb.Len() != len(big) {
+		t.Errorf("Len() = %d, want %d", rb.Len(), len(big))
+	}
+	if !bytes.Equal(rb.Bytes(), big) {
+		t.Error("Bytes() does not match original — data was lost")
+	}
+}
+
+func TestRingBuffer_Unbounded_Reset(t *testing.T) {
+	rb := NewRingBuffer(0)
+	rb.Write([]byte("data"))
+	rb.Reset()
+
+	if rb.Len() != 0 {
+		t.Errorf("Len() after reset = %d", rb.Len())
+	}
+	if len(rb.Bytes()) != 0 {
+		t.Errorf("Bytes() after reset = %q", rb.Bytes())
+	}
+}
+
 func TestRingBuffer_TotalWritten(t *testing.T) {
 	rb := NewRingBuffer(5)
 	if rb.TotalWritten() != 0 {
