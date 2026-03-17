@@ -29,22 +29,28 @@ const uncategorized = "Uncategorized"
 
 // TaskList renders the task list view with collapsible project folders.
 type TaskList struct {
-	tasks    []*model.Task
-	scroll   ScrollState
-	theme    Theme
-	width    int
-	height   int
-	filter   string
-	filtered []*model.Task
-	running  map[string]bool // task IDs with active agent sessions
-	idle     map[string]bool // task IDs with sessions waiting for input
-	rows     []row           // flattened display rows (headers + tasks)
-	expanded string          // currently expanded project name
-	tickEven bool            // toggles each tick for status icon animation
+	tasks         []*model.Task
+	scroll        ScrollState
+	theme         Theme
+	width         int
+	height        int
+	filter        string
+	filtered      []*model.Task
+	running       map[string]bool // task IDs with active agent sessions
+	idle          map[string]bool // task IDs with sessions waiting for input
+	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
+	rows          []row           // flattened display rows (headers + tasks)
+	expanded      string          // currently expanded project name
+	tickEven      bool            // toggles each tick for status icon animation
 }
 
 func NewTaskList(theme Theme) TaskList {
-	return TaskList{theme: theme, running: make(map[string]bool), idle: make(map[string]bool)}
+	return TaskList{
+		theme:         theme,
+		running:       make(map[string]bool),
+		idle:          make(map[string]bool),
+		idleUnvisited: make(map[string]bool),
+	}
 }
 
 func (tl *TaskList) Tick() {
@@ -57,6 +63,10 @@ func (tl *TaskList) SetRunning(ids []string) {
 
 func (tl *TaskList) SetIdle(ids []string) {
 	tl.idle = toStringSet(ids)
+}
+
+func (tl *TaskList) SetIdleUnvisited(ids []string) {
+	tl.idleUnvisited = toStringSet(ids)
 }
 
 func (tl *TaskList) SetTasks(tasks []*model.Task) {
@@ -418,29 +428,42 @@ func (tl TaskList) projectTasks(project string) []*model.Task {
 // animation logic for in-progress tasks (running/idle/tick).
 func (tl TaskList) taskStatusIcon(t *model.Task) string {
 	displayText := t.Status.Display()
+	displayStatus := t.Status // only overridden when idleUnvisited promotes to in_review
 	if t.Status == model.StatusInProgress {
-		if !tl.running[t.ID] || tl.idle[t.ID] {
+		if tl.idleUnvisited[t.ID] {
+			// Idle and not yet viewed since going idle → show as in review
+			displayStatus = model.StatusInReview
+			displayText = model.StatusInReview.Display()
+		} else if !tl.running[t.ID] || tl.idle[t.ID] {
 			displayText = "\uF186" // moon: idle
 		} else if tl.tickEven {
 			displayText = t.Status.DisplayAlt()
 		}
 	}
-	return tl.statusStyle(t.Status).Render(displayText)
+	return tl.statusStyle(displayStatus).Render(displayText)
 }
 
 // projectStatusIcon returns a single styled icon summarizing the aggregate
-// status of all tasks in a project. Priority: in_progress > in_review > all
-// complete > mixed (partial) > all pending.
+// status of all tasks in a project. Priority: in_review > in_progress >
+// all complete > mixed (partial) > all pending.
+// "in review" includes tasks with StatusInReview and idle+unvisited InProgress tasks.
 func (tl TaskList) projectStatusIcon(tasks []*model.Task) string {
-	var hasInProgress, hasInReview, hasPending, hasComplete bool
-	var allInProgressIdle bool = true
+	var hasActiveInProgress, hasInReview, hasPending, hasComplete bool
+	// hasActivelyRunning is only set for non-idleUnvisited in-progress tasks;
+	// used to pick between spinner and moon in the hasActiveInProgress case below.
+	var hasActivelyRunning bool
 
 	for _, t := range tasks {
 		switch t.Status {
 		case model.StatusInProgress:
-			hasInProgress = true
-			if tl.running[t.ID] && !tl.idle[t.ID] {
-				allInProgressIdle = false
+			if tl.idleUnvisited[t.ID] {
+				// Idle and unvisited → counts as in review for project summary
+				hasInReview = true
+			} else {
+				hasActiveInProgress = true
+				if tl.running[t.ID] && !tl.idle[t.ID] {
+					hasActivelyRunning = true
+				}
 			}
 		case model.StatusInReview:
 			hasInReview = true
@@ -452,16 +475,16 @@ func (tl TaskList) projectStatusIcon(tasks []*model.Task) string {
 	}
 
 	switch {
-	case hasInProgress:
+	case hasInReview:
+		return tl.statusStyle(model.StatusInReview).Render(model.StatusInReview.Display())
+	case hasActiveInProgress:
 		displayText := model.StatusInProgress.Display()
-		if allInProgressIdle {
-			displayText = "\uF186" // moon: all in-progress tasks idle
+		if !hasActivelyRunning {
+			displayText = "\uF186" // moon: all in-progress tasks are idle or not running
 		} else if tl.tickEven {
 			displayText = model.StatusInProgress.DisplayAlt()
 		}
 		return tl.statusStyle(model.StatusInProgress).Render(displayText)
-	case hasInReview:
-		return tl.statusStyle(model.StatusInReview).Render(model.StatusInReview.Display())
 	case hasComplete && !hasPending:
 		return tl.statusStyle(model.StatusComplete).Render(model.StatusComplete.Display())
 	case hasComplete && hasPending:

@@ -530,7 +530,7 @@ func TestTaskList_projectStatusIcon(t *testing.T) {
 		{"all complete", []model.Status{model.StatusComplete, model.StatusComplete}, model.StatusComplete.Display()},
 		{"has in_progress", []model.Status{model.StatusPending, model.StatusInProgress}, "\uF186"}, // moon (not running)
 		{"has in_review", []model.Status{model.StatusPending, model.StatusInReview}, model.StatusInReview.Display()},
-		{"in_progress beats in_review", []model.Status{model.StatusInReview, model.StatusInProgress}, "\uF186"},
+		{"in_review beats in_progress", []model.Status{model.StatusInReview, model.StatusInProgress}, model.StatusInReview.Display()},
 		{"mixed pending+complete", []model.Status{model.StatusPending, model.StatusComplete}, model.StatusComplete.Display()},
 	}
 	for _, tt := range tests {
@@ -544,6 +544,59 @@ func TestTaskList_projectStatusIcon(t *testing.T) {
 				t.Errorf("expected icon to contain %q, got %q", tt.wantIcon, icon)
 			}
 		})
+	}
+}
+
+func TestTaskList_taskStatusIcon_IdleUnvisited(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+
+	task := &model.Task{ID: "t1", Status: model.StatusInProgress}
+
+	// Idle and unvisited → in review icon
+	tl.SetRunning([]string{"t1"})
+	tl.SetIdle([]string{"t1"})
+	tl.SetIdleUnvisited([]string{"t1"})
+	icon := tl.taskStatusIcon(task)
+	if !strings.Contains(icon, model.StatusInReview.Display()) {
+		t.Errorf("expected in-review icon for idle+unvisited task, got %q", icon)
+	}
+
+	// After clearing idleUnvisited → back to moon
+	tl.SetIdleUnvisited([]string{})
+	icon = tl.taskStatusIcon(task)
+	if !strings.Contains(icon, "\uF186") {
+		t.Error("expected moon icon once idle+unvisited cleared")
+	}
+}
+
+func TestTaskList_projectStatusIcon_IdleUnvisited(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+
+	tasks := []*model.Task{
+		{ID: "t1", Status: model.StatusInProgress},
+		{ID: "t2", Status: model.StatusPending},
+	}
+
+	// Idle+unvisited → project shows in review
+	tl.SetRunning([]string{"t1"})
+	tl.SetIdle([]string{"t1"})
+	tl.SetIdleUnvisited([]string{"t1"})
+	icon := tl.projectStatusIcon(tasks)
+	if !strings.Contains(icon, model.StatusInReview.Display()) {
+		t.Errorf("expected in-review project icon for idle+unvisited task, got %q", icon)
+	}
+
+	// Mixed: one idle+unvisited, one actively running → in review wins
+	tasks2 := []*model.Task{
+		{ID: "t1", Status: model.StatusInProgress}, // idle+unvisited
+		{ID: "t2", Status: model.StatusInProgress}, // actively running
+	}
+	tl.SetRunning([]string{"t1", "t2"})
+	tl.SetIdle([]string{"t1"})
+	tl.SetIdleUnvisited([]string{"t1"})
+	icon = tl.projectStatusIcon(tasks2)
+	if !strings.Contains(icon, model.StatusInReview.Display()) {
+		t.Errorf("expected in-review to win over in-progress, got %q", icon)
 	}
 }
 

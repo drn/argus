@@ -141,6 +141,7 @@ type Model struct {
 	daemonRestarting   bool              // true while daemon restart is in progress
 	daemonFailures     int               // consecutive daemon ping failures
 	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
+	idleUnvisited      map[string]bool   // task IDs idle since user last opened their agent view
 
 	// Prune progress state (shown in viewPruning modal)
 	pruneTotal   int // total worktrees being cleaned up
@@ -188,6 +189,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 		theme:           theme,
 		daemonConnected: daemonConnected,
 		resolvedDirs:    make(map[string]string),
+		idleUnvisited:   make(map[string]bool),
 		program:         new(*tea.Program),
 		restartedClient: new(*dclient.Client),
 		tasklist:    tl,
@@ -833,6 +835,15 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 // (if not already running). All agent view entry must go through here
 // to prevent tick accumulation from multiple start points.
 func (m *Model) enterAgentView(taskID, taskName string) tea.Cmd {
+	// User is viewing the agent — clear the "idle unvisited" flag so the task
+	// no longer displays as "in review" in the task list. Also sync the copy on
+	// TaskList immediately (rather than waiting for the next tick).
+	delete(m.idleUnvisited, taskID)
+	idleUnvisited := make([]string, 0, len(m.idleUnvisited))
+	for id := range m.idleUnvisited {
+		idleUnvisited = append(idleUnvisited, id)
+	}
+	m.tasklist.SetIdleUnvisited(idleUnvisited)
 	m.agentview.Enter(taskID, taskName)
 	m.agentview.SetSize(m.width, m.height)
 	if dir, ok := m.resolvedDirs[taskID]; ok && dir != "" {
@@ -1347,9 +1358,31 @@ func (m *Model) refreshTasks() {
 	tasks := m.db.Tasks()
 	running := m.runner.Running()
 	idle := m.runner.Idle()
+
+	// Update idleUnvisited: add newly-idle tasks, remove tasks no longer idle.
+	newIdle := toStringSet(idle)
+	for id := range newIdle {
+		if !m.tasklist.idle[id] {
+			// Newly idle — mark as unvisited until user opens the agent view.
+			m.idleUnvisited[id] = true
+		}
+	}
+	for id := range m.idleUnvisited {
+		if !newIdle[id] {
+			// No longer idle (agent produced output again) — clear unvisited.
+			delete(m.idleUnvisited, id)
+		}
+	}
+
+	idleUnvisited := make([]string, 0, len(m.idleUnvisited))
+	for id := range m.idleUnvisited {
+		idleUnvisited = append(idleUnvisited, id)
+	}
+
 	m.tasklist.SetTasks(tasks)
 	m.tasklist.SetRunning(running)
 	m.tasklist.SetIdle(idle)
+	m.tasklist.SetIdleUnvisited(idleUnvisited)
 	m.statusbar.SetTasks(tasks)
 	m.statusbar.SetRunning(running)
 }
