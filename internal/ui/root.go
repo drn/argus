@@ -179,7 +179,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 	pv := NewPreview(theme, runner)
 	gs := NewGitStatus(theme)
 	dt := NewTaskDetail(theme)
-	avv := NewAgentView(theme, runner)
+	avv := NewAgentView(theme, runner, filepath.Join(db.DataDir(), "sessions"))
 	av := &avv
 
 	m := Model{
@@ -1019,6 +1019,7 @@ func (m Model) handleConfirmDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				deleteRemoteBranch(repoDir, t.Branch)
 			}
 		}
+		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 	})
 }
 
@@ -1034,6 +1035,7 @@ func (m Model) handleConfirmDestroyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				deleteRemoteBranch(repoDir, t.Branch)
 			}
 		}
+		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 	})
 }
 

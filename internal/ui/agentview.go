@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -28,14 +29,15 @@ type AgentViewTickMsg struct{}
 
 // AgentView renders a three-panel layout: git status | agent terminal | file explorer.
 type AgentView struct {
-	theme    Theme
-	runner   agent.SessionProvider
-	taskID   string
-	taskName string
-	focus    AgentPanel
-	layout   PanelLayout
-	width    int
-	height   int
+	theme       Theme
+	runner      agent.SessionProvider
+	sessionsDir string // directory where session logs are stored
+	taskID      string
+	taskName    string
+	focus       AgentPanel
+	layout      PanelLayout
+	width       int
+	height      int
 
 	gitstatus GitStatus
 	files     FileExplorer
@@ -76,12 +78,13 @@ type AgentView struct {
 	diffFileName     string            // current file being diffed (for highlighting)
 }
 
-func NewAgentView(theme Theme, runner agent.SessionProvider) AgentView {
+func NewAgentView(theme Theme, runner agent.SessionProvider, sessionsDir string) AgentView {
 	return AgentView{
-		theme:     theme,
-		runner:    runner,
-		focus:     panelAgent,
-		diffSplit: true,
+		theme:       theme,
+		runner:      runner,
+		sessionsDir: sessionsDir,
+		focus:       panelAgent,
+		diffSplit:   true,
 		layout: NewPanelLayout([]PanelConfig{
 			{Pct: 20, Min: 20},
 			{Pct: 60, Min: 60},
@@ -117,6 +120,15 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.diffScrollOff = 0
 	av.worktreeDir = ""
 	av.diffFileName = ""
+
+	// Load session log so scrollback works for completed/stopped tasks
+	// even after the daemon has restarted and the in-memory buffer is gone.
+	if av.runner.Get(taskID) == nil && av.sessionsDir != "" {
+		logPath := filepath.Join(av.sessionsDir, taskID+".log")
+		if data, err := os.ReadFile(logPath); err == nil && len(data) > 0 {
+			av.lastOutput = data
+		}
+	}
 }
 
 // SetLastOutput stores the final ring buffer from a finished session

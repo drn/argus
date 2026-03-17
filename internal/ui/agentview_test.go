@@ -2,7 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ import (
 
 func newTestAgentView() *AgentView {
 	runner := agent.NewRunner(nil)
-	av := NewAgentView(DefaultTheme(), runner)
+	av := NewAgentView(DefaultTheme(), runner, "")
 	av.SetSize(120, 40)
 	av.Enter("task-1", "test task")
 	return &av
@@ -380,7 +382,7 @@ func TestAgentView_HandleKey_FilePanelKeys(t *testing.T) {
 
 func TestAgentView_NeedsGitRefresh_NoTask(t *testing.T) {
 	runner := agent.NewRunner(nil)
-	av := NewAgentView(DefaultTheme(), runner)
+	av := NewAgentView(DefaultTheme(), runner, "")
 	if av.NeedsGitRefresh() {
 		t.Error("NeedsGitRefresh should be false with no task")
 	}
@@ -419,6 +421,37 @@ func TestAgentView_Enter_ResetsState(t *testing.T) {
 	}
 	if av.lastOutput != nil {
 		t.Error("lastOutput should be nil after Enter")
+	}
+}
+
+func TestAgentView_Enter_LoadsSessionLog(t *testing.T) {
+	sessionsDir := t.TempDir()
+	runner := agent.NewRunner(nil)
+	av := NewAgentView(DefaultTheme(), runner, sessionsDir)
+	av.SetSize(120, 40)
+
+	// Write a fake session log
+	taskID := "load-log-task"
+	logContent := []byte("previous session output\n")
+	if err := os.WriteFile(filepath.Join(sessionsDir, taskID+".log"), logContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	av.Enter(taskID, "load log task")
+	if string(av.lastOutput) != string(logContent) {
+		t.Errorf("lastOutput = %q, want %q", av.lastOutput, logContent)
+	}
+}
+
+func TestAgentView_Enter_NoLogFile(t *testing.T) {
+	sessionsDir := t.TempDir()
+	runner := agent.NewRunner(nil)
+	av := NewAgentView(DefaultTheme(), runner, sessionsDir)
+	av.SetSize(120, 40)
+
+	av.Enter("no-log-task", "no log task")
+	if av.lastOutput != nil {
+		t.Errorf("lastOutput should be nil when no log file exists, got %q", av.lastOutput)
 	}
 }
 
