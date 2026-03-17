@@ -100,11 +100,11 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 		}
 
 		if x == cursorX {
-			// Bare reverse with default colors — let the terminal's theme
-			// determine cursor color. Passing cell colors through buildSGR
-			// breaks because vt10x pre-swaps FG/BG for reverse cells,
-			// turning DefaultBG/DefaultFG sentinels into near-black RGB.
-			b.WriteString("\x1b[0;7m")
+			// Explicit white-on-black cursor. Reverse video (\x1b[0;7m) relies
+			// on the terminal's default FG/BG colors, which inside a lipgloss
+			// panel may both be dark, producing an invisible black cursor.
+			// Use bright white fg (97) on black bg (40) for guaranteed visibility.
+			b.WriteString("\x1b[0;97;40m")
 			b.WriteRune(ch)
 			b.WriteString("\x1b[0m")
 			active = false
