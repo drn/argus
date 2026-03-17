@@ -15,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -43,6 +44,7 @@ type tab int
 
 const (
 	tabTasks tab = iota
+	tabReviews
 	tabSettings
 )
 
@@ -104,6 +106,40 @@ type UXLogsMsg struct {
 	Err   error
 }
 
+// FetchPRListMsg carries the result of a GitHub PR list fetch.
+type FetchPRListMsg struct {
+	PRs []github.PR
+	Err error
+}
+
+// FetchPRFilesMsg carries changed files for a PR.
+type FetchPRFilesMsg struct {
+	Files []string
+	Err   error
+}
+
+// FetchPRDiffMsg carries the raw diff for a single PR file.
+type FetchPRDiffMsg struct {
+	Diff string
+	Err  error
+}
+
+// FetchPRCommentsMsg carries comments for a PR.
+type FetchPRCommentsMsg struct {
+	Comments []github.PRComment
+	Err      error
+}
+
+// PostCommentMsg carries the result of posting a review comment.
+type PostCommentMsg struct {
+	Err error
+}
+
+// SubmitReviewMsg carries the result of submitting a full review.
+type SubmitReviewMsg struct {
+	Err error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -112,6 +148,7 @@ type Model struct {
 	theme       Theme
 	tasklist    TaskList
 	settings    SettingsView
+	reviews     *ReviewsView
 	statusbar   StatusBar
 	helpview    HelpView
 	newtask     NewTaskForm
@@ -164,6 +201,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 
 	tl := NewTaskList(theme)
 	sv := NewSettingsView(theme)
+	rv := NewReviewsView(theme)
 	sb := NewStatusBar(theme)
 	hv := NewHelpView(keys, theme)
 
@@ -185,6 +223,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 		restartedClient: new(*dclient.Client),
 		tasklist:    tl,
 		settings:    sv,
+		reviews:     rv,
 		statusbar:   sb,
 		helpview:    hv,
 		preview:     pv,
@@ -308,6 +347,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		settingsLeft, _ := m.splitWidths()
 		m.settings.SetSize(settingsLeft, contentHeight)
 
+		// Reviews tab
+		m.reviews.SetSize(msg.Width, contentHeight)
+
 		m.statusbar.SetWidth(msg.Width)
 		m.newtask.SetSize(msg.Width, msg.Height)
 		m.projectform.SetSize(msg.Width, msg.Height)
@@ -333,6 +375,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.daemonRestarting {
 			if cmd := m.scheduleGitRefresh(); cmd != nil {
 				cmds = append(cmds, cmd)
+			}
+		}
+		// Reviews tab: auto-refresh stale data while the user is actively viewing.
+		// - Comments: TTL 2 min, OR if PR.UpdatedAt is newer than last fetch.
+		// - Diff: if PR.UpdatedAt is newer than when we fetched it (free check).
+		if m.activeTab == tabReviews {
+			if pr := m.reviews.SelectedPR(); pr != nil {
+				if m.reviews.areCommentsStale() {
+					cmds = append(cmds, fetchPRCommentsCmd(pr.RepoOwner, pr.Repo, pr.Number))
+				}
+				if m.reviews.isDiffStale() {
+					// Re-fetch full diff; applyFileDiff will re-slice current file.
+					cmds = append(cmds, fetchPRFullDiffCmd(pr.RepoOwner, pr.Repo, pr.Number))
+				}
 			}
 		}
 		// Daemon health check — auto-restart if N consecutive ping failures.
@@ -419,6 +475,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.current == viewUXLogs {
 			m.handleUXLogsMouse(msg)
+		}
+		if m.activeTab == tabReviews {
+			m.reviews.HandleMouse(msg)
 		}
 		return m, nil
 
@@ -515,6 +574,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 
+	case FetchPRListMsg:
+		if msg.Err != nil {
+			m.reviews.SetLoadError(githubErrMsg(msg.Err))
+		} else {
+			m.reviews.SetPRs(msg.PRs)
+		}
+		return m, nil
+
+	case FetchPRFilesMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError(githubErrMsg(msg.Err))
+		} else {
+			m.reviews.SetFiles(msg.Files)
+		}
+		return m, nil
+
+	case FetchPRDiffMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError(githubErrMsg(msg.Err))
+		} else {
+			// SetFullDiff caches the complete PR diff and extracts the current
+			// file's slice immediately — subsequent file changes are free.
+			m.reviews.SetFullDiff(msg.Diff)
+		}
+		return m, nil
+
+	case FetchPRCommentsMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError(githubErrMsg(msg.Err))
+		} else {
+			m.reviews.SetComments(msg.Comments)
+		}
+		return m, nil
+
+	case PostCommentMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError(githubErrMsg(msg.Err))
+		}
+		// Refresh comments after posting
+		if pr := m.reviews.SelectedPR(); pr != nil {
+			return m, fetchPRCommentsCmd(pr.RepoOwner, pr.Repo, pr.Number)
+		}
+		return m, nil
+
+	case SubmitReviewMsg:
+		if msg.Err != nil {
+			m.statusbar.SetError(githubErrMsg(msg.Err))
+		}
+		return m, nil
+
 	case detectBranchMsg:
 		if m.current == viewNewProject || m.current == viewEditProject {
 			cmd := m.projectform.Update(msg)
@@ -562,12 +671,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
-		// Tab switching with 1/2 keys or left/right arrows
+		// Tab switching with 1/2/3 keys or left/right arrows
 		switch msg.String() {
 		case "1":
 			m.activeTab = tabTasks
 			return m, nil
 		case "2":
+			m.activeTab = tabReviews
+			if m.reviews.canFetchPRList() {
+				return m, m.reviews.StartLoading()
+			}
+			return m, nil
+		case "3":
 			m.activeTab = tabSettings
 			return m, nil
 		}
@@ -580,11 +695,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.TabRight):
 			if m.activeTab < tabSettings {
 				m.activeTab++
+				if m.activeTab == tabReviews && m.reviews.canFetchPRList() {
+					return m, m.reviews.StartLoading()
+				}
 			}
 			return m, nil
 		}
 		if m.activeTab == tabSettings {
 			return m.handleSettingsKey(msg)
+		}
+		if m.activeTab == tabReviews {
+			return m.handleReviewsKey(msg)
 		}
 		return m.handleTaskListKey(msg)
 	}
@@ -607,6 +728,17 @@ func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshTasks()
 		return m, nil
 	}
+	return m, cmd
+}
+
+func (m Model) handleReviewsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Global quit
+	switch msg.String() {
+	case "q":
+		m.quitting = true
+		return m, tea.Quit
+	}
+	cmd := m.reviews.HandleKey(msg)
 	return m, cmd
 }
 
@@ -1569,6 +1701,57 @@ func (m Model) handleUXLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// githubErrMsg returns a user-friendly error message for GitHub API errors,
+// with a distinct message for rate limit errors (403/429).
+func githubErrMsg(err error) string {
+	if errors.Is(err, github.ErrRateLimit) {
+		return "GitHub rate limit exceeded — wait a minute and try again (5k req/hr REST, 30 req/min Search)"
+	}
+	return err.Error()
+}
+
+// fetchPRListCmd kicks off an async fetch of all open PRs and review requests.
+func fetchPRListCmd() tea.Cmd {
+	return func() tea.Msg {
+		prs, err := github.FetchPRList()
+		return FetchPRListMsg{PRs: prs, Err: err}
+	}
+}
+
+// fetchPRFilesCmd kicks off an async fetch of changed files for a PR.
+func fetchPRFilesCmd(owner, repo string, number int) tea.Cmd {
+	return func() tea.Msg {
+		files, err := github.FetchPRFiles(owner, repo, number)
+		return FetchPRFilesMsg{Files: files, Err: err}
+	}
+}
+
+// fetchPRFullDiffCmd fetches the complete diff for a PR once and caches it.
+// Subsequent file selections re-slice the cached diff without API calls.
+func fetchPRFullDiffCmd(owner, repo string, number int) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := github.FetchPRFullDiff(owner, repo, number)
+		return FetchPRDiffMsg{Diff: diff, Err: err}
+	}
+}
+
+
+// fetchPRCommentsCmd kicks off an async fetch of review comments for a PR.
+func fetchPRCommentsCmd(owner, repo string, number int) tea.Cmd {
+	return func() tea.Msg {
+		comments, err := github.FetchPRComments(owner, repo, number)
+		return FetchPRCommentsMsg{Comments: comments, Err: err}
+	}
+}
+
+// postCommentCmd kicks off an async post of a review comment.
+func postCommentCmd(pr *github.PR, path string, line int, body string) tea.Cmd {
+	return func() tea.Msg {
+		err := github.PostReviewComment(pr.RepoOwner, pr.Repo, pr.Number, pr.HeadSHA, path, line, body)
+		return PostCommentMsg{Err: err}
+	}
 }
 
 func (m *Model) handleUXLogsMouse(msg tea.MouseMsg) {

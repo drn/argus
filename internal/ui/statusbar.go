@@ -10,12 +10,13 @@ import (
 
 // StatusBar renders the bottom status bar.
 type StatusBar struct {
-	theme      Theme
-	width      int
-	tasks      []*model.Task
-	running    map[string]bool
+	theme       Theme
+	width       int
+	tasks       []*model.Task
+	running     map[string]bool
 	errMsg      string
 	settingsTab bool
+	reviewsTab  bool
 }
 
 func NewStatusBar(theme Theme) StatusBar {
@@ -36,6 +37,10 @@ func (sb *StatusBar) SetRunning(ids []string) {
 
 func (sb *StatusBar) SetSettingsTab(active bool) {
 	sb.settingsTab = active
+}
+
+func (sb *StatusBar) SetReviewsTab(active bool) {
+	sb.reviewsTab = active
 }
 
 func (sb *StatusBar) SetError(msg string) {
@@ -71,7 +76,19 @@ func (sb StatusBar) View() string {
 
 	// Keybinding hints with highlighted keys
 	var keys []struct{ key, label string }
-	if sb.settingsTab {
+	if sb.reviewsTab {
+		keys = []struct{ key, label string }{
+			{"↑↓", "navigate"},
+			{"RET", "select"},
+			{"c", "comment"},
+			{"a", "approve"},
+			{"r", "req changes"},
+			{"R", "refresh"},
+			{"1", "tasks"},
+			{"3", "settings"},
+			{"q", "quit"},
+		}
+	} else if sb.settingsTab {
 		keys = []struct{ key, label string }{
 			{"n", "new project"},
 			{"d", "del"},
@@ -85,7 +102,8 @@ func (sb StatusBar) View() string {
 			{"RET", "attach"},
 			{"s", "status"},
 			{"d", "del"},
-			{"2", "settings"},
+			{"2", "reviews"},
+			{"3", "settings"},
 			{"?", "help"},
 			{"q", "quit"},
 		}

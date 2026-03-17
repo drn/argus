@@ -706,27 +706,41 @@ func TestTabSwitching_LeftRightArrows(t *testing.T) {
 		t.Fatalf("expected initial tab to be tabTasks")
 	}
 
-	// Right arrow → projects
+	// Right arrow → reviews
 	msg := tea.KeyMsg{Type: tea.KeyRight}
 	updated, _ := m.Update(msg)
 	m = updated.(Model)
-	if m.activeTab != tabSettings {
-		t.Errorf("expected tabSettings after right arrow, got %d", m.activeTab)
+	if m.activeTab != tabReviews {
+		t.Errorf("expected tabReviews after right arrow, got %d", m.activeTab)
 	}
 
-	// Right arrow again → should stay on projects (no wrap)
+	// Right arrow again → settings
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
 	if m.activeTab != tabSettings {
 		t.Errorf("expected tabSettings after second right arrow, got %d", m.activeTab)
 	}
 
-	// Left arrow → tasks
+	// Right arrow again → should stay on settings (no wrap)
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
+	if m.activeTab != tabSettings {
+		t.Errorf("expected tabSettings after third right arrow (no wrap), got %d", m.activeTab)
+	}
+
+	// Left arrow → reviews
 	msg = tea.KeyMsg{Type: tea.KeyLeft}
 	updated, _ = m.Update(msg)
 	m = updated.(Model)
+	if m.activeTab != tabReviews {
+		t.Errorf("expected tabReviews after left arrow, got %d", m.activeTab)
+	}
+
+	// Left arrow again → tasks
+	updated, _ = m.Update(msg)
+	m = updated.(Model)
 	if m.activeTab != tabTasks {
-		t.Errorf("expected tabTasks after left arrow, got %d", m.activeTab)
+		t.Errorf("expected tabTasks after second left arrow, got %d", m.activeTab)
 	}
 
 	// Left arrow again → should stay on tasks (no wrap)
@@ -1306,12 +1320,20 @@ func TestModel_NewProjectCancel(t *testing.T) {
 func TestModel_TabSwitching_NumberKeys(t *testing.T) {
 	m := testModel(t)
 
-	// Press '2' for projects
+	// Press '2' for reviews
 	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}}
 	updated, _ := m.Update(msg)
 	um := updated.(Model)
+	if um.activeTab != tabReviews {
+		t.Errorf("expected tabReviews after '2', got %d", um.activeTab)
+	}
+
+	// Press '3' for settings
+	msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}}
+	updated, _ = um.Update(msg)
+	um = updated.(Model)
 	if um.activeTab != tabSettings {
-		t.Errorf("expected tabSettings after '2', got %d", um.activeTab)
+		t.Errorf("expected tabSettings after '3', got %d", um.activeTab)
 	}
 
 	// Press '1' for tasks
@@ -1701,6 +1723,8 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		}},
 		{"daemonLogs", func(m *Model) { m.current = viewDaemonLogs; m.daemonLogLines = []string{"test log line"} }},
 		{"uxLogs", func(m *Model) { m.current = viewUXLogs; m.uxLogLines = []string{"test ux log line"} }},
+		{"reviews", func(m *Model) { m.activeTab = tabReviews }},
+		{"reviewsLoading", func(m *Model) { m.activeTab = tabReviews; m.reviews.loading = true }},
 	}
 	for _, tc := range views {
 		t.Run(tc.name, func(t *testing.T) {
