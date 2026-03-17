@@ -49,26 +49,38 @@ func TestNewProjectForm_TabNavigation(t *testing.T) {
 		t.Errorf("after tab x3: focused = %d, want %d", f.focused, projFieldBackend)
 	}
 
-	// Tab: backend -> wraps to name
+	// Tab: backend -> sandboxDenyRead
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if f.focused != projFieldSandboxDenyRead {
+		t.Errorf("after tab x4: focused = %d, want %d", f.focused, projFieldSandboxDenyRead)
+	}
+
+	// Tab: sandboxDenyRead -> sandboxExtraWrite
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if f.focused != projFieldSandboxExtraWrite {
+		t.Errorf("after tab x5: focused = %d, want %d", f.focused, projFieldSandboxExtraWrite)
+	}
+
+	// Tab: sandboxExtraWrite -> wraps to name
 	f.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if f.focused != projFieldName {
-		t.Errorf("after tab x4: focused = %d, want %d (wrap)", f.focused, projFieldName)
+		t.Errorf("after tab x6: focused = %d, want %d (wrap)", f.focused, projFieldName)
 	}
 }
 
 func TestNewProjectForm_ShiftTabNavigation(t *testing.T) {
 	f := NewProjectForm(DefaultTheme())
 
-	// Shift+tab: name -> wraps to backend
+	// Shift+tab: name -> wraps to sandboxExtraWrite
 	f.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if f.focused != projFieldBackend {
-		t.Errorf("after shift+tab: focused = %d, want %d", f.focused, projFieldBackend)
+	if f.focused != projFieldSandboxExtraWrite {
+		t.Errorf("after shift+tab: focused = %d, want %d", f.focused, projFieldSandboxExtraWrite)
 	}
 
-	// Shift+tab: backend -> branch
+	// Shift+tab: sandboxExtraWrite -> sandboxDenyRead
 	f.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	if f.focused != projFieldBranch {
-		t.Errorf("after shift+tab x2: focused = %d, want %d", f.focused, projFieldBranch)
+	if f.focused != projFieldSandboxDenyRead {
+		t.Errorf("after shift+tab x2: focused = %d, want %d", f.focused, projFieldSandboxDenyRead)
 	}
 }
 
@@ -79,8 +91,8 @@ func TestNewProjectForm_EnterSubmits(t *testing.T) {
 	f.inputs[projFieldName].SetValue("myproject")
 	f.inputs[projFieldPath].SetValue("/tmp/myproject")
 
-	// Move to last field (backend)
-	f.focused = projFieldBackend
+	// Move to last field (sandboxExtraWrite)
+	f.focused = projFieldSandboxExtraWrite
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if !f.Done() {

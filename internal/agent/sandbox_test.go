@@ -228,7 +228,7 @@ func TestGenerateSandboxConfig_GitDir(t *testing.T) {
 	os.MkdirAll(wtGitDir, 0o755)
 	os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
 
-	cfg := config.Config{}
+	cfg := config.SandboxConfig{}
 	path, _, cleanup, err := GenerateSandboxConfig(wtDir, cfg)
 	if err != nil {
 		t.Fatal(err)
