@@ -111,7 +111,11 @@ func textareaAbsCursorPos(m *textarea.Model) int {
 		}
 		pos++
 	}
-	return pos + m.LineInfo().ColumnOffset
+	// ColumnOffset is relative to the current *visual* row, not the hard line.
+	// StartColumn is the rune offset where the current visual row begins within
+	// the hard line. Their sum gives m.col — the true position within the hard line.
+	li := m.LineInfo()
+	return pos + li.StartColumn + li.ColumnOffset
 }
 
 // textareaSetAbsCursorPos moves the textarea cursor to the given absolute rune
