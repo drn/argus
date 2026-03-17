@@ -366,6 +366,62 @@ func TestApplyWordNavTextarea_ThreeLine(t *testing.T) {
 	})
 }
 
+func TestApplyWordNavTextarea_SoftWrap(t *testing.T) {
+	// Regression: cursor on the second visual row of a soft-wrapped single hard
+	// line must navigate within the correct absolute position, not jump to the
+	// first visual row. This was caused by ColumnOffset being relative to the
+	// visual row, not the hard line.
+	altLeft := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	altBackspace := tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}
+
+	// Use a narrow width so the text wraps.
+	// "implement a feature that allows users to create custom labels"
+	// With width=30, this wraps to multiple visual lines.
+	text := "implement a feature that allows users to create custom labels"
+	makeTA := func(absPos int) textarea.Model {
+		ta := textarea.New()
+		ta.SetWidth(30) // narrow — forces soft wrapping
+		ta.SetValue(text)
+		textareaSetAbsCursorPos(&ta, text, absPos)
+		return ta
+	}
+
+	t.Run("absPos on second visual row", func(t *testing.T) {
+		// Cursor at "users" (abs ~36). With width 30, this is on the second
+		// visual row. textareaAbsCursorPos must return ~36, not a small number.
+		ta := makeTA(36) // "users"
+		got := textareaAbsCursorPos(&ta)
+		if got != 36 {
+			t.Errorf("textareaAbsCursorPos on wrapped line: got %d, want 36", got)
+		}
+	})
+
+	t.Run("alt+left stays on second visual row", func(t *testing.T) {
+		// Cursor past end of text (abs=len), alt+left → start of "labels" (abs=55)
+		ta := makeTA(len(text))
+		applyWordNavTextarea(altLeft, &ta, nil)
+		got := textareaAbsCursorPos(&ta)
+		if got != 55 {
+			t.Errorf("alt+left on wrapped line: got absPos %d, want 55", got)
+		}
+	})
+
+	t.Run("alt+backspace on second visual row", func(t *testing.T) {
+		// Cursor past end of text (abs=len), alt+backspace deletes "labels"
+		ta := makeTA(len(text))
+		applyWordNavTextarea(altBackspace, &ta, nil)
+		gotVal := ta.Value()
+		want := "implement a feature that allows users to create custom "
+		if gotVal != want {
+			t.Errorf("alt+backspace on wrapped line: got %q, want %q", gotVal, want)
+		}
+		got := textareaAbsCursorPos(&ta)
+		if got != 55 {
+			t.Errorf("alt+backspace cursor: got %d, want 55", got)
+		}
+	})
+}
+
 func TestDeleteWordRight(t *testing.T) {
 	tests := []struct {
 		input   string
