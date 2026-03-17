@@ -9,6 +9,25 @@ import (
 	"github.com/drn/argus/internal/model"
 )
 
+// ResolveSandboxConfig returns the effective sandbox config for a task.
+// Per-project settings are merged on top of the global config:
+//   - project Enabled (non-nil) overrides the global Enabled flag
+//   - project DenyRead paths are appended to the global list
+//   - project ExtraWrite paths are appended to the global list
+func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxConfig {
+	result := cfg.Sandbox
+	if task.Project != "" {
+		if proj, ok := cfg.Projects[task.Project]; ok {
+			if proj.Sandbox.Enabled != nil {
+				result.Enabled = *proj.Sandbox.Enabled
+			}
+			result.DenyRead = append(append([]string{}, result.DenyRead...), proj.Sandbox.DenyRead...)
+			result.ExtraWrite = append(append([]string{}, result.ExtraWrite...), proj.Sandbox.ExtraWrite...)
+		}
+	}
+	return result
+}
+
 // ResolveBackend returns the backend config for a task.
 // Priority: task.Backend > project.Backend > cfg.Defaults.Backend.
 func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {
@@ -78,10 +97,11 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
-	// Wrap with sandbox if enabled and available
+	// Wrap with sandbox if enabled (effective config merges global + per-project overrides).
 	var sandboxCleanup func()
-	if cfg.Sandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
-		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, cfg)
+	effectiveSandbox := ResolveSandboxConfig(task, cfg)
+	if effectiveSandbox.Enabled && IsSandboxAvailable() && task.Worktree != "" {
+		profilePath, params, cleanup, serr := GenerateSandboxConfig(task.Worktree, effectiveSandbox)
 		if serr == nil {
 			cmdStr = WrapWithSandbox(cmdStr, profilePath, params)
 			sandboxCleanup = cleanup

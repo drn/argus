@@ -511,6 +511,25 @@ func (sv SettingsView) renderProjectDetail(sel *settingsRow, innerW int) string 
 		b.WriteString("  " + sv.theme.Dimmed.Render(f.label+": ") + sv.theme.Normal.Render(val) + "\n")
 	}
 
+	// Per-project sandbox section
+	projSandbox := entry.Project.Sandbox
+	if projSandbox.Enabled != nil || len(projSandbox.DenyRead) > 0 || len(projSandbox.ExtraWrite) > 0 {
+		b.WriteString("\n" + sv.theme.Section.Render("  SANDBOX") + "\n")
+		if projSandbox.Enabled == nil {
+			b.WriteString("  " + sv.theme.Dimmed.Render("Enabled: inherit (global)") + "\n")
+		} else if *projSandbox.Enabled {
+			b.WriteString("  " + sv.theme.Dimmed.Render("Enabled: ") + sv.theme.Complete.Render("true") + "\n")
+		} else {
+			b.WriteString("  " + sv.theme.Dimmed.Render("Enabled: ") + sv.theme.Error.Render("false") + "\n")
+		}
+		for _, p := range projSandbox.DenyRead {
+			b.WriteString("  " + sv.theme.Dimmed.Render("deny: ") + sv.theme.Normal.Render(p) + "\n")
+		}
+		for _, p := range projSandbox.ExtraWrite {
+			b.WriteString("  " + sv.theme.Dimmed.Render("write: ") + sv.theme.Normal.Render(p) + "\n")
+		}
+	}
+
 	// Task summary section
 	sc := sv.taskCounts[entry.Name]
 	total := sc.Total()

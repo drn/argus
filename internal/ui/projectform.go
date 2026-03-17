@@ -10,17 +10,28 @@ import (
 	"github.com/drn/argus/internal/config"
 )
 
+// sandboxEnabledState represents the per-project sandbox enabled override.
+// 0 = inherit global, 1 = enabled, 2 = disabled
+type sandboxEnabledState int
+
+const (
+	sandboxInherit  sandboxEnabledState = 0
+	sandboxEnabled  sandboxEnabledState = 1
+	sandboxDisabled sandboxEnabledState = 2
+)
+
 // NewProjectForm handles the new project creation and editing UI.
 type ProjectForm struct {
-	inputs       []textinput.Model
-	focused      int
-	theme        Theme
-	done         bool
-	canceled     bool
-	width        int
-	height       int
-	editMode     bool   // true when editing an existing project
-	originalName string // project name being edited (read-only in edit mode)
+	inputs         []textinput.Model
+	focused        int
+	sandboxState   sandboxEnabledState // per-project sandbox override
+	theme          Theme
+	done           bool
+	canceled       bool
+	width          int
+	height         int
+	editMode       bool   // true when editing an existing project
+	originalName   string // project name being edited (read-only in edit mode)
 }
 
 const (
@@ -28,6 +39,8 @@ const (
 	projFieldPath
 	projFieldBranch
 	projFieldBackend
+	projFieldSandboxDenyRead
+	projFieldSandboxExtraWrite
 	projFieldCount
 )
 
@@ -55,6 +68,16 @@ func NewProjectForm(theme Theme) ProjectForm {
 	backendInput.CharLimit = 40
 	inputs[projFieldBackend] = backendInput
 
+	sandboxDenyInput := textinput.New()
+	sandboxDenyInput.Placeholder = "Comma-separated paths (e.g. /secrets,~/.private)"
+	sandboxDenyInput.CharLimit = 500
+	inputs[projFieldSandboxDenyRead] = sandboxDenyInput
+
+	sandboxWriteInput := textinput.New()
+	sandboxWriteInput.Placeholder = "Comma-separated paths (e.g. ~/.npm,/var/cache)"
+	sandboxWriteInput.CharLimit = 500
+	inputs[projFieldSandboxExtraWrite] = sandboxWriteInput
+
 	return ProjectForm{
 		inputs:  inputs,
 		focused: projFieldName,
@@ -71,6 +94,16 @@ func (f *ProjectForm) LoadProject(name string, proj config.Project) {
 	f.inputs[projFieldPath].SetValue(proj.Path)
 	f.inputs[projFieldBranch].SetValue(proj.Branch)
 	f.inputs[projFieldBackend].SetValue(proj.Backend)
+	f.inputs[projFieldSandboxDenyRead].SetValue(strings.Join(proj.Sandbox.DenyRead, ","))
+	f.inputs[projFieldSandboxExtraWrite].SetValue(strings.Join(proj.Sandbox.ExtraWrite, ","))
+	switch {
+	case proj.Sandbox.Enabled == nil:
+		f.sandboxState = sandboxInherit
+	case *proj.Sandbox.Enabled:
+		f.sandboxState = sandboxEnabled
+	default:
+		f.sandboxState = sandboxDisabled
+	}
 	// Start focus on path since name is read-only in edit mode.
 	f.focused = projFieldPath
 }
@@ -78,12 +111,16 @@ func (f *ProjectForm) LoadProject(name string, proj config.Project) {
 // nextField returns the next field index in the tab order.
 func (f *ProjectForm) nextField() int {
 	if f.editMode {
-		// Cycle through path → branch → backend → path.
+		// Cycle through path → branch → backend → sandboxDenyRead → sandboxExtraWrite → path.
 		switch f.focused {
 		case projFieldPath:
 			return projFieldBranch
 		case projFieldBranch:
 			return projFieldBackend
+		case projFieldBackend:
+			return projFieldSandboxDenyRead
+		case projFieldSandboxDenyRead:
+			return projFieldSandboxExtraWrite
 		default:
 			return projFieldPath
 		}
@@ -96,11 +133,15 @@ func (f *ProjectForm) prevField() int {
 	if f.editMode {
 		switch f.focused {
 		case projFieldPath:
-			return projFieldBackend
+			return projFieldSandboxExtraWrite
 		case projFieldBranch:
 			return projFieldPath
-		default:
+		case projFieldBackend:
 			return projFieldBranch
+		case projFieldSandboxDenyRead:
+			return projFieldBackend
+		default:
+			return projFieldSandboxDenyRead
 		}
 	}
 	return (f.focused - 1 + projFieldCount) % projFieldCount
@@ -108,7 +149,7 @@ func (f *ProjectForm) prevField() int {
 
 // lastField returns the last editable field index (the submit-on-enter field).
 func (f *ProjectForm) lastField() int {
-	return projFieldBackend // same in both modes
+	return projFieldSandboxExtraWrite
 }
 
 func (f *ProjectForm) Update(msg tea.Msg) tea.Cmd {
@@ -141,6 +182,10 @@ func (f *ProjectForm) Update(msg tea.Msg) tea.Cmd {
 				cmds = append(cmds, f.detectDefaultBranch())
 			}
 			return tea.Batch(cmds...)
+		case "ctrl+e":
+			// Cycle sandbox enabled state: inherit → enabled → disabled → inherit
+			f.sandboxState = (f.sandboxState + 1) % 3
+			return nil
 		case "enter":
 			if f.focused == f.lastField() {
 				// Submit on enter at last field
@@ -234,15 +279,55 @@ func (f *ProjectForm) ProjectEntry() (string, config.Project) {
 	branch := strings.TrimSpace(f.inputs[projFieldBranch].Value())
 	backend := strings.TrimSpace(f.inputs[projFieldBackend].Value())
 
+	var sandboxEnabledPtr *bool
+	switch f.sandboxState {
+	case sandboxEnabled:
+		v := true
+		sandboxEnabledPtr = &v
+	case sandboxDisabled:
+		v := false
+		sandboxEnabledPtr = &v
+	}
+
 	return name, config.Project{
 		Path:    path,
 		Branch:  branch,
 		Backend: backend,
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:    sandboxEnabledPtr,
+			DenyRead:   splitFormCSV(f.inputs[projFieldSandboxDenyRead].Value()),
+			ExtraWrite: splitFormCSV(f.inputs[projFieldSandboxExtraWrite].Value()),
+		},
 	}
+}
+
+// splitFormCSV splits a comma-separated string, trimming whitespace and dropping empty entries.
+func splitFormCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func (f *ProjectForm) Done() bool     { return f.done }
 func (f *ProjectForm) Canceled() bool { return f.canceled }
+
+// sandboxStateLabel returns a styled label for the current sandbox enabled state.
+func (f ProjectForm) sandboxStateLabel() string {
+	switch f.sandboxState {
+	case sandboxEnabled:
+		return f.theme.Complete.Render("Enabled")
+	case sandboxDisabled:
+		return f.theme.Error.Render("Disabled")
+	default:
+		return f.theme.Dimmed.Render("Inherit (global)")
+	}
+}
 
 func (f *ProjectForm) SetSize(w, h int) {
 	f.width = w
@@ -267,8 +352,9 @@ func (f ProjectForm) View() string {
 	}
 	var b strings.Builder
 
-	labels := []string{"Name:", "Path:", "Branch:", "Backend:"}
-	for i, label := range labels {
+	// Core fields: Name, Path, Branch, Backend
+	coreLabels := []string{"Name:", "Path:", "Branch:", "Backend:"}
+	for i, label := range coreLabels {
 		if f.editMode && i == projFieldName {
 			// In edit mode, name is read-only — show as a label, not an input.
 			b.WriteString(f.theme.Dimmed.Render(label) + "\n")
@@ -283,7 +369,28 @@ func (f ProjectForm) View() string {
 		b.WriteString(f.inputs[i].View() + "\n\n")
 	}
 
-	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  enter: submit  esc: cancel"))
+	// Sandbox section
+	b.WriteString(f.theme.Section.Render("SANDBOX") + "\n")
+	sandboxLabel := f.sandboxStateLabel()
+	b.WriteString(f.theme.Dimmed.Render("Enabled: ") + sandboxLabel + f.theme.Dimmed.Render("  (ctrl+e to cycle)") + "\n\n")
+
+	sandboxFields := []struct {
+		label string
+		field int
+	}{
+		{"Sandbox Deny Read:", projFieldSandboxDenyRead},
+		{"Sandbox Extra Write:", projFieldSandboxExtraWrite},
+	}
+	for _, sf := range sandboxFields {
+		style := f.theme.Dimmed
+		if sf.field == f.focused {
+			style = f.theme.Selected
+		}
+		b.WriteString(style.Render(sf.label) + "\n")
+		b.WriteString(f.inputs[sf.field].View() + "\n\n")
+	}
+
+	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  ctrl+e: cycle sandbox  enter: submit  esc: cancel"))
 
 	mw := f.modalWidth()
 

@@ -108,10 +108,13 @@ func (d *DB) createTables() error {
 			ended_at   TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS projects (
-			name    TEXT PRIMARY KEY,
-			path    TEXT NOT NULL,
-			branch  TEXT NOT NULL DEFAULT '',
-			backend TEXT NOT NULL DEFAULT ''
+			name                TEXT PRIMARY KEY,
+			path                TEXT NOT NULL,
+			branch              TEXT NOT NULL DEFAULT '',
+			backend             TEXT NOT NULL DEFAULT '',
+			sandbox_enabled     TEXT NOT NULL DEFAULT '',
+			sandbox_deny_read   TEXT NOT NULL DEFAULT '',
+			sandbox_extra_write TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS backends (
 			name        TEXT PRIMARY KEY,
@@ -123,8 +126,21 @@ func (d *DB) createTables() error {
 			value TEXT NOT NULL
 		);
 	`
-	_, err := d.conn.Exec(ddl)
-	return err
+	if _, err := d.conn.Exec(ddl); err != nil {
+		return err
+	}
+
+	// Add per-project sandbox columns to existing databases (safe to call multiple times;
+	// errors for already-existing columns are silently ignored).
+	for _, def := range []string{
+		"sandbox_enabled     TEXT NOT NULL DEFAULT ''",
+		"sandbox_deny_read   TEXT NOT NULL DEFAULT ''",
+		"sandbox_extra_write TEXT NOT NULL DEFAULT ''",
+	} {
+		d.conn.Exec(`ALTER TABLE projects ADD COLUMN ` + def) //nolint:errcheck
+	}
+
+	return nil
 }
 
 // --- Tasks ---
@@ -269,7 +285,7 @@ func (d *DB) Projects() map[string]config.Project {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, path, branch, backend FROM projects ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write FROM projects ORDER BY name`)
 	if err != nil {
 		return make(map[string]config.Project)
 	}
@@ -279,8 +295,23 @@ func (d *DB) Projects() map[string]config.Project {
 	for rows.Next() {
 		var name string
 		var p config.Project
-		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend); err != nil {
+		var sandboxEnabled, sandboxDenyRead, sandboxExtraWrite string
+		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend, &sandboxEnabled, &sandboxDenyRead, &sandboxExtraWrite); err != nil {
 			continue
+		}
+		switch sandboxEnabled {
+		case "true":
+			v := true
+			p.Sandbox.Enabled = &v
+		case "false":
+			v := false
+			p.Sandbox.Enabled = &v
+		}
+		if sandboxDenyRead != "" {
+			p.Sandbox.DenyRead = splitCSV(sandboxDenyRead)
+		}
+		if sandboxExtraWrite != "" {
+			p.Sandbox.ExtraWrite = splitCSV(sandboxExtraWrite)
 		}
 		projects[name] = p
 	}
@@ -291,8 +322,19 @@ func (d *DB) SetProject(name string, p config.Project) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend) VALUES (?, ?, ?, ?)`,
-		name, p.Path, p.Branch, p.Backend)
+	sandboxEnabled := ""
+	if p.Sandbox.Enabled != nil {
+		if *p.Sandbox.Enabled {
+			sandboxEnabled = "true"
+		} else {
+			sandboxEnabled = "false"
+		}
+	}
+	sandboxDenyRead := strings.Join(p.Sandbox.DenyRead, ",")
+	sandboxExtraWrite := strings.Join(p.Sandbox.ExtraWrite, ",")
+
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		name, p.Path, p.Branch, p.Backend, sandboxEnabled, sandboxDenyRead, sandboxExtraWrite)
 	return err
 }
 

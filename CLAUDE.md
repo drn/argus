@@ -160,6 +160,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **Agent view file explorer must merge committed + uncommitted changes, not choose one or the other.** The original `UpdateGitStatus` used an if/else: show uncommitted files (`git status --short`) if any, *else* show committed branch files (`git diff --name-status base..HEAD`). This caused blank panels whenever the working tree was momentarily clean between agent commits — the committed changes existed but weren't shown because the uncommitted path returned nothing and the committed path was never reached. Fix: always call `MergeChangedFiles(ParseGitDiffNameStatus(msg.BranchFiles), ParseGitStatus(msg.Status))` which starts with committed branch files as the base and overlays uncommitted status (which takes precedence for the same path). This way the panel always shows all changes on the branch regardless of commit state.
 
+- **Per-project sandbox config is stored as three columns on the `projects` table.** `sandbox_enabled` stores `""` (inherit global), `"true"`, or `"false"`. `sandbox_deny_read` and `sandbox_extra_write` store CSV paths appended to the global lists. `ResolveSandboxConfig(task, cfg)` merges global + per-project overrides before calling `GenerateSandboxConfig`. Adding new columns to an existing SQLite table uses `ALTER TABLE projects ADD COLUMN ... DEFAULT ''` — this is called after `CREATE TABLE IF NOT EXISTS` and the error for duplicate column names is silently ignored (covers both new and existing databases). `GenerateSandboxConfig` takes `config.SandboxConfig` directly (not `config.Config`) so the caller controls which merged config is used.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

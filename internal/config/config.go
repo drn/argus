@@ -19,10 +19,19 @@ type Backend struct {
 	PromptFlag string `toml:"prompt_flag"`
 }
 
+// ProjectSandboxConfig holds per-project sandbox overrides.
+// A nil Enabled means "inherit from global"; non-nil overrides the global setting.
+type ProjectSandboxConfig struct {
+	Enabled    *bool    // nil = inherit global; true/false = override
+	DenyRead   []string // additional paths appended to the global deny_read list
+	ExtraWrite []string // additional paths appended to the global extra_write list
+}
+
 type Project struct {
-	Path    string `toml:"path"`
-	Branch  string `toml:"branch"`
-	Backend string `toml:"backend"`
+	Path    string               `toml:"path"`
+	Branch  string               `toml:"branch"`
+	Backend string               `toml:"backend"`
+	Sandbox ProjectSandboxConfig `toml:"sandbox"`
 }
 
 type Keybindings struct {

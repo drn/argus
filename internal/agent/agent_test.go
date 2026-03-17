@@ -288,6 +288,130 @@ func TestBuildCmd_WorktreeOverridesProject(t *testing.T) {
 	}
 }
 
+func TestResolveSandboxConfig_InheritsGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{
+		Enabled:    true,
+		DenyRead:   []string{"/secrets"},
+		ExtraWrite: []string{"~/.npm"},
+	}
+	task := &model.Task{Project: "other"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if !result.Enabled {
+		t.Error("expected sandbox enabled (inherited from global)")
+	}
+	if len(result.DenyRead) != 1 || result.DenyRead[0] != "/secrets" {
+		t.Errorf("expected global deny_read, got %v", result.DenyRead)
+	}
+	if len(result.ExtraWrite) != 1 || result.ExtraWrite[0] != "~/.npm" {
+		t.Errorf("expected global extra_write, got %v", result.ExtraWrite)
+	}
+}
+
+func TestResolveSandboxConfig_ProjectOverridesEnabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: false}
+
+	projEnabled := true
+	cfg.Projects["myapp"] = config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled: &projEnabled,
+		},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if !result.Enabled {
+		t.Error("expected sandbox enabled (project overrides global false)")
+	}
+}
+
+func TestResolveSandboxConfig_ProjectDisablesGlobalEnabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: true}
+
+	projEnabled := false
+	cfg.Projects["myapp"] = config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled: &projEnabled,
+		},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if result.Enabled {
+		t.Error("expected sandbox disabled (project overrides global true)")
+	}
+}
+
+func TestResolveSandboxConfig_ProjectAppendsPaths(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{
+		DenyRead:   []string{"/global-deny"},
+		ExtraWrite: []string{"/global-write"},
+	}
+	cfg.Projects["myapp"] = config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			DenyRead:   []string{"/proj-deny"},
+			ExtraWrite: []string{"/proj-write"},
+		},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if len(result.DenyRead) != 2 {
+		t.Fatalf("expected 2 deny_read paths, got %d: %v", len(result.DenyRead), result.DenyRead)
+	}
+	if result.DenyRead[0] != "/global-deny" || result.DenyRead[1] != "/proj-deny" {
+		t.Errorf("unexpected deny_read order: %v", result.DenyRead)
+	}
+	if len(result.ExtraWrite) != 2 {
+		t.Fatalf("expected 2 extra_write paths, got %d: %v", len(result.ExtraWrite), result.ExtraWrite)
+	}
+	if result.ExtraWrite[0] != "/global-write" || result.ExtraWrite[1] != "/proj-write" {
+		t.Errorf("unexpected extra_write order: %v", result.ExtraWrite)
+	}
+}
+
+func TestResolveSandboxConfig_NoProjectUsesGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{Enabled: true, DenyRead: []string{"/x"}}
+	task := &model.Task{} // no project
+
+	result := ResolveSandboxConfig(task, cfg)
+
+	if !result.Enabled {
+		t.Error("expected sandbox enabled from global")
+	}
+	if len(result.DenyRead) != 1 {
+		t.Errorf("expected 1 deny_read, got %v", result.DenyRead)
+	}
+}
+
+func TestResolveSandboxConfig_DoesNotMutateGlobal(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{DenyRead: []string{"/global"}}
+	cfg.Projects["myapp"] = config.Project{
+		Sandbox: config.ProjectSandboxConfig{DenyRead: []string{"/proj"}},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	_ = ResolveSandboxConfig(task, cfg)
+
+	// Global config must not be mutated
+	if len(cfg.Sandbox.DenyRead) != 1 {
+		t.Errorf("global DenyRead was mutated: %v", cfg.Sandbox.DenyRead)
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
 		input    string

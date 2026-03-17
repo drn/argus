@@ -250,6 +250,146 @@ func TestDB_SetProjectUpdates(t *testing.T) {
 	}
 }
 
+func TestDB_Project_SandboxInherit(t *testing.T) {
+	d := testDB(t)
+
+	// Project with no sandbox override (nil Enabled, empty paths)
+	if err := d.SetProject("myapp", config.Project{Path: "/home/user/myapp"}); err != nil {
+		t.Fatal(err)
+	}
+	projects := d.Projects()
+	p := projects["myapp"]
+	if p.Sandbox.Enabled != nil {
+		t.Errorf("expected nil Enabled (inherit), got %v", p.Sandbox.Enabled)
+	}
+	if len(p.Sandbox.DenyRead) != 0 {
+		t.Errorf("expected empty DenyRead, got %v", p.Sandbox.DenyRead)
+	}
+	if len(p.Sandbox.ExtraWrite) != 0 {
+		t.Errorf("expected empty ExtraWrite, got %v", p.Sandbox.ExtraWrite)
+	}
+}
+
+func TestDB_Project_SandboxEnabledTrue(t *testing.T) {
+	d := testDB(t)
+
+	v := true
+	proj := config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled: &v,
+		},
+	}
+	if err := d.SetProject("myapp", proj); err != nil {
+		t.Fatal(err)
+	}
+	projects := d.Projects()
+	p := projects["myapp"]
+	if p.Sandbox.Enabled == nil {
+		t.Fatal("expected non-nil Enabled")
+	}
+	if !*p.Sandbox.Enabled {
+		t.Error("expected Enabled=true")
+	}
+}
+
+func TestDB_Project_SandboxEnabledFalse(t *testing.T) {
+	d := testDB(t)
+
+	v := false
+	proj := config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled: &v,
+		},
+	}
+	if err := d.SetProject("myapp", proj); err != nil {
+		t.Fatal(err)
+	}
+	projects := d.Projects()
+	p := projects["myapp"]
+	if p.Sandbox.Enabled == nil {
+		t.Fatal("expected non-nil Enabled")
+	}
+	if *p.Sandbox.Enabled {
+		t.Error("expected Enabled=false")
+	}
+}
+
+func TestDB_Project_SandboxPaths(t *testing.T) {
+	d := testDB(t)
+
+	proj := config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			DenyRead:   []string{"/secrets", "~/.private"},
+			ExtraWrite: []string{"~/.npm", "/var/cache"},
+		},
+	}
+	if err := d.SetProject("myapp", proj); err != nil {
+		t.Fatal(err)
+	}
+	projects := d.Projects()
+	p := projects["myapp"]
+	if len(p.Sandbox.DenyRead) != 2 {
+		t.Fatalf("expected 2 DenyRead paths, got %d: %v", len(p.Sandbox.DenyRead), p.Sandbox.DenyRead)
+	}
+	if p.Sandbox.DenyRead[0] != "/secrets" || p.Sandbox.DenyRead[1] != "~/.private" {
+		t.Errorf("DenyRead = %v", p.Sandbox.DenyRead)
+	}
+	if len(p.Sandbox.ExtraWrite) != 2 {
+		t.Fatalf("expected 2 ExtraWrite paths, got %d: %v", len(p.Sandbox.ExtraWrite), p.Sandbox.ExtraWrite)
+	}
+	if p.Sandbox.ExtraWrite[0] != "~/.npm" || p.Sandbox.ExtraWrite[1] != "/var/cache" {
+		t.Errorf("ExtraWrite = %v", p.Sandbox.ExtraWrite)
+	}
+}
+
+func TestDB_Project_SandboxRoundtrip(t *testing.T) {
+	d := testDB(t)
+
+	v := true
+	proj := config.Project{
+		Path:   "/home/user/myapp",
+		Branch: "master",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:    &v,
+			DenyRead:   []string{"/deny-this"},
+			ExtraWrite: []string{"/allow-this"},
+		},
+	}
+	if err := d.SetProject("myapp", proj); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update with different values
+	v2 := false
+	proj2 := config.Project{
+		Path:   "/home/user/myapp",
+		Branch: "master",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:    &v2,
+			DenyRead:   []string{"/other-deny"},
+			ExtraWrite: nil,
+		},
+	}
+	if err := d.SetProject("myapp", proj2); err != nil {
+		t.Fatal(err)
+	}
+
+	projects := d.Projects()
+	p := projects["myapp"]
+	if p.Sandbox.Enabled == nil || *p.Sandbox.Enabled {
+		t.Errorf("expected Enabled=false after update, got %v", p.Sandbox.Enabled)
+	}
+	if len(p.Sandbox.DenyRead) != 1 || p.Sandbox.DenyRead[0] != "/other-deny" {
+		t.Errorf("DenyRead = %v", p.Sandbox.DenyRead)
+	}
+	if len(p.Sandbox.ExtraWrite) != 0 {
+		t.Errorf("expected empty ExtraWrite after update, got %v", p.Sandbox.ExtraWrite)
+	}
+}
+
 // --- Backend tests ---
 
 func TestDB_Backends(t *testing.T) {

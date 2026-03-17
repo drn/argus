@@ -34,3 +34,6 @@ Thumbs.db
 
 # Git worktrees
 .worktrees/
+
+# Local Go build cache (sandbox workaround)
+.gocache/

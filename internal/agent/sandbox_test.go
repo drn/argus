@@ -10,10 +10,9 @@ import (
 )
 
 func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
-	cfg := config.Config{}
 	worktree := "/home/user/.argus/worktrees/myapp/fix-bug"
 
-	path, params, cleanup, err := GenerateSandboxConfig(worktree, cfg)
+	path, params, cleanup, err := GenerateSandboxConfig(worktree, config.SandboxConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,15 +85,13 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 }
 
 func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
-	cfg := config.Config{
-		Sandbox: config.SandboxConfig{
-			DenyRead:   []string{"/secrets"},
-			ExtraWrite: []string{"~/.npm", "/var/cache"},
-		},
+	sandboxCfg := config.SandboxConfig{
+		DenyRead:   []string{"/secrets"},
+		ExtraWrite: []string{"~/.npm", "/var/cache"},
 	}
 	worktree := "/tmp/wt"
 
-	path, _, cleanup, err := GenerateSandboxConfig(worktree, cfg)
+	path, _, cleanup, err := GenerateSandboxConfig(worktree, sandboxCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,8 +121,7 @@ func TestGenerateSandboxConfig_CustomConfig(t *testing.T) {
 }
 
 func TestGenerateSandboxConfig_Cleanup(t *testing.T) {
-	cfg := config.Config{}
-	path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+	path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", config.SandboxConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

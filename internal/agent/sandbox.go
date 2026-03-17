@@ -70,10 +70,10 @@ func ResetSandboxCache() {
 }
 
 // GenerateSandboxConfig creates a temporary SBPL profile file for a task.
-// The worktreePath is granted write access. Custom deny/allow paths from cfg
+// The worktreePath is granted write access. Custom deny/allow paths from sandboxCfg
 // are appended to the base profile.
 // Returns the profile path, params slice (HOME=..., WORKTREE=...), cleanup func, and error.
-func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, []string, func(), error) {
+func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("getting home dir: %w", err)
@@ -83,7 +83,7 @@ func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, []st
 	profile.WriteString(sandboxProfileBase)
 
 	// Append user-configured deny read paths
-	for _, p := range cfg.Sandbox.DenyRead {
+	for _, p := range sandboxCfg.DenyRead {
 		p = expandHomePath(strings.TrimSpace(p), homeDir)
 		if p != "" {
 			profile.WriteString(fmt.Sprintf("(deny file-read* (subpath %s))\n", sbplQuote(p)))
@@ -91,7 +91,7 @@ func GenerateSandboxConfig(worktreePath string, cfg config.Config) (string, []st
 	}
 
 	// Append user-configured extra write paths
-	for _, p := range cfg.Sandbox.ExtraWrite {
+	for _, p := range sandboxCfg.ExtraWrite {
 		p = expandHomePath(strings.TrimSpace(p), homeDir)
 		if p != "" {
 			profile.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", sbplQuote(p)))
