@@ -223,11 +223,27 @@
 5. **Profile must allow writes to `~/.claude.json` and `~/.claude/`.** Claude Code writes `~/.claude.json` (auth/session state) on every startup. Blocking this write causes a silent hang: the agent emits ~41 bytes of terminal init sequences (`\x1b[?25h\x1b[<u...`) then stops — no TUI renders, agent view appears blank with no output or error message. Also allow `(subpath "~/.claude")` for conversation history (needed for `--resume`). Rules: `(allow file-write* (literal (string-append (param "HOME") "/.claude.json")))` and `(allow file-write* (subpath (string-append (param "HOME") "/.claude")))`.
 6. **Symlink write rules use resolved paths.** If `~/.claude/skills` is symlinked to `~/.dots`, the `(subpath "~/.claude")` write rule does NOT cover writes to resolved `~/.dots/...` paths (kernel resolves symlinks before matching). Reads are unaffected (global `(allow file-read*)` applies to resolved paths). Only add `~/.dots` to write rules if agents actually need to write there.
 
+### Daemon Binary Staleness — Sandbox Changes Require Restart
+
+**Rebuilding the binary does NOT update the running daemon.** The daemon loads the binary image at startup and runs it in memory indefinitely. `sandboxProfileBase` is a compiled-in Go constant — recompiling changes it on disk but leaves the daemon's in-memory copy unchanged. Any tasks started after a rebuild still use the OLD profile.
+
+**When daemon restart is required:**
+- Any change to `sandboxProfileBase` in `internal/agent/sandbox.go`
+- Any change to `GenerateSandboxConfig()` or `WrapWithSandbox()` logic
+- Any other change in the daemon's code path (not just sandbox — all daemon-side code)
+
+**To restart:** `kill -TERM $(cat ~/.argus/daemon.pid)` — the TUI auto-restarts via `autoStartDaemon()`.
+
+**To diagnose staleness:** Compare `ps -p $(cat ~/.argus/daemon.pid) -o lstart` (daemon start time) against `ls -la /path/to/argus` (binary mtime). If binary is newer, daemon is stale.
+
+**To verify active profile:** The daemon logs the `.sb` path in `~/.argus/daemon.log` as `-f '/var/folders/.../T/argus-sandbox-NNNN.sb'`. While the sandboxed process is running, `cat <path>` shows the exact SBPL rules in effect. Compare against `sandboxProfileBase` to confirm match.
+
 ### Config Persistence
 - Sandbox config stored as `sandbox.enabled`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
 - `sandbox.allowed_domains` key was used by srt; now orphaned in existing DBs but harmlessly ignored
 - List values stored as CSV (comma-separated). Known limitation: paths with commas would break.
 - `SetSandboxEnabled(bool)` convenience method on DB; other values via `SetConfigValue`
+- **`sandbox.extra_write` garbage causes broken SBPL rules.** Each CSV value becomes `(allow file-write* (subpath "..."))`. A partial entry like `"e"` produces `(allow file-write* (subpath "e"))` — valid syntax, no effect. Clear via: `sqlite3 ~/.argus/data.sql "UPDATE config SET value='' WHERE key='sandbox.extra_write'"`
 
 ## Daemon Restart Feature (2026-03-15)
 
