@@ -97,8 +97,9 @@ func applyWordNavTextinput(msg tea.KeyMsg, m *textinput.Model) bool {
 }
 
 // textareaAbsCursorPos returns the absolute rune index of the cursor within
-// the full textarea value. LineInfo().CharOffset is relative to the current
-// line; this function adds the lengths of all preceding lines.
+// the full textarea value. LineInfo().ColumnOffset is the rune index within
+// the current hard line; this function adds the rune lengths of all preceding
+// lines (including their newline characters) to get the absolute position.
 func textareaAbsCursorPos(m *textarea.Model) int {
 	runes := []rune(m.Value())
 	targetLine := m.Line()
@@ -110,7 +111,7 @@ func textareaAbsCursorPos(m *textarea.Model) int {
 		}
 		pos++
 	}
-	return pos + m.LineInfo().CharOffset
+	return pos + m.LineInfo().ColumnOffset
 }
 
 // textareaSetAbsCursorPos moves the textarea cursor to the given absolute rune
@@ -166,7 +167,7 @@ func applyWordNavTextarea(msg tea.KeyMsg, m *textarea.Model, adjustHeight func()
 		runes := []rune(m.Value())
 		newRunes, newAbsPos := deleteWordLeft(runes, textareaAbsCursorPos(m))
 		newText := string(newRunes)
-		m.SetValue(newText) // resets cursor to (0,0)
+		m.SetValue(newText) // resets cursor to end of new text
 		textareaSetAbsCursorPos(m, newText, newAbsPos)
 		if adjustHeight != nil {
 			adjustHeight()
@@ -175,7 +176,7 @@ func applyWordNavTextarea(msg tea.KeyMsg, m *textarea.Model, adjustHeight func()
 		runes := []rune(m.Value())
 		newRunes, newAbsPos := deleteWordRight(runes, textareaAbsCursorPos(m))
 		newText := string(newRunes)
-		m.SetValue(newText) // resets cursor to (0,0)
+		m.SetValue(newText) // resets cursor to end of new text
 		textareaSetAbsCursorPos(m, newText, newAbsPos)
 		if adjustHeight != nil {
 			adjustHeight()

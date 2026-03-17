@@ -1197,6 +1197,111 @@ func TestAgentView_Enter_ResetsDiffMode(t *testing.T) {
 	}
 }
 
+func TestWrapDiffLines_Caching(t *testing.T) {
+	av := newTestAgentView()
+	// A line long enough to wrap at width 20.
+	long := strings.Repeat("x", 50)
+	av.diffUnified = []string{long, "short"}
+
+	// First call: populates cache.
+	wrapped1 := av.wrapDiffLines(20)
+	if len(wrapped1) <= 2 {
+		t.Errorf("expected long line to wrap into multiple entries, got %d lines", len(wrapped1))
+	}
+	if av.diffWrapWidth != 20 {
+		t.Errorf("diffWrapWidth = %d, want 20", av.diffWrapWidth)
+	}
+
+	// Second call same width: returns cache (same slice pointer).
+	wrapped2 := av.wrapDiffLines(20)
+	if &wrapped1[0] != &wrapped2[0] {
+		t.Error("expected cache to be reused on second call with same width")
+	}
+
+	// Call with different width: recomputes.
+	wrapped3 := av.wrapDiffLines(10)
+	if len(wrapped3) <= len(wrapped1) {
+		t.Errorf("narrower width should produce more wrapped lines: got %d, previous %d", len(wrapped3), len(wrapped1))
+	}
+	if av.diffWrapWidth != 10 {
+		t.Errorf("diffWrapWidth = %d, want 10 after resize", av.diffWrapWidth)
+	}
+}
+
+func TestWrapDiffLines_LineCountConsistency(t *testing.T) {
+	// diffLineCount must use wrapped lines in unified mode once dispW is set.
+	av := newTestAgentView()
+	av.diffSplit = false
+	long := strings.Repeat("a", 100)
+	av.diffUnified = []string{long, long, long}
+
+	// Before any render dispW is 0 — falls back to source line count.
+	if got := av.diffLineCount(); got != 3 {
+		t.Errorf("cold diffLineCount = %d, want 3", got)
+	}
+
+	// Simulate renderDiffPanel setting dispW.
+	av.diffDispW = 20
+	count := av.diffLineCount()
+	if count <= 3 {
+		t.Errorf("warm diffLineCount with narrow width should exceed source count, got %d", count)
+	}
+}
+
+func TestWrapDiffLines_ScrollBeforeFirstRender(t *testing.T) {
+	// Verify diffScrollDown doesn't panic and produces a sane offset when called
+	// before any render pass has set diffDispW (cold path).
+	av := newTestAgentView()
+	av.diffSplit = false
+	av.SetSize(100, 40)
+	long := strings.Repeat("a", 200) // wraps to multiple lines at any reasonable width
+	av.diffUnified = []string{long, long, long}
+	// diffDispW is 0 — simulates scroll before first View() call.
+	if av.diffDispW != 0 {
+		t.Fatal("expected diffDispW == 0 before first render")
+	}
+
+	av.diffScrollDown(10)
+	// Should not panic and offset should be >= 0.
+	if av.diffScrollOff < 0 {
+		t.Errorf("diffScrollOff should not go negative, got %d", av.diffScrollOff)
+	}
+}
+
+func TestRenderUnified_Basic(t *testing.T) {
+	lines := []string{"line1", "line2", "line3", "line4", "line5"}
+
+	// All lines visible.
+	out := RenderUnified(lines, 5, 0)
+	for _, l := range lines {
+		if !strings.Contains(out, l) {
+			t.Errorf("expected %q in output", l)
+		}
+	}
+
+	// Scrolled: skip first 2, show 2.
+	out2 := RenderUnified(lines, 2, 2)
+	if !strings.Contains(out2, "line3") || !strings.Contains(out2, "line4") {
+		t.Errorf("scrolled output should show line3 and line4, got: %q", out2)
+	}
+	if strings.Contains(out2, "line1") || strings.Contains(out2, "line2") {
+		t.Errorf("scrolled output should not show line1/line2, got: %q", out2)
+	}
+
+	// Empty input.
+	empty := RenderUnified(nil, 10, 0)
+	if empty != "(no diff)" {
+		t.Errorf("empty lines should return '(no diff)', got %q", empty)
+	}
+
+	// Wide lines pass through as-is (no truncation).
+	wide := []string{strings.Repeat("w", 200)}
+	outWide := RenderUnified(wide, 1, 0)
+	if outWide != wide[0] {
+		t.Errorf("wide line should pass through unchanged")
+	}
+}
+
 func TestFileExplorer_SelectedFile(t *testing.T) {
 	fe := NewFileExplorer(DefaultTheme())
 
