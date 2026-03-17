@@ -238,6 +238,11 @@
 
 **To verify active profile:** The daemon logs the `.sb` path in `~/.argus/daemon.log` as `-f '/var/folders/.../T/argus-sandbox-NNNN.sb'`. While the sandboxed process is running, `cat <path>` shows the exact SBPL rules in effect. Compare against `sandboxProfileBase` to confirm match.
 
+### Git Worktree .git Dir Write Access (2026-03-16)
+- **Problem:** Git worktrees store metadata (index.lock, objects, refs) in the main repo's `.git/worktrees/<name>/` directory, not in the worktree itself. The sandbox allowed writes to `WORKTREE` but not to the main repo's `.git` dir, so `git add`, `git commit`, and `git push` all failed with `Operation not permitted`.
+- **Fix:** `resolveGitDir(worktreePath)` reads the worktree's `.git` file (which is a file, not a directory, containing `gitdir: <path>`), walks up two levels from the gitdir path (`.git/worktrees/<name>` → `.git`), and returns the `.git` dir. `GenerateSandboxConfig()` calls this and adds `(allow file-write* (subpath "<gitdir>"))` to the profile. Falls back gracefully (no-op) for non-worktree dirs.
+- **Key detail:** The gitdir path in the `.git` file can be relative — `resolveGitDir` handles both absolute and relative paths via `filepath.Join` + `filepath.Clean`.
+
 ### Config Persistence
 - Sandbox config stored as `sandbox.enabled`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
 - `sandbox.allowed_domains` key was used by srt; now orphaned in existing DBs but harmlessly ignored
