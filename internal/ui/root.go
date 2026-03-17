@@ -82,18 +82,9 @@ type SessionResumedMsg struct {
 	Err    error
 }
 
-// PruneProgressMsg signals that one worktree was cleaned; remaining work follows.
-type PruneProgressMsg struct {
-	Current   int           // 1-based index of the one just completed
-	Total     int           // total worktrees to clean
-	Remaining []*model.Task // tasks still to clean
-	Cfg       config.Config // config snapshot for resolving dirs
-}
-
-// PruneDoneMsg signals that all prune cleanup is finished.
-type PruneDoneMsg struct {
-	Count int
-}
+// PruneProgressMsg signals that one worktree cleanup has completed.
+// All cleanups run in parallel; each goroutine sends one of these.
+type PruneProgressMsg struct{}
 
 // DaemonRestartedMsg carries the result of a daemon restart attempt.
 type DaemonRestartedMsg struct {
@@ -432,19 +423,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAgentFinished(msg)
 
 	case PruneProgressMsg:
-		m.pruneCurrent = msg.Current
-		if len(msg.Remaining) == 0 {
-			// All done.
+		m.pruneCurrent++
+		if m.pruneCurrent >= m.pruneTotal {
+			// All parallel cleanups done.
 			m.current = viewTaskList
 			m.refreshTasks()
 			return m, nil
 		}
-		// Clean next worktree.
-		return m, pruneNextCmd(msg.Current, msg.Total, msg.Remaining, msg.Cfg)
-
-	case PruneDoneMsg:
-		m.current = viewTaskList
-		m.refreshTasks()
+		// Still waiting for remaining parallel goroutines.
 		return m, nil
 
 	case DaemonRestartedMsg:
@@ -727,29 +713,28 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Show progress modal and run cleanup iteratively.
+		// Show progress modal and run all cleanups in parallel.
 		m.pruneTotal = len(toClean)
 		m.pruneCurrent = 0
 		m.current = viewPruning
 
-		return m, pruneNextCmd(0, len(toClean), toClean, cfg)
+		cmds := make([]tea.Cmd, len(toClean))
+		for i, t := range toClean {
+			cmds[i] = pruneOneCmd(t, cfg)
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	return m, nil
 }
 
-// pruneNextCmd cleans one worktree and returns a PruneProgressMsg with the remainder.
-func pruneNextCmd(done, total int, remaining []*model.Task, cfg config.Config) tea.Cmd {
+// pruneOneCmd cleans a single worktree and signals completion via PruneProgressMsg.
+// All pruneOneCmds are batched so they run in parallel.
+func pruneOneCmd(t *model.Task, cfg config.Config) tea.Cmd {
 	return func() tea.Msg {
-		t := remaining[0]
 		repoDir := agent.ResolveDir(t, cfg)
 		removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
-		return PruneProgressMsg{
-			Current:   done + 1,
-			Total:     total,
-			Remaining: remaining[1:],
-			Cfg:       cfg,
-		}
+		return PruneProgressMsg{}
 	}
 }
 
