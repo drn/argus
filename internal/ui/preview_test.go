@@ -32,9 +32,9 @@ func TestRenderLine_WithCursor(t *testing.T) {
 
 	// Cursor at position 2 (on the 'l')
 	line := renderLine(vt, 0, 20, 2)
-	// Cursor uses bare reverse video (\x1b[0;7m) with default colors
-	if !strings.Contains(line, "\x1b[0;7m") {
-		t.Errorf("renderLine with cursor should contain \\x1b[0;7m, got %q", line)
+	// Cursor uses explicit white-on-black (\x1b[0;97;40m) for guaranteed visibility
+	if !strings.Contains(line, "\x1b[0;97;40m") {
+		t.Errorf("renderLine with cursor should contain \\x1b[0;97;40m, got %q", line)
 	}
 }
 
@@ -46,9 +46,9 @@ func TestRenderLine_CursorBeyondText(t *testing.T) {
 
 	// Cursor at position 5, beyond "hi" (at position 2 would be after text)
 	line := renderLine(vt, 0, 20, 5)
-	// Should still render cursor with bare reverse video (extends lastCol)
-	if !strings.Contains(line, "\x1b[0;7m") {
-		t.Errorf("renderLine with cursor beyond text should contain \\x1b[0;7m, got %q", line)
+	// Should still render cursor with explicit white-on-black (extends lastCol)
+	if !strings.Contains(line, "\x1b[0;97;40m") {
+		t.Errorf("renderLine with cursor beyond text should contain \\x1b[0;97;40m, got %q", line)
 	}
 }
 
@@ -66,9 +66,9 @@ func TestRenderLine_CursorOnReverseCell(t *testing.T) {
 	if lineWithCursor == lineNoCursor {
 		t.Error("cursor on reverse-video cell should produce different output than no cursor")
 	}
-	// Cursor must use bare reverse with default colors
-	if !strings.Contains(lineWithCursor, "\x1b[0;7m") {
-		t.Errorf("cursor on reverse cell should use \\x1b[0;7m, got %q", lineWithCursor)
+	// Cursor must use explicit white-on-black regardless of cell attributes
+	if !strings.Contains(lineWithCursor, "\x1b[0;97;40m") {
+		t.Errorf("cursor on reverse cell should use \\x1b[0;97;40m, got %q", lineWithCursor)
 	}
 }
 
@@ -80,9 +80,9 @@ func TestRenderLine_CursorOnExplicitColorCell(t *testing.T) {
 	defer vt.Unlock()
 
 	line := renderLine(vt, 0, 20, 0)
-	// Cursor must use bare reverse — NOT include cell's explicit color 37
-	if !strings.Contains(line, "\x1b[0;7m") {
-		t.Errorf("cursor on explicit-color cell should use \\x1b[0;7m, got %q", line)
+	// Cursor must use explicit white-on-black — NOT include cell's explicit color 37
+	if !strings.Contains(line, "\x1b[0;97;40m") {
+		t.Errorf("cursor on explicit-color cell should use \\x1b[0;97;40m, got %q", line)
 	}
 }
 
