@@ -163,6 +163,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **Per-project sandbox config is stored as three columns on the `projects` table.** `sandbox_enabled` stores `""` (inherit global), `"true"`, or `"false"`. `sandbox_deny_read` and `sandbox_extra_write` store CSV paths appended to the global lists. `ResolveSandboxConfig(task, cfg)` merges global + per-project overrides before calling `GenerateSandboxConfig`. Adding new columns to an existing SQLite table uses `ALTER TABLE projects ADD COLUMN ... DEFAULT ''` — this is called after `CREATE TABLE IF NOT EXISTS` and the error for duplicate column names is silently ignored (covers both new and existing databases). `GenerateSandboxConfig` takes `config.SandboxConfig` directly (not `config.Config`) so the caller controls which merged config is used.
 
+- **`textarea.LineInfo().ColumnOffset` is relative to the current visual row, not the hard line.** When a single hard line soft-wraps to multiple visual rows, `ColumnOffset` gives the rune offset from the start of the *current visual row*, not from the start of the hard line. Use `li.StartColumn + li.ColumnOffset` to get the true position within the hard line (`m.col`). `StartColumn` is the cumulative rune count of all visual rows before the current one. Getting this wrong makes word navigation (Option+Left/Delete) think the cursor is near position 0 when it's on a wrapped row, causing it to jump to the first visual line. The existing multi-line tests didn't catch this because they used short hard lines that never wrapped — always test with narrow textarea widths to exercise soft-wrap paths.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4
