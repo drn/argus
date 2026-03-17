@@ -14,6 +14,7 @@ func (m Model) View() string {
 	}
 
 	m.statusbar.SetSettingsTab(m.activeTab == tabSettings)
+	m.statusbar.SetReviewsTab(m.activeTab == tabReviews)
 	bar := m.statusbar.View()
 
 	if m.current == viewAgent {
@@ -51,6 +52,8 @@ func (m Model) View() string {
 	switch m.activeTab {
 	case tabSettings:
 		return m.renderSettingsView(tabHeader, bar)
+	case tabReviews:
+		return m.renderReviewsView(tabHeader, bar)
 	default:
 		return m.renderTasksView(tabHeader, bar)
 	}
@@ -119,6 +122,7 @@ func (m Model) renderTabHeader() string {
 		t     tab
 	}{
 		{"Tasks", tabTasks},
+		{"Reviews", tabReviews},
 		{"Settings", tabSettings},
 	}
 
@@ -175,6 +179,32 @@ func (m Model) renderSettingsView(tabHeader, bar string) string {
 	leftPanel := borderedPanel(leftWidth, contentHeight, false, leftContent)
 	rightPanel := m.settings.RenderDetail(rightWidth, contentHeight)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+	content := tabHeader + "\n" + body
+	return m.padToBottom(content, bar)
+}
+
+func (m Model) renderReviewsView(tabHeader, bar string) string {
+	// 30 / 50 / 20 split
+	layout := NewPanelLayout([]PanelConfig{
+		{Pct: 30, Min: 25},
+		{Pct: 50, Min: 40},
+		{Pct: 20, Min: 20},
+	})
+	contentHeight := m.height - 2
+	layout.SetSize(m.width, contentHeight)
+	widths := layout.SplitWidths()
+	h := layout.Height()
+
+	leftContent := m.reviews.View()
+	leftPanel := borderedPanel(widths[0], h, m.reviews.focus == focusList, leftContent)
+
+	diffContent := m.reviews.RenderDiff(widths[1], h)
+	diffPanel := borderedPanel(widths[1], h, m.reviews.focus == focusDiff, diffContent)
+
+	commentsContent := m.reviews.RenderComments(widths[2], h)
+	commentsPanel := borderedPanel(widths[2], h, m.reviews.focus == focusComment, commentsContent)
+
+	body := layout.Render([]string{leftPanel, diffPanel, commentsPanel})
 	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
 }
