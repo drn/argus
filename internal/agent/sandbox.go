@@ -41,6 +41,8 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath "/private/tmp"))
 (allow file-write* (subpath "/tmp"))
 (allow file-write* (literal "/dev/null"))
+(allow file-write* (literal (string-append (param "HOME") "/.claude.json")))
+(allow file-write* (subpath (string-append (param "HOME") "/.claude")))
 `
 
 // IsSandboxAvailable checks whether sandbox-exec is available on this system.
