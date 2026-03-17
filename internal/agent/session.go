@@ -43,10 +43,15 @@ type Session struct {
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
 }
 
+// SessionsDir returns the directory where session logs are stored.
+func SessionsDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".argus", "sessions")
+}
+
 // SessionLogPath returns the path to the PTY output log file for a task.
 func SessionLogPath(taskID string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".argus", "sessions", taskID+".log")
+	return filepath.Join(SessionsDir(), taskID+".log")
 }
 
 // StartSession allocates a PTY with the given initial size, starts the command,
@@ -65,10 +70,11 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 	}
 
 	// Open log file for PTY output — best effort, nil if unavailable.
+	// 0700/0600 permissions: raw PTY output may contain secrets.
 	var logFile *os.File
 	logPath := SessionLogPath(taskID)
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
-		logFile, _ = os.Create(logPath)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err == nil {
+		logFile, _ = os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	}
 
 	s := &Session{

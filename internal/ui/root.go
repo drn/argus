@@ -170,7 +170,7 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 	pv := NewPreview(theme, runner)
 	gs := NewGitStatus(theme)
 	dt := NewTaskDetail(theme)
-	avv := NewAgentView(theme, runner, filepath.Join(db.DataDir(), "sessions"))
+	avv := NewAgentView(theme, runner, agent.SessionsDir())
 	av := &avv
 
 	m := Model{
@@ -402,6 +402,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case DirFilesMsg:
 		m.agentview.UpdateDirFiles(msg)
+		return m, nil
+
+	case SessionLogLoadedMsg:
+		if m.agentview.taskID == msg.TaskID {
+			m.agentview.SetLastOutput(msg.Data)
+		}
 		return m, nil
 
 	case tea.MouseMsg:
@@ -835,16 +841,20 @@ func (m *Model) enterAgentView(taskID, taskName string) tea.Cmd {
 		m.agentview.SetWorktreeDir(dir)
 	}
 	m.current = viewAgent
+	logCmd := m.agentview.LoadSessionLogCmd(taskID)
 	// Start the 100ms tick chain if not already running. The chain
 	// self-perpetuates via the AgentViewTickMsg handler and stops
 	// itself when m.current leaves viewAgent.
 	if m.agentTickActive {
-		return nil
+		return logCmd
 	}
 	m.agentTickActive = true
-	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
-		return AgentViewTickMsg{}
-	})
+	return tea.Batch(
+		logCmd,
+		tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+			return AgentViewTickMsg{}
+		}),
+	)
 }
 
 // determinePostExitStatus decides what status a task should have after its

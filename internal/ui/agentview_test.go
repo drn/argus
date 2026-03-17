@@ -424,7 +424,7 @@ func TestAgentView_Enter_ResetsState(t *testing.T) {
 	}
 }
 
-func TestAgentView_Enter_LoadsSessionLog(t *testing.T) {
+func TestAgentView_LoadSessionLogCmd_LoadsLog(t *testing.T) {
 	sessionsDir := t.TempDir()
 	runner := agent.NewRunner(nil)
 	av := NewAgentView(DefaultTheme(), runner, sessionsDir)
@@ -438,8 +438,44 @@ func TestAgentView_Enter_LoadsSessionLog(t *testing.T) {
 	}
 
 	av.Enter(taskID, "load log task")
-	if string(av.lastOutput) != string(logContent) {
-		t.Errorf("lastOutput = %q, want %q", av.lastOutput, logContent)
+	// Enter() no longer loads the log synchronously — lastOutput stays nil.
+	if av.lastOutput != nil {
+		t.Errorf("Enter should not set lastOutput; got %q", av.lastOutput)
+	}
+
+	// LoadSessionLogCmd returns a cmd that reads the file asynchronously.
+	cmd := av.LoadSessionLogCmd(taskID)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd for existing log file")
+	}
+	msg := cmd()
+	loaded, ok := msg.(SessionLogLoadedMsg)
+	if !ok {
+		t.Fatalf("expected SessionLogLoadedMsg, got %T", msg)
+	}
+	if loaded.TaskID != taskID {
+		t.Errorf("TaskID = %q, want %q", loaded.TaskID, taskID)
+	}
+	if string(loaded.Data) != string(logContent) {
+		t.Errorf("Data = %q, want %q", loaded.Data, logContent)
+	}
+}
+
+func TestAgentView_LoadSessionLogCmd_NoLogFile(t *testing.T) {
+	sessionsDir := t.TempDir()
+	runner := agent.NewRunner(nil)
+	av := NewAgentView(DefaultTheme(), runner, sessionsDir)
+	av.SetSize(120, 40)
+
+	av.Enter("no-log-task", "no log task")
+	// No log file: cmd should return nil msg.
+	cmd := av.LoadSessionLogCmd("no-log-task")
+	if cmd == nil {
+		return // acceptable: no cmd when no log file
+	}
+	msg := cmd()
+	if msg != nil {
+		t.Errorf("expected nil msg for missing log file, got %T: %v", msg, msg)
 	}
 }
 
@@ -451,7 +487,7 @@ func TestAgentView_Enter_NoLogFile(t *testing.T) {
 
 	av.Enter("no-log-task", "no log task")
 	if av.lastOutput != nil {
-		t.Errorf("lastOutput should be nil when no log file exists, got %q", av.lastOutput)
+		t.Errorf("lastOutput should be nil after Enter when no log file exists, got %q", av.lastOutput)
 	}
 }
 

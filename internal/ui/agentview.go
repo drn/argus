@@ -27,6 +27,13 @@ const (
 // AgentViewTickMsg triggers a fast refresh of the agent terminal output.
 type AgentViewTickMsg struct{}
 
+// SessionLogLoadedMsg carries the contents of a session log file loaded
+// asynchronously when entering the agent view for a completed task.
+type SessionLogLoadedMsg struct {
+	TaskID string
+	Data   []byte
+}
+
 // AgentView renders a three-panel layout: git status | agent terminal | file explorer.
 type AgentView struct {
 	theme       Theme
@@ -120,14 +127,22 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.diffScrollOff = 0
 	av.worktreeDir = ""
 	av.diffFileName = ""
+}
 
-	// Load session log so scrollback works for completed/stopped tasks
-	// even after the daemon has restarted and the in-memory buffer is gone.
-	if av.runner.Get(taskID) == nil && av.sessionsDir != "" {
-		logPath := filepath.Join(av.sessionsDir, taskID+".log")
-		if data, err := os.ReadFile(logPath); err == nil && len(data) > 0 {
-			av.lastOutput = data
+// LoadSessionLogCmd returns a tea.Cmd that asynchronously reads the session log
+// for completed/stopped tasks so scrollback works after a daemon restart.
+// Returns nil when a live session exists (ring buffer is authoritative).
+func (av *AgentView) LoadSessionLogCmd(taskID string) tea.Cmd {
+	if av.runner.Get(taskID) != nil || av.sessionsDir == "" {
+		return nil
+	}
+	logPath := filepath.Join(av.sessionsDir, taskID+".log")
+	return func() tea.Msg {
+		data, err := os.ReadFile(logPath)
+		if err != nil || len(data) == 0 {
+			return nil
 		}
+		return SessionLogLoadedMsg{TaskID: taskID, Data: data}
 	}
 }
 
