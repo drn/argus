@@ -166,6 +166,87 @@ func TestWrapWithSandbox(t *testing.T) {
 	}
 }
 
+func TestResolveGitDir(t *testing.T) {
+	t.Run("valid worktree", func(t *testing.T) {
+		// Create a fake worktree with a .git file
+		wtDir := t.TempDir()
+		mainRepo := t.TempDir()
+		gitDir := mainRepo + "/.git"
+		wtGitDir := gitDir + "/worktrees/my-task"
+		os.MkdirAll(wtGitDir, 0o755)
+
+		os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
+
+		result := resolveGitDir(wtDir)
+		if result != gitDir {
+			t.Errorf("expected %q, got %q", gitDir, result)
+		}
+	})
+
+	t.Run("real git dir", func(t *testing.T) {
+		// A real repo has a .git directory, not a file
+		dir := t.TempDir()
+		os.MkdirAll(dir+"/.git", 0o755)
+
+		result := resolveGitDir(dir)
+		if result != "" {
+			t.Errorf("expected empty for real .git dir, got %q", result)
+		}
+	})
+
+	t.Run("no git", func(t *testing.T) {
+		dir := t.TempDir()
+		result := resolveGitDir(dir)
+		if result != "" {
+			t.Errorf("expected empty for no .git, got %q", result)
+		}
+	})
+
+	t.Run("relative gitdir", func(t *testing.T) {
+		wtDir := t.TempDir()
+		// Simulate a relative gitdir path
+		os.MkdirAll(wtDir+"/../../main/.git/worktrees/task", 0o755)
+		os.WriteFile(wtDir+"/.git", []byte("gitdir: ../../main/.git/worktrees/task\n"), 0o644)
+
+		result := resolveGitDir(wtDir)
+		// Should resolve to an absolute path ending in .git
+		if result == "" {
+			t.Fatal("expected non-empty result for relative gitdir")
+		}
+		if !strings.HasSuffix(result, "/.git") {
+			t.Errorf("expected result ending in /.git, got %q", result)
+		}
+	})
+}
+
+func TestGenerateSandboxConfig_GitDir(t *testing.T) {
+	// Create a fake worktree with a .git file pointing to a main repo
+	wtDir := t.TempDir()
+	mainRepo := t.TempDir()
+	gitDir := mainRepo + "/.git"
+	wtGitDir := gitDir + "/worktrees/my-task"
+	os.MkdirAll(wtGitDir, 0o755)
+	os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
+
+	cfg := config.Config{}
+	path, _, cleanup, err := GenerateSandboxConfig(wtDir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := string(data)
+
+	// Profile must contain a write rule for the main repo's .git dir
+	if !strings.Contains(profile, gitDir) {
+		t.Errorf("profile missing .git dir write rule for %q:\n%s", gitDir, profile)
+	}
+}
+
 func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sandbox.Enabled = false

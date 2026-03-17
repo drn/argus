@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -82,6 +83,13 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 	var profile strings.Builder
 	profile.WriteString(sandboxProfileBase)
 
+	// Allow writes to main repo's .git dir for git operations in worktrees.
+	// Git worktrees store metadata (index.lock, objects, refs) in the main
+	// repo's .git/worktrees/<name>/ directory, not in the worktree itself.
+	if gitDir := resolveGitDir(worktreePath); gitDir != "" {
+		profile.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", sbplQuote(gitDir)))
+	}
+
 	// Append user-configured deny read paths
 	for _, p := range sandboxCfg.DenyRead {
 		p = expandHomePath(strings.TrimSpace(p), homeDir)
@@ -152,5 +160,38 @@ func sbplQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return `"` + s + `"`
+}
+
+// resolveGitDir resolves the main repo's .git directory for a git worktree.
+// Git worktrees have a .git file (not directory) containing "gitdir: <path>".
+// The gitdir path points to .git/worktrees/<name>; we walk up two levels to
+// get the .git directory itself. Returns empty string if not a worktree.
+func resolveGitDir(worktreePath string) string {
+	gitPath := filepath.Join(worktreePath, ".git")
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return ""
+	}
+
+	gitdir := strings.TrimPrefix(content, "gitdir: ")
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(worktreePath, gitdir)
+	}
+	gitdir = filepath.Clean(gitdir)
+
+	// gitdir points to .git/worktrees/<name>, walk up two levels to .git
+	dotGit := filepath.Dir(filepath.Dir(gitdir))
+
+	// Sanity check: the result should end with .git
+	if filepath.Base(dotGit) != ".git" {
+		return ""
+	}
+
+	return dotGit
 }
 
