@@ -11,7 +11,11 @@ type RingBuffer struct {
 }
 
 // NewRingBuffer creates a ring buffer of the given size.
+// If size is 0, the buffer grows without bound and never overwrites old data.
 func NewRingBuffer(size int) *RingBuffer {
+	if size == 0 {
+		return &RingBuffer{size: 0}
+	}
 	return &RingBuffer{
 		data: make([]byte, size),
 		size: size,
@@ -19,8 +23,14 @@ func NewRingBuffer(size int) *RingBuffer {
 }
 
 // Write appends data to the ring buffer using bulk copy operations.
+// In unbounded mode (size == 0), the buffer grows without limit.
 func (rb *RingBuffer) Write(p []byte) {
 	rb.total += uint64(len(p))
+	if rb.size == 0 {
+		rb.data = append(rb.data, p...)
+		rb.pos = len(rb.data)
+		return
+	}
 	for len(p) > 0 {
 		n := copy(rb.data[rb.pos:], p)
 		p = p[n:]
@@ -39,6 +49,10 @@ func (rb *RingBuffer) TotalWritten() uint64 {
 
 // Bytes returns the buffered data in order (oldest first).
 func (rb *RingBuffer) Bytes() []byte {
+	if rb.size == 0 {
+		// Unbounded: return a copy of all data
+		return append([]byte(nil), rb.data...)
+	}
 	if !rb.full {
 		return append([]byte(nil), rb.data[:rb.pos]...)
 	}
@@ -51,6 +65,9 @@ func (rb *RingBuffer) Bytes() []byte {
 
 // Len returns the number of bytes stored.
 func (rb *RingBuffer) Len() int {
+	if rb.size == 0 {
+		return rb.pos
+	}
 	if rb.full {
 		return rb.size
 	}
@@ -61,4 +78,7 @@ func (rb *RingBuffer) Len() int {
 func (rb *RingBuffer) Reset() {
 	rb.pos = 0
 	rb.full = false
+	if rb.size == 0 {
+		rb.data = rb.data[:0]
+	}
 }
