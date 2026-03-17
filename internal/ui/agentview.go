@@ -63,14 +63,17 @@ type AgentView struct {
 	vtRows     int    // vtTerm row count
 
 	// Diff viewer state
-	diffMode      bool              // true when viewing a file's diff
-	diffSplit     bool              // true = side-by-side, false = unified
-	diffParsed    ParsedDiff        // parsed diff structure (for both views)
-	diffRows      []SideBySideLine  // side-by-side rows (computed from diffParsed)
-	diffUnified   []string          // unified view lines (highlighted, computed from diffParsed)
-	diffScrollOff int               // scroll offset within diff
-	worktreeDir   string            // resolved worktree directory for git commands
-	diffFileName  string            // current file being diffed (for highlighting)
+	diffMode         bool              // true when viewing a file's diff
+	diffSplit        bool              // true = side-by-side, false = unified
+	diffParsed       ParsedDiff        // parsed diff structure (for both views)
+	diffRows         []SideBySideLine  // side-by-side rows (computed from diffParsed)
+	diffUnified      []string          // unified view lines (highlighted, computed from diffParsed)
+	diffWrappedLines []string          // diffUnified after Hardwrap — cache
+	diffWrapWidth    int               // width used for diffWrappedLines; 0 = stale
+	diffDispW        int               // last-computed display width for the diff panel
+	diffScrollOff    int               // scroll offset within diff
+	worktreeDir      string            // resolved worktree directory for git commands
+	diffFileName     string            // current file being diffed (for highlighting)
 }
 
 func NewAgentView(theme Theme, runner agent.SessionProvider) AgentView {
@@ -108,6 +111,9 @@ func (av *AgentView) Enter(taskID, taskName string) {
 	av.diffParsed = ParsedDiff{}
 	av.diffRows = nil
 	av.diffUnified = nil
+	av.diffWrappedLines = nil
+	av.diffWrapWidth = 0
+	av.diffDispW = 0
 	av.diffScrollOff = 0
 	av.worktreeDir = ""
 	av.diffFileName = ""
@@ -365,6 +371,11 @@ func (av *AgentView) UpdateFileDiff(msg FileDiffMsg) {
 	av.diffMode = true
 	av.diffScrollOff = 0
 	av.diffFileName = msg.FilePath
+	av.diffWrappedLines = nil
+	av.diffWrapWidth = 0
+	// diffDispW is intentionally preserved: panel width hasn't changed, so
+	// diffLineCount can return correct wrapped counts without waiting for the
+	// next render pass. exitDiffMode clears it since the panel leaves the screen.
 	if msg.Diff == "" {
 		av.diffParsed = ParsedDiff{}
 		av.diffRows = nil
@@ -386,8 +397,28 @@ func (av *AgentView) exitDiffMode() {
 	av.diffParsed = ParsedDiff{}
 	av.diffRows = nil
 	av.diffUnified = nil
+	av.diffWrappedLines = nil
+	av.diffWrapWidth = 0
+	av.diffDispW = 0
 	av.diffScrollOff = 0
 	av.diffFileName = ""
+}
+
+// wrapDiffLines returns unified diff lines hard-wrapped to dispW, caching the
+// result so wrapping is only recomputed when content or width changes.
+func (av *AgentView) wrapDiffLines(dispW int) []string {
+	if av.diffWrappedLines != nil && av.diffWrapWidth == dispW {
+		return av.diffWrappedLines
+	}
+	var wrapped []string
+	for _, line := range av.diffUnified {
+		w := ansi.Hardwrap(line, dispW, true)
+		parts := strings.Split(w, "\n")
+		wrapped = append(wrapped, parts...)
+	}
+	av.diffWrappedLines = wrapped
+	av.diffWrapWidth = dispW
+	return wrapped
 }
 
 func (av *AgentView) handleDiffKey(msg tea.KeyMsg) tea.Cmd {
@@ -434,6 +465,11 @@ func (av *AgentView) diffScrollUp(n int) {
 func (av *AgentView) diffLineCount() int {
 	if av.diffSplit {
 		return len(av.diffRows)
+	}
+	// Always use the wrapped count so scroll bounds are correct. diffDispW is
+	// set by renderDiffPanel on every render; wrapDiffLines caches the result.
+	if av.diffDispW > 0 {
+		return len(av.wrapDiffLines(av.diffDispW))
 	}
 	return len(av.diffUnified)
 }
@@ -583,6 +619,10 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 		Width(w - 2).
 		Height(innerH)
 
+	dispW := max(w-4, 10)
+	dispH := max(h-4, 3)
+	av.diffDispW = dispW // must be set before diffLineCount so scroll bounds use wrapped widths
+
 	lineCount := av.diffLineCount()
 	if lineCount == 0 {
 		empty := av.theme.Dimmed.
@@ -592,9 +632,6 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 			AlignVertical(lipgloss.Center)
 		return border.Render(empty.Render("No diff available"))
 	}
-
-	dispW := max(w-4, 10)
-	dispH := max(h-4, 3)
 
 	// Header
 	fileName := av.diffFileName
@@ -617,7 +654,8 @@ func (av *AgentView) renderDiffPanel(w, h int) string {
 	if av.diffSplit {
 		content = RenderSideBySide(av.diffRows, fileName, dispW, visibleH, av.diffScrollOff, av.theme)
 	} else {
-		content = RenderUnified(av.diffUnified, dispW, visibleH, av.diffScrollOff)
+		wrapped := av.wrapDiffLines(dispW)
+		content = RenderUnified(wrapped, visibleH, av.diffScrollOff)
 	}
 
 	return border.Render(header + "\n" + content)

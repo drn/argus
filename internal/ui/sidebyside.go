@@ -274,7 +274,8 @@ func RenderUnifiedLines(pd ParsedDiff, filename string) []string {
 }
 
 // RenderUnified renders the unified diff view for the given visible window.
-func RenderUnified(lines []string, dispW, visibleH, scrollOff int) string {
+// Lines must already be hard-wrapped to the display width.
+func RenderUnified(lines []string, visibleH, scrollOff int) string {
 	if len(lines) == 0 {
 		return "(no diff)"
 	}
@@ -290,7 +291,7 @@ func RenderUnified(lines []string, dispW, visibleH, scrollOff int) string {
 
 	var b strings.Builder
 	for i := start; i < end; i++ {
-		b.WriteString(ansi.Truncate(lines[i], dispW, "\x1b[0m"))
+		b.WriteString(lines[i])
 		if i < end-1 {
 			b.WriteString("\n")
 		}

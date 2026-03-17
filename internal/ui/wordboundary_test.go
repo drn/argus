@@ -277,6 +277,95 @@ func TestApplyWordNavTextarea_MultiLine(t *testing.T) {
 	})
 }
 
+func TestApplyWordNavTextarea_SingleLine(t *testing.T) {
+	// Regression: single-line textarea must behave identically to old code.
+	altLeft := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	altRight := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
+	altBackspace := tea.KeyMsg{Type: tea.KeyBackspace, Alt: true}
+	altDelete := tea.KeyMsg{Type: tea.KeyDelete, Alt: true}
+	ctrlW := tea.KeyMsg{Type: tea.KeyCtrlW}
+
+	t.Run("alt+left single line", func(t *testing.T) {
+		ta := newTestTextarea("hello world", 11)
+		applyWordNavTextarea(altLeft, &ta, nil)
+		if got := textareaAbsCursorPos(&ta); got != 6 {
+			t.Errorf("got %d, want 6", got)
+		}
+	})
+
+	t.Run("alt+right single line", func(t *testing.T) {
+		ta := newTestTextarea("hello world", 0)
+		applyWordNavTextarea(altRight, &ta, nil)
+		if got := textareaAbsCursorPos(&ta); got != 5 {
+			t.Errorf("got %d, want 5", got)
+		}
+	})
+
+	t.Run("alt+backspace single line", func(t *testing.T) {
+		ta := newTestTextarea("hello world", 11)
+		applyWordNavTextarea(altBackspace, &ta, nil)
+		if got := ta.Value(); got != "hello " {
+			t.Errorf("value: got %q, want %q", got, "hello ")
+		}
+		if got := textareaAbsCursorPos(&ta); got != 6 {
+			t.Errorf("absPos: got %d, want 6", got)
+		}
+	})
+
+	t.Run("ctrl+w (alias for alt+backspace) single line", func(t *testing.T) {
+		ta := newTestTextarea("hello world", 11)
+		applyWordNavTextarea(ctrlW, &ta, nil)
+		if got := ta.Value(); got != "hello " {
+			t.Errorf("value: got %q, want %q", got, "hello ")
+		}
+	})
+
+	t.Run("alt+delete single line", func(t *testing.T) {
+		ta := newTestTextarea("hello world", 6)
+		applyWordNavTextarea(altDelete, &ta, nil)
+		if got := ta.Value(); got != "hello " {
+			t.Errorf("value: got %q, want %q", got, "hello ")
+		}
+		if got := textareaAbsCursorPos(&ta); got != 6 {
+			t.Errorf("absPos: got %d, want 6", got)
+		}
+	})
+}
+
+func TestApplyWordNavTextarea_ThreeLine(t *testing.T) {
+	// "one\ntwo\nthree" — three hard lines
+	altLeft := tea.KeyMsg{Type: tea.KeyLeft, Alt: true}
+	altRight := tea.KeyMsg{Type: tea.KeyRight, Alt: true}
+
+	t.Run("alt+left from line 2", func(t *testing.T) {
+		// "one\ntwo\nthree": t=8,h=9,r=10,e=11,e=12 (len=13)
+		// cursor at end (abs=13), alt+left → start of "three" (abs=8)
+		ta := newTestTextarea("one\ntwo\nthree", 13)
+		applyWordNavTextarea(altLeft, &ta, nil)
+		if got := textareaAbsCursorPos(&ta); got != 8 {
+			t.Errorf("got %d, want 8", got)
+		}
+	})
+
+	t.Run("alt+right from line 0", func(t *testing.T) {
+		// cursor at start (abs=0), expect end of "one" (abs=3)
+		ta := newTestTextarea("one\ntwo\nthree", 0)
+		applyWordNavTextarea(altRight, &ta, nil)
+		if got := textareaAbsCursorPos(&ta); got != 3 {
+			t.Errorf("got %d, want 3", got)
+		}
+	})
+
+	t.Run("alt+left across two newlines", func(t *testing.T) {
+		// cursor at start of "two" (abs=4), alt+left skips \n → start of "one" (abs=0)
+		ta := newTestTextarea("one\ntwo\nthree", 4)
+		applyWordNavTextarea(altLeft, &ta, nil)
+		if got := textareaAbsCursorPos(&ta); got != 0 {
+			t.Errorf("got %d, want 0", got)
+		}
+	})
+}
+
 func TestDeleteWordRight(t *testing.T) {
 	tests := []struct {
 		input   string
