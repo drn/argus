@@ -52,6 +52,11 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for ~/.claude/:\n%s", profile)
 	}
 
+	// Profile must allow writes to /var/folders for macOS temp/cache dirs
+	if !strings.Contains(profile, "/var/folders") {
+		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
+	}
+
 	// Params must contain HOME and WORKTREE
 	hasHome := false
 	hasWorktree := false
