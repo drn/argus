@@ -96,6 +96,58 @@ func applyWordNavTextinput(msg tea.KeyMsg, m *textinput.Model) bool {
 	return true
 }
 
+// textareaAbsCursorPos returns the absolute rune index of the cursor within
+// the full textarea value. LineInfo().CharOffset is relative to the current
+// line; this function adds the lengths of all preceding lines.
+func textareaAbsCursorPos(m *textarea.Model) int {
+	runes := []rune(m.Value())
+	targetLine := m.Line()
+	pos := 0
+	currentLine := 0
+	for pos < len(runes) && currentLine < targetLine {
+		if runes[pos] == '\n' {
+			currentLine++
+		}
+		pos++
+	}
+	return pos + m.LineInfo().CharOffset
+}
+
+// textareaSetAbsCursorPos moves the textarea cursor to the given absolute rune
+// position within text. It navigates line-by-line from the current cursor line
+// using CursorUp/CursorDown, then sets the column with SetCursor.
+// After SetValue the cursor resets to (0,0), so pass the new text and call
+// this from line 0 in that case.
+func textareaSetAbsCursorPos(m *textarea.Model, text string, absPos int) {
+	runes := []rune(text)
+	if absPos < 0 {
+		absPos = 0
+	}
+	if absPos > len(runes) {
+		absPos = len(runes)
+	}
+	targetLine := 0
+	col := 0
+	for i := 0; i < absPos; i++ {
+		if runes[i] == '\n' {
+			targetLine++
+			col = 0
+		} else {
+			col++
+		}
+	}
+	currentLine := m.Line()
+	for currentLine < targetLine {
+		m.CursorDown()
+		currentLine++
+	}
+	for currentLine > targetLine {
+		m.CursorUp()
+		currentLine--
+	}
+	m.SetCursor(col)
+}
+
 // applyWordNavTextarea handles word navigation keys for a textarea.Model.
 // Returns true if the key was handled (caller should skip the normal Update).
 // Also accepts a height-adjust callback called after delete operations so the
@@ -104,23 +156,27 @@ func applyWordNavTextarea(msg tea.KeyMsg, m *textarea.Model, adjustHeight func()
 	switch msg.String() {
 	case "alt+left", "alt+b":
 		runes := []rune(m.Value())
-		m.SetCursor(wordLeftPos(runes, m.LineInfo().CharOffset))
+		newAbsPos := wordLeftPos(runes, textareaAbsCursorPos(m))
+		textareaSetAbsCursorPos(m, m.Value(), newAbsPos)
 	case "alt+right", "alt+f":
 		runes := []rune(m.Value())
-		m.SetCursor(wordRightPos(runes, m.LineInfo().CharOffset))
+		newAbsPos := wordRightPos(runes, textareaAbsCursorPos(m))
+		textareaSetAbsCursorPos(m, m.Value(), newAbsPos)
 	case "alt+backspace", "ctrl+w":
 		runes := []rune(m.Value())
-		newRunes, newPos := deleteWordLeft(runes, m.LineInfo().CharOffset)
-		m.SetValue(string(newRunes))
-		m.SetCursor(newPos)
+		newRunes, newAbsPos := deleteWordLeft(runes, textareaAbsCursorPos(m))
+		newText := string(newRunes)
+		m.SetValue(newText) // resets cursor to (0,0)
+		textareaSetAbsCursorPos(m, newText, newAbsPos)
 		if adjustHeight != nil {
 			adjustHeight()
 		}
 	case "alt+delete", "alt+d":
 		runes := []rune(m.Value())
-		newRunes, newPos := deleteWordRight(runes, m.LineInfo().CharOffset)
-		m.SetValue(string(newRunes))
-		m.SetCursor(newPos)
+		newRunes, newAbsPos := deleteWordRight(runes, textareaAbsCursorPos(m))
+		newText := string(newRunes)
+		m.SetValue(newText) // resets cursor to (0,0)
+		textareaSetAbsCursorPos(m, newText, newAbsPos)
 		if adjustHeight != nil {
 			adjustHeight()
 		}
