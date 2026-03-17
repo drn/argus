@@ -44,6 +44,14 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		}
 	}
 
+	// Profile must allow writes to ~/.claude.json and ~/.claude/ for Claude Code startup
+	if !strings.Contains(profile, "/.claude.json") {
+		t.Errorf("profile missing allow file-write* for ~/.claude.json:\n%s", profile)
+	}
+	if !strings.Contains(profile, `"/.claude"`) {
+		t.Errorf("profile missing allow file-write* for ~/.claude/:\n%s", profile)
+	}
+
 	// Params must contain HOME and WORKTREE
 	hasHome := false
 	hasWorktree := false
