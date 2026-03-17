@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -38,6 +39,14 @@ type Session struct {
 	ptyCols    uint16    // current PTY width
 	ptyRows    uint16    // current PTY height
 	lastOutput time.Time // last time output was received from PTY
+
+	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
+}
+
+// SessionLogPath returns the path to the PTY output log file for a task.
+func SessionLogPath(taskID string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".argus", "sessions", taskID+".log")
 }
 
 // StartSession allocates a PTY with the given initial size, starts the command,
@@ -55,6 +64,13 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		return nil, err
 	}
 
+	// Open log file for PTY output — best effort, nil if unavailable.
+	var logFile *os.File
+	logPath := SessionLogPath(taskID)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
+		logFile, _ = os.Create(logPath)
+	}
+
 	s := &Session{
 		TaskID:   taskID,
 		Cmd:      cmd,
@@ -64,6 +80,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		detachCh: make(chan struct{}),
 		ptyCols:  cols,
 		ptyRows:  rows,
+		logFile:  logFile,
 	}
 
 	// Single reader: PTY → ring buffer (+ attached writer when set)
@@ -76,8 +93,11 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 }
 
 // readLoop is the sole reader of the PTY. It always writes to the ring buffer,
-// and tees output to all attached writers.
+// tees output to all attached writers, and appends to the session log file.
 func (s *Session) readLoop() {
+	if s.logFile != nil {
+		defer s.logFile.Close()
+	}
 	tmp := make([]byte, 4096)
 	for {
 		n, err := s.ptmx.Read(tmp)
@@ -91,6 +111,10 @@ func (s *Session) readLoop() {
 			ws := make([]io.Writer, len(s.writers))
 			copy(ws, s.writers)
 			s.mu.Unlock()
+			// Write to log file — sole writer, no lock needed.
+			if s.logFile != nil {
+				s.logFile.Write(chunk) //nolint:errcheck // best-effort
+			}
 			// Write to all attached writers, collect any that error.
 			var failed []io.Writer
 			for _, w := range ws {
