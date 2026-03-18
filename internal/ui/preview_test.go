@@ -97,6 +97,31 @@ func TestBuildSGRWithActiveLine_PreservesExplicitBackground(t *testing.T) {
 	}
 }
 
+func TestBuildSGRWithActiveLine_PreservesExplicitForeground(t *testing.T) {
+	// A cell with explicit FG (e.g. Claude Code's Ink cursor) must not be
+	// tinted — only completely default cells get the activeInputBG.
+	result := buildSGRWithActiveLine(vt10x.Color(7), vt10x.DefaultBG, 0, true)
+	if strings.Contains(result, "48;5;17") {
+		t.Fatalf("active-row tint should not apply when FG is explicit, got %q", result)
+	}
+}
+
+func TestBuildSGRWithActiveLine_PreservesMode(t *testing.T) {
+	// A reverse-video cell (e.g. a cursor indicator) must not be tinted.
+	result := buildSGRWithActiveLine(vt10x.DefaultFG, vt10x.DefaultBG, vtAttrReverse, true)
+	if strings.Contains(result, "48;5;17") {
+		t.Fatalf("active-row tint should not apply to reverse-video cells, got %q", result)
+	}
+}
+
+func TestBuildSGRWithActiveLine_TintsBlankCell(t *testing.T) {
+	// A completely default cell (blank background) should receive the tint.
+	result := buildSGRWithActiveLine(vt10x.DefaultFG, vt10x.DefaultBG, 0, true)
+	if !strings.Contains(result, "48;5;17") {
+		t.Fatalf("blank cell on active row should receive activeInputBG tint, got %q", result)
+	}
+}
+
 func TestStripANSI_NoEscapes(t *testing.T) {
 	result := stripANSI("hello world")
 	if result != "hello world" {
