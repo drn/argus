@@ -811,9 +811,19 @@ func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyDown:
 			return m.switchAgentTask(+1)
 		case tea.KeyRunes:
-			// Cmd+O (sent as Alt+O by macOS terminals) opens the associated PR in browser.
+			// Option+O (⌥O, sent as Alt+O by macOS terminals) opens the associated PR in browser.
 			if string(msg.Runes) == "o" {
 				return m, m.agentview.OpenPR()
+			}
+		}
+	}
+
+	// When the agent session has finished, the PTY is dead — intercept 'o' to
+	// open the PR (consistent with the task list's 'o' binding).
+	if !msg.Alt && msg.Type == tea.KeyRunes && string(msg.Runes) == "o" {
+		if m.runner.Get(m.agentview.taskID) == nil {
+			if cmd := m.agentview.OpenPR(); cmd != nil {
+				return m, cmd
 			}
 		}
 	}
