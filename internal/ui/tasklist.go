@@ -40,10 +40,9 @@ type TaskList struct {
 	running       map[string]bool // task IDs with active agent sessions
 	idle          map[string]bool // task IDs with sessions waiting for input
 	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
-	rows            []row           // flattened display rows (headers + tasks)
-	expanded        string          // currently expanded project name
-	archiveExpanded bool            // whether the Archive section is open
-	archiveProject  string          // expanded project within archive section
+	rows           []row   // flattened display rows (headers + tasks)
+	expanded       string  // currently expanded project name
+	archiveProject string  // expanded project within archive section
 	tickEven        bool            // toggles each tick for status icon animation
 }
 
@@ -117,8 +116,46 @@ func (tl *TaskList) moveCursor(dir int) {
 		return
 	}
 
-	// Already on a task row or archive header — done.
-	if tl.rows[c].kind == rowTask || tl.rows[c].kind == rowArchiveHeader {
+	// Already on a task row — done.
+	if tl.rows[c].kind == rowTask {
+		return
+	}
+
+	// On the archive header — skip it like a project header.
+	if tl.rows[c].kind == rowArchiveHeader {
+		if dir > 0 {
+			if c+1 < len(tl.rows) {
+				tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+				tl.autoExpand()
+				c = tl.scroll.Cursor()
+				// May have landed on a project header within archive — skip that too.
+				if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+					if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+						tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+					}
+				}
+			}
+		} else {
+			tl.scroll.CursorUp()
+			tl.autoExpand()
+			c = tl.scroll.Cursor()
+			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+				// Find the last task row in this expanded project.
+				lastTask := -1
+				for i := c + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
+					lastTask = i
+				}
+				if lastTask >= 0 {
+					tl.scroll.SetCursor(lastTask)
+					visible := tl.visibleRows()
+					if lastTask >= tl.scroll.Offset()+visible {
+						tl.scroll.SetOffset(lastTask - visible + 1)
+					}
+				}
+			} else if c < 0 || (c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader) {
+				tl.scroll.SetCursor(prev)
+			}
+		}
 		return
 	}
 
@@ -134,10 +171,6 @@ func (tl *TaskList) moveCursor(dir int) {
 			tl.scroll.CursorUp()
 			tl.autoExpand()
 			c = tl.scroll.Cursor()
-			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
-				// Landed on archive header — that's fine, stop here.
-				return
-			}
 			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
 				// Find the last task row in this expanded project.
 				lastTask := -1
@@ -312,30 +345,28 @@ func (tl *TaskList) buildRows() {
 	// Add archive section if there are archived tasks.
 	if len(archivedTasks) > 0 {
 		tl.rows = append(tl.rows, row{kind: rowArchiveHeader})
-		if tl.archiveExpanded {
-			archiveGroups := tl.groupByProject(archivedTasks)
-			// Reset archiveProject if it no longer exists.
-			if tl.archiveProject != "" {
-				found := false
-				for _, g := range archiveGroups {
-					if g.name == tl.archiveProject {
-						found = true
-						break
-					}
-				}
-				if !found {
-					tl.archiveProject = ""
-				}
-			}
-			if tl.archiveProject == "" && len(archiveGroups) > 0 {
-				tl.archiveProject = archiveGroups[0].name
-			}
+		archiveGroups := tl.groupByProject(archivedTasks)
+		// Reset archiveProject if it no longer exists.
+		if tl.archiveProject != "" {
+			found := false
 			for _, g := range archiveGroups {
-				tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
 				if g.name == tl.archiveProject {
-					for _, t := range g.tasks {
-						tl.rows = append(tl.rows, row{kind: rowTask, project: g.name, task: t})
-					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				tl.archiveProject = ""
+			}
+		}
+		if tl.archiveProject == "" && len(archiveGroups) > 0 {
+			tl.archiveProject = archiveGroups[0].name
+		}
+		for _, g := range archiveGroups {
+			tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
+			if g.name == tl.archiveProject {
+				for _, t := range g.tasks {
+					tl.rows = append(tl.rows, row{kind: rowTask, project: g.name, task: t})
 				}
 			}
 		}
@@ -491,7 +522,7 @@ func (tl TaskList) View() string {
 			tl.renderProjectHeader(&b, r.project, selected, tl.isInArchiveSection(i))
 		case rowArchiveHeader:
 			b.WriteString("\n")
-			tl.renderArchiveHeader(&b, selected)
+			tl.renderArchiveHeader(&b)
 		case rowTask:
 			tl.renderTaskRow(&b, r.task, selected, tl.isInArchiveSection(i))
 		}
@@ -634,12 +665,7 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 	}
 }
 
-func (tl TaskList) renderArchiveHeader(b *strings.Builder, selected bool) {
-	chevron := "▸"
-	if tl.archiveExpanded {
-		chevron = "▾"
-	}
-
+func (tl TaskList) renderArchiveHeader(b *strings.Builder) {
 	// Count archived tasks.
 	count := 0
 	for _, t := range tl.filtered {
@@ -648,31 +674,10 @@ func (tl TaskList) renderArchiveHeader(b *strings.Builder, selected bool) {
 		}
 	}
 
-	nameStyle := tl.theme.Dimmed
-	chevronStyle := tl.theme.Dimmed
-	cursorStr := "  "
-	if selected {
-		nameStyle = tl.theme.Selected
-		chevronStyle = tl.theme.Selected
-		cursorStr = tl.theme.Selected.Render(" >")
-	}
-
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	fmt.Fprintf(b, "%s %s %s%s\n", cursorStr, chevronStyle.Render(chevron), nameStyle.Render("Archive"), countStr)
+	fmt.Fprintf(b, "%s%s\n", tl.theme.Dimmed.Render("Archive"), countStr)
 }
 
-// ToggleArchive toggles the archive section open/closed.
-func (tl *TaskList) ToggleArchive() {
-	tl.archiveExpanded = !tl.archiveExpanded
-	tl.buildRows()
-	tl.scroll.ClampCursor(len(tl.rows))
-}
-
-// CursorOnArchiveHeader returns true if the cursor is on the archive section header.
-func (tl *TaskList) CursorOnArchiveHeader() bool {
-	c := tl.scroll.Cursor()
-	return c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader
-}
 
 func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected, inArchive bool) {
 	icon := tl.taskStatusIcon(t)
