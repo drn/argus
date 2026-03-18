@@ -74,6 +74,15 @@ func estimateVTRows(raw []byte, vtCols, dispH int) int {
 	return vtRows
 }
 
+const (
+	// activeInputBG is a subtle row highlight for the live input line in the
+	// agent terminal. It makes the editable row read as an input field rather
+	// than passive terminal output.
+	activeInputBG vt10x.Color = 17
+	cursorFG      vt10x.Color = 17
+	cursorBG      vt10x.Color = 153
+)
+
 // renderLine builds a single line from the vt10x screen with ANSI colors.
 // cursorX is the column to render a cursor at (-1 for no cursor on this line).
 func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
@@ -81,6 +90,7 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 	var curFG, curBG vt10x.Color
 	var curMode int16
 	active := false
+	activeLine := cursorX >= 0
 
 	lastCol := -1
 	for x := cols - 1; x >= 0; x-- {
@@ -97,6 +107,9 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 	if cursorX > lastCol {
 		lastCol = cursorX
 	}
+	if activeLine && cols > 0 {
+		lastCol = cols - 1
+	}
 
 	for x := 0; x <= lastCol; x++ {
 		cell := vt.Cell(x, y)
@@ -106,17 +119,15 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 		}
 
 		if x == cursorX {
-			// Explicit white-on-black cursor. Reverse video (\x1b[0;7m) relies
-			// on the terminal's default FG/BG colors, which inside a lipgloss
-			// panel may both be dark, producing an invisible black cursor.
-			// Use bright white fg (97) on black bg (40) for guaranteed visibility.
-			b.WriteString("\x1b[0;97;40m")
+			// Use an explicit high-contrast cursor so it stays legible on the
+			// highlighted input row and against the panel background.
+			b.WriteString(buildSGR(cursorFG, cursorBG, 0))
 			b.WriteRune(ch)
 			b.WriteString("\x1b[0m")
 			active = false
 		} else {
 			if cell.FG != curFG || cell.BG != curBG || cell.Mode != curMode || !active {
-				b.WriteString(buildSGR(cell.FG, cell.BG, cell.Mode))
+				b.WriteString(buildSGRWithActiveLine(cell.FG, cell.BG, cell.Mode, activeLine))
 				curFG = cell.FG
 				curBG = cell.BG
 				curMode = cell.Mode
@@ -135,6 +146,14 @@ func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
 
 // buildSGR builds an ANSI SGR escape sequence for the given attributes.
 func buildSGR(fg, bg vt10x.Color, mode int16) string {
+	return buildSGRWithActiveLine(fg, bg, mode, false)
+}
+
+// buildSGRWithActiveLine builds an ANSI SGR escape sequence for the given
+// attributes. When activeLine is true, default-background cells inherit the
+// input-row highlight so the editable line is visually separated from
+// surrounding text.
+func buildSGRWithActiveLine(fg, bg vt10x.Color, mode int16, activeLine bool) string {
 	var params []string
 
 	params = append(params, "0")
@@ -154,6 +173,9 @@ func buildSGR(fg, bg vt10x.Color, mode int16) string {
 
 	if fg != vt10x.DefaultFG {
 		params = append(params, sgrColor(fg, 30))
+	}
+	if activeLine && bg == vt10x.DefaultBG {
+		bg = activeInputBG
 	}
 	if bg != vt10x.DefaultBG {
 		params = append(params, sgrColor(bg, 40))

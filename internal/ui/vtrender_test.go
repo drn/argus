@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/hinshun/vt10x"
 )
 
 func TestReplayVT10X_TrimsLeadingEmptyLines(t *testing.T) {
@@ -58,5 +60,19 @@ func TestReplayVT10X_EmptyTerminal(t *testing.T) {
 	lines := replayVT10X(raw, 40, 10, true)
 	if len(lines) != 0 {
 		t.Errorf("expected empty lines for empty input, got %d", len(lines))
+	}
+}
+
+func TestRenderLine_HighlightsActiveInputRow(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 2))
+	vt.Write([]byte("Summarize recent com"))
+
+	line := renderLine(vt, 0, 20, 5)
+
+	if !strings.Contains(line, "\x1b[0;48;5;17m") {
+		t.Fatalf("expected active row background highlight, got %q", line)
+	}
+	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
+		t.Fatalf("expected explicit cursor styling, got %q", line)
 	}
 }
