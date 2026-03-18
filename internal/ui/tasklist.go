@@ -486,7 +486,7 @@ func (tl *TaskList) autoExpand() {
 			currentRow := tl.rows[c]
 			tl.archiveProject = r.project
 			tl.buildRows()
-			tl.restoreCursor(currentRow)
+			tl.restoreCursor(currentRow, true)
 		}
 	} else {
 		// Expand the project in the active section.
@@ -494,7 +494,7 @@ func (tl *TaskList) autoExpand() {
 			currentRow := tl.rows[c]
 			tl.expanded = r.project
 			tl.buildRows()
-			tl.restoreCursor(currentRow)
+			tl.restoreCursor(currentRow, false)
 		}
 	}
 }
@@ -510,10 +510,15 @@ func (tl *TaskList) isInArchiveSection(idx int) bool {
 }
 
 // restoreCursor finds the row matching currentRow in the rebuilt rows slice
-// and positions the cursor there.
-func (tl *TaskList) restoreCursor(target row) {
+// and positions the cursor there. inArchive restricts the search to the
+// archive section (or main section), preventing a project that exists in both
+// sections from matching the wrong header.
+func (tl *TaskList) restoreCursor(target row, inArchive bool) {
 	for i, r := range tl.rows {
 		if r.kind == target.kind && r.project == target.project {
+			if tl.isInArchiveSection(i) != inArchive {
+				continue
+			}
 			if r.kind == rowProject || r.task == target.task {
 				tl.scroll.SetCursor(i)
 				// Ensure offset is reasonable after cursor jump.

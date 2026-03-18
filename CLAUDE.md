@@ -210,6 +210,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **`fixupBackends()` migrates `--yolo` to `--full-auto` and sets `resume_command` for codex.** Detection: command contains "codex" but not `--full-auto`, or codex command missing `resume_command`. The `resume_command` DB column is added via `ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''` (idempotent).
 
+- **`restoreCursor` must filter by archive section to avoid cross-section project name collisions.** When a project has both active and archived tasks, its name appears as a `rowProject` header in BOTH the main section and the archive section. The old `restoreCursor` iterated rows and took the first match on `(kind, project)` — always finding the main-section header, jumping the cursor out of the archive. Fix: `restoreCursor` now takes an `inArchive bool` and skips candidate rows where `tl.isInArchiveSection(i) != inArchive`. Both call sites in `autoExpand()` pass the correct value (true for archive, false for main).
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

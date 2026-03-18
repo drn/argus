@@ -909,3 +909,80 @@ func TestTaskList_ArchiveAutoExpandProjectSwitch(t *testing.T) {
 		t.Error("archive project should auto-expand when cursor moves to a different project")
 	}
 }
+
+// TestTaskList_ArchiveNavigation_SameProjectName tests that navigating within
+// the archive section does not jump to the main section when a project name
+// appears in both sections. This is the core bug: restoreCursor used to find
+// the first matching project header (in the main section) instead of the one
+// in the archive.
+func TestTaskList_ArchiveNavigation_SameProjectName(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		// "argus" has active tasks (appears in main section) AND archived tasks.
+		{ID: "t1", Name: "Active argus task", Project: "argus"},
+		{ID: "t2", Name: "Archived argus 1", Project: "argus", Archived: true},
+		{ID: "t3", Name: "Archived argus 2", Project: "argus", Archived: true},
+		// "cli" has only archived tasks (only appears in archive section).
+		{ID: "t4", Name: "Archived cli 1", Project: "cli", Archived: true},
+		{ID: "t5", Name: "Archived cli 2", Project: "cli", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Navigate into the archive section.
+	for range 20 {
+		tl.CursorDown()
+	}
+
+	if !tl.archiveExpanded {
+		t.Fatal("expected archive to be expanded")
+	}
+
+	// Navigate through the archive to the "cli" project.
+	for range 20 {
+		tl.CursorDown()
+	}
+
+	sel := tl.Selected()
+	if sel == nil {
+		t.Fatal("expected a task selected")
+	}
+
+	// The cursor must be in the archive section — not in the main section.
+	c := tl.scroll.Cursor()
+	if !tl.isInArchiveSection(c) {
+		t.Errorf("cursor jumped out of archive section to main section (task %q, project %q)", sel.Name, sel.Project)
+	}
+}
+
+// TestTaskList_ArchiveLastItemNavigation verifies that pressing Down from the
+// last task in the archive does not move the cursor backward.
+func TestTaskList_ArchiveLastItemNavigation(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+		{ID: "t2", Name: "Arch 1", Project: "proj", Archived: true},
+		{ID: "t3", Name: "Arch 2", Project: "proj", Archived: true},
+		{ID: "t4", Name: "Arch 3", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Navigate all the way down.
+	for range 30 {
+		tl.CursorDown()
+	}
+
+	sel := tl.Selected()
+	if sel == nil {
+		t.Fatal("expected a task selected at bottom")
+	}
+	lastCursor := tl.scroll.Cursor()
+
+	// Pressing down again from the last item must not move the cursor backward.
+	tl.CursorDown()
+	newCursor := tl.scroll.Cursor()
+	if newCursor < lastCursor {
+		t.Errorf("cursor moved backward from last item: was %d, now %d", lastCursor, newCursor)
+	}
+}
