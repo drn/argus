@@ -618,3 +618,98 @@ func TestNewTaskForm_VisualLineCount(t *testing.T) {
 		t.Errorf("mixed: visualLineCount() = %d, want %d (maxPromptLines for pasted multi-line)", got, maxPromptLines)
 	}
 }
+
+func TestNewTaskForm_AcTriggerClaudeSlash(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+	if got := f.acTrigger(); got != "/" {
+		t.Errorf("acTrigger() = %q, want %q for claude backend", got, "/")
+	}
+}
+
+func TestNewTaskForm_AcTriggerCodexDollar(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "codex")
+	if got := f.acTrigger(); got != "$" {
+		t.Errorf("acTrigger() = %q, want %q for codex backend", got, "$")
+	}
+}
+
+func TestNewTaskForm_AutocompleteCodexTrigger(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "codex")
+	f.skills = testSkills()
+	f.SetSize(80, 40)
+
+	// "$" triggers autocomplete for codex
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'$'}})
+	if !f.acOpen {
+		t.Error("acOpen should be true after typing '$' with codex backend")
+	}
+	if len(f.acMatches) != 4 {
+		t.Errorf("acMatches = %d, want 4", len(f.acMatches))
+	}
+
+	// "/" should NOT trigger autocomplete for codex
+	theme2 := DefaultTheme()
+	f2 := NewNewTaskForm(theme2, testProjects(), "", testBackends(), "codex")
+	f2.skills = testSkills()
+	f2.SetSize(80, 40)
+	f2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if f2.acOpen {
+		t.Error("acOpen should be false after '/' with codex backend")
+	}
+}
+
+func TestNewTaskForm_AutocompleteSelectCodexDollarPrefix(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "codex")
+	f.skills = testSkills()
+	f.SetSize(80, 40)
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'$'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyDown}) // select deploy (index 1)
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	val := f.promptInput.Value()
+	if !strings.HasPrefix(val, "$deploy") {
+		t.Errorf("prompt value = %q, want '$deploy ...'", val)
+	}
+}
+
+func TestNewTaskForm_AutocompleteViewCodexDollar(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "codex")
+	f.skills = testSkills()
+	f.SetSize(80, 40)
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'$'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+
+	view := f.View()
+	if !strings.Contains(view, "$pr") {
+		t.Errorf("View() missing '$pr' in autocomplete: %q", view)
+	}
+}
+
+func TestNewTaskForm_BackendSwitchUpdatesTrigger(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+	f.skills = testSkills()
+	f.SetSize(80, 40)
+
+	// Type "/" — opens autocomplete with claude trigger
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !f.acOpen {
+		t.Fatal("expected acOpen=true after '/' on claude backend")
+	}
+
+	// Close autocomplete, navigate to backend field, switch to codex
+	f.Update(tea.KeyMsg{Type: tea.KeyEsc})    // close autocomplete (stays on prompt)
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})    // tab: prompt → project
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})    // tab: project → backend
+	f.Update(tea.KeyMsg{Type: tea.KeyRight})  // cycle backend to codex
+
+	if f.acTrigger() != "$" {
+		t.Errorf("acTrigger() = %q after switching to codex, want %q", f.acTrigger(), "$")
+	}
+}
