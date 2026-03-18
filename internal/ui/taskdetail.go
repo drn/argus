@@ -74,7 +74,7 @@ func (d TaskDetail) View(t *model.Task, running bool) string {
 	if t.PRURL != "" {
 		pr := t.PRURL
 		maxPRLen := innerW - 8 // "  PR: " + some margin
-		if maxPRLen > 0 && len(pr) > maxPRLen {
+		if maxPRLen > 3 && len(pr) > maxPRLen {
 			pr = "..." + pr[len(pr)-maxPRLen+3:]
 		}
 		b.WriteString("  " + d.theme.Dimmed.Render("PR: ") + d.theme.Normal.Render(pr) + "\n")
@@ -84,7 +84,7 @@ func (d TaskDetail) View(t *model.Task, running bool) string {
 	if t.Worktree != "" {
 		wt := t.Worktree
 		maxWtLen := innerW - 14 // "  Worktree: " + some margin
-		if maxWtLen > 0 && len(wt) > maxWtLen {
+		if maxWtLen > 3 && len(wt) > maxWtLen {
 			wt = "..." + wt[len(wt)-maxWtLen+3:]
 		}
 		b.WriteString("  " + d.theme.Dimmed.Render("Worktree: ") + d.theme.Normal.Render(wt) + "\n")
