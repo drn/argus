@@ -15,3 +15,5 @@ Which context files are captured in knowledge:
 | context/plans/daemon-architecture.md | code-quality.md (Daemon Architecture section) | Implementation patterns, IPC design, gotchas |
 | context/plans/sandbox-worktrees.md | code-quality.md (Sandbox section) | sandbox-exec SBPL profile, BuildCmd signature, sandbox config lifecycle, SBPL gotchas |
 | context/research/daemon-lifecycle-flows.md | code-quality.md (Daemon Cleanup Race section) | All startup/shutdown/restart flows, goroutine ordering, race analysis |
+| context/research/terminal-runtime-notes.md | key-learnings.md (terminal passthrough entry) | Library evaluation (tcell, tview, x/vt, vt10x), Bubble Tea passthrough rejection reasons, phased migration plan |
+| context/plans/2026-03-18-terminal-passthrough-plan.md | key-learnings.md (terminal passthrough entry) | Phase 1 complete: internal/app/agentview package, TerminalAdapter, SessionLookup, UIRuntime, ARGUS_UI_RUNTIME env var |

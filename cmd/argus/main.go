@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
@@ -45,7 +46,22 @@ func main() {
 		}
 	}
 
-	runTUI()
+	uiRuntime, err := agentview.ParseRuntime(os.Getenv(agentview.EnvUIRuntime))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	switch uiRuntime {
+	case agentview.RuntimeBubbleTea:
+		runTUI()
+	case agentview.RuntimeTcell:
+		fmt.Fprintln(os.Stderr, "ARGUS_UI_RUNTIME=tcell is planned but not implemented yet")
+		os.Exit(2)
+	default:
+		fmt.Fprintf(os.Stderr, "unsupported UI runtime %q\n", uiRuntime)
+		os.Exit(1)
+	}
 }
 
 func runTUI() {
