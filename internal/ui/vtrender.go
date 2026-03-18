@@ -16,6 +16,8 @@ const (
 	// attrGfx      = 1 << 3
 	vtAttrItalic = 1 << 4
 	// attrBlink    = 1 << 5
+	// attrWrap     = 1 << 6
+	vtAttrDim = 1 << 7
 )
 
 // replayVT10X replays raw terminal output through a virtual terminal and
@@ -141,6 +143,9 @@ func buildSGR(fg, bg vt10x.Color, mode int16) string {
 
 	if mode&vtAttrBold != 0 {
 		params = append(params, "1")
+	}
+	if mode&vtAttrDim != 0 {
+		params = append(params, "2")
 	}
 	if mode&vtAttrItalic != 0 {
 		params = append(params, "3")
