@@ -367,3 +367,18 @@ Three bugs discovered in daemon lifecycle management:
 **Fix**: `FetchPRList()` fetches the cross-repo list via `gh search prs` (without `reviewDecision`), then `enrichReviewDecisions()` groups PRs by repo and calls `gh pr list -R owner/repo --json number,reviewDecision` per unique repo — O(repos) not O(PRs). Failures are silently ignored (badges just won't show).
 
 **Logging rule added**: All async message handlers in root.go for the reviews tab now use `uxlog.Log("[reviews] ...")` for both success and error paths. This was missing at launch, making failures invisible. New `### Logging Requirements` section added to CLAUDE.md Development Rules to enforce this for all future features.
+
+### Task Rename Feature (2026-03-17)
+
+**Data model**: No new fields — rename updates `Name`, `Branch`, and `Worktree` on the existing `Task` struct.
+
+**Flow**: 'r' key in task list → `viewRenameTask` → `RenameTaskForm` (single `textinput.Model` pre-filled with current name) → on submit: `git branch -m` in worktree dir, `os.Rename` worktree directory, `git worktree repair` in repo dir, update DB.
+
+**Gotchas**:
+- Must block rename while agent is running (`runner.HasSession` check both at key press and at submit).
+- Branch rename runs in the worktree dir (where the branch is checked out), not the repo dir.
+- After directory rename, `git worktree repair` is needed so git's worktree metadata points at the new path.
+- On branch rename failure, the form stays open with the error. On directory rename failure, the branch rename is reverted.
+- `isWorktreeSubdir` guard prevents renaming directories outside `~/.argus/worktrees/`.
+
+**Key binding**: `'r'` in `handleTaskListKey` via `msg.String() == "r"`. Also added to `KeyMap.Rename` for help display. Does not conflict with `RestartDaemon` ('r' in settings tab) since they're in different tab handlers.
