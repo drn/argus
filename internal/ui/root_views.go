@@ -46,6 +46,8 @@ func (m Model) View() string {
 		return m.renametask.View() + "\n" + bar
 	case viewNewProject, viewEditProject:
 		return m.projectform.View() + "\n" + bar
+	case viewNewBackend, viewEditBackend:
+		return m.backendform.View() + "\n" + bar
 	case viewSandboxConfig:
 		return m.sandboxconfig.View() + "\n" + bar
 	}

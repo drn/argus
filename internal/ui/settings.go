@@ -38,6 +38,7 @@ type SettingsView struct {
 	warnings         []string
 	projects         []projectEntry
 	backends         []backendEntry
+	defaultBackend   string // name of the default backend
 	taskCounts       map[string]statusCounts
 	sandboxEnabled    bool
 	sandboxAvailable  bool
@@ -76,6 +77,12 @@ func (sv *SettingsView) SetProjects(projects map[string]config.Project) {
 		sv.projects = append(sv.projects, projectEntry{Name: name, Project: proj})
 	}
 	sortProjects(sv.projects)
+	sv.rebuildRows()
+}
+
+// SetDefaultBackend stores the name of the current default backend.
+func (sv *SettingsView) SetDefaultBackend(name string) {
+	sv.defaultBackend = name
 	sv.rebuildRows()
 }
 
@@ -161,7 +168,11 @@ func (sv *SettingsView) rebuildRows() {
 	}
 
 	// BACKENDS section
-	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "BACKENDS"})
+	backendsLabel := "BACKENDS"
+	if sv.defaultBackend != "" {
+		backendsLabel += " (default: " + sv.defaultBackend + ")"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: backendsLabel})
 	for _, b := range sv.backends {
 		sv.rows = append(sv.rows, settingsRow{kind: settingsRowBackend, label: b.Name, key: b.Name})
 	}
@@ -572,7 +583,7 @@ func (sv SettingsView) renderProjectDetail(sel *settingsRow, innerW int) string 
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func (sv SettingsView) renderBackendDetail(sel *settingsRow, _ int) string {
+func (sv SettingsView) renderBackendDetail(_ *settingsRow, _ int) string {
 	entry := sv.SelectedBackend()
 	if entry == nil {
 		return sv.theme.Dimmed.Render(" Backend not found")
@@ -582,14 +593,30 @@ func (sv SettingsView) renderBackendDetail(sel *settingsRow, _ int) string {
 
 	b.WriteString(sv.theme.Title.Render(" "+entry.Name) + "\n\n")
 
+	// Default indicator
+	if entry.Name == sv.defaultBackend {
+		b.WriteString("  " + sv.theme.Complete.Render("★ Default backend") + "\n\n")
+	}
+
 	b.WriteString(sv.theme.Section.Render("  CONFIG") + "\n")
 	b.WriteString("  " + sv.theme.Dimmed.Render("Command: ") + sv.theme.Normal.Render(entry.Backend.Command) + "\n")
+
+	if entry.Backend.ResumeCommand != "" {
+		b.WriteString("  " + sv.theme.Dimmed.Render("Resume: ") + sv.theme.Normal.Render(entry.Backend.ResumeCommand) + "\n")
+	}
 
 	promptFlag := entry.Backend.PromptFlag
 	if promptFlag == "" {
 		promptFlag = "(none — uses stdin)"
 	}
 	b.WriteString("  " + sv.theme.Dimmed.Render("Prompt Flag: ") + sv.theme.Normal.Render(promptFlag) + "\n")
+
+	// Help hints
+	hints := "[e] edit  [n] new"
+	if entry.Name != sv.defaultBackend {
+		hints += "  [d] set as default"
+	}
+	b.WriteString("\n" + sv.theme.Help.Render("  "+hints) + "\n")
 
 	return b.String()
 }

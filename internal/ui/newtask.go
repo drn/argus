@@ -18,7 +18,10 @@ type NewTaskForm struct {
 	promptInput  textarea.Model
 	projectNames []string
 	projectIdx   int
-	focused      int // 0 = project, 1 = prompt
+	backendNames []string // sorted backend names; index 0 is "(default)"
+	backendIdx   int
+	defaultBackendName string // resolved name for the "(default)" entry
+	focused      int // 0 = project, 1 = backend, 2 = prompt
 	theme        Theme
 	projects     map[string]config.Project
 	done         bool
@@ -30,13 +33,14 @@ type NewTaskForm struct {
 
 const (
 	fieldProject = 0
-	fieldPrompt  = 1
+	fieldBackend = 1
+	fieldPrompt  = 2
 )
 
 // maxPromptLines is the maximum number of visible lines for the prompt textarea.
 const maxPromptLines = 10
 
-func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string) NewTaskForm {
+func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string, backends map[string]config.Backend, defaultBackend string) NewTaskForm {
 	promptInput := textarea.New()
 	promptInput.Placeholder = "Prompt for the agent"
 	promptInput.CharLimit = 0 // no limit
@@ -72,13 +76,25 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 		}
 	}
 
+	// Build sorted backend name list with "(default)" entry at index 0
+	backendNames := []string{"(default)"}
+	bNames := make([]string, 0, len(backends))
+	for name := range backends {
+		bNames = append(bNames, name)
+	}
+	sort.Strings(bNames)
+	backendNames = append(backendNames, bNames...)
+
 	return NewTaskForm{
-		promptInput:  promptInput,
-		projectNames: names,
-		projectIdx:   idx,
-		focused:      fieldPrompt,
-		theme:        theme,
-		projects:     projects,
+		promptInput:        promptInput,
+		projectNames:       names,
+		projectIdx:         idx,
+		backendNames:       backendNames,
+		backendIdx:         0,
+		defaultBackendName: defaultBackend,
+		focused:            fieldPrompt,
+		theme:              theme,
+		projects:           projects,
 	}
 }
 
@@ -92,24 +108,37 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			f.canceled = true
 			return nil
 		case "tab":
-			if f.focused == fieldProject {
+			switch f.focused {
+			case fieldProject:
+				f.focused = fieldBackend
+				f.promptInput.Blur()
+			case fieldBackend:
+				f.focused = fieldPrompt
+				return f.promptInput.Focus()
+			default: // fieldPrompt
+				f.focused = fieldProject
+				f.promptInput.Blur()
+			}
+			return nil
+		case "shift+tab":
+			switch f.focused {
+			case fieldPrompt:
+				f.focused = fieldBackend
+				f.promptInput.Blur()
+			case fieldBackend:
+				f.focused = fieldProject
+			default: // fieldProject
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
-			f.focused = fieldProject
-			f.promptInput.Blur()
 			return nil
-		case "shift+tab":
-			if f.focused == fieldPrompt {
-				f.focused = fieldProject
-				f.promptInput.Blur()
-				return nil
-			}
-			f.focused = fieldPrompt
-			return f.promptInput.Focus()
 		case "left":
 			if f.focused == fieldProject && len(f.projectNames) > 0 {
 				f.projectIdx = (f.projectIdx - 1 + len(f.projectNames)) % len(f.projectNames)
+				return nil
+			}
+			if f.focused == fieldBackend && len(f.backendNames) > 0 {
+				f.backendIdx = (f.backendIdx - 1 + len(f.backendNames)) % len(f.backendNames)
 				return nil
 			}
 		case "right":
@@ -117,21 +146,33 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 				f.projectIdx = (f.projectIdx + 1) % len(f.projectNames)
 				return nil
 			}
+			if f.focused == fieldBackend && len(f.backendNames) > 0 {
+				f.backendIdx = (f.backendIdx + 1) % len(f.backendNames)
+				return nil
+			}
 		case "up":
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
-			// Move to project field if cursor is on the first visual line
+			if f.focused == fieldBackend {
+				f.focused = fieldProject
+				return nil
+			}
+			// Move to backend field if cursor is on the first visual line
 			li := f.promptInput.LineInfo()
 			if f.promptInput.Line() == 0 && li.RowOffset == 0 {
-				f.focused = fieldProject
+				f.focused = fieldBackend
 				f.promptInput.Blur()
 				return nil
 			}
 			// Otherwise let textarea handle up arrow for multi-line navigation
 		case "down":
 			if f.focused == fieldProject {
+				f.focused = fieldBackend
+				return nil
+			}
+			if f.focused == fieldBackend {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
@@ -145,6 +186,10 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			// Otherwise let textarea handle down arrow for multi-line navigation
 		case "enter":
 			if f.focused == fieldProject {
+				f.focused = fieldBackend
+				return nil
+			}
+			if f.focused == fieldBackend {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
@@ -213,6 +258,14 @@ func (f *NewTaskForm) SelectedProject() string {
 	return f.projectNames[f.projectIdx]
 }
 
+// SelectedBackend returns the selected backend name, or "" for "(default)".
+func (f *NewTaskForm) SelectedBackend() string {
+	if len(f.backendNames) == 0 || f.backendIdx == 0 {
+		return "" // "(default)" → inherit
+	}
+	return f.backendNames[f.backendIdx]
+}
+
 func (f *NewTaskForm) Task() *model.Task {
 	project := f.SelectedProject()
 	prompt := strings.TrimSpace(f.promptInput.Value())
@@ -232,6 +285,7 @@ func (f *NewTaskForm) Task() *model.Task {
 		Project: project,
 		Branch:  branch,
 		Prompt:  prompt,
+		Backend: f.SelectedBackend(),
 	}
 }
 
@@ -279,6 +333,14 @@ func (f NewTaskForm) View() string {
 	b.WriteString(projStyle.Render("Project:") + "\n")
 	b.WriteString(f.renderProjectSelector() + "\n\n")
 
+	// Backend selector
+	backendStyle := f.theme.Dimmed
+	if f.focused == fieldBackend {
+		backendStyle = f.theme.Selected
+	}
+	b.WriteString(backendStyle.Render("Backend:") + "\n")
+	b.WriteString(f.renderBackendSelector() + "\n\n")
+
 	// Prompt input
 	promptStyle := f.theme.Dimmed
 	if f.focused == fieldPrompt {
@@ -292,7 +354,7 @@ func (f NewTaskForm) View() string {
 		b.WriteString(errStyle.Render("Error: "+f.errMsg) + "\n\n")
 	}
 
-	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  ←/→: select project  enter: submit  esc: cancel"))
+	b.WriteString(f.theme.Help.Render("tab/shift+tab: navigate  ←/→: select  enter: submit  esc: cancel"))
 
 	mw := f.modalWidth()
 
@@ -304,6 +366,30 @@ func (f NewTaskForm) View() string {
 		Render(f.theme.Title.Render("New Task") + "\n\n" + b.String())
 
 	return lipgloss.Place(f.width, f.height, lipgloss.Center, lipgloss.Center, modal)
+}
+
+func (f NewTaskForm) renderBackendSelector() string {
+	if len(f.backendNames) == 0 {
+		return f.theme.Dimmed.Render("  (no backends configured)")
+	}
+
+	arrow := f.theme.Dimmed
+	selected := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("87"))
+
+	left := arrow.Render("◀ ")
+	right := arrow.Render(" ▶")
+	name := selected.Render(f.backendNames[f.backendIdx])
+
+	counter := f.theme.Dimmed.Render(
+		fmt.Sprintf(" (%d/%d)", f.backendIdx+1, len(f.backendNames)))
+
+	// Show resolved default name when "(default)" is selected
+	suffix := ""
+	if f.backendIdx == 0 && f.defaultBackendName != "" {
+		suffix = " " + f.theme.Dimmed.Render("→ "+f.defaultBackendName)
+	}
+
+	return "  " + left + name + right + counter + suffix
 }
 
 func (f NewTaskForm) renderProjectSelector() string {

@@ -80,12 +80,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	cmdStr := backend.Command
 
-	if resume && task.SessionID != "" {
-		// Resume an existing session — no prompt needed.
-		cmdStr += " --resume " + shellQuote(task.SessionID)
+	if resume {
+		if backend.ResumeCommand != "" {
+			// Codex-style: use dedicated resume command (replaces base command entirely).
+			cmdStr = backend.ResumeCommand
+		} else if task.SessionID != "" {
+			// Claude-style: append --resume flag to base command.
+			cmdStr += " --resume " + shellQuote(task.SessionID)
+		}
 	} else {
-		// New session — pin the session ID so we can resume later
-		if task.SessionID != "" {
+		// New session — only pin session ID for Claude-style backends (no ResumeCommand).
+		if backend.ResumeCommand == "" && task.SessionID != "" {
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {

@@ -395,3 +395,34 @@ Three bugs discovered in daemon lifecycle management:
 **Navigation**: `rowArchiveHeader` is a navigable row — cursor can land on it (unlike project headers which are skipped). Enter on the archive header toggles `archiveExpanded`. `isInArchiveSection(idx)` walks backward to detect if a row is after the archive header — used by `autoExpand()` to dispatch to `archiveProject` vs `expanded`, and by `renderProjectHeader()` to pick the correct chevron state.
 
 **Key entities**: `rowArchiveHeader`, `archiveExpanded`, `archiveProject`, `ToggleArchive()`, `CursorOnArchiveHeader()`, `isInArchiveSection()`, `groupByProject()` (extracted helper), `projectTasksFiltered()`.
+
+### Codex Backend Support: 2026-03-17
+
+**Feature**: Full Codex CLI support as an Argus backend, with backend-aware resume logic, backend selector in new task form, and default backend management in settings.
+
+**Data model**: `Backend.ResumeCommand string` field added to `config.Backend`. `resume_command TEXT NOT NULL DEFAULT ''` column on the `backends` table (added via `ALTER TABLE`). When `ResumeCommand` is non-empty, `BuildCmd` uses it verbatim for resume (replacing the base command entirely) and skips `--session-id` on new sessions.
+
+**Codex CLI differences from Claude Code**:
+- Auto-approve: `--full-auto` (not `--yolo` which doesn't exist). `--dangerously-bypass-approvals-and-sandbox` is the unsandboxed equivalent.
+- Resume: `codex resume [SESSION_ID] [PROMPT]` — a subcommand, not a `--resume` flag. `--last` resumes most recent session. Codex filters by cwd by default.
+- No `--session-id` equivalent — cannot pin a session ID upfront.
+- Model selection: `-m <MODEL>` (e.g., `-m o3`).
+
+**Resume logic** (`BuildCmd` in `agent.go`):
+- If `resume && backend.ResumeCommand != ""`: use `ResumeCommand` verbatim (Codex: `codex resume --full-auto --last`)
+- If `resume && backend.ResumeCommand == ""`: append `--resume <sessionID>` to base command (Claude)
+- If `!resume && backend.ResumeCommand == ""`: append `--session-id <sessionID>` (Claude only)
+- If `!resume && backend.ResumeCommand != ""`: no session pinning (Codex)
+
+**Resume signal** (`startOrAttach` in `root.go`):
+- Claude: `resume = t.SessionID != ""`
+- Codex: `resume = !t.StartedAt.IsZero() && t.Status == StatusPending` (previously started, no pinned session)
+- SessionID is only generated for Claude-style backends (check `backend.ResumeCommand == ""`)
+
+**fixupBackends**: Migrates `codex --yolo` → `codex --full-auto` and sets `resume_command` for codex. Scoped to `name == "codex"` (not command content) to avoid overwriting user-defined backends.
+
+**New task form**: Three fields — project → backend → prompt. Backend selector has `(default)` at index 0 (inherits from project/global config). Shows resolved default name dimmed (e.g., `(default) → claude`). When `(default)` is selected, `Task().Backend` is empty string (inheritance).
+
+**Settings**: BACKENDS section header shows `(default: <name>)`. Backend detail panel shows `★ Default backend` indicator. Keys: `[e]` edit, `[n]` new, `[d]` set as default (calls `db.SetConfigValue("defaults.backend", name)`).
+
+**Backend form** (`backendform.go`): 4 textinput fields (Name, Command, Resume Command, Prompt Flag). Mirrors `ProjectForm` pattern with edit/new modes.

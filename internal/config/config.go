@@ -15,8 +15,9 @@ type Defaults struct {
 }
 
 type Backend struct {
-	Command    string `toml:"command"`
-	PromptFlag string `toml:"prompt_flag"`
+	Command       string `toml:"command"`
+	PromptFlag    string `toml:"prompt_flag"`
+	ResumeCommand string `toml:"resume_command"`
 }
 
 // ProjectSandboxConfig holds per-project sandbox overrides.
@@ -79,8 +80,9 @@ func DefaultConfig() Config {
 				PromptFlag: "",
 			},
 			"codex": {
-				Command:    "codex --yolo",
-				PromptFlag: "",
+				Command:       "codex --full-auto",
+				PromptFlag:    "",
+				ResumeCommand: "codex resume --full-auto --last",
 			},
 		},
 		Projects:    make(map[string]Project),

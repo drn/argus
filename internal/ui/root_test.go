@@ -1097,7 +1097,8 @@ func TestModel_PromptViewDismiss(t *testing.T) {
 func TestModel_ViewNewTask(t *testing.T) {
 	m := testModel(t)
 	m.current = viewNewTask
-	m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), "")
+	cfg := m.db.Config()
+	m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), "", cfg.Backends, cfg.Defaults.Backend)
 	m.newtask.SetSize(80, 24)
 	m.width = 80
 	m.height = 24
@@ -1722,6 +1723,13 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 			f.LoadProject("proj", config.Project{Path: "/tmp/proj", Branch: "master"})
 			m.projectform = f
 			m.current = viewEditProject
+		}},
+		{"newBackend", func(m *Model) { m.current = viewNewBackend }},
+		{"editBackend", func(m *Model) {
+			f := NewBackendForm(m.theme)
+			f.LoadBackend("claude", config.Backend{Command: "claude --dangerously-skip-permissions"})
+			m.backendform = f
+			m.current = viewEditBackend
 		}},
 		{"pruning", func(m *Model) { m.current = viewPruning; m.pruneTotal = 3 }},
 		{"daemonRestart", func(m *Model) { m.current = viewDaemonRestart; m.daemonRestarting = true }},

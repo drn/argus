@@ -529,16 +529,16 @@ func TestFixupBackends_MissingDangerouslySkipPermissions(t *testing.T) {
 	}
 }
 
-func TestFixupBackends_MissingYolo(t *testing.T) {
+func TestFixupBackends_MissingFullAuto(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 
-	// Simulate a codex backend added manually without --yolo
+	// Simulate a codex backend with old --yolo flag
 	if err := d.SetBackend("codex", config.Backend{
-		Command:    "codex",
+		Command:    "codex --yolo",
 		PromptFlag: "",
 	}); err != nil {
 		t.Fatal(err)
@@ -556,6 +556,36 @@ func TestFixupBackends_MissingYolo(t *testing.T) {
 	defaultCfg := config.DefaultConfig()
 	if b.Command != defaultCfg.Backends["codex"].Command {
 		t.Errorf("expected command %q, got %q", defaultCfg.Backends["codex"].Command, b.Command)
+	}
+	if b.ResumeCommand != defaultCfg.Backends["codex"].ResumeCommand {
+		t.Errorf("expected resume_command %q, got %q", defaultCfg.Backends["codex"].ResumeCommand, b.ResumeCommand)
+	}
+}
+
+func TestFixupBackends_CodexMissingResumeCommand(t *testing.T) {
+	d, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+
+	// Simulate codex with correct command but missing resume_command
+	if err := d.SetBackend("codex", config.Backend{
+		Command:    "codex --full-auto",
+		PromptFlag: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.fixupBackends(); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b := backends["codex"]
+	defaultCfg := config.DefaultConfig()
+	if b.ResumeCommand != defaultCfg.Backends["codex"].ResumeCommand {
+		t.Errorf("expected resume_command %q, got %q", defaultCfg.Backends["codex"].ResumeCommand, b.ResumeCommand)
 	}
 }
 
@@ -1163,6 +1193,44 @@ func TestDB_PRURL(t *testing.T) {
 	got, _ = d.Get(task.ID)
 	if got.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Errorf("PRURL = %q", got.PRURL)
+	}
+}
+
+func TestDB_BackendResumeCommand(t *testing.T) {
+	d := testDB(t)
+
+	// Set a backend with resume_command
+	if err := d.SetBackend("codex", config.Backend{
+		Command:       "codex --full-auto",
+		ResumeCommand: "codex resume --full-auto --last",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	backends := d.Backends()
+	b, ok := backends["codex"]
+	if !ok {
+		t.Fatal("codex not found")
+	}
+	if b.Command != "codex --full-auto" {
+		t.Errorf("command = %q", b.Command)
+	}
+	if b.ResumeCommand != "codex resume --full-auto --last" {
+		t.Errorf("resume_command = %q", b.ResumeCommand)
+	}
+}
+
+func TestDB_BackendResumeCommandInConfig(t *testing.T) {
+	d := testDB(t)
+
+	// Default config should have codex with resume_command
+	cfg := d.Config()
+	codex, ok := cfg.Backends["codex"]
+	if !ok {
+		t.Fatal("expected codex backend in config")
+	}
+	if codex.ResumeCommand != "codex resume --full-auto --last" {
+		t.Errorf("resume_command = %q", codex.ResumeCommand)
 	}
 }
 

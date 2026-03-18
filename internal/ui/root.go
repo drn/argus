@@ -44,6 +44,8 @@ const (
 	viewDaemonLogs
 	viewUXLogs
 	viewRenameTask
+	viewNewBackend
+	viewEditBackend
 )
 
 type tab int
@@ -166,6 +168,7 @@ type Model struct {
 	newtask     NewTaskForm
 	renametask  RenameTaskForm
 	projectform   ProjectForm
+	backendform   BackendForm
 	sandboxconfig SandboxConfigForm // sandbox settings editor
 	preview     Preview
 	gitstatus   *GitStatus
@@ -369,6 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.newtask.SetSize(msg.Width, msg.Height)
 		m.renametask.SetSize(msg.Width, msg.Height)
 		m.projectform.SetSize(msg.Width, msg.Height)
+		m.backendform.SetSize(msg.Width, msg.Height)
 		m.sandboxconfig.SetSize(msg.Width, msg.Height)
 		m.agentview.SetSize(msg.Width, msg.Height)
 		return m, nil
@@ -727,6 +731,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case viewSandboxConfig:
 		return m.handleSandboxConfigKey(msg)
+	case viewNewBackend, viewEditBackend:
+		return m.handleBackendFormKey(msg)
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
@@ -829,7 +835,8 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if t := m.tasklist.Selected(); t != nil {
 			defaultProject = t.Project
 		}
-		m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), defaultProject)
+		cfg := m.db.Config()
+		m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), defaultProject, cfg.Backends, cfg.Defaults.Backend)
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
 		return m, nil
@@ -998,11 +1005,23 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// If the task already has a session ID, resume that conversation;
-	// otherwise generate a new one for a fresh start.
+	// Determine if this is a resume. Claude-style backends use SessionID;
+	// Codex-style backends (ResumeCommand != "") have no session pinning,
+	// so detect resume by checking if the task was previously started and
+	// is still pending (not completed — a completed task reset to pending
+	// should start fresh, not resume).
 	resume := t.SessionID != ""
+	if !resume && !t.StartedAt.IsZero() && t.Status == model.StatusPending {
+		// Previously started, no pinned session, and pending — resume for Codex-style backends.
+		resume = true
+	}
 	if !resume {
-		t.SessionID = model.GenerateSessionID()
+		// Generate session ID for Claude-style backends (new session).
+		cfg := m.db.Config()
+		backend, _ := agent.ResolveBackend(t, cfg)
+		if backend.ResumeCommand == "" {
+			t.SessionID = model.GenerateSessionID()
+		}
 	}
 	uxlog.Log("startOrAttach: resume=%v session=%s", resume, t.SessionID)
 
@@ -1403,7 +1422,6 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.New):
-		// Only allow new project creation when on a project row (or section).
 		sel := m.settings.Selected()
 		if sel == nil || sel.kind == settingsRowProject {
 			m.projectform = NewProjectForm(m.theme)
@@ -1411,16 +1429,28 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.current = viewNewProject
 			return m, m.projectform.inputs[0].Focus()
 		}
+		if sel != nil && sel.kind == settingsRowBackend {
+			m.backendform = NewBackendForm(m.theme)
+			m.backendform.SetSize(m.width, m.height)
+			m.current = viewNewBackend
+			return m, m.backendform.inputs[0].Focus()
+		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Edit):
-		// Edit the selected project.
 		if entry := m.settings.SelectedProject(); entry != nil {
 			m.projectform = NewProjectForm(m.theme)
 			m.projectform.SetSize(m.width, m.height)
 			m.projectform.LoadProject(entry.Name, entry.Project)
 			m.current = viewEditProject
 			return m, m.projectform.inputs[projFieldPath].Focus()
+		}
+		if entry := m.settings.SelectedBackend(); entry != nil {
+			m.backendform = NewBackendForm(m.theme)
+			m.backendform.SetSize(m.width, m.height)
+			m.backendform.LoadBackend(entry.Name, entry.Backend)
+			m.current = viewEditBackend
+			return m, m.backendform.inputs[backendFieldCommand].Focus()
 		}
 		return m, nil
 
@@ -1449,6 +1479,14 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Delete):
 		if m.settings.SelectedProject() != nil {
 			m.current = viewConfirmDeleteProject
+			return m, nil
+		}
+		// 'd' on a backend row sets it as the default backend.
+		if entry := m.settings.SelectedBackend(); entry != nil {
+			_ = m.db.SetConfigValue("defaults.backend", entry.Name)
+			m.refreshSettings()
+			m.statusbar.SetError("default backend → " + entry.Name)
+			return m, nil
 		}
 		return m, nil
 
@@ -1532,6 +1570,27 @@ func (m Model) handleEditProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) handleBackendFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd := m.backendform.Update(msg)
+
+	if m.backendform.Canceled() {
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	if m.backendform.Done() {
+		name, backend := m.backendform.BackendEntry()
+		_ = m.db.SetBackend(name, backend)
+		m.refreshSettings()
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	return m, cmd
+}
+
 func (m Model) handleConfirmDeleteProjectKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
@@ -1557,10 +1616,11 @@ func (m *Model) refreshSettings() {
 		warnings = append(warnings, "In-process mode: sessions won't persist")
 	}
 	m.settings.SetWarnings(warnings)
-	m.settings.SetProjects(m.db.Projects())
-	m.settings.SetBackends(m.db.Backends())
-	m.settings.SetTasks(m.db.Tasks())
 	cfg := m.db.Config()
+	m.settings.SetProjects(m.db.Projects())
+	m.settings.SetDefaultBackend(cfg.Defaults.Backend)
+	m.settings.SetBackends(cfg.Backends)
+	m.settings.SetTasks(m.db.Tasks())
 	// IsSandboxAvailable() is cached via sync.Once — only slow on the first call.
 	// Always probe so the settings view shows correct install status regardless of
 	// whether sandbox is currently enabled.
