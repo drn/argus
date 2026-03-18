@@ -57,9 +57,43 @@ func TestReplayVT10X_TrimsTrailingEmptyLines(t *testing.T) {
 
 func TestReplayVT10X_EmptyTerminal(t *testing.T) {
 	raw := []byte{}
+
+	// With cursor visible, the cursor line (row 0) must be preserved even
+	// though it has no content — that's the whole point of the fix.
 	lines := replayVT10X(raw, 40, 10, true)
+	if len(lines) != 1 {
+		t.Errorf("expected 1 line (cursor line) for empty input with cursor, got %d", len(lines))
+	}
+
+	// Without cursor, there's nothing to preserve so output should be empty.
+	lines = replayVT10X(raw, 40, 10, false)
 	if len(lines) != 0 {
-		t.Errorf("expected empty lines for empty input, got %d", len(lines))
+		t.Errorf("expected empty lines for empty input without cursor, got %d", len(lines))
+	}
+}
+
+func TestReplayVT10X_PreservesCursorOnEmptyBottomRow(t *testing.T) {
+	// Simulate Claude Code: content at top, cursor parked at an empty bottom
+	// row after rendering (Ink hides hardware cursor with \x1b[?25l and parks
+	// it below the TUI). The cursor line must NOT be trimmed even though
+	// stripANSI collapses its colored background to "".
+	raw := []byte(
+		"\x1b[1;1H" + "Hello" + // content at row 1
+			"\x1b[?25l" + // hide hardware cursor (Claude Code behavior)
+			"\x1b[5;3H", // move cursor to row 5, col 3 (empty row)
+	)
+
+	lines := replayVT10X(raw, 40, 10, true)
+
+	// Must have at least 5 lines (rows 1–5), with the cursor at the 5th.
+	if len(lines) < 5 {
+		t.Fatalf("cursor line was trimmed: expected ≥5 lines, got %d", len(lines))
+	}
+
+	// The cursor line (index 4, row 5) should contain the cursor escape.
+	cursorLine := lines[len(lines)-1]
+	if !strings.Contains(cursorLine, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("cursor styling not found in last line: %q", cursorLine)
 	}
 }
 
