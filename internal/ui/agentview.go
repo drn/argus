@@ -222,6 +222,10 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 			av.exitDiffMode()
 			return false, nil
 		}
+		if av.focus == panelFiles {
+			av.focus = panelAgent
+			return false, nil
+		}
 		return true, nil
 	}
 
