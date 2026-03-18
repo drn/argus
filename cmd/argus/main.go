@@ -45,7 +45,22 @@ func main() {
 		}
 	}
 
-	runTUI()
+	runtime, err := ui.ParseRuntime(os.Getenv("ARGUS_UI_RUNTIME"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	switch runtime {
+	case ui.RuntimeBubbleTea:
+		runTUI()
+	case ui.RuntimeTCell:
+		fmt.Fprintln(os.Stderr, "ARGUS_UI_RUNTIME=tcell is planned but not implemented yet")
+		os.Exit(2)
+	default:
+		fmt.Fprintf(os.Stderr, "unsupported UI runtime %q\n", runtime)
+		os.Exit(1)
+	}
 }
 
 func runTUI() {
@@ -204,4 +219,3 @@ func runDaemonRestart() {
 	}
 	runDaemon()
 }
-

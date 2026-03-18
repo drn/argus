@@ -54,12 +54,12 @@ type AgentView struct {
 	lastGitRefresh time.Time
 
 	// Terminal render cache — avoids replaying entire ring buffer every tick
-	cachedWriteCount  uint64
-	cachedTerminal    string
-	cachedScrollOff   int // scroll offset when cache was generated
+	cachedWriteCount uint64
+	cachedTerminal   string
+	cachedScrollOff  int // scroll offset when cache was generated
 
 	// Scrollback support
-	scrollOffset int // lines scrolled up from bottom (0 = follow tail)
+	scrollOffset int      // lines scrolled up from bottom (0 = follow tail)
 	cachedLines  []string // cached rendered lines for scrolling without re-parsing
 
 	// lastOutput holds the final ring buffer contents from a finished session
@@ -73,17 +73,17 @@ type AgentView struct {
 	vtRows     int    // vtTerm row count
 
 	// Diff viewer state
-	diffMode         bool              // true when viewing a file's diff
-	diffSplit        bool              // true = side-by-side, false = unified
-	diffParsed       ParsedDiff        // parsed diff structure (for both views)
-	diffRows         []SideBySideLine  // side-by-side rows (computed from diffParsed)
-	diffUnified      []string          // unified view lines (highlighted, computed from diffParsed)
-	diffWrappedLines []string          // diffUnified after Hardwrap — cache
-	diffWrapWidth    int               // width used for diffWrappedLines; 0 = stale
-	diffDispW        int               // last-computed display width for the diff panel
-	diffScrollOff    int               // scroll offset within diff
-	worktreeDir      string            // resolved worktree directory for git commands
-	diffFileName     string            // current file being diffed (for highlighting)
+	diffMode         bool             // true when viewing a file's diff
+	diffSplit        bool             // true = side-by-side, false = unified
+	diffParsed       ParsedDiff       // parsed diff structure (for both views)
+	diffRows         []SideBySideLine // side-by-side rows (computed from diffParsed)
+	diffUnified      []string         // unified view lines (highlighted, computed from diffParsed)
+	diffWrappedLines []string         // diffUnified after Hardwrap — cache
+	diffWrapWidth    int              // width used for diffWrappedLines; 0 = stale
+	diffDispW        int              // last-computed display width for the diff panel
+	diffScrollOff    int              // scroll offset within diff
+	worktreeDir      string           // resolved worktree directory for git commands
+	diffFileName     string           // current file being diffed (for highlighting)
 }
 
 func NewAgentView(theme Theme, runner agent.SessionProvider, sessionsDir string) AgentView {
@@ -188,9 +188,7 @@ func (av *AgentView) SetSize(w, h int) {
 	av.files.SetSize(widths[2], contentH)
 	// Resize PTY to match center panel (minus border)
 	if sess := av.runner.Get(av.taskID); sess != nil {
-		ptyRows := uint16(max(contentH-2, 5))
-		ptyCols := uint16(max(widths[1]-4, 20))
-		sess.Resize(ptyRows, ptyCols)
+		resizeSessionToPanel(sess, contentH, widths[1]) //nolint:errcheck // best-effort resize
 	}
 }
 
@@ -291,9 +289,7 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		av.scrollOffset = 0
 		// Forward all other keys to the PTY
 		if sess := av.runner.Get(av.taskID); sess != nil {
-			if b := keyMsgToBytes(msg); len(b) > 0 {
-				sess.WriteInput(b)
-			}
+			forwardKeyToSession(sess, msg)
 		}
 	case panelFiles:
 		switch keyStr {
@@ -980,6 +976,3 @@ func (av *AgentView) scrollDown(n int) {
 		av.scrollOffset = 0
 	}
 }
-
-
-
