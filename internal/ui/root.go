@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +21,9 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// prURLRe matches GitHub pull request URLs in agent output.
+var prURLRe = regexp.MustCompile(`https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+`)
 
 type view int
 
@@ -138,6 +143,12 @@ type PostCommentMsg struct {
 // SubmitReviewMsg carries the result of submitting a full review.
 type SubmitReviewMsg struct {
 	Err error
+}
+
+// PRDetectedMsg is sent when a GitHub PR URL is found in agent output.
+type PRDetectedMsg struct {
+	TaskID string
+	URL    string
 }
 
 // Model is the top-level Bubble Tea model.
@@ -391,6 +402,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Scan in-progress sessions for GitHub PR URLs.
+		// Always take the last match so that if the agent opens multiple PRs,
+		// 'o' opens the most recent one.
+		for _, taskID := range m.runner.Running() {
+			if sess := m.runner.Get(taskID); sess != nil {
+				matches := prURLRe.FindAllString(string(sess.RecentOutput()), -1)
+				if len(matches) > 0 {
+					url := matches[len(matches)-1]
+					if t, err := m.db.Get(taskID); err == nil && t.PRURL != url {
+						tid := taskID
+						cmds = append(cmds, func() tea.Msg {
+							return PRDetectedMsg{TaskID: tid, URL: url}
+						})
+					}
+				}
+			}
+		}
 		// Daemon health check — auto-restart if N consecutive ping failures.
 		if m.daemonConnected && !m.daemonRestarting {
 			if client, ok := m.runner.(*dclient.Client); ok {
@@ -486,6 +514,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
+
+	case PRDetectedMsg:
+		if t, err := m.db.Get(msg.TaskID); err == nil && t.PRURL != msg.URL {
+			t.PRURL = msg.URL
+			_ = m.db.Update(t)
+			m.refreshTasks()
+		}
+		return m, nil
 
 	case PruneProgressMsg:
 		m.pruneCurrent++
@@ -816,6 +852,16 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case msg.String() == "o":
+		if t := m.tasklist.Selected(); t != nil && t.PRURL != "" {
+			url := t.PRURL
+			return m, func() tea.Msg {
+				exec.Command("open", url).Start() //nolint:errcheck
+				return nil
+			}
+		}
+		return m, nil
+
 	case key.Matches(msg, m.keys.Prune):
 		pruned, err := m.db.PruneCompleted()
 		if err != nil {
@@ -1035,6 +1081,14 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	t.SetStatus(newStatus)
 	if clearSession {
 		t.SessionID = ""
+	}
+
+	// Scan LastOutput for a PR URL in case the agent finished before the tick
+	// scanner had a chance to pick it up (e.g. fast-finishing agents).
+	if t.PRURL == "" {
+		if matches := prURLRe.FindAllString(string(msg.LastOutput), -1); len(matches) > 0 {
+			t.PRURL = matches[len(matches)-1]
+		}
 	}
 
 	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {

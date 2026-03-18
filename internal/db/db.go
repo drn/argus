@@ -103,6 +103,7 @@ func (d *DB) createTables() error {
 			worktree   TEXT NOT NULL DEFAULT '',
 			agent_pid  INTEGER NOT NULL DEFAULT 0,
 			session_id TEXT NOT NULL DEFAULT '',
+			pr_url     TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			started_at TEXT NOT NULL DEFAULT '',
 			ended_at   TEXT NOT NULL DEFAULT ''
@@ -140,13 +141,16 @@ func (d *DB) createTables() error {
 		d.conn.Exec(`ALTER TABLE projects ADD COLUMN ` + def) //nolint:errcheck
 	}
 
+	// Add pr_url column to existing tasks tables.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
 	return nil
 }
 
 // --- Tasks ---
 
 // taskColumns is the canonical column list for task queries.
-const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at`
+const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, created_at, started_at, ended_at`
 
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -157,7 +161,7 @@ type scanner interface {
 func scanTask(row scanner) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &createdAt, &startedAt, &endedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &t.PRURL, &createdAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
@@ -197,8 +201,8 @@ func (d *DB) Add(t *model.Task) error {
 		t.CreatedAt = time.Now()
 	}
 
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -207,8 +211,8 @@ func (d *DB) Update(t *model.Task) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
-		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, pr_url=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return err

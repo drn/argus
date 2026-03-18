@@ -335,3 +335,25 @@ Three bugs discovered in daemon lifecycle management:
 - **Fix**: Use `li.StartColumn + li.ColumnOffset`. `StartColumn` is the cumulative rune count of all visual rows before the current one. Their sum equals `m.col` — the true rune position within the hard line.
 - **Root cause**: Existing tests used `SetWidth(200)` (no wrapping) so `ColumnOffset == StartColumn + ColumnOffset` trivially. Added `TestApplyWordNavTextarea_SoftWrap` with `SetWidth(30)` to exercise the wrapped path.
 - **Rule**: When testing textarea cursor position logic, always include a narrow-width test case that forces soft wrapping. `ColumnOffset` and `CharOffset` in `LineInfo()` are visual-row-relative, not hard-line-relative.
+
+### PR URL Detection & Task Association (2026-03-17)
+
+**Feature**: When an agent runs `gh pr create`, the resulting PR URL is automatically detected, persisted to the task, and openable with `'o'` from the task list.
+
+**Data model**: `Task.PRURL string` + `pr_url TEXT NOT NULL DEFAULT ''` column on the `tasks` table. Column added with `ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''` (error silently ignored) to cover existing databases — same pattern as sandbox columns on `projects`.
+
+**Detection flow**:
+1. `TickMsg` handler calls `runner.Running()`, then for each session: `prURLRe.FindAllString(string(sess.RecentOutput()), -1)`. Takes `matches[len(matches)-1]` (latest match wins — handles agent opening PR #1, then PR #2).
+2. Guard `t.PRURL != url` prevents redundant DB writes when URL hasn't changed.
+3. On match: fires `PRDetectedMsg{TaskID, URL}` as a `tea.Cmd`.
+4. `PRDetectedMsg` handler: re-checks `t.PRURL != msg.URL` (idempotent), updates DB, refreshes task list.
+
+**Fast-exit edge case**: `runner.Running()` excludes sessions that have already exited. An agent that creates a PR and exits within 1 second would be missed by the tick scan. Fix: `handleAgentFinished` also scans `msg.LastOutput` when `t.PRURL == ""`, updating `t.PRURL` in-place before `db.Update(t)`.
+
+**Regex**: `https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+`. Works for both plain URLs and OSC 8 hyperlinks (where the URL appears twice as target + display text; the last match is the display text).
+
+**Key binding**: `'o'` in `handleTaskListKey` — `exec.Command("open", url).Start()` wrapped in a `tea.Cmd` (must not block Update). Not in KeyMap; uses `msg.String() == "o"` (consistent with agent view's inline switch pattern).
+
+**Display**: `TaskDetail.View()` shows `PR: <url>` when `t.PRURL != ""`, truncated to fit panel width.
+
+**Rule**: Always scan `LastOutput` in `handleAgentFinished` for any feature that detects content in session output — the tick scan only covers actively-running sessions.
