@@ -919,32 +919,39 @@ func TestInit_ResetsStartedAtBeforeResume(t *testing.T) {
 	}
 }
 
-func TestModel_SplitWidths(t *testing.T) {
+func TestModel_SettingsWidths(t *testing.T) {
 	m := testModel(t)
 	m.width = 120
 
-	left, right := m.splitWidths()
-	if left+right != 120 {
-		t.Errorf("splitWidths total = %d, want 120", left+right)
+	margin, left, right := m.settingsWidths()
+	if margin != 24 {
+		t.Errorf("margin = %d, want 24 (20%% of 120)", margin)
 	}
-	if left < 30 {
-		t.Errorf("left = %d, want >= 30", left)
+	if left != 24 {
+		t.Errorf("left = %d, want 24 (20%% of 120)", left)
 	}
-	if right < 20 {
-		t.Errorf("right = %d, want >= 20", right)
+	if right != 48 {
+		t.Errorf("right = %d, want 48 (40%% of 120)", right)
+	}
+	if margin+left+right > 120 {
+		t.Errorf("total %d exceeds width 120", margin+left+right)
 	}
 }
 
-func TestModel_SplitWidths_NarrowTerminal(t *testing.T) {
+func TestModel_SettingsWidths_NarrowTerminal(t *testing.T) {
 	m := testModel(t)
-	m.width = 60
+	m.width = 40
 
-	left, right := m.splitWidths()
-	if left+right != 60 {
-		t.Errorf("splitWidths total = %d, want 60", left+right)
+	margin, left, right := m.settingsWidths()
+	// At 40 wide, 20% = 8, left min = 15, right min = 30 → 8+15+30 > 40 → margin = 0
+	if margin != 0 {
+		t.Errorf("margin = %d, want 0 (panels exceed width)", margin)
 	}
-	if left < 30 {
-		t.Errorf("left should be at least 30, got %d", left)
+	if left < 15 {
+		t.Errorf("left = %d, want >= 15", left)
+	}
+	if right < 30 {
+		t.Errorf("right = %d, want >= 30", right)
 	}
 }
 
