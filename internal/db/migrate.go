@@ -50,13 +50,13 @@ func (d *DB) seedDefaults() error {
 		var existing string
 		err := d.conn.QueryRow(`SELECT command FROM backends WHERE name=?`, name).Scan(&existing)
 		if err == sql.ErrNoRows {
-			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag, resume_command) VALUES (?, ?, ?, ?)`,
-				name, b.Command, b.PromptFlag, b.ResumeCommand); err != nil {
+			if _, err := d.conn.Exec(`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
+				name, b.Command, b.PromptFlag); err != nil {
 				return err
 			}
 		} else if err == nil && (existing == "echo" || existing == "cat" || existing == "true") {
-			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=?, resume_command=? WHERE name=?`,
-				b.Command, b.PromptFlag, b.ResumeCommand, name); err != nil {
+			if _, err := d.conn.Exec(`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
+				b.Command, b.PromptFlag, name); err != nil {
 				return err
 			}
 		}
@@ -99,10 +99,10 @@ func (d *DB) fixupBackends() error {
 	cfg := config.DefaultConfig()
 
 	for name, want := range cfg.Backends {
-		var command, promptFlag, resumeCommand string
+		var command, promptFlag string
 		err := d.conn.QueryRow(
-			`SELECT command, prompt_flag, resume_command FROM backends WHERE name=?`, name,
-		).Scan(&command, &promptFlag, &resumeCommand)
+			`SELECT command, prompt_flag FROM backends WHERE name=?`, name,
+		).Scan(&command, &promptFlag)
 		if err != nil {
 			continue // backend doesn't exist — seedDefaults handles insertion
 		}
@@ -114,15 +114,10 @@ func (d *DB) fixupBackends() error {
 			needsUpdate = true
 		}
 
-		// Fix: codex backend uses --yolo (removed) instead of --full-auto.
-		// Scoped to the "codex" backend name (not command content) to avoid
-		// accidentally overwriting user-defined backends with "codex" in their command.
-		if name == "codex" && !strings.Contains(command, "--full-auto") {
-			needsUpdate = true
-		}
-
-		// Fix: codex backend missing resume_command.
-		if name == "codex" && resumeCommand == "" && want.ResumeCommand != "" {
+		// Fix: codex backend uses old flags (--yolo or --full-auto) instead of
+		// --dangerously-bypass-approvals-and-sandbox.
+		// Scoped to name=="codex" — users who renamed their codex backend must update manually.
+		if name == "codex" && !strings.Contains(command, "--dangerously-bypass-approvals-and-sandbox") {
 			needsUpdate = true
 		}
 
@@ -141,8 +136,8 @@ func (d *DB) fixupBackends() error {
 
 		if needsUpdate {
 			if _, err := d.conn.Exec(
-				`UPDATE backends SET command=?, prompt_flag=?, resume_command=? WHERE name=?`,
-				want.Command, want.PromptFlag, want.ResumeCommand, name,
+				`UPDATE backends SET command=?, prompt_flag=? WHERE name=?`,
+				want.Command, want.PromptFlag, name,
 			); err != nil {
 				return err
 			}

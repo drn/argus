@@ -154,6 +154,15 @@ type PRDetectedMsg struct {
 	URL    string
 }
 
+// CodexSessionCapturedMsg is sent when the codex session ID for a task has been
+// looked up from codex's local state database after the session exits.
+// Err is non-nil on failure; SessionID is empty string on failure.
+type CodexSessionCapturedMsg struct {
+	TaskID    string
+	SessionID string
+	Err       error
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	db          *db.DB
@@ -525,6 +534,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentFinishedMsg:
 		return m.handleAgentFinished(msg)
+
+	case CodexSessionCapturedMsg:
+		return m.handleCodexSessionCaptured(msg)
 
 	case PRDetectedMsg:
 		if t, err := m.db.Get(msg.TaskID); err == nil && t.PRURL != msg.URL {
@@ -1000,21 +1012,19 @@ func (m Model) startOrAttach(t *model.Task) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Determine if this is a resume. Claude-style backends use SessionID;
-	// Codex-style backends (ResumeCommand != "") have no session pinning,
-	// so detect resume by checking if the task was previously started and
-	// is still pending (not completed — a completed task reset to pending
-	// should start fresh, not resume).
+	// Determine if this is a resume. Both Claude and Codex use SessionID to
+	// track conversation state. For Claude, the ID is generated at session start
+	// and pinned via --session-id. For Codex, the ID is captured from codex's
+	// state DB after the session exits (handleCodexSessionCaptured) and then used
+	// with `codex resume` on the next run. So a codex task starts with an empty
+	// SessionID and becomes non-empty only after its first successful exit.
 	resume := t.SessionID != ""
-	if !resume && !t.StartedAt.IsZero() && t.Status == model.StatusPending {
-		// Previously started, no pinned session, and pending — resume for Codex-style backends.
-		resume = true
-	}
 	if !resume {
 		// Generate session ID for Claude-style backends (new session).
+		// Codex does not support --session-id; its ID is captured post-exit.
 		cfg := m.db.Config()
 		backend, _ := agent.ResolveBackend(t, cfg)
-		if backend.ResumeCommand == "" {
+		if !agent.IsCodexBackend(backend.Command) {
 			t.SessionID = model.GenerateSessionID()
 		}
 	}
@@ -1162,7 +1172,43 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 	}
 	_ = m.db.Update(t)
 
+	// For codex backends that exited cleanly without a session ID yet,
+	// capture the session ID from codex's state DB so future runs resume.
+	var captureCmd tea.Cmd
+	if !clearSession && t.SessionID == "" && t.Worktree != "" {
+		cfg := m.db.Config()
+		backend, _ := agent.ResolveBackend(t, cfg)
+		if agent.IsCodexBackend(backend.Command) {
+			taskID := t.ID
+			worktree := t.Worktree
+			captureCmd = func() tea.Msg {
+				id, err := agent.CaptureCodexSessionID(worktree)
+				uxlog.Log("handleAgentFinished: codex capture task=%s id=%s err=%v", taskID, id, err)
+				return CodexSessionCapturedMsg{TaskID: taskID, SessionID: id, Err: err}
+			}
+		}
+	}
+
 	m.refreshTasks()
+	return m, captureCmd
+}
+
+func (m Model) handleCodexSessionCaptured(msg CodexSessionCapturedMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		uxlog.Log("handleCodexSessionCaptured: failed task=%s err=%v", msg.TaskID, msg.Err)
+		return m, nil
+	}
+	t, err := m.db.Get(msg.TaskID)
+	if err != nil {
+		uxlog.Log("handleCodexSessionCaptured: db.Get failed task=%s err=%v", msg.TaskID, err)
+		return m, nil
+	}
+	t.SessionID = msg.SessionID
+	if err := m.db.Update(t); err != nil {
+		uxlog.Log("handleCodexSessionCaptured: db.Update failed task=%s err=%v", msg.TaskID, err)
+		return m, nil
+	}
+	uxlog.Log("handleCodexSessionCaptured: stored session=%s for task=%s", msg.SessionID, msg.TaskID)
 	return m, nil
 }
 

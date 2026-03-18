@@ -25,7 +25,6 @@ type BackendForm struct {
 const (
 	backendFieldName = iota
 	backendFieldCommand
-	backendFieldResumeCommand
 	backendFieldPromptFlag
 	backendFieldCount
 )
@@ -39,14 +38,9 @@ func NewBackendForm(theme Theme) BackendForm {
 	inputs[backendFieldName] = nameInput
 
 	commandInput := textinput.New()
-	commandInput.Placeholder = "Command (e.g. codex --full-auto)"
+	commandInput.Placeholder = "Command (e.g. codex --dangerously-bypass-approvals-and-sandbox)"
 	commandInput.CharLimit = 200
 	inputs[backendFieldCommand] = commandInput
-
-	resumeInput := textinput.New()
-	resumeInput.Placeholder = "Resume command (optional, e.g. codex resume --full-auto --last)"
-	resumeInput.CharLimit = 200
-	inputs[backendFieldResumeCommand] = resumeInput
 
 	promptFlagInput := textinput.New()
 	promptFlagInput.Placeholder = "Prompt flag (usually empty)"
@@ -66,7 +60,6 @@ func (f *BackendForm) LoadBackend(name string, b config.Backend) {
 	f.originalName = name
 	f.inputs[backendFieldName].SetValue(name)
 	f.inputs[backendFieldCommand].SetValue(b.Command)
-	f.inputs[backendFieldResumeCommand].SetValue(b.ResumeCommand)
 	f.inputs[backendFieldPromptFlag].SetValue(b.PromptFlag)
 	// Start focus on command since name is read-only in edit mode.
 	f.focused = backendFieldCommand
@@ -76,8 +69,6 @@ func (f *BackendForm) nextField() int {
 	if f.editMode {
 		switch f.focused {
 		case backendFieldCommand:
-			return backendFieldResumeCommand
-		case backendFieldResumeCommand:
 			return backendFieldPromptFlag
 		default:
 			return backendFieldCommand
@@ -91,10 +82,8 @@ func (f *BackendForm) prevField() int {
 		switch f.focused {
 		case backendFieldCommand:
 			return backendFieldPromptFlag
-		case backendFieldResumeCommand:
-			return backendFieldCommand
 		default:
-			return backendFieldResumeCommand
+			return backendFieldCommand
 		}
 	}
 	return (f.focused - 1 + backendFieldCount) % backendFieldCount
@@ -157,9 +146,8 @@ func (f *BackendForm) BackendEntry() (string, config.Backend) {
 		name = f.originalName
 	}
 	return name, config.Backend{
-		Command:       strings.TrimSpace(f.inputs[backendFieldCommand].Value()),
-		PromptFlag:    strings.TrimSpace(f.inputs[backendFieldPromptFlag].Value()),
-		ResumeCommand: strings.TrimSpace(f.inputs[backendFieldResumeCommand].Value()),
+		Command:    strings.TrimSpace(f.inputs[backendFieldCommand].Value()),
+		PromptFlag: strings.TrimSpace(f.inputs[backendFieldPromptFlag].Value()),
 	}
 }
 
@@ -194,7 +182,6 @@ func (f BackendForm) View() string {
 	}{
 		{"Name:", backendFieldName},
 		{"Command:", backendFieldCommand},
-		{"Resume Command:", backendFieldResumeCommand},
 		{"Prompt Flag:", backendFieldPromptFlag},
 	}
 	for _, l := range labels {

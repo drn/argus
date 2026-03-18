@@ -19,7 +19,7 @@ func testProjects() map[string]config.Project {
 func testBackends() map[string]config.Backend {
 	return map[string]config.Backend{
 		"claude": {Command: "claude --dangerously-skip-permissions"},
-		"codex":  {Command: "codex --full-auto", ResumeCommand: "codex resume --full-auto --last"},
+		"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
 	}
 }
 

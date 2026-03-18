@@ -601,10 +601,6 @@ func (sv SettingsView) renderBackendDetail(_ *settingsRow, _ int) string {
 	b.WriteString(sv.theme.Section.Render("  CONFIG") + "\n")
 	b.WriteString("  " + sv.theme.Dimmed.Render("Command: ") + sv.theme.Normal.Render(entry.Backend.Command) + "\n")
 
-	if entry.Backend.ResumeCommand != "" {
-		b.WriteString("  " + sv.theme.Dimmed.Render("Resume: ") + sv.theme.Normal.Render(entry.Backend.ResumeCommand) + "\n")
-	}
-
 	promptFlag := entry.Backend.PromptFlag
 	if promptFlag == "" {
 		promptFlag = "(none — uses stdin)"

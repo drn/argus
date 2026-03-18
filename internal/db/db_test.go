@@ -529,7 +529,7 @@ func TestFixupBackends_MissingDangerouslySkipPermissions(t *testing.T) {
 	}
 }
 
-func TestFixupBackends_MissingFullAuto(t *testing.T) {
+func TestFixupBackends_CodexOldFlags(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -557,19 +557,16 @@ func TestFixupBackends_MissingFullAuto(t *testing.T) {
 	if b.Command != defaultCfg.Backends["codex"].Command {
 		t.Errorf("expected command %q, got %q", defaultCfg.Backends["codex"].Command, b.Command)
 	}
-	if b.ResumeCommand != defaultCfg.Backends["codex"].ResumeCommand {
-		t.Errorf("expected resume_command %q, got %q", defaultCfg.Backends["codex"].ResumeCommand, b.ResumeCommand)
-	}
 }
 
-func TestFixupBackends_CodexMissingResumeCommand(t *testing.T) {
+func TestFixupBackends_CodexFullAuto(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 
-	// Simulate codex with correct command but missing resume_command
+	// Simulate codex with old --full-auto flag (pre-migration)
 	if err := d.SetBackend("codex", config.Backend{
 		Command:    "codex --full-auto",
 		PromptFlag: "",
@@ -584,8 +581,8 @@ func TestFixupBackends_CodexMissingResumeCommand(t *testing.T) {
 	backends := d.Backends()
 	b := backends["codex"]
 	defaultCfg := config.DefaultConfig()
-	if b.ResumeCommand != defaultCfg.Backends["codex"].ResumeCommand {
-		t.Errorf("expected resume_command %q, got %q", defaultCfg.Backends["codex"].ResumeCommand, b.ResumeCommand)
+	if b.Command != defaultCfg.Backends["codex"].Command {
+		t.Errorf("expected command %q, got %q", defaultCfg.Backends["codex"].Command, b.Command)
 	}
 }
 
@@ -1196,13 +1193,12 @@ func TestDB_PRURL(t *testing.T) {
 	}
 }
 
-func TestDB_BackendResumeCommand(t *testing.T) {
+func TestDB_BackendCommandRoundtrip(t *testing.T) {
 	d := testDB(t)
 
-	// Set a backend with resume_command
 	if err := d.SetBackend("codex", config.Backend{
-		Command:       "codex --full-auto",
-		ResumeCommand: "codex resume --full-auto --last",
+		Command:    "codex --dangerously-bypass-approvals-and-sandbox",
+		PromptFlag: "",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1212,25 +1208,22 @@ func TestDB_BackendResumeCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("codex not found")
 	}
-	if b.Command != "codex --full-auto" {
+	if b.Command != "codex --dangerously-bypass-approvals-and-sandbox" {
 		t.Errorf("command = %q", b.Command)
-	}
-	if b.ResumeCommand != "codex resume --full-auto --last" {
-		t.Errorf("resume_command = %q", b.ResumeCommand)
 	}
 }
 
-func TestDB_BackendResumeCommandInConfig(t *testing.T) {
+func TestDB_CodexDefaultCommand(t *testing.T) {
 	d := testDB(t)
 
-	// Default config should have codex with resume_command
+	// Default config should have the new codex command
 	cfg := d.Config()
 	codex, ok := cfg.Backends["codex"]
 	if !ok {
 		t.Fatal("expected codex backend in config")
 	}
-	if codex.ResumeCommand != "codex resume --full-auto --last" {
-		t.Errorf("resume_command = %q", codex.ResumeCommand)
+	if codex.Command != "codex --dangerously-bypass-approvals-and-sandbox" {
+		t.Errorf("command = %q", codex.Command)
 	}
 }
 

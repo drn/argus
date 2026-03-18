@@ -13,7 +13,7 @@ func testConfig() config.Config {
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
 			"claude": {Command: "claude --dangerously-skip-permissions", PromptFlag: ""},
-			"codex":  {Command: "codex --full-auto", PromptFlag: "", ResumeCommand: "codex resume --full-auto --last"},
+			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
 			"bare":   {Command: "my-agent", PromptFlag: ""},
 		},
 		Projects: map[string]config.Project{
@@ -44,7 +44,7 @@ func TestResolveBackend_ProjectOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "codex --full-auto" {
+	if b.Command != "codex --dangerously-bypass-approvals-and-sandbox" {
 		t.Errorf("expected codex command, got %q", b.Command)
 	}
 }
@@ -156,8 +156,8 @@ func TestBuildCmd_WithProject(t *testing.T) {
 	if cmd.Dir != "/home/user/.argus/worktrees/myapp/fix-bug" {
 		t.Errorf("expected dir from worktree, got %q", cmd.Dir)
 	}
-	// Should use codex backend from project (no prompt flag, no session ID for ResumeCommand backends)
-	if cmd.Args[2] != "codex --full-auto 'test'" {
+	// Should use codex backend from project (no --session-id for codex backends)
+	if cmd.Args[2] != "codex --dangerously-bypass-approvals-and-sandbox 'test'" {
 		t.Errorf("unexpected command: %q", cmd.Args[2])
 	}
 }
@@ -412,24 +412,30 @@ func TestResolveSandboxConfig_DoesNotMutateGlobal(t *testing.T) {
 	}
 }
 
-func TestBuildCmd_ResumeWithResumeCommand(t *testing.T) {
+func TestBuildCmd_CodexResumeWithSessionID(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Project: "myapp", Prompt: "fix the bug", Worktree: t.TempDir()}
+	task := &model.Task{
+		Project:   "myapp",
+		Prompt:    "fix the bug",
+		SessionID: "019cff60-2cfb-7ed3-bca6-15ef06587c99",
+		Worktree:  t.TempDir(),
+	}
 
 	cmd, _, err := BuildCmd(task, cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Codex-style resume uses the dedicated ResumeCommand, replacing the base command entirely.
-	expected := "codex resume --full-auto --last"
+	// Codex resume uses dedicated command with specific session ID.
+	expected := codexResumeCmd + " '019cff60-2cfb-7ed3-bca6-15ef06587c99'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
 }
 
-func TestBuildCmd_CodexNoSessionID(t *testing.T) {
+func TestBuildCmd_CodexNewSessionNoSessionIDFlag(t *testing.T) {
 	cfg := testConfig()
+	// Even if SessionID is somehow set, codex new sessions should NOT use --session-id.
 	task := &model.Task{Project: "myapp", Prompt: "fix the bug", SessionID: "some-id", Worktree: t.TempDir()}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
@@ -437,26 +443,32 @@ func TestBuildCmd_CodexNoSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Codex-style backends (ResumeCommand != "") should NOT append --session-id.
-	expected := "codex --full-auto 'fix the bug'"
+	// Codex does not support --session-id flag.
+	expected := "codex --dangerously-bypass-approvals-and-sandbox 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
 }
 
-func TestBuildCmd_ClaudeResumeIgnoresResumeCommand(t *testing.T) {
-	cfg := testConfig()
-	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
-
-	cmd, _, err := BuildCmd(task, cfg, true)
-	if err != nil {
-		t.Fatal(err)
+func TestIsCodexBackend(t *testing.T) {
+	tests := []struct {
+		command  string
+		expected bool
+	}{
+		{"codex --dangerously-bypass-approvals-and-sandbox", true},
+		{"codex --full-auto", true},
+		{"codex", true},
+		{"/usr/local/bin/codex --full-auto", true},
+		{"claude --dangerously-skip-permissions", false},
+		{"my-codex-wrapper --flags", false},
+		{"/usr/bin/my-codex", false},
+		{"", false},
 	}
-
-	// Claude backend (no ResumeCommand) should use --resume flag.
-	expected := "claude --dangerously-skip-permissions --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
-	if cmd.Args[2] != expected {
-		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
+	for _, tt := range tests {
+		got := IsCodexBackend(tt.command)
+		if got != tt.expected {
+			t.Errorf("IsCodexBackend(%q) = %v, want %v", tt.command, got, tt.expected)
+		}
 	}
 }
 
