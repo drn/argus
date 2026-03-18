@@ -755,6 +755,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.TabLeft):
 			if m.activeTab > tabTasks {
 				m.activeTab--
+				if m.activeTab == tabReviews && m.reviews.canFetchPRList() {
+					return m, m.reviews.StartLoading()
+				}
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.TabRight):

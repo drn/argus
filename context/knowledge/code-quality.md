@@ -446,6 +446,7 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **`parentDir()` helper:** Walks backward from a child row index to find the parent directory row (indent 0, IsDir true). Used when cursor is on a child to determine which directory should stay expanded.
 
+<<<<<<< HEAD
 ## Reviews Tab: PR List Sort Order Bug — 2026-03-17
 
 **Problem:** `FetchPRList()` appends "my PRs" (`IsReviewRequest: false`) before "review requests" (`IsReviewRequest: true`) in the slice. But `renderPRList()` visually renders "Review Requests" first and "My Open PRs" second. Since `prCursor` navigates the flat slice sequentially, the cursor started in the "My Open PRs" section (at the bottom) and couldn't reach "Review Requests" (at the top) without scrolling through all "My PRs" first.
@@ -455,3 +456,15 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 **Fix:** `SetPRs()` now calls `sort.SliceStable` to sort review requests to the front of the slice before storing it. This makes the flat cursor index order match the visual top-to-bottom render order. Test: `TestReviewsView_SetPRs_SortOrder`.
 
 **Invariant:** Any view that renders items in a different order than the backing slice must either (a) sort the slice to match, or (b) use an indirection layer (display index → data index). Option (a) is simpler when the sort is stable and the grouping is fixed.
+
+## Reviews Tab Caching: 2026-03-17
+
+### Pattern: Background refresh with cached data display
+
+**What:** PR list has a 10-minute cooldown (`prListCooldown`). Tab entry (all three paths: `"2"`, TabLeft, TabRight) checks `canFetchPRList()` before fetching. When cached data exists, the UI shows it during background refresh with a dimmed "refreshing…" indicator instead of replacing with "Loading PRs...".
+
+**Key design decisions:**
+- `SetPRs()` distinguishes first-load (resets all state) from background refresh (preserves cursor, scroll offset, selection, files, diff, comments). `hadData` flag checks `len(rv.prs) > 0 || rv.selectedPR != nil`.
+- Both `prCursor` and `prScrollOff` are clamped when the list shrinks on refresh.
+- `View()` only shows "Loading PRs..." / error when no cached data exists. Background errors appear as dimmed "refresh failed: ..." appended to the cached list.
+- `'R'` key forces manual refresh subject to the same cooldown, showing remaining seconds if blocked.
