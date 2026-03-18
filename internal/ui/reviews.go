@@ -25,6 +25,7 @@ const (
 	focusList    reviewFocus = iota
 	focusDiff
 	focusComment
+	focusApproveConfirm
 )
 
 // ReviewsView is the three-panel GitHub PR review interface.
@@ -241,6 +242,29 @@ func (rv *ReviewsView) SetComments(comments []github.PRComment) {
 	rv.commentsFetching = false
 }
 
+// MarkReviewDecision updates the in-memory ReviewDecision for the given PR number
+// so the badge updates immediately without waiting for a full PR list refresh.
+func (rv *ReviewsView) MarkReviewDecision(prNumber int, action github.ReviewAction) {
+	var decision string
+	switch action {
+	case github.ReviewApprove:
+		decision = "APPROVED"
+	case github.ReviewRequestChanges:
+		decision = "CHANGES_REQUESTED"
+	default:
+		return
+	}
+	for i := range rv.prs {
+		if rv.prs[i].Number == prNumber {
+			rv.prs[i].ReviewDecision = decision
+			break
+		}
+	}
+	if rv.selectedPR != nil && rv.selectedPR.Number == prNumber {
+		rv.selectedPR.ReviewDecision = decision
+	}
+}
+
 // SetLoadError records a load error.
 func (rv *ReviewsView) SetLoadError(err string) {
 	rv.loadErr = err
@@ -269,6 +293,9 @@ func (rv *ReviewsView) DraftComment() (path string, line int, body string) {
 func (rv *ReviewsView) HandleKey(msg tea.KeyMsg) tea.Cmd {
 	if rv.focus == focusComment {
 		return rv.handleCommentKey(msg)
+	}
+	if rv.focus == focusApproveConfirm {
+		return rv.handleApproveConfirmKey(msg)
 	}
 
 	switch msg.String() {
@@ -324,11 +351,7 @@ func (rv *ReviewsView) HandleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "a":
 		if rv.selectedPR != nil {
-			pr := rv.selectedPR
-			return func() tea.Msg {
-				err := github.SubmitReview(pr.RepoOwner, pr.Repo, pr.Number, github.ReviewApprove, "")
-				return SubmitReviewMsg{Err: err}
-			}
+			rv.focus = focusApproveConfirm
 		}
 	case "r":
 		// REQUEST_CHANGES requires a non-empty body per GitHub API.
@@ -363,7 +386,7 @@ func (rv *ReviewsView) handleCommentKey(msg tea.KeyMsg) tea.Cmd {
 			if isDraftReview {
 				return func() tea.Msg {
 					err := github.SubmitReview(pr.RepoOwner, pr.Repo, pr.Number, github.ReviewRequestChanges, body)
-					return SubmitReviewMsg{Err: err}
+					return SubmitReviewMsg{Err: err, Action: github.ReviewRequestChanges, PRNumber: pr.Number}
 				}
 			}
 			return postCommentCmd(pr, path, line, body)
@@ -382,6 +405,21 @@ func (rv *ReviewsView) handleCommentKey(msg tea.KeyMsg) tea.Cmd {
 		if len(msg.Runes) > 0 {
 			rv.draftBody += string(msg.Runes)
 		}
+	}
+	return nil
+}
+
+func (rv *ReviewsView) handleApproveConfirmKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "y", "enter":
+		pr := rv.selectedPR
+		rv.focus = focusList
+		return func() tea.Msg {
+			err := github.SubmitReview(pr.RepoOwner, pr.Repo, pr.Number, github.ReviewApprove, "")
+			return SubmitReviewMsg{Err: err, Action: github.ReviewApprove, PRNumber: pr.Number}
+		}
+	case "n", "esc":
+		rv.focus = focusList
 	}
 	return nil
 }
@@ -680,7 +718,16 @@ func (rv *ReviewsView) renderFileList() string {
 	b.WriteString(rv.theme.Title.Render(title))
 	b.WriteString("\n")
 	b.WriteString(rv.theme.Dimmed.Render(fmt.Sprintf("#%d · %s/%s", pr.Number, pr.RepoOwner, pr.Repo)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	switch pr.ReviewDecision {
+	case "APPROVED":
+		b.WriteString(rv.theme.Complete.Render("✓ Approved"))
+	case "CHANGES_REQUESTED":
+		b.WriteString(rv.theme.Error.Render("✗ Changes requested"))
+	case "REVIEW_REQUIRED":
+		b.WriteString(rv.theme.Dimmed.Render("? Review required"))
+	}
+	b.WriteString("\n")
 
 	if len(rv.files) == 0 {
 		b.WriteString(rv.theme.Dimmed.Render("Loading files..."))
@@ -792,6 +839,10 @@ func (rv *ReviewsView) RenderComments(w, h int) string {
 		return rv.renderCommentCompose()
 	}
 
+	if rv.focus == focusApproveConfirm {
+		return rv.renderApproveConfirm()
+	}
+
 	var b strings.Builder
 
 	if len(rv.comments) == 0 {
@@ -839,6 +890,23 @@ func (rv *ReviewsView) RenderComments(w, h int) string {
 		}
 	}
 
+	return b.String()
+}
+
+func (rv *ReviewsView) renderApproveConfirm() string {
+	pr := rv.selectedPR
+	if pr == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(rv.theme.Title.Render("Approve PR?"))
+	b.WriteString("\n\n")
+	title := truncString(pr.Title, 40, 37)
+	b.WriteString(rv.theme.Normal.Render(title))
+	b.WriteString("\n")
+	b.WriteString(rv.theme.Dimmed.Render(fmt.Sprintf("#%d · %s/%s", pr.Number, pr.RepoOwner, pr.Repo)))
+	b.WriteString("\n\n")
+	b.WriteString(rv.theme.Help.Render("[y/enter] confirm  [n/esc] cancel"))
 	return b.String()
 }
 
