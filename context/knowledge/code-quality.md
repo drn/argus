@@ -206,6 +206,10 @@
 - Improve `internal/daemon/client` test coverage to ≥80% (Get() race + StreamLost + DaemonDown tests added 2026-03-16; remaining: stream reconnection on live process, concurrent stream/RPC paths)
 - Daemon session resume on startup: daemon should resume in-progress tasks with saved session IDs (port Init() logic from root.go)
 
+### UX Regression Fixes (2026-03-18)
+- **Backend inheritance in new task form:** Removing the synthetic default/inherit option from the backend selector changed task semantics, not just presentation. Because `ResolveBackend` prefers `task.Backend` over `project.Backend`, preselecting and persisting the global default backend forced every new task to override project-level backend settings. Fixed by restoring an explicit `(inherit)` option that stores an empty task backend and rendering a resolved hint (`→ <backend>`) so users still see what will run.
+- **Autocomplete refresh after async skill discovery:** The `/skill` dropdown is populated asynchronously via `skillsLoadedMsg`. If a user typed a slash command prefix before the scan finished, the dropdown stayed closed because only `m.newtask.skills` was updated. Fixed by immediately calling `m.newtask.updateAutocomplete()` in the `skillsLoadedMsg` handler so the current prompt is re-evaluated as soon as skill data arrives.
+
 ## Sandbox Architecture (2026-03-16, updated from srt to sandbox-exec)
 
 ### Design Decisions

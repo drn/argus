@@ -709,6 +709,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case skillsLoadedMsg:
 		m.newtask.skills = []SkillItem(msg)
+		m.newtask.updateAutocomplete()
 		return m, nil
 
 	case tea.KeyMsg:
