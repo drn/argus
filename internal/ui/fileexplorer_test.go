@@ -457,6 +457,99 @@ func TestFileExplorer_SetFiles_PrunesStaleExpansion(t *testing.T) {
 	}
 }
 
+func TestFileExplorer_AutoExpand(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "M", Path: "top.go"},
+		{Status: "??", Path: "dir1/", IsDir: true},
+		{Status: "??", Path: "dir2/", IsDir: true},
+	})
+	fe.SetDirChildren("dir1/", []ChangedFile{
+		{Status: "A", Path: "dir1/a.go"},
+	})
+	fe.SetDirChildren("dir2/", []ChangedFile{
+		{Status: "A", Path: "dir2/b.go"},
+	})
+
+	// Cursor starts on top.go (non-dir), no dir should be expanded
+	row := fe.SelectedRow()
+	if row == nil || row.Path != "top.go" {
+		t.Fatalf("expected cursor on top.go, got %+v", row)
+	}
+
+	// Move down to dir1/ — should auto-expand
+	fe.CursorDown()
+	row = fe.SelectedRow()
+	if row == nil || row.Path != "dir1/" {
+		t.Fatalf("expected cursor on dir1/, got %+v", row)
+	}
+	if !fe.expanded["dir1/"] {
+		t.Error("dir1/ should be auto-expanded when cursor enters")
+	}
+	// rows: top.go, dir1/, dir1/a.go, dir2/
+	if fe.DisplayRowCount() != 4 {
+		t.Errorf("expected 4 rows with dir1 expanded, got %d", fe.DisplayRowCount())
+	}
+
+	// Move down to dir1/a.go — dir1 should stay expanded
+	fe.CursorDown()
+	row = fe.SelectedRow()
+	if row == nil || row.Path != "dir1/a.go" {
+		t.Fatalf("expected cursor on dir1/a.go, got %+v", row)
+	}
+	if !fe.expanded["dir1/"] {
+		t.Error("dir1/ should stay expanded when cursor is on child")
+	}
+
+	// Move down to dir2/ — dir1 should collapse, dir2 should expand
+	fe.CursorDown()
+	row = fe.SelectedRow()
+	if row == nil || row.Path != "dir2/" {
+		t.Fatalf("expected cursor on dir2/, got %+v", row)
+	}
+	if fe.expanded["dir1/"] {
+		t.Error("dir1/ should collapse when cursor moves to dir2/")
+	}
+	if !fe.expanded["dir2/"] {
+		t.Error("dir2/ should auto-expand when cursor enters")
+	}
+
+	// Move back up to top.go — all dirs should collapse
+	fe.CursorUp()
+	fe.CursorUp()
+	row = fe.SelectedRow()
+	if row == nil || row.Path != "top.go" {
+		t.Fatalf("expected cursor on top.go, got %+v", row)
+	}
+	if fe.expanded["dir1/"] || fe.expanded["dir2/"] {
+		t.Error("all dirs should collapse when cursor is on a top-level file")
+	}
+}
+
+func TestFileExplorer_AutoExpand_NeedsFetch(t *testing.T) {
+	fe := NewFileExplorer(DefaultTheme())
+	fe.SetSize(40, 20)
+	fe.SetFiles([]ChangedFile{
+		{Status: "??", Path: "dir/", IsDir: true},
+	})
+
+	// Move cursor to dir/ — should auto-expand and request fetch
+	needsFetch := fe.CursorDown()
+	// Cursor doesn't move past end so it stays on dir/ (first row after down from 0 is still 0 if only 1 row)
+	// Actually with 1 row, cursor starts at 0 (dir/) — autoExpand runs on initial CursorDown
+	// Let's check the initial position
+	row := fe.SelectedRow()
+	if row == nil || row.Path != "dir/" {
+		t.Fatalf("expected cursor on dir/, got %+v", row)
+	}
+	// The initial SetFiles doesn't trigger autoExpand, but CursorDown does.
+	// With only 1 row, CursorDown doesn't move but autoExpand still runs.
+	if needsFetch != "dir/" {
+		t.Errorf("expected needsFetch=dir/, got %q", needsFetch)
+	}
+}
+
 func TestFileExplorer_StatusStyle(t *testing.T) {
 	theme := DefaultTheme()
 	fe := NewFileExplorer(theme)
