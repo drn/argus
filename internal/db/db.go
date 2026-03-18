@@ -118,9 +118,10 @@ func (d *DB) createTables() error {
 			sandbox_extra_write TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS backends (
-			name        TEXT PRIMARY KEY,
-			command     TEXT NOT NULL,
-			prompt_flag TEXT NOT NULL DEFAULT ''
+			name           TEXT PRIMARY KEY,
+			command        TEXT NOT NULL,
+			prompt_flag    TEXT NOT NULL DEFAULT '',
+			resume_command TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS config (
 			key   TEXT PRIMARY KEY,
@@ -146,6 +147,9 @@ func (d *DB) createTables() error {
 
 	// Add archived column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+
+	// Add resume_command column to existing backends tables.
+	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	return nil
 }
@@ -369,7 +373,7 @@ func (d *DB) Backends() map[string]config.Backend {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, command, prompt_flag FROM backends ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT name, command, prompt_flag, resume_command FROM backends ORDER BY name`)
 	if err != nil {
 		return make(map[string]config.Backend)
 	}
@@ -379,7 +383,7 @@ func (d *DB) Backends() map[string]config.Backend {
 	for rows.Next() {
 		var name string
 		var b config.Backend
-		if err := rows.Scan(&name, &b.Command, &b.PromptFlag); err != nil {
+		if err := rows.Scan(&name, &b.Command, &b.PromptFlag, &b.ResumeCommand); err != nil {
 			continue
 		}
 		backends[name] = b
@@ -391,8 +395,8 @@ func (d *DB) SetBackend(name string, b config.Backend) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
-		name, b.Command, b.PromptFlag)
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag, resume_command) VALUES (?, ?, ?, ?)`,
+		name, b.Command, b.PromptFlag, b.ResumeCommand)
 	return err
 }
 

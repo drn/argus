@@ -200,6 +200,14 @@ go test ./internal/db/      # run tests for a single package
 
 - **Daemon process appears as "argusd" in Activity Monitor via symlink.** `AutoStart` in `internal/daemon/client/client.go` creates a symlink `~/.argus/argusd -> <real binary>` and launches the daemon via that symlink. macOS Activity Monitor shows the basename of the executable path as the process name. The symlink is updated whenever `os.Executable()` differs from the current target (handles binary rebuilds). Falls back to the real binary path if symlink creation fails. The symlink persists on disk (never cleaned up) but is harmless when stale — `AutoStart` recreates it on next launch.
 
+- **`Backend.ResumeCommand` separates resume semantics from the base command.** Claude uses `--resume <session-id>` appended to the base command. Codex uses a completely different command (`codex resume --full-auto --last`). The `ResumeCommand` field on `config.Backend` holds the dedicated resume command; when non-empty, `BuildCmd` replaces the entire command string on resume instead of appending `--resume`. Backends with `ResumeCommand` also skip `--session-id` on new sessions (Codex doesn't support session pinning). The resume detection in `startOrAttach` uses `!t.StartedAt.IsZero() && t.SessionID == ""` to detect "previously started but no pinned session" as a resume case for Codex-style backends.
+
+- **Backend form: `internal/ui/backendform.go`.** Mirrors `ProjectForm` pattern with 4 textinput fields: Name, Command, Resume Command, Prompt Flag. Supports edit mode (name read-only) and new mode. Wired via `viewNewBackend`/`viewEditBackend` in root.go. Settings view keys: `[n]` new backend, `[e]` edit backend, `[d]` set as default (on backend rows). The BACKENDS section header shows `(default: <name>)`.
+
+- **New task form has a backend selector.** Field order: project → backend → prompt. The backend selector has `(default)` at index 0 (inherits from project/global), followed by sorted backend names. When `(default)` is selected, `Task().Backend` is empty string (inheritance). The resolved default name is shown dimmed next to the selector.
+
+- **`fixupBackends()` migrates `--yolo` to `--full-auto` and sets `resume_command` for codex.** Detection: command contains "codex" but not `--full-auto`, or codex command missing `resume_command`. The `resume_command` DB column is added via `ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''` (idempotent).
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

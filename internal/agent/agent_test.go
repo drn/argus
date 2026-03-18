@@ -13,7 +13,7 @@ func testConfig() config.Config {
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
 			"claude": {Command: "claude --dangerously-skip-permissions", PromptFlag: ""},
-			"codex":  {Command: "codex", PromptFlag: "--prompt"},
+			"codex":  {Command: "codex --full-auto", PromptFlag: "", ResumeCommand: "codex resume --full-auto --last"},
 			"bare":   {Command: "my-agent", PromptFlag: ""},
 		},
 		Projects: map[string]config.Project{
@@ -44,7 +44,7 @@ func TestResolveBackend_ProjectOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "codex" {
+	if b.Command != "codex --full-auto" {
 		t.Errorf("expected codex command, got %q", b.Command)
 	}
 }
@@ -156,8 +156,8 @@ func TestBuildCmd_WithProject(t *testing.T) {
 	if cmd.Dir != "/home/user/.argus/worktrees/myapp/fix-bug" {
 		t.Errorf("expected dir from worktree, got %q", cmd.Dir)
 	}
-	// Should use codex backend from project
-	if cmd.Args[2] != "codex --prompt 'test'" {
+	// Should use codex backend from project (no prompt flag, no session ID for ResumeCommand backends)
+	if cmd.Args[2] != "codex --full-auto 'test'" {
 		t.Errorf("unexpected command: %q", cmd.Args[2])
 	}
 }
@@ -409,6 +409,54 @@ func TestResolveSandboxConfig_DoesNotMutateGlobal(t *testing.T) {
 	// Global config must not be mutated
 	if len(cfg.Sandbox.DenyRead) != 1 {
 		t.Errorf("global DenyRead was mutated: %v", cfg.Sandbox.DenyRead)
+	}
+}
+
+func TestBuildCmd_ResumeWithResumeCommand(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Project: "myapp", Prompt: "fix the bug", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Codex-style resume uses the dedicated ResumeCommand, replacing the base command entirely.
+	expected := "codex resume --full-auto --last"
+	if cmd.Args[2] != expected {
+		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_CodexNoSessionID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Project: "myapp", Prompt: "fix the bug", SessionID: "some-id", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Codex-style backends (ResumeCommand != "") should NOT append --session-id.
+	expected := "codex --full-auto 'fix the bug'"
+	if cmd.Args[2] != expected {
+		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_ClaudeResumeIgnoresResumeCommand(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Prompt: "fix the bug", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Claude backend (no ResumeCommand) should use --resume flag.
+	expected := "claude --dangerously-skip-permissions --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
+	if cmd.Args[2] != expected {
+		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
 }
 

@@ -16,9 +16,16 @@ func testProjects() map[string]config.Project {
 	}
 }
 
+func testBackends() map[string]config.Backend {
+	return map[string]config.Backend{
+		"claude": {Command: "claude --dangerously-skip-permissions"},
+		"codex":  {Command: "codex --full-auto", ResumeCommand: "codex resume --full-auto --last"},
+	}
+}
+
 func TestNewTaskForm_ProjectListSorted(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
 	if len(f.projectNames) != 3 {
 		t.Fatalf("expected 3 project names, got %d", len(f.projectNames))
@@ -33,7 +40,7 @@ func TestNewTaskForm_ProjectListSorted(t *testing.T) {
 
 func TestNewTaskForm_DefaultSelectsFirst(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
 	if got := f.SelectedProject(); got != "alpha" {
 		t.Errorf("SelectedProject() = %q, want %q", got, "alpha")
@@ -42,7 +49,7 @@ func TestNewTaskForm_DefaultSelectsFirst(t *testing.T) {
 
 func TestNewTaskForm_RightCyclesForward(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldProject
 
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -64,7 +71,7 @@ func TestNewTaskForm_RightCyclesForward(t *testing.T) {
 
 func TestNewTaskForm_LeftCyclesBackward(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldProject
 
 	// Wraps to last
@@ -81,7 +88,7 @@ func TestNewTaskForm_LeftCyclesBackward(t *testing.T) {
 
 func TestNewTaskForm_TabNavigatesBetweenFields(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
 	// Starts on prompt
 	if f.focused != fieldPrompt {
@@ -94,27 +101,33 @@ func TestNewTaskForm_TabNavigatesBetweenFields(t *testing.T) {
 		t.Errorf("after tab: focused = %d, want %d", f.focused, fieldProject)
 	}
 
+	// Tab goes to backend
+	f.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if f.focused != fieldBackend {
+		t.Errorf("after tab x2: focused = %d, want %d", f.focused, fieldBackend)
+	}
+
 	// Tab goes back to prompt
 	f.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if f.focused != fieldPrompt {
-		t.Errorf("after tab x2: focused = %d, want %d", f.focused, fieldPrompt)
+		t.Errorf("after tab x3: focused = %d, want %d", f.focused, fieldPrompt)
 	}
 }
 
-func TestNewTaskForm_EnterOnProjectMovesToPrompt(t *testing.T) {
+func TestNewTaskForm_EnterOnProjectMovesToBackend(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldProject
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if f.focused != fieldPrompt {
-		t.Errorf("after enter on project: focused = %d, want %d", f.focused, fieldPrompt)
+	if f.focused != fieldBackend {
+		t.Errorf("after enter on project: focused = %d, want %d", f.focused, fieldBackend)
 	}
 }
 
 func TestNewTaskForm_TaskUsesBranchFromProject(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldProject
 
 	// Select bravo (has branch "develop")
@@ -135,7 +148,7 @@ func TestNewTaskForm_TaskUsesBranchFromProject(t *testing.T) {
 
 func TestNewTaskForm_EmptyProjects(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, map[string]config.Project{}, "")
+	f := NewNewTaskForm(theme, map[string]config.Project{}, "", testBackends(), "claude")
 
 	if got := f.SelectedProject(); got != "" {
 		t.Errorf("SelectedProject() with no projects = %q, want empty", got)
@@ -153,7 +166,7 @@ func TestNewTaskForm_EmptyProjects(t *testing.T) {
 
 func TestNewTaskForm_EscCancels(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
 	f.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if !f.Canceled() {
@@ -163,7 +176,7 @@ func TestNewTaskForm_EscCancels(t *testing.T) {
 
 func TestNewTaskForm_SubmitRequiresPrompt(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
 	// Enter with empty prompt should not submit
 	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -183,21 +196,90 @@ func TestNewTaskForm_DefaultProject(t *testing.T) {
 	theme := DefaultTheme()
 
 	// Default to "bravo" — should be index 1 in sorted list [alpha, bravo, charlie]
-	f := NewNewTaskForm(theme, testProjects(), "bravo")
+	f := NewNewTaskForm(theme, testProjects(), "bravo", testBackends(), "claude")
 	if got := f.SelectedProject(); got != "bravo" {
 		t.Errorf("SelectedProject() = %q, want %q", got, "bravo")
 	}
 
 	// Unknown project falls back to first
-	f2 := NewNewTaskForm(theme, testProjects(), "unknown")
+	f2 := NewNewTaskForm(theme, testProjects(), "unknown", testBackends(), "claude")
 	if got := f2.SelectedProject(); got != "alpha" {
 		t.Errorf("SelectedProject() with unknown default = %q, want %q", got, "alpha")
 	}
 }
 
+func TestNewTaskForm_BackendSelectorDefaultsToDefault(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+
+	if got := f.SelectedBackend(); got != "" {
+		t.Errorf("SelectedBackend() = %q, want empty (default)", got)
+	}
+	// Backend names should be (default), claude, codex
+	if len(f.backendNames) != 3 {
+		t.Fatalf("expected 3 backend names, got %d: %v", len(f.backendNames), f.backendNames)
+	}
+	if f.backendNames[0] != "(default)" {
+		t.Errorf("backendNames[0] = %q, want (default)", f.backendNames[0])
+	}
+}
+
+func TestNewTaskForm_BackendSelectorCycles(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+	f.focused = fieldBackend
+
+	// Right cycles: (default) → claude → codex → (default)
+	f.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := f.SelectedBackend(); got != "claude" {
+		t.Errorf("after right: SelectedBackend() = %q, want claude", got)
+	}
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := f.SelectedBackend(); got != "codex" {
+		t.Errorf("after right x2: SelectedBackend() = %q, want codex", got)
+	}
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if got := f.SelectedBackend(); got != "" {
+		t.Errorf("after right x3 (wrap): SelectedBackend() = %q, want empty (default)", got)
+	}
+}
+
+func TestNewTaskForm_TaskIncludesBackend(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+	f.focused = fieldBackend
+
+	// Select codex
+	f.Update(tea.KeyMsg{Type: tea.KeyRight}) // claude
+	f.Update(tea.KeyMsg{Type: tea.KeyRight}) // codex
+
+	f.focused = fieldPrompt
+	f.promptInput.SetValue("fix the bug")
+
+	task := f.Task()
+	if task.Backend != "codex" {
+		t.Errorf("task.Backend = %q, want codex", task.Backend)
+	}
+}
+
+func TestNewTaskForm_TaskDefaultBackendEmpty(t *testing.T) {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+
+	f.focused = fieldPrompt
+	f.promptInput.SetValue("fix the bug")
+
+	task := f.Task()
+	if task.Backend != "" {
+		t.Errorf("task.Backend = %q, want empty (inherit)", task.Backend)
+	}
+}
+
 func TestNewTaskForm_TextareaWrapsAndExpands(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.SetSize(80, 40)
 
 	// Textarea should start at height 1
@@ -233,7 +315,7 @@ func TestNewTaskForm_TextareaWrapsAndExpands(t *testing.T) {
 // Verifies heights increase monotonically and all content stays visible.
 func TestNewTaskForm_WordWrapHeightTransitions(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.SetSize(80, 40)
 
 	words := strings.Fields("implement a new feature that allows users to search through their task history and filter by project name and status")
@@ -273,7 +355,7 @@ func TestNewTaskForm_WordWrapHeightTransitions(t *testing.T) {
 
 func TestNewTaskForm_VisualLineCount(t *testing.T) {
 	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "")
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.SetSize(80, 40) // modal width ~32, input width ~28
 
 	// Empty value = 1 visual line
