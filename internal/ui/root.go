@@ -354,8 +354,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview.SetSize(widths[1], previewH)
 		m.detail.SetSize(widths[2], contentHeight)
 
-		// Settings tab uses two-panel split
-		settingsLeft, _ := m.splitWidths()
+		// Settings tab: 20% margin | 20% left | 40% right | 20% margin
+		_, settingsLeft, _ := m.settingsWidths()
 		m.settings.SetSize(settingsLeft, contentHeight)
 
 		// Reviews tab

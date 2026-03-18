@@ -88,18 +88,6 @@ func (m Model) splitCenterHeights(total int) (int, int) {
 	return gitH, previewH
 }
 
-// splitWidths returns a two-panel split for the settings tab.
-func (m Model) splitWidths() (int, int) {
-	left := m.width * 2 / 5
-	if left < 30 {
-		left = 30
-	}
-	if left > m.width-20 {
-		left = m.width - 20
-	}
-	right := m.width - left
-	return left, right
-}
 
 
 func (m Model) renderTabHeader() string {
@@ -173,14 +161,37 @@ func (m Model) renderTasksView(tabHeader, bar string) string {
 }
 
 func (m Model) renderSettingsView(tabHeader, bar string) string {
-	leftWidth, rightWidth := m.splitWidths()
-	contentHeight := m.height - 2
+	logo := renderBanner(m.width)
+	logoHeight := lipgloss.Height(logo)
+
+	// Panel area: 20% margin | 20% left | 40% right | 20% margin
+	contentHeight := max(m.height-2-logoHeight, 3) // 2 = tab header + separator
+	marginW, leftWidth, rightWidth := m.settingsWidths()
+
 	leftContent := m.settings.View()
 	leftPanel := borderedPanel(leftWidth, contentHeight, false, leftContent)
 	rightPanel := m.settings.RenderDetail(rightWidth, contentHeight)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, rightPanel)
+
+	if marginW > 0 {
+		panels = lipgloss.NewStyle().PaddingLeft(marginW).Render(panels)
+	}
+
+	body := logo + "\n" + panels
 	content := tabHeader + "\n" + body
 	return m.padToBottom(content, bar)
+}
+
+// settingsWidths returns the margin, left panel, and right panel widths
+// for the settings view layout: 20% margin | 20% left | 40% right | 20% margin.
+func (m Model) settingsWidths() (margin, left, right int) {
+	margin = m.width / 5
+	left = max(m.width/5, 15)
+	right = max(m.width*2/5, 30)
+	if margin+left+right > m.width {
+		margin = 0
+	}
+	return
 }
 
 func (m Model) renderReviewsView(tabHeader, bar string) string {
