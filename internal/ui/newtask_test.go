@@ -212,15 +212,15 @@ func TestNewTaskForm_BackendSelectorDefaultsToDefault(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
-	if got := f.SelectedBackend(); got != "" {
-		t.Errorf("SelectedBackend() = %q, want empty (default)", got)
+	if got := f.SelectedBackend(); got != "claude" {
+		t.Errorf("SelectedBackend() = %q, want claude", got)
 	}
-	// Backend names should be (default), claude, codex
-	if len(f.backendNames) != 3 {
-		t.Fatalf("expected 3 backend names, got %d: %v", len(f.backendNames), f.backendNames)
+	// Backend names should be claude, codex (sorted, no "(default)")
+	if len(f.backendNames) != 2 {
+		t.Fatalf("expected 2 backend names, got %d: %v", len(f.backendNames), f.backendNames)
 	}
-	if f.backendNames[0] != "(default)" {
-		t.Errorf("backendNames[0] = %q, want (default)", f.backendNames[0])
+	if f.backendNames[0] != "claude" {
+		t.Errorf("backendNames[0] = %q, want claude", f.backendNames[0])
 	}
 }
 
@@ -229,20 +229,15 @@ func TestNewTaskForm_BackendSelectorCycles(t *testing.T) {
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldBackend
 
-	// Right cycles: (default) → claude → codex → (default)
-	f.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if got := f.SelectedBackend(); got != "claude" {
-		t.Errorf("after right: SelectedBackend() = %q, want claude", got)
-	}
-
+	// Right cycles: claude → codex → claude (wrap)
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if got := f.SelectedBackend(); got != "codex" {
-		t.Errorf("after right x2: SelectedBackend() = %q, want codex", got)
+		t.Errorf("after right: SelectedBackend() = %q, want codex", got)
 	}
 
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if got := f.SelectedBackend(); got != "" {
-		t.Errorf("after right x3 (wrap): SelectedBackend() = %q, want empty (default)", got)
+	if got := f.SelectedBackend(); got != "claude" {
+		t.Errorf("after right x2 (wrap): SelectedBackend() = %q, want claude", got)
 	}
 }
 
@@ -251,8 +246,7 @@ func TestNewTaskForm_TaskIncludesBackend(t *testing.T) {
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldBackend
 
-	// Select codex
-	f.Update(tea.KeyMsg{Type: tea.KeyRight}) // claude
+	// Select codex (starts at claude, one right moves to codex)
 	f.Update(tea.KeyMsg{Type: tea.KeyRight}) // codex
 
 	f.focused = fieldPrompt
@@ -264,7 +258,7 @@ func TestNewTaskForm_TaskIncludesBackend(t *testing.T) {
 	}
 }
 
-func TestNewTaskForm_TaskDefaultBackendEmpty(t *testing.T) {
+func TestNewTaskForm_TaskDefaultBackendIsPreselected(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
@@ -272,8 +266,8 @@ func TestNewTaskForm_TaskDefaultBackendEmpty(t *testing.T) {
 	f.promptInput.SetValue("fix the bug")
 
 	task := f.Task()
-	if task.Backend != "" {
-		t.Errorf("task.Backend = %q, want empty (inherit)", task.Backend)
+	if task.Backend != "claude" {
+		t.Errorf("task.Backend = %q, want claude (pre-selected default)", task.Backend)
 	}
 }
 

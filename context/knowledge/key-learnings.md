@@ -138,7 +138,7 @@
 
 - **Backend form: `internal/ui/backendform.go`.** Mirrors `ProjectForm` pattern with 3 textinput fields: Name, Command, Prompt Flag. Supports edit mode (name read-only) and new mode. Wired via `viewNewBackend`/`viewEditBackend` in root.go. Settings view keys: `[n]` new backend, `[e]` edit backend, `[d]` set as default (on backend rows). The BACKENDS section header shows `(default: <name>)`.
 
-- **New task form has a backend selector.** Field order: project → backend → prompt. The backend selector has `(default)` at index 0 (inherits from project/global), followed by sorted backend names. When `(default)` is selected, `Task().Backend` is empty string (inheritance). The resolved default name is shown dimmed next to the selector.
+- **New task form has a backend selector.** Field order: project → backend → prompt. The backend selector shows sorted backend names only — no `(default)` entry. The configured default backend is pre-selected by name at open (`backendIdx` set by matching `defaultBackend` param, falls back to index 0). `SelectedBackend()` always returns the actual name at `backendIdx`; `Task().Backend` is always an explicit backend name (never empty string for "inherit").
 
 - **`fixupBackends()` migrates old codex flags to `--dangerously-bypass-approvals-and-sandbox`.** Detection: `name == "codex"` AND command doesn't contain `--dangerously-bypass-approvals-and-sandbox`. Covers `--yolo` and `--full-auto`. Scoped to `name == "codex"` — users who renamed their codex backend must update manually. The `resume_command` DB column exists for backward compat but is no longer read or written.
 
