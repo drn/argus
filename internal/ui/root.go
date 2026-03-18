@@ -810,12 +810,15 @@ func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.switchAgentTask(-1)
 		case tea.KeyDown:
 			return m.switchAgentTask(+1)
-		case tea.KeyRunes:
-			// Option+O (⌥O, sent as Alt+O by macOS terminals) opens the associated PR in browser.
-			if string(msg.Runes) == "o" {
-				return m, m.agentview.OpenPR()
-			}
 		}
+	}
+
+	// ctrl+p opens the associated PR in the browser. ctrl+p (0x10) is a raw
+	// control byte sent reliably by every terminal without configuration —
+	// unlike Option/Cmd modifiers which macOS terminals intercept or remap to
+	// Unicode characters (e.g. Terminal.app/iTerm2/Warp remap Option+O → ø).
+	if msg.Type == tea.KeyCtrlP {
+		return m, m.agentview.OpenPR()
 	}
 
 	// When the agent session has finished, the PTY is dead — intercept 'o' to
