@@ -612,24 +612,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FetchPRListMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] fetch PR list failed: %v", msg.Err)
 			m.reviews.SetLoadError(githubErrMsg(msg.Err))
 		} else {
+			uxlog.Log("[reviews] fetched %d PRs", len(msg.PRs))
 			m.reviews.SetPRs(msg.PRs)
 		}
 		return m, nil
 
 	case FetchPRFilesMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] fetch PR files failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
 		} else {
+			uxlog.Log("[reviews] fetched %d files for PR", len(msg.Files))
 			m.reviews.SetFiles(msg.Files)
 		}
 		return m, nil
 
 	case FetchPRDiffMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] fetch PR diff failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
 		} else {
+			uxlog.Log("[reviews] fetched full diff (%d bytes)", len(msg.Diff))
 			// SetFullDiff caches the complete PR diff and extracts the current
 			// file's slice immediately — subsequent file changes are free.
 			m.reviews.SetFullDiff(msg.Diff)
@@ -638,15 +644,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FetchPRCommentsMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] fetch comments failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
 		} else {
+			uxlog.Log("[reviews] fetched %d comments", len(msg.Comments))
 			m.reviews.SetComments(msg.Comments)
 		}
 		return m, nil
 
 	case PostCommentMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] post comment failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
+		} else {
+			uxlog.Log("[reviews] comment posted successfully")
 		}
 		// Refresh comments after posting
 		if pr := m.reviews.SelectedPR(); pr != nil {
@@ -656,7 +667,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SubmitReviewMsg:
 		if msg.Err != nil {
+			uxlog.Log("[reviews] submit review failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
+		} else {
+			uxlog.Log("[reviews] review submitted successfully")
 		}
 		return m, nil
 

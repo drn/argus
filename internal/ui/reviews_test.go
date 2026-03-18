@@ -200,6 +200,51 @@ func TestReviewsView_DiffRender(t *testing.T) {
 	}
 }
 
+func TestReviewsView_ReviewDecisionBadges(t *testing.T) {
+	rv := NewReviewsView(DefaultTheme())
+	rv.SetSize(120, 40)
+
+	prs := []github.PR{
+		{Number: 1, Title: "Approved PR", Author: "a", RepoOwner: "o", Repo: "r", ReviewDecision: "APPROVED"},
+		{Number: 2, Title: "Changes PR", Author: "a", RepoOwner: "o", Repo: "r", ReviewDecision: "CHANGES_REQUESTED"},
+		{Number: 3, Title: "Review PR", Author: "a", RepoOwner: "o", Repo: "r", ReviewDecision: "REVIEW_REQUIRED"},
+		{Number: 4, Title: "No Decision PR", Author: "a", RepoOwner: "o", Repo: "r", ReviewDecision: ""},
+	}
+	rv.SetPRs(prs)
+
+	got := rv.View()
+	if !strings.Contains(got, "✓") {
+		t.Error("expected ✓ badge for APPROVED PR")
+	}
+	if !strings.Contains(got, "✗") {
+		t.Error("expected ✗ badge for CHANGES_REQUESTED PR")
+	}
+	if !strings.Contains(got, "?") {
+		t.Error("expected ? badge for REVIEW_REQUIRED PR")
+	}
+}
+
+func TestTruncString(t *testing.T) {
+	tests := []struct {
+		s        string
+		maxRunes int
+		keepRunes int
+		want     string
+	}{
+		{"short", 10, 7, "short"},
+		{"a longer string here", 10, 7, "a longe..."},
+		{"", 10, 7, ""},
+		{"exactly10!", 10, 7, "exactly10!"},
+		{"exactly11!!", 10, 7, "exactly..."},
+	}
+	for _, tt := range tests {
+		got := truncString(tt.s, tt.maxRunes, tt.keepRunes)
+		if got != tt.want {
+			t.Errorf("truncString(%q, %d, %d) = %q, want %q", tt.s, tt.maxRunes, tt.keepRunes, got, tt.want)
+		}
+	}
+}
+
 func TestReviewsView_CanFetchPRList(t *testing.T) {
 	rv := NewReviewsView(DefaultTheme())
 

@@ -131,6 +131,11 @@ go test ./internal/db/      # run tests for a single package
 - **Update `context/knowledge/code-quality.md`** with a dated section summarizing the feature's data model, flow, and any gotchas. Update `context/knowledge/index.md` to include the new key entities.
 - **What to document:** new Task fields, new DB columns, new key bindings, new message types, new tea.Cmd patterns, new scan/detection loops, and any edge cases that required a second fix.
 
+### Logging Requirements
+
+- **Every new feature must include uxlog calls for debugging.** All async message handlers (tea.Msg case branches) that process results from external systems (GitHub API, git commands, daemon RPC, etc.) must log both success and failure paths via `uxlog.Log("[feature] ...")`. Use a consistent prefix per feature area (e.g., `[reviews]`, `[git]`, `[daemon]`). Without logs, failures are invisible — the UI just shows blank/stale data with no indication of what went wrong.
+- **What to log:** fetch results (count/size), errors, state transitions, and any guards that silently skip work (e.g., cooldown timers, staleness checks).
+
 ### Testing Requirements
 
 - **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
@@ -182,6 +187,10 @@ go test ./internal/db/      # run tests for a single package
 - **Use `prURLRe.FindAllString(output, -1)` and take `matches[len(matches)-1]` for PR URL detection.** Taking the last match means the most recently opened PR wins — correct when an agent opens a draft, revises it, and opens a final PR. The regex `https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+` covers both plain-text URLs and OSC 8 hyperlinks (where the URL appears twice — as target and display text). The final match is the display text occurrence.
 
 - **`'o'` key to open PR in browser from task list uses `exec.Command("open", url).Start()` inside a `tea.Cmd`.** The `open` command on macOS opens any URL in the default browser. The cmd must return a `tea.Msg` (return nil) — not just `exec.Command(...).Start()` directly in Update — because starting a process in Update would block. Add the key case using `msg.String() == "o"` (consistent with agent view's inline `case "o":` switch pattern) rather than adding it to KeyMap, since it is not user-configurable.
+
+- **`gh search prs --json` does NOT support `reviewDecision` — use `gh pr list` instead.** The GitHub Search API returns `SearchResultItem`, not `PullRequest`. Available search fields: `number`, `title`, `author`, `isDraft`, `repository`, `updatedAt`, `url`, `state`, `labels`, `body`, `commentsCount`, `createdAt`, `closedAt`, `id`, `isLocked`, `isPullRequest`, `authorAssociation`, `assignees`. `reviewDecision` is available via `gh pr list --json` and `gh pr view --json` (both use the GraphQL PullRequest type). `FetchPRList()` in `internal/github/github.go` fetches the cross-repo list via `gh search prs`, then enriches with `reviewDecision` via `gh pr list` grouped by repo — O(repos) not O(PRs).
+
+- **Reviews tab: `internal/ui/reviews.go` + `internal/github/github.go`.** Three-panel layout (PR list / diff / comments) using `PanelLayout`. PR list fetched via `gh search prs`, files via REST API, full diff via `gh pr diff` (cached per PR, re-sliced per file via `ExtractFileDiff`). Comments via REST. Review actions: `a` approve, `r` request changes, `c` line comment. Focus cycles: list → diff → comment compose. Auto-refresh on tick: comments have 2min TTL, diff staleness checked against `PR.UpdatedAt`. All message handlers log to uxlog with `[reviews]` prefix.
 
 ## Planned but Not Yet Implemented
 
