@@ -118,6 +118,41 @@ func TestRingBuffer_Unbounded_Reset(t *testing.T) {
 	}
 }
 
+func TestRingBuffer_Tail(t *testing.T) {
+	tests := []struct {
+		name string
+		size int    // 0 = unbounded
+		data string // written to buffer
+		n    int
+		want string
+	}{
+		{"bounded_no_wrap", 10, "hello", 3, "llo"},
+		{"bounded_no_wrap_exact", 10, "hello", 5, "hello"},
+		{"bounded_no_wrap_over", 10, "hello", 10, "hello"},
+		{"bounded_wrapped", 5, "abcdefg", 3, "efg"},
+		{"bounded_wrapped_span", 5, "abcdefg", 5, "cdefg"},
+		{"bounded_wrapped_all", 5, "abcdefg", 10, "cdefg"},
+		{"unbounded", 0, "hello world", 5, "world"},
+		{"unbounded_all", 0, "hello", 10, "hello"},
+		{"unbounded_exact", 0, "hello", 5, "hello"},
+		{"zero_n", 10, "hello", 0, ""},
+		{"negative_n", 10, "hello", -1, ""},
+		{"empty_buffer", 10, "", 5, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rb := NewRingBuffer(tt.size)
+			if tt.data != "" {
+				rb.Write([]byte(tt.data))
+			}
+			got := string(rb.Tail(tt.n))
+			if got != tt.want {
+				t.Errorf("Tail(%d) = %q, want %q", tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRingBuffer_TotalWritten(t *testing.T) {
 	rb := NewRingBuffer(5)
 	if rb.TotalWritten() != 0 {

@@ -289,6 +289,35 @@ func TestSession_RecentOutput(t *testing.T) {
 	}
 }
 
+func TestSession_RecentOutputTail(t *testing.T) {
+	cmd := exec.Command("echo", "tail output test data here")
+	sess, err := StartSession("rot-1", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-sess.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	full := sess.RecentOutput()
+	tail := sess.RecentOutputTail(10)
+
+	if len(tail) > 10 {
+		t.Errorf("RecentOutputTail(10) returned %d bytes, want <= 10", len(tail))
+	}
+	if len(full) > 0 && len(tail) > 0 {
+		// Tail should match the end of full output
+		fullEnd := full[len(full)-len(tail):]
+		if string(tail) != string(fullEnd) {
+			t.Errorf("RecentOutputTail(10) = %q, want suffix of full output %q", tail, fullEnd)
+		}
+	}
+}
+
 func TestSession_Stop_AlreadyStopped(t *testing.T) {
 	cmd := exec.Command("true")
 	sess, err := StartSession("stop-2", cmd, 24, 80)

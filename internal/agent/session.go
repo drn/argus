@@ -12,7 +12,7 @@ import (
 	"github.com/creack/pty"
 )
 
-const defaultBufSize = 0 // unbounded: keep all output for full scrollback
+const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
 
 // idleThreshold is how long without output before a session is considered idle.
 const idleThreshold = 3 * time.Second
@@ -319,6 +319,14 @@ func (s *Session) RecentOutput() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.buf.Bytes()
+}
+
+// RecentOutputTail returns the last n bytes from the ring buffer.
+// More efficient than RecentOutput() when only a small tail is needed.
+func (s *Session) RecentOutputTail(n int) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Tail(n)
 }
 
 // TotalWritten returns the monotonic count of bytes written to the ring buffer.

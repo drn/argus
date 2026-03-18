@@ -27,6 +27,7 @@ type SessionHandle interface {
 	WriteInput(p []byte) (int, error)
 	Resize(rows, cols uint16) error
 	RecentOutput() []byte
+	RecentOutputTail(n int) []byte
 	TotalWritten() uint64
 	IsIdle() bool
 	Alive() bool

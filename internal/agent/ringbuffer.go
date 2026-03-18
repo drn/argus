@@ -74,6 +74,43 @@ func (rb *RingBuffer) Len() int {
 	return rb.pos
 }
 
+// Tail returns the last n bytes from the buffer without copying the entire thing.
+// Returns fewer bytes if the buffer contains less than n.
+func (rb *RingBuffer) Tail(n int) []byte {
+	if n <= 0 {
+		return nil
+	}
+	stored := rb.Len()
+	if n >= stored {
+		return rb.Bytes()
+	}
+	if rb.size == 0 {
+		// Unbounded: tail is just the last n bytes
+		return append([]byte(nil), rb.data[len(rb.data)-n:]...)
+	}
+	// Bounded circular buffer: reconstruct last n bytes
+	if !rb.full {
+		// Not wrapped yet: data is contiguous in [0..pos)
+		return append([]byte(nil), rb.data[rb.pos-n:rb.pos]...)
+	}
+	// Full/wrapped: logical order is [pos..size) + [0..pos)
+	// pos is the write pointer (oldest byte when full).
+	// [pos..size) has (size-pos) bytes, [0..pos) has pos bytes.
+	tailStart := stored - n // bytes to skip from the start of logical order
+	if tailStart >= rb.size-rb.pos {
+		// Tail is entirely within the [0..pos) segment
+		offset := tailStart - (rb.size - rb.pos)
+		return append([]byte(nil), rb.data[offset:rb.pos]...)
+	}
+	// Tail spans both segments
+	out := make([]byte, n)
+	firstStart := rb.pos + tailStart
+	firstLen := rb.size - firstStart
+	copy(out, rb.data[firstStart:])
+	copy(out[firstLen:], rb.data[:rb.pos])
+	return out
+}
+
 // Reset clears the buffer.
 func (rb *RingBuffer) Reset() {
 	rb.pos = 0
