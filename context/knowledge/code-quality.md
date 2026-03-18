@@ -371,16 +371,9 @@ Three bugs discovered in daemon lifecycle management:
 
 ### Task Rename Feature (2026-03-17)
 
-**Data model**: No new fields — rename updates `Name`, `Branch`, and `Worktree` on the existing `Task` struct.
+**Data model**: Rename is display-only — only updates `Name` on the existing `Task` struct. Branch and worktree directory are unchanged.
 
-**Flow**: 'r' key in task list → `viewRenameTask` → `RenameTaskForm` (single `textinput.Model` pre-filled with current name) → on submit: `git branch -m` in worktree dir, `os.Rename` worktree directory, `git worktree repair` in repo dir, update DB.
-
-**Gotchas**:
-- Must block rename while agent is running (`runner.HasSession` check both at key press and at submit).
-- Branch rename runs in the worktree dir (where the branch is checked out), not the repo dir.
-- After directory rename, `git worktree repair` is needed so git's worktree metadata points at the new path.
-- On branch rename failure, the form stays open with the error. On directory rename failure, the branch rename is reverted.
-- `isWorktreeSubdir` guard prevents renaming directories outside `~/.argus/worktrees/`.
+**Flow**: 'r' key in task list → `viewRenameTask` → `RenameTaskForm` (single `textinput.Model` pre-filled with current name) → on submit: update `t.Name` in DB → return to task list. Works even while an agent is running since no filesystem or git state is touched.
 
 **Key binding**: `'r'` in `handleTaskListKey` via `msg.String() == "r"`. Also added to `KeyMap.Rename` for help display. Does not conflict with `RestartDaemon` ('r' in settings tab) since they're in different tab handlers.
 
