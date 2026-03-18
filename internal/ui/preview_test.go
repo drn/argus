@@ -13,7 +13,7 @@ func TestRenderLine_NoCursor(t *testing.T) {
 	vt.Lock()
 	defer vt.Unlock()
 
-	line := renderLine(vt, 0, 20, -1)
+	line := renderLine(vt, 0, 20, -1, false)
 	stripped := stripANSI(line)
 	if stripped != "hello" {
 		t.Errorf("renderLine without cursor = %q, want %q", stripped, "hello")
@@ -31,7 +31,7 @@ func TestRenderLine_WithCursor(t *testing.T) {
 	defer vt.Unlock()
 
 	// Cursor at position 2 (on the 'l')
-	line := renderLine(vt, 0, 20, 2)
+	line := renderLine(vt, 0, 20, 2, true)
 	// Cursor uses an explicit accent color pair instead of inheriting the
 	// terminal default, which previously rendered as black in the panel.
 	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
@@ -46,7 +46,7 @@ func TestRenderLine_CursorBeyondText(t *testing.T) {
 	defer vt.Unlock()
 
 	// Cursor at position 5, beyond "hi" (at position 2 would be after text)
-	line := renderLine(vt, 0, 20, 5)
+	line := renderLine(vt, 0, 20, 5, true)
 	// Should still render the explicit cursor style even when it extends past text.
 	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
 		t.Errorf("renderLine with cursor beyond text should contain explicit cursor styling, got %q", line)
@@ -61,8 +61,8 @@ func TestRenderLine_CursorOnReverseCell(t *testing.T) {
 	defer vt.Unlock()
 
 	// Cursor at position 0 (on the 'r' which has reverse attribute)
-	lineWithCursor := renderLine(vt, 0, 20, 0)
-	lineNoCursor := renderLine(vt, 0, 20, -1)
+	lineWithCursor := renderLine(vt, 0, 20, 0, true)
+	lineNoCursor := renderLine(vt, 0, 20, -1, false)
 	// Cursor cell must differ from non-cursor cell on reverse text
 	if lineWithCursor == lineNoCursor {
 		t.Error("cursor on reverse-video cell should produce different output than no cursor")
@@ -80,7 +80,7 @@ func TestRenderLine_CursorOnExplicitColorCell(t *testing.T) {
 	vt.Lock()
 	defer vt.Unlock()
 
-	line := renderLine(vt, 0, 20, 0)
+	line := renderLine(vt, 0, 20, 0, true)
 	// Cursor must use explicit styling — not inherit the cell's explicit color.
 	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
 		t.Errorf("cursor on explicit-color cell should use explicit cursor styling, got %q", line)

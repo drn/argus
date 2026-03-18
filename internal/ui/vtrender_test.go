@@ -101,12 +101,75 @@ func TestRenderLine_HighlightsActiveInputRow(t *testing.T) {
 	vt := vt10x.New(vt10x.WithSize(20, 2))
 	vt.Write([]byte("Summarize recent com"))
 
-	line := renderLine(vt, 0, 20, 5)
+	line := renderLine(vt, 0, 20, 5, true)
 
 	if !strings.Contains(line, "\x1b[0;48;5;17m") {
 		t.Fatalf("expected active row background highlight, got %q", line)
 	}
 	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
 		t.Fatalf("expected explicit cursor styling, got %q", line)
+	}
+}
+
+// TestFindInputRow_CursorOnContentRow verifies that when the cursor sits on a
+// row with visible characters (e.g. Codex), findInputRow returns that row.
+func TestFindInputRow_CursorOnContentRow(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 5))
+	vt.Write([]byte("hello"))
+	vt.Lock()
+	defer vt.Unlock()
+
+	row := findInputRow(vt, 0, 20)
+	if row != 0 {
+		t.Errorf("findInputRow: cursor on content row, got %d want 0", row)
+	}
+}
+
+// TestFindInputRow_CursorOnEmptyRow verifies that when the cursor is parked at
+// an empty trailing row, findInputRow scans upward to the last non-empty row.
+func TestFindInputRow_CursorOnEmptyRow(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 5))
+	vt.Write([]byte("> user input\n"))
+	vt.Lock()
+	defer vt.Unlock()
+
+	// Cursor at row 1 (empty). Input content at row 0.
+	row := findInputRow(vt, 1, 20)
+	if row != 0 {
+		t.Errorf("findInputRow: cursor on empty row, got %d want 0", row)
+	}
+}
+
+// TestFindInputRow_PromptMarker verifies that ❯ is preferred over a tip row.
+// Claude's layout: input (❯), tip row, empty rows, cursor.
+func TestFindInputRow_PromptMarker(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(40, 5))
+	// Row 0: Claude input prompt with ❯
+	// Row 1: tip/hint text (no ❯)
+	// Rows 2+: empty; cursor ends at row 2.
+	vt.Write([]byte("❯ command\n> Tip: ...\n"))
+	vt.Lock()
+	defer vt.Unlock()
+
+	// Should return row 0 (prompt marker), not row 1 (tip).
+	row := findInputRow(vt, 2, 40)
+	if row != 0 {
+		t.Errorf("findInputRow: ❯ marker should win over tip row, got %d want 0", row)
+	}
+}
+
+// TestFindInputRow_FallbackWithoutMarker verifies the fallback to last
+// non-empty row when no ❯ marker is present (e.g. Codex).
+func TestFindInputRow_FallbackWithoutMarker(t *testing.T) {
+	vt := vt10x.New(vt10x.WithSize(20, 5))
+	// Row 0: input; row 1: tip (no ❯ anywhere); cursor at row 2.
+	vt.Write([]byte("> command\n> Tip: ...\n"))
+	vt.Lock()
+	defer vt.Unlock()
+
+	// No ❯ found — fallback is last non-empty row (row 1).
+	row := findInputRow(vt, 2, 20)
+	if row != 1 {
+		t.Errorf("findInputRow: no marker fallback, got %d want 1", row)
 	}
 }
