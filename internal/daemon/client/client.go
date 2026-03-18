@@ -8,12 +8,14 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -258,7 +260,18 @@ func AutoStart(sockPath string) (*Client, error) {
 		return nil, fmt.Errorf("resolve executable: %w", err)
 	}
 
-	cmd := exec.Command(exe, "daemon", "start")
+	// Create a symlink named "argusd" so Activity Monitor shows that name
+	// instead of the generic binary name.
+	daemonExe := filepath.Join(db.DataDir(), "argusd")
+	target, _ := os.Readlink(daemonExe)
+	if target != exe {
+		os.Remove(daemonExe) //nolint:errcheck
+		if err := os.Symlink(exe, daemonExe); err != nil {
+			daemonExe = exe // fall back to original binary
+		}
+	}
+
+	cmd := exec.Command(daemonExe, "daemon", "start")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	// Detach from parent process group so the daemon survives TUI exit.
