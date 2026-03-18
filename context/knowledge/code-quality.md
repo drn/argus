@@ -357,3 +357,13 @@ Three bugs discovered in daemon lifecycle management:
 **Display**: `TaskDetail.View()` shows `PR: <url>` when `t.PRURL != ""`, truncated to fit panel width.
 
 **Rule**: Always scan `LastOutput` in `handleAgentFinished` for any feature that detects content in session output — the tick scan only covers actively-running sessions.
+
+### Reviews Tab: 2026-03-17
+
+**Feature**: Three-panel GitHub PR review interface (`internal/ui/reviews.go` + `internal/github/github.go`). Left panel shows PR list (review requests + my PRs), center shows unified diff, right shows comments and compose box.
+
+**gh CLI field gotcha**: `gh search prs --json` uses the GitHub Search API which returns `SearchResultItem` — a limited field set that does NOT include `reviewDecision`. Available search fields: `number`, `title`, `author`, `isDraft`, `repository`, `updatedAt`, `url`, `state`, `labels`, `body`, `commentsCount`, `createdAt`, `closedAt`, `id`, `isLocked`, `isPullRequest`, `authorAssociation`, `assignees`. In contrast, `gh pr list --json` and `gh pr view --json` both use the GraphQL `PullRequest` type which DOES support `reviewDecision`.
+
+**Fix**: `FetchPRList()` fetches the cross-repo list via `gh search prs` (without `reviewDecision`), then `enrichReviewDecisions()` groups PRs by repo and calls `gh pr list -R owner/repo --json number,reviewDecision` per unique repo — O(repos) not O(PRs). Failures are silently ignored (badges just won't show).
+
+**Logging rule added**: All async message handlers in root.go for the reviews tab now use `uxlog.Log("[reviews] ...")` for both success and error paths. This was missing at launch, making failures invisible. New `### Logging Requirements` section added to CLAUDE.md Development Rules to enforce this for all future features.

@@ -74,29 +74,30 @@ func runGh(args ...string) (string, error) {
 
 // FetchPRList returns all open PRs + review requests for the authenticated user.
 // Uses gh search prs to work across all repos regardless of current directory.
+// Note: gh search prs does NOT support reviewDecision in --json fields.
+// Review decisions are fetched separately via GraphQL in enrichReviewDecisions.
 func FetchPRList() ([]PR, error) {
 	type ghSearchPR struct {
-		Number    int    `json:"number"`
-		Title     string `json:"title"`
-		Author    struct{ Login string } `json:"author"`
-		IsDraft   bool   `json:"isDraft"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Author struct{ Login string } `json:"author"`
+		IsDraft bool `json:"isDraft"`
 		Repository struct {
 			NameWithOwner string `json:"nameWithOwner"`
 		} `json:"repository"`
-		UpdatedAt      time.Time `json:"updatedAt"`
-		ReviewDecision string    `json:"reviewDecision"`
+		UpdatedAt time.Time `json:"updatedAt"`
 	}
 
 	// Fetch PRs authored by current user
 	myOut, myErr := runGh("search", "prs",
 		"--author=@me", "--state=open",
-		"--json", "number,title,author,isDraft,repository,updatedAt,reviewDecision",
+		"--json", "number,title,author,isDraft,repository,updatedAt",
 		"--limit", "50")
 
 	// Fetch PRs requesting review from current user
 	reviewOut, reviewErr := runGh("search", "prs",
 		"--review-requested=@me", "--state=open",
-		"--json", "number,title,author,isDraft,repository,updatedAt,reviewDecision",
+		"--json", "number,title,author,isDraft,repository,updatedAt",
 		"--limit", "50")
 
 	if myErr != nil && reviewErr != nil {
@@ -138,7 +139,6 @@ func FetchPRList() ([]PR, error) {
 				Repo:            repo,
 				IsDraft:         p.IsDraft,
 				IsReviewRequest: isReviewReq,
-				ReviewDecision:  p.ReviewDecision,
 				UpdatedAt:       p.UpdatedAt,
 			})
 		}
@@ -157,7 +157,55 @@ func FetchPRList() ([]PR, error) {
 		return nil, parseErr
 	}
 
+	// Enrich with review decisions via gh pr list per repo (supports reviewDecision).
+	// Best-effort: failures leave ReviewDecision empty (badges just won't show).
+	enrichReviewDecisions(prs)
+
 	return prs, nil
+}
+
+// enrichReviewDecisions fetches reviewDecision for PRs using gh pr list.
+// gh pr list --json supports reviewDecision (unlike gh search prs).
+// Groups PRs by repo to minimize API calls — O(repos) not O(PRs).
+// Failures are silently ignored — badges just won't show.
+func enrichReviewDecisions(prs []PR) {
+	// Group PR indices by owner/repo.
+	type repoKey struct{ owner, repo string }
+	groups := make(map[repoKey][]int)
+	for i, pr := range prs {
+		key := repoKey{pr.RepoOwner, pr.Repo}
+		groups[key] = append(groups[key], i)
+	}
+
+	type listPR struct {
+		Number         int    `json:"number"`
+		ReviewDecision string `json:"reviewDecision"`
+	}
+
+	for key, indices := range groups {
+		out, err := runGh("pr", "list",
+			"-R", fmt.Sprintf("%s/%s", key.owner, key.repo),
+			"--state=open",
+			"--json", "number,reviewDecision",
+			"--limit", "100")
+		if err != nil {
+			continue
+		}
+		var repoPRs []listPR
+		if err := json.Unmarshal([]byte(out), &repoPRs); err != nil {
+			continue
+		}
+		// Build number → reviewDecision lookup.
+		decisions := make(map[int]string, len(repoPRs))
+		for _, rp := range repoPRs {
+			decisions[rp.Number] = rp.ReviewDecision
+		}
+		for _, idx := range indices {
+			if d, ok := decisions[prs[idx].Number]; ok {
+				prs[idx].ReviewDecision = d
+			}
+		}
+	}
 }
 
 // FetchPRFiles returns the list of changed files for a given PR.
