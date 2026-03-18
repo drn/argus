@@ -691,8 +691,59 @@ func TestTaskList_ArchivedSection(t *testing.T) {
 	if !activeFound {
 		t.Error("expected active task in rows")
 	}
+	if archivedFound {
+		t.Error("archived task should not be visible when archive is collapsed")
+	}
+}
+
+func TestTaskList_ArchiveAutoExpand(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+		{ID: "t2", Name: "Archived", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Archive should be collapsed initially.
+	archivedFound := false
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == "t2" {
+			archivedFound = true
+		}
+	}
+	if archivedFound {
+		t.Error("archived task should not be visible initially")
+	}
+
+	// Navigate down to archive header — archive should auto-expand.
+	for range 10 {
+		tl.CursorDown()
+	}
+
+	archivedFound = false
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == "t2" {
+			archivedFound = true
+		}
+	}
 	if !archivedFound {
-		t.Error("expected archived task in rows (archive is always expanded)")
+		t.Error("expected archived task visible after cursor enters archive section")
+	}
+
+	// Navigate back up past archive header — archive should auto-collapse.
+	for range 10 {
+		tl.CursorUp()
+	}
+
+	archivedFound = false
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == "t2" {
+			archivedFound = true
+		}
+	}
+	if archivedFound {
+		t.Error("archived task should not be visible after cursor leaves archive section")
 	}
 }
 
@@ -735,7 +786,8 @@ func TestTaskList_CursorSkipsArchiveHeader(t *testing.T) {
 	}
 	tl.SetTasks(tasks)
 
-	// Navigate down past all rows — cursor should never land on archive header.
+	// Navigate down — cursor should skip the archive header and land on a task.
+	// Archive should auto-expand as cursor passes through the archive section.
 	for range 20 {
 		tl.CursorDown()
 	}
@@ -743,6 +795,11 @@ func TestTaskList_CursorSkipsArchiveHeader(t *testing.T) {
 	c := tl.scroll.Cursor()
 	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
 		t.Error("cursor should never land on the archive header")
+	}
+
+	// Archive should have auto-expanded when cursor entered the section.
+	if !tl.archiveExpanded {
+		t.Error("expected archive to auto-expand when cursor passes through archive section")
 	}
 }
 
@@ -755,6 +812,11 @@ func TestTaskList_ArchiveMultipleProjects(t *testing.T) {
 		{ID: "t3", Name: "Archived B", Project: "beta", Archived: true},
 	}
 	tl.SetTasks(tasks)
+
+	// Navigate down to archive section to trigger auto-expand.
+	for range 10 {
+		tl.CursorDown()
+	}
 
 	// Both archived projects should appear as headers in the archive section.
 	archiveProjectHeaders := 0
@@ -770,5 +832,80 @@ func TestTaskList_ArchiveMultipleProjects(t *testing.T) {
 	}
 	if archiveProjectHeaders < 2 {
 		t.Errorf("expected at least 2 project headers in archive section, got %d", archiveProjectHeaders)
+	}
+}
+
+func TestTaskList_ArchivedProjectOnlyInArchive(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "alpha"},
+		{ID: "t2", Name: "Archived only", Project: "beta", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// "beta" has only archived tasks — it should NOT appear in the main section.
+	for _, r := range tl.rows {
+		if r.kind == rowProject && r.project == "beta" && !tl.isInArchiveSection(0) {
+			t.Error("project with only archived tasks should not appear in main section")
+		}
+	}
+
+	// Navigate to archive section to auto-expand.
+	for range 10 {
+		tl.CursorDown()
+	}
+
+	// Now "beta" should appear as a project header in the archive section.
+	betaInArchive := false
+	for i, r := range tl.rows {
+		if r.kind == rowProject && r.project == "beta" && tl.isInArchiveSection(i) {
+			betaInArchive = true
+		}
+	}
+	if !betaInArchive {
+		t.Error("expected beta project to appear in archive section")
+	}
+}
+
+func TestTaskList_ArchiveAutoExpandProjectSwitch(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "alpha"},
+		{ID: "t2", Name: "Archived A", Project: "alpha", Archived: true},
+		{ID: "t3", Name: "Archived B1", Project: "beta", Archived: true},
+		{ID: "t4", Name: "Archived B2", Project: "beta", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Navigate into archive section.
+	for range 10 {
+		tl.CursorDown()
+	}
+
+	if !tl.archiveExpanded {
+		t.Fatal("expected archive to be expanded")
+	}
+
+	// The first archive project should be expanded.
+	firstArchiveProject := tl.archiveProject
+	if firstArchiveProject == "" {
+		t.Fatal("expected an archive project to be expanded")
+	}
+
+	// Navigate down to find a task from a different archive project.
+	for range 10 {
+		tl.CursorDown()
+	}
+
+	sel := tl.Selected()
+	if sel == nil {
+		t.Fatal("expected a task to be selected in archive")
+	}
+
+	// If there are multiple archive projects, the expanded project should have switched.
+	if tl.archiveProject == firstArchiveProject && sel.Project != firstArchiveProject {
+		t.Error("archive project should auto-expand when cursor moves to a different project")
 	}
 }

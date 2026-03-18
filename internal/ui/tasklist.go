@@ -40,10 +40,11 @@ type TaskList struct {
 	running       map[string]bool // task IDs with active agent sessions
 	idle          map[string]bool // task IDs with sessions waiting for input
 	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
-	rows           []row   // flattened display rows (headers + tasks)
-	expanded       string  // currently expanded project name
-	archiveProject string  // expanded project within archive section
-	tickEven        bool            // toggles each tick for status icon animation
+	rows            []row   // flattened display rows (headers + tasks)
+	expanded        string  // currently expanded project name
+	archiveExpanded bool    // whether the Archive section is open (auto-managed by cursor position)
+	archiveProject  string  // expanded project within archive section
+	tickEven        bool    // toggles each tick for status icon animation
 }
 
 func NewTaskList(theme Theme) TaskList {
@@ -345,28 +346,30 @@ func (tl *TaskList) buildRows() {
 	// Add archive section if there are archived tasks.
 	if len(archivedTasks) > 0 {
 		tl.rows = append(tl.rows, row{kind: rowArchiveHeader})
-		archiveGroups := tl.groupByProject(archivedTasks)
-		// Reset archiveProject if it no longer exists.
-		if tl.archiveProject != "" {
-			found := false
-			for _, g := range archiveGroups {
-				if g.name == tl.archiveProject {
-					found = true
-					break
+		if tl.archiveExpanded {
+			archiveGroups := tl.groupByProject(archivedTasks)
+			// Reset archiveProject if it no longer exists.
+			if tl.archiveProject != "" {
+				found := false
+				for _, g := range archiveGroups {
+					if g.name == tl.archiveProject {
+						found = true
+						break
+					}
+				}
+				if !found {
+					tl.archiveProject = ""
 				}
 			}
-			if !found {
-				tl.archiveProject = ""
+			if tl.archiveProject == "" && len(archiveGroups) > 0 {
+				tl.archiveProject = archiveGroups[0].name
 			}
-		}
-		if tl.archiveProject == "" && len(archiveGroups) > 0 {
-			tl.archiveProject = archiveGroups[0].name
-		}
-		for _, g := range archiveGroups {
-			tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
-			if g.name == tl.archiveProject {
-				for _, t := range g.tasks {
-					tl.rows = append(tl.rows, row{kind: rowTask, project: g.name, task: t})
+			for _, g := range archiveGroups {
+				tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
+				if g.name == tl.archiveProject {
+					for _, t := range g.tasks {
+						tl.rows = append(tl.rows, row{kind: rowTask, project: g.name, task: t})
+					}
 				}
 			}
 		}
@@ -428,7 +431,8 @@ func projectPriority(tasks []*model.Task) int {
 }
 
 // autoExpand checks if the cursor moved to a different project and rebuilds
-// the row list with that project expanded.
+// the row list with that project expanded. Also auto-expands the archive
+// section when the cursor enters it and auto-collapses when the cursor leaves.
 func (tl *TaskList) autoExpand() {
 	if len(tl.rows) == 0 {
 		return
@@ -439,13 +443,28 @@ func (tl *TaskList) autoExpand() {
 	}
 	r := tl.rows[c]
 
+	// Determine if cursor is in the archive section (on or after the archive header).
+	inArchive := tl.isInArchiveSection(c)
+
+	// Auto-expand/collapse archive section based on cursor position.
+	if inArchive && !tl.archiveExpanded {
+		tl.archiveExpanded = true
+		tl.buildRows()
+		// Cursor stays valid — archive rows are appended after current position.
+		c = tl.scroll.Cursor()
+		if c >= 0 && c < len(tl.rows) {
+			r = tl.rows[c]
+		}
+	} else if !inArchive && tl.archiveExpanded {
+		tl.archiveExpanded = false
+		tl.buildRows()
+		// Cursor is above archive section — rows above haven't changed.
+	}
+
 	// Archive header row — don't change project expansion.
 	if r.kind == rowArchiveHeader {
 		return
 	}
-
-	// Determine if cursor is in the archive section (after the archive header).
-	inArchive := tl.isInArchiveSection(c)
 
 	if inArchive {
 		// Expand the project within the archive section.
