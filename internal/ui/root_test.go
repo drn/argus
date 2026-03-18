@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2153,5 +2154,102 @@ func TestRenameForm_ViewZeroValue(t *testing.T) {
 	view := f.View()
 	if view != "" {
 		t.Error("expected empty string for zero-valued form")
+	}
+}
+
+// stubRunner implements SessionProvider with configurable Running/Idle lists.
+type stubRunner struct {
+	agent.SessionProvider
+	running []string
+	idle    []string
+}
+
+func (s *stubRunner) Running() []string  { return s.running }
+func (s *stubRunner) Idle() []string     { return s.idle }
+func (s *stubRunner) Get(string) agent.SessionHandle { return nil }
+func (s *stubRunner) HasSession(string) bool         { return false }
+func (s *stubRunner) WorkDir(string) string           { return "" }
+func (s *stubRunner) StopAll()                        {}
+func (s *stubRunner) Stop(string) error               { return nil }
+func (s *stubRunner) Start(*model.Task, config.Config, uint16, uint16, bool) (agent.SessionHandle, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func testModelWithRunner(t *testing.T, runner agent.SessionProvider, tasks ...*model.Task) Model {
+	t.Helper()
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	for _, task := range tasks {
+		if err := database.Add(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return NewModel(database, runner, false)
+}
+
+func TestIdleUnvisited_NotReaddedAfterAgentView(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "test", Status: model.StatusInProgress}
+	sr := &stubRunner{running: []string{"t1"}, idle: nil}
+	m := testModelWithRunner(t, sr, task)
+	m.width = 120
+	m.height = 40
+
+	// Phase 1: task is running, not idle.
+	m.refreshTasks()
+	if m.idleUnvisited["t1"] {
+		t.Fatal("should not be idleUnvisited when not idle")
+	}
+
+	// Phase 2: task goes idle → marked as idleUnvisited.
+	sr.idle = []string{"t1"}
+	m.refreshTasks()
+	if !m.idleUnvisited["t1"] {
+		t.Fatal("should be idleUnvisited after going idle")
+	}
+
+	// Phase 3: user enters agent view → idleUnvisited cleared.
+	m.enterAgentView("t1", "test")
+	if m.idleUnvisited["t1"] {
+		t.Fatal("enterAgentView should clear idleUnvisited")
+	}
+
+	// Phase 4: simulate being in agent view (no refreshTasks called).
+	// tasklist.idle still has "t1" = true from the last SetIdle.
+	// Now user returns to task list and refreshTasks runs.
+	// BUG (before fix): m.tasklist.idle["t1"] is true, but since
+	// refreshTasks was skipped, the stale state matches the new state,
+	// so it's NOT detected as "newly idle". BUT if the agent had gone
+	// non-idle then idle again during the view, it WOULD be re-added.
+	//
+	// Simulate the worst case: agent went non-idle then idle again
+	// while in agent view. This makes tasklist.idle stale (it still
+	// says idle=true from before, but the real sequence was idle→active→idle).
+	// Force tasklist.idle to NOT contain t1 (simulating a non-idle→idle cycle
+	// that refreshTasks missed while in agent view).
+	m.tasklist.SetIdle(nil) // simulate stale state: tasklist thinks t1 was not idle
+
+	m.refreshTasks()
+
+	// Without the fix, t1 would be re-added to idleUnvisited because
+	// m.tasklist.idle["t1"] was false (stale) and newIdle has "t1".
+	if m.idleUnvisited["t1"] {
+		t.Error("idleUnvisited should NOT be re-added after user viewed the agent")
+	}
+
+	// Phase 5: once the task goes non-idle, the guard should clear.
+	sr.idle = nil
+	m.refreshTasks()
+	if m.viewedWhileAgent["t1"] {
+		t.Error("viewedWhileAgent guard should clear when task is no longer idle")
+	}
+
+	// Phase 6: task goes idle again → NOW it should be marked idleUnvisited.
+	sr.idle = []string{"t1"}
+	m.refreshTasks()
+	if !m.idleUnvisited["t1"] {
+		t.Error("should be idleUnvisited after going idle again (guard was cleared)")
 	}
 }

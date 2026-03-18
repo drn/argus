@@ -183,6 +183,7 @@ type Model struct {
 	daemonFailures     int               // consecutive daemon ping failures
 	resolvedDirs       map[string]string // taskID → resolved worktree dir (cache)
 	idleUnvisited      map[string]bool   // task IDs idle since user last opened their agent view
+	viewedWhileAgent   map[string]bool   // tasks viewed in agent view; suppresses idleUnvisited re-add
 
 	// Prune progress state (shown in viewPruning modal)
 	pruneTotal   int // total worktrees being cleaned up
@@ -230,8 +231,9 @@ func NewModel(database *db.DB, runner agent.SessionProvider, daemonConnected boo
 		keys:            keys,
 		theme:           theme,
 		daemonConnected: daemonConnected,
-		resolvedDirs:    make(map[string]string),
-		idleUnvisited:   make(map[string]bool),
+		resolvedDirs:     make(map[string]string),
+		idleUnvisited:    make(map[string]bool),
+		viewedWhileAgent: make(map[string]bool),
 		program:         new(*tea.Program),
 		restartedClient: new(*dclient.Client),
 		tasklist:    tl,
@@ -1051,6 +1053,7 @@ func (m *Model) enterAgentView(taskID, taskName string) tea.Cmd {
 	// no longer displays as "in review" in the task list. Also sync the copy on
 	// TaskList immediately (rather than waiting for the next tick).
 	delete(m.idleUnvisited, taskID)
+	m.viewedWhileAgent[taskID] = true
 	idleUnvisited := make([]string, 0, len(m.idleUnvisited))
 	for id := range m.idleUnvisited {
 		idleUnvisited = append(idleUnvisited, id)
@@ -1685,6 +1688,18 @@ func (m *Model) refreshTasks() {
 		if !newIdle[id] {
 			// No longer idle (agent produced output again) — clear unvisited.
 			delete(m.idleUnvisited, id)
+		}
+	}
+
+	// If the user recently viewed a task's agent view, suppress the
+	// idleUnvisited flag for it. refreshTasks is skipped while in agent
+	// view, so m.tasklist.idle goes stale — the "newly idle" check above
+	// may false-positive for a task the user was actively watching.
+	for id := range m.viewedWhileAgent {
+		delete(m.idleUnvisited, id)
+		if !newIdle[id] {
+			// Task is no longer idle — safe to clear the guard permanently.
+			delete(m.viewedWhileAgent, id)
 		}
 	}
 
