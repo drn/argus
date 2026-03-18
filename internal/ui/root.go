@@ -884,10 +884,6 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case msg.String() == "r":
 		if t := m.tasklist.Selected(); t != nil {
-			if m.runner.HasSession(t.ID) {
-				m.statusbar.SetError("stop the agent before renaming")
-				return m, nil
-			}
 			m.renametask = NewRenameTaskForm(m.theme, t.ID, t.Name)
 			m.renametask.SetSize(m.width, m.height)
 			m.current = viewRenameTask
@@ -1252,53 +1248,9 @@ func (m Model) handleRenameTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Block rename while agent is running.
-		if m.runner.HasSession(t.ID) {
-			m.renametask.SetError("stop the agent before renaming")
-			return m, nil
-		}
-
-		cfg := m.db.Config()
-		repoDir := agent.ResolveDir(t, cfg)
-		oldBranch := t.Branch
-		newBranch := "argus/" + newName
-
-		// Rename git branch (in the worktree dir so the branch is checked out).
-		if t.Worktree != "" && oldBranch != "" {
-			gitCmd := exec.Command("git", "branch", "-m", oldBranch, newBranch)
-			gitCmd.Dir = t.Worktree
-			if err := gitCmd.Run(); err != nil {
-				m.renametask.SetError(fmt.Sprintf("git branch rename: %v", err))
-				return m, nil
-			}
-		}
-
-		// Rename worktree directory.
-		if t.Worktree != "" && isWorktreeSubdir(t.Worktree) {
-			newWtPath := filepath.Join(filepath.Dir(t.Worktree), newName)
-			if err := os.Rename(t.Worktree, newWtPath); err != nil {
-				// Revert branch rename on failure. os.Rename is atomic on
-				// same-filesystem, so on error the old path still exists.
-				if oldBranch != "" {
-					revertCmd := exec.Command("git", "branch", "-m", newBranch, oldBranch)
-					revertCmd.Dir = t.Worktree
-					_ = revertCmd.Run()
-				}
-				m.renametask.SetError(fmt.Sprintf("rename worktree dir: %v", err))
-				return m, nil
-			}
-			t.Worktree = newWtPath
-
-			// Repair git worktree metadata to point at the new directory.
-			if repoDir != "" {
-				repairCmd := exec.Command("git", "worktree", "repair")
-				repairCmd.Dir = repoDir
-				_ = repairCmd.Run()
-			}
-		}
-
+		// Rename is display-only — worktree dir and branch stay the same
+		// so rename works even while an agent is running.
 		t.Name = newName
-		t.Branch = newBranch
 		if err := m.db.Update(t); err != nil {
 			m.statusbar.SetError(fmt.Sprintf("rename succeeded but DB update failed: %v", err))
 		}

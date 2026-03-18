@@ -2131,8 +2131,8 @@ func TestRenameForm_SuccessNoWorktree(t *testing.T) {
 	if got.Name != "new-name" {
 		t.Errorf("expected name 'new-name', got %q", got.Name)
 	}
-	if got.Branch != "argus/new-name" {
-		t.Errorf("expected branch 'argus/new-name', got %q", got.Branch)
+	if got.Branch != "argus/old-name" {
+		t.Errorf("expected branch unchanged 'argus/old-name', got %q", got.Branch)
 	}
 }
 
