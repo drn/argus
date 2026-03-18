@@ -1108,6 +1108,33 @@ func TestModel_ViewNewTask(t *testing.T) {
 	}
 }
 
+func TestModel_SkillsLoadedMsgRefreshesAutocomplete(t *testing.T) {
+	m := testModel(t)
+	m.current = viewNewTask
+	cfg := m.db.Config()
+	m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), "", cfg.Backends, cfg.Defaults.Backend)
+	m.newtask.SetSize(80, 24)
+
+	m.newtask.promptInput.SetValue("/de")
+	m.newtask.updateAutocomplete()
+	if m.newtask.acOpen {
+		t.Fatal("autocomplete should stay closed before skills load")
+	}
+
+	updated, _ := m.Update(skillsLoadedMsg{
+		{Name: "debug", Description: "Debug issue"},
+		{Name: "deploy", Description: "Deploy app"},
+	})
+	m = updated.(Model)
+
+	if !m.newtask.acOpen {
+		t.Fatal("autocomplete should open after skills load")
+	}
+	if len(m.newtask.acMatches) != 2 {
+		t.Fatalf("acMatches = %d, want 2", len(m.newtask.acMatches))
+	}
+}
+
 func TestModel_ViewNewProject(t *testing.T) {
 	m := testModel(t)
 	m.current = viewNewProject
