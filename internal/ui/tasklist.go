@@ -490,9 +490,10 @@ func (tl TaskList) View() string {
 		case rowProject:
 			tl.renderProjectHeader(&b, r.project, selected, tl.isInArchiveSection(i))
 		case rowArchiveHeader:
+			b.WriteString("\n")
 			tl.renderArchiveHeader(&b, selected)
 		case rowTask:
-			tl.renderTaskRow(&b, r.task, selected)
+			tl.renderTaskRow(&b, r.task, selected, tl.isInArchiveSection(i))
 		}
 	}
 
@@ -626,7 +627,11 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 
 	icon := tl.projectStatusIcon(tasks)
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	b.WriteString(fmt.Sprintf("%s %s %s %s%s\n", cursorStr, icon, chevronStyle.Render(chevron), nameStyle.Render(project), countStr))
+	if inArchive {
+		fmt.Fprintf(b, "%s %s %s%s\n", cursorStr, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
+	} else {
+		fmt.Fprintf(b, "%s %s %s %s%s\n", cursorStr, icon, chevronStyle.Render(chevron), nameStyle.Render(project), countStr)
+	}
 }
 
 func (tl TaskList) renderArchiveHeader(b *strings.Builder, selected bool) {
@@ -653,7 +658,7 @@ func (tl TaskList) renderArchiveHeader(b *strings.Builder, selected bool) {
 	}
 
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	fmt.Fprintf(b, "%s   %s %s%s\n", cursorStr, chevronStyle.Render(chevron), nameStyle.Render("Archive"), countStr)
+	fmt.Fprintf(b, "%s %s %s%s\n", cursorStr, chevronStyle.Render(chevron), nameStyle.Render("Archive"), countStr)
 }
 
 // ToggleArchive toggles the archive section open/closed.
@@ -669,7 +674,7 @@ func (tl *TaskList) CursorOnArchiveHeader() bool {
 	return c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader
 }
 
-func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected bool) {
+func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected, inArchive bool) {
 	icon := tl.taskStatusIcon(t)
 
 	nameStyle := tl.theme.Normal
@@ -685,6 +690,12 @@ func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected boo
 	if selected {
 		cursorStr = tl.theme.Selected.Render("   >")
 	}
+	if inArchive {
+		cursorStr = "  "
+		if selected {
+			cursorStr = tl.theme.Selected.Render(" >")
+		}
+	}
 
 	// Duration in parentheses immediately after name
 	elapsed := ""
@@ -692,7 +703,7 @@ func (tl TaskList) renderTaskRow(b *strings.Builder, t *model.Task, selected boo
 		elapsed = " " + tl.theme.Elapsed.Render("("+e+")")
 	}
 
-	b.WriteString(fmt.Sprintf("%s %s  %s%s\n", cursorStr, icon, name, elapsed))
+	fmt.Fprintf(b, "%s %s  %s%s\n", cursorStr, icon, name, elapsed)
 }
 
 func (tl TaskList) statusStyle(s model.Status) lipgloss.Style {
