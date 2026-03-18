@@ -192,6 +192,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **Reviews tab: `internal/ui/reviews.go` + `internal/github/github.go`.** Three-panel layout (PR list / diff / comments) using `PanelLayout`. PR list fetched via `gh search prs`, files via REST API, full diff via `gh pr diff` (cached per PR, re-sliced per file via `ExtractFileDiff`). Comments via REST. Review actions: `a` approve, `r` request changes, `c` line comment. Focus cycles: list → diff → comment compose. Auto-refresh on tick: comments have 2min TTL, diff staleness checked against `PR.UpdatedAt`. All message handlers log to uxlog with `[reviews]` prefix.
 
+- **Task rename requires `git worktree repair` after directory rename.** When renaming a task, the worktree directory is moved via `os.Rename`, but git's internal worktree metadata (in `<repo>/.git/worktrees/<name>`) still points at the old path. Running `git worktree repair` in the repo dir updates these pointers. The branch rename (`git branch -m`) must run in the worktree dir (where the branch is checked out), not the repo dir. On directory rename failure, the branch rename is reverted. The `isWorktreeSubdir` guard prevents renaming directories outside `~/.argus/worktrees/`. The 'r' key in the task list opens `viewRenameTask` with a `RenameTaskForm` (single `textinput.Model`). Rename is blocked while an agent is running (`runner.HasSession` check). The form is in `internal/ui/renametask.go`.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

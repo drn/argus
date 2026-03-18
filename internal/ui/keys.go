@@ -15,6 +15,7 @@ type KeyMap struct {
 	Help      key.Binding
 	Filter    key.Binding
 	Prompt    key.Binding
+	Rename    key.Binding
 	Worktree  key.Binding
 	Prune     key.Binding
 	RestartDaemon key.Binding
@@ -72,6 +73,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("p"),
 			key.WithHelp("p", "view prompt"),
 		),
+		Rename: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "rename task"),
+		),
 		Worktree: key.NewBinding(
 			key.WithKeys("w"),
 			key.WithHelp("w", "worktree info"),
@@ -120,7 +125,7 @@ func (k KeyMap) ShortHelp() []key.Binding {
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.New, k.Attach, k.Delete, k.Destroy},
-		{k.StatusFwd, k.StatusRev, k.Prompt},
+		{k.StatusFwd, k.StatusRev, k.Rename, k.Prompt},
 		{k.Up, k.Down, k.Filter},
 		{k.Worktree, k.Prune, k.RestartDaemon, k.Help, k.Quit},
 	}

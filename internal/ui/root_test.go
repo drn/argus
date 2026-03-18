@@ -1730,6 +1730,10 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		}},
 		{"daemonLogs", func(m *Model) { m.current = viewDaemonLogs; m.daemonLogLines = []string{"test log line"} }},
 		{"uxLogs", func(m *Model) { m.current = viewUXLogs; m.uxLogLines = []string{"test ux log line"} }},
+		{"renameTask", func(m *Model) {
+			m.renametask = NewRenameTaskForm(m.theme, "t1", "task")
+			m.current = viewRenameTask
+		}},
 		{"reviews", func(m *Model) { m.activeTab = tabReviews }},
 		{"reviewsLoading", func(m *Model) { m.activeTab = tabReviews; m.reviews.loading = true }},
 	}
@@ -1981,5 +1985,173 @@ func TestHandleTaskListKey_OpenPR_NoURL(t *testing.T) {
 	// cmd should be nil since task has no PRURL.
 	if cmd != nil {
 		t.Error("expected nil cmd when task has no PRURL")
+	}
+}
+
+func TestRenameKey_OpensForm(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.refreshTasks()
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewRenameTask {
+		t.Errorf("expected viewRenameTask, got %v", um.current)
+	}
+	if um.renametask.TaskID() != "t1" {
+		t.Errorf("expected task ID t1, got %q", um.renametask.TaskID())
+	}
+}
+
+func TestRenameKey_NoTask(t *testing.T) {
+	m := testModel(t)
+	m.width = 120
+	m.height = 40
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Error("expected to stay on task list when no task selected")
+	}
+}
+
+func TestRenameForm_Cancel(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.renametask = NewRenameTaskForm(m.theme, "t1", "old-name")
+	m.renametask.SetSize(m.width, m.height)
+	m.current = viewRenameTask
+
+	msg := tea.KeyMsg{Type: tea.KeyEsc}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Error("expected esc to return to task list")
+	}
+	// Name should be unchanged.
+	got, _ := um.db.Get("t1")
+	if got.Name != "old-name" {
+		t.Errorf("expected name unchanged, got %q", got.Name)
+	}
+}
+
+func TestRenameForm_SameName(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.renametask = NewRenameTaskForm(m.theme, "t1", "old-name")
+	m.renametask.SetSize(m.width, m.height)
+	m.current = viewRenameTask
+
+	// Submit with unchanged name.
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Error("expected same-name submit to return to task list")
+	}
+}
+
+func TestRenameForm_EmptyName(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.renametask = NewRenameTaskForm(m.theme, "t1", "old-name")
+	m.renametask.SetSize(m.width, m.height)
+	m.current = viewRenameTask
+
+	// Clear the input, then submit.
+	// Select all and delete to clear the input.
+	m.renametask.input.SetValue("")
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewRenameTask {
+		t.Error("expected empty name to keep form open")
+	}
+}
+
+func TestRenameForm_View(t *testing.T) {
+	f := NewRenameTaskForm(DefaultTheme(), "t1", "my-task")
+	f.SetSize(120, 40)
+	view := f.View()
+	if !strings.Contains(view, "Rename Task") {
+		t.Error("expected 'Rename Task' title in view")
+	}
+	if !strings.Contains(view, "my-task") {
+		t.Error("expected current task name in view")
+	}
+}
+
+func TestRenameForm_SuccessNoWorktree(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj", Branch: "argus/old-name"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.renametask = NewRenameTaskForm(m.theme, "t1", "old-name")
+	m.renametask.SetSize(m.width, m.height)
+	m.current = viewRenameTask
+
+	// Type a new name by setting value directly, then submit.
+	m.renametask.input.SetValue("new-name")
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewTaskList {
+		t.Errorf("expected viewTaskList after rename, got %v", um.current)
+	}
+
+	got, err := um.db.Get("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new-name" {
+		t.Errorf("expected name 'new-name', got %q", got.Name)
+	}
+	if got.Branch != "argus/new-name" {
+		t.Errorf("expected branch 'argus/new-name', got %q", got.Branch)
+	}
+}
+
+func TestRenameForm_InvalidName(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.renametask = NewRenameTaskForm(m.theme, "t1", "old-name")
+	m.renametask.SetSize(m.width, m.height)
+	m.current = viewRenameTask
+
+	// Try a name with spaces (invalid).
+	m.renametask.input.SetValue("has spaces")
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	updated, _ := m.Update(msg)
+	um := updated.(Model)
+
+	if um.current != viewRenameTask {
+		t.Error("expected invalid name to keep form open")
+	}
+}
+
+func TestRenameForm_ViewZeroValue(t *testing.T) {
+	var f RenameTaskForm
+	// Must not panic.
+	view := f.View()
+	if view != "" {
+		t.Error("expected empty string for zero-valued form")
 	}
 }
