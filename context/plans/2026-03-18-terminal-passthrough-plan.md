@@ -3,7 +3,7 @@
 **Date:** 2026-03-18
 **Source:** Inline request: "research well-maintained libraries that do this cleanly. then write an implementation plan"
 **Status:** In Progress
-**Current Phase:** Phase 2 (Phase 1 complete)
+**Current Phase:** Phase 3 (Phases 1-2 complete)
 
 ## Goal
 
@@ -93,14 +93,14 @@ This avoids trying to force a real terminal surface through a `View() string` AP
 - [x] Add a runtime switch (`ARGUS_UI_RUNTIME=bubbletea|tcell`) with Bubble Tea as the default, wired in `cmd/argus/main.go`
 
 ### Phase 2: Build a Tcell/Tview App Shell
-**Status:** pending
+**Status:** complete
 
-- [ ] Add a new `tcell`/`tview` entrypoint under `cmd/argus-tcell` or a feature-gated path in [`cmd/argus/main.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/cmd/argus/main.go)
-- [ ] Implement the top-level layout shell in a new package such as `internal/tui2`: header, three-panel layout, footer/status bar, focus ring, and event loop
-- [ ] Map current Bubble Tea primitives onto `tview` primitives where possible: pages, flex/grid layout, tables, lists, forms, modals
-- [ ] Port the global navigation model: tabs, detach, task switching, agent tick/update loop, and daemon connectivity state
-- [ ] Mirror the existing task-selection and agent-attach flow well enough to reach the live agent view without feature regression
-- [ ] Add screenshot/manual smoke coverage for resize, focus changes, and basic navigation parity
+- [x] Add a new `tcell`/`tview` entrypoint — feature-gated `runTcell()` in `cmd/argus/main.go`, selected via `ARGUS_UI_RUNTIME=tcell`
+- [x] Implement the top-level layout shell in `internal/tui2`: `Header` (tab bar), `StatusBar` (bottom hints + counts), `TaskListView` (grouped by project with archive), `AgentPane` (placeholder), `SidePanel` (git/files)
+- [x] Map current Bubble Tea primitives onto `tview` primitives: `tview.Pages` for view switching, `tview.Flex` for layout, custom `tview.Box`-based widgets for task list / agent pane / panels
+- [x] Port the global navigation model: tab switching (1/2/3), quit (q/ctrl+c), agent detach (ctrl+q/esc), daemon connectivity check on tick, task refresh on tick
+- [x] Mirror the existing task-selection and agent-attach flow: Enter on task → agent view with session lookup, `startOrAttach` for session lifecycle, `tcellKeyToBytes` for PTY input forwarding
+- [x] Add test coverage: 18 tests covering app creation, tab switching, task selection, agent view enter/exit, key-to-bytes conversion, PTY sizing, task list navigation, row building, archive detection
 
 ### Phase 3: Replace the Live Agent Pane With a Native Terminal Surface
 **Status:** pending

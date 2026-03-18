@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/tui2"
 	"github.com/drn/argus/internal/ui"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -56,8 +57,7 @@ func main() {
 	case agentview.RuntimeBubbleTea:
 		runTUI()
 	case agentview.RuntimeTcell:
-		fmt.Fprintln(os.Stderr, "ARGUS_UI_RUNTIME=tcell is planned but not implemented yet")
-		os.Exit(2)
+		runTcell()
 	default:
 		fmt.Fprintf(os.Stderr, "unsupported UI runtime %q\n", uiRuntime)
 		os.Exit(1)
@@ -133,6 +133,51 @@ func runTUI() {
 	// If a daemon restart occurred, close the new client.
 	if rc := m.RestartedClient(); rc != nil {
 		rc.Close()
+	}
+}
+
+func runTcell() {
+	// Initialize UX debug log.
+	if err := uxlog.Init(uxlog.Path(db.DataDir())); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot open ux log: %v\n", err)
+	}
+	defer uxlog.Close()
+	uxlog.Log("=== argus TUI starting (tcell runtime) ===")
+
+	database, err := db.Open(db.DefaultPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+
+	var runner agent.SessionProvider
+	var daemonConnected bool
+
+	sockPath := daemon.DefaultSocketPath()
+	client, err := dclient.Connect(sockPath)
+	if err != nil {
+		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
+		client, err = dclient.AutoStart(sockPath)
+	}
+
+	if err != nil {
+		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
+		// TODO(phase3): wire onFinish callback to deliver AgentFinished events
+		// to the App. Without this, in-process session exits are only detected
+		// on the next tick refresh (1s delay, session stays "running" briefly).
+		runner = agent.NewRunner(nil)
+	} else {
+		uxlog.Log("connected to daemon at %s", sockPath)
+		daemonConnected = true
+		runner = client
+		defer client.Close()
+	}
+
+	app := tui2.New(database, runner, daemonConnected)
+	if err := app.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
