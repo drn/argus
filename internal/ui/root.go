@@ -868,10 +868,6 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.Attach):
-		if m.tasklist.CursorOnArchiveHeader() {
-			m.tasklist.ToggleArchive()
-			return m, nil
-		}
 		return m.attachAgent()
 
 	case key.Matches(msg, m.keys.Prompt):

@@ -676,7 +676,7 @@ func TestTaskList_ArchivedSection(t *testing.T) {
 		t.Error("expected archive header row when archived tasks exist")
 	}
 
-	// Active task should be in rows, archived should not (archive collapsed by default).
+	// Archive is always expanded — both active and archived tasks should be in rows.
 	activeFound, archivedFound := false, false
 	for _, r := range tl.rows {
 		if r.kind == rowTask {
@@ -691,44 +691,8 @@ func TestTaskList_ArchivedSection(t *testing.T) {
 	if !activeFound {
 		t.Error("expected active task in rows")
 	}
-	if archivedFound {
-		t.Error("archived task should not be visible when archive is collapsed")
-	}
-}
-
-func TestTaskList_ArchiveToggle(t *testing.T) {
-	tl := NewTaskList(DefaultTheme())
-	tl.SetSize(80, 40)
-	tasks := []*model.Task{
-		{ID: "t1", Name: "Active", Project: "proj"},
-		{ID: "t2", Name: "Archived", Project: "proj", Archived: true},
-	}
-	tl.SetTasks(tasks)
-
-	// Toggle archive open.
-	tl.ToggleArchive()
-
-	// Archived task should now be visible.
-	archivedFound := false
-	for _, r := range tl.rows {
-		if r.kind == rowTask && r.task.ID == "t2" {
-			archivedFound = true
-		}
-	}
 	if !archivedFound {
-		t.Error("expected archived task visible after expanding archive")
-	}
-
-	// Toggle archive closed.
-	tl.ToggleArchive()
-	archivedFound = false
-	for _, r := range tl.rows {
-		if r.kind == rowTask && r.task.ID == "t2" {
-			archivedFound = true
-		}
-	}
-	if archivedFound {
-		t.Error("archived task should not be visible after collapsing archive")
+		t.Error("expected archived task in rows (archive is always expanded)")
 	}
 }
 
@@ -762,7 +726,7 @@ func TestTaskList_ArchiveViewRendersHeader(t *testing.T) {
 	}
 }
 
-func TestTaskList_CursorOnArchiveHeader(t *testing.T) {
+func TestTaskList_CursorSkipsArchiveHeader(t *testing.T) {
 	tl := NewTaskList(DefaultTheme())
 	tl.SetSize(80, 40)
 	tasks := []*model.Task{
@@ -771,13 +735,14 @@ func TestTaskList_CursorOnArchiveHeader(t *testing.T) {
 	}
 	tl.SetTasks(tasks)
 
-	// Navigate down to archive header.
-	for range 10 {
+	// Navigate down past all rows — cursor should never land on archive header.
+	for range 20 {
 		tl.CursorDown()
 	}
 
-	if !tl.CursorOnArchiveHeader() {
-		t.Error("expected cursor to land on archive header")
+	c := tl.scroll.Cursor()
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
+		t.Error("cursor should never land on the archive header")
 	}
 }
 
@@ -790,7 +755,6 @@ func TestTaskList_ArchiveMultipleProjects(t *testing.T) {
 		{ID: "t3", Name: "Archived B", Project: "beta", Archived: true},
 	}
 	tl.SetTasks(tasks)
-	tl.ToggleArchive()
 
 	// Both archived projects should appear as headers in the archive section.
 	archiveProjectHeaders := 0
