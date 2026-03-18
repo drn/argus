@@ -145,7 +145,9 @@ type PostCommentMsg struct {
 
 // SubmitReviewMsg carries the result of submitting a full review.
 type SubmitReviewMsg struct {
-	Err error
+	Err      error
+	Action   github.ReviewAction // what was submitted (APPROVE / REQUEST_CHANGES)
+	PRNumber int                 // which PR was reviewed
 }
 
 // PRDetectedMsg is sent when a GitHub PR URL is found in agent output.
@@ -696,7 +698,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			uxlog.Log("[reviews] submit review failed: %v", msg.Err)
 			m.statusbar.SetError(githubErrMsg(msg.Err))
 		} else {
-			uxlog.Log("[reviews] review submitted successfully")
+			uxlog.Log("[reviews] review submitted successfully: %s on PR #%d", msg.Action, msg.PRNumber)
+			m.reviews.MarkReviewDecision(msg.PRNumber, msg.Action)
 		}
 		return m, nil
 

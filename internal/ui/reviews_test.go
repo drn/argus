@@ -309,6 +309,130 @@ func TestReviewsView_CanFetchPRList(t *testing.T) {
 	}
 }
 
+func TestReviewsView_ApproveConfirm(t *testing.T) {
+	rv := NewReviewsView(DefaultTheme())
+	rv.SetSize(120, 40)
+
+	pr := github.PR{Number: 10, Title: "My feature PR", Author: "alice", RepoOwner: "org", Repo: "repo"}
+	rv.SetPRs([]github.PR{pr})
+	rv.HandleKey(tea.KeyMsg{Type: tea.KeyEnter}) // select PR
+
+	t.Run("a_opens_confirm", func(t *testing.T) {
+		rv.focus = focusList
+		rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if rv.focus != focusApproveConfirm {
+			t.Errorf("expected focusApproveConfirm after 'a', got %d", rv.focus)
+		}
+	})
+
+	t.Run("confirm_renders_pr_title", func(t *testing.T) {
+		rv.focus = focusApproveConfirm
+		got := rv.RenderComments(80, 20)
+		if !strings.Contains(got, "My feature PR") {
+			t.Errorf("expected PR title in confirm panel, got: %q", got)
+		}
+		if !strings.Contains(got, "confirm") {
+			t.Errorf("expected 'confirm' hint in confirm panel, got: %q", got)
+		}
+	})
+
+	t.Run("n_cancels", func(t *testing.T) {
+		rv.focus = focusApproveConfirm
+		cmd := rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+		if cmd != nil {
+			t.Error("expected nil cmd from 'n' cancel")
+		}
+		if rv.focus != focusList {
+			t.Errorf("expected focusList after cancel, got %d", rv.focus)
+		}
+	})
+
+	t.Run("esc_cancels", func(t *testing.T) {
+		rv.focus = focusApproveConfirm
+		rv.HandleKey(tea.KeyMsg{Type: tea.KeyEsc})
+		if rv.focus != focusList {
+			t.Errorf("expected focusList after Esc, got %d", rv.focus)
+		}
+	})
+
+	t.Run("y_submits", func(t *testing.T) {
+		rv.focus = focusApproveConfirm
+		cmd := rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+		if cmd == nil {
+			t.Error("expected non-nil cmd from 'y' confirm")
+		}
+		if rv.focus != focusList {
+			t.Errorf("expected focusList after confirm, got %d", rv.focus)
+		}
+	})
+
+	t.Run("a_noop_without_selected_pr", func(t *testing.T) {
+		rv.selectedPR = nil
+		rv.focus = focusList
+		rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+		if rv.focus != focusList {
+			t.Errorf("expected focusList unchanged when no PR selected, got %d", rv.focus)
+		}
+	})
+}
+
+func TestReviewsView_MarkReviewDecision(t *testing.T) {
+	rv := NewReviewsView(DefaultTheme())
+	rv.SetSize(120, 40)
+
+	prs := []github.PR{
+		{Number: 10, Title: "PR A", Author: "alice", RepoOwner: "org", Repo: "repo"},
+		{Number: 11, Title: "PR B", Author: "bob", RepoOwner: "org", Repo: "repo"},
+	}
+	rv.SetPRs(prs)
+	rv.HandleKey(tea.KeyMsg{Type: tea.KeyEnter}) // select PR #10
+	if rv.selectedPR == nil {
+		t.Fatal("setup: expected PR selected")
+	}
+
+	rv.MarkReviewDecision(10, github.ReviewApprove)
+
+	if rv.prs[0].ReviewDecision != "APPROVED" {
+		t.Errorf("prs[0].ReviewDecision = %q, want APPROVED", rv.prs[0].ReviewDecision)
+	}
+	if rv.selectedPR.ReviewDecision != "APPROVED" {
+		t.Errorf("selectedPR.ReviewDecision = %q, want APPROVED", rv.selectedPR.ReviewDecision)
+	}
+	// Other PR unchanged
+	if rv.prs[1].ReviewDecision != "" {
+		t.Errorf("prs[1].ReviewDecision should be empty, got %q", rv.prs[1].ReviewDecision)
+	}
+
+	rv.MarkReviewDecision(11, github.ReviewRequestChanges)
+	if rv.prs[1].ReviewDecision != "CHANGES_REQUESTED" {
+		t.Errorf("prs[1].ReviewDecision = %q, want CHANGES_REQUESTED", rv.prs[1].ReviewDecision)
+	}
+}
+
+func TestReviewsView_FileList_ReviewDecisionIndicator(t *testing.T) {
+	tests := []struct {
+		decision string
+		want     string
+	}{
+		{"APPROVED", "Approved"},
+		{"CHANGES_REQUESTED", "Changes requested"},
+		{"REVIEW_REQUIRED", "Review required"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		rv := NewReviewsView(DefaultTheme())
+		rv.SetSize(120, 40)
+		rv.SetPRs([]github.PR{{Number: 1, Title: "PR", Author: "a", RepoOwner: "o", Repo: "r", ReviewDecision: tt.decision}})
+		rv.HandleKey(tea.KeyMsg{Type: tea.KeyEnter}) // select PR
+		rv.SetFiles([]string{"main.go"})
+
+		got := rv.View()
+		if tt.want != "" && !strings.Contains(got, tt.want) {
+			t.Errorf("decision=%q: expected %q in file list view, got: %q", tt.decision, tt.want, got)
+		}
+	}
+}
+
 func TestReviewsView_SetPRs_BackgroundRefresh(t *testing.T) {
 	rv := NewReviewsView(DefaultTheme())
 	rv.SetSize(80, 24)
