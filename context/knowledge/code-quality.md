@@ -426,3 +426,17 @@ Three bugs discovered in daemon lifecycle management:
 **Settings**: BACKENDS section header shows `(default: <name>)`. Backend detail panel shows `★ Default backend` indicator. Keys: `[e]` edit, `[n]` new, `[d]` set as default (calls `db.SetConfigValue("defaults.backend", name)`).
 
 **Backend form** (`backendform.go`): 4 textinput fields (Name, Command, Resume Command, Prompt Flag). Mirrors `ProjectForm` pattern with edit/new modes.
+
+## Cursor Navigation Refactor: 2026-03-17
+
+### Bug: Cursor stuck on archive header when pressing up from first archived task
+
+**Root cause:** `moveCursor` had a project-header skip path (going up) that called `CursorUp()` to skip the project header but didn't handle landing on an `rowArchiveHeader`. The cursor got parked on the archive header — a non-task row. The next press of up then hit the archive header handler which properly exited.
+
+**Fix:** Extracted two helpers from `moveCursor`:
+- `skipUpPastHeader(prev int)` — moves up past any header (project or archive), chaining through consecutive headers. Handles the project→archive header sequence in one call.
+- `landOnLastTask(idx, prev int)` — finds the last consecutive task row after a project header at `idx`, sets cursor + adjusts scroll offset. Falls back to `prev` if no tasks follow.
+
+These replaced 4 duplicate instances of the "find last task in project + set cursor + scroll adjust" pattern.
+
+**Archive header indent:** Added 2-space prefix to "Archive" label in `renderArchiveHeader` for visual alignment with project headers.
