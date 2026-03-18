@@ -440,3 +440,15 @@ Three bugs discovered in daemon lifecycle management:
 These replaced 4 duplicate instances of the "find last task in project + set cursor + scroll adjust" pattern.
 
 **Archive header indent:** Added 2-space prefix to "Archive" label in `renderArchiveHeader` for visual alignment with project headers.
+
+## File Explorer Auto-Expand: 2026-03-17
+
+### Pattern: Auto-expand directories on cursor movement
+
+**What:** File explorer directories auto-expand when cursor enters them and collapse when cursor leaves, matching the task list's one-expanded-at-a-time pattern. Replaced the manual Enter-to-toggle behavior.
+
+**Data flow:** `CursorUp()`/`CursorDown()` → `autoExpand()` → returns dir path needing fetch (or `""`) → agent view issues `fetchDirChildren()` as `tea.Cmd`.
+
+**Key gotcha — cursor position shift on row rebuild:** When collapsing a directory, child rows are removed and all subsequent row indices shift up. `autoExpand()` saves `cursorPath` before rebuild, then finds the same path in the new rows and calls `SetCursor(i)`. Without this, the cursor drifts to the wrong row after any collapse.
+
+**`parentDir()` helper:** Walks backward from a child row index to find the parent directory row (indent 0, IsDir true). Used when cursor is on a child to determine which directory should stay expanded.
