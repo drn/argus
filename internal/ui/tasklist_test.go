@@ -34,11 +34,18 @@ func TestTaskList_Selected(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected non-nil selected task")
 	}
-	// First project should be "webapp" (both projects have pending status, alphabetical: backend < webapp,
-	// but order depends on input order within same priority tier — they both have pending tasks).
-	// The first project header's Selected() returns its first task.
-	if got.Project != tl.rows[0].project {
-		t.Errorf("expected task from first project %q, got project %q", tl.rows[0].project, got.Project)
+	// rows[0] is the tasks header; cursor starts on the first task (skipToFirstTask
+	// advances past both tasks header and project header). Find the first project header
+	// to verify the selected task belongs to it.
+	firstProject := ""
+	for _, r := range tl.rows {
+		if r.kind == rowProject {
+			firstProject = r.project
+			break
+		}
+	}
+	if got.Project != firstProject {
+		t.Errorf("expected task from first project %q, got project %q", firstProject, got.Project)
 	}
 }
 
@@ -800,6 +807,39 @@ func TestTaskList_CursorSkipsArchiveHeader(t *testing.T) {
 	// Archive should have auto-expanded when cursor entered the section.
 	if !tl.archiveExpanded {
 		t.Error("expected archive to auto-expand when cursor passes through archive section")
+	}
+}
+
+func TestTaskList_CursorSkipsTasksHeader(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Task 1", Project: "proj"},
+		{ID: "t2", Name: "Task 2", Project: "proj"},
+	}
+	tl.SetTasks(tasks)
+
+	// Cursor should never land on the tasks header at any point during navigation.
+	assertNotOnTasksHeader := func(label string) {
+		t.Helper()
+		c := tl.scroll.Cursor()
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowTasksHeader {
+			t.Errorf("%s: cursor should never land on the tasks header (row %d)", label, c)
+		}
+	}
+
+	assertNotOnTasksHeader("initial")
+
+	// Navigate down through all rows.
+	for range 10 {
+		tl.CursorDown()
+		assertNotOnTasksHeader("CursorDown")
+	}
+
+	// Navigate back up through all rows.
+	for range 10 {
+		tl.CursorUp()
+		assertNotOnTasksHeader("CursorUp")
 	}
 }
 
