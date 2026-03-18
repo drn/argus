@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -120,7 +121,12 @@ func (rv *ReviewsView) canFetchPRList() bool {
 }
 
 // SetPRs replaces the PR list and resets all selection state.
+// Sorts review requests first to match the visual render order in renderPRList,
+// so cursor navigation (sequential through the flat slice) matches top-to-bottom order.
 func (rv *ReviewsView) SetPRs(prs []github.PR) {
+	sort.SliceStable(prs, func(i, j int) bool {
+		return prs[i].IsReviewRequest && !prs[j].IsReviewRequest
+	})
 	rv.lastFetchTime = time.Now()
 	rv.prs = prs
 	rv.loading = false

@@ -245,6 +245,49 @@ func TestTruncString(t *testing.T) {
 	}
 }
 
+func TestReviewsView_SetPRs_SortOrder(t *testing.T) {
+	rv := NewReviewsView(DefaultTheme())
+	rv.SetSize(120, 40)
+
+	// Pass review requests after my PRs — SetPRs should sort review requests first.
+	prs := []github.PR{
+		{Number: 1, Title: "My PR 1", Author: "me", RepoOwner: "o", Repo: "r", IsReviewRequest: false},
+		{Number: 2, Title: "My PR 2", Author: "me", RepoOwner: "o", Repo: "r", IsReviewRequest: false},
+		{Number: 3, Title: "Review Req 1", Author: "bob", RepoOwner: "o", Repo: "r", IsReviewRequest: true},
+		{Number: 4, Title: "Review Req 2", Author: "alice", RepoOwner: "o", Repo: "r", IsReviewRequest: true},
+	}
+	rv.SetPRs(prs)
+
+	// After SetPRs, review requests should be at the front of the slice
+	// so cursor navigation matches the visual render order.
+	if len(rv.prs) != 4 {
+		t.Fatalf("expected 4 PRs, got %d", len(rv.prs))
+	}
+	if !rv.prs[0].IsReviewRequest || !rv.prs[1].IsReviewRequest {
+		t.Errorf("expected first 2 PRs to be review requests, got IsReviewRequest=%v,%v",
+			rv.prs[0].IsReviewRequest, rv.prs[1].IsReviewRequest)
+	}
+	if rv.prs[2].IsReviewRequest || rv.prs[3].IsReviewRequest {
+		t.Errorf("expected last 2 PRs to be my PRs, got IsReviewRequest=%v,%v",
+			rv.prs[2].IsReviewRequest, rv.prs[3].IsReviewRequest)
+	}
+
+	// Cursor at 0 should select the first review request
+	if rv.prCursor != 0 {
+		t.Errorf("expected prCursor=0, got %d", rv.prCursor)
+	}
+	if rv.prs[rv.prCursor].Title != "Review Req 1" {
+		t.Errorf("expected cursor on 'Review Req 1', got %q", rv.prs[rv.prCursor].Title)
+	}
+
+	// Navigate down twice to reach "My PR 1"
+	rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	rv.HandleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if rv.prs[rv.prCursor].Title != "My PR 1" {
+		t.Errorf("expected cursor on 'My PR 1' after 2 downs, got %q", rv.prs[rv.prCursor].Title)
+	}
+}
+
 func TestReviewsView_CanFetchPRList(t *testing.T) {
 	rv := NewReviewsView(DefaultTheme())
 
