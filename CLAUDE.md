@@ -125,6 +125,12 @@ go test ./internal/db/      # run tests for a single package
 
 ## Development Rules
 
+### Documentation Requirements
+
+- **Every new feature must be documented in CLAUDE.md before the session ends.** Add a bullet to the Key Learnings section covering: what the feature does, where the code lives, any non-obvious design decisions, and edge cases handled. If the feature introduces a new pattern (e.g. a new message type, a new DB column, a new key binding), document the pattern so future agents don't have to rediscover it.
+- **Update `context/knowledge/code-quality.md`** with a dated section summarizing the feature's data model, flow, and any gotchas. Update `context/knowledge/index.md` to include the new key entities.
+- **What to document:** new Task fields, new DB columns, new key bindings, new message types, new tea.Cmd patterns, new scan/detection loops, and any edge cases that required a second fix.
+
 ### Testing Requirements
 
 - **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
@@ -164,6 +170,18 @@ go test ./internal/db/      # run tests for a single package
 - **Per-project sandbox config is stored as three columns on the `projects` table.** `sandbox_enabled` stores `""` (inherit global), `"true"`, or `"false"`. `sandbox_deny_read` and `sandbox_extra_write` store CSV paths appended to the global lists. `ResolveSandboxConfig(task, cfg)` merges global + per-project overrides before calling `GenerateSandboxConfig`. Adding new columns to an existing SQLite table uses `ALTER TABLE projects ADD COLUMN ... DEFAULT ''` — this is called after `CREATE TABLE IF NOT EXISTS` and the error for duplicate column names is silently ignored (covers both new and existing databases). `GenerateSandboxConfig` takes `config.SandboxConfig` directly (not `config.Config`) so the caller controls which merged config is used.
 
 - **`textarea.LineInfo().ColumnOffset` is relative to the current visual row, not the hard line.** When a single hard line soft-wraps to multiple visual rows, `ColumnOffset` gives the rune offset from the start of the *current visual row*, not from the start of the hard line. Use `li.StartColumn + li.ColumnOffset` to get the true position within the hard line (`m.col`). `StartColumn` is the cumulative rune count of all visual rows before the current one. Getting this wrong makes word navigation (Option+Left/Delete) think the cursor is near position 0 when it's on a wrapped row, causing it to jump to the first visual line. The existing multi-line tests didn't catch this because they used short hard lines that never wrapped — always test with narrow textarea widths to exercise soft-wrap paths.
+
+- **PR URL detection scans session output on each tick, not just on finish.** The `TickMsg` handler calls `runner.Running()` and for each running session calls `prURLRe.FindAllString(string(sess.RecentOutput()), -1)`, taking the last match. This keeps `t.PRURL` up-to-date as the agent iterates (e.g. closes PR #1, opens PR #2). The guard `t.PRURL != url` prevents redundant DB writes when the URL hasn't changed.
+
+- **Also scan `msg.LastOutput` in `handleAgentFinished` to catch fast-finishing agents.** `runner.Running()` no longer includes a task once its session exits. If an agent creates a PR and exits before the next 1-second tick, the tick scan misses the URL. Fix: scan `msg.LastOutput` inside `handleAgentFinished` when `t.PRURL == ""`. This is the only place in the exit path that still has access to the ring buffer contents.
+
+- **Adding a new column to an existing SQLite table uses `ALTER TABLE ... ADD COLUMN ... DEFAULT ''` after `CREATE TABLE IF NOT EXISTS`.** The error for a duplicate column (column already exists) is silently ignored with `//nolint:errcheck`. This pattern covers both fresh databases (CREATE TABLE includes the column) and existing ones (ALTER TABLE adds it). Used for `pr_url` on tasks and `sandbox_enabled/deny_read/extra_write` on projects. Any future column additions must follow this same pattern in `createTables()` — never use schema migrations for simple column additions.
+
+- **`taskColumns` is the canonical column list used in every task query.** When adding a new column to the tasks table, update `taskColumns`, `scanTask` (add `&t.NewField` in the exact same position), `Add` (insert/values), and `Update` (SET clause) all in lockstep. Missing any one of these causes silent data loss or scan errors that only manifest at runtime.
+
+- **Use `prURLRe.FindAllString(output, -1)` and take `matches[len(matches)-1]` for PR URL detection.** Taking the last match means the most recently opened PR wins — correct when an agent opens a draft, revises it, and opens a final PR. The regex `https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+` covers both plain-text URLs and OSC 8 hyperlinks (where the URL appears twice — as target and display text). The final match is the display text occurrence.
+
+- **`'o'` key to open PR in browser from task list uses `exec.Command("open", url).Start()` inside a `tea.Cmd`.** The `open` command on macOS opens any URL in the default browser. The cmd must return a `tea.Msg` (return nil) — not just `exec.Command(...).Start()` directly in Update — because starting a process in Update would block. Add the key case using `msg.String() == "o"` (consistent with agent view's inline `case "o":` switch pattern) rather than adding it to KeyMap, since it is not user-configurable.
 
 ## Planned but Not Yet Implemented
 

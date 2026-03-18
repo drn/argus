@@ -70,6 +70,16 @@ func (d TaskDetail) View(t *model.Task, running bool) string {
 		b.WriteString("  " + d.theme.Dimmed.Render("Backend: ") + d.theme.Normal.Render(t.Backend) + "\n")
 	}
 
+	// PR URL (if agent opened a PR)
+	if t.PRURL != "" {
+		pr := t.PRURL
+		maxPRLen := innerW - 8 // "  PR: " + some margin
+		if maxPRLen > 0 && len(pr) > maxPRLen {
+			pr = "..." + pr[len(pr)-maxPRLen+3:]
+		}
+		b.WriteString("  " + d.theme.Dimmed.Render("PR: ") + d.theme.Normal.Render(pr) + "\n")
+	}
+
 	// Worktree path (truncated)
 	if t.Worktree != "" {
 		wt := t.Worktree

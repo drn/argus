@@ -1139,6 +1139,31 @@ func TestDB_UpdateAllFields(t *testing.T) {
 	if got.EndedAt.IsZero() {
 		t.Error("EndedAt should not be zero")
 	}
+	if got.PRURL != "" {
+		t.Errorf("PRURL should be empty, got %q", got.PRURL)
+	}
+}
+
+func TestDB_PRURL(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "pr task"}
+	_ = d.Add(task)
+
+	// Initially empty.
+	got, _ := d.Get(task.ID)
+	if got.PRURL != "" {
+		t.Errorf("expected empty PRURL, got %q", got.PRURL)
+	}
+
+	// Set and persist.
+	task.PRURL = "https://github.com/owner/repo/pull/42"
+	_ = d.Update(task)
+
+	got, _ = d.Get(task.ID)
+	if got.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("PRURL = %q", got.PRURL)
+	}
 }
 
 // --- DeleteBackend is not exposed, but we can test SetBackend overwrites ---

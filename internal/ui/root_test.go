@@ -1929,3 +1929,50 @@ func TestSettingsWarningDetail_ShowsRestartHint(t *testing.T) {
 		t.Error("expected restart hint in 'all good' warning detail")
 	}
 }
+
+func TestPRDetectedMsg_UpdatesTask(t *testing.T) {
+	task := &model.Task{Name: "pr task", Status: model.StatusInProgress}
+	m := testModel(t, task)
+	m.refreshTasks()
+
+	updated, _ := m.Update(PRDetectedMsg{TaskID: task.ID, URL: "https://github.com/owner/repo/pull/7"})
+	um := updated.(Model)
+
+	got, err := um.db.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PRURL != "https://github.com/owner/repo/pull/7" {
+		t.Errorf("PRURL = %q", got.PRURL)
+	}
+}
+
+func TestHandleTaskListKey_OpenPR(t *testing.T) {
+	task := &model.Task{Name: "pr task", PRURL: "https://github.com/owner/repo/pull/7"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.refreshTasks()
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}
+	_, cmd := m.Update(msg)
+	// cmd should be non-nil since task has a PRURL.
+	if cmd == nil {
+		t.Error("expected non-nil cmd when task has PRURL")
+	}
+}
+
+func TestHandleTaskListKey_OpenPR_NoURL(t *testing.T) {
+	task := &model.Task{Name: "no pr task"}
+	m := testModel(t, task)
+	m.width = 120
+	m.height = 40
+	m.refreshTasks()
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}}
+	_, cmd := m.Update(msg)
+	// cmd should be nil since task has no PRURL.
+	if cmd != nil {
+		t.Error("expected nil cmd when task has no PRURL")
+	}
+}
