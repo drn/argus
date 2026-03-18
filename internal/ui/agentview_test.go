@@ -1042,6 +1042,27 @@ func TestAgentView_FilesPanelEscRefocusesAgent(t *testing.T) {
 	}
 }
 
+func TestAgentView_CtrlQInDiffModeRefocusesAgent(t *testing.T) {
+	av := newTestAgentView()
+	av.focus = panelFiles
+	av.UpdateFileDiff(FileDiffMsg{
+		TaskID:   "task-1",
+		FilePath: "foo.go",
+		Diff:     "--- a/foo.go\n+++ b/foo.go\n@@ -1,3 +1,3 @@\n+added line\n-removed line\n context",
+	})
+	if !av.diffMode {
+		t.Fatal("expected diffMode after UpdateFileDiff")
+	}
+
+	av.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlQ})
+	if av.diffMode {
+		t.Error("expected diffMode to be false after ctrl+q")
+	}
+	if av.focus != panelAgent {
+		t.Errorf("expected focus on panelAgent after ctrl+q in diff mode, got %d", av.focus)
+	}
+}
+
 func TestAgentView_FilesPanelOpenKeys(t *testing.T) {
 	av := newTestAgentView()
 	av.focus = panelFiles
