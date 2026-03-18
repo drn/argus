@@ -767,6 +767,12 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 	if len(lines) > dispH {
 		lines = lines[len(lines)-dispH:]
 	}
+
+	// Trim leading empty lines (e.g. Codex positions its TUI content in the
+	// lower portion of the terminal, leaving the top rows blank).
+	for len(lines) > 0 && stripANSI(lines[0]) == "" {
+		lines = lines[1:]
+	}
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")
 	}
