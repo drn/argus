@@ -9,7 +9,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 )
 
-const defaultBufSize = 0 // unbounded: keep all output for full scrollback
+const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
 
 // Compile-time assertion.
 var _ agent.SessionHandle = (*RemoteSession)(nil)
@@ -76,6 +76,12 @@ func (rs *RemoteSession) RecentOutput() []byte {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	return rs.buf.Bytes()
+}
+
+func (rs *RemoteSession) RecentOutputTail(n int) []byte {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.buf.Tail(n)
 }
 
 func (rs *RemoteSession) TotalWritten() uint64 {

@@ -344,7 +344,7 @@ Three bugs discovered in daemon lifecycle management:
 **Data model**: `Task.PRURL string` + `pr_url TEXT NOT NULL DEFAULT ''` column on the `tasks` table. Column added with `ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''` (error silently ignored) to cover existing databases — same pattern as sandbox columns on `projects`.
 
 **Detection flow**:
-1. `TickMsg` handler calls `runner.Running()`, then for each session: `prURLRe.FindAllString(string(sess.RecentOutput()), -1)`. Takes `matches[len(matches)-1]` (latest match wins — handles agent opening PR #1, then PR #2).
+1. `TickMsg` handler calls `runner.Running()`, then for each session: `prURLRe.FindAllString(string(sess.RecentOutputTail(32*1024)), -1)`. Only scans the last 32KB to avoid copying the entire ring buffer every tick. Takes `matches[len(matches)-1]` (latest match wins — handles agent opening PR #1, then PR #2).
 2. Guard `t.PRURL != url` prevents redundant DB writes when URL hasn't changed.
 3. On match: fires `PRDetectedMsg{TaskID, URL}` as a `tea.Cmd`.
 4. `PRDetectedMsg` handler: re-checks `t.PRURL != msg.URL` (idempotent), updates DB, refreshes task list.

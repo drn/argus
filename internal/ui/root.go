@@ -412,7 +412,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 'o' opens the most recent one.
 		for _, taskID := range m.runner.Running() {
 			if sess := m.runner.Get(taskID); sess != nil {
-				matches := prURLRe.FindAllString(string(sess.RecentOutput()), -1)
+				// Only scan the last 32KB — PR URLs appear near the end of output.
+				// Avoids copying the entire ring buffer on every tick.
+				matches := prURLRe.FindAllString(string(sess.RecentOutputTail(32*1024)), -1)
 				if len(matches) > 0 {
 					url := matches[len(matches)-1]
 					if t, err := m.db.Get(taskID); err == nil && t.PRURL != url {
