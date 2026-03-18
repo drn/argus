@@ -240,6 +240,7 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 	if keyStr == "ctrl+q" {
 		if av.diffMode {
 			av.exitDiffMode()
+			av.focus = panelAgent
 			return false, nil
 		}
 		if av.focus == panelFiles {
