@@ -41,6 +41,7 @@ type AgentView struct {
 	sessionsDir string // directory where session logs are stored
 	taskID      string
 	taskName    string
+	taskPRURL   string
 	focus       AgentPanel
 	layout      PanelLayout
 	width       int
@@ -106,6 +107,7 @@ func NewAgentView(theme Theme, runner agent.SessionProvider, sessionsDir string)
 func (av *AgentView) Enter(taskID, taskName string) {
 	av.taskID = taskID
 	av.taskName = taskName
+	av.taskPRURL = ""
 	av.focus = panelAgent
 	av.gitstatus.SetTask(taskID)
 	av.lastGitRefresh = time.Time{}
@@ -143,6 +145,24 @@ func (av *AgentView) LoadSessionLogCmd(taskID string) tea.Cmd {
 			return nil
 		}
 		return SessionLogLoadedMsg{TaskID: taskID, Data: data}
+	}
+}
+
+// SetPRURL updates the PR URL associated with the current task.
+func (av *AgentView) SetPRURL(url string) {
+	av.taskPRURL = url
+}
+
+// OpenPR opens the task's PR URL in the default browser.
+// Returns a tea.Cmd that runs the open command, or nil if no PR URL is set.
+func (av *AgentView) OpenPR() tea.Cmd {
+	if av.taskPRURL == "" {
+		return nil
+	}
+	url := av.taskPRURL
+	return func() tea.Msg {
+		exec.Command("open", url).Start() //nolint:errcheck
+		return nil
 	}
 }
 
@@ -833,6 +853,9 @@ func (av AgentView) renderStatusBar() string {
 			{"⇧↑/↓", "scroll"},
 			{"C-←/→", "panel"},
 			{"^q", "detach"},
+		}
+		if av.taskPRURL != "" {
+			keys = append(keys, struct{ key, label string }{"⌘O", "open PR"})
 		}
 	}
 	var parts []string

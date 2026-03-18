@@ -1,5 +1,7 @@
 ## Key Learnings
 
+- **Cmd+O in agent view opens the associated PR URL in the browser.** macOS terminals send Cmd+O as Alt+O (`msg.Alt=true`, `msg.Type=tea.KeyRunes`, `string(msg.Runes)=="o"`). Handled in `handleAgentViewKey` in `root.go` before the key reaches the PTY. The PR URL is stored in `AgentView.taskPRURL` (set via `SetPRURL`). Three places keep it current: (1) `enterAgentView` looks up the task from DB at view entry; (2) `PRDetectedMsg` handler pushes new URLs while the agent view is active; (3) `handleAgentFinished` pushes URLs discovered from the final output. The `⌘O open PR` hint appears in the agent view status bar only when `taskPRURL != ""`.
+
 - **New task form has `/skill` autocomplete.** `internal/ui/skills.go` scans `~/.claude/skills/*/SKILL.md` frontmatter to build a `[]SkillItem` list. The form stores this list and when the prompt value starts with `/` and contains no spaces, shows a filtered dropdown below the textarea (`acOpen`, `acMatches`, `acIdx`, `acScroll`). Up/Down navigate the list, Enter selects (sets value to `/<name> ` and closes without submitting), Esc closes the dropdown (second Esc cancels the form). `updateAutocomplete()` is called after every `textarea.Update()` to recompute matches. The dropdown uses `acMaxVisible = 6` visible rows with scroll indicators when the list is longer.
 
 - PTY child processes need a real terminal size at launch (`pty.StartWithSize`), not 0x0. TUI apps like claude won't render with zero dimensions.

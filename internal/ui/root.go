@@ -544,6 +544,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.db.Update(t)
 			m.refreshTasks()
 		}
+		if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
+			m.agentview.SetPRURL(msg.URL)
+		}
 		return m, nil
 
 	case PruneProgressMsg:
@@ -803,6 +806,11 @@ func (m Model) handleAgentViewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.switchAgentTask(-1)
 		case tea.KeyDown:
 			return m.switchAgentTask(+1)
+		case tea.KeyRunes:
+			// Cmd+O (sent as Alt+O by macOS terminals) opens the associated PR in browser.
+			if string(msg.Runes) == "o" {
+				return m, m.agentview.OpenPR()
+			}
 		}
 	}
 
@@ -1090,6 +1098,9 @@ func (m *Model) enterAgentView(taskID, taskName string) tea.Cmd {
 	}
 	m.tasklist.SetIdleUnvisited(idleUnvisited)
 	m.agentview.Enter(taskID, taskName)
+	if t, err := m.db.Get(taskID); err == nil {
+		m.agentview.SetPRURL(t.PRURL)
+	}
 	m.agentview.SetSize(m.width, m.height)
 	if dir, ok := m.resolvedDirs[taskID]; ok && dir != "" {
 		m.agentview.SetWorktreeDir(dir)
@@ -1169,6 +1180,7 @@ func (m Model) handleAgentFinished(msg AgentFinishedMsg) (tea.Model, tea.Cmd) {
 
 	if m.current == viewAgent && m.agentview.taskID == msg.TaskID {
 		m.agentview.SetLastOutput(msg.LastOutput)
+		m.agentview.SetPRURL(t.PRURL)
 	}
 
 	if m.current == viewAgent && m.agentview.taskID == msg.TaskID && !quickExit {
