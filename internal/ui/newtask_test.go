@@ -353,6 +353,243 @@ func TestNewTaskForm_WordWrapHeightTransitions(t *testing.T) {
 	}
 }
 
+func TestFilterSkills(t *testing.T) {
+	skills := []SkillItem{
+		{Name: "bisect", Description: "Bisect commits"},
+		{Name: "changelog", Description: "Generate changelog"},
+		{Name: "debug", Description: "Debug issue"},
+		{Name: "deploy", Description: "Deploy app"},
+	}
+
+	tests := []struct {
+		prefix string
+		want   []string
+	}{
+		{"", []string{"bisect", "changelog", "debug", "deploy"}},
+		{"d", []string{"debug", "deploy"}},
+		{"de", []string{"debug", "deploy"}},
+		{"dep", []string{"deploy"}},
+		{"ch", []string{"changelog"}},
+		{"z", nil},
+	}
+	for _, tt := range tests {
+		got := filterSkills(skills, tt.prefix)
+		if len(got) != len(tt.want) {
+			t.Errorf("filterSkills(%q): got %d results, want %d", tt.prefix, len(got), len(tt.want))
+			continue
+		}
+		for i, s := range got {
+			if s.Name != tt.want[i] {
+				t.Errorf("filterSkills(%q)[%d] = %q, want %q", tt.prefix, i, s.Name, tt.want[i])
+			}
+		}
+	}
+}
+
+func testFormWithSkills(skills []SkillItem) NewTaskForm {
+	theme := DefaultTheme()
+	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
+	f.skills = skills
+	f.SetSize(80, 40)
+	return f
+}
+
+func testSkills() []SkillItem {
+	return []SkillItem{
+		{Name: "debug", Description: "Debug issue"},
+		{Name: "deploy", Description: "Deploy app"},
+		{Name: "deps", Description: "Audit dependencies"},
+		{Name: "pr", Description: "Open a PR"},
+	}
+}
+
+func TestNewTaskForm_AutocompleteOpensOnSlash(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	// Type "/" — should open autocomplete with all skills
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+
+	if !f.acOpen {
+		t.Error("acOpen should be true after typing '/'")
+	}
+	if len(f.acMatches) != 4 {
+		t.Errorf("acMatches = %d, want 4", len(f.acMatches))
+	}
+}
+
+func TestNewTaskForm_AutocompleteFiltersOnType(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+
+	if !f.acOpen {
+		t.Error("acOpen should be true after '/d'")
+	}
+	// debug, deploy, deps — 3 matches
+	if len(f.acMatches) != 3 {
+		t.Errorf("acMatches = %d, want 3", len(f.acMatches))
+	}
+}
+
+func TestNewTaskForm_AutocompleteClosesOnSpace(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if f.acOpen {
+		t.Error("acOpen should be false after space")
+	}
+}
+
+func TestNewTaskForm_AutocompleteClosesOnNoMatch(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+
+	if f.acOpen {
+		t.Error("acOpen should be false when no matches")
+	}
+}
+
+func TestNewTaskForm_AutocompleteNavigationDown(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if f.acIdx != 0 {
+		t.Fatalf("initial acIdx = %d, want 0", f.acIdx)
+	}
+
+	f.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if f.acIdx != 1 {
+		t.Errorf("after down: acIdx = %d, want 1", f.acIdx)
+	}
+
+	f.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if f.acIdx != 2 {
+		t.Errorf("after down x2: acIdx = %d, want 2", f.acIdx)
+	}
+}
+
+func TestNewTaskForm_AutocompleteNavigationWrap(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+
+	// Wrap down past last item (4 skills)
+	for i := 0; i < 4; i++ {
+		f.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	if f.acIdx != 0 {
+		t.Errorf("after 4 downs (wrap): acIdx = %d, want 0", f.acIdx)
+	}
+
+	// Wrap up past first item
+	f.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if f.acIdx != 3 {
+		t.Errorf("after up from 0 (wrap): acIdx = %d, want 3", f.acIdx)
+	}
+}
+
+func TestNewTaskForm_AutocompleteSelectOnEnter(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyDown}) // select deploy (index 1)
+
+	f.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	// Should close autocomplete
+	if f.acOpen {
+		t.Error("acOpen should be false after enter")
+	}
+	// Should not submit form (enter with autocomplete just selects)
+	if f.Done() {
+		t.Error("Done() should be false — enter on autocomplete selects, not submits")
+	}
+	// Value should be the selected skill name
+	val := f.promptInput.Value()
+	if !strings.HasPrefix(val, "/deploy") {
+		t.Errorf("prompt value = %q, want '/deploy ...'", val)
+	}
+}
+
+func TestNewTaskForm_AutocompleteEscClosesDropdown(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if !f.acOpen {
+		t.Fatal("acOpen should be true")
+	}
+
+	f.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if f.acOpen {
+		t.Error("acOpen should be false after esc")
+	}
+	// Form should NOT be canceled — esc on autocomplete only closes it
+	if f.Canceled() {
+		t.Error("form should not be canceled when esc closes autocomplete")
+	}
+}
+
+func TestNewTaskForm_AutocompleteEscTwiceCancels(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyEsc}) // close autocomplete
+	f.Update(tea.KeyMsg{Type: tea.KeyEsc}) // cancel form
+
+	if !f.Canceled() {
+		t.Error("form should be canceled after second esc")
+	}
+}
+
+func TestNewTaskForm_AutocompleteViewRendersDropdown(t *testing.T) {
+	f := testFormWithSkills(testSkills())
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+
+	view := f.View()
+	if !strings.Contains(view, "/pr") {
+		t.Errorf("View() missing '/pr' in autocomplete: %q", view)
+	}
+}
+
+func TestNewTaskForm_AutocompleteScrolling(t *testing.T) {
+	// Create more skills than acMaxVisible (6)
+	skills := []SkillItem{
+		{Name: "a1", Description: "A1"},
+		{Name: "a2", Description: "A2"},
+		{Name: "a3", Description: "A3"},
+		{Name: "a4", Description: "A4"},
+		{Name: "a5", Description: "A5"},
+		{Name: "a6", Description: "A6"},
+		{Name: "a7", Description: "A7"},
+	}
+	f := testFormWithSkills(skills)
+
+	f.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	if len(f.acMatches) != 7 {
+		t.Fatalf("acMatches = %d, want 7", len(f.acMatches))
+	}
+
+	// Scroll down past visible window
+	for i := 0; i < acMaxVisible; i++ {
+		f.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	// acIdx = 6, acScroll should have moved
+	if f.acIdx != acMaxVisible {
+		t.Errorf("acIdx = %d, want %d", f.acIdx, acMaxVisible)
+	}
+	if f.acScroll == 0 {
+		t.Error("acScroll should be > 0 after scrolling past visible window")
+	}
+}
+
 func TestNewTaskForm_VisualLineCount(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
