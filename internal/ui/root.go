@@ -857,6 +857,10 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.Attach):
+		if m.tasklist.CursorOnArchiveHeader() {
+			m.tasklist.ToggleArchive()
+			return m, nil
+		}
 		return m.attachAgent()
 
 	case key.Matches(msg, m.keys.Prompt):
@@ -880,6 +884,14 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.renametask = NewRenameTaskForm(m.theme, t.ID, t.Name)
 			m.renametask.SetSize(m.width, m.height)
 			m.current = viewRenameTask
+		}
+		return m, nil
+
+	case msg.String() == "a":
+		if t := m.tasklist.Selected(); t != nil {
+			t.Archived = !t.Archived
+			_ = m.db.Update(t)
+			m.refreshTasks()
 		}
 		return m, nil
 

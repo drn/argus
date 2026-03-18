@@ -633,7 +633,7 @@ func TestTaskList_renderProjectHeader_SingleIcon(t *testing.T) {
 	tl.SetTasks(tasks)
 
 	var b strings.Builder
-	tl.renderProjectHeader(&b, "alpha", false)
+	tl.renderProjectHeader(&b, "alpha", false, false)
 	output := b.String()
 
 	// Mixed pending+complete → dimmed check icon (single icon, not per-task).
@@ -653,5 +653,158 @@ func TestTaskList_View_Empty(t *testing.T) {
 	v := tl.View()
 	if v == "" {
 		t.Error("should render empty state message")
+	}
+}
+
+func TestTaskList_ArchivedSection(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active task", Project: "proj"},
+		{ID: "t2", Name: "Archived task", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Should have archive header row.
+	hasArchiveHeader := false
+	for _, r := range tl.rows {
+		if r.kind == rowArchiveHeader {
+			hasArchiveHeader = true
+		}
+	}
+	if !hasArchiveHeader {
+		t.Error("expected archive header row when archived tasks exist")
+	}
+
+	// Active task should be in rows, archived should not (archive collapsed by default).
+	activeFound, archivedFound := false, false
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			if r.task.ID == "t1" {
+				activeFound = true
+			}
+			if r.task.ID == "t2" {
+				archivedFound = true
+			}
+		}
+	}
+	if !activeFound {
+		t.Error("expected active task in rows")
+	}
+	if archivedFound {
+		t.Error("archived task should not be visible when archive is collapsed")
+	}
+}
+
+func TestTaskList_ArchiveToggle(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+		{ID: "t2", Name: "Archived", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Toggle archive open.
+	tl.ToggleArchive()
+
+	// Archived task should now be visible.
+	archivedFound := false
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == "t2" {
+			archivedFound = true
+		}
+	}
+	if !archivedFound {
+		t.Error("expected archived task visible after expanding archive")
+	}
+
+	// Toggle archive closed.
+	tl.ToggleArchive()
+	archivedFound = false
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == "t2" {
+			archivedFound = true
+		}
+	}
+	if archivedFound {
+		t.Error("archived task should not be visible after collapsing archive")
+	}
+}
+
+func TestTaskList_NoArchiveHeaderWithoutArchivedTasks(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+	}
+	tl.SetTasks(tasks)
+
+	for _, r := range tl.rows {
+		if r.kind == rowArchiveHeader {
+			t.Error("should not have archive header when no archived tasks")
+		}
+	}
+}
+
+func TestTaskList_ArchiveViewRendersHeader(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+		{ID: "t2", Name: "Archived", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	v := tl.View()
+	if !strings.Contains(v, "Archive") {
+		t.Error("expected 'Archive' in view output")
+	}
+}
+
+func TestTaskList_CursorOnArchiveHeader(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "proj"},
+		{ID: "t2", Name: "Archived", Project: "proj", Archived: true},
+	}
+	tl.SetTasks(tasks)
+
+	// Navigate down to archive header.
+	for range 10 {
+		tl.CursorDown()
+	}
+
+	if !tl.CursorOnArchiveHeader() {
+		t.Error("expected cursor to land on archive header")
+	}
+}
+
+func TestTaskList_ArchiveMultipleProjects(t *testing.T) {
+	tl := NewTaskList(DefaultTheme())
+	tl.SetSize(80, 40)
+	tasks := []*model.Task{
+		{ID: "t1", Name: "Active", Project: "alpha"},
+		{ID: "t2", Name: "Archived A", Project: "alpha", Archived: true},
+		{ID: "t3", Name: "Archived B", Project: "beta", Archived: true},
+	}
+	tl.SetTasks(tasks)
+	tl.ToggleArchive()
+
+	// Both archived projects should appear as headers in the archive section.
+	archiveProjectHeaders := 0
+	inArchive := false
+	for _, r := range tl.rows {
+		if r.kind == rowArchiveHeader {
+			inArchive = true
+			continue
+		}
+		if inArchive && r.kind == rowProject {
+			archiveProjectHeaders++
+		}
+	}
+	if archiveProjectHeaders < 2 {
+		t.Errorf("expected at least 2 project headers in archive section, got %d", archiveProjectHeaders)
 	}
 }
