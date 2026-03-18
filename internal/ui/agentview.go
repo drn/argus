@@ -773,17 +773,19 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 	lines := make([]string, 0, ptyRows)
 	for y := 0; y < ptyRows; y++ {
 		cursorX := -1
-		if y == cur.Y {
+		// Only render the cursor block on the input row. When the cursor is
+		// parked on a different (empty) row — as Claude (Ink) does — rendering
+		// the cursor there produces a stray white block below the real input.
+		if y == cur.Y && cur.Y == inputRow {
 			cursorX = cur.X
 		}
 		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX, y == inputRow))
 	}
 
-	// Trim trailing empty lines, but never trim the cursor line — TUI agents
-	// like Claude Code park the cursor at an empty bottom row after rendering,
-	// so stripANSI strips the colored-background cursor cell to "" and the
-	// trimmer would remove it, making the cursor invisible.
-	for len(lines) > 0 && len(lines)-1 != cur.Y && stripANSI(lines[len(lines)-1]) == "" {
+	// Trim trailing empty lines. The inputRow (where the highlight lives) has
+	// visible content so it will never be trimmed. The cursor parking row
+	// (cur.Y for Claude) is now empty and trimmed away — no stray blank row.
+	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
@@ -798,12 +800,8 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 
 	// Trim leading empty lines (e.g. Codex positions its TUI content in the
 	// lower portion of the terminal, leaving the top rows blank).
-	// Track how many lines were removed from the front so we can protect the
-	// cursor line from being trimmed here too.
-	frontRemoved := 0
-	for len(lines) > 0 && frontRemoved != cur.Y && stripANSI(lines[0]) == "" {
+	for len(lines) > 0 && stripANSI(lines[0]) == "" {
 		lines = lines[1:]
-		frontRemoved++
 	}
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")

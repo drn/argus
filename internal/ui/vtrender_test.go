@@ -58,25 +58,25 @@ func TestReplayVT10X_TrimsTrailingEmptyLines(t *testing.T) {
 func TestReplayVT10X_EmptyTerminal(t *testing.T) {
 	raw := []byte{}
 
-	// With cursor visible, the cursor line (row 0) must be preserved even
-	// though it has no content — that's the whole point of the fix.
+	// Empty terminal has no content anywhere. findInputRow falls back to
+	// curY=0, but after trimming (the rendered row is all spaces) we get 0
+	// lines — an empty panel is the right result.
 	lines := replayVT10X(raw, 40, 10, true)
-	if len(lines) != 1 {
-		t.Errorf("expected 1 line (cursor line) for empty input with cursor, got %d", len(lines))
+	if len(lines) != 0 {
+		t.Errorf("expected 0 lines for empty terminal, got %d", len(lines))
 	}
 
-	// Without cursor, there's nothing to preserve so output should be empty.
 	lines = replayVT10X(raw, 40, 10, false)
 	if len(lines) != 0 {
-		t.Errorf("expected empty lines for empty input without cursor, got %d", len(lines))
+		t.Errorf("expected 0 lines for empty terminal without cursor, got %d", len(lines))
 	}
 }
 
-func TestReplayVT10X_PreservesCursorOnEmptyBottomRow(t *testing.T) {
-	// Simulate Claude Code: content at top, cursor parked at an empty bottom
-	// row after rendering (Ink hides hardware cursor with \x1b[?25l and parks
-	// it below the TUI). The cursor line must NOT be trimmed even though
-	// stripANSI collapses its colored background to "".
+func TestReplayVT10X_CursorParkedBelowContent(t *testing.T) {
+	// Simulate Claude Code: content at row 0, cursor parked at an empty row
+	// below (Ink hides hardware cursor with \x1b[?25l and parks it below the
+	// TUI). findInputRow should find the content row; the empty parking rows
+	// should be trimmed away; no stray cursor block on the empty row.
 	raw := []byte(
 		"\x1b[1;1H" + "Hello" + // content at row 1
 			"\x1b[?25l" + // hide hardware cursor (Claude Code behavior)
@@ -85,15 +85,19 @@ func TestReplayVT10X_PreservesCursorOnEmptyBottomRow(t *testing.T) {
 
 	lines := replayVT10X(raw, 40, 10, true)
 
-	// Must have at least 5 lines (rows 1–5), with the cursor at the 5th.
-	if len(lines) < 5 {
-		t.Fatalf("cursor line was trimmed: expected ≥5 lines, got %d", len(lines))
+	// Empty rows below content are trimmed; only the content row remains.
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line (content row, empty rows trimmed), got %d", len(lines))
 	}
 
-	// The cursor line (index 4, row 5) should contain the cursor escape.
-	cursorLine := lines[len(lines)-1]
-	if !strings.Contains(cursorLine, "\x1b[0;38;5;17;48;5;153m") {
-		t.Errorf("cursor styling not found in last line: %q", cursorLine)
+	// The content row gets the inputRow highlight, not the cursor block.
+	contentLine := lines[0]
+	if !strings.Contains(contentLine, "Hello") {
+		t.Errorf("expected content line to contain 'Hello', got %q", contentLine)
+	}
+	// No cursor block — cursor is parked on a different (empty) row.
+	if strings.Contains(contentLine, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("cursor styling should not appear on content line when cursor is parked elsewhere: %q", contentLine)
 	}
 }
 

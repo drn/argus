@@ -46,27 +46,27 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	var lines []string
 	for y := 0; y < vtRows; y++ {
 		cursorX := -1
-		if showCursor && y == cur.Y {
+		// Only render the cursor block on the input row. When the cursor is
+		// parked on a different (empty) row — as Claude (Ink) does — rendering
+		// the cursor there produces a stray white block below the real input.
+		if showCursor && y == cur.Y && cur.Y == inputRow {
 			cursorX = cur.X
 		}
 		line := renderLine(vt, y, vtCols, cursorX, y == inputRow)
 		lines = append(lines, line)
 	}
 
-	// Trim trailing empty lines, but preserve the cursor line — the cursor
-	// cell is a space with colored background that stripANSI collapses to "",
-	// so the trimmer would silently remove it and hide the cursor.
-	for len(lines) > 0 && !(showCursor && len(lines)-1 == cur.Y) && stripANSI(lines[len(lines)-1]) == "" {
+	// Trim trailing empty lines. The inputRow has visible content so it is
+	// never trimmed. The cursor parking row (cur.Y when cur.Y != inputRow) is
+	// now empty and trimmed away — no stray blank row below the input.
+	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
 	// Trim leading empty lines (e.g. Codex positions its TUI content in the
 	// lower portion of the terminal, leaving the top rows blank).
-	// Protect the cursor line here too.
-	frontRemoved := 0
-	for len(lines) > 0 && !(showCursor && frontRemoved == cur.Y) && stripANSI(lines[0]) == "" {
+	for len(lines) > 0 && stripANSI(lines[0]) == "" {
 		lines = lines[1:]
-		frontRemoved++
 	}
 
 	return lines
@@ -225,7 +225,10 @@ func buildSGRWithActiveLine(fg, bg vt10x.Color, mode int16, activeLine bool) str
 	if fg != vt10x.DefaultFG {
 		params = append(params, sgrColor(fg, 30))
 	}
-	if activeLine && bg == vt10x.DefaultBG {
+	// Only tint blank cells (no FG, no BG, no mode set). Cells with any
+	// explicit styling — including Claude Code's Ink cursor indicator — keep
+	// their original colors so they remain legible on the highlighted row.
+	if activeLine && fg == vt10x.DefaultFG && bg == vt10x.DefaultBG && mode == 0 {
 		bg = activeInputBG
 	}
 	if bg != vt10x.DefaultBG {
