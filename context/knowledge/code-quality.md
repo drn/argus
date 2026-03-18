@@ -445,3 +445,13 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 **Key gotcha — cursor position shift on row rebuild:** When collapsing a directory, child rows are removed and all subsequent row indices shift up. `autoExpand()` saves `cursorPath` before rebuild, then finds the same path in the new rows and calls `SetCursor(i)`. Without this, the cursor drifts to the wrong row after any collapse.
 
 **`parentDir()` helper:** Walks backward from a child row index to find the parent directory row (indent 0, IsDir true). Used when cursor is on a child to determine which directory should stay expanded.
+
+## Reviews Tab: PR List Sort Order Bug — 2026-03-17
+
+**Problem:** `FetchPRList()` appends "my PRs" (`IsReviewRequest: false`) before "review requests" (`IsReviewRequest: true`) in the slice. But `renderPRList()` visually renders "Review Requests" first and "My Open PRs" second. Since `prCursor` navigates the flat slice sequentially, the cursor started in the "My Open PRs" section (at the bottom) and couldn't reach "Review Requests" (at the top) without scrolling through all "My PRs" first.
+
+**Root cause:** Visual render order and data order were decoupled — `renderPRList` separates PRs into two groups and renders review requests first, but the cursor index is against the unsorted flat slice.
+
+**Fix:** `SetPRs()` now calls `sort.SliceStable` to sort review requests to the front of the slice before storing it. This makes the flat cursor index order match the visual top-to-bottom render order. Test: `TestReviewsView_SetPRs_SortOrder`.
+
+**Invariant:** Any view that renders items in a different order than the backing slice must either (a) sort the slice to match, or (b) use an indirection layer (display index → data index). Option (a) is simpler when the sort is stable and the grouping is fixed.
