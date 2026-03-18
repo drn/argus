@@ -32,9 +32,10 @@ func TestRenderLine_WithCursor(t *testing.T) {
 
 	// Cursor at position 2 (on the 'l')
 	line := renderLine(vt, 0, 20, 2)
-	// Cursor uses explicit white-on-black (\x1b[0;97;40m) for guaranteed visibility
-	if !strings.Contains(line, "\x1b[0;97;40m") {
-		t.Errorf("renderLine with cursor should contain \\x1b[0;97;40m, got %q", line)
+	// Cursor uses an explicit accent color pair instead of inheriting the
+	// terminal default, which previously rendered as black in the panel.
+	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("renderLine with cursor should contain explicit cursor styling, got %q", line)
 	}
 }
 
@@ -46,9 +47,9 @@ func TestRenderLine_CursorBeyondText(t *testing.T) {
 
 	// Cursor at position 5, beyond "hi" (at position 2 would be after text)
 	line := renderLine(vt, 0, 20, 5)
-	// Should still render cursor with explicit white-on-black (extends lastCol)
-	if !strings.Contains(line, "\x1b[0;97;40m") {
-		t.Errorf("renderLine with cursor beyond text should contain \\x1b[0;97;40m, got %q", line)
+	// Should still render the explicit cursor style even when it extends past text.
+	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("renderLine with cursor beyond text should contain explicit cursor styling, got %q", line)
 	}
 }
 
@@ -66,9 +67,9 @@ func TestRenderLine_CursorOnReverseCell(t *testing.T) {
 	if lineWithCursor == lineNoCursor {
 		t.Error("cursor on reverse-video cell should produce different output than no cursor")
 	}
-	// Cursor must use explicit white-on-black regardless of cell attributes
-	if !strings.Contains(lineWithCursor, "\x1b[0;97;40m") {
-		t.Errorf("cursor on reverse cell should use \\x1b[0;97;40m, got %q", lineWithCursor)
+	// Cursor must use explicit styling regardless of cell attributes.
+	if !strings.Contains(lineWithCursor, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("cursor on reverse cell should use explicit cursor styling, got %q", lineWithCursor)
 	}
 }
 
@@ -80,9 +81,19 @@ func TestRenderLine_CursorOnExplicitColorCell(t *testing.T) {
 	defer vt.Unlock()
 
 	line := renderLine(vt, 0, 20, 0)
-	// Cursor must use explicit white-on-black — NOT include cell's explicit color 37
-	if !strings.Contains(line, "\x1b[0;97;40m") {
-		t.Errorf("cursor on explicit-color cell should use \\x1b[0;97;40m, got %q", line)
+	// Cursor must use explicit styling — not inherit the cell's explicit color.
+	if !strings.Contains(line, "\x1b[0;38;5;17;48;5;153m") {
+		t.Errorf("cursor on explicit-color cell should use explicit cursor styling, got %q", line)
+	}
+}
+
+func TestBuildSGRWithActiveLine_PreservesExplicitBackground(t *testing.T) {
+	result := buildSGRWithActiveLine(vt10x.DefaultFG, vt10x.Color(52), 0, true)
+	if !strings.Contains(result, "48;5;52") {
+		t.Fatalf("explicit cell background should win over active-row tint, got %q", result)
+	}
+	if strings.Contains(result, "48;5;17") {
+		t.Fatalf("active-row tint should not override explicit cell background, got %q", result)
 	}
 }
 
