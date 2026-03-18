@@ -2024,7 +2024,7 @@ func TestHandleTaskListKey_OpenPR_NoURL(t *testing.T) {
 	}
 }
 
-func TestAgentView_CmdO_OpensPR(t *testing.T) {
+func TestAgentView_CtrlP_OpensPR(t *testing.T) {
 	task := &model.Task{
 		ID: "t1", Name: "pr task", Status: model.StatusPending, Project: "proj",
 		PRURL: "https://github.com/owner/repo/pull/42",
@@ -2036,16 +2036,15 @@ func TestAgentView_CmdO_OpensPR(t *testing.T) {
 	m.agentview.Enter("t1", "pr task")
 	m.agentview.SetPRURL(task.PRURL)
 
-	// Alt+O (Cmd+O on macOS terminals) should return a non-nil cmd to open PR.
-	// We test that cmd is non-nil (not that it executes), to avoid opening a real browser in tests.
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}, Alt: true}
+	// ctrl+p should open the PR regardless of session state.
+	msg := tea.KeyMsg{Type: tea.KeyCtrlP}
 	_, cmd := m.Update(msg)
 	if cmd == nil {
 		t.Error("expected non-nil cmd when task has PRURL")
 	}
 }
 
-func TestAgentView_CmdO_NoPR(t *testing.T) {
+func TestAgentView_CtrlP_NoPR(t *testing.T) {
 	task := &model.Task{ID: "t1", Name: "no pr task", Status: model.StatusPending, Project: "proj"}
 	m := testModel(t, task)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -2053,8 +2052,8 @@ func TestAgentView_CmdO_NoPR(t *testing.T) {
 	m.current = viewAgent
 	m.agentview.Enter("t1", "no pr task")
 
-	// Alt+O with no PRURL should return nil cmd.
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}, Alt: true}
+	// ctrl+p with no PRURL should return nil cmd.
+	msg := tea.KeyMsg{Type: tea.KeyCtrlP}
 	_, cmd := m.Update(msg)
 	if cmd != nil {
 		t.Error("expected nil cmd when task has no PRURL")
