@@ -765,13 +765,18 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 
 	cur := av.vtTerm.Cursor()
 
+	// Find the actual input row. Claude (Ink-based) parks the cursor at an
+	// empty trailing row; findInputRow scans upward to the last row with
+	// visible content so the highlight lands on the real input row.
+	inputRow := findInputRow(av.vtTerm, cur.Y, ptyCols)
+
 	lines := make([]string, 0, ptyRows)
 	for y := 0; y < ptyRows; y++ {
 		cursorX := -1
 		if y == cur.Y {
 			cursorX = cur.X
 		}
-		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX))
+		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX, y == inputRow))
 	}
 
 	// Trim trailing empty lines, but never trim the cursor line — TUI agents

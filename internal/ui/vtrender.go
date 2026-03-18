@@ -34,13 +34,22 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	// to show the cursor position in the agent view.
 	showCursor := cursorVisible
 
+	// Find the row to highlight as the active input line. Claude (Ink-based)
+	// parks the cursor at an empty trailing row; findInputRow scans upward to
+	// the last row with visible content so the highlight lands on the real
+	// input row rather than the empty parking spot.
+	inputRow := -1
+	if showCursor {
+		inputRow = findInputRow(vt, cur.Y, vtCols)
+	}
+
 	var lines []string
 	for y := 0; y < vtRows; y++ {
 		cursorX := -1
 		if showCursor && y == cur.Y {
 			cursorX = cur.X
 		}
-		line := renderLine(vt, y, vtCols, cursorX)
+		line := renderLine(vt, y, vtCols, cursorX, y == inputRow)
 		lines = append(lines, line)
 	}
 
@@ -88,14 +97,51 @@ const (
 	cursorBG      vt10x.Color = 153
 )
 
+// promptMarker is the Unicode character Claude Code (Ink-based) renders at
+// the start of its input prompt row. Scanning for it lets findInputRow land
+// exactly on the input row rather than a tip/hint row below it.
+const promptMarker = '❯'
+
+// findInputRow returns the row to highlight as the active input line.
+// For agents like Claude Code (Ink-based), the cursor is parked at an empty
+// trailing row while the actual input content is above it. We scan upward
+// from curY looking first for a row that starts with the prompt marker (❯),
+// which precisely identifies the Claude input row. If no prompt marker is
+// found, we fall back to the last non-empty row so Codex (cursor on input)
+// and other agents still work correctly.
+func findInputRow(vt vt10x.Terminal, curY, cols int) int {
+	lastNonEmpty := -1
+	for y := curY; y >= 0; y-- {
+		for x := 0; x < cols; x++ {
+			cell := vt.Cell(x, y)
+			ch := cell.Char
+			if ch == promptMarker {
+				return y
+			}
+			if (ch != 0 && ch != ' ') || cell.BG != vt10x.DefaultBG || cell.FG != vt10x.DefaultFG {
+				if lastNonEmpty == -1 {
+					lastNonEmpty = y
+				}
+			}
+		}
+	}
+	if lastNonEmpty != -1 {
+		return lastNonEmpty
+	}
+	return curY // fallback: entire screen is empty
+}
+
 // renderLine builds a single line from the vt10x screen with ANSI colors.
 // cursorX is the column to render a cursor at (-1 for no cursor on this line).
-func renderLine(vt vt10x.Terminal, y, cols int, cursorX int) string {
+// isInputRow controls the blue background highlight for the active input line;
+// it is determined by the caller (usually via findInputRow) and is independent
+// of cursorX so that the cursor parking row and the input row can differ.
+func renderLine(vt vt10x.Terminal, y, cols int, cursorX int, isInputRow bool) string {
 	var b strings.Builder
 	var curFG, curBG vt10x.Color
 	var curMode int16
 	active := false
-	activeLine := cursorX >= 0
+	activeLine := isInputRow
 
 	lastCol := -1
 	for x := cols - 1; x >= 0; x-- {
