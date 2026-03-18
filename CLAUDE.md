@@ -196,6 +196,8 @@ go test ./internal/db/      # run tests for a single package
 
 - **Archive section uses `Task.Archived` bool persisted as INTEGER in SQLite.** Press `'a'` on any task in the task list to toggle it in/out of the archive. Archived tasks are removed from the main project groups and displayed in a collapsible "Archive" section at the bottom of the task list. The archive section has its own project sub-groups with independent expansion (`archiveProject` field on `TaskList`, separate from `expanded`). The archive header is a navigable row (`rowArchiveHeader`) — cursor can land on it, and Enter toggles the section open/closed. `buildRows()` separates tasks by `t.Archived` before grouping by project. `isInArchiveSection(idx)` walks backward from a row index to find if it's after the archive header — used by `autoExpand()` and `renderProjectHeader()` to use the correct expansion state. The `archived` DB column uses the standard `ALTER TABLE ... ADD COLUMN ... DEFAULT 0` migration pattern.
 
+- **Daemon process appears as "argusd" in Activity Monitor via symlink.** `AutoStart` in `internal/daemon/client/client.go` creates a symlink `~/.argus/argusd -> <real binary>` and launches the daemon via that symlink. macOS Activity Monitor shows the basename of the executable path as the process name. The symlink is updated whenever `os.Executable()` differs from the current target (handles binary rebuilds). Falls back to the real binary path if symlink creation fails. The symlink persists on disk (never cleaned up) but is harmless when stale — `AutoStart` recreates it on next launch.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4

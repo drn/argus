@@ -274,6 +274,7 @@
 - `autoStartDaemon` moved from `cmd/argus/main.go` to `dclient.AutoStart()` for reuse by TUI restart
 - `daemonSysProcAttr` platform files moved from `cmd/argus/` to `internal/daemon/client/`
 - `WaitForShutdown(sockPath, timeout)` polls until socket file disappears
+- **Daemon process naming (2026-03-17):** `AutoStart` creates a symlink `~/.argus/argusd -> exe` and launches via the symlink so macOS Activity Monitor shows "argusd" instead of the generic binary name. Symlink is updated when `os.Executable()` differs from the current target. Falls back to direct exe path on symlink failure. Imports `internal/db` for `DataDir()`.
 
 ### Stream Failure ≠ Process Exit Bug (2026-03-16)
 - Tasks were being auto-completed when the TUI's stream connection to the daemon dropped, even though the agent processes were still running on the daemon side.
