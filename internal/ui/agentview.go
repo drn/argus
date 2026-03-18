@@ -774,8 +774,11 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 		lines = append(lines, renderLine(av.vtTerm, y, ptyCols, cursorX))
 	}
 
-	// Trim trailing empty lines
-	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
+	// Trim trailing empty lines, but never trim the cursor line — TUI agents
+	// like Claude Code park the cursor at an empty bottom row after rendering,
+	// so stripANSI strips the colored-background cursor cell to "" and the
+	// trimmer would remove it, making the cursor invisible.
+	for len(lines) > 0 && len(lines)-1 != cur.Y && stripANSI(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
@@ -790,8 +793,12 @@ func (av *AgentView) renderIncremental(sess agent.SessionHandle, raw []byte, tot
 
 	// Trim leading empty lines (e.g. Codex positions its TUI content in the
 	// lower portion of the terminal, leaving the top rows blank).
-	for len(lines) > 0 && stripANSI(lines[0]) == "" {
+	// Track how many lines were removed from the front so we can protect the
+	// cursor line from being trimmed here too.
+	frontRemoved := 0
+	for len(lines) > 0 && frontRemoved != cur.Y && stripANSI(lines[0]) == "" {
 		lines = lines[1:]
+		frontRemoved++
 	}
 	for i, line := range lines {
 		lines[i] = ansi.Truncate(line, dispW, "\x1b[0m")

@@ -44,15 +44,20 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 		lines = append(lines, line)
 	}
 
-	// Trim trailing empty lines
-	for len(lines) > 0 && stripANSI(lines[len(lines)-1]) == "" {
+	// Trim trailing empty lines, but preserve the cursor line — the cursor
+	// cell is a space with colored background that stripANSI collapses to "",
+	// so the trimmer would silently remove it and hide the cursor.
+	for len(lines) > 0 && !(showCursor && len(lines)-1 == cur.Y) && stripANSI(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}
 
 	// Trim leading empty lines (e.g. Codex positions its TUI content in the
 	// lower portion of the terminal, leaving the top rows blank).
-	for len(lines) > 0 && stripANSI(lines[0]) == "" {
+	// Protect the cursor line here too.
+	frontRemoved := 0
+	for len(lines) > 0 && !(showCursor && frontRemoved == cur.Y) && stripANSI(lines[0]) == "" {
 		lines = lines[1:]
+		frontRemoved++
 	}
 
 	return lines
