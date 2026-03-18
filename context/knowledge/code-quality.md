@@ -382,3 +382,15 @@ Three bugs discovered in daemon lifecycle management:
 - `isWorktreeSubdir` guard prevents renaming directories outside `~/.argus/worktrees/`.
 
 **Key binding**: `'r'` in `handleTaskListKey` via `msg.String() == "r"`. Also added to `KeyMap.Rename` for help display. Does not conflict with `RestartDaemon` ('r' in settings tab) since they're in different tab handlers.
+
+## Task Archive Feature: 2026-03-17
+
+**Data model**: `Task.Archived bool` persisted as `archived INTEGER NOT NULL DEFAULT 0` in SQLite. Standard ALTER TABLE migration pattern.
+
+**Flow**: Press `'a'` on task list → toggles `t.Archived` → `db.Update(t)` → `refreshTasks()`. Archive section appears at the bottom of the task list when any archived tasks exist.
+
+**UI structure**: `buildRows()` separates `filtered` tasks into `activeTasks` / `archivedTasks` by `t.Archived`. Active tasks build the main project groups. Archived tasks build a separate "Archive" section: `rowArchiveHeader` row followed by project sub-groups (only when `archiveExpanded == true`). The archive has its own project expansion state (`archiveProject` field, independent of `expanded`).
+
+**Navigation**: `rowArchiveHeader` is a navigable row — cursor can land on it (unlike project headers which are skipped). Enter on the archive header toggles `archiveExpanded`. `isInArchiveSection(idx)` walks backward to detect if a row is after the archive header — used by `autoExpand()` to dispatch to `archiveProject` vs `expanded`, and by `renderProjectHeader()` to pick the correct chevron state.
+
+**Key entities**: `rowArchiveHeader`, `archiveExpanded`, `archiveProject`, `ToggleArchive()`, `CursorOnArchiveHeader()`, `isInArchiveSection()`, `groupByProject()` (extracted helper), `projectTasksFiltered()`.

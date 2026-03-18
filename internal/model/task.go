@@ -19,6 +19,7 @@ type Task struct {
 	AgentPID  int       `json:"agent_pid,omitempty"`
 	SessionID string    `json:"session_id,omitempty"`
 	PRURL     string    `json:"pr_url,omitempty"`
+	Archived  bool      `json:"archived,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	StartedAt time.Time `json:"started_at,omitempty"`
 	EndedAt   time.Time `json:"ended_at,omitempty"`
