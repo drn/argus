@@ -2061,6 +2061,44 @@ func TestAgentView_CmdO_NoPR(t *testing.T) {
 	}
 }
 
+func TestAgentView_PlainO_OpensPR_InactiveSession(t *testing.T) {
+	task := &model.Task{
+		ID: "t1", Name: "pr task", Status: model.StatusPending, Project: "proj",
+		PRURL: "https://github.com/owner/repo/pull/42",
+	}
+	m := testModel(t, task)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	m.current = viewAgent
+	m.agentview.Enter("t1", "pr task")
+	m.agentview.SetPRURL(task.PRURL)
+	// runner has no session for this task (session is inactive)
+
+	// Plain 'o' should open the PR when session is not running.
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}, Alt: false}
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Error("expected non-nil cmd when session is inactive and task has PRURL")
+	}
+}
+
+func TestAgentView_PlainO_NoPR_InactiveSession(t *testing.T) {
+	task := &model.Task{ID: "t1", Name: "no pr task", Status: model.StatusPending, Project: "proj"}
+	m := testModel(t, task)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	m.current = viewAgent
+	m.agentview.Enter("t1", "no pr task")
+	// no PRURL set, no session running
+
+	// Plain 'o' with no PRURL should not return a cmd.
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}, Alt: false}
+	_, cmd := m.Update(msg)
+	if cmd != nil {
+		t.Error("expected nil cmd when task has no PRURL")
+	}
+}
+
 func TestRenameKey_OpensForm(t *testing.T) {
 	task := &model.Task{ID: "t1", Name: "old-name", Status: model.StatusPending, Project: "proj"}
 	m := testModel(t, task)

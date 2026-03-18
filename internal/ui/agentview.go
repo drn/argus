@@ -862,7 +862,11 @@ func (av AgentView) renderStatusBar() string {
 			{"^q", "detach"},
 		}
 		if av.taskPRURL != "" {
-			keys = append(keys, struct{ key, label string }{"⌘O", "open PR"})
+			prKey := "⌥O"
+			if av.runner.Get(av.taskID) == nil {
+				prKey = "o"
+			}
+			keys = append(keys, struct{ key, label string }{prKey, "open PR"})
 		}
 	}
 	var parts []string
