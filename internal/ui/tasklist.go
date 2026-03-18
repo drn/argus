@@ -16,6 +16,7 @@ const (
 	rowProject rowKind = iota
 	rowTask
 	rowArchiveHeader
+	rowTasksHeader
 )
 
 // row represents a single navigable row in the task list — either a project
@@ -45,6 +46,8 @@ type TaskList struct {
 	archiveExpanded bool    // whether the Archive section is open (auto-managed by cursor position)
 	archiveProject  string  // expanded project within archive section
 	tickEven        bool    // toggles each tick for status icon animation
+	activeCount     int     // count of non-archived filtered tasks, set by buildRows
+	archiveCount    int     // count of archived filtered tasks, set by buildRows
 }
 
 func NewTaskList(theme Theme) TaskList {
@@ -122,6 +125,29 @@ func (tl *TaskList) moveCursor(dir int) {
 		return
 	}
 
+	// On the tasks header — defensive guard (cursor normally never lands here due
+	// to skipToFirstTask). Symmetric with the archive header handler below.
+	if tl.rows[c].kind == rowTasksHeader {
+		if dir > 0 {
+			if c+1 < len(tl.rows) {
+				tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+				tl.autoExpand()
+				c = tl.scroll.Cursor()
+				if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+					if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+						tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
+					}
+				}
+			}
+		} else {
+			// rowTasksHeader is always at index 0 — nothing above it. Use
+			// SetCursor(prev) directly rather than skipUpPastHeader, which
+			// would chain upward and find nothing, reverting to prev anyway.
+			tl.scroll.SetCursor(prev)
+		}
+		return
+	}
+
 	// On the archive header — skip it like a project header.
 	if tl.rows[c].kind == rowArchiveHeader {
 		if dir > 0 {
@@ -162,6 +188,8 @@ func (tl *TaskList) moveCursor(dir int) {
 // landing on the last task of the previous expanded project. If it lands on
 // another header (e.g., archive header above a project header), it chains
 // through one additional header. Falls back to prev if no task is reachable.
+// rowTasksHeader is never encountered here — it is handled upstream in moveCursor
+// before skipUpPastHeader is called.
 func (tl *TaskList) skipUpPastHeader(prev int) {
 	tl.scroll.CursorUp()
 	tl.autoExpand()
@@ -211,7 +239,7 @@ func (tl *TaskList) landOnLastTask(idx, prev int) {
 // a project header. Used after building/resetting the row list.
 func (tl *TaskList) skipToFirstTask() {
 	c := tl.scroll.Cursor()
-	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+	if c >= 0 && c < len(tl.rows) && (tl.rows[c].kind == rowProject || tl.rows[c].kind == rowTasksHeader) {
 		for i := c; i < len(tl.rows); i++ {
 			if tl.rows[i].kind == rowTask {
 				tl.scroll.SetCursor(i)
@@ -347,7 +375,13 @@ func (tl *TaskList) buildRows() {
 		tl.expanded = groups[0].name
 	}
 
+	tl.activeCount = len(activeTasks)
+	tl.archiveCount = len(archivedTasks)
+
 	tl.rows = nil
+	if len(activeTasks) > 0 {
+		tl.rows = append(tl.rows, row{kind: rowTasksHeader})
+	}
 	for _, g := range groups {
 		tl.rows = append(tl.rows, row{kind: rowProject, project: g.name})
 		if g.name == tl.expanded {
@@ -475,8 +509,8 @@ func (tl *TaskList) autoExpand() {
 		// Cursor is above archive section — rows above haven't changed.
 	}
 
-	// Archive header row — don't change project expansion.
-	if r.kind == rowArchiveHeader {
+	// Tasks/archive header rows — don't change project expansion.
+	if r.kind == rowTasksHeader || r.kind == rowArchiveHeader {
 		return
 	}
 
@@ -556,6 +590,8 @@ func (tl TaskList) View() string {
 		selected := i == cursor
 
 		switch r.kind {
+		case rowTasksHeader:
+			tl.renderTasksHeader(&b)
 		case rowProject:
 			tl.renderProjectHeader(&b, r.project, selected, tl.isInArchiveSection(i))
 		case rowArchiveHeader:
@@ -703,17 +739,12 @@ func (tl TaskList) renderProjectHeader(b *strings.Builder, project string, selec
 	}
 }
 
-func (tl TaskList) renderArchiveHeader(b *strings.Builder) {
-	// Count archived tasks.
-	count := 0
-	for _, t := range tl.filtered {
-		if t.Archived {
-			count++
-		}
-	}
+func (tl TaskList) renderTasksHeader(b *strings.Builder) {
+	fmt.Fprintf(b, "  %s\n", tl.theme.Dimmed.Render(fmt.Sprintf("Tasks (%d)", tl.activeCount)))
+}
 
-	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	fmt.Fprintf(b, "  %s%s\n", tl.theme.Dimmed.Render("Archive"), countStr)
+func (tl TaskList) renderArchiveHeader(b *strings.Builder) {
+	fmt.Fprintf(b, "  %s\n", tl.theme.Dimmed.Render(fmt.Sprintf("Archive (%d)", tl.archiveCount)))
 }
 
 
