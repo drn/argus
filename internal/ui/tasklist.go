@@ -137,25 +137,7 @@ func (tl *TaskList) moveCursor(dir int) {
 				}
 			}
 		} else {
-			tl.scroll.CursorUp()
-			tl.autoExpand()
-			c = tl.scroll.Cursor()
-			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
-				// Find the last task row in this expanded project.
-				lastTask := -1
-				for i := c + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
-					lastTask = i
-				}
-				if lastTask >= 0 {
-					tl.scroll.SetCursor(lastTask)
-					visible := tl.visibleRows()
-					if lastTask >= tl.scroll.Offset()+visible {
-						tl.scroll.SetOffset(lastTask - visible + 1)
-					}
-				}
-			} else if c < 0 || (c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader) {
-				tl.scroll.SetCursor(prev)
-			}
+			tl.skipUpPastHeader(prev)
 		}
 		return
 	}
@@ -167,29 +149,61 @@ func (tl *TaskList) moveCursor(dir int) {
 			tl.scroll.CursorDown(len(tl.rows), tl.visibleRows())
 		}
 	} else {
-		// Going up: expand the project above and land on its last task.
 		if c > 0 {
-			tl.scroll.CursorUp()
-			tl.autoExpand()
-			c = tl.scroll.Cursor()
-			if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
-				// Find the last task row in this expanded project.
-				lastTask := -1
-				for i := c + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
-					lastTask = i
-				}
-				if lastTask >= 0 {
-					tl.scroll.SetCursor(lastTask)
-					visible := tl.visibleRows()
-					if lastTask >= tl.scroll.Offset()+visible {
-						tl.scroll.SetOffset(lastTask - visible + 1)
-					}
-				}
-			}
+			tl.skipUpPastHeader(prev)
 		} else {
 			// At the top (row 0) and it's a header — stay on the previous task.
 			tl.scroll.SetCursor(prev)
 		}
+	}
+}
+
+// skipUpPastHeader moves the cursor up past a header row (project or archive),
+// landing on the last task of the previous expanded project. If it lands on
+// another header (e.g., archive header above a project header), it chains
+// through one additional header. Falls back to prev if no task is reachable.
+func (tl *TaskList) skipUpPastHeader(prev int) {
+	tl.scroll.CursorUp()
+	tl.autoExpand()
+	c := tl.scroll.Cursor()
+
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+		tl.landOnLastTask(c, prev)
+		return
+	}
+
+	// Landed on archive header after skipping a project header — skip it too.
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
+		tl.scroll.CursorUp()
+		tl.autoExpand()
+		c = tl.scroll.Cursor()
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+			tl.landOnLastTask(c, prev)
+			return
+		}
+	}
+
+	// Couldn't find a task — revert.
+	if c < 0 || tl.rows[c].kind != rowTask {
+		tl.scroll.SetCursor(prev)
+	}
+}
+
+// landOnLastTask sets the cursor to the last consecutive task row after
+// the project header at idx. Falls back to prev if no tasks follow.
+func (tl *TaskList) landOnLastTask(idx, prev int) {
+	lastTask := -1
+	for i := idx + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
+		lastTask = i
+	}
+	if lastTask >= 0 {
+		tl.scroll.SetCursor(lastTask)
+		visible := tl.visibleRows()
+		if lastTask >= tl.scroll.Offset()+visible {
+			tl.scroll.SetOffset(lastTask - visible + 1)
+		}
+	} else {
+		tl.scroll.SetCursor(prev)
 	}
 }
 
@@ -694,7 +708,7 @@ func (tl TaskList) renderArchiveHeader(b *strings.Builder) {
 	}
 
 	countStr := tl.theme.Dimmed.Render(fmt.Sprintf(" (%d)", count))
-	fmt.Fprintf(b, "%s%s\n", tl.theme.Dimmed.Render("Archive"), countStr)
+	fmt.Fprintf(b, "  %s%s\n", tl.theme.Dimmed.Render("Archive"), countStr)
 }
 
 
