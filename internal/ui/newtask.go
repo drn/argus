@@ -21,9 +21,8 @@ type NewTaskForm struct {
 	promptInput  textarea.Model
 	projectNames []string
 	projectIdx   int
-	backendNames []string // sorted backend names; index 0 is "(inherit)"
+	backendNames []string // sorted backend names
 	backendIdx   int
-	defaultBackendName string
 	focused      int // 0 = project, 1 = backend, 2 = prompt
 	theme        Theme
 	projects     map[string]config.Project
@@ -49,8 +48,6 @@ const (
 
 // maxPromptLines is the maximum number of visible lines for the prompt textarea.
 const maxPromptLines = 10
-
-const inheritBackendOption = "(inherit)"
 
 func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProject string, backends map[string]config.Backend, defaultBackend string) NewTaskForm {
 	promptInput := textarea.New()
@@ -88,23 +85,27 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 		}
 	}
 
-	// Build sorted backend name list with an explicit inherit option so a task
-	// can defer to its project's configured backend instead of forcing the
-	// global default onto every new task.
-	backendNames := make([]string, 0, len(backends)+1)
+	// Build sorted backend name list, pre-selecting the default backend.
+	backendNames := make([]string, 0, len(backends))
 	for name := range backends {
 		backendNames = append(backendNames, name)
 	}
 	sort.Strings(backendNames)
-	backendNames = append([]string{inheritBackendOption}, backendNames...)
+
+	backendIdx := 0
+	for i, name := range backendNames {
+		if name == defaultBackend {
+			backendIdx = i
+			break
+		}
+	}
 
 	return NewTaskForm{
 		promptInput:  promptInput,
 		projectNames: names,
 		projectIdx:   idx,
 		backendNames: backendNames,
-		backendIdx:   0,
-		defaultBackendName: defaultBackend,
+		backendIdx:   backendIdx,
 		focused:      fieldPrompt,
 		theme:        theme,
 		projects:     projects,
@@ -389,28 +390,12 @@ func (f *NewTaskForm) SelectedProject() string {
 	return f.projectNames[f.projectIdx]
 }
 
-// SelectedBackend returns the selected backend name, or "" when the form is set
-// to inherit from project/global defaults.
+// SelectedBackend returns the selected backend name, or "" if no backends are configured.
 func (f *NewTaskForm) SelectedBackend() string {
-	if len(f.backendNames) == 0 || f.backendIdx == 0 {
+	if len(f.backendNames) == 0 {
 		return ""
 	}
 	return f.backendNames[f.backendIdx]
-}
-
-func (f *NewTaskForm) inheritedBackendName() string {
-	if project := f.SelectedProject(); project != "" {
-		if p, ok := f.projects[project]; ok && p.Backend != "" {
-			return p.Backend
-		}
-	}
-	if f.defaultBackendName != "" {
-		return f.defaultBackendName
-	}
-	if len(f.backendNames) > 1 {
-		return f.backendNames[1]
-	}
-	return ""
 }
 
 func (f *NewTaskForm) Task() *model.Task {
@@ -535,14 +520,7 @@ func (f NewTaskForm) renderBackendSelector() string {
 	counter := f.theme.Dimmed.Render(
 		fmt.Sprintf(" (%d/%d)", f.backendIdx+1, len(f.backendNames)))
 
-	suffix := ""
-	if current == inheritBackendOption {
-		if inherited := f.inheritedBackendName(); inherited != "" {
-			suffix = " " + f.theme.Dimmed.Render("→ "+inherited)
-		}
-	}
-
-	return "  " + left + name + right + counter + suffix
+	return "  " + left + name + right + counter
 }
 
 // renderAutocomplete renders the skill suggestion dropdown below the prompt input.

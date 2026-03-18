@@ -212,15 +212,13 @@ func TestNewTaskForm_BackendSelectorDefaultsToDefault(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
-	if got := f.SelectedBackend(); got != "" {
-		t.Errorf("SelectedBackend() = %q, want empty inherit", got)
+	// Should pre-select the global default backend by name.
+	if got := f.SelectedBackend(); got != "claude" {
+		t.Errorf("SelectedBackend() = %q, want claude", got)
 	}
-	// Backend names should include inherit plus the sorted backends.
-	if len(f.backendNames) != 3 {
-		t.Fatalf("expected 3 backend names, got %d: %v", len(f.backendNames), f.backendNames)
-	}
-	if f.backendNames[0] != inheritBackendOption {
-		t.Errorf("backendNames[0] = %q, want %q", f.backendNames[0], inheritBackendOption)
+	// Backend names should be the sorted backends only (no inherit entry).
+	if len(f.backendNames) != 2 {
+		t.Fatalf("expected 2 backend names, got %d: %v", len(f.backendNames), f.backendNames)
 	}
 }
 
@@ -229,60 +227,15 @@ func TestNewTaskForm_BackendSelectorCycles(t *testing.T) {
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldBackend
 
-	// Right cycles: inherit → claude → codex → inherit (wrap)
-	f.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if got := f.SelectedBackend(); got != "claude" {
-		t.Errorf("after right: SelectedBackend() = %q, want claude", got)
-	}
-
+	// Right cycles: claude → codex → claude (wrap)
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if got := f.SelectedBackend(); got != "codex" {
-		t.Errorf("after right x2: SelectedBackend() = %q, want codex", got)
+		t.Errorf("after right: SelectedBackend() = %q, want codex", got)
 	}
 
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if got := f.SelectedBackend(); got != "" {
-		t.Errorf("after right x3 (wrap): SelectedBackend() = %q, want empty inherit", got)
-	}
-}
-
-func TestNewTaskForm_InheritUsesProjectBackend(t *testing.T) {
-	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "bravo", testBackends(), "claude")
-
-	if got := f.SelectedProject(); got != "bravo" {
-		t.Fatalf("SelectedProject() = %q, want bravo", got)
-	}
-	if got := f.SelectedBackend(); got != "" {
-		t.Fatalf("SelectedBackend() = %q, want inherit", got)
-	}
-
-	f.focused = fieldPrompt
-	f.promptInput.SetValue("fix the bug")
-
-	task := f.Task()
-	if task.Backend != "" {
-		t.Errorf("task.Backend = %q, want empty inherit", task.Backend)
-	}
-}
-
-func TestNewTaskForm_BackendSelectorShowsInheritedBackend(t *testing.T) {
-	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "bravo", testBackends(), "claude")
-
-	view := f.renderBackendSelector()
-	if !strings.Contains(view, "codex") {
-		t.Errorf("renderBackendSelector() = %q, want inherited backend hint", view)
-	}
-}
-
-func TestNewTaskForm_BackendSelectorShowsGlobalDefaultWhenProjectHasNoBackend(t *testing.T) {
-	theme := DefaultTheme()
-	f := NewNewTaskForm(theme, testProjects(), "alpha", testBackends(), "claude")
-
-	view := f.renderBackendSelector()
-	if !strings.Contains(view, "claude") {
-		t.Errorf("renderBackendSelector() = %q, want global default hint", view)
+	if got := f.SelectedBackend(); got != "claude" {
+		t.Errorf("after right x2 (wrap): SelectedBackend() = %q, want claude", got)
 	}
 }
 
@@ -291,8 +244,7 @@ func TestNewTaskForm_TaskIncludesBackend(t *testing.T) {
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 	f.focused = fieldBackend
 
-	// Select codex (inherit -> claude -> codex).
-	f.Update(tea.KeyMsg{Type: tea.KeyRight})
+	// Select codex (claude → codex).
 	f.Update(tea.KeyMsg{Type: tea.KeyRight})
 
 	f.focused = fieldPrompt
@@ -307,7 +259,7 @@ func TestNewTaskForm_TaskIncludesBackend(t *testing.T) {
 	}
 }
 
-func TestNewTaskForm_TaskDefaultBackendInherits(t *testing.T) {
+func TestNewTaskForm_TaskDefaultBackendIsExplicit(t *testing.T) {
 	theme := DefaultTheme()
 	f := NewNewTaskForm(theme, testProjects(), "", testBackends(), "claude")
 
@@ -315,8 +267,8 @@ func TestNewTaskForm_TaskDefaultBackendInherits(t *testing.T) {
 	f.promptInput.SetValue("fix the bug")
 
 	task := f.Task()
-	if task.Backend != "" {
-		t.Errorf("task.Backend = %q, want empty inherit", task.Backend)
+	if task.Backend != "claude" {
+		t.Errorf("task.Backend = %q, want claude", task.Backend)
 	}
 }
 
