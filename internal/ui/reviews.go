@@ -11,9 +11,8 @@ import (
 )
 
 // prListCooldown is the minimum time between PR list refreshes.
-// GitHub Search API is limited to 30 requests/minute; FetchPRList makes 2
-// search calls, so 30 seconds between refreshes is a safe lower bound.
-const prListCooldown = 30 * time.Second
+// 10 minutes balances freshness with GitHub API usage.
+const prListCooldown = 10 * time.Minute
 
 // commentsTTL is how long comments are considered fresh before auto-refresh.
 // Comments change frequently (others reviewing in parallel), so 2 minutes is
@@ -115,22 +114,38 @@ func (rv *ReviewsView) SetSize(w, h int) {
 }
 
 // canFetchPRList reports whether the cooldown has expired since the last fetch.
-// This guards against spamming the GitHub Search API (30 req/min limit).
 func (rv *ReviewsView) canFetchPRList() bool {
 	return rv.lastFetchTime.IsZero() || time.Since(rv.lastFetchTime) >= prListCooldown
 }
 
-// SetPRs replaces the PR list and resets all selection state.
+// SetPRs replaces the PR list. If this is a background refresh (cached data
+// was already displayed), it preserves cursor/selection state. On first load
+// (no cached data), it resets everything.
 // Sorts review requests first to match the visual render order in renderPRList,
 // so cursor navigation (sequential through the flat slice) matches top-to-bottom order.
 func (rv *ReviewsView) SetPRs(prs []github.PR) {
 	sort.SliceStable(prs, func(i, j int) bool {
 		return prs[i].IsReviewRequest && !prs[j].IsReviewRequest
 	})
+	hadData := len(rv.prs) > 0 || rv.selectedPR != nil
 	rv.lastFetchTime = time.Now()
 	rv.prs = prs
 	rv.loading = false
 	rv.loadErr = ""
+
+	if hadData {
+		// Background refresh — keep cursor and selection intact.
+		// Clamp cursor and scroll offset in case the list shrank.
+		if rv.prCursor >= len(prs) {
+			rv.prCursor = max(len(prs)-1, 0)
+		}
+		if rv.prScrollOff > rv.prCursor {
+			rv.prScrollOff = rv.prCursor
+		}
+		return
+	}
+
+	// First load — reset everything.
 	rv.prCursor = 0
 	rv.prScrollOff = 0
 	rv.selectedPR = nil
@@ -580,10 +595,10 @@ func (rv *ReviewsView) View() string {
 	if rv.width == 0 || rv.height == 0 {
 		return ""
 	}
-	if rv.loading {
+	if rv.loading && len(rv.prs) == 0 && rv.selectedPR == nil {
 		return rv.theme.Dimmed.Render("Loading PRs...")
 	}
-	if rv.loadErr != "" {
+	if rv.loadErr != "" && len(rv.prs) == 0 && rv.selectedPR == nil {
 		return rv.theme.Error.Render("Error: " + rv.loadErr)
 	}
 
@@ -592,7 +607,16 @@ func (rv *ReviewsView) View() string {
 		return rv.renderFileList()
 	}
 
-	return rv.renderPRList()
+	list := rv.renderPRList()
+
+	// Append a background status indicator when cached data is visible.
+	if rv.loading {
+		list += "\n" + rv.theme.Dimmed.Render("  refreshing…")
+	} else if rv.loadErr != "" {
+		list += "\n" + rv.theme.Dimmed.Render("  refresh failed: "+rv.loadErr)
+	}
+
+	return list
 }
 
 func (rv *ReviewsView) renderPRList() string {

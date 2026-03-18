@@ -308,3 +308,75 @@ func TestReviewsView_CanFetchPRList(t *testing.T) {
 		t.Error("expected canFetchPRList()=true after cooldown expires")
 	}
 }
+
+func TestReviewsView_SetPRs_BackgroundRefresh(t *testing.T) {
+	rv := NewReviewsView(DefaultTheme())
+	rv.SetSize(80, 24)
+
+	initial := []github.PR{
+		{Number: 1, Title: "PR one", Repo: "org/repo"},
+		{Number: 2, Title: "PR two", Repo: "org/repo"},
+		{Number: 3, Title: "PR three", Repo: "org/repo"},
+	}
+	rv.SetPRs(initial)
+	rv.prCursor = 2
+	rv.prScrollOff = 1
+
+	t.Run("preserves cursor on refresh with same size", func(t *testing.T) {
+		refreshed := []github.PR{
+			{Number: 1, Title: "PR one updated", Repo: "org/repo"},
+			{Number: 2, Title: "PR two updated", Repo: "org/repo"},
+			{Number: 4, Title: "PR four", Repo: "org/repo"},
+		}
+		rv.SetPRs(refreshed)
+		if rv.prCursor != 2 {
+			t.Errorf("prCursor = %d, want 2", rv.prCursor)
+		}
+		if rv.prScrollOff != 1 {
+			t.Errorf("prScrollOff = %d, want 1", rv.prScrollOff)
+		}
+	})
+
+	t.Run("clamps cursor when list shrinks", func(t *testing.T) {
+		rv.prCursor = 2
+		rv.prScrollOff = 2
+		shrunk := []github.PR{
+			{Number: 1, Title: "PR one", Repo: "org/repo"},
+		}
+		rv.SetPRs(shrunk)
+		if rv.prCursor != 0 {
+			t.Errorf("prCursor = %d, want 0", rv.prCursor)
+		}
+		if rv.prScrollOff != 0 {
+			t.Errorf("prScrollOff = %d, want 0", rv.prScrollOff)
+		}
+	})
+
+	t.Run("shows cached data while loading", func(t *testing.T) {
+		rv.SetPRs(initial)
+		rv.loading = true
+		view := rv.View()
+		if view == "" {
+			t.Error("expected non-empty view with cached data during loading")
+		}
+		if strings.Contains(view, "Loading PRs...") {
+			t.Error("should not show 'Loading PRs...' when cached data exists")
+		}
+		if !strings.Contains(view, "refreshing") {
+			t.Error("expected 'refreshing' indicator during background refresh")
+		}
+	})
+
+	t.Run("shows cached data with background error", func(t *testing.T) {
+		rv.SetPRs(initial)
+		rv.loadErr = "API timeout"
+		view := rv.View()
+		if strings.Contains(view, "Error: API timeout") {
+			t.Error("should not show full error when cached data exists")
+		}
+		if !strings.Contains(view, "refresh failed") {
+			t.Error("expected dimmed refresh error indicator")
+		}
+		rv.loadErr = ""
+	})
+}
