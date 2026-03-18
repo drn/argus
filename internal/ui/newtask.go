@@ -9,26 +9,33 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
 
 // NewTaskForm handles the new task creation UI.
 type NewTaskForm struct {
-	promptInput  textarea.Model
-	projectNames []string
-	projectIdx   int
-	backendNames []string // sorted backend names; index 0 is "(default)"
-	backendIdx   int
+	promptInput        textarea.Model
+	projectNames       []string
+	projectIdx         int
+	backendNames       []string // sorted backend names; index 0 is "(default)"
+	backendIdx         int
 	defaultBackendName string // resolved name for the "(default)" entry
-	focused      int // 0 = project, 1 = backend, 2 = prompt
-	theme        Theme
-	projects     map[string]config.Project
-	done         bool
-	canceled     bool
-	errMsg       string
-	width        int
-	height       int
+	focused            int    // 0 = project, 1 = backend, 2 = prompt
+	theme              Theme
+	projects           map[string]config.Project
+	done               bool
+	canceled           bool
+	errMsg             string
+	width              int
+	height             int
+	// autocomplete state
+	skills    []SkillItem
+	acOpen    bool
+	acMatches []SkillItem
+	acIdx     int
+	acScroll  int
 }
 
 const (
@@ -98,6 +105,17 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 	}
 }
 
+// skillsLoadedMsg carries the result of an async skill scan.
+type skillsLoadedMsg []SkillItem
+
+// loadSkillsCmd returns a Cmd that scans ~/.claude/skills/ in a background
+// goroutine, keeping the UI responsive during filesystem discovery.
+func loadSkillsCmd() tea.Cmd {
+	return func() tea.Msg {
+		return skillsLoadedMsg(LoadSkills(nil))
+	}
+}
+
 func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -105,6 +123,10 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		f.errMsg = ""
 		switch msg.String() {
 		case "esc":
+			if f.acOpen {
+				f.acOpen = false
+				return nil
+			}
 			f.canceled = true
 			return nil
 		case "tab":
@@ -151,6 +173,10 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 		case "up":
+			if f.acOpen && f.focused == fieldPrompt {
+				f.acMoveUp()
+				return nil
+			}
 			if f.focused == fieldProject {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
@@ -168,6 +194,10 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			}
 			// Otherwise let textarea handle up arrow for multi-line navigation
 		case "down":
+			if f.acOpen && f.focused == fieldPrompt {
+				f.acMoveDown()
+				return nil
+			}
 			if f.focused == fieldProject {
 				f.focused = fieldBackend
 				return nil
@@ -193,6 +223,14 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 				f.focused = fieldPrompt
 				return f.promptInput.Focus()
 			}
+			// Select autocomplete suggestion if open
+			if f.acOpen && len(f.acMatches) > 0 {
+				f.promptInput.SetValue("/" + f.acMatches[f.acIdx].Name + " ")
+				f.promptInput.CursorEnd()
+				f.acOpen = false
+				f.adjustPromptHeight()
+				return nil
+			}
 			// Submit on enter at prompt field
 			if strings.TrimSpace(f.promptInput.Value()) != "" {
 				f.done = true
@@ -217,6 +255,7 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		f.promptInput, cmd = f.promptInput.Update(msg)
 		// Shrink height back to fit the actual visual line count
 		f.adjustPromptHeight()
+		f.updateAutocomplete()
 		return cmd
 	}
 
@@ -249,6 +288,60 @@ func (f *NewTaskForm) visualLineCount() int {
 		return maxPromptLines
 	}
 	return f.promptInput.LineInfo().Height
+}
+
+// updateAutocomplete recomputes the autocomplete matches based on the current
+// prompt value. Autocomplete is active when the value starts with "/" and
+// contains no spaces (the user is still typing the skill name).
+func (f *NewTaskForm) updateAutocomplete() {
+	val := f.promptInput.Value()
+	// Close once the user moves past the skill name (typed a space to add args).
+	if !strings.HasPrefix(val, "/") || strings.ContainsRune(val[1:], ' ') {
+		f.acOpen = false
+		return
+	}
+	filter := val[1:]
+	f.acMatches = filterSkills(f.skills, filter)
+	if len(f.acMatches) == 0 {
+		f.acOpen = false
+		return
+	}
+	f.acOpen = true
+	if f.acIdx >= len(f.acMatches) {
+		f.acIdx = 0
+		f.acScroll = 0
+	}
+}
+
+// acMoveDown moves the autocomplete cursor down one item (wraps around).
+func (f *NewTaskForm) acMoveDown() {
+	if len(f.acMatches) == 0 {
+		return
+	}
+	f.acIdx = (f.acIdx + 1) % len(f.acMatches)
+	if f.acIdx == 0 {
+		f.acScroll = 0
+	} else if f.acIdx >= f.acScroll+acMaxVisible {
+		f.acScroll = f.acIdx - acMaxVisible + 1
+	}
+}
+
+// acMoveUp moves the autocomplete cursor up one item (wraps around).
+func (f *NewTaskForm) acMoveUp() {
+	if len(f.acMatches) == 0 {
+		return
+	}
+	if f.acIdx == 0 {
+		f.acIdx = len(f.acMatches) - 1
+		if f.acIdx >= acMaxVisible {
+			f.acScroll = f.acIdx - acMaxVisible + 1
+		}
+	} else {
+		f.acIdx--
+		if f.acIdx < f.acScroll {
+			f.acScroll = f.acIdx
+		}
+	}
 }
 
 func (f *NewTaskForm) SelectedProject() string {
@@ -347,7 +440,11 @@ func (f NewTaskForm) View() string {
 		promptStyle = f.theme.Selected
 	}
 	b.WriteString(promptStyle.Render("Prompt:") + "\n")
-	b.WriteString(f.promptInput.View() + "\n\n")
+	b.WriteString(f.promptInput.View() + "\n")
+	if f.acOpen { // acOpen is only true when acMatches is non-empty
+		b.WriteString(f.renderAutocomplete() + "\n")
+	}
+	b.WriteString("\n")
 
 	if f.errMsg != "" {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
@@ -390,6 +487,71 @@ func (f NewTaskForm) renderBackendSelector() string {
 	}
 
 	return "  " + left + name + right + counter + suffix
+}
+
+// renderAutocomplete renders the skill suggestion dropdown below the prompt input.
+func (f NewTaskForm) renderAutocomplete() string {
+	inputW := f.modalWidth() - 4 // matches textarea width
+
+	// Compute the longest skill name for alignment
+	maxName := 0
+	end := f.acScroll + acMaxVisible
+	if end > len(f.acMatches) {
+		end = len(f.acMatches)
+	}
+	for i := f.acScroll; i < end; i++ {
+		n := ansi.StringWidth("/" + f.acMatches[i].Name)
+		if n > maxName {
+			maxName = n
+		}
+	}
+
+	selectedStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("87"))
+	var rows []string
+	for i := f.acScroll; i < end; i++ {
+		skill := f.acMatches[i]
+		isSelected := i == f.acIdx
+
+		indicator := "  "
+		nameStr := "/" + skill.Name
+		if isSelected {
+			indicator = "▶ "
+			nameStr = selectedStyle.Render(nameStr)
+		} else {
+			nameStr = f.theme.Dimmed.Render(nameStr)
+		}
+
+		// Pad name to maxName display columns for alignment.
+		// Use ansi.StringWidth for multibyte/wide-character safety.
+		plainNameW := ansi.StringWidth("/" + skill.Name)
+		padding := strings.Repeat(" ", maxName-plainNameW+2)
+
+		// Truncate description to fit remaining display width.
+		// Guard descW <= 0 explicitly — avoids negative slice index when
+		// the modal is very narrow (zero-dimension invariant).
+		descW := inputW - ansi.StringWidth(indicator) - maxName - 2
+		desc := skill.Description
+		if descW <= 0 {
+			desc = ""
+		} else {
+			runes := []rune(desc)
+			if len(runes) > descW {
+				desc = string(runes[:descW-1]) + "…"
+			}
+		}
+		descStr := f.theme.Dimmed.Render(desc)
+
+		rows = append(rows, indicator+nameStr+padding+descStr)
+	}
+
+	// Scroll indicator when list is longer than visible window
+	if len(f.acMatches) > acMaxVisible {
+		count := f.theme.Dimmed.Render(
+			fmt.Sprintf("  (%d/%d)", f.acIdx+1, len(f.acMatches)))
+		rows = append(rows, count)
+	}
+
+	return strings.Join(rows, "\n")
 }
 
 func (f NewTaskForm) renderProjectSelector() string {

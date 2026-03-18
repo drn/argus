@@ -704,6 +704,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case skillsLoadedMsg:
+		m.newtask.skills = []SkillItem(msg)
+		return m, nil
+
 	case tea.KeyMsg:
 		m.statusbar.ClearError()
 		return m.handleKey(msg)
@@ -854,7 +858,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), defaultProject, cfg.Backends, cfg.Defaults.Backend)
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
-		return m, nil
+		return m, loadSkillsCmd()
 
 	case key.Matches(msg, m.keys.StatusFwd):
 		if t := m.tasklist.Selected(); t != nil {

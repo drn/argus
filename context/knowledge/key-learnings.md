@@ -1,5 +1,7 @@
 ## Key Learnings
 
+- **New task form has `/skill` autocomplete.** `internal/ui/skills.go` scans `~/.claude/skills/*/SKILL.md` frontmatter to build a `[]SkillItem` list. The form stores this list and when the prompt value starts with `/` and contains no spaces, shows a filtered dropdown below the textarea (`acOpen`, `acMatches`, `acIdx`, `acScroll`). Up/Down navigate the list, Enter selects (sets value to `/<name> ` and closes without submitting), Esc closes the dropdown (second Esc cancels the form). `updateAutocomplete()` is called after every `textarea.Update()` to recompute matches. The dropdown uses `acMaxVisible = 6` visible rows with scroll indicators when the list is longer.
+
 - PTY child processes need a real terminal size at launch (`pty.StartWithSize`), not 0x0. TUI apps like claude won't render with zero dimensions.
 - Use `charmbracelet/x/term` for raw mode (cross-platform) instead of platform-specific ioctls (`TIOCGETA` is macOS-only, `TCGETS` is Linux-only).
 - `tea.ExecCommand.SetStdin/SetStdout` must capture and use Bubble Tea's `p.input`/`p.output` — don't hardcode `os.Stdin`/`os.Stdout`.
