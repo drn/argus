@@ -46,6 +46,7 @@ const (
 	viewRenameTask
 	viewNewBackend
 	viewEditBackend
+	viewKBVaultPath
 )
 
 type tab int
@@ -181,6 +182,7 @@ type Model struct {
 	projectform   ProjectForm
 	backendform   BackendForm
 	sandboxconfig SandboxConfigForm // sandbox settings editor
+	kbvaultform   KBVaultForm      // vault path input modal
 	preview     Preview
 	gitstatus   *GitStatus
 	detail      TaskDetail
@@ -385,6 +387,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projectform.SetSize(msg.Width, msg.Height)
 		m.backendform.SetSize(msg.Width, msg.Height)
 		m.sandboxconfig.SetSize(msg.Width, msg.Height)
+		m.kbvaultform.SetSize(msg.Width, msg.Height)
 		m.agentview.SetSize(msg.Width, msg.Height)
 		return m, nil
 
@@ -756,6 +759,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSandboxConfigKey(msg)
 	case viewNewBackend, viewEditBackend:
 		return m.handleBackendFormKey(msg)
+	case viewKBVaultPath:
+		return m.handleKBVaultFormKey(msg)
 	case viewAgent:
 		return m.handleAgentViewKey(msg)
 	default:
@@ -1350,6 +1355,27 @@ func (m Model) handleRenameTaskKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) handleKBVaultFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmd := m.kbvaultform.Update(msg)
+
+	if m.kbvaultform.Canceled() {
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	if m.kbvaultform.Done() {
+		path := m.kbvaultform.Value()
+		_ = m.db.SetConfigValue(m.kbvaultform.ConfigKey(), path)
+		m.refreshSettings()
+		m.current = viewTaskList
+		m.activeTab = tabSettings
+		return m, nil
+	}
+
+	return m, cmd
+}
+
 // handleConfirmAction handles enter/esc for confirmation dialogs.
 // The cleanup function is called with the selected task on confirmation.
 func (m Model) handleConfirmAction(msg tea.KeyMsg, cleanup func(*model.Task)) (tea.Model, tea.Cmd) {
@@ -1503,6 +1529,45 @@ func (m Model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if sel != nil && sel.kind == settingsRowUXLogs {
 			return m, m.loadUXLogsCmd()
+		}
+		if sel != nil && sel.kind == settingsRowKB {
+			cfg := m.db.Config()
+			newVal := "true"
+			if cfg.KB.Enabled {
+				newVal = "false"
+			}
+			_ = m.db.SetConfigValue("kb.enabled", newVal)
+			m.refreshSettings()
+			return m, nil
+		}
+		if sel != nil && sel.kind == settingsRowKBTaskSync {
+			cfg := m.db.Config()
+			newVal := "true"
+			if cfg.KB.AutoCreateTasks {
+				newVal = "false"
+			}
+			_ = m.db.SetConfigValue("kb.auto_create_tasks", newVal)
+			m.refreshSettings()
+			return m, nil
+		}
+		return m, nil
+
+	case msg.String() == "v":
+		sel := m.settings.Selected()
+		if sel != nil {
+			cfg := m.db.Config()
+			switch sel.kind {
+			case settingsRowMetisVault, settingsRowKB:
+				m.kbvaultform = NewKBVaultForm(m.theme, "Metis (KB)", "kb.metis_vault_path", cfg.KB.MetisVaultPath)
+				m.kbvaultform.SetSize(m.width, m.height)
+				m.current = viewKBVaultPath
+				return m, nil
+			case settingsRowArgusVault, settingsRowKBTaskSync:
+				m.kbvaultform = NewKBVaultForm(m.theme, "Argus (task sync)", "kb.argus_vault_path", cfg.KB.ArgusVaultPath)
+				m.kbvaultform.SetSize(m.width, m.height)
+				m.current = viewKBVaultPath
+				return m, nil
+			}
 		}
 		return m, nil
 
@@ -1661,6 +1726,7 @@ func (m *Model) refreshSettings() {
 		cfg.Sandbox.DenyRead,
 		cfg.Sandbox.ExtraWrite,
 	)
+	m.settings.SetKBConfig(cfg.KB.Enabled, cfg.KB.MetisVaultPath, cfg.KB.ArgusVaultPath, cfg.KB.AutoCreateTasks)
 }
 
 // selectedTaskForGit returns the task whose git status should be refreshed.

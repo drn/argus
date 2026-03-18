@@ -48,6 +48,8 @@ func (m Model) View() string {
 		return m.projectform.View() + "\n" + bar
 	case viewNewBackend, viewEditBackend:
 		return m.backendform.View() + "\n" + bar
+	case viewKBVaultPath:
+		return m.kbvaultform.View() + "\n" + bar
 	case viewSandboxConfig:
 		return m.sandboxconfig.View() + "\n" + bar
 	}

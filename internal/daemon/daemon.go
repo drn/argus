@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,10 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/inject"
+	injectcodex "github.com/drn/argus/internal/inject/codex"
+	"github.com/drn/argus/internal/kb"
+	"github.com/drn/argus/internal/mcp"
 )
 
 // DefaultSocketPath returns the default Unix socket path.
@@ -48,9 +53,12 @@ type Daemon struct {
 	exitInfos map[string]ExitInfo    // taskID → cached exit info (brief)
 	mu        sync.Mutex
 	done      chan struct{}
-	ready     chan struct{} // closed when Serve has set listener (or failed)
-	sockPath  string        // set by Serve, used by cleanup
-	pidPath   string        // set by Serve, used by cleanup
+	ready     chan struct{}  // closed when Serve has set listener (or failed)
+	sockPath  string         // set by Serve, used by cleanup
+	pidPath   string         // set by Serve, used by cleanup
+	mcpPort   int            // actual MCP HTTP port in use (set after listen)
+	mcpServer *mcp.Server    // set when KB is enabled, shut down in cleanup
+	kbIndexer *kb.Indexer    // set when KB is enabled, stopped in cleanup
 }
 
 // New creates a new Daemon.
@@ -126,6 +134,51 @@ func (d *Daemon) Serve(sockPath string) error {
 	if err := writePIDFile(pidPath); err != nil {
 		ln.Close()
 		return fmt.Errorf("pid file: %w", err)
+	}
+
+	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
+	cfg := d.db.Config()
+	if cfg.KB.Enabled {
+		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort)
+		d.mcpServer = mcpSrv
+		actualPort, err := mcpSrv.ListenAndServe()
+		if err != nil {
+			log.Printf("mcp server error: %v", err)
+		} else {
+			d.mu.Lock()
+			d.mcpPort = actualPort
+			d.mu.Unlock()
+			inject.SetMCPPort(actualPort)
+			log.Printf("mcp server listening on port %d", actualPort)
+
+			// Inject MCP config into Claude Code and Codex.
+			go func() {
+				if err := inject.InjectGlobal(actualPort); err != nil {
+					log.Printf("inject claude: %v", err)
+				} else {
+					log.Printf("inject claude: ok (port %d)", actualPort)
+				}
+				if err := injectcodex.InjectGlobal(actualPort); err != nil {
+					log.Printf("inject codex: %v", err)
+				} else {
+					log.Printf("inject codex: ok (port %d)", actualPort)
+				}
+				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
+					log.Printf("inject claude trust: %v", err)
+				}
+			}()
+		}
+
+		// Start the KB indexer for the Metis vault.
+		if cfg.KB.MetisVaultPath != "" {
+			idx := kb.NewIndexer(d.db, cfg.KB.MetisVaultPath)
+			d.kbIndexer = idx
+			go func() {
+				if err := idx.Start(); err != nil {
+					log.Printf("kb indexer start: %v", err)
+				}
+			}()
+		}
 	}
 
 	// Register RPC service.
@@ -244,6 +297,20 @@ func (d *Daemon) Shutdown() {
 func (d *Daemon) cleanup() {
 	log.Println("daemon shutting down...")
 	d.runner.StopAll()
+
+	// Stop the KB indexer if running.
+	if d.kbIndexer != nil {
+		d.kbIndexer.Stop()
+	}
+
+	// Shut down the MCP HTTP server if running.
+	if d.mcpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.mcpServer.Shutdown(ctx); err != nil {
+			log.Printf("mcp server shutdown: %v", err)
+		}
+	}
 
 	// Only clean up socket and PID files if we still own them.
 	// A newer daemon may have already replaced these files — removing them

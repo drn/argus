@@ -451,7 +451,6 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **`parentDir()` helper:** Walks backward from a child row index to find the parent directory row (indent 0, IsDir true). Used when cursor is on a child to determine which directory should stay expanded.
 
-<<<<<<< HEAD
 ## Reviews Tab: PR List Sort Order Bug — 2026-03-17
 
 **Problem:** `FetchPRList()` appends "my PRs" (`IsReviewRequest: false`) before "review requests" (`IsReviewRequest: true`) in the slice. But `renderPRList()` visually renders "Review Requests" first and "My Open PRs" second. Since `prCursor` navigates the flat slice sequentially, the cursor started in the "My Open PRs" section (at the bottom) and couldn't reach "Review Requests" (at the top) without scrolling through all "My PRs" first.
@@ -473,3 +472,45 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - Both `prCursor` and `prScrollOff` are clamped when the list shrinks on refresh.
 - `View()` only shows "Loading PRs..." / error when no cached data exists. Background errors appear as dimmed "refresh failed: ..." appended to the cached list.
 - `'R'` key forces manual refresh subject to the same cooldown, showing remaining seconds if blocked.
+
+## Knowledge Base + Obsidian Integration: 2026-03-18
+
+### Architecture
+
+**Packages**: `internal/kb/` (types, search sanitization, indexer, document parsing), `internal/mcp/` (HTTP MCP server), `internal/inject/` (Claude MCP config), `internal/inject/codex/` (Codex TOML config). `internal/kb/` NEVER imports `internal/db/` — circular import. Only `db` imports `kb`.
+
+**Two-vault design**: "Metis" vault (KB indexing, `kb.metis_vault_path`) and "Argus" vault (task creation, `kb.argus_vault_path`). Default paths resolve to iCloud Obsidian: `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<VaultName>`. Settings panel has 4 rows: KB enabled toggle, Metis vault path, Argus vault path, task sync toggle. All default OFF (`KBConfig.Enabled = false`).
+
+**FTS5 storage**: `kb_documents` virtual FTS5 table (path, title, body, tags, tier), `kb_metadata` regular table (modified_at, ingested_at, word_count, tier as integers). Upsert = DELETE+INSERT in transaction (FTS5 doesn't support UPDATE). `kb_pending_tasks` table for Obsidian-sourced tasks awaiting approval.
+
+**MCP server** (`internal/mcp/server.go`): Streamable HTTP JSON-RPC 2.0 on `POST /mcp`. Named `argus-kb` in server info. Port 7742 default, auto-increments to 7750 on conflict. Four tools: `kb_search`, `kb_read`, `kb_list`, `kb_ingest`. Codex workaround: echoes back client's `protocolVersion` rather than asserting `2024-11-05` (Codex v0.47 sends `2025-06-18` and requires echo).
+
+**Daemon wiring**: MCP server starts in `Serve()` when `cfg.KB.Enabled`. KB Indexer starts in a goroutine after MCP is up. Both shut down in `cleanup()` — `d.kbIndexer.Stop()` then `d.mcpServer.Shutdown(ctx)` with 5-second timeout.
+
+### Key Patterns & Gotchas
+
+**FTS5 `SanitizeQuery` must strip all FTS5 operators**: `" * ( ) : ^ { } - +`. Missing `-` (NOT operator) or `+` (proximity) allows injection of FTS5 query syntax into the index. Full set in `internal/kb/search.go`.
+
+**FTS5 + metadata JOIN — no N+1**: `KBSearch` uses `LEFT JOIN kb_metadata km ON km.path = kb_documents.path` with `COALESCE(km.modified_at, 0)` — all metadata fetched in one query. Never issue a nested `d.conn.QueryRow` inside a `rows.Next()` loop while the mutex is held (deadlock risk if the nested query also needs the mutex).
+
+**MCP server Shutdown method**: `Server` stores `httpSrv *http.Server`. `Shutdown(ctx context.Context) error` calls `s.httpSrv.Shutdown(ctx)`. Daemon stores `mcpServer *mcp.Server` and calls it in `cleanup()` with a 5-second context timeout.
+
+**Atomic config writes**: `injectCodexTOML` (and `inject/claude.go`) writes via `os.CreateTemp` + `os.Rename` — never `os.WriteFile` directly. Prevents partial reads if the process crashes mid-write.
+
+**Explicit configKey parameter**: `NewKBVaultForm(theme, vaultName, configKey, currentPath)` accepts the DB config key explicitly (e.g., `"kb.metis_vault_path"`). Never derive configKey from a human-readable label string — fragile to localization or wording changes.
+
+**`filepath.Walk` vault root error propagation**: When `err != nil && path == idx.vaultPath`, return the error (vault root inaccessible). For sub-paths, `return nil` (skip). Without this, `FullScan` returns `nil` when the vault directory doesn't exist — silently does nothing instead of reporting the misconfiguration.
+
+**`path/filepath.IsAbs` + `strings.Contains(path, "..")` path validation**: The `kb_ingest` MCP tool validates incoming paths before calling `KBUpsert`. Absolute paths and paths with `..` components are rejected. This prevents agents from injecting arbitrary paths into the FTS5 index.
+
+### Config Keys
+- `kb.enabled` — `"true"` / `""` (default `""` = off)
+- `kb.http_port` — integer string (default `"7742"`)
+- `kb.metis_vault_path` — Obsidian vault path for KB indexing
+- `kb.argus_vault_path` — Obsidian vault path for task creation
+- `kb.auto_create_tasks` — `"true"` / `""` (default off)
+
+### Deferred Items
+- Phase 5: fsnotify watcher in `kb.Indexer.watch()` (currently placeholder goroutine)
+- Phase 6: Obsidian → task creation (parser exists in `internal/import/obsidian.go`, UI approval flow not wired)
+- Settings: `'v'` key to edit vault path uses `KBVaultForm` modal; actual DB write happens in root.go `viewKBVaultPath` handler

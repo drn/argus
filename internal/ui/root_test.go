@@ -1772,6 +1772,10 @@ func TestModel_ViewZeroDimensions(t *testing.T) {
 		}},
 		{"reviews", func(m *Model) { m.activeTab = tabReviews }},
 		{"reviewsLoading", func(m *Model) { m.activeTab = tabReviews; m.reviews.loading = true }},
+		{"kbVaultPath", func(m *Model) {
+			m.kbvaultform = NewKBVaultForm(m.theme, "Metis (KB)", "kb.metis_vault_path", "")
+			m.current = viewKBVaultPath
+		}},
 	}
 	for _, tc := range views {
 		t.Run(tc.name, func(t *testing.T) {

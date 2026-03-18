@@ -39,6 +39,9 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "kb":
+			runKBCommand(os.Args[2:])
+			return
 		}
 	}
 
