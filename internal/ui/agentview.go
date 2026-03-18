@@ -279,13 +279,14 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		case "esc":
 			av.focus = panelAgent
 		case "up", "k":
-			av.files.CursorUp()
-		case "down", "j":
-			av.files.CursorDown()
-		case "enter":
-			if row := av.files.SelectedRow(); row != nil && row.IsDir {
-				return false, av.toggleDir(row.Path)
+			if dir := av.files.CursorUp(); dir != "" {
+				return false, av.fetchDirChildren(dir)
 			}
+		case "down", "j":
+			if dir := av.files.CursorDown(); dir != "" {
+				return false, av.fetchDirChildren(dir)
+			}
+		case "enter":
 			return false, av.openFileDiff()
 		case "o":
 			return false, av.openInFinder()
@@ -320,13 +321,8 @@ func (av *AgentView) HandleMouse(msg tea.MouseMsg) {
 	}
 }
 
-// toggleDir toggles a directory's expansion state. If newly expanded and
-// children haven't been fetched yet, returns a command to fetch them.
-func (av *AgentView) toggleDir(dirPath string) tea.Cmd {
-	needsFetch := av.files.ToggleDir(dirPath)
-	if !needsFetch {
-		return nil
-	}
+// fetchDirChildren returns a command to fetch children for an expanded directory.
+func (av *AgentView) fetchDirChildren(dirPath string) tea.Cmd {
 	taskID := av.taskID
 	dir := av.worktreeDir
 	return func() tea.Msg {

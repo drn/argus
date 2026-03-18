@@ -111,12 +111,75 @@ func (fe *FileExplorer) buildDisplayRows() {
 	}
 }
 
-func (fe *FileExplorer) CursorUp() {
+func (fe *FileExplorer) CursorUp() string {
 	fe.scroll.CursorUp()
+	return fe.autoExpand()
 }
 
-func (fe *FileExplorer) CursorDown() {
+func (fe *FileExplorer) CursorDown() string {
 	fe.scroll.CursorDown(len(fe.rows), fe.visibleRows())
+	return fe.autoExpand()
+}
+
+// autoExpand expands the directory the cursor is on (or the parent directory
+// if cursor is on a child row) and collapses all others — mirroring the task
+// list's one-expanded-at-a-time behavior. Returns the dir path that needs
+// children fetched (empty string if none).
+func (fe *FileExplorer) autoExpand() string {
+	row := fe.SelectedRow()
+	if row == nil {
+		return ""
+	}
+
+	// Save the path at cursor so we can restore position after rebuild.
+	cursorPath := row.Path
+
+	// Determine which directory should be expanded.
+	var targetDir string
+	if row.IsDir {
+		targetDir = row.Path
+	} else if row.indent > 0 {
+		// Child row — find its parent directory by walking backward.
+		targetDir = fe.parentDir(fe.scroll.Cursor())
+	}
+	// If cursor is on a top-level file, no directory should be expanded.
+
+	// Collapse all directories except the target.
+	for dir := range fe.expanded {
+		if dir != targetDir {
+			fe.expanded[dir] = false
+		}
+	}
+
+	var needsFetch string
+	if targetDir != "" && !fe.expanded[targetDir] {
+		fe.expanded[targetDir] = true
+		if _, ok := fe.dirChildren[targetDir]; !ok {
+			needsFetch = targetDir
+		}
+	}
+
+	fe.buildDisplayRows()
+
+	// Restore cursor to the same logical row after rebuild.
+	for i, r := range fe.rows {
+		if r.Path == cursorPath {
+			fe.scroll.SetCursor(i)
+			break
+		}
+	}
+	fe.scroll.ClampCursor(len(fe.rows))
+	return needsFetch
+}
+
+// parentDir walks backward from idx to find the parent directory row.
+func (fe *FileExplorer) parentDir(idx int) string {
+	for i := idx - 1; i >= 0; i-- {
+		if fe.rows[i].IsDir && fe.rows[i].indent == 0 {
+			return fe.rows[i].Path
+		}
+	}
+	return ""
 }
 
 // SelectedRow returns the currently selected display row, or nil if none.
