@@ -415,7 +415,7 @@ Three bugs discovered in daemon lifecycle management:
 
 **fixupBackends**: Migrates old codex flags (`--yolo`, `--full-auto`) to `--dangerously-bypass-approvals-and-sandbox`. Scoped to `name == "codex"` — users who renamed their codex backend must update manually.
 
-**New task form**: Three fields — project → backend → prompt. Backend selector has `(default)` at index 0. When `(default)`, `Task().Backend` is empty string (inheritance).
+**New task form**: Three fields — project → backend → prompt. Backend selector shows sorted backend names only (no `(default)` entry). The configured default backend is pre-selected by name; `Task().Backend` is always an explicit backend name.
 
 **Settings**: BACKENDS section header shows `(default: <name>)`. Backend detail panel shows `★ Default backend`. Keys: `[e]` edit, `[n]` new, `[d]` set as default.
 

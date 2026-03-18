@@ -16,20 +16,19 @@ import (
 
 // NewTaskForm handles the new task creation UI.
 type NewTaskForm struct {
-	promptInput        textarea.Model
-	projectNames       []string
-	projectIdx         int
-	backendNames       []string // sorted backend names; index 0 is "(default)"
-	backendIdx         int
-	defaultBackendName string // resolved name for the "(default)" entry
-	focused            int    // 0 = project, 1 = backend, 2 = prompt
-	theme              Theme
-	projects           map[string]config.Project
-	done               bool
-	canceled           bool
-	errMsg             string
-	width              int
-	height             int
+	promptInput  textarea.Model
+	projectNames []string
+	projectIdx   int
+	backendNames []string // sorted backend names
+	backendIdx   int
+	focused      int // 0 = project, 1 = backend, 2 = prompt
+	theme        Theme
+	projects     map[string]config.Project
+	done         bool
+	canceled     bool
+	errMsg       string
+	width        int
+	height       int
 	// autocomplete state
 	skills    []SkillItem
 	acOpen    bool
@@ -83,25 +82,31 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 		}
 	}
 
-	// Build sorted backend name list with "(default)" entry at index 0
-	backendNames := []string{"(default)"}
-	bNames := make([]string, 0, len(backends))
+	// Build sorted backend name list
+	backendNames := make([]string, 0, len(backends))
 	for name := range backends {
-		bNames = append(bNames, name)
+		backendNames = append(backendNames, name)
 	}
-	sort.Strings(bNames)
-	backendNames = append(backendNames, bNames...)
+	sort.Strings(backendNames)
+
+	// Pre-select the default backend
+	backendIdx := 0
+	for i, name := range backendNames {
+		if name == defaultBackend {
+			backendIdx = i
+			break
+		}
+	}
 
 	return NewTaskForm{
-		promptInput:        promptInput,
-		projectNames:       names,
-		projectIdx:         idx,
-		backendNames:       backendNames,
-		backendIdx:         0,
-		defaultBackendName: defaultBackend,
-		focused:            fieldPrompt,
-		theme:              theme,
-		projects:           projects,
+		promptInput:  promptInput,
+		projectNames: names,
+		projectIdx:   idx,
+		backendNames: backendNames,
+		backendIdx:   backendIdx,
+		focused:      fieldPrompt,
+		theme:        theme,
+		projects:     projects,
 	}
 }
 
@@ -351,10 +356,10 @@ func (f *NewTaskForm) SelectedProject() string {
 	return f.projectNames[f.projectIdx]
 }
 
-// SelectedBackend returns the selected backend name, or "" for "(default)".
+// SelectedBackend returns the selected backend name, or "" if no backends are configured.
 func (f *NewTaskForm) SelectedBackend() string {
-	if len(f.backendNames) == 0 || f.backendIdx == 0 {
-		return "" // "(default)" → inherit
+	if len(f.backendNames) == 0 {
+		return ""
 	}
 	return f.backendNames[f.backendIdx]
 }
@@ -480,13 +485,7 @@ func (f NewTaskForm) renderBackendSelector() string {
 	counter := f.theme.Dimmed.Render(
 		fmt.Sprintf(" (%d/%d)", f.backendIdx+1, len(f.backendNames)))
 
-	// Show resolved default name when "(default)" is selected
-	suffix := ""
-	if f.backendIdx == 0 && f.defaultBackendName != "" {
-		suffix = " " + f.theme.Dimmed.Render("→ "+f.defaultBackendName)
-	}
-
-	return "  " + left + name + right + counter + suffix
+	return "  " + left + name + right + counter
 }
 
 // renderAutocomplete renders the skill suggestion dropdown below the prompt input.
