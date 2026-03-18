@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/inject"
 )
 
 // resolveStartPoint checks whether ref is a valid git ref in the given repo.
@@ -85,6 +86,9 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 				return "", "", fmt.Errorf("git worktree add: %s\n%s", cmdErr, string(append(out, out2...)))
 			}
 		}
+
+		// Inject MCP configs into the new worktree for both Claude and Codex.
+		inject.InjectWorktreeAll(wtDir)
 
 		return wtDir, candidate, nil
 	}

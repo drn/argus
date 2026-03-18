@@ -20,6 +20,10 @@ const (
 	settingsRowSandbox                         // sandbox config item
 	settingsRowDaemonLogs                      // daemon logs item
 	settingsRowUXLogs                          // UX debug logs item
+	settingsRowKB                              // KB enabled toggle
+	settingsRowMetisVault                      // Metis vault path (KB indexing)
+	settingsRowArgusVault                      // Argus vault path (task sync)
+	settingsRowKBTaskSync                      // KB task sync toggle
 )
 
 type settingsRow struct {
@@ -44,6 +48,10 @@ type SettingsView struct {
 	sandboxAvailable  bool
 	sandboxDenyRead   []string
 	sandboxExtraWrite []string
+	kbEnabled        bool
+	metisVaultPath   string
+	argusVaultPath   string
+	kbTaskSync       bool
 }
 
 type backendEntry struct {
@@ -131,6 +139,15 @@ func (sv *SettingsView) SetSandboxConfig(enabled, available bool, denyRead, extr
 	sv.rebuildRows()
 }
 
+// SetKBConfig updates the knowledge base display state.
+func (sv *SettingsView) SetKBConfig(enabled bool, metisVaultPath, argusVaultPath string, autoCreateTasks bool) {
+	sv.kbEnabled = enabled
+	sv.metisVaultPath = metisVaultPath
+	sv.argusVaultPath = argusVaultPath
+	sv.kbTaskSync = autoCreateTasks
+	sv.rebuildRows()
+}
+
 func (sv *SettingsView) rebuildRows() {
 	sv.rows = nil
 
@@ -175,6 +192,29 @@ func (sv *SettingsView) rebuildRows() {
 	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: backendsLabel})
 	for _, b := range sv.backends {
 		sv.rows = append(sv.rows, settingsRow{kind: settingsRowBackend, label: b.Name, key: b.Name})
+	}
+
+	// KNOWLEDGE BASE section
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowSection, label: "KNOWLEDGE BASE"})
+	if sv.kbEnabled {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowKB, label: "Enabled", key: "_kb"})
+	} else {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowKB, label: "Disabled", key: "_kb"})
+	}
+	metisLabel := sv.metisVaultPath
+	if metisLabel == "" {
+		metisLabel = "(not set)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowMetisVault, label: "Metis: " + metisLabel, key: "_metis_vault"})
+	argusLabel := sv.argusVaultPath
+	if argusLabel == "" {
+		argusLabel = "(not set)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: settingsRowArgusVault, label: "Argus: " + argusLabel, key: "_argus_vault"})
+	if sv.kbTaskSync {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowKBTaskSync, label: "Task sync: On", key: "_kb_tasksync"})
+	} else {
+		sv.rows = append(sv.rows, settingsRow{kind: settingsRowKBTaskSync, label: "Task sync: Off", key: "_kb_tasksync"})
 	}
 
 	sv.scroll.ClampCursor(len(sv.rows))
@@ -359,6 +399,20 @@ func (sv SettingsView) View() string {
 				icon = "  "
 			case settingsRowBackend:
 				icon = "  "
+			case settingsRowKB:
+				if sv.kbEnabled {
+					icon = "  "
+				} else {
+					icon = "  "
+				}
+			case settingsRowMetisVault, settingsRowArgusVault:
+				icon = "  "
+			case settingsRowKBTaskSync:
+				if sv.kbTaskSync {
+					icon = "  "
+				} else {
+					icon = "  "
+				}
 			}
 
 			b.WriteString(" " + cur + icon + labelStyle.Render(row.label) + "\n")
@@ -393,6 +447,8 @@ func (sv SettingsView) RenderDetail(rightWidth, contentHeight int) string {
 		content = sv.renderProjectDetail(sel, innerW)
 	case settingsRowBackend:
 		content = sv.renderBackendDetail(sel, innerW)
+	case settingsRowKB, settingsRowMetisVault, settingsRowArgusVault, settingsRowKBTaskSync:
+		content = sv.renderKBDetail(innerW)
 	default:
 		content = sv.theme.Dimmed.Render(" Select an item")
 	}
@@ -458,6 +514,46 @@ func (sv SettingsView) renderSandboxDetail(_ int) string {
 			b.WriteString("  " + sv.theme.Normal.Render(p) + "\n")
 		}
 	}
+
+	return b.String()
+}
+
+func (sv SettingsView) renderKBDetail(_ int) string {
+	var b strings.Builder
+
+	b.WriteString(sv.theme.Title.Render(" Knowledge Base") + "\n\n")
+
+	// KB enabled status
+	if sv.kbEnabled {
+		b.WriteString("  " + sv.theme.Complete.Render("Enabled") + "\n")
+	} else {
+		b.WriteString("  " + sv.theme.Dimmed.Render("Disabled") + "\n")
+	}
+
+	// Vault paths
+	b.WriteString("\n" + sv.theme.Section.Render("  METIS VAULT") + " " + sv.theme.Dimmed.Render("(knowledge base)") + "\n")
+	if sv.metisVaultPath != "" {
+		b.WriteString("  " + sv.theme.Normal.Render(sv.metisVaultPath) + "\n")
+	} else {
+		b.WriteString("  " + sv.theme.Dimmed.Render("(not configured)") + "\n")
+	}
+	b.WriteString("\n" + sv.theme.Section.Render("  ARGUS VAULT") + " " + sv.theme.Dimmed.Render("(task sync)") + "\n")
+	if sv.argusVaultPath != "" {
+		b.WriteString("  " + sv.theme.Normal.Render(sv.argusVaultPath) + "\n")
+	} else {
+		b.WriteString("  " + sv.theme.Dimmed.Render("(not configured)") + "\n")
+	}
+
+	// Task sync status
+	b.WriteString("\n" + sv.theme.Section.Render("  TASK SYNC") + "\n")
+	if sv.kbTaskSync {
+		b.WriteString("  " + sv.theme.Complete.Render("On") + " — tasks tagged #argus will be imported\n")
+	} else {
+		b.WriteString("  " + sv.theme.Dimmed.Render("Off") + "\n")
+	}
+
+	// Help hints
+	b.WriteString("\n" + sv.theme.Help.Render("  [space/enter] toggle KB  [v] set vault path") + "\n")
 
 	return b.String()
 }

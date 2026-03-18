@@ -1,5 +1,10 @@
 package config
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Config is the top-level configuration.
 type Config struct {
 	Defaults    Defaults           `toml:"defaults"`
@@ -8,6 +13,31 @@ type Config struct {
 	Keybindings Keybindings        `toml:"keybindings"`
 	UI          UIConfig           `toml:"ui"`
 	Sandbox     SandboxConfig      `toml:"sandbox"`
+	KB          KBConfig           `toml:"kb"`
+}
+
+// KBConfig controls the knowledge base server.
+type KBConfig struct {
+	Enabled         bool   `toml:"enabled"`            // default false — must be turned on in settings
+	HTTPPort        int    `toml:"http_port"`          // default 7742
+	MetisVaultPath  string `toml:"metis_vault_path"`   // Obsidian vault for KB indexing (Metis)
+	ArgusVaultPath  string `toml:"argus_vault_path"`   // Obsidian vault for task syncing (Argus)
+	AutoCreateTasks bool   `toml:"auto_create_tasks"`  // auto-create tasks from Argus vault
+}
+
+// iCloudObsidianBase is the default iCloud-synced Obsidian vault parent directory.
+const iCloudObsidianBase = "Library/Mobile Documents/iCloud~md~obsidian/Documents"
+
+// DefaultMetisVaultPath returns the default iCloud path for the Metis (KB) vault.
+func DefaultMetisVaultPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, iCloudObsidianBase, "Metis")
+}
+
+// DefaultArgusVaultPath returns the default iCloud path for the Argus (task sync) vault.
+func DefaultArgusVaultPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, iCloudObsidianBase, "Argus")
 }
 
 type Defaults struct {
@@ -89,6 +119,9 @@ func DefaultConfig() Config {
 			Theme:       "default",
 			ShowElapsed: true,
 			ShowIcons:   true,
+		},
+		KB: KBConfig{
+			HTTPPort: 7742,
 		},
 	}
 }

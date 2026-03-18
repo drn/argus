@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,48 @@ func (d *DB) createTables() error {
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// KB FTS5 full-text search table (virtual table — CREATE VIRTUAL TABLE).
+	// Note: FTS5 doesn't support UPDATE; use DELETE+INSERT in a transaction.
+	if _, err := d.conn.Exec(`
+		CREATE VIRTUAL TABLE IF NOT EXISTS kb_documents USING fts5(
+			path UNINDEXED,
+			title,
+			body,
+			tags,
+			tier UNINDEXED,
+			tokenize = 'porter unicode61'
+		)
+	`); err != nil {
+		return fmt.Errorf("creating kb_documents fts5 table: %w", err)
+	}
+
+	// KB metadata table for non-text fields not suitable for FTS5.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS kb_metadata (
+			path        TEXT PRIMARY KEY,
+			modified_at INTEGER NOT NULL,
+			ingested_at INTEGER NOT NULL,
+			word_count  INTEGER NOT NULL DEFAULT 0,
+			tier        TEXT NOT NULL DEFAULT 'hot'
+		)
+	`); err != nil {
+		return fmt.Errorf("creating kb_metadata table: %w", err)
+	}
+
+	// KB pending tasks table for vault task imports awaiting approval.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS kb_pending_tasks (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL,
+			project     TEXT NOT NULL DEFAULT '',
+			source_file TEXT NOT NULL,
+			created_at  TEXT NOT NULL,
+			UNIQUE(source_file, name)
+		)
+	`); err != nil {
+		return fmt.Errorf("creating kb_pending_tasks table: %w", err)
+	}
 
 	return nil
 }
@@ -482,6 +525,25 @@ func (d *DB) Config() config.Config {
 	}
 	if v, ok := kv["sandbox.extra_write"]; ok && v != "" {
 		cfg.Sandbox.ExtraWrite = splitCSV(v)
+	}
+
+	// KB config
+	if v, ok := kv["kb.enabled"]; ok {
+		cfg.KB.Enabled = v == "true"
+	}
+	if v, ok := kv["kb.http_port"]; ok {
+		if port, err := strconv.Atoi(v); err == nil && port > 0 {
+			cfg.KB.HTTPPort = port
+		}
+	}
+	if v, ok := kv["kb.metis_vault_path"]; ok {
+		cfg.KB.MetisVaultPath = v
+	}
+	if v, ok := kv["kb.argus_vault_path"]; ok {
+		cfg.KB.ArgusVaultPath = v
+	}
+	if v, ok := kv["kb.auto_create_tasks"]; ok {
+		cfg.KB.AutoCreateTasks = v == "true"
 	}
 
 	return cfg

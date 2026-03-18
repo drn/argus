@@ -73,3 +73,63 @@ type PongResp struct {
 
 // Empty is a placeholder for RPC methods that take no arguments.
 type Empty struct{}
+
+// KBSearchReq is the RPC request to search the knowledge base.
+type KBSearchReq struct {
+	Query string
+	Limit int
+}
+
+// KBSearchResp is the RPC response from a KB search.
+type KBSearchResp struct {
+	Results []KBSearchResult
+	Error   string
+}
+
+// KBSearchResult is a KB search result returned over RPC.
+// (Mirrors kb.SearchResult but avoids importing the kb package in types.go.)
+type KBSearchResult struct {
+	Path    string
+	Title   string
+	Tier    string
+	Snippet string
+	Rank    float64
+}
+
+// KBIngestReq is the RPC request to ingest a document into the knowledge base.
+type KBIngestReq struct {
+	Path    string
+	Content string
+}
+
+// KBIngestResp is the RPC response from a KB ingest.
+type KBIngestResp struct {
+	Error string
+}
+
+// KBListReq is the RPC request to list documents in the knowledge base.
+type KBListReq struct {
+	Prefix string
+	Limit  int
+}
+
+// KBListResp is the RPC response from a KB list.
+type KBListResp struct {
+	Documents []KBDocumentInfo
+	Error     string
+}
+
+// KBDocumentInfo summarises a KB document (no body).
+type KBDocumentInfo struct {
+	Path      string
+	Title     string
+	Tier      string
+	WordCount int
+}
+
+// KBStatusResp is the RPC response for a KB status query.
+type KBStatusResp struct {
+	DocumentCount int
+	VaultPath     string
+	Port          int
+}

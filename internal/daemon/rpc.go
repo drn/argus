@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"log"
+	"time"
 
+	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -159,5 +161,80 @@ func (s *RPCService) Shutdown(_ *Empty, resp *StatusResp) error {
 	log.Printf("rpc.Shutdown: requested")
 	resp.OK = true
 	go s.daemon.Shutdown()
+	return nil
+}
+
+// KBSearch performs a full-text search of the knowledge base.
+func (s *RPCService) KBSearch(req *KBSearchReq, resp *KBSearchResp) error {
+	log.Printf("rpc.KBSearch: query=%q limit=%d", req.Query, req.Limit)
+	sanitized := kb.SanitizeQuery(req.Query)
+	if sanitized == "" {
+		resp.Results = nil
+		return nil
+	}
+	results, err := s.daemon.db.KBSearch(sanitized, req.Limit)
+	if err != nil {
+		resp.Error = err.Error()
+		log.Printf("rpc.KBSearch: error: %v", err)
+		return nil
+	}
+	for _, r := range results {
+		resp.Results = append(resp.Results, KBSearchResult{
+			Path:    r.Path,
+			Title:   r.Title,
+			Tier:    r.Tier,
+			Snippet: r.Snippet,
+			Rank:    r.Rank,
+		})
+	}
+	log.Printf("rpc.KBSearch: %d results", len(resp.Results))
+	return nil
+}
+
+// KBIngest ingests a document into the knowledge base.
+func (s *RPCService) KBIngest(req *KBIngestReq, resp *KBIngestResp) error {
+	log.Printf("rpc.KBIngest: path=%s", req.Path)
+	doc := kb.ParseDocument(req.Path, req.Content)
+	doc.IngestedAt = time.Now()
+	doc.ModifiedAt = time.Now()
+	if err := s.daemon.db.KBUpsert(&doc); err != nil {
+		resp.Error = err.Error()
+		log.Printf("rpc.KBIngest: error: %v", err)
+	} else {
+		log.Printf("rpc.KBIngest: ok path=%s", req.Path)
+	}
+	return nil
+}
+
+// KBList lists documents in the knowledge base.
+func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
+	log.Printf("rpc.KBList: prefix=%q limit=%d", req.Prefix, req.Limit)
+	docs, err := s.daemon.db.KBList(req.Prefix, req.Limit)
+	if err != nil {
+		resp.Error = err.Error()
+		log.Printf("rpc.KBList: error: %v", err)
+		return nil
+	}
+	for _, doc := range docs {
+		resp.Documents = append(resp.Documents, KBDocumentInfo{
+			Path:      doc.Path,
+			Title:     doc.Title,
+			Tier:      doc.Tier,
+			WordCount: doc.WordCount,
+		})
+	}
+	log.Printf("rpc.KBList: %d documents", len(resp.Documents))
+	return nil
+}
+
+// KBStatus returns the current state of the knowledge base.
+func (s *RPCService) KBStatus(_ *Empty, resp *KBStatusResp) error {
+	resp.DocumentCount = s.daemon.db.KBDocumentCount()
+	cfg := s.daemon.db.Config()
+	resp.VaultPath = cfg.KB.MetisVaultPath
+	s.daemon.mu.Lock()
+	resp.Port = s.daemon.mcpPort
+	s.daemon.mu.Unlock()
+	log.Printf("rpc.KBStatus: docs=%d vault=%s port=%d", resp.DocumentCount, resp.VaultPath, resp.Port)
 	return nil
 }
