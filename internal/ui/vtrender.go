@@ -49,6 +49,12 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 		lines = lines[:len(lines)-1]
 	}
 
+	// Trim leading empty lines (e.g. Codex positions its TUI content in the
+	// lower portion of the terminal, leaving the top rows blank).
+	for len(lines) > 0 && stripANSI(lines[0]) == "" {
+		lines = lines[1:]
+	}
+
 	return lines
 }
 
