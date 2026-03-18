@@ -2,8 +2,8 @@
 
 **Date:** 2026-03-18
 **Source:** Inline request: "research well-maintained libraries that do this cleanly. then write an implementation plan"
-**Status:** Draft
-**Current Phase:** Phase 1
+**Status:** In Progress
+**Current Phase:** Phase 2 (Phase 1 complete)
 
 ## Goal
 
@@ -84,13 +84,13 @@ This avoids trying to force a real terminal surface through a `View() string` AP
 ## Implementation Steps
 
 ### Phase 1: Isolate Terminal Concerns From Bubble Tea
-**Status:** pending
+**Status:** complete
 
-- [ ] Add `context/research/terminal-runtime-notes.md` — capture the library comparison, fit, and rejection reasons for Bubble Tea-only passthrough
-- [ ] Introduce a UI-agnostic agent-view state model under `internal/app/agentview` or similar — move scroll/focus/session display decisions out of [`agentview.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/ui/agentview.go)
-- [ ] Extract PTY input translation and terminal-pane commands into a narrower adapter interface so a second UI runtime can reuse them
-- [ ] Define a runtime boundary for layout primitives: panels, focus, key routing, resize, status bar text, and modal state
-- [ ] Add a runtime switch (`ARGUS_UI_RUNTIME=bubbletea|tcell`) with Bubble Tea as the default
+- [x] Add `context/research/terminal-runtime-notes.md` — capture the library comparison, fit, and rejection reasons for Bubble Tea-only passthrough
+- [x] Introduce a UI-agnostic agent-view state model under `internal/app/agentview` — scroll/focus/session display state, diff state, git refresh timing
+- [x] Extract PTY input translation into `TerminalAdapter` interface and `SessionLookup` for session resolution
+- [x] Define runtime boundary: `Panel` type, `DiffState`, `State` struct with focus/scroll/diff methods; `UIRuntime` type with `DetectRuntime()`
+- [x] Add a runtime switch (`ARGUS_UI_RUNTIME=bubbletea|tcell`) with Bubble Tea as the default, wired in `cmd/argus/main.go`
 
 ### Phase 2: Build a Tcell/Tview App Shell
 **Status:** pending

@@ -188,9 +188,7 @@ func (av *AgentView) SetSize(w, h int) {
 	av.files.SetSize(widths[2], contentH)
 	// Resize PTY to match center panel (minus border)
 	if sess := av.runner.Get(av.taskID); sess != nil {
-		ptyRows := uint16(max(contentH-2, 5))
-		ptyCols := uint16(max(widths[1]-4, 20))
-		sess.Resize(ptyRows, ptyCols)
+		resizeSessionToPanel(sess, contentH, widths[1]) //nolint:errcheck // best-effort resize
 	}
 }
 
@@ -291,9 +289,7 @@ func (av *AgentView) HandleKey(msg tea.KeyMsg) (detach bool, cmd tea.Cmd) {
 		av.scrollOffset = 0
 		// Forward all other keys to the PTY
 		if sess := av.runner.Get(av.taskID); sess != nil {
-			if b := keyMsgToBytes(msg); len(b) > 0 {
-				sess.WriteInput(b)
-			}
+			forwardKeyToSession(sess, msg)
 		}
 	case panelFiles:
 		switch keyStr {

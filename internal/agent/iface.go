@@ -3,6 +3,7 @@ package agent
 import (
 	"io"
 
+	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
@@ -43,3 +44,4 @@ type SessionHandle interface {
 // Compile-time assertions.
 var _ SessionProvider = (*Runner)(nil)
 var _ SessionHandle = (*Session)(nil)
+var _ agentview.TerminalAdapter = (*Session)(nil)
