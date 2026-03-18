@@ -866,7 +866,7 @@ func (m Model) handleTaskListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.newtask = NewNewTaskForm(m.theme, m.db.Projects(), defaultProject, cfg.Backends, cfg.Defaults.Backend)
 		m.newtask.SetSize(m.width, m.height)
 		m.current = viewNewTask
-		return m, loadSkillsCmd()
+		return m, loadSkillsCmd(m.newtask.selectedProjectPath())
 
 	case key.Matches(msg, m.keys.StatusFwd):
 		if t := m.tasklist.Selected(); t != nil {

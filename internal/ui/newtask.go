@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
@@ -24,6 +26,7 @@ type NewTaskForm struct {
 	focused      int // 0 = project, 1 = backend, 2 = prompt
 	theme        Theme
 	projects     map[string]config.Project
+	backends     map[string]config.Backend
 	done         bool
 	canceled     bool
 	errMsg       string
@@ -107,18 +110,45 @@ func NewNewTaskForm(theme Theme, projects map[string]config.Project, defaultProj
 		focused:      fieldPrompt,
 		theme:        theme,
 		projects:     projects,
+		backends:     backends,
 	}
 }
 
 // skillsLoadedMsg carries the result of an async skill scan.
 type skillsLoadedMsg []SkillItem
 
-// loadSkillsCmd returns a Cmd that scans ~/.claude/skills/ in a background
-// goroutine, keeping the UI responsive during filesystem discovery.
-func loadSkillsCmd() tea.Cmd {
+// loadSkillsCmd returns a Cmd that scans ~/.claude/skills/ and the project's
+// .claude/skills/ directory in a background goroutine. projectPath may be empty.
+func loadSkillsCmd(projectPath string) tea.Cmd {
 	return func() tea.Msg {
-		return skillsLoadedMsg(LoadSkills(nil))
+		var extraDirs []string
+		if projectPath != "" {
+			extraDirs = []string{filepath.Join(projectPath, ".claude", "skills")}
+		}
+		return skillsLoadedMsg(LoadSkills(extraDirs))
 	}
+}
+
+// selectedProjectPath returns the filesystem path of the currently selected project.
+func (f *NewTaskForm) selectedProjectPath() string {
+	if len(f.projectNames) == 0 {
+		return ""
+	}
+	if p, ok := f.projects[f.projectNames[f.projectIdx]]; ok {
+		return p.Path
+	}
+	return ""
+}
+
+// acTrigger returns the autocomplete trigger character for the selected backend:
+// "$" for codex backends, "/" for all others.
+func (f NewTaskForm) acTrigger() string {
+	if len(f.backendNames) > 0 && f.backendIdx < len(f.backendNames) {
+		if b, ok := f.backends[f.backendNames[f.backendIdx]]; ok && agent.IsCodexBackend(b.Command) {
+			return "$"
+		}
+	}
+	return "/"
 }
 
 func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
@@ -162,19 +192,23 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 		case "left":
 			if f.focused == fieldProject && len(f.projectNames) > 0 {
 				f.projectIdx = (f.projectIdx - 1 + len(f.projectNames)) % len(f.projectNames)
-				return nil
+				f.acOpen = false
+				return loadSkillsCmd(f.selectedProjectPath())
 			}
 			if f.focused == fieldBackend && len(f.backendNames) > 0 {
 				f.backendIdx = (f.backendIdx - 1 + len(f.backendNames)) % len(f.backendNames)
+				f.updateAutocomplete()
 				return nil
 			}
 		case "right":
 			if f.focused == fieldProject && len(f.projectNames) > 0 {
 				f.projectIdx = (f.projectIdx + 1) % len(f.projectNames)
-				return nil
+				f.acOpen = false
+				return loadSkillsCmd(f.selectedProjectPath())
 			}
 			if f.focused == fieldBackend && len(f.backendNames) > 0 {
 				f.backendIdx = (f.backendIdx + 1) % len(f.backendNames)
+				f.updateAutocomplete()
 				return nil
 			}
 		case "up":
@@ -230,7 +264,7 @@ func (f *NewTaskForm) Update(msg tea.Msg) tea.Cmd {
 			}
 			// Select autocomplete suggestion if open
 			if f.acOpen && len(f.acMatches) > 0 {
-				f.promptInput.SetValue("/" + f.acMatches[f.acIdx].Name + " ")
+				f.promptInput.SetValue(f.acTrigger() + f.acMatches[f.acIdx].Name + " ")
 				f.promptInput.CursorEnd()
 				f.acOpen = false
 				f.adjustPromptHeight()
@@ -296,12 +330,13 @@ func (f *NewTaskForm) visualLineCount() int {
 }
 
 // updateAutocomplete recomputes the autocomplete matches based on the current
-// prompt value. Autocomplete is active when the value starts with "/" and
-// contains no spaces (the user is still typing the skill name).
+// prompt value. Autocomplete is active when the value starts with the trigger
+// character ("/" for claude, "$" for codex) and contains no spaces.
 func (f *NewTaskForm) updateAutocomplete() {
 	val := f.promptInput.Value()
+	trigger := f.acTrigger()
 	// Close once the user moves past the skill name (typed a space to add args).
-	if !strings.HasPrefix(val, "/") || strings.ContainsRune(val[1:], ' ') {
+	if !strings.HasPrefix(val, trigger) || strings.ContainsRune(val[1:], ' ') {
 		f.acOpen = false
 		return
 	}
@@ -498,8 +533,9 @@ func (f NewTaskForm) renderAutocomplete() string {
 	if end > len(f.acMatches) {
 		end = len(f.acMatches)
 	}
+	trigger := f.acTrigger()
 	for i := f.acScroll; i < end; i++ {
-		n := ansi.StringWidth("/" + f.acMatches[i].Name)
+		n := ansi.StringWidth(trigger + f.acMatches[i].Name)
 		if n > maxName {
 			maxName = n
 		}
@@ -512,7 +548,7 @@ func (f NewTaskForm) renderAutocomplete() string {
 		isSelected := i == f.acIdx
 
 		indicator := "  "
-		nameStr := "/" + skill.Name
+		nameStr := trigger + skill.Name
 		if isSelected {
 			indicator = "▶ "
 			nameStr = selectedStyle.Render(nameStr)
@@ -522,7 +558,7 @@ func (f NewTaskForm) renderAutocomplete() string {
 
 		// Pad name to maxName display columns for alignment.
 		// Use ansi.StringWidth for multibyte/wide-character safety.
-		plainNameW := ansi.StringWidth("/" + skill.Name)
+		plainNameW := ansi.StringWidth(trigger + skill.Name)
 		padding := strings.Repeat(" ", maxName-plainNameW+2)
 
 		// Truncate description to fit remaining display width.
