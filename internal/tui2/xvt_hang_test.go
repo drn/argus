@@ -38,39 +38,34 @@ func TestXVTDAHang(t *testing.T) {
 	}
 }
 
-func TestStripTerminalQueries(t *testing.T) {
-	tests := []struct {
-		name  string
-		input []byte
-		want  []byte
-	}{
-		{"no queries", []byte("hello world"), []byte("hello world")},
-		{"DA1", []byte("before\x1b[cafter"), []byte("beforeafter")},
-		{"DA1 with 0", []byte("before\x1b[0cafter"), []byte("beforeafter")},
-		{"DA2", []byte("before\x1b[>cafter"), []byte("beforeafter")},
-		{"DA2 with 0", []byte("before\x1b[>0cafter"), []byte("beforeafter")},
-		{"DSR5", []byte("before\x1b[5nafter"), []byte("beforeafter")},
-		{"DSR6", []byte("before\x1b[6nafter"), []byte("beforeafter")},
-		{"non-query CSI", []byte("before\x1b[38;5;174mafter"), []byte("before\x1b[38;5;174mafter")},
-		{"multiple queries", []byte("\x1b[c\x1b[6nhello"), []byte("hello")},
-		{"XTVERSION kept", []byte("before\x1b[>0qafter"), []byte("before\x1b[>0qafter")},
-		{"DA3 kept", []byte("before\x1b[=cafter"), []byte("before\x1b[=cafter")},
-		{"empty", []byte{}, []byte{}},
-		{"incomplete ESC at end", []byte("hello\x1b"), []byte("hello\x1b")},
-		{"incomplete CSI at end", []byte("hello\x1b["), []byte("hello\x1b[")},
+func TestDrainedEmulatorNoHang(t *testing.T) {
+	sequences := map[string][]byte{
+		"DA1":     []byte("\x1b[c"),
+		"DA2":     []byte("\x1b[>c"),
+		"DSR_pos": []byte("\x1b[6n"),
+		"DSR_dev": []byte("\x1b[5n"),
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := stripTerminalQueries(tt.input)
-			if string(got) != string(tt.want) {
-				t.Errorf("stripTerminalQueries(%q) = %q, want %q", tt.input, got, tt.want)
+	for name, seq := range sequences {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan struct{})
+			go func() {
+				emu := newDrainedEmulator(80, 24)
+				emu.Write(seq)
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				// Expected — the drain goroutine prevents the hang.
+			case <-time.After(2 * time.Second):
+				t.Fatalf("%s: HANG — drain goroutine did not prevent blocking", name)
 			}
 		})
 	}
 }
 
-func TestStripTerminalQueriesFixesHang(t *testing.T) {
+func TestDrainedEmulatorWithSessionData(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	logPath := filepath.Join(home, ".argus", "sessions", "1773949319275631000.log")
 	data, err := os.ReadFile(logPath)
@@ -81,21 +76,19 @@ func TestStripTerminalQueriesFixesHang(t *testing.T) {
 	if len(data) > 2300 {
 		data = data[:2300]
 	}
-
-	clean := stripTerminalQueries(data)
-	t.Logf("original: %d bytes, stripped: %d bytes (removed %d)", len(data), len(clean), len(data)-len(clean))
+	t.Logf("feeding %d bytes to drained emulator(192, 84)", len(data))
 
 	done := make(chan struct{})
 	go func() {
-		emu := xvt.NewSafeEmulator(192, 84)
-		emu.Write(clean)
+		emu := newDrainedEmulator(192, 84)
+		emu.Write(data)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		t.Log("Write completed successfully after stripping queries")
+		t.Log("Write completed successfully with drained emulator")
 	case <-time.After(5 * time.Second):
-		t.Fatal("HANG: emu.Write still hangs after stripping queries")
+		t.Fatal("HANG: drained emulator still hangs on Claude output")
 	}
 }

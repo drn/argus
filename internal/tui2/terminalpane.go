@@ -1,7 +1,7 @@
 package tui2
 
 import (
-	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,81 +20,16 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
-// stripTerminalQueries removes terminal query sequences that cause x/vt to hang.
-// These are sequences where the terminal application asks the host terminal
-// for information (device attributes, cursor position, etc.). x/vt blocks
-// waiting for a response that never comes since we're not a real terminal.
-//
-// Stripped sequences:
-//   - \x1b[c   (DA1 — Primary Device Attributes)
-//   - \x1b[>c  (DA2 — Secondary Device Attributes)
-//   - \x1b[5n  (DSR — Device Status Report)
-//   - \x1b[6n  (DSR — Cursor Position Report)
-func stripTerminalQueries(data []byte) []byte {
-	// Fast path: no ESC means no queries to strip.
-	if !bytes.ContainsRune(data, 0x1b) {
-		return data
-	}
-
-	out := make([]byte, 0, len(data))
-	i := 0
-	for i < len(data) {
-		if data[i] != 0x1b || i+1 >= len(data) || data[i+1] != '[' {
-			out = append(out, data[i])
-			i++
-			continue
-		}
-
-		// We have ESC[ — scan for the specific query sequences.
-		// Format: ESC [ <optional params> <final byte>
-		j := i + 2 // skip ESC [
-		for j < len(data) && ((data[j] >= '0' && data[j] <= '9') || data[j] == ';' || data[j] == '>' || data[j] == '=') {
-			j++
-		}
-		if j >= len(data) {
-			// Incomplete sequence at end of buffer — keep it.
-			out = append(out, data[i:]...)
-			break
-		}
-
-		seq := data[i : j+1] // full sequence including final byte
-		if isTerminalQuery(seq) {
-			// Skip this sequence entirely.
-			i = j + 1
-			continue
-		}
-
-		// Not a query — keep the byte and advance.
-		out = append(out, data[i])
-		i++
-	}
-	return out
-}
-
-// isTerminalQuery returns true if the sequence is a known terminal query.
-func isTerminalQuery(seq []byte) bool {
-	// Minimum: ESC [ <final> = 3 bytes
-	if len(seq) < 3 || seq[0] != 0x1b || seq[1] != '[' {
-		return false
-	}
-	body := seq[2:]
-	// DA1: ESC [ c  or  ESC [ 0 c
-	if bytes.Equal(body, []byte("c")) || bytes.Equal(body, []byte("0c")) {
-		return true
-	}
-	// DA2: ESC [ > c  or  ESC [ > 0 c
-	if bytes.Equal(body, []byte(">c")) || bytes.Equal(body, []byte(">0c")) {
-		return true
-	}
-	// DSR device status: ESC [ 5 n
-	if bytes.Equal(body, []byte("5n")) {
-		return true
-	}
-	// DSR cursor position: ESC [ 6 n
-	if bytes.Equal(body, []byte("6n")) {
-		return true
-	}
-	return false
+// newDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
+// the response pipe. x/vt uses io.Pipe() internally — when the emulator
+// processes terminal query sequences (DA1, DA2, DSR, etc.), it writes responses
+// to pw which blocks until pr is read. Without draining, Write() hangs
+// indefinitely on any input containing these sequences. The drain goroutine
+// exits when the emulator is closed or garbage collected.
+func newDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
+	emu := xvt.NewSafeEmulator(cols, rows)
+	go io.Copy(io.Discard, emu) //nolint:errcheck
+	return emu
 }
 
 // Cursor colors — high-contrast, theme-independent.
@@ -127,9 +62,6 @@ type TerminalPane struct {
 
 	// Scrollback.
 	scrollOffset int
-
-	// Debug counter — log every N draws.
-	drawLogCounter int
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
@@ -407,17 +339,6 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		raw = tp.replayData
 	}
 
-	// Log frequently during startup (first 20 draws), then every 50th.
-	if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 0 {
-		tw := uint64(0)
-		if sess != nil {
-			tw = sess.TotalWritten()
-		}
-		uxlog.Log("[terminalpane] Draw #%d: sess=%v alive=%v rawLen=%d totalWritten=%d ptyCols=%d ptyRows=%d panelW=%d panelH=%d scrollOff=%d",
-			tp.drawLogCounter, sess != nil, alive, len(raw), tw, ptyCols, ptyRows, width, height, tp.scrollOffset)
-	}
-	tp.drawLogCounter++
-
 	if len(raw) == 0 {
 		if sess != nil {
 			msg := "Waiting for output..."
@@ -452,37 +373,19 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	}
 
 	if tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows {
-		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
+		tp.emu = newDrainedEmulator(ptyCols, ptyRows)
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
 		tp.emuRows = ptyRows
 	}
 
 	newBytes := totalWritten - tp.emuFedTotal
-	if tp.drawLogCounter < 20 {
-		uxlog.Log("[terminalpane] renderLive #%d: BEFORE emu.Write newBytes=%d rawLen=%d totalWritten=%d emuFedTotal=%d",
-			tp.drawLogCounter, newBytes, len(raw), totalWritten, tp.emuFedTotal)
-	}
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
-		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
-		clean := stripTerminalQueries(raw)
-		n, err := tp.emu.Write(clean)
-		if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
-			uxlog.Log("[terminalpane] renderLive #%d: WRAPPED totalWritten=%d emuFedTotal=%d rawLen=%d clean=%d wrote=%d err=%v",
-				tp.drawLogCounter, totalWritten, tp.emuFedTotal, len(raw), len(clean), n, err)
-		}
+		tp.emu = newDrainedEmulator(ptyCols, ptyRows)
+		tp.emu.Write(raw)
 	} else if newBytes > 0 {
-		chunk := raw[len(raw)-int(newBytes):]
-		clean := stripTerminalQueries(chunk)
-		n, err := tp.emu.Write(clean)
-		if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
-			uxlog.Log("[terminalpane] renderLive #%d: INCR newBytes=%d rawLen=%d clean=%d wrote=%d err=%v totalWritten=%d",
-				tp.drawLogCounter, newBytes, len(raw), len(clean), n, err, totalWritten)
-		}
-	}
-	if tp.drawLogCounter < 20 {
-		uxlog.Log("[terminalpane] renderLive #%d: AFTER emu.Write, calling paintEmu", tp.drawLogCounter)
+		tp.emu.Write(raw[len(raw)-int(newBytes):])
 	}
 	tp.emuFedTotal = totalWritten
 
@@ -492,8 +395,8 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 // renderReplay uses x/vt scrollback for finished sessions and scroll mode.
 // Feeds full buffer into a fresh emulator and uses scrollback for history.
 func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
-	emu := xvt.NewSafeEmulator(ptyCols, ptyRows)
-	emu.Write(stripTerminalQueries(raw))
+	emu := newDrainedEmulator(ptyCols, ptyRows)
+	emu.Write(raw)
 
 	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0)
 }
@@ -516,15 +419,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
-	if tp.drawLogCounter < 20 {
-		uxlog.Log("[terminalpane] paintEmu #%d: curX=%d curY=%d sbLen=%d lastContentRow=%d firstContentRow=%d totalLines=%d emuCols=%d emuRows=%d panelW=%d panelH=%d",
-			tp.drawLogCounter, cur.X, cur.Y, sbLen, lastContentRow, firstContentRow, totalLines, emuCols, emuRows, w, h)
-	}
-
 	if totalLines <= 0 {
-		if tp.drawLogCounter < 20 {
-			uxlog.Log("[terminalpane] paintEmu #%d: EMPTY — totalLines=%d, returning", tp.drawLogCounter, totalLines)
-		}
 		return
 	}
 
