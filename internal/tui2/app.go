@@ -1131,6 +1131,8 @@ func (a *App) onTaskSelect(task *model.Task) {
 	a.agentPane.SetFocused(true)
 	a.filePanel.SetFocused(false)
 
+	// Hide the tab header in agent view — only the agent header is shown.
+	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
 
@@ -1440,6 +1442,8 @@ func (a *App) exitAgentView() {
 	a.agentPane.ExitDiffMode()
 	a.agentPane.ResetVT()
 	a.worktreeDir = ""
+	// Restore the tab header when returning to root views.
+	a.root.ResizeItem(a.header, 1, 0)
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
