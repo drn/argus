@@ -1126,14 +1126,12 @@ func (a *App) startSession(task *model.Task) {
 // is too slow for a live terminal. Self-terminates when the session exits or
 // the user leaves the agent view.
 func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
-	uxlog.Log("[tui2] startAgentRedrawLoop: taskID=%s sessAlive=%v", taskID, sess.Alive())
+	uxlog.Log("[tui2] startAgentRedrawLoop: taskID=%s", taskID)
 	go func() {
-		iter := 0
 		for {
 			time.Sleep(200 * time.Millisecond)
-			iter++
 			if !sess.Alive() {
-				uxlog.Log("[tui2] redrawLoop: session dead, exiting iter=%d", iter)
+				// One final redraw to show the finished state.
 				a.tapp.QueueUpdateDraw(func() {})
 				return
 			}
@@ -1141,11 +1139,7 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 			stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
 			a.mu.Unlock()
 			if !stillViewing {
-				uxlog.Log("[tui2] redrawLoop: no longer viewing, exiting iter=%d", iter)
 				return
-			}
-			if iter <= 10 || iter%50 == 0 {
-				uxlog.Log("[tui2] redrawLoop: iter=%d totalWritten=%d", iter, sess.TotalWritten())
 			}
 			a.tapp.QueueUpdateDraw(func() {})
 		}
