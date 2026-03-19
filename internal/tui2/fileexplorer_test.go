@@ -3,12 +3,12 @@ package tui2
 import (
 	"testing"
 
-	"github.com/drn/argus/internal/ui"
+	"github.com/drn/argus/internal/gitutil"
 )
 
 func TestFilePanel_SetFiles(t *testing.T) {
 	fp := NewFilePanel()
-	files := []ui.ChangedFile{
+	files := []gitutil.ChangedFile{
 		{Status: "M", Path: "a.go"},
 		{Status: "A", Path: "b.go"},
 	}
@@ -26,7 +26,7 @@ func TestFilePanel_CursorNavigation(t *testing.T) {
 	fp := NewFilePanel()
 	// Simulate having inner rect
 	fp.Box.SetRect(0, 0, 40, 20)
-	files := []ui.ChangedFile{
+	files := []gitutil.ChangedFile{
 		{Status: "M", Path: "a.go"},
 		{Status: "A", Path: "b.go"},
 		{Status: "D", Path: "c.go"},
@@ -47,7 +47,7 @@ func TestFilePanel_CursorNavigation(t *testing.T) {
 func TestFilePanel_DirExpansion(t *testing.T) {
 	fp := NewFilePanel()
 	fp.Box.SetRect(0, 0, 40, 20)
-	files := []ui.ChangedFile{
+	files := []gitutil.ChangedFile{
 		{Status: "M", Path: "src/", IsDir: true},
 		{Status: "A", Path: "b.go"},
 	}
@@ -58,7 +58,7 @@ func TestFilePanel_DirExpansion(t *testing.T) {
 	// First cursor should be on src/ (already expanded or needs fetch)
 	_ = dir
 
-	fp.SetDirChildren("src/", []ui.ChangedFile{
+	fp.SetDirChildren("src/", []gitutil.ChangedFile{
 		{Status: "M", Path: "src/main.go"},
 	})
 

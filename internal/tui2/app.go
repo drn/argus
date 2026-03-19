@@ -14,7 +14,7 @@ import (
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
-	"github.com/drn/argus/internal/ui"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -469,7 +469,7 @@ func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 
 // fetchGitStatus runs git status asynchronously and updates the panels.
 func (a *App) fetchGitStatus(taskID, dir string) {
-	msg := ui.FetchGitStatus(taskID, dir)
+	msg := gitutil.FetchGitStatus(taskID, dir)
 	a.tapp.QueueUpdateDraw(func() {
 		if taskID != a.agentState.TaskID {
 			return
@@ -477,9 +477,9 @@ func (a *App) fetchGitStatus(taskID, dir string) {
 		a.lastGitRefresh = time.Now()
 		a.gitPanel.SetStatus(msg.Status, msg.Diff, msg.BranchFiles)
 		// Merge committed + uncommitted files
-		files := ui.MergeChangedFiles(
-			ui.ParseGitDiffNameStatus(msg.BranchFiles),
-			ui.ParseGitStatus(msg.Status),
+		files := gitutil.MergeChangedFiles(
+			gitutil.ParseGitDiffNameStatus(msg.BranchFiles),
+			gitutil.ParseGitStatus(msg.Status),
 		)
 		a.filePanel.SetFiles(files)
 		uxlog.Log("[tui2] git status refreshed: %d files", len(files))
@@ -490,7 +490,7 @@ func (a *App) fetchGitStatus(taskID, dir string) {
 func (a *App) fetchDirChildren(dirPath string) {
 	taskID := a.agentState.TaskID
 	dir := a.worktreeDir
-	msg := ui.FetchDirFiles(taskID, dir, dirPath)
+	msg := gitutil.FetchDirFiles(taskID, dir, dirPath)
 	a.tapp.QueueUpdateDraw(func() {
 		if taskID != a.agentState.TaskID {
 			return
@@ -508,7 +508,7 @@ func (a *App) openFileDiff() {
 	filePath := f.Path
 	dir := a.worktreeDir
 	go func() {
-		msg := ui.FetchFileDiff(a.agentState.TaskID, dir, filePath)
+		msg := gitutil.FetchFileDiff(a.agentState.TaskID, dir, filePath)
 		a.tapp.QueueUpdateDraw(func() {
 			if msg.TaskID != a.agentState.TaskID {
 				return
