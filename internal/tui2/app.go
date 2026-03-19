@@ -55,6 +55,7 @@ type App struct {
 	taskPreview  *TaskPreviewPanel
 	taskDetail   *TaskDetailPanel
 	agentPane    *TerminalPane
+	agentHeader  *AgentHeader
 	gitPanel     *GitPanel // git status for agent view (left panel)
 	filePanel    *FilePanel
 
@@ -140,6 +141,7 @@ func (a *App) buildUI() {
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
 	a.agentPane = NewTerminalPane()
+	a.agentHeader = NewAgentHeader()
 
 	// Wire mouse click callbacks so clicking a panel switches agentFocus.
 	a.filePanel.OnClick = func() {
@@ -167,11 +169,14 @@ func (a *App) buildUI() {
 		AddItem(a.taskDetail, 0, 1, false)
 	a.taskPage = NewTaskPage(taskFlex, a.tasklist)
 
-	// Agent page — three-panel layout
-	a.agentPage = tview.NewFlex().SetDirection(tview.FlexColumn).
+	// Agent page — header + three-panel layout
+	agentPanels := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(a.gitPanel, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
+	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.agentHeader, 1, 0, false).
+		AddItem(agentPanels, 0, 1, true)
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
@@ -1063,6 +1068,7 @@ func (a *App) onTaskSelect(task *model.Task) {
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
+	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.SetPRURL(task.PRURL)
 	a.agentPane.ResetVT()
@@ -1179,8 +1185,8 @@ func (a *App) startSession(task *model.Task) {
 		if centerW < 20 {
 			centerW = 20
 		}
-		// Height minus header(1) and statusbar(1).
-		centerH := th - 2
+		// Height minus header(1), agent header(1), and statusbar(1).
+		centerH := th - 3
 		if centerH < 5 {
 			centerH = 5
 		}

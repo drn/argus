@@ -210,4 +210,6 @@
 
 - **Agent view replay must use current panel dimensions, not stale PTY size.** When a session dies, `TerminalPane.ptyCols/ptyRows` retains the last live PTY size. If the user resizes the window after the session finishes, replay renders at the old width — clipping or leaving gaps. Fix: in `Draw()`, for dead/nil sessions, override `ptyCols/ptyRows` with `wantCols/wantRows` (current panel dimensions) so `renderReplay` creates the emulator at the current size. The replay path already creates a fresh emulator on every `Draw()` call, so this adds no overhead.
 
+- **Agent view has a powerline-style header showing the current task name.** `AgentHeader` (`internal/tui2/agentheader.go`) is a 1-row `tview.Box` widget that renders a centered powerline segment with the task name using the same color palette as the root `Header` (lavender active segment on dark background). It's set via `SetTaskName()` in `onTaskSelect()`. The agent page layout is a `FlexRow`: agent header (1 row, fixed) + agent panels (flex, 3-column layout). The PTY size fallback calculation in `startSession` accounts for the extra row (subtracts 3 instead of 2 for header + agent header + statusbar).
+
 ## Planned but Not Yet Implemented

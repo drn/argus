@@ -592,3 +592,12 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 - Per-line tokenization loses cross-line context (multi-line strings, block comments) — accepted tradeoff since diff content is inherently fragmented.
 - Diff backgrounds use fixed RGB (`#3d1012` removed, `#0d3317` added) for consistent tinting; foregrounds use palette indices to adapt to terminal themes.
 - `applyDiffBG` unconditionally overlays the diff background on all cells — Chroma token backgrounds are overwritten by the diff background.
+
+## Agent View Header: 2026-03-19
+
+### Data Model & Flow
+- `AgentHeader` widget (`internal/tui2/agentheader.go`): 1-row `tview.Box` rendering a centered powerline segment with the task name.
+- Uses the same color palette as the root `Header` (`headerActiveBG`, `headerActiveFG`, `headerBaseBG`, `powerlineSep`).
+- `SetTaskName(name)` is called from `onTaskSelect()` in `app.go` when entering the agent view.
+- Agent page layout changed from a flat `FlexColumn` to a `FlexRow` wrapping: agent header (1 row fixed) + agent panels (flex, 3-column).
+- PTY size fallback in `startSession` updated: subtracts 3 rows (root header + agent header + statusbar) instead of 2.
