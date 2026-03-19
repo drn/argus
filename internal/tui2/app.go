@@ -613,6 +613,12 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	}
 
+	// When session is finished, ctrl+d exits agent view (same as ctrl+q/esc)
+	if event.Key() == tcell.KeyCtrlD && (sess == nil || !sess.Alive()) {
+		a.exitAgentView()
+		return nil
+	}
+
 	// 'o' to open PR when finished
 	if event.Key() == tcell.KeyRune && event.Rune() == 'o' && (sess == nil || !sess.Alive()) {
 		a.agentPane.OpenPR()
