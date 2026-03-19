@@ -230,4 +230,12 @@
 
 - **Stale in-progress tasks are reconciled to complete on every tick (daemon mode only).** `refreshTasksWithIDs` checks all tasks: if `StatusInProgress` but not in the daemon's running set, mark `Complete`. This catches cases where the `handleSessionExitUI` callback didn't fire (daemon restart with stale binary, TUI restart mid-session, stream loss without proper exit). Only runs when `daemonConnected` is true — in-process mode has its own `onFinish` callback. `restartDaemon` also wires `OnSessionExit` on the new client (was previously missing, causing all sessions started after a daemon restart to never fire exit callbacks).
 
+- **Stopped agent → `StatusInReview`, not Pending.** `handleSessionExitUI` in `app.go` sets `StatusInReview` when `stopped == true` (user explicitly stopped the agent). Normal clean exit → `StatusComplete`. This matches the pre-tcell Bubble Tea behavior: stopped means "needs human review", not "reset to pending".
+
+- **Idle+unvisited tasks are visually promoted to InReview in the task list.** `App` tracks `idleUnvisited` and `viewedWhileAgent` maps (same as pre-tcell). When an in-progress task becomes idle and the user hasn't visited its agent view since, `drawTaskRow` renders it with the InReview icon (◎) and cyan style. `projectStatusIcon` also counts these as InReview at the project level. Entering the agent view (`onTaskSelect`) clears the flag. `refreshTasksWithIDs` computes newly-idle tasks by diffing against `IdleSet()` (the previous idle map) and adds them to `idleUnvisited`; tasks no longer idle are removed. `viewedWhileAgent` suppresses false-positive re-adds for tasks the user was watching when they went idle.
+
+- **`s`/`S` keys cycle task status manually.** `s` advances via `Status.Next()`, `S` reverts via `Status.Prev()`. Wired through `OnStatusChange` callback → `db.Update` + `refreshTasks`. This allows manually cycling through all four states: Pending → InProgress → InReview → Complete.
+
+- **Task row icon animates between ● and ◉ for actively running tasks.** `drawTaskRow` checks `tickEven` for InProgress tasks that are running and not idle, alternating the icon on each tick. Idle tasks (visited) show moon (☾). Idle+unvisited show InReview icon (◎). This matches the pre-tcell 4-way branch: idleUnvisited → running/idle → running+tickEven → running+!tickEven.
+
 ## Planned but Not Yet Implemented

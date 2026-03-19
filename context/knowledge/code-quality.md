@@ -637,6 +637,19 @@ The tui2 migration (Phase 11) ported individual task status icons but dropped:
 - `refreshTasksWithIDs(runningIDs, idleIDs []string)` — signature expanded to accept idle IDs. All three call sites updated: `onTick`, `handleSessionExitUI` goroutine, `refreshTasks`.
 - `handleSessionExitUI` now calls `exitAgentView()` when viewing a completed task's agent pane (not stopped — stopped tasks stay on agent view with cleared session).
 
+### Task Status Handling (2026-03-19)
+
+**Restored pre-tcell behavior for task status transitions and visual feedback:**
+
+- **Stopped agent → InReview**: `handleSessionExitUI` now sets `StatusInReview` (not Pending) when `stopped == true`. Matches the Bubble Tea `determinePostExitStatus` behavior where explicit stop = "needs human review".
+- **Idle+unvisited visual promotion**: `App` struct gains `idleUnvisited` and `viewedWhileAgent` maps. `refreshTasksWithIDs` diffs newly-idle tasks against `TaskListView.IdleSet()` to populate `idleUnvisited`. Entering agent view clears the flag via `onTaskSelect`. `drawTaskRow` renders idleUnvisited InProgress tasks with InReview icon (◎, cyan). `projectStatusIcon` counts them as InReview at project level.
+- **Manual status cycling**: `s`/`S` keys in task list call `Status.Next()`/`Prev()` via `OnStatusChange` callback → `db.Update` + `refreshTasks`.
+- **Task row animation**: `drawTaskRow` now checks `tickEven` for running InProgress tasks, alternating ● and ◉. Idle (visited) tasks show moon (☾). Idle+unvisited show ◎.
+
+**New fields on `TaskListView`**: `idleUnvisited map[string]bool`, `OnStatusChange func(task)`.
+**New methods**: `SetIdleUnvisited(ids)`, `IdleSet() map[string]bool`.
+**New fields on `App`**: `idleUnvisited map[string]bool`, `viewedWhileAgent map[string]bool`.
+
 ### Gotchas
 - Chevron state checks both `tl.expanded` and `tl.archiveProject` — same-named projects in main and archive sections will both show expanded chevrons. Acceptable given the BT code had the same behavior.
 
