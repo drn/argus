@@ -595,10 +595,10 @@ func (rv *ReviewsView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Three-panel layout: 30% PR list / 50% diff / 20% comments.
-	leftW := width * 30 / 100
-	if leftW < 25 {
-		leftW = min(25, width)
+	// Three-panel layout: 20% PR list / 60% diff / 20% comments.
+	leftW := width * 20 / 100
+	if leftW < 20 {
+		leftW = min(20, width)
 	}
 	rightW := width * 20 / 100
 	if rightW < 20 {
