@@ -17,6 +17,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/uxlog"
@@ -78,6 +79,17 @@ type TerminalPane struct {
 
 	// Scrollback.
 	scrollOffset int
+
+	// Anchor-lock: track total lines so scrollOffset stays pinned when new output arrives.
+	anchorTotalLines int // total lines when scrollOffset was last set
+
+	// Replay emulator cache: reuse when only scroll changes (no new bytes).
+	replayEmu          *xvt.SafeEmulator
+	replayEmuBytes     uint64 // TotalWritten when replayEmu was built
+	replayEmuCols      int
+	replayEmuRows      int
+	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
+	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
@@ -210,6 +222,10 @@ func (tp *TerminalPane) ResetVT() {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	tp.anchorTotalLines = 0
+	tp.replayEmu = nil
+	tp.replayEmuBytes = 0
+	tp.replayEmuLogSize = 0
 	tp.replayData = nil
 	tp.ExitDiffMode()
 }
@@ -229,13 +245,47 @@ func (tp *TerminalPane) HasContent() bool {
 
 func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n }
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0 }
+func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0 }
 
 func (tp *TerminalPane) ScrollDown(n int) {
 	tp.scrollOffset -= n
 	if tp.scrollOffset < 0 {
 		tp.scrollOffset = 0
+		tp.anchorTotalLines = 0
 	}
+}
+
+// readLogTail reads the last `size` bytes from the session log file.
+// Returns nil if the file doesn't exist or is empty. The log file is
+// concurrently appended by readLoop; using Open+Seek+Read (not ReadFile)
+// avoids reading partial writes at EOF. vt10x handles truncated escape
+// sequences gracefully.
+func (tp *TerminalPane) readLogTail(size int64) ([]byte, int64) {
+	logPath := agent.SessionLogPath(tp.taskID)
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil, 0
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return nil, 0
+	}
+
+	fileSize := fi.Size()
+	readSize := size
+	if readSize > fileSize {
+		readSize = fileSize
+	}
+
+	offset := fileSize - readSize
+	buf := make([]byte, readSize)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return nil, 0
+	}
+	return buf[:n], fileSize
 }
 
 // MouseHandler handles mouse clicks (focus switching) and scroll wheel.
@@ -387,22 +437,9 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		return
 	}
 
-	var raw []byte
 	alive := false
-
 	if sess != nil {
 		alive = sess.Alive()
-		raw = sess.RecentOutput()
-	} else if len(tp.replayData) > 0 {
-		raw = tp.replayData
-	}
-
-	if len(raw) == 0 {
-		if sess != nil {
-			msg := "Waiting for output..."
-			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
-		}
-		return
 	}
 
 	if ptyCols < 20 {
@@ -413,8 +450,47 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	if tp.scrollOffset > 0 || !alive {
-		tp.renderReplay(screen, x, y, width, height, raw, ptyCols, ptyRows)
+		// Scrollback or finished session: use log file for full history,
+		// falling back to ring buffer or cached replay data.
+		var raw []byte
+		var logSize int64
+
+		if tp.taskID != "" {
+			// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
+			// Minimum 1MB to avoid re-reads on small scrolls.
+			needed := int64(tp.scrollOffset+height) * int64(ptyCols) * 3
+			if needed < 1024*1024 {
+				needed = 1024 * 1024
+			}
+			raw, logSize = tp.readLogTail(needed)
+		}
+		if len(raw) == 0 {
+			// Fallback: ring buffer or cached replay data.
+			if sess != nil {
+				raw = sess.RecentOutput()
+			} else if len(tp.replayData) > 0 {
+				raw = tp.replayData
+			}
+		}
+		if len(raw) == 0 {
+			if sess != nil {
+				msg := "Waiting for output..."
+				drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+			}
+			return
+		}
+		tp.renderReplay(screen, x, y, width, height, raw, logSize, ptyCols, ptyRows)
 	} else {
+		// Live follow-tail mode: incremental feed.
+		var raw []byte
+		if sess != nil {
+			raw = sess.RecentOutput()
+		}
+		if len(raw) == 0 {
+			msg := "Waiting for output..."
+			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+			return
+		}
 		tp.renderLive(screen, x, y, width, height, raw, ptyCols, ptyRows)
 	}
 }
@@ -451,15 +527,31 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 }
 
 // renderReplay uses x/vt scrollback for finished sessions and scroll mode.
-// Feeds full buffer into a fresh emulator and uses scrollback for history.
-func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
-	cursorVisible := true
-	emu := tp.newTrackedEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
-		cursorVisible = visible
-	})
-	safeEmuWrite(emu, raw)
+// Caches the emulator when input hasn't changed (same log size or same
+// TotalWritten). Supports anchor-lock: when scrolled up and new output
+// arrives, bumps scrollOffset so the viewed content stays pinned.
+func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, logSize int64, ptyCols, ptyRows int) {
+	// Check if we can reuse the cached replay emulator.
+	needRebuild := tp.replayEmu == nil ||
+		tp.replayEmuCols != ptyCols ||
+		tp.replayEmuRows != ptyRows ||
+		(logSize > 0 && tp.replayEmuLogSize != logSize) ||
+		(logSize == 0 && tp.replayEmuBytes != uint64(len(raw)))
 
-	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0, cursorVisible)
+	if needRebuild {
+		cursorVisible := true
+		tp.replayEmu = tp.newTrackedEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+			cursorVisible = visible
+		})
+		safeEmuWrite(tp.replayEmu, raw)
+		tp.replayEmuCols = ptyCols
+		tp.replayEmuRows = ptyRows
+		tp.replayEmuLogSize = logSize
+		tp.replayEmuBytes = uint64(len(raw))
+		tp.replayEmuCursorVisible = cursorVisible
+	}
+
+	tp.paintEmu(screen, x, y, w, h, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
@@ -483,6 +575,14 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	if totalLines <= 0 {
 		return
 	}
+
+	// Anchor-lock: when scrolled up and new lines arrive, bump scrollOffset
+	// so the viewed content stays pinned (tmux-style).
+	if tp.scrollOffset > 0 && tp.anchorTotalLines > 0 && totalLines > tp.anchorTotalLines {
+		delta := totalLines - tp.anchorTotalLines
+		tp.scrollOffset += delta
+	}
+	tp.anchorTotalLines = totalLines
 
 	// Clamp scroll offset.
 	maxScroll := totalLines - h
