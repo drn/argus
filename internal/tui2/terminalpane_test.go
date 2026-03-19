@@ -9,6 +9,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
+	"github.com/drn/argus/internal/gitutil"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -166,12 +168,13 @@ func TestTerminalPane_DiffMode(t *testing.T) {
 	if tp.InDiffMode() {
 		t.Error("should not be in diff mode initially")
 	}
-	tp.EnterDiffMode("+added\n-removed\n context", "test.go")
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	tp.EnterDiffMode(diff, "test.go")
 	if !tp.InDiffMode() {
 		t.Error("should be in diff mode")
 	}
-	if len(tp.diffContent) == 0 {
-		t.Error("diff content should be populated")
+	if len(tp.diffUnifiedLines) == 0 {
+		t.Error("unified diff lines should be populated")
 	}
 	tp.ExitDiffMode()
 	if tp.InDiffMode() {
@@ -294,46 +297,79 @@ func TestScrollbackLen(t *testing.T) {
 	}
 }
 
-func TestParseDiffLines(t *testing.T) {
-	diff := "+added\n-removed\n context\n@@ header"
-	lines := parseDiffLines(diff)
-	if len(lines) != 4 {
-		t.Fatalf("expected 4 lines, got %d", len(lines))
+func TestBuildUnifiedDiffLines(t *testing.T) {
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	pd := gitutil.ParseUnifiedDiff(diff)
+	lines := buildUnifiedDiffLines(pd, "test.go")
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty unified diff lines")
 	}
-	if lines[0].lineType != diffAdded {
-		t.Errorf("line 0 type = %d, want diffAdded", lines[0].lineType)
+	// Should have: hunk header + 3 content lines + trailing empty context = 5 lines
+	if len(lines) < 4 {
+		t.Errorf("expected at least 4 lines, got %d", len(lines))
 	}
-	if lines[1].lineType != diffRemoved {
-		t.Errorf("line 1 type = %d, want diffRemoved", lines[1].lineType)
-	}
-	if lines[2].lineType != diffContext {
-		t.Errorf("line 2 type = %d, want diffContext", lines[2].lineType)
-	}
-	if lines[3].lineType != diffHeader {
-		t.Errorf("line 3 type = %d, want diffHeader", lines[3].lineType)
+	// Each line should have styled cells
+	for i, line := range lines {
+		if len(line.cells) == 0 {
+			t.Errorf("line %d has no cells", i)
+		}
 	}
 }
 
-func TestParseDiffLinesEmpty(t *testing.T) {
-	if parseDiffLines("") != nil {
+func TestBuildUnifiedDiffLinesEmpty(t *testing.T) {
+	pd := gitutil.ParseUnifiedDiff("")
+	lines := buildUnifiedDiffLines(pd, "test.go")
+	if lines != nil {
 		t.Error("expected nil for empty diff")
 	}
 }
 
-func TestDiffLineStyle(t *testing.T) {
-	addedFG, _, _ := diffLineStyle(diffAdded).Decompose()
-	removedFG, _, _ := diffLineStyle(diffRemoved).Decompose()
-	contextFG, _, _ := diffLineStyle(diffContext).Decompose()
-	headerFG, _, _ := diffLineStyle(diffHeader).Decompose()
+func TestBuildSideBySideDiffLines(t *testing.T) {
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	pd := gitutil.ParseUnifiedDiff(diff)
+	lines := buildSideBySideDiffLines(pd, "test.go", 80)
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty side-by-side diff lines")
+	}
+	for i, line := range lines {
+		if len(line.cells) == 0 {
+			t.Errorf("line %d has no cells", i)
+		}
+	}
+}
 
-	if addedFG == removedFG {
-		t.Error("added and removed should have different colors")
+func TestHighlightLines(t *testing.T) {
+	lines := []string{"func main() {", "  fmt.Println(\"hello\")", "}"}
+	hl := highlightLines(lines, "test.go")
+	if len(hl) != 3 {
+		t.Fatalf("expected 3 highlighted lines, got %d", len(hl))
 	}
-	if contextFG == addedFG {
-		t.Error("context and added should have different colors")
+	// Go code should get syntax highlighting — at least some cells should
+	// have non-default foreground.
+	hasColor := false
+	for _, line := range hl {
+		for _, c := range line.cells {
+			fg, _, _ := c.style.Decompose()
+			if fg != tcell.ColorDefault {
+				hasColor = true
+				break
+			}
+		}
 	}
-	if headerFG == contextFG {
-		t.Error("header and context should have different colors")
+	if !hasColor {
+		t.Error("expected syntax-highlighted cells with non-default colors")
+	}
+}
+
+func TestHighlightLinesUnknownExtension(t *testing.T) {
+	lines := []string{"hello world"}
+	hl := highlightLines(lines, "unknown.xyz123")
+	if len(hl) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(hl))
+	}
+	// Should return plain (unstyled) text
+	if len(hl[0].cells) != len("hello world") {
+		t.Errorf("expected %d cells, got %d", len("hello world"), len(hl[0].cells))
 	}
 }
 

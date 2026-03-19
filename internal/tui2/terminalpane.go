@@ -17,6 +17,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -67,11 +68,14 @@ type TerminalPane struct {
 	replayData []byte
 
 	// Diff mode.
-	diffMode    bool
-	diffContent []diffLine
-	diffSplit   bool
-	diffScroll  int
-	diffFile    string
+	diffMode         bool
+	diffParsed       gitutil.ParsedDiff
+	diffUnifiedLines []renderedDiffLine
+	diffSplitLines   []renderedDiffLine
+	diffSplitWidth   int // width used to build split lines (invalidate on resize)
+	diffSplit        bool
+	diffScroll       int
+	diffFile         string
 
 	// pendingResize is set by Draw() when panel dimensions differ from PTY.
 	// The tick goroutine checks this and performs the resize RPC.
@@ -82,21 +86,6 @@ type TerminalPane struct {
 	// The app wires this to switch agentFocus back to the terminal.
 	OnClick func()
 }
-
-// diffLine is a single line in the diff view with its type.
-type diffLine struct {
-	text     string
-	lineType diffLineType
-}
-
-type diffLineType int
-
-const (
-	diffContext diffLineType = iota
-	diffAdded
-	diffRemoved
-	diffHeader
-)
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
 const mouseScrollStep = 3
@@ -270,13 +259,19 @@ func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
 	tp.diffMode = true
 	tp.diffScroll = 0
 	tp.diffFile = fileName
-	tp.diffContent = parseDiffLines(diff)
+	tp.diffParsed = gitutil.ParseUnifiedDiff(diff)
+	tp.diffUnifiedLines = buildUnifiedDiffLines(tp.diffParsed, fileName)
+	tp.diffSplitLines = nil
+	tp.diffSplitWidth = 0
 }
 
 // ExitDiffMode returns to terminal display.
 func (tp *TerminalPane) ExitDiffMode() {
 	tp.diffMode = false
-	tp.diffContent = nil
+	tp.diffParsed = gitutil.ParsedDiff{}
+	tp.diffUnifiedLines = nil
+	tp.diffSplitLines = nil
+	tp.diffSplitWidth = 0
 	tp.diffScroll = 0
 	tp.diffFile = ""
 }
@@ -545,14 +540,30 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 // --- Diff rendering ---
 
 func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
-	if len(tp.diffContent) == 0 {
+	var lines []renderedDiffLine
+	if tp.diffSplit {
+		// Rebuild side-by-side lines if width changed.
+		if tp.diffSplitWidth != w || tp.diffSplitLines == nil {
+			tp.diffSplitLines = buildSideBySideDiffLines(tp.diffParsed, tp.diffFile, w)
+			tp.diffSplitWidth = w
+		}
+		lines = tp.diffSplitLines
+	} else {
+		lines = tp.diffUnifiedLines
+	}
+
+	if len(lines) == 0 {
 		msg := "No diff available"
 		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
 		return
 	}
 
 	// Header
-	headerText := " " + tp.diffFile + " "
+	mode := "unified"
+	if tp.diffSplit {
+		mode = "split"
+	}
+	headerText := " " + tp.diffFile + "  [" + mode + "]"
 	headerStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
 	for i, r := range headerText {
 		if i >= w {
@@ -562,7 +573,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 	}
 
 	visibleH := h - 1
-	maxScroll := len(tp.diffContent) - visibleH
+	maxScroll := len(lines) - visibleH
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -572,57 +583,11 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 
 	for i := range visibleH {
 		lineIdx := tp.diffScroll + i
-		if lineIdx >= len(tp.diffContent) {
+		if lineIdx >= len(lines) {
 			break
 		}
-		line := tp.diffContent[lineIdx]
-		style := diffLineStyle(line.lineType)
-		text := line.text
-		if len(text) > w {
-			text = text[:w]
-		}
-		drawText(screen, x, y+1+i, w, text, style)
+		drawStyledLine(screen, x, y+1+i, w, lines[lineIdx].cells)
 	}
-}
-
-func diffLineStyle(t diffLineType) tcell.Style {
-	switch t {
-	case diffAdded:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(78)) // green
-	case diffRemoved:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(203)) // red
-	case diffHeader:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(87)).Bold(true)
-	default:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(245))
-	}
-}
-
-func parseDiffLines(diff string) []diffLine {
-	if diff == "" {
-		return nil
-	}
-	var lines []diffLine
-	start := 0
-	for i := 0; i <= len(diff); i++ {
-		if i == len(diff) || diff[i] == '\n' {
-			line := diff[start:i]
-			start = i + 1
-			lt := diffContext
-			if len(line) > 0 {
-				switch line[0] {
-				case '+':
-					lt = diffAdded
-				case '-':
-					lt = diffRemoved
-				case '@':
-					lt = diffHeader
-				}
-			}
-			lines = append(lines, diffLine{text: line, lineType: lt})
-		}
-	}
-	return lines
 }
 
 // --- x/vt → tcell helpers ---

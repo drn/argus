@@ -574,3 +574,21 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 ### Data Model
 - `FilePanel.OnClick func()` — callback fired on mouse click
 - `TerminalPane.OnClick func()` — callback fired on mouse click
+
+## Syntax Highlighting in Diff Views (2026-03-19)
+
+### Data Model
+- `styledChar{ch rune, style tcell.Style}` — single character with tcell style
+- `highlightedLine{cells []styledChar}` — one syntax-highlighted line
+- `renderedDiffLine{cells []styledChar}` — fully assembled diff line (numbers + prefix + highlighted content + BG)
+
+### Files
+- `highlight.go` — Chroma tokenizer → `styledChar` cells. `highlightLines(lines, filename)` batch-highlights, `tokenToStyle` maps Chroma tokens to tcell styles via monokai palette.
+- `diffrender.go` — `buildUnifiedDiffLines` and `buildSideBySideDiffLines` produce `[]renderedDiffLine` with line numbers, +/- prefix, syntax-highlighted content, and diff background colors.
+- `terminalpane.go` — `EnterDiffMode` pre-renders unified lines; split lines are lazily cached per width (`diffSplitWidth` invalidation). `renderDiff` paints via `drawStyledLine`.
+- `reviews.go` — `applyFileDiff` pre-renders unified lines into `diffRendered` field.
+
+### Gotchas
+- Per-line tokenization loses cross-line context (multi-line strings, block comments) — accepted tradeoff since diff content is inherently fragmented.
+- Diff backgrounds use fixed RGB (`#3d1012` removed, `#0d3317` added) for consistent tinting; foregrounds use palette indices to adapt to terminal themes.
+- `applyDiffBG` unconditionally overlays the diff background on all cells — Chroma token backgrounds are overwritten by the diff background.
