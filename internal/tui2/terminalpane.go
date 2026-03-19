@@ -77,6 +77,10 @@ type TerminalPane struct {
 	// The tick goroutine checks this and performs the resize RPC.
 	pendingResizeRows uint16
 	pendingResizeCols uint16
+
+	// OnClick is called when the user clicks on the terminal pane.
+	// The app wires this to switch agentFocus back to the terminal.
+	OnClick func()
 }
 
 // diffLine is a single line in the diff view with its type.
@@ -228,10 +232,16 @@ func (tp *TerminalPane) ScrollDown(n int) {
 	}
 }
 
-// MouseHandler handles mouse wheel scrolling in the terminal pane.
+// MouseHandler handles mouse clicks (focus switching) and scroll wheel.
 func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 		switch action {
+		case tview.MouseLeftDown, tview.MouseLeftClick:
+			setFocus(tp)
+			if tp.OnClick != nil {
+				tp.OnClick()
+			}
+			return true, nil
 		case tview.MouseScrollUp:
 			if tp.diffMode {
 				tp.DiffScrollUp(mouseScrollStep)
