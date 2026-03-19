@@ -303,7 +303,14 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		return
 	}
 
+	if len(tl.rows) == 0 {
+		return
+	}
+
 	// Ensure scroll offset keeps cursor visible
+	if tl.cursor < 0 {
+		tl.cursor = 0
+	}
 	if tl.cursor < tl.offset {
 		tl.offset = tl.cursor
 	}
