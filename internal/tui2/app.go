@@ -56,8 +56,9 @@ type App struct {
 	filePanel    *FilePanel
 
 	// Reviews and settings tabs
-	reviews  *ReviewsView
-	settings *SettingsView
+	reviews      *ReviewsView
+	settings     *SettingsView
+	settingsPage *SettingsPage
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -108,6 +109,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
+	app.settingsPage = NewSettingsPage(app.settings)
 	app.buildUI()
 	app.refreshTasks()
 
@@ -158,7 +160,7 @@ func (a *App) buildUI() {
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("reviews", a.reviews, true, false).
-		AddPage("settings", a.settings, true, false)
+		AddPage("settings", a.settingsPage, true, false)
 
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
