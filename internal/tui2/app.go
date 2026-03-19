@@ -48,10 +48,11 @@ type App struct {
 	header       *Header
 	statusbar    *StatusBar
 	tasklist     *TaskListView
+	taskGitPanel *GitPanel // git status for selected task (task list center-top)
 	taskPreview  *TaskPreviewPanel
 	taskDetail   *TaskDetailPanel
 	agentPane    *TerminalPane
-	gitPanel     *GitPanel
+	gitPanel     *GitPanel // git status for agent view (left panel)
 	filePanel    *FilePanel
 
 	// Reviews and settings tabs
@@ -123,8 +124,8 @@ func (a *App) buildUI() {
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 
+	a.taskGitPanel = NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
-	a.taskPreview.SetRunner(a.runner)
 	a.taskDetail = NewTaskDetailPanel()
 
 	a.gitPanel = NewGitPanel()
@@ -135,10 +136,15 @@ func (a *App) buildUI() {
 		go fn()
 	})
 
-	// Task list page — three-panel layout: tasks | preview | details
+	// Task list page — three-panel layout: tasks | (git status + preview) | details
+	// Center column is a vertical split: git status (30%, clamped 3-15 rows) on top,
+	// preview (remaining) on bottom — matching the old Bubble Tea layout.
+	taskCenter := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.taskGitPanel, 0, 3, false).
+		AddItem(a.taskPreview, 0, 7, false)
 	a.taskPage = tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(a.tasklist, 0, 1, true).
-		AddItem(a.taskPreview, 0, 3, false).
+		AddItem(taskCenter, 0, 3, false).
 		AddItem(a.taskDetail, 0, 1, false)
 
 	// Agent page — three-panel layout
@@ -224,6 +230,15 @@ func (a *App) onTick() {
 		}
 	}
 
+	// Refresh task list side panels (runs on tick goroutine — blocking is OK here).
+	if previewTaskID := a.taskPreview.TaskID(); previewTaskID != "" && a.mode == modeTaskList {
+		a.refreshPreview(previewTaskID)
+		// Also refresh git status for the selected task periodically.
+		if sel := a.tasklist.SelectedTask(); sel != nil && sel.Worktree != "" {
+			a.fetchTaskGitStatus(sel.ID, sel.Worktree)
+		}
+	}
+
 	// Update agent pane session
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
@@ -297,7 +312,6 @@ func (a *App) restartDaemon() {
 		a.daemonClient = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
-		a.taskPreview.SetRunner(newClient)
 		a.mu.Unlock()
 
 		// Reset in-progress tasks to pending, preserving SessionID for resume.
@@ -827,15 +841,61 @@ func (a *App) switchTab(t Tab) {
 	}
 }
 
-// onTaskCursorChange updates the preview and detail panels when the task list cursor moves.
+// onTaskCursorChange updates the preview, git status, and detail panels when the task list cursor moves.
 func (a *App) onTaskCursorChange(task *model.Task) {
 	if task == nil {
 		a.taskPreview.SetTaskID("")
 		a.taskDetail.SetTask(nil, false)
+		a.taskGitPanel.Clear()
 		return
 	}
 	a.taskPreview.SetTaskID(task.ID)
 	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
+	// Kick off git status fetch for the selected task's worktree.
+	if task.Worktree != "" {
+		a.taskGitPanel.Clear()
+		go a.fetchTaskGitStatus(task.ID, task.Worktree)
+	} else {
+		a.taskGitPanel.Clear()
+	}
+}
+
+// fetchTaskGitStatus runs git status for a task's worktree and updates the task git panel.
+func (a *App) fetchTaskGitStatus(taskID, dir string) {
+	msg := gitutil.FetchGitStatus(taskID, dir)
+	a.tapp.QueueUpdateDraw(func() {
+		// Only update if we're still viewing this task.
+		sel := a.tasklist.SelectedTask()
+		if sel == nil || sel.ID != taskID {
+			return
+		}
+		a.taskGitPanel.SetStatus(msg.Status, msg.Diff, msg.BranchFiles)
+	})
+}
+
+// refreshPreview fetches output for the selected task and pre-renders cells.
+// Called from the tick goroutine — RPC and file I/O are safe here.
+func (a *App) refreshPreview(taskID string) {
+	_, _, w, h := a.taskPreview.GetInnerRect()
+	if w <= 0 || h <= 0 {
+		return
+	}
+
+	sess := a.runner.Get(taskID)
+	if sess != nil {
+		raw := sess.RecentOutput()
+		a.taskPreview.RefreshOutput(raw, w, h)
+		return
+	}
+
+	// No live session — try session log file.
+	logData := LoadSessionLog(taskID)
+	if len(logData) > 0 {
+		a.taskPreview.RefreshOutput(logData, w, h)
+		return
+	}
+
+	a.taskPreview.SetStatus("No active agent")
 }
 
 // isTaskRunning checks if a task has a running session.

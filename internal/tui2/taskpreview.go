@@ -7,42 +7,130 @@ import (
 	"sync"
 
 	xvt "github.com/charmbracelet/x/vt"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/drn/argus/internal/agent"
 )
 
+// previewCell is a pre-rendered cell for the preview panel.
+type previewCell struct {
+	ch    rune
+	style tcell.Style
+}
+
 // TaskPreviewPanel renders a small terminal snapshot of the selected task's agent output.
+// All heavy work (RPC, file I/O, VT emulation) happens in RefreshOutput(), called from
+// the tick goroutine. Draw() only paints cached cells — zero blocking.
 type TaskPreviewPanel struct {
 	*tview.Box
 	mu     sync.Mutex
-	runner agent.SessionProvider
 	taskID string
+
+	// Pre-rendered cell grid, updated by RefreshOutput().
+	cells     [][]previewCell
+	cellCols  int
+	cellRows  int
+	statusMsg string // shown when cells is nil ("No task selected", etc.)
 }
 
 // NewTaskPreviewPanel creates a task preview panel.
 func NewTaskPreviewPanel() *TaskPreviewPanel {
 	return &TaskPreviewPanel{
-		Box: tview.NewBox(),
+		Box:       tview.NewBox(),
+		statusMsg: "No task selected",
 	}
 }
 
-// SetRunner sets the session provider for looking up task sessions.
-func (tp *TaskPreviewPanel) SetRunner(runner agent.SessionProvider) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	tp.runner = runner
-}
-
-// SetTaskID sets which task to preview.
+// SetTaskID sets which task to preview. Clears cached cells.
 func (tp *TaskPreviewPanel) SetTaskID(id string) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
+	if tp.taskID == id {
+		return
+	}
 	tp.taskID = id
+	tp.cells = nil
+	tp.cellCols = 0
+	tp.cellRows = 0
+	if id == "" {
+		tp.statusMsg = "No task selected"
+	} else {
+		tp.statusMsg = "Loading..."
+	}
 }
 
-// Draw renders the preview panel.
+// TaskID returns the current task ID.
+func (tp *TaskPreviewPanel) TaskID() string {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return tp.taskID
+}
+
+// RefreshOutput fetches session output and pre-renders cells.
+// Called from a goroutine — never from the UI thread.
+func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
+	if cols < 10 {
+		cols = 10
+	}
+	if rows < 3 {
+		rows = 3
+	}
+
+	if len(raw) == 0 {
+		tp.mu.Lock()
+		tp.statusMsg = "Waiting for output..."
+		tp.cells = nil
+		tp.mu.Unlock()
+		return
+	}
+
+	// Run VT emulation off the UI thread.
+	emu := xvt.NewSafeEmulator(cols, rows)
+	emu.Write(raw)
+
+	grid := make([][]previewCell, rows)
+	for vy := 0; vy < rows; vy++ {
+		grid[vy] = make([]previewCell, cols)
+		for vx := 0; vx < cols; vx++ {
+			cell := emu.CellAt(vx, vy)
+			ch := ' '
+			style := tcell.StyleDefault
+			if cell != nil {
+				ch = cellRune(cell)
+				style = uvCellToTcellStyle(cell)
+			}
+			grid[vy][vx] = previewCell{ch: ch, style: style}
+		}
+	}
+
+	tp.mu.Lock()
+	tp.cells = grid
+	tp.cellCols = cols
+	tp.cellRows = rows
+	tp.statusMsg = ""
+	tp.mu.Unlock()
+}
+
+// SetStatus sets a status message (clears cached cells).
+func (tp *TaskPreviewPanel) SetStatus(msg string) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	tp.statusMsg = msg
+	tp.cells = nil
+}
+
+// cellRune extracts the display rune from a uv.Cell.
+func cellRune(cell *uv.Cell) rune {
+	if cell.Content != "" {
+		runes := []rune(cell.Content)
+		if len(runes) > 0 {
+			return runes[0]
+		}
+	}
+	return ' '
+}
+
+// Draw renders the preview panel from cached cells — no blocking work.
 func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 	tp.Box.DrawForSubclass(screen, tp)
 	x, y, width, height := tp.GetInnerRect()
@@ -62,74 +150,33 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 	}
 
 	tp.mu.Lock()
-	taskID := tp.taskID
-	runner := tp.runner
+	cells := tp.cells
+	cellCols := tp.cellCols
+	cellRows := tp.cellRows
+	statusMsg := tp.statusMsg
 	tp.mu.Unlock()
 
-	if taskID == "" || runner == nil {
-		tp.drawCentered(screen, x, y, width, height, "No task selected")
+	if cells == nil {
+		tp.drawCentered(screen, x, y, width, height, statusMsg)
 		return
 	}
 
-	sess := runner.Get(taskID)
-	if sess == nil {
-		// Try loading from session log file
-		logData := tp.loadSessionLog(taskID)
-		if len(logData) > 0 {
-			tp.renderVTOutput(screen, x, y, width, height, logData)
-			return
-		}
-		tp.drawCentered(screen, x, y, width, height, "No active agent")
-		return
-	}
-
-	raw := sess.RecentOutput()
-	if len(raw) == 0 {
-		tp.drawCentered(screen, x, y, width, height, "Waiting for output...")
-		return
-	}
-
-	tp.renderVTOutput(screen, x, y, width, height, raw)
-}
-
-// renderVTOutput replays raw PTY bytes through x/vt and paints the last h rows to screen.
-func (tp *TaskPreviewPanel) renderVTOutput(screen tcell.Screen, x, y, w, h int, raw []byte) {
-	cols := w
-	rows := h
-	if cols < 10 {
-		cols = 10
-	}
-	if rows < 3 {
-		rows = 3
-	}
-
-	emu := xvt.NewSafeEmulator(cols, rows)
-	emu.Write(raw)
-
-	renderCols := min(cols, w)
-	renderRows := min(rows, h)
-
+	// Paint cached cells
+	renderCols := min(cellCols, width)
+	renderRows := min(cellRows, height)
 	for vy := 0; vy < renderRows; vy++ {
 		for vx := 0; vx < renderCols; vx++ {
-			cell := emu.CellAt(vx, vy)
-			ch := ' '
-			style := tcell.StyleDefault
-			if cell != nil {
-				if cell.Content != "" {
-					runes := []rune(cell.Content)
-					if len(runes) > 0 {
-						ch = runes[0]
-					}
-				}
-				style = uvCellToTcellStyle(cell)
-			}
-			screen.SetContent(x+vx, y+vy, ch, nil, style)
+			c := cells[vy][vx]
+			screen.SetContent(x+vx, y+vy, c.ch, nil, c.style)
 		}
 	}
 }
 
 // drawCentered renders centered dimmed text in the panel.
 func (tp *TaskPreviewPanel) drawCentered(screen tcell.Screen, x, y, w, h int, msg string) {
+	if msg == "" {
+		return
+	}
 	lines := strings.Split(msg, "\n")
 	startY := y + (h-len(lines))/2
 	for i, line := range lines {
@@ -145,8 +192,9 @@ func (tp *TaskPreviewPanel) drawCentered(screen tcell.Screen, x, y, w, h int, ms
 	}
 }
 
-// loadSessionLog reads the session log file for a finished task.
-func (tp *TaskPreviewPanel) loadSessionLog(taskID string) []byte {
+// LoadSessionLog reads the session log file for a finished task.
+// Call from a goroutine, then pass the result to RefreshOutput.
+func LoadSessionLog(taskID string) []byte {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
