@@ -195,6 +195,23 @@ func TestArrowTabNavigation(t *testing.T) {
 	}
 }
 
+func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	// No session running — ctrl+d should exit agent view
+	ev := tcell.NewEventKey(tcell.KeyCtrlD, 0, 0)
+	app.handleAgentKey(ev)
+
+	if app.mode != modeTaskList {
+		t.Errorf("mode = %v, want modeTaskList after ctrl+d with no session", app.mode)
+	}
+}
+
 func TestArrowsIgnoredInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
