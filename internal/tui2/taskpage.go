@@ -51,7 +51,20 @@ func (tp *TaskPage) Draw(screen tcell.Screen) {
 	drawText(screen, x+hintPad, hintY, width-hintPad, emptyHint, tcell.StyleDefault.Foreground(ColorDimmed))
 }
 
-// Children returns the inner flex for tview focus routing.
+// Focus delegates to the inner flex so tview's focus chain reaches the
+// task list (the child added with focus=true). Without this, Box.Focus()
+// would set focus on the TaskPage itself, and the inner flex's InputHandler
+// would silently swallow events because no child HasFocus().
+func (tp *TaskPage) Focus(delegate func(p tview.Primitive)) {
+	tp.inner.Focus(delegate)
+}
+
+// HasFocus delegates to the inner flex.
+func (tp *TaskPage) HasFocus() bool {
+	return tp.inner.HasFocus()
+}
+
+// InputHandler delegates to the inner flex.
 func (tp *TaskPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return tp.inner.InputHandler()
 }
