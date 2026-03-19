@@ -348,6 +348,12 @@ func (a *App) restartDaemon() {
 	}
 
 	uxlog.Log("[tui2] daemon restarted, reconnected")
+
+	// Wire up session exit callback on the new client.
+	newClient.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+		a.HandleSessionExit(taskID, info)
+	})
+
 	a.tapp.QueueUpdateDraw(func() {
 		a.mu.Lock()
 		a.daemonRestarting = false
@@ -461,6 +467,25 @@ func (a *App) refreshTasks() {
 func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasks = a.db.Tasks()
 	a.runningIDs = runningIDs
+
+	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
+	// but has no running session, mark it Complete. This handles cases where
+	// the exit callback didn't fire (daemon restart, TUI restart, etc.).
+	// Only reconcile when connected to a daemon — the daemon is the source of
+	// truth for running sessions. In-process mode has its own onFinish callback.
+	if a.daemonConnected {
+		runningSet := make(map[string]bool, len(runningIDs))
+		for _, id := range runningIDs {
+			runningSet[id] = true
+		}
+		for _, t := range a.tasks {
+			if t.Status == model.StatusInProgress && !runningSet[t.ID] {
+				t.SetStatus(model.StatusComplete)
+				a.db.Update(t) //nolint:errcheck
+				uxlog.Log("[tui2] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
+			}
+		}
+	}
 
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)
@@ -1217,12 +1242,17 @@ func (a *App) startSession(task *model.Task) {
 	if err != nil {
 		uxlog.Log("[tui2] failed to start session: %v", err)
 		a.statusbar.SetError("Start failed: " + err.Error())
+		// Revert to pending so the task isn't left in a ghost state.
+		task.SetStatus(model.StatusPending)
+		task.SessionID = ""
+		task.StartedAt = time.Time{}
+		a.db.Update(task) //nolint:errcheck
 		return
 	}
 
-	task.Status = model.StatusInProgress
+	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
-	a.db.Update(task)
+	a.db.Update(task) //nolint:errcheck
 
 	// Now that the session exists, attach it to the terminal pane.
 	a.agentPane.SetSession(sess)
