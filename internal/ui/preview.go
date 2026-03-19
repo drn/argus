@@ -71,7 +71,7 @@ func (p Preview) formatOutput(raw []byte, ptyCols, ptyRows int) string {
 		vtRows = 500
 	}
 
-	lines := replayVT10X(raw, vtCols, vtRows, false)
+	lines := ReplayVT10X(raw, vtCols, vtRows, false)
 	if len(lines) == 0 {
 		return ""
 	}

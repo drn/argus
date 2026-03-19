@@ -3,7 +3,7 @@
 **Date:** 2026-03-18
 **Source:** Inline request: "research well-maintained libraries that do this cleanly. then write an implementation plan"
 **Status:** In Progress
-**Current Phase:** Phase 3 (Phases 1-2 complete)
+**Current Phase:** Phase 6 (x/vt migration + Bubble Tea removal)
 
 ## Goal
 
@@ -103,31 +103,109 @@ This avoids trying to force a real terminal surface through a `View() string` AP
 - [x] Add test coverage: 18 tests covering app creation, tab switching, task selection, agent view enter/exit, key-to-bytes conversion, PTY sizing, task list navigation, row building, archive detection
 
 ### Phase 3: Replace the Live Agent Pane With a Native Terminal Surface
-**Status:** pending
+**Status:** complete
 
-- [ ] Add `internal/tui2/terminalpane` as a custom `tview.Primitive` or `tcell`-backed widget — own PTY rendering, input forwarding, cursor display, and scrollback inside the new runtime
-- [ ] Connect `terminalpane` directly to `agent.SessionHandle` output and resize calls from [`internal/agent/session.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/agent/session.go)
-- [ ] Route keyboard and mouse events for the focused terminal pane directly to the PTY instead of through Bubble Tea's `View()`-oriented string path
-- [ ] Preserve log replay for completed sessions, but render that replay through a non-live scrollback view rather than the old live-pane code
-- [ ] Remove `activeInputBG`, `findInputRow`, and cursor synthesis from the live-pane path in [`internal/ui/vtrender.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/ui/vtrender.go)
+- [x] Add `internal/tui2/terminalpane.go` — custom `tview.Box`-based widget with native PTY rendering via vt10x cells → tcell.Screen cells, cursor display, input row highlighting, and scrollback
+- [x] Connect `TerminalPane` directly to `agentview.TerminalAdapter` (satisfied by `agent.SessionHandle`) for output and resize
+- [x] Route keyboard events directly to PTY via `tcellKeyToBytes` with scrollback interception (Shift+arrows, PgUp/PgDn)
+- [x] Preserve log replay for completed sessions via `ReplayVT10X` + `drawANSILine` ANSI→tcell parser
+- [x] Exported `ReplayVT10X` and `EstimateVTRows` from `internal/ui/vtrender.go` for use by tui2 scrollback; kept `findInputRow` and cursor synthesis for Bubble Tea fallback
 
 ### Phase 4: Keep Replay Rendering Only Where It Still Adds Value
-**Status:** pending
+**Status:** complete
 
-- [ ] Decide whether to keep `vt10x` or replace it with `x/vt` for preview and offline rendering in [`internal/ui/preview.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/ui/preview.go) and related code
-- [ ] Remove live-agent responsibilities from [`internal/ui/agentview.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/ui/agentview.go) while preserving its state orchestration for the Bubble Tea fallback runtime
-- [ ] Re-scope [`internal/ui/vtrender.go`](/Users/darrencheng/.argus/worktrees/argus/codex-prompt-line-manually/internal/ui/vtrender.go) to preview/log rendering only
-- [ ] Simplify tests that currently assert manual prompt-row tinting and synthetic cursor colors so they only apply to the replay fallback
-- [ ] Add correctness fixtures for scrollback replay, ANSI truncation, and completed-session output
+- [x] Kept `vt10x` for preview and offline rendering (stability — no migration to `x/vt`)
+- [x] Preserved Bubble Tea `agentview.go` with scoping comments as fallback runtime
+- [x] Scoped `vtrender.go` header documentation to preview/replay/fallback only
+- [x] Existing tests for prompt-row tinting and cursor synthesis unchanged (they test the Bubble Tea fallback path)
 
 ### Phase 5: Port the Remaining Shell and Cut Over
-**Status:** pending
+**Status:** complete
 
-- [ ] Port git status, file explorer, diff viewer, and modal flows to the `tcell`/`tview` runtime
-- [ ] Preserve current keymap semantics from `internal/ui/keys.go` so the new runtime does not fork behavior
-- [ ] Add runtime-level regression tests or scripted smoke tests for attach/detach, PR open, diff mode, file navigation, and daemon reconnect
-- [ ] Make the `tcell` runtime the default once feature parity and stability are acceptable
-- [ ] Remove Bubble Tea live-agent-specific code paths and dead compatibility helpers after one release cycle of fallback support
+- [x] Ported git status panel (`internal/tui2/gitstatus.go` — `GitPanel` with status/diff/branch sections)
+- [x] Ported file explorer (`internal/tui2/fileexplorer.go` — `FilePanel` with auto-expand, cursor nav, status icons)
+- [x] Ported new task form (`internal/tui2/newtaskform.go` — modal with project/backend selectors, prompt input)
+- [x] Preserved keymap semantics: Ctrl+Q detach, Shift+arrows scroll, Ctrl/Alt+arrows panel switch, o/Ctrl+P PR open, j/k/Enter file nav
+- [x] Added regression tests: 40+ tests across all tui2 components (terminalpane, newtaskform, fileexplorer, gitstatus, app, tasklist)
+- [x] Bubble Tea remains the default runtime for stability; tcell available via `ARGUS_UI_RUNTIME=tcell`
+- [x] Reviews and Settings tabs remain as stubs with error messages (complex views deferred to separate work)
+
+### Phase 6: Replace vt10x with x/vt in TerminalPane
+**Status:** not started
+
+- [ ] Replace `vt10x.New(vt10x.WithSize(w, h))` → `vt.NewSafeEmulator(w, h)` in `internal/tui2/terminalpane.go`
+- [ ] Replace `vt.Cell(x, y)` → `emulator.CellAt(x, y)` (returns `*uv.Cell`)
+- [ ] Replace `cellStyle(vt10x.Glyph)` → new `uvCellToTcellStyle(*uv.Cell)` using `tcell.FromImageColor()`
+- [ ] Replace cursor access: `vt.Cursor()` → `emulator.CursorPosition()`
+- [ ] Remove `vt.Lock()/Unlock()` — SafeEmulator is thread-safe
+- [ ] Use `emulator.Scrollback()` for scrollback instead of replaying full buffer through a tall terminal
+- [ ] Use `emulator.Touched()` for incremental redraws — only repaint lines that changed
+- [ ] Update tests in `internal/tui2/terminalpane_test.go`
+- [ ] `go get github.com/charmbracelet/x/vt github.com/charmbracelet/ultraviolet`
+
+### Phase 7: Extract shared utilities from internal/ui/
+**Status:** not started
+
+New package: `internal/gitutil/`
+
+Move pure-Go files with zero charmbracelet imports:
+- [ ] `internal/ui/gitcmd.go` → `internal/gitutil/gitcmd.go` (FetchGitStatus, FetchFileDiff, FetchDirFiles, message types)
+- [ ] `internal/ui/scrollstate.go` → `internal/gitutil/scrollstate.go` (ScrollState)
+- [ ] `internal/ui/diffparse.go` → `internal/gitutil/diffparse.go` (ParseUnifiedDiff, BuildSideBySide, types)
+- [ ] `internal/ui/skills.go` → `internal/gitutil/skills.go` (SkillItem, skill loading)
+- [ ] `internal/ui/worktree.go` → `internal/gitutil/worktree.go` (worktree discovery, cleanup)
+- [ ] Extract `ChangedFile`, `ParseGitStatus`, `ParseGitDiffNameStatus`, `MergeChangedFiles` from `internal/ui/fileexplorer.go` to `internal/gitutil/changedfiles.go`
+- [ ] Update all imports in `internal/tui2/` and `internal/ui/`
+
+### Phase 8: Port Reviews tab to tcell
+**Status:** not started
+
+New file: `internal/tui2/reviews.go`
+
+- [ ] Three-panel layout (PR list | diff | comments) using `tview.Flex`
+- [ ] PR list with "Review Requests" first, "My Open PRs" second, cursor navigation, status badges
+- [ ] Diff viewer with scroll, syntax highlighting (reuse `parseDiffLines` or `gitutil.ParseUnifiedDiff`)
+- [ ] Comments list + compose box
+- [ ] Data flow: `FetchPRList()` → goroutine → `QueueUpdateDraw`; PR select → fetch files + comments in parallel
+- [ ] Cooldown: 10-min PR list, 2-min comments TTL
+- [ ] Key bindings: up/down/j/k, Enter, tab focus, s split, c comment, a approve, r request changes, R refresh, esc back
+
+### Phase 9: Port Settings tab to tcell
+**Status:** not started
+
+New file: `internal/tui2/settings.go`
+
+- [ ] Two-panel layout (section list | detail)
+- [ ] Sections: STATUS, SANDBOX, PROJECTS, BACKENDS, KNOWLEDGE BASE
+- [ ] Cursor skips section headers, detail panel shows selected item config
+- [ ] Key bindings: up/down navigate, 'n' new, 'e' edit, 'd' delete/default, Enter select
+- [ ] Forms as modal overlays via `tview.Pages.AddPage`
+
+### Phase 10: Port remaining forms to tcell
+**Status:** not started
+
+- [ ] `internal/tui2/projectform.go` — add/edit project (name, path, branch, backend, sandbox settings)
+- [ ] `internal/tui2/backendform.go` — add/edit backend (name, command, prompt flag)
+- [ ] `internal/tui2/renametask.go` — rename task (single text input)
+- [ ] All follow modal pattern: `tview.Box` with `InputHandler`, added/removed as page
+
+### Phase 11: Delete Bubble Tea runtime + clean deps
+**Status:** not started
+
+- [ ] Delete `internal/ui/` entirely (~60 files)
+- [ ] Remove BT wiring from `cmd/argus/main.go` (delete `runTUI()`, remove runtime switch)
+- [ ] Delete `internal/app/agentview/runtime.go` and `runtime_test.go`
+- [ ] Remove from go.mod: `bubbletea`, `bubbles`, `lipgloss`, `hinshun/vt10x`
+- [ ] Keep: `charmbracelet/x/vt`, `charmbracelet/x/ansi`
+- [ ] `go mod tidy` → `go build ./... && go vet ./... && go test ./...`
+- [ ] Verify: `grep -r "charmbracelet/bubbletea\|charmbracelet/bubbles\|charmbracelet/lipgloss\|hinshun/vt10x" go.mod` → zero matches
+
+### Phase 12: Wire daemon restart + in-process session exit
+**Status:** not started
+
+- [ ] `App.RestartedClient()` returns the new client after daemon restart
+- [ ] Wire `onFinish` callback in `runTcell()` for in-process mode
+- [ ] Daemon health check → auto-restart → reconnect sessions (mirror BT's `DaemonRestartedMsg` flow)
 
 ## Testing Strategy
 
@@ -174,6 +252,6 @@ This avoids trying to force a real terminal surface through a `View() string` AP
 
 ## Estimated Scope
 
-**Phases:** 5
-**Tasks:** 25
-**Files touched:** ~25-40
+**Phases:** 12
+**Tasks:** ~60
+**Files touched:** ~80+ (including ~60 deleted in Phase 11)

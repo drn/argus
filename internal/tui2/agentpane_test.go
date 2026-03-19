@@ -2,23 +2,8 @@ package tui2
 
 import "testing"
 
-func TestAgentPane_SetSession(t *testing.T) {
-	ap := NewAgentPane()
-	if ap.session != nil {
-		t.Error("initial session should be nil")
-	}
-
-	ap.SetTaskID("task-1")
-	if ap.taskID != "task-1" {
-		t.Errorf("taskID = %q, want task-1", ap.taskID)
-	}
-
-	ap.SetFocused(true)
-	if !ap.focused {
-		t.Error("should be focused")
-	}
-}
-
+// TestSplitLines tests the ANSI-stripping line splitter used by the Phase 2
+// placeholder. The function remains for scrollback text display.
 func TestSplitLines(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -1,5 +1,21 @@
 package ui
 
+// vtrender.go — vt10x replay rendering for preview, scrollback, and offline display.
+//
+// This file is scoped to non-live rendering paths:
+//   - Task list preview panel (preview.go)
+//   - Scrollback mode in both Bubble Tea and tcell runtimes
+//   - Finished session log replay
+//   - Bubble Tea fallback live rendering (agentview.go renderIncremental)
+//
+// The tcell runtime (internal/tui2/terminalpane.go) renders live PTY output
+// natively via vt10x cells → tcell.Screen, bypassing the ANSI string
+// intermediate. It reuses ReplayVT10X/EstimateVTRows only for scrollback.
+//
+// The prompt-row tinting (activeInputBG), cursor synthesis, and findInputRow
+// logic remain here for the Bubble Tea fallback and preview paths. The tcell
+// runtime has its own findInputRow that renders directly to tcell cells.
+
 import (
 	"bytes"
 	"fmt"
@@ -8,7 +24,8 @@ import (
 	"github.com/hinshun/vt10x"
 )
 
-// vt10x attribute bit flags (unexported in the library)
+// vt10x attribute bit flags (unexported in the library).
+// Also defined in internal/tui2/terminalpane.go for the tcell native path.
 const (
 	vtAttrReverse   = 1 << 0
 	vtAttrUnderline = 1 << 1
@@ -18,10 +35,11 @@ const (
 	// attrBlink    = 1 << 5
 )
 
-// replayVT10X replays raw terminal output through a virtual terminal and
+// ReplayVT10X replays raw terminal output through a virtual terminal and
 // returns the rendered lines with ANSI colors. cursorVisible controls whether
 // the cursor position is rendered with reverse video.
-func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
+// Exported for use by tui2 scrollback rendering.
+func ReplayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
 
@@ -72,9 +90,10 @@ func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	return lines
 }
 
-// estimateVTRows estimates the number of virtual terminal rows needed to
+// EstimateVTRows estimates the number of virtual terminal rows needed to
 // capture all output, given the raw bytes and display dimensions.
-func estimateVTRows(raw []byte, vtCols, dispH int) int {
+// Exported for use by tui2 scrollback rendering.
+func EstimateVTRows(raw []byte, vtCols, dispH int) int {
 	vtRows := dispH
 	if n := bytes.Count(raw, []byte{'\n'}); n > vtRows {
 		vtRows = n + dispH

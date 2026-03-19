@@ -79,3 +79,5 @@ go test ./internal/db/      # run tests for a single package
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4
+- Reviews tab in tcell runtime — currently shows stub error
+- Settings tab in tcell runtime — currently shows stub error
