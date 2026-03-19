@@ -238,4 +238,6 @@
 
 - **Task row icon animates between ● and ◉ for actively running tasks.** `drawTaskRow` checks `tickEven` for InProgress tasks that are running and not idle, alternating the icon on each tick. Idle tasks (visited) show moon (☾). Idle+unvisited show InReview icon (◎). This matches the pre-tcell 4-way branch: idleUnvisited → running/idle → running+tickEven → running+!tickEven.
 
+- **Enter on a completed task in the task list is a no-op.** The `InputHandler` in `tasklist.go` guards `OnSelect` with `t.Status != model.StatusComplete`. Completed tasks can still be viewed via other means but pressing Enter won't re-enter the agent view for them. This prevents accidentally re-entering a finished task.
+
 ## Planned but Not Yet Implemented

@@ -3,10 +3,9 @@ package tui2
 import (
 	"testing"
 
+	"github.com/drn/argus/internal/model"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-
-	"github.com/drn/argus/internal/model"
 )
 
 func makeTasks() []*model.Task {
@@ -272,6 +271,41 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 				t.Errorf("projectStatusIcon() = %c, want %c", icon, tt.wantChar)
 			}
 		})
+	}
+}
+
+func TestTaskListView_EnterSkipsCompleted(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "beta"
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "done-task", Project: "beta", Status: model.StatusComplete},
+		{ID: "2", Name: "active-task", Project: "beta", Status: model.StatusInProgress},
+	})
+
+	var selected *model.Task
+	tl.OnSelect = func(task *model.Task) { selected = task }
+
+	// Navigate to the completed task
+	for tl.SelectedTask() == nil || tl.SelectedTask().Status != model.StatusComplete {
+		tl.CursorDown()
+	}
+
+	// Enter on completed task should NOT fire OnSelect
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if selected != nil {
+		t.Error("Enter on completed task should not fire OnSelect")
+	}
+
+	// Navigate to the in-progress task
+	for tl.SelectedTask() == nil || tl.SelectedTask().Status != model.StatusInProgress {
+		tl.CursorDown()
+	}
+
+	// Enter on in-progress task should fire OnSelect
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if selected == nil || selected.ID != "2" {
+		t.Error("Enter on in-progress task should fire OnSelect")
 	}
 }
 

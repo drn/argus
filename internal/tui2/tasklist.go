@@ -342,7 +342,7 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 		case tcell.KeyDown:
 			tl.CursorDown()
 		case tcell.KeyEnter:
-			if t := tl.SelectedTask(); t != nil && tl.OnSelect != nil {
+			if t := tl.SelectedTask(); t != nil && t.Status != model.StatusComplete && tl.OnSelect != nil {
 				tl.OnSelect(t)
 			}
 		case tcell.KeyRune:
