@@ -88,8 +88,20 @@ func runTUI() {
 		defer client.Close()
 	}
 
+	// Wire up session exit callback for daemon mode BEFORE creating the app,
+	// so no exit events can be missed during initialization.
+	var appRef2 *tui2.App
+	if client != nil {
+		client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+			if a := appRef2; a != nil {
+				a.HandleSessionExit(taskID, info)
+			}
+		})
+	}
+
 	app := tui2.New(database, runner, daemonConnected)
 	appRef = app
+	appRef2 = app
 	if err := app.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

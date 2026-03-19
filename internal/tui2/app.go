@@ -351,25 +351,72 @@ func (a *App) RestartedClient() *dclient.Client {
 // NotifySessionExit is called from the in-process runner's onFinish callback.
 // It triggers a UI refresh so session exits are detected immediately (not on next tick).
 func (a *App) NotifySessionExit(taskID string, err error, stopped bool) {
-	uxlog.Log("[tui2] session exit: task=%s stopped=%v err=%v", taskID, stopped, err)
+	uxlog.Log("[tui2] session exit (in-process): task=%s stopped=%v err=%v", taskID, stopped, err)
 	a.tapp.QueueUpdateDraw(func() {
-		// If we're viewing this task's agent pane, clear the session.
-		if a.mode == modeAgent && a.agentState.TaskID == taskID {
-			a.agentPane.SetSession(nil)
-		}
-		// Refresh task list to update status.
-		a.refreshTasks()
+		a.handleSessionExitUI(taskID, stopped)
 	})
 }
 
-func (a *App) refreshTasks() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.refreshTasksLocked()
+// HandleSessionExit is called from the daemon client's OnSessionExit callback.
+// It updates task status and refreshes the UI.
+func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
+	if info.StreamLost {
+		uxlog.Log("[tui2] stream lost: task=%s — status unchanged, process may still be alive", taskID)
+		return
+	}
+	uxlog.Log("[tui2] session exit (daemon): task=%s err=%s stopped=%v lastOutput=%d bytes",
+		taskID, info.Err, info.Stopped, len(info.LastOutput))
+	a.tapp.QueueUpdateDraw(func() {
+		a.handleSessionExitUI(taskID, info.Stopped)
+	})
 }
 
-func (a *App) refreshTasksLocked() {
-	a.refreshTasksWithIDs(a.runner.Running())
+// handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
+// Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
+func (a *App) handleSessionExitUI(taskID string, stopped bool) {
+	// Update task status in DB.
+	tasks := a.db.Tasks()
+	for _, t := range tasks {
+		if t.ID == taskID && t.Status == model.StatusInProgress {
+			if stopped {
+				t.SetStatus(model.StatusPending)
+			} else {
+				t.SetStatus(model.StatusComplete)
+			}
+			a.db.Update(t) //nolint:errcheck
+			uxlog.Log("[tui2] task %s (%s) → %s", t.ID, t.Name, t.Status)
+			break
+		}
+	}
+
+	// If we're viewing this task's agent pane, clear the session.
+	a.mu.Lock()
+	viewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+	a.mu.Unlock()
+	if viewing {
+		a.agentPane.SetSession(nil)
+	}
+
+	// Refresh task list — fetch running IDs in a goroutine to avoid
+	// blocking the tview main goroutine with an RPC call.
+	go func() {
+		runningIDs := a.runner.Running()
+		a.tapp.QueueUpdateDraw(func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.refreshTasksWithIDs(runningIDs)
+		})
+	}()
+}
+
+func (a *App) refreshTasks() {
+	// Fetch running IDs OUTSIDE the lock — Running() is an RPC call that
+	// can block for up to 5s on timeout. Holding a.mu during that blocks
+	// the entire UI.
+	runningIDs := a.runner.Running()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.refreshTasksWithIDs(runningIDs)
 }
 
 // refreshTasksWithIDs updates the task list with pre-fetched running IDs.

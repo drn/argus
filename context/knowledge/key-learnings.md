@@ -210,4 +210,10 @@
 
 - **Empty task list shows centered banner with hint.** `TaskPage` (`internal/tui2/taskpage.go`) wraps the 3-panel task list layout. When `tasklist.HasTasks()` is false, it draws the banner (reusing `drawBanner` from `banner.go`) centered vertically with "Press [n] to create your first task" below — same pattern as `SettingsPage`. When tasks exist, it delegates to the inner `tview.Flex` normally. `InputHandler` and `MouseHandler` always delegate to the inner flex.
 
+- **Never call `GetInnerRect()` or any tview widget method from the tick goroutine.** tview is not thread-safe — widget state is set during `Draw()` on the main goroutine. Cross-goroutine reads cause data races. The fix for `SyncPTYSize`: `Draw()` computes the desired PTY size under `tp.mu` and stores it in `pendingResizeRows`/`pendingResizeCols`. The tick goroutine atomically reads and clears the pending values under the same lock, then performs the resize RPC. This keeps all tview access on the main goroutine and all RPC calls off it.
+
+- **`refreshTasks()` must not do RPC while holding `a.mu`.** `a.runner.Running()` is an RPC call (up to 5s timeout). Calling it inside `a.mu.Lock()` blocks the entire UI — any `QueueUpdateDraw` callback that also needs `a.mu` is stalled, causing a visible freeze. Fix: fetch `runningIDs` OUTSIDE the lock (same pattern as `onTick`), then lock and call `refreshTasksWithIDs(runningIDs)`.
+
+- **Daemon session exits must be wired to the tui2 app via `client.OnSessionExit`.** Without this callback, when an agent process exits in daemon mode, the TUI never learns about it — `task.Status` stays `InProgress` forever and the agent view shows stale state. The callback fires `HandleSessionExit(taskID, info)` which updates the task to `Complete` (or `Pending` if stopped) via `QueueUpdateDraw`. For `StreamLost` exits, status is preserved since the process may still be alive.
+
 ## Planned but Not Yet Implemented
