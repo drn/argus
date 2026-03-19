@@ -178,6 +178,54 @@ func TestNewTaskForm_WrapPrompt(t *testing.T) {
 	}
 }
 
+func TestNewTaskForm_WordWrap(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {}}, "b",
+	)
+
+	// "hello world" at width 8 → breaks before "world"
+	f.prompt = []rune("hello world")
+	lines := f.wrapPrompt(8)
+	if len(lines) != 2 {
+		t.Fatalf("word wrap: got %d lines, want 2", len(lines))
+	}
+	// "hello " (6 chars including space) on first line
+	if got := string(f.prompt[lines[0].start : lines[0].start+lines[0].length]); got != "hello " {
+		t.Errorf("line 0 = %q, want %q", got, "hello ")
+	}
+	// "world" on second line
+	if got := string(f.prompt[lines[1].start : lines[1].start+lines[1].length]); got != "world" {
+		t.Errorf("line 1 = %q, want %q", got, "world")
+	}
+
+	// "aaa bbb ccc" at width 8 → "aaa bbb " / "ccc"
+	f.prompt = []rune("aaa bbb ccc")
+	lines = f.wrapPrompt(8)
+	if len(lines) != 2 {
+		t.Fatalf("word wrap 2: got %d lines, want 2", len(lines))
+	}
+	if got := string(f.prompt[lines[0].start : lines[0].start+lines[0].length]); got != "aaa bbb " {
+		t.Errorf("line 0 = %q, want %q", got, "aaa bbb ")
+	}
+	if got := string(f.prompt[lines[1].start : lines[1].start+lines[1].length]); got != "ccc" {
+		t.Errorf("line 1 = %q, want %q", got, "ccc")
+	}
+
+	// Long word exceeding width → hard break
+	f.prompt = []rune("abcdefghijklmno")
+	lines = f.wrapPrompt(8)
+	if len(lines) != 2 {
+		t.Fatalf("hard break: got %d lines, want 2", len(lines))
+	}
+	if lines[0].length != 8 {
+		t.Errorf("hard break line 0 length = %d, want 8", lines[0].length)
+	}
+	if lines[1].length != 7 {
+		t.Errorf("hard break line 1 length = %d, want 7", lines[1].length)
+	}
+}
+
 func TestNewTaskForm_CursorWrappedPos(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",

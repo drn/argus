@@ -639,3 +639,23 @@ The tui2 migration (Phase 11) ported individual task status icons but dropped:
 
 ### Gotchas
 - Chevron state checks both `tl.expanded` and `tl.archiveProject` — same-named projects in main and archive sections will both show expanded chevrons. Acceptable given the BT code had the same behavior.
+
+## New Task Form Polish: 2026-03-19
+
+### Changes
+Three visual fixes to the `NewTaskForm` modal:
+
+1. **Word wrapping** — `wrapPrompt(width)` now breaks at word boundaries (last space within width) instead of hard character positions. Hard-breaks only when a single word exceeds width. `cursorWrappedPos` updated from simple division (`pos/width`, `pos%width`) to linear search through variable-length wrapped lines. `moveCursorUp`/`moveCursorDown` use actual `wrappedLine.start` offsets instead of `line*width`.
+
+2. **Modal background consistency** — Modal uses `Color235` background. Input field area uses `Color237` (slightly lighter) to create visual depth. Both focused and unfocused input states render against proper backgrounds. Placeholder text also uses the input background.
+
+3. **Cursor visibility** — Changed from `Foreground(Color(17)).Background(Color(153))` to `Foreground(ColorBlack).Background(Color252)` — high-contrast block cursor. Empty cells in the input area now have the `Color237` background, so the cursor block is visible even at end-of-line.
+
+### Data Model
+- No new fields or DB columns — purely rendering changes
+- `wrappedLine` struct unchanged: `{start, length}` still indexes into `f.prompt`
+- `wrapPrompt` returns variable-length lines (previously all lines were `width` except the last)
+
+### Gotchas
+- `cursorWrappedPos` can no longer use division — must iterate `wrapPrompt` result. This means `wrapPrompt` is called more often (once per cursor position query), but the prompt is small so this is negligible.
+- Word wrap includes trailing space on the broken line (e.g., "hello " not "hello"). This keeps cursor positions contiguous across the prompt rune slice with no gaps.

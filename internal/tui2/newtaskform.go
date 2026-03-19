@@ -460,7 +460,9 @@ type wrappedLine struct {
 	length int // number of runes on this line
 }
 
-// wrapPrompt splits the prompt runes into visual lines of the given width.
+// wrapPrompt splits the prompt runes into visual lines of the given width,
+// breaking at word boundaries when possible. A "word boundary" is a space
+// character. If a single word exceeds the width, it is hard-broken.
 func (f *NewTaskForm) wrapPrompt(width int) []wrappedLine {
 	if width <= 0 {
 		return nil
@@ -469,12 +471,32 @@ func (f *NewTaskForm) wrapPrompt(width int) []wrappedLine {
 		return []wrappedLine{{0, 0}}
 	}
 	var lines []wrappedLine
-	for i := 0; i < len(f.prompt); i += width {
-		end := i + width
-		if end > len(f.prompt) {
-			end = len(f.prompt)
+	i := 0
+	for i < len(f.prompt) {
+		remaining := len(f.prompt) - i
+		if remaining <= width {
+			// Rest fits on one line
+			lines = append(lines, wrappedLine{i, remaining})
+			break
 		}
-		lines = append(lines, wrappedLine{i, end - i})
+		// Find last space within the width to break at
+		breakAt := -1
+		for j := i + width; j > i; j-- {
+			if f.prompt[j] == ' ' {
+				breakAt = j
+				break
+			}
+		}
+		if breakAt <= i {
+			// No space found — hard break at width
+			lines = append(lines, wrappedLine{i, width})
+			i += width
+		} else {
+			// Break at the space; include the space on this line
+			lineLen := breakAt - i + 1
+			lines = append(lines, wrappedLine{i, lineLen})
+			i = breakAt + 1
+		}
 	}
 	return lines
 }
@@ -484,9 +506,18 @@ func (f *NewTaskForm) cursorWrappedPos(width int) (int, int) {
 	if width <= 0 {
 		return 0, 0
 	}
-	line := f.cursorPos / width
-	col := f.cursorPos % width
-	return line, col
+	lines := f.wrapPrompt(width)
+	for i, wl := range lines {
+		if f.cursorPos >= wl.start && f.cursorPos < wl.start+wl.length {
+			return i, f.cursorPos - wl.start
+		}
+	}
+	// Cursor is at the end of the last line
+	if len(lines) > 0 {
+		last := lines[len(lines)-1]
+		return len(lines) - 1, f.cursorPos - last.start
+	}
+	return 0, 0
 }
 
 // promptInnerW returns the cached prompt width from the last Draw call,
@@ -501,11 +532,19 @@ func (f *NewTaskForm) promptInnerW() int {
 // moveCursorUp moves the cursor up one wrapped line. Returns false if already on the first line.
 func (f *NewTaskForm) moveCursorUp() bool {
 	w := f.promptInnerW()
+	lines := f.wrapPrompt(w)
 	line, col := f.cursorWrappedPos(w)
 	if line == 0 {
 		return false
 	}
-	newPos := (line-1)*w + col
+	prevLine := lines[line-1]
+	newPos := prevLine.start + col
+	if col > prevLine.length-1 {
+		newPos = prevLine.start + prevLine.length - 1
+		if newPos < prevLine.start {
+			newPos = prevLine.start
+		}
+	}
 	if newPos > len(f.prompt) {
 		newPos = len(f.prompt)
 	}
@@ -521,7 +560,12 @@ func (f *NewTaskForm) moveCursorDown() {
 	if line >= len(lines)-1 {
 		return
 	}
-	newPos := (line+1)*w + col
+	nextLine := lines[line+1]
+	newPos := nextLine.start + col
+	endPos := nextLine.start + nextLine.length
+	if newPos > endPos {
+		newPos = endPos
+	}
 	if newPos > len(f.prompt) {
 		newPos = len(f.prompt)
 	}
@@ -598,7 +642,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	my := sy + (sh-modalH)/2
 
 	// Clear modal area
-	clearStyle := tcell.StyleDefault.Background(tcell.Color235)
+	modalBG := tcell.Color235
+	clearStyle := tcell.StyleDefault.Background(modalBG)
 	for row := my; row < my+modalH; row++ {
 		for col := mx; col < mx+modalW; col++ {
 			screen.SetContent(col, row, ' ', nil, clearStyle)
@@ -611,8 +656,9 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	// Title
 	title := " New Task "
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
+	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true).Background(modalBG)
 	for i, r := range title {
-		screen.SetContent(titleX+i, my, r, nil, StyleTitle)
+		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
 
 	innerX := mx + 2
@@ -636,16 +682,18 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Prompt input — wrapped across multiple visual lines
 	curLine, curCol := f.cursorWrappedPos(innerW)
-	inputStyle := StyleNormal
-	cursorStyle := tcell.StyleDefault.Foreground(tcell.Color(17)).Background(tcell.Color(153))
+	inputBG := tcell.Color237 // slightly lighter than modal for input field
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(inputBG)
+	inputEmptyStyle := tcell.StyleDefault.Background(inputBG)
+	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if f.focused == ntFieldPrompt {
 		for vi := 0; vi < visiblePromptLines; vi++ {
 			li := vi + f.scrollOffset
 			if li >= len(wrappedLines) {
-				// Empty line below content — just clear
+				// Empty line below content
 				for col := 0; col < innerW; col++ {
-					screen.SetContent(innerX+col, row+vi, ' ', nil, tcell.StyleDefault)
+					screen.SetContent(innerX+col, row+vi, ' ', nil, inputEmptyStyle)
 				}
 				continue
 			}
@@ -659,7 +707,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 					st = inputStyle
 				} else {
 					ch = ' '
-					st = tcell.StyleDefault
+					st = inputEmptyStyle
 				}
 				if li == curLine && col == curCol {
 					st = cursorStyle
@@ -668,11 +716,21 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 			}
 		}
 	} else {
-		promptStr := string(f.prompt)
-		if len(promptStr) == 0 {
-			drawText(screen, innerX, row, innerW, "Prompt for the agent", StyleDimmed)
+		if len(f.prompt) == 0 {
+			// Placeholder text with input background
+			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(inputBG)
+			placeholder := "Prompt for the agent"
+			pRunes := []rune(placeholder)
+			for col := 0; col < innerW; col++ {
+				if col < len(pRunes) {
+					screen.SetContent(innerX+col, row, pRunes[col], nil, placeholderStyle)
+				} else {
+					screen.SetContent(innerX+col, row, ' ', nil, inputEmptyStyle)
+				}
+			}
 		} else {
 			// Render wrapped lines when unfocused too
+			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
 			for vi := 0; vi < visiblePromptLines; vi++ {
 				li := vi + f.scrollOffset
 				if li >= len(wrappedLines) {
@@ -681,7 +739,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 				start := wrappedLines[li].start
 				length := wrappedLines[li].length
 				lineStr := string(f.prompt[start : start+length])
-				drawText(screen, innerX, row+vi, innerW, lineStr, inputStyle)
+				drawText(screen, innerX, row+vi, innerW, lineStr, unfocusedStyle)
 			}
 		}
 	}
