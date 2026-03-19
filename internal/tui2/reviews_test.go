@@ -228,23 +228,27 @@ func TestReviewsView_BackgroundRefresh(t *testing.T) {
 	}
 }
 
-func TestReviewsView_OpenPR_NoPanic(t *testing.T) {
+func TestReviewsView_PRURL(t *testing.T) {
 	rv := NewReviewsView()
 
-	// No PRs — should not panic.
-	rv.openPRInBrowser()
+	// No PRs — empty URL.
+	if got := rv.prURL(); got != "" {
+		t.Errorf("expected empty URL with no PRs, got %q", got)
+	}
 
 	// With PRs on the list (no selection).
 	rv.SetPRs([]github.PR{
 		{Number: 42, RepoOwner: "acme", Repo: "widgets"},
 	}, nil)
 	rv.prCursor = 0
-	// openPRInBrowser would call exec.Command("open", url).Start()
-	// which is a no-op on CI / headless. Just verify no panic.
-	rv.openPRInBrowser()
+	if got := rv.prURL(); got != "https://github.com/acme/widgets/pull/42" {
+		t.Errorf("unexpected URL from cursor: %q", got)
+	}
 
 	// With a selected PR.
 	pr := rv.prs[0]
 	rv.selectedPR = &pr
-	rv.openPRInBrowser()
+	if got := rv.prURL(); got != "https://github.com/acme/widgets/pull/42" {
+		t.Errorf("unexpected URL from selection: %q", got)
+	}
 }
