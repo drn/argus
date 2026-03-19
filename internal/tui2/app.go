@@ -474,6 +474,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 
 	switch event.Key() {
 	case tcell.KeyCtrlC:
+		if a.mode == modeAgent {
+			// Forward ctrl+c to the PTY if session is alive; otherwise ignore
+			if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+				if _, err := sess.WriteInput([]byte{0x03}); err != nil {
+					uxlog.Log("[tui2] write ctrl+c to PTY failed: %v", err)
+				}
+			}
+			return nil
+		}
 		a.tapp.Stop()
 		return nil
 	case tcell.KeyCtrlQ:
