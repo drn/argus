@@ -1015,7 +1015,13 @@ func (a *App) refreshPreview(taskID string) {
 	sess := a.runner.Get(taskID)
 	if sess != nil {
 		raw := sess.RecentOutput()
-		a.taskPreview.RefreshOutput(raw, w, h)
+		// Use the PTY's actual width for the emulator so text wraps at
+		// the same column as in the agent view. Draw() clips to panel size.
+		emuCols := w
+		if ptyCols, _ := sess.PTYSize(); ptyCols > 0 {
+			emuCols = ptyCols
+		}
+		a.taskPreview.RefreshOutput(raw, emuCols, h)
 		return
 	}
 

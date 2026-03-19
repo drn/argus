@@ -352,14 +352,24 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
-	if sess != nil && sess.Alive() && (tp.ptyCols != wantCols || tp.ptyRows != wantRows) {
-		tp.ptyCols = wantCols
-		tp.ptyRows = wantRows
-		tp.pendingResizeRows = uint16(wantRows)
-		tp.pendingResizeCols = uint16(wantCols)
+	if sess != nil && sess.Alive() {
+		// Live session — resize PTY to match panel.
+		if tp.ptyCols != wantCols || tp.ptyRows != wantRows {
+			tp.ptyCols = wantCols
+			tp.ptyRows = wantRows
+			tp.pendingResizeRows = uint16(wantRows)
+			tp.pendingResizeCols = uint16(wantCols)
+		}
 	}
 	ptyCols := tp.ptyCols
 	ptyRows := tp.ptyRows
+	// For dead/replay sessions, always use current panel dimensions so
+	// content auto-resizes with the window instead of staying at the
+	// stale PTY size from when the session was alive.
+	if sess == nil || !sess.Alive() {
+		ptyCols = wantCols
+		ptyRows = wantRows
+	}
 	tp.mu.Unlock()
 
 	if sess == nil && !tp.HasContent() {
