@@ -10,11 +10,12 @@ import (
 // GitPanel displays git status in a bordered side panel.
 type GitPanel struct {
 	*tview.Box
-	statusLines []string
-	diffLines   []string
-	branchLines []string
-	loaded      bool
-	focused     bool
+	statusLines  []string
+	diffLines    []string
+	branchLines  []string
+	loaded       bool
+	focused      bool
+	BorderInside bool // when true, border draws inside allocated rect (task list style)
 }
 
 // NewGitPanel creates a git status panel.
@@ -58,72 +59,74 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 	if gp.focused {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x-1, y-1, width+2, height+2, borderStyle)
 
-	// Title in border
-	title := " Git Status "
-	for i, r := range title {
-		if x+i < x+width {
-			screen.SetContent(x+i, y-1, r, nil, borderStyle.Bold(true))
-		}
+	var inner innerRect
+	if gp.BorderInside {
+		inner = drawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
+	} else {
+		// Agent view style: border outside the allocated rect.
+		inner = drawBorderedPanel(screen, x-1, y-1, width+2, height+2, " Git Status ", borderStyle)
 	}
-
-	if !gp.loaded {
-		drawText(screen, x+1, y+1, width-2, "Loading...", StyleDimmed)
+	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
 
-	row := y
-	innerW := width - 1
+	if !gp.loaded {
+		drawText(screen, inner.X, inner.Y, inner.W, "Loading...", StyleDimmed)
+		return
+	}
+
+	row := inner.Y
+	maxRow := inner.Y + inner.H
 
 	// STATUS section
 	if len(gp.statusLines) > 0 {
-		drawText(screen, x+1, row, innerW, "FILES", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "FILES", StyleTitle)
 		row++
 		for _, line := range gp.statusLines {
-			if row >= y+height {
+			if row >= maxRow {
 				break
 			}
 			style := gp.statusLineStyle(line)
-			text := truncate(line, innerW)
-			drawText(screen, x+1, row, innerW, text, style)
+			text := truncate(line, inner.W)
+			drawText(screen, inner.X, row, inner.W, text, style)
 			row++
 		}
 		row++ // spacer
 	}
 
 	// DIFF section
-	if len(gp.diffLines) > 0 && row < y+height {
-		drawText(screen, x+1, row, innerW, "DIFF", StyleTitle)
+	if len(gp.diffLines) > 0 && row < maxRow {
+		drawText(screen, inner.X, row, inner.W, "DIFF", StyleTitle)
 		row++
 		for _, line := range gp.diffLines {
-			if row >= y+height {
+			if row >= maxRow {
 				break
 			}
-			text := truncate(line, innerW)
-			drawText(screen, x+1, row, innerW, text, StyleDimmed)
+			text := truncate(line, inner.W)
+			drawText(screen, inner.X, row, inner.W, text, StyleDimmed)
 			row++
 		}
 		row++
 	}
 
 	// BRANCH section
-	if len(gp.branchLines) > 0 && row < y+height {
-		drawText(screen, x+1, row, innerW, "BRANCH", StyleTitle)
+	if len(gp.branchLines) > 0 && row < maxRow {
+		drawText(screen, inner.X, row, inner.W, "BRANCH", StyleTitle)
 		row++
 		for _, line := range gp.branchLines {
-			if row >= y+height {
+			if row >= maxRow {
 				break
 			}
-			text := truncate(line, innerW)
-			drawText(screen, x+1, row, innerW, text, StyleDimmed)
+			text := truncate(line, inner.W)
+			drawText(screen, inner.X, row, inner.W, text, StyleDimmed)
 			row++
 		}
 	}
 
 	// Empty state
 	if len(gp.statusLines) == 0 && len(gp.diffLines) == 0 && len(gp.branchLines) == 0 {
-		drawText(screen, x+1, y+1, innerW, "Clean — no changes", StyleDimmed)
+		drawText(screen, inner.X, inner.Y, inner.W, "Clean — no changes", StyleDimmed)
 	}
 }
 

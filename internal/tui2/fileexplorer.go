@@ -190,18 +190,11 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 	if fp.focused {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x-1, y-1, width+2, height+2, borderStyle)
-
-	// Title in border
 	title := " Files "
 	if len(fp.files) > 0 {
 		title = fmt.Sprintf(" Files (%d) ", len(fp.files))
 	}
-	for i, r := range title {
-		if x+i < x+width {
-			screen.SetContent(x+i, y-1, r, nil, borderStyle.Bold(true))
-		}
-	}
+	drawBorderedPanel(screen, x-1, y-1, width+2, height+2, title, borderStyle)
 
 	if len(fp.rows) == 0 {
 		drawText(screen, x+1, y+1, width-2, "No changes", StyleDimmed)

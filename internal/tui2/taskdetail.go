@@ -39,32 +39,25 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Draw border
-	drawBorder(screen, x-1, y-1, width+2, height+2, StyleBorder)
-
-	// Title in border
-	title := " Details "
-	for i, r := range title {
-		if x+i < x+width {
-			screen.SetContent(x+i, y-1, r, nil, StyleBorder.Bold(true))
-		}
+	inner := drawBorderedPanel(screen, x, y, width, height, " Details ", StyleBorder)
+	if inner.W <= 0 || inner.H <= 0 {
+		return
 	}
 
 	if td.task == nil {
-		drawText(screen, x+1, y+1, width-2, "No task selected", StyleDimmed)
+		drawText(screen, inner.X, inner.Y, inner.W, "No task selected", StyleDimmed)
 		return
 	}
 
 	t := td.task
-	innerW := width - 2
-	row := y
+	row := inner.Y
 
 	// Task name (title)
 	name := t.Name
-	if len(name) > innerW-1 {
-		name = name[:innerW-4] + "..."
+	if len(name) > inner.W-1 {
+		name = name[:inner.W-4] + "..."
 	}
-	drawText(screen, x+1, row, innerW, name, StyleTitle)
+	drawText(screen, inner.X, row, inner.W, name, StyleTitle)
 	row += 2
 
 	// Status
@@ -77,75 +70,76 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		}
 	}
 	statusStyle := td.statusStyle(t.Status)
-	row = td.drawField(screen, x, row, innerW, "Status", statusLabel, statusStyle)
+	row = td.drawField(screen, inner.X, row, inner.W, "Status", statusLabel, statusStyle)
 
 	// Project
 	if t.Project != "" {
-		row = td.drawField(screen, x, row, innerW, "Project", t.Project, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Project", t.Project, StyleNormal)
 	}
 
 	// Branch
 	if t.Branch != "" {
-		row = td.drawField(screen, x, row, innerW, "Branch", t.Branch, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Branch", t.Branch, StyleNormal)
 	}
 
 	// Backend
 	if t.Backend != "" {
-		row = td.drawField(screen, x, row, innerW, "Backend", t.Backend, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, StyleNormal)
 	}
 
 	// PR URL
 	if t.PRURL != "" {
 		pr := t.PRURL
-		maxLen := innerW - 5
+		maxLen := inner.W - 5
 		if maxLen > 3 && len(pr) > maxLen {
 			pr = "..." + pr[len(pr)-maxLen+3:]
 		}
-		row = td.drawField(screen, x, row, innerW, "PR", pr, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "PR", pr, StyleNormal)
 	}
 
 	// Worktree
 	if t.Worktree != "" {
 		wt := t.Worktree
-		maxLen := innerW - 11
+		maxLen := inner.W - 11
 		if maxLen > 3 && len(wt) > maxLen {
 			wt = "..." + wt[len(wt)-maxLen+3:]
 		}
-		row = td.drawField(screen, x, row, innerW, "Worktree", wt, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Worktree", wt, StyleNormal)
 	}
 
 	// Created date
 	if !t.CreatedAt.IsZero() {
-		row = td.drawField(screen, x, row, innerW, "Created", t.CreatedAt.Format(time.DateOnly), StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Created", t.CreatedAt.Format(time.DateOnly), StyleNormal)
 	}
 
 	// Elapsed
 	if elapsed := t.ElapsedString(); elapsed != "" {
-		row = td.drawField(screen, x, row, innerW, "Elapsed", elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
+		row = td.drawField(screen, inner.X, row, inner.W, "Elapsed", elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
 	}
 
 	// Prompt
-	if t.Prompt != "" && row < y+height-1 {
+	maxRow := inner.Y + inner.H
+	if t.Prompt != "" && row < maxRow-1 {
 		row++
-		drawText(screen, x+1, row, innerW, "PROMPT", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "PROMPT", StyleTitle)
 		row++
-		remaining := y + height - row
-		promptLines := td.wrapText(t.Prompt, innerW-1)
+		remaining := maxRow - row
+		promptLines := td.wrapText(t.Prompt, inner.W-1)
 		for i, line := range promptLines {
 			if i >= remaining {
 				break
 			}
-			drawText(screen, x+1, row, innerW, line, StyleNormal)
+			drawText(screen, inner.X, row, inner.W, line, StyleNormal)
 			row++
 		}
 	}
 }
 
-// drawField renders "  Label: Value" and returns the next row.
-func (td *TaskDetailPanel) drawField(screen tcell.Screen, x, row, innerW int, label, value string, valStyle tcell.Style) int {
+// drawField renders "Label: Value" and returns the next row.
+func (td *TaskDetailPanel) drawField(screen tcell.Screen, x, row, w int, label, value string, valStyle tcell.Style) int {
 	labelStr := fmt.Sprintf("%s: ", label)
-	drawText(screen, x+1, row, len(labelStr), labelStr, StyleDimmed)
-	drawText(screen, x+1+len(labelStr), row, innerW-len(labelStr), value, valStyle)
+	drawText(screen, x, row, len(labelStr), labelStr, StyleDimmed)
+	drawText(screen, x+len(labelStr), row, w-len(labelStr), value, valStyle)
 	return row + 1
 }
 

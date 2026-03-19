@@ -125,6 +125,7 @@ func (a *App) buildUI() {
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 
 	a.taskGitPanel = NewGitPanel()
+	a.taskGitPanel.BorderInside = true
 	a.taskPreview = NewTaskPreviewPanel()
 	a.taskDetail = NewTaskDetailPanel()
 

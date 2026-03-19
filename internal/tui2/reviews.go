@@ -624,15 +624,11 @@ func (rv *ReviewsView) renderPRList(screen tcell.Screen, x, y, w, h int) {
 	if rv.focus == rfList {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x, y, w, h, borderStyle)
-
-	innerX := x + 1
-	innerY := y + 1
-	innerW := w - 2
-	innerH := h - 2
-	if innerW <= 0 || innerH <= 0 {
+	inner := drawBorderedPanel(screen, x, y, w, h, "", borderStyle)
+	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
+	innerX, innerY, innerW, innerH := inner.X, inner.Y, inner.W, inner.H
 
 	if rv.loading && len(rv.prs) == 0 {
 		drawText(screen, innerX, innerY, innerW, "Loading PRs...", StyleDimmed)
@@ -746,15 +742,11 @@ func (rv *ReviewsView) renderDiff(screen tcell.Screen, x, y, w, h int) {
 	if rv.focus == rfDiff {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x, y, w, h, borderStyle)
-
-	innerX := x + 1
-	innerY := y + 1
-	innerW := w - 2
-	innerH := h - 2
-	if innerW <= 0 || innerH <= 0 {
+	inner := drawBorderedPanel(screen, x, y, w, h, "", borderStyle)
+	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
+	innerX, innerY, innerW, innerH := inner.X, inner.Y, inner.W, inner.H
 
 	if rv.focus == rfApproveConfirm {
 		rv.renderApproveConfirm(screen, innerX, innerY, innerW, innerH)
@@ -863,15 +855,11 @@ func (rv *ReviewsView) renderComments(screen tcell.Screen, x, y, w, h int) {
 	if rv.focus == rfComment {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x, y, w, h, borderStyle)
-
-	innerX := x + 1
-	innerY := y + 1
-	innerW := w - 2
-	innerH := h - 2
-	if innerW <= 0 || innerH <= 0 {
+	inner := drawBorderedPanel(screen, x, y, w, h, "", borderStyle)
+	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
+	innerX, innerY, innerW, innerH := inner.X, inner.Y, inner.W, inner.H
 
 	// Comment compose mode.
 	if rv.focus == rfComment {

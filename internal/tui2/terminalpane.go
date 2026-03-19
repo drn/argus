@@ -224,7 +224,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if tp.focused {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorder(screen, x-1, y-1, width+2, height+2, borderStyle)
+	drawBorderedPanel(screen, x-1, y-1, width+2, height+2, "", borderStyle)
 
 	if tp.diffMode {
 		tp.renderDiff(screen, x, y, width, height)

@@ -533,6 +533,16 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - **PTY key forwarding** via `tcellKeyToBytes(event)` — maps `tcell.EventKey` to raw bytes including alt modifier.
 - **View switching** via `tview.Pages.SwitchToPage()` — mirrors BT's `current view` enum.
 
+### Bordered Panel Consolidation (2026-03-18)
+
+**Problem:** Border drawing was duplicated across 8+ panels with two inconsistent patterns — "border outside" (`drawBorder(x-1, y-1, w+2, h+2)`) used by agent view panels, and "border inside" (`drawBorder(x, y, w, h)` with manual `innerX/Y/W/H` computation) used by reviews and task list panels. Title rendering was also duplicated (4 lines each time).
+
+**Fix:** `drawBorderedPanel(screen, x, y, w, h, title, style) innerRect` in `agentpane.go`. Draws border + optional title, returns `innerRect{X, Y, W, H}` for content area. All bordered panels (TaskListView, TaskDetailPanel, TaskPreviewPanel, GitPanel, TerminalPane, FilePanel, 3x ReviewsView sub-panels) now use it.
+
+**Two border modes remain:** Agent view panels pass `(x-1, y-1, w+2, h+2)` (border outside allocated rect — panels share edges). Task list and reviews panels pass `(x, y, w, h)` (border inside allocated rect). GitPanel has `BorderInside bool` to select mode since both agent view and task list use GitPanel instances. Both modes use the same `drawBorderedPanel` helper.
+
+**Rule:** Any new panel that needs a bordered frame should call `drawBorderedPanel`, not `drawBorder` directly. `drawBorder` remains as the low-level primitive.
+
 ### Gotchas
 - `tview.Application.SetRoot()` must be called before `Run()` — the root Flex is built eagerly in `buildUI()`.
 - `QueueUpdateDraw(func(){})` from the tick goroutine is the idiomatic way to trigger a redraw from a non-event goroutine. The empty func is intentional — state was already updated under `a.mu`.
