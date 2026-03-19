@@ -45,6 +45,8 @@ type TaskListView struct {
 	OnSelect func(task *model.Task)
 	// Callback when user presses 'n' (new task).
 	OnNew func()
+	// Callback when cursor moves to a different task.
+	OnCursorChange func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
@@ -207,6 +209,7 @@ func (tl *TaskListView) CursorDown() {
 		tl.cursor = len(tl.rows) - 1
 	}
 	tl.autoExpand()
+	tl.notifyCursorChange()
 }
 
 // CursorUp moves the cursor up. When landing on a project header,
@@ -220,6 +223,14 @@ func (tl *TaskListView) CursorUp() {
 		tl.cursor = 0
 	}
 	tl.autoExpand()
+	tl.notifyCursorChange()
+}
+
+// notifyCursorChange fires the OnCursorChange callback with the current task.
+func (tl *TaskListView) notifyCursorChange() {
+	if tl.OnCursorChange != nil {
+		tl.OnCursorChange(tl.SelectedTask())
+	}
 }
 
 // autoExpand expands the project the cursor is in, collapses others.
