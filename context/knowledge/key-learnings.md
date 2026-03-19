@@ -220,4 +220,6 @@
 
 - **`ctrl+d` must exit agent view when session is dead.** When a Claude/Codex session finishes (Ctrl+D sends EOF to the agent), the PTY process exits and `sess.Alive()` returns false. But pressing Ctrl+D again in the agent view did nothing — `tcellKeyToBytes` converts it to `{0x04}` which reaches the "Forward to PTY" block, but with no alive session the key is silently dropped. Fix: in `handleAgentKey`, check for `KeyCtrlD` when `sess == nil || !sess.Alive()` and call `exitAgentView()`. This mirrors the existing `'o'` key guard pattern for dead sessions.
 
+- **`TerminalPane.MouseHandler()` enables mouse wheel scrolling in the agent view.** tview dispatches mouse events via `MouseHandler()` on primitives — the default `Box.MouseHandler()` does nothing with scroll events. `TerminalPane` overrides it using `WrapMouseHandler` (which checks bounds) to handle `tview.MouseScrollUp` and `tview.MouseScrollDown`. In diff mode, scroll events go to `DiffScrollUp`/`DiffScrollDown`; otherwise to `ScrollUp`/`ScrollDown`. Scroll step is 3 lines per wheel tick. `WrapMouseHandler` requires the box to have a valid rect and the event coordinates to be inside it — tests must call `SetRect()` and pass a `tcell.EventMouse` with coordinates inside the rect.
+
 ## Planned but Not Yet Implemented

@@ -94,6 +94,9 @@ const (
 	diffHeader
 )
 
+// mouseScrollStep is the number of lines scrolled per mouse wheel tick.
+const mouseScrollStep = 3
+
 // NewTerminalPane creates a native terminal rendering pane.
 func NewTerminalPane() *TerminalPane {
 	return &TerminalPane{
@@ -223,6 +226,29 @@ func (tp *TerminalPane) ScrollDown(n int) {
 	if tp.scrollOffset < 0 {
 		tp.scrollOffset = 0
 	}
+}
+
+// MouseHandler handles mouse wheel scrolling in the terminal pane.
+func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		switch action {
+		case tview.MouseScrollUp:
+			if tp.diffMode {
+				tp.DiffScrollUp(mouseScrollStep)
+			} else {
+				tp.ScrollUp(mouseScrollStep)
+			}
+			return true, nil
+		case tview.MouseScrollDown:
+			if tp.diffMode {
+				tp.DiffScrollDown(mouseScrollStep)
+			} else {
+				tp.ScrollDown(mouseScrollStep)
+			}
+			return true, nil
+		}
+		return false, nil
+	})
 }
 
 // --- Diff mode ---
