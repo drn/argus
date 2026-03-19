@@ -87,6 +87,9 @@ type App struct {
 
 // New creates the tui2 application shell.
 func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *App {
+	// Use the terminal's default background instead of tview's hard-coded black.
+	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
+
 	app := &App{
 		tapp:            tview.NewApplication(),
 		db:              database,
