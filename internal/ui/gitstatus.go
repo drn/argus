@@ -8,15 +8,6 @@ import (
 // gitRefreshInterval is how long between automatic git status refreshes.
 const gitRefreshInterval = 3 * time.Second
 
-// GitStatusRefreshMsg carries the result of a background git status check.
-type GitStatusRefreshMsg struct {
-	TaskID      string
-	Status      string // git status --short output
-	Diff        string // git diff --stat (unstaged + staged) output
-	BranchDiff  string // git diff --stat against merge-base (committed changes)
-	BranchFiles string // git diff --name-status against merge-base (for file list)
-}
-
 // GitStatus renders worktree git status and diff stat above the preview pane.
 type GitStatus struct {
 	theme       Theme

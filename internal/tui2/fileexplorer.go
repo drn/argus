@@ -8,7 +8,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/drn/argus/internal/ui"
+	"github.com/drn/argus/internal/gitutil"
 )
 
 // FilePanel is a file explorer panel for the tcell agent view.
@@ -16,17 +16,17 @@ import (
 // and cursor navigation — mirroring the Bubble Tea FileExplorer.
 type FilePanel struct {
 	*tview.Box
-	files       []ui.ChangedFile
+	files       []gitutil.ChangedFile
 	rows        []fpRow
 	expanded    map[string]bool
-	dirChildren map[string][]ui.ChangedFile
+	dirChildren map[string][]gitutil.ChangedFile
 	cursor      int
 	offset      int
 	focused     bool
 }
 
 type fpRow struct {
-	ui.ChangedFile
+	gitutil.ChangedFile
 	indent int
 }
 
@@ -35,12 +35,12 @@ func NewFilePanel() *FilePanel {
 	return &FilePanel{
 		Box:         tview.NewBox(),
 		expanded:    make(map[string]bool),
-		dirChildren: make(map[string][]ui.ChangedFile),
+		dirChildren: make(map[string][]gitutil.ChangedFile),
 	}
 }
 
 // SetFiles updates the file list and rebuilds rows.
-func (fp *FilePanel) SetFiles(files []ui.ChangedFile) {
+func (fp *FilePanel) SetFiles(files []gitutil.ChangedFile) {
 	fp.files = files
 	// Prune stale expansion state
 	dirs := make(map[string]bool)
@@ -60,7 +60,7 @@ func (fp *FilePanel) SetFiles(files []ui.ChangedFile) {
 }
 
 // SetDirChildren caches directory children and rebuilds.
-func (fp *FilePanel) SetDirChildren(dir string, children []ui.ChangedFile) {
+func (fp *FilePanel) SetDirChildren(dir string, children []gitutil.ChangedFile) {
 	fp.dirChildren[dir] = children
 	fp.buildRows()
 	fp.clampCursor()
@@ -72,7 +72,7 @@ func (fp *FilePanel) SetFocused(f bool) {
 }
 
 // SelectedFile returns the file at the cursor, or nil.
-func (fp *FilePanel) SelectedFile() *ui.ChangedFile {
+func (fp *FilePanel) SelectedFile() *gitutil.ChangedFile {
 	if fp.cursor < 0 || fp.cursor >= len(fp.rows) {
 		return nil
 	}
