@@ -42,6 +42,10 @@ type TerminalPane struct {
 	emuCols     int
 	emuRows     int
 
+	// Cached PTY size — updated from tick, never from Draw().
+	ptyCols int
+	ptyRows int
+
 	// Scrollback.
 	scrollOffset int
 
@@ -97,6 +101,17 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	// Seed PTY size from panel dimensions — SyncPTYSize will refine on next tick.
+	if sess != nil {
+		_, _, w, h := tp.GetInnerRect()
+		if w > 0 && h > 0 {
+			tp.ptyCols = max(w, 20)
+			tp.ptyRows = max(h, 5)
+		} else {
+			tp.ptyCols = 80
+			tp.ptyRows = 24
+		}
+	}
 }
 
 // Session returns the current session (thread-safe).
@@ -133,6 +148,27 @@ func (tp *TerminalPane) loadSessionLog(taskID string) {
 // SetPRURL sets the PR URL for the current task.
 func (tp *TerminalPane) SetPRURL(url string) {
 	tp.taskPR = url
+}
+
+// SyncPTYSize resizes the PTY to match the panel and caches the result.
+// Called from the tick goroutine — RPC calls are safe here (not on UI thread).
+func (tp *TerminalPane) SyncPTYSize() {
+	tp.mu.Lock()
+	sess := tp.session
+	tp.mu.Unlock()
+	if sess == nil || !sess.Alive() {
+		return
+	}
+
+	_, _, width, height := tp.GetInnerRect()
+	wantRows := max(height, 5)
+	wantCols := max(width, 20)
+
+	if tp.ptyCols != wantCols || tp.ptyRows != wantRows {
+		sess.Resize(uint16(wantRows), uint16(wantCols))
+		tp.ptyCols = wantCols
+		tp.ptyRows = wantRows
+	}
 }
 
 // SetFocused sets the focus state for border rendering.
@@ -261,21 +297,14 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	var raw []byte
-	var ptyCols, ptyRows int
 	alive := false
 
+	// Use cached PTY size — never do RPC in Draw().
+	ptyCols := tp.ptyCols
+	ptyRows := tp.ptyRows
+
 	if sess != nil {
-		ptyCols, ptyRows = sess.PTYSize()
 		alive = sess.Alive()
-
-		// Resize PTY to match panel dimensions if they've changed.
-		wantRows := max(height, 5)
-		wantCols := max(width, 20)
-		if alive && (ptyCols != wantCols || ptyRows != wantRows) {
-			sess.Resize(uint16(wantRows), uint16(wantCols))
-			ptyCols, ptyRows = wantCols, wantRows
-		}
-
 		raw = sess.RecentOutput()
 	} else if len(tp.replayData) > 0 {
 		raw = tp.replayData

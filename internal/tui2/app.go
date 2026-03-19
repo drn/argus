@@ -252,6 +252,11 @@ func (a *App) onTick() {
 	// Update agent pane session
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
+
+		// Sync PTY size from tick goroutine — this does RPC which must not
+		// happen on the tview main goroutine (Draw).
+		a.agentPane.SyncPTYSize()
+
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
 				a.agentPane.SetSession(sess)
@@ -975,6 +980,11 @@ func (a *App) onTaskSelect(task *model.Task) {
 	if a.worktreeDir != "" {
 		go a.fetchGitStatus(task.ID, a.worktreeDir)
 	}
+
+	// Start continuous redraw loop for existing running sessions.
+	if sess != nil && sess.Alive() {
+		a.startAgentRedrawLoop(task.ID, sess)
+	}
 }
 
 // onNewTask opens the new task form.
@@ -1061,19 +1071,29 @@ func (a *App) startSession(task *model.Task) {
 	// Now that the session exists, attach it to the terminal pane.
 	a.agentPane.SetSession(sess)
 
-	// Fast-poll for initial output. New sessions start with an empty ring buffer
-	// because the agent takes 2-3 seconds to initialize. The 1-second tick is too
-	// slow to catch the first output, so poll every 200ms for up to 10 seconds.
+	a.startAgentRedrawLoop(task.ID, sess)
+}
+
+// startAgentRedrawLoop runs a goroutine that triggers redraws every 200ms
+// while the session is alive and the agent view is active. The 1-second tick
+// is too slow for a live terminal. Self-terminates when the session exits or
+// the user leaves the agent view.
+func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 	go func() {
-		for range 50 { // 50 * 200ms = 10 seconds max
+		for {
 			time.Sleep(200 * time.Millisecond)
-			if sess.TotalWritten() > 0 {
+			if !sess.Alive() {
+				// One final redraw to show the finished state.
 				a.tapp.QueueUpdateDraw(func() {})
 				return
 			}
-			if !sess.Alive() {
+			a.mu.Lock()
+			stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+			a.mu.Unlock()
+			if !stillViewing {
 				return
 			}
+			a.tapp.QueueUpdateDraw(func() {})
 		}
 	}()
 }
