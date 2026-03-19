@@ -63,6 +63,11 @@ type SettingsView struct {
 	argusVaultPath string
 	kbTaskSync     bool
 
+	// Logs detail scroll.
+	logScrollOff int
+	logLines     []string // cached lines for current log
+	logKey       string   // which log is cached ("ux" or "daemon")
+
 	// DB reference for toggling values.
 	database *db.DB
 }
@@ -316,6 +321,25 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	return false
 }
 
+// HandleMouse handles mouse events (scroll wheel on logs detail).
+func (sv *SettingsView) HandleMouse(action tview.MouseAction) bool {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srLogs {
+		return false
+	}
+	switch action {
+	case tview.MouseScrollUp:
+		if sv.logScrollOff > 0 {
+			sv.logScrollOff--
+		}
+		return true
+	case tview.MouseScrollDown:
+		sv.logScrollOff++
+		return true
+	}
+	return false
+}
+
 func (sv *SettingsView) moveCursor(dir int) {
 	sv.cursor += dir
 	if sv.cursor < 0 {
@@ -325,6 +349,12 @@ func (sv *SettingsView) moveCursor(dir int) {
 		sv.cursor = len(sv.rows) - 1
 	}
 	sv.skipToSelectable(dir)
+	// Reset log scroll when leaving a log row or switching logs.
+	if row := sv.SelectedRow(); row == nil || row.kind != srLogs || row.key != sv.logKey {
+		sv.logScrollOff = 0
+		sv.logLines = nil
+		sv.logKey = ""
+	}
 }
 
 func (sv *SettingsView) handleEnter() bool {
@@ -664,12 +694,39 @@ func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, ro
 	drawText(screen, x, y, w, title, StyleTitle)
 	drawText(screen, x, y+2, w, logPath, StyleDimmed)
 
-	// Show tail of the log file.
-	lines := tailFile(logPath, h-4)
-	for i, line := range lines {
-		if y+4+i >= y+h {
+	// Load/cache log lines.
+	if sv.logKey != row.key {
+		sv.logLines = readLogLines(logPath)
+		sv.logKey = row.key
+		// Auto-scroll to bottom on first load.
+		visibleRows := h - 4
+		if len(sv.logLines) > visibleRows {
+			sv.logScrollOff = len(sv.logLines) - visibleRows
+		} else {
+			sv.logScrollOff = 0
+		}
+	}
+
+	// Clamp scroll offset.
+	visibleRows := h - 4
+	if visibleRows <= 0 {
+		return
+	}
+	maxScroll := len(sv.logLines) - visibleRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if sv.logScrollOff > maxScroll {
+		sv.logScrollOff = maxScroll
+	}
+
+	// Render visible lines.
+	for i := range visibleRows {
+		lineIdx := sv.logScrollOff + i
+		if lineIdx >= len(sv.logLines) {
 			break
 		}
+		line := sv.logLines[lineIdx]
 		if len(line) > w {
 			line = line[:w]
 		}
@@ -677,11 +734,8 @@ func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, ro
 	}
 }
 
-// tailFile reads the last n lines from a file.
-func tailFile(path string, n int) []string {
-	if n <= 0 {
-		return nil
-	}
+// readLogLines reads all lines from a log file.
+func readLogLines(path string) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return []string{"(file not found)"}
@@ -690,11 +744,7 @@ func tailFile(path string, n int) []string {
 	if text == "" {
 		return []string{"(empty)"}
 	}
-	lines := strings.Split(text, "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return lines
+	return strings.Split(text, "\n")
 }
 
 // --- Helpers ---
