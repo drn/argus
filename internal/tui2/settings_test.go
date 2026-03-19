@@ -265,6 +265,68 @@ func TestSettingsView_LogScroll(t *testing.T) {
 	}
 }
 
+func TestSettingsView_DaemonRestart(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Not connected — no daemon row.
+	sv.SetDaemonConnected(false)
+	for _, row := range sv.rows {
+		if row.kind == srDaemon {
+			t.Fatal("daemon row should not appear when not connected")
+		}
+	}
+
+	// Connected — daemon row should appear.
+	sv.SetDaemonConnected(true)
+	found := false
+	for _, row := range sv.rows {
+		if row.kind == srDaemon {
+			found = true
+			if row.label != "  Restart Daemon" {
+				t.Errorf("daemon row label = %q, want '  Restart Daemon'", row.label)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("daemon row should appear when connected")
+	}
+
+	// Enter on daemon row fires callback.
+	called := false
+	sv.OnRestartDaemon = func() { called = true }
+	for i, row := range sv.rows {
+		if row.kind == srDaemon {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !called {
+		t.Error("OnRestartDaemon should be called on enter")
+	}
+	if !sv.daemonRestarting {
+		t.Error("daemonRestarting should be true after enter")
+	}
+
+	// While restarting, label changes and enter is a no-op.
+	called = false
+	sv.handleEnter()
+	if called {
+		t.Error("OnRestartDaemon should not fire while restarting")
+	}
+	for _, row := range sv.rows {
+		if row.kind == srDaemon && row.label != "  Restarting..." {
+			t.Errorf("daemon row label during restart = %q, want '  Restarting...'", row.label)
+		}
+	}
+
+	// Clear restarting state.
+	sv.SetDaemonRestarting(false)
+	if sv.daemonRestarting {
+		t.Error("daemonRestarting should be false after SetDaemonRestarting(false)")
+	}
+}
+
 func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {
 	sv := testSettingsView(t)
 

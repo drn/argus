@@ -116,6 +116,12 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
+	app.settings.OnRestartDaemon = func() {
+		app.mu.Lock()
+		app.daemonRestarting = true
+		app.mu.Unlock()
+		go app.restartDaemon()
+	}
 	app.settingsPage = NewSettingsPage(app.settings)
 	app.buildUI()
 	app.refreshTasks()
@@ -335,6 +341,7 @@ func (a *App) restartDaemon() {
 			a.daemonRestarting = false
 			a.daemonFailures = 0
 			a.mu.Unlock()
+			a.settings.SetDaemonRestarting(false)
 			a.statusbar.SetError("Daemon restart failed: " + err.Error())
 		})
 		return
@@ -349,6 +356,8 @@ func (a *App) restartDaemon() {
 		a.runner = newClient
 		a.restartedClient = newClient
 		a.mu.Unlock()
+
+		a.settings.SetDaemonRestarting(false)
 
 		// Reset in-progress tasks to pending, preserving SessionID for resume.
 		for _, t := range a.db.Tasks() {
