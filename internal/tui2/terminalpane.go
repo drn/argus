@@ -381,6 +381,10 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	}
 
 	newBytes := totalWritten - tp.emuFedTotal
+	if tp.drawLogCounter < 20 {
+		uxlog.Log("[terminalpane] renderLive #%d: BEFORE emu.Write newBytes=%d rawLen=%d totalWritten=%d emuFedTotal=%d",
+			tp.drawLogCounter, newBytes, len(raw), totalWritten, tp.emuFedTotal)
+	}
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
 		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
@@ -395,6 +399,9 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 			uxlog.Log("[terminalpane] renderLive #%d: INCR newBytes=%d rawLen=%d wrote=%d err=%v totalWritten=%d",
 				tp.drawLogCounter, newBytes, len(raw), n, err, totalWritten)
 		}
+	}
+	if tp.drawLogCounter < 20 {
+		uxlog.Log("[terminalpane] renderLive #%d: AFTER emu.Write, calling paintEmu", tp.drawLogCounter)
 	}
 	tp.emuFedTotal = totalWritten
 
@@ -428,7 +435,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
-	if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
+	if tp.drawLogCounter < 20 {
 		uxlog.Log("[terminalpane] paintEmu #%d: curX=%d curY=%d sbLen=%d lastContentRow=%d firstContentRow=%d totalLines=%d emuCols=%d emuRows=%d panelW=%d panelH=%d",
 			tp.drawLogCounter, cur.X, cur.Y, sbLen, lastContentRow, firstContentRow, totalLines, emuCols, emuRows, w, h)
 	}
