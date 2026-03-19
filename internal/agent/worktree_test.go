@@ -188,6 +188,83 @@ func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	}
 }
 
+func TestSanitizeBranchName(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"fix-bug", "fix-bug"},
+		{"fails?", "fails"},
+		{"hello world", "hello-world"},
+		{"feat~1", "feat-1"},
+		{"name..with..dots", "name-with-dots"},
+		{"trailing.", "trailing"},
+		{"a:b:c", "a-b-c"},
+		{"has[brackets]", "has-brackets"},
+		{"back\\slash", "back-slash"},
+		{"star*name", "star-name"},
+		{"caret^ref", "caret-ref"},
+		{"ref@{0}", "ref@-0"},
+		{".hidden", "hidden"},   // leading dot stripped
+		{".dotfile.", "dotfile"},// both leading and trailing dots
+		{"???", "task"},         // all invalid → fallback
+		{"", "task"},            // empty → fallback
+		{"normal-name", "normal-name"},
+	}
+	for _, tt := range tests {
+		got := sanitizeBranchName(tt.input)
+		if got != tt.expected {
+			t.Errorf("sanitizeBranchName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestCreateWorktree_SpecialChars(t *testing.T) {
+	// Task names with special characters should not fail worktree creation.
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// "fails?" contains ?, which is invalid in git branch names.
+	wtPath, finalName, err := CreateWorktree(repoDir, "testproject", "fails?", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree with special chars failed: %v", err)
+	}
+	if finalName != "fails" {
+		t.Errorf("expected finalName %q, got %q", "fails", finalName)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath)
+	}
+}
+
 func TestResolveStartPoint(t *testing.T) {
 	// HEAD should always be returned as-is.
 	if got := resolveStartPoint("/nonexistent", "HEAD"); got != "HEAD" {

@@ -5,10 +5,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/inject"
 )
+
+// sanitizeBranchName replaces the most common invalid git branch name characters.
+// Covers spaces, control chars, and the characters forbidden by git-check-ref-format:
+//   ~ ^ : ? * [ ] { } \   plus leading/trailing dots, consecutive dots, and @{.
+var invalidBranchChars = regexp.MustCompile(`[[:cntrl:] ~^:?*\[\]{}\\]+`)
+
+func sanitizeBranchName(name string) string {
+	s := invalidBranchChars.ReplaceAllString(name, "-")
+	s = strings.Trim(s, ".")             // cannot start or end with .
+	s = strings.Trim(s, "/")             // cannot start or end with /
+	s = strings.ReplaceAll(s, "..", "-")  // no consecutive dots
+	s = strings.ReplaceAll(s, "//", "/")  // no consecutive slashes
+	s = strings.ReplaceAll(s, "@{", "-")  // no @{
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "task" // fallback when name is entirely invalid characters
+	}
+	return s
+}
 
 // resolveStartPoint checks whether ref is a valid git ref in the given repo.
 // If not, it tries origin/<ref> and upstream/<ref> as fallbacks.
@@ -57,11 +78,14 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 	// try remote-tracking branches (origin/<branch>, upstream/<branch>).
 	baseBranch = resolveStartPoint(projectPath, baseBranch)
 
+	// Sanitize the task name for use in branch names and directory paths.
+	safeName := sanitizeBranchName(taskName)
+
 	// Try the base name first, then -1, -2, ... up to 99.
-	candidate := taskName
+	candidate := safeName
 	for i := 0; i <= 99; i++ {
 		if i > 0 {
-			candidate = fmt.Sprintf("%s-%d", taskName, i)
+			candidate = fmt.Sprintf("%s-%d", safeName, i)
 		}
 		wtDir := WorktreeDir(projectName, candidate)
 
