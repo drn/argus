@@ -73,8 +73,8 @@ func (h *Header) Draw(screen tcell.Screen) {
 	// Compute total width of all tab segments to center them.
 	// Each segment = 1 (open chevron) + len(text) + 1 (close chevron).
 	totalWidth := 0
-	for i, label := range tabLabels {
-		text := fmt.Sprintf(" %s %s ", tabKeys[i], label)
+	for _, label := range tabLabels {
+		text := fmt.Sprintf(" %s ", label)
 		totalWidth += 1 + len(text) + 1 // open sep + text + close sep
 	}
 
@@ -88,7 +88,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 		if col >= x+width {
 			break
 		}
-		text := fmt.Sprintf(" %s %s ", tabKeys[i], label)
+		text := fmt.Sprintf(" %s ", label)
 		if Tab(i) == h.activeTab {
 			col = h.drawSegment(screen, col, y, x+width, text, headerActiveBG, headerActiveFG, true)
 		} else {
