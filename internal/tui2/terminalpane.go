@@ -50,6 +50,9 @@ type TerminalPane struct {
 	// Scrollback.
 	scrollOffset int
 
+	// Debug counter — log every N draws.
+	drawLogCounter int
+
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
 
@@ -326,6 +329,12 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		raw = tp.replayData
 	}
 
+	if tp.drawLogCounter%50 == 0 {
+		uxlog.Log("[terminalpane] Draw: sess=%v alive=%v rawLen=%d ptyCols=%d ptyRows=%d panelW=%d panelH=%d scrollOff=%d",
+			sess != nil, alive, len(raw), ptyCols, ptyRows, width, height, tp.scrollOffset)
+	}
+	tp.drawLogCounter++
+
 	if len(raw) == 0 {
 		if sess != nil {
 			msg := "Waiting for output..."
@@ -370,9 +379,17 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
 		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
-		tp.emu.Write(raw)
+		n, err := tp.emu.Write(raw)
+		if tp.drawLogCounter%50 == 1 {
+			uxlog.Log("[terminalpane] renderLive: WRAPPED totalWritten=%d emuFedTotal=%d rawLen=%d wrote=%d err=%v",
+				totalWritten, tp.emuFedTotal, len(raw), n, err)
+		}
 	} else if newBytes > 0 {
-		tp.emu.Write(raw[len(raw)-int(newBytes):])
+		n, err := tp.emu.Write(raw[len(raw)-int(newBytes):])
+		if tp.drawLogCounter%50 == 1 {
+			uxlog.Log("[terminalpane] renderLive: INCR newBytes=%d rawLen=%d wrote=%d err=%v totalWritten=%d",
+				newBytes, len(raw), n, err, totalWritten)
+		}
 	}
 	tp.emuFedTotal = totalWritten
 
@@ -392,6 +409,11 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor bool) {
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
+	if tp.drawLogCounter%50 == 1 {
+		lastRow := findLastContentRowEmu(emu, emuCols, emuRows)
+		uxlog.Log("[terminalpane] paintEmu: curX=%d curY=%d sbLen=%d lastContentRow=%d emuCols=%d emuRows=%d panelW=%d panelH=%d",
+			cur.X, cur.Y, sbLen, lastRow, emuCols, emuRows, w, h)
+	}
 
 	// Find content bounds in the main screen area.
 	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
