@@ -198,8 +198,14 @@ func (a *App) tickLoop() {
 
 // onTick handles periodic updates.
 func (a *App) onTick() {
+	// Fetch running IDs OUTSIDE the lock — this is an RPC call that can take
+	// up to 5 seconds on timeout, and holding a.mu during that blocks the
+	// entire UI (QueueUpdateDraw callbacks can't run while the tick goroutine
+	// holds the mutex and waits for RPC).
+	runningIDs := a.runner.Running()
+
 	a.mu.Lock()
-	a.refreshTasksLocked()
+	a.refreshTasksWithIDs(runningIDs)
 	checkDaemon := a.daemonConnected && a.daemonClient != nil
 	taskID := ""
 	if a.mode == modeAgent {
@@ -245,6 +251,7 @@ func (a *App) onTick() {
 	// Update agent pane session
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
+		uxlog.Log("[tick] agent mode: taskID=%s sess=%v", taskID, sess != nil)
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
 				a.agentPane.SetSession(sess)
@@ -357,8 +364,14 @@ func (a *App) refreshTasks() {
 }
 
 func (a *App) refreshTasksLocked() {
+	a.refreshTasksWithIDs(a.runner.Running())
+}
+
+// refreshTasksWithIDs updates the task list with pre-fetched running IDs.
+// Used by onTick to avoid calling Running() (RPC) while holding a.mu.
+func (a *App) refreshTasksWithIDs(runningIDs []string) {
 	a.tasks = a.db.Tasks()
-	a.runningIDs = a.runner.Running()
+	a.runningIDs = runningIDs
 
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)

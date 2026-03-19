@@ -78,10 +78,16 @@ func NewTerminalPane() *TerminalPane {
 	}
 }
 
-// SetSession attaches a live session. Resets emulator state.
+// SetSession attaches a live session. Resets emulator state only when the
+// session pointer actually changes — the tick calls this every second with
+// the same session, and resetting the emulator each time would destroy
+// incremental rendering state.
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
+	if tp.session == sess {
+		return // same session, skip reset
+	}
 	if sess != nil {
 		uxlog.Log("[terminalpane] SetSession: sess=%p totalWritten=%d", sess, sess.TotalWritten())
 	} else {
