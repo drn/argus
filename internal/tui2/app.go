@@ -45,12 +45,14 @@ type App struct {
 	mu     sync.Mutex
 
 	// Sub-views
-	header    *Header
-	statusbar *StatusBar
-	tasklist  *TaskListView
-	agentPane *TerminalPane
-	gitPanel  *GitPanel
-	filePanel *FilePanel
+	header       *Header
+	statusbar    *StatusBar
+	tasklist     *TaskListView
+	taskPreview  *TaskPreviewPanel
+	taskDetail   *TaskDetailPanel
+	agentPane    *TerminalPane
+	gitPanel     *GitPanel
+	filePanel    *FilePanel
 
 	// Reviews and settings tabs
 	reviews  *ReviewsView
@@ -119,6 +121,11 @@ func (a *App) buildUI() {
 	a.tasklist = NewTaskListView()
 	a.tasklist.OnSelect = a.onTaskSelect
 	a.tasklist.OnNew = a.onNewTask
+	a.tasklist.OnCursorChange = a.onTaskCursorChange
+
+	a.taskPreview = NewTaskPreviewPanel()
+	a.taskPreview.SetRunner(a.runner)
+	a.taskDetail = NewTaskDetailPanel()
 
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
@@ -128,12 +135,11 @@ func (a *App) buildUI() {
 		go fn()
 	})
 
-	// Task list page
-	taskListCenter := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(tview.NewBox(), 0, 1, false).
-		AddItem(a.tasklist, 0, 3, true).
-		AddItem(tview.NewBox(), 0, 1, false)
-	a.taskPage = taskListCenter
+	// Task list page — three-panel layout: tasks | preview | details
+	a.taskPage = tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(a.tasklist, 0, 1, true).
+		AddItem(a.taskPreview, 0, 3, false).
+		AddItem(a.taskDetail, 0, 1, false)
 
 	// Agent page — three-panel layout
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexColumn).
@@ -291,6 +297,7 @@ func (a *App) restartDaemon() {
 		a.daemonClient = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
+		a.taskPreview.SetRunner(newClient)
 		a.mu.Unlock()
 
 		// Reset in-progress tasks to pending, preserving SessionID for resume.
@@ -340,6 +347,18 @@ func (a *App) refreshTasksLocked() {
 	a.tasklist.SetRunning(a.runningIDs)
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
+
+	// Keep side panels in sync with cursor
+	if a.mode == modeTaskList {
+		t := a.tasklist.SelectedTask()
+		if t != nil {
+			a.taskPreview.SetTaskID(t.ID)
+			a.taskDetail.SetTask(t, a.isTaskRunning(t.ID))
+		} else {
+			a.taskPreview.SetTaskID("")
+			a.taskDetail.SetTask(nil, false)
+		}
+	}
 }
 
 // handleGlobalKey processes key events at the application level.
@@ -806,6 +825,27 @@ func (a *App) switchTab(t Tab) {
 		a.settings.Refresh()
 		a.pages.SwitchToPage("settings")
 	}
+}
+
+// onTaskCursorChange updates the preview and detail panels when the task list cursor moves.
+func (a *App) onTaskCursorChange(task *model.Task) {
+	if task == nil {
+		a.taskPreview.SetTaskID("")
+		a.taskDetail.SetTask(nil, false)
+		return
+	}
+	a.taskPreview.SetTaskID(task.ID)
+	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
+}
+
+// isTaskRunning checks if a task has a running session.
+func (a *App) isTaskRunning(taskID string) bool {
+	for _, id := range a.runningIDs {
+		if id == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.

@@ -204,4 +204,6 @@
 
 - **tcell has no `KeyCtrlLeft`/`KeyCtrlRight` — use modifier checks.** Panel switching checks `event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0` on arrow keys. Both Ctrl+arrow and Alt+arrow (macOS Cmd+arrow) work.
 
+- **Task list three-panel layout: tasks | preview | details.** The task list page (`taskPage` in `app.go`) uses a `tview.FlexColumn` with 1:3:1 ratio — `TaskListView` (left), `TaskPreviewPanel` (center), `TaskDetailPanel` (right). `TaskPreviewPanel` (`taskpreview.go`) renders a live terminal snapshot via `xvt.SafeEmulator` using `uvCellToTcellStyle` (same cell painting as `TerminalPane`), falling back to session log file for finished tasks. `TaskDetailPanel` (`taskdetail.go`) shows task metadata (name, status, project, branch, backend, PR URL, worktree, created date, elapsed time, prompt). Both panels update via `OnCursorChange` callback on `TaskListView` (fired from `CursorDown`/`CursorUp`) and from `refreshTasksLocked` to keep data current on ticks.
+
 ## Planned but Not Yet Implemented
