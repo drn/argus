@@ -139,6 +139,16 @@ func (a *App) buildUI() {
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
 	a.agentPane = NewTerminalPane()
+
+	// Wire mouse click callbacks so clicking a panel switches agentFocus.
+	a.filePanel.OnClick = func() {
+		a.agentFocus = focusFiles
+		a.updateFocusIndicators()
+	}
+	a.agentPane.OnClick = func() {
+		a.agentFocus = focusTerminal
+		a.updateFocusIndicators()
+	}
 	a.reviews = NewReviewsView()
 	a.reviews.SetOnFetch(func(fn func()) {
 		go fn()
@@ -714,10 +724,18 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyUp:
-		a.agentPane.DiffScrollUp(1)
+		// Navigate to previous file's diff.
+		if dir := a.filePanel.CursorUp(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		a.openFileDiff()
 		return nil
 	case tcell.KeyDown:
-		a.agentPane.DiffScrollDown(1)
+		// Navigate to next file's diff.
+		if dir := a.filePanel.CursorDown(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		a.openFileDiff()
 		return nil
 	case tcell.KeyPgUp:
 		a.agentPane.DiffScrollUp(20)

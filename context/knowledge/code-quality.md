@@ -567,3 +567,19 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - Worktree cleanup respects `cfg.UI.ShouldCleanupWorktrees()` — when disabled, only branches are deleted.
 - `isWorktreeSubdir` safety check prevents `os.RemoveAll` on non-worktree paths.
 - Prune runs worktree cleanup in a goroutine to keep TUI responsive; calls `QueueUpdateDraw` on completion.
+
+## Mouse Focus & Diff File Navigation Fix: 2026-03-19
+
+### Problem
+Clicking on the Files panel in the agent view didn't switch keyboard focus — Up/Down arrows continued routing to the PTY instead of navigating files. tview's default `Box.MouseHandler` updates tview's internal focus but Argus uses `agentFocus` for key routing. Also, Up/Down in diff mode only scrolled the diff — no way to switch files.
+
+### Fix
+- Added `MouseHandler()` overrides to `FilePanel` and `TerminalPane` with `OnClick` callbacks
+- `FilePanel.MouseHandler` also positions cursor on clicked row and handles scroll wheel
+- `TerminalPane.MouseHandler` handles scroll wheel for scrollback
+- Callbacks wired in `buildUI` to update `agentFocus` and `updateFocusIndicators()`
+- Up/Down in diff mode now navigate to prev/next file's diff; j/k scroll the diff
+
+### Data Model
+- `FilePanel.OnClick func()` — callback fired on mouse click
+- `TerminalPane.OnClick func()` — callback fired on mouse click
