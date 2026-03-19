@@ -514,3 +514,26 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - Phase 5: fsnotify watcher in `kb.Indexer.watch()` (currently placeholder goroutine)
 - Phase 6: Obsidian → task creation (parser exists in `internal/import/obsidian.go`, UI approval flow not wired)
 - Settings: `'v'` key to edit vault path uses `KBVaultForm` modal; actual DB write happens in root.go `viewKBVaultPath` handler
+
+## Terminal Passthrough Phase 2: tcell/tview App Shell (2026-03-18)
+
+### Data Model & Flow
+- `internal/tui2/app.go` — `App` struct owns `tview.Application`, `*db.DB`, `agent.SessionProvider`, all sub-views. `New()` builds the widget tree, `Run()` starts the event loop + tick goroutine.
+- `internal/tui2/header.go` — `Header` (tab bar): custom `tview.Box` widget, `SetTab(t)` / `ActiveTab()`.
+- `internal/tui2/statusbar.go` — `StatusBar`: task counts + keybinding hints, changes hints per active tab.
+- `internal/tui2/tasklist.go` — `TaskListView`: flattened row model with `rowKind` (rowTask/rowProject/rowArchiveHeader), cursor navigation skipping headers, auto-expand, archive section.
+- `internal/tui2/agentpane.go` — `AgentPane`: Phase 2 placeholder showing PTY tail output. Takes `agentview.TerminalAdapter` for session display.
+- `internal/tui2/sidepanel.go` — `SidePanel`: bordered panel with title for git/files.
+- `internal/tui2/theme.go` — tcell color constants matching the Bubble Tea 256-color palette.
+
+### Key Patterns
+- **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly — analogous to BT plain structs with `View() string`.
+- **Async updates** via `tapp.QueueUpdateDraw()` from the tick goroutine — equivalent to `tea.Cmd` returning `tea.Msg`.
+- **Key routing** via `tapp.SetInputCapture()` — global handler dispatches by mode (taskList vs agent).
+- **PTY key forwarding** via `tcellKeyToBytes(event)` — maps `tcell.EventKey` to raw bytes including alt modifier.
+- **View switching** via `tview.Pages.SwitchToPage()` — mirrors BT's `current view` enum.
+
+### Gotchas
+- `tview.Application.SetRoot()` must be called before `Run()` — the root Flex is built eagerly in `buildUI()`.
+- `QueueUpdateDraw(func(){})` from the tick goroutine is the idiomatic way to trigger a redraw from a non-event goroutine. The empty func is intentional — state was already updated under `a.mu`.
+- `tcellKeyToBytes` must handle `tcell.KeyBackspace` AND `tcell.KeyBackspace2` — different terminals send different variants.
