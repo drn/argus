@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	xvt "github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -85,9 +84,9 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 	}
 
 	// Run VT emulation off the UI thread.
-	// Strip terminal query sequences that cause x/vt to hang (DA, DSR).
-	emu := xvt.NewSafeEmulator(cols, rows)
-	emu.Write(stripTerminalQueries(raw))
+	// Use drained emulator to prevent hangs on terminal query sequences.
+	emu := newDrainedEmulator(cols, rows)
+	emu.Write(raw)
 
 	grid := make([][]previewCell, rows)
 	for vy := 0; vy < rows; vy++ {
