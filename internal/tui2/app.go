@@ -251,7 +251,6 @@ func (a *App) onTick() {
 	// Update agent pane session
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
-		uxlog.Log("[tick] agent mode: taskID=%s sess=%v", taskID, sess != nil)
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
 				a.agentPane.SetSession(sess)
@@ -944,9 +943,11 @@ func (a *App) isTaskRunning(taskID string) bool {
 func (a *App) onTaskSelect(task *model.Task) {
 	uxlog.Log("[tui2] entering agent view for task %s (%s)", task.ID, task.Name)
 
+	a.mu.Lock()
 	a.mode = modeAgent
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
+	a.mu.Unlock()
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.SetPRURL(task.PRURL)
 	a.agentPane.ResetVT()
@@ -1058,6 +1059,22 @@ func (a *App) startSession(task *model.Task) {
 
 	// Now that the session exists, attach it to the terminal pane.
 	a.agentPane.SetSession(sess)
+
+	// Fast-poll for initial output. New sessions start with an empty ring buffer
+	// because the agent takes 2-3 seconds to initialize. The 1-second tick is too
+	// slow to catch the first output, so poll every 200ms for up to 10 seconds.
+	go func() {
+		for range 50 { // 50 * 200ms = 10 seconds max
+			time.Sleep(200 * time.Millisecond)
+			if sess.TotalWritten() > 0 {
+				a.tapp.QueueUpdateDraw(func() {})
+				return
+			}
+			if !sess.Alive() {
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) closeNewTaskForm() {
@@ -1071,8 +1088,10 @@ func (a *App) closeNewTaskForm() {
 // exitAgentView returns to the task list.
 func (a *App) exitAgentView() {
 	uxlog.Log("[tui2] exiting agent view")
+	a.mu.Lock()
 	a.mode = modeTaskList
 	a.agentFocus = focusTerminal
+	a.mu.Unlock()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()

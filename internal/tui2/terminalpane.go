@@ -283,16 +283,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 	if len(raw) == 0 {
 		if sess != nil {
-			uxlog.Log("[terminalpane] Draw: sess=%p alive=%v ptyCols=%d ptyRows=%d raw=0 totalWritten=%d",
-				sess, alive, ptyCols, ptyRows, sess.TotalWritten())
 			msg := "Waiting for output..."
 			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
 		}
 		return
 	}
-
-	uxlog.Log("[terminalpane] Draw: rendering raw=%d ptyCols=%d ptyRows=%d alive=%v scroll=%d",
-		len(raw), ptyCols, ptyRows, alive, tp.scrollOffset)
 
 	if ptyCols < 20 {
 		ptyCols = width
