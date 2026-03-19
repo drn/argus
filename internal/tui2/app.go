@@ -407,6 +407,22 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.exitAgentView()
 			return nil
 		}
+	case tcell.KeyLeft:
+		if a.mode != modeAgent {
+			cur := a.header.ActiveTab()
+			if cur > TabTasks {
+				a.switchTab(cur - 1)
+			}
+			return nil
+		}
+	case tcell.KeyRight:
+		if a.mode != modeAgent {
+			cur := a.header.ActiveTab()
+			if cur < TabSettings {
+				a.switchTab(cur + 1)
+			}
+			return nil
+		}
 	case tcell.KeyRune:
 		switch event.Rune() {
 		case 'q':

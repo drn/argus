@@ -140,6 +140,77 @@ func TestTcellKeyToBytes(t *testing.T) {
 	}
 }
 
+func TestArrowTabNavigation(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Start on Tasks tab
+	if app.header.ActiveTab() != TabTasks {
+		t.Fatalf("initial tab = %v, want TabTasks", app.header.ActiveTab())
+	}
+
+	// Right arrow → Reviews
+	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("right arrow should be consumed (return nil)")
+	}
+	if app.header.ActiveTab() != TabReviews {
+		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	}
+
+	// Right arrow → Settings
+	result = app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabSettings {
+		t.Errorf("tab = %v, want TabSettings", app.header.ActiveTab())
+	}
+
+	// Right arrow at Settings — stays on Settings (no wrap)
+	result = app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabSettings {
+		t.Errorf("tab = %v, want TabSettings (no wrap)", app.header.ActiveTab())
+	}
+
+	// Left arrow → Reviews
+	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
+	result = app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("left arrow should be consumed")
+	}
+	if app.header.ActiveTab() != TabReviews {
+		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	}
+
+	// Left arrow → Tasks
+	result = app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabTasks {
+		t.Errorf("tab = %v, want TabTasks", app.header.ActiveTab())
+	}
+
+	// Left arrow at Tasks — stays on Tasks (no wrap)
+	result = app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabTasks {
+		t.Errorf("tab = %v, want TabTasks (no wrap)", app.header.ActiveTab())
+	}
+}
+
+func TestArrowsIgnoredInAgentMode(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	// Right arrow should NOT switch tabs in agent mode
+	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
+	app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabTasks {
+		t.Errorf("tab changed in agent mode: %v", app.header.ActiveTab())
+	}
+}
+
 // ptySizeForPanel is tested inline below.
 
 func TestRefreshTasks(t *testing.T) {
