@@ -198,10 +198,14 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 	if len(fp.files) > 0 {
 		title = fmt.Sprintf(" Files (%d) ", len(fp.files))
 	}
-	drawBorderedPanel(screen, x-1, y-1, width+2, height+2, title, borderStyle)
+	inner := drawBorderedPanel(screen, x, y, width, height, title, borderStyle)
+	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
+	if width <= 0 || height <= 0 {
+		return
+	}
 
 	if len(fp.rows) == 0 {
-		drawText(screen, x+1, y+1, width-2, "No changes", StyleDimmed)
+		drawText(screen, x, y, width, "No changes", StyleDimmed)
 		return
 	}
 
@@ -273,10 +277,10 @@ func (fp *FilePanel) MouseHandler() func(action tview.MouseAction, event *tcell.
 				fp.OnClick()
 			}
 
-			// Position cursor on the clicked row.
+			// Position cursor on the clicked row (content starts 1 cell inside border).
 			_, ey, _, _ := fp.GetInnerRect()
 			_, my := event.Position()
-			clickedRow := fp.offset + (my - ey)
+			clickedRow := fp.offset + (my - ey - 1)
 			if clickedRow >= 0 && clickedRow < len(fp.rows) {
 				fp.cursor = clickedRow
 			}

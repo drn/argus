@@ -14,8 +14,7 @@ type GitPanel struct {
 	diffLines    []string
 	branchLines  []string
 	loaded       bool
-	focused      bool
-	BorderInside bool // when true, border draws inside allocated rect (task list style)
+	focused bool
 }
 
 // NewGitPanel creates a git status panel.
@@ -60,13 +59,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 		borderStyle = StyleFocusedBorder
 	}
 
-	var inner innerRect
-	if gp.BorderInside {
-		inner = drawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
-	} else {
-		// Agent view style: border outside the allocated rect.
-		inner = drawBorderedPanel(screen, x-1, y-1, width+2, height+2, " Git Status ", borderStyle)
-	}
+	inner := drawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}

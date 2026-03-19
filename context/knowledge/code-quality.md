@@ -530,7 +530,7 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **Fix:** `drawBorderedPanel(screen, x, y, w, h, title, style) innerRect` in `agentpane.go`. Draws border + optional title, returns `innerRect{X, Y, W, H}` for content area. All bordered panels (TaskListView, TaskDetailPanel, TaskPreviewPanel, GitPanel, TerminalPane, FilePanel, 3x ReviewsView sub-panels) now use it.
 
-**Two border modes remain:** Agent view panels pass `(x-1, y-1, w+2, h+2)` (border outside allocated rect — panels share edges). Task list and reviews panels pass `(x, y, w, h)` (border inside allocated rect). GitPanel has `BorderInside bool` to select mode since both agent view and task list use GitPanel instances. Both modes use the same `drawBorderedPanel` helper.
+**All panels use inside borders:** Every panel passes `(x, y, w, h)` (border inside allocated rect) and uses the returned `innerRect` for content rendering. This ensures consistent rounded borders across all views.
 
 **Rule:** Any new panel that needs a bordered frame should call `drawBorderedPanel`, not `drawBorder` directly. `drawBorder` remains as the low-level primitive.
 
