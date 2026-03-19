@@ -228,4 +228,6 @@
 
 - **Daemon restart from Settings tab via `srDaemon` row.** When `daemonConnected` is true, the Status section shows a "Restart Daemon" row (`srDaemon` kind). Enter triggers `OnRestartDaemon` callback → `App.restartDaemon()` in a goroutine. During restart, the row label changes to "Restarting..." and Enter is a no-op. `SetDaemonRestarting(false)` is called from `restartDaemon()`'s success and error `QueueUpdateDraw` callbacks to reset the label. The detail panel shows daemon status and `[enter] restart daemon` hint. The row only appears in daemon mode — not in in-process mode.
 
+- **Stale in-progress tasks are reconciled to complete on every tick (daemon mode only).** `refreshTasksWithIDs` checks all tasks: if `StatusInProgress` but not in the daemon's running set, mark `Complete`. This catches cases where the `handleSessionExitUI` callback didn't fire (daemon restart with stale binary, TUI restart mid-session, stream loss without proper exit). Only runs when `daemonConnected` is true — in-process mode has its own `onFinish` callback. `restartDaemon` also wires `OnSessionExit` on the new client (was previously missing, causing all sessions started after a daemon restart to never fire exit callbacks).
+
 ## Planned but Not Yet Implemented
