@@ -225,9 +225,10 @@ func (a *App) onTick() {
 	// entire UI (QueueUpdateDraw callbacks can't run while the tick goroutine
 	// holds the mutex and waits for RPC).
 	runningIDs := a.runner.Running()
+	idleIDs := a.runner.Idle()
 
 	a.mu.Lock()
-	a.refreshTasksWithIDs(runningIDs)
+	a.refreshTasksWithIDs(runningIDs, idleIDs)
 	checkDaemon := a.daemonConnected && a.daemonClient != nil
 	taskID := ""
 	if a.mode == modeAgent {
@@ -409,44 +410,53 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 		}
 	}
 
-	// If we're viewing this task's agent pane, clear the session.
+	// If we're viewing this task's agent pane and it completed, navigate back
+	// to the task list. If stopped (reverted to pending), just clear the session.
 	a.mu.Lock()
 	viewing := a.mode == modeAgent && a.agentState.TaskID == taskID
 	a.mu.Unlock()
 	if viewing {
-		a.agentPane.SetSession(nil)
+		if !stopped {
+			a.exitAgentView()
+		} else {
+			a.agentPane.SetSession(nil)
+		}
 	}
 
-	// Refresh task list — fetch running IDs in a goroutine to avoid
+	// Refresh task list — fetch running/idle IDs in a goroutine to avoid
 	// blocking the tview main goroutine with an RPC call.
 	go func() {
 		runningIDs := a.runner.Running()
+		idleIDs := a.runner.Idle()
 		a.tapp.QueueUpdateDraw(func() {
 			a.mu.Lock()
 			defer a.mu.Unlock()
-			a.refreshTasksWithIDs(runningIDs)
+			a.refreshTasksWithIDs(runningIDs, idleIDs)
 		})
 	}()
 }
 
 func (a *App) refreshTasks() {
-	// Fetch running IDs OUTSIDE the lock — Running() is an RPC call that
-	// can block for up to 5s on timeout. Holding a.mu during that blocks
+	// Fetch running/idle IDs OUTSIDE the lock — Running()/Idle() are RPC calls
+	// that can block for up to 5s on timeout. Holding a.mu during that blocks
 	// the entire UI.
 	runningIDs := a.runner.Running()
+	idleIDs := a.runner.Idle()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.refreshTasksWithIDs(runningIDs)
+	a.refreshTasksWithIDs(runningIDs, idleIDs)
 }
 
-// refreshTasksWithIDs updates the task list with pre-fetched running IDs.
+// refreshTasksWithIDs updates the task list with pre-fetched running/idle IDs.
 // Used by onTick to avoid calling Running() (RPC) while holding a.mu.
-func (a *App) refreshTasksWithIDs(runningIDs []string) {
+func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasks = a.db.Tasks()
 	a.runningIDs = runningIDs
 
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)
+	a.tasklist.SetIdle(idleIDs)
+	a.tasklist.Tick()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
 

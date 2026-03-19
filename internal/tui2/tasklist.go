@@ -34,6 +34,7 @@ type TaskListView struct {
 	rows    []taskRow
 	running map[string]bool
 	idle    map[string]bool
+	tickEven bool // toggles each tick for status icon animation
 
 	cursor   int
 	offset   int // scroll offset
@@ -80,6 +81,11 @@ func (tl *TaskListView) SetIdle(ids []string) {
 	for _, id := range ids {
 		tl.idle[id] = true
 	}
+}
+
+// Tick toggles the animation frame for status icons.
+func (tl *TaskListView) Tick() {
+	tl.tickEven = !tl.tickEven
 }
 
 // SelectedTask returns the task at the current cursor, or nil.
@@ -380,10 +386,91 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 	}
 }
 
+// projectStatusIcon returns the aggregated status icon and style for a project's tasks.
+// Priority: in_progress > in_review > all complete > mixed > all pending.
+func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
+	var hasInProgress, hasInReview, hasPending, hasComplete bool
+	allInProgressIdle := true
+
+	for _, t := range tasks {
+		switch t.Status {
+		case model.StatusInProgress:
+			hasInProgress = true
+			if tl.running[t.ID] && !tl.idle[t.ID] {
+				allInProgressIdle = false
+			}
+		case model.StatusInReview:
+			hasInReview = true
+		case model.StatusComplete:
+			hasComplete = true
+		default:
+			hasPending = true
+		}
+	}
+
+	switch {
+	case hasInProgress:
+		if allInProgressIdle {
+			return '☾', tcell.StyleDefault.Foreground(ColorInProgress)
+		}
+		if tl.tickEven {
+			return '◉', StyleInProgress
+		}
+		return '●', StyleInProgress
+	case hasInReview:
+		return '◎', StyleInReview
+	case hasComplete && !hasPending:
+		return '✓', StyleComplete
+	case hasComplete && hasPending:
+		return '✓', StyleDimmed
+	default:
+		return '○', StylePending
+	}
+}
+
 func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj string) {
-	style := tcell.StyleDefault.Foreground(ColorProject).Bold(true)
-	text := fmt.Sprintf("  %s", proj)
-	drawText(screen, x, y, w, text, style)
+	// Find tasks for this project to compute the aggregated status icon.
+	var projTasks []*model.Task
+	for _, t := range tl.tasks {
+		p := t.Project
+		if p == "" {
+			p = "(no project)"
+		}
+		if p == proj {
+			projTasks = append(projTasks, t)
+		}
+	}
+
+	col := x
+	// "  " prefix
+	drawText(screen, col, y, 2, "  ", StyleDefault)
+	col += 2
+
+	// Status icon
+	if len(projTasks) > 0 {
+		icon, iconStyle := tl.projectStatusIcon(projTasks)
+		screen.SetContent(col, y, icon, nil, iconStyle)
+		col += 2
+	}
+
+	// Chevron
+	chevron := '▸'
+	if proj == tl.expanded || proj == tl.archiveProject {
+		chevron = '▾'
+	}
+	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(ColorDimmed))
+	col += 2
+
+	// Project name
+	nameStyle := tcell.StyleDefault.Foreground(ColorProject).Bold(true)
+	drawText(screen, col, y, w-(col-x), proj, nameStyle)
+	col += len(proj)
+
+	// Task count
+	countStr := fmt.Sprintf(" (%d)", len(projTasks))
+	if col-x+len(countStr) <= w {
+		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(ColorDimmed))
+	}
 }
 
 func (tl *TaskListView) drawArchiveHeader(screen tcell.Screen, x, y, w int) {

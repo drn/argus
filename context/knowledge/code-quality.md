@@ -619,3 +619,23 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 - vt10x handles truncated escape sequences at read boundaries gracefully (partial sequences ignored).
 - `readLogTail` returns `(nil, 0)` if no log file exists; callers fall back to ring buffer.
 - Anchor reset happens both in `ScrollDown` (when hitting 0) and `ResetScroll` to avoid stale anchors in follow-tail mode.
+
+## Project Status Icons & Idle Wiring: 2026-03-19
+
+### What Was Missing
+The tui2 migration (Phase 11) ported individual task status icons but dropped:
+1. **Project header status icons** — `drawProjectRow` rendered only the project name, no aggregated icon
+2. **Idle state wiring** — `SetIdle()` existed on `TaskListView` but `app.go` never called `runner.Idle()`
+3. **Icon animation** — no `tickEven` toggle for alternating in-progress icons
+4. **Auto-navigate on completion** — `handleSessionExitUI` cleared the session but didn't exit the agent view
+
+### Data Model & Flow
+- `TaskListView.tickEven bool` — toggles each tick for status icon animation (● ↔ ◉)
+- `TaskListView.Tick()` — called from `refreshTasksWithIDs` on every refresh cycle
+- `projectStatusIcon(tasks) (rune, tcell.Style)` — computes aggregated icon with priority: in_progress > in_review > all_complete > mixed(✓ dimmed) > all_pending. Idle detection: when all in-progress tasks are idle, shows moon (☾).
+- `drawProjectRow` now renders: 2-char indent + status icon + chevron (▸/▾) + project name + count `(N)`
+- `refreshTasksWithIDs(runningIDs, idleIDs []string)` — signature expanded to accept idle IDs. All three call sites updated: `onTick`, `handleSessionExitUI` goroutine, `refreshTasks`.
+- `handleSessionExitUI` now calls `exitAgentView()` when viewing a completed task's agent pane (not stopped — stopped tasks stay on agent view with cleared session).
+
+### Gotchas
+- Chevron state checks both `tl.expanded` and `tl.archiveProject` — same-named projects in main and archive sections will both show expanded chevrons. Acceptable given the BT code had the same behavior.

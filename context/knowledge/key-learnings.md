@@ -224,4 +224,6 @@
 
 - **tui2 `NewTaskForm` has `/skill` autocomplete (ported from old `internal/ui/newtask.go`).** State: `acOpen`, `acMatches`, `acIdx`, `acScroll`. Skills loaded via `skills.LoadSkills()` on form creation and on project change. Trigger is `/` for Claude backends, `$` for Codex (via `agent.IsCodexBackend()`). Autocomplete opens when prompt starts with trigger and has no spaces. Up/Down navigate with wrapping; Enter selects (injects `/<name> `); Esc closes dropdown without canceling form; space closes (user typing args). `acMaxVisible=6` items shown with scroll indicator.
 
+- **Project headers in the task list show an aggregated status icon with chevron and task count.** `drawProjectRow` in `internal/tui2/tasklist.go` renders: icon + chevron + project name + (count). `projectStatusIcon()` computes the icon from all tasks in that project with priority: in_progress > in_review > all_complete > mixed > all_pending. When all in-progress tasks are idle, shows a moon icon (☾). The `tickEven` field toggles on each tick for icon animation (alternates between ● and ◉ for active in-progress). `refreshTasksWithIDs` in `app.go` passes both `runningIDs` and `idleIDs` from the runner, calling `SetIdle()` and `Tick()` on every refresh cycle.
+
 ## Planned but Not Yet Implemented

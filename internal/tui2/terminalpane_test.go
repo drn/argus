@@ -418,7 +418,7 @@ func TestTerminalPane_AnchorLock(t *testing.T) {
 	// First paint establishes anchorTotalLines.
 	tp.scrollOffset = 5
 	tp.anchorTotalLines = 0
-	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false)
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
 	firstAnchor := tp.anchorTotalLines
 	if firstAnchor == 0 {
 		t.Fatal("anchorTotalLines should be set after first paint")
@@ -429,7 +429,7 @@ func TestTerminalPane_AnchorLock(t *testing.T) {
 		emu.Write([]byte("new output line!!!!\n"))
 	}
 	oldOffset := tp.scrollOffset
-	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false)
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
 
 	// scrollOffset should have increased by the delta.
 	if tp.scrollOffset <= oldOffset {

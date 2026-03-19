@@ -176,6 +176,102 @@ func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
 	}
 }
 
+func TestTaskListView_Tick(t *testing.T) {
+	tl := NewTaskListView()
+	if tl.tickEven {
+		t.Error("tickEven should start false")
+	}
+	tl.Tick()
+	if !tl.tickEven {
+		t.Error("tickEven should be true after one tick")
+	}
+	tl.Tick()
+	if tl.tickEven {
+		t.Error("tickEven should be false after two ticks")
+	}
+}
+
+func TestTaskListView_SetIdle(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdle([]string{"1", "3"})
+	if !tl.idle["1"] {
+		t.Error("task 1 should be idle")
+	}
+	if !tl.idle["3"] {
+		t.Error("task 3 should be idle")
+	}
+	if tl.idle["2"] {
+		t.Error("task 2 should not be idle")
+	}
+}
+
+func TestTaskListView_ProjectStatusIcon(t *testing.T) {
+	tl := NewTaskListView()
+
+	tests := []struct {
+		name     string
+		tasks    []*model.Task
+		running  map[string]bool
+		idle     map[string]bool
+		wantChar rune
+	}{
+		{
+			name:     "all pending",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusPending}},
+			wantChar: '○',
+		},
+		{
+			name:     "in progress running",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
+			running:  map[string]bool{"1": true},
+			wantChar: '●', // tickEven is false
+		},
+		{
+			name:     "all complete",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusComplete}},
+			wantChar: '✓',
+		},
+		{
+			name:     "in review",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInReview}},
+			wantChar: '◎',
+		},
+		{
+			name: "mixed complete and pending",
+			tasks: []*model.Task{
+				{ID: "1", Status: model.StatusComplete},
+				{ID: "2", Status: model.StatusPending},
+			},
+			wantChar: '✓',
+		},
+		{
+			name:     "all in progress idle",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
+			running:  map[string]bool{"1": true},
+			idle:     map[string]bool{"1": true},
+			wantChar: '☾',
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tl.running = tt.running
+			if tl.running == nil {
+				tl.running = map[string]bool{}
+			}
+			tl.idle = tt.idle
+			if tl.idle == nil {
+				tl.idle = map[string]bool{}
+			}
+			tl.tickEven = false
+			icon, _ := tl.projectStatusIcon(tt.tasks)
+			if icon != tt.wantChar {
+				t.Errorf("projectStatusIcon() = %c, want %c", icon, tt.wantChar)
+			}
+		})
+	}
+}
+
 func TestTaskListView_IsInArchive(t *testing.T) {
 	tl := NewTaskListView()
 	tl.archiveExpanded = true
