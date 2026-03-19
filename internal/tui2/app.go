@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"os/exec"
 	"sync"
 	"time"
 
@@ -22,15 +23,23 @@ const (
 	modeAgent
 )
 
+// focusPanel identifies which panel has focus in the agent view.
+type focusPanel int
+
+const (
+	focusTerminal focusPanel = iota
+	focusFiles
+)
+
 // App is the top-level tview application shell.
 // It mirrors the Bubble Tea Model's responsibilities: routing events,
 // managing sub-views, running periodic ticks, and coordinating with the
 // daemon/runner.
 type App struct {
-	tapp    *tview.Application
-	db      *db.DB
-	runner  agent.SessionProvider
-	mu      sync.Mutex // guards state accessed from tick goroutine
+	tapp   *tview.Application
+	db     *db.DB
+	runner agent.SessionProvider
+	mu     sync.Mutex // guards state accessed from tick goroutine
 
 	// Sub-views
 	header    *Header
@@ -41,17 +50,19 @@ type App struct {
 	filePanel *SidePanel
 
 	// Layout containers
-	root      *tview.Flex // vertical: header + content + statusbar
-	taskPage  *tview.Flex // task list content
-	agentPage *tview.Flex // agent view: git | terminal | files
+	root      *tview.Flex  // vertical: header + content + statusbar
+	taskPage  *tview.Flex  // task list content
+	agentPage *tview.Flex  // agent view: git | terminal | files
 	pages     *tview.Pages
 
 	// State
 	mode            viewMode
+	focus           focusPanel
 	agentState      agentview.State
 	daemonConnected bool
 	tasks           []*model.Task
 	runningIDs      []string
+	currentTaskPR   string // PR URL for the current agent view task
 
 	// Daemon health
 	daemonFailures int
@@ -84,27 +95,22 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 
 // buildUI constructs the tview widget tree.
 func (a *App) buildUI() {
-	// Header
 	a.header = NewHeader()
-
-	// Status bar
 	a.statusbar = NewStatusBar()
 
-	// Task list
 	a.tasklist = NewTaskListView()
 	a.tasklist.OnSelect = a.onTaskSelect
 	a.tasklist.OnNew = a.onNewTask
 
-	// Agent view panels
 	a.gitPanel = NewSidePanel("Git Status")
 	a.filePanel = NewSidePanel("Files")
 	a.agentPane = NewAgentPane()
 
 	// Task list page — centered task list with side panels
 	taskListCenter := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(tview.NewBox(), 0, 1, false).         // left spacer
-		AddItem(a.tasklist, 0, 3, true).               // task list
-		AddItem(tview.NewBox(), 0, 1, false)            // right spacer
+		AddItem(tview.NewBox(), 0, 1, false).
+		AddItem(a.tasklist, 0, 3, true).
+		AddItem(tview.NewBox(), 0, 1, false)
 	a.taskPage = taskListCenter
 
 	// Agent page — three-panel layout
@@ -113,7 +119,6 @@ func (a *App) buildUI() {
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
 
-	// Pages overlay for switching between task list and agent view
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false)
@@ -124,14 +129,15 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// Global key handler
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
+
+	// Mouse support for scroll wheel
+	a.tapp.EnableMouse(true)
 }
 
 // Run starts the application event loop. Blocks until exit.
 func (a *App) Run() error {
-	// Start periodic tick
 	go a.tickLoop()
 	defer close(a.tickDone)
 
@@ -156,8 +162,6 @@ func (a *App) tickLoop() {
 
 // onTick handles periodic updates.
 func (a *App) onTick() {
-	// Snapshot state under lock, then release before calling runner methods
-	// to avoid lock inversion (runner has its own internal lock).
 	a.mu.Lock()
 	a.refreshTasksLocked()
 	checkDaemon := a.daemonConnected && a.daemonClient != nil
@@ -167,7 +171,7 @@ func (a *App) onTick() {
 	}
 	a.mu.Unlock()
 
-	// Daemon health check (outside lock — Ping acquires its own lock)
+	// Daemon health check
 	if checkDaemon {
 		if err := a.daemonClient.Ping(); err != nil {
 			a.mu.Lock()
@@ -184,9 +188,8 @@ func (a *App) onTick() {
 		}
 	}
 
-	// Update agent pane session via QueueUpdateDraw so the write to
-	// agentPane.session happens on the tview event loop thread — avoiding
-	// a data race with Draw() which reads it on that same thread.
+	// Update agent pane session via QueueUpdateDraw so writes happen on
+	// the tview event loop thread, avoiding data races with Draw().
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
 		a.tapp.QueueUpdateDraw(func() {
@@ -195,7 +198,6 @@ func (a *App) onTick() {
 			}
 		})
 	} else {
-		// Still trigger a redraw for task list updates
 		a.tapp.QueueUpdateDraw(func() {})
 	}
 }
@@ -209,11 +211,8 @@ func (a *App) refreshTasks() {
 
 func (a *App) refreshTasksLocked() {
 	a.tasks = a.db.Tasks()
-
-	// Get running sessions
 	a.runningIDs = a.runner.Running()
 
-	// Update sub-views
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)
 	a.statusbar.SetTasks(a.tasks)
@@ -222,17 +221,31 @@ func (a *App) refreshTasksLocked() {
 
 // handleGlobalKey processes key events at the application level.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
-	// Global keys available in all modes
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		a.tapp.Stop()
 		return nil
 	case tcell.KeyCtrlQ:
 		if a.mode == modeAgent {
+			if a.agentPane.InDiffMode() {
+				a.agentPane.ExitDiffMode()
+				a.focus = focusTerminal
+				return nil
+			}
+			if a.focus == focusFiles {
+				a.focus = focusTerminal
+				a.agentPane.SetFocused(true)
+				a.filePanel.SetFocused(false)
+				return nil
+			}
 			a.exitAgentView()
 			return nil
 		}
 	case tcell.KeyRune:
+		if a.mode == modeAgent {
+			// Agent view rune keys are handled by handleAgentKey
+			break
+		}
 		switch event.Rune() {
 		case 'q':
 			if a.mode == modeTaskList {
@@ -252,8 +265,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	// Mode-specific handling
-	switch a.mode {
-	case modeAgent:
+	if a.mode == modeAgent {
 		return a.handleAgentKey(event)
 	}
 
@@ -264,12 +276,112 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyEscape:
+		if a.agentPane.InDiffMode() {
+			a.agentPane.ExitDiffMode()
+			a.focus = focusTerminal
+			return nil
+		}
+		if a.focus == focusFiles {
+			a.focus = focusTerminal
+			a.agentPane.SetFocused(true)
+			a.filePanel.SetFocused(false)
+			return nil
+		}
 		a.exitAgentView()
+		return nil
+
+	case tcell.KeyLeft:
+		// Ctrl+Left or Alt+Left: focus left panel
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			if a.focus > focusTerminal {
+				a.focus--
+				a.updateFocusIndicators()
+			}
+			return nil
+		}
+
+	case tcell.KeyRight:
+		// Ctrl+Right or Alt+Right: focus right panel
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			if a.focus < focusFiles {
+				a.focus++
+				a.updateFocusIndicators()
+			}
+			return nil
+		}
+
+	case tcell.KeyPgUp:
+		if event.Modifiers()&tcell.ModShift != 0 {
+			_, _, _, h := a.agentPane.GetInnerRect()
+			a.agentPane.ScrollUp(h)
+			return nil
+		}
+	case tcell.KeyPgDn:
+		if event.Modifiers()&tcell.ModShift != 0 {
+			_, _, _, h := a.agentPane.GetInnerRect()
+			a.agentPane.ScrollDown(h)
+			return nil
+		}
+
+	case tcell.KeyUp:
+		if event.Modifiers()&tcell.ModShift != 0 {
+			a.agentPane.ScrollUp(1)
+			return nil
+		}
+		if a.focus == focusFiles {
+			// File cursor up
+			return nil
+		}
+	case tcell.KeyDown:
+		if event.Modifiers()&tcell.ModShift != 0 {
+			a.agentPane.ScrollDown(1)
+			return nil
+		}
+		if a.focus == focusFiles {
+			// File cursor down
+			return nil
+		}
+
+	case tcell.KeyCtrlP:
+		// Open PR URL
+		if a.currentTaskPR != "" {
+			exec.Command("open", a.currentTaskPR).Start() //nolint:errcheck
+			return nil
+		}
+
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'o':
+			// Open PR when session is not active
+			if a.agentPane.session == nil || !a.agentPane.session.Alive() {
+				if a.currentTaskPR != "" {
+					exec.Command("open", a.currentTaskPR).Start() //nolint:errcheck
+					return nil
+				}
+			}
+		case 's':
+			if a.agentPane.InDiffMode() {
+				a.agentPane.ToggleDiffSplit()
+				return nil
+			}
+		case 'q':
+			if a.agentPane.InDiffMode() {
+				a.agentPane.ExitDiffMode()
+				a.focus = focusTerminal
+				return nil
+			}
+		}
+	}
+
+	// In diff mode, don't forward to PTY
+	if a.agentPane.InDiffMode() {
 		return nil
 	}
 
-	// Forward to PTY if session is active
-	if a.agentPane.session != nil && a.agentPane.session.Alive() {
+	// Forward to PTY if session is active and terminal is focused
+	if a.focus == focusTerminal && a.agentPane.session != nil && a.agentPane.session.Alive() {
+		// Reset scroll on any input (follow tail)
+		a.agentPane.ScrollToBottom()
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
 			if _, err := a.agentPane.session.WriteInput(b); err != nil {
@@ -280,6 +392,12 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	return event
+}
+
+// updateFocusIndicators updates the focused state of panels.
+func (a *App) updateFocusIndicators() {
+	a.agentPane.SetFocused(a.focus == focusTerminal)
+	a.filePanel.SetFocused(a.focus == focusFiles)
 }
 
 // tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY input.
@@ -295,8 +413,7 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 
 	alt := ev.Modifiers()&tcell.ModAlt != 0
 
-	// Arrow keys with Alt modifier use CSI sequences with modifier parameter.
-	// Alt+arrow sends \x1b[1;3X (modifier 3 = Alt) for word navigation.
+	// Arrow keys with Alt modifier
 	if alt {
 		switch ev.Key() {
 		case tcell.KeyUp:
@@ -308,11 +425,10 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		case tcell.KeyLeft:
 			return []byte("\x1b[1;3D")
 		case tcell.KeyDelete:
-			return []byte{0x1b, 0x7f} // Alt+Delete = word delete
+			return []byte{0x1b, 0x7f}
 		}
 	}
 
-	// Special keys (no Alt)
 	switch ev.Key() {
 	case tcell.KeyEnter:
 		return []byte{'\r'}
@@ -320,7 +436,7 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		return []byte{'\t'}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if alt {
-			return []byte{0x1b, 0x7f} // Alt+Backspace = word delete
+			return []byte{0x1b, 0x7f}
 		}
 		return []byte{0x7f}
 	case tcell.KeyDelete:
@@ -404,12 +520,9 @@ func (a *App) switchTab(t Tab) {
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
 	case TabReviews:
-		// Phase 2 placeholder: show tasks page with a message
-		// Reviews will be ported in Phase 5
 		a.statusbar.SetError("Reviews tab not yet ported to tcell runtime")
 		a.pages.SwitchToPage("tasks")
 	case TabSettings:
-		// Phase 2 placeholder
 		a.statusbar.SetError("Settings tab not yet ported to tcell runtime")
 		a.pages.SwitchToPage("tasks")
 	}
@@ -420,8 +533,10 @@ func (a *App) onTaskSelect(task *model.Task) {
 	uxlog.Log("[tui2] entering agent view for task %s (%s)", task.ID, task.Name)
 
 	a.mode = modeAgent
+	a.focus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.agentPane.SetTaskID(task.ID)
+	a.currentTaskPR = task.PRURL
 
 	// Look up session
 	sess := a.runner.Get(task.ID)
@@ -440,7 +555,6 @@ func (a *App) onTaskSelect(task *model.Task) {
 
 // onNewTask handles the 'n' key — placeholder for new task form.
 func (a *App) onNewTask() {
-	// Phase 2 placeholder: new task form will be ported in Phase 5
 	a.statusbar.SetError("New task form not yet ported to tcell runtime")
 }
 
@@ -448,8 +562,11 @@ func (a *App) onNewTask() {
 func (a *App) exitAgentView() {
 	uxlog.Log("[tui2] exiting agent view")
 	a.mode = modeTaskList
+	a.focus = focusTerminal
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
+	a.agentPane.ExitDiffMode()
+	a.currentTaskPR = ""
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()

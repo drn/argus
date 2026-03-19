@@ -21,6 +21,11 @@ const (
 // replayVT10X replays raw terminal output through a virtual terminal and
 // returns the rendered lines with ANSI colors. cursorVisible controls whether
 // the cursor position is rendered with reverse video.
+//
+// SCOPE (Phase 4): This function is used only by the Bubble Tea fallback
+// runtime for preview rendering, scrollback replay, and finished-session
+// display. The tcell runtime uses terminalpane.Pane which renders vt10x
+// cells directly to tcell.Screen — no ANSI string intermediary.
 func replayVT10X(raw []byte, vtCols, vtRows int, cursorVisible bool) []string {
 	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
 	vt.Write(raw)
@@ -136,6 +141,11 @@ func findInputRow(vt vt10x.Terminal, curY, cols int) int {
 // isInputRow controls the blue background highlight for the active input line;
 // it is determined by the caller (usually via findInputRow) and is independent
 // of cursorX so that the cursor parking row and the input row can differ.
+//
+// SCOPE (Phase 4): The activeInputBG tint, findInputRow, and cursor synthesis
+// only apply to the Bubble Tea fallback runtime's ANSI string path. The tcell
+// runtime renders vt10x cells directly — no prompt-row highlighting or
+// synthetic cursor needed.
 func renderLine(vt vt10x.Terminal, y, cols int, cursorX int, isInputRow bool) string {
 	var b strings.Builder
 	var curFG, curBG vt10x.Color

@@ -537,3 +537,39 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - `tview.Application.SetRoot()` must be called before `Run()` — the root Flex is built eagerly in `buildUI()`.
 - `QueueUpdateDraw(func(){})` from the tick goroutine is the idiomatic way to trigger a redraw from a non-event goroutine. The empty func is intentional — state was already updated under `a.mu`.
 - `tcellKeyToBytes` must handle `tcell.KeyBackspace` AND `tcell.KeyBackspace2` — different terminals send different variants.
+
+## Terminal Passthrough: Phases 3-5 (2026-03-18)
+
+### Phase 3: Native Terminal Surface (`internal/tui2/terminalpane/`)
+
+**Data Model:**
+- `TerminalSession` interface: `RecentOutput`, `TotalWritten`, `Alive`, `PTYSize` — narrow subset of `agent.SessionHandle`
+- `Pane` struct: persistent `vt10x.Terminal`, `fedTotal uint64`, `scrollOffset int`, `replayData []byte`
+- vt10x color mapping: `vtColorToTcell()` handles DefaultFG/BG → `tcell.ColorDefault`, 0-255 → `tcell.PaletteColor(n)`, RGB → `tcell.NewRGBColor`
+- vt10x attribute flags: `vtAttrReverse=1<<0`, `vtAttrUnderline=1<<1`, `vtAttrBold=1<<2`, `vtAttrItalic=1<<4` (redefined locally, not imported from ui package)
+
+**Flow:**
+1. `Pane.Render(screen, x, y, w, h)` is called by `AgentPane.Draw()` on each tview draw cycle
+2. Live mode: `renderLive()` feeds only new bytes to persistent vt10x, then copies cell-by-cell to `tcell.Screen` — O(screen_size) per render
+3. Scrollback mode: `renderReplay()` replays full ring buffer through a taller vt10x, renders a window — same approach as BT's `formatTerminalOutput`
+4. Content trimming: `findFirstContentRow`/`findLastContentRow` trim empty rows (Codex positions content in lower portion)
+5. Cursor rendered unconditionally with explicit colors (`PaletteColor(17)` fg, `PaletteColor(153)` bg) — no `CursorVisible()` gating
+6. NO `activeInputBG` or `findInputRow` — the native surface shows upstream PTY output without Argus-injected highlights
+
+**Key Design Decision:** No ANSI string intermediary. Previous path: vt10x → ANSI strings → lipgloss rendering. New path: vt10x cells → tcell.Screen cells directly.
+
+### Phase 4: Scoping
+
+- `vtrender.go` functions (`replayVT10X`, `renderLine`, `findInputRow`, `activeInputBG`) scoped to Bubble Tea fallback only via documentation comments
+- Both runtimes use `vt10x` — no replacement with `x/vt` (vt10x is stable and sufficient)
+- Existing BT tests remain valid for the fallback path
+
+### Phase 5: Shell Ports
+
+- **Diff viewer**: `AgentPane.EnterDiffMode(diff, fileName)` parses raw unified diff into `[]diffLine` with types (added/removed/context/header) and renders with basic colors. `ExitDiffMode()`, `ToggleDiffSplit()`, scroll support.
+- **Focus cycling**: `focusPanel` type (focusTerminal, focusFiles) with Ctrl+Left/Right and Alt+Left/Right panel switching. `updateFocusIndicators()` syncs border styles.
+- **Key layering**: `ctrl+q`/`esc` use 3-level exit: diff → files panel → agent view (mirrors BT behavior exactly)
+- **PR open**: `ctrl+p` always, `o` when session dead. Uses `exec.Command("open", url).Start()`.
+- **Session log loading**: `AgentPane.loadSessionLog(taskID)` reads `~/.argus/sessions/<taskID>.log` on task select when no live session exists.
+- **Mouse**: `tapp.EnableMouse(true)` for scroll wheel support.
+- **Stubs**: Reviews, Settings, new task form show status bar error messages.
