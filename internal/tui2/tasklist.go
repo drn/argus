@@ -30,11 +30,12 @@ type taskRow struct {
 // cursor skips headers, archive section at the bottom.
 type TaskListView struct {
 	*tview.Box
-	tasks   []*model.Task
-	rows    []taskRow
-	running map[string]bool
-	idle    map[string]bool
-	tickEven bool // toggles each tick for status icon animation
+	tasks         []*model.Task
+	rows          []taskRow
+	running       map[string]bool
+	idle          map[string]bool
+	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
+	tickEven      bool            // toggles each tick for status icon animation
 
 	cursor   int
 	offset   int // scroll offset
@@ -48,14 +49,17 @@ type TaskListView struct {
 	OnNew func()
 	// Callback when cursor moves to a different task.
 	OnCursorChange func(task *model.Task)
+	// Callback when user changes task status via s/S keys.
+	OnStatusChange func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
 func NewTaskListView() *TaskListView {
 	tl := &TaskListView{
-		Box:     tview.NewBox(),
-		running: make(map[string]bool),
-		idle:    make(map[string]bool),
+		Box:           tview.NewBox(),
+		running:       make(map[string]bool),
+		idle:          make(map[string]bool),
+		idleUnvisited: make(map[string]bool),
 	}
 	return tl
 }
@@ -80,6 +84,23 @@ func (tl *TaskListView) SetIdle(ids []string) {
 	tl.idle = make(map[string]bool, len(ids))
 	for _, id := range ids {
 		tl.idle[id] = true
+	}
+}
+
+// IdleSet returns a snapshot of the current idle map (for diffing newly-idle tasks).
+func (tl *TaskListView) IdleSet() map[string]bool {
+	cp := make(map[string]bool, len(tl.idle))
+	for id := range tl.idle {
+		cp[id] = true
+	}
+	return cp
+}
+
+// SetIdleUnvisited updates the set of idle+unvisited task IDs.
+func (tl *TaskListView) SetIdleUnvisited(ids []string) {
+	tl.idleUnvisited = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		tl.idleUnvisited[id] = true
 	}
 }
 
@@ -334,6 +355,20 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				if tl.OnNew != nil {
 					tl.OnNew()
 				}
+			case 's':
+				if t := tl.SelectedTask(); t != nil {
+					t.SetStatus(t.Status.Next())
+					if tl.OnStatusChange != nil {
+						tl.OnStatusChange(t)
+					}
+				}
+			case 'S':
+				if t := tl.SelectedTask(); t != nil {
+					t.SetStatus(t.Status.Prev())
+					if tl.OnStatusChange != nil {
+						tl.OnStatusChange(t)
+					}
+				}
 			}
 		}
 	})
@@ -395,9 +430,14 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	for _, t := range tasks {
 		switch t.Status {
 		case model.StatusInProgress:
-			hasInProgress = true
-			if tl.running[t.ID] && !tl.idle[t.ID] {
-				allInProgressIdle = false
+			if tl.idleUnvisited[t.ID] {
+				// Idle+unvisited InProgress tasks count as InReview at project level.
+				hasInReview = true
+			} else {
+				hasInProgress = true
+				if tl.running[t.ID] && !tl.idle[t.ID] {
+					allInProgressIdle = false
+				}
 			}
 		case model.StatusInReview:
 			hasInReview = true
@@ -492,14 +532,21 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		statusChar = '○'
 		statusStyle = StylePending
 	case model.StatusInProgress:
-		if tl.running[task.ID] {
-			statusChar = '●'
+		if tl.idleUnvisited[task.ID] {
+			// Idle and not yet viewed since going idle — show as in-review.
+			statusChar = '◎'
+			statusStyle = StyleInReview
+		} else if !tl.running[task.ID] || tl.idle[task.ID] {
+			// Session absent or idle (waiting for input) — moon icon.
+			statusChar = '☾'
 			statusStyle = StyleInProgress
-		} else if tl.idle[task.ID] {
+		} else if tl.tickEven {
+			// Actively running — animated alternate frame.
 			statusChar = '◉'
-			statusStyle = tcell.StyleDefault.Foreground(tcell.Color78) // green
+			statusStyle = StyleInProgress
 		} else {
-			statusChar = '◉'
+			// Actively running — animated default frame.
+			statusChar = '●'
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:

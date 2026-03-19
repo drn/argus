@@ -3,6 +3,9 @@ package tui2
 import (
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
 	"github.com/drn/argus/internal/model"
 )
 
@@ -298,5 +301,113 @@ func TestTaskListView_IsInArchive(t *testing.T) {
 	// Rows at or after archive header should be in archive
 	if !tl.isInArchive(archiveIdx) {
 		t.Error("archive header row should be in archive")
+	}
+}
+
+func TestTaskListView_SetIdleUnvisited(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdleUnvisited([]string{"1", "3"})
+	if !tl.idleUnvisited["1"] {
+		t.Error("task 1 should be idle-unvisited")
+	}
+	if tl.idleUnvisited["2"] {
+		t.Error("task 2 should not be idle-unvisited")
+	}
+	if !tl.idleUnvisited["3"] {
+		t.Error("task 3 should be idle-unvisited")
+	}
+}
+
+func TestTaskListView_IdleSet(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdle([]string{"a", "b"})
+	s := tl.IdleSet()
+	if !s["a"] || !s["b"] {
+		t.Error("IdleSet should return the current idle map")
+	}
+}
+
+func TestTaskListView_IdleUnvisitedPromotion(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "1", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.idleUnvisited = map[string]bool{"1": true}
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{"1": true}
+	tl.tickEven = false
+
+	// Project icon should be InReview (◎) when the only InProgress task is idleUnvisited.
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != '◎' {
+		t.Errorf("projectStatusIcon with idleUnvisited = %c, want ◎", icon)
+	}
+}
+
+func TestTaskListView_StatusCycleKeys(t *testing.T) {
+	tl := NewTaskListView()
+	var changed *model.Task
+	tl.OnStatusChange = func(task *model.Task) {
+		changed = task
+	}
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task1", Status: model.StatusPending, Project: "p"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	// Move cursor to the task row (skip project header).
+	tl.CursorDown()
+
+	// Press 's' to advance status: Pending -> InProgress
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInProgress {
+		t.Errorf("after 's': status = %v, want InProgress", changed.Status)
+	}
+
+	// Press 's' again: InProgress -> InReview
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInReview {
+		t.Errorf("after second 's': status = %v, want InReview", changed.Status)
+	}
+
+	// Press 'S' to revert: InReview -> InProgress
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInProgress {
+		t.Errorf("after 'S': status = %v, want InProgress", changed.Status)
+	}
+}
+
+func TestTaskListView_RunningTaskAnimation(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "1", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{}
+
+	// tickEven=false: running task at project level should show ●
+	tl.tickEven = false
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != '●' {
+		t.Errorf("tickEven=false: got %c, want ●", icon)
+	}
+
+	// tickEven=true: running task at project level should show ◉
+	tl.tickEven = true
+	icon, _ = tl.projectStatusIcon(tasks)
+	if icon != '◉' {
+		t.Errorf("tickEven=true: got %c, want ◉", icon)
 	}
 }

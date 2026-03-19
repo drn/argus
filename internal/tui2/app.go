@@ -86,6 +86,10 @@ type App struct {
 	worktreeDir     string // resolved worktree dir for current agent view task
 	lastGitRefresh  time.Time
 
+	// Idle-unvisited tracking (for visual InReview promotion)
+	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
+	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
+
 	// Daemon health
 	daemonFailures   int
 	daemonRestarting bool
@@ -102,12 +106,14 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 
 	app := &App{
-		tapp:            tview.NewApplication(),
-		db:              database,
-		runner:          runner,
-		daemonConnected: daemonConnected,
-		agentState:      agentview.New(),
-		tickDone:        make(chan struct{}),
+		tapp:             tview.NewApplication(),
+		db:               database,
+		runner:           runner,
+		daemonConnected:  daemonConnected,
+		agentState:       agentview.New(),
+		tickDone:         make(chan struct{}),
+		idleUnvisited:    make(map[string]bool),
+		viewedWhileAgent: make(map[string]bool),
 	}
 
 	if dc, ok := runner.(*dclient.Client); ok {
@@ -138,6 +144,11 @@ func (a *App) buildUI() {
 	a.tasklist.OnSelect = a.onTaskSelect
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
+	a.tasklist.OnStatusChange = func(t *model.Task) {
+		uxlog.Log("[tui2] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
+		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		a.refreshTasks()
+	}
 
 	a.taskGitPanel = NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
@@ -414,7 +425,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	for _, t := range tasks {
 		if t.ID == taskID && t.Status == model.StatusInProgress {
 			if stopped {
-				t.SetStatus(model.StatusPending)
+				t.SetStatus(model.StatusInReview)
 			} else {
 				t.SetStatus(model.StatusComplete)
 			}
@@ -425,7 +436,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	}
 
 	// If we're viewing this task's agent pane and it completed, navigate back
-	// to the task list. If stopped (reverted to pending), just clear the session.
+	// to the task list. If stopped (set to in-review), just clear the session.
 	a.mu.Lock()
 	viewing := a.mode == modeAgent && a.agentState.TaskID == taskID
 	a.mu.Unlock()
@@ -450,6 +461,17 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	}()
 }
 
+// syncIdleUnvisited pushes the current idleUnvisited set to the task list.
+// All access to idleUnvisited/viewedWhileAgent happens on the tview main goroutine
+// (via QueueUpdateDraw or direct calls from InputHandler), so no mutex is needed.
+func (a *App) syncIdleUnvisited() {
+	ids := make([]string, 0, len(a.idleUnvisited))
+	for id := range a.idleUnvisited {
+		ids = append(ids, id)
+	}
+	a.tasklist.SetIdleUnvisited(ids)
+}
+
 func (a *App) refreshTasks() {
 	// Fetch running/idle IDs OUTSIDE the lock — Running()/Idle() are RPC calls
 	// that can block for up to 5s on timeout. Holding a.mu during that blocks
@@ -472,6 +494,8 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// the exit callback didn't fire (daemon restart, TUI restart, etc.).
 	// Only reconcile when connected to a daemon — the daemon is the source of
 	// truth for running sessions. In-process mode has its own onFinish callback.
+	// Note: InReview tasks are intentionally non-running (set by handleSessionExitUI
+	// when the user stops an agent) and must NOT be reconciled to Complete.
 	if a.daemonConnected {
 		runningSet := make(map[string]bool, len(runningIDs))
 		for _, id := range runningIDs {
@@ -486,9 +510,38 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		}
 	}
 
+	// Update idleUnvisited: add newly-idle tasks, remove tasks no longer idle.
+	newIdle := make(map[string]bool, len(idleIDs))
+	for _, id := range idleIDs {
+		newIdle[id] = true
+	}
+	prevIdle := a.tasklist.IdleSet()
+	for id := range newIdle {
+		if !prevIdle[id] {
+			// Newly idle — mark as unvisited until user opens the agent view.
+			a.idleUnvisited[id] = true
+		}
+	}
+	for id := range a.idleUnvisited {
+		if !newIdle[id] {
+			// No longer idle (agent produced output again) — clear unvisited.
+			delete(a.idleUnvisited, id)
+		}
+	}
+	// If the user recently viewed a task's agent view, suppress the
+	// idleUnvisited flag for it. Once the task goes active again (no longer
+	// idle), clear the guard — a new idle transition will re-add to
+	// idleUnvisited fresh.
+	for id := range a.viewedWhileAgent {
+		delete(a.idleUnvisited, id)
+		if !newIdle[id] {
+			delete(a.viewedWhileAgent, id)
+		}
+	}
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
+	a.syncIdleUnvisited()
 	a.tasklist.Tick()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
@@ -1105,6 +1158,12 @@ func (a *App) isTaskRunning(taskID string) bool {
 // onTaskSelect handles Enter on a task — enters the agent view.
 func (a *App) onTaskSelect(task *model.Task) {
 	uxlog.Log("[tui2] entering agent view for task %s (%s)", task.ID, task.Name)
+
+	// User is viewing the agent — clear the "idle unvisited" flag so the task
+	// no longer displays as "in review" in the task list.
+	delete(a.idleUnvisited, task.ID)
+	a.viewedWhileAgent[task.ID] = true
+	a.syncIdleUnvisited()
 
 	a.mu.Lock()
 	a.mode = modeAgent
