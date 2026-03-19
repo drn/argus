@@ -1,10 +1,13 @@
 package tui2
 
 import (
+	"image/color"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+	xvt "github.com/charmbracelet/x/vt"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
-	"github.com/hinshun/vt10x"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -49,17 +52,17 @@ func TestTerminalPane_Scrollback(t *testing.T) {
 
 func TestTerminalPane_ResetVT(t *testing.T) {
 	tp := NewTerminalPane()
-	tp.vtTerm = vt10x.New(vt10x.WithSize(80, 24))
-	tp.vtFedTotal = 100
+	tp.emu = xvt.NewSafeEmulator(80, 24)
+	tp.emuFedTotal = 100
 	tp.scrollOffset = 5
 
 	tp.ResetVT()
 
-	if tp.vtTerm != nil {
-		t.Error("vtTerm should be nil after reset")
+	if tp.emu != nil {
+		t.Error("emu should be nil after reset")
 	}
-	if tp.vtFedTotal != 0 {
-		t.Errorf("vtFedTotal = %d, want 0", tp.vtFedTotal)
+	if tp.emuFedTotal != 0 {
+		t.Errorf("emuFedTotal = %d, want 0", tp.emuFedTotal)
 	}
 	if tp.scrollOffset != 0 {
 		t.Errorf("scrollOffset = %d, want 0", tp.scrollOffset)
@@ -95,38 +98,49 @@ func TestTerminalPane_DiffMode(t *testing.T) {
 	}
 }
 
-func TestVtColorToTcell(t *testing.T) {
+func TestUvColorToTcell(t *testing.T) {
 	tests := []struct {
 		name  string
-		color vt10x.Color
+		color color.Color
 		want  tcell.Color
 	}{
-		{"default_fg", vt10x.DefaultFG, tcell.ColorDefault},
-		{"default_bg", vt10x.DefaultBG, tcell.ColorDefault},
-		{"black", 0, tcell.PaletteColor(0)},
-		{"red", 1, tcell.PaletteColor(1)},
-		{"xterm_87", 87, tcell.PaletteColor(87)},
-		{"xterm_255", 255, tcell.PaletteColor(255)},
+		{"nil_default", nil, tcell.ColorDefault},
+		{"basic_0", ansi.BasicColor(0), tcell.PaletteColor(0)},
+		{"basic_1", ansi.BasicColor(1), tcell.PaletteColor(1)},
+		{"indexed_87", ansi.IndexedColor(87), tcell.PaletteColor(87)},
+		{"indexed_255", ansi.IndexedColor(255), tcell.PaletteColor(255)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := vtColorToTcell(tt.color)
+			got := uvColorToTcell(tt.color)
 			if got != tt.want {
-				t.Errorf("vtColorToTcell(%d) = %v, want %v", tt.color, got, tt.want)
+				t.Errorf("uvColorToTcell(%v) = %v, want %v", tt.color, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCellStyle(t *testing.T) {
-	// Bold + red foreground
-	cell := vt10x.Glyph{
-		Char: 'A',
-		FG:   1,
-		BG:   vt10x.DefaultBG,
-		Mode: vtAttrBold,
+func TestUvColorToTcell_RGB(t *testing.T) {
+	// RGB color should convert to a valid tcell color (not default).
+	c := color.RGBA{R: 255, G: 128, B: 0, A: 255}
+	got := uvColorToTcell(c)
+	if got == tcell.ColorDefault {
+		t.Error("RGB color should not map to ColorDefault")
 	}
-	style := cellStyle(cell)
+}
+
+func TestUvCellToTcellStyle(t *testing.T) {
+	// Bold + red foreground.
+	cell := &uv.Cell{
+		Content: "A",
+		Width:   1,
+		Style: uv.Style{
+			Fg:    ansi.BasicColor(1),
+			Bg:    nil,
+			Attrs: uv.AttrBold,
+		},
+	}
+	style := uvCellToTcellStyle(cell)
 	fg, bg, attr := style.Decompose()
 	if fg != tcell.PaletteColor(1) {
 		t.Errorf("fg = %v, want PaletteColor(1)", fg)
@@ -139,57 +153,63 @@ func TestCellStyle(t *testing.T) {
 	}
 }
 
-func TestCellStyle_NoActiveInputBG(t *testing.T) {
-	// Default-colored cell should NOT get activeInputBG tinting.
-	// The native surface shows upstream PTY output as-is.
-	cell := vt10x.Glyph{
-		Char: ' ',
-		FG:   vt10x.DefaultFG,
-		BG:   vt10x.DefaultBG,
-		Mode: 0,
+func TestUvCellToTcellStyle_Nil(t *testing.T) {
+	style := uvCellToTcellStyle(nil)
+	fg, bg, _ := style.Decompose()
+	if fg != tcell.ColorDefault || bg != tcell.ColorDefault {
+		t.Error("nil cell should produce default style")
 	}
-	style := cellStyle(cell)
+}
+
+func TestUvCellToTcellStyle_NoActiveInputBG(t *testing.T) {
+	// Default-colored cell should NOT get activeInputBG tinting.
+	cell := &uv.Cell{
+		Content: " ",
+		Width:   1,
+		Style:   uv.Style{},
+	}
+	style := uvCellToTcellStyle(cell)
 	_, bg, _ := style.Decompose()
 	if bg != tcell.ColorDefault {
 		t.Errorf("default cell bg = %v, want ColorDefault (no activeInputBG)", bg)
 	}
 }
 
-func TestRowHasContent(t *testing.T) {
-	vt := vt10x.New(vt10x.WithSize(20, 5))
-	vt.Write([]byte("hello\n"))
-	vt.Lock()
-	defer vt.Unlock()
+func TestRowHasContentEmu(t *testing.T) {
+	emu := xvt.NewSafeEmulator(20, 5)
+	emu.Write([]byte("hello\n"))
 
-	if !rowHasContent(vt, 0, 20) {
+	if !rowHasContentEmu(emu, 0, 20) {
 		t.Error("row 0 should have content")
 	}
-	if rowHasContent(vt, 2, 20) {
-		t.Error("row 2 should be empty")
+	if rowHasContentEmu(emu, 3, 20) {
+		t.Error("row 3 should be empty")
 	}
 }
 
-func TestFindContentRows(t *testing.T) {
-	vt := vt10x.New(vt10x.WithSize(20, 10))
-	vt.Write([]byte("\n\nhello\nworld\n"))
-	vt.Lock()
-	defer vt.Unlock()
+func TestFindContentRowsEmu(t *testing.T) {
+	emu := xvt.NewSafeEmulator(20, 10)
+	emu.Write([]byte("\n\nhello\nworld\n"))
 
-	last := findLastContentRow(vt, 20, 10)
+	last := findLastContentRowEmu(emu, 20, 10)
 	if last < 2 {
-		t.Errorf("findLastContentRow = %d, want >= 2", last)
+		t.Errorf("findLastContentRowEmu = %d, want >= 2", last)
 	}
-	first := findFirstContentRow(vt, 20, last)
+	first := findFirstContentRowEmu(emu, 20, last)
 	if first > 3 {
-		t.Errorf("findFirstContentRow = %d, want <= 3", first)
+		t.Errorf("findFirstContentRowEmu = %d, want <= 3", first)
 	}
 }
 
-func TestEstimateVTRows(t *testing.T) {
-	raw := []byte("line1\nline2\nline3\nline4\nline5\n")
-	rows := estimateVTRows(raw, 80, 10)
-	if rows < 10 {
-		t.Errorf("estimateVTRows = %d, want >= 10", rows)
+func TestScrollbackLen(t *testing.T) {
+	// Write enough lines to push content into scrollback.
+	emu := xvt.NewSafeEmulator(20, 5)
+	for i := 0; i < 20; i++ {
+		emu.Write([]byte("line content here!\n"))
+	}
+	sbLen := emu.ScrollbackLen()
+	if sbLen == 0 {
+		t.Error("expected scrollback lines after overflow, got 0")
 	}
 }
 
