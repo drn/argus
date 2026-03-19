@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/rivo/tview"
+
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 )
@@ -195,9 +197,9 @@ func TestSettingsView_LogsSection(t *testing.T) {
 	}
 }
 
-func TestTailFile(t *testing.T) {
+func TestReadLogLines(t *testing.T) {
 	// Non-existent file.
-	lines := tailFile("/nonexistent/path", 10)
+	lines := readLogLines("/nonexistent/path")
 	if len(lines) != 1 || lines[0] != "(file not found)" {
 		t.Errorf("expected '(file not found)', got %v", lines)
 	}
@@ -212,15 +214,77 @@ func TestTailFile(t *testing.T) {
 	}
 	f.Close()
 
-	// Tail last 5 lines.
-	lines = tailFile(f.Name(), 5)
-	if len(lines) != 5 {
-		t.Fatalf("expected 5 lines, got %d", len(lines))
+	lines = readLogLines(f.Name())
+	if len(lines) != 20 {
+		t.Fatalf("expected 20 lines, got %d", len(lines))
 	}
-	if lines[0] != "line 15" {
-		t.Errorf("first tail line = %q, want 'line 15'", lines[0])
+	if lines[0] != "line 0" {
+		t.Errorf("first line = %q, want 'line 0'", lines[0])
 	}
-	if lines[4] != "line 19" {
-		t.Errorf("last tail line = %q, want 'line 19'", lines[4])
+	if lines[19] != "line 19" {
+		t.Errorf("last line = %q, want 'line 19'", lines[19])
+	}
+}
+
+func TestSettingsView_LogScroll(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Find a log row.
+	for i, row := range sv.rows {
+		if row.kind == srLogs {
+			sv.cursor = i
+			break
+		}
+	}
+
+	// Simulate loading some lines.
+	sv.logLines = make([]string, 100)
+	for i := range sv.logLines {
+		sv.logLines[i] = fmt.Sprintf("line %d", i)
+	}
+	sv.logKey = sv.SelectedRow().key
+	sv.logScrollOff = 50
+
+	// Scroll up.
+	sv.HandleMouse(tview.MouseScrollUp)
+	if sv.logScrollOff != 49 {
+		t.Errorf("scroll up: offset = %d, want 49", sv.logScrollOff)
+	}
+
+	// Scroll down.
+	sv.HandleMouse(tview.MouseScrollDown)
+	if sv.logScrollOff != 50 {
+		t.Errorf("scroll down: offset = %d, want 50", sv.logScrollOff)
+	}
+
+	// Scroll up at 0 stays at 0.
+	sv.logScrollOff = 0
+	sv.HandleMouse(tview.MouseScrollUp)
+	if sv.logScrollOff != 0 {
+		t.Errorf("scroll up at 0: offset = %d, want 0", sv.logScrollOff)
+	}
+}
+
+func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Find a log row and set scroll state.
+	for i, row := range sv.rows {
+		if row.kind == srLogs {
+			sv.cursor = i
+			sv.logScrollOff = 42
+			sv.logKey = row.key
+			sv.logLines = []string{"test"}
+			break
+		}
+	}
+
+	// Move cursor away — should reset scroll.
+	sv.moveCursor(1)
+	if sv.logScrollOff != 0 {
+		t.Errorf("scroll offset not reset after cursor move: %d", sv.logScrollOff)
+	}
+	if sv.logKey != "" {
+		t.Errorf("logKey not cleared: %q", sv.logKey)
 	}
 }

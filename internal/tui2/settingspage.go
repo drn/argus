@@ -53,3 +53,13 @@ func (sp *SettingsPage) Draw(screen tcell.Screen) {
 	sp.settings.SetRect(x+marginW, settingsY, innerW, settingsH)
 	sp.settings.Draw(screen)
 }
+
+// MouseHandler delegates mouse events to the settings view.
+func (sp *SettingsPage) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return sp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		if sp.settings.HandleMouse(action) {
+			return true, nil
+		}
+		return false, nil
+	})
+}
