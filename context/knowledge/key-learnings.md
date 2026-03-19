@@ -208,4 +208,6 @@
 
 - **Task names with git-invalid characters must be sanitized before branch/dir creation.** `sanitizeBranchName()` in `internal/agent/worktree.go` strips characters forbidden by `git-check-ref-format`: spaces, control chars, `~ ^ : ? * [ ] { } \`, leading/trailing dots, consecutive dots, and `@{`. The sanitized name is used for both the branch (`argus/<safeName>`) and the worktree directory (`~/.argus/worktrees/<project>/<safeName>`). The task's display name (`t.Name`) is set to the sanitized+suffixed `finalName` returned by `CreateWorktree`. Worktree removal uses stored `t.Worktree` paths, not re-derived names, so no mismatch risk. Without sanitization, characters like `?` cause `git worktree add` to fail with exit status 255.
 
+- **Empty task list shows centered banner with hint.** `TaskPage` (`internal/tui2/taskpage.go`) wraps the 3-panel task list layout. When `tasklist.HasTasks()` is false, it draws the banner (reusing `drawBanner` from `banner.go`) centered vertically with "Press [n] to create your first task" below — same pattern as `SettingsPage`. When tasks exist, it delegates to the inner `tview.Flex` normally. `InputHandler` and `MouseHandler` always delegate to the inner flex.
+
 ## Planned but Not Yet Implemented

@@ -65,7 +65,7 @@ type App struct {
 
 	// Layout containers
 	root      *tview.Flex
-	taskPage  *tview.Flex
+	taskPage  *TaskPage
 	agentPage *tview.Flex
 	pages     *tview.Pages
 
@@ -145,10 +145,11 @@ func (a *App) buildUI() {
 	taskCenter := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.taskGitPanel, 0, 3, false).
 		AddItem(a.taskPreview, 0, 7, false)
-	a.taskPage = tview.NewFlex().SetDirection(tview.FlexColumn).
+	taskFlex := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(a.tasklist, 0, 1, true).
 		AddItem(taskCenter, 0, 3, false).
 		AddItem(a.taskDetail, 0, 1, false)
+	a.taskPage = NewTaskPage(taskFlex, a.tasklist)
 
 	// Agent page — three-panel layout
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexColumn).
