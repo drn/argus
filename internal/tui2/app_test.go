@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func testDB(t *testing.T) *db.DB {
@@ -252,5 +253,248 @@ func TestRefreshTasks(t *testing.T) {
 	}
 	if !app.tasklist.HasTasks() {
 		t.Error("tasklist should have tasks")
+	}
+}
+
+func TestConfirmDeleteModal(t *testing.T) {
+	task := &model.Task{
+		ID:       "t1",
+		Name:     "test task",
+		Worktree: "/some/path",
+		Branch:   "argus/test-task",
+	}
+
+	t.Run("cancel", func(t *testing.T) {
+		m := NewConfirmDeleteModal(task)
+		if m.Confirmed() || m.Canceled() {
+			t.Error("modal should not be confirmed or canceled initially")
+		}
+
+		// Press Esc
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(p tview.Primitive) {})
+
+		if !m.Canceled() {
+			t.Error("modal should be canceled after Esc")
+		}
+		if m.Confirmed() {
+			t.Error("modal should not be confirmed after Esc")
+		}
+	})
+
+	t.Run("confirm", func(t *testing.T) {
+		m := NewConfirmDeleteModal(task)
+
+		// Press Enter
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+
+		if !m.Confirmed() {
+			t.Error("modal should be confirmed after Enter")
+		}
+		if m.Canceled() {
+			t.Error("modal should not be canceled after Enter")
+		}
+	})
+
+	t.Run("task preserved", func(t *testing.T) {
+		m := NewConfirmDeleteModal(task)
+		if m.Task().ID != "t1" {
+			t.Errorf("Task().ID = %q, want %q", m.Task().ID, "t1")
+		}
+	})
+}
+
+func TestOpenConfirmDelete(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "test task",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	app.openConfirmDelete(task)
+
+	if app.mode != modeConfirmDelete {
+		t.Errorf("mode = %v, want modeConfirmDelete", app.mode)
+	}
+	if app.confirmDeleteModal == nil {
+		t.Error("confirmDeleteModal should not be nil")
+	}
+}
+
+func TestCloseConfirmDelete(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "test task",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	// Open then close
+	app.openConfirmDelete(task)
+	app.closeConfirmDelete()
+
+	if app.mode != modeTaskList {
+		t.Errorf("mode = %v, want modeTaskList", app.mode)
+	}
+	if app.confirmDeleteModal != nil {
+		t.Error("confirmDeleteModal should be nil after close")
+	}
+}
+
+func TestDeleteTask(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "test task",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	if len(app.tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(app.tasks))
+	}
+
+	app.deleteTask(task)
+
+	if len(app.tasks) != 0 {
+		t.Errorf("expected 0 tasks after delete, got %d", len(app.tasks))
+	}
+
+	// Verify task is gone from DB
+	tasks := d.Tasks()
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 tasks in DB, got %d", len(tasks))
+	}
+}
+
+func TestCtrlDOpensConfirmDelete(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "test task",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	// Ctrl+D on task list should open confirm modal
+	ev := tcell.NewEventKey(tcell.KeyCtrlD, 0, 0)
+	result := app.handleGlobalKey(ev)
+
+	if result != nil {
+		t.Error("Ctrl+D should be consumed (return nil)")
+	}
+	if app.mode != modeConfirmDelete {
+		t.Errorf("mode = %v, want modeConfirmDelete", app.mode)
+	}
+}
+
+func TestCtrlDIgnoredInAgentMode(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	ev := tcell.NewEventKey(tcell.KeyCtrlD, 0, 0)
+	app.handleGlobalKey(ev)
+
+	if app.mode != modeAgent {
+		t.Errorf("mode changed to %v, should stay modeAgent", app.mode)
+	}
+}
+
+func TestPruneCompletedTasks(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Add tasks with various statuses
+	d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t2", Name: "done1", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t3", Name: "in-progress", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t4", Name: "done2", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
+	app.refreshTasks()
+
+	if len(app.tasks) != 4 {
+		t.Fatalf("expected 4 tasks, got %d", len(app.tasks))
+	}
+
+	app.pruneCompletedTasks()
+
+	if len(app.tasks) != 2 {
+		t.Errorf("expected 2 tasks after prune, got %d", len(app.tasks))
+	}
+
+	// Only non-complete tasks should remain
+	for _, task := range app.tasks {
+		if task.Status == model.StatusComplete {
+			t.Errorf("completed task %q should have been pruned", task.Name)
+		}
+	}
+}
+
+func TestCtrlRPrunesCompleted(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t2", Name: "done", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
+	app.refreshTasks()
+
+	ev := tcell.NewEventKey(tcell.KeyCtrlR, 0, 0)
+	result := app.handleGlobalKey(ev)
+
+	if result != nil {
+		t.Error("Ctrl+R should be consumed (return nil)")
+	}
+	if len(app.tasks) != 1 {
+		t.Errorf("expected 1 task after Ctrl+R prune, got %d", len(app.tasks))
+	}
+}
+
+func TestWorktreeSubdir(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/Users/foo/.argus/worktrees/proj/task", true},
+		{"/Users/foo/.claude/worktrees/proj/task", true},
+		{"/Users/foo/projects/repo", false},
+		{"/tmp/foo", false},
+	}
+	for _, tt := range tests {
+		if got := isWorktreeSubdir(tt.path); got != tt.want {
+			t.Errorf("isWorktreeSubdir(%q) = %v, want %v", tt.path, got, tt.want)
+		}
 	}
 }

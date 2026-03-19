@@ -550,3 +550,20 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - **tview `GetInnerRect()` is not thread-safe** — calling it from a non-main goroutine (e.g., tick goroutine) races with `Draw()` on the main goroutine. Use a pending-resize pattern: `Draw()` computes desired PTY size under mutex and stores it; the tick goroutine consumes and performs the RPC.
 - **Never call daemon RPC while holding `a.mu`** — `runner.Running()` does an RPC with up to 5s timeout. Holding the mutex blocks all `QueueUpdateDraw` callbacks (including redraws) for the duration. Extract RPC calls outside the lock, then re-acquire for state mutation.
 - **Daemon session exit callback must be wired for tui2 runtime.** Without `client.OnSessionExit()`, agent processes that finish are never detected — tasks stay `InProgress` forever. The callback must be registered before `tui2.New()` with a nil guard (`if a := appRef; a != nil`) to handle the initialization window.
+
+## Task Delete & Prune: 2026-03-19
+
+### Data Model
+- `ConfirmDeleteModal` — tview Box widget with `confirmed`/`canceled` bools and a `*model.Task` reference.
+- `modeConfirmDelete` — new `viewMode` constant, intercepts all keys in `handleGlobalKey`.
+- Worktree helpers (`removeWorktreeAndBranch`, `isWorktreeSubdir`, etc.) ported to `internal/tui2/worktree.go`.
+
+### Flow
+- **Ctrl+D**: `handleGlobalKey` → `openConfirmDelete(task)` → shows modal via `pages.AddPage("confirmdelete", ...)` → Enter triggers `deleteTask(t)` → stop session, cleanup worktree/branch, delete session log, `db.Delete(id)`, refresh.
+- **Ctrl+R**: `handleGlobalKey` → `pruneCompletedTasks()` → `db.PruneCompleted()` (atomic fetch+delete) → stop sessions → worktree cleanup in background goroutine → refresh.
+- Both guarded by `a.mode == modeTaskList && a.header.ActiveTab() == TabTasks`.
+
+### Gotchas
+- Worktree cleanup respects `cfg.UI.ShouldCleanupWorktrees()` — when disabled, only branches are deleted.
+- `isWorktreeSubdir` safety check prevents `os.RemoveAll` on non-worktree paths.
+- Prune runs worktree cleanup in a goroutine to keep TUI responsive; calls `QueueUpdateDraw` on completion.

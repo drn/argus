@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ const (
 	modeTaskList viewMode = iota
 	modeAgent
 	modeNewTask
+	modeConfirmDelete
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -62,6 +64,9 @@ type App struct {
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
+
+	// Confirm delete modal (created on demand)
+	confirmDeleteModal *ConfirmDeleteModal
 
 	// Layout containers
 	root      *tview.Flex
@@ -451,6 +456,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Confirm delete modal — delegate everything to the modal
+	if a.mode == modeConfirmDelete && a.confirmDeleteModal != nil {
+		a.handleConfirmDeleteKey(event)
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		a.tapp.Stop()
@@ -470,6 +481,18 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 			a.exitAgentView()
+			return nil
+		}
+	case tcell.KeyCtrlD:
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
+			if t := a.tasklist.SelectedTask(); t != nil {
+				a.openConfirmDelete(t)
+				return nil
+			}
+		}
+	case tcell.KeyCtrlR:
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
+			a.pruneCompletedTasks()
 			return nil
 		}
 	case tcell.KeyLeft:
@@ -1158,6 +1181,136 @@ func (a *App) closeNewTaskForm() {
 	a.pages.RemovePage("newtask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// openConfirmDelete shows the confirm delete modal for the given task.
+func (a *App) openConfirmDelete(t *model.Task) {
+	a.confirmDeleteModal = NewConfirmDeleteModal(t)
+	a.mode = modeConfirmDelete
+	a.pages.AddPage("confirmdelete", a.confirmDeleteModal, true, true)
+	a.pages.SwitchToPage("confirmdelete")
+	a.tapp.SetFocus(a.confirmDeleteModal)
+}
+
+// handleConfirmDeleteKey processes keys in the confirm delete modal.
+func (a *App) handleConfirmDeleteKey(event *tcell.EventKey) {
+	handler := a.confirmDeleteModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.confirmDeleteModal.Canceled() {
+		a.closeConfirmDelete()
+		return
+	}
+
+	if a.confirmDeleteModal.Confirmed() {
+		t := a.confirmDeleteModal.Task()
+		a.deleteTask(t)
+		a.closeConfirmDelete()
+	}
+}
+
+// closeConfirmDelete dismisses the confirm delete modal.
+func (a *App) closeConfirmDelete() {
+	a.mode = modeTaskList
+	a.confirmDeleteModal = nil
+	a.pages.RemovePage("confirmdelete")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+// deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.
+// Worktree/branch cleanup runs in a background goroutine to avoid blocking the UI.
+func (a *App) deleteTask(t *model.Task) {
+	uxlog.Log("[tui2] deleting task %s (%s)", t.ID, t.Name)
+
+	// Stop the agent if running.
+	if a.runner.HasSession(t.ID) {
+		if err := a.runner.Stop(t.ID); err != nil {
+			uxlog.Log("[tui2] failed to stop session for task %s: %v", t.ID, err)
+		}
+	}
+
+	// Remove session log file.
+	os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
+
+	// Delete from database first so the UI updates immediately.
+	if err := a.db.Delete(t.ID); err != nil {
+		uxlog.Log("[tui2] failed to delete task %s: %v", t.ID, err)
+	}
+	a.refreshTasks()
+
+	// Clean up worktree and branch in background — git operations can take seconds.
+	cfg := a.db.Config()
+	worktree, branch := t.Worktree, t.Branch
+	go func() {
+		if worktree != "" && cfg.UI.ShouldCleanupWorktrees() {
+			repoDir := agent.ResolveDir(t, cfg)
+			removeWorktreeAndBranch(worktree, branch, repoDir)
+		} else if branch != "" {
+			if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
+				deleteBranch(repoDir, branch)
+				deleteRemoteBranch(repoDir, branch)
+			}
+		}
+	}()
+}
+
+// pruneCompletedTasks removes all completed tasks, cleaning up worktrees and branches.
+// Matches the old Ctrl+R behavior from the Bubble Tea UI.
+func (a *App) pruneCompletedTasks() {
+	pruned, err := a.db.PruneCompleted()
+	if err != nil {
+		uxlog.Log("[tui2] prune error: %v", err)
+		return
+	}
+	if len(pruned) == 0 {
+		return
+	}
+
+	uxlog.Log("[tui2] pruning %d completed tasks", len(pruned))
+
+	// Stop sessions synchronously (fast, in-process).
+	for _, t := range pruned {
+		if a.runner.HasSession(t.ID) {
+			_ = a.runner.Stop(t.ID)
+		}
+	}
+
+	// Clean up worktrees in a background goroutine so the UI stays responsive.
+	cfg := a.db.Config()
+	needsCleanup := cfg.UI.ShouldCleanupWorktrees()
+
+	var toClean []*model.Task
+	if needsCleanup {
+		for _, t := range pruned {
+			if t.Worktree != "" {
+				toClean = append(toClean, t)
+			}
+		}
+	}
+
+	// Remove session logs for all pruned tasks.
+	for _, t := range pruned {
+		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
+	}
+
+	if len(toClean) == 0 {
+		a.refreshTasks()
+		return
+	}
+
+	// Run worktree cleanup in a background goroutine.
+	go func() {
+		for _, t := range toClean {
+			repoDir := agent.ResolveDir(t, cfg)
+			removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+		}
+		a.tapp.QueueUpdateDraw(func() {
+			a.refreshTasks()
+		})
+	}()
+
+	a.refreshTasks()
 }
 
 // exitAgentView returns to the task list.
