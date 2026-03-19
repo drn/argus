@@ -66,10 +66,11 @@ type TerminalPane struct {
 	focused bool
 
 	// Persistent x/vt emulator for live incremental rendering.
-	emu        *xvt.SafeEmulator
+	emu         *xvt.SafeEmulator
 	emuFedTotal uint64
 	emuCols     int
 	emuRows     int
+	cursorVisible bool
 
 	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
 	ptyCols int
@@ -430,7 +431,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	}
 
 	if tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows {
-		tp.emu = newDrainedEmulator(ptyCols, ptyRows)
+		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
 		tp.emuRows = ptyRows
@@ -439,27 +440,30 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	newBytes := totalWritten - tp.emuFedTotal
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
-		tp.emu = newDrainedEmulator(ptyCols, ptyRows)
+		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 		safeEmuWrite(tp.emu, raw)
 	} else if newBytes > 0 {
 		safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 	}
 	tp.emuFedTotal = totalWritten
 
-	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true)
+	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
 }
 
 // renderReplay uses x/vt scrollback for finished sessions and scroll mode.
 // Feeds full buffer into a fresh emulator and uses scrollback for history.
 func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
-	emu := newDrainedEmulator(ptyCols, ptyRows)
+	cursorVisible := true
+	emu := tp.newTrackedEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+		cursorVisible = visible
+	})
 	safeEmuWrite(emu, raw)
 
-	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0)
+	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0, cursorVisible)
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
-func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor bool) {
+func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor, cursorVisible bool) {
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
 	// Find content bounds in the main screen area.
@@ -536,8 +540,8 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 				style = uvCellToTcellStyle(cell)
 			}
 
-			// Cursor — always render regardless of CursorVisible().
-			if showCursor && isMainScreen && mainRow == cur.Y && col == cur.X {
+			// Match the emulator's cursor visibility instead of forcing an Argus-owned cursor.
+			if showCursor && cursorVisible && isMainScreen && mainRow == cur.Y && col == cur.X {
 				style = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}
 
@@ -559,6 +563,25 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 			}
 		}
 	}
+}
+
+func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
+	return tp.newTrackedEmulatorWithCallback(cols, rows, func(visible bool) {
+		tp.cursorVisible = visible
+	})
+}
+
+func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
+	emu := newDrainedEmulator(cols, rows)
+	if onCursorVisible != nil {
+		emu.Emulator.SetCallbacks(xvt.Callbacks{
+			CursorVisibility: onCursorVisible,
+		})
+	}
+	if onCursorVisible != nil {
+		onCursorVisible(true)
+	}
+	return emu
 }
 
 // --- Diff rendering ---
