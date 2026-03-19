@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
@@ -348,5 +349,121 @@ func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {
 	}
 	if sv.logKey != "" {
 		t.Errorf("logKey not cleared: %q", sv.logKey)
+	}
+}
+
+func TestSettingsView_NewProjectCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Move cursor to a project row.
+	for i, row := range sv.rows {
+		if row.kind == srProject {
+			sv.cursor = i
+			break
+		}
+	}
+
+	called := false
+	sv.OnNewProject = func() { called = true }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'n' key should be handled on project row")
+	}
+	if !called {
+		t.Error("OnNewProject callback not fired")
+	}
+}
+
+func TestSettingsView_EditProjectCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Move cursor to a project row.
+	for i, row := range sv.rows {
+		if row.kind == srProject && row.key == "test-proj" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var gotName string
+	sv.OnEditProject = func(name string, p config.Project) { gotName = name }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'e', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'e' key should be handled on project row")
+	}
+	if gotName != "test-proj" {
+		t.Errorf("OnEditProject got name %q, want test-proj", gotName)
+	}
+}
+
+func TestSettingsView_NewBackendCallback(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Move cursor to a backend row.
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+
+	called := false
+	sv.OnNewBackend = func() { called = true }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'n' key should be handled on backend row")
+	}
+	if !called {
+		t.Error("OnNewBackend callback not fired")
+	}
+}
+
+func TestSettingsView_EditBackendCallback(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Move cursor to a backend row.
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var gotName string
+	sv.OnEditBackend = func(name string, b config.Backend) { gotName = name }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'e', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'e' key should be handled on backend row")
+	}
+	if gotName == "" {
+		t.Error("OnEditBackend callback not fired or got empty name")
+	}
+}
+
+func TestSettingsView_NKeyOnNonProjectRow(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Cursor should be on a non-project row (e.g., warning/status).
+	sv.OnNewProject = func() { t.Error("OnNewProject should not fire on non-project row") }
+	sv.OnNewBackend = func() { t.Error("OnNewBackend should not fire on non-backend row") }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if handled {
+		t.Error("'n' should not be handled on non-project/backend row")
 	}
 }

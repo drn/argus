@@ -240,4 +240,6 @@
 
 - **Enter on a completed task in the task list is a no-op.** The `InputHandler` in `tasklist.go` guards `OnSelect` with `t.Status != model.StatusComplete`. Completed tasks can still be viewed via other means but pressing Enter won't re-enter the agent view for them. This prevents accidentally re-entering a finished task.
 
+- **Settings tab `n`/`e` keys open project/backend forms as modal overlays.** `SettingsView.HandleKey` dispatches `n` and `e` based on `currentSection()` — the row kind at the cursor. For project rows: `OnNewProject`/`OnEditProject` callbacks; for backend rows: `OnNewBackend`/`OnEditBackend`. The `App` wires these to `openProjectForm`/`openBackendForm` which use the same modal pattern as `modeNewTask` and `modeConfirmDelete`: set mode → `pages.AddPage` → `SwitchToPage` → `SetFocus`. Form key events are intercepted in `handleGlobalKey` before any other routing. On submit, the form validates (name and path/command non-empty), calls `db.SetProject`/`db.SetBackend`, refreshes settings, and returns to the settings page. On cancel (Esc), the form is dismissed. The `done` flag must be reset to `false` on validation failure to allow re-submission.
+
 ## Planned but Not Yet Implemented
