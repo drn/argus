@@ -157,7 +157,7 @@ func (a *App) buildUI() {
 
 	// Task list page — three-panel layout: tasks | (git status + preview) | details
 	// Center column is a vertical split: git status (30%, clamped 3-15 rows) on top,
-	// preview (remaining) on bottom — matching the old Bubble Tea layout.
+	// preview (remaining) on bottom.
 	taskCenter := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.taskGitPanel, 0, 3, false).
 		AddItem(a.taskPreview, 0, 7, false)
