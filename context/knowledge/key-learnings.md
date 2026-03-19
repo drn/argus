@@ -226,4 +226,6 @@
 
 - **Project headers in the task list show an aggregated status icon with chevron and task count.** `drawProjectRow` in `internal/tui2/tasklist.go` renders: icon + chevron + project name + (count). `projectStatusIcon()` computes the icon from all tasks in that project with priority: in_progress > in_review > all_complete > mixed > all_pending. When all in-progress tasks are idle, shows a moon icon (☾). The `tickEven` field toggles on each tick for icon animation (alternates between ● and ◉ for active in-progress). `refreshTasksWithIDs` in `app.go` passes both `runningIDs` and `idleIDs` from the runner, calling `SetIdle()` and `Tick()` on every refresh cycle.
 
+- **Daemon restart from Settings tab via `srDaemon` row.** When `daemonConnected` is true, the Status section shows a "Restart Daemon" row (`srDaemon` kind). Enter triggers `OnRestartDaemon` callback → `App.restartDaemon()` in a goroutine. During restart, the row label changes to "Restarting..." and Enter is a no-op. `SetDaemonRestarting(false)` is called from `restartDaemon()`'s success and error `QueueUpdateDraw` callbacks to reset the label. The detail panel shows daemon status and `[enter] restart daemon` hint. The row only appears in daemon mode — not in in-process mode.
+
 ## Planned but Not Yet Implemented

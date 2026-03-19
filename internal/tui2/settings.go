@@ -27,6 +27,7 @@ const (
 	srSandbox
 	srLogs
 	srKB
+	srDaemon
 )
 
 // settingsRow is a single row in the settings section list.
@@ -67,6 +68,13 @@ type SettingsView struct {
 	logScrollOff int
 	logLines     []string // cached lines for current log
 	logKey       string   // which log is cached ("ux" or "daemon")
+
+	// Daemon.
+	daemonConnected  bool
+	daemonRestarting bool
+
+	// Callbacks.
+	OnRestartDaemon func()
 
 	// DB reference for toggling values.
 	database *db.DB
@@ -150,6 +158,7 @@ func (sv *SettingsView) Refresh() {
 }
 
 func (sv *SettingsView) SetDaemonConnected(connected bool) {
+	sv.daemonConnected = connected
 	if !connected {
 		sv.warnings = []string{"Running in-process mode (daemon not connected)"}
 	} else {
@@ -187,6 +196,13 @@ func (sv *SettingsView) rebuildRows() {
 		for i, w := range sv.warnings {
 			sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  ⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 		}
+	}
+	if sv.daemonConnected {
+		label := "  Restart Daemon"
+		if sv.daemonRestarting {
+			label = "  Restarting..."
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
 	}
 
 	// Sandbox section.
@@ -385,6 +401,13 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] KB toggled to %s", val)
 		sv.rebuildRows()
 		return true
+	case srDaemon:
+		if !sv.daemonRestarting && sv.OnRestartDaemon != nil {
+			sv.daemonRestarting = true
+			sv.rebuildRows()
+			sv.OnRestartDaemon()
+		}
+		return true
 	}
 	return false
 }
@@ -497,6 +520,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
 	case srLogs:
 		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srDaemon:
+		sv.renderDaemonDetail(screen, innerX, innerY, innerW, innerH)
 	}
 }
 
@@ -675,6 +700,25 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB", StyleDimmed)
 	}
+}
+
+func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Daemon", StyleTitle)
+	r := 2
+
+	if sv.daemonRestarting {
+		drawText(screen, x, y+r, w, "Restarting daemon...", tcell.StyleDefault.Foreground(ColorInProgress))
+	} else {
+		drawText(screen, x, y+r, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+		r += 2
+		drawText(screen, x, y+r, w, "[enter] restart daemon", StyleDimmed)
+	}
+}
+
+// SetDaemonRestarting updates the restarting state from the app.
+func (sv *SettingsView) SetDaemonRestarting(restarting bool) {
+	sv.daemonRestarting = restarting
+	sv.rebuildRows()
 }
 
 func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
