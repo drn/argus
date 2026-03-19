@@ -8,6 +8,7 @@ import (
 	xvt "github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -47,6 +48,51 @@ func TestTerminalPane_Scrollback(t *testing.T) {
 	tp.ResetScroll()
 	if tp.ScrollOffset() != 0 {
 		t.Errorf("after reset scrollOffset = %d, want 0", tp.ScrollOffset())
+	}
+}
+
+func TestTerminalPane_MouseScroll(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 24)
+	handler := tp.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+	// Mouse event inside the box.
+	ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
+
+	// Scroll up via mouse wheel.
+	consumed, _ := handler(tview.MouseScrollUp, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollUp should be consumed")
+	}
+	if tp.ScrollOffset() != 3 {
+		t.Errorf("after scroll up: offset = %d, want 3", tp.ScrollOffset())
+	}
+
+	// Scroll down via mouse wheel.
+	consumed, _ = handler(tview.MouseScrollDown, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollDown should be consumed")
+	}
+	if tp.ScrollOffset() != 0 {
+		t.Errorf("after scroll down: offset = %d, want 0", tp.ScrollOffset())
+	}
+
+	// Diff mode scrolling.
+	tp.EnterDiffMode("+line1\n+line2\n context", "test.go")
+	tp.diffScroll = 0
+	consumed, _ = handler(tview.MouseScrollDown, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollDown in diff mode should be consumed")
+	}
+	if tp.diffScroll != 3 {
+		t.Errorf("diff scroll after down = %d, want 3", tp.diffScroll)
+	}
+	consumed, _ = handler(tview.MouseScrollUp, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollUp in diff mode should be consumed")
+	}
+	if tp.diffScroll != 0 {
+		t.Errorf("diff scroll after up = %d, want 0", tp.diffScroll)
 	}
 }
 
