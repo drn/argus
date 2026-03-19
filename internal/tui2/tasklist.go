@@ -108,6 +108,12 @@ func (tl *TaskListView) buildRows() {
 
 	// Group active tasks by project
 	projectOrder, projectTasks := groupByProject(active)
+
+	// Auto-expand first project if none is expanded
+	if tl.expanded == "" && len(projectOrder) > 0 {
+		tl.expanded = projectOrder[0]
+	}
+
 	for _, proj := range projectOrder {
 		tl.rows = append(tl.rows, taskRow{kind: rowProject, project: proj})
 		if proj == tl.expanded {
@@ -190,7 +196,8 @@ func (tl *TaskListView) skipToTask(dir int) {
 	}
 }
 
-// CursorDown moves the cursor down, skipping non-task rows.
+// CursorDown moves the cursor down. When landing on a project header,
+// autoExpand will expand it and advance the cursor to the first task.
 func (tl *TaskListView) CursorDown() {
 	if len(tl.rows) == 0 {
 		return
@@ -199,11 +206,11 @@ func (tl *TaskListView) CursorDown() {
 	if tl.cursor >= len(tl.rows) {
 		tl.cursor = len(tl.rows) - 1
 	}
-	tl.skipToTask(1)
 	tl.autoExpand()
 }
 
-// CursorUp moves the cursor up, skipping non-task rows.
+// CursorUp moves the cursor up. When landing on a project header,
+// autoExpand will expand it and move the cursor to the last task.
 func (tl *TaskListView) CursorUp() {
 	if len(tl.rows) == 0 {
 		return
@@ -212,7 +219,6 @@ func (tl *TaskListView) CursorUp() {
 	if tl.cursor < 0 {
 		tl.cursor = 0
 	}
-	tl.skipToTask(-1)
 	tl.autoExpand()
 }
 
@@ -222,25 +228,46 @@ func (tl *TaskListView) autoExpand() {
 		return
 	}
 	row := tl.rows[tl.cursor]
-	if row.kind != rowTask {
-		return
-	}
 
-	inArchive := tl.isInArchive(tl.cursor)
-
-	if inArchive {
-		tl.archiveExpanded = true
-		if row.project != tl.archiveProject {
-			tl.archiveProject = row.project
-			tl.buildRows()
-			tl.restoreCursorToTask(row.task)
+	switch row.kind {
+	case rowProject:
+		// Cursor landed on a project header — expand it
+		inArchive := tl.isInArchive(tl.cursor)
+		if inArchive {
+			tl.archiveExpanded = true
+			if row.project != tl.archiveProject {
+				tl.archiveProject = row.project
+				tl.buildRows()
+				// Move cursor to the first task in this project
+				tl.skipToTask(1)
+			}
+		} else {
+			if row.project != tl.expanded {
+				tl.expanded = row.project
+				tl.buildRows()
+				// Move cursor to the first task in this project
+				tl.skipToTask(1)
+			}
 		}
-	} else {
-		tl.archiveExpanded = false
-		if row.project != tl.expanded {
-			tl.expanded = row.project
-			tl.buildRows()
-			tl.restoreCursorToTask(row.task)
+	case rowArchiveHeader:
+		tl.archiveExpanded = !tl.archiveExpanded
+		tl.buildRows()
+	case rowTask:
+		inArchive := tl.isInArchive(tl.cursor)
+		if inArchive {
+			tl.archiveExpanded = true
+			if row.project != tl.archiveProject {
+				tl.archiveProject = row.project
+				tl.buildRows()
+				tl.restoreCursorToTask(row.task)
+			}
+		} else {
+			tl.archiveExpanded = false
+			if row.project != tl.expanded {
+				tl.expanded = row.project
+				tl.buildRows()
+				tl.restoreCursorToTask(row.task)
+			}
 		}
 	}
 }
