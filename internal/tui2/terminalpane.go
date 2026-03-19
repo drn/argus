@@ -1,26 +1,21 @@
 package tui2
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 
+	"image/color"
+
+	"github.com/charmbracelet/x/ansi"
+	xvt "github.com/charmbracelet/x/vt"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
-	"github.com/hinshun/vt10x"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/uxlog"
-)
-
-// vt10x attribute bit flags (redefined locally — no BT dependency).
-const (
-	vtAttrReverse   = 1 << 0
-	vtAttrUnderline = 1 << 1
-	vtAttrBold      = 1 << 2
-	vtAttrItalic    = 1 << 4
 )
 
 // Cursor colors — high-contrast, theme-independent.
@@ -29,8 +24,8 @@ var (
 	cursorBG = tcell.PaletteColor(153) // light blue
 )
 
-// TerminalPane renders PTY output natively to a tcell screen via vt10x.
-// No ANSI string intermediary — vt10x cells map directly to tcell cells.
+// TerminalPane renders PTY output natively to a tcell screen via x/vt.
+// No ANSI string intermediary — x/vt cells map directly to tcell cells.
 // No activeInputBG or findInputRow — the native surface shows upstream
 // PTY output without Argus-injected highlights.
 type TerminalPane struct {
@@ -41,11 +36,11 @@ type TerminalPane struct {
 	taskPR  string
 	focused bool
 
-	// Persistent vt10x for live incremental rendering.
-	vtTerm     vt10x.Terminal
-	vtFedTotal uint64
-	vtCols     int
-	vtRows     int
+	// Persistent x/vt emulator for live incremental rendering.
+	emu        *xvt.SafeEmulator
+	emuFedTotal uint64
+	emuCols     int
+	emuRows     int
 
 	// Scrollback.
 	scrollOffset int
@@ -83,13 +78,13 @@ func NewTerminalPane() *TerminalPane {
 	}
 }
 
-// SetSession attaches a live session. Resets vt10x state.
+// SetSession attaches a live session. Resets emulator state.
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 	tp.session = sess
-	tp.vtTerm = nil
-	tp.vtFedTotal = 0
+	tp.emu = nil
+	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 }
 
@@ -136,8 +131,8 @@ func (tp *TerminalPane) SetFocused(f bool) {
 
 // ResetVT clears all terminal state (on resize or task switch).
 func (tp *TerminalPane) ResetVT() {
-	tp.vtTerm = nil
-	tp.vtFedTotal = 0
+	tp.emu = nil
+	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.replayData = nil
 	tp.ExitDiffMode()
@@ -156,9 +151,9 @@ func (tp *TerminalPane) HasContent() bool {
 
 // --- Scrollback ---
 
-func (tp *TerminalPane) ScrollUp(n int)  { tp.scrollOffset += n }
-func (tp *TerminalPane) ScrollOffset() int { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()     { tp.scrollOffset = 0 }
+func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n }
+func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
+func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0 }
 
 func (tp *TerminalPane) ScrollDown(n int) {
 	tp.scrollOffset -= n
@@ -282,13 +277,13 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	if tp.scrollOffset > 0 || !alive {
-		tp.renderReplay(screen, x, y, width, height, raw, ptyCols)
+		tp.renderReplay(screen, x, y, width, height, raw, ptyCols, ptyRows)
 	} else {
 		tp.renderLive(screen, x, y, width, height, raw, ptyCols, ptyRows)
 	}
 }
 
-// renderLive feeds only new bytes to persistent vt10x and paints cells to tcell.
+// renderLive feeds only new bytes to persistent x/vt emulator and paints cells to tcell.
 func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
 	tp.mu.Lock()
 	sess := tp.session
@@ -299,57 +294,59 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 		totalWritten = sess.TotalWritten()
 	}
 
-	if tp.vtTerm == nil || tp.vtCols != ptyCols || tp.vtRows != ptyRows {
-		tp.vtTerm = vt10x.New(vt10x.WithSize(ptyCols, ptyRows))
-		tp.vtFedTotal = 0
-		tp.vtCols = ptyCols
-		tp.vtRows = ptyRows
+	if tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows {
+		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
+		tp.emuFedTotal = 0
+		tp.emuCols = ptyCols
+		tp.emuRows = ptyRows
 	}
 
-	newBytes := totalWritten - tp.vtFedTotal
+	newBytes := totalWritten - tp.emuFedTotal
 	if newBytes > uint64(len(raw)) {
-		tp.vtTerm = vt10x.New(vt10x.WithSize(ptyCols, ptyRows))
-		tp.vtTerm.Write(raw)
+		// Ring buffer wrapped — full reset and replay.
+		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
+		tp.emu.Write(raw)
 	} else if newBytes > 0 {
-		tp.vtTerm.Write(raw[len(raw)-int(newBytes):])
+		tp.emu.Write(raw[len(raw)-int(newBytes):])
 	}
-	tp.vtFedTotal = totalWritten
+	tp.emuFedTotal = totalWritten
 
-	tp.vtTerm.Lock()
-	defer tp.vtTerm.Unlock()
-
-	tp.paintVT(screen, x, y, w, h, tp.vtTerm, ptyCols, ptyRows, true)
+	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true)
 }
 
-// renderReplay replays full buffer through a tall vt10x and renders a window.
-// Direct vt10x→tcell — no ANSI string intermediary.
-func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, vtCols int) {
-	vtRows := estimateVTRows(raw, vtCols, h)
-	vt := vt10x.New(vt10x.WithSize(vtCols, vtRows))
-	vt.Write(raw)
+// renderReplay uses x/vt scrollback for finished sessions and scroll mode.
+// Feeds full buffer into a fresh emulator and uses scrollback for history.
+func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
+	emu := xvt.NewSafeEmulator(ptyCols, ptyRows)
+	emu.Write(raw)
 
-	vt.Lock()
-	defer vt.Unlock()
-
-	tp.paintVT(screen, x, y, w, h, vt, vtCols, vtRows, tp.scrollOffset == 0)
+	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0)
 }
 
-// paintVT renders vt10x cells to the tcell screen with content trimming and scrollback.
-func (tp *TerminalPane) paintVT(screen tcell.Screen, x, y, w, h int, vt vt10x.Terminal, vtCols, vtRows int, showCursor bool) {
-	cur := vt.Cursor()
+// paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
+func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor bool) {
+	cur := emu.CursorPosition()
+	sbLen := emu.ScrollbackLen()
 
-	lastContentRow := findLastContentRow(vt, vtCols, vtRows)
+	// Find content bounds in the main screen area.
+	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
 	if cur.Y > lastContentRow {
 		lastContentRow = cur.Y
 	}
-	if lastContentRow < 0 {
+
+	// Total addressable lines = scrollback + visible content.
+	totalLines := sbLen + lastContentRow + 1
+	firstContentRow := 0
+	if sbLen == 0 {
+		firstContentRow = findFirstContentRowEmu(emu, emuCols, lastContentRow)
+		totalLines = lastContentRow - firstContentRow + 1
+	}
+
+	if totalLines <= 0 {
 		return
 	}
 
-	firstContentRow := findFirstContentRow(vt, vtCols, lastContentRow)
-	totalLines := lastContentRow - firstContentRow + 1
-
-	// Clamp scroll offset
+	// Clamp scroll offset.
 	maxScroll := totalLines - h
 	if maxScroll < 0 {
 		maxScroll = 0
@@ -358,33 +355,55 @@ func (tp *TerminalPane) paintVT(screen tcell.Screen, x, y, w, h int, vt vt10x.Te
 		tp.scrollOffset = maxScroll
 	}
 
-	// Compute visible window
-	endRow := lastContentRow - tp.scrollOffset
-	if endRow < firstContentRow {
-		endRow = firstContentRow
-	}
-	startRow := endRow - h + 1
-	if startRow < firstContentRow {
-		startRow = firstContentRow
+	renderCols := min(emuCols, w)
+
+	// Render visible rows. Row index is in "unified" space:
+	// rows 0..sbLen-1 are scrollback, rows sbLen..sbLen+emuRows-1 are main screen.
+	endLine := totalLines - 1 - tp.scrollOffset
+	startLine := endLine - h + 1
+	if startLine < 0 {
+		startLine = 0
 	}
 
-	renderCols := min(vtCols, w)
 	for screenRow := 0; screenRow < h; screenRow++ {
-		vtRow := startRow + screenRow
-		if vtRow > endRow {
+		lineIdx := startLine + screenRow
+		if lineIdx > endLine {
 			break
 		}
+
 		for col := 0; col < renderCols; col++ {
-			cell := vt.Cell(col, vtRow)
-			ch := cell.Char
-			if ch == 0 {
-				ch = ' '
+			var cell *uv.Cell
+			isMainScreen := false
+			mainRow := 0
+
+			if sbLen > 0 && lineIdx < sbLen {
+				// Scrollback region.
+				cell = emu.ScrollbackCellAt(col, lineIdx)
+			} else {
+				// Main screen region.
+				if sbLen > 0 {
+					mainRow = lineIdx - sbLen
+				} else {
+					mainRow = firstContentRow + lineIdx
+				}
+				isMainScreen = true
+				cell = emu.CellAt(col, mainRow)
 			}
 
-			style := cellStyle(cell)
+			ch := ' '
+			style := tcell.StyleDefault
+			if cell != nil {
+				if cell.Content != "" {
+					runes := []rune(cell.Content)
+					if len(runes) > 0 {
+						ch = runes[0]
+					}
+				}
+				style = uvCellToTcellStyle(cell)
+			}
 
-			// Cursor — always render regardless of CursorVisible()
-			if showCursor && vtRow == cur.Y && col == cur.X {
+			// Cursor — always render regardless of CursorVisible().
+			if showCursor && isMainScreen && mainRow == cur.Y && col == cur.X {
 				style = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}
 
@@ -392,7 +411,7 @@ func (tp *TerminalPane) paintVT(screen tcell.Screen, x, y, w, h int, vt vt10x.Te
 		}
 	}
 
-	// Scroll indicator
+	// Scroll indicator.
 	if tp.scrollOffset > 0 {
 		indicator := "   [SCROLL]   "
 		style := tcell.StyleDefault.Foreground(tcell.PaletteColor(214)).Bold(true)
@@ -491,93 +510,89 @@ func parseDiffLines(diff string) []diffLine {
 	return lines
 }
 
-// --- vt10x helpers (no BT dependency) ---
+// --- x/vt → tcell helpers ---
 
-// vtColorToTcell maps a vt10x color to a tcell color.
-// DefaultFG/BG → tcell.ColorDefault so terminal theme is inherited.
-func vtColorToTcell(c vt10x.Color) tcell.Color {
-	if c == vt10x.DefaultFG || c == vt10x.DefaultBG {
+// uvColorToTcell converts an image/color.Color (as used by x/vt) to a tcell.Color.
+// nil → tcell.ColorDefault (inherits terminal theme).
+// ansi.BasicColor/IndexedColor → tcell.PaletteColor for exact palette match.
+// Everything else → tcell.FromImageColor for RGB conversion.
+func uvColorToTcell(c color.Color) tcell.Color {
+	if c == nil {
 		return tcell.ColorDefault
 	}
-	n := uint32(c)
-	if n < 256 {
-		return tcell.PaletteColor(int(n))
+	switch v := c.(type) {
+	case ansi.BasicColor:
+		return tcell.PaletteColor(int(v))
+	case ansi.IndexedColor:
+		return tcell.PaletteColor(int(v))
+	default:
+		return tcell.FromImageColor(c)
 	}
-	r := int32((n >> 16) & 0xFF)
-	g := int32((n >> 8) & 0xFF)
-	b := int32(n & 0xFF)
-	return tcell.NewRGBColor(r, g, b)
 }
 
-// cellStyle converts a vt10x glyph to a tcell.Style.
-// No activeInputBG — the native surface shows upstream PTY output as-is.
-func cellStyle(cell vt10x.Glyph) tcell.Style {
+// uvCellToTcellStyle converts a *uv.Cell to a tcell.Style.
+func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
+	if cell == nil {
+		return tcell.StyleDefault
+	}
 	style := tcell.StyleDefault.
-		Foreground(vtColorToTcell(cell.FG)).
-		Background(vtColorToTcell(cell.BG))
+		Foreground(uvColorToTcell(cell.Style.Fg)).
+		Background(uvColorToTcell(cell.Style.Bg))
 
-	if cell.Mode&vtAttrBold != 0 {
+	attrs := cell.Style.Attrs
+	if attrs&uv.AttrBold != 0 {
 		style = style.Bold(true)
 	}
-	if cell.Mode&vtAttrItalic != 0 {
+	if attrs&uv.AttrItalic != 0 {
 		style = style.Italic(true)
 	}
-	if cell.Mode&vtAttrUnderline != 0 {
-		style = style.Underline(true)
-	}
-	if cell.Mode&vtAttrReverse != 0 {
+	if attrs&uv.AttrReverse != 0 {
 		style = style.Reverse(true)
+	}
+	if attrs&uv.AttrStrikethrough != 0 {
+		style = style.StrikeThrough(true)
+	}
+	// Underline styles.
+	ul := cell.Style.Underline
+	if ul != 0 {
+		style = style.Underline(true)
 	}
 	return style
 }
 
-// findLastContentRow scans backwards to find the last row with visible content.
-func findLastContentRow(vt vt10x.Terminal, cols, rows int) int {
+// findLastContentRowEmu scans backwards to find the last row with visible content.
+func findLastContentRowEmu(emu *xvt.SafeEmulator, cols, rows int) int {
 	for row := rows - 1; row >= 0; row-- {
-		if rowHasContent(vt, row, cols) {
+		if rowHasContentEmu(emu, row, cols) {
 			return row
 		}
 	}
 	return -1
 }
 
-// findFirstContentRow scans forward to find the first row with content.
-func findFirstContentRow(vt vt10x.Terminal, cols, maxRow int) int {
+// findFirstContentRowEmu scans forward to find the first row with content.
+func findFirstContentRowEmu(emu *xvt.SafeEmulator, cols, maxRow int) int {
 	for row := 0; row <= maxRow; row++ {
-		if rowHasContent(vt, row, cols) {
+		if rowHasContentEmu(emu, row, cols) {
 			return row
 		}
 	}
 	return 0
 }
 
-// rowHasContent returns true if any cell in the row has visible content.
-func rowHasContent(vt vt10x.Terminal, row, cols int) bool {
+// rowHasContentEmu returns true if any cell in the row has visible content.
+func rowHasContentEmu(emu *xvt.SafeEmulator, row, cols int) bool {
 	for x := 0; x < cols; x++ {
-		cell := vt.Cell(x, row)
-		if cell.Char != 0 && cell.Char != ' ' {
+		cell := emu.CellAt(x, row)
+		if cell == nil {
+			continue
+		}
+		if cell.Content != "" && cell.Content != " " {
 			return true
 		}
-		if cell.FG != vt10x.DefaultFG || cell.BG != vt10x.DefaultBG || cell.Mode != 0 {
+		if cell.Style.Fg != nil || cell.Style.Bg != nil || cell.Style.Attrs != 0 {
 			return true
 		}
 	}
 	return false
 }
-
-// estimateVTRows estimates how many rows a vt10x terminal needs to capture
-// all output. Reimplemented locally to avoid importing internal/ui (BT package).
-func estimateVTRows(raw []byte, vtCols, dispH int) int {
-	vtRows := dispH
-	if n := bytes.Count(raw, []byte{'\n'}); n > vtRows {
-		vtRows = n + dispH
-	}
-	if vtCols > 0 {
-		wrappedEstimate := len(raw)/vtCols + dispH
-		if wrappedEstimate > vtRows {
-			vtRows = wrappedEstimate
-		}
-	}
-	return vtRows
-}
-
