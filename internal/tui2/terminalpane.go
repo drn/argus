@@ -256,6 +256,15 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if sess != nil {
 		ptyCols, ptyRows = sess.PTYSize()
 		alive = sess.Alive()
+
+		// Resize PTY to match panel dimensions if they've changed.
+		wantRows := max(height, 5)
+		wantCols := max(width, 20)
+		if alive && (ptyCols != wantCols || ptyRows != wantRows) {
+			sess.Resize(uint16(wantRows), uint16(wantCols))
+			ptyCols, ptyRows = wantCols, wantRows
+		}
+
 		raw = sess.RecentOutput()
 	} else if len(tp.replayData) > 0 {
 		raw = tp.replayData
