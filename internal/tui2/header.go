@@ -56,7 +56,7 @@ func (h *Header) ActiveTab() Tab {
 	return h.activeTab
 }
 
-// Draw renders the tab bar with powerline-style segments.
+// Draw renders the tab bar with powerline-style segments, centered.
 func (h *Header) Draw(screen tcell.Screen) {
 	h.Box.DrawForSubclass(screen, h)
 	x, y, width, _ := h.GetInnerRect()
@@ -70,13 +70,18 @@ func (h *Header) Draw(screen tcell.Screen) {
 		screen.SetContent(x+i, y, ' ', nil, baseStyle)
 	}
 
-	col := x
+	// Compute total width of all tab segments to center them.
+	// Each segment = 1 (open chevron) + len(text) + 1 (close chevron).
+	totalWidth := 0
+	for i, label := range tabLabels {
+		text := fmt.Sprintf(" %s %s ", tabKeys[i], label)
+		totalWidth += 1 + len(text) + 1 // open sep + text + close sep
+	}
 
-	// Draw "argus" segment (always active/C1 style)
-	col = h.drawSegment(screen, col, y, x+width, " argus ", headerActiveBG, headerActiveFG, true)
-
-	// One space gap between title and tabs
-	col++
+	col := x + (width-totalWidth)/2
+	if col < x {
+		col = x
+	}
 
 	// Draw tabs
 	for i, label := range tabLabels {
