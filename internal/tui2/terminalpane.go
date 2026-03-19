@@ -385,15 +385,15 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 		// Ring buffer wrapped — full reset and replay.
 		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
 		n, err := tp.emu.Write(raw)
-		if tp.drawLogCounter%50 == 1 {
-			uxlog.Log("[terminalpane] renderLive: WRAPPED totalWritten=%d emuFedTotal=%d rawLen=%d wrote=%d err=%v",
-				totalWritten, tp.emuFedTotal, len(raw), n, err)
+		if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
+			uxlog.Log("[terminalpane] renderLive #%d: WRAPPED totalWritten=%d emuFedTotal=%d rawLen=%d wrote=%d err=%v",
+				tp.drawLogCounter, totalWritten, tp.emuFedTotal, len(raw), n, err)
 		}
 	} else if newBytes > 0 {
 		n, err := tp.emu.Write(raw[len(raw)-int(newBytes):])
-		if tp.drawLogCounter%50 == 1 {
-			uxlog.Log("[terminalpane] renderLive: INCR newBytes=%d rawLen=%d wrote=%d err=%v totalWritten=%d",
-				newBytes, len(raw), n, err, totalWritten)
+		if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
+			uxlog.Log("[terminalpane] renderLive #%d: INCR newBytes=%d rawLen=%d wrote=%d err=%v totalWritten=%d",
+				tp.drawLogCounter, newBytes, len(raw), n, err, totalWritten)
 		}
 	}
 	tp.emuFedTotal = totalWritten
@@ -414,12 +414,6 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor bool) {
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
-	if tp.drawLogCounter%50 == 1 {
-		lastRow := findLastContentRowEmu(emu, emuCols, emuRows)
-		uxlog.Log("[terminalpane] paintEmu: curX=%d curY=%d sbLen=%d lastContentRow=%d emuCols=%d emuRows=%d panelW=%d panelH=%d",
-			cur.X, cur.Y, sbLen, lastRow, emuCols, emuRows, w, h)
-	}
-
 	// Find content bounds in the main screen area.
 	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
 	if cur.Y > lastContentRow {
@@ -434,7 +428,15 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
+	if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 1 {
+		uxlog.Log("[terminalpane] paintEmu #%d: curX=%d curY=%d sbLen=%d lastContentRow=%d firstContentRow=%d totalLines=%d emuCols=%d emuRows=%d panelW=%d panelH=%d",
+			tp.drawLogCounter, cur.X, cur.Y, sbLen, lastContentRow, firstContentRow, totalLines, emuCols, emuRows, w, h)
+	}
+
 	if totalLines <= 0 {
+		if tp.drawLogCounter < 20 {
+			uxlog.Log("[terminalpane] paintEmu #%d: EMPTY — totalLines=%d, returning", tp.drawLogCounter, totalLines)
+		}
 		return
 	}
 
