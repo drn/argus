@@ -138,15 +138,9 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Draw border
-	drawBorder(screen, x-1, y-1, width+2, height+2, StyleBorder)
-
-	// Title in border
-	title := " Preview "
-	for i, r := range title {
-		if x+i < x+width {
-			screen.SetContent(x+i, y-1, r, nil, StyleBorder.Bold(true))
-		}
+	inner := drawBorderedPanel(screen, x, y, width, height, " Preview ", StyleBorder)
+	if inner.W <= 0 || inner.H <= 0 {
+		return
 	}
 
 	tp.mu.Lock()
@@ -157,17 +151,17 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 	tp.mu.Unlock()
 
 	if cells == nil {
-		tp.drawCentered(screen, x, y, width, height, statusMsg)
+		tp.drawCentered(screen, inner.X, inner.Y, inner.W, inner.H, statusMsg)
 		return
 	}
 
 	// Paint cached cells
-	renderCols := min(cellCols, width)
-	renderRows := min(cellRows, height)
+	renderCols := min(cellCols, inner.W)
+	renderRows := min(cellRows, inner.H)
 	for vy := 0; vy < renderRows; vy++ {
 		for vx := 0; vx < renderCols; vx++ {
 			c := cells[vy][vx]
-			screen.SetContent(x+vx, y+vy, c.ch, nil, c.style)
+			screen.SetContent(inner.X+vx, inner.Y+vy, c.ch, nil, c.style)
 		}
 	}
 }

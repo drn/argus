@@ -64,3 +64,23 @@ func drawBorder(screen tcell.Screen, x, y, w, h int, style tcell.Style) {
 		screen.SetContent(x+w-1, row, '│', nil, style)
 	}
 }
+
+// innerRect holds the content area inside a bordered panel.
+type innerRect struct {
+	X, Y, W, H int
+}
+
+// drawBorderedPanel draws a rounded border at (x, y, w, h) with an optional
+// title embedded in the top border, and returns the inner content rect.
+// All bordered panels should use this to guarantee consistent chrome.
+func drawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style tcell.Style) innerRect {
+	drawBorder(screen, x, y, w, h, style)
+	if title != "" {
+		for i, r := range title {
+			if x+1+i < x+w-1 {
+				screen.SetContent(x+1+i, y, r, nil, style.Bold(true))
+			}
+		}
+	}
+	return innerRect{X: x + 1, Y: y + 1, W: w - 2, H: h - 2}
+}

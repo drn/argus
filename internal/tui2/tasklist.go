@@ -341,6 +341,11 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		return
 	}
 
+	inner := drawBorderedPanel(screen, x, y, width, height, " Tasks ", StyleBorder)
+	if inner.W <= 0 || inner.H <= 0 {
+		return
+	}
+
 	if len(tl.rows) == 0 {
 		return
 	}
@@ -352,11 +357,11 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 	if tl.cursor < tl.offset {
 		tl.offset = tl.cursor
 	}
-	if tl.cursor >= tl.offset+height {
-		tl.offset = tl.cursor - height + 1
+	if tl.cursor >= tl.offset+inner.H {
+		tl.offset = tl.cursor - inner.H + 1
 	}
 
-	for i := 0; i < height; i++ {
+	for i := 0; i < inner.H; i++ {
 		idx := tl.offset + i
 		if idx >= len(tl.rows) {
 			break
@@ -366,11 +371,11 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 		switch row.kind {
 		case rowProject:
-			tl.drawProjectRow(screen, x, y+i, width, row.project)
+			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project)
 		case rowArchiveHeader:
-			tl.drawArchiveHeader(screen, x, y+i, width)
+			tl.drawArchiveHeader(screen, inner.X, inner.Y+i, inner.W)
 		case rowTask:
-			tl.drawTaskRow(screen, x, y+i, width, row.task, isCursor)
+			tl.drawTaskRow(screen, inner.X, inner.Y+i, inner.W, row.task, isCursor)
 		}
 	}
 }
