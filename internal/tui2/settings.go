@@ -2,6 +2,7 @@ package tui2
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -218,6 +219,11 @@ func (sv *SettingsView) rebuildRows() {
 		kbLabel = "  Enabled"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+
+	// Logs section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  Daemon Log", key: "daemon"})
 
 	// Clamp cursor.
 	if sv.cursor >= len(sv.rows) {
@@ -459,6 +465,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srKB:
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+	case srLogs:
+		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
 	}
 }
 
@@ -637,6 +645,56 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB", StyleDimmed)
 	}
+}
+
+func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	dataDir := db.DataDir()
+	var title, logPath string
+	switch row.key {
+	case "ux":
+		title = "UX Log"
+		logPath = uxlog.Path(dataDir)
+	case "daemon":
+		title = "Daemon Log"
+		logPath = dataDir + "/daemon.log"
+	default:
+		return
+	}
+
+	drawText(screen, x, y, w, title, StyleTitle)
+	drawText(screen, x, y+2, w, logPath, StyleDimmed)
+
+	// Show tail of the log file.
+	lines := tailFile(logPath, h-4)
+	for i, line := range lines {
+		if y+4+i >= y+h {
+			break
+		}
+		if len(line) > w {
+			line = line[:w]
+		}
+		drawText(screen, x, y+4+i, w, line, tcell.StyleDefault)
+	}
+}
+
+// tailFile reads the last n lines from a file.
+func tailFile(path string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []string{"(file not found)"}
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return []string{"(empty)"}
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
 }
 
 // --- Helpers ---

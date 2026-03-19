@@ -1,6 +1,8 @@
 package tui2
 
 import (
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -171,5 +173,54 @@ func TestSettingsView_KBToggle(t *testing.T) {
 
 	if sv.kbEnabled == initialKB {
 		t.Error("KB should have toggled")
+	}
+}
+
+func TestSettingsView_LogsSection(t *testing.T) {
+	sv := testSettingsView(t)
+	var logsRows []settingsRow
+	for _, row := range sv.rows {
+		if row.kind == srLogs {
+			logsRows = append(logsRows, row)
+		}
+	}
+	if len(logsRows) != 2 {
+		t.Fatalf("expected 2 log rows, got %d", len(logsRows))
+	}
+	if logsRows[0].key != "ux" {
+		t.Errorf("first log row key = %q, want ux", logsRows[0].key)
+	}
+	if logsRows[1].key != "daemon" {
+		t.Errorf("second log row key = %q, want daemon", logsRows[1].key)
+	}
+}
+
+func TestTailFile(t *testing.T) {
+	// Non-existent file.
+	lines := tailFile("/nonexistent/path", 10)
+	if len(lines) != 1 || lines[0] != "(file not found)" {
+		t.Errorf("expected '(file not found)', got %v", lines)
+	}
+
+	// Write a temp file with known content.
+	f, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		fmt.Fprintf(f, "line %d\n", i)
+	}
+	f.Close()
+
+	// Tail last 5 lines.
+	lines = tailFile(f.Name(), 5)
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d", len(lines))
+	}
+	if lines[0] != "line 15" {
+		t.Errorf("first tail line = %q, want 'line 15'", lines[0])
+	}
+	if lines[4] != "line 19" {
+		t.Errorf("last tail line = %q, want 'line 19'", lines[4])
 	}
 }
