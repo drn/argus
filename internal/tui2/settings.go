@@ -173,8 +173,8 @@ func (sv *SettingsView) setTasks(tasks []*model.Task) {
 func (sv *SettingsView) rebuildRows() {
 	sv.rows = nil
 
-	// STATUS section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "STATUS"})
+	// Status section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Status"})
 	if len(sv.warnings) == 0 {
 		sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  System status", key: "_ok"})
 	} else {
@@ -183,16 +183,16 @@ func (sv *SettingsView) rebuildRows() {
 		}
 	}
 
-	// SANDBOX section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "SANDBOX"})
+	// Sandbox section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Sandbox"})
 	label := "  Disabled"
 	if sv.sandboxEnabled {
 		label = "  Enabled"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
 
-	// PROJECTS section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "PROJECTS"})
+	// Projects section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Projects"})
 	if len(sv.projects) == 0 {
 		sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  (no projects)"})
 	} else {
@@ -201,18 +201,18 @@ func (sv *SettingsView) rebuildRows() {
 		}
 	}
 
-	// BACKENDS section.
-	bLabel := "BACKENDS"
+	// Backends section.
+	bLabel := "Backends"
 	if sv.defaultBackend != "" {
-		bLabel = fmt.Sprintf("BACKENDS (default: %s)", sv.defaultBackend)
+		bLabel = fmt.Sprintf("Backends (default: %s)", sv.defaultBackend)
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: bLabel})
 	for _, b := range sv.backends {
 		sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "  " + b.Name, key: b.Name})
 	}
 
-	// KNOWLEDGE BASE section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "KNOWLEDGE BASE"})
+	// Knowledge Base section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Knowledge Base"})
 	kbLabel := "  Disabled"
 	if sv.kbEnabled {
 		kbLabel = "  Enabled"
@@ -231,11 +231,19 @@ func (sv *SettingsView) skipToSelectable(dir int) {
 	for sv.cursor >= 0 && sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		sv.cursor += dir
 	}
-	if sv.cursor < 0 {
+	if sv.cursor < 0 || (sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection) {
+		// Went past the top — search forward for the first selectable row.
 		sv.cursor = 0
+		for sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor++
+		}
 	}
 	if sv.cursor >= len(sv.rows) {
+		// Went past the bottom — search backward for the last selectable row.
 		sv.cursor = len(sv.rows) - 1
+		for sv.cursor >= 0 && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor--
+		}
 	}
 }
 
@@ -411,6 +419,9 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 			style = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
 		case srWarning:
 			style = tcell.StyleDefault.Foreground(ColorInProgress)
+			if rowIdx == sv.cursor {
+				style = style.Background(ColorHighlight)
+			}
 		default:
 			if rowIdx == sv.cursor {
 				style = style.Background(ColorHighlight)
@@ -486,7 +497,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	row += 2
 
 	if len(sv.sandboxDenyRead) > 0 {
-		drawText(screen, x, y+row, w, "DENY READ:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Deny Read:", tcell.StyleDefault.Foreground(ColorTitle))
 		row++
 		for _, p := range sv.sandboxDenyRead {
 			if row >= h {
@@ -499,7 +510,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if len(sv.sandboxExtraWrite) > 0 {
-		drawText(screen, x, y+row, w, "EXTRA WRITE:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Extra Write:", tcell.StyleDefault.Foreground(ColorTitle))
 		row++
 		for _, p := range sv.sandboxExtraWrite {
 			if row >= h {
@@ -525,7 +536,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y, w, pe.Name, StyleTitle)
 	r := 2
 
-	drawText(screen, x, y+r, w, "CONFIG", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	drawText(screen, x, y+r, w, "  Path: "+pe.Project.Path, StyleDimmed)
 	r++
@@ -541,7 +552,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	// Task counts.
 	counts, ok := sv.taskCounts[pe.Name]
 	if ok {
-		drawText(screen, x, y+r, w, "TASKS", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(ColorTitle))
 		r++
 		total := counts.pending + counts.inProgress + counts.inReview + counts.complete
 		drawText(screen, x, y+r, w, fmt.Sprintf("  %d pending  %d active  %d review  %d done",
@@ -569,7 +580,7 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	}
 	r++
 
-	drawText(screen, x, y+r, w, "CONFIG", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	cmd := be.Backend.Command
 	if len(cmd) > w-12 {
@@ -602,7 +613,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	drawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
 	r += 2
 
-	drawText(screen, x, y+r, w, "METIS VAULT:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Metis Vault:", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	vault := sv.metisVaultPath
 	if vault == "" {
@@ -611,7 +622,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
 	r += 2
 
-	drawText(screen, x, y+r, w, "ARGUS VAULT:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	vault = sv.argusVaultPath
 	if vault == "" {

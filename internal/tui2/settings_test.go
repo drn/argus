@@ -33,7 +33,7 @@ func TestSettingsView_Sections(t *testing.T) {
 			sections++
 		}
 	}
-	// STATUS, SANDBOX, PROJECTS, BACKENDS, KNOWLEDGE BASE
+	// Status, Sandbox, Projects, Backends, Knowledge Base
 	if sections < 4 {
 		t.Errorf("expected at least 4 sections, got %d", sections)
 	}
@@ -41,7 +41,7 @@ func TestSettingsView_Sections(t *testing.T) {
 
 func TestSettingsView_CursorSkipsHeaders(t *testing.T) {
 	sv := testSettingsView(t)
-	// First row should be STATUS (section header), cursor should skip it.
+	// First row should be Status (section header), cursor should skip it.
 	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		t.Error("cursor should skip section headers")
 	}
@@ -58,6 +58,23 @@ func TestSettingsView_Navigation(t *testing.T) {
 	// Should either return to initial or land on a non-header.
 	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		t.Error("cursor should not be on a section header after navigation")
+	}
+}
+
+func TestSettingsView_CursorStaysOnFirstItem(t *testing.T) {
+	sv := testSettingsView(t)
+	// Move to the first selectable row.
+	sv.cursor = 0
+	sv.skipToSelectable(1)
+	first := sv.cursor
+
+	// Pressing up from the first selectable row should not move the cursor.
+	sv.moveCursor(-1)
+	if sv.cursor != first {
+		t.Errorf("cursor moved from first selectable row %d to %d", first, sv.cursor)
+	}
+	if sv.rows[sv.cursor].kind == srSection {
+		t.Error("cursor landed on a section header")
 	}
 }
 
