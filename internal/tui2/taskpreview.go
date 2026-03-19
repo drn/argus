@@ -85,8 +85,9 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 	}
 
 	// Run VT emulation off the UI thread.
+	// Strip terminal query sequences that cause x/vt to hang (DA, DSR).
 	emu := xvt.NewSafeEmulator(cols, rows)
-	emu.Write(raw)
+	emu.Write(stripTerminalQueries(raw))
 
 	grid := make([][]previewCell, rows)
 	for vy := 0; vy < rows; vy++ {
