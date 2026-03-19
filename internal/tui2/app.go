@@ -11,6 +11,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/github"
@@ -75,8 +76,10 @@ type App struct {
 	lastGitRefresh  time.Time
 
 	// Daemon health
-	daemonFailures int
-	daemonClient   *dclient.Client
+	daemonFailures   int
+	daemonRestarting bool
+	daemonClient     *dclient.Client
+	restartedClient  *dclient.Client // set after daemon restart
 
 	// Tick control
 	tickDone chan struct{}
@@ -188,18 +191,27 @@ func (a *App) onTick() {
 
 	// Daemon health check
 	if checkDaemon {
-		if err := a.daemonClient.Ping(); err != nil {
-			a.mu.Lock()
-			a.daemonFailures++
-			failures := a.daemonFailures
-			a.mu.Unlock()
-			if failures >= 3 {
-				uxlog.Log("[tui2] daemon unreachable after %d pings", failures)
+		a.mu.Lock()
+		restarting := a.daemonRestarting
+		a.mu.Unlock()
+		if !restarting {
+			if err := a.daemonClient.Ping(); err != nil {
+				a.mu.Lock()
+				a.daemonFailures++
+				failures := a.daemonFailures
+				a.mu.Unlock()
+				if failures >= 3 {
+					uxlog.Log("[tui2] daemon unreachable after %d pings, restarting...", failures)
+					a.mu.Lock()
+					a.daemonRestarting = true
+					a.mu.Unlock()
+					go a.restartDaemon()
+				}
+			} else {
+				a.mu.Lock()
+				a.daemonFailures = 0
+				a.mu.Unlock()
 			}
-		} else {
-			a.mu.Lock()
-			a.daemonFailures = 0
-			a.mu.Unlock()
 		}
 	}
 
@@ -239,6 +251,76 @@ func (a *App) onTick() {
 			}()
 		}
 	}
+}
+
+// restartDaemon kills the old daemon, auto-starts a new one, and reconnects.
+// Must be called from a goroutine (not UI thread).
+func (a *App) restartDaemon() {
+	uxlog.Log("[tui2] restarting daemon...")
+
+	// Try graceful shutdown via RPC.
+	if a.daemonClient != nil {
+		a.daemonClient.Close()
+	}
+
+	sockPath := daemon.DefaultSocketPath()
+	dclient.WaitForShutdown(sockPath, 3*time.Second)
+
+	// Auto-start new daemon.
+	newClient, err := dclient.AutoStart(sockPath)
+	if err != nil {
+		uxlog.Log("[tui2] daemon restart failed: %v", err)
+		a.tapp.QueueUpdateDraw(func() {
+			a.mu.Lock()
+			a.daemonRestarting = false
+			a.daemonFailures = 0
+			a.mu.Unlock()
+			a.statusbar.SetError("Daemon restart failed: " + err.Error())
+		})
+		return
+	}
+
+	uxlog.Log("[tui2] daemon restarted, reconnected")
+	a.tapp.QueueUpdateDraw(func() {
+		a.mu.Lock()
+		a.daemonRestarting = false
+		a.daemonFailures = 0
+		a.daemonClient = newClient
+		a.runner = newClient
+		a.restartedClient = newClient
+		a.mu.Unlock()
+
+		// Reset in-progress tasks to pending, preserving SessionID for resume.
+		for _, t := range a.db.Tasks() {
+			if t.Status == model.StatusInProgress {
+				t.SetStatus(model.StatusPending)
+				a.db.Update(t) //nolint:errcheck
+				uxlog.Log("[tui2] reset task %s to pending (daemon restarted)", t.ID)
+			}
+		}
+		a.refreshTasks()
+	})
+}
+
+// RestartedClient returns the new daemon client after a daemon restart, or nil.
+func (a *App) RestartedClient() *dclient.Client {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.restartedClient
+}
+
+// NotifySessionExit is called from the in-process runner's onFinish callback.
+// It triggers a UI refresh so session exits are detected immediately (not on next tick).
+func (a *App) NotifySessionExit(taskID string, err error, stopped bool) {
+	uxlog.Log("[tui2] session exit: task=%s stopped=%v err=%v", taskID, stopped, err)
+	a.tapp.QueueUpdateDraw(func() {
+		// If we're viewing this task's agent pane, clear the session.
+		if a.mode == modeAgent && a.agentState.TaskID == taskID {
+			a.agentPane.SetSession(nil)
+		}
+		// Refresh task list to update status.
+		a.refreshTasks()
+	})
 }
 
 func (a *App) refreshTasks() {
@@ -865,7 +947,3 @@ func (a *App) exitAgentView() {
 	a.statusbar.ClearError()
 }
 
-// RestartedClient returns nil — daemon restart not yet implemented in tui2.
-func (a *App) RestartedClient() *dclient.Client {
-	return nil
-}
