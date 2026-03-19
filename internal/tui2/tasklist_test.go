@@ -130,6 +130,52 @@ func TestGroupByProject(t *testing.T) {
 	}
 }
 
+func TestTaskListView_AutoExpandFirstProject(t *testing.T) {
+	tl := NewTaskListView()
+	// expanded is "" — should auto-expand first project
+	tl.SetTasks(makeTasks())
+
+	if tl.expanded != "alpha" {
+		t.Errorf("expanded = %q, want 'alpha' (first project auto-expanded)", tl.expanded)
+	}
+
+	// Should have task rows visible
+	task := tl.SelectedTask()
+	if task == nil {
+		t.Fatal("cursor should be on a task row after auto-expand")
+	}
+	if task.Project != "alpha" {
+		t.Errorf("selected task project = %q, want 'alpha'", task.Project)
+	}
+}
+
+func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	// Should start in alpha
+	if tl.expanded != "alpha" {
+		t.Fatalf("expanded = %q, want alpha", tl.expanded)
+	}
+
+	// Navigate down past alpha tasks into beta
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+
+	// Should have auto-expanded beta
+	task := tl.SelectedTask()
+	if task == nil {
+		t.Fatal("cursor should be on a task after navigating down")
+	}
+	if task.Project != "beta" {
+		t.Errorf("after navigating down, project = %q, want 'beta'", task.Project)
+	}
+	if tl.expanded != "beta" {
+		t.Errorf("expanded = %q, want 'beta' after navigating into it", tl.expanded)
+	}
+}
+
 func TestTaskListView_IsInArchive(t *testing.T) {
 	tl := NewTaskListView()
 	tl.archiveExpanded = true
