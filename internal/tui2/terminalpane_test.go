@@ -30,6 +30,41 @@ func TestTerminalPane_SetSession(t *testing.T) {
 	}
 }
 
+func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
+	// SetSession must NOT hardcode 80x24 — it should use GetInnerRect
+	// dimensions (or leave at 0 if unavailable). The old code had an
+	// explicit fallback to 80x24 which caused emulator/PTY mismatch.
+	tp := NewTerminalPane()
+	sess := &mockAdapter{alive: true, totalWritten: 100, output: make([]byte, 100)}
+	tp.SetSession(sess)
+	tp.mu.Lock()
+	cols, rows := tp.ptyCols, tp.ptyRows
+	tp.mu.Unlock()
+	// Must not be the old hardcoded 80x24 fallback.
+	if cols == 80 && rows == 24 {
+		t.Errorf("SetSession fell back to hardcoded 80x24; should use panel dimensions")
+	}
+}
+
+type mockAdapter struct {
+	alive        bool
+	totalWritten uint64
+	output       []byte
+}
+
+func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
+func (m *mockAdapter) Resize(rows, cols uint16) error    { return nil }
+func (m *mockAdapter) RecentOutput() []byte              { return m.output }
+func (m *mockAdapter) RecentOutputTail(n int) []byte {
+	if n >= len(m.output) {
+		return m.output
+	}
+	return m.output[len(m.output)-n:]
+}
+func (m *mockAdapter) TotalWritten() uint64          { return m.totalWritten }
+func (m *mockAdapter) Alive() bool                   { return m.alive }
+func (m *mockAdapter) PTYSize() (int, int)           { return 80, 24 }
+
 func TestTerminalPane_Scrollback(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.ScrollUp(5)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"golang.org/x/term"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
@@ -268,9 +269,8 @@ func (a *App) onTick() {
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
 
-		// Sync PTY size from tick goroutine — this does RPC which must not
-		// happen on the tview main goroutine (Draw).
-		a.agentPane.SyncPTYSize()
+		// PTY size sync moved to startAgentRedrawLoop (200ms) for faster
+		// initial resize. The tick no longer calls SyncPTYSize.
 
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
@@ -1147,8 +1147,31 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 
-	// Use reasonable defaults — Draw() will resize to actual panel dimensions.
+	// Use actual panel dimensions so the agent process starts at the correct
+	// width — agents format their initial output for the PTY size at launch,
+	// and existing output isn't reflowed on later resize. GetInnerRect may
+	// return 0 before the first Draw(), so fall back to computing from the
+	// terminal size and the 1:3:1 agent page layout ratio.
 	rows, cols := uint16(24), uint16(80)
+	_, _, pw, ph := a.agentPane.GetInnerRect()
+	if pw > 0 && ph > 0 {
+		cols = uint16(max(pw, 20))
+		rows = uint16(max(ph, 5))
+	} else if tw, th, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 && th > 0 {
+		// Agent page is a 1:3:1 flex — center panel gets 3/5 of width.
+		// Border is drawn outside the box rect, so no deduction needed.
+		centerW := tw * 3 / 5
+		if centerW < 20 {
+			centerW = 20
+		}
+		// Height minus header(1) and statusbar(1).
+		centerH := th - 2
+		if centerH < 5 {
+			centerH = 5
+		}
+		cols = uint16(centerW)
+		rows = uint16(centerH)
+	}
 
 	resume := task.SessionID != ""
 	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
@@ -1188,6 +1211,11 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 			if !stillViewing {
 				return
 			}
+			// Sync PTY size on every redraw cycle — the 1-second tick is too
+			// slow and causes the agent to render at the wrong width (e.g., 80
+			// cols) until the first tick fires. This is an RPC call but runs on
+			// the background goroutine, not the tview main goroutine.
+			a.agentPane.SyncPTYSize()
 			a.tapp.QueueUpdateDraw(func() {})
 		}
 	}()
