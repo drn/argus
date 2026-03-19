@@ -109,12 +109,13 @@ func (f *NewTaskForm) Task() *model.Task {
 		}
 	}
 
+	prompt := strings.TrimSpace(string(f.prompt))
 	return &model.Task{
-		Name:    strings.TrimSpace(string(f.prompt)),
+		Name:    model.GenerateNameFromPrompt(prompt),
 		Status:  model.StatusPending,
 		Project: proj,
 		Branch:  branch,
-		Prompt:  strings.TrimSpace(string(f.prompt)),
+		Prompt:  prompt,
 		Backend: backend,
 	}
 }
