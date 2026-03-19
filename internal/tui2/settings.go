@@ -75,6 +75,10 @@ type SettingsView struct {
 
 	// Callbacks.
 	OnRestartDaemon func()
+	OnNewProject    func()
+	OnEditProject   func(name string, p config.Project)
+	OnNewBackend    func()
+	OnEditBackend   func(name string, b config.Backend)
 
 	// DB reference for toggling values.
 	database *db.DB
@@ -332,6 +336,10 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		case 'd':
 			return sv.handleSetDefault()
+		case 'n':
+			return sv.handleNew()
+		case 'e':
+			return sv.handleEdit()
 		}
 	}
 	return false
@@ -422,6 +430,46 @@ func (sv *SettingsView) handleSetDefault() bool {
 	uxlog.Log("[settings] default backend set to %s", be.Name)
 	sv.rebuildRows()
 	return true
+}
+
+// currentSection returns the section kind for the currently selected row.
+func (sv *SettingsView) currentSection() settingsRowKind {
+	if sv.cursor < 0 || sv.cursor >= len(sv.rows) {
+		return srSection
+	}
+	return sv.rows[sv.cursor].kind
+}
+
+func (sv *SettingsView) handleNew() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if sv.OnNewProject != nil {
+			sv.OnNewProject()
+			return true
+		}
+	case srBackend:
+		if sv.OnNewBackend != nil {
+			sv.OnNewBackend()
+			return true
+		}
+	}
+	return false
+}
+
+func (sv *SettingsView) handleEdit() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
+			sv.OnEditProject(pe.Name, pe.Project)
+			return true
+		}
+	case srBackend:
+		if be := sv.SelectedBackend(); be != nil && sv.OnEditBackend != nil {
+			sv.OnEditBackend(be.Name, be.Backend)
+			return true
+		}
+	}
+	return false
 }
 
 // --- Draw ---
@@ -622,6 +670,10 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 			drawText(screen, x, y+r, w, fmt.Sprintf("  %d%% complete", pct), StyleDimmed)
 		}
 	}
+
+	if h > 2 {
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit", StyleDimmed)
+	}
 }
 
 func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
@@ -650,9 +702,9 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, StyleDimmed)
 	r += 2
 
-	hints := "[d] set as default"
+	hints := "[d] set as default  [n] new  [e] edit"
 	if be.Name == sv.defaultBackend {
-		hints = "(already default)"
+		hints = "(already default)  [n] new  [e] edit"
 	}
 	if r < h {
 		drawText(screen, x, y+r, w, hints, StyleDimmed)

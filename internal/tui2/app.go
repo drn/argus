@@ -30,6 +30,8 @@ const (
 	modeAgent
 	modeNewTask
 	modeConfirmDelete
+	modeProjectForm
+	modeBackendForm
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -69,6 +71,10 @@ type App struct {
 
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal *ConfirmDeleteModal
+
+	// Settings forms (created on demand)
+	projectForm *ProjectForm
+	backendForm *BackendForm
 
 	// Layout containers
 	root      *tview.Flex
@@ -128,6 +134,10 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		app.mu.Unlock()
 		go app.restartDaemon()
 	}
+	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
+	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
+	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
+	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
 	app.settingsPage = NewSettingsPage(app.settings)
 	app.buildUI()
 	app.refreshTasks()
@@ -570,6 +580,18 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm delete modal — delegate everything to the modal
 	if a.mode == modeConfirmDelete && a.confirmDeleteModal != nil {
 		a.handleConfirmDeleteKey(event)
+		return nil
+	}
+
+	// Project form mode — delegate everything to the form
+	if a.mode == modeProjectForm && a.projectForm != nil {
+		a.handleProjectFormKey(event)
+		return nil
+	}
+
+	// Backend form mode — delegate everything to the form
+	if a.mode == modeBackendForm && a.backendForm != nil {
+		a.handleBackendFormKey(event)
 		return nil
 	}
 
@@ -1392,6 +1414,110 @@ func (a *App) closeConfirmDelete() {
 	a.pages.RemovePage("confirmdelete")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// --- Project form ---
+
+func (a *App) openProjectForm(edit bool, name string, p config.Project) {
+	a.projectForm = NewProjectForm()
+	if edit {
+		a.projectForm.LoadProject(name, p)
+	}
+	a.mode = modeProjectForm
+	a.pages.AddPage("projectform", a.projectForm, true, true)
+	a.pages.SwitchToPage("projectform")
+	a.tapp.SetFocus(a.projectForm)
+}
+
+func (a *App) handleProjectFormKey(event *tcell.EventKey) {
+	a.projectForm.HandleKey(event)
+
+	if a.projectForm.Canceled() {
+		a.closeProjectForm()
+		return
+	}
+
+	if a.projectForm.Done() {
+		name, proj := a.projectForm.Result()
+		if name == "" {
+			a.projectForm.SetError("Name cannot be empty")
+			a.projectForm.done = false
+			return
+		}
+		if proj.Path == "" {
+			a.projectForm.SetError("Path cannot be empty")
+			a.projectForm.done = false
+			return
+		}
+		if err := a.db.SetProject(name, proj); err != nil {
+			a.projectForm.SetError("Save error: " + err.Error())
+			a.projectForm.done = false
+			return
+		}
+		uxlog.Log("[settings] saved project %s (path=%s, branch=%s)", name, proj.Path, proj.Branch)
+		a.closeProjectForm()
+	}
+}
+
+func (a *App) closeProjectForm() {
+	a.mode = modeTaskList
+	a.projectForm = nil
+	a.pages.RemovePage("projectform")
+	a.settings.Refresh()
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
+}
+
+// --- Backend form ---
+
+func (a *App) openBackendForm(edit bool, name string, b config.Backend) {
+	a.backendForm = NewBackendForm()
+	if edit {
+		a.backendForm.LoadBackend(name, b)
+	}
+	a.mode = modeBackendForm
+	a.pages.AddPage("backendform", a.backendForm, true, true)
+	a.pages.SwitchToPage("backendform")
+	a.tapp.SetFocus(a.backendForm)
+}
+
+func (a *App) handleBackendFormKey(event *tcell.EventKey) {
+	a.backendForm.HandleKey(event)
+
+	if a.backendForm.Canceled() {
+		a.closeBackendForm()
+		return
+	}
+
+	if a.backendForm.Done() {
+		name, backend := a.backendForm.Result()
+		if name == "" {
+			a.backendForm.SetError("Name cannot be empty")
+			a.backendForm.done = false
+			return
+		}
+		if backend.Command == "" {
+			a.backendForm.SetError("Command cannot be empty")
+			a.backendForm.done = false
+			return
+		}
+		if err := a.db.SetBackend(name, backend); err != nil {
+			a.backendForm.SetError("Save error: " + err.Error())
+			a.backendForm.done = false
+			return
+		}
+		uxlog.Log("[settings] saved backend %s (cmd=%s)", name, backend.Command)
+		a.closeBackendForm()
+	}
+}
+
+func (a *App) closeBackendForm() {
+	a.mode = modeTaskList
+	a.backendForm = nil
+	a.pages.RemovePage("backendform")
+	a.settings.Refresh()
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
 }
 
 // deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.
