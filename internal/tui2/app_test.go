@@ -140,7 +140,7 @@ func TestTcellKeyToBytes(t *testing.T) {
 	}
 }
 
-// ptySizeForPanel lives in internal/ui/terminal_adapter.go (shared) — tested there.
+// ptySizeForPanel is tested inline below.
 
 func TestRefreshTasks(t *testing.T) {
 	d := testDB(t)

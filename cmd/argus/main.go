@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -10,14 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/drn/argus/internal/agent"
-	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/tui2"
-	"github.com/drn/argus/internal/ui"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -47,25 +43,11 @@ func main() {
 		}
 	}
 
-	uiRuntime, err := agentview.ParseRuntime(os.Getenv(agentview.EnvUIRuntime))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
-
-	switch uiRuntime {
-	case agentview.RuntimeBubbleTea:
-		runTUI()
-	case agentview.RuntimeTcell:
-		runTcell()
-	default:
-		fmt.Fprintf(os.Stderr, "unsupported UI runtime %q\n", uiRuntime)
-		os.Exit(1)
-	}
+	runTUI()
 }
 
 func runTUI() {
-	// Initialize UX debug log (separate from daemon log).
+	// Initialize UX debug log.
 	if err := uxlog.Init(uxlog.Path(db.DataDir())); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: cannot open ux log: %v\n", err)
 	}
@@ -80,78 +62,6 @@ func runTUI() {
 	defer database.Close()
 
 	var runner agent.SessionProvider
-	var p *tea.Program
-	var daemonConnected bool
-
-	sockPath := daemon.DefaultSocketPath()
-	client, err := dclient.Connect(sockPath)
-	if err != nil {
-		// No daemon running — auto-start one and retry.
-		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
-		client, err = dclient.AutoStart(sockPath)
-	}
-
-	if err != nil {
-		// Daemon failed to start — fall back to in-process runner.
-		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
-		inProc := agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
-			if p != nil {
-				p.Send(ui.AgentFinishedMsg{TaskID: taskID, Err: err, Stopped: stopped, LastOutput: lastOutput})
-			}
-		})
-		runner = inProc
-	} else {
-		// Connected to daemon.
-		uxlog.Log("connected to daemon at %s", sockPath)
-		daemonConnected = true
-		client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
-			if p != nil {
-				var exitErr error
-				if info.Err != "" {
-					exitErr = errors.New(info.Err)
-				}
-				p.Send(ui.AgentFinishedMsg{
-					TaskID:     taskID,
-					Err:        exitErr,
-					Stopped:    info.Stopped,
-					LastOutput: info.LastOutput,
-					StreamLost: info.StreamLost,
-				})
-			}
-		})
-		runner = client
-		defer client.Close()
-	}
-
-	m := ui.NewModel(database, runner, daemonConnected)
-	p = tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	m.SetProgram(p)
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	// If a daemon restart occurred, close the new client.
-	if rc := m.RestartedClient(); rc != nil {
-		rc.Close()
-	}
-}
-
-func runTcell() {
-	// Initialize UX debug log.
-	if err := uxlog.Init(uxlog.Path(db.DataDir())); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: cannot open ux log: %v\n", err)
-	}
-	defer uxlog.Close()
-	uxlog.Log("=== argus TUI starting (tcell runtime) ===")
-
-	database, err := db.Open(db.DefaultPath())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
-		os.Exit(1)
-	}
-	defer database.Close()
-
-	var runner agent.SessionProvider
 	var daemonConnected bool
 
 	sockPath := daemon.DefaultSocketPath()
@@ -163,7 +73,7 @@ func runTcell() {
 
 	if err != nil {
 		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
-		// TODO(phase3): wire onFinish callback to deliver AgentFinished events
+		// TODO: wire onFinish callback to deliver session exit events
 		// to the App. Without this, in-process session exits are only detected
 		// on the next tick refresh (1s delay, session stays "running" briefly).
 		runner = agent.NewRunner(nil)
@@ -265,4 +175,3 @@ func runDaemonRestart() {
 	}
 	runDaemon()
 }
-
