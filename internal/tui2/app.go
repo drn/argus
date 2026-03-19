@@ -1000,18 +1000,18 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		a.closeNewTaskForm()
 		a.refreshTasks()
 
-		// Start the agent session
-		a.startAndAttach(task)
+		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
+		a.onTaskSelect(task)
+		a.startSession(task)
 	}
 }
 
-// startAndAttach starts a session for the task and enters agent view.
-func (a *App) startAndAttach(task *model.Task) {
+// startSession starts a session for the current task (agent view must already be active).
+func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 
-	// Compute PTY size from agent pane dimensions
-	_, _, w, h := a.agentPane.GetInnerRect()
-	rows, cols := uint16(max(h-2, 5)), uint16(max(w-4, 20))
+	// Use reasonable defaults — Draw() will resize to actual panel dimensions.
+	rows, cols := uint16(24), uint16(80)
 
 	resume := task.SessionID != ""
 	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
@@ -1025,7 +1025,8 @@ func (a *App) startAndAttach(task *model.Task) {
 	task.AgentPID = sess.PID()
 	a.db.Update(task)
 
-	a.onTaskSelect(task)
+	// Now that the session exists, attach it to the terminal pane.
+	a.agentPane.SetSession(sess)
 }
 
 func (a *App) closeNewTaskForm() {
