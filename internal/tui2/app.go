@@ -140,7 +140,6 @@ func (a *App) buildUI() {
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 
 	a.taskGitPanel = NewGitPanel()
-	a.taskGitPanel.BorderInside = true
 	a.taskPreview = NewTaskPreviewPanel()
 	a.taskDetail = NewTaskDetailPanel()
 
@@ -1219,17 +1218,18 @@ func (a *App) startSession(task *model.Task) {
 	rows, cols := uint16(24), uint16(80)
 	_, _, pw, ph := a.agentPane.GetInnerRect()
 	if pw > 0 && ph > 0 {
-		cols = uint16(max(pw, 20))
-		rows = uint16(max(ph, 5))
+		// Border is drawn inside the box rect — content area is 2 smaller each dimension.
+		cols = uint16(max(pw-2, 20))
+		rows = uint16(max(ph-2, 5))
 	} else if tw, th, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 && th > 0 {
 		// Agent page is a 1:3:1 flex — center panel gets 3/5 of width.
-		// Border is drawn outside the box rect, so no deduction needed.
-		centerW := tw * 3 / 5
+		// Border is drawn inside, deduct 2 for border cells.
+		centerW := tw*3/5 - 2
 		if centerW < 20 {
 			centerW = 20
 		}
-		// Height minus header(1), agent header(1), and statusbar(1).
-		centerH := th - 3
+		// Height minus header(1), agent header(1), statusbar(1), and border(2).
+		centerH := th - 5
 		if centerH < 5 {
 			centerH = 5
 		}
