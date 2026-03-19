@@ -71,12 +71,16 @@ func runTUI() {
 		client, err = dclient.AutoStart(sockPath)
 	}
 
+	// appRef is set after tui2.New so the onFinish callback can reach the app.
+	var appRef *tui2.App
+
 	if err != nil {
 		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
-		// TODO: wire onFinish callback to deliver session exit events
-		// to the App. Without this, in-process session exits are only detected
-		// on the next tick refresh (1s delay, session stays "running" briefly).
-		runner = agent.NewRunner(nil)
+		runner = agent.NewRunner(func(taskID string, exitErr error, stopped bool, _ []byte) {
+			if appRef != nil {
+				appRef.NotifySessionExit(taskID, exitErr, stopped)
+			}
+		})
 	} else {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
@@ -85,9 +89,14 @@ func runTUI() {
 	}
 
 	app := tui2.New(database, runner, daemonConnected)
+	appRef = app
 	if err := app.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+	// If a daemon restart occurred, close the new client.
+	if rc := app.RestartedClient(); rc != nil {
+		rc.Close()
 	}
 }
 
