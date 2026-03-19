@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -31,6 +32,19 @@ func newDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
 	emu := xvt.NewSafeEmulator(cols, rows)
 	go io.Copy(io.Discard, emu) //nolint:errcheck
 	return emu
+}
+
+// safeEmuWrite writes data to an x/vt emulator, recovering from panics caused
+// by upstream bugs (e.g., InsertLineArea index-out-of-range when replay data
+// contains cursor positions or scroll regions from a larger terminal).
+func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) (n int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[vt] recovered from emulator panic: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("emulator panic: %v", r)
+		}
+	}()
+	return emu.Write(data)
 }
 
 // Cursor colors — high-contrast, theme-independent.
@@ -416,9 +430,9 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
 		tp.emu = newDrainedEmulator(ptyCols, ptyRows)
-		tp.emu.Write(raw)
+		safeEmuWrite(tp.emu, raw)
 	} else if newBytes > 0 {
-		tp.emu.Write(raw[len(raw)-int(newBytes):])
+		safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 	}
 	tp.emuFedTotal = totalWritten
 
@@ -429,7 +443,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 // Feeds full buffer into a fresh emulator and uses scrollback for history.
 func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
 	emu := newDrainedEmulator(ptyCols, ptyRows)
-	emu.Write(raw)
+	safeEmuWrite(emu, raw)
 
 	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0)
 }

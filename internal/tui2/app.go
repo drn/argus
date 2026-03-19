@@ -1007,7 +1007,7 @@ func (a *App) fetchTaskGitStatus(taskID, dir string) {
 // refreshPreview fetches output for the selected task and pre-renders cells.
 // Called from the tick goroutine — RPC and file I/O are safe here.
 func (a *App) refreshPreview(taskID string) {
-	_, _, w, h := a.taskPreview.GetInnerRect()
+	w, h := a.taskPreview.DrawSize()
 	if w <= 0 || h <= 0 {
 		return
 	}
