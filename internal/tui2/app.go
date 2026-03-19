@@ -51,8 +51,9 @@ type App struct {
 	gitPanel  *GitPanel
 	filePanel *FilePanel
 
-	// Reviews tab
-	reviews *ReviewsView
+	// Reviews and settings tabs
+	reviews  *ReviewsView
+	settings *SettingsView
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -96,6 +97,8 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		app.daemonClient = dc
 	}
 
+	app.settings = NewSettingsView(database)
+	app.settings.SetDaemonConnected(daemonConnected)
 	app.buildUI()
 	app.refreshTasks()
 
@@ -135,7 +138,8 @@ func (a *App) buildUI() {
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
-		AddPage("reviews", a.reviews, true, false)
+		AddPage("reviews", a.reviews, true, false).
+		AddPage("settings", a.settings, true, false)
 
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
@@ -315,6 +319,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Reviews tab key routing.
 	if a.header.ActiveTab() == TabReviews {
 		if a.reviews.HandleKey(event, a) {
+			return nil
+		}
+	}
+
+	// Settings tab key routing.
+	if a.header.ActiveTab() == TabSettings {
+		if a.settings.HandleKey(event) {
 			return nil
 		}
 	}
@@ -706,8 +717,9 @@ func (a *App) switchTab(t Tab) {
 			a.reviews.fetchPRList(a)
 		}
 	case TabSettings:
-		a.statusbar.SetError("Settings tab not yet ported to tcell runtime")
-		a.pages.SwitchToPage("tasks")
+		a.mode = modeTaskList
+		a.settings.Refresh()
+		a.pages.SwitchToPage("settings")
 	}
 }
 
