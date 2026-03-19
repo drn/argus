@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 
 	"image/color"
@@ -42,7 +43,7 @@ type TerminalPane struct {
 	emuCols     int
 	emuRows     int
 
-	// Cached PTY size — updated from tick, never from Draw().
+	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
 	ptyCols int
 	ptyRows int
 
@@ -58,6 +59,11 @@ type TerminalPane struct {
 	diffSplit   bool
 	diffScroll  int
 	diffFile    string
+
+	// pendingResize is set by Draw() when panel dimensions differ from PTY.
+	// The tick goroutine checks this and performs the resize RPC.
+	pendingResizeRows uint16
+	pendingResizeCols uint16
 }
 
 // diffLine is a single line in the diff view with its type.
@@ -150,25 +156,22 @@ func (tp *TerminalPane) SetPRURL(url string) {
 	tp.taskPR = url
 }
 
-// SyncPTYSize resizes the PTY to match the panel and caches the result.
-// Called from the tick goroutine — RPC calls are safe here (not on UI thread).
+// SyncPTYSize performs a pending PTY resize (RPC). Called from the tick
+// goroutine — safe to block here. Draw() sets pendingResize* when panel
+// dimensions change; this method consumes them and issues the resize RPC.
 func (tp *TerminalPane) SyncPTYSize() {
 	tp.mu.Lock()
 	sess := tp.session
+	rows := tp.pendingResizeRows
+	cols := tp.pendingResizeCols
+	tp.pendingResizeRows = 0
+	tp.pendingResizeCols = 0
 	tp.mu.Unlock()
-	if sess == nil || !sess.Alive() {
+
+	if sess == nil || !sess.Alive() || rows == 0 || cols == 0 {
 		return
 	}
-
-	_, _, width, height := tp.GetInnerRect()
-	wantRows := max(height, 5)
-	wantCols := max(width, 20)
-
-	if tp.ptyCols != wantCols || tp.ptyRows != wantRows {
-		sess.Resize(uint16(wantRows), uint16(wantCols))
-		tp.ptyCols = wantCols
-		tp.ptyRows = wantRows
-	}
+	sess.Resize(rows, cols)
 }
 
 // SetFocused sets the focus state for border rendering.
@@ -261,6 +264,12 @@ func (tp *TerminalPane) OpenPR() {
 // --- Draw ---
 
 func (tp *TerminalPane) Draw(screen tcell.Screen) {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[terminalpane] PANIC in Draw: %v\n%s", r, debug.Stack())
+		}
+	}()
+
 	tp.Box.DrawForSubclass(screen, tp)
 	x, y, width, height := tp.GetInnerRect()
 	if width <= 0 || height <= 0 {
@@ -280,6 +289,17 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 	tp.mu.Lock()
 	sess := tp.session
+	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
+	wantCols := max(width, 20)
+	wantRows := max(height, 5)
+	if sess != nil && sess.Alive() && (tp.ptyCols != wantCols || tp.ptyRows != wantRows) {
+		tp.ptyCols = wantCols
+		tp.ptyRows = wantRows
+		tp.pendingResizeRows = uint16(wantRows)
+		tp.pendingResizeCols = uint16(wantCols)
+	}
+	ptyCols := tp.ptyCols
+	ptyRows := tp.ptyRows
 	tp.mu.Unlock()
 
 	if sess == nil && !tp.HasContent() {
@@ -298,10 +318,6 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 	var raw []byte
 	alive := false
-
-	// Use cached PTY size — never do RPC in Draw().
-	ptyCols := tp.ptyCols
-	ptyRows := tp.ptyRows
 
 	if sess != nil {
 		alive = sess.Alive()
