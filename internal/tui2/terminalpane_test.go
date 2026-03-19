@@ -396,6 +396,155 @@ func TestHighlightLinesUnknownExtension(t *testing.T) {
 	}
 }
 
+func TestTerminalPane_AnchorLock(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// Simulate being scrolled up with a known total line count.
+	tp.scrollOffset = 10
+	tp.anchorTotalLines = 50
+
+	// paintEmu anchor-lock: when totalLines grows, scrollOffset should increase.
+	// We test this indirectly via the renderReplay path.
+	// Create an emulator with enough content to produce scrollback.
+	emu := newDrainedEmulator(20, 5)
+	for i := 0; i < 30; i++ {
+		emu.Write([]byte("line of content!!!!\n"))
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// First paint establishes anchorTotalLines.
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 0
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+	firstAnchor := tp.anchorTotalLines
+	if firstAnchor == 0 {
+		t.Fatal("anchorTotalLines should be set after first paint")
+	}
+
+	// Write more content to increase totalLines.
+	for i := 0; i < 10; i++ {
+		emu.Write([]byte("new output line!!!!\n"))
+	}
+	oldOffset := tp.scrollOffset
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+
+	// scrollOffset should have increased by the delta.
+	if tp.scrollOffset <= oldOffset {
+		t.Errorf("anchor-lock failed: scrollOffset=%d should be > %d", tp.scrollOffset, oldOffset)
+	}
+}
+
+func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 50
+
+	// Scrolling to bottom should reset anchor.
+	tp.ScrollDown(10) // goes past 0, clamped to 0
+	if tp.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0", tp.scrollOffset)
+	}
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0 after scroll to bottom", tp.anchorTotalLines)
+	}
+
+	// ResetScroll should also clear anchor.
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 50
+	tp.ResetScroll()
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0 after ResetScroll", tp.anchorTotalLines)
+	}
+}
+
+func TestTerminalPane_ReplayCaching(t *testing.T) {
+	tp := NewTerminalPane()
+
+	raw := []byte("hello world\nline two\nline three\n")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// First render builds the emulator.
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should be set after first render")
+	}
+	firstEmu := tp.replayEmu
+
+	// Same data, same dimensions → should reuse the emulator.
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu != firstEmu {
+		t.Error("replayEmu should be reused when data hasn't changed")
+	}
+
+	// Different data → should rebuild.
+	raw2 := []byte("hello world\nline two\nline three\nline four\n")
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 0, 40, 10)
+	if tp.replayEmu == firstEmu {
+		t.Error("replayEmu should be rebuilt when data changes")
+	}
+
+	// Log-backed: different logSize → should rebuild.
+	secondEmu := tp.replayEmu
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 1000, 40, 10)
+	if tp.replayEmu == secondEmu {
+		t.Error("replayEmu should be rebuilt when logSize changes")
+	}
+
+	// Same logSize → should reuse.
+	thirdEmu := tp.replayEmu
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 1000, 40, 10)
+	if tp.replayEmu != thirdEmu {
+		t.Error("replayEmu should be reused when logSize unchanged")
+	}
+}
+
+func TestTerminalPane_ReadLogTail(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// No taskID → should return nil.
+	tp.taskID = ""
+	data, size := tp.readLogTail(1024)
+	if data != nil || size != 0 {
+		t.Error("readLogTail with no taskID should return nil")
+	}
+
+	// Non-existent task → should return nil.
+	tp.taskID = "nonexistent-task-id-12345"
+	data, size = tp.readLogTail(1024)
+	if data != nil || size != 0 {
+		t.Error("readLogTail with missing log should return nil")
+	}
+}
+
+func TestTerminalPane_ResetVTClearsReplayCache(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.replayEmu = newDrainedEmulator(80, 24)
+	tp.replayEmuBytes = 100
+	tp.replayEmuLogSize = 500
+	tp.anchorTotalLines = 50
+
+	tp.ResetVT()
+
+	if tp.replayEmu != nil {
+		t.Error("replayEmu should be nil after ResetVT")
+	}
+	if tp.replayEmuBytes != 0 {
+		t.Errorf("replayEmuBytes = %d, want 0", tp.replayEmuBytes)
+	}
+	if tp.replayEmuLogSize != 0 {
+		t.Errorf("replayEmuLogSize = %d, want 0", tp.replayEmuLogSize)
+	}
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0", tp.anchorTotalLines)
+	}
+}
+
 func TestDrawBorder(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.Init()

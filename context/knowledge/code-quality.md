@@ -602,6 +602,24 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 - Agent page layout changed from a flat `FlexColumn` to a `FlexRow` wrapping: agent header (1 row fixed) + agent panels (flex, 3-column).
 - PTY size fallback in `startSession` updated: subtracts 3 rows (root header + agent header + statusbar) instead of 2.
 
+## Infinite Scrollback: 2026-03-19
+
+### Data Model
+- `TerminalPane` new fields: `anchorTotalLines int` (anchor-lock tracking), `replayEmu`/`replayEmuBytes`/`replayEmuCols`/`replayEmuRows`/`replayEmuLogSize` (replay emulator cache).
+- `readLogTail(size int64) ([]byte, int64)` — seeks from EOF in session log file, returns data + file size.
+
+### Flow
+- **Live follow-tail** (`scrollOffset == 0`): Unchanged — uses ring buffer + incremental vt10x feed. Fast path.
+- **Scrollback** (`scrollOffset > 0`): `Draw()` reads from session log file via `readLogTail()` with estimated byte count `(scrollOffset + height) * cols * 3`, minimum 1MB. Falls back to ring buffer if log unavailable.
+- **Anchor-lock**: `paintEmu()` tracks `anchorTotalLines`. When total lines grow while scrolled up, bumps `scrollOffset` by delta. Reset on scroll-to-bottom.
+- **Replay caching**: `renderReplay()` caches the `xvt.SafeEmulator` keyed by `(logSize, ptyCols, ptyRows)` or `(len(raw), ptyCols, ptyRows)`. Only rebuilds on data/dimension change.
+
+### Gotchas
+- Session log is concurrently appended by `readLoop` — use `os.Open` + `ReadAt`, not `ReadFile`.
+- vt10x handles truncated escape sequences at read boundaries gracefully (partial sequences ignored).
+- `readLogTail` returns `(nil, 0)` if no log file exists; callers fall back to ring buffer.
+- Anchor reset happens both in `ScrollDown` (when hitting 0) and `ResetScroll` to avoid stale anchors in follow-tail mode.
+
 ## Project Status Icons & Idle Wiring: 2026-03-19
 
 ### What Was Missing

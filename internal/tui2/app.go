@@ -1155,7 +1155,6 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			wtPath, finalName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
 			if err != nil {
 				a.newTaskForm.SetError("Worktree error: " + err.Error())
-				a.newTaskForm.done = false
 				return
 			}
 			task.Worktree = wtPath
