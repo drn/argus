@@ -17,7 +17,7 @@ Argus already has a sensible top-level package split:
 - `internal/agent` owns local process/session lifecycle and worktree/backend setup.
 - `internal/daemon` and `internal/daemon/client` provide the persistent session layer.
 - `internal/db` persists tasks, projects, backends, and config in SQLite.
-- `internal/ui` renders Bubble Tea views and currently coordinates most workflows.
+- `internal/tui2` renders tcell/tview views and currently coordinates most workflows.
 
 The codebase is healthy enough to change safely:
 
@@ -36,7 +36,7 @@ The main structural pressure points found during review:
 
 ### Must Have
 
-- Shrink the top-level UI coordinator into smaller application-facing components without regressing current Bubble Tea behavior.
+- Shrink the top-level UI coordinator into smaller application-facing components without regressing current behavior.
 - Separate database/repository logic from schema migration and startup "fixup" behavior.
 - Clarify the session/runtime abstraction so remote and local session implementations do not need misleading no-op methods.
 - Preserve the current user-facing workflow: task creation, worktree isolation, daemon persistence, reviews tab, and settings management.
@@ -51,7 +51,7 @@ The main structural pressure points found during review:
 
 ### Won't Do (this iteration)
 
-- Rebuild the UI framework or replace Bubble Tea.
+- Rebuild the UI framework or replace tcell/tview.
 - Replace SQLite or redesign the full persistence model.
 - Introduce heavy dependency injection frameworks or large third-party architecture libraries.
 - Change core product behavior around worktrees, daemon ownership, or backend semantics unless required for correctness.
@@ -61,7 +61,7 @@ The main structural pressure points found during review:
 Refactor toward a clearer three-layer architecture:
 
 1. Presentation layer
-   `internal/ui` should handle rendering, keyboard/mouse events, and translation between Bubble Tea messages and application commands.
+   `internal/tui2` should handle rendering, keyboard/mouse events, and translation between UI events and application commands.
 
 2. Application layer
    New service-style packages should own workflow orchestration such as task start/stop/resume, task completion transitions, daemon health/restart policy, and settings mutation.
@@ -170,7 +170,7 @@ The design goal is not "maximum abstraction." It is to move domain decisions out
 
 ## Dependencies
 
-- Existing Bubble Tea model architecture in `internal/ui`
+- Existing tcell/tview architecture in `internal/tui2`
 - SQLite schema and WAL behavior in `internal/db`
 - Daemon/session runtime contracts in `internal/agent`, `internal/daemon`, and `internal/daemon/client`
 - Existing architecture notes in `context/plans/daemon-architecture.md` and `context/research/daemon-lifecycle-flows.md`

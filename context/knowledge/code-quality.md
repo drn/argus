@@ -18,10 +18,11 @@
 ### Structural Split
 - Infrastructure functions (worktree discovery, process cleanup, git operations) extracted from root.go (1250 lines) into worktree.go, reducing root.go to ~1100 lines.
 
-### Incremental vt10x Rendering (2026-03-14)
-- Agent view was replaying the entire 256KB ring buffer through a fresh vt10x terminal every 100ms tick. Each keystroke echo invalidated the render cache, causing progressively worse input lag as buffer grew.
-- Fixed by persisting a `vt10x.Terminal` on `AgentView` and feeding only new bytes (delta from `TotalWritten`). Full replay is now only used for scrollback mode.
+### Incremental Terminal Rendering (2026-03-14)
+- Agent view was replaying the entire 256KB ring buffer through a fresh terminal emulator every 100ms tick. Each keystroke echo invalidated the render cache, causing progressively worse input lag as buffer grew.
+- Fixed by persisting a terminal emulator instance and feeding only new bytes (delta from `TotalWritten`). Full replay is now only used for scrollback mode.
 - Reset triggers: task switch, terminal resize, ring buffer wrap (when delta exceeds buffer capacity).
+- Now uses x/vt (`charmbracelet/x/vt`) with native scrollback buffer and damage tracking via `Touched()`.
 
 ### Polish Refactoring Session: 2026-03-14 (PR #90)
 - **ScrollState extraction**: Shared cursor/scroll logic extracted from TaskList/ProjectList/FileExplorer into `scrollstate.go` — 3 identical CursorUp/CursorDown/visibleRows implementations → 1
@@ -30,7 +31,7 @@
 - **File splits**: root.go views → root_views.go (1107→797 lines), key byte maps → keybytes.go, git commands → gitcmd.go
 - **Confirm handler dedup**: handleConfirmDeleteKey/handleConfirmDestroyKey → shared `handleConfirmAction(msg, cleanup func)`
 - **determinePostExitStatus**: Pure function extracted from handleAgentFinished for testability
-- **borderedPanel helper**: Extracted repeated lipgloss border construction into `borderedPanel(w, h, focused, content)`
+- **borderedPanel helper**: Extracted repeated border construction into `borderedPanel(w, h, focused, content)`
 - **Idiom fixes**: `errors.Is(err, sql.ErrNoRows)` replacing `==` and string comparison; `io.Discard` replacing dead stderr buffer; named constants for terminal sizes and refresh intervals
 - Net: -738 lines across 23 files, 3-reviewer unanimous APPROVE
 
@@ -107,8 +108,7 @@
 
 ### Unicode Width Mismatch — ⌘ Symbol (2026-03-14)
 - `⌘` (U+2318, PLACE OF INTEREST SIGN) renders as 2 cells in most terminal emulators (iTerm2, Ghostty, Terminal.app) but `go-runewidth` v0.0.19 reports `RuneWidth('⌘') == 1`.
-- Lipgloss uses `go-runewidth` for `Width()`, so any layout math using `lipgloss.Width()` on strings containing `⌘` underestimates by 1 per occurrence.
-- Fix: add `strings.Count(s, "⌘")` to the computed width. Applied in `renderStatusBar()` for the `right` hints string.
+- Any layout math using `go-runewidth` on strings containing `⌘` underestimates by 1 per occurrence.
 - **Pattern:** When adding Unicode symbols to TUI layouts, verify `runewidth.RuneWidth(r)` against actual terminal rendering. Common offenders: miscellaneous symbols block (U+2300–U+23FF), dingbats, and emoji.
 
 ### Tmux-Matched Tab Header (2026-03-14)
@@ -117,23 +117,14 @@
 - **Powerline separators:** `\ue0b0` (right-facing full chevron) for smooth active tab transitions. Defined in `~/.dots/cmd/tmux-status/separator/root.go`.
 - **Pattern:** When styling Argus UI elements that sit adjacent to tmux chrome, use the tmux C1/C2/C3 palette to maintain visual continuity. The color constants are in `~/.dots/cmd/tmux-status/color/root.go`.
 
-### Zero-Dimension View() Panic (2026-03-15)
-- Bubble Tea calls `View()` before delivering the first `WindowSizeMsg`. At this point `m.width` and `m.height` are both 0.
-- `renderTasksView` computed `contentHeight := m.height - 3` (= -3) and passed it to `padHeight()`, which did `lines[:h]` — panic on negative slice bound.
-- Introduced by `bc55e7d` ("Add three-panel layout to task list view") which added `padHeight` calls without the guard that `padToBottom` already had.
-- The zero-dimension test (`TestModel_ViewZeroDimensions`) also caught two latent panics: `NewTaskForm.View()` (textarea nil pointer at zero value) and `NewProjectForm.View()` (empty inputs slice at zero value).
-- **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every `View()` on a form struct must guard against zero-valued state (uninitialized by constructor).
-- **Prevention:** `TestModel_ViewZeroDimensions` covers all 10 view paths with `width=0, height=0`. New views must add a subtest.
+### Zero-Dimension Rendering Panic (2026-03-15)
+- Layout code can be called before the terminal size is known. At this point width and height are both 0.
+- Height computations like `height - 3` produce negative values — passing to slice expressions or layout functions causes panics.
+- **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every render path on a form/view struct must guard against zero-valued state (uninitialized by constructor).
 
-### vt10x Cursor Reverse-Bit Fix (2026-03-15)
-- Cursor rendering used `cell.Mode | vtAttrReverse` (OR) which double-reversed already-reverse cells, making cursor invisible on them. Separately, replacing default colors with hardcoded black/white (colors 0/15) produced a black cursor on dark terminals instead of inheriting the terminal's theme.
-- Fixed with `cell.Mode ^ vtAttrReverse` (XOR) — toggles reverse for both normal and reverse cells. No explicit colors needed; SGR reverse with defaults inherits the terminal's fg/bg, producing the expected white cursor on dark backgrounds.
-- **Pattern:** When vt10x stores pre-swapped attributes, always toggle (XOR) rather than set (OR) to avoid double-application.
-
-### vt10x CursorVisible Gate Removal (2026-03-16)
-- Despite correct `\x1b[0;7m` cursor rendering logic, cursor was never visible because both `renderIncremental` and `replayVT10X` gated cursor rendering on `vt.CursorVisible()`.
-- Claude Code (built with Ink) hides the hardware cursor (`\x1b[?25l`) — standard for TUI apps. vt10x correctly tracks this, so `CursorVisible()` returned `false`, and `cursorX` was always `-1` (no cursor rendered on any line).
-- Fixed by removing the `CursorVisible()` check in both paths — cursor position is always passed to `renderLine()`.
+### Cursor Rendering: Always Show Regardless of CursorVisible (2026-03-16)
+- TUI agents like Claude Code (built with Ink) hide the hardware cursor (`\x1b[?25l`) — standard for TUI apps. The terminal emulator correctly tracks this, so `CursorVisible()` returns `false`.
+- When embedding a TUI app's output inside another TUI (as Argus does), gating cursor rendering on `CursorVisible()` makes the cursor invisible.
 - **Pattern:** When embedding a TUI app's output inside another TUI, ignore the child's cursor visibility state — the parent always wants to show cursor position. `CursorVisible()` is only meaningful when directly driving a physical terminal.
 
 ### Shared PanelLayout Extraction (2026-03-15)
@@ -165,7 +156,7 @@
 - `PanelLayout.Render()` only pads height via `padHeight()` — it does NOT enforce column widths on panels.
 - The task list view's left pane was rendering as raw text without `borderedPanel`, so it collapsed to content width instead of filling its 20% allocation.
 - Fix: wrapped task list content in `borderedPanel(widths[0], contentHeight, false, ...)` in `renderTasksView()`, and adjusted `tasklist.SetSize()` to subtract 2 from each dimension for the border.
-- **Pattern:** Every panel passed to `PanelLayout.Render()` must enforce its own width. `borderedPanel` does this internally (`Width(w-2)` + border = `w` total). Panels without borders need explicit `lipgloss.NewStyle().Width(w)`.
+- **Pattern:** Every panel in a multi-panel layout must enforce its own width. `borderedPanel` does this internally. Panels without borders need explicit width enforcement.
 
 ### Daemon Architecture Implementation (2026-03-15)
 - **SessionProvider/SessionHandle interfaces** (`iface.go`): Decouples UI from concrete `*Runner`/`*Session`. UI code depends only on interfaces, enabling both in-process and daemon-backed implementations.
@@ -182,17 +173,17 @@
 
 ### Chroma Background Color Compositing Fix (2026-03-15)
 - Syntax-highlighted diff lines (added/removed) lost their red/green background color after the first token. Only the first word of each line had the correct background.
-- Root cause: Chroma's `writeToken()` emits `\033[0m` (full SGR reset) after every token — by design, so pagers can render lines independently. When the highlighted string was wrapped with `lipgloss.Style.Render()` (which sets background at start, resets at end), the first internal `\033[0m` from chroma cleared the background for all subsequent tokens.
+- Root cause: Chroma's `writeToken()` emits `\033[0m` (full SGR reset) after every token — by design, so pagers can render lines independently. Setting a background color only applies to the first token — subsequent tokens lose it after the first `\033[0m` reset.
 - Chroma has no option to preserve an outer background — `clearBackground()` in the formatter intentionally strips style background colors. The `terminal256` and `terminal16m` formatters both use the same `writeToken()` with full resets.
 - Fix: `injectBg(s, bgEsc)` — prepends the background escape, replaces all `\033[0m` with `\033[0m<bgEsc>`, and appends `\033[0m`. Applied in `formatSideContent` (side-by-side) and `RenderUnifiedLines` (unified).
-- Replaced `removedBgStyle`/`addedBgStyle` (lipgloss.Style) with raw escape strings (`removedBgEsc`/`addedBgEsc`) since lipgloss `Render()` can't handle this pattern.
-- **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset. Do NOT use lipgloss `.Render()` wrapping — it only sets the background once at the start.
+- Uses raw escape strings (`removedBgEsc`/`addedBgEsc`) to re-inject the background color.
+- **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset.
 
 ### Tab Characters Break Width Math (2026-03-15)
-- `ansi.StringWidth("\t")` returns **0** — tabs are zero-width in charmbracelet's width calculations (`ansi.StringWidth`, `ansi.Truncate`, `lipgloss.Width`). Terminals render them as 1-8 columns.
+- `ansi.StringWidth("\t")` returns **0** — tabs are zero-width in charmbracelet's width calculations (`ansi.StringWidth`, `ansi.Truncate`). Terminals render them as 1-8 columns.
 - This caused the side-by-side diff divider (`│`) to shift position between rows: lines with tabs got too much padding (width underestimated), lines without tabs were correct.
 - **Fix:** `expandTabs()` in `diffparse.go` converts tabs to 2 spaces during parsing, before any width calculation or rendering.
-- **Pattern:** Any UI panel that renders external text (diff content, file previews, terminal output) must expand tabs to spaces before computing widths. The `vt10x` terminal emulator handles its own tab stops, so this only applies to non-vt10x rendering paths.
+- **Pattern:** Any UI panel that renders external text (diff content, file previews, terminal output) must expand tabs to spaces before computing widths. The x/vt terminal emulator handles its own tab stops, so this only applies to non-emulator rendering paths (diff views, file previews).
 
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
@@ -524,11 +515,11 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - `internal/tui2/tasklist.go` — `TaskListView`: flattened row model with `rowKind` (rowTask/rowProject/rowArchiveHeader), cursor navigation skipping headers, auto-expand, archive section.
 - `internal/tui2/agentpane.go` — `AgentPane`: Phase 2 placeholder showing PTY tail output. Takes `agentview.TerminalAdapter` for session display.
 - `internal/tui2/sidepanel.go` — `SidePanel`: bordered panel with title for git/files.
-- `internal/tui2/theme.go` — tcell color constants matching the Bubble Tea 256-color palette.
+- `internal/tui2/theme.go` — tcell color constants for the 256-color palette.
 
 ### Key Patterns
-- **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly — analogous to BT plain structs with `View() string`.
-- **Async updates** via `tapp.QueueUpdateDraw()` from the tick goroutine — equivalent to `tea.Cmd` returning `tea.Msg`.
+- **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly.
+- **Async updates** via `tapp.QueueUpdateDraw()` from the tick goroutine.
 - **Key routing** via `tapp.SetInputCapture()` — global handler dispatches by mode (taskList vs agent).
 - **PTY key forwarding** via `tcellKeyToBytes(event)` — maps `tcell.EventKey` to raw bytes including alt modifier.
 - **View switching** via `tview.Pages.SwitchToPage()` — mirrors BT's `current view` enum.

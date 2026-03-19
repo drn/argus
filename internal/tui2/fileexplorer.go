@@ -13,7 +13,7 @@ import (
 
 // FilePanel is a file explorer panel for the tcell agent view.
 // It displays changed files with status icons, directory expansion,
-// and cursor navigation — mirroring the Bubble Tea FileExplorer.
+// and cursor navigation.
 type FilePanel struct {
 	*tview.Box
 	files       []gitutil.ChangedFile

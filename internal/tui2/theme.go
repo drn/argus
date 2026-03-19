@@ -1,11 +1,11 @@
 // Package tui2 implements the tcell/tview UI runtime for Argus.
-// This is the target runtime for native terminal passthrough in the agent
-// view, replacing the Bubble Tea string-rendering approach.
+// This runtime uses direct cell painting for native terminal passthrough
+// in the agent view.
 package tui2
 
 import "github.com/gdamore/tcell/v2"
 
-// Color constants matching the Bubble Tea theme (256-color palette).
+// Color constants for the 256-color palette theme.
 var (
 	ColorTitle      = tcell.Color87  // cyan — titles, focused borders
 	ColorStatusBG   = tcell.Color235 // dark gray — status bar background
