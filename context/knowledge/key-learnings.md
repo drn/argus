@@ -212,4 +212,6 @@
 
 - **Agent view has a powerline-style header showing the current task name.** `AgentHeader` (`internal/tui2/agentheader.go`) is a 1-row `tview.Box` widget that renders a centered powerline segment with the task name using the same color palette as the root `Header` (lavender active segment on dark background). It's set via `SetTaskName()` in `onTaskSelect()`. The agent page layout is a `FlexRow`: agent header (1 row, fixed) + agent panels (flex, 3-column layout). The PTY size fallback calculation in `startSession` accounts for the extra row (subtracts 3 instead of 2 for header + agent header + statusbar).
 
+- **Project headers in the task list show an aggregated status icon with chevron and task count.** `drawProjectRow` in `internal/tui2/tasklist.go` renders: icon + chevron + project name + (count). `projectStatusIcon()` computes the icon from all tasks in that project with priority: in_progress > in_review > all_complete > mixed > all_pending. When all in-progress tasks are idle, shows a moon icon (☾). The `tickEven` field toggles on each tick for icon animation (alternates between ● and ◉ for active in-progress). `refreshTasksWithIDs` in `app.go` passes both `runningIDs` and `idleIDs` from the runner, calling `SetIdle()` and `Tick()` on every refresh cycle.
+
 ## Planned but Not Yet Implemented
