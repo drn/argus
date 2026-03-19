@@ -454,7 +454,8 @@ func (rv *ReviewsView) handleEsc() {
 	}
 }
 
-func (rv *ReviewsView) openPRInBrowser() {
+// prURL returns the GitHub URL for the currently selected/cursored PR, or "".
+func (rv *ReviewsView) prURL() string {
 	var pr *github.PR
 	if rv.selectedPR != nil {
 		pr = rv.selectedPR
@@ -462,11 +463,18 @@ func (rv *ReviewsView) openPRInBrowser() {
 		pr = &rv.prs[rv.prCursor]
 	}
 	if pr == nil {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
+}
+
+func (rv *ReviewsView) openPRInBrowser() {
+	url := rv.prURL()
+	if url == "" {
 		return
 	}
-	url := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
 	exec.Command("open", url).Start() //nolint:errcheck
-	uxlog.Log("[reviews] opened PR #%d in browser: %s", pr.Number, url)
+	uxlog.Log("[reviews] opened PR in browser: %s", url)
 }
 
 func (rv *ReviewsView) handleRefresh(app *App) {
