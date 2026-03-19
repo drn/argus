@@ -329,9 +329,14 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		raw = tp.replayData
 	}
 
-	if tp.drawLogCounter%50 == 0 {
-		uxlog.Log("[terminalpane] Draw: sess=%v alive=%v rawLen=%d ptyCols=%d ptyRows=%d panelW=%d panelH=%d scrollOff=%d",
-			sess != nil, alive, len(raw), ptyCols, ptyRows, width, height, tp.scrollOffset)
+	// Log frequently during startup (first 20 draws), then every 50th.
+	if tp.drawLogCounter < 20 || tp.drawLogCounter%50 == 0 {
+		tw := uint64(0)
+		if sess != nil {
+			tw = sess.TotalWritten()
+		}
+		uxlog.Log("[terminalpane] Draw #%d: sess=%v alive=%v rawLen=%d totalWritten=%d ptyCols=%d ptyRows=%d panelW=%d panelH=%d scrollOff=%d",
+			tp.drawLogCounter, sess != nil, alive, len(raw), tw, ptyCols, ptyRows, width, height, tp.scrollOffset)
 	}
 	tp.drawLogCounter++
 
