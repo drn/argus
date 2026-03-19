@@ -297,6 +297,29 @@ func TestScrollbackLen(t *testing.T) {
 	}
 }
 
+func TestPaintEmu_HiddenCursorNotRendered(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 5)
+
+	tp := NewTerminalPane()
+	cursorVisible := true
+	emu := tp.newTrackedEmulatorWithCallback(20, 5, func(visible bool) {
+		cursorVisible = visible
+	})
+	emu.Write([]byte("hello\x1b[?25l"))
+
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, true, cursorVisible)
+
+	_, _, style, _ := screen.GetContent(5, 0)
+	fg, bg, _ := style.Decompose()
+	if fg == cursorFG || bg == cursorBG {
+		t.Fatalf("hidden cursor should not be painted with cursor style: fg=%v bg=%v", fg, bg)
+	}
+}
+
 func TestBuildUnifiedDiffLines(t *testing.T) {
 	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
 	pd := gitutil.ParseUnifiedDiff(diff)
