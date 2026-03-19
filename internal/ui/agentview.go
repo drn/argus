@@ -35,6 +35,11 @@ type SessionLogLoadedMsg struct {
 }
 
 // AgentView renders a three-panel layout: git status | agent terminal | file explorer.
+//
+// This is the Bubble Tea implementation. The tcell runtime (internal/tui2/)
+// uses TerminalPane for native PTY rendering instead of the string-based
+// renderIncremental/formatTerminalOutput paths here. This Bubble Tea
+// implementation remains as a fallback runtime (ARGUS_UI_RUNTIME=bubbletea).
 type AgentView struct {
 	theme       Theme
 	runner      agent.SessionProvider
@@ -820,8 +825,8 @@ func (av *AgentView) formatTerminalOutput(raw []byte, panelW, panelH int) string
 		}
 	}
 
-	vtRows := estimateVTRows(raw, vtCols, dispH)
-	lines := replayVT10X(raw, vtCols, vtRows, true)
+	vtRows := EstimateVTRows(raw, vtCols, dispH)
+	lines := ReplayVT10X(raw, vtCols, vtRows, true)
 
 	if len(lines) == 0 {
 		return ""

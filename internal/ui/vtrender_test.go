@@ -9,7 +9,7 @@ import (
 
 func TestReplayVT10X_TrimsLeadingEmptyLines(t *testing.T) {
 	// Codex-style TUI: positions content in the bottom portion of the terminal,
-	// leaving the top rows empty. replayVT10X should trim those leading empty rows.
+	// leaving the top rows empty. ReplayVT10X should trim those leading empty rows.
 	// Use cursor-positioning to put text at row 5 of a 10-row terminal.
 	raw := []byte(
 		"\x1b[5;1H" + // move to row 5, col 1
@@ -18,7 +18,7 @@ func TestReplayVT10X_TrimsLeadingEmptyLines(t *testing.T) {
 			"Second line",
 	)
 
-	lines := replayVT10X(raw, 40, 10, true)
+	lines := ReplayVT10X(raw, 40, 10, true)
 
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty lines")
@@ -40,7 +40,7 @@ func TestReplayVT10X_TrimsTrailingEmptyLines(t *testing.T) {
 		"\x1b[1;1H" + "Top line",
 	)
 
-	lines := replayVT10X(raw, 40, 10, true)
+	lines := ReplayVT10X(raw, 40, 10, true)
 
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty lines")
@@ -61,12 +61,12 @@ func TestReplayVT10X_EmptyTerminal(t *testing.T) {
 	// Empty terminal has no content anywhere. findInputRow falls back to
 	// curY=0, but after trimming (the rendered row is all spaces) we get 0
 	// lines — an empty panel is the right result.
-	lines := replayVT10X(raw, 40, 10, true)
+	lines := ReplayVT10X(raw, 40, 10, true)
 	if len(lines) != 0 {
 		t.Errorf("expected 0 lines for empty terminal, got %d", len(lines))
 	}
 
-	lines = replayVT10X(raw, 40, 10, false)
+	lines = ReplayVT10X(raw, 40, 10, false)
 	if len(lines) != 0 {
 		t.Errorf("expected 0 lines for empty terminal without cursor, got %d", len(lines))
 	}
@@ -83,7 +83,7 @@ func TestReplayVT10X_CursorParkedBelowContent(t *testing.T) {
 			"\x1b[5;3H", // move cursor to row 5, col 3 (empty row)
 	)
 
-	lines := replayVT10X(raw, 40, 10, true)
+	lines := ReplayVT10X(raw, 40, 10, true)
 
 	// Empty rows below content are trimmed; only the content row remains.
 	if len(lines) != 1 {

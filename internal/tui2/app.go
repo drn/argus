@@ -1,16 +1,20 @@
 package tui2
 
 import (
+	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/config"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/ui"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -20,42 +24,54 @@ type viewMode int
 const (
 	modeTaskList viewMode = iota
 	modeAgent
+	modeNewTask
+)
+
+// agentFocus tracks which panel has focus in the agent view.
+type agentFocus int
+
+const (
+	focusTerminal agentFocus = iota
+	focusFiles
 )
 
 // App is the top-level tview application shell.
-// It mirrors the Bubble Tea Model's responsibilities: routing events,
-// managing sub-views, running periodic ticks, and coordinating with the
-// daemon/runner.
 type App struct {
-	tapp    *tview.Application
-	db      *db.DB
-	runner  agent.SessionProvider
-	mu      sync.Mutex // guards state accessed from tick goroutine
+	tapp   *tview.Application
+	db     *db.DB
+	runner agent.SessionProvider
+	mu     sync.Mutex
 
 	// Sub-views
 	header    *Header
 	statusbar *StatusBar
 	tasklist  *TaskListView
-	agentPane *AgentPane
-	gitPanel  *SidePanel
-	filePanel *SidePanel
+	agentPane *TerminalPane
+	gitPanel  *GitPanel
+	filePanel *FilePanel
+
+	// New task form (created on demand)
+	newTaskForm *NewTaskForm
 
 	// Layout containers
-	root      *tview.Flex // vertical: header + content + statusbar
-	taskPage  *tview.Flex // task list content
-	agentPage *tview.Flex // agent view: git | terminal | files
+	root      *tview.Flex
+	taskPage  *tview.Flex
+	agentPage *tview.Flex
 	pages     *tview.Pages
 
 	// State
 	mode            viewMode
+	agentFocus      agentFocus
 	agentState      agentview.State
 	daemonConnected bool
 	tasks           []*model.Task
 	runningIDs      []string
+	worktreeDir     string // resolved worktree dir for current agent view task
+	lastGitRefresh  time.Time
 
 	// Daemon health
 	daemonFailures int
-	daemonClient   *dclient.Client // non-nil when daemon-connected
+	daemonClient   *dclient.Client
 
 	// Tick control
 	tickDone chan struct{}
@@ -84,27 +100,22 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 
 // buildUI constructs the tview widget tree.
 func (a *App) buildUI() {
-	// Header
 	a.header = NewHeader()
-
-	// Status bar
 	a.statusbar = NewStatusBar()
 
-	// Task list
 	a.tasklist = NewTaskListView()
 	a.tasklist.OnSelect = a.onTaskSelect
 	a.tasklist.OnNew = a.onNewTask
 
-	// Agent view panels
-	a.gitPanel = NewSidePanel("Git Status")
-	a.filePanel = NewSidePanel("Files")
-	a.agentPane = NewAgentPane()
+	a.gitPanel = NewGitPanel()
+	a.filePanel = NewFilePanel()
+	a.agentPane = NewTerminalPane()
 
-	// Task list page — centered task list with side panels
+	// Task list page
 	taskListCenter := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(tview.NewBox(), 0, 1, false).         // left spacer
-		AddItem(a.tasklist, 0, 3, true).               // task list
-		AddItem(tview.NewBox(), 0, 1, false)            // right spacer
+		AddItem(tview.NewBox(), 0, 1, false).
+		AddItem(a.tasklist, 0, 3, true).
+		AddItem(tview.NewBox(), 0, 1, false)
 	a.taskPage = taskListCenter
 
 	// Agent page — three-panel layout
@@ -113,25 +124,22 @@ func (a *App) buildUI() {
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
 
-	// Pages overlay for switching between task list and agent view
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false)
 
-	// Root layout: header (1 row) + content + status bar (1 row)
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// Global key handler
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
+	a.tapp.EnableMouse(true)
 }
 
-// Run starts the application event loop. Blocks until exit.
+// Run starts the application event loop.
 func (a *App) Run() error {
-	// Start periodic tick
 	go a.tickLoop()
 	defer close(a.tickDone)
 
@@ -139,7 +147,7 @@ func (a *App) Run() error {
 	return a.tapp.Run()
 }
 
-// tickLoop runs periodic updates (task refresh, daemon health check).
+// tickLoop runs periodic updates.
 func (a *App) tickLoop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -156,8 +164,6 @@ func (a *App) tickLoop() {
 
 // onTick handles periodic updates.
 func (a *App) onTick() {
-	// Snapshot state under lock, then release before calling runner methods
-	// to avoid lock inversion (runner has its own internal lock).
 	a.mu.Lock()
 	a.refreshTasksLocked()
 	checkDaemon := a.daemonConnected && a.daemonClient != nil
@@ -167,7 +173,7 @@ func (a *App) onTick() {
 	}
 	a.mu.Unlock()
 
-	// Daemon health check (outside lock — Ping acquires its own lock)
+	// Daemon health check
 	if checkDaemon {
 		if err := a.daemonClient.Ping(); err != nil {
 			a.mu.Lock()
@@ -184,23 +190,23 @@ func (a *App) onTick() {
 		}
 	}
 
-	// Update agent pane session via QueueUpdateDraw so the write to
-	// agentPane.session happens on the tview event loop thread — avoiding
-	// a data race with Draw() which reads it on that same thread.
+	// Update agent pane session
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
 				a.agentPane.SetSession(sess)
 			}
+			// Refresh git status periodically
+			if a.worktreeDir != "" && time.Since(a.lastGitRefresh) > 3*time.Second {
+				go a.fetchGitStatus(taskID, a.worktreeDir)
+			}
 		})
 	} else {
-		// Still trigger a redraw for task list updates
 		a.tapp.QueueUpdateDraw(func() {})
 	}
 }
 
-// refreshTasks loads tasks from DB and updates sub-views.
 func (a *App) refreshTasks() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -209,11 +215,8 @@ func (a *App) refreshTasks() {
 
 func (a *App) refreshTasksLocked() {
 	a.tasks = a.db.Tasks()
-
-	// Get running sessions
 	a.runningIDs = a.runner.Running()
 
-	// Update sub-views
 	a.tasklist.SetTasks(a.tasks)
 	a.tasklist.SetRunning(a.runningIDs)
 	a.statusbar.SetTasks(a.tasks)
@@ -222,13 +225,30 @@ func (a *App) refreshTasksLocked() {
 
 // handleGlobalKey processes key events at the application level.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
-	// Global keys available in all modes
+	// New task form mode — delegate everything to the form
+	if a.mode == modeNewTask && a.newTaskForm != nil {
+		a.handleNewTaskKey(event)
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		a.tapp.Stop()
 		return nil
 	case tcell.KeyCtrlQ:
 		if a.mode == modeAgent {
+			// 3-level exit: diff → files panel → agent view
+			if a.agentPane.InDiffMode() {
+				a.agentPane.ExitDiffMode()
+				a.agentFocus = focusTerminal
+				a.updateFocusIndicators()
+				return nil
+			}
+			if a.agentFocus == focusFiles {
+				a.agentFocus = focusTerminal
+				a.updateFocusIndicators()
+				return nil
+			}
 			a.exitAgentView()
 			return nil
 		}
@@ -240,18 +260,23 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		case '1':
-			a.switchTab(TabTasks)
-			return nil
+			if a.mode != modeAgent {
+				a.switchTab(TabTasks)
+				return nil
+			}
 		case '2':
-			a.switchTab(TabReviews)
-			return nil
+			if a.mode != modeAgent {
+				a.switchTab(TabReviews)
+				return nil
+			}
 		case '3':
-			a.switchTab(TabSettings)
-			return nil
+			if a.mode != modeAgent {
+				a.switchTab(TabSettings)
+				return nil
+			}
 		}
 	}
 
-	// Mode-specific handling
 	switch a.mode {
 	case modeAgent:
 		return a.handleAgentKey(event)
@@ -260,19 +285,100 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+// updateFocusIndicators syncs border styles with the current focus state.
+func (a *App) updateFocusIndicators() {
+	a.agentPane.SetFocused(a.agentFocus == focusTerminal)
+	a.filePanel.SetFocused(a.agentFocus == focusFiles)
+}
+
 // handleAgentKey handles keys when the agent view is active.
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyEscape:
+		// 3-level exit: diff → files panel → agent view
+		if a.agentPane.InDiffMode() {
+			a.agentPane.ExitDiffMode()
+			a.agentFocus = focusTerminal
+			a.updateFocusIndicators()
+			return nil
+		}
+		if a.agentFocus == focusFiles {
+			a.agentFocus = focusTerminal
+			a.updateFocusIndicators()
+			return nil
+		}
 		a.exitAgentView()
+		return nil
+	case tcell.KeyCtrlP:
+		a.agentPane.OpenPR()
+		return nil
+	case tcell.KeyLeft:
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			if a.agentFocus > focusTerminal {
+				a.agentFocus--
+				a.updateFocusIndicators()
+			}
+			return nil
+		}
+	case tcell.KeyRight:
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			if a.agentFocus < focusFiles {
+				a.agentFocus++
+				a.updateFocusIndicators()
+			}
+			return nil
+		}
+	}
+
+	// Diff mode keys
+	if a.agentPane.InDiffMode() {
+		return a.handleDiffKey(event)
+	}
+
+	// File panel navigation
+	if a.agentFocus == focusFiles {
+		return a.handleFilePanelKey(event)
+	}
+
+	sess := a.agentPane.Session()
+
+	// Scrollback keys
+	if event.Modifiers()&tcell.ModShift != 0 {
+		switch event.Key() {
+		case tcell.KeyUp:
+			a.agentPane.ScrollUp(1)
+			return nil
+		case tcell.KeyDown:
+			a.agentPane.ScrollDown(1)
+			return nil
+		case tcell.KeyPgUp:
+			a.agentPane.ScrollUp(20)
+			return nil
+		case tcell.KeyPgDn:
+			a.agentPane.ScrollDown(20)
+			return nil
+		case tcell.KeyEnd:
+			a.agentPane.ResetScroll()
+			return nil
+		}
+	}
+
+	// 'o' to open PR when finished
+	if event.Key() == tcell.KeyRune && event.Rune() == 'o' && (sess == nil || !sess.Alive()) {
+		a.agentPane.OpenPR()
 		return nil
 	}
 
-	// Forward to PTY if session is active
-	if a.agentPane.session != nil && a.agentPane.session.Alive() {
+	// Reset scroll on any other key
+	if a.agentPane.ScrollOffset() > 0 {
+		a.agentPane.ResetScroll()
+	}
+
+	// Forward to PTY
+	if sess != nil && sess.Alive() {
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
-			if _, err := a.agentPane.session.WriteInput(b); err != nil {
+			if _, err := sess.WriteInput(b); err != nil {
 				uxlog.Log("[tui2] write to PTY failed: %v", err)
 			}
 			return nil
@@ -282,9 +388,163 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+// handleFilePanelKey handles keys when the file panel has focus.
+func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyUp:
+		if dir := a.filePanel.CursorUp(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		return nil
+	case tcell.KeyDown:
+		if dir := a.filePanel.CursorDown(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		return nil
+	case tcell.KeyEnter:
+		// Open diff for selected file
+		a.openFileDiff()
+		return nil
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'j':
+			if dir := a.filePanel.CursorDown(); dir != "" {
+				go a.fetchDirChildren(dir)
+			}
+			return nil
+		case 'k':
+			if dir := a.filePanel.CursorUp(); dir != "" {
+				go a.fetchDirChildren(dir)
+			}
+			return nil
+		case 'o':
+			a.openInFinder()
+			return nil
+		case 'e':
+			a.openInEditor()
+			return nil
+		case 't':
+			a.openTerminal()
+			return nil
+		}
+	}
+	return event
+}
+
+// handleDiffKey handles keys when viewing a diff.
+func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
+	switch event.Key() {
+	case tcell.KeyUp:
+		a.agentPane.DiffScrollUp(1)
+		return nil
+	case tcell.KeyDown:
+		a.agentPane.DiffScrollDown(1)
+		return nil
+	case tcell.KeyPgUp:
+		a.agentPane.DiffScrollUp(20)
+		return nil
+	case tcell.KeyPgDn:
+		a.agentPane.DiffScrollDown(20)
+		return nil
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 's':
+			a.agentPane.ToggleDiffSplit()
+			return nil
+		case 'q':
+			a.agentPane.ExitDiffMode()
+			a.agentFocus = focusTerminal
+			a.updateFocusIndicators()
+			return nil
+		case 'j':
+			a.agentPane.DiffScrollDown(1)
+			return nil
+		case 'k':
+			a.agentPane.DiffScrollUp(1)
+			return nil
+		}
+	}
+	return nil
+}
+
+// fetchGitStatus runs git status asynchronously and updates the panels.
+func (a *App) fetchGitStatus(taskID, dir string) {
+	msg := ui.FetchGitStatus(taskID, dir)
+	a.tapp.QueueUpdateDraw(func() {
+		if taskID != a.agentState.TaskID {
+			return
+		}
+		a.lastGitRefresh = time.Now()
+		a.gitPanel.SetStatus(msg.Status, msg.Diff, msg.BranchFiles)
+		// Merge committed + uncommitted files
+		files := ui.MergeChangedFiles(
+			ui.ParseGitDiffNameStatus(msg.BranchFiles),
+			ui.ParseGitStatus(msg.Status),
+		)
+		a.filePanel.SetFiles(files)
+		uxlog.Log("[tui2] git status refreshed: %d files", len(files))
+	})
+}
+
+// fetchDirChildren fetches directory children asynchronously.
+func (a *App) fetchDirChildren(dirPath string) {
+	taskID := a.agentState.TaskID
+	dir := a.worktreeDir
+	msg := ui.FetchDirFiles(taskID, dir, dirPath)
+	a.tapp.QueueUpdateDraw(func() {
+		if taskID != a.agentState.TaskID {
+			return
+		}
+		a.filePanel.SetDirChildren(msg.DirPath, msg.Files)
+	})
+}
+
+// openFileDiff fetches the diff for the selected file and enters diff mode.
+func (a *App) openFileDiff() {
+	f := a.filePanel.SelectedFile()
+	if f == nil || a.worktreeDir == "" {
+		return
+	}
+	filePath := f.Path
+	dir := a.worktreeDir
+	go func() {
+		msg := ui.FetchFileDiff(a.agentState.TaskID, dir, filePath)
+		a.tapp.QueueUpdateDraw(func() {
+			if msg.TaskID != a.agentState.TaskID {
+				return
+			}
+			if msg.Diff != "" {
+				a.agentPane.EnterDiffMode(msg.Diff, msg.FilePath)
+			}
+		})
+	}()
+}
+
+func (a *App) openInFinder() {
+	f := a.filePanel.SelectedFile()
+	if f == nil || a.worktreeDir == "" {
+		return
+	}
+	exec.Command("open", "-R", a.worktreeDir+"/"+f.Path).Start() //nolint:errcheck
+}
+
+func (a *App) openInEditor() {
+	f := a.filePanel.SelectedFile()
+	if f == nil || a.worktreeDir == "" {
+		return
+	}
+	exec.Command("tmux", "new-window", "nvim", a.worktreeDir+"/"+f.Path).Start() //nolint:errcheck
+}
+
+func (a *App) openTerminal() {
+	if a.worktreeDir == "" {
+		return
+	}
+	exec.Command("tmux", "new-window", "-c", a.worktreeDir).Start() //nolint:errcheck
+}
+
 // tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY input.
 func tcellKeyToBytes(ev *tcell.EventKey) []byte {
-	// Rune keys
 	if ev.Key() == tcell.KeyRune {
 		r := ev.Rune()
 		if ev.Modifiers()&tcell.ModAlt != 0 {
@@ -295,8 +555,6 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 
 	alt := ev.Modifiers()&tcell.ModAlt != 0
 
-	// Arrow keys with Alt modifier use CSI sequences with modifier parameter.
-	// Alt+arrow sends \x1b[1;3X (modifier 3 = Alt) for word navigation.
 	if alt {
 		switch ev.Key() {
 		case tcell.KeyUp:
@@ -308,11 +566,10 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		case tcell.KeyLeft:
 			return []byte("\x1b[1;3D")
 		case tcell.KeyDelete:
-			return []byte{0x1b, 0x7f} // Alt+Delete = word delete
+			return []byte{0x1b, 0x7f}
 		}
 	}
 
-	// Special keys (no Alt)
 	switch ev.Key() {
 	case tcell.KeyEnter:
 		return []byte{'\r'}
@@ -320,7 +577,7 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		return []byte{'\t'}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if alt {
-			return []byte{0x1b, 0x7f} // Alt+Backspace = word delete
+			return []byte{0x1b, 0x7f}
 		}
 		return []byte{0x7f}
 	case tcell.KeyDelete:
@@ -401,15 +658,13 @@ func (a *App) switchTab(t Tab) {
 		if a.mode == modeAgent {
 			a.exitAgentView()
 		}
+		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
 	case TabReviews:
-		// Phase 2 placeholder: show tasks page with a message
-		// Reviews will be ported in Phase 5
 		a.statusbar.SetError("Reviews tab not yet ported to tcell runtime")
 		a.pages.SwitchToPage("tasks")
 	case TabSettings:
-		// Phase 2 placeholder
 		a.statusbar.SetError("Settings tab not yet ported to tcell runtime")
 		a.pages.SwitchToPage("tasks")
 	}
@@ -420,10 +675,17 @@ func (a *App) onTaskSelect(task *model.Task) {
 	uxlog.Log("[tui2] entering agent view for task %s (%s)", task.ID, task.Name)
 
 	a.mode = modeAgent
+	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.agentPane.SetTaskID(task.ID)
+	a.agentPane.SetPRURL(task.PRURL)
+	a.agentPane.ResetVT()
 
-	// Look up session
+	// Resolve worktree dir
+	a.worktreeDir = task.Worktree
+	a.lastGitRefresh = time.Time{}
+	a.gitPanel.Clear()
+
 	sess := a.runner.Get(task.ID)
 	if sess != nil {
 		a.agentPane.SetSession(sess)
@@ -436,20 +698,115 @@ func (a *App) onTaskSelect(task *model.Task) {
 
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
+
+	// Kick off initial git status
+	if a.worktreeDir != "" {
+		go a.fetchGitStatus(task.ID, a.worktreeDir)
+	}
 }
 
-// onNewTask handles the 'n' key — placeholder for new task form.
+// onNewTask opens the new task form.
 func (a *App) onNewTask() {
-	// Phase 2 placeholder: new task form will be ported in Phase 5
-	a.statusbar.SetError("New task form not yet ported to tcell runtime")
+	cfg := a.db.Config()
+
+	a.newTaskForm = NewNewTaskForm(
+		cfg.Projects, "", // TODO: default to currently selected project
+		cfg.Backends, cfg.Defaults.Backend,
+	)
+
+	a.mode = modeNewTask
+	a.pages.AddPage("newtask", a.newTaskForm, true, true)
+	a.pages.SwitchToPage("newtask")
+	a.tapp.SetFocus(a.newTaskForm)
+}
+
+// handleNewTaskKey processes keys in the new task form mode.
+func (a *App) handleNewTaskKey(event *tcell.EventKey) {
+	handler := a.newTaskForm.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.newTaskForm.Canceled() {
+		a.closeNewTaskForm()
+		return
+	}
+
+	if a.newTaskForm.Done() {
+		task := a.newTaskForm.Task()
+		if task.Name == "" {
+			a.newTaskForm.SetError("Prompt cannot be empty")
+			return
+		}
+
+		// Create worktree and persist task
+		proj := a.newTaskForm.SelectedProject()
+		var projCfg config.Project
+		if p, ok := a.db.Config().Projects[proj]; ok {
+			projCfg = p
+		}
+
+		if projCfg.Path != "" {
+			wtPath, finalName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
+			if err != nil {
+				a.newTaskForm.SetError("Worktree error: " + err.Error())
+				a.newTaskForm.done = false
+				return
+			}
+			task.Worktree = wtPath
+			task.Name = finalName
+		}
+
+		a.db.Add(task)
+		uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
+
+		a.closeNewTaskForm()
+		a.refreshTasks()
+
+		// Start the agent session
+		a.startAndAttach(task)
+	}
+}
+
+// startAndAttach starts a session for the task and enters agent view.
+func (a *App) startAndAttach(task *model.Task) {
+	cfg := a.db.Config()
+
+	// Compute PTY size from agent pane dimensions
+	_, _, w, h := a.agentPane.GetInnerRect()
+	rows, cols := uint16(max(h-2, 5)), uint16(max(w-4, 20))
+
+	resume := task.SessionID != ""
+	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
+	if err != nil {
+		uxlog.Log("[tui2] failed to start session: %v", err)
+		a.statusbar.SetError("Start failed: " + err.Error())
+		return
+	}
+
+	task.Status = model.StatusInProgress
+	task.AgentPID = sess.PID()
+	a.db.Update(task)
+
+	a.onTaskSelect(task)
+}
+
+func (a *App) closeNewTaskForm() {
+	a.mode = modeTaskList
+	a.newTaskForm = nil
+	a.pages.RemovePage("newtask")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // exitAgentView returns to the task list.
 func (a *App) exitAgentView() {
 	uxlog.Log("[tui2] exiting agent view")
 	a.mode = modeTaskList
+	a.agentFocus = focusTerminal
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
+	a.agentPane.ExitDiffMode()
+	a.agentPane.ResetVT()
+	a.worktreeDir = ""
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()

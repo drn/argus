@@ -21,7 +21,8 @@ const (
 const EnvUIRuntime = "ARGUS_UI_RUNTIME"
 
 // ParseRuntime parses a runtime string value. Empty or unset defaults to
-// RuntimeBubbleTea. Unknown values return an error (fail-fast).
+// RuntimeBubbleTea. Set to "tcell" for the native terminal passthrough runtime.
+// Unknown values return an error (fail-fast).
 // Input is normalized to lowercase with whitespace trimmed.
 func ParseRuntime(v string) (UIRuntime, error) {
 	normalized := strings.TrimSpace(strings.ToLower(v))
