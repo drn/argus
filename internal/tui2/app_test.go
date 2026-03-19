@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
@@ -194,6 +195,67 @@ func TestArrowTabNavigation(t *testing.T) {
 	result = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != TabTasks {
 		t.Errorf("tab = %v, want TabTasks (no wrap)", app.header.ActiveTab())
+	}
+}
+
+func TestCtrlCForwardsToAgentPTY(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Start a real process so we have a live session.
+	task := &model.Task{
+		ID:       "ctrl-c-test",
+		Name:     "ctrl-c-test",
+		Status:   model.StatusInProgress,
+		Worktree: t.TempDir(),
+		Backend:  "test",
+	}
+	cfg := config.DefaultConfig()
+	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	sess, err := runner.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatalf("runner.Start: %v", err)
+	}
+	defer runner.Stop(task.ID)
+
+	// Enter agent mode with the session wired up
+	app.mode = modeAgent
+	app.agentState.Reset(task.ID, task.Name)
+	app.agentPane.SetSession(sess)
+
+	if !sess.Alive() {
+		t.Fatal("session should be alive")
+	}
+
+	// ctrl+c in agent mode with live session should be consumed (forwarded to PTY)
+	// and NOT stop the app.
+	ev := tcell.NewEventKey(tcell.KeyCtrlC, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("ctrl+c in agent mode with live session should be consumed")
+	}
+	if app.mode != modeAgent {
+		t.Errorf("mode = %v, want modeAgent after ctrl+c with live session", app.mode)
+	}
+}
+
+func TestCtrlCNoopInAgentViewDeadSession(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Agent mode with no session — ctrl+c should be consumed but not exit
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	ev := tcell.NewEventKey(tcell.KeyCtrlC, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("ctrl+c in agent mode with dead session should be consumed")
+	}
+	if app.mode != modeAgent {
+		t.Errorf("mode = %v, want modeAgent after ctrl+c with no session", app.mode)
 	}
 }
 
