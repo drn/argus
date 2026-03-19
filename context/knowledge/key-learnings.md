@@ -228,4 +228,7 @@
 
 - **In diff mode, Up/Down navigate between files — `j`/`k` scroll the diff.** `handleDiffKey` uses Up/Down arrows to move the file panel cursor (`CursorUp`/`CursorDown`) and immediately call `openFileDiff()` to fetch and display the new file's diff. Diff scrolling uses `j`/`k` (vim-style), `PgUp`/`PgDn`, and mouse scroll wheel. This matches the expected UX where arrow keys switch files while viewing diffs, similar to GitHub's PR review.
 
+- **PTY must be started at actual panel width, not hardcoded 80x24.** TUI agents (Claude Code, Codex) format their initial output for the PTY size at launch and don't reflow existing output on later resize. `startSession` in `internal/tui2/app.go` must query `agentPane.GetInnerRect()` for actual panel dimensions; when that returns zero (before first Draw), fall back to computing from `term.GetSize(os.Stdout)` and the 1:3:1 agent page layout ratio (center panel = 3/5 of terminal width; border is drawn outside the box rect so no deduction needed; height = terminal height minus header and statusbar). `SetSession` in `terminalpane.go` must NOT fall back to 80x24 when `GetInnerRect()` returns zero — leave `ptyCols/ptyRows` at 0 so `Draw()` sets them to match the actual panel width. Additionally, `SyncPTYSize()` runs in the 200ms `startAgentRedrawLoop` (not just the 1-second tick) to minimize the window where the PTY size is stale.
+
+
 ## Planned but Not Yet Implemented

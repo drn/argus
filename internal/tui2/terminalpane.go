@@ -127,15 +127,17 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
-	// Seed PTY size from panel dimensions — SyncPTYSize will refine on next tick.
+	// Seed PTY size from panel dimensions — Draw() will refine on first render.
+	// Do NOT fall back to 80x24 when GetInnerRect returns zero (before first
+	// Draw); leave ptyCols/ptyRows at 0 so Draw() sets them to match the
+	// actual panel width. Falling back to 80 creates a mismatch with the PTY
+	// (which was started at the correct width), causing the emulator to wrap
+	// text at 80 cols even though the agent output is formatted wider.
 	if sess != nil {
 		_, _, w, h := tp.GetInnerRect()
 		if w > 0 && h > 0 {
 			tp.ptyCols = max(w, 20)
 			tp.ptyRows = max(h, 5)
-		} else {
-			tp.ptyCols = 80
-			tp.ptyRows = 24
 		}
 	}
 }
