@@ -227,3 +227,24 @@ func TestReviewsView_BackgroundRefresh(t *testing.T) {
 		t.Errorf("cursor = %d, want 1 (preserved)", rv.prCursor)
 	}
 }
+
+func TestReviewsView_OpenPR_NoPanic(t *testing.T) {
+	rv := NewReviewsView()
+
+	// No PRs — should not panic.
+	rv.openPRInBrowser()
+
+	// With PRs on the list (no selection).
+	rv.SetPRs([]github.PR{
+		{Number: 42, RepoOwner: "acme", Repo: "widgets"},
+	}, nil)
+	rv.prCursor = 0
+	// openPRInBrowser would call exec.Command("open", url).Start()
+	// which is a no-op on CI / headless. Just verify no panic.
+	rv.openPRInBrowser()
+
+	// With a selected PR.
+	pr := rv.prs[0]
+	rv.selectedPR = &pr
+	rv.openPRInBrowser()
+}

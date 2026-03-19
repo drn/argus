@@ -2,6 +2,7 @@ package tui2
 
 import (
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -299,6 +300,9 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 		case 'k':
 			rv.cursorUp()
 			return true
+		case 'o':
+			rv.openPRInBrowser()
+			return true
 		case 'R':
 			rv.handleRefresh(app)
 			return true
@@ -448,6 +452,21 @@ func (rv *ReviewsView) handleEsc() {
 		rv.focus = rfList
 		return
 	}
+}
+
+func (rv *ReviewsView) openPRInBrowser() {
+	var pr *github.PR
+	if rv.selectedPR != nil {
+		pr = rv.selectedPR
+	} else if rv.prCursor >= 0 && rv.prCursor < len(rv.prs) {
+		pr = &rv.prs[rv.prCursor]
+	}
+	if pr == nil {
+		return
+	}
+	url := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
+	exec.Command("open", url).Start() //nolint:errcheck
+	uxlog.Log("[reviews] opened PR #%d in browser: %s", pr.Number, url)
 }
 
 func (rv *ReviewsView) handleRefresh(app *App) {
