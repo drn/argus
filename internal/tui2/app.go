@@ -13,8 +13,9 @@ import (
 	"github.com/drn/argus/internal/config"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -49,6 +50,9 @@ type App struct {
 	agentPane *TerminalPane
 	gitPanel  *GitPanel
 	filePanel *FilePanel
+
+	// Reviews tab
+	reviews *ReviewsView
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -110,6 +114,10 @@ func (a *App) buildUI() {
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
 	a.agentPane = NewTerminalPane()
+	a.reviews = NewReviewsView()
+	a.reviews.SetOnFetch(func(fn func()) {
+		go fn()
+	})
 
 	// Task list page
 	taskListCenter := tview.NewFlex().SetDirection(tview.FlexColumn).
@@ -126,7 +134,8 @@ func (a *App) buildUI() {
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
-		AddPage("agent", a.agentPage, true, false)
+		AddPage("agent", a.agentPage, true, false).
+		AddPage("reviews", a.reviews, true, false)
 
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
@@ -205,6 +214,27 @@ func (a *App) onTick() {
 	} else {
 		a.tapp.QueueUpdateDraw(func() {})
 	}
+
+	// Reviews tab: check diff/comment staleness.
+	if a.header.ActiveTab() == TabReviews && a.reviews.SelectedPR() != nil {
+		if a.reviews.IsDiffStale() && !a.reviews.DiffFetching() {
+			a.reviews.fetchDiffAndComments(a)
+		} else if a.reviews.AreCommentsStale() && !a.reviews.CommentsFetching() {
+			pr := a.reviews.SelectedPR()
+			a.reviews.commentsFetching = true
+			go func() {
+				comments, err := github.FetchPRComments(pr.RepoOwner, pr.Repo, pr.Number)
+				a.tapp.QueueUpdateDraw(func() {
+					if err != nil {
+						uxlog.Log("[reviews] tick comment refresh error: %v", err)
+						a.reviews.commentsFetching = false
+						return
+					}
+					a.reviews.SetComments(comments)
+				})
+			}()
+		}
+	}
 }
 
 func (a *App) refreshTasks() {
@@ -280,6 +310,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	switch a.mode {
 	case modeAgent:
 		return a.handleAgentKey(event)
+	}
+
+	// Reviews tab key routing.
+	if a.header.ActiveTab() == TabReviews {
+		if a.reviews.HandleKey(event, a) {
+			return nil
+		}
 	}
 
 	return event
@@ -662,8 +699,12 @@ func (a *App) switchTab(t Tab) {
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
 	case TabReviews:
-		a.statusbar.SetError("Reviews tab not yet ported to tcell runtime")
-		a.pages.SwitchToPage("tasks")
+		a.mode = modeTaskList // reuse task list mode for non-agent tabs
+		a.pages.SwitchToPage("reviews")
+		if a.reviews.CanFetchPRList() {
+			a.reviews.StartLoading()
+			a.reviews.fetchPRList(a)
+		}
 	case TabSettings:
 		a.statusbar.SetError("Settings tab not yet ported to tcell runtime")
 		a.pages.SwitchToPage("tasks")

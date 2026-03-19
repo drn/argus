@@ -23,6 +23,7 @@ var (
 	ColorError      = tcell.Color203 // red — errors
 	ColorKeyHint    = tcell.Color87  // cyan — keybinding hints
 	ColorKeyLabel   = tcell.Color240 // dim — keybinding labels
+	ColorHighlight  = tcell.Color236 // slightly lighter dark gray — cursor/selection highlight
 )
 
 // Styles for common UI elements.
