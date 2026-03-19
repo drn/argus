@@ -2,8 +2,8 @@
 
 **Date:** 2026-03-18
 **Source:** Inline request: "research well-maintained libraries that do this cleanly. then write an implementation plan"
-**Status:** In Progress
-**Current Phase:** Phase 6 (x/vt migration + Bubble Tea removal)
+**Status:** Complete
+**Current Phase:** All phases complete (1-12)
 
 ## Goal
 
@@ -148,171 +148,171 @@ The clean path is a runtime split and staged migration:
 - [x] Reviews and Settings tabs remain as stubs with error messages (complex views deferred to separate work)
 
 ### Phase 6: Replace vt10x with x/vt in TerminalPane
-**Status:** not started
+**Status:** complete
 
 This is a significant architectural change. Currently scrollback replays the entire 256KB ring buffer through a tall vt10x instance every frame. x/vt's native `Scrollback()` buffer eliminates this entirely — no more `estimateVTRows()`, no more creating a throwaway emulator sized to total-output-lines.
 
 **Emulator swap:**
-- [ ] `go get github.com/charmbracelet/x/vt github.com/charmbracelet/ultraviolet`
-- [ ] Replace `vt10x.New(vt10x.WithSize(w, h))` → `vt.NewSafeEmulator(w, h)` in `internal/tui2/terminalpane.go`
-- [ ] Replace `vt.Cell(x, y)` → `emulator.CellAt(x, y)` (returns `*uv.Cell` with `.Content` string, `.Style` with fg/bg as `image/color.Color`, attrs as bitflags)
-- [ ] Replace `cellStyle(vt10x.Glyph)` → new `uvCellToTcellStyle(*uv.Cell)` using `tcell.FromImageColor(cell.Style.Fg)` for color conversion
-- [ ] Replace cursor access: `vt.Cursor()` → `emulator.CursorPosition()`
-- [ ] Remove `vt.Lock()/Unlock()` — SafeEmulator is thread-safe
-- [ ] Replace `rowHasContent` to check `cell.Content != "" && cell.Content != " "` (x/vt cells use string content, not rune)
+- [x] `go get github.com/charmbracelet/x/vt github.com/charmbracelet/ultraviolet`
+- [x] Replace `vt10x.New(vt10x.WithSize(w, h))` → `vt.NewSafeEmulator(w, h)` in `internal/tui2/terminalpane.go`
+- [x] Replace `vt.Cell(x, y)` → `emulator.CellAt(x, y)` (returns `*uv.Cell` with `.Content` string, `.Style` with fg/bg as `image/color.Color`, attrs as bitflags)
+- [x] Replace `cellStyle(vt10x.Glyph)` → new `uvCellToTcellStyle(*uv.Cell)` using `tcell.FromImageColor(cell.Style.Fg)` for color conversion
+- [x] Replace cursor access: `vt.Cursor()` → `emulator.CursorPosition()`
+- [x] Remove `vt.Lock()/Unlock()` — SafeEmulator is thread-safe
+- [x] Replace `rowHasContent` to check `cell.Content != "" && cell.Content != " "` (x/vt cells use string content, not rune)
 
 **Scrollback rewrite:**
-- [ ] Replace `renderReplay` (full-buffer replay through tall vt10x) with `emulator.Scrollback()` — native scrollback buffer with `.Len()` and `.CellAt(x, y)`
-- [ ] Delete `estimateVTRows()` from terminalpane.go — no longer needed
-- [ ] Scrollback rendering reads from `emulator.Scrollback()` for lines above the viewport and `emulator.CellAt()` for visible lines
+- [x] Replace `renderReplay` (full-buffer replay through tall vt10x) with `emulator.Scrollback()` — native scrollback buffer with `.Len()` and `.CellAt(x, y)`
+- [x] Delete `estimateVTRows()` from terminalpane.go — no longer needed
+- [x] Scrollback rendering reads from `emulator.Scrollback()` for lines above the viewport and `emulator.CellAt()` for visible lines
 
 **Damage tracking:**
-- [ ] Use `emulator.Touched()` to get set of changed lines since last draw
-- [ ] Only repaint changed lines in `paintVT()` instead of full panel repaint
+- [x] Use `emulator.Touched()` to get set of changed lines since last draw
+- [x] Only repaint changed lines in `paintVT()` instead of full panel repaint
 
 **Log replay for finished sessions:**
-- [ ] Rewrite log replay in terminalpane.go to use x/vt instead of importing `ui.ReplayVT10X` + `ui.EstimateVTRows` — feed session log bytes to a local x/vt emulator, use its scrollback for navigation
-- [ ] Remove tui2's dependency on `internal/ui/vtrender.go` exports (`ReplayVT10X`, `EstimateVTRows`)
+- [x] Rewrite log replay in terminalpane.go to use x/vt instead of importing `ui.ReplayVT10X` + `ui.EstimateVTRows` — feed session log bytes to a local x/vt emulator, use its scrollback for navigation
+- [x] Remove tui2's dependency on `internal/ui/vtrender.go` exports (`ReplayVT10X`, `EstimateVTRows`)
 
 **Tests:**
-- [ ] Update `internal/tui2/terminalpane_test.go` for x/vt API
-- [ ] Add tests for scrollback via `Scrollback()` buffer
-- [ ] Add tests for damage tracking (only changed lines repainted)
+- [x] Update `internal/tui2/terminalpane_test.go` for x/vt API
+- [x] Add tests for scrollback via `Scrollback()` buffer
+- [x] Add tests for damage tracking (only changed lines repainted)
 
 ### Phase 7: Extract shared utilities from internal/ui/
-**Status:** not started
+**Status:** complete
 
 Two new packages: `internal/gitutil/` (git operations, diff parsing, changed files) and `internal/skills/` (skill loading — not git-related).
 
 **Move to `internal/gitutil/` (pure Go, zero charmbracelet imports):**
-- [ ] `internal/ui/gitcmd.go` → `internal/gitutil/gitcmd.go` (FetchGitStatus, FetchFileDiff, FetchDirFiles, and their message types: `GitStatusRefreshMsg`, `DirFilesMsg`, `FileDiffMsg`)
-- [ ] `internal/ui/scrollstate.go` → `internal/gitutil/scrollstate.go` (ScrollState)
-- [ ] `internal/ui/diffparse.go` → `internal/gitutil/diffparse.go` (ParseUnifiedDiff, BuildSideBySide, DiffLine, DiffHunk types). Note: uses `charmbracelet/x/ansi` for `ansi.Hardwrap` and `ansi.StringWidth` — this dep stays in go.mod.
-- [ ] `internal/ui/worktree.go` → `internal/gitutil/worktree.go` (worktree discovery, cleanup)
-- [ ] Extract `ChangedFile`, `ParseGitStatus`, `ParseGitDiffNameStatus`, `MergeChangedFiles` from `internal/ui/fileexplorer.go` → `internal/gitutil/changedfiles.go` (pure Go types and parsers only; the `FileExplorer` struct with lipgloss rendering stays in `internal/ui/` until Phase 11 deletion)
+- [x] `internal/ui/gitcmd.go` → `internal/gitutil/gitcmd.go` (FetchGitStatus, FetchFileDiff, FetchDirFiles, and their message types: `GitStatusRefreshMsg`, `DirFilesMsg`, `FileDiffMsg`)
+- [x] `internal/ui/scrollstate.go` → `internal/gitutil/scrollstate.go` (ScrollState)
+- [x] `internal/ui/diffparse.go` → `internal/gitutil/diffparse.go` (ParseUnifiedDiff, BuildSideBySide, DiffLine, DiffHunk types). Note: uses `charmbracelet/x/ansi` for `ansi.Hardwrap` and `ansi.StringWidth` — this dep stays in go.mod.
+- [x] `internal/ui/worktree.go` → `internal/gitutil/worktree.go` (worktree discovery, cleanup)
+- [x] Extract `ChangedFile`, `ParseGitStatus`, `ParseGitDiffNameStatus`, `MergeChangedFiles` from `internal/ui/fileexplorer.go` → `internal/gitutil/changedfiles.go` (pure Go types and parsers only; the `FileExplorer` struct with lipgloss rendering stays in `internal/ui/` until Phase 11 deletion)
 
 **Move to `internal/skills/`:**
-- [ ] `internal/ui/skills.go` → `internal/skills/skills.go` (SkillItem, ScanSkills, LoadSkillsCmd — pure Go, no charmbracelet imports)
+- [x] `internal/ui/skills.go` → `internal/skills/skills.go` (SkillItem, ScanSkills, LoadSkillsCmd — pure Go, no charmbracelet imports)
 
 **Update imports:**
-- [ ] `internal/tui2/app.go`: `ui.FetchGitStatus` → `gitutil.FetchGitStatus`, `ui.ParseGitStatus` → `gitutil.ParseGitStatus`, etc.
-- [ ] `internal/tui2/fileexplorer.go`: `ui.ChangedFile` → `gitutil.ChangedFile`
-- [ ] `internal/tui2/newtaskform.go`: skill loading → `skills.ScanSkills`
-- [ ] Keep `internal/ui/` files importing from `gitutil`/`skills` so BT runtime still compiles (deleted in Phase 11)
+- [x] `internal/tui2/app.go`: `ui.FetchGitStatus` → `gitutil.FetchGitStatus`, `ui.ParseGitStatus` → `gitutil.ParseGitStatus`, etc.
+- [x] `internal/tui2/fileexplorer.go`: `ui.ChangedFile` → `gitutil.ChangedFile`
+- [x] `internal/tui2/newtaskform.go`: skill loading → `skills.ScanSkills`
+- [x] Keep `internal/ui/` files importing from `gitutil`/`skills` so BT runtime still compiles (deleted in Phase 11)
 
 **vtrender.go stays in `internal/ui/`** — after Phase 6 removes tui2's dependency on it, vtrender.go is only used by the BT runtime and will be deleted in Phase 11. No extraction needed.
 
 ### Phase 8: Port Reviews tab to tcell
-**Status:** not started
+**Status:** complete
 
 New file: `internal/tui2/reviews.go`
 
 The BT reviews tab (`internal/ui/reviews.go`) has significant complexity that must be ported:
 
 **PR fetching (from `internal/github/github.go`):**
-- [ ] Cross-repo list via `gh search prs` → enrichment with `reviewDecision` via `gh pr list` grouped by repo (O(repos) not O(PRs))
-- [ ] `SetPRs` must sort review requests before "my PRs" — `prCursor` navigates a flat slice, order must match visual sections
-- [ ] 10-min cooldown (`prListCooldown`) gates refetch on tab entry; all tab-switch paths check `canFetchPRList()`
-- [ ] Show cached data during background refresh with dimmed "refreshing…" indicator
+- [x] Cross-repo list via `gh search prs` → enrichment with `reviewDecision` via `gh pr list` grouped by repo (O(repos) not O(PRs))
+- [x] `SetPRs` must sort review requests before "my PRs" — `prCursor` navigates a flat slice, order must match visual sections
+- [x] 10-min cooldown (`prListCooldown`) gates refetch on tab entry; all tab-switch paths check `canFetchPRList()`
+- [x] Show cached data during background refresh with dimmed "refreshing…" indicator
 
 **Three-panel layout using `tview.Flex`:**
-- [ ] Left: PR list with "Review Requests" section first, "My Open PRs" second. Cursor navigation, status badges (draft, review decision, CI status).
-- [ ] Center: Diff viewer using `gitutil.ParseUnifiedDiff` + `gitutil.BuildSideBySide` for split mode. Syntax highlighting via Chroma with `injectBg` for diff line backgrounds (Chroma resets after every token — must re-apply background after each `\033[0m`). Full diff cached per PR, re-sliced per file via `ExtractFileDiff`.
-- [ ] Right: Comments list with threading + compose box. Comments fetched via GitHub REST API. 2-min TTL for auto-refresh. Diff staleness checked against `PR.UpdatedAt`.
+- [x] Left: PR list with "Review Requests" section first, "My Open PRs" second. Cursor navigation, status badges (draft, review decision, CI status).
+- [x] Center: Diff viewer using `gitutil.ParseUnifiedDiff` + `gitutil.BuildSideBySide` for split mode. Syntax highlighting via Chroma with `injectBg` for diff line backgrounds (Chroma resets after every token — must re-apply background after each `\033[0m`). Full diff cached per PR, re-sliced per file via `ExtractFileDiff`.
+- [x] Right: Comments list with threading + compose box. Comments fetched via GitHub REST API. 2-min TTL for auto-refresh. Diff staleness checked against `PR.UpdatedAt`.
 
 **Key bindings:**
-- [ ] up/down/j/k navigate PR list or diff
-- [ ] Enter select PR → fetch files + comments in parallel
-- [ ] Tab cycle focus: list → diff → comment compose
-- [ ] s toggle split/unified diff view
-- [ ] c capture line number, open comment compose
-- [ ] a approve, r request changes via `github.SubmitReview()`
-- [ ] R manual refresh (subject to cooldown)
-- [ ] esc back (exit compose, exit diff, exit reviews)
+- [x] up/down/j/k navigate PR list or diff
+- [x] Enter select PR → fetch files + comments in parallel
+- [x] Tab cycle focus: list → diff → comment compose
+- [x] s toggle split/unified diff view
+- [x] c capture line number, open comment compose
+- [x] a approve, r request changes via `github.SubmitReview()`
+- [x] R manual refresh (subject to cooldown)
+- [x] esc back (exit compose, exit diff, exit reviews)
 
 ### Phase 9: Port Settings tab to tcell
-**Status:** not started
+**Status:** complete
 
 New file: `internal/tui2/settings.go`
 
 The BT settings tab has more complexity than a simple list/detail view:
 
 **Two-panel layout (section list | detail):**
-- [ ] Left: Scrollable list of sections. Cursor skips section headers (same pattern as task list).
-- [ ] Right: Detail panel for selected item.
+- [x] Left: Scrollable list of sections. Cursor skips section headers (same pattern as task list).
+- [x] Right: Detail panel for selected item.
 
 **Sections and their detail views:**
-- [ ] STATUS — daemon connection state (`daemonConnected` flag drives "in-process mode" warning), sandbox availability (`IsSandboxAvailable()` cached via `sync.Once`)
-- [ ] SANDBOX — global sandbox enabled/disabled, deny-read paths (CSV), extra-write paths (CSV). Inline editing of path lists.
-- [ ] PROJECTS — project name, path, branch, backend, per-project sandbox overrides (`sandbox_enabled`: inherit/true/false, `sandbox_deny_read`, `sandbox_extra_write`). Detail shows all config fields.
-- [ ] BACKENDS — name, command, prompt flag. Shows `(default: <name>)` in section header. 'd' sets default.
-- [ ] KNOWLEDGE BASE — vault paths (`kb.argus_vault_path`, `kb.metis_vault_path`). Uses `NewKBVaultForm` pattern (accepts DB config key explicitly, not derived from label).
-- [ ] UX LOGS — display recent entries from `~/.argus/ux.log`
+- [x] STATUS — daemon connection state (`daemonConnected` flag drives "in-process mode" warning), sandbox availability (`IsSandboxAvailable()` cached via `sync.Once`)
+- [x] SANDBOX — global sandbox enabled/disabled, deny-read paths (CSV), extra-write paths (CSV). Inline editing of path lists.
+- [x] PROJECTS — project name, path, branch, backend, per-project sandbox overrides (`sandbox_enabled`: inherit/true/false, `sandbox_deny_read`, `sandbox_extra_write`). Detail shows all config fields.
+- [x] BACKENDS — name, command, prompt flag. Shows `(default: <name>)` in section header. 'd' sets default.
+- [x] KNOWLEDGE BASE — vault paths (`kb.argus_vault_path`, `kb.metis_vault_path`). Uses `NewKBVaultForm` pattern (accepts DB config key explicitly, not derived from label).
+- [x] UX LOGS — display recent entries from `~/.argus/ux.log`
 
 **Key bindings:**
-- [ ] up/down navigate (cursor skips section headers)
-- [ ] 'n' new project/backend
-- [ ] 'e' edit selected item (opens modal form)
-- [ ] 'd' delete item or set default backend
-- [ ] Enter select/expand
+- [x] up/down navigate (cursor skips section headers)
+- [x] 'n' new project/backend
+- [x] 'e' edit selected item (opens modal form)
+- [x] 'd' delete item or set default backend
+- [x] Enter select/expand
 
 **Forms as modal overlays via `tview.Pages.AddPage`** — same pattern as `NewTaskForm`.
 
 ### Phase 10: Port remaining forms to tcell
-**Status:** not started
+**Status:** complete
 
-- [ ] `internal/tui2/projectform.go` — add/edit project (name, path, branch, backend selector, per-project sandbox settings: enabled inherit/true/false, deny-read paths, extra-write paths). Auto-detect remote default branch on path entry (prefer `upstream` over `origin`).
-- [ ] `internal/tui2/backendform.go` — add/edit backend (name, command, prompt flag). Edit mode: name field read-only. Mirrors `internal/ui/backendform.go` pattern with 3 text input fields.
-- [ ] `internal/tui2/renametask.go` — rename task (single text input). Display-only rename: updates `t.Name` in DB, worktree dir/branch/session unchanged. Works while agent is running.
-- [ ] `internal/tui2/kbvaultform.go` — KB vault path editor. Takes DB config key explicitly (`"kb.metis_vault_path"`, `"kb.argus_vault_path"`), not derived from label string.
-- [ ] All follow modal pattern: `tview.Box` with `InputHandler`, added/removed as page on submit/cancel.
+- [x] `internal/tui2/projectform.go` — add/edit project (name, path, branch, backend selector, per-project sandbox settings: enabled inherit/true/false, deny-read paths, extra-write paths). Auto-detect remote default branch on path entry (prefer `upstream` over `origin`).
+- [x] `internal/tui2/backendform.go` — add/edit backend (name, command, prompt flag). Edit mode: name field read-only. Mirrors `internal/ui/backendform.go` pattern with 3 text input fields.
+- [x] `internal/tui2/renametask.go` — rename task (single text input). Display-only rename: updates `t.Name` in DB, worktree dir/branch/session unchanged. Works while agent is running.
+- [x] `internal/tui2/kbvaultform.go` — KB vault path editor. Takes DB config key explicitly (`"kb.metis_vault_path"`, `"kb.argus_vault_path"`), not derived from label string.
+- [x] All follow modal pattern: `tview.Box` with `InputHandler`, added/removed as page on submit/cancel.
 
-### Phase 10.5: Task list preview panel
-**Status:** not started
+### Phase 10: Port remaining forms to tcell
+**Status:** complete
 
 The BT task list shows a small terminal snapshot in the right panel when hovering over a task (`internal/ui/preview.go`). The tcell task list currently has no preview.
 
-- [ ] Add preview rendering to `TaskListView` right panel — small x/vt emulator sized to panel dimensions, fed from `session.RecentOutput()` or session log file
-- [ ] Preview updates on cursor movement (debounced, not every keystroke)
-- [ ] Finished tasks: replay from `~/.argus/sessions/<taskID>.log`
-- [ ] Active tasks: snapshot from `session.RecentOutputTail()`
+- [x] Add preview rendering to `TaskListView` right panel — small x/vt emulator sized to panel dimensions, fed from `session.RecentOutput()` or session log file
+- [x] Preview updates on cursor movement (debounced, not every keystroke)
+- [x] Finished tasks: replay from `~/.argus/sessions/<taskID>.log`
+- [x] Active tasks: snapshot from `session.RecentOutputTail()`
 
 ### Phase 11: Delete Bubble Tea runtime + clean deps
-**Status:** not started
+**Status:** complete
 
-- [ ] Delete `internal/ui/` entirely (~60 files including vtrender.go, agentview.go, root.go, all forms, all views, all tests)
-- [ ] Remove BT wiring from `cmd/argus/main.go`: delete `runTUI()` function, delete `tea` and `internal/ui` imports, make `runTcell()` the only path (remove runtime switch and `ARGUS_UI_RUNTIME` env var)
-- [ ] Delete `internal/app/agentview/runtime.go` and `runtime_test.go` (no longer needed — single runtime)
-- [ ] Remove from go.mod: `github.com/charmbracelet/bubbletea`, `github.com/charmbracelet/bubbles`, `github.com/charmbracelet/lipgloss`, `github.com/hinshun/vt10x`
-- [ ] Keep in go.mod: `github.com/charmbracelet/x/vt` (emulator), `github.com/charmbracelet/x/ansi` (used by `internal/gitutil/diffparse.go` for `ansi.Hardwrap`/`ansi.StringWidth`), `github.com/charmbracelet/ultraviolet` (x/vt cell types)
-- [ ] `go mod tidy` to drop indirect deps (colorprofile, cellbuf, x/term, etc.)
-- [ ] `go build ./... && go vet ./... && go test ./...`
-- [ ] Verify: `grep -r "charmbracelet/bubbletea\|charmbracelet/bubbles\|charmbracelet/lipgloss\|hinshun/vt10x" go.mod` → zero matches
-- [ ] Verify: `grep -r "internal/ui" internal/tui2/ cmd/` → zero matches (only `internal/gitutil` and `internal/skills`)
+- [x] Delete `internal/ui/` entirely (~60 files including vtrender.go, agentview.go, root.go, all forms, all views, all tests)
+- [x] Remove BT wiring from `cmd/argus/main.go`: delete `runTUI()` function, delete `tea` and `internal/ui` imports, make `runTcell()` the only path (remove runtime switch and `ARGUS_UI_RUNTIME` env var)
+- [x] Delete `internal/app/agentview/runtime.go` and `runtime_test.go` (no longer needed — single runtime)
+- [x] Remove from go.mod: `github.com/charmbracelet/bubbletea`, `github.com/charmbracelet/bubbles`, `github.com/charmbracelet/lipgloss`, `github.com/hinshun/vt10x`
+- [x] Keep in go.mod: `github.com/charmbracelet/x/vt` (emulator), `github.com/charmbracelet/x/ansi` (used by `internal/gitutil/diffparse.go` for `ansi.Hardwrap`/`ansi.StringWidth`), `github.com/charmbracelet/ultraviolet` (x/vt cell types)
+- [x] `go mod tidy` to drop indirect deps (colorprofile, cellbuf, x/term, etc.)
+- [x] `go build ./... && go vet ./... && go test ./...`
+- [x] Verify: `grep -r "charmbracelet/bubbletea\|charmbracelet/bubbles\|charmbracelet/lipgloss\|hinshun/vt10x" go.mod` → zero matches
+- [x] Verify: `grep -r "internal/ui" internal/tui2/ cmd/` → zero matches (only `internal/gitutil` and `internal/skills`)
 
 ### Phase 12: Wire daemon restart + in-process session exit
-**Status:** not started
+**Status:** complete
 
 The BT runtime has significant daemon lifecycle code that must be ported:
 
 **Daemon health check (mirror BT's `daemonFailures` counter):**
-- [ ] Tick handler pings daemon via `client.Ping()` (type-assert `runner` to `*dclient.Client`)
-- [ ] Three consecutive failures set `daemonRestarting = true` and trigger `restartDaemonCmd()`
-- [ ] Reset `daemonFailures = 0` on successful ping AND in restart-complete handler
-- [ ] Skip health check when `!daemonConnected` (in-process mode) or `daemonRestarting` (already restarting)
+- [x] Tick handler pings daemon via `client.Ping()` (type-assert `runner` to `*dclient.Client`)
+- [x] Three consecutive failures set `daemonRestarting = true` and trigger `restartDaemonCmd()`
+- [x] Reset `daemonFailures = 0` on successful ping AND in restart-complete handler
+- [x] Skip health check when `!daemonConnected` (in-process mode) or `daemonRestarting` (already restarting)
 
 **Daemon restart flow (mirror BT's `DaemonRestartedMsg`):**
-- [ ] `App.RestartedClient()` returns the new `*dclient.Client` after daemon restart (currently returns nil)
-- [ ] Restart handler: reset all InProgress tasks to Pending, **preserve SessionID** (Claude Code's `--session-id` persists conversation state — clearing it loses history)
-- [ ] Re-query sessions from new daemon, update `runner` reference
+- [x] `App.RestartedClient()` returns the new `*dclient.Client` after daemon restart (currently returns nil)
+- [x] Restart handler: reset all InProgress tasks to Pending, **preserve SessionID** (Claude Code's `--session-id` persists conversation state — clearing it loses history)
+- [x] Re-query sessions from new daemon, update `runner` reference
 
 **In-process session exit:**
-- [ ] Wire `onFinish` callback in `runTcell()` for in-process mode so session exits are detected immediately via `QueueUpdateDraw`, not on next 1s tick
-- [ ] `onFinish` must fire before session removal from runner (same ordering invariant as BT path)
+- [x] Wire `onFinish` callback in `runTcell()` for in-process mode so session exits are detected immediately via `QueueUpdateDraw`, not on next 1s tick
+- [x] `onFinish` must fire before session removal from runner (same ordering invariant as BT path)
 
 **Auto-start daemon:**
-- [ ] `autoStartDaemon()` forks current binary with `Setsid`, polls socket until ready (50ms intervals, 3s timeout)
-- [ ] Falls back to in-process mode if auto-start fails, with warning in Settings tab
+- [x] `autoStartDaemon()` forks current binary with `Setsid`, polls socket until ready (50ms intervals, 3s timeout)
+- [x] Falls back to in-process mode if auto-start fails, with warning in Settings tab
 
 ## Testing Strategy
 

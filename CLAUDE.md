@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Argus is a terminal-native LLM code orchestrator built with Go + Bubble Tea. It manages multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and keyboard-driven workflow.
+Argus is a terminal-native LLM code orchestrator built with Go + tcell/tview. It manages multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and keyboard-driven workflow.
 
 ## Build & Run
 
@@ -79,5 +79,4 @@ go test ./internal/db/      # run tests for a single package
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4
-- Reviews tab in tcell runtime — currently shows stub error
-- Settings tab in tcell runtime — currently shows stub error
+- Task list preview panel (small terminal snapshot per task)
