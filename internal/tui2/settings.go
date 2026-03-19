@@ -419,13 +419,9 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 			style = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
 		case srWarning:
 			style = tcell.StyleDefault.Foreground(ColorInProgress)
-			if rowIdx == sv.cursor {
-				style = style.Background(ColorHighlight)
-			}
-		default:
-			if rowIdx == sv.cursor {
-				style = style.Background(ColorHighlight)
-			}
+		}
+		if row.kind != srSection && rowIdx == sv.cursor {
+			style = style.Background(ColorHighlight)
 		}
 
 		label := row.label
