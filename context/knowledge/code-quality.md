@@ -672,3 +672,12 @@ Three visual fixes to the `NewTaskForm` modal:
 ### Gotchas
 - `cursorWrappedPos` can no longer use division — must iterate `wrapPrompt` result. This means `wrapPrompt` is called more often (once per cursor position query), but the prompt is small so this is negligible.
 - Word wrap includes trailing space on the broken line (e.g., "hello " not "hello"). This keeps cursor positions contiguous across the prompt rune slice with no gaps.
+
+## Enter Guard on Completed Tasks: 2026-03-19
+
+### Flow
+- `TaskListView.InputHandler()` in `tasklist.go` checks `t.Status != model.StatusComplete` before calling `OnSelect`
+- Single-line guard — no new types, fields, or DB changes
+
+### Gotchas
+- The guard is on the tasklist side, not `onTaskSelect` — so any programmatic calls to `onTaskSelect` (e.g., from new task form) are unaffected
