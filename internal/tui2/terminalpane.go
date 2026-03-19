@@ -77,6 +77,10 @@ type TerminalPane struct {
 	// The tick goroutine checks this and performs the resize RPC.
 	pendingResizeRows uint16
 	pendingResizeCols uint16
+
+	// OnClick is called when the user clicks on the terminal pane.
+	// The app wires this to switch agentFocus back to the terminal.
+	OnClick func()
 }
 
 // diffLine is a single line in the diff view with its type.
@@ -123,15 +127,17 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
-	// Seed PTY size from panel dimensions — SyncPTYSize will refine on next tick.
+	// Seed PTY size from panel dimensions — Draw() will refine on first render.
+	// Do NOT fall back to 80x24 when GetInnerRect returns zero (before first
+	// Draw); leave ptyCols/ptyRows at 0 so Draw() sets them to match the
+	// actual panel width. Falling back to 80 creates a mismatch with the PTY
+	// (which was started at the correct width), causing the emulator to wrap
+	// text at 80 cols even though the agent output is formatted wider.
 	if sess != nil {
 		_, _, w, h := tp.GetInnerRect()
 		if w > 0 && h > 0 {
 			tp.ptyCols = max(w, 20)
 			tp.ptyRows = max(h, 5)
-		} else {
-			tp.ptyCols = 80
-			tp.ptyRows = 24
 		}
 	}
 }
@@ -228,10 +234,16 @@ func (tp *TerminalPane) ScrollDown(n int) {
 	}
 }
 
-// MouseHandler handles mouse wheel scrolling in the terminal pane.
+// MouseHandler handles mouse clicks (focus switching) and scroll wheel.
 func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 		switch action {
+		case tview.MouseLeftDown, tview.MouseLeftClick:
+			setFocus(tp)
+			if tp.OnClick != nil {
+				tp.OnClick()
+			}
+			return true, nil
 		case tview.MouseScrollUp:
 			if tp.diffMode {
 				tp.DiffScrollUp(mouseScrollStep)

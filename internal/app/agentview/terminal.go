@@ -5,8 +5,8 @@ package agentview
 // agent.SessionHandle focused on display and input — it omits lifecycle
 // methods (Stop, Done, Err) that belong to the orchestration layer.
 //
-// Both the Bubble Tea renderer and a future tcell/tview renderer satisfy
-// their terminal rendering needs through this interface.
+// The tcell/tview renderer satisfies its terminal rendering needs
+// through this interface.
 type TerminalAdapter interface {
 	// WriteInput sends raw bytes to the agent process stdin.
 	WriteInput(p []byte) (int, error)

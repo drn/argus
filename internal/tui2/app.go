@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"golang.org/x/term"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
@@ -139,6 +140,16 @@ func (a *App) buildUI() {
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
 	a.agentPane = NewTerminalPane()
+
+	// Wire mouse click callbacks so clicking a panel switches agentFocus.
+	a.filePanel.OnClick = func() {
+		a.agentFocus = focusFiles
+		a.updateFocusIndicators()
+	}
+	a.agentPane.OnClick = func() {
+		a.agentFocus = focusTerminal
+		a.updateFocusIndicators()
+	}
 	a.reviews = NewReviewsView()
 	a.reviews.SetOnFetch(func(fn func()) {
 		go fn()
@@ -146,7 +157,7 @@ func (a *App) buildUI() {
 
 	// Task list page — three-panel layout: tasks | (git status + preview) | details
 	// Center column is a vertical split: git status (30%, clamped 3-15 rows) on top,
-	// preview (remaining) on bottom — matching the old Bubble Tea layout.
+	// preview (remaining) on bottom.
 	taskCenter := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.taskGitPanel, 0, 3, false).
 		AddItem(a.taskPreview, 0, 7, false)
@@ -258,9 +269,8 @@ func (a *App) onTick() {
 	if taskID != "" {
 		sess := a.runner.Get(taskID)
 
-		// Sync PTY size from tick goroutine — this does RPC which must not
-		// happen on the tview main goroutine (Draw).
-		a.agentPane.SyncPTYSize()
+		// PTY size sync moved to startAgentRedrawLoop (200ms) for faster
+		// initial resize. The tick no longer calls SyncPTYSize.
 
 		a.tapp.QueueUpdateDraw(func() {
 			if sess != nil {
@@ -714,10 +724,18 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 func (a *App) handleDiffKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyUp:
-		a.agentPane.DiffScrollUp(1)
+		// Navigate to previous file's diff.
+		if dir := a.filePanel.CursorUp(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		a.openFileDiff()
 		return nil
 	case tcell.KeyDown:
-		a.agentPane.DiffScrollDown(1)
+		// Navigate to next file's diff.
+		if dir := a.filePanel.CursorDown(); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
+		a.openFileDiff()
 		return nil
 	case tcell.KeyPgUp:
 		a.agentPane.DiffScrollUp(20)
@@ -1129,8 +1147,31 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 func (a *App) startSession(task *model.Task) {
 	cfg := a.db.Config()
 
-	// Use reasonable defaults — Draw() will resize to actual panel dimensions.
+	// Use actual panel dimensions so the agent process starts at the correct
+	// width — agents format their initial output for the PTY size at launch,
+	// and existing output isn't reflowed on later resize. GetInnerRect may
+	// return 0 before the first Draw(), so fall back to computing from the
+	// terminal size and the 1:3:1 agent page layout ratio.
 	rows, cols := uint16(24), uint16(80)
+	_, _, pw, ph := a.agentPane.GetInnerRect()
+	if pw > 0 && ph > 0 {
+		cols = uint16(max(pw, 20))
+		rows = uint16(max(ph, 5))
+	} else if tw, th, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 && th > 0 {
+		// Agent page is a 1:3:1 flex — center panel gets 3/5 of width.
+		// Border is drawn outside the box rect, so no deduction needed.
+		centerW := tw * 3 / 5
+		if centerW < 20 {
+			centerW = 20
+		}
+		// Height minus header(1) and statusbar(1).
+		centerH := th - 2
+		if centerH < 5 {
+			centerH = 5
+		}
+		cols = uint16(centerW)
+		rows = uint16(centerH)
+	}
 
 	resume := task.SessionID != ""
 	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
@@ -1170,6 +1211,11 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 			if !stillViewing {
 				return
 			}
+			// Sync PTY size on every redraw cycle — the 1-second tick is too
+			// slow and causes the agent to render at the wrong width (e.g., 80
+			// cols) until the first tick fires. This is an RPC call but runs on
+			// the background goroutine, not the tview main goroutine.
+			a.agentPane.SyncPTYSize()
 			a.tapp.QueueUpdateDraw(func() {})
 		}
 	}()

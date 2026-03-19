@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -213,6 +214,157 @@ func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
 	}
 }
 
+func TestFilePanelKeyRouting(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Enter agent mode with file panel focused
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+	app.agentFocus = focusFiles
+	app.filePanel.SetFocused(true)
+
+	// Set the file panel rect so CursorDown can compute visible rows
+	app.filePanel.SetRect(0, 0, 40, 20)
+
+	// Populate files
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+		{Status: "D", Path: "c.go"},
+	}
+	app.filePanel.SetFiles(files)
+
+	// Verify initial state
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Fatalf("initial selected file = %v, want a.go", f)
+	}
+
+	// Press Down arrow — should move cursor to b.go
+	ev := tcell.NewEventKey(tcell.KeyDown, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("Down arrow in file panel should be consumed (return nil)")
+	}
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "b.go" {
+		t.Errorf("after Down: selected = %v, want b.go", f)
+	}
+
+	// Press Up arrow — should move cursor back to a.go
+	ev = tcell.NewEventKey(tcell.KeyUp, 0, 0)
+	result = app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("Up arrow in file panel should be consumed (return nil)")
+	}
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Errorf("after Up: selected = %v, want a.go", f)
+	}
+}
+
+func TestDiffModeArrowsNavigateFiles(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Enter agent mode
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+	app.agentFocus = focusTerminal
+	app.filePanel.SetRect(60, 0, 40, 20)
+
+	// Populate files
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+		{Status: "D", Path: "c.go"},
+	}
+	app.filePanel.SetFiles(files)
+
+	// Enter diff mode (simulate viewing a.go's diff)
+	app.agentPane.EnterDiffMode("+line1\n-line2\n context", "a.go")
+	if !app.agentPane.InDiffMode() {
+		t.Fatal("should be in diff mode")
+	}
+
+	// Verify cursor starts on a.go
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Fatalf("initial = %v, want a.go", f)
+	}
+
+	// Press Down arrow — should move file cursor to b.go (not scroll diff)
+	ev := tcell.NewEventKey(tcell.KeyDown, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("Down in diff mode should be consumed")
+	}
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "b.go" {
+		t.Errorf("after Down: selected = %v, want b.go", f)
+	}
+
+	// Press Up arrow — should move file cursor back to a.go
+	ev = tcell.NewEventKey(tcell.KeyUp, 0, 0)
+	result = app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("Up in diff mode should be consumed")
+	}
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Errorf("after Up: selected = %v, want a.go", f)
+	}
+}
+
+func TestFilePanelMouseFocus(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Enter agent mode with terminal focused (default)
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+	app.agentFocus = focusTerminal
+
+	// Set up file panel with rect and files
+	app.filePanel.SetRect(60, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+	}
+	app.filePanel.SetFiles(files)
+
+	// Simulate clicking on the file panel — OnClick should switch agentFocus
+	if app.filePanel.OnClick == nil {
+		t.Fatal("OnClick callback not wired")
+	}
+	app.filePanel.OnClick()
+
+	if app.agentFocus != focusFiles {
+		t.Errorf("after click: agentFocus = %v, want focusFiles", app.agentFocus)
+	}
+	if !app.filePanel.focused {
+		t.Error("after click: file panel should be focused")
+	}
+
+	// Now Up/Down should navigate files (key routing test)
+	ev := tcell.NewEventKey(tcell.KeyDown, 0, 0)
+	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("Down arrow after mouse focus should be consumed")
+	}
+	if f := app.filePanel.SelectedFile(); f == nil || f.Path != "b.go" {
+		t.Errorf("after click+Down: selected = %v, want b.go", f)
+	}
+
+	// Click on terminal pane should switch focus back
+	if app.agentPane.OnClick == nil {
+		t.Fatal("TerminalPane OnClick not wired")
+	}
+	app.agentPane.OnClick()
+
+	if app.agentFocus != focusTerminal {
+		t.Errorf("after terminal click: agentFocus = %v, want focusTerminal", app.agentFocus)
+	}
+}
+
 func TestArrowsIgnoredInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -416,7 +568,7 @@ func TestCtrlDOpensConfirmDelete(t *testing.T) {
 	}
 }
 
-func TestCtrlDIgnoredInAgentMode(t *testing.T) {
+func TestCtrlDDoesNotDeleteInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -424,11 +576,13 @@ func TestCtrlDIgnoredInAgentMode(t *testing.T) {
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
 
+	// Ctrl+D in agent mode with no session exits agent view (not delete modal)
 	ev := tcell.NewEventKey(tcell.KeyCtrlD, 0, 0)
 	app.handleGlobalKey(ev)
 
-	if app.mode != modeAgent {
-		t.Errorf("mode changed to %v, should stay modeAgent", app.mode)
+	// Should return to task list, NOT open confirm delete modal
+	if app.mode == modeConfirmDelete {
+		t.Error("Ctrl+D in agent mode should not open delete modal")
 	}
 }
 

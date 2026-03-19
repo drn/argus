@@ -12,7 +12,7 @@ var bannerLines = [...]string{
 	`██   ██ ██   ██  ██████   ██████  ███████`,
 }
 
-// Per-line gradient colors matching the Bubble Tea banner.
+// Per-line gradient colors for the banner.
 var bannerGradient = [...]tcell.Color{
 	tcell.Color87,  // bright cyan
 	tcell.Color81,  // light blue

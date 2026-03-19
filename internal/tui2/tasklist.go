@@ -26,7 +26,7 @@ type taskRow struct {
 }
 
 // TaskListView displays tasks grouped by project with cursor navigation.
-// Matches the Bubble Tea TaskList behavior: one project expanded at a time,
+// One project expanded at a time,
 // cursor skips headers, archive section at the bottom.
 type TaskListView struct {
 	*tview.Box

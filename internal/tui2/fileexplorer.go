@@ -13,7 +13,7 @@ import (
 
 // FilePanel is a file explorer panel for the tcell agent view.
 // It displays changed files with status icons, directory expansion,
-// and cursor navigation — mirroring the Bubble Tea FileExplorer.
+// and cursor navigation.
 type FilePanel struct {
 	*tview.Box
 	files       []gitutil.ChangedFile
@@ -23,6 +23,10 @@ type FilePanel struct {
 	cursor      int
 	offset      int
 	focused     bool
+
+	// OnClick is called when the user clicks on the file panel.
+	// The app wires this to switch agentFocus so keyboard events route here.
+	OnClick func()
 }
 
 type fpRow struct {
@@ -252,6 +256,43 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 		}
 		drawText(screen, col, y+i, maxNameW, name, nameStyle)
 	}
+}
+
+// MouseHandler handles mouse events — clicks focus the panel and position the cursor.
+func (fp *FilePanel) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+	return fp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !fp.InRect(event.Position()) {
+			return false, nil
+		}
+		if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
+			setFocus(fp)
+			consumed = true
+
+			// Notify the app to switch agentFocus.
+			if fp.OnClick != nil {
+				fp.OnClick()
+			}
+
+			// Position cursor on the clicked row.
+			_, ey, _, _ := fp.GetInnerRect()
+			_, my := event.Position()
+			clickedRow := fp.offset + (my - ey)
+			if clickedRow >= 0 && clickedRow < len(fp.rows) {
+				fp.cursor = clickedRow
+			}
+		}
+
+		if action == tview.MouseScrollUp {
+			fp.CursorUp()
+			consumed = true
+		}
+		if action == tview.MouseScrollDown {
+			fp.CursorDown()
+			consumed = true
+		}
+
+		return
+	})
 }
 
 func (fp *FilePanel) statusIcon(status string) (rune, tcell.Style) {
