@@ -753,3 +753,27 @@ func TestTaskListView_OpenPRKey(t *testing.T) {
 		t.Error("OnOpenPR should NOT fire for task without PR URL")
 	}
 }
+
+func TestTaskListView_SelectedProject(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	// Starts on alpha's first task — SelectedProject should return "alpha".
+	if got := tl.SelectedProject(); got != "alpha" {
+		t.Errorf("SelectedProject = %q, want 'alpha'", got)
+	}
+
+	// Navigate down into beta.
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+	if got := tl.SelectedProject(); got != "beta" {
+		t.Errorf("SelectedProject after navigating to beta = %q, want 'beta'", got)
+	}
+
+	// Empty list — should return "".
+	tl2 := NewTaskListView()
+	if got := tl2.SelectedProject(); got != "" {
+		t.Errorf("SelectedProject on empty list = %q, want empty", got)
+	}
+}

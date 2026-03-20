@@ -126,6 +126,15 @@ func (tl *TaskListView) SelectedTask() *model.Task {
 	return r.task
 }
 
+// SelectedProject returns the project name at the current cursor position,
+// whether the cursor is on a task row or a project header row.
+func (tl *TaskListView) SelectedProject() string {
+	if tl.cursor < 0 || tl.cursor >= len(tl.rows) {
+		return ""
+	}
+	return tl.rows[tl.cursor].project
+}
+
 // buildRows flattens tasks into display rows grouped by project.
 func (tl *TaskListView) buildRows() {
 	tl.rows = nil
