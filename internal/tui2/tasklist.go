@@ -624,9 +624,9 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 			return '☾', tcell.StyleDefault.Foreground(ColorInProgress)
 		}
 		if tl.tickEven {
-			return '◉', StyleInProgress
+			return '\uF192', StyleInProgress
 		}
-		return '●', StyleInProgress
+		return '\uF10C', StyleInProgress
 	case hasInReview:
 		return '◎', StyleInReview
 	case hasComplete && !hasPending:
@@ -718,12 +718,12 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			statusChar = '☾'
 			statusStyle = StyleInProgress
 		} else if tl.tickEven {
-			// Actively running — animated alternate frame.
-			statusChar = '◉'
+			// Actively running — animated alternate frame (nerd font dot-circle-o).
+			statusChar = '\uF192'
 			statusStyle = StyleInProgress
 		} else {
-			// Actively running — animated default frame.
-			statusChar = '●'
+			// Actively running — animated default frame (nerd font circle-o).
+			statusChar = '\uF10C'
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:

@@ -226,7 +226,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			name:     "in progress running",
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
 			running:  map[string]bool{"1": true},
-			wantChar: '●', // tickEven is false
+			wantChar: '\uF10C', // tickEven is false (nerd font circle-o)
 		},
 		{
 			name:     "all complete",
@@ -496,18 +496,18 @@ func TestTaskListView_RunningTaskAnimation(t *testing.T) {
 	tl.running = map[string]bool{"1": true}
 	tl.idle = map[string]bool{}
 
-	// tickEven=false: running task at project level should show ●
+	// tickEven=false: running task at project level should show \uF10C (nerd font circle-o)
 	tl.tickEven = false
 	icon, _ := tl.projectStatusIcon(tasks)
-	if icon != '●' {
-		t.Errorf("tickEven=false: got %c, want ●", icon)
+	if icon != '\uF10C' {
+		t.Errorf("tickEven=false: got %c, want \\uF10C", icon)
 	}
 
-	// tickEven=true: running task at project level should show ◉
+	// tickEven=true: running task at project level should show \uF192 (nerd font dot-circle-o)
 	tl.tickEven = true
 	icon, _ = tl.projectStatusIcon(tasks)
-	if icon != '◉' {
-		t.Errorf("tickEven=true: got %c, want ◉", icon)
+	if icon != '\uF192' {
+		t.Errorf("tickEven=true: got %c, want \\uF192", icon)
 	}
 }
 
