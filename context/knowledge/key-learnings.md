@@ -247,4 +247,6 @@
 
 - **`CreateWorktree` must return the branch name so callers can store it on `task.Branch`.** The branch created is `"argus/" + candidate` but was previously not returned — callers stored the base branch (e.g., `master`) in `task.Branch` instead of the actual worktree branch. This caused `removeWorktreeAndBranch` to attempt deleting the wrong branch (or skip deletion if empty), leaving stale `argus/*` branches behind. The fix: `CreateWorktree` returns `(wtPath, finalName, branchName, err)` and the caller in `app.go` sets `task.Branch = branchName` after worktree creation.
 
+- **Cmd+Up/Down navigates between tasks while in the agent view.** `handleAgentKey` intercepts `KeyUp`/`KeyDown` with `ModCtrl|ModAlt` (covers Cmd on macOS terminals) and calls `navigateAgentTask(direction)`. This finds the adjacent task via `TaskListView.AdjacentTask(currentID, direction)` which scans the full `tl.tasks` slice (not just visible rows), then calls `SelectByID` to sync the task list cursor (expanding the target project if collapsed), and `onTaskSelect` to switch the agent view. Allows cycling through tasks without returning to the task list.
+
 ## Planned but Not Yet Implemented

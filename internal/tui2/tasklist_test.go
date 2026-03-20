@@ -423,6 +423,71 @@ func TestTaskListView_StatusCycleKeys(t *testing.T) {
 	}
 }
 
+func TestTaskListView_AdjacentTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "first", Project: "projA"},
+		{ID: "2", Name: "second", Project: "projA"},
+		{ID: "3", Name: "third", Project: "projB"},
+	})
+
+	// Next from first task
+	next := tl.AdjacentTask("1", 1)
+	if next == nil || next.ID != "2" {
+		t.Fatalf("expected task 2, got %v", next)
+	}
+
+	// Next across projects
+	next = tl.AdjacentTask("2", 1)
+	if next == nil || next.ID != "3" {
+		t.Fatalf("expected task 3, got %v", next)
+	}
+
+	// No next from last task
+	next = tl.AdjacentTask("3", 1)
+	if next != nil {
+		t.Fatalf("expected nil, got %v", next)
+	}
+
+	// Prev from second task
+	prev := tl.AdjacentTask("2", -1)
+	if prev == nil || prev.ID != "1" {
+		t.Fatalf("expected task 1, got %v", prev)
+	}
+
+	// No prev from first task
+	prev = tl.AdjacentTask("1", -1)
+	if prev != nil {
+		t.Fatalf("expected nil, got %v", prev)
+	}
+
+	// Unknown ID
+	if tl.AdjacentTask("unknown", 1) != nil {
+		t.Fatal("expected nil for unknown ID")
+	}
+}
+
+func TestTaskListView_SelectByID(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "first", Project: "projA"},
+		{ID: "2", Name: "second", Project: "projA"},
+		{ID: "3", Name: "third", Project: "projB"},
+	})
+
+	tl.SelectByID("3")
+	sel := tl.SelectedTask()
+	if sel == nil || sel.ID != "3" {
+		t.Fatalf("expected task 3, got %v", sel)
+	}
+
+	tl.SelectByID("1")
+	sel = tl.SelectedTask()
+	if sel == nil || sel.ID != "1" {
+		t.Fatalf("expected task 1, got %v", sel)
+	}
+}
+
 func TestTaskListView_RunningTaskAnimation(t *testing.T) {
 	tl := NewTaskListView()
 	tasks := []*model.Task{

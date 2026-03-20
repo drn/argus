@@ -748,6 +748,52 @@ func (tl *TaskListView) HasTasks() bool {
 	return len(tl.tasks) > 0
 }
 
+// AdjacentTask returns the next (+1) or previous (-1) task relative to the
+// given task ID. Scans the full task list (not just visible/expanded rows).
+// Returns nil if there is no adjacent task in that direction.
+func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Task {
+	currentIdx := -1
+	for i, t := range tl.tasks {
+		if t.ID == currentID {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		return nil
+	}
+	next := currentIdx + direction
+	if next < 0 || next >= len(tl.tasks) {
+		return nil
+	}
+	return tl.tasks[next]
+}
+
+// SelectByID moves the cursor to the row matching the given task ID.
+// If the task is in a collapsed project, expands it first.
+func (tl *TaskListView) SelectByID(id string) {
+	// Find the task to get its project, then expand it so the row exists.
+	for _, t := range tl.tasks {
+		if t.ID == id {
+			if t.Archived {
+				tl.archiveExpanded = true
+				tl.archiveProject = t.Project
+			} else {
+				tl.expanded = t.Project
+			}
+			tl.buildRows()
+			break
+		}
+	}
+	for i, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == id {
+			tl.cursor = i
+			tl.notifyCursorChange()
+			return
+		}
+	}
+}
+
 // SetExpanded sets which project is expanded.
 func (tl *TaskListView) SetExpanded(proj string) {
 	tl.expanded = proj
