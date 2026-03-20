@@ -27,6 +27,8 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`startOrAttach` must revert all state on Start failure.** Reset to Pending, clear SessionID, zero StartedAt. `SetStatus(StatusPending)` doesn't clear StartedAt — explicit zero required.
 - **Daemon session exits must be wired to TUI via `client.OnSessionExit`.** Without this, tasks stay InProgress forever in daemon mode.
 - **`restartDaemon` must re-wire `OnSessionExit` on the new client.**
+- **SessionID must be populated before first `runner.Start` for Claude backends, and captured post-exit for Codex.** Claude uses `--session-id <uuid>` on first run and `--resume <uuid>` on subsequent runs. Codex captures its ID from `~/.codex/state_5.sqlite` after exit. Without a SessionID, `resume` is always false and every start is a fresh conversation.
+- **Codex session ID capture (`CaptureCodexSessionID`) must run off the tview main goroutine.** It opens a SQLite connection which can block. Use a background goroutine + `QueueUpdateDraw` to persist.
 
 ### PTY & Terminal Rendering
 

@@ -480,6 +480,7 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	// Update task status in DB.
+	var captureWorktree, captureTaskID string
 	tasks := a.db.Tasks()
 	for _, t := range tasks {
 		if t.ID == taskID && t.Status == model.StatusInProgress {
@@ -488,10 +489,37 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			} else {
 				t.SetStatus(model.StatusComplete)
 			}
+			// Check if we need to capture a Codex session ID (done off-thread below).
+			if t.SessionID == "" && t.Worktree != "" {
+				cfg := a.db.Config()
+				if backend, berr := agent.ResolveBackend(t, cfg); berr == nil && agent.IsCodexBackend(backend.Command) {
+					captureWorktree = t.Worktree
+					captureTaskID = t.ID
+				}
+			}
 			a.db.Update(t) //nolint:errcheck
 			uxlog.Log("[tui2] task %s (%s) → %s", t.ID, t.Name, t.Status)
 			break
 		}
+	}
+
+	// Capture Codex session ID in a background goroutine — CaptureCodexSessionID
+	// opens a SQLite connection which must not block the tview main goroutine.
+	if captureWorktree != "" {
+		go func(wtPath, tID string) {
+			sid, err := agent.CaptureCodexSessionID(wtPath)
+			if err != nil {
+				uxlog.Log("[tui2] codex session ID capture failed for task %s: %v", tID, err)
+				return
+			}
+			uxlog.Log("[tui2] captured codex session ID %s for task %s", sid, tID)
+			a.tapp.QueueUpdateDraw(func() {
+				if t, gerr := a.db.Get(tID); gerr == nil && t != nil {
+					t.SessionID = sid
+					a.db.Update(t) //nolint:errcheck
+				}
+			})
+		}(captureWorktree, captureTaskID)
 	}
 
 	// If we're viewing this task's agent pane and it completed, navigate back
@@ -885,6 +913,19 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	// When session is finished, ctrl+d exits agent view (same as ctrl+q/esc)
 	if event.Key() == tcell.KeyCtrlD && (sess == nil || !sess.Alive()) {
 		a.exitAgentView()
+		return nil
+	}
+
+	// Enter restarts/resumes the session when dead.
+	if event.Key() == tcell.KeyEnter && (sess == nil || !sess.Alive()) {
+		a.mu.Lock()
+		taskID := a.agentState.TaskID
+		a.mu.Unlock()
+		if t, err := a.db.Get(taskID); err == nil && t != nil {
+			a.startSession(t)
+		} else {
+			uxlog.Log("[tui2] enter-to-restart: db.Get(%s) failed: %v", taskID, err)
+		}
 		return nil
 	}
 
@@ -1432,6 +1473,19 @@ func (a *App) startSession(task *model.Task) {
 	}
 
 	resume := task.SessionID != ""
+
+	// For Claude-style backends, generate a session ID on first run so we can
+	// resume the conversation later. Codex captures its ID post-exit
+	// (in handleSessionExitUI → CaptureCodexSessionID).
+	if !resume {
+		backend, berr := agent.ResolveBackend(task, cfg)
+		if berr == nil && !agent.IsCodexBackend(backend.Command) {
+			task.SessionID = model.GenerateSessionID()
+			a.db.Update(task) //nolint:errcheck
+			uxlog.Log("[tui2] generated session ID %s for task %s", task.SessionID, task.ID)
+		}
+	}
+
 	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
 	if err != nil {
 		uxlog.Log("[tui2] failed to start session: %v", err)
