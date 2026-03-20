@@ -781,7 +781,7 @@ Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards 
 
 ### Data model
 - `db.WorktreePaths()` — returns `(map[string]bool, error)` of all worktree paths in the DB (used for orphan detection)
-- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with animated dots, absorbs all keys
+- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with animated dots, `Increment()` for progress, absorbs all keys
 - `countOrphanedWorktrees(knownPaths)` / `sweepOrphanedWorktrees(knownPaths, projects)` in `worktree.go` — scan `~/.argus/worktrees/` for dirs not in DB
 - `modePruning` view mode in `app.go` — absorbs all keys during cleanup
 
@@ -789,9 +789,10 @@ Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards 
 1. `PruneCompleted()` fetches+deletes completed tasks from DB
 2. Stop sessions, remove session logs
 3. Count task worktrees + orphan worktrees
-4. Show `PruneModal` in running phase
-5. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep
+4. Show `PruneModal` with total count
+5. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep. Each goroutine calls `QueueUpdateDraw` → `pruneModal.Increment()` on completion (thread-safe: all increments serialized on tview main goroutine).
 6. `wg.Wait()` → `QueueUpdateDraw` → `closePruneModal` + `refreshTasks`
+7. Display transitions: static "Cleaning up N worktree(s)..." → iterative "(current/total)" as each finishes
 
 ### Gotchas
 - Orphan sweep infers branch as `"argus/" + filepath.Base(worktreePath)` since no DB record exists
