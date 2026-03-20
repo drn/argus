@@ -45,6 +45,8 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Agent view replay must use current panel dimensions, not stale PTY size.** Override `ptyCols/ptyRows` with current dimensions for dead/nil sessions.
 - **Preview panel must use PTY width, not panel width, for VT emulation.** Otherwise text double-wraps.
 - **New emulators must default `cursorVisible` to `false`.** Agents send `\e[?25l` early, but after ring buffer wrap or emu rebuild, that sequence is lost. Defaulting to `true` causes a phantom cursor at bottom-left. Also, `lastContentRow` must not extend to cursor position when cursor is hidden.
+- **`renderLive` must skip `RecentOutput()` when `newBytes == 0`.** The 256KB ring buffer copy on every draw causes typing lag — keystroke redraws trigger `Draw()` before PTY echo arrives, so copying is wasted. `emuFedTotal` must only advance when bytes are actually fed to the emulator; advancing it on an empty `raw` silently skips those bytes permanently.
+- **`startAgentRedrawLoop` must skip `QueueUpdateDraw` when idle.** Keystroke and resize events trigger their own tview redraws; the 200ms loop only needs to fire when new PTY output arrives (`TotalWritten` changed).
 - **`uvCellToTcellStyle` must map ALL ultraviolet attributes.** Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose visual contrast. Keep in sync with `uv.Attr*` constants: Bold, Faint, Italic, Blink, Reverse, Strikethrough. Also map underline styles (curly/dotted/dashed/double), underline color, and hyperlinks (OSC 8).
 
 ### UI Threading

@@ -849,19 +849,16 @@ Single→Solid, Double, Curly, Dotted, Dashed. Underline color via `style.Underl
 - `resume` flag derived from `task.SessionID != ""` — if SessionID is never set, resume never triggers
 - Enter key in agent view had no handler for dead sessions — fell through to PTY write (no-op)
 
-## Task Preview Bottom-of-History Rendering: 2026-03-20
+## renderLive Buffer Copy Optimization: 2026-03-20
 
 ### Problem
-`TaskPreviewPanel.RefreshOutput()` replayed PTY bytes into an x/vt emulator but then copied cells with `emu.CellAt(vx, vy)` starting from row 0. That only showed the top of the main screen, so Codex task previews looked blank or stale once useful output had scrolled lower or into scrollback.
+Every tview redraw (including keystroke-triggered redraws) called `sess.RecentOutput()` which copies the full 256KB ring buffer. When typing in the agent view, each keystroke triggers a draw before the PTY echo arrives — copying 256KB with 0 new bytes, causing perceptible input lag.
 
-### Flow
-1. Replay PTY bytes into a drained x/vt emulator
-2. Compute `lastContentRow` from the main screen and `ScrollbackLen()` from the emulator
-3. Derive `totalLines` in unified history space
-4. Render the last `rows` lines from scrollback or the main screen into cached `previewCell`s
-5. `Draw()` paints cached cells only
+### Fix
+1. **`renderLive` checks `TotalWritten()` vs `emuFedTotal` before copying.** When no new bytes exist and the emulator dimensions haven't changed, the buffer copy is skipped entirely and the cached emulator is repainted directly.
+2. **`startAgentRedrawLoop` tracks `lastTotalWritten`.** Only queues `QueueUpdateDraw` when new output has arrived. Keystroke and resize events trigger their own tview redraws.
 
-### Gotchas
-- Preview rendering must use the same "bottom-of-history" model as `TerminalPane.paintEmu()`, even though the preview panel caches cells instead of drawing live
-- When scrollback is empty, trim leading blank rows with `findFirstContentRowEmu()` so short outputs anchor to meaningful content
-- The correct regression test is not "some text renders"; it must prove old top-of-buffer lines are dropped and newest lines remain visible
+### Invariants
+- `emuFedTotal` must only advance when bytes are actually fed to the emulator (not on empty `raw`)
+- `needRebuild` (emu nil or dimensions changed) must always trigger a full buffer copy + replay
+- The `else if tp.emuFedTotal == 0` guard handles the "no data ever" case when the fast path would otherwise paint an uninitialized emulator

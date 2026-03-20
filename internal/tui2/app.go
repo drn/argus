@@ -1515,6 +1515,7 @@ func (a *App) startSession(task *model.Task) {
 func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 	uxlog.Log("[tui2] startAgentRedrawLoop: taskID=%s", taskID)
 	go func() {
+		var lastTotalWritten uint64
 		for {
 			time.Sleep(200 * time.Millisecond)
 			if !sess.Alive() {
@@ -1533,7 +1534,14 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 			// cols) until the first tick fires. This is an RPC call but runs on
 			// the background goroutine, not the tview main goroutine.
 			a.agentPane.SyncPTYSize()
-			a.tapp.QueueUpdateDraw(func() {})
+			// Only trigger a redraw when new output has arrived. Keystroke
+			// and window-resize events already trigger their own redraws via
+			// tview, so skipping here when idle avoids unnecessary draw cycles.
+			tw := sess.TotalWritten()
+			if tw != lastTotalWritten {
+				lastTotalWritten = tw
+				a.tapp.QueueUpdateDraw(func() {})
+			}
 		}
 	}()
 }
