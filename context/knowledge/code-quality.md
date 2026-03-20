@@ -828,3 +828,22 @@ Single→Solid, Double, Curly, Dotted, Dashed. Underline color via `style.Underl
 - `AttrConceal` (SGR 8) and `AttrRapidBlink` (SGR 6) not mapped — rarely used, tcell has no direct support for conceal
 - Hyperlinks (`cell.Link.URL`) forwarded via `style.Url()` — tcell has no getter for URL so not directly testable
 - Old code used `Underline(true)` for all styles — lost curly/dotted/dashed distinction used by Claude Code diagnostics
+
+## Session Resume Wiring: 2026-03-20
+
+### Data Model
+- `task.SessionID` (string, persisted in SQLite `session_id` column) — UUID for conversation pinning
+- Claude backends: UUID generated via `model.GenerateSessionID()` before first `runner.Start`
+- Codex backends: UUID captured post-exit from `~/.codex/state_5.sqlite` via `agent.CaptureCodexSessionID(worktreePath)`
+
+### Flow
+1. **First run (Claude):** `startSession` → `GenerateSessionID()` → `db.Update` → `BuildCmd` uses `--session-id <uuid>` → `runner.Start`
+2. **First run (Codex):** `startSession` → no ID → `BuildCmd` uses bare command → `runner.Start`
+3. **Session exit (Codex):** `handleSessionExitUI` → background goroutine → `CaptureCodexSessionID` → `QueueUpdateDraw` → `db.Update`
+4. **Resume (both):** `startSession` → `resume = task.SessionID != ""` → `BuildCmd` uses `--resume <id>` (Claude) or `codex resume ... <id>` (Codex)
+5. **Enter-to-restart:** `handleAgentKey` → `KeyEnter` when session dead → `db.Get(taskID)` → `startSession`
+
+### Gotchas
+- `CaptureCodexSessionID` opens SQLite — must not run on tview main goroutine (blocking I/O)
+- `resume` flag derived from `task.SessionID != ""` — if SessionID is never set, resume never triggers
+- Enter key in agent view had no handler for dead sessions — fell through to PTY write (no-op)
