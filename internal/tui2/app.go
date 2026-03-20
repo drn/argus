@@ -1384,7 +1384,7 @@ func (a *App) onNewTask() {
 	cfg := a.db.Config()
 
 	a.newTaskForm = NewNewTaskForm(
-		cfg.Projects, "", // TODO: default to currently selected project
+		cfg.Projects, a.tasklist.SelectedProject(),
 		cfg.Backends, cfg.Defaults.Backend,
 	)
 
