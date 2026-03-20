@@ -642,7 +642,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	my := sy + (sh-modalH)/2
 
 	// Clear modal area
-	modalBG := tcell.Color235
+	modalBG := tcell.ColorDefault
 	clearStyle := tcell.StyleDefault.Background(modalBG)
 	for row := my; row < my+modalH; row++ {
 		for col := mx; col < mx+modalW; col++ {
@@ -682,7 +682,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Prompt input — wrapped across multiple visual lines
 	curLine, curCol := f.cursorWrappedPos(innerW)
-	inputBG := tcell.Color237 // slightly lighter than modal for input field
+	inputBG := tcell.Color236 // slightly lighter than default for input field
 	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(inputBG)
 	inputEmptyStyle := tcell.StyleDefault.Background(inputBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
