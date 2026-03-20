@@ -271,6 +271,100 @@ func TestCreateWorktree_SpecialChars(t *testing.T) {
 	}
 }
 
+func TestCreateWorktree_StaleRef(t *testing.T) {
+	// Test that CreateWorktree succeeds even when a previous worktree was
+	// deleted without `git worktree remove`, leaving a stale reference.
+	repoDir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// Create a worktree normally.
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+
+	// Simulate stale reference: remove the worktree directory WITHOUT
+	// running `git worktree remove`.
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatalf("removing worktree dir: %v", err)
+	}
+
+	// Without pruning, the branch argus/stale is still locked to the stale
+	// worktree entry. CreateWorktree should prune and succeed.
+	wtPath2, finalName, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	if err != nil {
+		t.Fatalf("second CreateWorktree with stale ref failed: %v", err)
+	}
+	if finalName != "stale" {
+		t.Errorf("expected finalName %q, got %q", "stale", finalName)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath2, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath2)
+	}
+}
+
+func TestCleanGitOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  [][]byte
+		expect string
+	}{
+		{
+			name:   "fatal line extracted",
+			input:  [][]byte{[]byte("Preparing worktree\nfatal: branch already exists\n")},
+			expect: "fatal: branch already exists",
+		},
+		{
+			name:   "multiple fatal lines",
+			input:  [][]byte{[]byte("fatal: first\n"), []byte("fatal: second\n")},
+			expect: "fatal: first; fatal: second",
+		},
+		{
+			name:   "no fatal lines",
+			input:  [][]byte{[]byte("some\nother\nerror\n")},
+			expect: "some other error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanGitOutput(tt.input...)
+			if got != tt.expect {
+				t.Errorf("cleanGitOutput = %q, want %q", got, tt.expect)
+			}
+		})
+	}
+}
+
 func TestResolveStartPoint(t *testing.T) {
 	// HEAD should always be returned as-is.
 	if got := resolveStartPoint("/nonexistent", "HEAD"); got != "HEAD" {

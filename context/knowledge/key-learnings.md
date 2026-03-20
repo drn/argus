@@ -1,5 +1,7 @@
 ## Key Learnings
 
+- **`CreateWorktree` must prune stale worktree references before creating.** `git worktree prune` runs at the top of `CreateWorktree` (best-effort, errors ignored). Without it, a worktree directory deleted without `git worktree remove` leaves a stale entry that locks the branch — both `git worktree add -b` (branch exists) and `git worktree add` (branch locked to stale entry) fail, producing an opaque exit status 255 error. After cmd1 fails, the code also checks `os.Stat(wtDir)` to detect partial success from post-checkout hook failures — if the directory exists despite the error, the worktree was created successfully. The error message uses `cleanGitOutput` to extract `fatal:` lines and replace newlines with spaces for single-line display in the new task form.
+
 - **Reconciliation must distinguish RPC failure from empty running set.** `Client.Running()` returns `nil` on RPC error vs. `[]string{}` when the daemon confirms no sessions. `refreshTasksWithIDs` checks `runningIDs != nil` before reconciling — without this, a transient RPC timeout causes ALL InProgress tasks to be marked Complete, prematurely killing active workflows.
 
 - **`ctrl+c` only exits Argus from the root (task list) view.** The global `handleGlobalKey` processes `KeyCtrlC` before mode-specific handlers. In agent mode, `ctrl+c` is always consumed: if the session is alive, `0x03` is written to the PTY; if dead, it's a no-op. Only in non-agent modes does `ctrl+c` call `tapp.Stop()`. This prevents accidentally killing Argus when trying to interrupt an agent process.
