@@ -3,6 +3,7 @@ package tui2
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"time"
@@ -111,6 +112,10 @@ type App struct {
 
 	// Tick control
 	tickDone chan struct{}
+
+	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
+	// Overridden in tests to avoid scanning real worktrees.
+	wtRoot string
 }
 
 // New creates the tui2 application shell.
@@ -127,6 +132,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		tickDone:         make(chan struct{}),
 		idleUnvisited:    make(map[string]bool),
 		viewedWhileAgent: make(map[string]bool),
+		wtRoot:           filepath.Join(db.DataDir(), "worktrees"),
 	}
 
 	if dc, ok := runner.(*dclient.Client); ok {
@@ -1703,7 +1709,7 @@ func (a *App) pruneCompletedTasks() {
 	if err != nil {
 		uxlog.Log("[tui2] WorktreePaths failed, skipping orphan sweep: %v", err)
 	} else {
-		orphanCount = countOrphanedWorktrees(knownPaths)
+		orphanCount = countOrphanedWorktrees(a.wtRoot, knownPaths)
 	}
 
 	totalClean := len(toClean) + orphanCount
@@ -1747,7 +1753,7 @@ func (a *App) pruneCompletedTasks() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				swept := sweepOrphanedWorktrees(knownPaths, projects)
+				swept := sweepOrphanedWorktrees(a.wtRoot, knownPaths, projects)
 				uxlog.Log("[tui2] orphan sweep cleaned %d directories", swept)
 			}()
 		}
