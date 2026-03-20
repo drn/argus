@@ -564,7 +564,10 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	sbLen := emu.ScrollbackLen()
 	// Find content bounds in the main screen area.
 	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
-	if cur.Y > lastContentRow {
+	// Only extend content area to include cursor when it's visible.
+	// Without this guard, a hidden cursor at (0, bottom) inflates the
+	// content region with empty rows, causing a phantom cursor artifact.
+	if cursorVisible && cur.Y > lastContentRow {
 		lastContentRow = cur.Y
 	}
 
@@ -682,8 +685,13 @@ func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorV
 			CursorVisibility: onCursorVisible,
 		})
 	}
+	// Default cursor to hidden — agents (Claude Code, Codex) hide the hardware
+	// cursor via \e[?25l. When the ring buffer wraps or the emulator is rebuilt,
+	// the hide sequence may no longer be in the replay data. Defaulting to false
+	// prevents a stale cursor from appearing (typically bottom-left) until the
+	// emulator processes an explicit \e[?25h show-cursor sequence.
 	if onCursorVisible != nil {
-		onCursorVisible(true)
+		onCursorVisible(false)
 	}
 	return emu
 }

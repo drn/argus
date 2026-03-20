@@ -297,6 +297,44 @@ func TestScrollbackLen(t *testing.T) {
 	}
 }
 
+func TestNewTrackedEmulator_DefaultCursorHidden(t *testing.T) {
+	tp := NewTerminalPane()
+	cursorVisible := true // will be overwritten by callback
+	_ = tp.newTrackedEmulatorWithCallback(20, 5, func(visible bool) {
+		cursorVisible = visible
+	})
+	if cursorVisible {
+		t.Fatal("new emulator should default cursor to hidden (agents hide cursor)")
+	}
+}
+
+func TestPaintEmu_HiddenCursorNoContentExtension(t *testing.T) {
+	// When cursor is hidden and at (0, lastRow), paintEmu should NOT extend
+	// lastContentRow to include the cursor — otherwise a phantom cursor cell
+	// appears at the bottom-left.
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 10)
+
+	tp := NewTerminalPane()
+	emu := tp.newTrackedEmulatorWithCallback(20, 10, func(visible bool) {})
+	// Write one line of content, then move cursor to bottom-left.
+	emu.Write([]byte("hello\x1b[10;1H"))
+
+	// Paint with cursorVisible=false — the cursor at (0,9) should NOT
+	// cause content to extend to row 9.
+	tp.paintEmu(screen, 0, 0, 20, 10, emu, 20, 10, true, false)
+
+	// Row 9 col 0 should NOT have cursor styling.
+	_, _, style, _ := screen.GetContent(0, 9)
+	fg, bg, _ := style.Decompose()
+	if fg == cursorFG || bg == cursorBG {
+		t.Fatalf("hidden cursor at bottom-left should not be painted: fg=%v bg=%v", fg, bg)
+	}
+}
+
 func TestPaintEmu_HiddenCursorNotRendered(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
