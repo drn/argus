@@ -714,3 +714,42 @@ func TestTaskListView_SeparatorBeforeArchive(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskListView_OpenPRKey(t *testing.T) {
+	tl := NewTaskListView()
+	var opened *model.Task
+	tl.OnOpenPR = func(task *model.Task) {
+		opened = task
+	}
+
+	// Single task with a PR URL.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "has-pr", Project: "p", PRURL: "https://github.com/acme/repo/pull/42"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
+	if opened == nil {
+		t.Fatal("OnOpenPR should have been called for task with PR URL")
+	}
+	if opened.ID != "1" {
+		t.Errorf("OnOpenPR called with task %s, want 1", opened.ID)
+	}
+
+	// Task without PR URL — callback should NOT fire.
+	opened = nil
+	tl.SetTasks([]*model.Task{
+		{ID: "2", Name: "no-pr", Project: "p", PRURL: ""},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
+	if opened != nil {
+		t.Error("OnOpenPR should NOT fire for task without PR URL")
+	}
+}

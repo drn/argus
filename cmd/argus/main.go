@@ -76,9 +76,9 @@ func runTUI() {
 
 	if err != nil {
 		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
-		runner = agent.NewRunner(func(taskID string, exitErr error, stopped bool, _ []byte) {
+		runner = agent.NewRunner(func(taskID string, exitErr error, stopped bool, lastOutput []byte) {
 			if appRef != nil {
-				appRef.NotifySessionExit(taskID, exitErr, stopped)
+				appRef.NotifySessionExit(taskID, exitErr, stopped, lastOutput)
 			}
 		})
 	} else {

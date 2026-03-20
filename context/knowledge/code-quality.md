@@ -701,3 +701,23 @@ No changes — same `task.Worktree` and `task.Branch` fields.
 ### Gotchas
 - `git worktree prune` must run BEFORE `git branch -D` — git tracks worktree→branch associations in `.git/worktrees/` and refuses to delete a branch with a (possibly stale) worktree reference
 - Branch inference from directory name only works when the worktree dir was created by `CreateWorktree` (which uses the sanitized task name). Manual worktrees would need the correct branch stored on the task
+
+## PR URL Detection Restoration: 2026-03-20
+
+### What was missing
+PR URL detection was lost during the Bubble Tea → tcell/tview migration. The data model (`Task.PRURL`, `pr_url` DB column), display (`SetPRURL`, `OpenPR`), and agent view key bindings (`ctrl+p`, `o`) all existed, but the scanning loop that populates `PRURL` was never ported.
+
+### Flow
+1. **Tick scan**: `onTick()` iterates `runner.Running()`, calls `sess.RecentOutputTail(32KB)`, matches `prURLRe`, persists to DB, updates agent pane (guarded by `agentState.TaskID == taskID`)
+2. **Exit scan**: Both `NotifySessionExit` (in-process) and `HandleSessionExit` (daemon) call `scanAndStorePRURL(taskID, lastOutput)` to catch fast-finishing agents
+3. **Key bindings**: `p` in task list via `OnOpenPR` callback, `ctrl+p` in task list via same callback, `ctrl+p` in agent view (existing), `o` in agent view when dead (existing)
+
+### Data model
+- `prURLRe` — package-level compiled regex in `internal/tui2/app.go`
+- `scanAndStorePRURL(taskID, lastOutput)` — shared helper for exit paths, goroutine-safe
+- `OnOpenPR` callback on `TaskListView` — same pattern as `OnArchive`, `OnStatusChange`
+
+### Gotchas
+- `NotifySessionExit` signature changed to accept `lastOutput []byte` — callers in `main.go` must pass it through (was previously discarded with `_`)
+- `SetPRURL` in `QueueUpdateDraw` must guard on `agentState.TaskID` to avoid setting the wrong PR on the visible agent pane
+- Both `p` and `ctrl+p` in the task list route through `OnOpenPR` for testability and consistency

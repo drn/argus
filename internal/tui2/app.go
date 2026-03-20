@@ -3,6 +3,7 @@ package tui2
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"sync"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+var prURLRe = regexp.MustCompile(`https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+`)
 
 // viewMode identifies the active view.
 type viewMode int
@@ -164,6 +167,9 @@ func (a *App) buildUI() {
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasks()
 	}
+	a.tasklist.OnOpenPR = func(t *model.Task) {
+		exec.Command("open", t.PRURL).Start() //nolint:errcheck
+	}
 
 	a.taskGitPanel = NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
@@ -257,6 +263,27 @@ func (a *App) onTick() {
 	// holds the mutex and waits for RPC).
 	runningIDs := a.runner.Running()
 	idleIDs := a.runner.Idle()
+
+	// Scan running sessions for GitHub PR URLs (last 32KB of output).
+	for _, rid := range runningIDs {
+		if sess := a.runner.Get(rid); sess != nil {
+			tail := sess.RecentOutputTail(32 * 1024)
+			if matches := prURLRe.FindAll(tail, -1); len(matches) > 0 {
+				url := string(matches[len(matches)-1])
+				if t, err := a.db.Get(rid); err == nil && t.PRURL != url {
+					t.PRURL = url
+					a.db.Update(t) //nolint:errcheck
+					uxlog.Log("[tui2] PR detected for task %s: %s", rid, url)
+					taskID := rid
+					a.tapp.QueueUpdateDraw(func() {
+						if a.agentState.TaskID == taskID {
+							a.agentPane.SetPRURL(url)
+						}
+					})
+				}
+			}
+		}
+	}
 
 	a.mu.Lock()
 	a.refreshTasksWithIDs(runningIDs, idleIDs)
@@ -411,8 +438,10 @@ func (a *App) RestartedClient() *dclient.Client {
 
 // NotifySessionExit is called from the in-process runner's onFinish callback.
 // It triggers a UI refresh so session exits are detected immediately (not on next tick).
-func (a *App) NotifySessionExit(taskID string, err error, stopped bool) {
+func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutput []byte) {
 	uxlog.Log("[tui2] session exit (in-process): task=%s stopped=%v err=%v", taskID, stopped, err)
+	// Scan last output for PR URL in case agent finished before tick detected it.
+	a.scanAndStorePRURL(taskID, lastOutput)
 	a.tapp.QueueUpdateDraw(func() {
 		a.handleSessionExitUI(taskID, stopped)
 	})
@@ -427,6 +456,8 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	}
 	uxlog.Log("[tui2] session exit (daemon): task=%s err=%s stopped=%v lastOutput=%d bytes",
 		taskID, info.Err, info.Stopped, len(info.LastOutput))
+	// Scan last output for PR URL in case agent finished before tick detected it.
+	a.scanAndStorePRURL(taskID, info.LastOutput)
 	a.tapp.QueueUpdateDraw(func() {
 		a.handleSessionExitUI(taskID, info.Stopped)
 	})
@@ -474,6 +505,31 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			a.refreshTasksWithIDs(runningIDs, idleIDs)
 		})
 	}()
+}
+
+// scanAndStorePRURL scans output for a GitHub PR URL and persists it on the task.
+// Safe to call from any goroutine.
+func (a *App) scanAndStorePRURL(taskID string, output []byte) {
+	if len(output) == 0 {
+		return
+	}
+	matches := prURLRe.FindAll(output, -1)
+	if len(matches) == 0 {
+		return
+	}
+	url := string(matches[len(matches)-1])
+	t, err := a.db.Get(taskID)
+	if err != nil || t.PRURL == url {
+		return
+	}
+	t.PRURL = url
+	a.db.Update(t) //nolint:errcheck
+	uxlog.Log("[tui2] PR detected on exit for task %s: %s", taskID, url)
+	a.tapp.QueueUpdateDraw(func() {
+		if a.agentState.TaskID == taskID {
+			a.agentPane.SetPRURL(url)
+		}
+	})
 }
 
 // syncIdleUnvisited pushes the current idleUnvisited set to the task list.
@@ -634,6 +690,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil {
 				a.openConfirmDelete(t)
+				return nil
+			}
+		}
+	case tcell.KeyCtrlP:
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
+			if t := a.tasklist.SelectedTask(); t != nil && t.PRURL != "" && a.tasklist.OnOpenPR != nil {
+				a.tasklist.OnOpenPR(t)
 				return nil
 			}
 		}

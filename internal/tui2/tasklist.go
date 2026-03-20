@@ -54,6 +54,8 @@ type TaskListView struct {
 	OnStatusChange func(task *model.Task)
 	// Callback when user toggles archive on a task via 'a' key.
 	OnArchive func(task *model.Task)
+	// Callback when user presses 'p' to open PR URL.
+	OnOpenPR func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
@@ -536,6 +538,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 					if tl.OnArchive != nil {
 						tl.OnArchive(t)
 					}
+				}
+			case 'p':
+				if t := tl.SelectedTask(); t != nil && t.PRURL != "" && tl.OnOpenPR != nil {
+					tl.OnOpenPR(t)
 				}
 			}
 		}
