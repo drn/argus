@@ -391,7 +391,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if tp.focused {
 		borderStyle = StyleFocusedBorder
 	}
-	inner := drawBorderedPanel(screen, x, y, width, height, "", borderStyle)
+	inner := drawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return
