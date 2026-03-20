@@ -486,21 +486,16 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		tp.renderReplay(screen, x, y, width, height, raw, logSize, ptyCols, ptyRows)
 	} else {
 		// Live follow-tail mode: incremental feed.
-		var raw []byte
-		if sess != nil {
-			raw = sess.RecentOutput()
-		}
-		if len(raw) == 0 {
-			msg := "Waiting for output..."
-			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
-			return
-		}
-		tp.renderLive(screen, x, y, width, height, raw, ptyCols, ptyRows)
+		// renderLive fetches the buffer internally, only when new bytes
+		// have arrived — avoids a 256KB ring buffer copy on every draw.
+		tp.renderLive(screen, x, y, width, height, ptyCols, ptyRows)
 	}
 }
 
 // renderLive feeds only new bytes to persistent x/vt emulator and paints cells to tcell.
-func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
+// It fetches the ring buffer only when new output has arrived, avoiding a 256KB copy
+// on redraws triggered by keystrokes or timer ticks with no new output.
+func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols, ptyRows int) {
 	tp.mu.Lock()
 	sess := tp.session
 	tp.mu.Unlock()
@@ -510,7 +505,8 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 		totalWritten = sess.TotalWritten()
 	}
 
-	if tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows {
+	needRebuild := tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows
+	if needRebuild {
 		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
@@ -518,14 +514,41 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	}
 
 	newBytes := totalWritten - tp.emuFedTotal
-	if newBytes > uint64(len(raw)) {
-		// Ring buffer wrapped — full reset and replay.
-		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
-		safeEmuWrite(tp.emu, raw)
-	} else if newBytes > 0 {
-		safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
+
+	if newBytes > 0 || needRebuild {
+		// Only copy the ring buffer when there are new bytes or a rebuild.
+		var raw []byte
+		if sess != nil {
+			raw = sess.RecentOutput()
+		}
+		if len(raw) == 0 {
+			if tp.emuFedTotal == 0 {
+				msg := "Waiting for output..."
+				drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
+				return
+			}
+			// Emulator already has content — just repaint below.
+			// Don't advance emuFedTotal: no bytes were actually fed.
+		} else if newBytes > uint64(len(raw)) || needRebuild {
+			// Ring buffer wrapped or dimensions changed — full replay.
+			if !needRebuild {
+				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+			}
+			safeEmuWrite(tp.emu, raw)
+			tp.emuFedTotal = totalWritten
+		} else {
+			safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
+			tp.emuFedTotal = totalWritten
+		}
+	} else if tp.emuFedTotal == 0 {
+		// No data has ever arrived.
+		msg := "Waiting for output..."
+		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
+		return
 	}
-	tp.emuFedTotal = totalWritten
+	// When newBytes == 0 and !needRebuild, we skip the buffer copy entirely
+	// and repaint from the cached emulator — this is the fast path for
+	// keystroke-triggered redraws.
 
 	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
 }

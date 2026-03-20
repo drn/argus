@@ -654,6 +654,52 @@ func TestTerminalPane_ResetVTClearsReplayCache(t *testing.T) {
 	}
 }
 
+// countingAdapter wraps mockAdapter and counts RecentOutput calls.
+type countingAdapter struct {
+	mockAdapter
+	recentOutputCalls int
+}
+
+func (c *countingAdapter) RecentOutput() []byte {
+	c.recentOutputCalls++
+	return c.mockAdapter.RecentOutput()
+}
+
+func TestTerminalPane_RenderLiveSkipsCopyWhenIdle(t *testing.T) {
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	output := []byte("hello world\r\n")
+	sess := &countingAdapter{
+		mockAdapter: mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output},
+	}
+	tp.SetSession(sess)
+
+	// First render — must fetch the buffer to populate the emulator.
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	testutil.Equal(t, sess.recentOutputCalls, 1)
+	testutil.Equal(t, tp.emuFedTotal, uint64(len(output)))
+
+	firstEmu := tp.emu
+
+	// Second render with same TotalWritten — should NOT call RecentOutput.
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	testutil.Equal(t, sess.recentOutputCalls, 1) // still 1
+	if tp.emu != firstEmu {
+		t.Error("emulator should be reused when no new bytes")
+	}
+
+	// Simulate new output arriving.
+	newOutput := []byte("hello world\r\nline two\r\n")
+	sess.totalWritten = uint64(len(newOutput))
+	sess.output = newOutput
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	testutil.Equal(t, sess.recentOutputCalls, 2) // now 2
+	testutil.Equal(t, tp.emuFedTotal, uint64(len(newOutput)))
+}
+
 func TestDrawBorder(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.Init()
