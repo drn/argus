@@ -1272,13 +1272,14 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		}
 
 		if projCfg.Path != "" {
-			wtPath, finalName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
+			wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
 			if err != nil {
 				a.newTaskForm.SetError("Worktree error: " + err.Error())
 				return
 			}
 			task.Worktree = wtPath
 			task.Name = finalName
+			task.Branch = branchName
 		}
 
 		a.db.Add(task)

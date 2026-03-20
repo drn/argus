@@ -68,12 +68,15 @@ func TestCreateWorktree(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, finalName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 	if finalName != "fix-bug" {
 		t.Errorf("expected finalName %q, got %q", "fix-bug", finalName)
+	}
+	if branchName != "argus/fix-bug" {
+		t.Errorf("expected branchName %q, got %q", "argus/fix-bug", branchName)
 	}
 
 	// Verify worktree was created.
@@ -100,12 +103,15 @@ func TestCreateWorktree(t *testing.T) {
 	}
 
 	// Creating again with same name should get -1 suffix.
-	wtPath2, finalName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath2, finalName2, branchName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("second CreateWorktree failed: %v", err)
 	}
 	if finalName2 != "fix-bug-1" {
 		t.Errorf("expected finalName %q, got %q", "fix-bug-1", finalName2)
+	}
+	if branchName2 != "argus/fix-bug-1" {
+		t.Errorf("expected branchName %q, got %q", "argus/fix-bug-1", branchName2)
 	}
 	expected2 := filepath.Join(tmpHome, ".argus", "worktrees", "testproject", "fix-bug-1")
 	if wtPath2 != expected2 {
@@ -176,7 +182,7 @@ func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// baseBranch=defaultBranch should resolve to origin/<defaultBranch>.
-	wtPath, finalName, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
 	if err != nil {
 		t.Fatalf("CreateWorktree with remote branch failed: %v", err)
 	}
@@ -253,7 +259,7 @@ func TestCreateWorktree_SpecialChars(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// "fails?" contains ?, which is invalid in git branch names.
-	wtPath, finalName, err := CreateWorktree(repoDir, "testproject", "fails?", "")
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproject", "fails?", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with special chars failed: %v", err)
 	}
@@ -308,7 +314,7 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with existing branch failed: %v", err)
 	}
