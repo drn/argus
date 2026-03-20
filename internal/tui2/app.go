@@ -715,7 +715,7 @@ func (a *App) updateFocusIndicators() {
 func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	switch event.Key() {
 	case tcell.KeyEscape:
-		// 3-level exit: diff → files panel → agent view
+		// Escape refocuses terminal from diff/files, but does NOT exit agent view
 		if a.agentPane.InDiffMode() {
 			a.agentPane.ExitDiffMode()
 			a.agentFocus = focusTerminal
@@ -727,8 +727,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			a.updateFocusIndicators()
 			return nil
 		}
-		a.exitAgentView()
-		return nil
+		// When focused on terminal, forward escape to PTY (handled by tcellKeyToBytes below)
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
 		return nil
