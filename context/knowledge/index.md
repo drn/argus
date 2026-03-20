@@ -17,3 +17,4 @@ Which context files are captured in knowledge:
 | context/research/daemon-lifecycle-flows.md | code-quality.md (Daemon Cleanup Race section) | All startup/shutdown/restart flows, goroutine ordering, race analysis |
 | context/research/terminal-runtime-notes.md | key-learnings.md (tui2 entries) | Library evaluation (tcell, tview, x/vt), migration complete |
 | context/plans/2026-03-18-terminal-passthrough-plan.md | key-learnings.md (tui2 entries), code-quality.md (Phase 2 section) | All phases complete: tcell/tview runtime is sole UI |
+| context/knowledge/reference-bt-migration.md | reference-bt-migration.md | Pre-tcell BT reference commit (5b8d560), old file listing |
