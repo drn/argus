@@ -748,6 +748,16 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		}
+	case tcell.KeyUp:
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			a.navigateAgentTask(-1)
+			return nil
+		}
+	case tcell.KeyDown:
+		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
+			a.navigateAgentTask(1)
+			return nil
+		}
 	}
 
 	// Diff mode keys
@@ -1618,6 +1628,20 @@ func (a *App) pruneCompletedTasks() {
 	}()
 
 	a.refreshTasks()
+}
+
+// navigateAgentTask switches to the next (+1) or previous (-1) task
+// while staying in the agent view.
+func (a *App) navigateAgentTask(direction int) {
+	next := a.tasklist.AdjacentTask(a.agentState.TaskID, direction)
+	if next == nil {
+		return
+	}
+	// Update the task list cursor so it stays in sync.
+	a.tasklist.SelectByID(next.ID)
+	// Enter the agent view for the new task (reuses onTaskSelect which
+	// resets all agent state, wires up the session, kicks off git status, etc.)
+	a.onTaskSelect(next)
 }
 
 // exitAgentView returns to the task list.
