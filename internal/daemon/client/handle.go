@@ -7,6 +7,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/daemon"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles full scrollback
@@ -19,19 +20,54 @@ type RemoteSession struct {
 	taskID string
 	client *Client
 
-	mu   sync.Mutex
-	buf  *agent.RingBuffer // local ring buffer, populated by stream reader
-	pid  int
-	info daemon.SessionInfo // cached session info
-	done chan struct{}       // closed when stream EOF
+	mu      sync.Mutex
+	buf     *agent.RingBuffer // local ring buffer, populated by stream reader
+	pid     int
+	info    daemon.SessionInfo // cached session info
+	done    chan struct{}       // closed when stream EOF
+	inputCh chan []byte         // async input channel for WriteInput
 }
 
 func newRemoteSession(taskID string, c *Client) *RemoteSession {
-	return &RemoteSession{
-		taskID: taskID,
-		client: c,
-		buf:    agent.NewRingBuffer(defaultBufSize),
-		done:   make(chan struct{}),
+	rs := &RemoteSession{
+		taskID:  taskID,
+		client:  c,
+		buf:     agent.NewRingBuffer(defaultBufSize),
+		done:    make(chan struct{}),
+		inputCh: make(chan []byte, 64),
+	}
+	go rs.inputLoop()
+	return rs
+}
+
+// inputLoop drains the input channel and sends coalesced bytes to the daemon
+// via RPC. Runs until the done channel is closed.
+func (rs *RemoteSession) inputLoop() {
+	for {
+		// Block until at least one input arrives or session closes.
+		select {
+		case b := <-rs.inputCh:
+			// Drain any additional pending bytes to coalesce into one RPC.
+			buf := b
+			for {
+				select {
+				case more := <-rs.inputCh:
+					buf = append(buf, more...)
+				default:
+					goto send
+				}
+			}
+		send:
+			var resp daemon.StatusResp
+			if err := rs.client.call("Daemon.WriteInput", &daemon.WriteReq{
+				TaskID: rs.taskID,
+				Data:   buf,
+			}, &resp); err != nil {
+				uxlog.Log("[client] inputLoop WriteInput failed: task=%s err=%v", rs.taskID, err)
+			}
+		case <-rs.done:
+			return
+		}
 	}
 }
 
@@ -42,18 +78,15 @@ func (rs *RemoteSession) PID() int {
 }
 
 func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
-	var resp daemon.StatusResp
-	err := rs.client.call("Daemon.WriteInput", &daemon.WriteReq{
-		TaskID: rs.taskID,
-		Data:   p,
-	}, &resp)
-	if err != nil {
-		return 0, err
+	// Copy so the caller can reuse the slice.
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	select {
+	case rs.inputCh <- cp:
+		return len(p), nil
+	case <-rs.done:
+		return 0, fmt.Errorf("session closed")
 	}
-	if resp.Error != "" {
-		return 0, fmt.Errorf("%s", resp.Error)
-	}
-	return len(p), nil
 }
 
 func (rs *RemoteSession) Resize(rows, cols uint16) error {
