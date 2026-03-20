@@ -741,3 +741,15 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 
 ### CI Changes
 - Go 1.24 → 1.25, added `-coverprofile=coverage.out`, coverage summary step, artifact upload
+
+## Escape Key Agent View Fix: 2026-03-20
+
+### Problem
+Pressing Escape in agent view (terminal focused) exited back to the task list instead of being forwarded to the PTY. The `case tcell.KeyEscape:` block had a comment-only fallthrough for the terminal-focused case, letting the event reach the generic "Forward to PTY" block gated by `sess != nil && sess.Alive()`. When the session was dead or nil, the event returned unhandled to tview, which exited the view.
+
+### Fix
+Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to PTY when alive (with `ResetScroll()` to snap back from scrollback, matching the generic forward block's behavior), and always returns `nil` to consume the event. Location: `internal/tui2/app.go` lines 795-801.
+
+### Gotchas
+- Must call `ResetScroll()` after writing escape to PTY — the generic forward block does this for all keys, so escape must match
+- The `return nil` is unconditional — dead/nil sessions silently consume escape rather than leaking it to tview
