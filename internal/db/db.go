@@ -343,6 +343,29 @@ func (d *DB) PruneCompleted() ([]*model.Task, error) {
 	return pruned, nil
 }
 
+// WorktreePaths returns the set of all non-empty worktree paths currently in the DB.
+// Returns an error if the query fails — callers should skip orphan sweep on error
+// to avoid treating all worktrees as orphans.
+func (d *DB) WorktreePaths() (map[string]bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT worktree FROM tasks WHERE worktree != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	paths := make(map[string]bool)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err == nil {
+			paths[p] = true
+		}
+	}
+	return paths, nil
+}
+
 // --- Projects ---
 
 func (d *DB) Projects() map[string]config.Project {
