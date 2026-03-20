@@ -847,3 +847,20 @@ Single→Solid, Double, Curly, Dotted, Dashed. Underline color via `style.Underl
 - `CaptureCodexSessionID` opens SQLite — must not run on tview main goroutine (blocking I/O)
 - `resume` flag derived from `task.SessionID != ""` — if SessionID is never set, resume never triggers
 - Enter key in agent view had no handler for dead sessions — fell through to PTY write (no-op)
+
+## Task Preview Bottom-of-History Rendering: 2026-03-20
+
+### Problem
+`TaskPreviewPanel.RefreshOutput()` replayed PTY bytes into an x/vt emulator but then copied cells with `emu.CellAt(vx, vy)` starting from row 0. That only showed the top of the main screen, so Codex task previews looked blank or stale once useful output had scrolled lower or into scrollback.
+
+### Flow
+1. Replay PTY bytes into a drained x/vt emulator
+2. Compute `lastContentRow` from the main screen and `ScrollbackLen()` from the emulator
+3. Derive `totalLines` in unified history space
+4. Render the last `rows` lines from scrollback or the main screen into cached `previewCell`s
+5. `Draw()` paints cached cells only
+
+### Gotchas
+- Preview rendering must use the same "bottom-of-history" model as `TerminalPane.paintEmu()`, even though the preview panel caches cells instead of drawing live
+- When scrollback is empty, trim leading blank rows with `findFirstContentRowEmu()` so short outputs anchor to meaningful content
+- The correct regression test is not "some text renders"; it must prove old top-of-buffer lines are dropped and newest lines remain visible
