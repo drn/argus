@@ -109,6 +109,45 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 
 @context/knowledge/key-learnings.md
 
+### Maintaining Key Learnings
+
+`context/knowledge/key-learnings.md` captures **non-obvious invariants and gotchas** — things an agent can't easily discover by reading the code. It is imported into this file via `@` reference, so its size directly impacts context window usage.
+
+**What belongs in key-learnings:**
+- Invariants that caused bugs when violated (e.g., "must do X before Y or Z breaks")
+- Non-obvious ordering requirements, race conditions, platform quirks
+- Gotchas where the obvious approach silently fails
+
+**What does NOT belong:**
+- Architecture descriptions (what code does) — put in the Architecture section above
+- Feature descriptions (UI layout, key bindings, panel structure) — discoverable from code
+- Development rules (testing, logging, documentation) — put in dedicated sections of CLAUDE.md
+- Implementation details that are clear from reading the function
+
+**Format:** Each entry is 1-2 sentences: the rule in bold, then minimal context. Group under topic headers. Target: under 15k chars total.
+
+### Documentation Requirements
+
+- **Every new feature must be documented in `context/knowledge/key-learnings.md` before the session ends** — but only the non-obvious gotchas, not a description of what the feature does.
+- **Update `context/knowledge/code-quality.md`** with a dated section summarizing the feature's data model, flow, and any gotchas. Update `context/knowledge/index.md` to include new key entities.
+- **What to document in key-learnings:** invariants that caused bugs, ordering requirements, platform quirks, silent failure modes. NOT: what the code does, feature descriptions, or UI layout.
+
+### Logging Requirements
+
+- **Every new feature must include uxlog calls for debugging.** All async handlers that process results from external systems (GitHub API, git commands, daemon RPC, etc.) must log both success and failure paths via `uxlog.Log("[feature] ...")`. Use a consistent prefix per feature area (e.g., `[reviews]`, `[git]`, `[daemon]`).
+- **What to log:** fetch results (count/size), errors, state transitions, and any guards that silently skip work (e.g., cooldown timers, staleness checks).
+
+### Testing Requirements
+
+- **Every change must include tests.** Run `make test` to verify all tests pass before considering work complete.
+- **Run `make test-cover` after writing tests** to verify coverage improved. Aim for ≥80% on packages you touch.
+- **All table-driven tests must use `t.Run` subtests.** Guard slow tests with `testing.Short()`.
+- **Test file placement:** `*_test.go` in the same package (not `_test` suffix). Use existing `testDB(t)` helpers.
+- **What to test:** exported functions, pure logic (parsers, state transitions), view/render output, edge cases (nil, empty, boundaries), state machines.
+- **OK to skip:** real terminal functions (raw mode, ioctl), external process shelling, `cmd/argus/main.go`.
+- **Testing patterns:** `db.OpenInMemory()`, `agent.NewRunner(nil)`, `exec.Command("echo")` / `exec.Command("sleep")`, `DefaultTheme()`, table-driven with `t.Run`. Keep daemon client test names short (macOS 104-byte socket path limit).
+- **CRITICAL: Tests must NEVER operate on real `~/.argus/` paths.** All worktree paths, data dirs, and file operations in tests MUST use `t.TempDir()`. A runtime `testGuard` in `internal/tui2/worktree.go` blocks deletions on real `~/.argus/` during `go test` as a safety net, but tests should be designed correctly in the first place.
+
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4
