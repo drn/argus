@@ -1709,6 +1709,12 @@ func (a *App) pruneCompletedTasks() {
 	if err != nil {
 		uxlog.Log("[tui2] WorktreePaths failed, skipping orphan sweep: %v", err)
 	} else {
+		// PruneCompleted already deleted these from the DB, so their
+		// worktree dirs would be misidentified as orphans. Mark them
+		// known so they aren't double-counted.
+		for _, t := range toClean {
+			knownPaths[t.Worktree] = true
+		}
 		orphanCount = countOrphanedWorktrees(a.wtRoot, knownPaths)
 	}
 
