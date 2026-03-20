@@ -7,9 +7,13 @@ To view old implementations: `git show 5b8d560:internal/ui/<file>`
 Key old files:
 - `internal/ui/tasklist.go` — task list with navigation, archive, auto-expand
 - `internal/ui/root.go` — key bindings, callbacks, app-level wiring
+- `internal/ui/root_views.go` — view rendering (incl. `pruneView()` with iterative progress)
 - `internal/ui/newtask.go` — new task form with autocomplete
 - `internal/ui/agentpane.go` — agent view
 - `internal/ui/wordboundary.go` — word navigation helpers
 - `internal/ui/worktree.go` — worktree cleanup helpers
+
+Notable patterns in old UI (useful for parity checks):
+- **Prune progress** (commit `7a3d9e2`): iterative `(N/M)` display via `PruneProgressMsg` chaining, one worktree per tea.Cmd cycle
 
 When checking for missing functionality from the old UI, diff or read files at this commit to see the original behavior.
