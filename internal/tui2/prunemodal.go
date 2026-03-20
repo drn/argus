@@ -15,8 +15,12 @@ const pruneModalWidth = 50
 type PruneModal struct {
 	*tview.Box
 	total    int
+	current  int  // number completed so far (0 = starting)
 	tickEven bool // toggles for animated dots
 }
+
+// Increment marks one more worktree as cleaned.
+func (m *PruneModal) Increment() { m.current++ }
 
 // NewPruneModal creates a prune progress modal.
 func NewPruneModal(total int) *PruneModal {
@@ -64,6 +68,11 @@ func (m *PruneModal) Draw(screen tcell.Screen) {
 	if m.tickEven {
 		dots = ".. "
 	}
-	msg := fmt.Sprintf("Cleaning up %d worktree(s)%s", m.total, dots)
+	var msg string
+	if m.current == 0 {
+		msg = fmt.Sprintf("Cleaning up %d worktree(s)%s", m.total, dots)
+	} else {
+		msg = fmt.Sprintf("Cleaning up worktrees (%d/%d)%s", m.current, m.total, dots)
+	}
 	drawText(screen, formX+2, formY+2, formW-4, msg, StyleNormal)
 }

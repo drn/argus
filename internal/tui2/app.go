@@ -1805,6 +1805,11 @@ func (a *App) pruneCompletedTasks() {
 				uxlog.Log("[tui2] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
 					t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
 				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+				a.tapp.QueueUpdateDraw(func() {
+					if a.pruneModal != nil {
+						a.pruneModal.Increment()
+					}
+				})
 			}(t)
 		}
 
@@ -1815,6 +1820,11 @@ func (a *App) pruneCompletedTasks() {
 				defer wg.Done()
 				swept := sweepOrphanedWorktrees(a.wtRoot, knownPaths, projects)
 				uxlog.Log("[tui2] orphan sweep cleaned %d directories", swept)
+				a.tapp.QueueUpdateDraw(func() {
+					if a.pruneModal != nil {
+						a.pruneModal.Increment()
+					}
+				})
 			}()
 		}
 
