@@ -277,6 +277,27 @@ func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
 	}
 }
 
+func TestEscapeStaysInAgentView(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+	app.agentFocus = focusTerminal
+
+	// No session running — escape should be consumed, NOT exit agent view
+	ev := tcell.NewEventKey(tcell.KeyEscape, 0, 0)
+	result := app.handleAgentKey(ev)
+
+	if app.mode != modeAgent {
+		t.Errorf("mode = %v, want modeAgent after escape with no session", app.mode)
+	}
+	if result != nil {
+		t.Error("escape should return nil (consumed), not pass through to tview")
+	}
+}
+
 func TestFilePanelKeyRouting(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
