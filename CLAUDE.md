@@ -9,12 +9,37 @@ Argus is a terminal-native LLM code orchestrator built with Go + tcell/tview. It
 ## Build & Run
 
 ```bash
-go build ./...              # build all packages
-go build -o argus ./cmd/argus/  # build binary
-go vet ./...                # lint
-go test ./...               # run all tests
-go test ./internal/db/      # run tests for a single package
+make build                  # go build ./...
+make vet                    # go vet ./...
+make test                   # go test -race -count=1 ./...
+make test-pkg PKG=./internal/db/  # single package, verbose
+make test-cover             # coverage profile + summary
+make test-watch             # gotestsum --watch (install: go install gotest.tools/gotestsum@latest)
+go build -o argus ./cmd/argus/    # build binary
 ```
+
+## Test-Driven Development
+
+Follow Red-Green-Refactor as the default workflow:
+1. **Red** — Write a failing test first using `internal/testutil` assertions
+2. **Green** — Write the minimum code to make it pass
+3. **Refactor** — Clean up while keeping tests green
+
+Use `make test-watch` for continuous feedback. Use `make test-pkg` for focused iteration on a single package.
+
+**Assertions** — use `internal/testutil` (not raw `if got != want`):
+```go
+import "github.com/drn/argus/internal/testutil"
+
+testutil.Equal(t, got, want)           // comparable types
+testutil.DeepEqual(t, got, want)       // structs/slices via go-cmp
+testutil.NoError(t, err)               // err == nil
+testutil.ErrorIs(t, err, target)       // errors.Is
+testutil.Nil(t, val)                   // handles nil-interface trap
+testutil.Contains(t, s, substr)        // string contains
+```
+
+All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing.Short()`.
 
 ## Architecture
 

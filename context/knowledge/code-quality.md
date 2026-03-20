@@ -722,14 +722,46 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 - `SetPRURL` in `QueueUpdateDraw` must guard on `agentState.TaskID` to avoid setting the wrong PR on the visible agent pane
 - Both `p` and `ctrl+p` in the task list route through `OnOpenPR` for testability and consistency
 
+## TDD Infrastructure: 2026-03-20
+
+### Data Model
+- `internal/testutil/testutil.go` — assertion helpers: `Equal[T]`, `DeepEqual[T]` (go-cmp), `NotEqual[T]`, `Nil`/`NotNil` (reflection-based for nil-interface trap), `NoError`/`Error`/`ErrorIs`, `True`/`False`, `Contains`
+- Dependency: `github.com/google/go-cmp` for `DeepEqual` struct diffs
+
+### Flow
+- Import `"github.com/drn/argus/internal/testutil"` → call `testutil.Equal(t, got, want)` etc.
+- All assertions use `t.Errorf` (not `t.Fatalf`) so multiple failures surface per run
+- `Nil`/`NotNil` use `reflect.ValueOf(got).IsNil()` to handle the nil-interface trap (nil `*T` assigned to `any` is non-nil at interface level)
+
+### Build Targets (Makefile)
+- `make test` — `go test -race -count=1 ./...`
+- `make test-watch` — `gotestsum --watch` (checks for install)
+- `make test-cover` — coverage profile + summary
+- `make test-pkg PKG=./internal/db/` — single package verbose
+
+### CI Changes
+- Go 1.24 → 1.25, added `-coverprofile=coverage.out`, coverage summary step, artifact upload
+
+## Escape Key Agent View Fix: 2026-03-20
+
+### Problem
+Pressing Escape in agent view (terminal focused) exited back to the task list instead of being forwarded to the PTY. The `case tcell.KeyEscape:` block had a comment-only fallthrough for the terminal-focused case, letting the event reach the generic "Forward to PTY" block gated by `sess != nil && sess.Alive()`. When the session was dead or nil, the event returned unhandled to tview, which exited the view.
+
+### Fix
+Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to PTY when alive (with `ResetScroll()` to snap back from scrollback, matching the generic forward block's behavior), and always returns `nil` to consume the event. Location: `internal/tui2/app.go` lines 795-801.
+
+### Gotchas
+- Must call `ResetScroll()` after writing escape to PTY — the generic forward block does this for all keys, so escape must match
+- The `return nil` is unconditional — dead/nil sessions silently consume escape rather than leaking it to tview
+
 ## Prune Worktree Fix: 2026-03-20
 
 ### Problem
 `Ctrl+R` prune deleted DB records first, then ran worktree/branch cleanup in a background goroutine. If the TUI exited before cleanup finished (each `git push origin --delete` takes ~1.5s), branches were left behind with no way to retry.
 
 ### Data model
-- `db.WorktreePaths()` — returns `map[string]bool` of all worktree paths in the DB (used for orphan detection)
-- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with `pruneRunning`/`pruneDone` phases, animated dots
+- `db.WorktreePaths()` — returns `(map[string]bool, error)` of all worktree paths in the DB (used for orphan detection)
+- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with animated dots, absorbs all keys
 - `countOrphanedWorktrees(knownPaths)` / `sweepOrphanedWorktrees(knownPaths, projects)` in `worktree.go` — scan `~/.argus/worktrees/` for dirs not in DB
 - `modePruning` view mode in `app.go` — absorbs all keys during cleanup
 
@@ -745,4 +777,5 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 - Orphan sweep infers branch as `"argus/" + filepath.Base(worktreePath)` since no DB record exists
 - `walkOrphanedWorktrees` with nil projects map just counts; with non-nil map it removes
 - Empty project directories are cleaned up after sweep
-- Modal absorbs ALL keys during `pruneRunning` — prevents premature exit
+- Modal absorbs ALL keys during cleanup — prevents premature exit
+- `WorktreePaths()` returns error; caller skips orphan sweep on failure to avoid false positives

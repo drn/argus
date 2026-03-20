@@ -804,7 +804,14 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			a.updateFocusIndicators()
 			return nil
 		}
-		// When focused on terminal, forward escape to PTY (handled by tcellKeyToBytes below)
+		// When focused on terminal, forward escape to PTY if alive, otherwise consume it
+		if sess := a.agentPane.Session(); sess != nil && sess.Alive() {
+			if _, err := sess.WriteInput([]byte{0x1b}); err != nil {
+				uxlog.Log("[tui2] write escape to PTY failed: %v", err)
+			}
+			a.agentPane.ResetScroll()
+		}
+		return nil
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
 		return nil
@@ -1095,6 +1102,8 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		return []byte{'\r'}
 	case tcell.KeyTab:
 		return []byte{'\t'}
+	case tcell.KeyBacktab:
+		return []byte("\x1b[Z")
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if alt {
 			return []byte{0x1b, 0x7f}

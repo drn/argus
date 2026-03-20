@@ -112,6 +112,7 @@ func TestTcellKeyToBytes(t *testing.T) {
 	}{
 		{"enter", tcell.KeyEnter, 0, 0, []byte{'\r'}},
 		{"tab", tcell.KeyTab, 0, 0, []byte{'\t'}},
+		{"shift-tab", tcell.KeyBacktab, 0, 0, []byte("\x1b[Z")},
 		{"backspace", tcell.KeyBackspace2, 0, 0, []byte{0x7f}},
 		{"up", tcell.KeyUp, 0, 0, []byte("\x1b[A")},
 		{"down", tcell.KeyDown, 0, 0, []byte("\x1b[B")},
@@ -273,6 +274,27 @@ func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
 
 	if app.mode != modeTaskList {
 		t.Errorf("mode = %v, want modeTaskList after ctrl+d with no session", app.mode)
+	}
+}
+
+func TestEscapeStaysInAgentView(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+	app.agentFocus = focusTerminal
+
+	// No session running — escape should be consumed, NOT exit agent view
+	ev := tcell.NewEventKey(tcell.KeyEscape, 0, 0)
+	result := app.handleAgentKey(ev)
+
+	if app.mode != modeAgent {
+		t.Errorf("mode = %v, want modeAgent after escape with no session", app.mode)
+	}
+	if result != nil {
+		t.Error("escape should return nil (consumed), not pass through to tview")
 	}
 }
 

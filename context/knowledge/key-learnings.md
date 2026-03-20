@@ -59,8 +59,12 @@
 
 ### Testing Requirements
 
-- **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `go test ./...` to verify all tests pass before considering work complete.
-- **Run `go test ./... -cover` after writing tests** to verify coverage improved. Aim for ≥80% coverage on any package you touch.
+- **Use Red-Green-Refactor as the default development approach.** Write a failing test first, make it pass with minimal code, then refactor. Use `make test-watch` (`gotestsum --watch`) for continuous feedback during TDD. Use `make test-pkg PKG=./internal/foo/` to run a single package with verbose output.
+- **Use `internal/testutil` for assertions.** `Equal`, `DeepEqual`, `NotEqual`, `Nil`, `NotNil`, `NoError`, `Error`, `ErrorIs`, `True`, `False`, `Contains`. All use `t.Errorf` (not `t.Fatalf`) so multiple assertions surface in one run. `DeepEqual` uses `go-cmp` for readable struct diffs. `Nil`/`NotNil` handle the nil-interface trap via reflection.
+- **Every change must include tests.** When adding new functionality, fixing bugs, or refactoring, always add or update corresponding tests. Run `make test` (or `go test -race -count=1 ./...`) to verify all tests pass before considering work complete.
+- **Run `make test-cover` after writing tests** to verify coverage improved. Aim for ≥80% coverage on any package you touch.
+- **All table-driven tests must use `t.Run` subtests** for clear failure output and selective re-running.
+- **Use `testing.Short()` for slow/integration tests.** Guard long-running tests with `if testing.Short() { t.Skip("skipping in short mode") }`. Run `go test -short ./...` for fast feedback.
 - **Test file placement:** Tests go in `*_test.go` files in the same package (not `_test` suffix packages). Use the existing `testDB(t)` and similar helpers.
 - **What to test:**
   - All exported functions and methods
@@ -76,6 +80,8 @@
   - `DefaultTheme()` for any UI component tests
   - Table-driven tests with `[]struct{ input, expected }` for functions with many cases
   - **Keep daemon client test names short** — macOS Unix socket paths have a 104-byte limit. `t.TempDir()` + long test name exceeds it → `connect: invalid argument`. Use short names like `TestAlive_Dead` not `TestIsSessionAlive_DeadSession`.
+
+- **TDD tooling: `internal/testutil/testutil.go` provides thin assertion helpers wrapping stdlib + go-cmp.** Generic `Equal[T]`/`NotEqual[T]` for comparable types, `DeepEqual[T]` for struct diffs via `github.com/google/go-cmp`, `Nil`/`NotNil` with reflection to handle the nil-interface trap (`nil *T` assigned to `any` is non-nil at the interface level but nil at the concrete level). `Makefile` provides `test`, `test-watch`, `test-cover`, and `test-pkg` targets. CI (`ci.yml`) generates `coverage.out` and uploads as artifact.
 
 ## Context Directory
 
@@ -167,7 +173,7 @@
 
 - **Inline diff viewer in `TerminalPane`.** `EnterDiffMode(diff, fileName)` parses raw unified diff into `[]diffLine` with types (added/removed/context/header) and renders with colored text. `ExitDiffMode()`, `ToggleDiffSplit()`, `DiffScrollUp/Down` for navigation. Diff is fetched asynchronously via `gitutil.FetchFileDiff` and rendered in the center panel, replacing the terminal view.
 
-- **Agent view key layering: `ctrl+q` exits, `esc` refocuses.** `ctrl+q` uses a 3-level exit: (1) diff → exit diff, refocus terminal; (2) files panel → refocus terminal; (3) terminal → exit agent view. `Escape` refocuses the terminal from diff/files (same first two levels) but does NOT exit agent view — when already on the terminal, escape is forwarded to the PTY as `0x1b` so agents receive it. `updateFocusIndicators()` syncs border styles.
+- **Agent view key layering: `ctrl+q` exits, `esc` refocuses.** `ctrl+q` uses a 3-level exit: (1) diff → exit diff, refocus terminal; (2) files panel → refocus terminal; (3) terminal → exit agent view. `Escape` refocuses the terminal from diff/files (same first two levels) but does NOT exit agent view — when already on the terminal, escape is explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to the PTY if the session is alive, and always returns `nil` to consume the event. This prevents escape from leaking to tview when the session is dead or nil (which would cause an unintended exit from agent view). `updateFocusIndicators()` syncs border styles.
 
 - **Session log loading for finished tasks.** `SetTaskID()` automatically reads `~/.argus/sessions/<taskID>.log` when no live session exists. The replay data is rendered via x/vt emulation painted directly to tcell.
 
