@@ -129,23 +129,21 @@ func pruneWorktrees(repoDir string) {
 }
 
 // countOrphanedWorktrees returns the number of worktree directories under
-// ~/.argus/worktrees/ that are not tracked in the DB.
-func countOrphanedWorktrees(knownPaths map[string]bool) int {
-	return walkOrphanedWorktrees(knownPaths, nil)
+// wtRoot that are not tracked in the DB.
+func countOrphanedWorktrees(wtRoot string, knownPaths map[string]bool) int {
+	return walkOrphanedWorktrees(wtRoot, knownPaths, nil)
 }
 
 // sweepOrphanedWorktrees removes orphaned worktree directories and their
 // associated branches. projects maps project name → repo path.
 // Returns the count of cleaned directories.
-func sweepOrphanedWorktrees(knownPaths map[string]bool, projects map[string]string) int {
-	return walkOrphanedWorktrees(knownPaths, projects)
+func sweepOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects map[string]string) int {
+	return walkOrphanedWorktrees(wtRoot, knownPaths, projects)
 }
 
-// walkOrphanedWorktrees scans ~/.argus/worktrees/<project>/<task>/ dirs.
+// walkOrphanedWorktrees scans wtRoot/<project>/<task>/ dirs.
 // If projects is nil, it just counts orphans. If non-nil, it removes them.
-func walkOrphanedWorktrees(knownPaths map[string]bool, projects map[string]string) int {
-	home, _ := os.UserHomeDir()
-	wtRoot := filepath.Join(home, ".argus", "worktrees")
+func walkOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects map[string]string) int {
 	if !dirExists(wtRoot) {
 		return 0
 	}

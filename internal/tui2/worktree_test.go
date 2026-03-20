@@ -142,13 +142,8 @@ func TestRemoveWorktree_CleansEmptyDir(t *testing.T) {
 }
 
 func TestCountOrphanedWorktrees(t *testing.T) {
-	// Create a fake ~/.argus/worktrees structure in a temp dir.
-	// We can't override the home dir, so test walkOrphanedWorktrees directly
-	// by creating the structure it expects.
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	wtRoot := filepath.Join(home, ".argus", "worktrees")
+	// Create a fake worktree structure in a temp dir.
+	wtRoot := filepath.Join(t.TempDir(), "worktrees")
 	os.MkdirAll(filepath.Join(wtRoot, "proj1", "task-a"), 0o755) //nolint:errcheck
 	os.MkdirAll(filepath.Join(wtRoot, "proj1", "task-b"), 0o755) //nolint:errcheck
 	os.MkdirAll(filepath.Join(wtRoot, "proj2", "task-c"), 0o755) //nolint:errcheck
@@ -158,17 +153,14 @@ func TestCountOrphanedWorktrees(t *testing.T) {
 		filepath.Join(wtRoot, "proj1", "task-a"): true,
 	}
 
-	count := countOrphanedWorktrees(known)
+	count := countOrphanedWorktrees(wtRoot, known)
 	if count != 2 {
 		t.Errorf("expected 2 orphans, got %d", count)
 	}
 }
 
 func TestSweepOrphanedWorktrees(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	wtRoot := filepath.Join(home, ".argus", "worktrees")
+	wtRoot := filepath.Join(t.TempDir(), ".argus", "worktrees")
 	orphanPath := filepath.Join(wtRoot, "proj1", "orphan-task")
 	os.MkdirAll(orphanPath, 0o755) //nolint:errcheck
 
@@ -179,7 +171,7 @@ func TestSweepOrphanedWorktrees(t *testing.T) {
 
 	// Pass empty projects map — removeWorktreeAndBranch will skip git ops
 	// but os.RemoveAll will still clean the dir.
-	swept := sweepOrphanedWorktrees(known, map[string]string{})
+	swept := sweepOrphanedWorktrees(wtRoot, known, map[string]string{})
 	if swept != 1 {
 		t.Errorf("expected 1 swept, got %d", swept)
 	}

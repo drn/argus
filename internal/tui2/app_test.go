@@ -674,6 +674,7 @@ func TestPruneCompletedTasks(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
+	app.wtRoot = t.TempDir() // isolate from real worktrees
 
 	// Add tasks with various statuses
 	d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
@@ -704,6 +705,7 @@ func TestCtrlRPrunesCompleted(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
+	app.wtRoot = t.TempDir() // isolate from real worktrees
 
 	d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
 	d.Add(&model.Task{ID: "t2", Name: "done", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
