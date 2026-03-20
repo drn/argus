@@ -173,7 +173,7 @@
 
 - **Inline diff viewer in `TerminalPane`.** `EnterDiffMode(diff, fileName)` parses raw unified diff into `[]diffLine` with types (added/removed/context/header) and renders with colored text. `ExitDiffMode()`, `ToggleDiffSplit()`, `DiffScrollUp/Down` for navigation. Diff is fetched asynchronously via `gitutil.FetchFileDiff` and rendered in the center panel, replacing the terminal view.
 
-- **Agent view key layering: `ctrl+q` exits, `esc` refocuses.** `ctrl+q` uses a 3-level exit: (1) diff → exit diff, refocus terminal; (2) files panel → refocus terminal; (3) terminal → exit agent view. `Escape` refocuses the terminal from diff/files (same first two levels) but does NOT exit agent view — when already on the terminal, escape is forwarded to the PTY as `0x1b` so agents receive it. `updateFocusIndicators()` syncs border styles.
+- **Agent view key layering: `ctrl+q` exits, `esc` refocuses.** `ctrl+q` uses a 3-level exit: (1) diff → exit diff, refocus terminal; (2) files panel → refocus terminal; (3) terminal → exit agent view. `Escape` refocuses the terminal from diff/files (same first two levels) but does NOT exit agent view — when already on the terminal, escape is explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to the PTY if the session is alive, and always returns `nil` to consume the event. This prevents escape from leaking to tview when the session is dead or nil (which would cause an unintended exit from agent view). `updateFocusIndicators()` syncs border styles.
 
 - **Session log loading for finished tasks.** `SetTaskID()` automatically reads `~/.argus/sessions/<taskID>.log` when no live session exists. The replay data is rendered via x/vt emulation painted directly to tcell.
 
