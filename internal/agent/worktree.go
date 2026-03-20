@@ -68,8 +68,9 @@ func WorktreeDir(projectName, taskName string) string {
 // CreateWorktree creates a git worktree at the deterministic path with branch
 // argus/<taskName>. If the path conflicts with an existing worktree for a
 // different task, appends -1, -2, etc. until a free slot is found. Returns
-// the worktree path and the final task name (which may have a suffix).
-func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPath, finalName string, err error) {
+// the worktree path, the final task name (which may have a suffix), and the
+// branch name (e.g. "argus/fix-bug").
+func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPath, finalName, branchName string, err error) {
 	if baseBranch == "" {
 		baseBranch = "HEAD"
 	}
@@ -96,7 +97,7 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 
 		// Ensure parent directory exists.
 		if mkErr := os.MkdirAll(filepath.Dir(wtDir), 0o755); mkErr != nil {
-			return "", "", fmt.Errorf("creating worktree parent dir: %w", mkErr)
+			return "", "", "", fmt.Errorf("creating worktree parent dir: %w", mkErr)
 		}
 
 		branch := "argus/" + candidate
@@ -107,15 +108,15 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 			cmd2 := exec.Command("git", "worktree", "add", wtDir, branch)
 			cmd2.Dir = projectPath
 			if out2, cmdErr2 := cmd2.CombinedOutput(); cmdErr2 != nil {
-				return "", "", fmt.Errorf("git worktree add: %s\n%s", cmdErr, string(append(out, out2...)))
+				return "", "", "", fmt.Errorf("git worktree add: %s\n%s", cmdErr, string(append(out, out2...)))
 			}
 		}
 
 		// Inject MCP configs into the new worktree for both Claude and Codex.
 		inject.InjectWorktreeAll(wtDir)
 
-		return wtDir, candidate, nil
+		return wtDir, candidate, branch, nil
 	}
 
-	return "", "", fmt.Errorf("could not create worktree: too many name conflicts for %q", taskName)
+	return "", "", "", fmt.Errorf("could not create worktree: too many name conflicts for %q", taskName)
 }
