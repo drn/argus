@@ -194,3 +194,45 @@ func branchExists(repoDir, branch string) bool {
 	cmd.Dir = repoDir
 	return cmd.Run() == nil
 }
+
+func TestIsTestBinary(t *testing.T) {
+	// We're running inside go test, so this must return true.
+	if !isTestBinary() {
+		t.Fatal("isTestBinary should return true during go test")
+	}
+}
+
+func TestTestGuard_BlocksRealPath(t *testing.T) {
+	// testGuard should block operations on the real ~/.argus/ during tests.
+	home, _ := os.UserHomeDir()
+	realPath := filepath.Join(home, ".argus", "worktrees", "proj", "task")
+	if !testGuard(realPath) {
+		t.Fatal("testGuard should block real ~/.argus/ path during go test")
+	}
+}
+
+func TestTestGuard_AllowsTempPath(t *testing.T) {
+	// testGuard should allow operations on temp dir paths (t.TempDir()).
+	tmpPath := filepath.Join(t.TempDir(), ".argus", "worktrees", "proj", "task")
+	if testGuard(tmpPath) {
+		t.Fatal("testGuard should allow temp dir path during go test")
+	}
+}
+
+func TestIsRealDataDir(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{filepath.Join(home, ".argus", "worktrees", "proj", "task"), true},
+		{filepath.Join(home, ".argus"), true},
+		{filepath.Join("/tmp", ".argus", "worktrees", "proj"), false},
+		{filepath.Join(home, ".argus-other"), false},
+	}
+	for _, tt := range tests {
+		if got := isRealDataDir(tt.path); got != tt.want {
+			t.Errorf("isRealDataDir(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}

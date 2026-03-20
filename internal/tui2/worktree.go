@@ -6,12 +6,40 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// isRealDataDir returns true if path is under the real ~/.argus/ directory
+// (not a test temp dir). Used to prevent tests from accidentally operating on
+// real worktrees — the "re-still-properly-cleaning" incident wiped 12 live
+// worktrees when a test scanned the real filesystem.
+func isRealDataDir(path string) bool {
+	cleaned := filepath.Clean(path)
+	realData := filepath.Clean(db.DataDir())
+	return strings.HasPrefix(cleaned, realData+string(filepath.Separator)) || cleaned == realData
+}
+
+// testGuard returns true (and logs a warning) if we detect that we're running
+// inside "go test" and the path targets the real ~/.argus/ directory. This
+// prevents test code from accidentally deleting real worktrees.
+func testGuard(path string) bool {
+	if !isTestBinary() {
+		return false
+	}
+	if !isRealDataDir(path) {
+		return false
+	}
+	uxlog.Log("[worktree] BLOCKED: refusing to operate on real path %q during go test", path)
+	return true
+}
 
 // removeWorktreeAndBranch removes a git worktree and deletes its local and
 // remote branches.
 func removeWorktreeAndBranch(worktreePath, branch, repoDir string) {
+	if testGuard(worktreePath) {
+		return
+	}
 	uxlog.Log("[worktree] removeWorktreeAndBranch: path=%q branch=%q repoDir=%q", worktreePath, branch, repoDir)
 	removeWorktree(worktreePath, repoDir)
 
@@ -85,6 +113,9 @@ func isWorktreeSubdir(worktreePath string) bool {
 
 // removeWorktree removes a git worktree directory.
 func removeWorktree(worktreePath, repoDir string) {
+	if testGuard(worktreePath) {
+		return
+	}
 	if !dirExists(worktreePath) {
 		uxlog.Log("[worktree] removeWorktree: path %q does not exist, skipping", worktreePath)
 		return
@@ -193,4 +224,11 @@ func walkOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects m
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// isTestBinary returns true when the current process is a Go test binary.
+// Go test compiles a binary named *.test (e.g., "tui2.test") before running.
+func isTestBinary() bool {
+	return strings.HasSuffix(os.Args[0], ".test") ||
+		strings.Contains(os.Args[0], "/_test/")
 }
