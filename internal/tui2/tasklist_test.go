@@ -445,3 +445,170 @@ func TestTaskListView_RunningTaskAnimation(t *testing.T) {
 		t.Errorf("tickEven=true: got %c, want ◉", icon)
 	}
 }
+
+func TestTaskListView_ArchiveToggle(t *testing.T) {
+	tl := NewTaskListView()
+	var archived *model.Task
+	tl.OnArchive = func(task *model.Task) {
+		archived = task
+	}
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task1", Status: model.StatusPending, Project: "p"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.clampCursor()
+
+	// Press 'a' to archive the task
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	if archived == nil {
+		t.Fatal("OnArchive should have been called")
+	}
+	if !archived.Archived {
+		t.Error("task should be archived after pressing 'a'")
+	}
+
+	// Press 'a' again to unarchive
+	archived = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	if archived == nil {
+		t.Fatal("OnArchive should have been called again")
+	}
+	if archived.Archived {
+		t.Error("task should be unarchived after pressing 'a' again")
+	}
+}
+
+func TestTaskListView_CursorAlwaysOnTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	// Navigate through all rows — cursor should always be on a task.
+	for i := 0; i < 20; i++ {
+		task := tl.SelectedTask()
+		if task == nil {
+			t.Errorf("step %d down: cursor not on a task (cursor=%d)", i, tl.cursor)
+		}
+		tl.CursorDown()
+	}
+	for i := 0; i < 20; i++ {
+		task := tl.SelectedTask()
+		if task == nil {
+			t.Errorf("step %d up: cursor not on a task (cursor=%d)", i, tl.cursor)
+		}
+		tl.CursorUp()
+	}
+}
+
+func TestTaskListView_SkipProjectHeaders(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "beta", Status: model.StatusPending},
+	})
+
+	// Start on alpha's task
+	if tl.SelectedTask() == nil || tl.SelectedTask().ID != "1" {
+		t.Fatalf("expected to start on task 1, got %v", tl.SelectedTask())
+	}
+
+	// Move down — should skip beta's project header and land on task 2
+	tl.CursorDown()
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("after down: expected task 2, got %v", task)
+	}
+
+	// Move back up — should skip alpha's project header and land on task 1
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "1" {
+		t.Errorf("after up: expected task 1, got %v", task)
+	}
+}
+
+func TestTaskListView_UpLandsOnLastTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "alpha", Status: model.StatusPending},
+		{ID: "3", Name: "t3", Project: "beta", Status: model.StatusPending},
+	})
+
+	// Navigate to beta's task
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "3" {
+		t.Fatalf("expected to be on task 3, got %v", task)
+	}
+
+	// Move up — should land on last task of alpha (task 2), not first (task 1)
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("after up from beta: expected task 2 (last in alpha), got %v", task)
+	}
+}
+
+func TestTaskListView_ArchiveAutoExpand(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+	})
+
+	// Archive should start collapsed
+	if tl.archiveExpanded {
+		t.Error("archive should start collapsed")
+	}
+
+	// Navigate down past all active tasks — should enter archive
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+
+	// Should have auto-expanded archive and landed on the archived task
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("expected to land on archived task 2, got %v", task)
+	}
+	if !tl.archiveExpanded {
+		t.Error("archive should be expanded after navigating into it")
+	}
+
+	// Navigate back up out of archive — should auto-collapse
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "1" {
+		t.Errorf("expected to land on task 1 after leaving archive, got %v", task)
+	}
+	if tl.archiveExpanded {
+		t.Error("archive should be collapsed after leaving it")
+	}
+}
+
+func TestTaskListView_ArchiveSectionAwareCursor(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "shared", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "shared", Status: model.StatusPending, Archived: true},
+	})
+
+	// Navigate into archive section
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("expected archived task 2, got %v", task)
+	}
+
+	// The cursor should be in the archive section, not on the main "shared" project
+	if !tl.isInArchive(tl.cursor) {
+		t.Error("cursor should be in archive section")
+	}
+}

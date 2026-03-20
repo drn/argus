@@ -51,6 +51,8 @@ type TaskListView struct {
 	OnCursorChange func(task *model.Task)
 	// Callback when user changes task status via s/S keys.
 	OnStatusChange func(task *model.Task)
+	// Callback when user toggles archive on a task via 'a' key.
+	OnArchive func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
@@ -225,32 +227,138 @@ func (tl *TaskListView) skipToTask(dir int) {
 	}
 }
 
-// CursorDown moves the cursor down. When landing on a project header,
-// autoExpand will expand it and advance the cursor to the first task.
+// CursorDown moves the cursor down, skipping headers.
 func (tl *TaskListView) CursorDown() {
+	tl.moveCursor(1)
+}
+
+// CursorUp moves the cursor up, skipping headers.
+func (tl *TaskListView) CursorUp() {
+	tl.moveCursor(-1)
+}
+
+// moveCursor moves the cursor in the given direction (+1 down, -1 up),
+// skipping project header and archive header rows so the cursor always
+// lands on a task. When navigating up past a project header, the cursor
+// lands on the last task of the previous project.
+func (tl *TaskListView) moveCursor(dir int) {
 	if len(tl.rows) == 0 {
 		return
 	}
-	tl.cursor++
+
+	prev := tl.cursor
+
+	// Step 1: Move one position in the given direction.
+	tl.cursor += dir
+	if tl.cursor < 0 {
+		tl.cursor = 0
+	}
 	if tl.cursor >= len(tl.rows) {
 		tl.cursor = len(tl.rows) - 1
 	}
 	tl.autoExpand()
+
+	c := tl.cursor
+	if c < 0 || c >= len(tl.rows) {
+		tl.notifyCursorChange()
+		return
+	}
+
+	// Already on a task row — done.
+	if tl.rows[c].kind == rowTask {
+		tl.notifyCursorChange()
+		return
+	}
+
+	// On the archive header — skip it like a project header.
+	if tl.rows[c].kind == rowArchiveHeader {
+		if dir > 0 {
+			if c+1 < len(tl.rows) {
+				tl.cursor++
+				tl.autoExpand()
+				c = tl.cursor
+				// May have landed on a project header within archive — skip that too.
+				if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+					if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+						tl.cursor++
+					}
+				}
+			}
+		} else {
+			tl.skipUpPastHeader(prev)
+		}
+		tl.notifyCursorChange()
+		return
+	}
+
+	// On a project header — skip it.
+	if dir > 0 {
+		// Going down: move to the first task below this header.
+		if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+			tl.cursor++
+		}
+	} else {
+		if c > 0 {
+			tl.skipUpPastHeader(prev)
+		} else {
+			// At the top (row 0) and it's a header — stay on the previous task.
+			tl.cursor = prev
+		}
+	}
 	tl.notifyCursorChange()
 }
 
-// CursorUp moves the cursor up. When landing on a project header,
-// autoExpand will expand it and move the cursor to the last task.
-func (tl *TaskListView) CursorUp() {
-	if len(tl.rows) == 0 {
-		return
-	}
+// skipUpPastHeader moves the cursor up past a header row (project or archive),
+// landing on the last task of the previous expanded project. If it lands on
+// another header (e.g., archive header above a project header), it chains
+// through one additional header. Falls back to prev if no task is reachable.
+func (tl *TaskListView) skipUpPastHeader(prev int) {
 	tl.cursor--
 	if tl.cursor < 0 {
-		tl.cursor = 0
+		tl.cursor = prev
+		return
 	}
 	tl.autoExpand()
-	tl.notifyCursorChange()
+	c := tl.cursor
+
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+		tl.landOnLastTask(c, prev)
+		return
+	}
+
+	// Landed on archive header after skipping a project header — skip it too.
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
+		tl.cursor--
+		if tl.cursor < 0 {
+			tl.cursor = prev
+			return
+		}
+		tl.autoExpand()
+		c = tl.cursor
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+			tl.landOnLastTask(c, prev)
+			return
+		}
+	}
+
+	// Couldn't find a task — revert.
+	if c < 0 || c >= len(tl.rows) || tl.rows[c].kind != rowTask {
+		tl.cursor = prev
+	}
+}
+
+// landOnLastTask sets the cursor to the last consecutive task row after
+// the project header at idx. Falls back to prev if no tasks follow.
+func (tl *TaskListView) landOnLastTask(idx, prev int) {
+	lastTask := -1
+	for i := idx + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
+		lastTask = i
+	}
+	if lastTask >= 0 {
+		tl.cursor = lastTask
+	} else {
+		tl.cursor = prev
+	}
 }
 
 // notifyCursorChange fires the OnCursorChange callback with the current task.
@@ -260,52 +368,57 @@ func (tl *TaskListView) notifyCursorChange() {
 	}
 }
 
-// autoExpand expands the project the cursor is in, collapses others.
+// autoExpand checks if the cursor moved to a different project and rebuilds
+// the row list with that project expanded. Also auto-expands the archive
+// section when the cursor enters it and auto-collapses when the cursor leaves.
 func (tl *TaskListView) autoExpand() {
-	if tl.cursor < 0 || tl.cursor >= len(tl.rows) {
+	if len(tl.rows) == 0 {
 		return
 	}
-	row := tl.rows[tl.cursor]
+	c := tl.cursor
+	if c < 0 || c >= len(tl.rows) {
+		return
+	}
+	r := tl.rows[c]
 
-	switch row.kind {
-	case rowProject:
-		// Cursor landed on a project header — expand it
-		inArchive := tl.isInArchive(tl.cursor)
-		if inArchive {
-			tl.archiveExpanded = true
-			if row.project != tl.archiveProject {
-				tl.archiveProject = row.project
-				tl.buildRows()
-				// Move cursor to the first task in this project
-				tl.skipToTask(1)
-			}
-		} else {
-			if row.project != tl.expanded {
-				tl.expanded = row.project
-				tl.buildRows()
-				// Move cursor to the first task in this project
-				tl.skipToTask(1)
-			}
-		}
-	case rowArchiveHeader:
-		tl.archiveExpanded = !tl.archiveExpanded
+	// Determine if cursor is in the archive section.
+	inArchive := tl.isInArchive(c)
+
+	// Auto-expand/collapse archive section based on cursor position.
+	if inArchive && !tl.archiveExpanded {
+		tl.archiveExpanded = true
 		tl.buildRows()
-	case rowTask:
-		inArchive := tl.isInArchive(tl.cursor)
-		if inArchive {
-			tl.archiveExpanded = true
-			if row.project != tl.archiveProject {
-				tl.archiveProject = row.project
-				tl.buildRows()
-				tl.restoreCursorToTask(row.task)
-			}
-		} else {
-			tl.archiveExpanded = false
-			if row.project != tl.expanded {
-				tl.expanded = row.project
-				tl.buildRows()
-				tl.restoreCursorToTask(row.task)
-			}
+		// Cursor stays valid — archive rows are appended after current position.
+		c = tl.cursor
+		if c >= 0 && c < len(tl.rows) {
+			r = tl.rows[c]
+		}
+	} else if !inArchive && tl.archiveExpanded {
+		tl.archiveExpanded = false
+		tl.buildRows()
+		// Cursor is above archive section — rows above haven't changed.
+	}
+
+	// Archive header — don't change project expansion.
+	if r.kind == rowArchiveHeader {
+		return
+	}
+
+	if inArchive {
+		// Expand the project within the archive section.
+		if r.project != tl.archiveProject {
+			currentRow := tl.rows[c]
+			tl.archiveProject = r.project
+			tl.buildRows()
+			tl.restoreCursor(currentRow, true)
+		}
+	} else {
+		// Expand the project in the active section.
+		if r.project != tl.expanded {
+			currentRow := tl.rows[c]
+			tl.expanded = r.project
+			tl.buildRows()
+			tl.restoreCursor(currentRow, false)
 		}
 	}
 }
@@ -320,17 +433,23 @@ func (tl *TaskListView) isInArchive(idx int) bool {
 	return false
 }
 
-// restoreCursorToTask moves the cursor to the row matching the given task.
-func (tl *TaskListView) restoreCursorToTask(task *model.Task) {
-	if task == nil {
-		return
-	}
+// restoreCursor finds the row matching target in the rebuilt rows slice
+// and positions the cursor there. inArchive restricts the search to the
+// archive section (or main section), preventing a project that exists in both
+// sections from matching the wrong header.
+func (tl *TaskListView) restoreCursor(target taskRow, inArchive bool) {
 	for i, r := range tl.rows {
-		if r.kind == rowTask && r.task != nil && r.task.ID == task.ID {
-			tl.cursor = i
-			return
+		if r.kind == target.kind && r.project == target.project {
+			if tl.isInArchive(i) != inArchive {
+				continue
+			}
+			if r.kind == rowProject || (r.task != nil && target.task != nil && r.task.ID == target.task.ID) {
+				tl.cursor = i
+				return
+			}
 		}
 	}
+	tl.clampCursor()
 }
 
 // InputHandler handles key events for the task list.
@@ -367,6 +486,13 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 					t.SetStatus(t.Status.Prev())
 					if tl.OnStatusChange != nil {
 						tl.OnStatusChange(t)
+					}
+				}
+			case 'a':
+				if t := tl.SelectedTask(); t != nil {
+					t.Archived = !t.Archived
+					if tl.OnArchive != nil {
+						tl.OnArchive(t)
 					}
 				}
 			}

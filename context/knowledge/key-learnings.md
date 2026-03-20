@@ -81,6 +81,7 @@
 - `context/knowledge/index.md` is the knowledge graph index — read it when you need project history or domain context
 - `context/research/` holds investigation notes and spike results
 - `context/plans/` holds strategic plans and proposals
+- **All project memories go in `context/knowledge/`** (checked into repo), NOT in `~/.claude/projects/.../memory/`. This ensures memories are versioned, visible in worktrees, and shared across branches.
 
 - **`git worktree add` requires a valid local ref or remote-tracking ref as the start point.** If the project config stores just `"master"` but the repo only has `origin/master` (no local branch), `git worktree add -b argus/task <path> master` fails with `fatal: not a valid object name: 'master'`. `resolveStartPoint()` in `worktree.go` resolves this by checking `git rev-parse --verify` and falling back to `upstream/<branch>` then `origin/<branch>`. The new project form also auto-detects the remote default branch (preferring `upstream` over `origin`) when the user enters a repo path, so new projects get the full ref like `upstream/master` by default.
 

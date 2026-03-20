@@ -159,6 +159,11 @@ func (a *App) buildUI() {
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasks()
 	}
+	a.tasklist.OnArchive = func(t *model.Task) {
+		uxlog.Log("[tui2] archive toggle: task %s (%s) archived=%v", t.ID, t.Name, t.Archived)
+		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		a.refreshTasks()
+	}
 
 	a.taskGitPanel = NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
