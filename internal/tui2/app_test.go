@@ -1,6 +1,8 @@
 package tui2
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -698,6 +700,43 @@ func TestPruneCompletedTasks(t *testing.T) {
 		if task.Status == model.StatusComplete {
 			t.Errorf("completed task %q should have been pruned", task.Name)
 		}
+	}
+}
+
+func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	wtRoot := t.TempDir()
+	app.wtRoot = wtRoot
+
+	// Create a worktree directory on disk for the completed task.
+	wtPath := filepath.Join(wtRoot, "p", "done-task")
+	if err := os.MkdirAll(wtPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	d.Add(&model.Task{
+		ID: "t1", Name: "done-task", Status: model.StatusComplete,
+		Project: "p", Worktree: wtPath, CreatedAt: time.Now(),
+	})
+	d.Add(&model.Task{
+		ID: "t2", Name: "active", Status: model.StatusPending,
+		Project: "p", CreatedAt: time.Now(),
+	})
+	app.refreshTasks()
+
+	app.pruneCompletedTasks()
+
+	// The prune modal total should be 1 (the completed task), not 2.
+	// Before the fix, the worktree was counted once as a pruned task
+	// AND once as an orphan (because PruneCompleted deletes the DB
+	// record before WorktreePaths runs).
+	if app.pruneModal == nil {
+		t.Fatal("expected prune modal to be shown")
+	}
+	if app.pruneModal.total != 1 {
+		t.Errorf("prune modal total = %d, want 1 (worktree double-counted as orphan)", app.pruneModal.total)
 	}
 }
 
