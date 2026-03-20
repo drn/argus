@@ -8,6 +8,10 @@ import (
 	xvt "github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
+	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -29,6 +33,41 @@ func TestTerminalPane_SetSession(t *testing.T) {
 	}
 }
 
+func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
+	// SetSession must NOT hardcode 80x24 — it should use GetInnerRect
+	// dimensions (or leave at 0 if unavailable). The old code had an
+	// explicit fallback to 80x24 which caused emulator/PTY mismatch.
+	tp := NewTerminalPane()
+	sess := &mockAdapter{alive: true, totalWritten: 100, output: make([]byte, 100)}
+	tp.SetSession(sess)
+	tp.mu.Lock()
+	cols, rows := tp.ptyCols, tp.ptyRows
+	tp.mu.Unlock()
+	// Must not be the old hardcoded 80x24 fallback.
+	if cols == 80 && rows == 24 {
+		t.Errorf("SetSession fell back to hardcoded 80x24; should use panel dimensions")
+	}
+}
+
+type mockAdapter struct {
+	alive        bool
+	totalWritten uint64
+	output       []byte
+}
+
+func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
+func (m *mockAdapter) Resize(rows, cols uint16) error    { return nil }
+func (m *mockAdapter) RecentOutput() []byte              { return m.output }
+func (m *mockAdapter) RecentOutputTail(n int) []byte {
+	if n >= len(m.output) {
+		return m.output
+	}
+	return m.output[len(m.output)-n:]
+}
+func (m *mockAdapter) TotalWritten() uint64          { return m.totalWritten }
+func (m *mockAdapter) Alive() bool                   { return m.alive }
+func (m *mockAdapter) PTYSize() (int, int)           { return 80, 24 }
+
 func TestTerminalPane_Scrollback(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.ScrollUp(5)
@@ -47,6 +86,51 @@ func TestTerminalPane_Scrollback(t *testing.T) {
 	tp.ResetScroll()
 	if tp.ScrollOffset() != 0 {
 		t.Errorf("after reset scrollOffset = %d, want 0", tp.ScrollOffset())
+	}
+}
+
+func TestTerminalPane_MouseScroll(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 24)
+	handler := tp.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+	// Mouse event inside the box.
+	ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
+
+	// Scroll up via mouse wheel.
+	consumed, _ := handler(tview.MouseScrollUp, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollUp should be consumed")
+	}
+	if tp.ScrollOffset() != 3 {
+		t.Errorf("after scroll up: offset = %d, want 3", tp.ScrollOffset())
+	}
+
+	// Scroll down via mouse wheel.
+	consumed, _ = handler(tview.MouseScrollDown, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollDown should be consumed")
+	}
+	if tp.ScrollOffset() != 0 {
+		t.Errorf("after scroll down: offset = %d, want 0", tp.ScrollOffset())
+	}
+
+	// Diff mode scrolling.
+	tp.EnterDiffMode("+line1\n+line2\n context", "test.go")
+	tp.diffScroll = 0
+	consumed, _ = handler(tview.MouseScrollDown, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollDown in diff mode should be consumed")
+	}
+	if tp.diffScroll != 3 {
+		t.Errorf("diff scroll after down = %d, want 3", tp.diffScroll)
+	}
+	consumed, _ = handler(tview.MouseScrollUp, ev, setFocus)
+	if !consumed {
+		t.Error("MouseScrollUp in diff mode should be consumed")
+	}
+	if tp.diffScroll != 0 {
+		t.Errorf("diff scroll after up = %d, want 0", tp.diffScroll)
 	}
 }
 
@@ -85,12 +169,13 @@ func TestTerminalPane_DiffMode(t *testing.T) {
 	if tp.InDiffMode() {
 		t.Error("should not be in diff mode initially")
 	}
-	tp.EnterDiffMode("+added\n-removed\n context", "test.go")
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	tp.EnterDiffMode(diff, "test.go")
 	if !tp.InDiffMode() {
 		t.Error("should be in diff mode")
 	}
-	if len(tp.diffContent) == 0 {
-		t.Error("diff content should be populated")
+	if len(tp.diffUnifiedLines) == 0 {
+		t.Error("unified diff lines should be populated")
 	}
 	tp.ExitDiffMode()
 	if tp.InDiffMode() {
@@ -153,6 +238,76 @@ func TestUvCellToTcellStyle(t *testing.T) {
 	}
 }
 
+func TestUvCellToTcellStyle_Faint(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "D",
+		Width:   1,
+		Style: uv.Style{
+			Attrs: uv.AttrFaint,
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrDim == 0 {
+		t.Error("expected dim attribute for AttrFaint")
+	}
+}
+
+func TestUvCellToTcellStyle_Blink(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "B",
+		Width:   1,
+		Style: uv.Style{
+			Attrs: uv.AttrBlink,
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrBlink == 0 {
+		t.Error("expected blink attribute for AttrBlink")
+	}
+}
+
+func TestUvCellToTcellStyle_UnderlineStyles(t *testing.T) {
+	tests := []struct {
+		name string
+		ul   ansi.Underline
+		want tcell.UnderlineStyle
+	}{
+		{"single", ansi.UnderlineSingle, tcell.UnderlineStyleSolid},
+		{"double", ansi.UnderlineDouble, tcell.UnderlineStyleDouble},
+		{"curly", ansi.UnderlineCurly, tcell.UnderlineStyleCurly},
+		{"dotted", ansi.UnderlineDotted, tcell.UnderlineStyleDotted},
+		{"dashed", ansi.UnderlineDashed, tcell.UnderlineStyleDashed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cell := &uv.Cell{
+				Content: "U",
+				Width:   1,
+				Style:   uv.Style{Underline: tt.ul},
+			}
+			style := uvCellToTcellStyle(cell)
+			got := style.GetUnderlineStyle()
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+}
+
+func TestUvCellToTcellStyle_UnderlineColor(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "U",
+		Width:   1,
+		Style: uv.Style{
+			Underline:      ansi.UnderlineCurly,
+			UnderlineColor: ansi.BasicColor(1),
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	testutil.Equal(t, style.GetUnderlineStyle(), tcell.UnderlineStyleCurly)
+	testutil.Equal(t, style.GetUnderlineColor(), tcell.PaletteColor(1))
+}
+
 func TestUvCellToTcellStyle_Nil(t *testing.T) {
 	style := uvCellToTcellStyle(nil)
 	fg, bg, _ := style.Decompose()
@@ -213,46 +368,289 @@ func TestScrollbackLen(t *testing.T) {
 	}
 }
 
-func TestParseDiffLines(t *testing.T) {
-	diff := "+added\n-removed\n context\n@@ header"
-	lines := parseDiffLines(diff)
-	if len(lines) != 4 {
-		t.Fatalf("expected 4 lines, got %d", len(lines))
-	}
-	if lines[0].lineType != diffAdded {
-		t.Errorf("line 0 type = %d, want diffAdded", lines[0].lineType)
-	}
-	if lines[1].lineType != diffRemoved {
-		t.Errorf("line 1 type = %d, want diffRemoved", lines[1].lineType)
-	}
-	if lines[2].lineType != diffContext {
-		t.Errorf("line 2 type = %d, want diffContext", lines[2].lineType)
-	}
-	if lines[3].lineType != diffHeader {
-		t.Errorf("line 3 type = %d, want diffHeader", lines[3].lineType)
+func TestNewTrackedEmulator_DefaultCursorHidden(t *testing.T) {
+	tp := NewTerminalPane()
+	cursorVisible := true // will be overwritten by callback
+	_ = tp.newTrackedEmulatorWithCallback(20, 5, func(visible bool) {
+		cursorVisible = visible
+	})
+	if cursorVisible {
+		t.Fatal("new emulator should default cursor to hidden (agents hide cursor)")
 	}
 }
 
-func TestParseDiffLinesEmpty(t *testing.T) {
-	if parseDiffLines("") != nil {
+func TestPaintEmu_HiddenCursorNoContentExtension(t *testing.T) {
+	// When cursor is hidden and at (0, lastRow), paintEmu should NOT extend
+	// lastContentRow to include the cursor — otherwise a phantom cursor cell
+	// appears at the bottom-left.
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 10)
+
+	tp := NewTerminalPane()
+	emu := tp.newTrackedEmulatorWithCallback(20, 10, func(visible bool) {})
+	// Write one line of content, then move cursor to bottom-left.
+	emu.Write([]byte("hello\x1b[10;1H"))
+
+	// Paint with cursorVisible=false — the cursor at (0,9) should NOT
+	// cause content to extend to row 9.
+	tp.paintEmu(screen, 0, 0, 20, 10, emu, 20, 10, true, false)
+
+	// Row 9 col 0 should NOT have cursor styling.
+	_, _, style, _ := screen.GetContent(0, 9)
+	fg, bg, _ := style.Decompose()
+	if fg == cursorFG || bg == cursorBG {
+		t.Fatalf("hidden cursor at bottom-left should not be painted: fg=%v bg=%v", fg, bg)
+	}
+}
+
+func TestPaintEmu_HiddenCursorNotRendered(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 5)
+
+	tp := NewTerminalPane()
+	cursorVisible := true
+	emu := tp.newTrackedEmulatorWithCallback(20, 5, func(visible bool) {
+		cursorVisible = visible
+	})
+	emu.Write([]byte("hello\x1b[?25l"))
+
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, true, cursorVisible)
+
+	_, _, style, _ := screen.GetContent(5, 0)
+	fg, bg, _ := style.Decompose()
+	if fg == cursorFG || bg == cursorBG {
+		t.Fatalf("hidden cursor should not be painted with cursor style: fg=%v bg=%v", fg, bg)
+	}
+}
+
+func TestBuildUnifiedDiffLines(t *testing.T) {
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	pd := gitutil.ParseUnifiedDiff(diff)
+	lines := buildUnifiedDiffLines(pd, "test.go")
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty unified diff lines")
+	}
+	// Should have: hunk header + 3 content lines + trailing empty context = 5 lines
+	if len(lines) < 4 {
+		t.Errorf("expected at least 4 lines, got %d", len(lines))
+	}
+	// Each line should have styled cells
+	for i, line := range lines {
+		if len(line.cells) == 0 {
+			t.Errorf("line %d has no cells", i)
+		}
+	}
+}
+
+func TestBuildUnifiedDiffLinesEmpty(t *testing.T) {
+	pd := gitutil.ParseUnifiedDiff("")
+	lines := buildUnifiedDiffLines(pd, "test.go")
+	if lines != nil {
 		t.Error("expected nil for empty diff")
 	}
 }
 
-func TestDiffLineStyle(t *testing.T) {
-	addedFG, _, _ := diffLineStyle(diffAdded).Decompose()
-	removedFG, _, _ := diffLineStyle(diffRemoved).Decompose()
-	contextFG, _, _ := diffLineStyle(diffContext).Decompose()
-	headerFG, _, _ := diffLineStyle(diffHeader).Decompose()
+func TestBuildSideBySideDiffLines(t *testing.T) {
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	pd := gitutil.ParseUnifiedDiff(diff)
+	lines := buildSideBySideDiffLines(pd, "test.go", 80)
+	if len(lines) == 0 {
+		t.Fatal("expected non-empty side-by-side diff lines")
+	}
+	for i, line := range lines {
+		if len(line.cells) == 0 {
+			t.Errorf("line %d has no cells", i)
+		}
+	}
+}
 
-	if addedFG == removedFG {
-		t.Error("added and removed should have different colors")
+func TestHighlightLines(t *testing.T) {
+	lines := []string{"func main() {", "  fmt.Println(\"hello\")", "}"}
+	hl := highlightLines(lines, "test.go")
+	if len(hl) != 3 {
+		t.Fatalf("expected 3 highlighted lines, got %d", len(hl))
 	}
-	if contextFG == addedFG {
-		t.Error("context and added should have different colors")
+	// Go code should get syntax highlighting — at least some cells should
+	// have non-default foreground.
+	hasColor := false
+	for _, line := range hl {
+		for _, c := range line.cells {
+			fg, _, _ := c.style.Decompose()
+			if fg != tcell.ColorDefault {
+				hasColor = true
+				break
+			}
+		}
 	}
-	if headerFG == contextFG {
-		t.Error("header and context should have different colors")
+	if !hasColor {
+		t.Error("expected syntax-highlighted cells with non-default colors")
+	}
+}
+
+func TestHighlightLinesUnknownExtension(t *testing.T) {
+	lines := []string{"hello world"}
+	hl := highlightLines(lines, "unknown.xyz123")
+	if len(hl) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(hl))
+	}
+	// Should return plain (unstyled) text
+	if len(hl[0].cells) != len("hello world") {
+		t.Errorf("expected %d cells, got %d", len("hello world"), len(hl[0].cells))
+	}
+}
+
+func TestTerminalPane_AnchorLock(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// Simulate being scrolled up with a known total line count.
+	tp.scrollOffset = 10
+	tp.anchorTotalLines = 50
+
+	// paintEmu anchor-lock: when totalLines grows, scrollOffset should increase.
+	// We test this indirectly via the renderReplay path.
+	// Create an emulator with enough content to produce scrollback.
+	emu := newDrainedEmulator(20, 5)
+	for i := 0; i < 30; i++ {
+		emu.Write([]byte("line of content!!!!\n"))
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// First paint establishes anchorTotalLines.
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 0
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+	firstAnchor := tp.anchorTotalLines
+	if firstAnchor == 0 {
+		t.Fatal("anchorTotalLines should be set after first paint")
+	}
+
+	// Write more content to increase totalLines.
+	for i := 0; i < 10; i++ {
+		emu.Write([]byte("new output line!!!!\n"))
+	}
+	oldOffset := tp.scrollOffset
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+
+	// scrollOffset should have increased by the delta.
+	if tp.scrollOffset <= oldOffset {
+		t.Errorf("anchor-lock failed: scrollOffset=%d should be > %d", tp.scrollOffset, oldOffset)
+	}
+}
+
+func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 50
+
+	// Scrolling to bottom should reset anchor.
+	tp.ScrollDown(10) // goes past 0, clamped to 0
+	if tp.scrollOffset != 0 {
+		t.Errorf("scrollOffset = %d, want 0", tp.scrollOffset)
+	}
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0 after scroll to bottom", tp.anchorTotalLines)
+	}
+
+	// ResetScroll should also clear anchor.
+	tp.scrollOffset = 5
+	tp.anchorTotalLines = 50
+	tp.ResetScroll()
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0 after ResetScroll", tp.anchorTotalLines)
+	}
+}
+
+func TestTerminalPane_ReplayCaching(t *testing.T) {
+	tp := NewTerminalPane()
+
+	raw := []byte("hello world\nline two\nline three\n")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// First render builds the emulator.
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should be set after first render")
+	}
+	firstEmu := tp.replayEmu
+
+	// Same data, same dimensions → should reuse the emulator.
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu != firstEmu {
+		t.Error("replayEmu should be reused when data hasn't changed")
+	}
+
+	// Different data → should rebuild.
+	raw2 := []byte("hello world\nline two\nline three\nline four\n")
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 0, 40, 10)
+	if tp.replayEmu == firstEmu {
+		t.Error("replayEmu should be rebuilt when data changes")
+	}
+
+	// Log-backed: different logSize → should rebuild.
+	secondEmu := tp.replayEmu
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 1000, 40, 10)
+	if tp.replayEmu == secondEmu {
+		t.Error("replayEmu should be rebuilt when logSize changes")
+	}
+
+	// Same logSize → should reuse.
+	thirdEmu := tp.replayEmu
+	tp.renderReplay(screen, 0, 0, 40, 10, raw2, 1000, 40, 10)
+	if tp.replayEmu != thirdEmu {
+		t.Error("replayEmu should be reused when logSize unchanged")
+	}
+}
+
+func TestTerminalPane_ReadLogTail(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// No taskID → should return nil.
+	tp.taskID = ""
+	data, size := tp.readLogTail(1024)
+	if data != nil || size != 0 {
+		t.Error("readLogTail with no taskID should return nil")
+	}
+
+	// Non-existent task → should return nil.
+	tp.taskID = "nonexistent-task-id-12345"
+	data, size = tp.readLogTail(1024)
+	if data != nil || size != 0 {
+		t.Error("readLogTail with missing log should return nil")
+	}
+}
+
+func TestTerminalPane_ResetVTClearsReplayCache(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.replayEmu = newDrainedEmulator(80, 24)
+	tp.replayEmuBytes = 100
+	tp.replayEmuLogSize = 500
+	tp.anchorTotalLines = 50
+
+	tp.ResetVT()
+
+	if tp.replayEmu != nil {
+		t.Error("replayEmu should be nil after ResetVT")
+	}
+	if tp.replayEmuBytes != 0 {
+		t.Errorf("replayEmuBytes = %d, want 0", tp.replayEmuBytes)
+	}
+	if tp.replayEmuLogSize != 0 {
+		t.Errorf("replayEmuLogSize = %d, want 0", tp.replayEmuLogSize)
+	}
+	if tp.anchorTotalLines != 0 {
+		t.Errorf("anchorTotalLines = %d, want 0", tp.anchorTotalLines)
 	}
 }
 

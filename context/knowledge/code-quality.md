@@ -18,10 +18,11 @@
 ### Structural Split
 - Infrastructure functions (worktree discovery, process cleanup, git operations) extracted from root.go (1250 lines) into worktree.go, reducing root.go to ~1100 lines.
 
-### Incremental vt10x Rendering (2026-03-14)
-- Agent view was replaying the entire 256KB ring buffer through a fresh vt10x terminal every 100ms tick. Each keystroke echo invalidated the render cache, causing progressively worse input lag as buffer grew.
-- Fixed by persisting a `vt10x.Terminal` on `AgentView` and feeding only new bytes (delta from `TotalWritten`). Full replay is now only used for scrollback mode.
+### Incremental Terminal Rendering (2026-03-14)
+- Agent view was replaying the entire 256KB ring buffer through a fresh terminal emulator every 100ms tick. Each keystroke echo invalidated the render cache, causing progressively worse input lag as buffer grew.
+- Fixed by persisting a terminal emulator instance and feeding only new bytes (delta from `TotalWritten`). Full replay is now only used for scrollback mode.
 - Reset triggers: task switch, terminal resize, ring buffer wrap (when delta exceeds buffer capacity).
+- Now uses x/vt (`charmbracelet/x/vt`) with native scrollback buffer and damage tracking via `Touched()`.
 
 ### Polish Refactoring Session: 2026-03-14 (PR #90)
 - **ScrollState extraction**: Shared cursor/scroll logic extracted from TaskList/ProjectList/FileExplorer into `scrollstate.go` — 3 identical CursorUp/CursorDown/visibleRows implementations → 1
@@ -30,7 +31,7 @@
 - **File splits**: root.go views → root_views.go (1107→797 lines), key byte maps → keybytes.go, git commands → gitcmd.go
 - **Confirm handler dedup**: handleConfirmDeleteKey/handleConfirmDestroyKey → shared `handleConfirmAction(msg, cleanup func)`
 - **determinePostExitStatus**: Pure function extracted from handleAgentFinished for testability
-- **borderedPanel helper**: Extracted repeated lipgloss border construction into `borderedPanel(w, h, focused, content)`
+- **borderedPanel helper**: Extracted repeated border construction into `borderedPanel(w, h, focused, content)`
 - **Idiom fixes**: `errors.Is(err, sql.ErrNoRows)` replacing `==` and string comparison; `io.Discard` replacing dead stderr buffer; named constants for terminal sizes and refresh intervals
 - Net: -738 lines across 23 files, 3-reviewer unanimous APPROVE
 
@@ -107,8 +108,7 @@
 
 ### Unicode Width Mismatch — ⌘ Symbol (2026-03-14)
 - `⌘` (U+2318, PLACE OF INTEREST SIGN) renders as 2 cells in most terminal emulators (iTerm2, Ghostty, Terminal.app) but `go-runewidth` v0.0.19 reports `RuneWidth('⌘') == 1`.
-- Lipgloss uses `go-runewidth` for `Width()`, so any layout math using `lipgloss.Width()` on strings containing `⌘` underestimates by 1 per occurrence.
-- Fix: add `strings.Count(s, "⌘")` to the computed width. Applied in `renderStatusBar()` for the `right` hints string.
+- Any layout math using `go-runewidth` on strings containing `⌘` underestimates by 1 per occurrence.
 - **Pattern:** When adding Unicode symbols to TUI layouts, verify `runewidth.RuneWidth(r)` against actual terminal rendering. Common offenders: miscellaneous symbols block (U+2300–U+23FF), dingbats, and emoji.
 
 ### Tmux-Matched Tab Header (2026-03-14)
@@ -117,23 +117,14 @@
 - **Powerline separators:** `\ue0b0` (right-facing full chevron) for smooth active tab transitions. Defined in `~/.dots/cmd/tmux-status/separator/root.go`.
 - **Pattern:** When styling Argus UI elements that sit adjacent to tmux chrome, use the tmux C1/C2/C3 palette to maintain visual continuity. The color constants are in `~/.dots/cmd/tmux-status/color/root.go`.
 
-### Zero-Dimension View() Panic (2026-03-15)
-- Bubble Tea calls `View()` before delivering the first `WindowSizeMsg`. At this point `m.width` and `m.height` are both 0.
-- `renderTasksView` computed `contentHeight := m.height - 3` (= -3) and passed it to `padHeight()`, which did `lines[:h]` — panic on negative slice bound.
-- Introduced by `bc55e7d` ("Add three-panel layout to task list view") which added `padHeight` calls without the guard that `padToBottom` already had.
-- The zero-dimension test (`TestModel_ViewZeroDimensions`) also caught two latent panics: `NewTaskForm.View()` (textarea nil pointer at zero value) and `NewProjectForm.View()` (empty inputs slice at zero value).
-- **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every `View()` on a form struct must guard against zero-valued state (uninitialized by constructor).
-- **Prevention:** `TestModel_ViewZeroDimensions` covers all 10 view paths with `width=0, height=0`. New views must add a subtest.
+### Zero-Dimension Rendering Panic (2026-03-15)
+- Layout code can be called before the terminal size is known. At this point width and height are both 0.
+- Height computations like `height - 3` produce negative values — passing to slice expressions or layout functions causes panics.
+- **Fix pattern:** Every function receiving a computed height/width must guard `<= 0` at the top. Every render path on a form/view struct must guard against zero-valued state (uninitialized by constructor).
 
-### vt10x Cursor Reverse-Bit Fix (2026-03-15)
-- Cursor rendering used `cell.Mode | vtAttrReverse` (OR) which double-reversed already-reverse cells, making cursor invisible on them. Separately, replacing default colors with hardcoded black/white (colors 0/15) produced a black cursor on dark terminals instead of inheriting the terminal's theme.
-- Fixed with `cell.Mode ^ vtAttrReverse` (XOR) — toggles reverse for both normal and reverse cells. No explicit colors needed; SGR reverse with defaults inherits the terminal's fg/bg, producing the expected white cursor on dark backgrounds.
-- **Pattern:** When vt10x stores pre-swapped attributes, always toggle (XOR) rather than set (OR) to avoid double-application.
-
-### vt10x CursorVisible Gate Removal (2026-03-16)
-- Despite correct `\x1b[0;7m` cursor rendering logic, cursor was never visible because both `renderIncremental` and `replayVT10X` gated cursor rendering on `vt.CursorVisible()`.
-- Claude Code (built with Ink) hides the hardware cursor (`\x1b[?25l`) — standard for TUI apps. vt10x correctly tracks this, so `CursorVisible()` returned `false`, and `cursorX` was always `-1` (no cursor rendered on any line).
-- Fixed by removing the `CursorVisible()` check in both paths — cursor position is always passed to `renderLine()`.
+### Cursor Rendering: Always Show Regardless of CursorVisible (2026-03-16)
+- TUI agents like Claude Code (built with Ink) hide the hardware cursor (`\x1b[?25l`) — standard for TUI apps. The terminal emulator correctly tracks this, so `CursorVisible()` returns `false`.
+- When embedding a TUI app's output inside another TUI (as Argus does), gating cursor rendering on `CursorVisible()` makes the cursor invisible.
 - **Pattern:** When embedding a TUI app's output inside another TUI, ignore the child's cursor visibility state — the parent always wants to show cursor position. `CursorVisible()` is only meaningful when directly driving a physical terminal.
 
 ### Shared PanelLayout Extraction (2026-03-15)
@@ -147,7 +138,7 @@
 - Commit `58a6789` ("Self-managed worktrees") introduced a regression: `CreateWorktree` errors were silently swallowed in `startOrAttach`, so failed worktree creation fell through to running agents in the main project directory.
 - Compounding bug: `ResolveTaskDirMsg` handler persisted the project directory path as `t.Worktree` in the DB (no validation). On restart, `startOrAttach` saw `t.Worktree != ""` and skipped worktree creation — permanently stuck.
 - Fix: moved worktree creation from `startOrAttach` to `handleNewTaskKey`, BEFORE `db.Add()`. If creation fails, the task form stays open with the error message (new `SetError()` method on `NewTaskForm`). Task is never persisted without a valid worktree.
-- `CreateWorktree` now returns `(wtPath, finalName, err)` and handles name conflicts by appending `-1`, `-2`, ... `-99` suffixes.
+- `CreateWorktree` now returns `(wtPath, finalName, branchName, err)` and handles name conflicts by appending `-1`, `-2`, ... `-99` suffixes. The `branchName` return (e.g., `"argus/fix-bug"`) must be stored on `task.Branch` — previously the branch was not returned, so `task.Branch` retained the base branch (e.g., `master`), causing `removeWorktreeAndBranch` to delete the wrong branch.
 - `ResolveTaskDirMsg` handler now guards with `isWorktreeSubdir()` before persisting `msg.Dir` as `t.Worktree`.
 - `BuildCmd` no longer falls back to `ResolveDir()` when `Worktree` is empty — every task must have a worktree. As of 2026-03-16, `BuildCmd` returns a hard error (`"task %q has no worktree set"`) when `Worktree` is empty.
 - Defense-in-depth enforcement (2026-03-16): worktree requirement is now checked at four layers: (a) task creation (`CreateWorktree` before `db.Add`), (b) `Init()` resume path (revert to Pending if no worktree found), (c) `startOrAttach()` early guard with user-visible error, (d) `BuildCmd` hard error return. Each layer catches independently.
@@ -165,7 +156,7 @@
 - `PanelLayout.Render()` only pads height via `padHeight()` — it does NOT enforce column widths on panels.
 - The task list view's left pane was rendering as raw text without `borderedPanel`, so it collapsed to content width instead of filling its 20% allocation.
 - Fix: wrapped task list content in `borderedPanel(widths[0], contentHeight, false, ...)` in `renderTasksView()`, and adjusted `tasklist.SetSize()` to subtract 2 from each dimension for the border.
-- **Pattern:** Every panel passed to `PanelLayout.Render()` must enforce its own width. `borderedPanel` does this internally (`Width(w-2)` + border = `w` total). Panels without borders need explicit `lipgloss.NewStyle().Width(w)`.
+- **Pattern:** Every panel in a multi-panel layout must enforce its own width. `borderedPanel` does this internally. Panels without borders need explicit width enforcement.
 
 ### Daemon Architecture Implementation (2026-03-15)
 - **SessionProvider/SessionHandle interfaces** (`iface.go`): Decouples UI from concrete `*Runner`/`*Session`. UI code depends only on interfaces, enabling both in-process and daemon-backed implementations.
@@ -182,17 +173,17 @@
 
 ### Chroma Background Color Compositing Fix (2026-03-15)
 - Syntax-highlighted diff lines (added/removed) lost their red/green background color after the first token. Only the first word of each line had the correct background.
-- Root cause: Chroma's `writeToken()` emits `\033[0m` (full SGR reset) after every token — by design, so pagers can render lines independently. When the highlighted string was wrapped with `lipgloss.Style.Render()` (which sets background at start, resets at end), the first internal `\033[0m` from chroma cleared the background for all subsequent tokens.
+- Root cause: Chroma's `writeToken()` emits `\033[0m` (full SGR reset) after every token — by design, so pagers can render lines independently. Setting a background color only applies to the first token — subsequent tokens lose it after the first `\033[0m` reset.
 - Chroma has no option to preserve an outer background — `clearBackground()` in the formatter intentionally strips style background colors. The `terminal256` and `terminal16m` formatters both use the same `writeToken()` with full resets.
 - Fix: `injectBg(s, bgEsc)` — prepends the background escape, replaces all `\033[0m` with `\033[0m<bgEsc>`, and appends `\033[0m`. Applied in `formatSideContent` (side-by-side) and `RenderUnifiedLines` (unified).
-- Replaced `removedBgStyle`/`addedBgStyle` (lipgloss.Style) with raw escape strings (`removedBgEsc`/`addedBgEsc`) since lipgloss `Render()` can't handle this pattern.
-- **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset. Do NOT use lipgloss `.Render()` wrapping — it only sets the background once at the start.
+- Uses raw escape strings (`removedBgEsc`/`addedBgEsc`) to re-inject the background color.
+- **Pattern:** When compositing ANSI backgrounds with syntax-highlighted text from chroma (or any formatter that resets between tokens), use `injectBg` to re-apply the background after each reset.
 
 ### Tab Characters Break Width Math (2026-03-15)
-- `ansi.StringWidth("\t")` returns **0** — tabs are zero-width in charmbracelet's width calculations (`ansi.StringWidth`, `ansi.Truncate`, `lipgloss.Width`). Terminals render them as 1-8 columns.
+- `ansi.StringWidth("\t")` returns **0** — tabs are zero-width in charmbracelet's width calculations (`ansi.StringWidth`, `ansi.Truncate`). Terminals render them as 1-8 columns.
 - This caused the side-by-side diff divider (`│`) to shift position between rows: lines with tabs got too much padding (width underestimated), lines without tabs were correct.
 - **Fix:** `expandTabs()` in `diffparse.go` converts tabs to 2 spaces during parsing, before any width calculation or rendering.
-- **Pattern:** Any UI panel that renders external text (diff content, file previews, terminal output) must expand tabs to spaces before computing widths. The `vt10x` terminal emulator handles its own tab stops, so this only applies to non-vt10x rendering paths.
+- **Pattern:** Any UI panel that renders external text (diff content, file previews, terminal output) must expand tabs to spaces before computing widths. The x/vt terminal emulator handles its own tab stops, so this only applies to non-emulator rendering paths (diff views, file previews).
 
 ### Deferred Items for Future Sessions
 - Add error handling for silently ignored `_ = m.db.Update()` calls (~15 instances in root.go)
@@ -524,11 +515,11 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - `internal/tui2/tasklist.go` — `TaskListView`: flattened row model with `rowKind` (rowTask/rowProject/rowArchiveHeader), cursor navigation skipping headers, auto-expand, archive section.
 - `internal/tui2/agentpane.go` — `AgentPane`: Phase 2 placeholder showing PTY tail output. Takes `agentview.TerminalAdapter` for session display.
 - `internal/tui2/sidepanel.go` — `SidePanel`: bordered panel with title for git/files.
-- `internal/tui2/theme.go` — tcell color constants matching the Bubble Tea 256-color palette.
+- `internal/tui2/theme.go` — tcell color constants for the 256-color palette.
 
 ### Key Patterns
-- **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly — analogous to BT plain structs with `View() string`.
-- **Async updates** via `tapp.QueueUpdateDraw()` from the tick goroutine — equivalent to `tea.Cmd` returning `tea.Msg`.
+- **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly.
+- **Async updates** via `tapp.QueueUpdateDraw()` from the tick goroutine.
 - **Key routing** via `tapp.SetInputCapture()` — global handler dispatches by mode (taskList vs agent).
 - **PTY key forwarding** via `tcellKeyToBytes(event)` — maps `tcell.EventKey` to raw bytes including alt modifier.
 - **View switching** via `tview.Pages.SwitchToPage()` — mirrors BT's `current view` enum.
@@ -539,7 +530,7 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **Fix:** `drawBorderedPanel(screen, x, y, w, h, title, style) innerRect` in `agentpane.go`. Draws border + optional title, returns `innerRect{X, Y, W, H}` for content area. All bordered panels (TaskListView, TaskDetailPanel, TaskPreviewPanel, GitPanel, TerminalPane, FilePanel, 3x ReviewsView sub-panels) now use it.
 
-**Two border modes remain:** Agent view panels pass `(x-1, y-1, w+2, h+2)` (border outside allocated rect — panels share edges). Task list and reviews panels pass `(x, y, w, h)` (border inside allocated rect). GitPanel has `BorderInside bool` to select mode since both agent view and task list use GitPanel instances. Both modes use the same `drawBorderedPanel` helper.
+**All panels use inside borders:** Every panel passes `(x, y, w, h)` (border inside allocated rect) and uses the returned `innerRect` for content rendering. This ensures consistent rounded borders across all views.
 
 **Rule:** Any new panel that needs a bordered frame should call `drawBorderedPanel`, not `drawBorder` directly. `drawBorder` remains as the low-level primitive.
 
@@ -547,3 +538,312 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - `tview.Application.SetRoot()` must be called before `Run()` — the root Flex is built eagerly in `buildUI()`.
 - `QueueUpdateDraw(func(){})` from the tick goroutine is the idiomatic way to trigger a redraw from a non-event goroutine. The empty func is intentional — state was already updated under `a.mu`.
 - `tcellKeyToBytes` must handle `tcell.KeyBackspace` AND `tcell.KeyBackspace2` — different terminals send different variants.
+- **tview `GetInnerRect()` is not thread-safe** — calling it from a non-main goroutine (e.g., tick goroutine) races with `Draw()` on the main goroutine. Use a pending-resize pattern: `Draw()` computes desired PTY size under mutex and stores it; the tick goroutine consumes and performs the RPC.
+- **Never call daemon RPC while holding `a.mu`** — `runner.Running()` does an RPC with up to 5s timeout. Holding the mutex blocks all `QueueUpdateDraw` callbacks (including redraws) for the duration. Extract RPC calls outside the lock, then re-acquire for state mutation.
+- **Daemon session exit callback must be wired for tui2 runtime.** Without `client.OnSessionExit()`, agent processes that finish are never detected — tasks stay `InProgress` forever. The callback must be registered before `tui2.New()` with a nil guard (`if a := appRef; a != nil`) to handle the initialization window.
+
+## Task Delete & Prune: 2026-03-19
+
+### Data Model
+- `ConfirmDeleteModal` — tview Box widget with `confirmed`/`canceled` bools and a `*model.Task` reference.
+- `modeConfirmDelete` — new `viewMode` constant, intercepts all keys in `handleGlobalKey`.
+- Worktree helpers (`removeWorktreeAndBranch`, `isWorktreeSubdir`, etc.) ported to `internal/tui2/worktree.go`.
+
+### Flow
+- **Ctrl+D**: `handleGlobalKey` → `openConfirmDelete(task)` → shows modal via `pages.AddPage("confirmdelete", ...)` → Enter triggers `deleteTask(t)` → stop session, cleanup worktree/branch, delete session log, `db.Delete(id)`, refresh.
+- **Ctrl+R**: `handleGlobalKey` → `pruneCompletedTasks()` → `db.PruneCompleted()` (atomic fetch+delete) → stop sessions → worktree cleanup in background goroutine → refresh.
+- Both guarded by `a.mode == modeTaskList && a.header.ActiveTab() == TabTasks`.
+
+### Gotchas
+- Worktree cleanup is unconditional — worktree, local branch, and remote branch are always removed on task delete/prune. The old `ShouldCleanupWorktrees()` config gate was removed.
+- `isWorktreeSubdir` safety check prevents `os.RemoveAll` on non-worktree paths.
+- Prune runs worktree cleanup in a goroutine to keep TUI responsive; calls `QueueUpdateDraw` on completion.
+
+## Mouse Focus & Diff File Navigation Fix: 2026-03-19
+
+### Problem
+Clicking on the Files panel in the agent view didn't switch keyboard focus — Up/Down arrows continued routing to the PTY instead of navigating files. tview's default `Box.MouseHandler` updates tview's internal focus but Argus uses `agentFocus` for key routing. Also, Up/Down in diff mode only scrolled the diff — no way to switch files.
+
+### Fix
+- Added `MouseHandler()` overrides to `FilePanel` and `TerminalPane` with `OnClick` callbacks
+- `FilePanel.MouseHandler` also positions cursor on clicked row and handles scroll wheel
+- `TerminalPane.MouseHandler` handles scroll wheel for scrollback
+- Callbacks wired in `buildUI` to update `agentFocus` and `updateFocusIndicators()`
+- Up/Down in diff mode now navigate to prev/next file's diff; j/k scroll the diff
+
+### Data Model
+- `FilePanel.OnClick func()` — callback fired on mouse click
+- `TerminalPane.OnClick func()` — callback fired on mouse click
+
+## Syntax Highlighting in Diff Views (2026-03-19)
+
+### Data Model
+- `styledChar{ch rune, style tcell.Style}` — single character with tcell style
+- `highlightedLine{cells []styledChar}` — one syntax-highlighted line
+- `renderedDiffLine{cells []styledChar}` — fully assembled diff line (numbers + prefix + highlighted content + BG)
+
+### Files
+- `highlight.go` — Chroma tokenizer → `styledChar` cells. `highlightLines(lines, filename)` batch-highlights, `tokenToStyle` maps Chroma tokens to tcell styles via monokai palette.
+- `diffrender.go` — `buildUnifiedDiffLines` and `buildSideBySideDiffLines` produce `[]renderedDiffLine` with line numbers, +/- prefix, syntax-highlighted content, and diff background colors.
+- `terminalpane.go` — `EnterDiffMode` pre-renders unified lines; split lines are lazily cached per width (`diffSplitWidth` invalidation). `renderDiff` paints via `drawStyledLine`.
+- `reviews.go` — `applyFileDiff` pre-renders unified lines into `diffRendered` field.
+
+### Gotchas
+- Per-line tokenization loses cross-line context (multi-line strings, block comments) — accepted tradeoff since diff content is inherently fragmented.
+- Diff backgrounds use fixed RGB (`#3d1012` removed, `#0d3317` added) for consistent tinting; foregrounds use palette indices to adapt to terminal themes.
+- `applyDiffBG` unconditionally overlays the diff background on all cells — Chroma token backgrounds are overwritten by the diff background.
+
+## Agent View Header: 2026-03-19
+
+### Data Model & Flow
+- `AgentHeader` widget (`internal/tui2/agentheader.go`): 1-row `tview.Box` rendering a centered powerline segment with the task name.
+- Uses the same color palette as the root `Header` (`headerActiveBG`, `headerActiveFG`, `headerBaseBG`, `powerlineSep`).
+- `SetTaskName(name)` is called from `onTaskSelect()` in `app.go` when entering the agent view.
+- Agent page layout changed from a flat `FlexColumn` to a `FlexRow` wrapping: agent header (1 row fixed) + agent panels (flex, 3-column).
+- PTY size fallback in `startSession` updated: subtracts 3 rows (root header + agent header + statusbar) instead of 2.
+
+## Infinite Scrollback: 2026-03-19
+
+### Data Model
+- `TerminalPane` new fields: `anchorTotalLines int` (anchor-lock tracking), `replayEmu`/`replayEmuBytes`/`replayEmuCols`/`replayEmuRows`/`replayEmuLogSize` (replay emulator cache).
+- `readLogTail(size int64) ([]byte, int64)` — seeks from EOF in session log file, returns data + file size.
+
+### Flow
+- **Live follow-tail** (`scrollOffset == 0`): Unchanged — uses ring buffer + incremental vt10x feed. Fast path.
+- **Scrollback** (`scrollOffset > 0`): `Draw()` reads from session log file via `readLogTail()` with estimated byte count `(scrollOffset + height) * cols * 3`, minimum 1MB. Falls back to ring buffer if log unavailable.
+- **Anchor-lock**: `paintEmu()` tracks `anchorTotalLines`. When total lines grow while scrolled up, bumps `scrollOffset` by delta. Reset on scroll-to-bottom.
+- **Replay caching**: `renderReplay()` caches the `xvt.SafeEmulator` keyed by `(logSize, ptyCols, ptyRows)` or `(len(raw), ptyCols, ptyRows)`. Only rebuilds on data/dimension change.
+
+### Gotchas
+- Session log is concurrently appended by `readLoop` — use `os.Open` + `ReadAt`, not `ReadFile`.
+- vt10x handles truncated escape sequences at read boundaries gracefully (partial sequences ignored).
+- `readLogTail` returns `(nil, 0)` if no log file exists; callers fall back to ring buffer.
+- Anchor reset happens both in `ScrollDown` (when hitting 0) and `ResetScroll` to avoid stale anchors in follow-tail mode.
+
+## Project Status Icons & Idle Wiring: 2026-03-19
+
+### What Was Missing
+The tui2 migration (Phase 11) ported individual task status icons but dropped:
+1. **Project header status icons** — `drawProjectRow` rendered only the project name, no aggregated icon
+2. **Idle state wiring** — `SetIdle()` existed on `TaskListView` but `app.go` never called `runner.Idle()`
+3. **Icon animation** — no `tickEven` toggle for alternating in-progress icons
+4. **Auto-navigate on completion** — `handleSessionExitUI` cleared the session but didn't exit the agent view
+
+### Data Model & Flow
+- `TaskListView.tickEven bool` — toggles each tick for status icon animation (Nerd Font \uF10C circle-o ↔ \uF192 dot-circle-o)
+- `TaskListView.Tick()` — called from `refreshTasksWithIDs` on every refresh cycle
+- `projectStatusIcon(tasks) (rune, tcell.Style)` — computes aggregated icon with priority: in_progress > in_review > all_complete > mixed(✓ dimmed) > all_pending. Idle detection: when all in-progress tasks are idle, shows moon (☾).
+- `drawProjectRow` now renders: 2-char indent + status icon + chevron (▸/▾) + project name + count `(N)`
+- `refreshTasksWithIDs(runningIDs, idleIDs []string)` — signature expanded to accept idle IDs. All three call sites updated: `onTick`, `handleSessionExitUI` goroutine, `refreshTasks`.
+- `handleSessionExitUI` now calls `exitAgentView()` when viewing a completed task's agent pane (not stopped — stopped tasks stay on agent view with cleared session).
+
+### Task Status Handling (2026-03-19)
+
+**Restored pre-tcell behavior for task status transitions and visual feedback:**
+
+- **Stopped agent → InReview**: `handleSessionExitUI` now sets `StatusInReview` (not Pending) when `stopped == true`. Matches the Bubble Tea `determinePostExitStatus` behavior where explicit stop = "needs human review".
+- **Idle+unvisited visual promotion**: `App` struct gains `idleUnvisited` and `viewedWhileAgent` maps. `refreshTasksWithIDs` diffs newly-idle tasks against `TaskListView.IdleSet()` to populate `idleUnvisited`. Entering agent view clears the flag via `onTaskSelect`. `drawTaskRow` renders idleUnvisited InProgress tasks with InReview icon (◎, cyan). `projectStatusIcon` counts them as InReview at project level.
+- **Manual status cycling**: `s`/`S` keys in task list call `Status.Next()`/`Prev()` via `OnStatusChange` callback → `db.Update` + `refreshTasks`.
+- **Task row animation**: `drawTaskRow` now checks `tickEven` for running InProgress tasks, alternating Nerd Font \uF10C (circle-o) and \uF192 (dot-circle-o). Idle (visited) tasks show moon (☾). Idle+unvisited show ◎.
+
+**New fields on `TaskListView`**: `idleUnvisited map[string]bool`, `OnStatusChange func(task)`.
+**New methods**: `SetIdleUnvisited(ids)`, `IdleSet() map[string]bool`.
+**New fields on `App`**: `idleUnvisited map[string]bool`, `viewedWhileAgent map[string]bool`.
+
+### Gotchas
+- Chevron state checks both `tl.expanded` and `tl.archiveProject` — same-named projects in main and archive sections will both show expanded chevrons. Acceptable given the BT code had the same behavior.
+
+## New Task Form Polish: 2026-03-19
+
+### Changes
+Three visual fixes to the `NewTaskForm` modal:
+
+1. **Word wrapping** — `wrapPrompt(width)` now breaks at word boundaries (last space within width) instead of hard character positions. Hard-breaks only when a single word exceeds width. `cursorWrappedPos` updated from simple division (`pos/width`, `pos%width`) to linear search through variable-length wrapped lines. `moveCursorUp`/`moveCursorDown` use actual `wrappedLine.start` offsets instead of `line*width`.
+
+2. **Modal background consistency** — Modal uses `Color235` background. Input field area uses `Color237` (slightly lighter) to create visual depth. Both focused and unfocused input states render against proper backgrounds. Placeholder text also uses the input background.
+
+3. **Cursor visibility** — Changed from `Foreground(Color(17)).Background(Color(153))` to `Foreground(ColorBlack).Background(Color252)` — high-contrast block cursor. Empty cells in the input area now have the `Color237` background, so the cursor block is visible even at end-of-line.
+
+### Data Model
+- No new fields or DB columns — purely rendering changes
+- `wrappedLine` struct unchanged: `{start, length}` still indexes into `f.prompt`
+- `wrapPrompt` returns variable-length lines (previously all lines were `width` except the last)
+
+### Gotchas
+- `cursorWrappedPos` can no longer use division — must iterate `wrapPrompt` result. This means `wrapPrompt` is called more often (once per cursor position query), but the prompt is small so this is negligible.
+- Word wrap includes trailing space on the broken line (e.g., "hello " not "hello"). This keeps cursor positions contiguous across the prompt rune slice with no gaps.
+
+## Enter Guard on Completed Tasks: 2026-03-19
+
+### Flow
+- `TaskListView.InputHandler()` in `tasklist.go` checks `t.Status != model.StatusComplete` before calling `OnSelect`
+- Single-line guard — no new types, fields, or DB changes
+
+### Gotchas
+- The guard is on the tasklist side, not `onTaskSelect` — so any programmatic calls to `onTaskSelect` (e.g., from new task form) are unaffected
+
+## Worktree Cleanup Fix: 2026-03-19
+
+### Problem
+`Ctrl+R` prune and `Ctrl+D` delete left behind stale worktree directories and `argus/*` branches. Three root causes:
+1. `git worktree remove --force` can exit 0 but leave empty dirs — `os.RemoveAll` fallback only ran on error
+2. Stale worktree refs in `.git/worktrees/` prevented `git branch -D` from deleting the branch
+3. Tasks created before the `CreateWorktree` branch-name fix stored the base branch (`origin/master`) in `task.Branch` instead of the actual worktree branch (`argus/<name>`)
+
+### Data Model
+No changes — same `task.Worktree` and `task.Branch` fields.
+
+### Flow
+- `removeWorktree()` in `internal/tui2/worktree.go`: runs `git worktree remove --force`, then ALWAYS checks `dirExists` and calls `os.RemoveAll` if the directory persists
+- `removeWorktreeAndBranch()`: runs `git worktree prune` before branch deletion; if `task.Branch` doesn't start with `argus/`, infers the correct branch from `"argus/" + filepath.Base(worktreePath)`
+- All functions now log to uxlog with `[worktree]` prefix for debugging
+
+### Gotchas
+- `git worktree prune` must run BEFORE `git branch -D` — git tracks worktree→branch associations in `.git/worktrees/` and refuses to delete a branch with a (possibly stale) worktree reference
+- Branch inference from directory name only works when the worktree dir was created by `CreateWorktree` (which uses the sanitized task name). Manual worktrees would need the correct branch stored on the task
+
+## Worktree Creation Stale-Ref Fix: 2026-03-20
+
+### Problem
+`CreateWorktree` failed with exit status 255 when a previous worktree directory was deleted without `git worktree remove`. Git retained a stale worktree→branch reference, causing both `git worktree add -b` (branch exists) and `git worktree add` (branch locked to stale entry) to fail. The error was also unreadable — `fmt.Errorf("...%s\n%s", ...)` produced a newline in the error string, but `drawText` renders on a single row, hiding the actual git fatal message.
+
+### Fix
+1. `git worktree prune` runs at the top of `CreateWorktree` (best-effort, errors ignored) to clean stale entries
+2. After each `git worktree add` failure, `isValidWorktreeDir(wtDir)` checks for `.git` file inside the directory — catches post-checkout hook failures where the worktree was created despite non-zero exit
+3. Error message uses `cleanGitOutput()` which extracts `fatal:` lines and collapses newlines for single-line display
+4. uxlog calls at every decision point: entry, cmd1 fail, partial success, cmd2 fail/success, final success
+
+### Key entities
+- `isValidWorktreeDir(dir)` — checks `filepath.Join(dir, ".git")` exists (stronger than bare `os.Stat(dir)`)
+- `cleanGitOutput(outputs ...[]byte)` — combines git output, extracts `fatal:` lines, collapses to single line
+- `[worktree]` uxlog prefix for all `CreateWorktree` logging
+
+### Gotchas
+- `os.Stat(wtDir)` alone is insufficient — a partial failure can leave an empty directory. Must check `.git` file presence
+- Error format `%s\n%s` is invisible in `drawText` (single-row renderer) — always use single-line error messages for form display
+
+## PR URL Detection Restoration: 2026-03-20
+
+### What was missing
+PR URL detection was lost during the Bubble Tea → tcell/tview migration. The data model (`Task.PRURL`, `pr_url` DB column), display (`SetPRURL`, `OpenPR`), and agent view key bindings (`ctrl+p`, `o`) all existed, but the scanning loop that populates `PRURL` was never ported.
+
+### Flow
+1. **Tick scan**: `onTick()` iterates `runner.Running()`, calls `sess.RecentOutputTail(32KB)`, matches `prURLRe`, persists to DB, updates agent pane (guarded by `agentState.TaskID == taskID`)
+2. **Exit scan**: Both `NotifySessionExit` (in-process) and `HandleSessionExit` (daemon) call `scanAndStorePRURL(taskID, lastOutput)` to catch fast-finishing agents
+3. **Key bindings**: `p` in task list via `OnOpenPR` callback, `ctrl+p` in task list via same callback, `ctrl+p` in agent view (existing), `o` in agent view when dead (existing)
+
+### Data model
+- `prURLRe` — package-level compiled regex in `internal/tui2/app.go`
+- `scanAndStorePRURL(taskID, lastOutput)` — shared helper for exit paths, goroutine-safe
+- `OnOpenPR` callback on `TaskListView` — same pattern as `OnArchive`, `OnStatusChange`
+
+### Gotchas
+- `NotifySessionExit` signature changed to accept `lastOutput []byte` — callers in `main.go` must pass it through (was previously discarded with `_`)
+- `SetPRURL` in `QueueUpdateDraw` must guard on `agentState.TaskID` to avoid setting the wrong PR on the visible agent pane
+- Both `p` and `ctrl+p` in the task list route through `OnOpenPR` for testability and consistency
+
+## TDD Infrastructure: 2026-03-20
+
+### Data Model
+- `internal/testutil/testutil.go` — assertion helpers: `Equal[T]`, `DeepEqual[T]` (go-cmp), `NotEqual[T]`, `Nil`/`NotNil` (reflection-based for nil-interface trap), `NoError`/`Error`/`ErrorIs`, `True`/`False`, `Contains`
+- Dependency: `github.com/google/go-cmp` for `DeepEqual` struct diffs
+
+### Flow
+- Import `"github.com/drn/argus/internal/testutil"` → call `testutil.Equal(t, got, want)` etc.
+- All assertions use `t.Errorf` (not `t.Fatalf`) so multiple failures surface per run
+- `Nil`/`NotNil` use `reflect.ValueOf(got).IsNil()` to handle the nil-interface trap (nil `*T` assigned to `any` is non-nil at interface level)
+
+### Build Targets (Makefile)
+- `make test` — `go test -race -count=1 ./...`
+- `make test-watch` — `gotestsum --watch` (checks for install)
+- `make test-cover` — coverage profile + summary
+- `make test-pkg PKG=./internal/db/` — single package verbose
+
+### CI Changes
+- Go 1.24 → 1.25, added `-coverprofile=coverage.out`, coverage summary step, artifact upload
+
+## Escape Key Agent View Fix: 2026-03-20
+
+### Problem
+Pressing Escape in agent view (terminal focused) exited back to the task list instead of being forwarded to the PTY. The `case tcell.KeyEscape:` block had a comment-only fallthrough for the terminal-focused case, letting the event reach the generic "Forward to PTY" block gated by `sess != nil && sess.Alive()`. When the session was dead or nil, the event returned unhandled to tview, which exited the view.
+
+### Fix
+Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to PTY when alive (with `ResetScroll()` to snap back from scrollback, matching the generic forward block's behavior), and always returns `nil` to consume the event. Location: `internal/tui2/app.go` lines 795-801.
+
+### Gotchas
+- Must call `ResetScroll()` after writing escape to PTY — the generic forward block does this for all keys, so escape must match
+- The `return nil` is unconditional — dead/nil sessions silently consume escape rather than leaking it to tview
+
+## Prune Worktree Fix: 2026-03-20
+
+### Problem
+`Ctrl+R` prune deleted DB records first, then ran worktree/branch cleanup in a background goroutine. If the TUI exited before cleanup finished (each `git push origin --delete` takes ~1.5s), branches were left behind with no way to retry.
+
+### Data model
+- `db.WorktreePaths()` — returns `(map[string]bool, error)` of all worktree paths in the DB (used for orphan detection)
+- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with animated dots, absorbs all keys
+- `countOrphanedWorktrees(knownPaths)` / `sweepOrphanedWorktrees(knownPaths, projects)` in `worktree.go` — scan `~/.argus/worktrees/` for dirs not in DB
+- `modePruning` view mode in `app.go` — absorbs all keys during cleanup
+
+### Flow
+1. `PruneCompleted()` fetches+deletes completed tasks from DB
+2. Stop sessions, remove session logs
+3. Count task worktrees + orphan worktrees
+4. Show `PruneModal` in running phase
+5. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep
+6. `wg.Wait()` → `QueueUpdateDraw` → `closePruneModal` + `refreshTasks`
+
+### Gotchas
+- Orphan sweep infers branch as `"argus/" + filepath.Base(worktreePath)` since no DB record exists
+- `walkOrphanedWorktrees` with nil projects map just counts; with non-nil map it removes
+- Empty project directories are cleaned up after sweep
+- Modal absorbs ALL keys during cleanup — prevents premature exit
+- `WorktreePaths()` returns error; caller skips orphan sweep on failure to avoid false positives
+
+## Terminal Style Conversion Completeness: 2026-03-20
+
+### Data Model
+- `uvCellToTcellStyle()` in `terminalpane.go` converts `uv.Cell.Style` → `tcell.Style`
+- Ultraviolet `Style` struct: `Fg`, `Bg`, `UnderlineColor` (all `color.Color`), `Underline` (enum), `Attrs` (uint8 bitmask)
+- Ultraviolet `Cell` also carries `Link` (OSC 8 hyperlink with URL + params)
+
+### Flow
+PTY bytes → x/vt emulator → `paintEmu()` iterates cells → `uvCellToTcellStyle()` per cell → `screen.SetContent()`
+
+### Attribute Mapping (must stay in sync with `uv.Attr*` constants)
+| uv constant | tcell method | SGR code |
+|---|---|---|
+| `AttrBold` | `Bold(true)` | 1 |
+| `AttrFaint` | `Dim(true)` | 2 |
+| `AttrItalic` | `Italic(true)` | 3 |
+| `AttrBlink` | `Blink(true)` | 5 |
+| `AttrReverse` | `Reverse(true)` | 7 |
+| `AttrStrikethrough` | `StrikeThrough(true)` | 9 |
+
+### Underline styles mapped to `tcell.UnderlineStyle*`
+Single→Solid, Double, Curly, Dotted, Dashed. Underline color via `style.Underline(ulStyle, color)`.
+
+### Gotchas
+- Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose highlight contrast — dimmed text rendered at full brightness
+- `AttrConceal` (SGR 8) and `AttrRapidBlink` (SGR 6) not mapped — rarely used, tcell has no direct support for conceal
+- Hyperlinks (`cell.Link.URL`) forwarded via `style.Url()` — tcell has no getter for URL so not directly testable
+- Old code used `Underline(true)` for all styles — lost curly/dotted/dashed distinction used by Claude Code diagnostics
+
+## Session Resume Wiring: 2026-03-20
+
+### Data Model
+- `task.SessionID` (string, persisted in SQLite `session_id` column) — UUID for conversation pinning
+- Claude backends: UUID generated via `model.GenerateSessionID()` before first `runner.Start`
+- Codex backends: UUID captured post-exit from `~/.codex/state_5.sqlite` via `agent.CaptureCodexSessionID(worktreePath)`
+
+### Flow
+1. **First run (Claude):** `startSession` → `GenerateSessionID()` → `db.Update` → `BuildCmd` uses `--session-id <uuid>` → `runner.Start`
+2. **First run (Codex):** `startSession` → no ID → `BuildCmd` uses bare command → `runner.Start`
+3. **Session exit (Codex):** `handleSessionExitUI` → background goroutine → `CaptureCodexSessionID` → `QueueUpdateDraw` → `db.Update`
+4. **Resume (both):** `startSession` → `resume = task.SessionID != ""` → `BuildCmd` uses `--resume <id>` (Claude) or `codex resume ... <id>` (Codex)
+5. **Enter-to-restart:** `handleAgentKey` → `KeyEnter` when session dead → `db.Get(taskID)` → `startSession`
+
+### Gotchas
+- `CaptureCodexSessionID` opens SQLite — must not run on tview main goroutine (blocking I/O)
+- `resume` flag derived from `task.SessionID != ""` — if SessionID is never set, resume never triggers
+- Enter key in agent view had no handler for dead sessions — fell through to PTY write (no-op)

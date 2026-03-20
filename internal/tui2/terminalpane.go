@@ -1,9 +1,12 @@
 package tui2
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 
 	"image/color"
@@ -14,9 +17,36 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// newDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
+// the response pipe. x/vt uses io.Pipe() internally — when the emulator
+// processes terminal query sequences (DA1, DA2, DSR, etc.), it writes responses
+// to pw which blocks until pr is read. Without draining, Write() hangs
+// indefinitely on any input containing these sequences. The drain goroutine
+// exits when the emulator is closed or garbage collected.
+func newDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
+	emu := xvt.NewSafeEmulator(cols, rows)
+	go io.Copy(io.Discard, emu) //nolint:errcheck
+	return emu
+}
+
+// safeEmuWrite writes data to an x/vt emulator, recovering from panics caused
+// by upstream bugs (e.g., InsertLineArea index-out-of-range when replay data
+// contains cursor positions or scroll regions from a larger terminal).
+func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) (n int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[vt] recovered from emulator panic: %v\n%s", r, debug.Stack())
+			err = fmt.Errorf("emulator panic: %v", r)
+		}
+	}()
+	return emu.Write(data)
+}
 
 // Cursor colors — high-contrast, theme-independent.
 var (
@@ -37,39 +67,55 @@ type TerminalPane struct {
 	focused bool
 
 	// Persistent x/vt emulator for live incremental rendering.
-	emu        *xvt.SafeEmulator
+	emu         *xvt.SafeEmulator
 	emuFedTotal uint64
 	emuCols     int
 	emuRows     int
+	cursorVisible bool
+
+	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
+	ptyCols int
+	ptyRows int
 
 	// Scrollback.
 	scrollOffset int
+
+	// Anchor-lock: track total lines so scrollOffset stays pinned when new output arrives.
+	anchorTotalLines int // total lines when scrollOffset was last set
+
+	// Replay emulator cache: reuse when only scroll changes (no new bytes).
+	replayEmu          *xvt.SafeEmulator
+	replayEmuBytes     uint64 // TotalWritten when replayEmu was built
+	replayEmuCols      int
+	replayEmuRows      int
+	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
+	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
 
 	// Diff mode.
-	diffMode    bool
-	diffContent []diffLine
-	diffSplit   bool
-	diffScroll  int
-	diffFile    string
+	diffMode         bool
+	diffParsed       gitutil.ParsedDiff
+	diffUnifiedLines []renderedDiffLine
+	diffSplitLines   []renderedDiffLine
+	diffSplitWidth   int // width used to build split lines (invalidate on resize)
+	diffSplit        bool
+	diffScroll       int
+	diffFile         string
+
+	// pendingResize is set by Draw() when panel dimensions differ from PTY.
+	// The tick goroutine checks this and performs the resize RPC.
+	pendingResizeRows uint16
+	pendingResizeCols uint16
+
+	// OnClick is called when the user clicks on the terminal pane.
+	// The app wires this to switch agentFocus back to the terminal.
+	OnClick func()
 }
 
-// diffLine is a single line in the diff view with its type.
-type diffLine struct {
-	text     string
-	lineType diffLineType
-}
-
-type diffLineType int
-
-const (
-	diffContext diffLineType = iota
-	diffAdded
-	diffRemoved
-	diffHeader
-)
+// mouseScrollStep is the number of lines scrolled per mouse wheel tick.
+const mouseScrollStep = 3
 
 // NewTerminalPane creates a native terminal rendering pane.
 func NewTerminalPane() *TerminalPane {
@@ -78,14 +124,38 @@ func NewTerminalPane() *TerminalPane {
 	}
 }
 
-// SetSession attaches a live session. Resets emulator state.
+// SetSession attaches a live session. Resets emulator state only when the
+// session pointer actually changes — the tick calls this every second with
+// the same session, and resetting the emulator each time would destroy
+// incremental rendering state.
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
+	if tp.session == sess {
+		return // same session, skip reset
+	}
+	if sess != nil {
+		uxlog.Log("[terminalpane] SetSession: sess=%p totalWritten=%d", sess, sess.TotalWritten())
+	} else {
+		uxlog.Log("[terminalpane] SetSession: nil")
+	}
 	tp.session = sess
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	// Seed PTY size from panel dimensions — Draw() will refine on first render.
+	// Do NOT fall back to 80x24 when GetInnerRect returns zero (before first
+	// Draw); leave ptyCols/ptyRows at 0 so Draw() sets them to match the
+	// actual panel width. Falling back to 80 creates a mismatch with the PTY
+	// (which was started at the correct width), causing the emulator to wrap
+	// text at 80 cols even though the agent output is formatted wider.
+	if sess != nil {
+		_, _, w, h := tp.GetInnerRect()
+		if w > 0 && h > 0 {
+			tp.ptyCols = max(w, 20)
+			tp.ptyRows = max(h, 5)
+		}
+	}
 }
 
 // Session returns the current session (thread-safe).
@@ -124,6 +194,24 @@ func (tp *TerminalPane) SetPRURL(url string) {
 	tp.taskPR = url
 }
 
+// SyncPTYSize performs a pending PTY resize (RPC). Called from the tick
+// goroutine — safe to block here. Draw() sets pendingResize* when panel
+// dimensions change; this method consumes them and issues the resize RPC.
+func (tp *TerminalPane) SyncPTYSize() {
+	tp.mu.Lock()
+	sess := tp.session
+	rows := tp.pendingResizeRows
+	cols := tp.pendingResizeCols
+	tp.pendingResizeRows = 0
+	tp.pendingResizeCols = 0
+	tp.mu.Unlock()
+
+	if sess == nil || !sess.Alive() || rows == 0 || cols == 0 {
+		return
+	}
+	sess.Resize(rows, cols)
+}
+
 // SetFocused sets the focus state for border rendering.
 func (tp *TerminalPane) SetFocused(f bool) {
 	tp.focused = f
@@ -134,6 +222,10 @@ func (tp *TerminalPane) ResetVT() {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	tp.anchorTotalLines = 0
+	tp.replayEmu = nil
+	tp.replayEmuBytes = 0
+	tp.replayEmuLogSize = 0
 	tp.replayData = nil
 	tp.ExitDiffMode()
 }
@@ -153,13 +245,76 @@ func (tp *TerminalPane) HasContent() bool {
 
 func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n }
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0 }
+func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0 }
 
 func (tp *TerminalPane) ScrollDown(n int) {
 	tp.scrollOffset -= n
 	if tp.scrollOffset < 0 {
 		tp.scrollOffset = 0
+		tp.anchorTotalLines = 0
 	}
+}
+
+// readLogTail reads the last `size` bytes from the session log file.
+// Returns nil if the file doesn't exist or is empty. The log file is
+// concurrently appended by readLoop; using Open+Seek+Read (not ReadFile)
+// avoids reading partial writes at EOF. vt10x handles truncated escape
+// sequences gracefully.
+func (tp *TerminalPane) readLogTail(size int64) ([]byte, int64) {
+	logPath := agent.SessionLogPath(tp.taskID)
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil, 0
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return nil, 0
+	}
+
+	fileSize := fi.Size()
+	readSize := size
+	if readSize > fileSize {
+		readSize = fileSize
+	}
+
+	offset := fileSize - readSize
+	buf := make([]byte, readSize)
+	n, err := f.ReadAt(buf, offset)
+	if err != nil && err != io.EOF {
+		return nil, 0
+	}
+	return buf[:n], fileSize
+}
+
+// MouseHandler handles mouse clicks (focus switching) and scroll wheel.
+func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		switch action {
+		case tview.MouseLeftDown, tview.MouseLeftClick:
+			setFocus(tp)
+			if tp.OnClick != nil {
+				tp.OnClick()
+			}
+			return true, nil
+		case tview.MouseScrollUp:
+			if tp.diffMode {
+				tp.DiffScrollUp(mouseScrollStep)
+			} else {
+				tp.ScrollUp(mouseScrollStep)
+			}
+			return true, nil
+		case tview.MouseScrollDown:
+			if tp.diffMode {
+				tp.DiffScrollDown(mouseScrollStep)
+			} else {
+				tp.ScrollDown(mouseScrollStep)
+			}
+			return true, nil
+		}
+		return false, nil
+	})
 }
 
 // --- Diff mode ---
@@ -169,13 +324,19 @@ func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
 	tp.diffMode = true
 	tp.diffScroll = 0
 	tp.diffFile = fileName
-	tp.diffContent = parseDiffLines(diff)
+	tp.diffParsed = gitutil.ParseUnifiedDiff(diff)
+	tp.diffUnifiedLines = buildUnifiedDiffLines(tp.diffParsed, fileName)
+	tp.diffSplitLines = nil
+	tp.diffSplitWidth = 0
 }
 
 // ExitDiffMode returns to terminal display.
 func (tp *TerminalPane) ExitDiffMode() {
 	tp.diffMode = false
-	tp.diffContent = nil
+	tp.diffParsed = gitutil.ParsedDiff{}
+	tp.diffUnifiedLines = nil
+	tp.diffSplitLines = nil
+	tp.diffSplitWidth = 0
 	tp.diffScroll = 0
 	tp.diffFile = ""
 }
@@ -214,6 +375,12 @@ func (tp *TerminalPane) OpenPR() {
 // --- Draw ---
 
 func (tp *TerminalPane) Draw(screen tcell.Screen) {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[terminalpane] PANIC in Draw: %v\n%s", r, debug.Stack())
+		}
+	}()
+
 	tp.Box.DrawForSubclass(screen, tp)
 	x, y, width, height := tp.GetInnerRect()
 	if width <= 0 || height <= 0 {
@@ -224,7 +391,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if tp.focused {
 		borderStyle = StyleFocusedBorder
 	}
-	drawBorderedPanel(screen, x-1, y-1, width+2, height+2, "", borderStyle)
+	inner := drawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
+	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
+	if width <= 0 || height <= 0 {
+		return
+	}
 
 	if tp.diffMode {
 		tp.renderDiff(screen, x, y, width, height)
@@ -233,6 +404,27 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 	tp.mu.Lock()
 	sess := tp.session
+	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
+	wantCols := max(width, 20)
+	wantRows := max(height, 5)
+	if sess != nil && sess.Alive() {
+		// Live session — resize PTY to match panel.
+		if tp.ptyCols != wantCols || tp.ptyRows != wantRows {
+			tp.ptyCols = wantCols
+			tp.ptyRows = wantRows
+			tp.pendingResizeRows = uint16(wantRows)
+			tp.pendingResizeCols = uint16(wantCols)
+		}
+	}
+	ptyCols := tp.ptyCols
+	ptyRows := tp.ptyRows
+	// For dead/replay sessions, always use current panel dimensions so
+	// content auto-resizes with the window instead of staying at the
+	// stale PTY size from when the session was alive.
+	if sess == nil || !sess.Alive() {
+		ptyCols = wantCols
+		ptyRows = wantRows
+	}
 	tp.mu.Unlock()
 
 	if sess == nil && !tp.HasContent() {
@@ -249,24 +441,9 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		return
 	}
 
-	var raw []byte
-	var ptyCols, ptyRows int
 	alive := false
-
 	if sess != nil {
-		ptyCols, ptyRows = sess.PTYSize()
 		alive = sess.Alive()
-		raw = sess.RecentOutput()
-	} else if len(tp.replayData) > 0 {
-		raw = tp.replayData
-	}
-
-	if len(raw) == 0 {
-		if sess != nil {
-			msg := "Waiting for output..."
-			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
-		}
-		return
 	}
 
 	if ptyCols < 20 {
@@ -277,8 +454,47 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	if tp.scrollOffset > 0 || !alive {
-		tp.renderReplay(screen, x, y, width, height, raw, ptyCols, ptyRows)
+		// Scrollback or finished session: use log file for full history,
+		// falling back to ring buffer or cached replay data.
+		var raw []byte
+		var logSize int64
+
+		if tp.taskID != "" {
+			// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
+			// Minimum 1MB to avoid re-reads on small scrolls.
+			needed := int64(tp.scrollOffset+height) * int64(ptyCols) * 3
+			if needed < 1024*1024 {
+				needed = 1024 * 1024
+			}
+			raw, logSize = tp.readLogTail(needed)
+		}
+		if len(raw) == 0 {
+			// Fallback: ring buffer or cached replay data.
+			if sess != nil {
+				raw = sess.RecentOutput()
+			} else if len(tp.replayData) > 0 {
+				raw = tp.replayData
+			}
+		}
+		if len(raw) == 0 {
+			if sess != nil {
+				msg := "Waiting for output..."
+				drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+			}
+			return
+		}
+		tp.renderReplay(screen, x, y, width, height, raw, logSize, ptyCols, ptyRows)
 	} else {
+		// Live follow-tail mode: incremental feed.
+		var raw []byte
+		if sess != nil {
+			raw = sess.RecentOutput()
+		}
+		if len(raw) == 0 {
+			msg := "Waiting for output..."
+			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+			return
+		}
 		tp.renderLive(screen, x, y, width, height, raw, ptyCols, ptyRows)
 	}
 }
@@ -295,7 +511,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	}
 
 	if tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows {
-		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
+		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
 		tp.emuRows = ptyRows
@@ -304,33 +520,54 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, raw []by
 	newBytes := totalWritten - tp.emuFedTotal
 	if newBytes > uint64(len(raw)) {
 		// Ring buffer wrapped — full reset and replay.
-		tp.emu = xvt.NewSafeEmulator(ptyCols, ptyRows)
-		tp.emu.Write(raw)
+		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+		safeEmuWrite(tp.emu, raw)
 	} else if newBytes > 0 {
-		tp.emu.Write(raw[len(raw)-int(newBytes):])
+		safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 	}
 	tp.emuFedTotal = totalWritten
 
-	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true)
+	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
 }
 
 // renderReplay uses x/vt scrollback for finished sessions and scroll mode.
-// Feeds full buffer into a fresh emulator and uses scrollback for history.
-func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, ptyCols, ptyRows int) {
-	emu := xvt.NewSafeEmulator(ptyCols, ptyRows)
-	emu.Write(raw)
+// Caches the emulator when input hasn't changed (same log size or same
+// TotalWritten). Supports anchor-lock: when scrolled up and new output
+// arrives, bumps scrollOffset so the viewed content stays pinned.
+func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, logSize int64, ptyCols, ptyRows int) {
+	// Check if we can reuse the cached replay emulator.
+	needRebuild := tp.replayEmu == nil ||
+		tp.replayEmuCols != ptyCols ||
+		tp.replayEmuRows != ptyRows ||
+		(logSize > 0 && tp.replayEmuLogSize != logSize) ||
+		(logSize == 0 && tp.replayEmuBytes != uint64(len(raw)))
 
-	tp.paintEmu(screen, x, y, w, h, emu, ptyCols, ptyRows, tp.scrollOffset == 0)
+	if needRebuild {
+		cursorVisible := true
+		tp.replayEmu = tp.newTrackedEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+			cursorVisible = visible
+		})
+		safeEmuWrite(tp.replayEmu, raw)
+		tp.replayEmuCols = ptyCols
+		tp.replayEmuRows = ptyRows
+		tp.replayEmuLogSize = logSize
+		tp.replayEmuBytes = uint64(len(raw))
+		tp.replayEmuCursorVisible = cursorVisible
+	}
+
+	tp.paintEmu(screen, x, y, w, h, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
-func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor bool) {
+func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor, cursorVisible bool) {
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
-
 	// Find content bounds in the main screen area.
 	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
-	if cur.Y > lastContentRow {
+	// Only extend content area to include cursor when it's visible.
+	// Without this guard, a hidden cursor at (0, bottom) inflates the
+	// content region with empty rows, causing a phantom cursor artifact.
+	if cursorVisible && cur.Y > lastContentRow {
 		lastContentRow = cur.Y
 	}
 
@@ -345,6 +582,14 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	if totalLines <= 0 {
 		return
 	}
+
+	// Anchor-lock: when scrolled up and new lines arrive, bump scrollOffset
+	// so the viewed content stays pinned (tmux-style).
+	if tp.scrollOffset > 0 && tp.anchorTotalLines > 0 && totalLines > tp.anchorTotalLines {
+		delta := totalLines - tp.anchorTotalLines
+		tp.scrollOffset += delta
+	}
+	tp.anchorTotalLines = totalLines
 
 	// Clamp scroll offset.
 	maxScroll := totalLines - h
@@ -402,8 +647,8 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 				style = uvCellToTcellStyle(cell)
 			}
 
-			// Cursor — always render regardless of CursorVisible().
-			if showCursor && isMainScreen && mainRow == cur.Y && col == cur.X {
+			// Match the emulator's cursor visibility instead of forcing an Argus-owned cursor.
+			if showCursor && cursorVisible && isMainScreen && mainRow == cur.Y && col == cur.X {
 				style = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}
 
@@ -427,17 +672,57 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	}
 }
 
+func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
+	return tp.newTrackedEmulatorWithCallback(cols, rows, func(visible bool) {
+		tp.cursorVisible = visible
+	})
+}
+
+func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
+	emu := newDrainedEmulator(cols, rows)
+	if onCursorVisible != nil {
+		emu.Emulator.SetCallbacks(xvt.Callbacks{
+			CursorVisibility: onCursorVisible,
+		})
+	}
+	// Default cursor to hidden — agents (Claude Code, Codex) hide the hardware
+	// cursor via \e[?25l. When the ring buffer wraps or the emulator is rebuilt,
+	// the hide sequence may no longer be in the replay data. Defaulting to false
+	// prevents a stale cursor from appearing (typically bottom-left) until the
+	// emulator processes an explicit \e[?25h show-cursor sequence.
+	if onCursorVisible != nil {
+		onCursorVisible(false)
+	}
+	return emu
+}
+
 // --- Diff rendering ---
 
 func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
-	if len(tp.diffContent) == 0 {
+	var lines []renderedDiffLine
+	if tp.diffSplit {
+		// Rebuild side-by-side lines if width changed.
+		if tp.diffSplitWidth != w || tp.diffSplitLines == nil {
+			tp.diffSplitLines = buildSideBySideDiffLines(tp.diffParsed, tp.diffFile, w)
+			tp.diffSplitWidth = w
+		}
+		lines = tp.diffSplitLines
+	} else {
+		lines = tp.diffUnifiedLines
+	}
+
+	if len(lines) == 0 {
 		msg := "No diff available"
 		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
 		return
 	}
 
 	// Header
-	headerText := " " + tp.diffFile + " "
+	mode := "unified"
+	if tp.diffSplit {
+		mode = "split"
+	}
+	headerText := " " + tp.diffFile + "  [" + mode + "]"
 	headerStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
 	for i, r := range headerText {
 		if i >= w {
@@ -447,7 +732,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 	}
 
 	visibleH := h - 1
-	maxScroll := len(tp.diffContent) - visibleH
+	maxScroll := len(lines) - visibleH
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -457,57 +742,11 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 
 	for i := range visibleH {
 		lineIdx := tp.diffScroll + i
-		if lineIdx >= len(tp.diffContent) {
+		if lineIdx >= len(lines) {
 			break
 		}
-		line := tp.diffContent[lineIdx]
-		style := diffLineStyle(line.lineType)
-		text := line.text
-		if len(text) > w {
-			text = text[:w]
-		}
-		drawText(screen, x, y+1+i, w, text, style)
+		drawStyledLine(screen, x, y+1+i, w, lines[lineIdx].cells)
 	}
-}
-
-func diffLineStyle(t diffLineType) tcell.Style {
-	switch t {
-	case diffAdded:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(78)) // green
-	case diffRemoved:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(203)) // red
-	case diffHeader:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(87)).Bold(true)
-	default:
-		return tcell.StyleDefault.Foreground(tcell.PaletteColor(245))
-	}
-}
-
-func parseDiffLines(diff string) []diffLine {
-	if diff == "" {
-		return nil
-	}
-	var lines []diffLine
-	start := 0
-	for i := 0; i <= len(diff); i++ {
-		if i == len(diff) || diff[i] == '\n' {
-			line := diff[start:i]
-			start = i + 1
-			lt := diffContext
-			if len(line) > 0 {
-				switch line[0] {
-				case '+':
-					lt = diffAdded
-				case '-':
-					lt = diffRemoved
-				case '@':
-					lt = diffHeader
-				}
-			}
-			lines = append(lines, diffLine{text: line, lineType: lt})
-		}
-	}
-	return lines
 }
 
 // --- x/vt → tcell helpers ---
@@ -543,8 +782,14 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if attrs&uv.AttrBold != 0 {
 		style = style.Bold(true)
 	}
+	if attrs&uv.AttrFaint != 0 {
+		style = style.Dim(true)
+	}
 	if attrs&uv.AttrItalic != 0 {
 		style = style.Italic(true)
+	}
+	if attrs&uv.AttrBlink != 0 {
+		style = style.Blink(true)
 	}
 	if attrs&uv.AttrReverse != 0 {
 		style = style.Reverse(true)
@@ -552,10 +797,32 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if attrs&uv.AttrStrikethrough != 0 {
 		style = style.StrikeThrough(true)
 	}
-	// Underline styles.
-	ul := cell.Style.Underline
-	if ul != 0 {
-		style = style.Underline(true)
+	// Underline styles + color.
+	if ul := cell.Style.Underline; ul != 0 {
+		var ulStyle tcell.UnderlineStyle
+		switch ul {
+		case ansi.UnderlineSingle:
+			ulStyle = tcell.UnderlineStyleSolid
+		case ansi.UnderlineDouble:
+			ulStyle = tcell.UnderlineStyleDouble
+		case ansi.UnderlineCurly:
+			ulStyle = tcell.UnderlineStyleCurly
+		case ansi.UnderlineDotted:
+			ulStyle = tcell.UnderlineStyleDotted
+		case ansi.UnderlineDashed:
+			ulStyle = tcell.UnderlineStyleDashed
+		default:
+			ulStyle = tcell.UnderlineStyleSolid
+		}
+		if cell.Style.UnderlineColor != nil {
+			style = style.Underline(ulStyle, uvColorToTcell(cell.Style.UnderlineColor))
+		} else {
+			style = style.Underline(ulStyle)
+		}
+	}
+	// Hyperlinks (OSC 8).
+	if cell.Link.URL != "" {
+		style = style.Url(cell.Link.URL)
 	}
 	return style
 }

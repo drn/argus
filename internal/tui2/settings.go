@@ -2,6 +2,7 @@ package tui2
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -26,6 +27,7 @@ const (
 	srSandbox
 	srLogs
 	srKB
+	srDaemon
 )
 
 // settingsRow is a single row in the settings section list.
@@ -61,6 +63,22 @@ type SettingsView struct {
 	metisVaultPath string
 	argusVaultPath string
 	kbTaskSync     bool
+
+	// Logs detail scroll.
+	logScrollOff int
+	logLines     []string // cached lines for current log
+	logKey       string   // which log is cached ("ux" or "daemon")
+
+	// Daemon.
+	daemonConnected  bool
+	daemonRestarting bool
+
+	// Callbacks.
+	OnRestartDaemon func()
+	OnNewProject    func()
+	OnEditProject   func(name string, p config.Project)
+	OnNewBackend    func()
+	OnEditBackend   func(name string, b config.Backend)
 
 	// DB reference for toggling values.
 	database *db.DB
@@ -144,6 +162,7 @@ func (sv *SettingsView) Refresh() {
 }
 
 func (sv *SettingsView) SetDaemonConnected(connected bool) {
+	sv.daemonConnected = connected
 	if !connected {
 		sv.warnings = []string{"Running in-process mode (daemon not connected)"}
 	} else {
@@ -173,8 +192,8 @@ func (sv *SettingsView) setTasks(tasks []*model.Task) {
 func (sv *SettingsView) rebuildRows() {
 	sv.rows = nil
 
-	// STATUS section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "STATUS"})
+	// Status section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Status"})
 	if len(sv.warnings) == 0 {
 		sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  System status", key: "_ok"})
 	} else {
@@ -182,17 +201,24 @@ func (sv *SettingsView) rebuildRows() {
 			sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  ⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 		}
 	}
+	if sv.daemonConnected {
+		label := "  Restart Daemon"
+		if sv.daemonRestarting {
+			label = "  Restarting..."
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
+	}
 
-	// SANDBOX section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "SANDBOX"})
+	// Sandbox section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Sandbox"})
 	label := "  Disabled"
 	if sv.sandboxEnabled {
 		label = "  Enabled"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
 
-	// PROJECTS section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "PROJECTS"})
+	// Projects section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Projects"})
 	if len(sv.projects) == 0 {
 		sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  (no projects)"})
 	} else {
@@ -201,23 +227,28 @@ func (sv *SettingsView) rebuildRows() {
 		}
 	}
 
-	// BACKENDS section.
-	bLabel := "BACKENDS"
+	// Backends section.
+	bLabel := "Backends"
 	if sv.defaultBackend != "" {
-		bLabel = fmt.Sprintf("BACKENDS (default: %s)", sv.defaultBackend)
+		bLabel = fmt.Sprintf("Backends (default: %s)", sv.defaultBackend)
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: bLabel})
 	for _, b := range sv.backends {
 		sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "  " + b.Name, key: b.Name})
 	}
 
-	// KNOWLEDGE BASE section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "KNOWLEDGE BASE"})
+	// Knowledge Base section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Knowledge Base"})
 	kbLabel := "  Disabled"
 	if sv.kbEnabled {
 		kbLabel = "  Enabled"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+
+	// Logs section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  Daemon Log", key: "daemon"})
 
 	// Clamp cursor.
 	if sv.cursor >= len(sv.rows) {
@@ -231,11 +262,19 @@ func (sv *SettingsView) skipToSelectable(dir int) {
 	for sv.cursor >= 0 && sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		sv.cursor += dir
 	}
-	if sv.cursor < 0 {
+	if sv.cursor < 0 || (sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection) {
+		// Went past the top — search forward for the first selectable row.
 		sv.cursor = 0
+		for sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor++
+		}
 	}
 	if sv.cursor >= len(sv.rows) {
+		// Went past the bottom — search backward for the last selectable row.
 		sv.cursor = len(sv.rows) - 1
+		for sv.cursor >= 0 && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor--
+		}
 	}
 }
 
@@ -297,7 +336,30 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		case 'd':
 			return sv.handleSetDefault()
+		case 'n':
+			return sv.handleNew()
+		case 'e':
+			return sv.handleEdit()
 		}
+	}
+	return false
+}
+
+// HandleMouse handles mouse events (scroll wheel on logs detail).
+func (sv *SettingsView) HandleMouse(action tview.MouseAction) bool {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srLogs {
+		return false
+	}
+	switch action {
+	case tview.MouseScrollUp:
+		if sv.logScrollOff > 0 {
+			sv.logScrollOff--
+		}
+		return true
+	case tview.MouseScrollDown:
+		sv.logScrollOff++
+		return true
 	}
 	return false
 }
@@ -311,6 +373,12 @@ func (sv *SettingsView) moveCursor(dir int) {
 		sv.cursor = len(sv.rows) - 1
 	}
 	sv.skipToSelectable(dir)
+	// Reset log scroll when leaving a log row or switching logs.
+	if row := sv.SelectedRow(); row == nil || row.kind != srLogs || row.key != sv.logKey {
+		sv.logScrollOff = 0
+		sv.logLines = nil
+		sv.logKey = ""
+	}
 }
 
 func (sv *SettingsView) handleEnter() bool {
@@ -341,6 +409,13 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] KB toggled to %s", val)
 		sv.rebuildRows()
 		return true
+	case srDaemon:
+		if !sv.daemonRestarting && sv.OnRestartDaemon != nil {
+			sv.daemonRestarting = true
+			sv.rebuildRows()
+			sv.OnRestartDaemon()
+		}
+		return true
 	}
 	return false
 }
@@ -355,6 +430,46 @@ func (sv *SettingsView) handleSetDefault() bool {
 	uxlog.Log("[settings] default backend set to %s", be.Name)
 	sv.rebuildRows()
 	return true
+}
+
+// currentSection returns the section kind for the currently selected row.
+func (sv *SettingsView) currentSection() settingsRowKind {
+	if sv.cursor < 0 || sv.cursor >= len(sv.rows) {
+		return srSection
+	}
+	return sv.rows[sv.cursor].kind
+}
+
+func (sv *SettingsView) handleNew() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if sv.OnNewProject != nil {
+			sv.OnNewProject()
+			return true
+		}
+	case srBackend:
+		if sv.OnNewBackend != nil {
+			sv.OnNewBackend()
+			return true
+		}
+	}
+	return false
+}
+
+func (sv *SettingsView) handleEdit() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
+			sv.OnEditProject(pe.Name, pe.Project)
+			return true
+		}
+	case srBackend:
+		if be := sv.SelectedBackend(); be != nil && sv.OnEditBackend != nil {
+			sv.OnEditBackend(be.Name, be.Backend)
+			return true
+		}
+	}
+	return false
 }
 
 // --- Draw ---
@@ -411,10 +526,9 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 			style = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
 		case srWarning:
 			style = tcell.StyleDefault.Foreground(ColorInProgress)
-		default:
-			if rowIdx == sv.cursor {
-				style = style.Background(ColorHighlight)
-			}
+		}
+		if row.kind != srSection && rowIdx == sv.cursor {
+			style = style.Background(ColorHighlight)
 		}
 
 		label := row.label
@@ -452,6 +566,10 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srKB:
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+	case srLogs:
+		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srDaemon:
+		sv.renderDaemonDetail(screen, innerX, innerY, innerW, innerH)
 	}
 }
 
@@ -486,7 +604,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	row += 2
 
 	if len(sv.sandboxDenyRead) > 0 {
-		drawText(screen, x, y+row, w, "DENY READ:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Deny Read:", tcell.StyleDefault.Foreground(ColorTitle))
 		row++
 		for _, p := range sv.sandboxDenyRead {
 			if row >= h {
@@ -499,7 +617,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if len(sv.sandboxExtraWrite) > 0 {
-		drawText(screen, x, y+row, w, "EXTRA WRITE:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Extra Write:", tcell.StyleDefault.Foreground(ColorTitle))
 		row++
 		for _, p := range sv.sandboxExtraWrite {
 			if row >= h {
@@ -525,7 +643,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y, w, pe.Name, StyleTitle)
 	r := 2
 
-	drawText(screen, x, y+r, w, "CONFIG", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	drawText(screen, x, y+r, w, "  Path: "+pe.Project.Path, StyleDimmed)
 	r++
@@ -541,7 +659,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	// Task counts.
 	counts, ok := sv.taskCounts[pe.Name]
 	if ok {
-		drawText(screen, x, y+r, w, "TASKS", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(ColorTitle))
 		r++
 		total := counts.pending + counts.inProgress + counts.inReview + counts.complete
 		drawText(screen, x, y+r, w, fmt.Sprintf("  %d pending  %d active  %d review  %d done",
@@ -551,6 +669,10 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 			pct := counts.complete * 100 / total
 			drawText(screen, x, y+r, w, fmt.Sprintf("  %d%% complete", pct), StyleDimmed)
 		}
+	}
+
+	if h > 2 {
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit", StyleDimmed)
 	}
 }
 
@@ -569,7 +691,7 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	}
 	r++
 
-	drawText(screen, x, y+r, w, "CONFIG", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	cmd := be.Backend.Command
 	if len(cmd) > w-12 {
@@ -580,9 +702,9 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, StyleDimmed)
 	r += 2
 
-	hints := "[d] set as default"
+	hints := "[d] set as default  [n] new  [e] edit"
 	if be.Name == sv.defaultBackend {
-		hints = "(already default)"
+		hints = "(already default)  [n] new  [e] edit"
 	}
 	if r < h {
 		drawText(screen, x, y+r, w, hints, StyleDimmed)
@@ -602,7 +724,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	drawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
 	r += 2
 
-	drawText(screen, x, y+r, w, "METIS VAULT:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Metis Vault:", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	vault := sv.metisVaultPath
 	if vault == "" {
@@ -611,7 +733,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
 	r += 2
 
-	drawText(screen, x, y+r, w, "ARGUS VAULT:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(ColorTitle))
 	r++
 	vault = sv.argusVaultPath
 	if vault == "" {
@@ -630,6 +752,95 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB", StyleDimmed)
 	}
+}
+
+func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Daemon", StyleTitle)
+	r := 2
+
+	if sv.daemonRestarting {
+		drawText(screen, x, y+r, w, "Restarting daemon...", tcell.StyleDefault.Foreground(ColorInProgress))
+	} else {
+		drawText(screen, x, y+r, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+		r += 2
+		drawText(screen, x, y+r, w, "[enter] restart daemon", StyleDimmed)
+	}
+}
+
+// SetDaemonRestarting updates the restarting state from the app.
+func (sv *SettingsView) SetDaemonRestarting(restarting bool) {
+	sv.daemonRestarting = restarting
+	sv.rebuildRows()
+}
+
+func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	dataDir := db.DataDir()
+	var title, logPath string
+	switch row.key {
+	case "ux":
+		title = "UX Log"
+		logPath = uxlog.Path(dataDir)
+	case "daemon":
+		title = "Daemon Log"
+		logPath = dataDir + "/daemon.log"
+	default:
+		return
+	}
+
+	drawText(screen, x, y, w, title, StyleTitle)
+	drawText(screen, x, y+2, w, logPath, StyleDimmed)
+
+	// Load/cache log lines.
+	if sv.logKey != row.key {
+		sv.logLines = readLogLines(logPath)
+		sv.logKey = row.key
+		// Auto-scroll to bottom on first load.
+		visibleRows := h - 4
+		if len(sv.logLines) > visibleRows {
+			sv.logScrollOff = len(sv.logLines) - visibleRows
+		} else {
+			sv.logScrollOff = 0
+		}
+	}
+
+	// Clamp scroll offset.
+	visibleRows := h - 4
+	if visibleRows <= 0 {
+		return
+	}
+	maxScroll := len(sv.logLines) - visibleRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if sv.logScrollOff > maxScroll {
+		sv.logScrollOff = maxScroll
+	}
+
+	// Render visible lines.
+	for i := range visibleRows {
+		lineIdx := sv.logScrollOff + i
+		if lineIdx >= len(sv.logLines) {
+			break
+		}
+		line := sv.logLines[lineIdx]
+		if len(line) > w {
+			line = line[:w]
+		}
+		drawText(screen, x, y+4+i, w, line, tcell.StyleDefault)
+	}
+}
+
+// readLogLines reads all lines from a log file.
+func readLogLines(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []string{"(file not found)"}
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return []string{"(empty)"}
+	}
+	return strings.Split(text, "\n")
 }
 
 // --- Helpers ---

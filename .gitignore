@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local Go build cache (sandbox workaround)
 .gocache/
+
+# Test coverage
+coverage.out

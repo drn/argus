@@ -16,6 +16,7 @@ const (
 	rowTask rowKind = iota
 	rowProject
 	rowArchiveHeader
+	rowSeparator
 )
 
 // taskRow is a flattened display row in the task list.
@@ -26,14 +27,16 @@ type taskRow struct {
 }
 
 // TaskListView displays tasks grouped by project with cursor navigation.
-// Matches the Bubble Tea TaskList behavior: one project expanded at a time,
+// One project expanded at a time,
 // cursor skips headers, archive section at the bottom.
 type TaskListView struct {
 	*tview.Box
-	tasks   []*model.Task
-	rows    []taskRow
-	running map[string]bool
-	idle    map[string]bool
+	tasks         []*model.Task
+	rows          []taskRow
+	running       map[string]bool
+	idle          map[string]bool
+	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
+	tickEven      bool            // toggles each tick for status icon animation
 
 	cursor   int
 	offset   int // scroll offset
@@ -47,14 +50,21 @@ type TaskListView struct {
 	OnNew func()
 	// Callback when cursor moves to a different task.
 	OnCursorChange func(task *model.Task)
+	// Callback when user changes task status via s/S keys.
+	OnStatusChange func(task *model.Task)
+	// Callback when user toggles archive on a task via 'a' key.
+	OnArchive func(task *model.Task)
+	// Callback when user presses 'p' to open PR URL.
+	OnOpenPR func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
 func NewTaskListView() *TaskListView {
 	tl := &TaskListView{
-		Box:     tview.NewBox(),
-		running: make(map[string]bool),
-		idle:    make(map[string]bool),
+		Box:           tview.NewBox(),
+		running:       make(map[string]bool),
+		idle:          make(map[string]bool),
+		idleUnvisited: make(map[string]bool),
 	}
 	return tl
 }
@@ -80,6 +90,28 @@ func (tl *TaskListView) SetIdle(ids []string) {
 	for _, id := range ids {
 		tl.idle[id] = true
 	}
+}
+
+// IdleSet returns a snapshot of the current idle map (for diffing newly-idle tasks).
+func (tl *TaskListView) IdleSet() map[string]bool {
+	cp := make(map[string]bool, len(tl.idle))
+	for id := range tl.idle {
+		cp[id] = true
+	}
+	return cp
+}
+
+// SetIdleUnvisited updates the set of idle+unvisited task IDs.
+func (tl *TaskListView) SetIdleUnvisited(ids []string) {
+	tl.idleUnvisited = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		tl.idleUnvisited[id] = true
+	}
+}
+
+// Tick toggles the animation frame for status icons.
+func (tl *TaskListView) Tick() {
+	tl.tickEven = !tl.tickEven
 }
 
 // SelectedTask returns the task at the current cursor, or nil.
@@ -127,6 +159,7 @@ func (tl *TaskListView) buildRows() {
 
 	// Archive section
 	if len(archived) > 0 {
+		tl.rows = append(tl.rows, taskRow{kind: rowSeparator})
 		tl.rows = append(tl.rows, taskRow{kind: rowArchiveHeader})
 		if tl.archiveExpanded {
 			archOrder, archTasks := groupByProject(archived)
@@ -198,32 +231,178 @@ func (tl *TaskListView) skipToTask(dir int) {
 	}
 }
 
-// CursorDown moves the cursor down. When landing on a project header,
-// autoExpand will expand it and advance the cursor to the first task.
+// CursorDown moves the cursor down, skipping headers.
 func (tl *TaskListView) CursorDown() {
+	tl.moveCursor(1)
+}
+
+// CursorUp moves the cursor up, skipping headers.
+func (tl *TaskListView) CursorUp() {
+	tl.moveCursor(-1)
+}
+
+// moveCursor moves the cursor in the given direction (+1 down, -1 up),
+// skipping project header and archive header rows so the cursor always
+// lands on a task. When navigating up past a project header, the cursor
+// lands on the last task of the previous project.
+func (tl *TaskListView) moveCursor(dir int) {
 	if len(tl.rows) == 0 {
 		return
 	}
-	tl.cursor++
+
+	prev := tl.cursor
+
+	// Step 1: Move one position in the given direction.
+	tl.cursor += dir
+	if tl.cursor < 0 {
+		tl.cursor = 0
+	}
 	if tl.cursor >= len(tl.rows) {
 		tl.cursor = len(tl.rows) - 1
 	}
 	tl.autoExpand()
+
+	c := tl.cursor
+	if c < 0 || c >= len(tl.rows) {
+		tl.notifyCursorChange()
+		return
+	}
+
+	// Already on a task row — done.
+	if tl.rows[c].kind == rowTask {
+		tl.notifyCursorChange()
+		return
+	}
+
+	// On the separator — skip it in the current direction.
+	if tl.rows[c].kind == rowSeparator {
+		if dir > 0 {
+			tl.cursor++
+		} else {
+			tl.skipUpPastHeader(prev)
+			tl.notifyCursorChange()
+			return
+		}
+		if tl.cursor < 0 {
+			tl.cursor = 0
+		}
+		if tl.cursor >= len(tl.rows) {
+			tl.cursor = len(tl.rows) - 1
+		}
+		c = tl.cursor
+	}
+
+	// On the archive header — skip it like a project header.
+	if tl.rows[c].kind == rowArchiveHeader {
+		// Auto-expand archive before skipping, so rows exist below the header.
+		tl.autoExpand()
+		c = tl.cursor
+		if dir > 0 {
+			if c+1 < len(tl.rows) {
+				tl.cursor++
+				tl.autoExpand()
+				c = tl.cursor
+				// May have landed on a project header within archive — skip that too.
+				if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+					if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+						tl.cursor++
+					}
+				}
+			}
+		} else {
+			tl.skipUpPastHeader(prev)
+		}
+		tl.notifyCursorChange()
+		return
+	}
+
+	// On a project header — skip it.
+	if dir > 0 {
+		// Going down: move to the first task below this header.
+		if c+1 < len(tl.rows) && tl.rows[c+1].kind == rowTask {
+			tl.cursor++
+		}
+	} else {
+		if c > 0 {
+			tl.skipUpPastHeader(prev)
+		} else {
+			// At the top (row 0) and it's a header — stay on the previous task.
+			tl.cursor = prev
+		}
+	}
 	tl.notifyCursorChange()
 }
 
-// CursorUp moves the cursor up. When landing on a project header,
-// autoExpand will expand it and move the cursor to the last task.
-func (tl *TaskListView) CursorUp() {
-	if len(tl.rows) == 0 {
-		return
-	}
+// skipUpPastHeader moves the cursor up past a header row (project or archive),
+// landing on the last task of the previous expanded project. If it lands on
+// another header (e.g., archive header above a project header), it chains
+// through one additional header. Falls back to prev if no task is reachable.
+func (tl *TaskListView) skipUpPastHeader(prev int) {
 	tl.cursor--
 	if tl.cursor < 0 {
-		tl.cursor = 0
+		tl.cursor = prev
+		return
 	}
 	tl.autoExpand()
-	tl.notifyCursorChange()
+	c := tl.cursor
+
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+		tl.landOnLastTask(c, prev)
+		return
+	}
+
+	// Landed on separator — skip it too.
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowSeparator {
+		tl.cursor--
+		if tl.cursor < 0 {
+			tl.cursor = prev
+			return
+		}
+		c = tl.cursor
+	}
+
+	// Landed on archive header after skipping a project header — skip it too.
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
+		tl.cursor--
+		if tl.cursor < 0 {
+			tl.cursor = prev
+			return
+		}
+		tl.autoExpand()
+		c = tl.cursor
+		// May land on separator before archive header.
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowSeparator {
+			tl.cursor--
+			if tl.cursor < 0 {
+				tl.cursor = prev
+				return
+			}
+			c = tl.cursor
+		}
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
+			tl.landOnLastTask(c, prev)
+			return
+		}
+	}
+
+	// Couldn't find a task — revert.
+	if c < 0 || c >= len(tl.rows) || tl.rows[c].kind != rowTask {
+		tl.cursor = prev
+	}
+}
+
+// landOnLastTask sets the cursor to the last consecutive task row after
+// the project header at idx. Falls back to prev if no tasks follow.
+func (tl *TaskListView) landOnLastTask(idx, prev int) {
+	lastTask := -1
+	for i := idx + 1; i < len(tl.rows) && tl.rows[i].kind == rowTask; i++ {
+		lastTask = i
+	}
+	if lastTask >= 0 {
+		tl.cursor = lastTask
+	} else {
+		tl.cursor = prev
+	}
 }
 
 // notifyCursorChange fires the OnCursorChange callback with the current task.
@@ -233,52 +412,57 @@ func (tl *TaskListView) notifyCursorChange() {
 	}
 }
 
-// autoExpand expands the project the cursor is in, collapses others.
+// autoExpand checks if the cursor moved to a different project and rebuilds
+// the row list with that project expanded. Also auto-expands the archive
+// section when the cursor enters it and auto-collapses when the cursor leaves.
 func (tl *TaskListView) autoExpand() {
-	if tl.cursor < 0 || tl.cursor >= len(tl.rows) {
+	if len(tl.rows) == 0 {
 		return
 	}
-	row := tl.rows[tl.cursor]
+	c := tl.cursor
+	if c < 0 || c >= len(tl.rows) {
+		return
+	}
+	r := tl.rows[c]
 
-	switch row.kind {
-	case rowProject:
-		// Cursor landed on a project header — expand it
-		inArchive := tl.isInArchive(tl.cursor)
-		if inArchive {
-			tl.archiveExpanded = true
-			if row.project != tl.archiveProject {
-				tl.archiveProject = row.project
-				tl.buildRows()
-				// Move cursor to the first task in this project
-				tl.skipToTask(1)
-			}
-		} else {
-			if row.project != tl.expanded {
-				tl.expanded = row.project
-				tl.buildRows()
-				// Move cursor to the first task in this project
-				tl.skipToTask(1)
-			}
-		}
-	case rowArchiveHeader:
-		tl.archiveExpanded = !tl.archiveExpanded
+	// Determine if cursor is in the archive section.
+	inArchive := tl.isInArchive(c)
+
+	// Auto-expand/collapse archive section based on cursor position.
+	if inArchive && !tl.archiveExpanded {
+		tl.archiveExpanded = true
 		tl.buildRows()
-	case rowTask:
-		inArchive := tl.isInArchive(tl.cursor)
-		if inArchive {
-			tl.archiveExpanded = true
-			if row.project != tl.archiveProject {
-				tl.archiveProject = row.project
-				tl.buildRows()
-				tl.restoreCursorToTask(row.task)
-			}
-		} else {
-			tl.archiveExpanded = false
-			if row.project != tl.expanded {
-				tl.expanded = row.project
-				tl.buildRows()
-				tl.restoreCursorToTask(row.task)
-			}
+		// Cursor stays valid — archive rows are appended after current position.
+		c = tl.cursor
+		if c >= 0 && c < len(tl.rows) {
+			r = tl.rows[c]
+		}
+	} else if !inArchive && tl.archiveExpanded {
+		tl.archiveExpanded = false
+		tl.buildRows()
+		// Cursor is above archive section — rows above haven't changed.
+	}
+
+	// Archive header and separator — don't change project expansion.
+	if r.kind == rowArchiveHeader || r.kind == rowSeparator {
+		return
+	}
+
+	if inArchive {
+		// Expand the project within the archive section.
+		if r.project != tl.archiveProject {
+			currentRow := tl.rows[c]
+			tl.archiveProject = r.project
+			tl.buildRows()
+			tl.restoreCursor(currentRow, true)
+		}
+	} else {
+		// Expand the project in the active section.
+		if r.project != tl.expanded {
+			currentRow := tl.rows[c]
+			tl.expanded = r.project
+			tl.buildRows()
+			tl.restoreCursor(currentRow, false)
 		}
 	}
 }
@@ -293,17 +477,23 @@ func (tl *TaskListView) isInArchive(idx int) bool {
 	return false
 }
 
-// restoreCursorToTask moves the cursor to the row matching the given task.
-func (tl *TaskListView) restoreCursorToTask(task *model.Task) {
-	if task == nil {
-		return
-	}
+// restoreCursor finds the row matching target in the rebuilt rows slice
+// and positions the cursor there. inArchive restricts the search to the
+// archive section (or main section), preventing a project that exists in both
+// sections from matching the wrong header.
+func (tl *TaskListView) restoreCursor(target taskRow, inArchive bool) {
 	for i, r := range tl.rows {
-		if r.kind == rowTask && r.task != nil && r.task.ID == task.ID {
-			tl.cursor = i
-			return
+		if r.kind == target.kind && r.project == target.project {
+			if tl.isInArchive(i) != inArchive {
+				continue
+			}
+			if r.kind == rowProject || (r.task != nil && target.task != nil && r.task.ID == target.task.ID) {
+				tl.cursor = i
+				return
+			}
 		}
 	}
+	tl.clampCursor()
 }
 
 // InputHandler handles key events for the task list.
@@ -315,7 +505,7 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 		case tcell.KeyDown:
 			tl.CursorDown()
 		case tcell.KeyEnter:
-			if t := tl.SelectedTask(); t != nil && tl.OnSelect != nil {
+			if t := tl.SelectedTask(); t != nil && t.Status != model.StatusComplete && tl.OnSelect != nil {
 				tl.OnSelect(t)
 			}
 		case tcell.KeyRune:
@@ -327,6 +517,31 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case 'n':
 				if tl.OnNew != nil {
 					tl.OnNew()
+				}
+			case 's':
+				if t := tl.SelectedTask(); t != nil {
+					t.SetStatus(t.Status.Next())
+					if tl.OnStatusChange != nil {
+						tl.OnStatusChange(t)
+					}
+				}
+			case 'S':
+				if t := tl.SelectedTask(); t != nil {
+					t.SetStatus(t.Status.Prev())
+					if tl.OnStatusChange != nil {
+						tl.OnStatusChange(t)
+					}
+				}
+			case 'a':
+				if t := tl.SelectedTask(); t != nil {
+					t.Archived = !t.Archived
+					if tl.OnArchive != nil {
+						tl.OnArchive(t)
+					}
+				}
+			case 'p':
+				if t := tl.SelectedTask(); t != nil && t.PRURL != "" && tl.OnOpenPR != nil {
+					tl.OnOpenPR(t)
 				}
 			}
 		}
@@ -372,6 +587,8 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		switch row.kind {
 		case rowProject:
 			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project)
+		case rowSeparator:
+			tl.drawSeparator(screen, inner.X, inner.Y+i, inner.W)
 		case rowArchiveHeader:
 			tl.drawArchiveHeader(screen, inner.X, inner.Y+i, inner.W)
 		case rowTask:
@@ -380,10 +597,103 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 	}
 }
 
+// projectStatusIcon returns the aggregated status icon and style for a project's tasks.
+// Priority: in_progress > in_review > all complete > mixed > all pending.
+func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
+	var hasInProgress, hasInReview, hasPending, hasComplete bool
+	allInProgressIdle := true
+
+	for _, t := range tasks {
+		switch t.Status {
+		case model.StatusInProgress:
+			if tl.idleUnvisited[t.ID] {
+				// Idle+unvisited InProgress tasks count as InReview at project level.
+				hasInReview = true
+			} else {
+				hasInProgress = true
+				if tl.running[t.ID] && !tl.idle[t.ID] {
+					allInProgressIdle = false
+				}
+			}
+		case model.StatusInReview:
+			hasInReview = true
+		case model.StatusComplete:
+			hasComplete = true
+		default:
+			hasPending = true
+		}
+	}
+
+	switch {
+	case hasInProgress:
+		if allInProgressIdle {
+			return '☾', tcell.StyleDefault.Foreground(ColorInProgress)
+		}
+		if tl.tickEven {
+			return '\uF192', StyleInProgress
+		}
+		return '\uF10C', StyleInProgress
+	case hasInReview:
+		return '◎', StyleInReview
+	case hasComplete && !hasPending:
+		return '✓', StyleComplete
+	case hasComplete && hasPending:
+		return '✓', StyleDimmed
+	default:
+		return '○', StylePending
+	}
+}
+
 func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj string) {
-	style := tcell.StyleDefault.Foreground(ColorProject).Bold(true)
-	text := fmt.Sprintf("  %s", proj)
-	drawText(screen, x, y, w, text, style)
+	// Find tasks for this project to compute the aggregated status icon.
+	var projTasks []*model.Task
+	for _, t := range tl.tasks {
+		p := t.Project
+		if p == "" {
+			p = "(no project)"
+		}
+		if p == proj {
+			projTasks = append(projTasks, t)
+		}
+	}
+
+	col := x
+	// "  " prefix
+	drawText(screen, col, y, 2, "  ", StyleDefault)
+	col += 2
+
+	// Status icon
+	if len(projTasks) > 0 {
+		icon, iconStyle := tl.projectStatusIcon(projTasks)
+		screen.SetContent(col, y, icon, nil, iconStyle)
+		col += 2
+	}
+
+	// Chevron
+	chevron := '▸'
+	if proj == tl.expanded || proj == tl.archiveProject {
+		chevron = '▾'
+	}
+	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(ColorDimmed))
+	col += 2
+
+	// Project name
+	nameStyle := tcell.StyleDefault.Foreground(ColorProject).Bold(true)
+	drawText(screen, col, y, w-(col-x), proj, nameStyle)
+	col += len(proj)
+
+	// Task count
+	countStr := fmt.Sprintf(" (%d)", len(projTasks))
+	if col-x+len(countStr) <= w {
+		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(ColorDimmed))
+	}
+}
+
+func (tl *TaskListView) drawSeparator(screen tcell.Screen, x, y, w int) {
+	style := tcell.StyleDefault.Foreground(ColorDimmed)
+	for i := 0; i < w; i++ {
+		screen.SetContent(x+i, y, '─', nil, style)
+	}
 }
 
 func (tl *TaskListView) drawArchiveHeader(screen tcell.Screen, x, y, w int) {
@@ -405,14 +715,21 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		statusChar = '○'
 		statusStyle = StylePending
 	case model.StatusInProgress:
-		if tl.running[task.ID] {
-			statusChar = '●'
+		if tl.idleUnvisited[task.ID] {
+			// Idle and not yet viewed since going idle — show as in-review.
+			statusChar = '◎'
+			statusStyle = StyleInReview
+		} else if !tl.running[task.ID] || tl.idle[task.ID] {
+			// Session absent or idle (waiting for input) — moon icon.
+			statusChar = '☾'
 			statusStyle = StyleInProgress
-		} else if tl.idle[task.ID] {
-			statusChar = '◉'
-			statusStyle = tcell.StyleDefault.Foreground(tcell.Color78) // green
+		} else if tl.tickEven {
+			// Actively running — animated alternate frame (nerd font dot-circle-o).
+			statusChar = '\uF192'
+			statusStyle = StyleInProgress
 		} else {
-			statusChar = '◉'
+			// Actively running — animated default frame (nerd font circle-o).
+			statusChar = '\uF10C'
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:
@@ -486,6 +803,52 @@ func drawText(screen tcell.Screen, x, y, maxWidth int, text string, style tcell.
 // HasTasks returns whether there are any tasks.
 func (tl *TaskListView) HasTasks() bool {
 	return len(tl.tasks) > 0
+}
+
+// AdjacentTask returns the next (+1) or previous (-1) task relative to the
+// given task ID. Scans the full task list (not just visible/expanded rows).
+// Returns nil if there is no adjacent task in that direction.
+func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Task {
+	currentIdx := -1
+	for i, t := range tl.tasks {
+		if t.ID == currentID {
+			currentIdx = i
+			break
+		}
+	}
+	if currentIdx < 0 {
+		return nil
+	}
+	next := currentIdx + direction
+	if next < 0 || next >= len(tl.tasks) {
+		return nil
+	}
+	return tl.tasks[next]
+}
+
+// SelectByID moves the cursor to the row matching the given task ID.
+// If the task is in a collapsed project, expands it first.
+func (tl *TaskListView) SelectByID(id string) {
+	// Find the task to get its project, then expand it so the row exists.
+	for _, t := range tl.tasks {
+		if t.ID == id {
+			if t.Archived {
+				tl.archiveExpanded = true
+				tl.archiveProject = t.Project
+			} else {
+				tl.expanded = t.Project
+			}
+			tl.buildRows()
+			break
+		}
+	}
+	for i, r := range tl.rows {
+		if r.kind == rowTask && r.task.ID == id {
+			tl.cursor = i
+			tl.notifyCursorChange()
+			return
+		}
+	}
 }
 
 // SetExpanded sets which project is expanded.

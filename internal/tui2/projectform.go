@@ -129,24 +129,29 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	// Center the form.
 	formW := min(60, width-4)
-	formH := 14
+	formH := 11
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
 		formY = y
 	}
 
+	modalBG := tcell.ColorDefault
 	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
 
-	title := "New Project"
+	title := " New Project "
 	if pf.editMode {
-		title = "Edit Project"
+		title = " Edit Project "
 	}
-	drawText(screen, formX+2, formY+1, formW-4, title, StyleTitle)
+	titleX := formX + (formW-utf8.RuneCountInString(title))/2
+	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true).Background(modalBG)
+	for i, r := range title {
+		screen.SetContent(titleX+i, formY, r, nil, titleStyle)
+	}
 
 	labels := [4]string{"Name:", "Path:", "Branch:", "Backend:"}
 	for i := range 4 {
-		ly := formY + 3 + i*2
+		ly := formY + 2 + i*2
 		if ly >= formY+formH-1 {
 			break
 		}

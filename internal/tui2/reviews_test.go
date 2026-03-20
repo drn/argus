@@ -227,3 +227,28 @@ func TestReviewsView_BackgroundRefresh(t *testing.T) {
 		t.Errorf("cursor = %d, want 1 (preserved)", rv.prCursor)
 	}
 }
+
+func TestReviewsView_PRURL(t *testing.T) {
+	rv := NewReviewsView()
+
+	// No PRs — empty URL.
+	if got := rv.prURL(); got != "" {
+		t.Errorf("expected empty URL with no PRs, got %q", got)
+	}
+
+	// With PRs on the list (no selection).
+	rv.SetPRs([]github.PR{
+		{Number: 42, RepoOwner: "acme", Repo: "widgets"},
+	}, nil)
+	rv.prCursor = 0
+	if got := rv.prURL(); got != "https://github.com/acme/widgets/pull/42" {
+		t.Errorf("unexpected URL from cursor: %q", got)
+	}
+
+	// With a selected PR.
+	pr := rv.prs[0]
+	rv.selectedPR = &pr
+	if got := rv.prURL(); got != "https://github.com/acme/widgets/pull/42" {
+		t.Errorf("unexpected URL from selection: %q", got)
+	}
+}

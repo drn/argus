@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func makeTasks() []*model.Task {
@@ -176,6 +178,137 @@ func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
 	}
 }
 
+func TestTaskListView_Tick(t *testing.T) {
+	tl := NewTaskListView()
+	if tl.tickEven {
+		t.Error("tickEven should start false")
+	}
+	tl.Tick()
+	if !tl.tickEven {
+		t.Error("tickEven should be true after one tick")
+	}
+	tl.Tick()
+	if tl.tickEven {
+		t.Error("tickEven should be false after two ticks")
+	}
+}
+
+func TestTaskListView_SetIdle(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdle([]string{"1", "3"})
+	if !tl.idle["1"] {
+		t.Error("task 1 should be idle")
+	}
+	if !tl.idle["3"] {
+		t.Error("task 3 should be idle")
+	}
+	if tl.idle["2"] {
+		t.Error("task 2 should not be idle")
+	}
+}
+
+func TestTaskListView_ProjectStatusIcon(t *testing.T) {
+	tl := NewTaskListView()
+
+	tests := []struct {
+		name     string
+		tasks    []*model.Task
+		running  map[string]bool
+		idle     map[string]bool
+		wantChar rune
+	}{
+		{
+			name:     "all pending",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusPending}},
+			wantChar: '○',
+		},
+		{
+			name:     "in progress running",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
+			running:  map[string]bool{"1": true},
+			wantChar: '\uF10C', // tickEven is false (nerd font circle-o)
+		},
+		{
+			name:     "all complete",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusComplete}},
+			wantChar: '✓',
+		},
+		{
+			name:     "in review",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInReview}},
+			wantChar: '◎',
+		},
+		{
+			name: "mixed complete and pending",
+			tasks: []*model.Task{
+				{ID: "1", Status: model.StatusComplete},
+				{ID: "2", Status: model.StatusPending},
+			},
+			wantChar: '✓',
+		},
+		{
+			name:     "all in progress idle",
+			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
+			running:  map[string]bool{"1": true},
+			idle:     map[string]bool{"1": true},
+			wantChar: '☾',
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tl.running = tt.running
+			if tl.running == nil {
+				tl.running = map[string]bool{}
+			}
+			tl.idle = tt.idle
+			if tl.idle == nil {
+				tl.idle = map[string]bool{}
+			}
+			tl.tickEven = false
+			icon, _ := tl.projectStatusIcon(tt.tasks)
+			if icon != tt.wantChar {
+				t.Errorf("projectStatusIcon() = %c, want %c", icon, tt.wantChar)
+			}
+		})
+	}
+}
+
+func TestTaskListView_EnterSkipsCompleted(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "beta"
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "done-task", Project: "beta", Status: model.StatusComplete},
+		{ID: "2", Name: "active-task", Project: "beta", Status: model.StatusInProgress},
+	})
+
+	var selected *model.Task
+	tl.OnSelect = func(task *model.Task) { selected = task }
+
+	// Navigate to the completed task
+	for tl.SelectedTask() == nil || tl.SelectedTask().Status != model.StatusComplete {
+		tl.CursorDown()
+	}
+
+	// Enter on completed task should NOT fire OnSelect
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if selected != nil {
+		t.Error("Enter on completed task should not fire OnSelect")
+	}
+
+	// Navigate to the in-progress task
+	for tl.SelectedTask() == nil || tl.SelectedTask().Status != model.StatusInProgress {
+		tl.CursorDown()
+	}
+
+	// Enter on in-progress task should fire OnSelect
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if selected == nil || selected.ID != "2" {
+		t.Error("Enter on in-progress task should fire OnSelect")
+	}
+}
+
 func TestTaskListView_IsInArchive(t *testing.T) {
 	tl := NewTaskListView()
 	tl.archiveExpanded = true
@@ -202,5 +335,421 @@ func TestTaskListView_IsInArchive(t *testing.T) {
 	// Rows at or after archive header should be in archive
 	if !tl.isInArchive(archiveIdx) {
 		t.Error("archive header row should be in archive")
+	}
+}
+
+func TestTaskListView_SetIdleUnvisited(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdleUnvisited([]string{"1", "3"})
+	if !tl.idleUnvisited["1"] {
+		t.Error("task 1 should be idle-unvisited")
+	}
+	if tl.idleUnvisited["2"] {
+		t.Error("task 2 should not be idle-unvisited")
+	}
+	if !tl.idleUnvisited["3"] {
+		t.Error("task 3 should be idle-unvisited")
+	}
+}
+
+func TestTaskListView_IdleSet(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetIdle([]string{"a", "b"})
+	s := tl.IdleSet()
+	if !s["a"] || !s["b"] {
+		t.Error("IdleSet should return the current idle map")
+	}
+}
+
+func TestTaskListView_IdleUnvisitedPromotion(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "1", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.idleUnvisited = map[string]bool{"1": true}
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{"1": true}
+	tl.tickEven = false
+
+	// Project icon should be InReview (◎) when the only InProgress task is idleUnvisited.
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != '◎' {
+		t.Errorf("projectStatusIcon with idleUnvisited = %c, want ◎", icon)
+	}
+}
+
+func TestTaskListView_StatusCycleKeys(t *testing.T) {
+	tl := NewTaskListView()
+	var changed *model.Task
+	tl.OnStatusChange = func(task *model.Task) {
+		changed = task
+	}
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task1", Status: model.StatusPending, Project: "p"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	// Move cursor to the task row (skip project header).
+	tl.CursorDown()
+
+	// Press 's' to advance status: Pending -> InProgress
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInProgress {
+		t.Errorf("after 's': status = %v, want InProgress", changed.Status)
+	}
+
+	// Press 's' again: InProgress -> InReview
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInReview {
+		t.Errorf("after second 's': status = %v, want InReview", changed.Status)
+	}
+
+	// Press 'S' to revert: InReview -> InProgress
+	changed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInProgress {
+		t.Errorf("after 'S': status = %v, want InProgress", changed.Status)
+	}
+}
+
+func TestTaskListView_AdjacentTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "first", Project: "projA"},
+		{ID: "2", Name: "second", Project: "projA"},
+		{ID: "3", Name: "third", Project: "projB"},
+	})
+
+	// Next from first task
+	next := tl.AdjacentTask("1", 1)
+	if next == nil || next.ID != "2" {
+		t.Fatalf("expected task 2, got %v", next)
+	}
+
+	// Next across projects
+	next = tl.AdjacentTask("2", 1)
+	if next == nil || next.ID != "3" {
+		t.Fatalf("expected task 3, got %v", next)
+	}
+
+	// No next from last task
+	next = tl.AdjacentTask("3", 1)
+	if next != nil {
+		t.Fatalf("expected nil, got %v", next)
+	}
+
+	// Prev from second task
+	prev := tl.AdjacentTask("2", -1)
+	if prev == nil || prev.ID != "1" {
+		t.Fatalf("expected task 1, got %v", prev)
+	}
+
+	// No prev from first task
+	prev = tl.AdjacentTask("1", -1)
+	if prev != nil {
+		t.Fatalf("expected nil, got %v", prev)
+	}
+
+	// Unknown ID
+	if tl.AdjacentTask("unknown", 1) != nil {
+		t.Fatal("expected nil for unknown ID")
+	}
+}
+
+func TestTaskListView_SelectByID(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "first", Project: "projA"},
+		{ID: "2", Name: "second", Project: "projA"},
+		{ID: "3", Name: "third", Project: "projB"},
+	})
+
+	tl.SelectByID("3")
+	sel := tl.SelectedTask()
+	if sel == nil || sel.ID != "3" {
+		t.Fatalf("expected task 3, got %v", sel)
+	}
+
+	tl.SelectByID("1")
+	sel = tl.SelectedTask()
+	if sel == nil || sel.ID != "1" {
+		t.Fatalf("expected task 1, got %v", sel)
+	}
+}
+
+func TestTaskListView_RunningTaskAnimation(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "1", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{}
+
+	// tickEven=false: running task at project level should show \uF10C (nerd font circle-o)
+	tl.tickEven = false
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != '\uF10C' {
+		t.Errorf("tickEven=false: got %c, want \\uF10C", icon)
+	}
+
+	// tickEven=true: running task at project level should show \uF192 (nerd font dot-circle-o)
+	tl.tickEven = true
+	icon, _ = tl.projectStatusIcon(tasks)
+	if icon != '\uF192' {
+		t.Errorf("tickEven=true: got %c, want \\uF192", icon)
+	}
+}
+
+func TestTaskListView_ArchiveToggle(t *testing.T) {
+	tl := NewTaskListView()
+	var archived *model.Task
+	tl.OnArchive = func(task *model.Task) {
+		archived = task
+	}
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task1", Status: model.StatusPending, Project: "p"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.clampCursor()
+
+	// Press 'a' to archive the task
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	if archived == nil {
+		t.Fatal("OnArchive should have been called")
+	}
+	if !archived.Archived {
+		t.Error("task should be archived after pressing 'a'")
+	}
+
+	// Press 'a' again to unarchive
+	archived = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	if archived == nil {
+		t.Fatal("OnArchive should have been called again")
+	}
+	if archived.Archived {
+		t.Error("task should be unarchived after pressing 'a' again")
+	}
+}
+
+func TestTaskListView_CursorAlwaysOnTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	// Navigate through all rows — cursor should always be on a task.
+	for i := 0; i < 20; i++ {
+		task := tl.SelectedTask()
+		if task == nil {
+			t.Errorf("step %d down: cursor not on a task (cursor=%d)", i, tl.cursor)
+		}
+		tl.CursorDown()
+	}
+	for i := 0; i < 20; i++ {
+		task := tl.SelectedTask()
+		if task == nil {
+			t.Errorf("step %d up: cursor not on a task (cursor=%d)", i, tl.cursor)
+		}
+		tl.CursorUp()
+	}
+}
+
+func TestTaskListView_SkipProjectHeaders(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "beta", Status: model.StatusPending},
+	})
+
+	// Start on alpha's task
+	if tl.SelectedTask() == nil || tl.SelectedTask().ID != "1" {
+		t.Fatalf("expected to start on task 1, got %v", tl.SelectedTask())
+	}
+
+	// Move down — should skip beta's project header and land on task 2
+	tl.CursorDown()
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("after down: expected task 2, got %v", task)
+	}
+
+	// Move back up — should skip alpha's project header and land on task 1
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "1" {
+		t.Errorf("after up: expected task 1, got %v", task)
+	}
+}
+
+func TestTaskListView_UpLandsOnLastTask(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "alpha", Status: model.StatusPending},
+		{ID: "3", Name: "t3", Project: "beta", Status: model.StatusPending},
+	})
+
+	// Navigate to beta's task
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "3" {
+		t.Fatalf("expected to be on task 3, got %v", task)
+	}
+
+	// Move up — should land on last task of alpha (task 2), not first (task 1)
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("after up from beta: expected task 2 (last in alpha), got %v", task)
+	}
+}
+
+func TestTaskListView_ArchiveAutoExpand(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+	})
+
+	// Archive should start collapsed
+	if tl.archiveExpanded {
+		t.Error("archive should start collapsed")
+	}
+
+	// Navigate down past all active tasks — should enter archive
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+
+	// Should have auto-expanded archive and landed on the archived task
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("expected to land on archived task 2, got %v", task)
+	}
+	if !tl.archiveExpanded {
+		t.Error("archive should be expanded after navigating into it")
+	}
+
+	// Navigate back up out of archive — should auto-collapse
+	tl.CursorUp()
+	task = tl.SelectedTask()
+	if task == nil || task.ID != "1" {
+		t.Errorf("expected to land on task 1 after leaving archive, got %v", task)
+	}
+	if tl.archiveExpanded {
+		t.Error("archive should be collapsed after leaving it")
+	}
+}
+
+func TestTaskListView_ArchiveSectionAwareCursor(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "shared", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "shared", Status: model.StatusPending, Archived: true},
+	})
+
+	// Navigate into archive section
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+
+	task := tl.SelectedTask()
+	if task == nil || task.ID != "2" {
+		t.Errorf("expected archived task 2, got %v", task)
+	}
+
+	// The cursor should be in the archive section, not on the main "shared" project
+	if !tl.isInArchive(tl.cursor) {
+		t.Error("cursor should be in archive section")
+	}
+}
+
+func TestTaskListView_SeparatorBeforeArchive(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+	})
+
+	// Rows should include a separator before the archive header.
+	hasSep := false
+	for i, r := range tl.rows {
+		if r.kind == rowSeparator {
+			hasSep = true
+			// Next row should be archive header.
+			if i+1 >= len(tl.rows) || tl.rows[i+1].kind != rowArchiveHeader {
+				t.Error("separator should be immediately before archive header")
+			}
+		}
+	}
+	if !hasSep {
+		t.Error("expected a separator row before the archive section")
+	}
+
+	// Cursor should never rest on the separator.
+	for i := 0; i < 20; i++ {
+		tl.CursorDown()
+		if tl.cursor >= 0 && tl.cursor < len(tl.rows) && tl.rows[tl.cursor].kind == rowSeparator {
+			t.Errorf("cursor rested on separator at index %d after CursorDown %d", tl.cursor, i+1)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		tl.CursorUp()
+		if tl.cursor >= 0 && tl.cursor < len(tl.rows) && tl.rows[tl.cursor].kind == rowSeparator {
+			t.Errorf("cursor rested on separator at index %d after CursorUp %d", tl.cursor, i+1)
+		}
+	}
+}
+
+func TestTaskListView_OpenPRKey(t *testing.T) {
+	tl := NewTaskListView()
+	var opened *model.Task
+	tl.OnOpenPR = func(task *model.Task) {
+		opened = task
+	}
+
+	// Single task with a PR URL.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "has-pr", Project: "p", PRURL: "https://github.com/acme/repo/pull/42"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
+	if opened == nil {
+		t.Fatal("OnOpenPR should have been called for task with PR URL")
+	}
+	if opened.ID != "1" {
+		t.Errorf("OnOpenPR called with task %s, want 1", opened.ID)
+	}
+
+	// Task without PR URL — callback should NOT fire.
+	opened = nil
+	tl.SetTasks([]*model.Task{
+		{ID: "2", Name: "no-pr", Project: "p", PRURL: ""},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
+	if opened != nil {
+		t.Error("OnOpenPR should NOT fire for task without PR URL")
 	}
 }

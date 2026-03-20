@@ -13,9 +13,9 @@ import (
 // headerHeight is the number of terminal rows reserved for the Argus header.
 const headerHeight = 1
 
-// AttachCmd implements tea.ExecCommand for attaching to a running session.
-// When executed by Bubble Tea, it takes over the terminal and splices I/O
-// with the session's PTY. Returns nil on detach, process error on exit.
+// AttachCmd implements full-screen attach to a running session.
+// It takes over the terminal and splices I/O with the session's PTY.
+// Returns nil on detach, process error on exit.
 type AttachCmd struct {
 	Session  *Session
 	TaskName string
@@ -23,19 +23,19 @@ type AttachCmd struct {
 	stdout   io.Writer
 }
 
-// SetStdin captures the reader provided by Bubble Tea.
+// SetStdin captures the reader provided by the caller.
 func (a *AttachCmd) SetStdin(r io.Reader) { a.stdin = r }
 
-// SetStdout captures the writer provided by Bubble Tea.
+// SetStdout captures the writer provided by the caller.
 func (a *AttachCmd) SetStdout(w io.Writer) { a.stdout = w }
 
 // SetStderr is required by tea.ExecCommand.
 func (a *AttachCmd) SetStderr(_ io.Writer) {}
 
-// Run is called by Bubble Tea's tea.Exec. It puts the terminal into raw mode,
-// resizes the PTY, and splices stdin/stdout until detach or process exit.
+// Run puts the terminal into raw mode, resizes the PTY, and splices
+// stdin/stdout until detach or process exit.
 func (a *AttachCmd) Run() error {
-	// Fall back to os std streams if Bubble Tea didn't provide them
+	// Fall back to os std streams if caller didn't provide them
 	if a.stdin == nil {
 		a.stdin = os.Stdin
 	}

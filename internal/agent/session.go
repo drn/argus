@@ -207,7 +207,7 @@ func (s *Session) AddWriter(w io.Writer) {
 	// Any bytes produced by readLoop during this window are missed
 	// (they're in the ring buffer but not yet in replay and w isn't
 	// registered yet). This creates a small gap rather than a duplicate.
-	// The gap is acceptable: the vt10x terminal handles missing bytes
+	// The gap is acceptable: the terminal emulator handles missing bytes
 	// gracefully (partial escape sequences are ignored), whereas
 	// duplicate bytes cause visible rendering corruption.
 	if len(replay) > 0 {

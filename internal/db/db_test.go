@@ -914,6 +914,40 @@ func TestDB_PruneCompleted_ReturnsWorktreeInfo(t *testing.T) {
 	}
 }
 
+func TestDB_WorktreePaths(t *testing.T) {
+	d := testDB(t)
+
+	_ = d.Add(&model.Task{Name: "t1", Worktree: "/tmp/wt/task1"})
+	_ = d.Add(&model.Task{Name: "t2", Worktree: "/tmp/wt/task2"})
+	_ = d.Add(&model.Task{Name: "t3", Worktree: ""}) // no worktree
+
+	paths, err := d.WorktreePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected 2 paths, got %d", len(paths))
+	}
+	if !paths["/tmp/wt/task1"] {
+		t.Error("expected /tmp/wt/task1")
+	}
+	if !paths["/tmp/wt/task2"] {
+		t.Error("expected /tmp/wt/task2")
+	}
+}
+
+func TestDB_WorktreePaths_Empty(t *testing.T) {
+	d := testDB(t)
+
+	paths, err := d.WorktreePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected 0 paths, got %d", len(paths))
+	}
+}
+
 // --- Multiple projects and backends in Config ---
 
 func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	xvt "github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -31,6 +30,10 @@ type TaskPreviewPanel struct {
 	cellCols  int
 	cellRows  int
 	statusMsg string // shown when cells is nil ("No task selected", etc.)
+
+	// Cached inner dimensions from Draw() — safe for tick goroutine to read.
+	drawCols int
+	drawRows int
 }
 
 // NewTaskPreviewPanel creates a task preview panel.
@@ -66,6 +69,14 @@ func (tp *TaskPreviewPanel) TaskID() string {
 	return tp.taskID
 }
 
+// DrawSize returns the cached inner dimensions from the last Draw() call.
+// Safe to call from any goroutine.
+func (tp *TaskPreviewPanel) DrawSize() (cols, rows int) {
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	return tp.drawCols, tp.drawRows
+}
+
 // RefreshOutput fetches session output and pre-renders cells.
 // Called from a goroutine — never from the UI thread.
 func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
@@ -85,8 +96,15 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 	}
 
 	// Run VT emulation off the UI thread.
-	emu := xvt.NewSafeEmulator(cols, rows)
-	emu.Write(raw)
+	// Use drained emulator to prevent hangs on terminal query sequences.
+	emu := newDrainedEmulator(cols, rows)
+	if _, err := safeEmuWrite(emu, raw); err != nil {
+		tp.mu.Lock()
+		tp.statusMsg = "Preview unavailable"
+		tp.cells = nil
+		tp.mu.Unlock()
+		return
+	}
 
 	grid := make([][]previewCell, rows)
 	for vy := 0; vy < rows; vy++ {
@@ -143,7 +161,10 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
+	// Cache inner dimensions for tick goroutine (avoids calling GetInnerRect off UI thread).
 	tp.mu.Lock()
+	tp.drawCols = inner.W
+	tp.drawRows = inner.H
 	cells := tp.cells
 	cellCols := tp.cellCols
 	cellRows := tp.cellRows

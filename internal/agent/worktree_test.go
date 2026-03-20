@@ -68,12 +68,15 @@ func TestCreateWorktree(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, finalName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath, finalName, branchName, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree failed: %v", err)
 	}
 	if finalName != "fix-bug" {
 		t.Errorf("expected finalName %q, got %q", "fix-bug", finalName)
+	}
+	if branchName != "argus/fix-bug" {
+		t.Errorf("expected branchName %q, got %q", "argus/fix-bug", branchName)
 	}
 
 	// Verify worktree was created.
@@ -100,12 +103,15 @@ func TestCreateWorktree(t *testing.T) {
 	}
 
 	// Creating again with same name should get -1 suffix.
-	wtPath2, finalName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
+	wtPath2, finalName2, branchName2, err := CreateWorktree(repoDir, "testproject", "fix-bug", "")
 	if err != nil {
 		t.Fatalf("second CreateWorktree failed: %v", err)
 	}
 	if finalName2 != "fix-bug-1" {
 		t.Errorf("expected finalName %q, got %q", "fix-bug-1", finalName2)
+	}
+	if branchName2 != "argus/fix-bug-1" {
+		t.Errorf("expected branchName %q, got %q", "argus/fix-bug-1", branchName2)
 	}
 	expected2 := filepath.Join(tmpHome, ".argus", "worktrees", "testproject", "fix-bug-1")
 	if wtPath2 != expected2 {
@@ -176,7 +182,7 @@ func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	defer os.Setenv("HOME", origHome)
 
 	// baseBranch=defaultBranch should resolve to origin/<defaultBranch>.
-	wtPath, finalName, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "remote-test", defaultBranch)
 	if err != nil {
 		t.Fatalf("CreateWorktree with remote branch failed: %v", err)
 	}
@@ -185,6 +191,177 @@ func TestCreateWorktree_RemoteBranch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
 		t.Errorf("expected worktree at %q", wtPath)
+	}
+}
+
+func TestSanitizeBranchName(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"fix-bug", "fix-bug"},
+		{"fails?", "fails"},
+		{"hello world", "hello-world"},
+		{"feat~1", "feat-1"},
+		{"name..with..dots", "name-with-dots"},
+		{"trailing.", "trailing"},
+		{"a:b:c", "a-b-c"},
+		{"has[brackets]", "has-brackets"},
+		{"back\\slash", "back-slash"},
+		{"star*name", "star-name"},
+		{"caret^ref", "caret-ref"},
+		{"ref@{0}", "ref@-0"},
+		{".hidden", "hidden"},   // leading dot stripped
+		{".dotfile.", "dotfile"},// both leading and trailing dots
+		{"???", "task"},         // all invalid → fallback
+		{"", "task"},            // empty → fallback
+		{"normal-name", "normal-name"},
+	}
+	for _, tt := range tests {
+		got := sanitizeBranchName(tt.input)
+		if got != tt.expected {
+			t.Errorf("sanitizeBranchName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestCreateWorktree_SpecialChars(t *testing.T) {
+	// Task names with special characters should not fail worktree creation.
+	repoDir := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// "fails?" contains ?, which is invalid in git branch names.
+	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproject", "fails?", "")
+	if err != nil {
+		t.Fatalf("CreateWorktree with special chars failed: %v", err)
+	}
+	if finalName != "fails" {
+		t.Errorf("expected finalName %q, got %q", "fails", finalName)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath)
+	}
+}
+
+func TestCreateWorktree_StaleRef(t *testing.T) {
+	// Test that CreateWorktree succeeds even when a previous worktree was
+	// deleted without `git worktree remove`, leaving a stale reference.
+	repoDir := t.TempDir()
+
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+	readme := filepath.Join(repoDir, "README.md")
+	if err := os.WriteFile(readme, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s\n%s", args, err, out)
+		}
+	}
+
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	defer os.Setenv("HOME", origHome)
+
+	// Create a worktree normally.
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+
+	// Simulate stale reference: remove the worktree directory WITHOUT
+	// running `git worktree remove`.
+	if err := os.RemoveAll(wtPath); err != nil {
+		t.Fatalf("removing worktree dir: %v", err)
+	}
+
+	// Without pruning, the branch argus/stale is still locked to the stale
+	// worktree entry. CreateWorktree should prune and succeed.
+	wtPath2, finalName, _, err := CreateWorktree(repoDir, "testproj", "stale", "")
+	if err != nil {
+		t.Fatalf("second CreateWorktree with stale ref failed: %v", err)
+	}
+	if finalName != "stale" {
+		t.Errorf("expected finalName %q, got %q", "stale", finalName)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath2, ".git")); err != nil {
+		t.Errorf("expected worktree at %q", wtPath2)
+	}
+}
+
+func TestCleanGitOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  [][]byte
+		expect string
+	}{
+		{
+			name:   "fatal line extracted",
+			input:  [][]byte{[]byte("Preparing worktree\nfatal: branch already exists\n")},
+			expect: "fatal: branch already exists",
+		},
+		{
+			name:   "multiple fatal lines",
+			input:  [][]byte{[]byte("fatal: first\n"), []byte("fatal: second\n")},
+			expect: "fatal: first; fatal: second",
+		},
+		{
+			name:   "no fatal lines",
+			input:  [][]byte{[]byte("some\nother\nerror\n")},
+			expect: "some other error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanGitOutput(tt.input...)
+			if got != tt.expect {
+				t.Errorf("cleanGitOutput = %q, want %q", got, tt.expect)
+			}
+		})
 	}
 }
 
@@ -231,7 +408,7 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	os.Setenv("HOME", tmpHome)
 	defer os.Setenv("HOME", origHome)
 
-	wtPath, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
+	wtPath, _, _, err := CreateWorktree(repoDir, "testproject", "my-task", "")
 	if err != nil {
 		t.Fatalf("CreateWorktree with existing branch failed: %v", err)
 	}

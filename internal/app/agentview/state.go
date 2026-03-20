@@ -1,8 +1,6 @@
 // Package agentview defines runtime-agnostic state, interfaces, and types for
-// the agent view. Both the current Bubble Tea UI and the planned tcell/tview
-// runtime share these abstractions so the terminal rendering backend can be
-// swapped without rewriting session display logic, scroll management, or
-// focus handling.
+// the agent view. These abstractions separate session display logic, scroll
+// management, and focus handling from the tcell/tview rendering layer.
 package agentview
 
 import "time"
@@ -25,7 +23,7 @@ type DiffState struct {
 }
 
 // State holds the runtime-agnostic portion of the agent view's state.
-// Rendering-specific fields (vt10x terminal, render cache, layout widgets)
+// Rendering-specific fields (terminal emulator, render cache, layout widgets)
 // remain in the UI-runtime-specific layer.
 type State struct {
 	TaskID   string

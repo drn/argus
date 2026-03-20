@@ -2,6 +2,7 @@ package tui2
 
 import (
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -50,13 +51,14 @@ type ReviewsView struct {
 	fileCursor int
 
 	// Diff state.
-	fullDiff       string
-	diffFetchedAt  time.Time
-	rawDiff        string
-	parsedDiff     *gitutil.ParsedDiff
-	diffScrollOff  int
-	splitMode      bool
-	diffFetching   bool
+	fullDiff         string
+	diffFetchedAt    time.Time
+	rawDiff          string
+	parsedDiff       *gitutil.ParsedDiff
+	diffRendered     []renderedDiffLine // pre-rendered syntax-highlighted lines
+	diffScrollOff    int
+	splitMode        bool
+	diffFetching     bool
 
 	// Comments state.
 	comments         []github.PRComment
@@ -144,6 +146,7 @@ func (rv *ReviewsView) SetFiles(files []string) {
 	rv.fullDiff = ""
 	rv.rawDiff = ""
 	rv.parsedDiff = nil
+	rv.diffRendered = nil
 	rv.diffScrollOff = 0
 	rv.diffFetchedAt = time.Time{}
 }
@@ -221,8 +224,10 @@ func (rv *ReviewsView) applyFileDiff() {
 	if rv.rawDiff != "" {
 		pd := gitutil.ParseUnifiedDiff(rv.rawDiff)
 		rv.parsedDiff = &pd
+		rv.diffRendered = buildUnifiedDiffLines(pd, filePath)
 	} else {
 		rv.parsedDiff = nil
+		rv.diffRendered = nil
 	}
 	rv.diffScrollOff = 0
 }
@@ -294,6 +299,9 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 			return true
 		case 'k':
 			rv.cursorUp()
+			return true
+		case 'o':
+			rv.openPRInBrowser()
 			return true
 		case 'R':
 			rv.handleRefresh(app)
@@ -439,10 +447,34 @@ func (rv *ReviewsView) handleEsc() {
 		rv.fullDiff = ""
 		rv.rawDiff = ""
 		rv.parsedDiff = nil
+		rv.diffRendered = nil
 		rv.comments = nil
 		rv.focus = rfList
 		return
 	}
+}
+
+// prURL returns the GitHub URL for the currently selected/cursored PR, or "".
+func (rv *ReviewsView) prURL() string {
+	var pr *github.PR
+	if rv.selectedPR != nil {
+		pr = rv.selectedPR
+	} else if rv.prCursor >= 0 && rv.prCursor < len(rv.prs) {
+		pr = &rv.prs[rv.prCursor]
+	}
+	if pr == nil {
+		return ""
+	}
+	return fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
+}
+
+func (rv *ReviewsView) openPRInBrowser() {
+	url := rv.prURL()
+	if url == "" {
+		return
+	}
+	exec.Command("open", url).Start() //nolint:errcheck
+	uxlog.Log("[reviews] opened PR in browser: %s", url)
 }
 
 func (rv *ReviewsView) handleRefresh(app *App) {
@@ -753,7 +785,7 @@ func (rv *ReviewsView) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		return
 	}
 
-	if rv.parsedDiff == nil {
+	if rv.parsedDiff == nil || len(rv.diffRendered) == 0 {
 		msg := "Select a file to view diff"
 		if rv.selectedPR == nil {
 			msg = "Select a PR to view diff"
@@ -764,8 +796,8 @@ func (rv *ReviewsView) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		return
 	}
 
-	// Render unified diff lines.
-	lines := rv.buildDiffLines()
+	// Render syntax-highlighted diff lines.
+	lines := rv.diffRendered
 	maxScroll := len(lines) - innerH
 	if maxScroll < 0 {
 		maxScroll = 0
@@ -779,62 +811,10 @@ func (rv *ReviewsView) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		if lineIdx >= len(lines) {
 			break
 		}
-		dl := lines[lineIdx]
-		text := dl.text
-		if len(text) > innerW {
-			text = text[:innerW]
-		}
-		drawText(screen, innerX, innerY+i, innerW, text, dl.style)
+		drawStyledLine(screen, innerX, innerY+i, innerW, lines[lineIdx].cells)
 	}
 }
 
-type reviewDiffLine struct {
-	text  string
-	style tcell.Style
-}
-
-func (rv *ReviewsView) buildDiffLines() []reviewDiffLine {
-	if rv.parsedDiff == nil {
-		return nil
-	}
-	var lines []reviewDiffLine
-	for _, hunk := range rv.parsedDiff.Hunks {
-		lines = append(lines, reviewDiffLine{
-			text:  hunk.Header,
-			style: tcell.StyleDefault.Foreground(tcell.PaletteColor(87)).Bold(true),
-		})
-		for _, dl := range hunk.Lines {
-			var prefix string
-			var style tcell.Style
-			switch dl.Type {
-			case gitutil.DiffAdded:
-				prefix = "+"
-				style = tcell.StyleDefault.Foreground(tcell.PaletteColor(78))
-			case gitutil.DiffRemoved:
-				prefix = "-"
-				style = tcell.StyleDefault.Foreground(tcell.PaletteColor(203))
-			default:
-				prefix = " "
-				style = tcell.StyleDefault.Foreground(tcell.PaletteColor(245))
-			}
-			num := ""
-			if dl.OldNum > 0 && dl.NewNum > 0 {
-				num = fmt.Sprintf("%4d %4d", dl.OldNum, dl.NewNum)
-			} else if dl.OldNum > 0 {
-				num = fmt.Sprintf("%4d     ", dl.OldNum)
-			} else if dl.NewNum > 0 {
-				num = fmt.Sprintf("     %4d", dl.NewNum)
-			} else {
-				num = "         "
-			}
-			lines = append(lines, reviewDiffLine{
-				text:  num + " " + prefix + dl.Content,
-				style: style,
-			})
-		}
-	}
-	return lines
-}
 
 func (rv *ReviewsView) renderApproveConfirm(screen tcell.Screen, x, y, w, h int) {
 	midY := y + h/2 - 1

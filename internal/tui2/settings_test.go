@@ -1,7 +1,12 @@
 package tui2
 
 import (
+	"fmt"
+	"os"
 	"testing"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -33,7 +38,7 @@ func TestSettingsView_Sections(t *testing.T) {
 			sections++
 		}
 	}
-	// STATUS, SANDBOX, PROJECTS, BACKENDS, KNOWLEDGE BASE
+	// Status, Sandbox, Projects, Backends, Knowledge Base
 	if sections < 4 {
 		t.Errorf("expected at least 4 sections, got %d", sections)
 	}
@@ -41,7 +46,7 @@ func TestSettingsView_Sections(t *testing.T) {
 
 func TestSettingsView_CursorSkipsHeaders(t *testing.T) {
 	sv := testSettingsView(t)
-	// First row should be STATUS (section header), cursor should skip it.
+	// First row should be Status (section header), cursor should skip it.
 	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		t.Error("cursor should skip section headers")
 	}
@@ -58,6 +63,23 @@ func TestSettingsView_Navigation(t *testing.T) {
 	// Should either return to initial or land on a non-header.
 	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
 		t.Error("cursor should not be on a section header after navigation")
+	}
+}
+
+func TestSettingsView_CursorStaysOnFirstItem(t *testing.T) {
+	sv := testSettingsView(t)
+	// Move to the first selectable row.
+	sv.cursor = 0
+	sv.skipToSelectable(1)
+	first := sv.cursor
+
+	// Pressing up from the first selectable row should not move the cursor.
+	sv.moveCursor(-1)
+	if sv.cursor != first {
+		t.Errorf("cursor moved from first selectable row %d to %d", first, sv.cursor)
+	}
+	if sv.rows[sv.cursor].kind == srSection {
+		t.Error("cursor landed on a section header")
 	}
 }
 
@@ -154,5 +176,294 @@ func TestSettingsView_KBToggle(t *testing.T) {
 
 	if sv.kbEnabled == initialKB {
 		t.Error("KB should have toggled")
+	}
+}
+
+func TestSettingsView_LogsSection(t *testing.T) {
+	sv := testSettingsView(t)
+	var logsRows []settingsRow
+	for _, row := range sv.rows {
+		if row.kind == srLogs {
+			logsRows = append(logsRows, row)
+		}
+	}
+	if len(logsRows) != 2 {
+		t.Fatalf("expected 2 log rows, got %d", len(logsRows))
+	}
+	if logsRows[0].key != "ux" {
+		t.Errorf("first log row key = %q, want ux", logsRows[0].key)
+	}
+	if logsRows[1].key != "daemon" {
+		t.Errorf("second log row key = %q, want daemon", logsRows[1].key)
+	}
+}
+
+func TestReadLogLines(t *testing.T) {
+	// Non-existent file.
+	lines := readLogLines("/nonexistent/path")
+	if len(lines) != 1 || lines[0] != "(file not found)" {
+		t.Errorf("expected '(file not found)', got %v", lines)
+	}
+
+	// Write a temp file with known content.
+	f, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		fmt.Fprintf(f, "line %d\n", i)
+	}
+	f.Close()
+
+	lines = readLogLines(f.Name())
+	if len(lines) != 20 {
+		t.Fatalf("expected 20 lines, got %d", len(lines))
+	}
+	if lines[0] != "line 0" {
+		t.Errorf("first line = %q, want 'line 0'", lines[0])
+	}
+	if lines[19] != "line 19" {
+		t.Errorf("last line = %q, want 'line 19'", lines[19])
+	}
+}
+
+func TestSettingsView_LogScroll(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Find a log row.
+	for i, row := range sv.rows {
+		if row.kind == srLogs {
+			sv.cursor = i
+			break
+		}
+	}
+
+	// Simulate loading some lines.
+	sv.logLines = make([]string, 100)
+	for i := range sv.logLines {
+		sv.logLines[i] = fmt.Sprintf("line %d", i)
+	}
+	sv.logKey = sv.SelectedRow().key
+	sv.logScrollOff = 50
+
+	// Scroll up.
+	sv.HandleMouse(tview.MouseScrollUp)
+	if sv.logScrollOff != 49 {
+		t.Errorf("scroll up: offset = %d, want 49", sv.logScrollOff)
+	}
+
+	// Scroll down.
+	sv.HandleMouse(tview.MouseScrollDown)
+	if sv.logScrollOff != 50 {
+		t.Errorf("scroll down: offset = %d, want 50", sv.logScrollOff)
+	}
+
+	// Scroll up at 0 stays at 0.
+	sv.logScrollOff = 0
+	sv.HandleMouse(tview.MouseScrollUp)
+	if sv.logScrollOff != 0 {
+		t.Errorf("scroll up at 0: offset = %d, want 0", sv.logScrollOff)
+	}
+}
+
+func TestSettingsView_DaemonRestart(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Not connected — no daemon row.
+	sv.SetDaemonConnected(false)
+	for _, row := range sv.rows {
+		if row.kind == srDaemon {
+			t.Fatal("daemon row should not appear when not connected")
+		}
+	}
+
+	// Connected — daemon row should appear.
+	sv.SetDaemonConnected(true)
+	found := false
+	for _, row := range sv.rows {
+		if row.kind == srDaemon {
+			found = true
+			if row.label != "  Restart Daemon" {
+				t.Errorf("daemon row label = %q, want '  Restart Daemon'", row.label)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("daemon row should appear when connected")
+	}
+
+	// Enter on daemon row fires callback.
+	called := false
+	sv.OnRestartDaemon = func() { called = true }
+	for i, row := range sv.rows {
+		if row.kind == srDaemon {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !called {
+		t.Error("OnRestartDaemon should be called on enter")
+	}
+	if !sv.daemonRestarting {
+		t.Error("daemonRestarting should be true after enter")
+	}
+
+	// While restarting, label changes and enter is a no-op.
+	called = false
+	sv.handleEnter()
+	if called {
+		t.Error("OnRestartDaemon should not fire while restarting")
+	}
+	for _, row := range sv.rows {
+		if row.kind == srDaemon && row.label != "  Restarting..." {
+			t.Errorf("daemon row label during restart = %q, want '  Restarting...'", row.label)
+		}
+	}
+
+	// Clear restarting state.
+	sv.SetDaemonRestarting(false)
+	if sv.daemonRestarting {
+		t.Error("daemonRestarting should be false after SetDaemonRestarting(false)")
+	}
+}
+
+func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Find a log row and set scroll state.
+	for i, row := range sv.rows {
+		if row.kind == srLogs {
+			sv.cursor = i
+			sv.logScrollOff = 42
+			sv.logKey = row.key
+			sv.logLines = []string{"test"}
+			break
+		}
+	}
+
+	// Move cursor away — should reset scroll.
+	sv.moveCursor(1)
+	if sv.logScrollOff != 0 {
+		t.Errorf("scroll offset not reset after cursor move: %d", sv.logScrollOff)
+	}
+	if sv.logKey != "" {
+		t.Errorf("logKey not cleared: %q", sv.logKey)
+	}
+}
+
+func TestSettingsView_NewProjectCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Move cursor to a project row.
+	for i, row := range sv.rows {
+		if row.kind == srProject {
+			sv.cursor = i
+			break
+		}
+	}
+
+	called := false
+	sv.OnNewProject = func() { called = true }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'n' key should be handled on project row")
+	}
+	if !called {
+		t.Error("OnNewProject callback not fired")
+	}
+}
+
+func TestSettingsView_EditProjectCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Move cursor to a project row.
+	for i, row := range sv.rows {
+		if row.kind == srProject && row.key == "test-proj" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var gotName string
+	sv.OnEditProject = func(name string, p config.Project) { gotName = name }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'e', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'e' key should be handled on project row")
+	}
+	if gotName != "test-proj" {
+		t.Errorf("OnEditProject got name %q, want test-proj", gotName)
+	}
+}
+
+func TestSettingsView_NewBackendCallback(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Move cursor to a backend row.
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+
+	called := false
+	sv.OnNewBackend = func() { called = true }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'n' key should be handled on backend row")
+	}
+	if !called {
+		t.Error("OnNewBackend callback not fired")
+	}
+}
+
+func TestSettingsView_EditBackendCallback(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Move cursor to a backend row.
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var gotName string
+	sv.OnEditBackend = func(name string, b config.Backend) { gotName = name }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'e', 0)
+	handled := sv.HandleKey(ev)
+	if !handled {
+		t.Error("'e' key should be handled on backend row")
+	}
+	if gotName == "" {
+		t.Error("OnEditBackend callback not fired or got empty name")
+	}
+}
+
+func TestSettingsView_NKeyOnNonProjectRow(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Cursor should be on a non-project row (e.g., warning/status).
+	sv.OnNewProject = func() { t.Error("OnNewProject should not fire on non-project row") }
+	sv.OnNewBackend = func() { t.Error("OnNewBackend should not fire on non-backend row") }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
+	handled := sv.HandleKey(ev)
+	if handled {
+		t.Error("'n' should not be handled on non-project/backend row")
 	}
 }
