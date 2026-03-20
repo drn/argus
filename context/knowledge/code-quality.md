@@ -721,3 +721,28 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 - `NotifySessionExit` signature changed to accept `lastOutput []byte` — callers in `main.go` must pass it through (was previously discarded with `_`)
 - `SetPRURL` in `QueueUpdateDraw` must guard on `agentState.TaskID` to avoid setting the wrong PR on the visible agent pane
 - Both `p` and `ctrl+p` in the task list route through `OnOpenPR` for testability and consistency
+
+## Prune Worktree Fix: 2026-03-20
+
+### Problem
+`Ctrl+R` prune deleted DB records first, then ran worktree/branch cleanup in a background goroutine. If the TUI exited before cleanup finished (each `git push origin --delete` takes ~1.5s), branches were left behind with no way to retry.
+
+### Data model
+- `db.WorktreePaths()` — returns `map[string]bool` of all worktree paths in the DB (used for orphan detection)
+- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with `pruneRunning`/`pruneDone` phases, animated dots
+- `countOrphanedWorktrees(knownPaths)` / `sweepOrphanedWorktrees(knownPaths, projects)` in `worktree.go` — scan `~/.argus/worktrees/` for dirs not in DB
+- `modePruning` view mode in `app.go` — absorbs all keys during cleanup
+
+### Flow
+1. `PruneCompleted()` fetches+deletes completed tasks from DB
+2. Stop sessions, remove session logs
+3. Count task worktrees + orphan worktrees
+4. Show `PruneModal` in running phase
+5. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep
+6. `wg.Wait()` → `QueueUpdateDraw` → `closePruneModal` + `refreshTasks`
+
+### Gotchas
+- Orphan sweep infers branch as `"argus/" + filepath.Base(worktreePath)` since no DB record exists
+- `walkOrphanedWorktrees` with nil projects map just counts; with non-nil map it removes
+- Empty project directories are cleaned up after sweep
+- Modal absorbs ALL keys during `pruneRunning` — prevents premature exit

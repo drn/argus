@@ -141,6 +141,62 @@ func TestRemoveWorktree_CleansEmptyDir(t *testing.T) {
 	}
 }
 
+func TestCountOrphanedWorktrees(t *testing.T) {
+	// Create a fake ~/.argus/worktrees structure in a temp dir.
+	// We can't override the home dir, so test walkOrphanedWorktrees directly
+	// by creating the structure it expects.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	wtRoot := filepath.Join(home, ".argus", "worktrees")
+	os.MkdirAll(filepath.Join(wtRoot, "proj1", "task-a"), 0o755) //nolint:errcheck
+	os.MkdirAll(filepath.Join(wtRoot, "proj1", "task-b"), 0o755) //nolint:errcheck
+	os.MkdirAll(filepath.Join(wtRoot, "proj2", "task-c"), 0o755) //nolint:errcheck
+
+	// task-a is known, task-b and task-c are orphans.
+	known := map[string]bool{
+		filepath.Join(wtRoot, "proj1", "task-a"): true,
+	}
+
+	count := countOrphanedWorktrees(known)
+	if count != 2 {
+		t.Errorf("expected 2 orphans, got %d", count)
+	}
+}
+
+func TestSweepOrphanedWorktrees(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	wtRoot := filepath.Join(home, ".argus", "worktrees")
+	orphanPath := filepath.Join(wtRoot, "proj1", "orphan-task")
+	os.MkdirAll(orphanPath, 0o755) //nolint:errcheck
+
+	// Write a dummy file so the dir is non-empty.
+	os.WriteFile(filepath.Join(orphanPath, "dummy.txt"), []byte("x"), 0o644) //nolint:errcheck
+
+	known := map[string]bool{} // no known paths — everything is an orphan
+
+	// Pass empty projects map — removeWorktreeAndBranch will skip git ops
+	// but os.RemoveAll will still clean the dir.
+	swept := sweepOrphanedWorktrees(known, map[string]string{})
+	if swept != 1 {
+		t.Errorf("expected 1 swept, got %d", swept)
+	}
+
+	// The orphan path should be gone (isWorktreeSubdir check will pass since
+	// the path contains /.argus/worktrees/).
+	if dirExists(orphanPath) {
+		t.Error("orphan directory should have been removed")
+	}
+
+	// Parent project dir should also be cleaned up since it's now empty.
+	projDir := filepath.Join(wtRoot, "proj1")
+	if dirExists(projDir) {
+		t.Error("empty project directory should have been removed")
+	}
+}
+
 func branchExists(repoDir, branch string) bool {
 	cmd := exec.Command("git", "rev-parse", "--verify", branch)
 	cmd.Dir = repoDir

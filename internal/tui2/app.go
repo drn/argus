@@ -33,6 +33,7 @@ const (
 	modeAgent
 	modeNewTask
 	modeConfirmDelete
+	modePruning
 	modeProjectForm
 	modeBackendForm
 )
@@ -74,6 +75,9 @@ type App struct {
 
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal *ConfirmDeleteModal
+
+	// Prune modal (created on demand)
+	pruneModal *PruneModal
 
 	// Settings forms (created on demand)
 	projectForm *ProjectForm
@@ -291,6 +295,9 @@ func (a *App) onTick() {
 	taskID := ""
 	if a.mode == modeAgent {
 		taskID = a.agentState.TaskID
+	}
+	if a.pruneModal != nil {
+		a.pruneModal.Tick()
 	}
 	a.mu.Unlock()
 
@@ -643,6 +650,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm delete modal — delegate everything to the modal
 	if a.mode == modeConfirmDelete && a.confirmDeleteModal != nil {
 		a.handleConfirmDeleteKey(event)
+		return nil
+	}
+
+	// Prune modal — absorb all keys while cleanup is running
+	if a.mode == modePruning {
 		return nil
 	}
 
@@ -1640,7 +1652,7 @@ func (a *App) deleteTask(t *model.Task) {
 }
 
 // pruneCompletedTasks removes all completed tasks, cleaning up worktrees and branches.
-// Matches the old Ctrl+R behavior from the Bubble Tea UI.
+// Shows a progress modal during cleanup to prevent premature TUI exit.
 func (a *App) pruneCompletedTasks() {
 	pruned, err := a.db.PruneCompleted()
 	if err != nil {
@@ -1660,7 +1672,11 @@ func (a *App) pruneCompletedTasks() {
 		}
 	}
 
-	// Clean up worktrees in a background goroutine so the UI stays responsive.
+	// Remove session logs for all pruned tasks.
+	for _, t := range pruned {
+		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
+	}
+
 	cfg := a.db.Config()
 
 	var toClean []*model.Task
@@ -1670,30 +1686,79 @@ func (a *App) pruneCompletedTasks() {
 		}
 	}
 
-	// Remove session logs for all pruned tasks.
-	for _, t := range pruned {
-		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
+	// Count orphaned worktrees not tracked in the DB.
+	// Skip orphan sweep if WorktreePaths fails — an empty map would
+	// misidentify all worktrees as orphans.
+	knownPaths, err := a.db.WorktreePaths()
+	orphanCount := 0
+	if err != nil {
+		uxlog.Log("[tui2] WorktreePaths failed, skipping orphan sweep: %v", err)
+	} else {
+		orphanCount = countOrphanedWorktrees(knownPaths)
 	}
 
-	if len(toClean) == 0 {
+	totalClean := len(toClean) + orphanCount
+
+	if totalClean == 0 {
 		a.refreshTasks()
 		return
 	}
 
-	// Run worktree cleanup in a background goroutine.
+	// Show the prune progress modal.
+	a.pruneModal = NewPruneModal(totalClean)
+	a.mode = modePruning
+	a.pages.AddPage("pruning", a.pruneModal, true, true)
+	a.pages.SwitchToPage("pruning")
+	a.tapp.SetFocus(a.pruneModal)
+
+	// Build project name → path map for orphan sweep.
+	projects := make(map[string]string)
+	for name, p := range cfg.Projects {
+		projects[name] = p.Path
+	}
+
+	// Parallel cleanup in background goroutines.
 	go func() {
+		var wg sync.WaitGroup
+
+		// Clean up each pruned task's worktree in parallel.
 		for _, t := range toClean {
-			repoDir := agent.ResolveDir(t, cfg)
-			uxlog.Log("[tui2] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
-				t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
-			removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+			wg.Add(1)
+			go func(t *model.Task) {
+				defer wg.Done()
+				repoDir := agent.ResolveDir(t, cfg)
+				uxlog.Log("[tui2] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
+					t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
+				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+			}(t)
 		}
+
+		// Sweep orphaned worktrees in parallel with task cleanup.
+		if orphanCount > 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				swept := sweepOrphanedWorktrees(knownPaths, projects)
+				uxlog.Log("[tui2] orphan sweep cleaned %d directories", swept)
+			}()
+		}
+
+		wg.Wait()
+
 		a.tapp.QueueUpdateDraw(func() {
+			a.closePruneModal()
 			a.refreshTasks()
 		})
 	}()
+}
 
-	a.refreshTasks()
+// closePruneModal dismisses the prune modal and returns to the task list.
+func (a *App) closePruneModal() {
+	a.mode = modeTaskList
+	a.pruneModal = nil
+	a.pages.RemovePage("pruning")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // navigateAgentTask switches to the next (+1) or previous (-1) task
