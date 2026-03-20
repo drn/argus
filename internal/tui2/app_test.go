@@ -714,3 +714,67 @@ func TestWorktreeSubdir(t *testing.T) {
 		}
 	}
 }
+
+func TestPRURLRegex(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"https://github.com/acme/widgets/pull/42", "https://github.com/acme/widgets/pull/42"},
+		{"Created PR https://github.com/acme/widgets/pull/42\n", "https://github.com/acme/widgets/pull/42"},
+		{"no url here", ""},
+		// OSC 8 hyperlink: URL appears twice — take last match
+		{"\x1b]8;;https://github.com/a/b/pull/1\x1b\\https://github.com/a/b/pull/1\x1b]8;;\x1b\\", "https://github.com/a/b/pull/1"},
+		// Multiple PRs: take last
+		{"https://github.com/a/b/pull/1 then https://github.com/a/b/pull/2", "https://github.com/a/b/pull/2"},
+	}
+	for _, tt := range tests {
+		matches := prURLRe.FindAllString(tt.input, -1)
+		got := ""
+		if len(matches) > 0 {
+			got = matches[len(matches)-1]
+		}
+		if got != tt.want {
+			t.Errorf("prURLRe(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestScanAndStorePRURL(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{
+		ID:      "pr-scan-1",
+		Name:    "test",
+		Project: "proj",
+		Status:  model.StatusInProgress,
+	}
+	d.Add(task) //nolint:errcheck
+
+	// Simulate what scanAndStorePRURL does (without needing a running tview app).
+	output := []byte("Created https://github.com/acme/repo/pull/99\nDone.")
+	matches := prURLRe.FindAll(output, -1)
+	if len(matches) == 0 {
+		t.Fatal("prURLRe should match PR URL in output")
+	}
+	url := string(matches[len(matches)-1])
+	if url != "https://github.com/acme/repo/pull/99" {
+		t.Errorf("matched URL = %q, want https://github.com/acme/repo/pull/99", url)
+	}
+
+	// Persist to DB (same as scanAndStorePRURL does).
+	got, _ := d.Get("pr-scan-1")
+	got.PRURL = url
+	d.Update(got) //nolint:errcheck
+
+	got2, _ := d.Get("pr-scan-1")
+	if got2.PRURL != "https://github.com/acme/repo/pull/99" {
+		t.Errorf("DB PRURL = %q, want https://github.com/acme/repo/pull/99", got2.PRURL)
+	}
+
+	// No match case.
+	noURLOutput := []byte("no github link here")
+	if matches := prURLRe.FindAll(noURLOutput, -1); len(matches) != 0 {
+		t.Errorf("should not match in %q", noURLOutput)
+	}
+}
