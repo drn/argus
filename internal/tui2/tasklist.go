@@ -16,6 +16,7 @@ const (
 	rowTask rowKind = iota
 	rowProject
 	rowArchiveHeader
+	rowSeparator
 )
 
 // taskRow is a flattened display row in the task list.
@@ -156,6 +157,7 @@ func (tl *TaskListView) buildRows() {
 
 	// Archive section
 	if len(archived) > 0 {
+		tl.rows = append(tl.rows, taskRow{kind: rowSeparator})
 		tl.rows = append(tl.rows, taskRow{kind: rowArchiveHeader})
 		if tl.archiveExpanded {
 			archOrder, archTasks := groupByProject(archived)
@@ -270,8 +272,29 @@ func (tl *TaskListView) moveCursor(dir int) {
 		return
 	}
 
+	// On the separator — skip it in the current direction.
+	if tl.rows[c].kind == rowSeparator {
+		if dir > 0 {
+			tl.cursor++
+		} else {
+			tl.skipUpPastHeader(prev)
+			tl.notifyCursorChange()
+			return
+		}
+		if tl.cursor < 0 {
+			tl.cursor = 0
+		}
+		if tl.cursor >= len(tl.rows) {
+			tl.cursor = len(tl.rows) - 1
+		}
+		c = tl.cursor
+	}
+
 	// On the archive header — skip it like a project header.
 	if tl.rows[c].kind == rowArchiveHeader {
+		// Auto-expand archive before skipping, so rows exist below the header.
+		tl.autoExpand()
+		c = tl.cursor
 		if dir > 0 {
 			if c+1 < len(tl.rows) {
 				tl.cursor++
@@ -326,6 +349,16 @@ func (tl *TaskListView) skipUpPastHeader(prev int) {
 		return
 	}
 
+	// Landed on separator — skip it too.
+	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowSeparator {
+		tl.cursor--
+		if tl.cursor < 0 {
+			tl.cursor = prev
+			return
+		}
+		c = tl.cursor
+	}
+
 	// Landed on archive header after skipping a project header — skip it too.
 	if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowArchiveHeader {
 		tl.cursor--
@@ -335,6 +368,15 @@ func (tl *TaskListView) skipUpPastHeader(prev int) {
 		}
 		tl.autoExpand()
 		c = tl.cursor
+		// May land on separator before archive header.
+		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowSeparator {
+			tl.cursor--
+			if tl.cursor < 0 {
+				tl.cursor = prev
+				return
+			}
+			c = tl.cursor
+		}
 		if c >= 0 && c < len(tl.rows) && tl.rows[c].kind == rowProject {
 			tl.landOnLastTask(c, prev)
 			return
@@ -399,8 +441,8 @@ func (tl *TaskListView) autoExpand() {
 		// Cursor is above archive section — rows above haven't changed.
 	}
 
-	// Archive header — don't change project expansion.
-	if r.kind == rowArchiveHeader {
+	// Archive header and separator — don't change project expansion.
+	if r.kind == rowArchiveHeader || r.kind == rowSeparator {
 		return
 	}
 
@@ -539,6 +581,8 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		switch row.kind {
 		case rowProject:
 			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project)
+		case rowSeparator:
+			tl.drawSeparator(screen, inner.X, inner.Y+i, inner.W)
 		case rowArchiveHeader:
 			tl.drawArchiveHeader(screen, inner.X, inner.Y+i, inner.W)
 		case rowTask:
@@ -636,6 +680,13 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 	countStr := fmt.Sprintf(" (%d)", len(projTasks))
 	if col-x+len(countStr) <= w {
 		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(ColorDimmed))
+	}
+}
+
+func (tl *TaskListView) drawSeparator(screen tcell.Screen, x, y, w int) {
+	style := tcell.StyleDefault.Foreground(ColorDimmed)
+	for i := 0; i < w; i++ {
+		screen.SetContent(x+i, y, '─', nil, style)
 	}
 }
 
