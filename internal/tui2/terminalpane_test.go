@@ -11,6 +11,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -235,6 +236,76 @@ func TestUvCellToTcellStyle(t *testing.T) {
 	if attr&tcell.AttrBold == 0 {
 		t.Error("expected bold attribute")
 	}
+}
+
+func TestUvCellToTcellStyle_Faint(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "D",
+		Width:   1,
+		Style: uv.Style{
+			Attrs: uv.AttrFaint,
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrDim == 0 {
+		t.Error("expected dim attribute for AttrFaint")
+	}
+}
+
+func TestUvCellToTcellStyle_Blink(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "B",
+		Width:   1,
+		Style: uv.Style{
+			Attrs: uv.AttrBlink,
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrBlink == 0 {
+		t.Error("expected blink attribute for AttrBlink")
+	}
+}
+
+func TestUvCellToTcellStyle_UnderlineStyles(t *testing.T) {
+	tests := []struct {
+		name string
+		ul   ansi.Underline
+		want tcell.UnderlineStyle
+	}{
+		{"single", ansi.UnderlineSingle, tcell.UnderlineStyleSolid},
+		{"double", ansi.UnderlineDouble, tcell.UnderlineStyleDouble},
+		{"curly", ansi.UnderlineCurly, tcell.UnderlineStyleCurly},
+		{"dotted", ansi.UnderlineDotted, tcell.UnderlineStyleDotted},
+		{"dashed", ansi.UnderlineDashed, tcell.UnderlineStyleDashed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cell := &uv.Cell{
+				Content: "U",
+				Width:   1,
+				Style:   uv.Style{Underline: tt.ul},
+			}
+			style := uvCellToTcellStyle(cell)
+			got := style.GetUnderlineStyle()
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+}
+
+func TestUvCellToTcellStyle_UnderlineColor(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "U",
+		Width:   1,
+		Style: uv.Style{
+			Underline:      ansi.UnderlineCurly,
+			UnderlineColor: ansi.BasicColor(1),
+		},
+	}
+	style := uvCellToTcellStyle(cell)
+	testutil.Equal(t, style.GetUnderlineStyle(), tcell.UnderlineStyleCurly)
+	testutil.Equal(t, style.GetUnderlineColor(), tcell.PaletteColor(1))
 }
 
 func TestUvCellToTcellStyle_Nil(t *testing.T) {

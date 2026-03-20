@@ -799,3 +799,32 @@ Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards 
 - Empty project directories are cleaned up after sweep
 - Modal absorbs ALL keys during cleanup — prevents premature exit
 - `WorktreePaths()` returns error; caller skips orphan sweep on failure to avoid false positives
+
+## Terminal Style Conversion Completeness: 2026-03-20
+
+### Data Model
+- `uvCellToTcellStyle()` in `terminalpane.go` converts `uv.Cell.Style` → `tcell.Style`
+- Ultraviolet `Style` struct: `Fg`, `Bg`, `UnderlineColor` (all `color.Color`), `Underline` (enum), `Attrs` (uint8 bitmask)
+- Ultraviolet `Cell` also carries `Link` (OSC 8 hyperlink with URL + params)
+
+### Flow
+PTY bytes → x/vt emulator → `paintEmu()` iterates cells → `uvCellToTcellStyle()` per cell → `screen.SetContent()`
+
+### Attribute Mapping (must stay in sync with `uv.Attr*` constants)
+| uv constant | tcell method | SGR code |
+|---|---|---|
+| `AttrBold` | `Bold(true)` | 1 |
+| `AttrFaint` | `Dim(true)` | 2 |
+| `AttrItalic` | `Italic(true)` | 3 |
+| `AttrBlink` | `Blink(true)` | 5 |
+| `AttrReverse` | `Reverse(true)` | 7 |
+| `AttrStrikethrough` | `StrikeThrough(true)` | 9 |
+
+### Underline styles mapped to `tcell.UnderlineStyle*`
+Single→Solid, Double, Curly, Dotted, Dashed. Underline color via `style.Underline(ulStyle, color)`.
+
+### Gotchas
+- Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose highlight contrast — dimmed text rendered at full brightness
+- `AttrConceal` (SGR 8) and `AttrRapidBlink` (SGR 6) not mapped — rarely used, tcell has no direct support for conceal
+- Hyperlinks (`cell.Link.URL`) forwarded via `style.Url()` — tcell has no getter for URL so not directly testable
+- Old code used `Underline(true)` for all styles — lost curly/dotted/dashed distinction used by Claude Code diagnostics

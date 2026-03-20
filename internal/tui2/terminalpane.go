@@ -782,8 +782,14 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if attrs&uv.AttrBold != 0 {
 		style = style.Bold(true)
 	}
+	if attrs&uv.AttrFaint != 0 {
+		style = style.Dim(true)
+	}
 	if attrs&uv.AttrItalic != 0 {
 		style = style.Italic(true)
+	}
+	if attrs&uv.AttrBlink != 0 {
+		style = style.Blink(true)
 	}
 	if attrs&uv.AttrReverse != 0 {
 		style = style.Reverse(true)
@@ -791,10 +797,32 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if attrs&uv.AttrStrikethrough != 0 {
 		style = style.StrikeThrough(true)
 	}
-	// Underline styles.
-	ul := cell.Style.Underline
-	if ul != 0 {
-		style = style.Underline(true)
+	// Underline styles + color.
+	if ul := cell.Style.Underline; ul != 0 {
+		var ulStyle tcell.UnderlineStyle
+		switch ul {
+		case ansi.UnderlineSingle:
+			ulStyle = tcell.UnderlineStyleSolid
+		case ansi.UnderlineDouble:
+			ulStyle = tcell.UnderlineStyleDouble
+		case ansi.UnderlineCurly:
+			ulStyle = tcell.UnderlineStyleCurly
+		case ansi.UnderlineDotted:
+			ulStyle = tcell.UnderlineStyleDotted
+		case ansi.UnderlineDashed:
+			ulStyle = tcell.UnderlineStyleDashed
+		default:
+			ulStyle = tcell.UnderlineStyleSolid
+		}
+		if cell.Style.UnderlineColor != nil {
+			style = style.Underline(ulStyle, uvColorToTcell(cell.Style.UnderlineColor))
+		} else {
+			style = style.Underline(ulStyle)
+		}
+	}
+	// Hyperlinks (OSC 8).
+	if cell.Link.URL != "" {
+		style = style.Url(cell.Link.URL)
 	}
 	return style
 }
