@@ -112,6 +112,7 @@ func TestTcellKeyToBytes(t *testing.T) {
 	}{
 		{"enter", tcell.KeyEnter, 0, 0, []byte{'\r'}},
 		{"tab", tcell.KeyTab, 0, 0, []byte{'\t'}},
+		{"shift-tab", tcell.KeyBacktab, 0, 0, []byte("\x1b[Z")},
 		{"backspace", tcell.KeyBackspace2, 0, 0, []byte{0x7f}},
 		{"up", tcell.KeyUp, 0, 0, []byte("\x1b[A")},
 		{"down", tcell.KeyDown, 0, 0, []byte("\x1b[B")},

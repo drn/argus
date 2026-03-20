@@ -1083,6 +1083,8 @@ func tcellKeyToBytes(ev *tcell.EventKey) []byte {
 		return []byte{'\r'}
 	case tcell.KeyTab:
 		return []byte{'\t'}
+	case tcell.KeyBacktab:
+		return []byte("\x1b[Z")
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if alt {
 			return []byte{0x1b, 0x7f}
