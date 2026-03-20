@@ -702,6 +702,26 @@ No changes — same `task.Worktree` and `task.Branch` fields.
 - `git worktree prune` must run BEFORE `git branch -D` — git tracks worktree→branch associations in `.git/worktrees/` and refuses to delete a branch with a (possibly stale) worktree reference
 - Branch inference from directory name only works when the worktree dir was created by `CreateWorktree` (which uses the sanitized task name). Manual worktrees would need the correct branch stored on the task
 
+## Worktree Creation Stale-Ref Fix: 2026-03-20
+
+### Problem
+`CreateWorktree` failed with exit status 255 when a previous worktree directory was deleted without `git worktree remove`. Git retained a stale worktree→branch reference, causing both `git worktree add -b` (branch exists) and `git worktree add` (branch locked to stale entry) to fail. The error was also unreadable — `fmt.Errorf("...%s\n%s", ...)` produced a newline in the error string, but `drawText` renders on a single row, hiding the actual git fatal message.
+
+### Fix
+1. `git worktree prune` runs at the top of `CreateWorktree` (best-effort, errors ignored) to clean stale entries
+2. After each `git worktree add` failure, `isValidWorktreeDir(wtDir)` checks for `.git` file inside the directory — catches post-checkout hook failures where the worktree was created despite non-zero exit
+3. Error message uses `cleanGitOutput()` which extracts `fatal:` lines and collapses newlines for single-line display
+4. uxlog calls at every decision point: entry, cmd1 fail, partial success, cmd2 fail/success, final success
+
+### Key entities
+- `isValidWorktreeDir(dir)` — checks `filepath.Join(dir, ".git")` exists (stronger than bare `os.Stat(dir)`)
+- `cleanGitOutput(outputs ...[]byte)` — combines git output, extracts `fatal:` lines, collapses to single line
+- `[worktree]` uxlog prefix for all `CreateWorktree` logging
+
+### Gotchas
+- `os.Stat(wtDir)` alone is insufficient — a partial failure can leave an empty directory. Must check `.git` file presence
+- Error format `%s\n%s` is invisible in `drawText` (single-row renderer) — always use single-line error messages for form display
+
 ## PR URL Detection Restoration: 2026-03-20
 
 ### What was missing
