@@ -721,3 +721,23 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 - `NotifySessionExit` signature changed to accept `lastOutput []byte` — callers in `main.go` must pass it through (was previously discarded with `_`)
 - `SetPRURL` in `QueueUpdateDraw` must guard on `agentState.TaskID` to avoid setting the wrong PR on the visible agent pane
 - Both `p` and `ctrl+p` in the task list route through `OnOpenPR` for testability and consistency
+
+## TDD Infrastructure: 2026-03-20
+
+### Data Model
+- `internal/testutil/testutil.go` — assertion helpers: `Equal[T]`, `DeepEqual[T]` (go-cmp), `NotEqual[T]`, `Nil`/`NotNil` (reflection-based for nil-interface trap), `NoError`/`Error`/`ErrorIs`, `True`/`False`, `Contains`
+- Dependency: `github.com/google/go-cmp` for `DeepEqual` struct diffs
+
+### Flow
+- Import `"github.com/drn/argus/internal/testutil"` → call `testutil.Equal(t, got, want)` etc.
+- All assertions use `t.Errorf` (not `t.Fatalf`) so multiple failures surface per run
+- `Nil`/`NotNil` use `reflect.ValueOf(got).IsNil()` to handle the nil-interface trap (nil `*T` assigned to `any` is non-nil at interface level)
+
+### Build Targets (Makefile)
+- `make test` — `go test -race -count=1 ./...`
+- `make test-watch` — `gotestsum --watch` (checks for install)
+- `make test-cover` — coverage profile + summary
+- `make test-pkg PKG=./internal/db/` — single package verbose
+
+### CI Changes
+- Go 1.24 → 1.25, added `-coverprofile=coverage.out`, coverage summary step, artifact upload
