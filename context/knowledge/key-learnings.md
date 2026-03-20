@@ -1,5 +1,7 @@
 ## Key Learnings
 
+- **Reconciliation must distinguish RPC failure from empty running set.** `Client.Running()` returns `nil` on RPC error vs. `[]string{}` when the daemon confirms no sessions. `refreshTasksWithIDs` checks `runningIDs != nil` before reconciling — without this, a transient RPC timeout causes ALL InProgress tasks to be marked Complete, prematurely killing active workflows.
+
 - **`ctrl+c` only exits Argus from the root (task list) view.** The global `handleGlobalKey` processes `KeyCtrlC` before mode-specific handlers. In agent mode, `ctrl+c` is always consumed: if the session is alive, `0x03` is written to the PTY; if dead, it's a no-op. Only in non-agent modes does `ctrl+c` call `tapp.Stop()`. This prevents accidentally killing Argus when trying to interrupt an agent process.
 
 - **`ctrl+q` in diff mode must both exit diff mode AND refocus the agent panel.** When a file diff is open, pressing `ctrl+q` calls `exitDiffMode()` but must also refocus the terminal panel — without this, the user lands back on the files panel and needs a second keypress to reach the terminal. The global `ctrl+q` handler runs before the diff key handler, so the fix belongs there.

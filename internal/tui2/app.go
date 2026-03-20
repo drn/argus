@@ -567,7 +567,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// truth for running sessions. In-process mode has its own onFinish callback.
 	// Note: InReview tasks are intentionally non-running (set by handleSessionExitUI
 	// when the user stops an agent) and must NOT be reconciled to Complete.
-	if a.daemonConnected {
+	// IMPORTANT: runningIDs is nil when the daemon RPC failed — skip reconciliation
+	// to avoid marking all active tasks as Complete due to a transient error.
+	if a.daemonConnected && runningIDs != nil {
 		runningSet := make(map[string]bool, len(runningIDs))
 		for _, id := range runningIDs {
 			runningSet[id] = true

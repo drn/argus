@@ -698,6 +698,51 @@ func TestCtrlRPrunesCompleted(t *testing.T) {
 	}
 }
 
+func TestReconcileSkipsOnNilRunning(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Simulate daemon mode
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "active-agent", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t2", Name: "also-active", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Pass nil runningIDs (simulates RPC failure) — should NOT reconcile
+	app.refreshTasksWithIDs(nil, nil)
+
+	for _, task := range app.tasks {
+		if task.Status == model.StatusComplete {
+			t.Errorf("task %q was wrongly reconciled to Complete on nil runningIDs", task.Name)
+		}
+	}
+}
+
+func TestReconcileWorksOnEmptyRunning(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Simulate daemon mode
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "stale-task", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Pass empty non-nil runningIDs (daemon confirmed nothing running) — should reconcile
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	found := false
+	for _, task := range app.tasks {
+		if task.ID == "t1" && task.Status == model.StatusComplete {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("stale task should have been reconciled to Complete with empty (non-nil) runningIDs")
+	}
+}
+
 func TestWorktreeSubdir(t *testing.T) {
 	tests := []struct {
 		path string
