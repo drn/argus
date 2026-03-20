@@ -12,7 +12,7 @@ func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
 		Backends: map[string]config.Backend{
-			"claude": {Command: "claude --dangerously-skip-permissions", PromptFlag: ""},
+			"claude": {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
 			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
 			"bare":   {Command: "my-agent", PromptFlag: ""},
 		},
@@ -31,7 +31,7 @@ func TestResolveBackend_DefaultFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "claude --dangerously-skip-permissions" {
+	if b.Command != "claude --dangerously-skip-permissions --permission-mode plan" {
 		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
@@ -57,7 +57,7 @@ func TestResolveBackend_TaskOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Command != "claude --dangerously-skip-permissions" {
+	if b.Command != "claude --dangerously-skip-permissions --permission-mode plan" {
 		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
@@ -71,7 +71,7 @@ func TestResolveBackend_ProjectWithoutBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Falls back to default since project "other" has no backend
-	if b.Command != "claude --dangerously-skip-permissions" {
+	if b.Command != "claude --dangerously-skip-permissions --permission-mode plan" {
 		t.Errorf("expected claude command, got %q", b.Command)
 	}
 }
@@ -138,7 +138,7 @@ func TestBuildCmd(t *testing.T) {
 	if args[0] != "sh" || args[1] != "-c" {
 		t.Errorf("expected sh -c, got %v", args[:2])
 	}
-	expected := "claude --dangerously-skip-permissions 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --permission-mode plan 'fix the bug'"
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
@@ -186,7 +186,7 @@ func TestBuildCmd_NewSessionWithID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := "claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --permission-mode plan --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
@@ -202,7 +202,7 @@ func TestBuildCmd_Resume(t *testing.T) {
 	}
 
 	// Resume should use --resume and ignore the prompt
-	expected := "claude --dangerously-skip-permissions --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
+	expected := "claude --dangerously-skip-permissions --permission-mode plan --resume 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
@@ -459,7 +459,7 @@ func TestIsCodexBackend(t *testing.T) {
 		{"codex --full-auto", true},
 		{"codex", true},
 		{"/usr/local/bin/codex --full-auto", true},
-		{"claude --dangerously-skip-permissions", false},
+		{"claude --dangerously-skip-permissions --permission-mode plan", false},
 		{"my-codex-wrapper --flags", false},
 		{"/usr/bin/my-codex", false},
 		{"", false},

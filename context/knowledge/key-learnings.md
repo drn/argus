@@ -79,7 +79,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 - **New columns use `ALTER TABLE ... ADD COLUMN ... DEFAULT ''` after `CREATE TABLE IF NOT EXISTS`.** Error for duplicate column silently ignored.
 - **`taskColumns` is the canonical column list.** Update `taskColumns`, `scanTask`, `Add`, and `Update` in lockstep.
-- **Backend default config must be self-healing.** `fixupBackends()` runs on every `Open()` to repair outdated configs. Any `DefaultConfig()` change must be mirrored there.
+- **Backend default config must be self-healing.** `fixupBackends()` runs on every `Open()` to repair outdated configs. Any `DefaultConfig()` change must be mirrored there. The `--permission-mode plan` fixup **appends** to the existing command (preserving user customizations) rather than replacing. All Claude fixup checks use `name == "claude"` (not `strings.Contains(command, "claude")`) to avoid matching user-created backends.
 - **Map lookups returning `*T` become non-nil interfaces.** `Get()` must check `if sess == nil { return nil }` before returning as interface.
 
 ### Go Patterns

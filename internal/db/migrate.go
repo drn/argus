@@ -113,9 +113,21 @@ func (d *DB) fixupBackends() error {
 
 		needsUpdate := false
 
-		// Fix: command references "claude" but is missing --dangerously-skip-permissions.
-		if strings.Contains(command, "claude") && !strings.Contains(command, "--dangerously-skip-permissions") {
+		// Fix: claude backend is missing --dangerously-skip-permissions.
+		if name == "claude" && !strings.Contains(command, "--dangerously-skip-permissions") {
 			needsUpdate = true
+		}
+
+		// Migrate: add --permission-mode plan so agents default to read-only plan mode.
+		// Appends to existing command (preserving user customizations) rather than replacing.
+		if name == "claude" && !strings.Contains(command, "--permission-mode") {
+			appended := command + " --permission-mode plan"
+			if _, err := d.conn.Exec(
+				`UPDATE backends SET command=? WHERE name=?`, appended, name,
+			); err != nil {
+				return err
+			}
+			command = appended // update local var so subsequent checks see the new command
 		}
 
 		// Fix: codex backend uses old flags (--yolo or --full-auto) instead of

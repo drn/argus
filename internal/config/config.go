@@ -105,7 +105,7 @@ func DefaultConfig() Config {
 		Defaults: Defaults{Backend: "claude"},
 		Backends: map[string]Backend{
 			"claude": {
-				Command:    "claude --dangerously-skip-permissions",
+				Command:    "claude --dangerously-skip-permissions --permission-mode plan",
 				PromptFlag: "",
 			},
 			"codex": {
