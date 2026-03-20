@@ -1114,7 +1114,11 @@ func (a *App) onTaskCursorChange(task *model.Task) {
 	}
 	a.taskPreview.SetTaskID(task.ID)
 	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
-	// Kick off git status fetch for the selected task's worktree.
+	// Kick off preview fetch immediately (don't wait for next tick).
+	go func() {
+		a.refreshPreview(task.ID)
+		a.tapp.QueueUpdateDraw(func() {}) // trigger redraw with new cells
+	}()
 	if task.Worktree != "" {
 		a.taskGitPanel.Clear()
 		go a.fetchTaskGitStatus(task.ID, task.Worktree)
