@@ -74,7 +74,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// STATUS section
 	if len(gp.statusLines) > 0 {
-		drawText(screen, inner.X, row, inner.W, "FILES", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "Files", StyleTitle)
 		row++
 		for _, line := range gp.statusLines {
 			if row >= maxRow {
@@ -90,7 +90,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// DIFF section
 	if len(gp.diffLines) > 0 && row < maxRow {
-		drawText(screen, inner.X, row, inner.W, "DIFF", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "Diff", StyleTitle)
 		row++
 		for _, line := range gp.diffLines {
 			if row >= maxRow {
