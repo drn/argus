@@ -118,6 +118,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 - **`restoreCursor` must filter by archive section.** Cross-section project name collisions cause cursor jumps.
 - **`buildRows()` separates tasks by `t.Archived` before grouping.** Projects with only archived tasks never appear in main section.
+- **Task-list previews must render the latest visible emulator lines, not `CellAt(x,y)` from row 0.** For Codex and any long-running PTY output, useful content often lives in scrollback or lower rows; replay logic must trim to bottom-of-history like `TerminalPane.paintEmu`.
 - **Stopped agent → `StatusInReview`, not Pending.** Stopped means "needs human review".
 - **Idle+unvisited tasks visually promoted to InReview.** Cleared on entering agent view.
 - **Enter on completed task is a no-op.**

@@ -151,4 +151,3 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 ## Planned but Not Yet Implemented
 
 - Task import from markdown/JSON (`internal/import/`) — Phase 4
-- Task list preview panel (small terminal snapshot per task)

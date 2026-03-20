@@ -106,11 +106,52 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 		return
 	}
 
+	lastContentRow := findLastContentRowEmu(emu, cols, rows)
+	sbLen := emu.ScrollbackLen()
+	totalLines := sbLen + lastContentRow + 1
+	firstContentRow := 0
+	if sbLen == 0 {
+		firstContentRow = findFirstContentRowEmu(emu, cols, lastContentRow)
+		totalLines = lastContentRow - firstContentRow + 1
+	}
+
 	grid := make([][]previewCell, rows)
 	for vy := 0; vy < rows; vy++ {
 		grid[vy] = make([]previewCell, cols)
+	}
+
+	if totalLines <= 0 {
+		tp.mu.Lock()
+		tp.cells = grid
+		tp.cellCols = cols
+		tp.cellRows = rows
+		tp.statusMsg = ""
+		tp.mu.Unlock()
+		return
+	}
+
+	endLine := totalLines - 1
+	startLine := endLine - rows + 1
+	if startLine < 0 {
+		startLine = 0
+	}
+
+	for vy := 0; vy < rows; vy++ {
+		lineIdx := startLine + vy
+		if lineIdx > endLine {
+			break
+		}
 		for vx := 0; vx < cols; vx++ {
-			cell := emu.CellAt(vx, vy)
+			var cell *uv.Cell
+			if sbLen > 0 && lineIdx < sbLen {
+				cell = emu.ScrollbackCellAt(vx, lineIdx)
+			} else {
+				mainRow := lineIdx - sbLen
+				if sbLen == 0 {
+					mainRow = firstContentRow + lineIdx
+				}
+				cell = emu.CellAt(vx, mainRow)
+			}
 			ch := ' '
 			style := tcell.StyleDefault
 			if cell != nil {

@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -151,4 +152,55 @@ func TestTaskPreviewPanel_SetTaskIDClears(t *testing.T) {
 	if cells != nil {
 		t.Error("expected cells to be nil after task change")
 	}
+}
+
+func TestTaskPreviewPanel_RefreshUsesLatestVisibleLines(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 8)
+	tp.SetTaskID("test-task")
+
+	raw := []byte(strings.Join([]string{
+		"line-1",
+		"line-2",
+		"line-3",
+		"line-4",
+		"line-5",
+		"line-6",
+	}, "\r\n") + "\r\n")
+	tp.RefreshOutput(raw, 20, 3)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "line-4") {
+		t.Fatal("expected preview to include line-4 from the latest visible rows")
+	}
+	if !previewScreenContains(screen, "line-6") {
+		t.Fatal("expected preview to include the newest output line")
+	}
+	if previewScreenContains(screen, "line-1") {
+		t.Fatal("expected preview to drop old top-of-buffer lines")
+	}
+}
+
+func previewScreenContains(screen tcell.SimulationScreen, needle string) bool {
+	w, h := screen.Size()
+	for row := 0; row < h; row++ {
+		var b strings.Builder
+		for col := 0; col < w; col++ {
+			r, _, _, _ := screen.GetContent(col, row)
+			if r == 0 {
+				r = ' '
+			}
+			b.WriteRune(r)
+		}
+		if strings.Contains(b.String(), needle) {
+			return true
+		}
+	}
+	return false
 }
