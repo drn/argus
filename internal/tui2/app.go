@@ -1545,14 +1545,12 @@ func (a *App) deleteTask(t *model.Task) {
 	cfg := a.db.Config()
 	worktree, branch := t.Worktree, t.Branch
 	go func() {
-		if worktree != "" && cfg.UI.ShouldCleanupWorktrees() {
-			repoDir := agent.ResolveDir(t, cfg)
+		repoDir := agent.ResolveDir(t, cfg)
+		if worktree != "" {
 			removeWorktreeAndBranch(worktree, branch, repoDir)
-		} else if branch != "" {
-			if repoDir := agent.ResolveDir(t, cfg); repoDir != "" {
-				deleteBranch(repoDir, branch)
-				deleteRemoteBranch(repoDir, branch)
-			}
+		} else if branch != "" && repoDir != "" {
+			deleteBranch(repoDir, branch)
+			deleteRemoteBranch(repoDir, branch)
 		}
 	}()
 }
@@ -1580,14 +1578,11 @@ func (a *App) pruneCompletedTasks() {
 
 	// Clean up worktrees in a background goroutine so the UI stays responsive.
 	cfg := a.db.Config()
-	needsCleanup := cfg.UI.ShouldCleanupWorktrees()
 
 	var toClean []*model.Task
-	if needsCleanup {
-		for _, t := range pruned {
-			if t.Worktree != "" {
-				toClean = append(toClean, t)
-			}
+	for _, t := range pruned {
+		if t.Worktree != "" {
+			toClean = append(toClean, t)
 		}
 	}
 

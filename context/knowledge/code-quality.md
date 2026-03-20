@@ -555,7 +555,7 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - Both guarded by `a.mode == modeTaskList && a.header.ActiveTab() == TabTasks`.
 
 ### Gotchas
-- Worktree cleanup respects `cfg.UI.ShouldCleanupWorktrees()` — when disabled, only branches are deleted.
+- Worktree cleanup is unconditional — worktree, local branch, and remote branch are always removed on task delete/prune. The old `ShouldCleanupWorktrees()` config gate was removed.
 - `isWorktreeSubdir` safety check prevents `os.RemoveAll` on non-worktree paths.
 - Prune runs worktree cleanup in a goroutine to keep TUI responsive; calls `QueueUpdateDraw` on completion.
 
