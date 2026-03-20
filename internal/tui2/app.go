@@ -1620,6 +1620,8 @@ func (a *App) pruneCompletedTasks() {
 	go func() {
 		for _, t := range toClean {
 			repoDir := agent.ResolveDir(t, cfg)
+			uxlog.Log("[tui2] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
+				t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
 			removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
 		}
 		a.tapp.QueueUpdateDraw(func() {
