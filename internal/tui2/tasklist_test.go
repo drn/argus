@@ -677,3 +677,40 @@ func TestTaskListView_ArchiveSectionAwareCursor(t *testing.T) {
 		t.Error("cursor should be in archive section")
 	}
 }
+
+func TestTaskListView_SeparatorBeforeArchive(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+	})
+
+	// Rows should include a separator before the archive header.
+	hasSep := false
+	for i, r := range tl.rows {
+		if r.kind == rowSeparator {
+			hasSep = true
+			// Next row should be archive header.
+			if i+1 >= len(tl.rows) || tl.rows[i+1].kind != rowArchiveHeader {
+				t.Error("separator should be immediately before archive header")
+			}
+		}
+	}
+	if !hasSep {
+		t.Error("expected a separator row before the archive section")
+	}
+
+	// Cursor should never rest on the separator.
+	for i := 0; i < 20; i++ {
+		tl.CursorDown()
+		if tl.cursor >= 0 && tl.cursor < len(tl.rows) && tl.rows[tl.cursor].kind == rowSeparator {
+			t.Errorf("cursor rested on separator at index %d after CursorDown %d", tl.cursor, i+1)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		tl.CursorUp()
+		if tl.cursor >= 0 && tl.cursor < len(tl.rows) && tl.rows[tl.cursor].kind == rowSeparator {
+			t.Errorf("cursor rested on separator at index %d after CursorUp %d", tl.cursor, i+1)
+		}
+	}
+}
