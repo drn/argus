@@ -681,3 +681,23 @@ Three visual fixes to the `NewTaskForm` modal:
 
 ### Gotchas
 - The guard is on the tasklist side, not `onTaskSelect` — so any programmatic calls to `onTaskSelect` (e.g., from new task form) are unaffected
+
+## Worktree Cleanup Fix: 2026-03-19
+
+### Problem
+`Ctrl+R` prune and `Ctrl+D` delete left behind stale worktree directories and `argus/*` branches. Three root causes:
+1. `git worktree remove --force` can exit 0 but leave empty dirs — `os.RemoveAll` fallback only ran on error
+2. Stale worktree refs in `.git/worktrees/` prevented `git branch -D` from deleting the branch
+3. Tasks created before the `CreateWorktree` branch-name fix stored the base branch (`origin/master`) in `task.Branch` instead of the actual worktree branch (`argus/<name>`)
+
+### Data Model
+No changes — same `task.Worktree` and `task.Branch` fields.
+
+### Flow
+- `removeWorktree()` in `internal/tui2/worktree.go`: runs `git worktree remove --force`, then ALWAYS checks `dirExists` and calls `os.RemoveAll` if the directory persists
+- `removeWorktreeAndBranch()`: runs `git worktree prune` before branch deletion; if `task.Branch` doesn't start with `argus/`, infers the correct branch from `"argus/" + filepath.Base(worktreePath)`
+- All functions now log to uxlog with `[worktree]` prefix for debugging
+
+### Gotchas
+- `git worktree prune` must run BEFORE `git branch -D` — git tracks worktree→branch associations in `.git/worktrees/` and refuses to delete a branch with a (possibly stale) worktree reference
+- Branch inference from directory name only works when the worktree dir was created by `CreateWorktree` (which uses the sanitized task name). Manual worktrees would need the correct branch stored on the task
