@@ -142,3 +142,4 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Task rename is display-only.** Worktree dir and branch unchanged.
 - **`ensureCursorVisible` must reset scrollOffset when all lines fit.** Check `totalLines <= visibleLines` → reset to 0.
 - **Tab indices shifted when `TabToDos` was added between Tasks and Reviews.** Numeric keys are now 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings. All statusbar hints and test assertions must match.
+- **Fork task `executeFork` must run worktree creation + context extraction in a background goroutine.** Git diff and session log reads are I/O that blocks the UI thread. The `QueueUpdateDraw` callback handles DB persistence and session start on the tview thread — same race-avoidance pattern as new task creation (use `refreshTasksLocal`, not `refreshTasksAsync`).

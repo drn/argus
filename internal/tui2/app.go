@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,7 @@ const (
 	modeProjectForm
 	modeBackendForm
 	modeLaunchToDo
+	modeForkTask
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -84,6 +86,9 @@ type App struct {
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal *LaunchToDoModal
+
+	// Fork task modal (created on demand)
+	forkModal *ForkTaskModal
 
 	// Settings forms (created on demand)
 	projectForm *ProjectForm
@@ -748,6 +753,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Fork task modal — delegate everything to the modal
+	if a.mode == modeForkTask && a.forkModal != nil {
+		a.handleForkTaskKey(event)
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		if a.mode == modeAgent {
@@ -789,6 +800,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil && t.PRURL != "" && a.tasklist.OnOpenPR != nil {
 				a.tasklist.OnOpenPR(t)
+				return nil
+			}
+		}
+	case tcell.KeyCtrlF:
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
+			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
+				a.openForkModal(t)
 				return nil
 			}
 		}
@@ -1722,6 +1740,116 @@ func (a *App) closeConfirmDelete() {
 	a.pages.RemovePage("confirmdelete")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// --- Fork task ---
+
+// openForkModal shows the fork confirmation modal for the given task.
+func (a *App) openForkModal(t *model.Task) {
+	a.forkModal = NewForkTaskModal(t)
+	a.mode = modeForkTask
+	a.pages.AddPage("forktask", a.forkModal, true, true)
+	a.pages.SwitchToPage("forktask")
+	a.tapp.SetFocus(a.forkModal)
+}
+
+// handleForkTaskKey processes keys in the fork task modal.
+func (a *App) handleForkTaskKey(event *tcell.EventKey) {
+	handler := a.forkModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.forkModal.Canceled() {
+		a.closeForkModal()
+		return
+	}
+
+	if a.forkModal.Confirmed() {
+		source := a.forkModal.Task()
+		a.closeForkModal()
+		a.executeFork(source)
+	}
+}
+
+// closeForkModal dismisses the fork task modal.
+func (a *App) closeForkModal() {
+	a.mode = modeTaskList
+	a.forkModal = nil
+	a.pages.RemovePage("forktask")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+// executeFork creates a new task forked from the source, extracting context
+// and starting a new agent session. Worktree creation and context extraction
+// run in a background goroutine to avoid blocking the UI thread.
+func (a *App) executeFork(source *model.Task) {
+	cfg := a.db.Config()
+	proj := source.Project
+	var projCfg config.Project
+	if p, ok := cfg.Projects[proj]; ok {
+		projCfg = p
+	}
+
+	if projCfg.Path == "" {
+		uxlog.Log("[fork] aborted: no project path for %s", proj)
+		a.statusbar.SetError("Fork failed: no project path configured")
+		return
+	}
+
+	uxlog.Log("[fork] starting fork of task %s (%s)", source.ID, source.Name)
+
+	go func() {
+		// Extract context from the source task (reads session log + git diff).
+		ctx := extractForkContext(source)
+
+		// Create worktree for the new task.
+		baseBranch := projCfg.Branch
+		forkName := "fork-" + strings.TrimPrefix(source.Name, "fork-")
+		wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, forkName, baseBranch)
+		if err != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				a.statusbar.SetError("Fork worktree error: " + err.Error())
+			})
+			uxlog.Log("[fork] worktree creation failed: %v", err)
+			return
+		}
+
+		// Write .context/ files into the new worktree.
+		if err := writeForkContextFiles(wtPath, ctx); err != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				a.statusbar.SetError("Fork context error: " + err.Error())
+			})
+			uxlog.Log("[fork] context file write failed: %v", err)
+			return
+		}
+
+		uxlog.Log("[fork] context files written to %s/.context/", wtPath)
+
+		// Create the task and start the session on the tview thread.
+		a.tapp.QueueUpdateDraw(func() {
+			task := &model.Task{
+				Name:     finalName,
+				Status:   model.StatusPending,
+				Project:  proj,
+				Prompt:   buildForkPrompt(source, ctx),
+				Backend:  source.Backend,
+				Branch:   branchName,
+				Worktree: wtPath,
+			}
+
+			if err := a.db.Add(task); err != nil {
+				uxlog.Log("[fork] db.Add failed: %v — cleaning up worktree", err)
+				a.statusbar.SetError("Fork failed: " + err.Error())
+				go removeWorktreeAndBranch(wtPath, branchName, projCfg.Path)
+				return
+			}
+			uxlog.Log("[fork] created task %s (%s) forked from %s", task.ID, task.Name, source.ID)
+
+			a.refreshTasksLocal()
+			a.onTaskSelect(task)
+			a.startSession(task)
+		})
+	}()
 }
 
 // --- Project form ---
