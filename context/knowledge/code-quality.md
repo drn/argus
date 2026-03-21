@@ -928,16 +928,17 @@ Three refresh methods for three use cases:
 - Tab indices shifted: 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings — all hint text and test assertions updated
 - `LaunchToDoModal` does not have a `PasteHandler` — it has no text input fields, only a selector
 
-## Fix: Task Creation Race Condition — 2026-03-20
+## Fix: Daemon Crash Incorrectly Marks Tasks Complete — 2026-03-20
 
 ### Problem
-New tasks were immediately marked Complete after creation. Race: `handleNewTaskKey` called `refreshTasksAsync()` between `db.Add(task)` and `startSession()`. The async RPC captured running IDs before the session existed → reconciliation saw InProgress + not-running → marked Complete.
+When the daemon crashed, one task was incorrectly marked Complete despite its agent still being live. Root cause: a race in `connectStream`'s retry loop. When `Client.Close()` fires during daemon restart, it closes `rs.done`. The `<-rs.done` case called `removeSession` (not `removeSessionStreamLost`), which tried `GetExitInfo` RPC on the closed client → zero-value `ExitInfo{StreamLost: false}` → `HandleSessionExit` treated it as normal exit → task marked Complete.
 
 ### Fix
-1. Removed `refreshTasksAsync()` from `handleNewTaskKey`, replaced with `refreshTasksLocal()` (no RPC, no reconciliation race)
-2. Fixed `SetTasks()` to preserve cursor position via `restoreCursor()` — status changes via `s`/`S` keys were visually lost because cursor jumped on refresh
-3. Fixed zero-value sentinel bug: `rowTask = iota` (0), so `kind != 0` guard never fired for task rows — used boolean `hasPrev` instead
+1. Changed `removeSession` to `removeSessionStreamLost` in `connectStream`'s `<-rs.done` case — external close means session fate is unknown, must treat as stream lost
+2. Added `!a.daemonRestarting` guard to reconciliation in `refreshTasksWithIDs` — belt-and-suspenders defense against new daemon having empty session list during restart
+3. Reverted `refreshTasksLocal()` back to `refreshTasksAsync()` in task creation — the `daemonRestarting` guard eliminates the original race, so the overly-cautious local-only refresh is no longer needed
 
 ### Gotchas
-- `rowKind` uses `iota` starting at 0, so `rowTask` is the zero value — never use `!= 0` as existence check
-- `refreshTasksLocal()` is safe post-creation because it reuses cached running IDs (no RPC) and only reloads DB state
+- `removeSession` with a failed RPC produces zero-value `ExitInfo{StreamLost: false}` — silently treated as normal exit
+- The `<-rs.done` path only triggers when `streamOnce` returns `(false, false)` (daemon briefly reachable, session alive), then `Client.Close()` fires between retries
+- `rs.close()` is a no-op when `done` is already closed, but should be called for consistency with other exit paths
