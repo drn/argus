@@ -900,3 +900,13 @@ Three refresh methods for three use cases:
 - `net/rpc` serializes calls on a single connection — head-of-line blocking makes separate `Running()`/`Idle()` calls doubly expensive
 - RPC timeout reduced from 5s to 2s — generous for local Unix socket, halves worst-case freeze
 - `refreshTasksLocal` must use cached `idleIDs`, not call `runner.Idle()` (which is RPC)
+
+### Paint Cache for Keystroke Redraws (2026-03-20)
+
+**Problem:** Typing in the agent terminal had visible lag because every keystroke triggered a full `paintEmu` cycle: 10K+ `CellAt` calls (each acquiring RLock/RUnlock), style conversions, rune allocations, and `SetContent` calls — all producing identical output since PTY echo hasn't arrived yet. Compounded by tview's `screen.Clear()` which defeats tcell's dirty tracking, forcing full terminal I/O for every cell on every frame.
+
+**Fix:** `paintEmu` now builds a `[]cachedCell` slice alongside its normal rendering. When `renderLive` detects no new bytes (`newBytes == 0`) and the viewport hasn't changed, it replays the cached cells via `replayPaintCache()` — a tight loop of `SetContent` calls with pre-computed values. Skips all emulator access, mutex operations, allocations, and style conversion.
+
+**Cache invalidation:** `paintCacheValid` is set to `false` on: scroll (up/down/reset), `ResetVT()`, `SetSession()`. New bytes arriving naturally take the `newBytes > 0` path which rebuilds the cache. Viewport position/size changes are detected by comparing `paintCacheX/Y/W/H`.
+
+**Data model:** `cachedCell{x, y int; ch rune; style tcell.Style}` — 40 bytes per cell. For a 200×50 viewport: ~400KB, reusing the backing array across frames. The cache lives on `TerminalPane` alongside the existing emulator cache fields.
