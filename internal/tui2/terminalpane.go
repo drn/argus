@@ -54,6 +54,13 @@ var (
 	cursorBG = tcell.PaletteColor(153) // light blue
 )
 
+// cachedCell stores a single cell's screen position and content for fast replay.
+type cachedCell struct {
+	x, y  int
+	ch    rune
+	style tcell.Style
+}
+
 // TerminalPane renders PTY output natively to a tcell screen via x/vt.
 // No ANSI string intermediary — x/vt cells map directly to tcell cells.
 // No activeInputBG or findInputRow — the native surface shows upstream
@@ -90,6 +97,16 @@ type TerminalPane struct {
 	replayEmuRows      int
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
+
+	// Paint cache: stores the last paintEmu output so keystroke-triggered
+	// redraws (no new bytes) can replay SetContent calls without touching
+	// the emulator (no mutex, no allocations, no style conversion).
+	paintCacheCells []cachedCell
+	paintCacheX     int // screen origin used when cache was built
+	paintCacheY     int
+	paintCacheW     int // viewport dimensions
+	paintCacheH     int
+	paintCacheValid bool // true when cache can be replayed
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
@@ -143,6 +160,7 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
+	tp.paintCacheValid = false
 	// Seed PTY size from panel dimensions — Draw() will refine on first render.
 	// Do NOT fall back to 80x24 when GetInnerRect returns zero (before first
 	// Draw); leave ptyCols/ptyRows at 0 so Draw() sets them to match the
@@ -227,6 +245,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayData = nil
+	tp.paintCacheValid = false
 	tp.ExitDiffMode()
 }
 
@@ -243,12 +262,13 @@ func (tp *TerminalPane) HasContent() bool {
 
 // --- Scrollback ---
 
-func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n }
+func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n; tp.paintCacheValid = false }
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0 }
+func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.paintCacheValid = false }
 
 func (tp *TerminalPane) ScrollDown(n int) {
 	tp.scrollOffset -= n
+	tp.paintCacheValid = false
 	if tp.scrollOffset < 0 {
 		tp.scrollOffset = 0
 		tp.anchorTotalLines = 0
@@ -368,6 +388,7 @@ func (tp *TerminalPane) ExitDiffMode() {
 	tp.diffSplitWidth = 0
 	tp.diffScroll = 0
 	tp.diffFile = ""
+	tp.paintCacheValid = false
 }
 
 // InDiffMode returns true if viewing a diff.
@@ -599,10 +620,15 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		msg := "Waiting for output..."
 		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
 		return
+	} else if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
+		tp.paintCacheW == w && tp.paintCacheH == h {
+		// Fast path: no new bytes, no rebuild, viewport unchanged.
+		// Replay cached SetContent calls — skips all emulator access,
+		// mutex ops, allocations, and style conversion.
+		tp.replayPaintCache(screen)
+		return
 	}
-	// When newBytes == 0 and !needRebuild, we skip the buffer copy entirely
-	// and repaint from the cached emulator — this is the fast path for
-	// keystroke-triggered redraws.
+	// Cache miss or stale — fall through to full paintEmu.
 
 	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
 }
@@ -679,6 +705,14 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 
 	renderCols := min(emuCols, w)
 
+	// Pre-allocate cache for this paint. Reuse backing array when possible.
+	cacheSize := h * renderCols
+	if cap(tp.paintCacheCells) >= cacheSize {
+		tp.paintCacheCells = tp.paintCacheCells[:0]
+	} else {
+		tp.paintCacheCells = make([]cachedCell, 0, cacheSize)
+	}
+
 	// Render visible rows. Row index is in "unified" space:
 	// rows 0..sbLen-1 are scrollback, rows sbLen..sbLen+emuRows-1 are main screen.
 	endLine := totalLines - 1 - tp.scrollOffset
@@ -729,7 +763,9 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 				style = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}
 
-			screen.SetContent(x+col, y+screenRow, ch, nil, style)
+			sx, sy := x+col, y+screenRow
+			screen.SetContent(sx, sy, ch, nil, style)
+			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: ch, style: style})
 		}
 	}
 
@@ -743,9 +779,27 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		}
 		for i, r := range indicator {
 			if midX+i < x+w {
-				screen.SetContent(midX+i, y, r, nil, style)
+				sx, sy := midX+i, y
+				screen.SetContent(sx, sy, r, nil, style)
+				tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: r, style: style})
 			}
 		}
+	}
+
+	// Mark cache as valid for this viewport.
+	tp.paintCacheX = x
+	tp.paintCacheY = y
+	tp.paintCacheW = w
+	tp.paintCacheH = h
+	tp.paintCacheValid = true
+}
+
+// replayPaintCache writes the cached cells to the screen without touching
+// the emulator. This is the fast path for keystroke-triggered redraws where
+// no new PTY output has arrived.
+func (tp *TerminalPane) replayPaintCache(screen tcell.Screen) {
+	for _, c := range tp.paintCacheCells {
+		screen.SetContent(c.x, c.y, c.ch, nil, c.style)
 	}
 }
 

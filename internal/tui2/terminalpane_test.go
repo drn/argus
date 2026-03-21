@@ -799,6 +799,114 @@ func TestTerminalPane_ScrollCacheDimensionChange(t *testing.T) {
 	}
 }
 
+// countingScreen wraps a simulation screen and counts SetContent calls.
+type countingScreen struct {
+	tcell.SimulationScreen
+	setContentCalls int
+}
+
+func (cs *countingScreen) SetContent(x, y int, ch rune, comb []rune, style tcell.Style) {
+	cs.setContentCalls++
+	cs.SimulationScreen.SetContent(x, y, ch, comb, style)
+}
+
+func TestTerminalPane_PaintCacheReplay(t *testing.T) {
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	output := []byte("hello world\r\nsecond line\r\n")
+	sess := &countingAdapter{
+		mockAdapter: mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output},
+	}
+	tp.SetSession(sess)
+
+	// First render — builds emulator and populates paint cache.
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	testutil.Equal(t, sess.recentOutputCalls, 1)
+	if !tp.paintCacheValid {
+		t.Fatal("paint cache should be valid after first render")
+	}
+	if len(tp.paintCacheCells) == 0 {
+		t.Fatal("paint cache should have cells")
+	}
+
+	// Capture the screen content after first paint.
+	ch1, _, style1, _ := screen.GetContent(0, 0)
+
+	// Clear screen to verify cache replay restores content.
+	screen.Clear()
+
+	// Second render — same TotalWritten, same viewport → should replay cache.
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	testutil.Equal(t, sess.recentOutputCalls, 1) // still 1 — no emulator access
+
+	// Verify screen content matches.
+	ch2, _, style2, _ := screen.GetContent(0, 0)
+	testutil.Equal(t, ch2, ch1)
+	testutil.Equal(t, style2, style1)
+}
+
+func TestTerminalPane_PaintCacheInvalidatedOnScroll(t *testing.T) {
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	output := []byte("hello\r\n")
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	if !tp.paintCacheValid {
+		t.Fatal("cache should be valid")
+	}
+
+	tp.ScrollUp(1)
+	if tp.paintCacheValid {
+		t.Error("cache should be invalidated after ScrollUp")
+	}
+}
+
+func TestTerminalPane_PaintCacheInvalidatedOnNewBytes(t *testing.T) {
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	output := []byte("hello\r\n")
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	if !tp.paintCacheValid {
+		t.Fatal("cache should be valid")
+	}
+
+	// Simulate new output — cache is still "valid" in the flag sense,
+	// but renderLive takes the newBytes>0 path which rebuilds the cache.
+	newOutput := []byte("hello\r\nworld\r\n")
+	sess.totalWritten = uint64(len(newOutput))
+	sess.output = newOutput
+	tp.renderLive(screen, 0, 0, 40, 10, 40, 10)
+	// Cache should still be valid (rebuilt with new content).
+	if !tp.paintCacheValid {
+		t.Error("cache should be valid after rebuild")
+	}
+}
+
+func TestTerminalPane_PaintCacheInvalidatedOnReset(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.paintCacheValid = true
+	tp.paintCacheCells = []cachedCell{{x: 0, y: 0, ch: 'A', style: tcell.StyleDefault}}
+
+	tp.ResetVT()
+	if tp.paintCacheValid {
+		t.Error("cache should be invalidated after ResetVT")
+	}
+}
+
 func TestDrawBorder(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.Init()
