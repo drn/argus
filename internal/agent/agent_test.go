@@ -138,7 +138,7 @@ func TestBuildCmd(t *testing.T) {
 	if args[0] != "sh" || args[1] != "-c" {
 		t.Errorf("expected sh -c, got %v", args[:2])
 	}
-	expected := "claude --dangerously-skip-permissions --permission-mode plan 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --permission-mode plan -- 'fix the bug'"
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
@@ -157,7 +157,7 @@ func TestBuildCmd_WithProject(t *testing.T) {
 		t.Errorf("expected dir from worktree, got %q", cmd.Dir)
 	}
 	// Should use codex backend from project (no --session-id for codex backends)
-	if cmd.Args[2] != "codex --dangerously-bypass-approvals-and-sandbox 'test'" {
+	if cmd.Args[2] != "codex --dangerously-bypass-approvals-and-sandbox -- 'test'" {
 		t.Errorf("unexpected command: %q", cmd.Args[2])
 	}
 }
@@ -171,9 +171,24 @@ func TestBuildCmd_EmptyPromptFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Empty PromptFlag means prompt is passed as positional arg
-	if cmd.Args[2] != "my-agent 'do stuff'" {
+	// Empty PromptFlag means prompt is passed as positional arg with -- separator
+	if cmd.Args[2] != "my-agent -- 'do stuff'" {
 		t.Errorf("expected command with positional prompt, got %q", cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_EmptyPromptFlag_DashPrefix(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Backend: "bare", Prompt: "- fix the bug", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The -- separator prevents prompts starting with "-" from being parsed as flags
+	if cmd.Args[2] != "my-agent -- '- fix the bug'" {
+		t.Errorf("expected command with -- separator, got %q", cmd.Args[2])
 	}
 }
 
@@ -186,7 +201,7 @@ func TestBuildCmd_NewSessionWithID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := "claude --dangerously-skip-permissions --permission-mode plan --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' 'fix the bug'"
+	expected := "claude --dangerously-skip-permissions --permission-mode plan --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee' -- 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
@@ -444,7 +459,7 @@ func TestBuildCmd_CodexNewSessionNoSessionIDFlag(t *testing.T) {
 	}
 
 	// Codex does not support --session-id flag.
-	expected := "codex --dangerously-bypass-approvals-and-sandbox 'fix the bug'"
+	expected := "codex --dangerously-bypass-approvals-and-sandbox -- 'fix the bug'"
 	if cmd.Args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Args[2])
 	}
