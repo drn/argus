@@ -3,6 +3,7 @@ package tui2
 import (
 	"testing"
 
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -106,6 +107,62 @@ func TestWrapTextLines(t *testing.T) {
 			testutil.Equal(t, len(lines), tt.want)
 		})
 	}
+}
+
+func TestToDosView_SyncTasks(t *testing.T) {
+	v := NewToDosView()
+	v.items = []ToDoItem{
+		{Name: "todo-a", Path: "/vault/a.md"},
+		{Name: "todo-b", Path: "/vault/b.md"},
+	}
+	v.list.SetItems(v.items)
+
+	taskMap := map[string]*model.Task{
+		"/vault/a.md": {Name: "task-a", Status: model.StatusInProgress},
+	}
+	v.SyncTasks(taskMap)
+
+	testutil.Equal(t, v.list.taskMap["/vault/a.md"].Status, model.StatusInProgress)
+}
+
+func TestToDosView_CompletedItems(t *testing.T) {
+	v := NewToDosView()
+	v.items = []ToDoItem{
+		{Name: "a", Path: "/vault/a.md"},
+		{Name: "b", Path: "/vault/b.md"},
+		{Name: "c", Path: "/vault/c.md"},
+	}
+
+	t.Run("no task map returns empty", func(t *testing.T) {
+		v.taskMap = nil
+		testutil.Equal(t, len(v.CompletedItems()), 0)
+	})
+
+	t.Run("returns only completed", func(t *testing.T) {
+		v.taskMap = map[string]*model.Task{
+			"/vault/a.md": {Status: model.StatusComplete},
+			"/vault/b.md": {Status: model.StatusInProgress},
+		}
+		completed := v.CompletedItems()
+		testutil.Equal(t, len(completed), 1)
+		testutil.Equal(t, completed[0].Name, "a")
+	})
+
+	t.Run("unlinked items not included", func(t *testing.T) {
+		v.taskMap = map[string]*model.Task{}
+		testutil.Equal(t, len(v.CompletedItems()), 0)
+	})
+}
+
+func TestToDoListPanel_SetTaskMap(t *testing.T) {
+	p := NewToDoListPanel()
+	testutil.Nil(t, p.taskMap)
+
+	taskMap := map[string]*model.Task{
+		"/vault/x.md": {Name: "x", Status: model.StatusComplete},
+	}
+	p.SetTaskMap(taskMap)
+	testutil.Equal(t, p.taskMap["/vault/x.md"].Status, model.StatusComplete)
 }
 
 func TestTabIndices(t *testing.T) {

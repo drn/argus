@@ -40,6 +40,7 @@ const (
 	modeBackendForm
 	modeLaunchToDo
 	modeForkTask
+	modeConfirmCleanupToDos
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -85,7 +86,8 @@ type App struct {
 	pruneModal *PruneModal
 
 	// Launch to-do modal (created on demand)
-	launchToDoModal *LaunchToDoModal
+	launchToDoModal    *LaunchToDoModal
+	cleanupToDosModal *ConfirmCleanupToDosModal
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -642,6 +644,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.runningIDs = runningIDs
 	a.idleIDs = idleIDs
 
+	// Sync todo-task associations so the ToDos tab shows linked task status.
+	a.todos.SyncTasks(a.db.TasksByTodoPath())
+
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
 	// but has no running session, mark it Complete. This handles cases where
 	// the exit callback didn't fire (daemon restart, TUI restart, etc.).
@@ -759,6 +764,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Cleanup to-dos confirmation modal
+	if a.mode == modeConfirmCleanupToDos && a.cleanupToDosModal != nil {
+		a.handleCleanupToDosKey(event)
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		if a.mode == modeAgent {
@@ -813,6 +824,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlR:
 		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
 			a.pruneCompletedTasks()
+			return nil
+		}
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabToDos {
+			a.cleanupCompletedToDos()
 			return nil
 		}
 	case tcell.KeyLeft:
@@ -1668,13 +1683,17 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 			projCfg = p
 		}
 
-		// Use the note content as the prompt, name from the note title.
+		// Build the prompt: user instructions + note context.
+		userPrompt := a.launchToDoModal.Prompt()
+		prompt := buildToDoPrompt(userPrompt, item.Content)
+
 		task := &model.Task{
-			Name:    item.Name,
-			Status:  model.StatusPending,
-			Project: proj,
-			Prompt:  item.Content,
-			Backend: cfg.Defaults.Backend,
+			Name:     item.Name,
+			Status:   model.StatusPending,
+			Project:  proj,
+			Prompt:   prompt,
+			Backend:  cfg.Defaults.Backend,
+			TodoPath: item.Path,
 		}
 
 		if projCfg.Path != "" {
@@ -1693,7 +1712,10 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 		uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
 
 		a.closeLaunchToDoModal()
-		a.refreshTasks()
+		// Use refreshTasksLocal (not refreshTasks/refreshTasksAsync) to avoid
+		// reconciliation race: the session doesn't exist yet, so async RPC would
+		// see InProgress + no running session → incorrectly mark Complete.
+		a.refreshTasksLocal()
 		a.onTaskSelect(task)
 		a.startSession(task)
 	}
@@ -1704,6 +1726,62 @@ func (a *App) closeLaunchToDoModal() {
 	a.mode = modeTaskList
 	a.launchToDoModal = nil
 	a.pages.RemovePage("launchtodo")
+	a.pages.SwitchToPage("todos")
+}
+
+// cleanupCompletedToDos shows a confirmation modal to delete vault files for completed to-dos.
+func (a *App) cleanupCompletedToDos() {
+	items := a.todos.CompletedItems()
+	if len(items) == 0 {
+		return
+	}
+	a.cleanupToDosModal = NewConfirmCleanupToDosModal(len(items))
+	a.mode = modeConfirmCleanupToDos
+	a.pages.AddPage("cleanuptodos", a.cleanupToDosModal, true, true)
+	a.pages.SwitchToPage("cleanuptodos")
+	a.tapp.SetFocus(a.cleanupToDosModal)
+}
+
+// handleCleanupToDosKey processes keys in the cleanup confirmation modal.
+func (a *App) handleCleanupToDosKey(event *tcell.EventKey) {
+	handler := a.cleanupToDosModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.cleanupToDosModal.Canceled() {
+		a.closeCleanupToDosModal()
+		return
+	}
+	if a.cleanupToDosModal.Confirmed() {
+		a.executeToDoCleanup()
+		a.closeCleanupToDosModal()
+	}
+}
+
+// executeToDoCleanup deletes vault .md files for completed to-dos.
+func (a *App) executeToDoCleanup() {
+	items := a.todos.CompletedItems()
+	vaultPath := a.todos.VaultPath()
+	for _, item := range items {
+		// Guard: only remove files within the configured vault directory.
+		if vaultPath == "" || !strings.HasPrefix(item.Path, vaultPath+string(os.PathSeparator)) {
+			uxlog.Log("[todos] cleanup: skipping %s (not in vault %s)", item.Path, vaultPath)
+			continue
+		}
+		if err := os.Remove(item.Path); err != nil {
+			uxlog.Log("[todos] cleanup: failed to remove %s: %v", item.Path, err)
+		} else {
+			uxlog.Log("[todos] cleanup: removed %s", item.Path)
+		}
+	}
+	// Refresh vault scan async to avoid blocking the UI thread on disk I/O.
+	a.todos.RefreshAsync(a.tapp)
+}
+
+// closeCleanupToDosModal closes the cleanup confirmation modal.
+func (a *App) closeCleanupToDosModal() {
+	a.mode = modeTaskList
+	a.cleanupToDosModal = nil
+	a.pages.RemovePage("cleanuptodos")
 	a.pages.SwitchToPage("todos")
 }
 

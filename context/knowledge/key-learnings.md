@@ -121,6 +121,12 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **All config file writes should be atomic** (temp + rename).
 - **KB Indexer started/stopped by daemon.** Start after MCP, stop before MCP shutdown.
 
+### Todo-Task Association
+
+- **`TodoPath` links a task to its source vault `.md` file.** Set only during `handleLaunchToDoKey`. `TasksByTodoPath()` returns most-recent task per path (ORDER BY created_at ASC, last wins).
+- **Ctrl+R cleanup on ToDos tab deletes vault files, not tasks.** Only `.md` files for todos with completed linked tasks are removed. Tasks remain in Argus history.
+- **`taskColumns`/`scanTask`/`Add`/`Update` lockstep includes `todo_path`.** Column position is after `pr_url`, before `archived`. Missing any site causes runtime panics.
+
 ### PR & Reviews
 
 - **PR URL detection: scan on tick + on agent exit.** Last regex match wins. Use `RecentOutputTail(32KB)`, not full buffer.
