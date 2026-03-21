@@ -154,7 +154,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 			if backend.PromptFlag != "" {
 				cmdStr += " " + backend.PromptFlag + " " + shellQuote(task.Prompt)
 			} else {
-				cmdStr += " " + shellQuote(task.Prompt)
+				// Use -- to separate options from the prompt argument.
+				// Without this, prompts starting with "-" are parsed as CLI flags.
+				cmdStr += " -- " + shellQuote(task.Prompt)
 			}
 		}
 	}
