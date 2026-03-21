@@ -71,8 +71,21 @@ func NewTaskListView() *TaskListView {
 
 // SetTasks updates the task list and rebuilds rows.
 func (tl *TaskListView) SetTasks(tasks []*model.Task) {
+	// Remember current cursor target so we can restore after rebuild.
+	var prev taskRow
+	inArchive := false
+	if tl.cursor >= 0 && tl.cursor < len(tl.rows) {
+		prev = tl.rows[tl.cursor]
+		inArchive = tl.isInArchive(tl.cursor)
+	}
+
 	tl.tasks = tasks
 	tl.buildRows()
+
+	// Try to restore cursor to the same task/project.
+	if prev.kind != 0 {
+		tl.restoreCursor(prev, inArchive)
+	}
 	tl.clampCursor()
 }
 
