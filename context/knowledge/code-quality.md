@@ -982,3 +982,24 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 3. If outside window: reset to 1
 4. Return step as scroll amount; update `lastScrollTime`
 5. Mouse scroll unchanged (fixed `mouseScrollStep = 3`)
+
+## Fork Task Feature: 2026-03-21
+
+### Data Model & Flow
+- **Ctrl+F** in task list opens `ForkTaskModal` (confirmation dialog)
+- On confirm: `executeFork` runs in background goroutine:
+  1. `extractForkContext` reads session log tail (last 32KB, ANSI-stripped) + `git diff HEAD` from source worktree
+  2. `agent.CreateWorktree` creates new worktree from project's base branch (not source's argus/* branch)
+  3. `writeForkContextFiles` writes `.context/fork-source.md`, `.context/fork-output.md`, `.context/fork-diff.patch`
+  4. `QueueUpdateDraw` callback: creates task in DB, enters agent view, starts session
+- New task prompt references `.context/` files and includes original prompt
+
+### Files
+- `forkmodal.go` — confirmation dialog (same pattern as `ConfirmDeleteModal`)
+- `forkcontext.go` — context extraction, ANSI stripping, file writing, prompt generation
+- `app.go` — `modeForkTask`, `openForkModal`, `handleForkTaskKey`, `closeForkModal`, `executeFork`
+
+### Gotchas
+- Fork execution is async (background goroutine) because git diff + log reads block UI thread
+- Uses `refreshTasksLocal` not `refreshTasksAsync` to avoid reconciliation race (same as new task creation)
+- `.context/` files skipped when empty (no output file for tasks that never ran, no diff for clean worktrees)
