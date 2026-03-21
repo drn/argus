@@ -1594,6 +1594,16 @@ func (a *App) closeConfirmDelete() {
 
 func (a *App) openProjectForm(edit bool, name string, p config.Project) {
 	a.projectForm = NewProjectForm()
+	a.projectForm.OnBranchFocus = func(path string) {
+		go func() {
+			branches := gitutil.ListRemoteBranches(path)
+			a.tapp.QueueUpdateDraw(func() {
+				if a.projectForm != nil {
+					a.projectForm.SetBranchOptions(branches)
+				}
+			})
+		}()
+	}
 	if edit {
 		a.projectForm.LoadProject(name, p)
 	}

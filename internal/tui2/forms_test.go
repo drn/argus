@@ -86,6 +86,143 @@ func TestProjectForm_Escape(t *testing.T) {
 	}
 }
 
+func TestProjectForm_BranchSelector(t *testing.T) {
+	// syncBranchLoader simulates the async OnBranchFocus pattern used in
+	// production (goroutine + QueueUpdateDraw) by calling SetBranchOptions
+	// synchronously within the callback. This is safe in tests since there
+	// is no tview event loop.
+	syncBranchLoader := func(pf *ProjectForm, branches []string) {
+		pf.OnBranchFocus = func(path string) {
+			pf.SetBranchOptions(branches)
+		}
+	}
+
+	t.Run("loads branches on tab to branch field", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"upstream/master", "origin/main", "origin/feature"})
+		// Type a path.
+		pf.focused = pfFieldPath
+		pf.fields[pfFieldPath] = []rune("/tmp/repo")
+		// Tab to branch field.
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0))
+		if pf.focused != pfFieldBranch {
+			t.Fatalf("focused = %d, want %d", pf.focused, pfFieldBranch)
+		}
+		if len(pf.branchOptions) != 3 {
+			t.Fatalf("branchOptions = %d, want 3", len(pf.branchOptions))
+		}
+		if pf.branchIdx != 0 {
+			t.Errorf("branchIdx = %d, want 0", pf.branchIdx)
+		}
+	})
+
+	t.Run("left/right cycles branch options", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"origin/master", "origin/main", "origin/dev"})
+		pf.focused = pfFieldPath
+		pf.fields[pfFieldPath] = []rune("/repo")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0)) // → branch
+
+		// Right cycles forward.
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+		if pf.branchIdx != 1 {
+			t.Errorf("after right: branchIdx = %d, want 1", pf.branchIdx)
+		}
+		// Left cycles back.
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+		if pf.branchIdx != 0 {
+			t.Errorf("after left: branchIdx = %d, want 0", pf.branchIdx)
+		}
+		// Left wraps to end.
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+		if pf.branchIdx != 2 {
+			t.Errorf("after wrap left: branchIdx = %d, want 2", pf.branchIdx)
+		}
+	})
+
+	t.Run("result returns selected branch", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"origin/master", "origin/main"})
+		pf.fields[pfFieldName] = []rune("proj")
+		pf.fields[pfFieldPath] = []rune("/repo")
+		pf.focused = pfFieldPath
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0)) // → branch
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+
+		_, proj := pf.Result()
+		if proj.Branch != "origin/main" {
+			t.Errorf("branch = %q, want origin/main", proj.Branch)
+		}
+	})
+
+	t.Run("pre-selects existing branch on edit", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"origin/master", "origin/main", "origin/dev"})
+		pf.LoadProject("test", config.Project{Path: "/repo", Branch: "origin/main"})
+		// Tab from path → branch.
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0))
+		if pf.branchIdx != 1 {
+			t.Errorf("branchIdx = %d, want 1 (origin/main)", pf.branchIdx)
+		}
+	})
+
+	t.Run("no callback falls back to text input", func(t *testing.T) {
+		pf := NewProjectForm()
+		// No OnBranchFocus set.
+		pf.focused = pfFieldPath
+		pf.fields[pfFieldPath] = []rune("/repo")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0)) // → branch
+		if pf.branchIsSelector() {
+			t.Error("should not be in selector mode without callback")
+		}
+		// Typing should still work.
+		for _, r := range "main" {
+			pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+		}
+		_, proj := pf.Result()
+		if proj.Branch != "main" {
+			t.Errorf("branch = %q, want main", proj.Branch)
+		}
+	})
+
+	t.Run("enter from path loads branches", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"origin/main"})
+		pf.focused = pfFieldPath
+		pf.fields[pfFieldPath] = []rune("/repo")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → branch
+		if len(pf.branchOptions) != 1 {
+			t.Errorf("branchOptions = %d, want 1", len(pf.branchOptions))
+		}
+	})
+
+	t.Run("paste ignored in selector mode", func(t *testing.T) {
+		pf := NewProjectForm()
+		syncBranchLoader(pf, []string{"origin/main"})
+		pf.focused = pfFieldPath
+		pf.fields[pfFieldPath] = []rune("/repo")
+		pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0)) // → branch
+		paste := pf.PasteHandler()
+		paste("garbage", func(p tview.Primitive) {})
+		_, proj := pf.Result()
+		if proj.Branch != "origin/main" {
+			t.Errorf("branch = %q, want origin/main (paste should be ignored)", proj.Branch)
+		}
+	})
+
+	t.Run("SetBranchOptions updates state", func(t *testing.T) {
+		pf := NewProjectForm()
+		pf.fields[pfFieldBranch] = []rune("origin/dev")
+		pf.SetBranchOptions([]string{"origin/master", "origin/dev", "origin/main"})
+		if pf.branchIdx != 1 {
+			t.Errorf("branchIdx = %d, want 1 (pre-selected origin/dev)", pf.branchIdx)
+		}
+		if !pf.branchIsSelector() {
+			t.Error("should be in selector mode after SetBranchOptions")
+		}
+	})
+}
+
 // --- BackendForm tests ---
 
 func TestBackendForm_New(t *testing.T) {
