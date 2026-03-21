@@ -1057,7 +1057,6 @@ func TestDB_Config_DefaultsBackendOverride(t *testing.T) {
 	}
 }
 
-
 func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
 	// Test that seedDefaults also fixes "cat" and "true" placeholder commands
 	for _, placeholder := range []string{"cat", "true"} {
