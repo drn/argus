@@ -106,7 +106,8 @@ type TerminalPane struct {
 	paintCacheY     int
 	paintCacheW     int // viewport dimensions
 	paintCacheH     int
-	paintCacheValid bool // true when cache can be replayed
+	paintCacheValid  bool // true when cache can be replayed
+	paintCacheScroll int  // scrollOffset when cache was built
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
@@ -511,7 +512,15 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// Mirrors renderReplay's needRebuild logic as an early-out before readLogTail.
 		if tp.replayEmu != nil && tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows {
 			cacheValid := false
-			if tp.taskID != "" {
+			if alive && tp.scrollOffset > 0 {
+				// Live session scrolled up: cache is always valid when
+				// dimensions match. New bytes arrive at the bottom of the
+				// log but the user is viewing older content — no need to
+				// re-read 1MB+ and rebuild the emulator on every Draw.
+				// When user scrolls back to bottom (scrollOffset == 0),
+				// the renderLive path handles it with the live emulator.
+				cacheValid = true
+			} else if tp.taskID != "" {
 				logSize := tp.statLogSize()
 				if logSize > 0 && logSize == tp.replayEmuLogSize {
 					cacheValid = true
@@ -525,6 +534,14 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				}
 			}
 			if cacheValid {
+				// If viewport AND scroll offset are unchanged, replay cached cells directly
+				// (skips all emulator cell lookups + style conversions).
+				if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
+					tp.paintCacheW == width && tp.paintCacheH == height &&
+					tp.paintCacheScroll == tp.scrollOffset {
+					tp.replayPaintCache(screen)
+					return
+				}
 				tp.paintEmu(screen, x, y, width, height, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
 				return
 			}
@@ -791,6 +808,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	tp.paintCacheY = y
 	tp.paintCacheW = w
 	tp.paintCacheH = h
+	tp.paintCacheScroll = tp.scrollOffset
 	tp.paintCacheValid = true
 }
 
