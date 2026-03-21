@@ -96,6 +96,7 @@ type TerminalPane struct {
 	replayEmuCols      int
 	replayEmuRows      int
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
+	replayEmuMaxScroll     int   // max scrollOffset the replay emulator was built for
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
 
 	// Paint cache: stores the last paintEmu output so keystroke-triggered
@@ -245,6 +246,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmu = nil
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
+	tp.replayEmuMaxScroll = 0
 	tp.replayData = nil
 	tp.paintCacheValid = false
 	tp.ExitDiffMode()
@@ -513,13 +515,15 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		if tp.replayEmu != nil && tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows {
 			cacheValid := false
 			if alive && tp.scrollOffset > 0 {
-				// Live session scrolled up: cache is always valid when
-				// dimensions match. New bytes arrive at the bottom of the
-				// log but the user is viewing older content — no need to
-				// re-read 1MB+ and rebuild the emulator on every Draw.
+				// Live session scrolled up: cache is valid when dimensions
+				// match and the user hasn't scrolled beyond what the emulator
+				// was built for. New bytes arrive below the viewport (log is
+				// append-only), so no rebuild needed for the viewed region.
 				// When user scrolls back to bottom (scrollOffset == 0),
 				// the renderLive path handles it with the live emulator.
-				cacheValid = true
+				if tp.scrollOffset <= tp.replayEmuMaxScroll {
+					cacheValid = true
+				}
 			} else if tp.taskID != "" {
 				logSize := tp.statLogSize()
 				if logSize > 0 && logSize == tp.replayEmuLogSize {
@@ -671,6 +675,7 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 		tp.replayEmuCols = ptyCols
 		tp.replayEmuRows = ptyRows
 		tp.replayEmuLogSize = logSize
+		tp.replayEmuMaxScroll = tp.scrollOffset
 		tp.replayEmuBytes = uint64(len(raw))
 		tp.replayEmuCursorVisible = cursorVisible
 	}
