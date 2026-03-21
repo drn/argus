@@ -927,3 +927,17 @@ Three refresh methods for three use cases:
 ### Gotchas
 - Tab indices shifted: 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings — all hint text and test assertions updated
 - `LaunchToDoModal` does not have a `PasteHandler` — it has no text input fields, only a selector
+
+## Fix: Task Creation Race Condition — 2026-03-20
+
+### Problem
+New tasks were immediately marked Complete after creation. Race: `handleNewTaskKey` called `refreshTasksAsync()` between `db.Add(task)` and `startSession()`. The async RPC captured running IDs before the session existed → reconciliation saw InProgress + not-running → marked Complete.
+
+### Fix
+1. Removed `refreshTasksAsync()` from `handleNewTaskKey`, replaced with `refreshTasksLocal()` (no RPC, no reconciliation race)
+2. Fixed `SetTasks()` to preserve cursor position via `restoreCursor()` — status changes via `s`/`S` keys were visually lost because cursor jumped on refresh
+3. Fixed zero-value sentinel bug: `rowTask = iota` (0), so `kind != 0` guard never fired for task rows — used boolean `hasPrev` instead
+
+### Gotchas
+- `rowKind` uses `iota` starting at 0, so `rowTask` is the zero value — never use `!= 0` as existence check
+- `refreshTasksLocal()` is safe post-creation because it reuses cached running IDs (no RPC) and only reloads DB state

@@ -21,6 +21,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`client.Get()` must return `nil` for any non-alive session.** Check `!info.Alive` alone — PID is stale between `onFinish()` and `delete(r.sessions)`.
 - **Daemon health check uses `Ping()`, not `refreshTasks()`.** Ping fails fast; refreshTasks blocks on RPC.
 - **Never call `refreshTasks()` from the tview main goroutine.** It blocks on RPC. Use `refreshTasksAsync()` (spawns goroutine + QueueUpdateDraw) or `refreshTasksLocal()` (reuses cached IDs, no RPC). Use `refreshTasksLocal` when only DB state changed (delete/prune); use `refreshTasksAsync` when session state may have changed.
+- **Never call `refreshTasksAsync()` between `db.Add(task)` and `startSession()`.** The async RPC snapshot captures running IDs before the session exists, then reconciliation sees InProgress + not-in-running-set → marks Complete. Use `refreshTasksLocal()` instead (no RPC, no reconciliation race).
 - **Always use `RunningAndIdle()` instead of separate `Running()` + `Idle()`.** They share the same `ListSessions` RPC — calling both separately doubles RPC overhead and doubles head-of-line blocking risk on the single `net/rpc` connection.
 - **Daemon cleanup must run on the `Serve` goroutine, not `Shutdown`.** `Shutdown()` runs on a non-main goroutine — process may exit before cleanup completes. `signal.Stop(sigCh)` must be called after the handler goroutine exits.
 - **Daemon restart must preserve `SessionID` on tasks.** Clearing it loses conversation history. On re-launch, `--resume <id>` picks up where it left off.
@@ -128,6 +129,8 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### Task List & UI
 
+- **`rowTask` is `iota` (zero value) — never use `rowKind != 0` as a sentinel.** Use a boolean `hasPrev` flag when checking whether a previous row exists. The zero-value trap silently skips the intended code path for the most common row kind.
+- **`SetTasks` must preserve cursor position across rebuilds.** Save the current row before `buildRows()`, then call `restoreCursor()` after. Without this, status changes via `s`/`S` keys appear to not work because the cursor jumps to a different row on refresh.
 - **`restoreCursor` must filter by archive section.** Cross-section project name collisions cause cursor jumps.
 - **`buildRows()` separates tasks by `t.Archived` before grouping.** Projects with only archived tasks never appear in main section.
 - **Task-list previews must render the latest visible emulator lines, not `CellAt(x,y)` from row 0.** For Codex and any long-running PTY output, useful content often lives in scrollback or lower rows; replay logic must trim to bottom-of-history like `TerminalPane.paintEmu`.

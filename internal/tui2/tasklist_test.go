@@ -423,6 +423,57 @@ func TestTaskListView_StatusCycleKeys(t *testing.T) {
 	}
 }
 
+func TestTaskListView_StatusPrevFromComplete(t *testing.T) {
+	tl := NewTaskListView()
+	var changed *model.Task
+	tl.OnStatusChange = func(task *model.Task) {
+		changed = task
+	}
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "done", Status: model.StatusComplete, Project: "p"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	// Press 'S' to revert: Complete -> InReview
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), func(tview.Primitive) {})
+	if changed == nil {
+		t.Fatal("OnStatusChange should have been called")
+	}
+	if changed.Status != model.StatusInReview {
+		t.Errorf("after 'S' from Complete: status = %v, want InReview", changed.Status)
+	}
+}
+
+func TestTaskListView_SetTasksPreservesCursor(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "alpha", Status: model.StatusInProgress},
+	})
+	// expanded should auto-set to alpha
+
+	// Move to second task
+	tl.CursorDown()
+	if sel := tl.SelectedTask(); sel == nil || sel.ID != "2" {
+		t.Fatalf("expected task 2 selected, got %v", sel)
+	}
+
+	// Simulate a refresh with new task objects (same IDs)
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "t1", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "t2", Project: "alpha", Status: model.StatusInReview},
+	})
+
+	// Cursor should still be on task 2
+	sel := tl.SelectedTask()
+	if sel == nil || sel.ID != "2" {
+		t.Errorf("after SetTasks refresh: expected task 2, got %v", sel)
+	}
+}
+
 func TestTaskListView_AdjacentTask(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
