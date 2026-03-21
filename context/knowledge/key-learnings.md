@@ -49,6 +49,12 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`startAgentRedrawLoop` must skip `QueueUpdateDraw` when idle.** Keystroke and resize events trigger their own tview redraws; the 200ms loop only needs to fire when new PTY output arrives (`TotalWritten` changed).
 - **`uvCellToTcellStyle` must map ALL ultraviolet attributes.** Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose visual contrast. Keep in sync with `uv.Attr*` constants: Bold, Faint, Italic, Blink, Reverse, Strikethrough. Also map underline styles (curly/dotted/dashed/double), underline color, and hyperlinks (OSC 8).
 
+### Paste & Input Batching
+
+- **`tapp.EnablePaste(true)` is required for fast paste.** Without it, tview delivers paste as thousands of individual `EventKey` events, each triggering a full screen redraw. With it, tview buffers all pasted text and delivers it as a single `PasteHandler()` call with one redraw.
+- **Every custom widget with text input must implement `PasteHandler()`.** tview's paste path bypasses `InputCapture` entirely — it goes through the focus chain calling `PasteHandler()` on the focused primitive. If a widget only has `InputHandler()`, paste is silently dropped when `EnablePaste` is on.
+- **TerminalPane paste must wrap text in bracket paste sequences.** Send `\x1b[200~` + text + `\x1b[201~` so the agent's readline treats it as a paste (no per-character echo/processing).
+
 ### UI Threading
 
 - **Never run git commands synchronously on the UI thread.** Even fast commands take 50-500ms. Use background goroutines + `QueueUpdateDraw`.

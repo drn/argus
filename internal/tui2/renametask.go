@@ -58,6 +58,23 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 	}
 }
 
+// PasteHandler handles bracketed paste events, inserting pasted text at the
+// cursor position in a single operation.
+func (rf *RenameTaskForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return rf.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		runes := []rune(pastedText)
+		if len(runes) == 0 {
+			return
+		}
+		newName := make([]rune, 0, len(rf.name)+len(runes))
+		newName = append(newName, rf.name[:rf.cursor]...)
+		newName = append(newName, runes...)
+		newName = append(newName, rf.name[rf.cursor:]...)
+		rf.name = newName
+		rf.cursor += len(runes)
+	})
+}
+
 // Draw renders the rename form as a modal.
 func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	rf.Box.DrawForSubclass(screen, rf)

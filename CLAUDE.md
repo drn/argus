@@ -81,7 +81,7 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 - `internal/gitutil/` — Git operations, diff parsing, changed files. Pure Go with no UI dependencies. Used by tui2 for git status, file diffs, and worktree management.
 - `internal/skills/` — Skill loading for autocomplete. Scans `~/.claude/skills/` and project-specific skill directories.
 
-**Key pattern:** Sub-views are custom `tview.Box` widgets with `Draw(screen tcell.Screen)` methods. Async updates via `tapp.QueueUpdateDraw()` from the tick goroutine. Key routing via `tapp.SetInputCapture()`.
+**Key pattern:** Sub-views are custom `tview.Box` widgets with `Draw(screen tcell.Screen)` methods. Async updates via `tapp.QueueUpdateDraw()` from the tick goroutine. Key routing via `tapp.SetInputCapture()`. **Every custom widget that accepts text input must implement `PasteHandler()`** — tview's bracket paste bypasses `InputCapture` entirely, so widgets without a `PasteHandler()` silently drop pasted text. For PTY-backed widgets, wrap the pasted text in bracket paste sequences (`\x1b[200~`/`\x1b[201~`).
 
 **Agent pattern:** A single `readLoop` goroutine is the sole reader of the PTY master fd. It always writes to the ring buffer, and tees output to all attached writers (via `session.writers` slice). Writers are copied under lock before iterating; errored writers are removed automatically. `AddWriter(w)` replays the ring buffer then registers for live output. `Attach()`/`Detach()` use AddWriter/RemoveWriter internally. The detach key (`ctrl+q`) is intercepted by `detachReader` wrapping stdin.
 

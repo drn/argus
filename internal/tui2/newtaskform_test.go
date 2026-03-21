@@ -731,6 +731,68 @@ func TestNewTaskForm_CtrlWClosesAC(t *testing.T) {
 	}
 }
 
+func TestNewTaskForm_PasteHandler(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}},
+		"p",
+		map[string]config.Backend{"b": {}},
+		"b",
+	)
+
+	handler := f.InputHandler()
+	pasteHandler := f.PasteHandler()
+
+	t.Run("paste into empty prompt", func(t *testing.T) {
+		pasteHandler("hello world", func(p tview.Primitive) {})
+		if got := string(f.prompt); got != "hello world" {
+			t.Errorf("prompt = %q, want %q", got, "hello world")
+		}
+		if f.cursorPos != 11 {
+			t.Errorf("cursorPos = %d, want 11", f.cursorPos)
+		}
+	})
+
+	t.Run("paste at cursor mid-text", func(t *testing.T) {
+		// Reset prompt to "ab" with cursor after 'a'
+		f.prompt = []rune("ab")
+		f.cursorPos = 1
+		pasteHandler("XY", func(p tview.Primitive) {})
+		if got := string(f.prompt); got != "aXYb" {
+			t.Errorf("prompt = %q, want %q", got, "aXYb")
+		}
+		if f.cursorPos != 3 {
+			t.Errorf("cursorPos = %d, want 3", f.cursorPos)
+		}
+	})
+
+	t.Run("paste ignored when not on prompt field", func(t *testing.T) {
+		f.prompt = []rune("keep")
+		f.cursorPos = 4
+		f.focused = ntFieldProject
+		pasteHandler("NOPE", func(p tview.Primitive) {})
+		if got := string(f.prompt); got != "keep" {
+			t.Errorf("prompt changed to %q, should stay %q", got, "keep")
+		}
+		f.focused = ntFieldPrompt
+	})
+
+	t.Run("paste large text is single operation", func(t *testing.T) {
+		f.prompt = nil
+		f.cursorPos = 0
+		// Simulate pasting a large script
+		largeText := ""
+		for i := 0; i < 1000; i++ {
+			largeText += "line of text\n"
+		}
+		pasteHandler(largeText, func(p tview.Primitive) {})
+		if len(f.prompt) != len([]rune(largeText)) {
+			t.Errorf("prompt len = %d, want %d", len(f.prompt), len([]rune(largeText)))
+		}
+	})
+
+	_ = handler // ensure handler is used
+}
+
 func TestItoa(t *testing.T) {
 	if got := itoa(0); got != "0" {
 		t.Errorf("itoa(0) = %q", got)

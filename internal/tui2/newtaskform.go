@@ -240,6 +240,29 @@ func (f *NewTaskForm) acMoveUp() {
 	}
 }
 
+// PasteHandler handles bracketed paste events, inserting the entire pasted
+// text at the cursor position in a single operation instead of per-character.
+func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return f.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		if f.focused != ntFieldPrompt {
+			return
+		}
+		f.errMsg = ""
+		runes := []rune(pastedText)
+		if len(runes) == 0 {
+			return
+		}
+		// Insert all runes at cursor position in one slice operation.
+		newPrompt := make([]rune, 0, len(f.prompt)+len(runes))
+		newPrompt = append(newPrompt, f.prompt[:f.cursorPos]...)
+		newPrompt = append(newPrompt, runes...)
+		newPrompt = append(newPrompt, f.prompt[f.cursorPos:]...)
+		f.prompt = newPrompt
+		f.cursorPos += len(runes)
+		f.updateAutocomplete()
+	})
+}
+
 // InputHandler handles key events for the form.
 func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return f.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
