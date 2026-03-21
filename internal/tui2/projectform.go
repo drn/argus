@@ -19,13 +19,23 @@ const (
 // ProjectForm is a modal form for adding/editing projects.
 type ProjectForm struct {
 	*tview.Box
-	fields   [4][]rune // name, path, branch, backend
+	fields   [4][]rune // name, path, branch (fallback text), backend
 	cursors  [4]int
 	focused  int
 	editMode bool // true = editing (name read-only)
 	done     bool
 	canceled bool
 	errMsg   string
+
+	// Branch selector state
+	branchOptions []string // populated via SetBranchOptions
+	branchIdx     int
+	branchPath    string // path for which branches were last loaded
+
+	// OnBranchFocus is called when the branch field gains focus and the
+	// path has changed since the last load. The caller should fetch branches
+	// in a background goroutine and call SetBranchOptions with the results.
+	OnBranchFocus func(path string)
 }
 
 // NewProjectForm creates a new project form.
@@ -45,17 +55,54 @@ func (pf *ProjectForm) LoadProject(name string, p config.Project) {
 	pf.focused = pfFieldPath // skip name in edit mode
 }
 
-func (pf *ProjectForm) Done() bool     { return pf.done }
-func (pf *ProjectForm) Canceled() bool { return pf.canceled }
+func (pf *ProjectForm) Done() bool          { return pf.done }
+func (pf *ProjectForm) Canceled() bool      { return pf.canceled }
 func (pf *ProjectForm) SetError(msg string) { pf.errMsg = msg }
+
+// branchIsSelector returns true when the branch field should render as a
+// left/right selector instead of a text input.
+func (pf *ProjectForm) branchIsSelector() bool {
+	return len(pf.branchOptions) > 0
+}
+
+// SetBranchOptions sets the branch dropdown options. Called from a background
+// goroutine via QueueUpdateDraw after fetching branches.
+func (pf *ProjectForm) SetBranchOptions(options []string) {
+	pf.branchOptions = options
+	pf.branchIdx = 0
+
+	// Pre-select the current branch value if it matches an option.
+	cur := string(pf.fields[pfFieldBranch])
+	for i, b := range pf.branchOptions {
+		if b == cur {
+			pf.branchIdx = i
+			break
+		}
+	}
+}
 
 // Result returns the form values.
 func (pf *ProjectForm) Result() (name string, p config.Project) {
+	branch := string(pf.fields[pfFieldBranch])
+	if pf.branchIsSelector() && pf.branchIdx < len(pf.branchOptions) {
+		branch = pf.branchOptions[pf.branchIdx]
+	}
 	return string(pf.fields[pfFieldName]), config.Project{
 		Path:    string(pf.fields[pfFieldPath]),
-		Branch:  string(pf.fields[pfFieldBranch]),
+		Branch:  branch,
 		Backend: string(pf.fields[pfFieldBackend]),
 	}
+}
+
+// maybeLoadBranches fires OnBranchFocus when the path has changed since
+// the last load. The actual git call happens in a background goroutine.
+func (pf *ProjectForm) maybeLoadBranches() {
+	path := string(pf.fields[pfFieldPath])
+	if path == pf.branchPath || pf.OnBranchFocus == nil {
+		return
+	}
+	pf.branchPath = path
+	pf.OnBranchFocus(path)
 }
 
 // HandleKey processes key events for the form.
@@ -68,7 +115,10 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		if pf.focused < pfFieldBackend {
 			pf.focused++
 			if pf.editMode && pf.focused == pfFieldName {
-				pf.focused++ // skip name in edit mode
+				pf.focused++
+			}
+			if pf.focused == pfFieldBranch {
+				pf.maybeLoadBranches()
 			}
 		} else {
 			pf.done = true
@@ -79,13 +129,29 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		if pf.editMode && pf.focused == pfFieldName {
 			pf.focused++
 		}
+		if pf.focused == pfFieldBranch {
+			pf.maybeLoadBranches()
+		}
 		return
 	case tcell.KeyBacktab:
 		pf.focused = (pf.focused + 3) % 4
 		if pf.editMode && pf.focused == pfFieldName {
 			pf.focused = pfFieldBackend
 		}
+		if pf.focused == pfFieldBranch {
+			pf.maybeLoadBranches()
+		}
 		return
+	}
+
+	// Branch selector mode — left/right cycles options.
+	if pf.focused == pfFieldBranch && pf.branchIsSelector() {
+		pf.handleBranchSelector(ev)
+		return
+	}
+
+	// Text field input.
+	switch ev.Key() {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		f := pf.focused
 		if pf.editMode && f == pfFieldName {
@@ -116,7 +182,20 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		pf.cursors[f]++
 		return
 	}
-	_ = utf8.RuneError // ensure import
+}
+
+// handleBranchSelector processes keys when the branch field is in selector mode.
+func (pf *ProjectForm) handleBranchSelector(ev *tcell.EventKey) {
+	n := len(pf.branchOptions)
+	if n == 0 {
+		return
+	}
+	switch ev.Key() {
+	case tcell.KeyLeft:
+		pf.branchIdx = (pf.branchIdx - 1 + n) % n
+	case tcell.KeyRight:
+		pf.branchIdx = (pf.branchIdx + 1) % n
+	}
 }
 
 // PasteHandler handles bracketed paste events, inserting pasted text into the
@@ -125,6 +204,10 @@ func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tv
 	return pf.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
 		f := pf.focused
 		if pf.editMode && f == pfFieldName {
+			return
+		}
+		// Ignore paste on branch selector.
+		if f == pfFieldBranch && pf.branchIsSelector() {
 			return
 		}
 		runes := []rune(pastedText)
@@ -171,6 +254,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	labels := [4]string{"Name:", "Path:", "Branch:", "Backend:"}
+	maxW := formW - 14
 	for i := range 4 {
 		ly := formY + 2 + i*2
 		if ly >= formY+formH-1 {
@@ -182,10 +266,15 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		}
 		drawText(screen, formX+2, ly, 10, labels[i], style)
 
-		// Field value.
+		// Branch selector mode.
+		if i == pfFieldBranch && pf.branchIsSelector() {
+			pf.drawBranchSelector(screen, formX+12, ly, maxW)
+			continue
+		}
+
+		// Field value (text input).
 		val := string(pf.fields[i])
 		if i == pf.focused {
-			// Insert cursor.
 			before := string(pf.fields[i][:pf.cursors[i]])
 			after := string(pf.fields[i][pf.cursors[i]:])
 			val = before + "█" + after
@@ -195,7 +284,6 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		} else {
 			style = tcell.StyleDefault
 		}
-		maxW := formW - 14
 		if len(val) > maxW {
 			val = val[len(val)-maxW:]
 		}
@@ -204,5 +292,28 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	if pf.errMsg != "" {
 		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, StyleError)
+	}
+}
+
+// drawBranchSelector renders the branch field as a ◀/▶ selector.
+func (pf *ProjectForm) drawBranchSelector(screen tcell.Screen, x, y, w int) {
+	if len(pf.branchOptions) == 0 {
+		drawText(screen, x, y, w, "(none)", StyleDimmed)
+		return
+	}
+
+	name := pf.branchOptions[pf.branchIdx]
+	selector := "◀ " + name + " ▶"
+	st := StyleNormal
+	if pf.focused == pfFieldBranch {
+		st = StyleSelected
+	}
+	drawText(screen, x, y, w, selector, st)
+
+	// Position indicator.
+	posText := "(" + itoa(pf.branchIdx+1) + "/" + itoa(len(pf.branchOptions)) + ")"
+	posX := x + w - utf8.RuneCountInString(posText)
+	if posX > x+utf8.RuneCountInString(selector)+1 {
+		drawText(screen, posX, y, utf8.RuneCountInString(posText), posText, StyleDimmed)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -136,6 +137,67 @@ func FetchDirFiles(taskID, worktree, dirPath string) DirFilesMsg {
 	}
 
 	return msg
+}
+
+// ListRemoteBranches returns remote-tracking branch names (e.g. "origin/main")
+// sorted with priority branches first. Returns nil if the path is not a git repo.
+func ListRemoteBranches(repoDir string) []string {
+	if repoDir == "" {
+		return nil
+	}
+	out, err := runGit(repoDir, "for-each-ref", "--format=%(refname:short)", "refs/remotes/")
+	if err != nil {
+		return nil
+	}
+	var branches []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasSuffix(line, "/HEAD") {
+			continue
+		}
+		branches = append(branches, line)
+	}
+	return sortBranchesWithPriority(branches)
+}
+
+// priorityBranches defines the preferred ordering for branch selection.
+// upstream first for fork workflows where upstream is the canonical remote.
+var priorityBranches = []string{
+	"upstream/master",
+	"origin/master",
+	"upstream/main",
+	"origin/main",
+}
+
+// sortBranchesWithPriority returns branches with priority entries first (in
+// order), followed by the remaining branches sorted alphabetically.
+func sortBranchesWithPriority(branches []string) []string {
+	if len(branches) == 0 {
+		return nil
+	}
+	prioritySet := make(map[string]bool, len(priorityBranches))
+	for _, b := range priorityBranches {
+		prioritySet[b] = true
+	}
+
+	var result []string
+	for _, pb := range priorityBranches {
+		for _, b := range branches {
+			if b == pb {
+				result = append(result, b)
+				break
+			}
+		}
+	}
+
+	var rest []string
+	for _, b := range branches {
+		if !prioritySet[b] {
+			rest = append(rest, b)
+		}
+	}
+	sort.Strings(rest)
+	return append(result, rest...)
 }
 
 func runGit(dir string, args ...string) (string, error) {
