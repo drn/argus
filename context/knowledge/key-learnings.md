@@ -45,6 +45,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Ring buffer must be bounded (256KB).** Unbounded causes CPU spikes and OOM. Session log file provides full scrollback.
 - **Live scrollback reads from session log file, not ring buffer.** `readLogTail` seeks from EOF — gives infinite scrollback while live follow-tail stays on the fast ring buffer path.
 - **Anchor-lock keeps scrolled-up content pinned when new output arrives.** Track `anchorTotalLines`; bump `scrollOffset` by the delta. Reset to 0 on scroll-to-bottom.
+- **`renderReplay` must reset `anchorTotalLines` on rebuild.** The replay emulator (fed from 1MB log tail) has far more scrollback than the live emulator (256KB ring buffer). Without reset, anchor-lock sees the totalLines jump as "new output" and bumps scrollOffset by the delta, causing a half-page jump on the first Shift+Up.
 - **Replay emulator is cached and reused when only scroll offset changes.** Rebuild only when input size or dimensions change. For **live sessions scrolled up**, treat cache as always valid (new bytes arrive below viewport) — checking log size growth invalidates on every Draw since the agent is writing. For dead sessions, stat the log file (~1μs) instead of reading it to check validity.
 - **Agent view replay must use current panel dimensions, not stale PTY size.** Override `ptyCols/ptyRows` with current dimensions for dead/nil sessions.
 - **Preview panel must use PTY width, not panel width, for VT emulation.** Otherwise text double-wraps.

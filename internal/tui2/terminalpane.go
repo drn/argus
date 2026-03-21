@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"image/color"
 
@@ -89,6 +90,10 @@ type TerminalPane struct {
 
 	// Anchor-lock: track total lines so scrollOffset stays pinned when new output arrives.
 	anchorTotalLines int // total lines when scrollOffset was last set
+
+	// Scroll acceleration: tracks recent scroll events for keyboard acceleration.
+	lastScrollTime time.Time // when last keyboard scroll happened
+	scrollAccel    int       // current acceleration multiplier (1-based)
 
 	// Replay emulator cache: reuse when only scroll changes (no new bytes).
 	replayEmu          *xvt.SafeEmulator
@@ -265,9 +270,54 @@ func (tp *TerminalPane) HasContent() bool {
 
 // --- Scrollback ---
 
+// scrollAccelWindow is the time window for key repeat acceleration.
+// If a scroll event arrives within this window of the previous one,
+// the acceleration multiplier increases.
+const scrollAccelWindow = 120 * time.Millisecond
+
+// scrollAccelMax caps the acceleration multiplier.
+const scrollAccelMax = 12
+
 func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n; tp.paintCacheValid = false }
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.paintCacheValid = false }
+func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.scrollAccel = 0; tp.paintCacheValid = false }
+
+// AccelScrollUp performs an accelerated scroll up for keyboard key-repeat.
+// Returns the actual number of lines scrolled.
+func (tp *TerminalPane) AccelScrollUp() int {
+	n := tp.nextAccelStep()
+	tp.scrollOffset += n
+	tp.paintCacheValid = false
+	return n
+}
+
+// AccelScrollDown performs an accelerated scroll down for keyboard key-repeat.
+func (tp *TerminalPane) AccelScrollDown() int {
+	n := tp.nextAccelStep()
+	tp.scrollOffset -= n
+	tp.paintCacheValid = false
+	if tp.scrollOffset < 0 {
+		tp.scrollOffset = 0
+		tp.anchorTotalLines = 0
+	}
+	return n
+}
+
+// nextAccelStep computes the scroll step based on acceleration state.
+// Rapid key repeats within scrollAccelWindow ramp up the step from 1 to scrollAccelMax.
+func (tp *TerminalPane) nextAccelStep() int {
+	now := time.Now()
+	if !tp.lastScrollTime.IsZero() && now.Sub(tp.lastScrollTime) < scrollAccelWindow {
+		tp.scrollAccel++
+		if tp.scrollAccel > scrollAccelMax {
+			tp.scrollAccel = scrollAccelMax
+		}
+	} else {
+		tp.scrollAccel = 1
+	}
+	tp.lastScrollTime = now
+	return tp.scrollAccel
+}
 
 func (tp *TerminalPane) ScrollDown(n int) {
 	tp.scrollOffset -= n
@@ -678,6 +728,12 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 		tp.replayEmuMaxScroll = tp.scrollOffset
 		tp.replayEmuBytes = uint64(len(raw))
 		tp.replayEmuCursorVisible = cursorVisible
+		// Reset anchor so the first paint after rebuild doesn't trigger
+		// false anchor-lock. The replay emulator (fed from log tail) often
+		// has more scrollback than the live emulator (256KB ring buffer),
+		// so anchorTotalLines from the live paint would cause a large
+		// spurious scrollOffset bump.
+		tp.anchorTotalLines = 0
 	}
 
 	tp.paintEmu(screen, x, y, w, h, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
