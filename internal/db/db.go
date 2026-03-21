@@ -149,6 +149,11 @@ func (d *DB) createTables() error {
 	// Add archived column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
+	// Add todo_path column to existing tasks tables.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN todo_path TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	// Index for TasksByTodoPath queries (called on every tick).
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_todo_path ON tasks(todo_path)`) //nolint:errcheck
+
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
@@ -200,7 +205,7 @@ func (d *DB) createTables() error {
 // --- Tasks ---
 
 // taskColumns is the canonical column list for task queries.
-const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, archived, created_at, started_at, ended_at`
+const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, todo_path, archived, created_at, started_at, ended_at`
 
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -212,7 +217,7 @@ func scanTask(row scanner) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
 	var archived int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &t.PRURL, &archived, &createdAt, &startedAt, &endedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &t.PRURL, &t.TodoPath, &archived, &createdAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
@@ -257,8 +262,8 @@ func (d *DB) Add(t *model.Task) error {
 	if t.Archived {
 		archivedInt = 1
 	}
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, archived, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, archivedInt,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, todo_path, archived, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, t.TodoPath, archivedInt,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -271,8 +276,8 @@ func (d *DB) Update(t *model.Task) error {
 	if t.Archived {
 		archivedInt = 1
 	}
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, pr_url=?, archived=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
-		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, archivedInt,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, pr_url=?, todo_path=?, archived=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, t.TodoPath, archivedInt,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return err
@@ -312,6 +317,28 @@ func (d *DB) Get(id string) (*model.Task, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// TasksByTodoPath returns a map from todo_path to the most recent task with that path.
+// Only tasks with a non-empty todo_path are included. Ordered by created_at ASC so
+// later tasks overwrite earlier ones (most recent wins).
+func (d *DB) TasksByTodoPath() map[string]*model.Task {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE todo_path != '' ORDER BY created_at ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	m := make(map[string]*model.Task)
+	for rows.Next() {
+		if t, err := scanTask(rows); err == nil {
+			m[t.TodoPath] = t
+		}
+	}
+	return m
 }
 
 func (d *DB) PruneCompleted() ([]*model.Task, error) {

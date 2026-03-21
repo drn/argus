@@ -8,6 +8,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -23,7 +24,8 @@ type ToDosView struct {
 
 	vaultPath string
 	items     []ToDoItem
-	tapp      *tview.Application // for async refresh
+	taskMap   map[string]*model.Task // todoPath -> most recent linked task
+	tapp      *tview.Application     // for async refresh
 
 	// Callback when the user presses Enter to launch a to-do as a task.
 	OnLaunch func(item ToDoItem)
@@ -49,6 +51,11 @@ func NewToDosView() *ToDosView {
 	}
 
 	return v
+}
+
+// VaultPath returns the configured vault directory path.
+func (v *ToDosView) VaultPath() string {
+	return v.vaultPath
 }
 
 // SetVaultPath sets the vault directory and triggers a scan.
@@ -100,6 +107,23 @@ func (v *ToDosView) SelectedItem() *ToDoItem {
 // HasItems returns whether there are any to-do items.
 func (v *ToDosView) HasItems() bool {
 	return len(v.items) > 0
+}
+
+// SyncTasks updates the task map used to display linked task status on todo items.
+func (v *ToDosView) SyncTasks(taskMap map[string]*model.Task) {
+	v.taskMap = taskMap
+	v.list.SetTaskMap(taskMap)
+}
+
+// CompletedItems returns todo items whose linked task is complete.
+func (v *ToDosView) CompletedItems() []ToDoItem {
+	var result []ToDoItem
+	for _, item := range v.items {
+		if t, ok := v.taskMap[item.Path]; ok && t.Status == model.StatusComplete {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 // HandleKey processes key events for the To Dos tab. Returns true if consumed.
@@ -185,11 +209,17 @@ func (v *ToDosView) MouseHandler() func(action tview.MouseAction, event *tcell.E
 // ToDoListPanel displays a scrollable list of to-do notes.
 type ToDoListPanel struct {
 	*tview.Box
-	items  []ToDoItem
-	cursor int
-	offset int
+	items   []ToDoItem
+	taskMap map[string]*model.Task
+	cursor  int
+	offset  int
 
 	OnCursorChange func(item *ToDoItem)
+}
+
+// SetTaskMap updates the task map used for status-aware bullet rendering.
+func (p *ToDoListPanel) SetTaskMap(m map[string]*model.Task) {
+	p.taskMap = m
 }
 
 // NewToDoListPanel creates a to-do list panel.
@@ -281,8 +311,28 @@ func (p *ToDoListPanel) Draw(screen tcell.Screen) {
 		drawText(screen, col, inner.Y+i, 2, prefix, StyleDefault)
 		col += 2
 
-		// Bullet
-		screen.SetContent(col, inner.Y+i, '○', nil, StyleDimmed)
+		// Status-aware bullet
+		bullet := '○'
+		bulletStyle := StyleDimmed
+		if p.taskMap != nil {
+			if t, ok := p.taskMap[item.Path]; ok {
+				switch t.Status {
+				case model.StatusPending:
+					bullet = '○'
+					bulletStyle = StylePending
+				case model.StatusInProgress:
+					bullet = '●'
+					bulletStyle = StyleInProgress
+				case model.StatusInReview:
+					bullet = '◎'
+					bulletStyle = StyleInReview
+				case model.StatusComplete:
+					bullet = '✓'
+					bulletStyle = StyleComplete
+				}
+			}
+		}
+		screen.SetContent(col, inner.Y+i, bullet, nil, bulletStyle)
 		col += 2
 
 		// Name

@@ -1439,3 +1439,91 @@ func TestDB_SandboxConfig_Paths(t *testing.T) {
 		t.Fatalf("expected 2 extra_write paths, got %d", len(cfg.Sandbox.ExtraWrite))
 	}
 }
+
+// --- TodoPath tests ---
+
+func TestDB_TodoPath_RoundTrip(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "todo task", TodoPath: "/vault/my-note.md"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TodoPath != "/vault/my-note.md" {
+		t.Errorf("TodoPath = %q, want %q", got.TodoPath, "/vault/my-note.md")
+	}
+}
+
+func TestDB_TodoPath_Update(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "todo task", TodoPath: "/vault/old.md"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+
+	task.TodoPath = "/vault/new.md"
+	if err := d.Update(task); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TodoPath != "/vault/new.md" {
+		t.Errorf("TodoPath = %q, want %q", got.TodoPath, "/vault/new.md")
+	}
+}
+
+func TestDB_TasksByTodoPath(t *testing.T) {
+	d := testDB(t)
+
+	t.Run("excludes tasks without todo_path", func(t *testing.T) {
+		task := &model.Task{Name: "no path"}
+		if err := d.Add(task); err != nil {
+			t.Fatal(err)
+		}
+		m := d.TasksByTodoPath()
+		if _, ok := m[""]; ok {
+			t.Error("should not include tasks with empty todo_path")
+		}
+	})
+
+	t.Run("returns linked tasks", func(t *testing.T) {
+		task := &model.Task{Name: "linked", TodoPath: "/vault/linked.md"}
+		if err := d.Add(task); err != nil {
+			t.Fatal(err)
+		}
+		m := d.TasksByTodoPath()
+		if got, ok := m["/vault/linked.md"]; !ok {
+			t.Error("expected entry for /vault/linked.md")
+		} else if got.Name != "linked" {
+			t.Errorf("Name = %q, want %q", got.Name, "linked")
+		}
+	})
+
+	t.Run("most recent task wins", func(t *testing.T) {
+		first := &model.Task{Name: "first", TodoPath: "/vault/dup.md", CreatedAt: time.Now().Add(-time.Hour)}
+		if err := d.Add(first); err != nil {
+			t.Fatal(err)
+		}
+		second := &model.Task{Name: "second", TodoPath: "/vault/dup.md", CreatedAt: time.Now()}
+		if err := d.Add(second); err != nil {
+			t.Fatal(err)
+		}
+		m := d.TasksByTodoPath()
+		if got := m["/vault/dup.md"]; got == nil || got.Name != "second" {
+			name := ""
+			if got != nil {
+				name = got.Name
+			}
+			t.Errorf("expected most recent task 'second', got %q", name)
+		}
+	})
+}

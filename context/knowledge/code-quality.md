@@ -1003,3 +1003,24 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - Fork execution is async (background goroutine) because git diff + log reads block UI thread
 - Uses `refreshTasksLocal` not `refreshTasksAsync` to avoid reconciliation race (same as new task creation)
 - `.context/` files skipped when empty (no output file for tasks that never ran, no diff for clean worktrees)
+
+### Todo-Task Association & Cleanup (2026-03-21)
+
+**Data Model:**
+- `Task.TodoPath string` — links a task to its source Obsidian vault `.md` file path. DB column `todo_path` with index `idx_tasks_todo_path`.
+- `LaunchToDoModal` — extended with a prompt input field (focused by default). User prompt + note content combined via `buildToDoPrompt()` using `<context>` XML tags.
+- `ConfirmCleanupToDosModal` — confirmation dialog for Ctrl+R cleanup on ToDos tab.
+
+**Flow:**
+1. User presses Enter on a todo → `LaunchToDoModal` shows with project selector + prompt field
+2. On confirm: `task.TodoPath = item.Path`, prompt = `buildToDoPrompt(userPrompt, noteContent)`, worktree created, task persisted
+3. `refreshTasksWithIDs` calls `a.db.TasksByTodoPath()` on every tick → `ToDosView.SyncTasks()` propagates to list panel
+4. `ToDoListPanel.Draw` renders status-aware bullets: `○` pending, `●` in progress, `◎` in review, `✓` complete
+5. Ctrl+R on ToDos tab → `cleanupCompletedToDos()` → confirmation modal → `executeToDoCleanup()` removes vault `.md` files, refreshes async
+
+**Gotchas:**
+- `handleLaunchToDoKey` must use `refreshTasksLocal()` (not `refreshTasks()`) between `db.Add` and `startSession` — same reconciliation race as new task form
+- `executeToDoCleanup` validates `item.Path` starts with `vaultPath + PathSeparator` before `os.Remove` — prevents path traversal
+- `executeToDoCleanup` uses `RefreshAsync` (not `Refresh`) to avoid blocking the UI thread on disk I/O
+- `TasksByTodoPath()` query uses `ORDER BY created_at ASC` so the last entry per path is the most recent task (map overwrite = most recent wins)
+- `todo_path` column has a DB index for the tick-frequency query
