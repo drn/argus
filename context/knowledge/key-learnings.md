@@ -19,7 +19,9 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **All daemon RPC calls must have a timeout.** `net/rpc.Client.Call()` blocks indefinitely. Use the `c.call()` wrapper with `select + time.After`. The buffered channel (`make(chan error, 1)`) is critical to prevent goroutine leak.
 - **Stream loss ≠ process exit.** Use `StreamLost` flag to distinguish. When `isSessionAlive()` returns `reachable=false`, treat as stream lost, not exit.
 - **`client.Get()` must return `nil` for any non-alive session.** Check `!info.Alive` alone — PID is stale between `onFinish()` and `delete(r.sessions)`.
-- **Daemon health check uses `Ping()`, not `refreshTasks()`.** Ping fails fast; refreshTasks has two 5s-timeout serial RPCs.
+- **Daemon health check uses `Ping()`, not `refreshTasks()`.** Ping fails fast; refreshTasks blocks on RPC.
+- **Never call `refreshTasks()` from the tview main goroutine.** It blocks on RPC. Use `refreshTasksAsync()` (spawns goroutine + QueueUpdateDraw) or `refreshTasksLocal()` (reuses cached IDs, no RPC). Use `refreshTasksLocal` when only DB state changed (delete/prune); use `refreshTasksAsync` when session state may have changed.
+- **Always use `RunningAndIdle()` instead of separate `Running()` + `Idle()`.** They share the same `ListSessions` RPC — calling both separately doubles RPC overhead and doubles head-of-line blocking risk on the single `net/rpc` connection.
 - **Daemon cleanup must run on the `Serve` goroutine, not `Shutdown`.** `Shutdown()` runs on a non-main goroutine — process may exit before cleanup completes. `signal.Stop(sigCh)` must be called after the handler goroutine exits.
 - **Daemon restart must preserve `SessionID` on tasks.** Clearing it loses conversation history. On re-launch, `--resume <id>` picks up where it left off.
 - **Rebuilding the binary does NOT update the running daemon.** Kill and restart: `kill -TERM $(cat ~/.argus/daemon.pid)`.

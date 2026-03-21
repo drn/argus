@@ -88,13 +88,9 @@ func (s *RPCService) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 
 // ListSessions returns info about all running sessions.
 func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
-	ids := s.daemon.runner.Running()
-	resp.Sessions = make([]SessionInfo, 0, len(ids))
-	for _, id := range ids {
-		sess := s.daemon.runner.Get(id)
-		if sess == nil {
-			continue
-		}
+	sessions := s.daemon.runner.Sessions()
+	resp.Sessions = make([]SessionInfo, 0, len(sessions))
+	for id, sess := range sessions {
 		cols, rows := sess.PTYSize()
 		resp.Sessions = append(resp.Sessions, SessionInfo{
 			TaskID:       id,

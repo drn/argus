@@ -202,6 +202,33 @@ func (r *Runner) WorkDir(taskID string) string {
 	return ""
 }
 
+// Sessions returns a snapshot of all active sessions keyed by task ID.
+// Used by the daemon's ListSessions RPC to avoid per-session Get() calls.
+func (r *Runner) Sessions() map[string]*Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]*Session, len(r.sessions))
+	for id, sess := range r.sessions {
+		out[id] = sess
+	}
+	return out
+}
+
+// RunningAndIdle returns the task IDs of all active sessions and of idle
+// sessions in a single pass under one lock acquisition.
+func (r *Runner) RunningAndIdle() (running, idle []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	running = make([]string, 0, len(r.sessions))
+	for id, sess := range r.sessions {
+		running = append(running, id)
+		if sess.IsIdle() {
+			idle = append(idle, id)
+		}
+	}
+	return running, idle
+}
+
 // HasSession returns true if a session exists for the task.
 func (r *Runner) HasSession(taskID string) bool {
 	r.mu.Lock()
