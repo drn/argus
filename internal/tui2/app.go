@@ -1496,6 +1496,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		// as Pending and startSession will set it to InProgress. An async refresh
 		// races: its RPC snapshot captures running IDs before the session exists,
 		// then reconciliation sees InProgress + not-in-running-set → marks Complete.
+		// Use refreshTasksLocal (no RPC) to make the task list consistent.
+		a.refreshTasksLocal()
 
 		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
 		a.onTaskSelect(task)
