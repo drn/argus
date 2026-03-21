@@ -34,6 +34,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### PTY & Terminal Rendering
 
+- **`pty.Setsize` (which calls `os.File.Fd()`) races with `os.File.Close()`.** `Fd()` reads the internal fd field without synchronization, while `Close()` modifies it. `Read()`/`Write()` are safe (they use internal `fdMutex`). Fix: `ptmxClosed` bool flag under Session mutex; `waitLoop` sets flag + closes under lock; `Resize` checks flag under lock before calling `Setsize`.
 - **PTY needs real terminal size at launch** (`pty.StartWithSize`), not 0x0. TUI apps won't render with zero dimensions. Start at actual panel width, not 80x24 — agents format initial output for launch PTY size.
 - **Single-reader-tee pattern is critical.** Two goroutines reading the same fd causes data loss.
 - **`AddWriter` must replay before registering.** Register first → live bytes arrive before replay → duplicate data → rendering corruption.
@@ -43,13 +44,19 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Ring buffer must be bounded (256KB).** Unbounded causes CPU spikes and OOM. Session log file provides full scrollback.
 - **Live scrollback reads from session log file, not ring buffer.** `readLogTail` seeks from EOF — gives infinite scrollback while live follow-tail stays on the fast ring buffer path.
 - **Anchor-lock keeps scrolled-up content pinned when new output arrives.** Track `anchorTotalLines`; bump `scrollOffset` by the delta. Reset to 0 on scroll-to-bottom.
-- **Replay emulator is cached and reused when only scroll offset changes.** Rebuild only when input size or dimensions change.
+- **Replay emulator is cached and reused when only scroll offset changes.** Rebuild only when input size or dimensions change. `Draw()` must stat the log file (not read it) to check cache validity — `readLogTail()` does open+stat+seek+read of 1MB+ per call, which blocks the UI thread and makes scrolling laggy.
 - **Agent view replay must use current panel dimensions, not stale PTY size.** Override `ptyCols/ptyRows` with current dimensions for dead/nil sessions.
 - **Preview panel must use PTY width, not panel width, for VT emulation.** Otherwise text double-wraps.
 - **New emulators must default `cursorVisible` to `false`.** Agents send `\e[?25l` early, but after ring buffer wrap or emu rebuild, that sequence is lost. Defaulting to `true` causes a phantom cursor at bottom-left. Also, `lastContentRow` must not extend to cursor position when cursor is hidden.
 - **`renderLive` must skip `RecentOutput()` when `newBytes == 0`.** The 256KB ring buffer copy on every draw causes typing lag — keystroke redraws trigger `Draw()` before PTY echo arrives, so copying is wasted. `emuFedTotal` must only advance when bytes are actually fed to the emulator; advancing it on an empty `raw` silently skips those bytes permanently.
 - **`startAgentRedrawLoop` must skip `QueueUpdateDraw` when idle.** Keystroke and resize events trigger their own tview redraws; the 200ms loop only needs to fire when new PTY output arrives (`TotalWritten` changed).
 - **`uvCellToTcellStyle` must map ALL ultraviolet attributes.** Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose visual contrast. Keep in sync with `uv.Attr*` constants: Bold, Faint, Italic, Blink, Reverse, Strikethrough. Also map underline styles (curly/dotted/dashed/double), underline color, and hyperlinks (OSC 8).
+
+### Paste & Input Batching
+
+- **`tapp.EnablePaste(true)` is required for fast paste.** Without it, tview delivers paste as thousands of individual `EventKey` events, each triggering a full screen redraw. With it, tview buffers all pasted text and delivers it as a single `PasteHandler()` call with one redraw.
+- **Every custom widget with text input must implement `PasteHandler()`.** tview's paste path bypasses `InputCapture` entirely — it goes through the focus chain calling `PasteHandler()` on the focused primitive. If a widget only has `InputHandler()`, paste is silently dropped when `EnablePaste` is on.
+- **TerminalPane paste must wrap text in bracket paste sequences.** Send `\x1b[200~` + text + `\x1b[201~` so the agent's readline treats it as a paste (no per-character echo/processing).
 
 ### UI Threading
 

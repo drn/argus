@@ -863,6 +863,23 @@ Every tview redraw (including keystroke-triggered redraws) called `sess.RecentOu
 - `needRebuild` (emu nil or dimensions changed) must always trigger a full buffer copy + replay
 - The `else if tp.emuFedTotal == 0` guard handles the "no data ever" case when the fast path would otherwise paint an uninitialized emulator
 
+## Bracket Paste Support: 2026-03-20
+
+### Problem
+Pasting large text into any input (agent terminal, new task form, settings forms) was extremely slow. Without `EnablePaste`, tview delivers paste as individual `EventKey` events — each triggering a full screen redraw. A 5KB paste = ~5000 redraws.
+
+### Fix
+1. **`tapp.EnablePaste(true)` in `initUI()`** — enables bracket paste mode on the tcell screen. tview buffers all pasted chars internally (zero per-key redraws) and calls `PasteHandler()` once at the end.
+2. **`PasteHandler()` on all 5 text input widgets:**
+   - `TerminalPane` — writes entire paste to PTY in one `WriteInput()` call, wrapped in bracket paste escape sequences (`\x1b[200~`/`\x1b[201~`)
+   - `NewTaskForm` — inserts all runes at cursor in a single slice operation
+   - `ProjectForm`, `BackendForm`, `RenameTaskForm` — same single-operation insert into focused field
+
+### Invariants
+- Any new custom widget with text input MUST implement `PasteHandler()` — without it, paste is silently dropped when `EnablePaste` is on (tview bypasses `InputCapture` for paste events)
+- PTY paste must include bracket paste sequences so the agent's readline handles it correctly
+- Edit-mode read-only fields (name field in ProjectForm/BackendForm) must reject paste just like they reject keystrokes
+
 ## Fix: UI Freeze from Blocking RPC on Main Goroutine — 2026-03-20
 
 ### Problem

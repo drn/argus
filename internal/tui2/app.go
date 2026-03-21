@@ -240,6 +240,7 @@ func (a *App) buildUI() {
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
 	a.tapp.EnableMouse(true)
+	a.tapp.EnablePaste(true)
 }
 
 // Run starts the application event loop.

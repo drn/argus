@@ -119,6 +119,27 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 	_ = utf8.RuneError // ensure import
 }
 
+// PasteHandler handles bracketed paste events, inserting pasted text into the
+// focused field in a single operation.
+func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return pf.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		f := pf.focused
+		if pf.editMode && f == pfFieldName {
+			return
+		}
+		runes := []rune(pastedText)
+		if len(runes) == 0 {
+			return
+		}
+		newField := make([]rune, 0, len(pf.fields[f])+len(runes))
+		newField = append(newField, pf.fields[f][:pf.cursors[f]]...)
+		newField = append(newField, runes...)
+		newField = append(newField, pf.fields[f][pf.cursors[f]:]...)
+		pf.fields[f] = newField
+		pf.cursors[f] += len(runes)
+	})
+}
+
 // Draw renders the project form as a modal.
 func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	pf.Box.DrawForSubclass(screen, pf)
