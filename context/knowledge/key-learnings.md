@@ -32,6 +32,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### PTY & Terminal Rendering
 
+- **`pty.Setsize` (which calls `os.File.Fd()`) races with `os.File.Close()`.** `Fd()` reads the internal fd field without synchronization, while `Close()` modifies it. `Read()`/`Write()` are safe (they use internal `fdMutex`). Fix: `ptmxClosed` bool flag under Session mutex; `waitLoop` sets flag + closes under lock; `Resize` checks flag under lock before calling `Setsize`.
 - **PTY needs real terminal size at launch** (`pty.StartWithSize`), not 0x0. TUI apps won't render with zero dimensions. Start at actual panel width, not 80x24 — agents format initial output for launch PTY size.
 - **Single-reader-tee pattern is critical.** Two goroutines reading the same fd causes data loss.
 - **`AddWriter` must replay before registering.** Register first → live bytes arrive before replay → duplicate data → rendering corruption.

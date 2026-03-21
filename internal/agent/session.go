@@ -39,6 +39,7 @@ type Session struct {
 	ptyCols    uint16    // current PTY width
 	ptyRows    uint16    // current PTY height
 	lastOutput time.Time // last time output was received from PTY
+	ptmxClosed bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
 
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
 }
@@ -145,7 +146,10 @@ func (s *Session) readLoop() {
 // waitLoop waits for the process to exit and cleans up.
 func (s *Session) waitLoop() {
 	s.err = s.Cmd.Wait()
+	s.mu.Lock()
+	s.ptmxClosed = true
 	s.ptmx.Close()
+	s.mu.Unlock()
 	close(s.done)
 }
 
@@ -352,9 +356,12 @@ func (s *Session) WorkDir() string {
 // Resize sets the PTY window size.
 func (s *Session) Resize(rows, cols uint16) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ptyCols = cols
 	s.ptyRows = rows
-	s.mu.Unlock()
+	if s.ptmxClosed {
+		return nil
+	}
 	return pty.Setsize(s.ptmx, &pty.Winsize{
 		Rows: rows,
 		Cols: cols,
