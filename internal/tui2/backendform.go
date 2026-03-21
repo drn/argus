@@ -113,6 +113,27 @@ func (bf *BackendForm) HandleKey(ev *tcell.EventKey) {
 	}
 }
 
+// PasteHandler handles bracketed paste events, inserting pasted text into the
+// focused field in a single operation.
+func (bf *BackendForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return bf.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		f := bf.focused
+		if bf.editMode && f == bfFieldName {
+			return
+		}
+		runes := []rune(pastedText)
+		if len(runes) == 0 {
+			return
+		}
+		newField := make([]rune, 0, len(bf.fields[f])+len(runes))
+		newField = append(newField, bf.fields[f][:bf.cursors[f]]...)
+		newField = append(newField, runes...)
+		newField = append(newField, bf.fields[f][bf.cursors[f]:]...)
+		bf.fields[f] = newField
+		bf.cursors[f] += len(runes)
+	})
+}
+
 // Draw renders the backend form as a modal.
 func (bf *BackendForm) Draw(screen tcell.Screen) {
 	bf.Box.DrawForSubclass(screen, bf)

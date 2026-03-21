@@ -317,6 +317,23 @@ func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tce
 	})
 }
 
+// PasteHandler handles bracketed paste events, writing the entire pasted text
+// to the PTY in a single call instead of character-by-character.
+func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return tp.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		tp.mu.Lock()
+		sess := tp.session
+		tp.mu.Unlock()
+		if sess != nil && sess.Alive() {
+			// Write the entire paste as a single PTY write, wrapped in
+			// bracket paste sequences so the agent's readline sees it as
+			// a paste (no per-character echo/processing).
+			data := "\x1b[200~" + pastedText + "\x1b[201~"
+			sess.WriteInput([]byte(data))
+		}
+	})
+}
+
 // --- Diff mode ---
 
 // EnterDiffMode activates diff display in the center panel.

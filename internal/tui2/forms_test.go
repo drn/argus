@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
 )
@@ -127,6 +128,53 @@ func TestBackendForm_TypeAndSubmit(t *testing.T) {
 	if be.Command != "echo hello" {
 		t.Errorf("command = %q", be.Command)
 	}
+}
+
+// --- Paste handler tests ---
+
+func TestProjectForm_PasteHandler(t *testing.T) {
+	pf := NewProjectForm()
+	paste := pf.PasteHandler()
+
+	t.Run("paste into focused field", func(t *testing.T) {
+		paste("/home/user/project", func(p tview.Primitive) {})
+		if got := string(pf.fields[pfFieldName]); got != "/home/user/project" {
+			t.Errorf("field = %q, want /home/user/project", got)
+		}
+	})
+
+	t.Run("paste skips read-only name in edit mode", func(t *testing.T) {
+		pf2 := NewProjectForm()
+		pf2.LoadProject("locked", config.Project{})
+		pf2.focused = pfFieldName
+		paste2 := pf2.PasteHandler()
+		paste2("overwrite", func(p tview.Primitive) {})
+		if got := string(pf2.fields[pfFieldName]); got != "locked" {
+			t.Errorf("name changed to %q, should stay locked", got)
+		}
+	})
+}
+
+func TestBackendForm_PasteHandler(t *testing.T) {
+	bf := NewBackendForm()
+	bf.focused = bfFieldCommand
+	paste := bf.PasteHandler()
+	paste("claude --model opus", func(p tview.Primitive) {})
+	if got := string(bf.fields[bfFieldCommand]); got != "claude --model opus" {
+		t.Errorf("field = %q, want 'claude --model opus'", got)
+	}
+}
+
+func TestRenameTaskForm_PasteHandler(t *testing.T) {
+	rf := NewRenameTaskForm("old")
+	paste := rf.PasteHandler()
+
+	t.Run("paste appends at cursor", func(t *testing.T) {
+		paste("-new-suffix", func(p tview.Primitive) {})
+		if got := rf.Name(); got != "old-new-suffix" {
+			t.Errorf("name = %q, want old-new-suffix", got)
+		}
+	})
 }
 
 // --- RenameTaskForm tests ---
