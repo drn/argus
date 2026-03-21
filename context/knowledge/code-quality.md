@@ -942,3 +942,22 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `removeSession` with a failed RPC produces zero-value `ExitInfo{StreamLost: false}` — silently treated as normal exit
 - The `<-rs.done` path only triggers when `streamOnce` returns `(false, false)` (daemon briefly reachable, session alive), then `Client.Close()` fires between retries
 - `rs.close()` is a no-op when `done` is already closed, but should be called for consistency with other exit paths
+
+### Live Scrollback Cache Optimization (2026-03-20)
+
+**Problem:** Scrolling up on a live agent session was laggy. The prior optimization (stat-based cache validity check) only worked for dead sessions — for live sessions, the log file grows continuously so `logSize != replayEmuLogSize` on every `Draw()`, causing 1MB+ file reads and emulator rebuilds per frame.
+
+**Data Model:**
+- `replayEmuMaxScroll int` — the scrollOffset the replay emulator was built for; used to detect when the user scrolls beyond cached data
+- `paintCacheScroll int` — the scrollOffset when paint cache was built; enables full cell-cache replay when scroll offset is unchanged
+
+**Flow:**
+1. Live session, scrolled up (`alive && scrollOffset > 0`): cache is valid if dimensions match AND `scrollOffset <= replayEmuMaxScroll` — skips log I/O entirely
+2. If `scrollOffset > replayEmuMaxScroll`: cache miss, rebuild with more data from log tail
+3. If viewport + scroll offset unchanged: replay `paintCacheCells` directly (no emulator access)
+4. Scroll to bottom (`scrollOffset == 0`): exits replay path, uses `renderLive` with live emulator
+
+**Gotchas:**
+- The log is append-only, so cached data remains valid for the viewed region even as new bytes arrive below viewport
+- `ScrollUp`/`ScrollDown` set `paintCacheValid = false`, ensuring scroll offset changes trigger `paintEmu` (but not log re-reads)
+- `replayEmuMaxScroll` must be reset in `ResetCache()` alongside other replay state

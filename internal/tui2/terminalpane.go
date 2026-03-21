@@ -96,6 +96,7 @@ type TerminalPane struct {
 	replayEmuCols      int
 	replayEmuRows      int
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
+	replayEmuMaxScroll     int   // max scrollOffset the replay emulator was built for
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
 
 	// Paint cache: stores the last paintEmu output so keystroke-triggered
@@ -106,7 +107,8 @@ type TerminalPane struct {
 	paintCacheY     int
 	paintCacheW     int // viewport dimensions
 	paintCacheH     int
-	paintCacheValid bool // true when cache can be replayed
+	paintCacheValid  bool // true when cache can be replayed
+	paintCacheScroll int  // scrollOffset when cache was built
 
 	// Replay data for finished sessions (loaded from session log file).
 	replayData []byte
@@ -244,6 +246,7 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmu = nil
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
+	tp.replayEmuMaxScroll = 0
 	tp.replayData = nil
 	tp.paintCacheValid = false
 	tp.ExitDiffMode()
@@ -511,7 +514,17 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// Mirrors renderReplay's needRebuild logic as an early-out before readLogTail.
 		if tp.replayEmu != nil && tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows {
 			cacheValid := false
-			if tp.taskID != "" {
+			if alive && tp.scrollOffset > 0 {
+				// Live session scrolled up: cache is valid when dimensions
+				// match and the user hasn't scrolled beyond what the emulator
+				// was built for. New bytes arrive below the viewport (log is
+				// append-only), so no rebuild needed for the viewed region.
+				// When user scrolls back to bottom (scrollOffset == 0),
+				// the renderLive path handles it with the live emulator.
+				if tp.scrollOffset <= tp.replayEmuMaxScroll {
+					cacheValid = true
+				}
+			} else if tp.taskID != "" {
 				logSize := tp.statLogSize()
 				if logSize > 0 && logSize == tp.replayEmuLogSize {
 					cacheValid = true
@@ -525,6 +538,14 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				}
 			}
 			if cacheValid {
+				// If viewport AND scroll offset are unchanged, replay cached cells directly
+				// (skips all emulator cell lookups + style conversions).
+				if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
+					tp.paintCacheW == width && tp.paintCacheH == height &&
+					tp.paintCacheScroll == tp.scrollOffset {
+					tp.replayPaintCache(screen)
+					return
+				}
 				tp.paintEmu(screen, x, y, width, height, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
 				return
 			}
@@ -654,6 +675,7 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 		tp.replayEmuCols = ptyCols
 		tp.replayEmuRows = ptyRows
 		tp.replayEmuLogSize = logSize
+		tp.replayEmuMaxScroll = tp.scrollOffset
 		tp.replayEmuBytes = uint64(len(raw))
 		tp.replayEmuCursorVisible = cursorVisible
 	}
@@ -791,6 +813,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	tp.paintCacheY = y
 	tp.paintCacheW = w
 	tp.paintCacheH = h
+	tp.paintCacheScroll = tp.scrollOffset
 	tp.paintCacheValid = true
 }
 
