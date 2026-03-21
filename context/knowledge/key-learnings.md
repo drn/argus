@@ -137,3 +137,4 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Daemon process appears as "argusd"** via symlink in `AutoStart`.
 - **Task rename is display-only.** Worktree dir and branch unchanged.
 - **`ensureCursorVisible` must reset scrollOffset when all lines fit.** Check `totalLines <= visibleLines` → reset to 0.
+- **Tab indices shifted when `TabToDos` was added between Tasks and Reviews.** Numeric keys are now 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings. All statusbar hints and test assertions must match.

@@ -156,12 +156,18 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Fatalf("initial tab = %v, want TabTasks", app.header.ActiveTab())
 	}
 
-	// Right arrow → Reviews
+	// Right arrow → To Dos
 	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
 	result := app.handleGlobalKey(ev)
 	if result != nil {
 		t.Error("right arrow should be consumed (return nil)")
 	}
+	if app.header.ActiveTab() != TabToDos {
+		t.Errorf("tab = %v, want TabToDos", app.header.ActiveTab())
+	}
+
+	// Right arrow → Reviews
+	result = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != TabReviews {
 		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
 	}
@@ -186,6 +192,12 @@ func TestArrowTabNavigation(t *testing.T) {
 	}
 	if app.header.ActiveTab() != TabReviews {
 		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	}
+
+	// Left arrow → To Dos
+	result = app.handleGlobalKey(ev)
+	if app.header.ActiveTab() != TabToDos {
+		t.Errorf("tab = %v, want TabToDos", app.header.ActiveTab())
 	}
 
 	// Left arrow → Tasks

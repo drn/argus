@@ -37,6 +37,7 @@ const (
 	modePruning
 	modeProjectForm
 	modeBackendForm
+	modeLaunchToDo
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -66,7 +67,8 @@ type App struct {
 	gitPanel     *GitPanel // git status for agent view (left panel)
 	filePanel    *FilePanel
 
-	// Reviews and settings tabs
+	// Tabs
+	todos        *ToDosView
 	reviews      *ReviewsView
 	settings     *SettingsView
 	settingsPage *SettingsPage
@@ -79,6 +81,9 @@ type App struct {
 
 	// Prune modal (created on demand)
 	pruneModal *PruneModal
+
+	// Launch to-do modal (created on demand)
+	launchToDoModal *LaunchToDoModal
 
 	// Settings forms (created on demand)
 	projectForm *ProjectForm
@@ -153,6 +158,19 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
 	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
 	app.settingsPage = NewSettingsPage(app.settings)
+
+	app.todos = NewToDosView()
+	app.todos.SetApp(app.tapp)
+	cfg := database.Config()
+	vaultPath := cfg.KB.ArgusVaultPath
+	if vaultPath == "" {
+		vaultPath = config.DefaultArgusVaultPath()
+	}
+	app.todos.SetVaultPath(vaultPath)
+	app.todos.OnLaunch = func(item ToDoItem) {
+		app.openLaunchToDoModal(item)
+	}
+
 	app.buildUI()
 	app.refreshTasks()
 
@@ -228,6 +246,7 @@ func (a *App) buildUI() {
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
+		AddPage("todos", a.todos, true, false).
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("reviews", a.reviews, true, false).
 		AddPage("settings", a.settingsPage, true, false)
@@ -721,6 +740,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Launch to-do modal — delegate everything to the modal
+	if a.mode == modeLaunchToDo && a.launchToDoModal != nil {
+		a.handleLaunchToDoKey(event)
+		return nil
+	}
+
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		if a.mode == modeAgent {
@@ -800,10 +825,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 		case '2':
 			if a.mode != modeAgent {
-				a.switchTab(TabReviews)
+				a.switchTab(TabToDos)
 				return nil
 			}
 		case '3':
+			if a.mode != modeAgent {
+				a.switchTab(TabReviews)
+				return nil
+			}
+		case '4':
 			if a.mode != modeAgent {
 				a.switchTab(TabSettings)
 				return nil
@@ -814,6 +844,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	switch a.mode {
 	case modeAgent:
 		return a.handleAgentKey(event)
+	}
+
+	// To Dos tab key routing.
+	if a.header.ActiveTab() == TabToDos {
+		if a.todos.HandleKey(event) {
+			return nil
+		}
 	}
 
 	// Reviews tab key routing.
@@ -1254,6 +1291,10 @@ func (a *App) switchTab(t Tab) {
 		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
+	case TabToDos:
+		a.mode = modeTaskList
+		a.todos.RefreshAsync(a.tapp)
+		a.pages.SwitchToPage("todos")
 	case TabReviews:
 		a.mode = modeTaskList // reuse task list mode for non-agent tabs
 		a.pages.SwitchToPage("reviews")
@@ -1569,6 +1610,75 @@ func (a *App) closeNewTaskForm() {
 	a.pages.RemovePage("newtask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// openLaunchToDoModal shows the project selection modal for launching a to-do as a task.
+func (a *App) openLaunchToDoModal(item ToDoItem) {
+	cfg := a.db.Config()
+	a.launchToDoModal = NewLaunchToDoModal(item, cfg.Projects, "")
+	a.mode = modeLaunchToDo
+	a.pages.AddPage("launchtodo", a.launchToDoModal, true, true)
+	a.pages.SwitchToPage("launchtodo")
+	a.tapp.SetFocus(a.launchToDoModal)
+}
+
+// handleLaunchToDoKey processes keys in the launch to-do modal.
+func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
+	handler := a.launchToDoModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.launchToDoModal.Canceled() {
+		a.closeLaunchToDoModal()
+		return
+	}
+
+	if a.launchToDoModal.Done() {
+		item := a.launchToDoModal.Item()
+		proj := a.launchToDoModal.SelectedProject()
+
+		cfg := a.db.Config()
+		var projCfg config.Project
+		if p, ok := cfg.Projects[proj]; ok {
+			projCfg = p
+		}
+
+		// Use the note content as the prompt, name from the note title.
+		task := &model.Task{
+			Name:    item.Name,
+			Status:  model.StatusPending,
+			Project: proj,
+			Prompt:  item.Content,
+			Backend: cfg.Defaults.Backend,
+		}
+
+		if projCfg.Path != "" {
+			task.Branch = projCfg.Branch
+			wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
+			if err != nil {
+				a.launchToDoModal.SetError("Worktree error: " + err.Error())
+				return
+			}
+			task.Worktree = wtPath
+			task.Name = finalName
+			task.Branch = branchName
+		}
+
+		a.db.Add(task)
+		uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
+
+		a.closeLaunchToDoModal()
+		a.refreshTasks()
+		a.onTaskSelect(task)
+		a.startSession(task)
+	}
+}
+
+// closeLaunchToDoModal closes the launch to-do modal and returns to the To Dos tab.
+func (a *App) closeLaunchToDoModal() {
+	a.mode = modeTaskList
+	a.launchToDoModal = nil
+	a.pages.RemovePage("launchtodo")
+	a.pages.SwitchToPage("todos")
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.
