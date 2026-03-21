@@ -910,3 +910,20 @@ Three refresh methods for three use cases:
 **Cache invalidation:** `paintCacheValid` is set to `false` on: scroll (up/down/reset), `ResetVT()`, `SetSession()`. New bytes arriving naturally take the `newBytes > 0` path which rebuilds the cache. Viewport position/size changes are detected by comparing `paintCacheX/Y/W/H`.
 
 **Data model:** `cachedCell{x, y int; ch rune; style tcell.Style}` — 40 bytes per cell. For a 200×50 viewport: ~400KB, reusing the backing array across frames. The cache lives on `TerminalPane` alongside the existing emulator cache fields.
+
+## To Dos Tab (2026-03-20)
+
+### Data Model & Flow
+- `ToDoItem{Name, Path, Content, ModTime}` — scanned from Obsidian vault `.md` files in `ArgusVaultPath`
+- `ToDosView` — three-panel layout (ToDoListPanel | ToDoPreviewPanel | ToDoDetailPanel) matching TaskPage structure
+- `LaunchToDoModal` — project selector modal, creates a task with note content as prompt
+- Vault path resolved from `KBConfig.ArgusVaultPath` (falls back to `DefaultArgusVaultPath()`)
+
+### Flow
+1. Tab switch to "To Dos" calls `Refresh()` → `ScanVaultToDos(vaultPath)` reads `.md` files sorted by mod time
+2. Enter on a to-do opens `LaunchToDoModal` with project selector
+3. Confirm creates worktree + task (same flow as `handleNewTaskKey`) and enters agent view
+
+### Gotchas
+- Tab indices shifted: 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings — all hint text and test assertions updated
+- `LaunchToDoModal` does not have a `PasteHandler` — it has no text input fields, only a selector
