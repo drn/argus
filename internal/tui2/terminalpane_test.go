@@ -3,6 +3,7 @@ package tui2
 import (
 	"image/color"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
@@ -931,4 +932,107 @@ func TestDrawBorderTooSmall(t *testing.T) {
 	// Should not panic
 	drawBorder(screen, 0, 0, 1, 1, StyleBorder)
 	drawBorder(screen, 0, 0, 0, 0, StyleBorder)
+}
+
+func TestTerminalPane_AccelScroll(t *testing.T) {
+	t.Run("first press scrolls 1 line", func(t *testing.T) {
+		tp := NewTerminalPane()
+		n := tp.AccelScrollUp()
+		testutil.Equal(t, n, 1)
+		testutil.Equal(t, tp.ScrollOffset(), 1)
+	})
+
+	t.Run("rapid presses accelerate", func(t *testing.T) {
+		tp := NewTerminalPane()
+		// Simulate rapid key repeats (no delay).
+		n1 := tp.AccelScrollUp()
+		testutil.Equal(t, n1, 1)
+
+		n2 := tp.AccelScrollUp()
+		testutil.Equal(t, n2, 2)
+
+		n3 := tp.AccelScrollUp()
+		testutil.Equal(t, n3, 3)
+
+		// Total offset = 1+2+3 = 6
+		testutil.Equal(t, tp.ScrollOffset(), 6)
+	})
+
+	t.Run("pause resets acceleration", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.AccelScrollUp()
+		tp.AccelScrollUp()
+		tp.AccelScrollUp()
+		// Simulate a pause longer than the accel window.
+		tp.lastScrollTime = time.Now().Add(-200 * time.Millisecond)
+		n := tp.AccelScrollUp()
+		testutil.Equal(t, n, 1) // reset to 1
+	})
+
+	t.Run("caps at max", func(t *testing.T) {
+		tp := NewTerminalPane()
+		for i := 0; i < 20; i++ {
+			tp.AccelScrollUp()
+		}
+		n := tp.AccelScrollUp()
+		testutil.Equal(t, n, scrollAccelMax)
+	})
+
+	t.Run("accel scroll down", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.ScrollUp(100) // start scrolled up
+		n := tp.AccelScrollDown()
+		testutil.Equal(t, n, 1)
+		testutil.Equal(t, tp.ScrollOffset(), 99)
+	})
+
+	t.Run("accel scroll down clamps at zero", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.ScrollUp(3)
+		// Rapid accelerated scrolls down should clamp.
+		tp.AccelScrollDown()
+		tp.AccelScrollDown()
+		tp.AccelScrollDown()
+		tp.AccelScrollDown()
+		testutil.Equal(t, tp.ScrollOffset(), 0)
+	})
+
+	t.Run("reset clears acceleration", func(t *testing.T) {
+		tp := NewTerminalPane()
+		tp.AccelScrollUp()
+		tp.AccelScrollUp()
+		tp.AccelScrollUp()
+		tp.ResetScroll()
+		testutil.Equal(t, tp.scrollAccel, 0)
+		// Next scroll should start fresh.
+		n := tp.AccelScrollUp()
+		testutil.Equal(t, n, 1)
+	})
+}
+
+func TestTerminalPane_ReplayAnchorReset(t *testing.T) {
+	// Verify that renderReplay resets anchorTotalLines on rebuild,
+	// preventing false anchor-lock when transitioning from live to replay.
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 24)
+
+	// Simulate live mode having set anchorTotalLines.
+	tp.anchorTotalLines = 100
+
+	// First scroll up transitions to replay path.
+	tp.ScrollUp(1)
+
+	// Build replay data: enough to fill some scrollback.
+	var data []byte
+	for i := 0; i < 200; i++ {
+		data = append(data, []byte("line content here\r\n")...)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// renderReplay should reset anchorTotalLines, so scrollOffset stays at 1.
+	tp.renderReplay(screen, 0, 0, 80, 24, data, 0, 80, 24)
+	testutil.Equal(t, tp.scrollOffset, 1)
 }

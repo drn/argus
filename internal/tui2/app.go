@@ -949,10 +949,10 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if event.Modifiers()&tcell.ModShift != 0 {
 		switch event.Key() {
 		case tcell.KeyUp:
-			a.agentPane.ScrollUp(1)
+			a.agentPane.AccelScrollUp()
 			return nil
 		case tcell.KeyDown:
-			a.agentPane.ScrollDown(1)
+			a.agentPane.AccelScrollDown()
 			return nil
 		case tcell.KeyPgUp:
 			a.agentPane.ScrollUp(20)

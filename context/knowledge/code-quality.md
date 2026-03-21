@@ -961,3 +961,24 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - The log is append-only, so cached data remains valid for the viewed region even as new bytes arrive below viewport
 - `ScrollUp`/`ScrollDown` set `paintCacheValid = false`, ensuring scroll offset changes trigger `paintEmu` (but not log re-reads)
 - `replayEmuMaxScroll` must be reset in `ResetCache()` alongside other replay state
+
+### Scroll Acceleration & Anchor-Lock Fix (2026-03-21)
+
+**Bug:** First Shift+Up in agent view caused a half-page jump. Root cause: `renderReplay` builds a replay emulator from 1MB+ of log tail, which has far more scrollback than the live emulator's 256KB ring buffer. The anchor-lock mechanism in `paintEmu` interpreted the totalLines difference as "new output arrived" and bumped `scrollOffset` by the delta.
+
+**Fix:** `renderReplay` now resets `anchorTotalLines = 0` on rebuild. With `anchorTotalLines == 0`, the anchor-lock guard (`tp.anchorTotalLines > 0`) is false, so no spurious scrollOffset bump occurs. `paintEmu` sets `anchorTotalLines = totalLines` on the first paint, establishing the correct baseline.
+
+**Scroll acceleration:** Keyboard scrolling (Shift+Up/Down) now uses `AccelScrollUp()`/`AccelScrollDown()` instead of fixed `ScrollUp(1)`. Time-based acceleration tracks `lastScrollTime` — key repeats within `scrollAccelWindow` (120ms) ramp the step from 1 to `scrollAccelMax` (12). Pause resets to 1. `ResetScroll()` clears the acceleration state.
+
+**Data Model:**
+- `lastScrollTime time.Time` — when last keyboard scroll happened
+- `scrollAccel int` — current acceleration multiplier (1-based)
+- `scrollAccelWindow` (120ms) — time window for key repeat detection
+- `scrollAccelMax` (12) — cap on acceleration multiplier
+
+**Flow:**
+1. `AccelScrollUp()` → `nextAccelStep()` checks elapsed time since `lastScrollTime`
+2. If within window: increment `scrollAccel` (capped at max)
+3. If outside window: reset to 1
+4. Return step as scroll amount; update `lastScrollTime`
+5. Mouse scroll unchanged (fixed `mouseScrollStep = 3`)
