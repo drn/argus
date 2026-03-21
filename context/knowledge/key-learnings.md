@@ -42,7 +42,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Ring buffer must be bounded (256KB).** Unbounded causes CPU spikes and OOM. Session log file provides full scrollback.
 - **Live scrollback reads from session log file, not ring buffer.** `readLogTail` seeks from EOF — gives infinite scrollback while live follow-tail stays on the fast ring buffer path.
 - **Anchor-lock keeps scrolled-up content pinned when new output arrives.** Track `anchorTotalLines`; bump `scrollOffset` by the delta. Reset to 0 on scroll-to-bottom.
-- **Replay emulator is cached and reused when only scroll offset changes.** Rebuild only when input size or dimensions change.
+- **Replay emulator is cached and reused when only scroll offset changes.** Rebuild only when input size or dimensions change. `Draw()` must stat the log file (not read it) to check cache validity — `readLogTail()` does open+stat+seek+read of 1MB+ per call, which blocks the UI thread and makes scrolling laggy.
 - **Agent view replay must use current panel dimensions, not stale PTY size.** Override `ptyCols/ptyRows` with current dimensions for dead/nil sessions.
 - **Preview panel must use PTY width, not panel width, for VT emulation.** Otherwise text double-wraps.
 - **New emulators must default `cursorVisible` to `false`.** Agents send `\e[?25l` early, but after ring buffer wrap or emu rebuild, that sequence is lost. Defaulting to `true` causes a phantom cursor at bottom-left. Also, `lastContentRow` must not extend to cursor position when cursor is hidden.
