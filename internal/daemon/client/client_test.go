@@ -284,6 +284,53 @@ func TestStreamLost_RemoveSession(t *testing.T) {
 	}
 }
 
+// TestDoneClose_StreamLost verifies that when rs.done is closed externally
+// (e.g., Client.Close during daemon restart), the exit callback fires with
+// StreamLost=true rather than marking the task as exited.
+// We call removeSessionStreamLost directly rather than driving through
+// connectStream because triggering the <-rs.done branch requires a live
+// daemon with a flaky stream (not feasible in unit tests).
+func TestDoneClose_StreamLost(t *testing.T) {
+	_, sockPath := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	exitCh := make(chan daemon.ExitInfo, 1)
+	c.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
+		exitCh <- info
+	})
+
+	// Manually add a session and pre-close done to simulate the
+	// Client.Close() → rs.close() path during daemon restart.
+	rs := newRemoteSession("t-done-close", c)
+	c.mu.Lock()
+	c.sessions["t-done-close"] = rs
+	c.mu.Unlock()
+
+	// Close done to simulate client shutdown.
+	rs.close()
+
+	// removeSessionStreamLost should fire with StreamLost=true.
+	// This is what connectStream's <-rs.done case now calls.
+	c.removeSessionStreamLost("t-done-close")
+
+	select {
+	case info := <-exitCh:
+		if !info.StreamLost {
+			t.Error("expected StreamLost=true when session closed externally")
+		}
+		if info.Stopped {
+			t.Error("expected Stopped=false")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for exit callback")
+	}
+}
+
 func TestAlive_DaemonDown(t *testing.T) {
 	_, sockPath := testSetup(t)
 

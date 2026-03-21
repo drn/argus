@@ -646,7 +646,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// when the user stops an agent) and must NOT be reconciled to Complete.
 	// IMPORTANT: runningIDs is nil when the daemon RPC failed — skip reconciliation
 	// to avoid marking all active tasks as Complete due to a transient error.
-	if a.daemonConnected && runningIDs != nil {
+	// Also skip during daemon restart — the new daemon has no sessions yet, so
+	// reconciliation would incorrectly mark all InProgress tasks as Complete.
+	if a.daemonConnected && runningIDs != nil && !a.daemonRestarting {
 		runningSet := make(map[string]bool, len(runningIDs))
 		for _, id := range runningIDs {
 			runningSet[id] = true

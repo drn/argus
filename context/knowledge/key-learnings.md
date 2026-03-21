@@ -15,9 +15,9 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### Daemon & RPC
 
-- **Reconciliation must distinguish RPC failure from empty running set.** `Client.Running()` returns `nil` on RPC error vs `[]string{}` when daemon confirms no sessions. Check `runningIDs != nil` before reconciling — otherwise a transient RPC timeout marks ALL InProgress tasks Complete.
+- **Reconciliation must distinguish RPC failure from empty running set.** `Client.Running()` returns `nil` on RPC error vs `[]string{}` when daemon confirms no sessions. Check `runningIDs != nil && !daemonRestarting` before reconciling — during restart the new daemon has no sessions, so reconciliation would incorrectly mark all InProgress tasks Complete.
 - **All daemon RPC calls must have a timeout.** `net/rpc.Client.Call()` blocks indefinitely. Use the `c.call()` wrapper with `select + time.After`. The buffered channel (`make(chan error, 1)`) is critical to prevent goroutine leak.
-- **Stream loss ≠ process exit.** Use `StreamLost` flag to distinguish. When `isSessionAlive()` returns `reachable=false`, treat as stream lost, not exit.
+- **Stream loss ≠ process exit.** Use `StreamLost` flag to distinguish. When `isSessionAlive()` returns `reachable=false`, treat as stream lost, not exit. **The `<-rs.done` path in `connectStream`'s retry loop must also use `removeSessionStreamLost`** — `Client.Close()` during daemon restart closes `done`, and using `removeSession` causes a zero-value ExitInfo (StreamLost=false) because the GetExitInfo RPC fails on the closed client, incorrectly marking the task Complete.
 - **`client.Get()` must return `nil` for any non-alive session.** Check `!info.Alive` alone — PID is stale between `onFinish()` and `delete(r.sessions)`.
 - **Daemon health check uses `Ping()`, not `refreshTasks()`.** Ping fails fast; refreshTasks blocks on RPC.
 - **Never call `refreshTasks()` from the tview main goroutine.** It blocks on RPC. Use `refreshTasksAsync()` (spawns goroutine + QueueUpdateDraw) or `refreshTasksLocal()` (reuses cached IDs, no RPC). Use `refreshTasksLocal` when only DB state changed (delete/prune); use `refreshTasksAsync` when session state may have changed.

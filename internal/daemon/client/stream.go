@@ -17,8 +17,8 @@ const maxStreamRetries = 3
 // Reads raw bytes and writes them to the local ring buffer. If the stream drops
 // but the daemon reports the session is still alive, retries up to maxStreamRetries
 // times before giving up. Calls removeSession only when the process has actually
-// exited. Calls removeSessionStreamLost when retries are exhausted or the daemon
-// is unreachable.
+// exited. Calls removeSessionStreamLost when retries are exhausted, the daemon
+// is unreachable, or the session was closed externally (e.g., client shutdown).
 func (rs *RemoteSession) connectStream(sockPath string) {
 	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
 		if attempt > 0 {
@@ -45,9 +45,13 @@ func (rs *RemoteSession) connectStream(sockPath string) {
 		// should retry or if we've been closed externally.
 		select {
 		case <-rs.done:
-			// Session was closed (e.g., client shutdown) — don't retry.
-			uxlog.Log("stream: session closed externally task=%s, not retrying", rs.taskID)
-			rs.client.removeSession(rs.taskID)
+			// Session was closed externally (e.g., client shutdown during
+			// daemon restart) — we don't know if the process actually
+			// exited, so treat as stream lost to avoid incorrectly
+			// marking the task Complete.
+			uxlog.Log("stream: session closed externally task=%s, treating as stream lost", rs.taskID)
+			rs.close() // no-op (done already closed), but consistent with other exit paths
+			rs.client.removeSessionStreamLost(rs.taskID)
 			return
 		default:
 		}
