@@ -255,6 +255,18 @@ func (tp *TerminalPane) ScrollDown(n int) {
 	}
 }
 
+// statLogSize returns the current size of the session log file without reading it.
+// Returns 0 if the file doesn't exist or can't be stat'd. This is a cheap syscall
+// (~1μs) used to check replay emulator cache validity without the cost of a full read.
+func (tp *TerminalPane) statLogSize() int64 {
+	logPath := agent.SessionLogPath(tp.taskID)
+	fi, err := os.Stat(logPath)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
 // readLogTail reads the last `size` bytes from the session log file.
 // Returns nil if the file doesn't exist or is empty. The log file is
 // concurrently appended by readLoop; using Open+Seek+Read (not ReadFile)
@@ -471,8 +483,33 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	if tp.scrollOffset > 0 || !alive {
-		// Scrollback or finished session: use log file for full history,
-		// falling back to ring buffer or cached replay data.
+		// Fast path: if we have a cached replay emulator with matching
+		// dimensions and the log file hasn't grown, skip file I/O entirely
+		// and just repaint from the cache with the new scroll offset.
+		// This is the hot path during scrolling — stat (~1μs) vs read (~1-10ms).
+		// Mirrors renderReplay's needRebuild logic as an early-out before readLogTail.
+		if tp.replayEmu != nil && tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows {
+			cacheValid := false
+			if tp.taskID != "" {
+				logSize := tp.statLogSize()
+				if logSize > 0 && logSize == tp.replayEmuLogSize {
+					cacheValid = true
+				}
+			} else if tp.replayEmuLogSize == 0 {
+				// Non-log-backed: check ring buffer or replayData size.
+				if sess != nil {
+					cacheValid = tp.replayEmuBytes == sess.TotalWritten()
+				} else {
+					cacheValid = tp.replayEmuBytes == uint64(len(tp.replayData))
+				}
+			}
+			if cacheValid {
+				tp.paintEmu(screen, x, y, width, height, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
+				return
+			}
+		}
+
+		// Slow path: cache miss — read log file and rebuild emulator.
 		var raw []byte
 		var logSize int64
 

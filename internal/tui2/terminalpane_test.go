@@ -700,6 +700,105 @@ func TestTerminalPane_RenderLiveSkipsCopyWhenIdle(t *testing.T) {
 	testutil.Equal(t, tp.emuFedTotal, uint64(len(newOutput)))
 }
 
+func TestTerminalPane_StatLogSize(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// No taskID → should return 0.
+	tp.taskID = ""
+	size := tp.statLogSize()
+	testutil.Equal(t, size, int64(0))
+
+	// Non-existent task → should return 0.
+	tp.taskID = "nonexistent-task-id-99999"
+	size = tp.statLogSize()
+	testutil.Equal(t, size, int64(0))
+}
+
+func TestTerminalPane_ScrollCacheFastPath(t *testing.T) {
+	// When a cached replay emulator exists and the data source hasn't changed,
+	// scrolling (changing scrollOffset) should NOT rebuild the emulator.
+	// This is the fast path that avoids file I/O during scroll events.
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	// Generate enough content to create scrollback.
+	var raw []byte
+	for i := 0; i < 50; i++ {
+		raw = append(raw, []byte("line of scrollable content here!\n")...)
+	}
+
+	// First render builds the emulator (non-log-backed: logSize=0).
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should be set after first render")
+	}
+	firstEmu := tp.replayEmu
+	testutil.Equal(t, tp.replayEmuBytes, uint64(len(raw)))
+
+	// Simulate scrolling up — only scrollOffset changes.
+	tp.scrollOffset = 5
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu != firstEmu {
+		t.Error("replayEmu should be reused when only scrollOffset changed (non-log path)")
+	}
+
+	// Scroll further up — still cached.
+	tp.scrollOffset = 20
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	if tp.replayEmu != firstEmu {
+		t.Error("replayEmu should be reused on deeper scroll (non-log path)")
+	}
+
+	// Same test for log-backed path (logSize > 0).
+	tp.replayEmu = nil // force rebuild
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 5000, 40, 10)
+	logEmu := tp.replayEmu
+	if logEmu == nil {
+		t.Fatal("replayEmu should be set for log-backed render")
+	}
+
+	// Scroll with same logSize — should reuse.
+	tp.scrollOffset = 10
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 5000, 40, 10)
+	if tp.replayEmu != logEmu {
+		t.Error("replayEmu should be reused when logSize unchanged (scroll-only)")
+	}
+
+	// Different logSize (new output) — should rebuild.
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 6000, 40, 10)
+	if tp.replayEmu == logEmu {
+		t.Error("replayEmu should rebuild when logSize changes")
+	}
+}
+
+func TestTerminalPane_ScrollCacheDimensionChange(t *testing.T) {
+	// Changing terminal dimensions must invalidate the replay cache.
+	tp := NewTerminalPane()
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 24)
+
+	raw := []byte("hello world\nline two\nline three\n")
+
+	tp.renderReplay(screen, 0, 0, 40, 10, raw, 0, 40, 10)
+	firstEmu := tp.replayEmu
+
+	// Change cols → must rebuild.
+	tp.renderReplay(screen, 0, 0, 60, 10, raw, 0, 60, 10)
+	if tp.replayEmu == firstEmu {
+		t.Error("replayEmu should rebuild when cols change")
+	}
+	secondEmu := tp.replayEmu
+
+	// Change rows → must rebuild.
+	tp.renderReplay(screen, 0, 0, 60, 15, raw, 0, 60, 15)
+	if tp.replayEmu == secondEmu {
+		t.Error("replayEmu should rebuild when rows change")
+	}
+}
+
 func TestDrawBorder(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	screen.Init()
