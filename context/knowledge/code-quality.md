@@ -879,3 +879,24 @@ Pasting large text into any input (agent terminal, new task form, settings forms
 - Any new custom widget with text input MUST implement `PasteHandler()` — without it, paste is silently dropped when `EnablePaste` is on (tview bypasses `InputCapture` for paste events)
 - PTY paste must include bracket paste sequences so the agent's readline handles it correctly
 - Edit-mode read-only fields (name field in ProjectForm/BackendForm) must reject paste just like they reject keystrokes
+
+## Fix: UI Freeze from Blocking RPC on Main Goroutine — 2026-03-20
+
+### Problem
+`refreshTasks()` called `runner.Running()` + `runner.Idle()` — both daemon RPC calls with up to 5s timeout. Seven call sites invoked this directly on the tview main goroutine, freezing all UI input until RPC completed. Additionally, `Running()` and `Idle()` each made a separate `ListSessions` RPC, doubling overhead.
+
+### Data Model
+- `SessionProvider` interface gains `RunningAndIdle() (running, idle []string)` — single-call variant
+- `Runner.Sessions()` returns a snapshot map for the daemon's `ListSessions` RPC (avoids N+1 lock acquisitions)
+- `App` caches `idleIDs []string` alongside existing `runningIDs` for `refreshTasksLocal()`
+
+### Flow
+Three refresh methods for three use cases:
+1. **`refreshTasks()`** — blocking, for init only (before event loop)
+2. **`refreshTasksAsync()`** — goroutine + QueueUpdateDraw, for UI-thread call sites (status change, archive, new task, daemon restart)
+3. **`refreshTasksLocal()`** — reuses cached IDs, no RPC, for DB-only changes (delete, prune)
+
+### Gotchas
+- `net/rpc` serializes calls on a single connection — head-of-line blocking makes separate `Running()`/`Idle()` calls doubly expensive
+- RPC timeout reduced from 5s to 2s — generous for local Unix socket, halves worst-case freeze
+- `refreshTasksLocal` must use cached `idleIDs`, not call `runner.Idle()` (which is RPC)

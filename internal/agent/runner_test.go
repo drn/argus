@@ -259,6 +259,85 @@ func TestRunner_Idle(t *testing.T) {
 	}
 }
 
+func TestRunner_RunningAndIdle(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	// Empty runner
+	running, idle := r.RunningAndIdle()
+	if len(running) != 0 || len(idle) != 0 {
+		t.Errorf("expected empty, got running=%v idle=%v", running, idle)
+	}
+
+	// Start a session — running but not idle (lastOutput is zero)
+	task := &model.Task{ID: "rai-t1", Name: "test", Worktree: t.TempDir()}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop("rai-t1")
+
+	running, idle = r.RunningAndIdle()
+	if len(running) != 1 || running[0] != "rai-t1" {
+		t.Errorf("expected [rai-t1] running, got %v", running)
+	}
+	if len(idle) != 0 {
+		t.Errorf("expected no idle, got %v", idle)
+	}
+
+	// Make it idle
+	sess := r.Get("rai-t1").(*Session)
+	sess.mu.Lock()
+	sess.lastOutput = time.Now().Add(-5 * time.Second)
+	sess.mu.Unlock()
+
+	running, idle = r.RunningAndIdle()
+	if len(running) != 1 {
+		t.Errorf("expected 1 running, got %v", running)
+	}
+	if len(idle) != 1 || idle[0] != "rai-t1" {
+		t.Errorf("expected [rai-t1] idle, got %v", idle)
+	}
+}
+
+func TestRunner_Sessions(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	// Empty
+	sessions := r.Sessions()
+	if len(sessions) != 0 {
+		t.Errorf("expected empty, got %d sessions", len(sessions))
+	}
+
+	task := &model.Task{ID: "sess-t1", Name: "test", Worktree: t.TempDir()}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Stop("sess-t1")
+
+	sessions = r.Sessions()
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session, got %d", len(sessions))
+	}
+	if _, ok := sessions["sess-t1"]; !ok {
+		t.Error("expected session for sess-t1")
+	}
+}
+
 func TestRunner_WorkDir(t *testing.T) {
 	r := NewRunner(nil)
 

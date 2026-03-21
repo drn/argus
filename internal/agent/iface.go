@@ -17,6 +17,7 @@ type SessionProvider interface {
 	Get(taskID string) SessionHandle // returns nil if not found
 	Running() []string
 	Idle() []string
+	RunningAndIdle() (running, idle []string)
 	HasSession(taskID string) bool
 	WorkDir(taskID string) string
 }

@@ -627,6 +627,31 @@ func TestDeleteTask(t *testing.T) {
 	}
 }
 
+func TestRefreshTasksLocal(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	d.Add(&model.Task{ID: "t1", Name: "task1", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t2", Name: "task2", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
+	app.refreshTasks()
+
+	if len(app.tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(app.tasks))
+	}
+
+	// Delete from DB, then use refreshTasksLocal (no RPC)
+	d.Delete("t1")
+	app.refreshTasksLocal()
+
+	if len(app.tasks) != 1 {
+		t.Errorf("expected 1 task after local refresh, got %d", len(app.tasks))
+	}
+	if app.tasks[0].ID != "t2" {
+		t.Errorf("expected t2, got %s", app.tasks[0].ID)
+	}
+}
+
 func TestCtrlDOpensConfirmDelete(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

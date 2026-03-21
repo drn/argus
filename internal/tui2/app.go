@@ -97,6 +97,7 @@ type App struct {
 	daemonConnected bool
 	tasks           []*model.Task
 	runningIDs      []string
+	idleIDs         []string
 	worktreeDir     string // resolved worktree dir for current agent view task
 	lastGitRefresh  time.Time
 
@@ -170,12 +171,12 @@ func (a *App) buildUI() {
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui2] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
-		a.refreshTasks()
+		a.refreshTasksAsync()
 	}
 	a.tasklist.OnArchive = func(t *model.Task) {
 		uxlog.Log("[tui2] archive toggle: task %s (%s) archived=%v", t.ID, t.Name, t.Archived)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
-		a.refreshTasks()
+		a.refreshTasksAsync()
 	}
 	a.tasklist.OnOpenPR = func(t *model.Task) {
 		exec.Command("open", t.PRURL).Start() //nolint:errcheck
@@ -272,8 +273,7 @@ func (a *App) onTick() {
 	// up to 5 seconds on timeout, and holding a.mu during that blocks the
 	// entire UI (QueueUpdateDraw callbacks can't run while the tick goroutine
 	// holds the mutex and waits for RPC).
-	runningIDs := a.runner.Running()
-	idleIDs := a.runner.Idle()
+	runningIDs, idleIDs := a.runner.RunningAndIdle()
 
 	// Scan running sessions for GitHub PR URLs (last 32KB of output).
 	for _, rid := range runningIDs {
@@ -439,7 +439,7 @@ func (a *App) restartDaemon() {
 				uxlog.Log("[tui2] reset task %s to pending (daemon restarted)", t.ID)
 			}
 		}
-		a.refreshTasks()
+		a.refreshTasksAsync()
 	})
 }
 
@@ -538,15 +538,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 
 	// Refresh task list — fetch running/idle IDs in a goroutine to avoid
 	// blocking the tview main goroutine with an RPC call.
-	go func() {
-		runningIDs := a.runner.Running()
-		idleIDs := a.runner.Idle()
-		a.tapp.QueueUpdateDraw(func() {
-			a.mu.Lock()
-			defer a.mu.Unlock()
-			a.refreshTasksWithIDs(runningIDs, idleIDs)
-		})
-	}()
+	a.refreshTasksAsync()
 }
 
 // scanAndStorePRURL scans output for a GitHub PR URL and persists it on the task.
@@ -585,15 +577,38 @@ func (a *App) syncIdleUnvisited() {
 	a.tasklist.SetIdleUnvisited(ids)
 }
 
+// refreshTasks fetches running/idle session IDs (RPC) and updates the task
+// list. IMPORTANT: This blocks on RPC calls — NEVER call from the tview main
+// goroutine. Use refreshTasksAsync instead for any UI-thread call site.
 func (a *App) refreshTasks() {
-	// Fetch running/idle IDs OUTSIDE the lock — Running()/Idle() are RPC calls
-	// that can block for up to 5s on timeout. Holding a.mu during that blocks
-	// the entire UI.
-	runningIDs := a.runner.Running()
-	idleIDs := a.runner.Idle()
+	runningIDs, idleIDs := a.runner.RunningAndIdle()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.refreshTasksWithIDs(runningIDs, idleIDs)
+}
+
+// refreshTasksAsync fetches running/idle IDs in a background goroutine, then
+// updates the task list on the tview main goroutine via QueueUpdateDraw.
+// Safe to call from any goroutine including the tview main goroutine.
+func (a *App) refreshTasksAsync() {
+	go func() {
+		runningIDs, idleIDs := a.runner.RunningAndIdle()
+		a.tapp.QueueUpdateDraw(func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.refreshTasksWithIDs(runningIDs, idleIDs)
+		})
+	}()
+}
+
+// refreshTasksLocal re-reads tasks from the DB and updates the task list using
+// the last-known running/idle IDs. Does NOT make RPC calls, so it is safe to
+// call from the tview main goroutine. Use this when only DB state changed
+// (e.g. task deleted) and running session state is unchanged.
+func (a *App) refreshTasksLocal() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.refreshTasksWithIDs(a.runningIDs, a.idleIDs)
 }
 
 // refreshTasksWithIDs updates the task list with pre-fetched running/idle IDs.
@@ -601,6 +616,7 @@ func (a *App) refreshTasks() {
 func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasks = a.db.Tasks()
 	a.runningIDs = runningIDs
+	a.idleIDs = idleIDs
 
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
 	// but has no running session, mark it Complete. This handles cases where
@@ -1434,7 +1450,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
 
 		a.closeNewTaskForm()
-		a.refreshTasks()
+		a.refreshTasksAsync()
 
 		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
 		a.onTaskSelect(task)
@@ -1713,7 +1729,7 @@ func (a *App) deleteTask(t *model.Task) {
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui2] failed to delete task %s: %v", t.ID, err)
 	}
-	a.refreshTasks()
+	a.refreshTasksLocal()
 
 	// Clean up worktree and branch in background — git operations can take seconds.
 	cfg := a.db.Config()
@@ -1784,7 +1800,7 @@ func (a *App) pruneCompletedTasks() {
 	totalClean := len(toClean) + orphanCount
 
 	if totalClean == 0 {
-		a.refreshTasks()
+		a.refreshTasksLocal()
 		return
 	}
 
@@ -1839,9 +1855,13 @@ func (a *App) pruneCompletedTasks() {
 
 		wg.Wait()
 
+		// Fetch session state off UI thread, then close modal + refresh together.
+		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
 			a.closePruneModal()
-			a.refreshTasks()
+			a.mu.Lock()
+			a.refreshTasksWithIDs(runningIDs, idleIDs)
+			a.mu.Unlock()
 		})
 	}()
 }

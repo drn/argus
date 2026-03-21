@@ -22,7 +22,8 @@ import (
 
 // rpcTimeout is the maximum time to wait for any single RPC call to the daemon.
 // Prevents the TUI from hanging indefinitely if the daemon crashes.
-const rpcTimeout = 5 * time.Second
+// 2s is generous for a local Unix socket; anything slower indicates real trouble.
+const rpcTimeout = 2 * time.Second
 
 // ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
@@ -198,6 +199,24 @@ func (c *Client) Idle() []string {
 		}
 	}
 	return ids
+}
+
+// RunningAndIdle returns running and idle task IDs in a single RPC call.
+func (c *Client) RunningAndIdle() (running, idle []string) {
+	var resp daemon.ListResp
+	if err := c.call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
+		return nil, nil
+	}
+	running = make([]string, 0, len(resp.Sessions))
+	for _, s := range resp.Sessions {
+		if s.Alive {
+			running = append(running, s.TaskID)
+		}
+		if s.Idle {
+			idle = append(idle, s.TaskID)
+		}
+	}
+	return running, idle
 }
 
 // HasSession returns true if a session exists for the task.
