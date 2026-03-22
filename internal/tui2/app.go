@@ -282,8 +282,6 @@ func (a *App) buildUI() {
 
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
-	a.tapp.EnableMouse(true)
-	a.tapp.EnablePaste(true)
 }
 
 // Run starts the application event loop.
@@ -296,6 +294,12 @@ func (a *App) Run() error {
 	}
 	a.screen = &lazyScreen{Screen: rawScreen}
 	a.tapp.SetScreen(a.screen)
+	// EnableMouse/EnablePaste must be called AFTER SetScreen. tview's
+	// EnablePaste only calls screen.EnablePaste() when a.screen is non-nil,
+	// and Run() only auto-enables when it creates its own screen. Calling
+	// these before SetScreen stores the flag but never applies it.
+	a.tapp.EnableMouse(true)
+	a.tapp.EnablePaste(true)
 
 	go a.tickLoop()
 	defer close(a.tickDone)

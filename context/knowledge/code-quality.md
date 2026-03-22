@@ -1109,3 +1109,30 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `len(line) > 120` uses byte length, which works because noise-concatenated lines are typically 600-1100 bytes
 - `partialRenderRe` allows up to 4 chars (`{0,4}`) because partial renders include fragments like "rpng"
 - `inlineWarpClaudRe` uses `[^⏺⎿]*` to consume noise without eating into the next content boundary
+
+## Bug Fix: EnablePaste/EnableMouse Regression from lazyScreen — 2026-03-22
+
+**Problem:** Commit `9479777` introduced `lazyScreen` wrapping `tcell.Screen` via `tapp.SetScreen()` in `Run()`, but `EnablePaste(true)` and `EnableMouse(true)` remained in `initUI()` which runs during `New()` — before the screen exists. tview's `EnablePaste` checks `a.screen != nil` before calling `screen.EnablePaste()`, so the flag was stored but never applied. And `Run()` only auto-enables when it creates its own screen (`a.screen == nil`), which it doesn't when `SetScreen` was called first. Result: bracketed paste silently broken in both agent view and new task form.
+
+**Fix:** Moved `EnableMouse(true)` and `EnablePaste(true)` from `buildUI()` to `Run()`, after `SetScreen()`.
+
+**Smoke test infrastructure added (`smoke_test.go`):**
+- `simApp(t)` — creates `lazyScreen`-wrapped `SimulationScreen` with correct Enable ordering
+- `wireApp(t, app)` — replaces an `App`'s tview with a SimulationScreen (sets `app.screen` to match production)
+- `runApp(t, app)` — manages event loop lifecycle with `syncUI` readiness check
+- `syncUI(t, app)` — waits for injected events to propagate (eventSettle + QueueUpdate round-trip)
+- `readUI(t, app, fn)` — executes fn on tview goroutine to avoid data races on UI state reads
+
+**Tests added:**
+- `TestEnablePasteAfterSetScreen` — end-to-end paste via SimulationScreen
+- `TestEnableMouseAfterSetScreen` — end-to-end mouse via SimulationScreen
+- `TestLazyScreen_EnableDisableDoesNotPanic` — embedding passthrough verification
+- `TestSmoke_TabSwitching` — numeric key tab switching through all 4 tabs
+- `TestSmoke_NewTaskFormPaste` — open form, paste text, verify prompt
+- `TestSmoke_AgentViewEnterExit` — Enter to agent view, Ctrl+D to exit
+- `TestSmoke_NewTaskFormEscape` — open form, Esc to close
+
+**Gotchas:**
+- SimulationScreen's `PostEvent(EventPaste)` bypasses real bracket paste mode — negative test (broken ordering) is not possible in simulation
+- `QueueUpdate` and SimulationScreen event injection use separate channels — `syncUI` needs `eventSettle` sleep before the QueueUpdate round-trip to let events propagate
+- UI state reads (`header.ActiveTab()`, `app.mode`) must happen inside `readUI`/`QueueUpdate` to avoid data races with the tview goroutine

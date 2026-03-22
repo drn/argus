@@ -147,6 +147,9 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 - **OK to skip:** real terminal functions (raw mode, ioctl), external process shelling, `cmd/argus/main.go`.
 - **Testing patterns:** `db.OpenInMemory()`, `agent.NewRunner(nil)`, `exec.Command("echo")` / `exec.Command("sleep")`, `DefaultTheme()`, table-driven with `t.Run`. Keep daemon client test names short (macOS 104-byte socket path limit).
 - **CRITICAL: Tests must NEVER operate on real `~/.argus/` paths.** All worktree paths, data dirs, and file operations in tests MUST use `t.TempDir()`. A runtime `testGuard` in `internal/tui2/worktree.go` blocks deletions on real `~/.argus/` during `go test` as a safety net, but tests should be designed correctly in the first place.
+- **CRITICAL: Tests must NEVER connect to or affect the live argus daemon.** Use `agent.NewRunner(nil)` (not a real daemon client). Never dial the Unix socket (`~/.argus/daemon.sock`). Never send signals to the daemon PID.
+- **Any change to tview screen setup (SetScreen, EnablePaste, EnableMouse, screen wrapping) must include a SimulationScreen integration test** verifying the feature works end-to-end. See `internal/tui2/smoke_test.go` for the pattern: `simApp(t)` creates a `lazyScreen`-wrapped SimulationScreen with correct Enable ordering; `wireApp(t, app)` wires a full `App` to a SimulationScreen for smoke tests; `runApp(t, app)` manages the event loop lifecycle.
+- **Major UI paths (tab switching, modal open/close, paste, agent view enter/exit) must have smoke tests** in `smoke_test.go` that exercise the real tview event loop. These catch setup-ordering bugs and event routing regressions that unit tests on individual handlers miss.
 
 ## Planned but Not Yet Implemented
 
