@@ -178,6 +178,11 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.todos.OnLaunch = func(item ToDoItem) {
 		app.openLaunchToDoModal(item)
 	}
+	app.todos.OnStatusChange = func(t *model.Task) {
+		uxlog.Log("[todos] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
+		app.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		app.refreshTasksAsync()
+	}
 
 	app.buildUI()
 	app.refreshTasks()

@@ -29,6 +29,8 @@ type ToDosView struct {
 
 	// Callback when the user presses Enter to launch a to-do as a task.
 	OnLaunch func(item ToDoItem)
+	// Callback when the user changes a linked task's status via s/S keys.
+	OnStatusChange func(task *model.Task)
 }
 
 // NewToDosView creates the To Dos tab with three-panel layout.
@@ -151,6 +153,26 @@ func (v *ToDosView) HandleKey(event *tcell.EventKey) bool {
 		case 'R':
 			if v.tapp != nil {
 				v.RefreshAsync(v.tapp)
+			}
+			return true
+		case 's':
+			if item := v.list.SelectedItem(); item != nil {
+				if t, ok := v.taskMap[item.Path]; ok {
+					t.SetStatus(t.Status.Next())
+					if v.OnStatusChange != nil {
+						v.OnStatusChange(t)
+					}
+				}
+			}
+			return true
+		case 'S':
+			if item := v.list.SelectedItem(); item != nil {
+				if t, ok := v.taskMap[item.Path]; ok {
+					t.SetStatus(t.Status.Prev())
+					if v.OnStatusChange != nil {
+						v.OnStatusChange(t)
+					}
+				}
 			}
 			return true
 		}
