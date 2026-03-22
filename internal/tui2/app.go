@@ -854,6 +854,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 	case tcell.KeyRune:
+		// When the task list filter is active, let all rune keys through
+		// to the filter input instead of handling global shortcuts.
+		if a.mode == modeTaskList && a.tasklist.Filtering() {
+			break
+		}
 		switch event.Rune() {
 		case 'q':
 			if a.mode == modeTaskList {

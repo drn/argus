@@ -805,6 +805,298 @@ func TestTaskListView_OpenPRKey(t *testing.T) {
 	}
 }
 
+func TestTaskListView_FilterActivatesOnSlash(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	if tl.Filtering() {
+		t.Error("should not be filtering initially")
+	}
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	if !tl.Filtering() {
+		t.Error("should be filtering after pressing /")
+	}
+	if tl.Filter() != "" {
+		t.Errorf("filter text should be empty, got %q", tl.Filter())
+	}
+}
+
+func TestTaskListView_FilterByName(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	// Activate filter
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	// Type "task-a" — should filter to only task-a
+	for _, ch := range "task-a" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	if tl.Filter() != "task-a" {
+		t.Errorf("filter = %q, want 'task-a'", tl.Filter())
+	}
+
+	// Count visible task rows
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	if taskCount != 1 {
+		t.Errorf("expected 1 visible task, got %d", taskCount)
+	}
+
+	sel := tl.SelectedTask()
+	if sel == nil || sel.Name != "task-a" {
+		t.Errorf("selected task = %v, want task-a", sel)
+	}
+}
+
+func TestTaskListView_FilterByProject(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	// Type "beta" — should match tasks in the beta project
+	for _, ch := range "beta" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	// task-c (active in beta) should be visible; task-d (archived in beta) too if archive expanded
+	if taskCount < 1 {
+		t.Errorf("expected at least 1 visible task matching 'beta', got %d", taskCount)
+	}
+}
+
+func TestTaskListView_FilterCaseInsensitive(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	for _, ch := range "TASK-B" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	if taskCount != 1 {
+		t.Errorf("case-insensitive filter: expected 1 task, got %d", taskCount)
+	}
+}
+
+func TestTaskListView_FilterEscapeClears(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), func(tview.Primitive) {})
+
+	if tl.Filter() != "x" {
+		t.Fatalf("filter should be 'x', got %q", tl.Filter())
+	}
+
+	// Escape clears filter and exits filter mode
+	handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(tview.Primitive) {})
+
+	if tl.Filtering() {
+		t.Error("should not be filtering after Escape")
+	}
+	if tl.Filter() != "" {
+		t.Errorf("filter should be empty after Escape, got %q", tl.Filter())
+	}
+
+	// All tasks should be visible again
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	if taskCount < 2 {
+		t.Errorf("expected all tasks visible after clearing filter, got %d", taskCount)
+	}
+}
+
+func TestTaskListView_FilterEnterConfirms(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "task-a" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	// Enter confirms — exits filter mode but keeps filter text
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+
+	if tl.Filtering() {
+		t.Error("should not be in filter input mode after Enter")
+	}
+	if tl.Filter() != "task-a" {
+		t.Errorf("filter should persist after Enter, got %q", tl.Filter())
+	}
+
+	// Filter should still be applied
+	taskCount := 0
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			taskCount++
+		}
+	}
+	if taskCount != 1 {
+		t.Errorf("filter should still be applied after Enter, got %d tasks", taskCount)
+	}
+}
+
+func TestTaskListView_FilterBackspace(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyRune, 'b', tcell.ModNone), func(tview.Primitive) {})
+
+	if tl.Filter() != "ab" {
+		t.Fatalf("filter should be 'ab', got %q", tl.Filter())
+	}
+
+	handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0), func(tview.Primitive) {})
+	if tl.Filter() != "a" {
+		t.Errorf("after backspace: filter should be 'a', got %q", tl.Filter())
+	}
+}
+
+func TestTaskListView_FilterNavigateWhileFiltering(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "fix-bug", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "fix-typo", Project: "alpha", Status: model.StatusPending},
+		{ID: "3", Name: "add-feature", Project: "alpha", Status: model.StatusPending},
+	})
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "fix" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	// Should have 2 matching tasks
+	sel1 := tl.SelectedTask()
+	if sel1 == nil {
+		t.Fatal("expected a selected task")
+	}
+
+	// Navigate with arrow keys while filtering
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	sel2 := tl.SelectedTask()
+	if sel2 == nil {
+		t.Fatal("expected a selected task after Down")
+	}
+	if sel2.ID == sel1.ID {
+		t.Error("Down should move to a different task")
+	}
+}
+
+func TestTaskListView_FilterPasteHandler(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	paste := tl.PasteHandler()
+	paste("task-b", func(tview.Primitive) {})
+
+	if tl.Filter() != "task-b" {
+		t.Errorf("after paste: filter = %q, want 'task-b'", tl.Filter())
+	}
+}
+
+func TestTaskListView_FilterPasteIgnoredWhenNotFiltering(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	paste := tl.PasteHandler()
+	paste("something", func(tview.Primitive) {})
+
+	if tl.Filter() != "" {
+		t.Errorf("paste when not filtering should be ignored, got %q", tl.Filter())
+	}
+}
+
+func TestTaskListView_FilterEscapeFromConfirmedFilter(t *testing.T) {
+	tl := NewTaskListView()
+	tl.expanded = "alpha"
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+
+	// Activate filter, type, confirm with Enter
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+
+	if tl.Filtering() {
+		t.Fatal("should not be in filter mode after Enter")
+	}
+	if tl.Filter() != "a" {
+		t.Fatalf("filter should be 'a', got %q", tl.Filter())
+	}
+
+	// Press Escape to clear the confirmed filter
+	handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(tview.Primitive) {})
+
+	if tl.Filter() != "" {
+		t.Errorf("Escape should clear confirmed filter, got %q", tl.Filter())
+	}
+}
+
+func TestTaskListView_FilterNoMatch(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "zzzzz" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	// No rows should match
+	if len(tl.rows) != 0 {
+		t.Errorf("expected 0 rows for non-matching filter, got %d", len(tl.rows))
+	}
+	if tl.SelectedTask() != nil {
+		t.Error("should have no selected task when filter matches nothing")
+	}
+}
+
 func TestTaskListView_SelectedProject(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks(makeTasks())
