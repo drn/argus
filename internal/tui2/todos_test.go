@@ -3,6 +3,8 @@ package tui2
 import (
 	"testing"
 
+	"github.com/gdamore/tcell/v2"
+
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -163,6 +165,52 @@ func TestToDoListPanel_SetTaskMap(t *testing.T) {
 	}
 	p.SetTaskMap(taskMap)
 	testutil.Equal(t, p.taskMap["/vault/x.md"].Status, model.StatusComplete)
+}
+
+func TestToDosView_StatusToggle(t *testing.T) {
+	v := NewToDosView()
+	v.items = []ToDoItem{
+		{Name: "a", Path: "/vault/a.md"},
+		{Name: "b", Path: "/vault/b.md"},
+	}
+	v.list.SetItems(v.items)
+
+	taskA := &model.Task{Name: "task-a", Status: model.StatusPending}
+	v.SyncTasks(map[string]*model.Task{
+		"/vault/a.md": taskA,
+	})
+
+	var changed *model.Task
+	v.OnStatusChange = func(task *model.Task) {
+		changed = task
+	}
+
+	t.Run("s advances linked task status", func(t *testing.T) {
+		changed = nil
+		v.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+		testutil.Equal(t, changed != nil, true)
+		testutil.Equal(t, changed.Status, model.StatusInProgress)
+	})
+
+	t.Run("s advances again", func(t *testing.T) {
+		changed = nil
+		v.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+		testutil.Equal(t, changed.Status, model.StatusInReview)
+	})
+
+	t.Run("S goes back", func(t *testing.T) {
+		changed = nil
+		v.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone))
+		testutil.Equal(t, changed.Status, model.StatusInProgress)
+	})
+
+	t.Run("s on unlinked todo is no-op", func(t *testing.T) {
+		changed = nil
+		// Move cursor to todo-b which has no linked task
+		v.list.MoveDown()
+		v.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+		testutil.Nil(t, changed)
+	})
 }
 
 func TestTabIndices(t *testing.T) {
