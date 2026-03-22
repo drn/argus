@@ -34,26 +34,71 @@ func (rf *RenameTaskForm) ResetDone()          { rf.done = false }
 
 // HandleKey processes key events for the rename form.
 func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
+	mod := ev.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
 	switch ev.Key() {
 	case tcell.KeyEscape:
 		rf.canceled = true
 	case tcell.KeyEnter:
 		rf.done = true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			rf.name, rf.cursor = deleteWordLeft(rf.name, rf.cursor)
+			return
+		}
 		if rf.cursor > 0 {
 			rf.name = append(rf.name[:rf.cursor-1], rf.name[rf.cursor:]...)
 			rf.cursor--
 		}
+	case tcell.KeyCtrlW:
+		rf.name, rf.cursor = deleteWordLeft(rf.name, rf.cursor)
+	case tcell.KeyDelete:
+		if hasAlt {
+			rf.name, rf.cursor = deleteWordRight(rf.name, rf.cursor)
+			return
+		}
+		if rf.cursor < len(rf.name) {
+			rf.name = append(rf.name[:rf.cursor], rf.name[rf.cursor+1:]...)
+		}
 	case tcell.KeyLeft:
+		if hasAlt {
+			rf.cursor = wordLeftPos(rf.name, rf.cursor)
+			return
+		}
 		if rf.cursor > 0 {
 			rf.cursor--
 		}
 	case tcell.KeyRight:
+		if hasAlt {
+			rf.cursor = wordRightPos(rf.name, rf.cursor)
+			return
+		}
 		if rf.cursor < len(rf.name) {
 			rf.cursor++
 		}
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		rf.cursor = 0
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		rf.cursor = len(rf.name)
+	case tcell.KeyCtrlU:
+		rf.name = rf.name[rf.cursor:]
+		rf.cursor = 0
+	case tcell.KeyCtrlK:
+		rf.name = rf.name[:rf.cursor]
 	case tcell.KeyRune:
 		r := ev.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				rf.cursor = wordLeftPos(rf.name, rf.cursor)
+			case 'f', 'F':
+				rf.cursor = wordRightPos(rf.name, rf.cursor)
+			case 'd', 'D':
+				rf.name, rf.cursor = deleteWordRight(rf.name, rf.cursor)
+			}
+			return
+		}
 		rf.name = append(rf.name[:rf.cursor], append([]rune{r}, rf.name[rf.cursor:]...)...)
 		rf.cursor++
 	}
@@ -88,9 +133,7 @@ func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	formH := 7
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
-	if formY < y {
-		formY = y
-	}
+	formY = max(formY, y)
 
 	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
 	drawText(screen, formX+2, formY+1, formW-4, "Rename Task", StyleTitle)
