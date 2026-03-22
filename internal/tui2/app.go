@@ -1943,7 +1943,7 @@ func (a *App) handleRenameTaskKey(event *tcell.EventKey) {
 	if a.renameModal.Done() {
 		newName := sanitizeTaskName(a.renameModal.Name())
 		if newName == "" {
-			a.renameModal.done = false
+			a.renameModal.ResetDone()
 			a.renameModal.SetError("Name cannot be empty")
 			return
 		}
@@ -1956,7 +1956,9 @@ func (a *App) handleRenameTaskKey(event *tcell.EventKey) {
 		uxlog.Log("[tui2] rename task: %s (%s) → (%s)", taskID, oldName, newName)
 		a.db.Rename(taskID, newName) //nolint:errcheck // best-effort
 		a.closeRenameModal()
-		a.refreshTasksAsync()
+		// Use refreshTasksLocal (not refreshTasksAsync) — rename only changes
+		// DB state, no session state changed. Avoids RPC reconciliation race.
+		a.refreshTasksLocal()
 	}
 }
 

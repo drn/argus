@@ -30,6 +30,7 @@ func (rf *RenameTaskForm) Done() bool      { return rf.done }
 func (rf *RenameTaskForm) Canceled() bool  { return rf.canceled }
 func (rf *RenameTaskForm) Name() string    { return string(rf.name) }
 func (rf *RenameTaskForm) SetError(msg string) { rf.errMsg = msg }
+func (rf *RenameTaskForm) ResetDone()          { rf.done = false }
 
 // HandleKey processes key events for the rename form.
 func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
