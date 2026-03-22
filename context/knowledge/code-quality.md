@@ -1063,3 +1063,13 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `handleGlobalKey` must bypass rune shortcuts (`q`, `1-4`) when `tasklist.Filtering()` is true
 - `buildRows` expands all projects and archive when `filter != ""` — otherwise matched tasks in collapsed projects are invisible
 - Filter title shown in panel border: `" Tasks [/query] "`
+
+## Bug Fix: Cursor Highlight Overwriting Elapsed Time — 2026-03-22
+
+**Problem:** `drawTaskRow` cursor fill loop iterated from end-of-name to edge-of-row, overwriting the right-aligned elapsed time indicator that was already drawn.
+
+**Fix:** Compute `elapsedCol` once before both the elapsed time draw and cursor fill blocks. Use it as the fill boundary so the loop stops before the elapsed time region.
+
+**Gotchas:**
+- `elapsedCol` was computed identically in two places — deduplicated to a single computation site to prevent drift
+- The `-1` in `elapsedCol = x + w - len(elapsed) - 1` is a 1-cell right margin
