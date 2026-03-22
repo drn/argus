@@ -1097,6 +1097,20 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			if a.screen != nil {
 				a.screen.skipClear = true
 			}
+			// Schedule a fast follow-up redraw to paint the PTY echo.
+			// The immediate tview draw (from returning nil) fires before
+			// the echo arrives (~1-5ms). Without this, the echo waits
+			// up to 200ms for the redraw loop poll — visible as typing lag.
+			// Only trigger the draw if new output actually arrived —
+			// otherwise we'd run Clear() without skipClear, causing the
+			// same full ~10K cell repaint that lazyScreen prevents.
+			tw := sess.TotalWritten()
+			go func() {
+				time.Sleep(16 * time.Millisecond)
+				if sess.TotalWritten() != tw {
+					a.tapp.QueueUpdateDraw(func() {})
+				}
+			}()
 			return nil
 		}
 	}

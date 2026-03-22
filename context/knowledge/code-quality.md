@@ -1133,6 +1133,19 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `TestSmoke_NewTaskFormEscape` — open form, Esc to close
 
 **Gotchas:**
+## Keystroke Echo Redraw: 2026-03-22
+
+**Problem:** PTY keystrokes had up to 200ms visible lag. The keystroke-triggered tview draw fires before the PTY echo arrives (~1-5ms). The 200ms `startAgentRedrawLoop` poll was the only path to paint the echo.
+
+**Fix:** 16ms delayed `QueueUpdateDraw` goroutine after each `WriteInput`, guarded by `TotalWritten` snapshot comparison.
+
+**Key interactions:**
+- `skipClear` is set for the immediate draw (no-op, correct) but NOT for the 16ms follow-up — `TotalWritten` guard prevents wasted `Clear()` when echo hasn't arrived
+- The 200ms poll loop and 16ms goroutine complement each other: whichever fires first consumes the `TotalWritten` delta, the other sees no change and skips
+- Rapid typing (~20 chars/sec) creates ~20 goroutines alive at once (each 16ms lifetime), `QueueUpdateDraw` calls coalesce in tview
+- `TotalWritten()` is local in both session types (mutex-protected counter, no RPC) — safe from background goroutine
+
+**Gotchas:**
 - SimulationScreen's `PostEvent(EventPaste)` bypasses real bracket paste mode — negative test (broken ordering) is not possible in simulation
 - `QueueUpdate` and SimulationScreen event injection use separate channels — `syncUI` needs `eventSettle` sleep before the QueueUpdate round-trip to let events propagate
 - UI state reads (`header.ActiveTab()`, `app.mode`) must happen inside `readUI`/`QueueUpdate` to avoid data races with the tview goroutine
