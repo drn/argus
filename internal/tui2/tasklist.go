@@ -3,7 +3,9 @@ package tui2
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/drn/argus/internal/model"
@@ -552,6 +554,7 @@ func (tl *TaskListView) ClearFilter() {
 	tl.filtering = false
 	tl.buildRows()
 	tl.clampCursor()
+	tl.notifyCursorChange()
 }
 
 // applyFilter sets the filter string and rebuilds rows.
@@ -574,7 +577,8 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 		return true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(tl.filter) > 0 {
-			tl.filter = tl.filter[:len(tl.filter)-1]
+			_, size := utf8.DecodeLastRuneInString(tl.filter)
+			tl.filter = tl.filter[:len(tl.filter)-size]
 			tl.applyFilter()
 		}
 		return true
@@ -741,7 +745,7 @@ func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 	inputStyle := tcell.StyleDefault.Foreground(ColorNormal)
 	drawText(screen, x+2, y, w-2, tl.filter, inputStyle)
 	// Draw cursor after filter text.
-	cursorCol := x + 2 + len(tl.filter)
+	cursorCol := x + 2 + ansi.StringWidth(tl.filter)
 	if cursorCol < x+w {
 		screen.SetContent(cursorCol, y, ' ', nil, tcell.StyleDefault.Background(ColorNormal))
 	}
