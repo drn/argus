@@ -18,7 +18,7 @@ var forkAnsiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x
 // Patterns for sanitizeForkOutput noise filtering.
 var (
 	// spinnerRe matches lines that are only spinner characters (with optional whitespace).
-	spinnerRe = regexp.MustCompile(`^[✳✶✻✽✢·\s]*$`)
+	spinnerRe = regexp.MustCompile(`^[✳✶✻✽✢·\s]+$`)
 	// thinkingRe matches lines containing only "(thinking)" with optional spinner prefix.
 	thinkingRe = regexp.MustCompile(`^[✳✶✻✽✢·\s]*(ping…)?\(thinking\)\s*$`)
 	// warpClaudRe matches Warping.../Clauding... status lines with optional spinner prefix.
