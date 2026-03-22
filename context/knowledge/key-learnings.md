@@ -61,6 +61,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 ### Paste & Input Batching
 
 - **`tapp.EnablePaste(true)` is required for fast paste.** Without it, tview delivers paste as thousands of individual `EventKey` events, each triggering a full screen redraw. With it, tview buffers all pasted text and delivers it as a single `PasteHandler()` call with one redraw.
+- **`EnablePaste`/`EnableMouse` must be called AFTER `SetScreen`.** tview's `EnablePaste` only calls `screen.EnablePaste()` when `a.screen != nil`. And `Run()` only auto-enables when it creates its own screen (`a.screen == nil`). If `SetScreen` is called before `Run`, and `EnablePaste` was called before `SetScreen`, the flag is stored but `screen.EnablePaste()` is never invoked.
 - **Every custom widget with text input must implement `PasteHandler()`.** tview's paste path bypasses `InputCapture` entirely — it goes through the focus chain calling `PasteHandler()` on the focused primitive. If a widget only has `InputHandler()`, paste is silently dropped when `EnablePaste` is on.
 - **TerminalPane paste must wrap text in bracket paste sequences.** Send `\x1b[200~` + text + `\x1b[201~` so the agent's readline treats it as a paste (no per-character echo/processing).
 
