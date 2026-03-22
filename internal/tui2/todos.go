@@ -31,6 +31,8 @@ type ToDosView struct {
 	OnLaunch func(item ToDoItem)
 	// Callback when the user changes a linked task's status via s/S keys.
 	OnStatusChange func(task *model.Task)
+	// Callback when the user presses 'o' and multiple links are found.
+	OnOpenLinks func(links []Link)
 }
 
 // NewToDosView creates the To Dos tab with three-panel layout.
@@ -175,9 +177,39 @@ func (v *ToDosView) HandleKey(event *tcell.EventKey) bool {
 				}
 			}
 			return true
+		case 'o':
+			v.openLinks()
+			return true
 		}
 	}
 	return false
+}
+
+// openLinks extracts links from the selected to-do and either opens the
+// single link directly or invokes OnOpenLinks for the user to pick one.
+func (v *ToDosView) openLinks() {
+	item := v.list.SelectedItem()
+	if item == nil {
+		return
+	}
+
+	// Collect links: PR URL from linked task + URLs from markdown content.
+	var links []Link
+	if t, ok := v.taskMap[item.Path]; ok && t.PRURL != "" {
+		links = append(links, Link{Label: "PR: " + t.PRURL, URL: t.PRURL})
+	}
+	links = append(links, ExtractLinks(item.Content)...)
+
+	if len(links) == 0 {
+		return
+	}
+	if len(links) == 1 {
+		openURL(links[0].URL)
+		return
+	}
+	if v.OnOpenLinks != nil {
+		v.OnOpenLinks(links)
+	}
 }
 
 // Draw renders the three-panel layout or an empty state.
