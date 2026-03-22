@@ -1020,6 +1020,12 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 
 6. `s`/`S` keys on ToDos tab toggle linked task status via `OnStatusChange` callback → `db.Update` + `refreshTasksAsync`. No-op if todo has no linked task.
 
+**Default ToDo Project (2026-03-22):**
+- `Defaults.TodoProject` — config field persisted as `defaults.todo_project` in the config table
+- `openLaunchToDoModal` passes `cfg.Defaults.TodoProject` to pre-select the project in the launch modal
+- Settings UI: `srToDoProject` row in KB section, cycles through projects with Enter/Left/Right via `cycleTodoProject(dir)`
+- `cycleTodoProject` prepends an empty string ("none") option; stale project names silently reset to "none" on first cycle
+
 **Gotchas:**
 - `handleLaunchToDoKey` must use `refreshTasksLocal()` (not `refreshTasks()`) between `db.Add` and `startSession` — same reconciliation race as new task form
 - `executeToDoCleanup` validates `item.Path` starts with `vaultPath + PathSeparator` before `os.Remove` — prevents path traversal

@@ -40,6 +40,7 @@ func (d *DB) Config() config.Config {
 		dest *string
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
+		{"defaults.todo_project", &cfg.Defaults.TodoProject},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
 		{"keybindings.status", &cfg.Keybindings.Status},

@@ -1663,7 +1663,7 @@ func (a *App) closeNewTaskForm() {
 // openLaunchToDoModal shows the project selection modal for launching a to-do as a task.
 func (a *App) openLaunchToDoModal(item ToDoItem) {
 	cfg := a.db.Config()
-	a.launchToDoModal = NewLaunchToDoModal(item, cfg.Projects, "")
+	a.launchToDoModal = NewLaunchToDoModal(item, cfg.Projects, cfg.Defaults.TodoProject)
 	a.mode = modeLaunchToDo
 	a.pages.AddPage("launchtodo", a.launchToDoModal, true, true)
 	a.pages.SwitchToPage("launchtodo")
