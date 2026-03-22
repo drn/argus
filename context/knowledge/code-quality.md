@@ -1032,3 +1032,24 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `executeToDoCleanup` uses `RefreshAsync` (not `Refresh`) to avoid blocking the UI thread on disk I/O
 - `TasksByTodoPath()` query uses `ORDER BY created_at ASC` so the last entry per path is the most recent task (map overwrite = most recent wins)
 - `todo_path` column has a DB index for the tick-frequency query
+
+---
+
+### 2026-03-22: Task List Filter (`/` key)
+
+**Data Model:**
+- `TaskListView.filtering bool` — true while filter input is focused
+- `TaskListView.filter string` — current filter text (case-insensitive substring match against task name or project name)
+
+**Flow:**
+1. User presses `/` on task list → `filtering = true`, filter input shown at bottom of panel
+2. Typing appends to `filter`, `buildRows` filters tasks via `matchesFilter()`, all matching projects auto-expand
+3. Arrow keys navigate filtered results while typing
+4. Enter confirms filter (keeps filter active, exits input mode); Escape clears filter entirely
+5. When filter is active but input not focused, Escape clears it from normal mode
+6. `PasteHandler` supports paste into filter input
+
+**Gotchas:**
+- `handleGlobalKey` must bypass rune shortcuts (`q`, `1-4`) when `tasklist.Filtering()` is true
+- `buildRows` expands all projects and archive when `filter != ""` — otherwise matched tasks in collapsed projects are invisible
+- Filter title shown in panel border: `" Tasks [/query] "`

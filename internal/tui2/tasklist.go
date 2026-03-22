@@ -44,6 +44,10 @@ type TaskListView struct {
 	archiveExpanded bool
 	archiveProject  string // expanded project within archive
 
+	// Filter state: `/` activates filter input, typing narrows visible tasks.
+	filtering bool   // true while the filter input is focused
+	filter    string // current filter text (case-insensitive substring match)
+
 	// Callback when user selects a task (Enter key).
 	OnSelect func(task *model.Task)
 	// Callback when user presses 'n' (new task).
@@ -149,13 +153,25 @@ func (tl *TaskListView) SelectedProject() string {
 	return tl.rows[tl.cursor].project
 }
 
+// matchesFilter returns true if the task matches the current filter.
+func (tl *TaskListView) matchesFilter(t *model.Task) bool {
+	if tl.filter == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(t.Name), strings.ToLower(tl.filter)) ||
+		strings.Contains(strings.ToLower(t.Project), strings.ToLower(tl.filter))
+}
+
 // buildRows flattens tasks into display rows grouped by project.
 func (tl *TaskListView) buildRows() {
 	tl.rows = nil
 
-	// Separate active and archived tasks
+	// Separate active and archived tasks, applying filter.
 	var active, archived []*model.Task
 	for _, t := range tl.tasks {
+		if !tl.matchesFilter(t) {
+			continue
+		}
 		if t.Archived {
 			archived = append(archived, t)
 		} else {
@@ -171,9 +187,10 @@ func (tl *TaskListView) buildRows() {
 		tl.expanded = projectOrder[0]
 	}
 
+	filterActive := tl.filter != ""
 	for _, proj := range projectOrder {
 		tl.rows = append(tl.rows, taskRow{kind: rowProject, project: proj})
-		if proj == tl.expanded {
+		if filterActive || proj == tl.expanded {
 			for _, t := range projectTasks[proj] {
 				tl.rows = append(tl.rows, taskRow{kind: rowTask, task: t, project: proj})
 			}
@@ -184,11 +201,11 @@ func (tl *TaskListView) buildRows() {
 	if len(archived) > 0 {
 		tl.rows = append(tl.rows, taskRow{kind: rowSeparator})
 		tl.rows = append(tl.rows, taskRow{kind: rowArchiveHeader})
-		if tl.archiveExpanded {
+		if filterActive || tl.archiveExpanded {
 			archOrder, archTasks := groupByProject(archived)
 			for _, proj := range archOrder {
 				tl.rows = append(tl.rows, taskRow{kind: rowProject, project: proj})
-				if proj == tl.archiveProject {
+				if filterActive || proj == tl.archiveProject {
 					for _, t := range archTasks[proj] {
 						tl.rows = append(tl.rows, taskRow{kind: rowTask, task: t, project: proj})
 					}
@@ -519,9 +536,71 @@ func (tl *TaskListView) restoreCursor(target taskRow, inArchive bool) {
 	tl.clampCursor()
 }
 
+// Filtering returns whether the filter input is currently active.
+func (tl *TaskListView) Filtering() bool {
+	return tl.filtering
+}
+
+// Filter returns the current filter text.
+func (tl *TaskListView) Filter() string {
+	return tl.filter
+}
+
+// ClearFilter clears the filter and rebuilds rows.
+func (tl *TaskListView) ClearFilter() {
+	tl.filter = ""
+	tl.filtering = false
+	tl.buildRows()
+	tl.clampCursor()
+}
+
+// applyFilter sets the filter string and rebuilds rows.
+func (tl *TaskListView) applyFilter() {
+	tl.buildRows()
+	tl.clampCursor()
+	tl.notifyCursorChange()
+}
+
+// handleFilterInput processes key events while the filter input is active.
+// Returns true if the event was consumed.
+func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
+	switch event.Key() {
+	case tcell.KeyEscape:
+		tl.ClearFilter()
+		return true
+	case tcell.KeyEnter:
+		// Confirm filter — keep filter text active, exit input mode.
+		tl.filtering = false
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(tl.filter) > 0 {
+			tl.filter = tl.filter[:len(tl.filter)-1]
+			tl.applyFilter()
+		}
+		return true
+	case tcell.KeyUp:
+		tl.CursorUp()
+		return true
+	case tcell.KeyDown:
+		tl.CursorDown()
+		return true
+	case tcell.KeyRune:
+		tl.filter += string(event.Rune())
+		tl.applyFilter()
+		return true
+	}
+	return false
+}
+
 // InputHandler handles key events for the task list.
 func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return tl.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		// When filter input is active, route all keys through filter handler.
+		if tl.filtering {
+			tl.handleFilterInput(event)
+			return
+		}
+
 		switch event.Key() {
 		case tcell.KeyUp:
 			tl.CursorUp()
@@ -530,6 +609,11 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 		case tcell.KeyEnter:
 			if t := tl.SelectedTask(); t != nil && t.Status != model.StatusComplete && tl.OnSelect != nil {
 				tl.OnSelect(t)
+			}
+		case tcell.KeyEscape:
+			// Clear active filter if one exists.
+			if tl.filter != "" {
+				tl.ClearFilter()
 			}
 		case tcell.KeyRune:
 			switch event.Rune() {
@@ -541,6 +625,8 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				if tl.OnNew != nil {
 					tl.OnNew()
 				}
+			case '/':
+				tl.filtering = true
 			case 's':
 				if t := tl.SelectedTask(); t != nil {
 					t.SetStatus(t.Status.Next())
@@ -571,6 +657,17 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 	})
 }
 
+// PasteHandler handles bracketed paste events in filter mode.
+func (tl *TaskListView) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return tl.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		if !tl.filtering {
+			return
+		}
+		tl.filter += pastedText
+		tl.applyFilter()
+	})
+}
+
 // Draw renders the task list.
 func (tl *TaskListView) Draw(screen tcell.Screen) {
 	tl.Box.DrawForSubclass(screen, tl)
@@ -579,9 +676,26 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Tasks ", StyleBorder)
+	// Show filter text in panel title when active.
+	title := " Tasks "
+	if tl.filter != "" || tl.filtering {
+		title = " Tasks [/" + tl.filter + "] "
+	}
+
+	inner := drawBorderedPanel(screen, x, y, width, height, title, StyleBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
+	}
+
+	// Reserve bottom row for filter input when in filter mode.
+	listH := inner.H
+	if tl.filtering {
+		listH--
+		if listH < 0 {
+			listH = 0
+		}
+		// Draw filter input on the last inner row.
+		tl.drawFilterInput(screen, inner.X, inner.Y+inner.H-1, inner.W)
 	}
 
 	if len(tl.rows) == 0 {
@@ -595,11 +709,11 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 	if tl.cursor < tl.offset {
 		tl.offset = tl.cursor
 	}
-	if tl.cursor >= tl.offset+inner.H {
-		tl.offset = tl.cursor - inner.H + 1
+	if listH > 0 && tl.cursor >= tl.offset+listH {
+		tl.offset = tl.cursor - listH + 1
 	}
 
-	for i := 0; i < inner.H; i++ {
+	for i := 0; i < listH; i++ {
 		idx := tl.offset + i
 		if idx >= len(tl.rows) {
 			break
@@ -617,6 +731,19 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		case rowTask:
 			tl.drawTaskRow(screen, inner.X, inner.Y+i, inner.W, row.task, isCursor)
 		}
+	}
+}
+
+// drawFilterInput renders the filter input line at the bottom of the task list.
+func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
+	style := tcell.StyleDefault.Foreground(ColorTitle)
+	drawText(screen, x, y, 2, "/ ", style)
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal)
+	drawText(screen, x+2, y, w-2, tl.filter, inputStyle)
+	// Draw cursor after filter text.
+	cursorCol := x + 2 + len(tl.filter)
+	if cursorCol < x+w {
+		screen.SetContent(cursorCol, y, ' ', nil, tcell.StyleDefault.Background(ColorNormal))
 	}
 }
 
