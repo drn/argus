@@ -121,6 +121,238 @@ func TestBuildForkPrompt(t *testing.T) {
 	})
 }
 
+func TestSanitizeForkOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"spinner lines removed",
+			"✳\n✶\n✻\n✽\n✢\n·\n",
+			"",
+		},
+		{
+			"thinking lines removed",
+			"(thinking)\n✶ping…(thinking)\n✳(thinking)\n",
+			"",
+		},
+		{
+			"warping and clauding lines removed",
+			"✻Warping…\nWarping…\nClauding…\n✶Clauding…\n✢ Warping… (thinking)\n✽ Warping… (thinking)\n",
+			"",
+		},
+		{
+			"status bar chrome removed",
+			"⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerrupt1MCPserverfailed ·/mcp\n⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n",
+			"",
+		},
+		{
+			"separator lines removed",
+			"──────────────────────────────────────────────────────────────────────\n",
+			"",
+		},
+		{
+			"prompt lines removed",
+			"❯  \n❯\n",
+			"",
+		},
+		{
+			"partial warping chars removed",
+			"W\n\na\n\n✢r\n\nWp(thinking)\n\n✳ai\n\nrpng\n\n✶i…\n\nn(thinking)\n\ng\n\n✻…\n",
+			"",
+		},
+		{
+			"partial clauding chars removed",
+			"Cl\n\na\n\nCu\n\n✻ld\n\nai\n\n✶un\n\ndg\n\n✳i…\n\nn\n\ng\n\n✢…(30s · ↑342 tokens)\n",
+			"",
+		},
+		{
+			"timing and token hints removed",
+			" (3s)(ctrl+b ctrl+b (twice) to run in background)\n(30s · ↑342 tokens)\n",
+			"",
+		},
+		{
+			"consecutive blank lines collapsed",
+			"hello\n\n\n\n\nworld\n",
+			"hello\n\nworld\n",
+		},
+		{
+			"preserves assistant messages",
+			"⏺Scan pipeline is running\n",
+			"⏺Scan pipeline is running\n",
+		},
+		{
+			"preserves tool calls",
+			"Bash(cd /tmp && ls)\n⏺Bash(echo hello)\n",
+			"Bash(cd /tmp && ls)\n⏺Bash(echo hello)\n",
+		},
+		{
+			"preserves tool results",
+			"⎿  file1.txt\n   file2.txt\n",
+			"⎿  file1.txt\n   file2.txt\n",
+		},
+		{
+			"shell cwd reset removed",
+			"⎿  Shell cwd was reset to /Users/foo/bar\n",
+			"",
+		},
+		{
+			"running marker removed",
+			"⎿  Running…\n",
+			"",
+		},
+		{
+			"no output marker removed",
+			"⏺(No output)\n",
+			"",
+		},
+		{
+			"baked for line removed",
+			"✻Baked for 31s                ❯                    \n",
+			"",
+		},
+		{
+			"expand hint removed",
+			"… +11 lines (ctrl+o to expand)\n",
+			"",
+		},
+		{
+			"empty input",
+			"",
+			"",
+		},
+		{
+			"real mixed content",
+			"✳ Warping… (thinking)\n⏺All queued up. The pipeline is running:\n\n1. Scan — picks up new files\n2. Auto-tag — matches performer\n✶\n✻\nClauding…\n",
+			"⏺All queued up. The pipeline is running:\n\n1. Scan — picks up new files\n2. Auto-tag — matches performer\n",
+		},
+		{
+			"lone digits removed",
+			"4\n\n5\n\n1\n",
+			"",
+		},
+		{
+			"carriage returns normalized",
+			"⏺Bash(echo hello)\r  ⎿  Running…\r✳ Warping…\n",
+			"⏺Bash(echo hello)\n",
+		},
+		{
+			"nbsp replaced",
+			"⎿ \u00a0Running…\n",
+			"",
+		},
+		{
+			"empty assistant markers removed",
+			"⏺\n⏺  \n",
+			"",
+		},
+		{
+			"keybind hints removed",
+			"(ctrl+b ctrl+b (twice) to run in background)\n",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeForkOutput(tt.in)
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+}
+
+func TestCleanLongLine(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"strips inline Running marker",
+			"⏺Bash(cd /tmp && ls 2>&1)  ⎿  Running…                              ✳ Warping… (thinking)                              ──────────────────────────────────",
+			"⏺Bash(cd /tmp && ls 2>&1)",
+		},
+		{
+			"strips inline Shell cwd reset and noise",
+			"⏺Info: Running script on host  ⎿  Shell cwd was reset to /Users/foo/bar                              ✽ Warping… (thinking)",
+			"⏺Info: Running script on host",
+		},
+		{
+			"strips status bar and prompt",
+			"⏺All done.  ❯                              ⏵⏵ bypass permissions on",
+			"⏺All done.",
+		},
+		{
+			"preserves content under 120 chars",
+			"⏺This is normal content that should not be modified at all",
+			"⏺This is normal content that should not be modified at all",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cleanLongLine(tt.in)
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+}
+
+func TestSanitizeForkOutput_RealWorld(t *testing.T) {
+	// Simulate the kind of noisy output seen in real fork captures.
+	noisy := strings.Join([]string{
+		"m⏺Bash(cd /tmp&&ls 2>&1)  ⎿  Running…                              ✳ Warping… (thinking)                              ──────────────────────────────────────────────────",
+		"❯  ",
+		"──────────────────────────────────────────────────────────────────────",
+		"⏵⏵bypasspermissionson (shift+tabtocycle)·esctointerrupt1MCPserverfailed ·/mcp",
+		"✶ping…(thinking)",
+		"",
+		"",
+		"",
+		"✻Warping…",
+		"",
+		"",
+		"✽",
+		"",
+		"⏺The scan completed successfully.",
+		"",
+		"✳",
+		"✶",
+		"Clauding…",
+		" Bash(tts -s1.1 \"done\")  ⎿  Running…                              ✻ Clauding…                              ──────────────────────────────────────────────────",
+		"❯  ",
+		"⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+		"✻Baked for 31s                ❯                    ",
+		"",
+	}, "\n")
+
+	got := sanitizeForkOutput(noisy)
+
+	// Should preserve the meaningful content.
+	testutil.Contains(t, got, "⏺Bash(cd /tmp&&ls 2>&1)")
+	testutil.Contains(t, got, "⏺The scan completed successfully.")
+	testutil.Contains(t, got, "Bash(tts -s1.1 \"done\")")
+
+	// Should NOT contain noise.
+	if strings.Contains(got, "Warping") {
+		t.Errorf("output still contains Warping noise:\n%s", got)
+	}
+	if strings.Contains(got, "Clauding") {
+		t.Errorf("output still contains Clauding noise:\n%s", got)
+	}
+	if strings.Contains(got, "bypass permissions") {
+		t.Errorf("output still contains status bar noise:\n%s", got)
+	}
+	if strings.Contains(got, "────") {
+		t.Errorf("output still contains separator noise:\n%s", got)
+	}
+
+	// Count lines — should be dramatically reduced.
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) > 10 {
+		t.Errorf("expected ≤10 lines after sanitization, got %d:\n%s", len(lines), got)
+	}
+}
+
 func TestReadSessionLogTail(t *testing.T) {
 	// Reading a non-existent log should return empty.
 	result := readSessionLogTail("nonexistent-task-id-12345")

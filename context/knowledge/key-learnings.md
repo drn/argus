@@ -157,3 +157,9 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`buildRows` must expand all projects when a filter is active.** Without `filterActive` check, filtered tasks in collapsed projects are invisible — the filter matches them but they're hidden behind a collapsed project header.
 - **String slicing for backspace must use `utf8.DecodeLastRuneInString`, not `len()-1`.** `len()` counts bytes, not runes — slicing mid-rune corrupts multi-byte UTF-8 characters. Same applies to cursor column positioning: use `ansi.StringWidth()` for display width, not `len()`.
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
+
+### Fork Context Capture
+
+- **PTY session logs contain `\r` (carriage return) characters that must be normalized before filtering.** Claude Code uses `\r` to overwrite status indicators in-place. Without `\r→\n` normalization, multiple screen elements concatenate on one "line" and per-line noise filters fail to match.
+- **PTY session logs contain `\u00a0` (non-breaking space) that must be normalized.** Claude Code uses NBSP in tool result formatting. Without normalization, `\s+` patterns may not match as expected.
+- **Long terminal lines (>120 bytes) need inline noise stripping, not just per-line filtering.** VT cell rendering concatenates the content area, status bar, separators, and prompt onto a single line with whitespace padding. `cleanLongLine` removes these inline patterns before per-line `isNoiseLine` runs.

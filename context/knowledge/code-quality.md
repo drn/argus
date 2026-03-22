@@ -1091,3 +1091,21 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 **Gotchas:**
 - `elapsedCol` was computed identically in two places — deduplicated to a single computation site to prevent drift
 - The `-1` in `elapsedCol = x + w - len(elapsed) - 1` is a 1-cell right margin
+
+## Fork Output Sanitization: 2026-03-22
+
+**Data Model:** `sanitizeForkOutput(string) string` in `forkcontext.go` — called after `stripANSI()` in `readSessionLogTail()`.
+
+**Flow:** Raw PTY log bytes → ANSI stripping → `\r`/NBSP normalization → inline noise removal (long lines >120 bytes) → per-line noise filtering → blank line collapsing → trimming.
+
+**Noise categories (15 regex patterns):**
+- Spinner chars (✳✶✻✽✢·), thinking/Warping/Clauding indicators, status bar chrome (⏵), separator lines (─), bare prompts (❯), partial character renders, timing hints, Shell cwd resets, Running markers, No output markers, Baked for status, expand hints, lone digits, empty assistant markers (⏺), keybind hints.
+
+**Inline patterns (9 regex patterns in `cleanLongLine`):** Handle VT cell concatenation where content area + status bar + separator + prompt are all on one terminal row.
+
+**Gotchas:**
+- PTY logs have `\r` (carriage return) throughout — must normalize to `\n` before line-based filtering
+- NBSP (`\u00a0`) appears in tool result formatting — must normalize to regular space
+- `len(line) > 120` uses byte length, which works because noise-concatenated lines are typically 600-1100 bytes
+- `partialRenderRe` allows up to 4 chars (`{0,4}`) because partial renders include fragments like "rpng"
+- `inlineWarpClaudRe` uses `[^⏺⎿]*` to consume noise without eating into the next content boundary
