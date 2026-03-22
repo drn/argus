@@ -75,19 +75,17 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 		t.Error("expected non-zero PID")
 	}
 
-	// Wait for process to exit and stream to deliver output.
+	// Poll until output arrives (process must exit AND stream must deliver).
 	deadline := time.Now().Add(5 * time.Second)
+	var output string
 	for time.Now().Before(deadline) {
-		if !sess.Alive() {
+		output = string(sess.RecentOutput())
+		if strings.Contains(output, "hello-from-daemon") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Give stream reader time to populate buffer.
-	time.Sleep(200 * time.Millisecond)
-
-	output := string(sess.RecentOutput())
 	if !strings.Contains(output, "hello-from-daemon") {
 		t.Errorf("expected output to contain 'hello-from-daemon', got %q", output)
 	}
