@@ -278,7 +278,18 @@ const scrollAccelWindow = 120 * time.Millisecond
 // scrollAccelMax caps the acceleration multiplier.
 const scrollAccelMax = 12
 
-func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n; tp.paintCacheValid = false }
+func (tp *TerminalPane) ScrollUp(n int) {
+	if tp.scrollOffset == 0 {
+		// Entering scroll mode from live mode — invalidate stale replay state.
+		// The cached replay emu may be from a previous scroll (agent has written
+		// more since then), so its content bottom doesn't match live. Clearing it
+		// forces a rebuild from the current log tail.
+		tp.replayEmu = nil
+		tp.anchorTotalLines = 0
+	}
+	tp.scrollOffset += n
+	tp.paintCacheValid = false
+}
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
 func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.scrollAccel = 0; tp.paintCacheValid = false }
 
@@ -286,6 +297,11 @@ func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTota
 // Returns the actual number of lines scrolled.
 func (tp *TerminalPane) AccelScrollUp() int {
 	n := tp.nextAccelStep()
+	if tp.scrollOffset == 0 {
+		// Entering scroll mode from live mode — invalidate stale replay state.
+		tp.replayEmu = nil
+		tp.anchorTotalLines = 0
+	}
 	tp.scrollOffset += n
 	tp.paintCacheValid = false
 	return n

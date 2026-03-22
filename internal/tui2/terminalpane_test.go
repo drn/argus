@@ -1036,3 +1036,92 @@ func TestTerminalPane_ReplayAnchorReset(t *testing.T) {
 	tp.renderReplay(screen, 0, 0, 80, 24, data, 0, 80, 24)
 	testutil.Equal(t, tp.scrollOffset, 1)
 }
+
+func TestTerminalPane_ScrollUpAfterReturnToLive(t *testing.T) {
+	// Regression: scroll up → scroll back to bottom (live mode sets
+	// anchorTotalLines) → scroll up again. Without the fix, two bugs:
+	// 1) Stale replay emu: cached emu content is behind live, so
+	//    scrollOffset=1 shows content from hundreds of lines ago.
+	// 2) Anchor-lock mismatch: anchorTotalLines from live mode causes
+	//    paintEmu to bump scrollOffset by (replayTotal - liveTotal).
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 24)
+
+	// Build replay data with enough content to produce scrollback.
+	var data []byte
+	for i := 0; i < 200; i++ {
+		data = append(data, []byte("line content here\r\n")...)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// Step 1: First scroll up — triggers rebuild, anchorTotalLines reset.
+	tp.ScrollUp(1)
+	tp.renderReplay(screen, 0, 0, 80, 24, data, 0, 80, 24)
+	testutil.Equal(t, tp.scrollOffset, 1)
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should be non-nil after renderReplay")
+	}
+
+	// Step 2: Scroll back to bottom → simulate live mode setting anchorTotalLines.
+	tp.ResetScroll()
+	// Simulate live mode leaving a stale anchorTotalLines value.
+	tp.anchorTotalLines = 50
+	// The replay emu from step 1 is still cached.
+	if tp.replayEmu == nil {
+		t.Fatal("replayEmu should still be cached after ResetScroll")
+	}
+
+	// Step 3: Scroll up again — must invalidate stale replay emu AND anchor.
+	tp.ScrollUp(1)
+	testutil.Equal(t, tp.anchorTotalLines, 0)
+	testutil.Nil(t, tp.replayEmu) // stale emu cleared, forces rebuild
+
+	// Render rebuilds from fresh data — scrollOffset stays at 1.
+	tp.renderReplay(screen, 0, 0, 80, 24, data, 0, 80, 24)
+	testutil.Equal(t, tp.scrollOffset, 1)
+}
+
+func TestTerminalPane_AccelScrollUpResetsReplayState(t *testing.T) {
+	// AccelScrollUp must also invalidate replay state on 0→>0 transition.
+	tp := NewTerminalPane()
+	tp.anchorTotalLines = 500
+	tp.replayEmu = newDrainedEmulator(80, 24) // simulate cached emu
+
+	n := tp.AccelScrollUp()
+	testutil.Equal(t, tp.anchorTotalLines, 0)
+	testutil.Nil(t, tp.replayEmu)
+	testutil.Equal(t, tp.scrollOffset, n)
+}
+
+func TestTerminalPane_MouseScrollUpResetsReplayState(t *testing.T) {
+	// Mouse wheel ScrollUp must also invalidate replay state on 0→>0 transition.
+	tp := NewTerminalPane()
+	tp.anchorTotalLines = 500
+	tp.replayEmu = newDrainedEmulator(80, 24) // simulate cached emu
+
+	tp.ScrollUp(3) // mouseScrollStep
+	testutil.Equal(t, tp.anchorTotalLines, 0)
+	testutil.Nil(t, tp.replayEmu)
+	testutil.Equal(t, tp.scrollOffset, 3)
+}
+
+func TestTerminalPane_ScrollUpWhileAlreadyScrolled(t *testing.T) {
+	// Scrolling further up while already scrolled should NOT invalidate
+	// the replay emu — it's still current for the scrolled region.
+	tp := NewTerminalPane()
+	tp.scrollOffset = 5
+	emu := newDrainedEmulator(80, 24)
+	tp.replayEmu = emu
+	tp.anchorTotalLines = 840
+
+	tp.ScrollUp(1)
+	// Should NOT invalidate — we're already in scroll mode.
+	testutil.Equal(t, tp.anchorTotalLines, 840)
+	if tp.replayEmu != emu {
+		t.Error("replayEmu should NOT be invalidated while already scrolled")
+	}
+	testutil.Equal(t, tp.scrollOffset, 6)
+}
