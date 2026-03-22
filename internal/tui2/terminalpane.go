@@ -278,7 +278,13 @@ const scrollAccelWindow = 120 * time.Millisecond
 // scrollAccelMax caps the acceleration multiplier.
 const scrollAccelMax = 12
 
-func (tp *TerminalPane) ScrollUp(n int)    { tp.scrollOffset += n; tp.paintCacheValid = false }
+func (tp *TerminalPane) ScrollUp(n int) {
+	if tp.scrollOffset == 0 {
+		tp.invalidateReplayCache()
+	}
+	tp.scrollOffset += n
+	tp.paintCacheValid = false
+}
 func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
 func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.scrollAccel = 0; tp.paintCacheValid = false }
 
@@ -286,9 +292,24 @@ func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTota
 // Returns the actual number of lines scrolled.
 func (tp *TerminalPane) AccelScrollUp() int {
 	n := tp.nextAccelStep()
+	if tp.scrollOffset == 0 {
+		tp.invalidateReplayCache()
+	}
 	tp.scrollOffset += n
 	tp.paintCacheValid = false
 	return n
+}
+
+// invalidateReplayCache clears stale replay emulator state when entering
+// scroll mode from live mode. The cached replay emu may be from a previous
+// scroll (agent has written more since then), and anchorTotalLines from
+// renderLive would cause anchor-lock to misfire.
+func (tp *TerminalPane) invalidateReplayCache() {
+	tp.replayEmu = nil
+	tp.replayEmuBytes = 0
+	tp.replayEmuLogSize = 0
+	tp.replayEmuMaxScroll = 0
+	tp.anchorTotalLines = 0
 }
 
 // AccelScrollDown performs an accelerated scroll down for keyboard key-repeat.

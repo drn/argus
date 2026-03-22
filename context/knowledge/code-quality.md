@@ -1043,6 +1043,13 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `TasksByTodoPath()` query uses `ORDER BY created_at ASC` so the last entry per path is the most recent task (map overwrite = most recent wins)
 - `todo_path` column has a DB index for the tick-frequency query
 
+**Scroll Mode Transition Fix (2026-03-22):**
+- `invalidateReplayCache()` — private helper that nils `replayEmu`, zeros `replayEmuBytes`, `replayEmuLogSize`, `replayEmuMaxScroll`, and `anchorTotalLines`
+- Called by `ScrollUp` and `AccelScrollUp` on the `scrollOffset == 0 → >0` transition (entering scroll mode from live mode)
+- Two bugs fixed: (1) stale replay emu from a previous scroll had content that didn't match current live output; (2) stale `anchorTotalLines` from `renderLive` caused `paintEmu` anchor-lock to bump `scrollOffset` by the totalLines difference (~half screen jump)
+- Only fires on the 0→>0 transition — continued scrolling while already scrolled reuses the cached replay emu (correct behavior)
+- All 0→>0 transitions verified to go through `ScrollUp` or `AccelScrollUp` (mouse wheel, Shift+Up, Shift+PgUp)
+
 ---
 
 ### 2026-03-22: Task List Filter (`/` key)
