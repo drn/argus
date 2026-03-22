@@ -1120,3 +1120,77 @@ func TestTaskListView_SelectedProject(t *testing.T) {
 		t.Errorf("SelectedProject on empty list = %q, want empty", got)
 	}
 }
+
+func TestTaskListView_RenameKey(t *testing.T) {
+	tl := NewTaskListView()
+	var renamed *model.Task
+	tl.OnRename = func(task *model.Task) {
+		renamed = task
+	}
+
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "my-task", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone), func(tview.Primitive) {})
+	if renamed == nil {
+		t.Fatal("OnRename should have been called")
+	}
+	if renamed.ID != "1" {
+		t.Errorf("OnRename called with task %s, want 1", renamed.ID)
+	}
+
+	// No callback wired — should not panic.
+	tl.OnRename = nil
+	renamed = nil
+	handler(tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone), func(tview.Primitive) {})
+	if renamed != nil {
+		t.Error("OnRename should not fire when callback is nil")
+	}
+}
+
+func TestTaskListView_RenameKeyNoSelection(t *testing.T) {
+	tl := NewTaskListView()
+	var renamed *model.Task
+	tl.OnRename = func(task *model.Task) {
+		renamed = task
+	}
+
+	// Empty list — 'r' should be a no-op.
+	tl.SetTasks(nil)
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone), func(tview.Primitive) {})
+	if renamed != nil {
+		t.Error("OnRename should not fire with no selected task")
+	}
+}
+
+func TestSanitizeTaskName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "my-task", "my-task"},
+		{"trim spaces", "  hello  ", "hello"},
+		{"newlines become spaces", "line1\nline2\nline3", "line1 line2 line3"},
+		{"carriage return", "foo\r\nbar", "foo  bar"},
+		{"tabs become spaces", "foo\tbar", "foo bar"},
+		{"control chars stripped", "foo\x00bar\x1Fbaz", "foobarbaz"},
+		{"only whitespace", "  \n\t  ", ""},
+		{"empty", "", ""},
+		{"unicode preserved", "日本語タスク", "日本語タスク"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeTaskName(tt.in)
+			if got != tt.want {
+				t.Errorf("sanitizeTaskName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

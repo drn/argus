@@ -94,6 +94,24 @@ func (d *DB) Update(t *model.Task) error {
 	return nil
 }
 
+// Rename updates only the name column for a task.
+// Unlike Update, this does not overwrite other fields, avoiding races with
+// concurrent status changes (e.g., agent exit while rename modal is open).
+func (d *DB) Rename(id, name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET name=? WHERE id=?`, name, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
 func (d *DB) Delete(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

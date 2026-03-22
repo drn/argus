@@ -41,6 +41,7 @@ const (
 	modeLaunchToDo
 	modeForkTask
 	modeConfirmCleanupToDos
+	modeRenameTask
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -91,6 +92,10 @@ type App struct {
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
+
+	// Rename task modal (created on demand)
+	renameModal *RenameTaskForm
+	renameTask  *model.Task
 
 	// Settings forms (created on demand)
 	projectForm *ProjectForm
@@ -214,6 +219,9 @@ func (a *App) buildUI() {
 	}
 	a.tasklist.OnOpenPR = func(t *model.Task) {
 		exec.Command("open", t.PRURL).Start() //nolint:errcheck
+	}
+	a.tasklist.OnRename = func(t *model.Task) {
+		a.openRenameModal(t)
 	}
 
 	a.taskGitPanel = NewGitPanel()
@@ -786,6 +794,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Cleanup to-dos confirmation modal
 	if a.mode == modeConfirmCleanupToDos && a.cleanupToDosModal != nil {
 		a.handleCleanupToDosKey(event)
+		return nil
+	}
+
+	// Rename task modal — delegate everything to the modal
+	if a.mode == modeRenameTask && a.renameModal != nil {
+		a.handleRenameTaskKey(event)
 		return nil
 	}
 
@@ -1884,6 +1898,76 @@ func (a *App) closeForkModal() {
 	a.mode = modeTaskList
 	a.forkModal = nil
 	a.pages.RemovePage("forktask")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+// sanitizeTaskName strips control characters and collapses whitespace for
+// display-safe task names. Prevents rendering glitches from pasted newlines
+// or other non-printable characters.
+func sanitizeTaskName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r == '\n' || r == '\r' || r == '\t' {
+			b.WriteRune(' ')
+		} else if r < 0x20 { // other control chars
+			continue
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// --- Rename task ---
+
+// openRenameModal shows the rename modal for the given task.
+func (a *App) openRenameModal(t *model.Task) {
+	a.renameTask = t
+	a.renameModal = NewRenameTaskForm(t.Name)
+	a.mode = modeRenameTask
+	a.pages.AddPage("renametask", a.renameModal, true, true)
+	a.pages.SwitchToPage("renametask")
+	a.tapp.SetFocus(a.renameModal)
+}
+
+// handleRenameTaskKey processes keys in the rename task modal.
+func (a *App) handleRenameTaskKey(event *tcell.EventKey) {
+	a.renameModal.HandleKey(event)
+
+	if a.renameModal.Canceled() {
+		a.closeRenameModal()
+		return
+	}
+
+	if a.renameModal.Done() {
+		newName := sanitizeTaskName(a.renameModal.Name())
+		if newName == "" {
+			a.renameModal.ResetDone()
+			a.renameModal.SetError("Name cannot be empty")
+			return
+		}
+		oldName := a.renameTask.Name
+		if newName == oldName {
+			a.closeRenameModal()
+			return
+		}
+		taskID := a.renameTask.ID
+		uxlog.Log("[tui2] rename task: %s (%s) → (%s)", taskID, oldName, newName)
+		a.db.Rename(taskID, newName) //nolint:errcheck // best-effort
+		a.closeRenameModal()
+		// Use refreshTasksLocal (not refreshTasksAsync) — rename only changes
+		// DB state, no session state changed. Avoids RPC reconciliation race.
+		a.refreshTasksLocal()
+	}
+}
+
+// closeRenameModal dismisses the rename task modal.
+func (a *App) closeRenameModal() {
+	a.mode = modeTaskList
+	a.renameModal = nil
+	a.renameTask = nil
+	a.pages.RemovePage("renametask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 }
