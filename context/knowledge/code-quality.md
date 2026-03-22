@@ -1052,6 +1052,17 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 
 ---
 
+## 2026-03-22 — Rename Task Feature
+
+**Data model:** No new columns. `task.Name` is updated in-place via `db.Rename(id, name)` — a targeted `UPDATE tasks SET name=? WHERE id=?` that only touches the name column.
+
+**Flow:** `r` key on task list → `OnRename` callback → `openRenameModal(task)` creates `RenameTaskForm` (pre-populated) → modal captures all keys via `modeRenameTask` in `handleGlobalKey` → Enter validates via `sanitizeTaskName` (strips control chars, collapses whitespace) → `db.Rename` persists → `closeRenameModal` → `refreshTasksLocal` rebuilds UI.
+
+**Gotchas:**
+- `db.Rename` must be used instead of `db.Update` — the modal captures a task pointer at open time; background `refreshTasksAsync` can orphan it, and `db.Update` on the stale pointer would overwrite concurrent field changes (e.g., agent exit changing status)
+- `sanitizeTaskName` converts `\n\r\t` to spaces and strips other control chars (`< 0x20`) to prevent `drawText` rendering glitches from pasted content
+- `done` flag must be reset to `false` on empty-name validation failure, otherwise every subsequent keypress re-triggers the validation check (the new task form has this latent bug but rename avoids it)
+
 ### 2026-03-22: Task List Filter (`/` key)
 
 **Data Model:**

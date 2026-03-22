@@ -149,7 +149,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Idle+unvisited tasks visually promoted to InReview.** Cleared on entering agent view.
 - **Enter on completed task is a no-op.**
 - **Daemon process appears as "argusd"** via symlink in `AutoStart`.
-- **Task rename is display-only.** Worktree dir and branch unchanged.
+- **Task rename is display-only.** Worktree dir and branch unchanged. Use `db.Rename(id, name)` (not `db.Update`) — the modal captures a task pointer at open time, and a background `refreshTasksAsync` can replace `a.tasks` while the modal is open, orphaning the pointer. `db.Update` on the stale pointer overwrites concurrent field changes (e.g., agent exit setting status=Complete).
 - **`ensureCursorVisible` must reset scrollOffset when all lines fit.** Check `totalLines <= visibleLines` → reset to 0.
 - **Tab indices shifted when `TabToDos` was added between Tasks and Reviews.** Numeric keys are now 1=Tasks, 2=ToDos, 3=Reviews, 4=Settings. All statusbar hints and test assertions must match.
 - **Fork task `executeFork` must run worktree creation + context extraction in a background goroutine.** Git diff and session log reads are I/O that blocks the UI thread. The `QueueUpdateDraw` callback handles DB persistence and session start on the tview thread — same race-avoidance pattern as new task creation (use `refreshTasksLocal`, not `refreshTasksAsync`).
