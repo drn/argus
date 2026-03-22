@@ -55,6 +55,8 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`startAgentRedrawLoop` must skip `QueueUpdateDraw` when idle.** Keystroke and resize events trigger their own tview redraws; the 200ms loop only needs to fire when new PTY output arrives (`TotalWritten` changed).
 - **`uvCellToTcellStyle` must map ALL ultraviolet attributes.** Missing `AttrFaint→Dim` caused Ink-based CLIs (Codex) to lose visual contrast. Keep in sync with `uv.Attr*` constants: Bold, Faint, Italic, Blink, Reverse, Strikethrough. Also map underline styles (curly/dotted/dashed/double), underline color, and hyperlinks (OSC 8).
 
+- **PTY-forwarded keystrokes must skip `screen.Clear()` via `lazyScreen`.** tview calls `screen.Clear()` → `CellBuffer.Fill(' ', StyleDefault)` on every draw, changing `currStr` for all cells. When widgets redraw identical content, `Put()` sees `cl != c.currStr` and calls `setDirty(true)` (sets `lastStr=""`). Then `Show()` → `drawCell()` finds all cells dirty → full terminal I/O (~10K cells per keystroke). The `lazyScreen` wrapper skips `Clear()` when `skipClear` is set, so cells retain previous values, widgets write identical content, tcell sees no changes, and `Show()` becomes a no-op.
+
 ### Paste & Input Batching
 
 - **`tapp.EnablePaste(true)` is required for fast paste.** Without it, tview delivers paste as thousands of individual `EventKey` events, each triggering a full screen redraw. With it, tview buffers all pasted text and delivers it as a single `PasteHandler()` call with one redraw.

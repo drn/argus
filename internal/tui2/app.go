@@ -130,6 +130,9 @@ type App struct {
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
 	wtRoot string
+
+	// Screen wrapper for skipping Clear() on PTY-forwarded keystrokes.
+	screen *lazyScreen
 }
 
 // New creates the tui2 application shell.
@@ -277,6 +280,15 @@ func (a *App) buildUI() {
 
 // Run starts the application event loop.
 func (a *App) Run() error {
+	// Create a tcell screen wrapped in lazyScreen so that PTY-forwarded
+	// keystrokes can skip Clear() and avoid a full terminal repaint.
+	rawScreen, err := tcell.NewScreen()
+	if err != nil {
+		return err
+	}
+	a.screen = &lazyScreen{Screen: rawScreen}
+	a.tapp.SetScreen(a.screen)
+
 	go a.tickLoop()
 	defer close(a.tickDone)
 
@@ -1047,6 +1059,13 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		if len(b) > 0 {
 			if _, err := sess.WriteInput(b); err != nil {
 				uxlog.Log("[tui2] write to PTY failed: %v", err)
+			}
+			// No UI state changed — tell lazyScreen to skip tview's
+			// screen.Clear() on the draw that follows returning nil.
+			// Without this, every keystroke triggers a full terminal
+			// repaint (~10K cells) even though nothing visual changed.
+			if a.screen != nil {
+				a.screen.skipClear = true
 			}
 			return nil
 		}

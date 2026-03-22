@@ -911,6 +911,16 @@ Three refresh methods for three use cases:
 
 **Data model:** `cachedCell{x, y int; ch rune; style tcell.Style}` — 40 bytes per cell. For a 200×50 viewport: ~400KB, reusing the backing array across frames. The cache lives on `TerminalPane` alongside the existing emulator cache fields.
 
+### lazyScreen: Skip Clear() for PTY Keystrokes (2026-03-22)
+
+**Problem (residual):** The paint cache eliminated CPU work (emulator access, style conversion) but did not eliminate terminal I/O. tview's `draw()` calls `screen.Clear()` → `CellBuffer.Fill(' ', StyleDefault)` which changes `currStr` for ALL cells. When widgets redraw identical content, `Put()` sees `cl != c.currStr` → `setDirty(true)` (sets `lastStr=""`). Then `Show()` → `drawCell()` finds every cell dirty → full terminal write (~10K cells per keystroke). The paint cache just made the redraw faster, not free.
+
+**Fix:** `lazyScreen` wraps `tcell.Screen` and overrides `Clear()`. When `skipClear` is set, `Clear()` is a no-op. Without Clear, cells retain previous values → `SetContent` writes identical content → `Put()` sees `cl == c.currStr` → no dirty flag → `Show()` writes zero bytes. Flag is set in `handleAgentKey` right before returning nil for PTY-forwarded keystrokes. Consumed (reset to false) on the next `Clear()` call, so normal draws are unaffected.
+
+**Threading:** Both `skipClear` set (InputCapture) and `Clear()` read (draw) happen on the tview main goroutine — sequential in the same event loop iteration. No synchronization needed.
+
+**Data model:** `lazyScreen{tcell.Screen, skipClear bool}` in `lazyscreen.go`. Created in `App.Run()`, stored on `App.screen`. `tapp.SetScreen()` injects it before `tapp.Run()`.
+
 ## To Dos Tab (2026-03-20)
 
 ### Data Model & Flow
