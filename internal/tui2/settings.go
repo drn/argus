@@ -509,7 +509,9 @@ func (sv *SettingsView) cycleTodoProject(dir int) {
 	if len(sv.projectNames) == 0 {
 		return
 	}
-	// Options: ["", proj1, proj2, ...]
+	// Prepend empty ("none") option. If todoProject was set to a since-deleted
+	// project, the lookup finds no match and idx stays at 0, effectively resetting
+	// to "none" on the first cycle — this is intentional.
 	options := append([]string{""}, sv.projectNames...)
 	idx := 0
 	for i, n := range options {
@@ -520,7 +522,9 @@ func (sv *SettingsView) cycleTodoProject(dir int) {
 	}
 	idx = (idx + dir + len(options)) % len(options)
 	sv.todoProject = options[idx]
-	_ = sv.database.SetConfigValue("defaults.todo_project", sv.todoProject)
+	if err := sv.database.SetConfigValue("defaults.todo_project", sv.todoProject); err != nil {
+		uxlog.Log("[settings] failed to persist todo project: %v", err)
+	}
 	uxlog.Log("[settings] default todo project set to %q", sv.todoProject)
 	sv.rebuildRows()
 }
