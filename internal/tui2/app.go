@@ -42,6 +42,7 @@ const (
 	modeForkTask
 	modeConfirmCleanupToDos
 	modeRenameTask
+	modeLinkPicker
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -89,6 +90,8 @@ type App struct {
 	// Launch to-do modal (created on demand)
 	launchToDoModal    *LaunchToDoModal
 	cleanupToDosModal *ConfirmCleanupToDosModal
+	linkPickerModal     *LinkPickerModal
+	linkPickerPrevPage  string
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -185,6 +188,9 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.todos.SetVaultPath(vaultPath)
 	app.todos.OnLaunch = func(item ToDoItem) {
 		app.openLaunchToDoModal(item)
+	}
+	app.todos.OnOpenLinks = func(links []Link) {
+		app.openLinkPickerModal(links)
 	}
 	app.todos.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[todos] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
@@ -798,6 +804,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Cleanup to-dos confirmation modal
 	if a.mode == modeConfirmCleanupToDos && a.cleanupToDosModal != nil {
 		a.handleCleanupToDosKey(event)
+		return nil
+	}
+
+	// Link picker modal
+	if a.mode == modeLinkPicker && a.linkPickerModal != nil {
+		a.handleLinkPickerKey(event)
 		return nil
 	}
 
@@ -1832,6 +1844,45 @@ func (a *App) closeCleanupToDosModal() {
 	a.cleanupToDosModal = nil
 	a.pages.RemovePage("cleanuptodos")
 	a.pages.SwitchToPage("todos")
+}
+
+// openLinkPickerModal shows the link picker dialog.
+func (a *App) openLinkPickerModal(links []Link) {
+	// Remember the current page so we restore correctly on close.
+	name, _ := a.pages.GetFrontPage()
+	a.linkPickerPrevPage = name
+
+	a.linkPickerModal = NewLinkPickerModal(links)
+	a.mode = modeLinkPicker
+	a.pages.AddPage("linkpicker", a.linkPickerModal, true, true)
+	a.pages.SwitchToPage("linkpicker")
+	a.tapp.SetFocus(a.linkPickerModal)
+}
+
+// handleLinkPickerKey processes keys in the link picker modal.
+func (a *App) handleLinkPickerKey(event *tcell.EventKey) {
+	handler := a.linkPickerModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.linkPickerModal.Canceled() {
+		a.closeLinkPickerModal()
+		return
+	}
+	if a.linkPickerModal.Selected() {
+		link := a.linkPickerModal.SelectedLink()
+		a.closeLinkPickerModal()
+		openURL(link.URL)
+	}
+}
+
+// closeLinkPickerModal closes the link picker modal.
+func (a *App) closeLinkPickerModal() {
+	a.mode = modeTaskList
+	a.linkPickerModal = nil
+	a.pages.RemovePage("linkpicker")
+	if a.linkPickerPrevPage != "" {
+		a.pages.SwitchToPage(a.linkPickerPrevPage)
+	}
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.
