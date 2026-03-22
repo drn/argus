@@ -111,7 +111,8 @@ type App struct {
 	runningIDs      []string
 	idleIDs         []string
 	worktreeDir     string // resolved worktree dir for current agent view task
-	lastGitRefresh  time.Time
+	lastGitRefresh     time.Time
+	lastTaskGitRefresh time.Time
 
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
@@ -360,12 +361,13 @@ func (a *App) onTick() {
 		}
 	}
 
-	// Refresh task list side panels (runs on tick goroutine — blocking is OK here).
+	// Refresh task list side panels.
 	if previewTaskID := a.taskPreview.TaskID(); previewTaskID != "" && a.mode == modeTaskList {
 		a.refreshPreview(previewTaskID)
 		// Also refresh git status for the selected task periodically.
-		if sel := a.tasklist.SelectedTask(); sel != nil && sel.Worktree != "" {
-			a.fetchTaskGitStatus(sel.ID, sel.Worktree)
+		if sel := a.tasklist.SelectedTask(); sel != nil && sel.Worktree != "" && time.Since(a.lastTaskGitRefresh) > 3*time.Second {
+			a.lastTaskGitRefresh = time.Now()
+			go a.fetchTaskGitStatus(sel.ID, sel.Worktree)
 		}
 	}
 

@@ -67,6 +67,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Never call `GetInnerRect()` from the tick goroutine.** tview is not thread-safe. Store pending values under mutex in `Draw()`, read from tick goroutine.
 - **`refreshTasks()` must not do RPC while holding `a.mu`.** Fetch `runningIDs` OUTSIDE the lock.
 - **`TaskPreviewPanel.Draw()` must never call `runner.Get()` or create a VT emulator.** Pre-render in `RefreshOutput()` on tick goroutine; `Draw()` only paints cached cells.
+- **Never run synchronous git commands on the tick goroutine.** Blocking the tick goroutine prevents `QueueUpdateDraw` from firing, freezing the UI. Use `go` + cooldown (e.g., `lastTaskGitRefresh` with 3s interval). The agent view already follows this pattern — the task list must too.
 
 ### Sandbox (macOS sandbox-exec)
 
