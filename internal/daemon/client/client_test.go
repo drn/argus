@@ -13,7 +13,7 @@ import (
 	"github.com/drn/argus/internal/model"
 )
 
-func testSetup(t *testing.T) (*daemon.Daemon, string) {
+func testSetup(t *testing.T) (*daemon.Daemon, string, *db.DB) {
 	t.Helper()
 	database, err := db.OpenInMemory()
 	if err != nil {
@@ -39,11 +39,11 @@ func testSetup(t *testing.T) (*daemon.Daemon, string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	return d, sockPath
+	return d, sockPath, database
 }
 
 func TestClient_ConnectAndPing(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -58,7 +58,12 @@ func TestClient_ConnectAndPing(t *testing.T) {
 }
 
 func TestClient_StartAndGetOutput(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, database := testSetup(t)
+
+	// Use a backend that sleeps before echoing — the stream connection is
+	// async (goroutine in getOrCreateSession), so "echo" alone exits before
+	// the stream subscribes, causing "session not found" on the daemon.
+	database.SetBackend("slow-test", config.Backend{Command: "sh -c 'sleep 0.3 && echo hello-from-daemon'"}) //nolint:errcheck
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -66,7 +71,7 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 	}
 	defer c.Close()
 
-	task := &model.Task{ID: "t1", Name: "test-task", Backend: "test", Worktree: t.TempDir()}
+	task := &model.Task{ID: "t1", Name: "test-task", Backend: "slow-test", Worktree: t.TempDir()}
 	sess, err := c.Start(task, config.Config{}, 24, 80, false)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +97,7 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 }
 
 func TestClient_RunningAndIdle(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -110,7 +115,7 @@ func TestClient_RunningAndIdle(t *testing.T) {
 }
 
 func TestClient_StopAll(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -123,7 +128,7 @@ func TestClient_StopAll(t *testing.T) {
 }
 
 func TestClient_SessionExitCallback(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -154,7 +159,7 @@ func TestClient_SessionExitCallback(t *testing.T) {
 }
 
 func TestAlive_Dead(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -184,7 +189,7 @@ func TestAlive_Dead(t *testing.T) {
 }
 
 func TestAlive_NoSession(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -205,7 +210,7 @@ func TestAlive_NoSession(t *testing.T) {
 }
 
 func TestGet_ExitingSession(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -243,7 +248,7 @@ func TestGet_ExitingSession(t *testing.T) {
 }
 
 func TestStreamLost_RemoveSession(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -289,7 +294,7 @@ func TestStreamLost_RemoveSession(t *testing.T) {
 // connectStream because triggering the <-rs.done branch requires a live
 // daemon with a flaky stream (not feasible in unit tests).
 func TestDoneClose_StreamLost(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -330,7 +335,7 @@ func TestDoneClose_StreamLost(t *testing.T) {
 }
 
 func TestAlive_DaemonDown(t *testing.T) {
-	_, sockPath := testSetup(t)
+	_, sockPath, _ := testSetup(t)
 
 	c, err := Connect(sockPath)
 	if err != nil {
