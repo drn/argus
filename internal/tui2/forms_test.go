@@ -7,6 +7,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/testutil"
 )
 
 // --- ProjectForm tests ---
@@ -354,4 +355,91 @@ func TestRenameTaskForm_Escape(t *testing.T) {
 	if !rf.Canceled() {
 		t.Error("should be canceled")
 	}
+}
+
+func TestRenameTaskForm_WordNavigation(t *testing.T) {
+	t.Run("alt+left jumps word left", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		// cursor at end (11)
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt))
+		testutil.Equal(t, rf.cursor, 6) // before "world"
+	})
+
+	t.Run("alt+right jumps word right", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.cursor = 0
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModAlt))
+		testutil.Equal(t, rf.cursor, 5) // after "hello"
+	})
+
+	t.Run("alt+backspace deletes word left", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt))
+		testutil.Equal(t, rf.Name(), "hello ")
+		testutil.Equal(t, rf.cursor, 6)
+	})
+
+	t.Run("alt+b jumps word left", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'b', tcell.ModAlt))
+		testutil.Equal(t, rf.cursor, 6)
+	})
+
+	t.Run("alt+f jumps word right", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.cursor = 0
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'f', tcell.ModAlt))
+		testutil.Equal(t, rf.cursor, 5)
+	})
+
+	t.Run("alt+d deletes word right", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.cursor = 0
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'd', tcell.ModAlt))
+		testutil.Equal(t, rf.Name(), " world")
+		testutil.Equal(t, rf.cursor, 0)
+	})
+
+	t.Run("ctrl+a moves to start", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello")
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlA, 0, 0))
+		testutil.Equal(t, rf.cursor, 0)
+	})
+
+	t.Run("ctrl+e moves to end", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello")
+		rf.cursor = 0
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlE, 0, 0))
+		testutil.Equal(t, rf.cursor, 5)
+	})
+
+	t.Run("ctrl+w deletes word left", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlW, 0, 0))
+		testutil.Equal(t, rf.Name(), "hello ")
+	})
+
+	t.Run("ctrl+u deletes to start", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.cursor = 5
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0))
+		testutil.Equal(t, rf.Name(), " world")
+		testutil.Equal(t, rf.cursor, 0)
+	})
+
+	t.Run("ctrl+k deletes to end", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello world")
+		rf.cursor = 5
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlK, 0, 0))
+		testutil.Equal(t, rf.Name(), "hello")
+		testutil.Equal(t, rf.cursor, 5)
+	})
+
+	t.Run("delete key removes char at cursor", func(t *testing.T) {
+		rf := NewRenameTaskForm("hello")
+		rf.cursor = 0
+		rf.HandleKey(tcell.NewEventKey(tcell.KeyDelete, 0, 0))
+		testutil.Equal(t, rf.Name(), "ello")
+		testutil.Equal(t, rf.cursor, 0)
+	})
 }
