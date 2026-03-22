@@ -102,6 +102,33 @@ func TestDB_UpdateNotFound(t *testing.T) {
 	}
 }
 
+func TestDB_Rename(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "original", Status: model.StatusInProgress}
+	_ = d.Add(task)
+
+	if err := d.Rename(task.ID, "renamed"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := d.Get(task.ID)
+	if got.Name != "renamed" {
+		t.Errorf("name = %q, want %q", got.Name, "renamed")
+	}
+	// Rename must NOT overwrite other fields.
+	if got.Status != model.StatusInProgress {
+		t.Errorf("status = %s, want InProgress (rename should not touch other fields)", got.Status)
+	}
+}
+
+func TestDB_RenameNotFound(t *testing.T) {
+	d := testDB(t)
+	if err := d.Rename("nonexistent", "foo"); err == nil {
+		t.Error("expected error")
+	}
+}
+
 func TestDB_Delete(t *testing.T) {
 	d := testDB(t)
 

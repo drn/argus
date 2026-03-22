@@ -125,7 +125,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 		}
 	default:
 		hints = []hint{
-			{"n", "new"}, {"RET", "attach"}, {"s", "status"},
+			{"n", "new"}, {"RET", "attach"}, {"s", "status"}, {"r", "rename"},
 			{"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"2", "todos"}, {"3", "reviews"}, {"4", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}

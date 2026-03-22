@@ -62,6 +62,8 @@ type TaskListView struct {
 	OnArchive func(task *model.Task)
 	// Callback when user presses 'p' to open PR URL.
 	OnOpenPR func(task *model.Task)
+	// Callback when user presses 'r' to rename a task.
+	OnRename func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
@@ -655,6 +657,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case 'p':
 				if t := tl.SelectedTask(); t != nil && t.PRURL != "" && tl.OnOpenPR != nil {
 					tl.OnOpenPR(t)
+				}
+			case 'r':
+				if t := tl.SelectedTask(); t != nil && tl.OnRename != nil {
+					tl.OnRename(t)
 				}
 			}
 		}
