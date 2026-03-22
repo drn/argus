@@ -27,6 +27,7 @@ const (
 	srSandbox
 	srLogs
 	srKB
+	srToDoProject
 	srDaemon
 )
 
@@ -63,6 +64,10 @@ type SettingsView struct {
 	metisVaultPath string
 	argusVaultPath string
 	kbTaskSync     bool
+
+	// ToDo defaults.
+	todoProject  string   // current default todo project
+	projectNames []string // sorted project names for cycling
 
 	// Logs detail scroll.
 	logScrollOff int
@@ -153,6 +158,10 @@ func (sv *SettingsView) Refresh() {
 	sv.metisVaultPath = cfg.KB.MetisVaultPath
 	sv.argusVaultPath = cfg.KB.ArgusVaultPath
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
+
+	// ToDo defaults.
+	sv.todoProject = cfg.Defaults.TodoProject
+	sv.projectNames = projNames
 
 	// Task counts.
 	tasks := sv.database.Tasks()
@@ -245,6 +254,13 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
 
+	// Default ToDo project.
+	todoLabel := "  ToDo Project: (none)"
+	if sv.todoProject != "" {
+		todoLabel = "  ToDo Project: " + sv.todoProject
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srToDoProject, label: todoLabel, key: "_todo_project"})
+
 	// Logs section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
 	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
@@ -324,6 +340,18 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	case tcell.KeyDown:
 		sv.moveCursor(1)
 		return true
+	case tcell.KeyLeft:
+		if sv.currentSection() == srToDoProject {
+			sv.cycleTodoProject(-1)
+			return true
+		}
+		return false
+	case tcell.KeyRight:
+		if sv.currentSection() == srToDoProject {
+			sv.cycleTodoProject(1)
+			return true
+		}
+		return false
 	case tcell.KeyEnter:
 		return sv.handleEnter()
 	case tcell.KeyRune:
@@ -409,6 +437,9 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] KB toggled to %s", val)
 		sv.rebuildRows()
 		return true
+	case srToDoProject:
+		sv.cycleTodoProject(1)
+		return true
 	case srDaemon:
 		if !sv.daemonRestarting && sv.OnRestartDaemon != nil {
 			sv.daemonRestarting = true
@@ -470,6 +501,28 @@ func (sv *SettingsView) handleEdit() bool {
 		}
 	}
 	return false
+}
+
+// cycleTodoProject cycles the default todo project forward or backward through
+// the sorted project list. An empty string ("none") is included as the first option.
+func (sv *SettingsView) cycleTodoProject(dir int) {
+	if len(sv.projectNames) == 0 {
+		return
+	}
+	// Options: ["", proj1, proj2, ...]
+	options := append([]string{""}, sv.projectNames...)
+	idx := 0
+	for i, n := range options {
+		if n == sv.todoProject {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(options)) % len(options)
+	sv.todoProject = options[idx]
+	_ = sv.database.SetConfigValue("defaults.todo_project", sv.todoProject)
+	uxlog.Log("[settings] default todo project set to %q", sv.todoProject)
+	sv.rebuildRows()
 }
 
 // --- Draw ---
@@ -566,6 +619,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srKB:
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+	case srToDoProject:
+		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
 	case srLogs:
 		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srDaemon:
@@ -751,6 +806,28 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderToDoProjectDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Default ToDo Project", StyleTitle)
+	r := 2
+
+	proj := sv.todoProject
+	if proj == "" {
+		drawText(screen, x, y+r, w, "(none)", StyleDimmed)
+	} else {
+		drawText(screen, x, y+r, w, proj, tcell.StyleDefault.Foreground(ColorComplete))
+	}
+	r += 2
+
+	drawText(screen, x, y+r, w, "The project pre-selected when launching", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "a to-do note as a new task.", StyleDimmed)
+	r += 2
+
+	if r < h {
+		drawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", StyleDimmed)
 	}
 }
 

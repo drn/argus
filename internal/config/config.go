@@ -41,7 +41,8 @@ func DefaultArgusVaultPath() string {
 }
 
 type Defaults struct {
-	Backend string `toml:"backend"`
+	Backend     string `toml:"backend"`
+	TodoProject string `toml:"todo_project"` // default project for launching todos
 }
 
 type Backend struct {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func testSettingsView(t *testing.T) *SettingsView {
@@ -177,6 +178,119 @@ func TestSettingsView_KBToggle(t *testing.T) {
 	if sv.kbEnabled == initialKB {
 		t.Error("KB should have toggled")
 	}
+}
+
+func TestSettingsView_TodoProjectCycle(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetProject("alpha", config.Project{Path: "/a"})
+	database.SetProject("beta", config.Project{Path: "/b"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Find the todo project row.
+	todoIdx := -1
+	for i, row := range sv.rows {
+		if row.kind == srToDoProject {
+			todoIdx = i
+			break
+		}
+	}
+	if todoIdx < 0 {
+		t.Fatal("no todo project row found")
+	}
+	sv.cursor = todoIdx
+
+	t.Run("starts empty", func(t *testing.T) {
+		testutil.Equal(t, sv.todoProject, "")
+	})
+
+	t.Run("cycle forward to first project", func(t *testing.T) {
+		sv.handleEnter()
+		testutil.Equal(t, sv.todoProject, "alpha")
+	})
+
+	t.Run("cycle forward to second project", func(t *testing.T) {
+		// Re-find row after rebuild.
+		for i, row := range sv.rows {
+			if row.kind == srToDoProject {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		testutil.Equal(t, sv.todoProject, "beta")
+	})
+
+	t.Run("cycle forward wraps to none", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srToDoProject {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		testutil.Equal(t, sv.todoProject, "")
+	})
+
+	t.Run("cycle backward wraps to last project", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srToDoProject {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.cycleTodoProject(-1)
+		testutil.Equal(t, sv.todoProject, "beta")
+	})
+
+	t.Run("persists to database", func(t *testing.T) {
+		cfg := database.Config()
+		testutil.Equal(t, cfg.Defaults.TodoProject, "beta")
+	})
+}
+
+func TestSettingsView_TodoProjectLeftRight(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("proj", config.Project{Path: "/p"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	for i, row := range sv.rows {
+		if row.kind == srToDoProject {
+			sv.cursor = i
+			break
+		}
+	}
+
+	// Right arrow cycles forward.
+	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
+	handled := sv.HandleKey(ev)
+	testutil.Equal(t, handled, true)
+	testutil.Equal(t, sv.todoProject, "proj")
+
+	// Left arrow cycles backward.
+	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
+	handled = sv.HandleKey(ev)
+	testutil.Equal(t, handled, true)
+	testutil.Equal(t, sv.todoProject, "")
+}
+
+func TestSettingsView_TodoProjectNoProjects(t *testing.T) {
+	sv := testSettingsView(t)
+
+	for i, row := range sv.rows {
+		if row.kind == srToDoProject {
+			sv.cursor = i
+			break
+		}
+	}
+
+	// Cycle should be a no-op with no projects.
+	sv.cycleTodoProject(1)
+	testutil.Equal(t, sv.todoProject, "")
 }
 
 func TestSettingsView_LogsSection(t *testing.T) {

@@ -10,6 +10,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Defaults.Backend != "claude" {
 		t.Errorf("default backend = %q, want claude", cfg.Defaults.Backend)
 	}
+	if cfg.Defaults.TodoProject != "" {
+		t.Errorf("default todo_project = %q, want empty", cfg.Defaults.TodoProject)
+	}
 	if _, ok := cfg.Backends["claude"]; !ok {
 		t.Error("claude backend should exist")
 	}

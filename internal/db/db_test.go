@@ -1057,6 +1057,27 @@ func TestDB_Config_DefaultsBackendOverride(t *testing.T) {
 	}
 }
 
+func TestDB_Config_DefaultsTodoProjectOverride(t *testing.T) {
+	d := testDB(t)
+
+	if err := d.SetConfigValue("defaults.todo_project", "forge"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := d.Config()
+	if cfg.Defaults.TodoProject != "forge" {
+		t.Errorf("Defaults.TodoProject = %q, want forge", cfg.Defaults.TodoProject)
+	}
+}
+
+func TestDB_Config_DefaultsTodoProjectEmpty(t *testing.T) {
+	d := testDB(t)
+
+	cfg := d.Config()
+	if cfg.Defaults.TodoProject != "" {
+		t.Errorf("Defaults.TodoProject = %q, want empty", cfg.Defaults.TodoProject)
+	}
+}
+
 func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
 	// Test that seedDefaults also fixes "cat" and "true" placeholder commands
 	for _, placeholder := range []string{"cat", "true"} {
