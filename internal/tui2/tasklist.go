@@ -926,17 +926,23 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	drawText(screen, col, y, len(nameStr), nameStr, nameStyle)
 	col += len(nameStr)
 
-	// Right-align elapsed time
+	// Right-align elapsed time. elapsedCol also limits cursor fill below.
+	elapsedCol := -1
 	if elapsed != "" {
-		elapsedCol := x + w - len(elapsed) - 1
-		if elapsedCol > col {
-			drawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
-		}
+		elapsedCol = x + w - len(elapsed) - 1
+	}
+	if elapsedCol > col {
+		drawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
 	}
 
-	// Fill remaining cells on cursor row so the highlight extends to edge
+	// Fill remaining cells on cursor row so the highlight extends to edge.
+	// Stop before the elapsed time region so it doesn't get overwritten.
 	if cursor {
-		for c := col; c < x+w; c++ {
+		fillEnd := x + w
+		if elapsedCol > col {
+			fillEnd = elapsedCol
+		}
+		for c := col; c < fillEnd; c++ {
 			screen.SetContent(c, y, ' ', nil, StyleDefault)
 		}
 	}
