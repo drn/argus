@@ -1138,17 +1138,26 @@ func findFirstContentRowEmu(emu *xvt.SafeEmulator, cols, maxRow int) int {
 	return 0
 }
 
+// cellHasContent returns true if a single cell has visible content or styling.
+func cellHasContent(cell *uv.Cell) bool {
+	if cell == nil {
+		return false
+	}
+	if cell.Content != "" && cell.Content != " " {
+		return true
+	}
+	return cell.Style.Fg != nil || cell.Style.Bg != nil || cell.Style.Attrs != 0
+}
+
 // rowHasContentEmu returns true if any cell in the row has visible content.
+// Checks column 0 first (most terminal output starts there) for a fast exit.
 func rowHasContentEmu(emu *xvt.SafeEmulator, row, cols int) bool {
-	for x := 0; x < cols; x++ {
-		cell := emu.CellAt(x, row)
-		if cell == nil {
-			continue
-		}
-		if cell.Content != "" && cell.Content != " " {
-			return true
-		}
-		if cell.Style.Fg != nil || cell.Style.Bg != nil || cell.Style.Attrs != 0 {
+	// Fast check: column 0 has content for ~90% of non-empty rows.
+	if cellHasContent(emu.CellAt(0, row)) {
+		return true
+	}
+	for x := 1; x < cols; x++ {
+		if cellHasContent(emu.CellAt(x, row)) {
 			return true
 		}
 	}

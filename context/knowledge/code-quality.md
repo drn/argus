@@ -1201,3 +1201,18 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - Circular import: `api` → `daemon` → `api` and `vault` → `daemon` → `vault`. Broken by injecting `TaskCreator` closures at daemon wiring time
 - API binds 0.0.0.0 (not 127.0.0.1 like MCP) because it must be reachable over Tailscale
 - iCloud `.icloud` placeholder files must be filtered out (they appear before the real file syncs)
+
+## Performance Optimization Pass: 2026-03-23
+
+### Changes
+- **`RingBuffer.total` → `atomic.Uint64`** — lock-free `TotalWritten()` on Session and RemoteSession. Eliminates mutex contention from 16ms follow-up goroutine, 200ms redraw loop, 1s tick, and every `Draw()`.
+- **`readLoop` per-read alloc eliminated** — `data := tmp[:n]` aliases into reusable buffer instead of `make([]byte, n)` per read. All consumers copy synchronously.
+- **`readLoop` writer snapshot uses stack array** — `[4]io.Writer` avoids heap alloc for typical 0-2 writers; falls back to heap for >4.
+- **`refreshPreview` TotalWritten guard** — skips 256KB `RecentOutput()` copy when output hasn't changed. Fields protected by `a.mu` (concurrent tick + cursor-change goroutines).
+- **PR URL scan TotalWritten guard** — `prScanTW` map tracks per-session TotalWritten; skips 32KB tail + regex when output unchanged.
+- **`rowHasContentEmu` column-0 fast path** — checks col 0 first (content there ~90% of the time), then scans remaining columns.
+
+### Gotchas
+- `len(raw)` is NOT a valid cache key for ring buffer content — once full (256KB), length is constant but content changes on every wrap. Use `TotalWritten()` instead.
+- `refreshPreview` is called from both tick goroutine and `onTaskCursorChange` goroutine — any shared state must be mutex-protected.
+- `readLoop` data alias (`tmp[:n]`) requires all writers to copy synchronously. An async writer storing a reference to `p` would corrupt data.

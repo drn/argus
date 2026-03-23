@@ -121,6 +121,9 @@ type App struct {
 	worktreeDir     string // resolved worktree dir for current agent view task
 	lastGitRefresh     time.Time
 	lastTaskGitRefresh time.Time
+	lastPreviewTW      uint64 // TotalWritten when preview was last refreshed
+	lastPreviewTaskID  string // task ID for the cached TotalWritten
+	prScanTW           map[string]uint64 // per-session TotalWritten for PR URL scan throttling
 
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
@@ -338,8 +341,17 @@ func (a *App) onTick() {
 	runningIDs, idleIDs := a.runner.RunningAndIdle()
 
 	// Scan running sessions for GitHub PR URLs (last 32KB of output).
+	// Skip sessions whose output hasn't changed since last scan.
+	if a.prScanTW == nil {
+		a.prScanTW = make(map[string]uint64)
+	}
 	for _, rid := range runningIDs {
 		if sess := a.runner.Get(rid); sess != nil {
+			tw := sess.TotalWritten()
+			if prev, ok := a.prScanTW[rid]; ok && prev == tw {
+				continue // no new output since last scan
+			}
+			a.prScanTW[rid] = tw
 			tail := sess.RecentOutputTail(32 * 1024)
 			if matches := prURLRe.FindAll(tail, -1); len(matches) > 0 {
 				url := string(matches[len(matches)-1])
@@ -1465,6 +1477,17 @@ func (a *App) refreshPreview(taskID string) {
 
 	sess := a.runner.Get(taskID)
 	if sess != nil {
+		// Skip 256KB ring buffer copy when output hasn't changed.
+		// Protected by a.mu — accessed from tick goroutine and onTaskCursorChange goroutine.
+		tw := sess.TotalWritten()
+		a.mu.Lock()
+		if taskID == a.lastPreviewTaskID && tw == a.lastPreviewTW {
+			a.mu.Unlock()
+			return
+		}
+		a.lastPreviewTaskID = taskID
+		a.lastPreviewTW = tw
+		a.mu.Unlock()
 		raw := sess.RecentOutput()
 		// Use the PTY's actual width for the emulator so text wraps at
 		// the same column as in the agent view. Draw() clips to panel size.

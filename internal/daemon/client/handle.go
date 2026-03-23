@@ -118,8 +118,6 @@ func (rs *RemoteSession) RecentOutputTail(n int) []byte {
 }
 
 func (rs *RemoteSession) TotalWritten() uint64 {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
 	return rs.buf.TotalWritten()
 }
 
