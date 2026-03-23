@@ -1,13 +1,19 @@
 package agent
 
+import "sync/atomic"
+
 // RingBuffer is a fixed-size circular byte buffer.
 // When full, new writes overwrite the oldest data.
+//
+// Thread safety: callers must hold an external mutex for Write, Bytes, Tail,
+// Len, and Reset. TotalWritten is the sole exception — it uses an atomic
+// counter and is safe to call without any lock.
 type RingBuffer struct {
 	data  []byte
 	size  int
 	pos   int
 	full  bool
-	total uint64 // monotonic count of bytes written
+	total atomic.Uint64 // monotonic count of bytes written; lock-free reads
 }
 
 // NewRingBuffer creates a ring buffer of the given size.
@@ -25,7 +31,7 @@ func NewRingBuffer(size int) *RingBuffer {
 // Write appends data to the ring buffer using bulk copy operations.
 // In unbounded mode (size == 0), the buffer grows without limit.
 func (rb *RingBuffer) Write(p []byte) {
-	rb.total += uint64(len(p))
+	rb.total.Add(uint64(len(p)))
 	if rb.size == 0 {
 		rb.data = append(rb.data, p...)
 		rb.pos = len(rb.data)
@@ -43,8 +49,9 @@ func (rb *RingBuffer) Write(p []byte) {
 }
 
 // TotalWritten returns the monotonic count of bytes written to the buffer.
+// Safe to call without holding the caller's mutex (atomic load).
 func (rb *RingBuffer) TotalWritten() uint64 {
-	return rb.total
+	return rb.total.Load()
 }
 
 // Bytes returns the buffered data in order (oldest first).

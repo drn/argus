@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"runtime"
 	"testing"
 )
 
@@ -150,6 +151,39 @@ func TestRingBuffer_Tail(t *testing.T) {
 				t.Errorf("Tail(%d) = %q, want %q", tt.n, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRingBuffer_TotalWritten_Concurrent(t *testing.T) {
+	rb := NewRingBuffer(256)
+	done := make(chan struct{})
+
+	// Writer goroutine.
+	go func() {
+		for i := 0; i < 1000; i++ {
+			rb.Write([]byte("x"))
+		}
+		close(done)
+	}()
+
+	// Concurrent reads — the race detector will flag any data race.
+	for {
+		tw := rb.TotalWritten()
+		if tw > 0 {
+			// Sanity: value should be monotonically increasing.
+			if tw2 := rb.TotalWritten(); tw2 < tw {
+				t.Errorf("TotalWritten went backwards: %d -> %d", tw, tw2)
+			}
+		}
+		select {
+		case <-done:
+			if rb.TotalWritten() != 1000 {
+				t.Errorf("final TotalWritten() = %d, want 1000", rb.TotalWritten())
+			}
+			return
+		default:
+			runtime.Gosched() // yield to writer on GOMAXPROCS=1
+		}
 	}
 }
 

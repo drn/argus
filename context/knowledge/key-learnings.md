@@ -60,6 +60,10 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 - **PTY keystroke follow-up redraw must guard on `TotalWritten`.** The immediate tview draw (from returning `nil`) fires before the PTY echo arrives. A 16ms delayed `QueueUpdateDraw` catches the echo, but it MUST check `sess.TotalWritten() != tw` — without the guard, `Clear()` runs without `skipClear`, causing the same full ~10K cell repaint that `lazyScreen` prevents.
 - **PTY-forwarded keystrokes must skip `screen.Clear()` via `lazyScreen`.** tview calls `screen.Clear()` → `CellBuffer.Fill(' ', StyleDefault)` on every draw, changing `currStr` for all cells. When widgets redraw identical content, `Put()` sees `cl != c.currStr` and calls `setDirty(true)` (sets `lastStr=""`). Then `Show()` → `drawCell()` finds all cells dirty → full terminal I/O (~10K cells per keystroke). The `lazyScreen` wrapper skips `Clear()` when `skipClear` is set, so cells retain previous values, widgets write identical content, tcell sees no changes, and `Show()` becomes a no-op.
+- **`RingBuffer.total` is `atomic.Uint64` — the only lock-free field.** All other RingBuffer fields (`data`, `pos`, `full`) require the caller's mutex. `TotalWritten()` is safe to call without any lock. `Session.TotalWritten()` and `RemoteSession.TotalWritten()` are lock-free.
+- **`readLoop` data alias (`tmp[:n]`) requires all writers to consume synchronously.** Avoids a per-read heap allocation. Safe because `buf.Write`, `logFile.Write`, and all `io.Writer.Write` implementations copy or consume before returning. A future async writer that stores a reference to `p` would silently corrupt data.
+- **`refreshPreview` TotalWritten guard fields must be protected by `a.mu`.** `lastPreviewTaskID` and `lastPreviewTW` are accessed from both the tick goroutine and `onTaskCursorChange` goroutines concurrently.
+- **Never use `len(raw)` as a cache key for ring buffer content.** Once the ring buffer fills (256KB), `len(Bytes())` is constant — same length but different content on every wrap. Use `TotalWritten()` for change detection instead.
 
 ### Paste & Input Batching
 

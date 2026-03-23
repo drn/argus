@@ -109,23 +109,34 @@ func (s *Session) readLoop() {
 	for {
 		n, err := s.ptmx.Read(tmp)
 		if n > 0 {
-			chunk := make([]byte, n)
-			copy(chunk, tmp[:n])
+			// Alias into tmp — avoids a per-read heap allocation. Safe because
+			// all consumers (buf.Write, logFile.Write, io.Writer.Write) copy or
+			// fully consume data synchronously before returning. The next
+			// ptmx.Read(tmp) doesn't execute until this iteration completes.
+			data := tmp[:n]
 			s.mu.Lock()
-			s.buf.Write(chunk)
+			s.buf.Write(data)
 			s.lastOutput = time.Now()
-			// Copy writer slice under lock, iterate outside lock.
-			ws := make([]io.Writer, len(s.writers))
-			copy(ws, s.writers)
+			// Snapshot writer slice under lock. Stack array avoids heap alloc
+			// for the typical 0-2 writers; falls back to heap for >4.
+			var wsArr [4]io.Writer
+			var ws []io.Writer
+			if len(s.writers) <= len(wsArr) {
+				nw := copy(wsArr[:], s.writers)
+				ws = wsArr[:nw]
+			} else {
+				ws = make([]io.Writer, len(s.writers))
+				copy(ws, s.writers)
+			}
 			s.mu.Unlock()
 			// Write to log file — sole writer, no lock needed.
 			if s.logFile != nil {
-				s.logFile.Write(chunk) //nolint:errcheck // best-effort
+				s.logFile.Write(data) //nolint:errcheck // best-effort
 			}
 			// Write to all attached writers, collect any that error.
 			var failed []io.Writer
 			for _, w := range ws {
-				if _, werr := w.Write(chunk); werr != nil {
+				if _, werr := w.Write(data); werr != nil {
 					failed = append(failed, w)
 				}
 			}
@@ -334,10 +345,8 @@ func (s *Session) RecentOutputTail(n int) []byte {
 }
 
 // TotalWritten returns the monotonic count of bytes written to the ring buffer.
-// Safe to call concurrently. Used to detect new output without copying the buffer.
+// Lock-free via atomic — safe to call concurrently without mutex contention.
 func (s *Session) TotalWritten() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.buf.TotalWritten()
 }
 
