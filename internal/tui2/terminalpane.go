@@ -24,6 +24,12 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
+// replayScrollbackSize is the scrollback buffer for replay emulators used
+// during scrollback browsing. 50K lines (~2500 screens at 20 rows) allows
+// deep scrolling in long sessions without constant rebuilds. The live emulator
+// uses x/vt's default (10K lines) since only the current viewport matters.
+const replayScrollbackSize = 50_000
+
 // newDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
 // the response pipe. x/vt uses io.Pipe() internally — when the emulator
 // processes terminal query sequences (DA1, DA2, DSR, etc.), it writes responses
@@ -32,6 +38,16 @@ import (
 // exits when the emulator is closed or garbage collected.
 func newDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
 	emu := xvt.NewSafeEmulator(cols, rows)
+	go io.Copy(io.Discard, emu) //nolint:errcheck
+	return emu
+}
+
+// newDrainedReplayEmulator creates an emulator with a large scrollback buffer
+// for scrollback browsing. This avoids frequent rebuilds when scrolling up
+// through long session output.
+func newDrainedReplayEmulator(cols, rows int) *xvt.SafeEmulator {
+	emu := xvt.NewSafeEmulator(cols, rows)
+	emu.Emulator.SetScrollbackSize(replayScrollbackSize)
 	go io.Copy(io.Discard, emu) //nolint:errcheck
 	return emu
 }
@@ -628,10 +644,12 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 		if tp.taskID != "" {
 			// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
-			// Minimum 1MB to avoid re-reads on small scrolls.
+			// Minimum 8MB to populate the 50K-line replay scrollback buffer and avoid
+			// mid-scroll rebuilds in long sessions. 50K lines × ~80 cols × 3 bytes
+			// ANSI overhead ≈ 12MB; 8MB covers ~60-70% of capacity on first read.
 			needed := int64(tp.scrollOffset+height) * int64(ptyCols) * 3
-			if needed < 1024*1024 {
-				needed = 1024 * 1024
+			if needed < 8*1024*1024 {
+				needed = 8 * 1024 * 1024
 			}
 			raw, logSize = tp.readLogTail(needed)
 		}
@@ -739,16 +757,44 @@ func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []
 
 	if needRebuild {
 		cursorVisible := true
-		tp.replayEmu = tp.newTrackedEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+		tp.replayEmu = tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
 			cursorVisible = visible
 		})
 		safeEmuWrite(tp.replayEmu, raw)
 		tp.replayEmuCols = ptyCols
 		tp.replayEmuRows = ptyRows
 		tp.replayEmuLogSize = logSize
-		tp.replayEmuMaxScroll = tp.scrollOffset
 		tp.replayEmuBytes = uint64(len(raw))
 		tp.replayEmuCursorVisible = cursorVisible
+
+		// Compute actual max scroll from emulator's scrollback capacity.
+		// Previously this was set to tp.scrollOffset, causing a full rebuild
+		// on every scroll step beyond the build-time offset. Now we use the
+		// emulator's actual content: scrollbackLen + visible content rows.
+		// Must mirror paintEmu's totalLines logic (cursor extension, firstContentRow)
+		// to avoid the fast-path cache returning cacheValid=true for offsets that
+		// paintEmu would clamp, or vice versa.
+		sbLen := tp.replayEmu.ScrollbackLen()
+		lastRow := findLastContentRowEmu(tp.replayEmu, ptyCols, ptyRows)
+		if cursorVisible {
+			cur := tp.replayEmu.CursorPosition()
+			if cur.Y > lastRow {
+				lastRow = cur.Y
+			}
+		}
+		var totalLines int
+		if sbLen > 0 {
+			totalLines = sbLen + lastRow + 1
+		} else {
+			firstRow := findFirstContentRowEmu(tp.replayEmu, ptyCols, lastRow)
+			totalLines = lastRow - firstRow + 1
+		}
+		maxScroll := totalLines - h
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		tp.replayEmuMaxScroll = maxScroll
+
 		// Reset anchor so the first paint after rebuild doesn't trigger
 		// false anchor-lock. The replay emulator (fed from log tail) often
 		// has more scrollback than the live emulator (256KB ring buffer),
@@ -922,6 +968,20 @@ func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorV
 	// prevents a stale cursor from appearing (typically bottom-left) until the
 	// emulator processes an explicit \e[?25h show-cursor sequence.
 	if onCursorVisible != nil {
+		onCursorVisible(false)
+	}
+	return emu
+}
+
+// newTrackedReplayEmulatorWithCallback creates a replay emulator with a large
+// scrollback buffer (50K lines) for scrollback browsing in long sessions.
+func (tp *TerminalPane) newTrackedReplayEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
+	emu := newDrainedReplayEmulator(cols, rows)
+	if onCursorVisible != nil {
+		emu.Emulator.SetCallbacks(xvt.Callbacks{
+			CursorVisibility: onCursorVisible,
+		})
+		// Default cursor to hidden — same rationale as newTrackedEmulatorWithCallback.
 		onCursorVisible(false)
 	}
 	return emu
