@@ -1150,6 +1150,23 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `QueueUpdate` and SimulationScreen event injection use separate channels — `syncUI` needs `eventSettle` sleep before the QueueUpdate round-trip to let events propagate
 - UI state reads (`header.ActiveTab()`, `app.mode`) must happen inside `readUI`/`QueueUpdate` to avoid data races with the tview goroutine
 
+## Scrollback Performance Fix: 2026-03-22
+
+**Problem:** Scrolling up in long agent sessions was slow — every scroll step beyond the initial build-time offset triggered a full replay emulator rebuild (log file read + x/vt feed).
+
+**Root cause:** `replayEmuMaxScroll` was set to `tp.scrollOffset` at build time (typically 1-2 lines with acceleration), not the emulator's actual scrollback capacity. The cache validity check `tp.scrollOffset <= tp.replayEmuMaxScroll` failed on nearly every subsequent scroll.
+
+**Fix — three parts:**
+1. After building the replay emulator, compute actual max scroll from `emu.ScrollbackLen() + lastContentRow + 1 - viewportHeight` instead of using the build-time scroll offset
+2. Introduced `newDrainedReplayEmulator` with 50K-line scrollback buffer (vs x/vt default 10K) for deep scrolling
+3. Increased minimum log read from 1MB to 8MB to populate ~60-70% of the larger scrollback buffer on first scroll
+
+**Data model:** New `newDrainedReplayEmulator()` function and `newTrackedReplayEmulatorWithCallback()` method — used only by `renderReplay`, not by the live emulator path.
+
+**Gotchas:**
+- `SetScrollbackSize` must be called on `emu.Emulator`, not the `SafeEmulator` wrapper
+- The actual scrollback capacity depends on content density — 4MB of ANSI-heavy output may produce fewer scrollback lines than 4MB of plain text
+
 ---
 
 ## 2026-03-22 — Remote Control (Vault Watcher + HTTP API)

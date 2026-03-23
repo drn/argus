@@ -1108,6 +1108,66 @@ func TestTerminalPane_MouseScrollUpResetsReplayState(t *testing.T) {
 	testutil.Equal(t, tp.scrollOffset, 3)
 }
 
+func TestTerminalPane_ReplayEmuMaxScrollUsesActualCapacity(t *testing.T) {
+	// replayEmuMaxScroll should reflect the emulator's actual scrollback
+	// capacity, not just the current scroll offset at build time. This prevents
+	// unnecessary rebuilds when scrolling further up.
+	tp := NewTerminalPane()
+
+	// Generate enough output to produce scrollback (30 lines in a 5-row emu).
+	var data []byte
+	for i := 0; i < 100; i++ {
+		data = append(data, []byte("scrollback line content!\n")...)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 24)
+
+	// Start with a small scroll offset.
+	tp.scrollOffset = 2
+	tp.renderReplay(screen, 0, 0, 20, 10, data, 0, 20, 10)
+
+	// maxScroll should be much larger than the scroll offset (2) because
+	// the emulator has many lines of scrollback.
+	if tp.replayEmuMaxScroll <= 2 {
+		t.Errorf("replayEmuMaxScroll=%d should be >> scroll offset 2 (reflects actual scrollback capacity)", tp.replayEmuMaxScroll)
+	}
+
+	// Scrolling further up should NOT trigger a rebuild (cache stays valid)
+	// because maxScroll covers the deeper offset.
+	oldEmu := tp.replayEmu
+	tp.scrollOffset = tp.replayEmuMaxScroll / 2 // scroll halfway into capacity
+	tp.paintCacheValid = false
+	tp.renderReplay(screen, 0, 0, 20, 10, data, 0, 20, 10)
+	if tp.replayEmu != oldEmu {
+		t.Error("replay emulator should be reused when scrolling within its capacity")
+	}
+}
+
+func TestTerminalPane_ReplayEmulatorHasLargeScrollback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("feeds 12K lines to emulator")
+	}
+	// Replay emulators must have a scrollback buffer larger than the default
+	// 10K lines. Feed 12K lines — if SetScrollbackSize(50K) were removed,
+	// the default 10K buffer would cap scrollback below 10K.
+	tp := NewTerminalPane()
+	emu := tp.newTrackedReplayEmulatorWithCallback(80, 24, nil)
+
+	// Feed 12K lines (exceeds default 10K scrollback).
+	for i := 0; i < 12_000; i++ {
+		emu.Write([]byte("line of content for scrollback testing\n"))
+	}
+
+	sbLen := emu.ScrollbackLen()
+	// With 50K buffer and 24-row viewport: 12000 - 24 = 11976 scrollback lines.
+	// With default 10K buffer: scrollback would be capped at 10000.
+	if sbLen <= 10_000 {
+		t.Errorf("replay emulator scrollback=%d, want >10000 (50K buffer should hold 12K lines)", sbLen)
+	}
+}
+
 func TestTerminalPane_ScrollUpWhileAlreadyScrolled(t *testing.T) {
 	// Scrolling further up while already scrolled should NOT invalidate
 	// the replay emu — it's still current for the scrolled region.
