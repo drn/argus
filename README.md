@@ -6,6 +6,32 @@ Every agent at a glance. Built with [tcell](https://github.com/gdamore/tcell) an
 
 A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and keyboard-driven workflow.
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/splash.png" width="720" alt="Splash screen">
+</p>
+
+<p align="center">
+  <img src="screenshots/task-list.png" width="720" alt="Task list with project folders and live preview">
+</p>
+
+<p align="center">
+  <img src="screenshots/new-task.png" width="720" alt="New task form with project and backend selection">
+</p>
+
+<p align="center">
+  <img src="screenshots/agent-view.png" width="720" alt="Agent view with terminal, git status, and file explorer">
+</p>
+
+<p align="center">
+  <img src="screenshots/file-diff.png" width="720" alt="Inline diff viewer with syntax highlighting">
+</p>
+
+<p align="center">
+  <img src="screenshots/settings.png" width="720" alt="Settings tab">
+</p>
+
 ## Features
 
 ### Agent Management
