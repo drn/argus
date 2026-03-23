@@ -18,11 +18,15 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/vault"
 )
 
 // DefaultSocketPath returns the default Unix socket path.
@@ -57,8 +61,15 @@ type Daemon struct {
 	sockPath  string         // set by Serve, used by cleanup
 	pidPath   string         // set by Serve, used by cleanup
 	mcpPort   int            // actual MCP HTTP port in use (set after listen)
-	mcpServer *mcp.Server    // set when KB is enabled, shut down in cleanup
-	kbIndexer *kb.Indexer    // set when KB is enabled, stopped in cleanup
+	mcpServer    *mcp.Server    // set when KB is enabled, shut down in cleanup
+	kbIndexer    *kb.Indexer    // set when KB is enabled, stopped in cleanup
+	vaultWatcher stopper        // set when auto_create_tasks is enabled
+	apiServer    *api.Server    // set when API is enabled, shut down in cleanup
+}
+
+// stopper is an interface for anything with a Stop() method.
+type stopper interface {
+	Stop()
 }
 
 // New creates a new Daemon.
@@ -181,6 +192,43 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}
 
+	// Start vault watcher for auto-task creation (when enabled).
+	if cfg.KB.AutoCreateTasks {
+		vaultPath := cfg.KB.ArgusVaultPath
+		if vaultPath == "" {
+			vaultPath = config.DefaultArgusVaultPath()
+		}
+		vw := vault.NewWatcher(d.db, vaultPath, func(name, prompt, project, todoPath string) (*model.Task, error) {
+			return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+		})
+		d.vaultWatcher = vw
+		go func() {
+			if err := vw.Start(); err != nil {
+				log.Printf("vault watcher start: %v", err)
+			}
+		}()
+	}
+
+	// Start HTTP API server (when enabled in settings).
+	if cfg.API.Enabled {
+		tokenPath := filepath.Join(db.DataDir(), "api-token")
+		token, err := api.LoadOrCreateToken(tokenPath)
+		if err != nil {
+			log.Printf("api token error: %v", err)
+		} else {
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+			})
+			d.apiServer = apiSrv
+			apiPort, err := apiSrv.ListenAndServe(cfg.API.HTTPPort)
+			if err != nil {
+				log.Printf("api server error: %v", err)
+			} else {
+				log.Printf("api server listening on port %d", apiPort)
+			}
+		}
+	}
+
 	// Register RPC service.
 	svc := &RPCService{daemon: d}
 	server := rpc.NewServer()
@@ -298,9 +346,23 @@ func (d *Daemon) cleanup() {
 	log.Println("daemon shutting down...")
 	d.runner.StopAll()
 
+	// Stop the vault watcher if running.
+	if d.vaultWatcher != nil {
+		d.vaultWatcher.Stop()
+	}
+
 	// Stop the KB indexer if running.
 	if d.kbIndexer != nil {
 		d.kbIndexer.Stop()
+	}
+
+	// Shut down the API HTTP server if running.
+	if d.apiServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.apiServer.Shutdown(ctx); err != nil {
+			log.Printf("api server shutdown: %v", err)
+		}
 	}
 
 	// Shut down the MCP HTTP server if running.

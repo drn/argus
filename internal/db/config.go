@@ -108,6 +108,16 @@ func (d *DB) Config() config.Config {
 		cfg.KB.AutoCreateTasks = v == "true"
 	}
 
+	// API config
+	if v, ok := kv["api.enabled"]; ok {
+		cfg.API.Enabled = v == "true"
+	}
+	if v, ok := kv["api.http_port"]; ok {
+		if port, err := strconv.Atoi(v); err == nil && port > 0 {
+			cfg.API.HTTPPort = port
+		}
+	}
+
 	return cfg
 }
 
