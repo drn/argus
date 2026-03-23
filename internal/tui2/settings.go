@@ -28,6 +28,7 @@ const (
 	srLogs
 	srKB
 	srToDoProject
+	srAPI
 	srDaemon
 )
 
@@ -64,6 +65,10 @@ type SettingsView struct {
 	metisVaultPath string
 	argusVaultPath string
 	kbTaskSync     bool
+
+	// API.
+	apiEnabled bool
+	apiPort    int
 
 	// ToDo defaults.
 	todoProject  string   // current default todo project
@@ -159,6 +164,13 @@ func (sv *SettingsView) Refresh() {
 	sv.argusVaultPath = cfg.KB.ArgusVaultPath
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
 
+	// API.
+	sv.apiEnabled = cfg.API.Enabled
+	sv.apiPort = cfg.API.HTTPPort
+	if sv.apiPort == 0 {
+		sv.apiPort = 7743
+	}
+
 	// ToDo defaults.
 	sv.todoProject = cfg.Defaults.TodoProject
 	sv.projectNames = projNames
@@ -253,6 +265,14 @@ func (sv *SettingsView) rebuildRows() {
 		kbLabel = "  Enabled"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+
+	// API section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
+	apiLabel := "  Disabled"
+	if sv.apiEnabled {
+		apiLabel = fmt.Sprintf("  Enabled (port %d)", sv.apiPort)
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
 
 	// Default ToDo project.
 	todoLabel := "  ToDo Project: (none)"
@@ -435,6 +455,17 @@ func (sv *SettingsView) handleEnter() bool {
 		}
 		sv.database.SetConfigValue("kb.enabled", val)
 		uxlog.Log("[settings] KB toggled to %s", val)
+		sv.rebuildRows()
+		return true
+	case srAPI:
+		// Toggle API.
+		sv.apiEnabled = !sv.apiEnabled
+		val := "false"
+		if sv.apiEnabled {
+			val = "true"
+		}
+		sv.database.SetConfigValue("api.enabled", val)
+		uxlog.Log("[settings] API toggled to %s", val)
 		sv.rebuildRows()
 		return true
 	case srToDoProject:

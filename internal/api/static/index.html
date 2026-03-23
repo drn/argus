@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Argus</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-dim: #7d8590;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --orange: #db6d28;
+  --purple: #bc8cff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg); color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+.container { max-width: 600px; margin: 0 auto; padding: 0 12px; }
+
+/* Header */
+header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 12px 0; position: sticky; top: 0; z-index: 10;
+}
+header .container { display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 18px; font-weight: 600; }
+header h1 span { color: var(--accent); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.status-dot.ok { background: var(--green); }
+.status-dot.err { background: var(--red); }
+.header-stats { font-size: 13px; color: var(--text-dim); }
+
+/* Auth screen */
+#auth-screen {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; min-height: 80vh; padding: 24px;
+}
+#auth-screen h2 { margin-bottom: 8px; font-size: 20px; }
+#auth-screen p { color: var(--text-dim); margin-bottom: 20px; font-size: 14px; text-align: center; }
+#auth-screen input {
+  width: 100%; max-width: 360px; padding: 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 16px; margin-bottom: 12px;
+}
+#auth-screen button { width: 100%; max-width: 360px; }
+#auth-error { color: var(--red); font-size: 13px; margin-top: 8px; display: none; }
+
+/* Buttons */
+button, .btn {
+  padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 14px;
+  cursor: pointer; font-weight: 500; transition: background 0.15s;
+}
+button:active, .btn:active { background: var(--border); }
+button.primary { background: var(--accent); color: #000; border-color: var(--accent); }
+button.danger { color: var(--red); border-color: var(--red); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+/* Tab bar */
+.tabs {
+  display: flex; gap: 0; background: var(--surface);
+  border-bottom: 1px solid var(--border); padding: 0 12px;
+}
+.tab {
+  padding: 10px 16px; font-size: 14px; color: var(--text-dim);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  font-weight: 500; transition: color 0.15s;
+}
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Task list */
+.task-list { padding: 8px 0; }
+.task-item {
+  display: flex; align-items: center; padding: 12px;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+  transition: background 0.1s; gap: 10px;
+}
+.task-item:active { background: var(--surface); }
+.task-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.badge-pending { background: #30363d; color: var(--text-dim); }
+.badge-in_progress { background: #1a3a2a; color: var(--green); }
+.badge-in_review { background: #2d2000; color: var(--yellow); }
+.badge-complete { background: #1a1a3a; color: var(--purple); }
+.task-info { flex: 1; min-width: 0; }
+.task-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.task-chevron { color: var(--text-dim); font-size: 18px; flex-shrink: 0; }
+.empty-state { text-align: center; padding: 48px 24px; color: var(--text-dim); }
+
+/* Task detail */
+#detail-view { display: none; }
+.detail-header {
+  padding: 12px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 8px; display: inline-block; }
+.detail-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.detail-subtitle { font-size: 13px; color: var(--text-dim); }
+.detail-actions { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
+.detail-actions button { flex: 1; min-width: 80px; }
+.output-box {
+  background: #000; color: #ccc; font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 12px; line-height: 1.4; padding: 12px; margin: 12px;
+  border-radius: 8px; min-height: 200px; max-height: 60vh;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  -webkit-overflow-scrolling: touch;
+}
+.input-bar {
+  display: flex; gap: 8px; padding: 0 12px 12px;
+}
+.input-bar input {
+  flex: 1; padding: 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 14px;
+}
+.input-bar button { flex-shrink: 0; }
+
+/* Create form */
+#create-view { display: none; }
+.form-group { padding: 0 12px; margin-bottom: 16px; }
+.form-group label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; font-weight: 500; }
+.form-group select, .form-group input, .form-group textarea {
+  width: 100%; padding: 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 14px; font-family: inherit;
+}
+.form-group textarea { min-height: 120px; resize: vertical; }
+.form-actions { display: flex; gap: 8px; padding: 12px; }
+.form-actions button { flex: 1; }
+
+/* Pull to refresh indicator */
+.refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
+
+/* Toast notifications */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--red); color: #fff; padding: 10px 20px; border-radius: 8px;
+  font-size: 14px; z-index: 100; max-width: 90vw; text-align: center;
+  animation: toast-in 0.2s ease-out;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+</style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="auth-screen">
+  <h2>Argus Remote</h2>
+  <p>Enter your API token to connect.<br>
+  <code style="font-size:12px; color:var(--text-dim)">cat ~/.argus/api-token</code></p>
+  <input type="password" id="token-input" placeholder="API Token" autocomplete="off">
+  <button class="primary" onclick="authenticate()">Connect</button>
+  <div id="auth-error">Invalid token. Check ~/.argus/api-token</div>
+</div>
+
+<!-- Main App -->
+<div id="main-app" style="display:none">
+  <header>
+    <div class="container">
+      <h1><span class="status-dot" id="conn-dot"></span>Argus</h1>
+      <div class="header-stats" id="header-stats"></div>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Tasks</div>
+    <div class="tab" data-tab="create" onclick="switchTab('create')">+ New</div>
+  </div>
+
+  <!-- Task List View -->
+  <div id="tasks-view">
+    <div class="refresh-hint" id="refresh-hint">Pull to refresh</div>
+    <div class="task-list" id="task-list"></div>
+  </div>
+
+  <!-- Task Detail View -->
+  <div id="detail-view">
+    <div class="detail-header">
+      <div class="detail-back" onclick="closeDetail()">&larr; Back</div>
+      <div class="detail-title" id="detail-title"></div>
+      <div class="detail-subtitle" id="detail-subtitle"></div>
+    </div>
+    <div class="detail-actions" id="detail-actions"></div>
+    <div class="output-box" id="output-box"></div>
+    <div class="input-bar" id="input-bar" style="display:none">
+      <input type="text" id="input-text" placeholder="Send to agent..." autocomplete="off">
+      <button onclick="sendInput()">Send</button>
+    </div>
+  </div>
+
+  <!-- Create Task View -->
+  <div id="create-view">
+    <div style="padding:16px 12px 8px"><h2 style="font-size:18px">New Task</h2></div>
+    <div class="form-group">
+      <label>Project</label>
+      <select id="create-project"></select>
+    </div>
+    <div class="form-group">
+      <label>Name (optional)</label>
+      <input type="text" id="create-name" placeholder="Auto-generated from prompt">
+    </div>
+    <div class="form-group">
+      <label>Prompt</label>
+      <textarea id="create-prompt" placeholder="What should the agent do?"></textarea>
+    </div>
+    <div class="form-actions">
+      <button onclick="switchTab('tasks')">Cancel</button>
+      <button class="primary" id="create-btn" onclick="createTask()">Create & Start</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let TOKEN = localStorage.getItem('argus-token') || '';
+let currentTask = null;
+let outputInterval = null;
+let outputFirstLoad = false;
+let tasks = [];
+let actionBusy = false;
+
+// --- Toast ---
+function showToast(msg, duration = 4000) {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), duration);
+}
+
+// --- Auth ---
+function authenticate() {
+  const input = document.getElementById('token-input');
+  TOKEN = input.value.trim();
+  tryConnect();
+}
+
+async function tryConnect() {
+  try {
+    const r = await api('/api/status');
+    if (r.ok) {
+      localStorage.setItem('argus-token', TOKEN);
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('main-app').style.display = 'block';
+      refresh();
+      loadProjects();
+      setInterval(refresh, 5000);
+    } else {
+      document.getElementById('auth-error').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('auth-error').style.display = 'block';
+  }
+}
+
+// --- API (with 10s timeout) ---
+async function api(path, opts = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const r = await fetch(API + path, {
+      ...opts,
+      signal: controller.signal,
+      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+    });
+    if (r.status === 401) { logout(); throw new Error('unauthorized'); }
+    return r;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function logout() {
+  localStorage.removeItem('argus-token');
+  TOKEN = '';
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('auth-screen').style.display = 'flex';
+}
+
+// --- Refresh ---
+async function refresh() {
+  try {
+    const [statusR, tasksR] = await Promise.all([api('/api/status'), api('/api/tasks')]);
+    if (!statusR.ok || !tasksR.ok) throw new Error('server error');
+    const status = await statusR.json();
+    const data = await tasksR.json();
+
+    document.getElementById('conn-dot').className = 'status-dot ok';
+
+    const s = status.sessions;
+    const t = status.tasks;
+    document.getElementById('header-stats').textContent =
+      `${s.running} running / ${t.pending} queued`;
+
+    tasks = data.tasks || [];
+    renderTaskList();
+  } catch(e) {
+    document.getElementById('conn-dot').className = 'status-dot err';
+  }
+}
+
+// --- Task List ---
+function renderTaskList() {
+  const el = document.getElementById('task-list');
+  if (!tasks.length) {
+    el.innerHTML = '<div class="empty-state">No tasks yet.<br>Tap + New to create one.</div>';
+    return;
+  }
+  const order = { in_progress: 0, in_review: 1, pending: 2, complete: 3 };
+  const sorted = [...tasks].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+  el.innerHTML = sorted.map(t => `
+    <div class="task-item" onclick="openDetail('${t.id}')">
+      <span class="task-badge badge-${t.status}">${statusLabel(t.status)}</span>
+      <div class="task-info">
+        <div class="task-name">${esc(t.name)}</div>
+        <div class="task-meta">${esc(t.project)}${t.elapsed ? ' &middot; ' + t.elapsed : ''}</div>
+      </div>
+      <div class="task-chevron">&rsaquo;</div>
+    </div>
+  `).join('');
+}
+
+function statusLabel(s) {
+  return { pending: 'Pending', in_progress: 'Running', in_review: 'Review', complete: 'Done' }[s] || s;
+}
+
+// --- Task Detail ---
+async function openDetail(id) {
+  currentTask = tasks.find(t => t.id === id);
+  if (!currentTask) return;
+
+  document.getElementById('tasks-view').style.display = 'none';
+  document.getElementById('detail-view').style.display = 'block';
+  document.getElementById('detail-title').textContent = currentTask.name;
+  document.getElementById('detail-subtitle').textContent =
+    `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
+
+  renderDetailActions();
+  outputFirstLoad = true;
+  loadOutput();
+  clearInterval(outputInterval);
+  if (currentTask.status === 'in_progress') {
+    outputInterval = setInterval(loadOutput, 2000);
+    document.getElementById('input-bar').style.display = 'flex';
+  } else {
+    document.getElementById('input-bar').style.display = 'none';
+  }
+}
+
+function renderDetailActions() {
+  const el = document.getElementById('detail-actions');
+  const s = currentTask.status;
+  let html = '';
+  if (s === 'in_progress') {
+    html += '<button class="danger" id="btn-stop" onclick="stopTask()">Stop</button>';
+  }
+  if (s === 'pending' || s === 'in_review' || s === 'complete') {
+    html += '<button class="primary" id="btn-resume" onclick="resumeTask()">Resume</button>';
+  }
+  if (currentTask.pr_url) {
+    html += `<button id="btn-pr" data-url="${esc(currentTask.pr_url)}">View PR</button>`;
+  }
+  html += '<button class="danger" id="btn-delete" onclick="deleteTask()">Delete</button>';
+  el.innerHTML = html;
+  // Bind PR button via JS (not inline onclick) to prevent XSS from crafted URLs.
+  const prBtn = document.getElementById('btn-pr');
+  if (prBtn) {
+    prBtn.addEventListener('click', () => {
+      const url = prBtn.dataset.url;
+      if (url && url.startsWith('http')) window.open(url, '_blank');
+    });
+  }
+}
+
+function setActionButtons(disabled) {
+  actionBusy = disabled;
+  ['btn-stop','btn-resume','btn-delete'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+async function loadOutput() {
+  try {
+    const r = await api(`/api/tasks/${currentTask.id}/output?bytes=65536`);
+    if (!r.ok) throw new Error('output fetch failed');
+    const text = await r.text();
+    const box = document.getElementById('output-box');
+    const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
+    box.textContent = stripAnsi(text);
+    if (outputFirstLoad || wasAtBottom) box.scrollTop = box.scrollHeight;
+    outputFirstLoad = false;
+  } catch(e) {
+    document.getElementById('output-box').textContent = '(no output available)';
+  }
+}
+
+function stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;:]*[a-zA-Z]/g, '')
+          .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+          .replace(/\x1b[()][A-Z0-9]/g, '')
+          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
+async function stopTask() {
+  if (actionBusy) return;
+  setActionButtons(true);
+  try {
+    await api(`/api/tasks/${currentTask.id}/stop`, { method: 'POST' });
+    clearInterval(outputInterval);
+    await refresh();
+    currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
+    currentTask.status = 'in_review';
+    document.getElementById('detail-subtitle').textContent =
+      `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
+    renderDetailActions();
+    document.getElementById('input-bar').style.display = 'none';
+  } catch(e) {
+    showToast('Stop failed: ' + e.message);
+  } finally {
+    setActionButtons(false);
+  }
+}
+
+async function resumeTask() {
+  if (actionBusy) return;
+  setActionButtons(true);
+  try {
+    const r = await api(`/api/tasks/${currentTask.id}/resume`, { method: 'POST' });
+    if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'resume failed'); }
+    await refresh();
+    currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
+    currentTask.status = 'in_progress';
+    document.getElementById('detail-subtitle').textContent =
+      `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
+    renderDetailActions();
+    document.getElementById('input-bar').style.display = 'flex';
+    outputInterval = setInterval(loadOutput, 2000);
+  } catch(e) {
+    showToast('Resume failed: ' + e.message);
+  } finally {
+    setActionButtons(false);
+  }
+}
+
+async function deleteTask() {
+  if (actionBusy) return;
+  if (!confirm('Delete task "' + currentTask.name + '"?')) return;
+  setActionButtons(true);
+  try {
+    await api(`/api/tasks/${currentTask.id}`, { method: 'DELETE' });
+    closeDetail();
+    refresh();
+  } catch(e) {
+    showToast('Delete failed: ' + e.message);
+  } finally {
+    setActionButtons(false);
+  }
+}
+
+function closeDetail() {
+  clearInterval(outputInterval);
+  currentTask = null;
+  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('tasks-view').style.display = 'block';
+}
+
+// --- Send Input ---
+async function sendInput() {
+  const input = document.getElementById('input-text');
+  const text = input.value;
+  if (!text || !currentTask) return;
+  try {
+    await api(`/api/tasks/${currentTask.id}/input`, {
+      method: 'POST',
+      body: text + '\n',
+      headers: { 'Content-Type': 'text/plain' }
+    });
+    input.value = '';
+    setTimeout(loadOutput, 500);
+  } catch(e) {
+    showToast('Send failed: ' + e.message);
+  }
+}
+
+document.getElementById('input-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); sendInput(); }
+});
+
+// --- Create Task ---
+async function loadProjects() {
+  try {
+    const r = await api('/api/projects');
+    if (!r.ok) return;
+    const data = await r.json();
+    const sel = document.getElementById('create-project');
+    sel.innerHTML = (data.projects || []).map(p =>
+      `<option value="${esc(p)}">${esc(p)}</option>`
+    ).join('');
+  } catch(e) {}
+}
+
+async function createTask() {
+  const project = document.getElementById('create-project').value;
+  const name = document.getElementById('create-name').value.trim();
+  const prompt = document.getElementById('create-prompt').value.trim();
+  if (!project) { showToast('Select a project'); return; }
+  if (!prompt && !name) { showToast('Enter a name or prompt'); return; }
+
+  const btn = document.getElementById('create-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    const r = await api('/api/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ name, prompt, project })
+    });
+    const data = await r.json();
+    if (r.ok) {
+      document.getElementById('create-name').value = '';
+      document.getElementById('create-prompt').value = '';
+      switchTab('tasks');
+      await refresh();
+      openDetail(data.id);
+    } else {
+      showToast(data.error || 'Failed to create task');
+    }
+  } catch(e) {
+    showToast('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create & Start';
+  }
+}
+
+// --- Tab switching ---
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
+  document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
+  document.getElementById('detail-view').style.display = 'none';
+  clearInterval(outputInterval);
+  if (tab === 'tasks') refresh();
+}
+
+// --- Helpers ---
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// --- Init ---
+if (TOKEN) tryConnect();
+</script>
+</body>
+</html>

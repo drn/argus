@@ -14,6 +14,13 @@ type Config struct {
 	UI          UIConfig           `toml:"ui"`
 	Sandbox     SandboxConfig      `toml:"sandbox"`
 	KB          KBConfig           `toml:"kb"`
+	API         APIConfig          `toml:"api"`
+}
+
+// APIConfig controls the HTTP REST API for remote control.
+type APIConfig struct {
+	Enabled  bool `toml:"enabled"`   // default false — must be turned on in settings
+	HTTPPort int  `toml:"http_port"` // default 7743
 }
 
 // KBConfig controls the knowledge base server.
@@ -123,6 +130,9 @@ func DefaultConfig() Config {
 		},
 		KB: KBConfig{
 			HTTPPort: 7742,
+		},
+		API: APIConfig{
+			HTTPPort: 7743,
 		},
 	}
 }
