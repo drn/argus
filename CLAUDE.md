@@ -80,6 +80,9 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
   - `stream.go` — Goroutine reads raw bytes from daemon stream connection into local ring buffer.
 - `internal/gitutil/` — Git operations, diff parsing, changed files. Pure Go with no UI dependencies. Used by tui2 for git status, file diffs, and worktree management.
 - `internal/skills/` — Skill loading for autocomplete. Scans `~/.claude/skills/` and project-specific skill directories.
+- `internal/vault/` — Vault file watcher for auto-task creation. Uses fsnotify to watch the Argus vault directory for new `.md` files, auto-creates tasks via `HeadlessCreateTask`. Debounces iCloud sync. Wired into daemon lifecycle.
+- `internal/api/` — HTTP REST API for remote control. Bearer token auth, CORS, task CRUD, output viewing, PTY input, SSE streaming. Binds `0.0.0.0` for Tailscale access. Port-probing pattern from MCP server.
+- `internal/daemon/headless.go` — Headless task creation (worktree + DB + session start) without TUI. Shared by vault watcher and HTTP API via `TaskCreator` function injection.
 
 **Key pattern:** Sub-views are custom `tview.Box` widgets with `Draw(screen tcell.Screen)` methods. Async updates via `tapp.QueueUpdateDraw()` from the tick goroutine. Key routing via `tapp.SetInputCapture()`. **Every custom widget that accepts text input must implement `PasteHandler()`** — tview's bracket paste bypasses `InputCapture` entirely, so widgets without a `PasteHandler()` silently drop pasted text. For PTY-backed widgets, wrap the pasted text in bracket paste sequences (`\x1b[200~`/`\x1b[201~`).
 
@@ -131,6 +134,7 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 - **Every new feature must be documented in `context/knowledge/key-learnings.md` before the session ends** — but only the non-obvious gotchas, not a description of what the feature does.
 - **Update `context/knowledge/code-quality.md`** with a dated section summarizing the feature's data model, flow, and any gotchas. Update `context/knowledge/index.md` to include new key entities.
 - **What to document in key-learnings:** invariants that caused bugs, ordering requirements, platform quirks, silent failure modes. NOT: what the code does, feature descriptions, or UI layout.
+- **Update README.md when adding user-facing features.** New features, configuration options, API endpoints, and keybindings must be documented in the appropriate README section before the session ends. If a feature changes how users interact with Argus, the README must reflect it.
 
 ### Logging Requirements
 

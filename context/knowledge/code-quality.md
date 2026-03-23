@@ -1149,3 +1149,38 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - SimulationScreen's `PostEvent(EventPaste)` bypasses real bracket paste mode — negative test (broken ordering) is not possible in simulation
 - `QueueUpdate` and SimulationScreen event injection use separate channels — `syncUI` needs `eventSettle` sleep before the QueueUpdate round-trip to let events propagate
 - UI state reads (`header.ActiveTab()`, `app.mode`) must happen inside `readUI`/`QueueUpdate` to avoid data races with the tview goroutine
+
+---
+
+## 2026-03-22 — Remote Control (Vault Watcher + HTTP API)
+
+### Data Model
+- `config.APIConfig{Enabled, HTTPPort}` — new config section, DB keys `api.enabled`, `api.http_port`
+- `~/.argus/api-token` — bearer token file, auto-generated on first daemon start with API enabled
+
+### Vault Watcher (`internal/vault/watcher.go`)
+- Watches `KB.ArgusVaultPath` via fsnotify for new `.md` files
+- Debounces 500ms after Create/Write events (iCloud sync latency)
+- Initial scan on Start() catches files created while daemon was down
+- Deduplicates via `db.TasksByTodoPath()` — skips files that already have linked tasks
+- Uses `Defaults.TodoProject` for project resolution; skips if not configured
+- Accepts `TaskCreator` function to avoid circular import with daemon package
+
+### HTTP API (`internal/api/`)
+- REST API server on configurable port (default 7743), binds 0.0.0.0 for Tailscale
+- Bearer token auth via `Authorization: Bearer <token>` header
+- CORS enabled for cross-origin mobile browser access
+- Port probing (tries port, port+1..port+8) same as MCP server pattern
+- Endpoints: status, tasks CRUD, output (live + log fallback), input, SSE stream
+- Task creation via `TaskCreator` function injection (same pattern as vault watcher)
+
+### Headless Task Creation (`internal/daemon/headless.go`)
+- Shared function `HeadlessCreateTask(db, runner, name, prompt, project, todoPath)` used by both vault watcher and API
+- Same flow as TUI's `handleLaunchToDoKey`: CreateWorktree → db.Add → GenerateSessionID → runner.Start
+- Default PTY size 24x80 (TUI resizes on attach)
+- Reverts task to Pending on runner.Start failure (clear SessionID, zero StartedAt)
+
+### Gotchas
+- Circular import: `api` → `daemon` → `api` and `vault` → `daemon` → `vault`. Broken by injecting `TaskCreator` closures at daemon wiring time
+- API binds 0.0.0.0 (not 127.0.0.1 like MCP) because it must be reachable over Tailscale
+- iCloud `.icloud` placeholder files must be filtered out (they appear before the real file syncs)

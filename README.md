@@ -29,8 +29,16 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **To Dos tab** — Browse an Obsidian vault as a task inbox. Three-panel view: note list, markdown preview, and metadata
 - **Auto-launch from vault** — Select a note, pick a project, optionally add a prompt, and launch it as a new agent task. The note content becomes the agent's instructions
 - **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running, ◎ review, ✓ done) show progress inline
+- **Vault auto-create** — When enabled, the daemon watches the vault directory for new `.md` files and automatically creates and starts agent tasks. Share a note to Obsidian from your phone, and the agent starts working
 - **Cleanup** — `ctrl+r` on the To Dos tab deletes vault files for completed tasks, keeping the inbox clean
 - **Knowledge base** — A separate FTS5-powered full-text search store indexes another Obsidian vault and exposes it as an MCP server (port 7742), auto-injected into every agent worktree
+
+### Remote Control
+
+- **HTTP REST API** — Full task management API on port 7743 (configurable). Create tasks, start/stop/resume agents, view output, send input to running agents. Bearer token authentication
+- **Mobile web dashboard** — Built-in mobile-first web UI served at `http://<host>:7743/`. Task list with status badges, output viewer with ANSI stripping, create task form, and live agent interaction. Dark theme optimized for phone screens
+- **Tailscale-friendly** — API binds `0.0.0.0` for access over Tailscale mesh VPN. No public exposure needed
+- **SSE streaming** — Live agent output via Server-Sent Events at `/api/tasks/{id}/stream` with 30s keepalive pings
 
 ### Git & Worktrees
 
@@ -159,6 +167,65 @@ All sandbox settings are managed in the **Settings tab** (`4` key):
 Argus includes a built-in FTS5 full-text search store that indexes Obsidian vault markdown files. The KB is exposed as an MCP server (port 7742) and auto-injected into every agent worktree, giving agents access to your notes and documentation.
 
 Configure vault paths in the **Settings tab** under the KB section.
+
+## Remote Control
+
+Argus includes a built-in HTTP API and mobile web dashboard for controlling agents from your phone or any device on your network.
+
+### Setup
+
+1. Enable in the **Settings tab** (`4` key) under **Remote API** — toggle to Enabled
+2. Restart the daemon (Settings → Restart Daemon) for the API server to start
+3. The API token is auto-generated at `~/.argus/api-token`
+
+### Web Dashboard
+
+Open `http://<your-machine>:7743/` in your phone browser. Enter the API token from `~/.argus/api-token` to authenticate.
+
+The dashboard provides:
+- **Task list** — All tasks sorted by status (running first), with project names and elapsed times
+- **Task detail** — View agent output (ANSI-stripped), stop/resume/delete agents
+- **Send input** — Type commands to running agents directly from your phone
+- **Create tasks** — Select a project, enter a prompt, and start a new agent
+
+The token persists in your browser's localStorage until you clear it.
+
+### REST API
+
+All endpoints require `Authorization: Bearer <token>` header. Token is in `~/.argus/api-token`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/status` | Daemon health, running/idle session counts, task counts by status |
+| `GET` | `/api/tasks` | List all tasks. Filter: `?status=in_progress&project=myproj` |
+| `POST` | `/api/tasks` | Create and start a task. Body: `{"name":"...", "prompt":"...", "project":"..."}` |
+| `GET` | `/api/tasks/{id}` | Get single task detail |
+| `POST` | `/api/tasks/{id}/stop` | Stop a running agent (task moves to "in review") |
+| `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent |
+| `DELETE` | `/api/tasks/{id}` | Delete a task |
+| `GET` | `/api/tasks/{id}/output` | Get recent agent output. Optional: `?bytes=65536` (max 1MB) |
+| `POST` | `/api/tasks/{id}/input` | Send text to the agent's PTY stdin. Body: raw text |
+| `GET` | `/api/tasks/{id}/stream` | SSE stream of live agent output (base64-encoded chunks) |
+| `GET` | `/api/projects` | List configured project names |
+
+### Tailscale Access
+
+For secure remote access without exposing ports to the internet:
+
+1. Install [Tailscale](https://tailscale.com) on your machine and phone
+2. Enable the API in Argus Settings
+3. Access the dashboard at `http://<tailscale-ip>:7743/` from your phone
+
+### Vault Auto-Create
+
+When **Task Sync** is enabled in Settings (under Knowledge Base), the daemon watches your Obsidian vault for new `.md` files and automatically creates agent tasks from them.
+
+1. Enable **Task Sync** in Settings
+2. Set your **ToDo Project** (the default project for auto-created tasks)
+3. Share a note to your Obsidian vault from your phone (via iOS Share Sheet or any sync method)
+4. The daemon detects the new file, creates a worktree, and starts an agent with the note content as the prompt
+
+Files are debounced (500ms) to handle iCloud sync latency. Duplicate detection prevents re-creating tasks for files that already have linked tasks.
 
 ## Data
 

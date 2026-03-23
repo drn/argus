@@ -165,3 +165,11 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **PTY session logs contain `\r` (carriage return) characters that must be normalized before filtering.** Claude Code uses `\r` to overwrite status indicators in-place. Without `\r→\n` normalization, multiple screen elements concatenate on one "line" and per-line noise filters fail to match.
 - **PTY session logs contain `\u00a0` (non-breaking space) that must be normalized.** Claude Code uses NBSP in tool result formatting. Without normalization, `\s+` patterns may not match as expected.
 - **Long terminal lines (>120 bytes) need inline noise stripping, not just per-line filtering.** VT cell rendering concatenates the content area, status bar, separators, and prompt onto a single line with whitespace padding. `cleanLongLine` removes these inline patterns before per-line `isNoiseLine` runs.
+
+### Vault Watcher & Remote API
+
+- **Vault watcher and API server cannot import `daemon` package (circular import).** Both use `HeadlessCreateTask` from `daemon`, but `daemon` imports them. Fix: inject a `TaskCreator` function via closure at daemon wiring time, breaking the cycle.
+- **iCloud-synced vault files need debounce (500ms) before reading.** Files arrive partially written; `fsnotify.Create` fires before the full content lands. Also skip `.icloud` placeholder files (iCloud uses these for files not yet downloaded).
+- **Headless task creation uses default 24x80 PTY dimensions.** Agents format initial output for the PTY size at launch. The TUI resizes the PTY when a user opens the agent view, so headless tasks auto-correct on attach.
+- **API server binds to `0.0.0.0` (not `127.0.0.1`) for Tailscale access.** MCP server uses `127.0.0.1` (local-only), but the API must be reachable over Tailscale's network interface. Auth is via bearer token from `~/.argus/api-token`.
+- **`HeadlessCreateTask` must revert task to Pending on `runner.Start` failure.** Clear SessionID and zero StartedAt — same revert pattern as `startSession` in `app.go`.
