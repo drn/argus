@@ -88,7 +88,7 @@ func (fp *FilePanel) FileCount() int {
 	return len(fp.files)
 }
 
-// CursorUp moves cursor up, auto-expands directories. Returns dir needing fetch.
+// CursorUp moves cursor up, skipping directories. Returns dir needing fetch.
 func (fp *FilePanel) CursorUp() string {
 	if fp.cursor > 0 {
 		fp.cursor--
@@ -96,10 +96,13 @@ func (fp *FilePanel) CursorUp() string {
 			fp.offset = fp.cursor
 		}
 	}
-	return fp.autoExpand()
+	fetch := fp.autoExpand()
+	fp.skipToFile(-1)
+	fp.ensureVisible()
+	return fetch
 }
 
-// CursorDown moves cursor down, auto-expands directories. Returns dir needing fetch.
+// CursorDown moves cursor down, skipping directories. Returns dir needing fetch.
 func (fp *FilePanel) CursorDown() string {
 	_, _, _, h := fp.GetInnerRect()
 	visible := max(h-3, 1) // reserve for border + header
@@ -109,7 +112,44 @@ func (fp *FilePanel) CursorDown() string {
 			fp.offset = fp.cursor - visible + 1
 		}
 	}
-	return fp.autoExpand()
+	fetch := fp.autoExpand()
+	fp.skipToFile(1)
+	fp.ensureVisible()
+	return fetch
+}
+
+// skipToFile advances the cursor past directory rows in the given direction.
+// If no file rows exist, the cursor stays on the current row (directory).
+func (fp *FilePanel) skipToFile(dir int) {
+	start := fp.cursor
+	for fp.cursor >= 0 && fp.cursor < len(fp.rows) {
+		if !fp.rows[fp.cursor].IsDir {
+			return
+		}
+		fp.cursor += dir
+	}
+	// Went past bounds — scan the opposite direction to find the nearest file
+	// (e.g., navigating down past the last file, look upward instead).
+	fp.cursor = max(0, min(fp.cursor, len(fp.rows)-1))
+	for fp.cursor >= 0 && fp.cursor < len(fp.rows) {
+		if !fp.rows[fp.cursor].IsDir {
+			return
+		}
+		fp.cursor -= dir
+	}
+	// No file rows at all — stay put.
+	fp.cursor = start
+}
+
+// ensureVisible adjusts offset so cursor is within the viewport.
+func (fp *FilePanel) ensureVisible() {
+	_, _, _, h := fp.GetInnerRect()
+	visible := max(h-3, 1)
+	if fp.cursor < fp.offset {
+		fp.offset = fp.cursor
+	} else if fp.cursor >= fp.offset+visible {
+		fp.offset = fp.cursor - visible + 1
+	}
 }
 
 // CursorIndex returns the current cursor index.

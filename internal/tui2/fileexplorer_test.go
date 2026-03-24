@@ -48,23 +48,82 @@ func TestFilePanel_DirExpansion(t *testing.T) {
 	fp := NewFilePanel()
 	fp.Box.SetRect(0, 0, 40, 20)
 	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
 		{Status: "M", Path: "src/", IsDir: true},
 		{Status: "A", Path: "b.go"},
 	}
 	fp.SetFiles(files)
 
-	// Moving to dir auto-expands it and returns dir path for fetch
-	dir := fp.CursorDown()
-	// First cursor should be on src/ (already expanded or needs fetch)
-	_ = dir
-
+	// Pre-populate children so skip-to-file can land on a child
 	fp.SetDirChildren("src/", []gitutil.ChangedFile{
 		{Status: "M", Path: "src/main.go"},
 	})
 
-	// Now there should be rows for: src/, src/main.go, b.go
-	if len(fp.rows) < 2 {
-		t.Errorf("expected at least 2 rows after expansion, got %d", len(fp.rows))
+	// From a.go, CursorDown hits src/ dir → autoExpand expands it → skipToFile lands on first child
+	fp.CursorDown()
+
+	// Rows: a.go, src/, src/main.go, b.go — cursor should skip src/ dir and land on src/main.go
+	if len(fp.rows) != 4 {
+		t.Errorf("expected 4 rows after expansion, got %d", len(fp.rows))
+	}
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/main.go" {
+		t.Errorf("cursor should skip dir and land on src/main.go, got %v", f)
+	}
+}
+
+func TestFilePanel_SkipDirDown(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "pkg/", IsDir: true},
+		{Status: "A", Path: "b.go"},
+	}
+	fp.SetFiles(files)
+
+	// Start on a.go, move down — should skip pkg/ dir and land on b.go
+	fp.CursorDown()
+	if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
+		t.Errorf("should skip dir, got %v", f)
+	}
+}
+
+func TestFilePanel_SkipDirUp(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "pkg/", IsDir: true},
+		{Status: "A", Path: "b.go"},
+	}
+	fp.SetFiles(files)
+
+	// Move cursor to b.go first
+	fp.CursorDown()
+	if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
+		t.Fatalf("setup: expected b.go, got %v", f)
+	}
+
+	// Move up — should skip pkg/ dir and land on a.go
+	fp.CursorUp()
+	if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Errorf("should skip dir going up, got %v", f)
+	}
+}
+
+func TestFilePanel_AllDirsNoSkip(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "M", Path: "pkg/", IsDir: true},
+	}
+	fp.SetFiles(files)
+
+	// With only dirs, cursor moves normally (skipToFile preserves position) and stays in bounds
+	fp.CursorDown()
+	if fp.cursor < 0 || fp.cursor >= len(fp.rows) {
+		t.Errorf("cursor out of bounds: %d (rows: %d)", fp.cursor, len(fp.rows))
 	}
 }
 
