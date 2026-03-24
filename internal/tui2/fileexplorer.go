@@ -128,7 +128,8 @@ func (fp *FilePanel) skipToFile(dir int) {
 		}
 		fp.cursor += dir
 	}
-	// Went past bounds — search the other direction.
+	// Went past bounds — scan the opposite direction to find the nearest file
+	// (e.g., navigating down past the last file, look upward instead).
 	fp.cursor = max(0, min(fp.cursor, len(fp.rows)-1))
 	for fp.cursor >= 0 && fp.cursor < len(fp.rows) {
 		if !fp.rows[fp.cursor].IsDir {

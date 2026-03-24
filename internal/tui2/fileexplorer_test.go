@@ -120,7 +120,7 @@ func TestFilePanel_AllDirsNoSkip(t *testing.T) {
 	}
 	fp.SetFiles(files)
 
-	// With only dirs, cursor should stay put (not crash or go out of bounds)
+	// With only dirs, cursor moves normally (skipToFile preserves position) and stays in bounds
 	fp.CursorDown()
 	if fp.cursor < 0 || fp.cursor >= len(fp.rows) {
 		t.Errorf("cursor out of bounds: %d (rows: %d)", fp.cursor, len(fp.rows))
