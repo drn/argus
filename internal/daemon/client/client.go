@@ -39,8 +39,8 @@ type Client struct {
 	mu       sync.Mutex
 
 	// leakedCalls tracks goroutines from timed-out RPC calls that are still
-	// blocked in rpc.Call. When this exceeds a threshold, the client is
-	// likely talking to a hung daemon and should be replaced.
+	// blocked in rpc.Call. Logged for observability — drain goroutines
+	// decrement the counter when the RPC eventually completes.
 	leakedCalls int
 
 	// onSessionExit is called when a session's stream EOF is detected.

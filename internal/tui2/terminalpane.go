@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -227,11 +226,7 @@ func (tp *TerminalPane) SetTaskID(id string) {
 
 // loadSessionLog reads the session log file for finished-session replay.
 func (tp *TerminalPane) loadSessionLog(taskID string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	logPath := filepath.Join(home, ".argus", "sessions", taskID+".log")
+	logPath := agent.SessionLogPath(taskID)
 	data, err := os.ReadFile(logPath)
 	if err != nil || len(data) == 0 {
 		return
@@ -776,10 +771,15 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	}
 
 	if len(raw) == 0 {
-		// Nothing to build — clear the building flag so next Draw retries.
+		// Nothing to build — clear the building flag and trigger one redraw
+		// so Draw can fall through to the placeholder message instead of
+		// spinning up a new goroutine on every Draw call.
 		tp.mu.Lock()
 		tp.replayBuilding = false
 		tp.mu.Unlock()
+		if onDone != nil {
+			onDone()
+		}
 		return
 	}
 

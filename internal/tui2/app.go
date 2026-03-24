@@ -1497,7 +1497,7 @@ func (a *App) refreshPreview(taskID string) {
 		}
 		a.lastPreviewTaskID = taskID
 		a.lastPreviewTW = tw
-		a.lastPreviewLogSize = 0
+		a.lastPreviewLogSize = 0 // reset so dead-session path re-reads log after session exit
 		a.mu.Unlock()
 		raw := sess.RecentOutput()
 		// Use the PTY's actual width for the emulator so text wraps at
