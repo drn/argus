@@ -418,7 +418,7 @@ function setActionButtons(disabled) {
 
 async function loadOutput() {
   try {
-    const r = await api(`/api/tasks/${currentTask.id}/output?bytes=65536`);
+    const r = await api(`/api/tasks/${currentTask.id}/output?bytes=65536&clean=1`);
     if (!r.ok) throw new Error('output fetch failed');
     const text = await r.text();
     const box = document.getElementById('output-box');
@@ -432,9 +432,10 @@ async function loadOutput() {
 }
 
 function stripAnsi(s) {
-  return s.replace(/\x1b\[[0-9;:]*[a-zA-Z]/g, '')
+  return s.replace(/\x1b\[?\??[0-9;:]*[a-zA-Z]/g, '')
           .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
           .replace(/\x1b[()][A-Z0-9]/g, '')
+          .replace(/\x1b[>=#]/g, '')
           .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
 }
 
