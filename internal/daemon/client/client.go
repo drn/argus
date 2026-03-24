@@ -38,6 +38,11 @@ type Client struct {
 	sessions map[string]*RemoteSession
 	mu       sync.Mutex
 
+	// leakedCalls tracks goroutines from timed-out RPC calls that are still
+	// blocked in rpc.Call. Logged for observability — drain goroutines
+	// decrement the counter when the RPC eventually completes.
+	leakedCalls int
+
 	// onSessionExit is called when a session's stream EOF is detected.
 	// Includes exit info (error, stopped flag, last output) from the daemon.
 	onSessionExit func(taskID string, info daemon.ExitInfo)
@@ -238,8 +243,8 @@ func (c *Client) WorkDir(taskID string) string {
 }
 
 // call wraps c.rpc.Call with a timeout so the TUI never hangs indefinitely
-// if the daemon crashes. The goroutine may outlive the timeout but will
-// unblock once the OS delivers a connection error on the dead socket.
+// if the daemon crashes. On timeout, a background goroutine drains the
+// channel when the RPC eventually completes, preventing goroutine leaks.
 func (c *Client) call(method string, args, reply any) error {
 	ch := make(chan error, 1)
 	go func() { ch <- c.rpc.Call(method, args, reply) }()
@@ -247,7 +252,19 @@ func (c *Client) call(method string, args, reply any) error {
 	case err := <-ch:
 		return err
 	case <-time.After(rpcTimeout):
-		uxlog.Log("client.call: RPC TIMEOUT method=%s", method)
+		// Drain the channel in the background so the RPC goroutine can
+		// exit when it eventually completes (e.g., socket error on daemon crash).
+		c.mu.Lock()
+		c.leakedCalls++
+		leaked := c.leakedCalls
+		c.mu.Unlock()
+		uxlog.Log("client.call: RPC TIMEOUT method=%s leaked=%d", method, leaked)
+		go func() {
+			<-ch // wait for RPC goroutine to finish
+			c.mu.Lock()
+			c.leakedCalls--
+			c.mu.Unlock()
+		}()
 		return ErrRPCTimeout
 	}
 }

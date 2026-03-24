@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -149,9 +148,19 @@ type TerminalPane struct {
 	pendingResizeRows uint16
 	pendingResizeCols uint16
 
+	// Async replay rebuild: when Draw() hits a cache miss on the slow path,
+	// it kicks off a background goroutine instead of blocking the main goroutine.
+	// The goroutine builds the emulator and stores it, then calls OnNeedRedraw.
+	replayBuilding       bool // true while a background rebuild is in flight
+	replayRebuildPending bool // set by async rebuild to signal anchor/cache reset needed
+
 	// OnClick is called when the user clicks on the terminal pane.
 	// The app wires this to switch agentFocus back to the terminal.
 	OnClick func()
+
+	// OnNeedRedraw is called from a background goroutine when an async
+	// replay rebuild completes. The app wires this to tapp.QueueUpdateDraw.
+	OnNeedRedraw func()
 }
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
@@ -217,11 +226,7 @@ func (tp *TerminalPane) SetTaskID(id string) {
 
 // loadSessionLog reads the session log file for finished-session replay.
 func (tp *TerminalPane) loadSessionLog(taskID string) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	logPath := filepath.Join(home, ".argus", "sessions", taskID+".log")
+	logPath := agent.SessionLogPath(taskID)
 	data, err := os.ReadFile(logPath)
 	if err != nil || len(data) == 0 {
 		return
@@ -258,8 +263,36 @@ func (tp *TerminalPane) SetFocused(f bool) {
 	tp.focused = f
 }
 
+// EagerReplayBuild kicks off an async replay rebuild from the session log
+// without waiting for Draw(). Called on session exit to pre-populate the
+// replay emulator so the first Draw() hits the cache instead of showing a
+// brief "Waiting for output..." flash.
+func (tp *TerminalPane) EagerReplayBuild() {
+	tp.mu.Lock()
+	if tp.replayBuilding || tp.taskID == "" {
+		tp.mu.Unlock()
+		return
+	}
+	tp.replayBuilding = true
+	taskID := tp.taskID
+	// Use reasonable defaults for dimensions — Draw() will rebuild if they differ.
+	cols := tp.ptyCols
+	rows := tp.ptyRows
+	if cols < 20 {
+		cols = 80
+	}
+	if rows < 5 {
+		rows = 24
+	}
+	onDone := tp.OnNeedRedraw
+	tp.mu.Unlock()
+
+	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, onDone)
+}
+
 // ResetVT clears all terminal state (on resize or task switch).
 func (tp *TerminalPane) ResetVT() {
+	tp.mu.Lock()
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
@@ -268,8 +301,11 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
+	tp.replayBuilding = false
+	tp.replayRebuildPending = false
 	tp.replayData = nil
 	tp.paintCacheValid = false
+	tp.mu.Unlock()
 	tp.ExitDiffMode()
 }
 
@@ -321,11 +357,14 @@ func (tp *TerminalPane) AccelScrollUp() int {
 // scroll (agent has written more since then), and anchorTotalLines from
 // renderLive would cause anchor-lock to misfire.
 func (tp *TerminalPane) invalidateReplayCache() {
+	tp.mu.Lock()
 	tp.replayEmu = nil
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
 	tp.anchorTotalLines = 0
+	tp.replayBuilding = false // allow new async rebuild after invalidation
+	tp.mu.Unlock()
 }
 
 // AccelScrollDown performs an accelerated scroll down for keyboard key-repeat.
@@ -377,13 +416,10 @@ func (tp *TerminalPane) statLogSize() int64 {
 	return fi.Size()
 }
 
-// readLogTail reads the last `size` bytes from the session log file.
-// Returns nil if the file doesn't exist or is empty. The log file is
-// concurrently appended by readLoop; using Open+Seek+Read (not ReadFile)
-// avoids reading partial writes at EOF. vt10x handles truncated escape
-// sequences gracefully.
-func (tp *TerminalPane) readLogTail(size int64) ([]byte, int64) {
-	logPath := agent.SessionLogPath(tp.taskID)
+// readLogTailForTask reads the last `size` bytes from a session log file.
+// Safe to call from any goroutine — uses only the passed taskID, no shared state.
+func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
+	logPath := agent.SessionLogPath(taskID)
 	f, err := os.Open(logPath)
 	if err != nil {
 		return nil, 0
@@ -594,20 +630,26 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 
 	if tp.scrollOffset > 0 || !alive {
+		// Replay/scroll path. The replay emulator fields are shared with
+		// asyncReplayRebuild (background goroutine), so access under tp.mu.
+		tp.mu.Lock()
+
+		// Consume pending reset from async rebuild — these fields are owned
+		// by the main goroutine (written by paintEmu without lock), so only
+		// the main goroutine may write them.
+		if tp.replayRebuildPending {
+			tp.replayRebuildPending = false
+			tp.anchorTotalLines = 0
+			tp.paintCacheValid = false
+		}
+
 		// Fast path: if we have a cached replay emulator with matching
 		// dimensions and the log file hasn't grown, skip file I/O entirely
 		// and just repaint from the cache with the new scroll offset.
-		// This is the hot path during scrolling — stat (~1μs) vs read (~1-10ms).
-		// Mirrors renderReplay's needRebuild logic as an early-out before readLogTail.
+		cacheHit := false
 		if tp.replayEmu != nil && tp.replayEmuCols == ptyCols && tp.replayEmuRows == ptyRows {
 			cacheValid := false
 			if alive && tp.scrollOffset > 0 {
-				// Live session scrolled up: cache is valid when dimensions
-				// match and the user hasn't scrolled beyond what the emulator
-				// was built for. New bytes arrive below the viewport (log is
-				// append-only), so no rebuild needed for the viewed region.
-				// When user scrolls back to bottom (scrollOffset == 0),
-				// the renderLive path handles it with the live emulator.
 				if tp.scrollOffset <= tp.replayEmuMaxScroll {
 					cacheValid = true
 				}
@@ -617,63 +659,178 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 					cacheValid = true
 				}
 			} else if tp.replayEmuLogSize == 0 {
-				// Non-log-backed: check ring buffer or replayData size.
 				if sess != nil {
 					cacheValid = tp.replayEmuBytes == sess.TotalWritten()
 				} else {
 					cacheValid = tp.replayEmuBytes == uint64(len(tp.replayData))
 				}
 			}
-			if cacheValid {
-				// If viewport AND scroll offset are unchanged, replay cached cells directly
-				// (skips all emulator cell lookups + style conversions).
-				if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
-					tp.paintCacheW == width && tp.paintCacheH == height &&
-					tp.paintCacheScroll == tp.scrollOffset {
-					tp.replayPaintCache(screen)
-					return
-				}
-				tp.paintEmu(screen, x, y, width, height, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
+			cacheHit = cacheValid
+		}
+
+		if cacheHit {
+			// Snapshot replay emu fields under lock, then release before painting.
+			emu := tp.replayEmu
+			curVis := tp.replayEmuCursorVisible
+			tp.mu.Unlock()
+
+			if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
+				tp.paintCacheW == width && tp.paintCacheH == height &&
+				tp.paintCacheScroll == tp.scrollOffset {
+				tp.replayPaintCache(screen)
 				return
 			}
-		}
-
-		// Slow path: cache miss — read log file and rebuild emulator.
-		var raw []byte
-		var logSize int64
-
-		if tp.taskID != "" {
-			// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
-			// Minimum 8MB to populate the 50K-line replay scrollback buffer and avoid
-			// mid-scroll rebuilds in long sessions. 50K lines × ~80 cols × 3 bytes
-			// ANSI overhead ≈ 12MB; 8MB covers ~60-70% of capacity on first read.
-			needed := int64(tp.scrollOffset+height) * int64(ptyCols) * 3
-			if needed < 8*1024*1024 {
-				needed = 8 * 1024 * 1024
-			}
-			raw, logSize = tp.readLogTail(needed)
-		}
-		if len(raw) == 0 {
-			// Fallback: ring buffer or cached replay data.
-			if sess != nil {
-				raw = sess.RecentOutput()
-			} else if len(tp.replayData) > 0 {
-				raw = tp.replayData
-			}
-		}
-		if len(raw) == 0 {
-			if sess != nil {
-				msg := "Waiting for output..."
-				drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
-			}
+			tp.paintEmu(screen, x, y, width, height, emu, ptyCols, ptyRows, tp.scrollOffset == 0, curVis)
 			return
 		}
-		tp.renderReplay(screen, x, y, width, height, raw, logSize, ptyCols, ptyRows)
+
+		// Slow path: cache miss — kick off async rebuild to avoid blocking
+		// the main goroutine with file I/O (up to 8MB read) and VT emulation.
+		if !tp.replayBuilding {
+			tp.replayBuilding = true
+			taskID := tp.taskID
+			scrollOffset := tp.scrollOffset
+			var replayDataCopy []byte
+			if len(tp.replayData) > 0 {
+				replayDataCopy = tp.replayData
+			}
+			tp.mu.Unlock()
+
+			// Grab ring buffer snapshot (may block briefly on session mutex,
+			// but this is a memcpy of ≤256KB — acceptable on the main goroutine).
+			var ringBuf []byte
+			if sess != nil {
+				ringBuf = sess.RecentOutput()
+			}
+			onDone := tp.OnNeedRedraw
+			go tp.asyncReplayRebuild(taskID, scrollOffset, height, ptyCols, ptyRows, ringBuf, replayDataCopy, onDone)
+
+			tp.mu.Lock()
+		}
+
+		// While rebuild is in flight, paint stale replay emulator if available.
+		staleEmu := tp.replayEmu
+		staleCurVis := tp.replayEmuCursorVisible
+		tp.mu.Unlock()
+
+		if staleEmu != nil {
+			// Save scrollOffset — the stale emulator may clamp it to its
+			// (smaller) maxScroll, which would cause a position jump when the
+			// fresh emulator arrives with more scrollback.
+			savedScroll := tp.scrollOffset
+			savedAnchor := tp.anchorTotalLines
+			tp.paintEmu(screen, x, y, width, height, staleEmu, ptyCols, ptyRows, tp.scrollOffset == 0, staleCurVis)
+			tp.scrollOffset = savedScroll
+			tp.anchorTotalLines = savedAnchor
+			return
+		}
+		if sess != nil {
+			msg := "Waiting for output..."
+			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+		}
+		return
 	} else {
 		// Live follow-tail mode: incremental feed.
 		// renderLive fetches the buffer internally, only when new bytes
 		// have arrived — avoids a 256KB ring buffer copy on every draw.
 		tp.renderLive(screen, x, y, width, height, ptyCols, ptyRows)
+	}
+}
+
+// asyncReplayRebuild performs the heavy replay emulator build (file I/O + VT emulation)
+// on a background goroutine. When done, it stores the result and triggers a redraw.
+// This prevents the main goroutine from blocking on multi-MB file reads and VT processing,
+// which was the primary cause of UI freezes with large session logs (20MB+).
+func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, onDone func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			uxlog.Log("[terminalpane] PANIC in asyncReplayRebuild: %v\n%s", r, debug.Stack())
+		}
+	}()
+
+	var raw []byte
+	var logSize int64
+
+	if taskID != "" {
+		// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
+		// Minimum 8MB to populate the 50K-line replay scrollback buffer.
+		needed := int64(scrollOffset+viewportHeight) * int64(ptyCols) * 3
+		if needed < 8*1024*1024 {
+			needed = 8 * 1024 * 1024
+		}
+		// Use taskID parameter (not tp.taskID) to avoid data race with SetTaskID.
+		raw, logSize = readLogTailForTask(taskID, needed)
+	}
+	if len(raw) == 0 {
+		// Fallback: ring buffer snapshot or cached replay data.
+		if len(ringBuf) > 0 {
+			raw = ringBuf
+		} else if len(replayDataCopy) > 0 {
+			raw = replayDataCopy
+		}
+	}
+
+	if len(raw) == 0 {
+		// Nothing to build — clear the building flag and trigger one redraw
+		// so Draw can fall through to the placeholder message instead of
+		// spinning up a new goroutine on every Draw call.
+		tp.mu.Lock()
+		tp.replayBuilding = false
+		tp.mu.Unlock()
+		if onDone != nil {
+			onDone()
+		}
+		return
+	}
+
+	// Build the replay emulator (the expensive part — VT emulation of up to 8MB).
+	cursorVisible := true
+	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
+		cursorVisible = visible
+	})
+	safeEmuWrite(emu, raw)
+
+	// Compute max scroll from emulator's scrollback capacity.
+	sbLen := emu.ScrollbackLen()
+	lastRow := findLastContentRowEmu(emu, ptyCols, ptyRows)
+	if cursorVisible {
+		cur := emu.CursorPosition()
+		if cur.Y > lastRow {
+			lastRow = cur.Y
+		}
+	}
+	var totalLines int
+	if sbLen > 0 {
+		totalLines = sbLen + lastRow + 1
+	} else {
+		firstRow := findFirstContentRowEmu(emu, ptyCols, lastRow)
+		totalLines = lastRow - firstRow + 1
+	}
+	maxScroll := totalLines - ptyRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+
+	// Store results — accessed from the main goroutine during Draw().
+	// Use tp.mu to safely swap in the new emulator.
+	// anchorTotalLines and paintCacheValid are owned by the main goroutine
+	// (written by paintEmu without lock), so we use replayRebuildPending
+	// to signal that the main goroutine should reset them.
+	tp.mu.Lock()
+	tp.replayEmu = emu
+	tp.replayEmuCols = ptyCols
+	tp.replayEmuRows = ptyRows
+	tp.replayEmuLogSize = logSize
+	tp.replayEmuBytes = uint64(len(raw))
+	tp.replayEmuCursorVisible = cursorVisible
+	tp.replayEmuMaxScroll = maxScroll
+	tp.replayRebuildPending = true
+	tp.replayBuilding = false
+	tp.mu.Unlock()
+
+	// Trigger a redraw so the next Draw() picks up the new emulator.
+	if onDone != nil {
+		onDone()
 	}
 }
 
@@ -741,69 +898,6 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	// Cache miss or stale — fall through to full paintEmu.
 
 	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
-}
-
-// renderReplay uses x/vt scrollback for finished sessions and scroll mode.
-// Caches the emulator when input hasn't changed (same log size or same
-// TotalWritten). Supports anchor-lock: when scrolled up and new output
-// arrives, bumps scrollOffset so the viewed content stays pinned.
-func (tp *TerminalPane) renderReplay(screen tcell.Screen, x, y, w, h int, raw []byte, logSize int64, ptyCols, ptyRows int) {
-	// Check if we can reuse the cached replay emulator.
-	needRebuild := tp.replayEmu == nil ||
-		tp.replayEmuCols != ptyCols ||
-		tp.replayEmuRows != ptyRows ||
-		(logSize > 0 && tp.replayEmuLogSize != logSize) ||
-		(logSize == 0 && tp.replayEmuBytes != uint64(len(raw)))
-
-	if needRebuild {
-		cursorVisible := true
-		tp.replayEmu = tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
-			cursorVisible = visible
-		})
-		safeEmuWrite(tp.replayEmu, raw)
-		tp.replayEmuCols = ptyCols
-		tp.replayEmuRows = ptyRows
-		tp.replayEmuLogSize = logSize
-		tp.replayEmuBytes = uint64(len(raw))
-		tp.replayEmuCursorVisible = cursorVisible
-
-		// Compute actual max scroll from emulator's scrollback capacity.
-		// Previously this was set to tp.scrollOffset, causing a full rebuild
-		// on every scroll step beyond the build-time offset. Now we use the
-		// emulator's actual content: scrollbackLen + visible content rows.
-		// Must mirror paintEmu's totalLines logic (cursor extension, firstContentRow)
-		// to avoid the fast-path cache returning cacheValid=true for offsets that
-		// paintEmu would clamp, or vice versa.
-		sbLen := tp.replayEmu.ScrollbackLen()
-		lastRow := findLastContentRowEmu(tp.replayEmu, ptyCols, ptyRows)
-		if cursorVisible {
-			cur := tp.replayEmu.CursorPosition()
-			if cur.Y > lastRow {
-				lastRow = cur.Y
-			}
-		}
-		var totalLines int
-		if sbLen > 0 {
-			totalLines = sbLen + lastRow + 1
-		} else {
-			firstRow := findFirstContentRowEmu(tp.replayEmu, ptyCols, lastRow)
-			totalLines = lastRow - firstRow + 1
-		}
-		maxScroll := totalLines - h
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		tp.replayEmuMaxScroll = maxScroll
-
-		// Reset anchor so the first paint after rebuild doesn't trigger
-		// false anchor-lock. The replay emulator (fed from log tail) often
-		// has more scrollback than the live emulator (256KB ring buffer),
-		// so anchorTotalLines from the live paint would cause a large
-		// spurious scrollOffset bump.
-		tp.anchorTotalLines = 0
-	}
-
-	tp.paintEmu(screen, x, y, w, h, tp.replayEmu, ptyCols, ptyRows, tp.scrollOffset == 0, tp.replayEmuCursorVisible)
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
