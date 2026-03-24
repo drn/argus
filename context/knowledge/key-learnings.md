@@ -30,6 +30,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`startOrAttach` must revert all state on Start failure.** Reset to Pending, clear SessionID, zero StartedAt. `SetStatus(StatusPending)` doesn't clear StartedAt — explicit zero required.
 - **Daemon session exits must be wired to TUI via `client.OnSessionExit`.** Without this, tasks stay InProgress forever in daemon mode.
 - **`restartDaemon` must re-wire `OnSessionExit` on the new client.**
+- **Fresh daemon auto-start must reconcile InProgress → InReview, not Complete.** When the TUI auto-starts a daemon (no prior daemon running), `daemonRestarting` is `false` but the daemon has zero sessions. Without `daemonFreshStart`, reconciliation marks all InProgress tasks Complete — losing todo status indicators. The flag is cleared after the first reconciliation so subsequent ticks use normal Complete behavior.
 - **SessionID must be populated before first `runner.Start` for Claude backends, and captured post-exit for Codex.** Claude uses `--session-id <uuid>` on first run and `--resume <uuid>` on subsequent runs. Codex captures its ID from `~/.codex/state_5.sqlite` after exit. Without a SessionID, `resume` is always false and every start is a fresh conversation.
 - **Codex session ID capture (`CaptureCodexSessionID`) must run off the tview main goroutine.** It opens a SQLite connection which can block. Use a background goroutine + `QueueUpdateDraw` to persist.
 
@@ -137,6 +138,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 ### Todo-Task Association
 
 - **`TodoPath` links a task to its source vault `.md` file.** Set only during `handleLaunchToDoKey`. `TasksByTodoPath()` returns most-recent task per path (ORDER BY created_at ASC, last wins).
+- **`PruneCompleted` must skip tasks with `todo_path` set.** Without the `AND todo_path = ''` filter, pruning deletes todo-linked completed tasks. The vault files survive but the association is lost — todo bullets revert to "not started" on next scan. Todo-linked tasks should only be cleaned up via the ToDo cleanup flow (Ctrl+R on ToDos tab), which removes vault files and tasks together.
 - **Ctrl+R cleanup on ToDos tab deletes vault files, not tasks.** Only `.md` files for todos with completed linked tasks are removed. Tasks remain in Argus history.
 - **`taskColumns`/`scanTask`/`Add`/`Update` lockstep includes `todo_path`.** Column position is after `pr_url`, before `archived`. Missing any site causes runtime panics.
 

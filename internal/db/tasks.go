@@ -146,8 +146,10 @@ func (d *DB) PruneCompleted() ([]*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Fetch completed tasks first
-	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete'`)
+	// Fetch completed tasks first. Skip tasks with a todo_path — those are
+	// linked to vault files and should only be cleaned up via the ToDo
+	// cleanup flow (which removes the vault file + association together).
+	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE status='complete' AND todo_path = ''`)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +166,7 @@ func (d *DB) PruneCompleted() ([]*model.Task, error) {
 		return nil, nil
 	}
 
-	_, err = d.conn.Exec(`DELETE FROM tasks WHERE status='complete'`)
+	_, err = d.conn.Exec(`DELETE FROM tasks WHERE status='complete' AND todo_path = ''`)
 	if err != nil {
 		return nil, err
 	}

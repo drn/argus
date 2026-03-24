@@ -63,6 +63,7 @@ func runTUI() {
 
 	var runner agent.SessionProvider
 	var daemonConnected bool
+	var daemonFreshStart bool
 
 	sockPath := daemon.DefaultSocketPath()
 	client, err := dclient.Connect(sockPath)
@@ -84,6 +85,7 @@ func runTUI() {
 	} else {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
+		daemonFreshStart = client.FreshStart() // true when daemon was auto-started (no prior sessions)
 		runner = client
 		defer client.Close()
 	}
@@ -99,7 +101,7 @@ func runTUI() {
 		})
 	}
 
-	app := tui2.New(database, runner, daemonConnected)
+	app := tui2.New(database, runner, daemonConnected, daemonFreshStart)
 	appRef = app
 	appRef2 = app
 	if err := app.Run(); err != nil {

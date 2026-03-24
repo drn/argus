@@ -28,7 +28,7 @@ func testDB(t *testing.T) *db.DB {
 func TestNew(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	if app.tapp == nil {
 		t.Error("tview.Application should not be nil")
@@ -53,7 +53,7 @@ func TestNew(t *testing.T) {
 func TestSwitchTab(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.switchTab(TabReviews)
 	if app.header.ActiveTab() != TabReviews {
@@ -74,7 +74,7 @@ func TestSwitchTab(t *testing.T) {
 func TestOnTaskSelect(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:   "test-1",
@@ -94,7 +94,7 @@ func TestOnTaskSelect(t *testing.T) {
 func TestExitAgentView(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.mode = modeAgent
 	app.exitAgentView()
@@ -149,7 +149,7 @@ func TestTcellKeyToBytes(t *testing.T) {
 func TestArrowTabNavigation(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Start on Tasks tab
 	if app.header.ActiveTab() != TabTasks {
@@ -216,7 +216,7 @@ func TestArrowTabNavigation(t *testing.T) {
 func TestCtrlCForwardsToAgentPTY(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Start a real process so we have a live session.
 	task := &model.Task{
@@ -258,7 +258,7 @@ func TestCtrlCForwardsToAgentPTY(t *testing.T) {
 func TestCtrlCNoopInAgentViewDeadSession(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Agent mode with no session — ctrl+c should be consumed but not exit
 	app.mode = modeAgent
@@ -277,7 +277,7 @@ func TestCtrlCNoopInAgentViewDeadSession(t *testing.T) {
 func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
@@ -294,7 +294,7 @@ func TestCtrlDExitsAgentViewWhenSessionDead(t *testing.T) {
 func TestEscapeStaysInAgentView(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
@@ -315,7 +315,7 @@ func TestEscapeStaysInAgentView(t *testing.T) {
 func TestFilePanelKeyRouting(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Enter agent mode with file panel focused
 	app.mode = modeAgent
@@ -363,7 +363,7 @@ func TestFilePanelKeyRouting(t *testing.T) {
 func TestDiffModeArrowsNavigateFiles(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Enter agent mode
 	app.mode = modeAgent
@@ -414,7 +414,7 @@ func TestDiffModeArrowsNavigateFiles(t *testing.T) {
 func TestFilePanelMouseFocus(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Enter agent mode with terminal focused (default)
 	app.mode = modeAgent
@@ -466,7 +466,7 @@ func TestFilePanelMouseFocus(t *testing.T) {
 func TestArrowsIgnoredInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
@@ -484,7 +484,7 @@ func TestArrowsIgnoredInAgentMode(t *testing.T) {
 func TestRefreshTasks(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Add a task
 	task := &model.Task{
@@ -558,7 +558,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 func TestOpenConfirmDelete(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:        "t1",
@@ -583,7 +583,7 @@ func TestOpenConfirmDelete(t *testing.T) {
 func TestCloseConfirmDelete(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:        "t1",
@@ -610,7 +610,7 @@ func TestCloseConfirmDelete(t *testing.T) {
 func TestDeleteTask(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:        "t1",
@@ -642,7 +642,7 @@ func TestDeleteTask(t *testing.T) {
 func TestRefreshTasksLocal(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	d.Add(&model.Task{ID: "t1", Name: "task1", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
 	d.Add(&model.Task{ID: "t2", Name: "task2", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
@@ -667,7 +667,7 @@ func TestRefreshTasksLocal(t *testing.T) {
 func TestCtrlDOpensConfirmDelete(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:        "t1",
@@ -694,7 +694,7 @@ func TestCtrlDOpensConfirmDelete(t *testing.T) {
 func TestCtrlDDoesNotDeleteInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
@@ -712,7 +712,7 @@ func TestCtrlDDoesNotDeleteInAgentMode(t *testing.T) {
 func TestPruneCompletedTasks(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 	app.wtRoot = t.TempDir() // isolate from real worktrees
 
 	// Add tasks with various statuses
@@ -743,7 +743,7 @@ func TestPruneCompletedTasks(t *testing.T) {
 func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 	wtRoot := t.TempDir()
 	app.wtRoot = wtRoot
 
@@ -780,7 +780,7 @@ func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 func TestCtrlRPrunesCompleted(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 	app.wtRoot = t.TempDir() // isolate from real worktrees
 
 	d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
@@ -801,7 +801,7 @@ func TestCtrlRPrunesCompleted(t *testing.T) {
 func TestReconcileSkipsOnNilRunning(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Simulate daemon mode
 	app.daemonConnected = true
@@ -822,7 +822,7 @@ func TestReconcileSkipsOnNilRunning(t *testing.T) {
 func TestReconcileWorksOnEmptyRunning(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	// Simulate daemon mode
 	app.daemonConnected = true
@@ -840,6 +840,72 @@ func TestReconcileWorksOnEmptyRunning(t *testing.T) {
 	}
 	if !found {
 		t.Error("stale task should have been reconciled to Complete with empty (non-nil) runningIDs")
+	}
+}
+
+func TestReconcileFreshDaemonUsesInReview(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, true) // daemonFreshStart = true
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "was-running", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "t2", Name: "was-pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()})
+
+	// Fresh daemon has no sessions — InProgress tasks should become InReview, not Complete.
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	for _, task := range app.tasks {
+		switch task.ID {
+		case "t1":
+			if task.Status != model.StatusInReview {
+				t.Errorf("task %q: got status %s, want in_review (fresh daemon start)", task.Name, task.Status)
+			}
+		case "t2":
+			if task.Status != model.StatusPending {
+				t.Errorf("task %q: got status %s, want pending (should not be affected)", task.Name, task.Status)
+			}
+		}
+	}
+
+	// After first reconciliation, daemonFreshStart should be cleared.
+	if app.daemonFreshStart {
+		t.Error("daemonFreshStart should be cleared after first reconciliation")
+	}
+}
+
+func TestReconcileFreshDaemonClearsFlag(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, true) // daemonFreshStart = true
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "task-a", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// First call: fresh start → InReview
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	// Add a new InProgress task after daemon is warmed up
+	d.Add(&model.Task{ID: "t2", Name: "task-b", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Second call: flag cleared → should use Complete
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	for _, task := range app.tasks {
+		switch task.ID {
+		case "t1":
+			// t1 was reconciled to InReview on the first call and should stay there.
+			if task.Status != model.StatusInReview {
+				t.Errorf("task %q: got status %s, want in_review (should remain from first reconciliation)", task.Name, task.Status)
+			}
+		case "t2":
+			// t2 was added after the flag cleared — should use normal Complete path.
+			if task.Status != model.StatusComplete {
+				t.Errorf("task %q: got status %s, want complete (flag should be cleared after first reconciliation)", task.Name, task.Status)
+			}
+		}
 	}
 }
 
