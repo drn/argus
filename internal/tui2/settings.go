@@ -625,7 +625,7 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 			style = tcell.StyleDefault.Foreground(ColorInProgress)
 		}
 		if row.kind != srSection && rowIdx == sv.cursor {
-			style = style.Background(ColorHighlight)
+			style = style.Foreground(ColorSelected).Bold(true)
 		}
 
 		label := row.label
