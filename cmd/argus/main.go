@@ -69,7 +69,6 @@ func runTUI() {
 	client, err := dclient.Connect(sockPath)
 	if err != nil {
 		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
-		daemonFreshStart = true // fresh daemon has no prior sessions
 		client, err = dclient.AutoStart(sockPath)
 	}
 
@@ -86,6 +85,7 @@ func runTUI() {
 	} else {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
+		daemonFreshStart = client.FreshStart() // true when daemon was auto-started (no prior sessions)
 		runner = client
 		defer client.Close()
 	}

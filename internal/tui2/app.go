@@ -131,9 +131,9 @@ type App struct {
 	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
 
 	// Daemon health
-	daemonFailures    int
-	daemonRestarting  bool
-	daemonFreshStart  bool // daemon was auto-started (no prior sessions)
+	daemonFailures   int
+	daemonRestarting bool
+	daemonFreshStart bool            // daemon was auto-started (no prior sessions)
 	daemonClient     *dclient.Client
 	restartedClient  *dclient.Client // set after daemon restart
 
@@ -149,8 +149,9 @@ type App struct {
 }
 
 // New creates the tui2 application shell.
-// daemonFreshStart indicates the daemon was just auto-started (no prior sessions),
-// so InProgress tasks should be reconciled to InReview instead of Complete.
+// daemonFreshStart indicates this daemon instance has no prior sessions (freshly
+// auto-started or restarted), so InProgress tasks should be reconciled to
+// InReview instead of Complete on the first tick.
 func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, daemonFreshStart bool) *App {
 	// Use the terminal's default background instead of tview's hard-coded black.
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
@@ -742,9 +743,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 				}
 			}
 		}
-		// Clear fresh-start flag after first reconciliation — subsequent ticks
-		// should use normal Complete reconciliation for tasks that truly finished.
-		a.daemonFreshStart = false
+		// Clear fresh-start flag after first reconciliation with tasks present —
+		// subsequent ticks use normal Complete reconciliation for tasks that truly
+		// finished. Only clear when tasks were loaded to avoid a race where a slow
+		// or empty first read clears the flag before InProgress tasks are seen.
+		if len(a.tasks) > 0 {
+			a.daemonFreshStart = false
+		}
 	}
 
 	// Update idleUnvisited: add newly-idle tasks, remove tasks no longer idle.

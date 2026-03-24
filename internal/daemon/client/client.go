@@ -33,10 +33,11 @@ var _ agent.SessionProvider = (*Client)(nil)
 
 // Client connects to the daemon and implements agent.SessionProvider.
 type Client struct {
-	rpc      *rpc.Client
-	sockPath string
-	sessions map[string]*RemoteSession
-	mu       sync.Mutex
+	rpc        *rpc.Client
+	sockPath   string
+	sessions   map[string]*RemoteSession
+	freshStart bool // true when the daemon was auto-started (no prior sessions)
+	mu         sync.Mutex
 
 	// leakedCalls tracks goroutines from timed-out RPC calls that are still
 	// blocked in rpc.Call. Logged for observability — drain goroutines
@@ -46,6 +47,12 @@ type Client struct {
 	// onSessionExit is called when a session's stream EOF is detected.
 	// Includes exit info (error, stopped flag, last output) from the daemon.
 	onSessionExit func(taskID string, info daemon.ExitInfo)
+}
+
+// FreshStart returns true when this client connected to a freshly auto-started
+// daemon that has no prior sessions (as opposed to an already-running daemon).
+func (c *Client) FreshStart() bool {
+	return c.freshStart
 }
 
 // Connect dials the daemon socket and returns a Client.
@@ -327,6 +334,7 @@ func AutoStart(sockPath string) (*Client, error) {
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
 		if client, err := Connect(sockPath); err == nil {
+			client.freshStart = true
 			return client, nil
 		}
 	}

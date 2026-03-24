@@ -894,8 +894,17 @@ func TestReconcileFreshDaemonClearsFlag(t *testing.T) {
 	app.refreshTasksWithIDs([]string{}, []string{})
 
 	for _, task := range app.tasks {
-		if task.ID == "t2" && task.Status != model.StatusComplete {
-			t.Errorf("task %q: got status %s, want complete (flag should be cleared after first reconciliation)", task.Name, task.Status)
+		switch task.ID {
+		case "t1":
+			// t1 was reconciled to InReview on the first call and should stay there.
+			if task.Status != model.StatusInReview {
+				t.Errorf("task %q: got status %s, want in_review (should remain from first reconciliation)", task.Name, task.Status)
+			}
+		case "t2":
+			// t2 was added after the flag cleared — should use normal Complete path.
+			if task.Status != model.StatusComplete {
+				t.Errorf("task %q: got status %s, want complete (flag should be cleared after first reconciliation)", task.Name, task.Status)
+			}
 		}
 	}
 }
