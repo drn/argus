@@ -799,7 +799,9 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 			r++
 		}
 	}
-	r++
+	if len(pe.Project.Sandbox.DenyRead) > 0 || len(pe.Project.Sandbox.ExtraWrite) > 0 {
+		r++
+	}
 
 	// Task counts.
 	counts, ok := sv.taskCounts[pe.Name]

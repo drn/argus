@@ -20,7 +20,7 @@ func TestProjectForm_NewDefaults(t *testing.T) {
 func TestProjectForm_LoadProject_SandboxInherit(t *testing.T) {
 	pf := NewProjectForm()
 	pf.LoadProject("test", config.Project{
-		Path: "/tmp/test",
+		Path: t.TempDir(),
 	})
 	testutil.Equal(t, pf.sandboxIdx, 0) // nil → Inherit
 }
@@ -29,7 +29,7 @@ func TestProjectForm_LoadProject_SandboxEnabled(t *testing.T) {
 	pf := NewProjectForm()
 	v := true
 	pf.LoadProject("test", config.Project{
-		Path:    "/tmp/test",
+		Path:    t.TempDir(),
 		Sandbox: config.ProjectSandboxConfig{Enabled: &v},
 	})
 	testutil.Equal(t, pf.sandboxIdx, 1) // true → Enabled
@@ -39,7 +39,7 @@ func TestProjectForm_LoadProject_SandboxDisabled(t *testing.T) {
 	pf := NewProjectForm()
 	v := false
 	pf.LoadProject("test", config.Project{
-		Path:    "/tmp/test",
+		Path:    t.TempDir(),
 		Sandbox: config.ProjectSandboxConfig{Enabled: &v},
 	})
 	testutil.Equal(t, pf.sandboxIdx, 2) // false → Disabled
@@ -48,7 +48,7 @@ func TestProjectForm_LoadProject_SandboxDisabled(t *testing.T) {
 func TestProjectForm_Result_SandboxInherit(t *testing.T) {
 	pf := NewProjectForm()
 	pf.fields[pfFieldName] = []rune("test")
-	pf.fields[pfFieldPath] = []rune("/tmp/test")
+	pf.fields[pfFieldPath] = []rune(t.TempDir())
 	pf.sandboxIdx = 0 // Inherit
 
 	_, proj := pf.Result()
@@ -58,7 +58,7 @@ func TestProjectForm_Result_SandboxInherit(t *testing.T) {
 func TestProjectForm_Result_SandboxEnabled(t *testing.T) {
 	pf := NewProjectForm()
 	pf.fields[pfFieldName] = []rune("test")
-	pf.fields[pfFieldPath] = []rune("/tmp/test")
+	pf.fields[pfFieldPath] = []rune(t.TempDir())
 	pf.sandboxIdx = 1 // Enabled
 
 	_, proj := pf.Result()
@@ -71,7 +71,7 @@ func TestProjectForm_Result_SandboxEnabled(t *testing.T) {
 func TestProjectForm_Result_SandboxDisabled(t *testing.T) {
 	pf := NewProjectForm()
 	pf.fields[pfFieldName] = []rune("test")
-	pf.fields[pfFieldPath] = []rune("/tmp/test")
+	pf.fields[pfFieldPath] = []rune(t.TempDir())
 	pf.sandboxIdx = 2 // Disabled
 
 	_, proj := pf.Result()
@@ -154,7 +154,7 @@ func TestProjectForm_EditMode_BacktabSkipsName(t *testing.T) {
 
 func TestProjectForm_TabFromSandbox_EditMode(t *testing.T) {
 	pf := NewProjectForm()
-	pf.LoadProject("test", config.Project{Path: "/tmp"})
+	pf.LoadProject("test", config.Project{Path: t.TempDir()})
 	pf.focused = pfFieldSandbox
 
 	// Tab from Sandbox → wraps to Name → edit mode skips → Path.
@@ -175,8 +175,9 @@ func TestProjectForm_RoundTrip(t *testing.T) {
 	// Load a project with sandbox enabled, verify it round-trips.
 	pf := NewProjectForm()
 	v := true
+	dir := t.TempDir()
 	pf.LoadProject("myproj", config.Project{
-		Path:    "/code/myproj",
+		Path:    dir,
 		Branch:  "main",
 		Backend: "claude",
 		Sandbox: config.ProjectSandboxConfig{Enabled: &v},
@@ -184,7 +185,7 @@ func TestProjectForm_RoundTrip(t *testing.T) {
 
 	name, proj := pf.Result()
 	testutil.Equal(t, name, "myproj")
-	testutil.Equal(t, proj.Path, "/code/myproj")
+	testutil.Equal(t, proj.Path, dir)
 	testutil.Equal(t, proj.Branch, "main")
 	testutil.Equal(t, proj.Backend, "claude")
 	if proj.Sandbox.Enabled == nil {
@@ -198,7 +199,7 @@ func TestProjectForm_RoundTrip_PreservesPathLists(t *testing.T) {
 	pf := NewProjectForm()
 	v := true
 	pf.LoadProject("proj", config.Project{
-		Path: "/code/proj",
+		Path: t.TempDir(),
 		Sandbox: config.ProjectSandboxConfig{
 			Enabled:    &v,
 			DenyRead:   []string{"/secret", "/credentials"},

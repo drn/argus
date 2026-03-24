@@ -18,6 +18,13 @@ const (
 	pfFieldCount   = 5
 )
 
+// Sandbox selector indices — must match sandboxOptions order.
+const (
+	sandboxInherit  = 0
+	sandboxEnabled  = 1
+	sandboxDisabled = 2
+)
+
 // sandboxOptions are the display labels for the per-project sandbox selector.
 var sandboxOptions = []string{"Inherit", "Enabled", "Disabled"}
 
@@ -62,12 +69,12 @@ func (pf *ProjectForm) LoadProject(name string, p config.Project) {
 	pf.fields[pfFieldPath] = []rune(p.Path)
 	pf.fields[pfFieldBranch] = []rune(p.Branch)
 	pf.fields[pfFieldBackend] = []rune(p.Backend)
-	pf.sandboxIdx = 0 // Inherit
+	pf.sandboxIdx = sandboxInherit
 	if p.Sandbox.Enabled != nil {
 		if *p.Sandbox.Enabled {
-			pf.sandboxIdx = 1 // Enabled
+			pf.sandboxIdx = sandboxEnabled
 		} else {
-			pf.sandboxIdx = 2 // Disabled
+			pf.sandboxIdx = sandboxDisabled
 		}
 	}
 	pf.sandboxDenyRead = p.Sandbox.DenyRead
@@ -114,13 +121,13 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 		Backend: string(pf.fields[pfFieldBackend]),
 	}
 	switch pf.sandboxIdx {
-	case 1: // Enabled
+	case sandboxEnabled:
 		v := true
 		proj.Sandbox.Enabled = &v
-	case 2: // Disabled
+	case sandboxDisabled:
 		v := false
 		proj.Sandbox.Enabled = &v
-	} // 0 = Inherit → nil (default)
+	} // sandboxInherit → nil (default)
 	proj.Sandbox.DenyRead = pf.sandboxDenyRead
 	proj.Sandbox.ExtraWrite = pf.sandboxExtraWrite
 	return string(pf.fields[pfFieldName]), proj
@@ -283,7 +290,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	// Center the form.
 	formW := min(60, width-4)
-	formH := 13
+	formH := 13 // pfFieldCount*2 rows + 3 overhead (title, border, error)
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
