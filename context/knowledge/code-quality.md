@@ -1255,3 +1255,4 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `readLogTail` (method) reads `tp.taskID` without lock — only safe from main goroutine. Background goroutines must use `readLogTailForTask` with an explicit taskID parameter.
 - `anchorTotalLines` and `paintCacheValid` are written by `paintEmu` (main goroutine) without lock. The background goroutine must not write them directly — use `replayRebuildPending` flag instead.
 - `replayBuilding` must be reset in `invalidateReplayCache` and `ResetVT` to allow new rebuilds after cache invalidation.
+- First scroll-up uses `tp.emu` (live emulator, 10K scrollback) as fallback while async replay builds. Fallback priority: stale replay emu > live emu > placeholder. Must save/restore `scrollOffset`/`anchorTotalLines` around the fallback `paintEmu` call since the smaller scrollback may clamp them.

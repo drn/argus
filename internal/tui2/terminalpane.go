@@ -713,13 +713,24 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		staleCurVis := tp.replayEmuCursorVisible
 		tp.mu.Unlock()
 
-		if staleEmu != nil {
-			// Save scrollOffset — the stale emulator may clamp it to its
+		// Pick the best available emulator to show while the replay builds.
+		// Prefer a stale replay emulator (from a previous scroll), but fall
+		// back to the live emulator which has 10K lines of scrollback — enough
+		// for instant scroll-up response while the full 50K replay builds.
+		fallbackEmu := staleEmu
+		fallbackCurVis := staleCurVis
+		if fallbackEmu == nil && tp.emu != nil { // tp.emu is main-goroutine-owned; no lock needed
+			fallbackEmu = tp.emu
+			fallbackCurVis = tp.cursorVisible
+		}
+
+		if fallbackEmu != nil {
+			// Save scrollOffset — the fallback emulator may clamp it to its
 			// (smaller) maxScroll, which would cause a position jump when the
 			// fresh emulator arrives with more scrollback.
 			savedScroll := tp.scrollOffset
 			savedAnchor := tp.anchorTotalLines
-			tp.paintEmu(screen, x, y, width, height, staleEmu, ptyCols, ptyRows, tp.scrollOffset == 0, staleCurVis)
+			tp.paintEmu(screen, x, y, width, height, fallbackEmu, ptyCols, ptyRows, tp.scrollOffset == 0, fallbackCurVis)
 			tp.scrollOffset = savedScroll
 			tp.anchorTotalLines = savedAnchor
 			return
