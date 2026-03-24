@@ -1618,6 +1618,17 @@ func (a *App) onTaskSelect(task *model.Task) {
 	// Start continuous redraw loop for existing running sessions.
 	if sess != nil && sess.Alive() {
 		a.startAgentRedrawLoop(task.ID, sess)
+		return
+	}
+
+	// Auto-resume sessions that were interrupted (e.g., daemon restart).
+	// The task has a SessionID from the previous conversation but no running
+	// session — resume immediately instead of requiring a second Enter press.
+	// NOTE: Call sites that do onTaskSelect + startSession explicitly (new task,
+	// todo launch, fork) are safe because new tasks never have a SessionID.
+	if (sess == nil || !sess.Alive()) && task.SessionID != "" && task.Status != model.StatusComplete && !task.Archived {
+		uxlog.Log("[tui2] auto-resuming session for task %s (sessionID=%s)", task.ID, task.SessionID)
+		a.startSession(task)
 	}
 }
 
