@@ -483,9 +483,9 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	row++
 
 	curLine, curCol := m.cursorWrappedPos(innerW)
-	inputBG := tcell.Color236
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(inputBG)
-	inputEmptyStyle := tcell.StyleDefault.Background(inputBG)
+	modalBG := tcell.ColorDefault
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if m.focused == ltFieldPrompt {
@@ -517,7 +517,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 		}
 	} else {
 		if len(m.prompt) == 0 {
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(inputBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
 			placeholder := "Additional instructions (optional)"
 			pRunes := []rune(placeholder)
 			for col := 0; col < innerW; col++ {
@@ -528,7 +528,6 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 				}
 			}
 		} else {
-			modalBG := tcell.ColorDefault
 			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
 			for vi := 0; vi < visiblePromptLines; vi++ {
 				li := vi + m.scrollOffset
