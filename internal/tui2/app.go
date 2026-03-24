@@ -1521,13 +1521,17 @@ func (a *App) refreshPreview(taskID string) {
 		a.lastPreviewLogSize = 0 // reset so dead-session path re-reads log after session exit
 		a.mu.Unlock()
 		raw := sess.RecentOutput()
-		// Use the PTY's actual width for the emulator so text wraps at
-		// the same column as in the agent view. Draw() clips to panel size.
-		emuCols := w
-		if ptyCols, _ := sess.PTYSize(); ptyCols > 0 {
+		// Use the PTY's actual dimensions for the emulator so cursor
+		// positioning and text wrapping match the agent view. The preview
+		// viewport (w x h) selects which rows to display.
+		emuCols, emuRows := w, h
+		if ptyCols, ptyRows := sess.PTYSize(); ptyCols > 0 {
 			emuCols = ptyCols
+			if ptyRows > emuRows {
+				emuRows = ptyRows
+			}
 		}
-		a.taskPreview.RefreshOutput(raw, emuCols, h)
+		a.taskPreview.RefreshOutput(raw, emuCols, emuRows, w, h)
 		return
 	}
 
@@ -1548,7 +1552,7 @@ func (a *App) refreshPreview(taskID string) {
 	if logSize > 0 {
 		logData := LoadSessionLog(taskID)
 		if len(logData) > 0 {
-			a.taskPreview.RefreshOutput(logData, w, h)
+			a.taskPreview.RefreshOutput(logData, w, h, w, h)
 			return
 		}
 	}
