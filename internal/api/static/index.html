@@ -148,7 +148,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ac-dropdown {
   position: absolute; left: 0; right: 0; top: 100%;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 0 0 8px 8px; max-height: 210px; overflow-y: auto;
+  border-radius: 0 0 8px 8px; max-height: 210px; /* ~5 items */ overflow-y: auto;
   z-index: 20; display: none;
 }
 .ac-dropdown.open { display: block; }
@@ -623,8 +623,7 @@ function updateAC() {
   const allSkills = cachedSkills[project] || [];
   acFiltered = prefix ? allSkills.filter(s => s.name.startsWith(prefix)) : allSkills;
   if (!acFiltered.length) { closeAC(); return; }
-  acIdx = Math.min(acIdx, acFiltered.length - 1);
-  if (acIdx < 0) acIdx = 0;
+  acIdx = 0;
   renderAC();
 }
 

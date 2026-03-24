@@ -216,7 +216,7 @@ func TestHandleListSkills(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 
 		var resp map[string][]skillJSON
-		json.Unmarshal(w.Body.Bytes(), &resp)
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		found := false
 		for _, s := range resp["skills"] {
 			if s.Name == "deploy" {
@@ -234,7 +234,7 @@ func TestHandleListSkills(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 
 		var resp map[string][]skillJSON
-		json.Unmarshal(w.Body.Bytes(), &resp)
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		for _, s := range resp["skills"] {
 			testutil.True(t, strings.HasPrefix(s.Name, "dep"))
 		}
@@ -247,7 +247,7 @@ func TestHandleListSkills(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 
 		var resp map[string][]skillJSON
-		json.Unmarshal(w.Body.Bytes(), &resp)
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		// Should succeed (may return global skills or empty).
 		testutil.True(t, resp["skills"] != nil)
 	})
