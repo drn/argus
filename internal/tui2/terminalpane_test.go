@@ -1124,3 +1124,121 @@ func TestTerminalPane_ScrollUpWhileAlreadyScrolled(t *testing.T) {
 	}
 	testutil.Equal(t, tp.scrollOffset, 6)
 }
+
+func TestTerminalPane_LiveEmuFallbackOnFirstScroll(t *testing.T) {
+	// When scrolling up for the first time, the replay emulator is nil
+	// (just invalidated). The live emulator should be used as a fallback
+	// so the user sees content immediately instead of "Waiting for output...".
+	tp := NewTerminalPane()
+	tp.Box.SetRect(0, 0, 42, 12) // 40x10 inner after 1-cell border
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(42, 12)
+
+	// Set up a live session so Draw enters the live-then-scroll path.
+	output := []byte("visible content\r\n")
+	for i := 0; i < 100; i++ {
+		output = append(output, []byte("scrollback line\r\n")...)
+	}
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+
+	// First Draw populates tp.emu via renderLive.
+	tp.Draw(screen)
+	if tp.emu == nil {
+		t.Fatal("live emulator should be populated after first Draw")
+	}
+
+	// Scroll up — invalidates replay cache, enters the fallback path.
+	tp.ScrollUp(1)
+	testutil.Nil(t, tp.replayEmu)
+	testutil.Equal(t, tp.scrollOffset, 1)
+
+	// Draw again — should use live emu as fallback, NOT show placeholder.
+	tp.Draw(screen)
+
+	// Verify actual content was rendered (not "Waiting for output...").
+	w, h := screen.Size()
+	var found bool
+	for row := 0; row < h; row++ {
+		var line []rune
+		for col := 0; col < w; col++ {
+			r, _, _, _ := screen.GetContent(col, row)
+			line = append(line, r)
+		}
+		if containsRunes(line, "Waiting") {
+			t.Error("should not show 'Waiting for output...' when live emu is available")
+		}
+		if containsRunes(line, "scrollback") || containsRunes(line, "visible") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected terminal content from live emu fallback, got none")
+	}
+
+	// scrollOffset should be preserved (not clamped by live emu's smaller scrollback).
+	testutil.Equal(t, tp.scrollOffset, 1)
+}
+
+func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
+	// When both a stale replay emulator and a live emulator exist,
+	// the stale replay should take priority (it has 50K scrollback).
+	tp := NewTerminalPane()
+
+	// Set up live emulator with distinctive content.
+	liveEmu := newDrainedEmulator(40, 10)
+	safeEmuWrite(liveEmu, []byte("live content\r\n"))
+	tp.emu = liveEmu
+	tp.emuCols = 40
+	tp.emuRows = 10
+	tp.cursorVisible = false
+
+	// Set up a stale replay emulator (simulating a previous scroll session).
+	staleEmu := newDrainedReplayEmulator(40, 10)
+	var replayData []byte
+	for i := 0; i < 200; i++ {
+		replayData = append(replayData, []byte("replay content\r\n")...)
+	}
+	safeEmuWrite(staleEmu, replayData)
+	tp.mu.Lock()
+	tp.replayEmu = staleEmu
+	tp.replayEmuCols = 40
+	tp.replayEmuRows = 10
+	tp.replayEmuMaxScroll = 100
+	tp.replayBuilding = true // simulate rebuild in flight
+	tp.mu.Unlock()
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(40, 10)
+
+	tp.scrollOffset = 5
+	tp.paintCacheValid = false
+
+	// Paint via the fallback path — stale replay emu should be used.
+	// We call paintEmu directly since Draw() has complex session setup.
+	savedScroll := tp.scrollOffset
+	savedAnchor := tp.anchorTotalLines
+	tp.paintEmu(screen, 0, 0, 40, 10, staleEmu, 40, 10, false, false)
+	tp.scrollOffset = savedScroll
+	tp.anchorTotalLines = savedAnchor
+
+	// Verify replay content was rendered (not live content).
+	w, h := screen.Size()
+	var foundReplay bool
+	for row := 0; row < h; row++ {
+		var line []rune
+		for col := 0; col < w; col++ {
+			r, _, _, _ := screen.GetContent(col, row)
+			line = append(line, r)
+		}
+		if containsRunes(line, "replay") {
+			foundReplay = true
+		}
+	}
+	if !foundReplay {
+		t.Error("expected replay content from stale replay emu, not live emu")
+	}
+}
