@@ -15,6 +15,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/skills"
 )
 
@@ -259,13 +260,19 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 		tailSize = min(n, 1<<20)
 	}
 
+	clean := r.URL.Query().Get("clean") == "1"
+
 	// Try live session first.
 	sess := s.runner.Get(id)
 	if sess != nil {
 		data := sess.RecentOutputTail(tailSize)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("X-Source", "live")
-		w.Write(data) //nolint:errcheck
+		if clean {
+			w.Write([]byte(sanitize.CleanPTYOutput(string(data)))) //nolint:errcheck
+		} else {
+			w.Write(data) //nolint:errcheck
+		}
 		return
 	}
 
@@ -291,8 +298,18 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Source", "log")
-	f.Seek(offset, io.SeekStart) //nolint:errcheck
-	io.Copy(w, f)                //nolint:errcheck
+	if clean {
+		f.Seek(offset, io.SeekStart) //nolint:errcheck
+		raw, err := io.ReadAll(f)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		w.Write([]byte(sanitize.CleanPTYOutput(string(raw)))) //nolint:errcheck
+	} else {
+		f.Seek(offset, io.SeekStart) //nolint:errcheck
+		io.Copy(w, f)                //nolint:errcheck
+	}
 }
 
 // --- Write Input ---
