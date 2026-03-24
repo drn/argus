@@ -1416,6 +1416,36 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 	}
 }
 
+func TestDB_PruneCompleted_PreservesToDoLinked(t *testing.T) {
+	d := testDB(t)
+
+	_ = d.Add(&model.Task{Name: "regular-done", Status: model.StatusComplete})
+	_ = d.Add(&model.Task{Name: "todo-done", Status: model.StatusComplete, TodoPath: "/vault/task.md"})
+	_ = d.Add(&model.Task{Name: "pending", Status: model.StatusPending})
+
+	pruned, err := d.PruneCompleted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 {
+		t.Errorf("expected 1 pruned (regular only), got %d", len(pruned))
+	}
+	if len(pruned) > 0 && pruned[0].Name != "regular-done" {
+		t.Errorf("pruned wrong task: %q", pruned[0].Name)
+	}
+
+	remaining := d.Tasks()
+	if len(remaining) != 2 {
+		t.Errorf("expected 2 remaining (todo-done + pending), got %d", len(remaining))
+	}
+
+	// The todo-linked task should still be retrievable via TasksByTodoPath.
+	todoMap := d.TasksByTodoPath()
+	if _, ok := todoMap["/vault/task.md"]; !ok {
+		t.Error("todo-linked completed task should be preserved after prune")
+	}
+}
+
 func TestMigration_OnlyRunsOnce(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.sql")
 

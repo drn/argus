@@ -131,8 +131,9 @@ type App struct {
 	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
 
 	// Daemon health
-	daemonFailures   int
-	daemonRestarting bool
+	daemonFailures    int
+	daemonRestarting  bool
+	daemonFreshStart  bool // daemon was auto-started (no prior sessions)
 	daemonClient     *dclient.Client
 	restartedClient  *dclient.Client // set after daemon restart
 
@@ -148,7 +149,9 @@ type App struct {
 }
 
 // New creates the tui2 application shell.
-func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *App {
+// daemonFreshStart indicates the daemon was just auto-started (no prior sessions),
+// so InProgress tasks should be reconciled to InReview instead of Complete.
+func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, daemonFreshStart bool) *App {
 	// Use the terminal's default background instead of tview's hard-coded black.
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 
@@ -157,6 +160,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		db:               database,
 		runner:           runner,
 		daemonConnected:  daemonConnected,
+		daemonFreshStart: daemonFreshStart,
 		agentState:       agentview.New(),
 		tickDone:         make(chan struct{}),
 		idleUnvisited:    make(map[string]bool),
@@ -724,11 +728,23 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		}
 		for _, t := range a.tasks {
 			if t.Status == model.StatusInProgress && !runningSet[t.ID] {
-				t.SetStatus(model.StatusComplete)
-				a.db.Update(t) //nolint:errcheck
-				uxlog.Log("[tui2] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
+				if a.daemonFreshStart {
+					// Daemon was just auto-started — agent sessions were lost
+					// (daemon died or system restarted), not finished normally.
+					// Mark as InReview so the user can decide what to do.
+					t.SetStatus(model.StatusInReview)
+					a.db.Update(t) //nolint:errcheck
+					uxlog.Log("[tui2] reconciled stale task %s (%s) → in_review (daemon fresh start, session lost)", t.ID, t.Name)
+				} else {
+					t.SetStatus(model.StatusComplete)
+					a.db.Update(t) //nolint:errcheck
+					uxlog.Log("[tui2] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
+				}
 			}
 		}
+		// Clear fresh-start flag after first reconciliation — subsequent ticks
+		// should use normal Complete reconciliation for tasks that truly finished.
+		a.daemonFreshStart = false
 	}
 
 	// Update idleUnvisited: add newly-idle tasks, remove tasks no longer idle.

@@ -224,7 +224,7 @@ func TestLazyScreen_EnableDisableDoesNotPanic(t *testing.T) {
 func TestSmoke_TabSwitching(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
@@ -253,7 +253,7 @@ func TestSmoke_TabSwitching(t *testing.T) {
 func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 	// Ensure there's a project and backend for the form.
 	d.SetProject("test", config.Project{Path: t.TempDir()})
 
@@ -287,7 +287,7 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 
 	task := &model.Task{
 		ID:        "smoke-1",
@@ -322,7 +322,7 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
+	app := New(d, runner, false, false)
 	d.SetProject("test", config.Project{Path: t.TempDir()})
 
 	sim, stop := wireApp(t, app)
