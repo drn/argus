@@ -128,7 +128,7 @@ func TestCleanPTYOutput(t *testing.T) {
 	}
 }
 
-func TestCleanLongLine(t *testing.T) {
+func Test_cleanLongLine(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -147,9 +147,9 @@ func TestCleanLongLine(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := CleanLongLine(tt.in)
+			got := cleanLongLine(tt.in)
 			if got != tt.want {
-				t.Errorf("CleanLongLine() = %q, want %q", got, tt.want)
+				t.Errorf("cleanLongLine() = %q, want %q", got, tt.want)
 			}
 		})
 	}

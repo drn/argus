@@ -24,11 +24,13 @@ var (
 	statusBarRe      = regexp.MustCompile(`^⏵`)
 	separatorRe      = regexp.MustCompile(`^─+\s*$`)
 	promptRe         = regexp.MustCompile(`^❯\s*$`)
-	partialRenderRe  = regexp.MustCompile(`^[✳✶✻✽✢·]?[A-Za-z…]{0,4}(\(thinking\))?\s*$`)
+	// partialRenderRe: frame-by-frame "Warping…"/"Clauding…" renders appear as 1-4 char lines.
+	// Over-broad (matches "Go", "OK") but acceptable — real content is always longer.
+	partialRenderRe = regexp.MustCompile(`^[✳✶✻✽✢·]?[A-Za-z…]{0,4}(\(thinking\))?\s*$`)
 	timingRe         = regexp.MustCompile(`^[✳✶✻✽✢·]?…?\s*\(\d+s.*\)\s*$`)
 	cwdResetRe       = regexp.MustCompile(`^⎿\s+Shell cwd was reset`)
 	runningRe        = regexp.MustCompile(`^\s*⎿\s+Running…\s*$`)
-	noOutputRe       = regexp.MustCompile(`\(No output\)`)
+	noOutputRe = regexp.MustCompile(`\(No output\)`) // intentionally unanchored — matches inline too
 	bakedRe          = regexp.MustCompile(`Baked for \d+s`)
 	expandHintRe     = regexp.MustCompile(`…\s*\+\d+ lines \(ctrl\+o to expand\)`)
 	loneDigitRe      = regexp.MustCompile(`^\d\s*$`)
@@ -73,7 +75,7 @@ func CleanPTYOutput(s string) string {
 
 	for _, line := range lines {
 		if len(line) > 120 {
-			line = CleanLongLine(line)
+			line = cleanLongLine(line)
 		}
 		trimmed := strings.TrimRight(line, " \t")
 
@@ -128,8 +130,8 @@ func isNoiseLine(line string) bool {
 		keybindHintRe.MatchString(line)
 }
 
-// CleanLongLine strips inline noise from long concatenated terminal lines.
-func CleanLongLine(line string) string {
+// cleanLongLine strips inline noise from long concatenated terminal lines.
+func cleanLongLine(line string) string {
 	s := line
 	s = inlineRunningRe.ReplaceAllString(s, "")
 	s = inlineCwdResetRe.ReplaceAllString(s, "")

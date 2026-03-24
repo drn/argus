@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -25,7 +26,7 @@ func TestStripANSI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testutil.Equal(t, stripANSI(tt.in), tt.want)
+			testutil.Equal(t, sanitize.StripANSI(tt.in), tt.want)
 		})
 	}
 }
@@ -256,42 +257,7 @@ func TestSanitizeForkOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeForkOutput(tt.in)
-			testutil.Equal(t, got, tt.want)
-		})
-	}
-}
-
-func TestCleanLongLine(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			"strips inline Running marker",
-			"⏺Bash(cd /tmp && ls 2>&1)  ⎿  Running…                              ✳ Warping… (thinking)                              ──────────────────────────────────",
-			"⏺Bash(cd /tmp && ls 2>&1)",
-		},
-		{
-			"strips inline Shell cwd reset and noise",
-			"⏺Info: Running script on host  ⎿  Shell cwd was reset to /Users/foo/bar                              ✽ Warping… (thinking)",
-			"⏺Info: Running script on host",
-		},
-		{
-			"strips status bar and prompt",
-			"⏺All done.  ❯                              ⏵⏵ bypass permissions on",
-			"⏺All done.",
-		},
-		{
-			"preserves content under 120 chars",
-			"⏺This is normal content that should not be modified at all",
-			"⏺This is normal content that should not be modified at all",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := cleanLongLine(tt.in)
+			got := sanitize.CleanPTYOutput(tt.in)
 			testutil.Equal(t, got, tt.want)
 		})
 	}
@@ -325,7 +291,7 @@ func TestSanitizeForkOutput_RealWorld(t *testing.T) {
 		"",
 	}, "\n")
 
-	got := sanitizeForkOutput(noisy)
+	got := sanitize.CleanPTYOutput(noisy)
 
 	// Should preserve the meaningful content.
 	testutil.Contains(t, got, "⏺Bash(cd /tmp&&ls 2>&1)")

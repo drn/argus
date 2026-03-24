@@ -101,24 +101,6 @@ func readGitDiff(worktree string) string {
 	return string(out)
 }
 
-// sanitizeForkOutput delegates to the shared sanitize package.
-// Kept as a package-level function for test compatibility.
-func sanitizeForkOutput(s string) string {
-	return sanitize.CleanPTYOutput(s)
-}
-
-// cleanLongLine delegates to the shared sanitize package.
-// Kept as a package-level function for test compatibility.
-func cleanLongLine(line string) string {
-	return sanitize.CleanLongLine(line)
-}
-
-// stripANSI delegates to the shared sanitize package.
-// Kept as a package-level function for test compatibility.
-func stripANSI(s string) string {
-	return sanitize.StripANSI(s)
-}
-
 // writeForkContextFiles writes .context/ files into the destination worktree.
 func writeForkContextFiles(destWorktree string, ctx *forkContext) error {
 	dir := destWorktree + "/.context"

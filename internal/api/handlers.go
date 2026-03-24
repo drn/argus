@@ -300,7 +300,11 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Source", "log")
 	if clean {
 		f.Seek(offset, io.SeekStart) //nolint:errcheck
-		raw, _ := io.ReadAll(f)
+		raw, err := io.ReadAll(f)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 		w.Write([]byte(sanitize.CleanPTYOutput(string(raw)))) //nolint:errcheck
 	} else {
 		f.Seek(offset, io.SeekStart) //nolint:errcheck
