@@ -1271,3 +1271,21 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - Client-side filtering from cache — no per-keystroke API calls
 - Keyboard nav: ArrowUp/Down, Enter to select, Escape to dismiss
 - Selection inserts `/{skillName} ` into prompt textarea
+
+## Shared PTY Sanitization: 2026-03-23
+
+### Summary
+Extracted ANSI stripping and terminal noise filtering from `internal/tui2/forkcontext.go` into `internal/sanitize/` shared package. Used by both the web API (`?clean=1` output endpoint) and fork context extraction.
+
+### Key entities
+- `sanitize.StripANSI` — comprehensive ANSI regex handling CSI (including DEC private mode `?`-prefixed), OSC, charset, keypad mode, DEC line attributes
+- `sanitize.CleanPTYOutput` — full pipeline: StripANSI → normalize `\r`/NBSP → filter noise lines → clean long concatenated lines → collapse blanks
+- `sanitize.cleanLongLine` (unexported) — strips inline noise from long lines where VT cell rendering concatenates content area + status bar + prompt
+- `sanitize.isNoiseLine` (unexported) — 16 regex patterns for spinners, thinking, warping/clauding, status bar, separators, timing hints, etc.
+- API `handleGetOutput` `?clean=1` query param — server-side sanitization for web clients
+- JS `stripAnsi()` in `index.html` — defense-in-depth client-side stripping (server does the heavy lifting)
+
+### Gotchas
+- The ANSI regex must include `\x1b\[\??` (optional `?` after `[`) to catch DEC private mode sequences like `\x1b[?25l` (cursor hide) and `\x1b[?2026h` (synchronized update). The original `forkAnsiRe` had this as a separate alternation; the new `ansiRe` uses `\[\??` in a single pattern.
+- `partialRenderRe` is intentionally over-broad (matches short words like "Go", "OK") because real agent content is always longer than 4 chars. Documented with a comment.
+- `noOutputRe` is intentionally unanchored (matches `(No output)` anywhere in a line) for inline matching. Other noise patterns are line-anchored.
