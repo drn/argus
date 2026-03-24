@@ -654,3 +654,78 @@ func TestSettingsView_NKeyOnNonProjectRow(t *testing.T) {
 		t.Error("'n' should not be handled on non-project/backend row")
 	}
 }
+
+func TestSettingsView_ProjectDetail_SandboxInherit(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("proj", config.Project{Path: "/tmp/proj"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	pe := findProjectEntry(t, sv, "proj")
+	testutil.Nil(t, pe.Project.Sandbox.Enabled)
+}
+
+func TestSettingsView_ProjectDetail_SandboxEnabled(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	v := true
+	database.SetProject("proj", config.Project{
+		Path:    "/tmp/proj",
+		Sandbox: config.ProjectSandboxConfig{Enabled: &v},
+	})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	pe := findProjectEntry(t, sv, "proj")
+	if pe.Project.Sandbox.Enabled == nil {
+		t.Fatal("expected Sandbox.Enabled to be non-nil")
+	}
+	testutil.Equal(t, *pe.Project.Sandbox.Enabled, true)
+}
+
+func TestSettingsView_ProjectDetail_SandboxDisabled(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	v := false
+	database.SetProject("proj", config.Project{
+		Path:    "/tmp/proj",
+		Sandbox: config.ProjectSandboxConfig{Enabled: &v},
+	})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	pe := findProjectEntry(t, sv, "proj")
+	if pe.Project.Sandbox.Enabled == nil {
+		t.Fatal("expected Sandbox.Enabled to be non-nil")
+	}
+	testutil.Equal(t, *pe.Project.Sandbox.Enabled, false)
+}
+
+func TestSettingsView_ProjectDetail_SandboxRoundTrip(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	v := true
+	database.SetProject("proj", config.Project{
+		Path: "/tmp/proj",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:    &v,
+			DenyRead:   []string{"/secret"},
+			ExtraWrite: []string{"/tmp/build"},
+		},
+	})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	pe := findProjectEntry(t, sv, "proj")
+	testutil.DeepEqual(t, pe.Project.Sandbox.DenyRead, []string{"/secret"})
+	testutil.DeepEqual(t, pe.Project.Sandbox.ExtraWrite, []string{"/tmp/build"})
+}
+
+// findProjectEntry locates a project in the settings view by name.
+func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry {
+	t.Helper()
+	for i := range sv.projects {
+		if sv.projects[i].Name == name {
+			return &sv.projects[i]
+		}
+	}
+	t.Fatalf("project %q not found in settings view", name)
+	return nil
+}

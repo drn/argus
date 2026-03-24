@@ -240,10 +240,16 @@
 
 ### Config Persistence
 - Sandbox config stored as `sandbox.enabled`, `sandbox.deny_read`, `sandbox.extra_write` in the `config` KV table
+- Per-project sandbox stored in `projects` table: `sandbox_enabled` (""=inherit, "true", "false"), `sandbox_deny_read`, `sandbox_extra_write` (CSV)
 - `sandbox.allowed_domains` key was used by srt; now orphaned in existing DBs but harmlessly ignored
 - List values stored as CSV (comma-separated). Known limitation: paths with commas would break.
 - `SetSandboxEnabled(bool)` convenience method on DB; other values via `SetConfigValue`
 - **`sandbox.extra_write` garbage causes broken SBPL rules.** Each CSV value becomes `(allow file-write* (subpath "..."))`. A partial entry like `"e"` produces `(allow file-write* (subpath "e"))` — valid syntax, no effect. Clear via: `sqlite3 ~/.argus/data.sql "UPDATE config SET value='' WHERE key='sandbox.extra_write'"`
+
+### Per-Project Sandbox UI (2026-03-24)
+- **Project form**: 5th field (`pfFieldSandbox`) is a ◀/▶ selector with options: Inherit, Enabled, Disabled. Maps to `ProjectSandboxConfig.Enabled`: nil, &true, &false.
+- **Settings detail**: `renderProjectDetail` shows sandbox mode (Inherit/Enabled/Disabled) with color coding, plus per-project deny_read and extra_write paths.
+- **Resolution**: `ResolveSandboxConfig()` in `internal/agent/agent.go` merges per-project on top of global: Enabled overrides, paths append.
 
 ## Daemon Restart Feature (2026-03-15)
 
