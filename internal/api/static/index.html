@@ -143,6 +143,22 @@ button:disabled { opacity: 0.5; cursor: default; }
 .form-actions { display: flex; gap: 8px; padding: 12px; }
 .form-actions button { flex: 1; }
 
+/* Skill autocomplete */
+.prompt-wrap { position: relative; }
+.ac-dropdown {
+  position: absolute; left: 0; right: 0; top: 100%;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px; max-height: 210px; overflow-y: auto;
+  z-index: 20; display: none;
+}
+.ac-dropdown.open { display: block; }
+.ac-item {
+  padding: 8px 10px; cursor: pointer; font-size: 14px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.ac-item:hover, .ac-item.selected { background: var(--border); }
+.ac-item .ac-desc { color: var(--text-dim); font-size: 12px; margin-left: 12px; text-align: right; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Pull to refresh indicator */
 .refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
 
@@ -216,7 +232,10 @@ button:disabled { opacity: 0.5; cursor: default; }
     </div>
     <div class="form-group">
       <label>Prompt</label>
-      <textarea id="create-prompt" placeholder="What should the agent do?"></textarea>
+      <div class="prompt-wrap">
+        <textarea id="create-prompt" placeholder="What should the agent do?"></textarea>
+        <div class="ac-dropdown" id="ac-dropdown"></div>
+      </div>
     </div>
     <div class="form-actions">
       <button onclick="switchTab('tasks')">Cancel</button>
@@ -514,6 +533,7 @@ async function loadProjects() {
     sel.innerHTML = (data.projects || []).map(p =>
       `<option value="${esc(p)}">${esc(p)}</option>`
     ).join('');
+    if (sel.value) loadSkillsForProject(sel.value);
   } catch(e) {}
 }
 
@@ -568,6 +588,97 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// --- Skill Autocomplete ---
+let cachedSkills = {};  // project -> [{name, description}]
+let acIdx = -1;
+let acFiltered = [];
+
+async function loadSkillsForProject(project) {
+  if (cachedSkills[project]) return;
+  try {
+    const r = await api('/api/skills?project=' + encodeURIComponent(project));
+    if (r.ok) {
+      const data = await r.json();
+      cachedSkills[project] = data.skills || [];
+    }
+  } catch(e) {}
+}
+
+document.getElementById('create-project').addEventListener('change', function() {
+  loadSkillsForProject(this.value);
+});
+
+const promptEl = document.getElementById('create-prompt');
+const acDrop = document.getElementById('ac-dropdown');
+
+function updateAC() {
+  const val = promptEl.value;
+  if (!val.startsWith('/') || (val.length > 1 && val.indexOf(' ', 1) !== -1)) {
+    closeAC();
+    return;
+  }
+  const prefix = val.slice(1);
+  const project = document.getElementById('create-project').value;
+  const allSkills = cachedSkills[project] || [];
+  acFiltered = prefix ? allSkills.filter(s => s.name.startsWith(prefix)) : allSkills;
+  if (!acFiltered.length) { closeAC(); return; }
+  acIdx = Math.min(acIdx, acFiltered.length - 1);
+  if (acIdx < 0) acIdx = 0;
+  renderAC();
+}
+
+function renderAC() {
+  acDrop.innerHTML = acFiltered.map((s, i) =>
+    `<div class="ac-item${i === acIdx ? ' selected' : ''}" data-idx="${i}">` +
+    `<span>${esc(s.name)}</span>` +
+    (s.description ? `<span class="ac-desc">${esc(s.description)}</span>` : '') +
+    `</div>`
+  ).join('');
+  acDrop.classList.add('open');
+  const sel = acDrop.querySelector('.selected');
+  if (sel) sel.scrollIntoView({ block: 'nearest' });
+}
+
+function closeAC() {
+  acDrop.classList.remove('open');
+  acFiltered = [];
+  acIdx = -1;
+}
+
+function selectAC(idx) {
+  if (idx >= 0 && idx < acFiltered.length) {
+    promptEl.value = '/' + acFiltered[idx].name + ' ';
+    promptEl.focus();
+  }
+  closeAC();
+}
+
+promptEl.addEventListener('input', updateAC);
+
+promptEl.addEventListener('keydown', function(e) {
+  if (!acDrop.classList.contains('open')) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    acIdx = (acIdx + 1) % acFiltered.length;
+    renderAC();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    acIdx = (acIdx - 1 + acFiltered.length) % acFiltered.length;
+    renderAC();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    selectAC(acIdx);
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeAC();
+  }
+});
+
+acDrop.addEventListener('click', function(e) {
+  const item = e.target.closest('.ac-item');
+  if (item) selectAC(parseInt(item.dataset.idx, 10));
+});
 
 // --- Init ---
 if (TOKEN) tryConnect();

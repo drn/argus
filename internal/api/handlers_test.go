@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -190,6 +193,64 @@ func TestHandleDeleteTask(t *testing.T) {
 	// Verify deleted.
 	got, _ := d.Get(task.ID)
 	testutil.Nil(t, got)
+}
+
+func TestHandleListSkills(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	// Set up a project with a skill directory.
+	projDir := t.TempDir()
+	skillDir := filepath.Join(projDir, ".claude", "skills", "deploy")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: Deploy to prod\n---\n"), 0o644)
+
+	d.SetProject("myproj", config.Project{Path: projDir})
+
+	t.Run("returns skills for project", func(t *testing.T) {
+		req := authedReq("GET", "/api/skills?project=myproj", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string][]skillJSON
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		found := false
+		for _, s := range resp["skills"] {
+			if s.Name == "deploy" {
+				found = true
+				testutil.Equal(t, s.Description, "Deploy to prod")
+			}
+		}
+		testutil.True(t, found)
+	})
+
+	t.Run("filters by prefix", func(t *testing.T) {
+		req := authedReq("GET", "/api/skills?project=myproj&prefix=dep", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string][]skillJSON
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		for _, s := range resp["skills"] {
+			testutil.True(t, strings.HasPrefix(s.Name, "dep"))
+		}
+	})
+
+	t.Run("no project returns global skills", func(t *testing.T) {
+		req := authedReq("GET", "/api/skills", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string][]skillJSON
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		// Should succeed (may return global skills or empty).
+		testutil.True(t, resp["skills"] != nil)
+	})
 }
 
 func TestSanitizeName(t *testing.T) {
