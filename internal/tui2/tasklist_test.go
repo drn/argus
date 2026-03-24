@@ -121,8 +121,15 @@ func TestGroupByProject(t *testing.T) {
 	if len(order) != 3 {
 		t.Errorf("len(order) = %d, want 3", len(order))
 	}
-	if order[0] != "alpha" {
-		t.Errorf("first project = %q, want alpha", order[0])
+	// Alphabetical: "(no project)" < "alpha" < "beta"
+	if order[0] != "(no project)" {
+		t.Errorf("first project = %q, want (no project)", order[0])
+	}
+	if order[1] != "alpha" {
+		t.Errorf("second project = %q, want alpha", order[1])
+	}
+	if order[2] != "beta" {
+		t.Errorf("third project = %q, want beta", order[2])
 	}
 	if len(groups["alpha"]) != 2 {
 		t.Errorf("alpha tasks = %d, want 2", len(groups["alpha"]))

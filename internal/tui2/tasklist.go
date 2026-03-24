@@ -2,6 +2,7 @@ package tui2
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -219,22 +220,21 @@ func (tl *TaskListView) buildRows() {
 	}
 }
 
-// groupByProject groups tasks by project name, preserving insertion order.
+// groupByProject groups tasks by project name, sorted alphabetically.
 func groupByProject(tasks []*model.Task) ([]string, map[string][]*model.Task) {
-	order := []string{}
 	groups := map[string][]*model.Task{}
-	seen := map[string]bool{}
 	for _, t := range tasks {
 		proj := t.Project
 		if proj == "" {
 			proj = "(no project)"
 		}
-		if !seen[proj] {
-			seen[proj] = true
-			order = append(order, proj)
-		}
 		groups[proj] = append(groups[proj], t)
 	}
+	order := make([]string, 0, len(groups))
+	for proj := range groups {
+		order = append(order, proj)
+	}
+	sort.Strings(order)
 	return order, groups
 }
 
