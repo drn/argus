@@ -33,6 +33,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Fresh daemon auto-start must reconcile InProgress → InReview, not Complete.** When the TUI auto-starts a daemon (no prior daemon running), `daemonRestarting` is `false` but the daemon has zero sessions. Without `daemonFreshStart`, reconciliation marks all InProgress tasks Complete — losing todo status indicators. The flag is cleared after the first reconciliation so subsequent ticks use normal Complete behavior.
 - **SessionID must be populated before first `runner.Start` for Claude backends, and captured post-exit for Codex.** Claude uses `--session-id <uuid>` on first run and `--resume <uuid>` on subsequent runs. Codex captures its ID from `~/.codex/state_5.sqlite` after exit. Without a SessionID, `resume` is always false and every start is a fresh conversation.
 - **Codex session ID capture (`CaptureCodexSessionID`) must run off the tview main goroutine.** It opens a SQLite connection which can block. Use a background goroutine + `QueueUpdateDraw` to persist.
+- **`onTaskSelect` auto-resumes sessions with a preserved SessionID.** Call sites that do `onTaskSelect` + explicit `startSession` (new task, todo launch, fork) are safe because new tasks never have a SessionID. Adding a SessionID before `onTaskSelect` at those sites would cause a double-start. Condition excludes completed and archived tasks.
 
 ### PTY & Terminal Rendering
 
