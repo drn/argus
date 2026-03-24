@@ -1232,3 +1232,26 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 ### Gotchas
 - `SetDaemonRestarting(false)` is the single reset point for both manual and auto-restart paths — do not add a redundant reset in `handleEnter`
 - `rebuildRows` guards with `apiBootRecorded &&` to suppress the hint during the window between restart and next `Refresh()`
+
+## Async Replay Rebuild: 2026-03-23
+
+### Problem
+`TerminalPane.Draw()` blocked the main goroutine with up to 8MB file I/O (`readLogTail`) + VT emulation (`safeEmuWrite`) when transitioning from live→replay mode. Since tview's `QueueUpdateDraw` is synchronous, all goroutines calling it (tick loop, redraw loop, git status, session exit) were frozen until Draw completed.
+
+### Changes
+- **`asyncReplayRebuild`** — background goroutine performs file I/O + VT emulation. Draw() paints stale cache while rebuild is in flight.
+- **`readLogTailForTask`** — standalone function accepting taskID parameter, safe for background goroutine use (avoids race with `SetTaskID`).
+- **`replayRebuildPending` flag** — signals main goroutine to reset `anchorTotalLines` and `paintCacheValid` (owned by main goroutine, written by `paintEmu` without lock).
+- **Preview caching for dead sessions** — `statSessionLog` + `lastPreviewLogSize` skips redundant `os.ReadFile` of up to 95MB log files on every tick.
+- **RPC goroutine leak fix** — `client.call()` timeout path now drains the channel in a background goroutine, tracked by `leakedCalls` counter.
+- **Mutex protection for replay fields** — `ResetVT`, `invalidateReplayCache` now hold `tp.mu` when writing fields shared with `asyncReplayRebuild`.
+
+### Data flow
+1. `Draw()` acquires `tp.mu`, checks replay cache (fast path) or triggers `asyncReplayRebuild` (slow path)
+2. Background goroutine: `readLogTailForTask` → `safeEmuWrite` → stores emulator under `tp.mu` → sets `replayRebuildPending` → `OnNeedRedraw()`
+3. Next `Draw()`: consumes `replayRebuildPending` (resets anchor + paint cache), finds cache hit, paints from new emulator
+
+### Gotchas
+- `readLogTail` (method) reads `tp.taskID` without lock — only safe from main goroutine. Background goroutines must use `readLogTailForTask` with an explicit taskID parameter.
+- `anchorTotalLines` and `paintCacheValid` are written by `paintEmu` (main goroutine) without lock. The background goroutine must not write them directly — use `replayRebuildPending` flag instead.
+- `replayBuilding` must be reset in `invalidateReplayCache` and `ResetVT` to allow new rebuilds after cache invalidation.

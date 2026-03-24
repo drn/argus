@@ -248,6 +248,21 @@ func (tp *TaskPreviewPanel) drawCentered(screen tcell.Screen, x, y, w, h int, ms
 	}
 }
 
+// statSessionLog returns the file size of a session log without reading it.
+// Returns 0 if the file doesn't exist. Used to skip redundant reads in refreshPreview.
+func statSessionLog(taskID string) int64 {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0
+	}
+	logPath := filepath.Join(home, ".argus", "sessions", taskID+".log")
+	fi, err := os.Stat(logPath)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
+}
+
 // LoadSessionLog reads the session log file for a finished task.
 // Call from a goroutine, then pass the result to RefreshOutput.
 func LoadSessionLog(taskID string) []byte {

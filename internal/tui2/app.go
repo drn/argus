@@ -121,9 +121,10 @@ type App struct {
 	worktreeDir     string // resolved worktree dir for current agent view task
 	lastGitRefresh     time.Time
 	lastTaskGitRefresh time.Time
-	lastPreviewTW      uint64 // TotalWritten when preview was last refreshed
-	lastPreviewTaskID  string // task ID for the cached TotalWritten
-	prScanTW           map[string]uint64 // per-session TotalWritten for PR URL scan throttling
+	lastPreviewTW       uint64 // TotalWritten when preview was last refreshed
+	lastPreviewTaskID   string // task ID for the cached TotalWritten
+	lastPreviewLogSize  int64  // log file size when dead-session preview was last refreshed
+	prScanTW            map[string]uint64 // per-session TotalWritten for PR URL scan throttling
 
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
@@ -250,6 +251,9 @@ func (a *App) buildUI() {
 	a.agentPane.OnClick = func() {
 		a.agentFocus = focusTerminal
 		a.updateFocusIndicators()
+	}
+	a.agentPane.OnNeedRedraw = func() {
+		a.tapp.QueueUpdateDraw(func() {})
 	}
 	a.reviews = NewReviewsView()
 	a.reviews.SetOnFetch(func(fn func()) {
@@ -608,6 +612,12 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			a.exitAgentView()
 		} else {
 			a.agentPane.SetSession(nil)
+			// Eagerly start async replay rebuild so the first Draw() after
+			// session stop hits the cache instead of showing a brief flash
+			// of "Waiting for output..." while the rebuild runs. Only needed
+			// for stopped sessions — completed sessions exit agent view, so
+			// the pre-built emulator would be discarded on re-entry.
+			a.agentPane.EagerReplayBuild()
 		}
 	}
 
@@ -1487,6 +1497,7 @@ func (a *App) refreshPreview(taskID string) {
 		}
 		a.lastPreviewTaskID = taskID
 		a.lastPreviewTW = tw
+		a.lastPreviewLogSize = 0
 		a.mu.Unlock()
 		raw := sess.RecentOutput()
 		// Use the PTY's actual width for the emulator so text wraps at
@@ -1500,10 +1511,25 @@ func (a *App) refreshPreview(taskID string) {
 	}
 
 	// No live session — try session log file.
-	logData := LoadSessionLog(taskID)
-	if len(logData) > 0 {
-		a.taskPreview.RefreshOutput(logData, w, h)
+	// Stat the file first to skip redundant reads for completed tasks
+	// whose log hasn't changed (avoids reading up to 95MB every tick).
+	logSize := statSessionLog(taskID)
+	a.mu.Lock()
+	if taskID == a.lastPreviewTaskID && logSize > 0 && logSize == a.lastPreviewLogSize {
+		a.mu.Unlock()
 		return
+	}
+	a.lastPreviewTaskID = taskID
+	a.lastPreviewTW = 0
+	a.lastPreviewLogSize = logSize
+	a.mu.Unlock()
+
+	if logSize > 0 {
+		logData := LoadSessionLog(taskID)
+		if len(logData) > 0 {
+			a.taskPreview.RefreshOutput(logData, w, h)
+			return
+		}
 	}
 
 	a.taskPreview.SetStatus("No active agent")
