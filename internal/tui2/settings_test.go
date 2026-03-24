@@ -3,6 +3,7 @@ package tui2
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -440,6 +441,78 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 	if sv.daemonRestarting {
 		t.Error("daemonRestarting should be false after SetDaemonRestarting(false)")
 	}
+}
+
+func TestSettingsView_APIRestartHint(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// After first Refresh, boot state is recorded.
+	testutil.Equal(t, sv.apiBootRecorded, true)
+	testutil.Equal(t, sv.apiEnabledAtBoot, false) // default is disabled
+
+	apiLabel := func() string {
+		for _, row := range sv.rows {
+			if row.kind == srAPI {
+				return row.label
+			}
+		}
+		return ""
+	}
+
+	t.Run("no hint when state matches boot", func(t *testing.T) {
+		testutil.Equal(t, apiLabel(), "  Disabled")
+	})
+
+	t.Run("hint appears after toggle", func(t *testing.T) {
+		// Toggle API on.
+		for i, row := range sv.rows {
+			if row.kind == srAPI {
+				sv.cursor = i
+				sv.handleEnter()
+				break
+			}
+		}
+		testutil.Contains(t, apiLabel(), "(restart required)")
+	})
+
+	t.Run("hint disappears after double toggle", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srAPI {
+				sv.cursor = i
+				sv.handleEnter()
+				break
+			}
+		}
+		label := apiLabel()
+		if strings.Contains(label, "(restart required)") {
+			t.Errorf("hint should disappear after toggling back, got %q", label)
+		}
+	})
+
+	t.Run("hint clears after daemon restart completes", func(t *testing.T) {
+		// Toggle API on again to show hint.
+		for i, row := range sv.rows {
+			if row.kind == srAPI {
+				sv.cursor = i
+				sv.handleEnter()
+				break
+			}
+		}
+		testutil.Contains(t, apiLabel(), "(restart required)")
+
+		// Simulate daemon restart completion (covers both manual and auto paths).
+		sv.SetDaemonRestarting(false)
+		testutil.Equal(t, sv.apiBootRecorded, false)
+
+		// Next Refresh re-anchors boot state — hint should clear.
+		sv.Refresh()
+		testutil.Equal(t, sv.apiBootRecorded, true)
+		testutil.Equal(t, sv.apiEnabledAtBoot, true) // now matches toggled state
+		label := apiLabel()
+		if strings.Contains(label, "(restart required)") {
+			t.Errorf("hint should clear after restart + refresh, got %q", label)
+		}
+	})
 }
 
 func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {

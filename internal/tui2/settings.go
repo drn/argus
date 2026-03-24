@@ -67,8 +67,10 @@ type SettingsView struct {
 	kbTaskSync     bool
 
 	// API.
-	apiEnabled bool
-	apiPort    int
+	apiEnabled       bool
+	apiEnabledAtBoot bool // value when daemon started; used to show "restart required"
+	apiBootRecorded  bool // true after first Refresh captures boot value
+	apiPort          int
 
 	// ToDo defaults.
 	todoProject  string   // current default todo project
@@ -165,6 +167,10 @@ func (sv *SettingsView) Refresh() {
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
 
 	// API.
+	if !sv.apiBootRecorded {
+		sv.apiEnabledAtBoot = cfg.API.Enabled
+		sv.apiBootRecorded = true
+	}
 	sv.apiEnabled = cfg.API.Enabled
 	sv.apiPort = cfg.API.HTTPPort
 	if sv.apiPort == 0 {
@@ -271,6 +277,9 @@ func (sv *SettingsView) rebuildRows() {
 	apiLabel := "  Disabled"
 	if sv.apiEnabled {
 		apiLabel = fmt.Sprintf("  Enabled (port %d)", sv.apiPort)
+	}
+	if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
+		apiLabel += " (restart required)"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
 
@@ -882,6 +891,10 @@ func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) 
 // SetDaemonRestarting updates the restarting state from the app.
 func (sv *SettingsView) SetDaemonRestarting(restarting bool) {
 	sv.daemonRestarting = restarting
+	if !restarting {
+		// Daemon just came back — re-capture boot state on next Refresh.
+		sv.apiBootRecorded = false
+	}
 	sv.rebuildRows()
 }
 
