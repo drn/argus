@@ -91,6 +91,120 @@ func TestOnTaskSelect(t *testing.T) {
 	}
 }
 
+func TestOnTaskSelectAutoResume(t *testing.T) {
+	t.Run("no auto-resume without session ID", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:   "t-no-sid",
+			Name: "no session id",
+		}
+		task.SetStatus(model.StatusInReview)
+
+		app.onTaskSelect(task)
+
+		// No session should have been started — runner has no sessions.
+		if runner.Get("t-no-sid") != nil {
+			t.Error("expected no session started for task without SessionID")
+		}
+	})
+
+	t.Run("no auto-resume for completed task", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:        "t-complete",
+			Name:      "completed task",
+			SessionID: "sess-123",
+		}
+		task.SetStatus(model.StatusComplete)
+		d.Add(task) //nolint:errcheck
+
+		app.onTaskSelect(task)
+
+		// Completed tasks should not auto-resume.
+		got, _ := d.Get("t-complete")
+		if got.Status != model.StatusComplete {
+			t.Errorf("status = %v, want Complete", got.Status)
+		}
+	})
+
+	t.Run("auto-resume for in-review task with session ID", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:        "t-resume",
+			Name:      "resumable task",
+			SessionID: "sess-456",
+		}
+		task.SetStatus(model.StatusInReview)
+		d.Add(task) //nolint:errcheck
+
+		app.onTaskSelect(task)
+
+		// startSession was attempted — the runner.Start will fail (no real
+		// backend binary), which reverts the task to Pending. Verify the
+		// revert happened (proves auto-resume was triggered).
+		got, _ := d.Get("t-resume")
+		if got.Status != model.StatusPending {
+			t.Errorf("status = %v, want Pending (reverted after failed start)", got.Status)
+		}
+	})
+
+	t.Run("no auto-resume for archived task", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:        "t-archived",
+			Name:      "archived task",
+			SessionID: "sess-arc",
+			Archived:  true,
+		}
+		task.SetStatus(model.StatusInReview)
+		d.Add(task) //nolint:errcheck
+
+		app.onTaskSelect(task)
+
+		// Archived tasks should not auto-resume.
+		got, _ := d.Get("t-archived")
+		if got.Status != model.StatusInReview {
+			t.Errorf("status = %v, want InReview (archived tasks should not auto-resume)", got.Status)
+		}
+	})
+
+	t.Run("auto-resume for pending task with session ID", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:        "t-pending",
+			Name:      "pending resumable",
+			SessionID: "sess-789",
+		}
+		task.SetStatus(model.StatusPending)
+		d.Add(task) //nolint:errcheck
+
+		app.onTaskSelect(task)
+
+		// startSession was attempted — verifies auto-resume triggers for
+		// Pending tasks with a SessionID (daemon restart scenario).
+		got, _ := d.Get("t-pending")
+		// After failed start, task reverts to Pending with cleared SessionID.
+		if got.SessionID != "" {
+			t.Error("expected auto-resume attempt to clear SessionID on failure")
+		}
+	})
+}
+
 func TestExitAgentView(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

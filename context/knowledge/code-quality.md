@@ -1289,3 +1289,23 @@ Extracted ANSI stripping and terminal noise filtering from `internal/tui2/forkco
 - The ANSI regex must include `\x1b\[\??` (optional `?` after `[`) to catch DEC private mode sequences like `\x1b[?25l` (cursor hide) and `\x1b[?2026h` (synchronized update). The original `forkAnsiRe` had this as a separate alternation; the new `ansiRe` uses `\[\??` in a single pattern.
 - `partialRenderRe` is intentionally over-broad (matches short words like "Go", "OK") because real agent content is always longer than 4 chars. Documented with a comment.
 - `noOutputRe` is intentionally unanchored (matches `(No output)` anywhere in a line) for inline matching. Other noise patterns are line-anchored.
+
+---
+
+## Auto-Resume on Agent View Entry (2026-03-23)
+
+When entering agent view for a task that has a preserved `SessionID` but no running session, `onTaskSelect` automatically calls `startSession` to resume the conversation. This eliminates the extra Enter press after daemon restart.
+
+### Data model
+- No new fields. Uses existing `task.SessionID` and `task.Status` as the trigger condition.
+
+### Flow
+1. User presses Enter on task → `onTaskSelect`
+2. `runner.Get(taskID)` returns nil (no session) or dead session
+3. Condition: `(sess == nil || !sess.Alive()) && task.SessionID != "" && task.Status != StatusComplete && !task.Archived`
+4. Auto-calls `startSession(task)` which uses `--resume <sessionID>` for Claude backends
+
+### Gotchas
+- Call sites that do `onTaskSelect` + explicit `startSession` (new task, todo launch, fork) are safe only because new tasks never have a SessionID. Adding a SessionID before calling `onTaskSelect` at those sites would double-start.
+- Archived tasks are excluded — an archived task with a stale SessionID should not auto-spawn an agent.
+- Dead-but-not-nil sessions (`sess != nil && !sess.Alive()`) are included in the condition — the handle is stale from a previous run.
