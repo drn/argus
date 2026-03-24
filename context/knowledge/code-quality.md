@@ -1216,3 +1216,19 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `len(raw)` is NOT a valid cache key for ring buffer content — once full (256KB), length is constant but content changes on every wrap. Use `TotalWritten()` instead.
 - `refreshPreview` is called from both tick goroutine and `onTaskCursorChange` goroutine — any shared state must be mutex-protected.
 - `readLoop` data alias (`tmp[:n]`) requires all writers to copy synchronously. An async writer storing a reference to `p` would corrupt data.
+
+## API Settings Restart Hint: 2026-03-23
+
+### Data Model
+- `apiEnabledAtBoot bool` — snapshot of `cfg.API.Enabled` on first `Refresh()` after daemon (re)start
+- `apiBootRecorded bool` — true after boot value captured; reset to false by `SetDaemonRestarting(false)`
+
+### Flow
+1. First `Refresh()` → captures `apiEnabledAtBoot`, sets `apiBootRecorded = true`
+2. User toggles API → `apiEnabled` changes → `rebuildRows` appends "(restart required)" when `apiEnabled != apiEnabledAtBoot`
+3. Double-toggle back to boot value → hint disappears (values match again)
+4. Any daemon restart completion → `SetDaemonRestarting(false)` resets `apiBootRecorded = false` → next `Refresh()` re-anchors
+
+### Gotchas
+- `SetDaemonRestarting(false)` is the single reset point for both manual and auto-restart paths — do not add a redundant reset in `handleEnter`
+- `rebuildRows` guards with `apiBootRecorded &&` to suppress the hint during the window between restart and next `Refresh()`
