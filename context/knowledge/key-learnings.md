@@ -179,3 +179,4 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Headless task creation uses default 24x80 PTY dimensions.** Agents format initial output for the PTY size at launch. The TUI resizes the PTY when a user opens the agent view, so headless tasks auto-correct on attach.
 - **API server binds to `0.0.0.0` (not `127.0.0.1`) for Tailscale access.** MCP server uses `127.0.0.1` (local-only), but the API must be reachable over Tailscale's network interface. Auth is via bearer token from `~/.argus/api-token`.
 - **`HeadlessCreateTask` must revert task to Pending on `runner.Start` failure.** Clear SessionID and zero StartedAt — same revert pattern as `startSession` in `app.go`.
+- **API server only starts during daemon `Serve()` init — toggling `api.enabled` in Settings requires a daemon restart.** `SetDaemonRestarting(false)` resets `apiBootRecorded` so the "(restart required)" hint re-anchors after any restart path (manual or auto).
