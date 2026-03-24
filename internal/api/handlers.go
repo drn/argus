@@ -9,11 +9,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/skills"
 )
 
 // --- Status ---
@@ -387,6 +389,38 @@ func (cw *channelWriter) Write(p []byte) (int, error) {
 		// Channel full — drop data to avoid blocking the session's readLoop.
 		return len(p), nil
 	}
+}
+
+// --- Skills ---
+
+type skillJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	prefix := r.URL.Query().Get("prefix")
+
+	var extraDirs []string
+	if project != "" {
+		projects := s.db.Projects()
+		if p, ok := projects[project]; ok && p.Path != "" {
+			extraDirs = []string{filepath.Join(p.Path, ".claude", "skills")}
+		}
+	}
+
+	items := skills.LoadSkills(extraDirs)
+	if prefix != "" {
+		items = skills.FilterSkills(items, prefix)
+	}
+
+	result := make([]skillJSON, len(items))
+	for i, it := range items {
+		result[i] = skillJSON{Name: it.Name, Description: it.Description}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"skills": result})
 }
 
 // --- Helpers ---

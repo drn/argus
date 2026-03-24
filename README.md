@@ -212,7 +212,7 @@ The dashboard provides:
 - **Task list** — All tasks sorted by status (running first), with project names and elapsed times
 - **Task detail** — View agent output (ANSI-stripped), stop/resume/delete agents
 - **Send input** — Type commands to running agents directly from your phone
-- **Create tasks** — Select a project, enter a prompt, and start a new agent
+- **Create tasks** — Select a project, enter a prompt, and start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 
 The token persists in your browser's localStorage until you clear it.
 
@@ -233,6 +233,7 @@ All endpoints require `Authorization: Bearer <token>` header. Token is in `~/.ar
 | `POST` | `/api/tasks/{id}/input` | Send text to the agent's PTY stdin. Body: raw text |
 | `GET` | `/api/tasks/{id}/stream` | SSE stream of live agent output (base64-encoded chunks) |
 | `GET` | `/api/projects` | List configured project names |
+| `GET` | `/api/skills` | List skills for autocomplete. Filter: `?project=myproj&prefix=dep` |
 
 ### Tailscale Access
 

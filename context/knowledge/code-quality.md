@@ -1256,3 +1256,18 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 - `anchorTotalLines` and `paintCacheValid` are written by `paintEmu` (main goroutine) without lock. The background goroutine must not write them directly — use `replayRebuildPending` flag instead.
 - `replayBuilding` must be reset in `invalidateReplayCache` and `ResetVT` to allow new rebuilds after cache invalidation.
 - First scroll-up uses `tp.emu` (live emulator, 10K scrollback) as fallback while async replay builds. Fallback priority: stale replay emu > live emu > placeholder. Must save/restore `scrollOffset`/`anchorTotalLines` around the fallback `paintEmu` call since the smaller scrollback may clamp them.
+
+## Remote API Skills Autocomplete: 2026-03-23
+
+### Data Model & Flow
+- `GET /api/skills?project={name}&prefix={prefix}` — new endpoint in `internal/api/handlers.go`
+- Reuses `skills.LoadSkills(extraDirs)` and `skills.FilterSkills()` from `internal/skills/skills.go`
+- Per-project skill dir resolved via `s.db.Projects()` → `filepath.Join(p.Path, ".claude", "skills")`
+- Returns `{"skills": [{"name": "...", "description": "..."}]}` — `skillJSON` struct with `omitempty` on description
+
+### Dashboard Integration
+- Skills fetched per-project on project dropdown load/change, cached client-side in `cachedSkills[project]`
+- Autocomplete triggers on `/` prefix with no spaces (same trigger logic as TUI `newtaskform.go:acTrigger`)
+- Client-side filtering from cache — no per-keystroke API calls
+- Keyboard nav: ArrowUp/Down, Enter to select, Escape to dismiss
+- Selection inserts `/{skillName} ` into prompt textarea
