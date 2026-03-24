@@ -43,8 +43,9 @@ func NewFilePanel() *FilePanel {
 	}
 }
 
-// SetFiles updates the file list and rebuilds rows.
-func (fp *FilePanel) SetFiles(files []gitutil.ChangedFile) {
+// SetFiles updates the file list and rebuilds rows. Returns a directory path
+// that needs children fetched (when the cursor lands on an unexpanded dir).
+func (fp *FilePanel) SetFiles(files []gitutil.ChangedFile) string {
 	fp.files = files
 	// Prune stale expansion state
 	dirs := make(map[string]bool)
@@ -61,13 +62,38 @@ func (fp *FilePanel) SetFiles(files []gitutil.ChangedFile) {
 	}
 	fp.buildRows()
 	fp.clampCursor()
+	// Auto-expand directory at cursor and skip to first file — consistent with
+	// CursorUp/CursorDown behavior so new folders don't require manual entry.
+	// Only run when cursor is on a directory row to avoid collapsing expanded
+	// dirs during background git refreshes (autoExpand collapses all non-cursor dirs).
+	var fetch string
+	if len(fp.rows) > 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir {
+		fetch = fp.autoExpand()
+		fp.skipToFile(1)
+	}
+	return fetch
 }
 
 // SetDirChildren caches directory children and rebuilds.
 func (fp *FilePanel) SetDirChildren(dir string, children []gitutil.ChangedFile) {
+	// Remember cursor path so row insertion doesn't displace it.
+	var cursorPath string
+	if fp.cursor >= 0 && fp.cursor < len(fp.rows) {
+		cursorPath = fp.rows[fp.cursor].Path
+	}
 	fp.dirChildren[dir] = children
 	fp.buildRows()
+	// Restore cursor to the same file by path (row indices shift on child insertion).
+	for i, r := range fp.rows {
+		if r.Path == cursorPath {
+			fp.cursor = i
+			break
+		}
+	}
 	fp.clampCursor()
+	// Skip past the directory row to the first child file.
+	fp.skipToFile(1)
+	fp.ensureVisible()
 }
 
 // SetFocused updates the focus state.

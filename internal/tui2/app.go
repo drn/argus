@@ -1276,7 +1276,9 @@ func (a *App) fetchGitStatus(taskID, dir string) {
 			gitutil.ParseGitDiffNameStatus(msg.BranchFiles),
 			gitutil.ParseGitStatus(msg.Status),
 		)
-		a.filePanel.SetFiles(files)
+		if dir := a.filePanel.SetFiles(files); dir != "" {
+			go a.fetchDirChildren(dir)
+		}
 		uxlog.Log("[tui2] git status refreshed: %d files", len(files))
 	})
 }
