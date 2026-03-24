@@ -58,7 +58,7 @@ func TestTaskPreviewPanel_RefreshAndDraw(t *testing.T) {
 	tp.SetTaskID("test-task")
 
 	// Pre-render cells with simple PTY output
-	tp.RefreshOutput([]byte("Hello, World!\r\n"), 36, 6)
+	tp.RefreshOutput([]byte("Hello, World!\r\n"), 36, 6, 36, 6)
 	tp.Draw(screen)
 	// Should render cached cells without panic
 }
@@ -68,7 +68,7 @@ func TestTaskPreviewPanel_RefreshEmptyOutput(t *testing.T) {
 	tp.SetTaskID("test-task")
 
 	// Empty output sets status message
-	tp.RefreshOutput(nil, 40, 10)
+	tp.RefreshOutput(nil, 40, 10, 40, 10)
 
 	tp.mu.Lock()
 	msg := tp.statusMsg
@@ -125,7 +125,7 @@ func TestTaskPreviewPanel_RefreshPanicRecovery(t *testing.T) {
 	// Feed data that might trigger emulator panic due to size mismatch.
 	// CSI 82;1H + reverse index into a 5-row emulator.
 	data := []byte("hello\r\n\x1b[82;1H\x1bM")
-	tp.RefreshOutput(data, 10, 5)
+	tp.RefreshOutput(data, 10, 5, 10, 5)
 
 	tp.mu.Lock()
 	msg := tp.statusMsg
@@ -142,7 +142,7 @@ func TestTaskPreviewPanel_RefreshPanicRecovery(t *testing.T) {
 func TestTaskPreviewPanel_SetTaskIDClears(t *testing.T) {
 	tp := NewTaskPreviewPanel()
 	tp.SetTaskID("task-1")
-	tp.RefreshOutput([]byte("data"), 40, 10)
+	tp.RefreshOutput([]byte("data"), 40, 10, 40, 10)
 
 	// Switching task should clear cells
 	tp.SetTaskID("task-2")
@@ -173,7 +173,7 @@ func TestTaskPreviewPanel_RefreshUsesLatestVisibleLines(t *testing.T) {
 		"line-5",
 		"line-6",
 	}, "\r\n") + "\r\n")
-	tp.RefreshOutput(raw, 20, 3)
+	tp.RefreshOutput(raw, 20, 3, 20, 3)
 	tp.Draw(screen)
 
 	if !previewScreenContains(screen, "line-4") {
@@ -184,6 +184,62 @@ func TestTaskPreviewPanel_RefreshUsesLatestVisibleLines(t *testing.T) {
 	}
 	if previewScreenContains(screen, "line-1") {
 		t.Fatal("expected preview to drop old top-of-buffer lines")
+	}
+}
+
+func TestTaskPreviewPanel_LargerEmuThanViewport(t *testing.T) {
+	// Simulates a live session where the PTY is taller than the preview panel.
+	// Content positioned at the bottom of the tall emulator should still appear
+	// in the shorter viewport (not blank space at top).
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 8)
+	tp.SetTaskID("test-task")
+
+	// ANSI sequence positions cursor at row 18 (in a 20-row emulator) and writes text.
+	// With a 6-row viewport, we should see the bottom content, not blank rows.
+	raw := []byte("\x1b[18;1Hbottom-content\r\n\x1b[19;1Hvery-last-line\r\n")
+	// emuCols=36, emuRows=20 (PTY size), viewCols=36, viewRows=6 (panel size)
+	tp.RefreshOutput(raw, 36, 20, 36, 6)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "bottom-content") {
+		t.Fatal("expected bottom-positioned content to appear in shorter viewport")
+	}
+	if !previewScreenContains(screen, "very-last-line") {
+		t.Fatal("expected last line to appear in viewport")
+	}
+}
+
+func TestTaskPreviewPanel_SmallerEmuThanViewport(t *testing.T) {
+	// When PTY is shorter than the preview panel, content should still render
+	// correctly at the top of the viewport (no blank-top regression).
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 20)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 18)
+	tp.SetTaskID("test-task")
+
+	// PTY is only 5 rows tall, viewport is 16 rows. Content at row 3.
+	raw := []byte("\x1b[3;1Hshort-pty-content\r\n\x1b[4;1Hmore-content\r\n")
+	// emuCols=36, emuRows=5 (small PTY), viewCols=36, viewRows=16 (tall panel)
+	tp.RefreshOutput(raw, 36, 5, 36, 16)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "short-pty-content") {
+		t.Fatal("expected content from short PTY to appear in taller viewport")
+	}
+	if !previewScreenContains(screen, "more-content") {
+		t.Fatal("expected second line from short PTY to appear")
 	}
 }
 

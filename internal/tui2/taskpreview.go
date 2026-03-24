@@ -80,12 +80,20 @@ func (tp *TaskPreviewPanel) DrawSize() (cols, rows int) {
 
 // RefreshOutput fetches session output and pre-renders cells.
 // Called from a goroutine — never from the UI thread.
-func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
-	if cols < 10 {
-		cols = 10
+// emuCols/emuRows are the VT emulator dimensions (should match PTY size for correct
+// cursor positioning). viewCols/viewRows are the viewport dimensions for the output grid.
+func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols, viewRows int) {
+	if emuCols < 10 {
+		emuCols = 10
 	}
-	if rows < 3 {
-		rows = 3
+	if emuRows < 3 {
+		emuRows = 3
+	}
+	if viewCols < 10 {
+		viewCols = 10
+	}
+	if viewRows < 3 {
+		viewRows = 3
 	}
 
 	if len(raw) == 0 {
@@ -98,7 +106,7 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 
 	// Run VT emulation off the UI thread.
 	// Use drained emulator to prevent hangs on terminal query sequences.
-	emu := newDrainedEmulator(cols, rows)
+	emu := newDrainedEmulator(emuCols, emuRows)
 	if _, err := safeEmuWrite(emu, raw); err != nil {
 		tp.mu.Lock()
 		tp.statusMsg = "Preview unavailable"
@@ -107,42 +115,44 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 		return
 	}
 
-	lastContentRow := findLastContentRowEmu(emu, cols, rows)
+	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
 	sbLen := emu.ScrollbackLen()
 	totalLines := sbLen + lastContentRow + 1
 	firstContentRow := 0
 	if sbLen == 0 {
-		firstContentRow = findFirstContentRowEmu(emu, cols, lastContentRow)
+		firstContentRow = findFirstContentRowEmu(emu, emuCols, lastContentRow)
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
-	grid := make([][]previewCell, rows)
-	for vy := 0; vy < rows; vy++ {
-		grid[vy] = make([]previewCell, cols)
+	grid := make([][]previewCell, viewRows)
+	for vy := 0; vy < viewRows; vy++ {
+		grid[vy] = make([]previewCell, viewCols)
 	}
 
 	if totalLines <= 0 {
 		tp.mu.Lock()
 		tp.cells = grid
-		tp.cellCols = cols
-		tp.cellRows = rows
+		tp.cellCols = viewCols
+		tp.cellRows = viewRows
 		tp.statusMsg = ""
 		tp.mu.Unlock()
 		return
 	}
 
 	endLine := totalLines - 1
-	startLine := endLine - rows + 1
+	startLine := endLine - viewRows + 1
 	if startLine < 0 {
 		startLine = 0
 	}
 
-	for vy := 0; vy < rows; vy++ {
+	// Clip to whichever is narrower: emulator width or viewport width.
+	renderCols := min(emuCols, viewCols)
+	for vy := 0; vy < viewRows; vy++ {
 		lineIdx := startLine + vy
 		if lineIdx > endLine {
 			break
 		}
-		for vx := 0; vx < cols; vx++ {
+		for vx := 0; vx < renderCols; vx++ {
 			var cell *uv.Cell
 			if sbLen > 0 && lineIdx < sbLen {
 				cell = emu.ScrollbackCellAt(vx, lineIdx)
@@ -165,8 +175,8 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, cols, rows int) {
 
 	tp.mu.Lock()
 	tp.cells = grid
-	tp.cellCols = cols
-	tp.cellRows = rows
+	tp.cellCols = viewCols
+	tp.cellRows = viewRows
 	tp.statusMsg = ""
 	tp.mu.Unlock()
 }
