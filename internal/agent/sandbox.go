@@ -41,10 +41,22 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (param "WORKTREE")))
 (allow file-write* (subpath "/private/tmp"))
 (allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/var/folders"))
 (allow file-write* (subpath "/var/folders"))
 (allow file-write* (literal "/dev/null"))
 (allow file-write* (literal (string-append (param "HOME") "/.claude.json")))
 (allow file-write* (subpath (string-append (param "HOME") "/.claude")))
+; Build tool caches
+(allow file-write* (subpath (string-append (param "HOME") "/Library/Caches")))
+(allow file-write* (subpath (string-append (param "HOME") "/go")))
+(allow file-write* (subpath (string-append (param "HOME") "/.npm")))
+(allow file-write* (subpath (string-append (param "HOME") "/.yarn")))
+(allow file-write* (subpath (string-append (param "HOME") "/.pnpm-store")))
+(allow file-write* (subpath (string-append (param "HOME") "/.cargo")))
+(allow file-write* (subpath (string-append (param "HOME") "/.local")))
+(allow file-write* (subpath (string-append (param "HOME") "/.cache")))
+; Skill usage tracking
+(allow file-write* (subpath (string-append (param "HOME") "/.dots/sys/skill-usage")))
 `
 
 // IsSandboxAvailable checks whether sandbox-exec is available on this system.
