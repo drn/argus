@@ -41,6 +41,7 @@ const (
 	modeLaunchToDo
 	modeForkTask
 	modeConfirmCleanupToDos
+	modeConfirmDeleteToDo
 	modeRenameTask
 	modeLinkPicker
 )
@@ -89,8 +90,9 @@ type App struct {
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal    *LaunchToDoModal
-	cleanupToDosModal *ConfirmCleanupToDosModal
-	linkPickerModal     *LinkPickerModal
+	cleanupToDosModal    *ConfirmCleanupToDosModal
+	deleteToDoModal      *ConfirmDeleteToDoModal
+	linkPickerModal      *LinkPickerModal
 	linkPickerPrevPage  string
 
 	// Fork task modal (created on demand)
@@ -850,6 +852,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Delete single to-do confirmation modal
+	if a.mode == modeConfirmDeleteToDo && a.deleteToDoModal != nil {
+		a.handleDeleteToDoKey(event)
+		return nil
+	}
+
 	// Link picker modal
 	if a.mode == modeLinkPicker && a.linkPickerModal != nil {
 		a.handleLinkPickerKey(event)
@@ -896,6 +904,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeTaskList && a.header.ActiveTab() == TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil {
 				a.openConfirmDelete(t)
+				return nil
+			}
+		}
+		if a.mode == modeTaskList && a.header.ActiveTab() == TabToDos {
+			if item := a.todos.SelectedItem(); item != nil {
+				a.openConfirmDeleteToDo(*item)
 				return nil
 			}
 		}
@@ -1942,6 +1956,54 @@ func (a *App) closeCleanupToDosModal() {
 	a.mode = modeTaskList
 	a.cleanupToDosModal = nil
 	a.pages.RemovePage("cleanuptodos")
+	a.pages.SwitchToPage("todos")
+}
+
+// openConfirmDeleteToDo shows a confirmation modal for deleting a single to-do vault file.
+func (a *App) openConfirmDeleteToDo(item ToDoItem) {
+	a.deleteToDoModal = NewConfirmDeleteToDoModal(item)
+	a.mode = modeConfirmDeleteToDo
+	a.pages.AddPage("deletetodo", a.deleteToDoModal, true, true)
+	a.pages.SwitchToPage("deletetodo")
+	a.tapp.SetFocus(a.deleteToDoModal)
+}
+
+// handleDeleteToDoKey processes keys in the delete to-do confirmation modal.
+func (a *App) handleDeleteToDoKey(event *tcell.EventKey) {
+	handler := a.deleteToDoModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.deleteToDoModal.Canceled() {
+		a.closeDeleteToDoModal()
+		return
+	}
+	if a.deleteToDoModal.Confirmed() {
+		a.executeDeleteToDo()
+		a.closeDeleteToDoModal()
+	}
+}
+
+// executeDeleteToDo deletes the selected to-do vault file.
+func (a *App) executeDeleteToDo() {
+	item := a.deleteToDoModal.Item()
+	vaultPath := a.todos.VaultPath()
+	if vaultPath == "" || !strings.HasPrefix(item.Path, vaultPath+string(os.PathSeparator)) {
+		uxlog.Log("[todos] delete: skipping %s (not in vault %s)", item.Path, vaultPath)
+		return
+	}
+	if err := os.Remove(item.Path); err != nil {
+		uxlog.Log("[todos] delete: failed to remove %s: %v", item.Path, err)
+	} else {
+		uxlog.Log("[todos] delete: removed %s", item.Path)
+	}
+	a.todos.RefreshAsync(a.tapp)
+}
+
+// closeDeleteToDoModal closes the delete to-do confirmation modal.
+func (a *App) closeDeleteToDoModal() {
+	a.mode = modeTaskList
+	a.deleteToDoModal = nil
+	a.pages.RemovePage("deletetodo")
 	a.pages.SwitchToPage("todos")
 }
 

@@ -108,7 +108,8 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	switch sb.activeTab {
 	case TabToDos:
 		hints = []hint{
-			{"↑↓", "navigate"}, {"RET", "launch"}, {"R", "refresh"},
+			{"↑↓", "navigate"}, {"RET", "launch"}, {"^D", "delete"},
+			{"R", "refresh"},
 			{"1", "tasks"}, {"3", "reviews"}, {"4", "settings"},
 			{"q", "quit"},
 		}
