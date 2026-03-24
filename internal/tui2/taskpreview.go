@@ -145,6 +145,7 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		startLine = 0
 	}
 
+	// Clip to whichever is narrower: emulator width or viewport width.
 	renderCols := min(emuCols, viewCols)
 	for vy := 0; vy < viewRows; vy++ {
 		lineIdx := startLine + vy

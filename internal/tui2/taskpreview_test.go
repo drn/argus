@@ -216,6 +216,33 @@ func TestTaskPreviewPanel_LargerEmuThanViewport(t *testing.T) {
 	}
 }
 
+func TestTaskPreviewPanel_SmallerEmuThanViewport(t *testing.T) {
+	// When PTY is shorter than the preview panel, content should still render
+	// correctly at the top of the viewport (no blank-top regression).
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 20)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 18)
+	tp.SetTaskID("test-task")
+
+	// PTY is only 5 rows tall, viewport is 16 rows. Content at row 3.
+	raw := []byte("\x1b[3;1Hshort-pty-content\r\n\x1b[4;1Hmore-content\r\n")
+	// emuCols=36, emuRows=5 (small PTY), viewCols=36, viewRows=16 (tall panel)
+	tp.RefreshOutput(raw, 36, 5, 36, 16)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "short-pty-content") {
+		t.Fatal("expected content from short PTY to appear in taller viewport")
+	}
+	if !previewScreenContains(screen, "more-content") {
+		t.Fatal("expected second line from short PTY to appear")
+	}
+}
+
 func previewScreenContains(screen tcell.SimulationScreen, needle string) bool {
 	w, h := screen.Size()
 	for row := 0; row < h; row++ {

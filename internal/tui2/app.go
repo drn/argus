@@ -1527,7 +1527,7 @@ func (a *App) refreshPreview(taskID string) {
 		emuCols, emuRows := w, h
 		if ptyCols, ptyRows := sess.PTYSize(); ptyCols > 0 {
 			emuCols = ptyCols
-			if ptyRows > emuRows {
+			if ptyRows > 0 {
 				emuRows = ptyRows
 			}
 		}
