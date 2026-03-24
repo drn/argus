@@ -705,9 +705,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Prompt input — wrapped across multiple visual lines
 	curLine, curCol := f.cursorWrappedPos(innerW)
-	inputBG := tcell.Color236 // slightly lighter than default for input field
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(inputBG)
-	inputEmptyStyle := tcell.StyleDefault.Background(inputBG)
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if f.focused == ntFieldPrompt {
@@ -741,7 +740,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	} else {
 		if len(f.prompt) == 0 {
 			// Placeholder text with input background
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(inputBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
 			placeholder := "Prompt for the agent"
 			pRunes := []rune(placeholder)
 			for col := 0; col < innerW; col++ {
