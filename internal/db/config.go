@@ -41,6 +41,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
 		{"defaults.todo_project", &cfg.Defaults.TodoProject},
+		{"defaults.review_prompt", &cfg.Defaults.ReviewPrompt},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
 		{"keybindings.status", &cfg.Keybindings.Status},

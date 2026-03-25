@@ -210,6 +210,17 @@ func (rv *ReviewsView) SelectedPR() *github.PR {
 	return rv.selectedPR
 }
 
+// cursoredPR returns the selected PR, or the PR at the cursor if none is selected.
+func (rv *ReviewsView) cursoredPR() *github.PR {
+	if rv.selectedPR != nil {
+		return rv.selectedPR
+	}
+	if rv.prCursor >= 0 && rv.prCursor < len(rv.prs) {
+		return &rv.prs[rv.prCursor]
+	}
+	return nil
+}
+
 func (rv *ReviewsView) DiffFetching() bool  { return rv.diffFetching }
 func (rv *ReviewsView) CommentsFetching() bool { return rv.commentsFetching }
 
@@ -290,6 +301,12 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 			} else {
 				rv.focus = rfList
 			}
+		}
+		return true
+	case tcell.KeyCtrlR:
+		pr := rv.cursoredPR()
+		if pr != nil {
+			app.startReviewTask(pr)
 		}
 		return true
 	case tcell.KeyRune:

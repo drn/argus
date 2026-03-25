@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -953,9 +954,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			return nil
 		}
 	case tcell.KeyRune:
-		// When the task list filter is active, let all rune keys through
-		// to the filter input instead of handling global shortcuts.
+		// When the task list filter or settings prompt editor is active,
+		// let all rune keys through instead of handling global shortcuts.
 		if a.mode == modeTaskList && a.tasklist.Filtering() {
+			break
+		}
+		if a.mode == modeTaskList && a.settings.IsEditingPrompt() {
 			break
 		}
 		switch event.Rune() {
@@ -1904,6 +1908,134 @@ func (a *App) closeLaunchToDoModal() {
 	a.pages.RemovePage("launchtodo")
 	a.pages.SwitchToPage("todos")
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// resolveProjectForRepo finds the Argus project whose name or directory basename
+// matches the given GitHub repo name (case-insensitive). Name matches take
+// priority over basename matches for deterministic results. Returns ("", zero)
+// if no match is found.
+func resolveProjectForRepo(projects map[string]config.Project, repo string) (string, config.Project) {
+	repo = strings.ToLower(repo)
+	// First pass: exact name match (highest priority).
+	for name, proj := range projects {
+		if strings.ToLower(name) == repo {
+			return name, proj
+		}
+	}
+	// Second pass: directory basename match.
+	for name, proj := range projects {
+		if proj.Path != "" && strings.ToLower(filepath.Base(proj.Path)) == repo {
+			return name, proj
+		}
+	}
+	return "", config.Project{}
+}
+
+// truncateRunes truncates s to at most maxRunes runes.
+func truncateRunes(s string, maxRunes int) string {
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes])
+}
+
+// startReviewTask creates a task to review the given PR, or navigates to
+// the existing task if one is already linked. Called from Ctrl+R in reviews tab.
+func (a *App) startReviewTask(pr *github.PR) {
+	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
+
+	// Check for existing task linked to this PR.
+	if existing := a.db.TaskByPRURL(prURL); existing != nil {
+		uxlog.Log("[reviews] found existing review task %s for %s", existing.ID, prURL)
+		a.switchTab(TabTasks)
+		a.refreshTasksLocal()
+		a.onTaskSelect(existing)
+		return
+	}
+
+	cfg := a.db.Config()
+	projName, projCfg := resolveProjectForRepo(cfg.Projects, pr.Repo)
+	if projName == "" {
+		a.statusbar.SetError("No project matches repo " + pr.Repo)
+		return
+	}
+
+	reviewPrompt := cfg.Defaults.ReviewPrompt
+	if reviewPrompt == "" {
+		reviewPrompt = "/review"
+	}
+	prompt := fmt.Sprintf("%s %s", reviewPrompt, prURL)
+	taskName := truncateRunes(
+		fmt.Sprintf("review-pr-%d-%s", pr.Number, model.GenerateNameFromPrompt(pr.Title)),
+		50,
+	)
+	backend := cfg.Defaults.Backend
+
+	if projCfg.Path == "" {
+		// No worktree needed — create task directly on the UI thread.
+		task := &model.Task{
+			Name:    taskName,
+			Status:  model.StatusPending,
+			Project: projName,
+			Prompt:  prompt,
+			Backend: backend,
+			PRURL:   prURL,
+		}
+		if err := a.db.Add(task); err != nil {
+			uxlog.Log("[reviews] failed to persist review task: %v", err)
+			a.statusbar.SetError("Failed to create task: " + err.Error())
+			return
+		}
+		uxlog.Log("[reviews] created review task %s (%s) for %s", task.ID, task.Name, prURL)
+		a.switchTab(TabTasks)
+		a.refreshTasksLocal()
+		a.onTaskSelect(task)
+		a.startSession(task)
+		return
+	}
+
+	// Worktree creation runs in a background goroutine to avoid blocking
+	// the tview event loop — same pattern as executeFork.
+	projPath := projCfg.Path
+	branch := projCfg.Branch
+	uxlog.Log("[reviews] starting review task creation for %s", prURL)
+
+	go func() {
+		wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, projName, taskName, branch)
+		if err != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				a.statusbar.SetError("Worktree error: " + err.Error())
+			})
+			uxlog.Log("[reviews] worktree creation failed: %v", err)
+			return
+		}
+
+		a.tapp.QueueUpdateDraw(func() {
+			task := &model.Task{
+				Name:     finalName,
+				Status:   model.StatusPending,
+				Project:  projName,
+				Prompt:   prompt,
+				Backend:  backend,
+				PRURL:    prURL,
+				Branch:   branchName,
+				Worktree: wtPath,
+			}
+			if err := a.db.Add(task); err != nil {
+				uxlog.Log("[reviews] failed to persist review task: %v — cleaning up worktree", err)
+				a.statusbar.SetError("Failed to create task: " + err.Error())
+				go removeWorktreeAndBranch(wtPath, branchName, projPath)
+				return
+			}
+			uxlog.Log("[reviews] created review task %s (%s) for %s", task.ID, task.Name, prURL)
+
+			a.switchTab(TabTasks)
+			a.refreshTasksLocal()
+			a.onTaskSelect(task)
+			a.startSession(task)
+		})
+	}()
 }
 
 // cleanupCompletedToDos shows a confirmation modal to delete vault files for completed to-dos.

@@ -196,6 +196,20 @@ func (d *DB) WorktreePaths() (map[string]bool, error) {
 	return paths, nil
 }
 
+// TaskByPRURL returns the most recent non-archived task linked to the given PR URL,
+// or nil if none exists. Used to detect duplicate review tasks.
+func (d *DB) TaskByPRURL(url string) *model.Task {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE pr_url=? AND archived=0 ORDER BY created_at DESC LIMIT 1`, url)
+	t, err := scanTask(row)
+	if err != nil {
+		return nil
+	}
+	return t
+}
+
 // TasksByTodoPath returns a map from todo_path to the most recent task with that path.
 // Only tasks with a non-empty todo_path are included. Ordered by created_at ASC so
 // later tasks overwrite earlier ones (most recent wins).
