@@ -2311,7 +2311,15 @@ func (a *App) handleProjectFormKey(event *tcell.EventKey) {
 			a.projectForm.done = false
 			return
 		}
-		uxlog.Log("[settings] saved project %s (path=%s, branch=%s)", name, proj.Path, proj.Branch)
+		sandboxMode := "inherit"
+		if proj.Sandbox.Enabled != nil {
+			if *proj.Sandbox.Enabled {
+				sandboxMode = "enabled"
+			} else {
+				sandboxMode = "disabled"
+			}
+		}
+		uxlog.Log("[settings] saved project %s (path=%s, branch=%s, sandbox=%s)", name, proj.Path, proj.Branch, sandboxMode)
 		a.closeProjectForm()
 	}
 }

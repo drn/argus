@@ -169,13 +169,21 @@ Argus can run agent processes inside macOS `sandbox-exec` for filesystem and cre
 
 ### Configuration
 
-All sandbox settings are managed in the **Settings tab** (`4` key):
+Global sandbox settings are managed in the **Settings tab** (`4` key):
 
 | Setting | Description |
 |---------|-------------|
-| Enabled | Master toggle (global or per-project) |
+| Enabled | Master toggle — applies to all projects by default |
 | Deny Read | Extra paths to block reads from (comma-separated) |
 | Extra Write | Extra paths to allow writes to (comma-separated) |
+
+Per-project overrides are set in the **project form** (`e` on a project in Settings):
+
+| Setting | Options |
+|---------|---------|
+| Sandbox | **Inherit** (use global), **Enabled**, or **Disabled** |
+
+Per-project deny-read and extra-write paths are appended to the global lists.
 
 ### Built-in defaults
 

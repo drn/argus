@@ -755,9 +755,57 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y+r, w, "  Backend: "+backend, StyleDimmed)
 	r += 2
 
+	// Sandbox override.
+	if r >= h {
+		return
+	}
+	drawText(screen, x, y+r, w, "Sandbox", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	sandboxLabel := "Inherit (global)"
+	sandboxColor := tcell.ColorDefault
+	if pe.Project.Sandbox.Enabled != nil {
+		if *pe.Project.Sandbox.Enabled {
+			sandboxLabel = "Enabled (override)"
+			sandboxColor = ColorComplete
+		} else {
+			sandboxLabel = "Disabled (override)"
+			sandboxColor = ColorError
+		}
+	}
+	if r >= h {
+		return
+	}
+	drawText(screen, x, y+r, w, "  Mode: "+sandboxLabel, tcell.StyleDefault.Foreground(sandboxColor))
+	r++
+	if len(pe.Project.Sandbox.DenyRead) > 0 && r < h {
+		drawText(screen, x, y+r, w, "  Deny Read:", StyleDimmed)
+		r++
+		for _, p := range pe.Project.Sandbox.DenyRead {
+			if r >= h {
+				break
+			}
+			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			r++
+		}
+	}
+	if len(pe.Project.Sandbox.ExtraWrite) > 0 && r < h {
+		drawText(screen, x, y+r, w, "  Extra Write:", StyleDimmed)
+		r++
+		for _, p := range pe.Project.Sandbox.ExtraWrite {
+			if r >= h {
+				break
+			}
+			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			r++
+		}
+	}
+	if len(pe.Project.Sandbox.DenyRead) > 0 || len(pe.Project.Sandbox.ExtraWrite) > 0 {
+		r++
+	}
+
 	// Task counts.
 	counts, ok := sv.taskCounts[pe.Name]
-	if ok {
+	if ok && r+2 < h {
 		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(ColorTitle))
 		r++
 		total := counts.pending + counts.inProgress + counts.inReview + counts.complete

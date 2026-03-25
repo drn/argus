@@ -14,13 +14,25 @@ const (
 	pfFieldPath    = 1
 	pfFieldBranch  = 2
 	pfFieldBackend = 3
+	pfFieldSandbox = 4
+	pfFieldCount   = 5
 )
+
+// Sandbox selector indices — must match sandboxOptions order.
+const (
+	sandboxInherit  = 0
+	sandboxEnabled  = 1
+	sandboxDisabled = 2
+)
+
+// sandboxOptions are the display labels for the per-project sandbox selector.
+var sandboxOptions = []string{"Inherit", "Enabled", "Disabled"}
 
 // ProjectForm is a modal form for adding/editing projects.
 type ProjectForm struct {
 	*tview.Box
-	fields   [4][]rune // name, path, branch (fallback text), backend
-	cursors  [4]int
+	fields   [pfFieldCount][]rune // name, path, branch (fallback text), backend
+	cursors  [pfFieldCount]int
 	focused  int
 	editMode bool // true = editing (name read-only)
 	done     bool
@@ -31,6 +43,12 @@ type ProjectForm struct {
 	branchOptions []string // populated via SetBranchOptions
 	branchIdx     int
 	branchPath    string // path for which branches were last loaded
+
+	// Sandbox selector state (0=Inherit, 1=Enabled, 2=Disabled).
+	sandboxIdx int
+	// Preserved per-project sandbox paths (not editable in form, survives round-trip).
+	sandboxDenyRead   []string
+	sandboxExtraWrite []string
 
 	// OnBranchFocus is called when the branch field gains focus and the
 	// path has changed since the last load. The caller should fetch branches
@@ -51,6 +69,16 @@ func (pf *ProjectForm) LoadProject(name string, p config.Project) {
 	pf.fields[pfFieldPath] = []rune(p.Path)
 	pf.fields[pfFieldBranch] = []rune(p.Branch)
 	pf.fields[pfFieldBackend] = []rune(p.Backend)
+	pf.sandboxIdx = sandboxInherit
+	if p.Sandbox.Enabled != nil {
+		if *p.Sandbox.Enabled {
+			pf.sandboxIdx = sandboxEnabled
+		} else {
+			pf.sandboxIdx = sandboxDisabled
+		}
+	}
+	pf.sandboxDenyRead = p.Sandbox.DenyRead
+	pf.sandboxExtraWrite = p.Sandbox.ExtraWrite
 	pf.editMode = true
 	pf.focused = pfFieldPath // skip name in edit mode
 }
@@ -87,11 +115,22 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 	if pf.branchIsSelector() && pf.branchIdx < len(pf.branchOptions) {
 		branch = pf.branchOptions[pf.branchIdx]
 	}
-	return string(pf.fields[pfFieldName]), config.Project{
+	proj := config.Project{
 		Path:    string(pf.fields[pfFieldPath]),
 		Branch:  branch,
 		Backend: string(pf.fields[pfFieldBackend]),
 	}
+	switch pf.sandboxIdx {
+	case sandboxEnabled:
+		v := true
+		proj.Sandbox.Enabled = &v
+	case sandboxDisabled:
+		v := false
+		proj.Sandbox.Enabled = &v
+	} // sandboxInherit → nil (default)
+	proj.Sandbox.DenyRead = pf.sandboxDenyRead
+	proj.Sandbox.ExtraWrite = pf.sandboxExtraWrite
+	return string(pf.fields[pfFieldName]), proj
 }
 
 // maybeLoadBranches fires OnBranchFocus when the path has changed since
@@ -112,7 +151,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		pf.canceled = true
 		return
 	case tcell.KeyEnter:
-		if pf.focused < pfFieldBackend {
+		if pf.focused < pfFieldSandbox {
 			pf.focused++
 			if pf.editMode && pf.focused == pfFieldName {
 				pf.focused++
@@ -125,7 +164,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyTab:
-		pf.focused = (pf.focused + 1) % 4
+		pf.focused = (pf.focused + 1) % pfFieldCount
 		if pf.editMode && pf.focused == pfFieldName {
 			pf.focused++
 		}
@@ -134,9 +173,9 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyBacktab:
-		pf.focused = (pf.focused + 3) % 4
+		pf.focused = (pf.focused + pfFieldCount - 1) % pfFieldCount
 		if pf.editMode && pf.focused == pfFieldName {
-			pf.focused = pfFieldBackend
+			pf.focused = pfFieldSandbox
 		}
 		if pf.focused == pfFieldBranch {
 			pf.maybeLoadBranches()
@@ -144,9 +183,13 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
-	// Branch selector mode — left/right cycles options.
+	// Selector fields — left/right cycles options.
 	if pf.focused == pfFieldBranch && pf.branchIsSelector() {
 		pf.handleBranchSelector(ev)
+		return
+	}
+	if pf.focused == pfFieldSandbox {
+		pf.handleSandboxSelector(ev)
 		return
 	}
 
@@ -198,6 +241,17 @@ func (pf *ProjectForm) handleBranchSelector(ev *tcell.EventKey) {
 	}
 }
 
+// handleSandboxSelector processes keys when the sandbox field is focused.
+func (pf *ProjectForm) handleSandboxSelector(ev *tcell.EventKey) {
+	n := len(sandboxOptions)
+	switch ev.Key() {
+	case tcell.KeyLeft:
+		pf.sandboxIdx = (pf.sandboxIdx - 1 + n) % n
+	case tcell.KeyRight:
+		pf.sandboxIdx = (pf.sandboxIdx + 1) % n
+	}
+}
+
 // PasteHandler handles bracketed paste events, inserting pasted text into the
 // focused field in a single operation.
 func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
@@ -206,8 +260,11 @@ func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tv
 		if pf.editMode && f == pfFieldName {
 			return
 		}
-		// Ignore paste on branch selector.
+		// Ignore paste on selector fields.
 		if f == pfFieldBranch && pf.branchIsSelector() {
+			return
+		}
+		if f == pfFieldSandbox {
 			return
 		}
 		runes := []rune(pastedText)
@@ -233,7 +290,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	// Center the form.
 	formW := min(60, width-4)
-	formH := 11
+	formH := 13 // pfFieldCount*2 rows + 3 overhead (title, border, error)
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
@@ -253,9 +310,9 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		screen.SetContent(titleX+i, formY, r, nil, titleStyle)
 	}
 
-	labels := [4]string{"Name:", "Path:", "Branch:", "Backend:"}
+	labels := [pfFieldCount]string{"Name:", "Path:", "Branch:", "Backend:", "Sandbox:"}
 	maxW := formW - 14
-	for i := range 4 {
+	for i := range pfFieldCount {
 		ly := formY + 2 + i*2
 		if ly >= formY+formH-1 {
 			break
@@ -266,9 +323,13 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		}
 		drawText(screen, formX+2, ly, 10, labels[i], style)
 
-		// Branch selector mode.
+		// Selector fields.
 		if i == pfFieldBranch && pf.branchIsSelector() {
 			pf.drawBranchSelector(screen, formX+12, ly, maxW)
+			continue
+		}
+		if i == pfFieldSandbox {
+			pf.drawSandboxSelector(screen, formX+12, ly, maxW)
 			continue
 		}
 
@@ -293,6 +354,17 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	if pf.errMsg != "" {
 		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, StyleError)
 	}
+}
+
+// drawSandboxSelector renders the sandbox field as a ◀/▶ selector.
+func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
+	name := sandboxOptions[pf.sandboxIdx]
+	selector := "◀ " + name + " ▶"
+	st := StyleNormal
+	if pf.focused == pfFieldSandbox {
+		st = StyleSelected
+	}
+	drawText(screen, x, y, w, selector, st)
 }
 
 // drawBranchSelector renders the branch field as a ◀/▶ selector.
