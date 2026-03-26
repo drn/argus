@@ -1315,3 +1315,16 @@ When entering agent view for a task that has a preserved `SessionID` but no runn
 - Call sites that do `onTaskSelect` + explicit `startSession` (new task, todo launch, fork) are safe only because new tasks never have a SessionID. Adding a SessionID before calling `onTaskSelect` at those sites would double-start.
 - Archived tasks are excluded — an archived task with a stale SessionID should not auto-spawn an agent.
 - Dead-but-not-nil sessions (`sess != nil && !sess.Alive()`) are included in the condition — the handle is stale from a previous run.
+
+## Modal Close Focus Restoration Fix (2026-03-26)
+
+All modal close functions must call `a.tapp.SetFocus(a.tasklist)` after removing the modal page. Without this, tview's internal focus remains on the deleted modal widget, silently dropping focus-dependent key events.
+
+### Bug
+`closeLinkPickerModal`, `closeLaunchToDoModal`, `closeCleanupToDosModal`, and `closeDeleteToDoModal` were all missing `SetFocus` calls. The link picker was most visible because it opens a browser — when the user tabs back, up/down navigation was broken. Left/right (tab switching) still worked because it's handled in `handleGlobalKey` before tview's focus-based routing.
+
+### Fix
+Added `a.tapp.SetFocus(a.tasklist)` to all four ToDo-related modal close functions, matching the pattern used by every other modal (`closeConfirmDelete`, `closeForkModal`, `closeRenameModal`, `closePruneModal`, `closeNewTaskForm`).
+
+### Gotchas
+- `a.tasklist` is always a valid focus target regardless of active tab. ToDos/Reviews/Settings handle keys via global input capture, so focusing `tasklist` is safe even when those tabs are active.

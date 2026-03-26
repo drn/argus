@@ -154,6 +154,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### Task List & UI
 
+- **Every modal close function must call `a.tapp.SetFocus(a.tasklist)`.** Without this, tview focus remains on the deleted modal widget, silently dropping focus-dependent key events (e.g., up/down in the task list). Tab switching (left/right) still works because it's handled in `handleGlobalKey` before focus-based routing, which masks the bug.
 - **`rowTask` is `iota` (zero value) — never use `rowKind != 0` as a sentinel.** Use a boolean `hasPrev` flag when checking whether a previous row exists. The zero-value trap silently skips the intended code path for the most common row kind.
 - **`SetTasks` must preserve cursor position across rebuilds.** Save the current row before `buildRows()`, then call `restoreCursor()` after. Without this, status changes via `s`/`S` keys appear to not work because the cursor jumps to a different row on refresh.
 - **`restoreCursor` must filter by archive section.** Cross-section project name collisions cause cursor jumps.

@@ -1903,6 +1903,7 @@ func (a *App) closeLaunchToDoModal() {
 	a.launchToDoModal = nil
 	a.pages.RemovePage("launchtodo")
 	a.pages.SwitchToPage("todos")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // cleanupCompletedToDos shows a confirmation modal to delete vault files for completed to-dos.
@@ -1959,6 +1960,7 @@ func (a *App) closeCleanupToDosModal() {
 	a.cleanupToDosModal = nil
 	a.pages.RemovePage("cleanuptodos")
 	a.pages.SwitchToPage("todos")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // openConfirmDeleteToDo shows a confirmation modal for deleting a single to-do vault file.
@@ -2007,6 +2009,7 @@ func (a *App) closeDeleteToDoModal() {
 	a.deleteToDoModal = nil
 	a.pages.RemovePage("deletetodo")
 	a.pages.SwitchToPage("todos")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // openLinkPickerModal shows the link picker dialog.
@@ -2046,6 +2049,7 @@ func (a *App) closeLinkPickerModal() {
 	if a.linkPickerPrevPage != "" {
 		a.pages.SwitchToPage(a.linkPickerPrevPage)
 	}
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.
