@@ -319,6 +319,43 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	testutil.Equal(t, mode, modeTaskList)
 }
 
+func TestSmoke_LinkPickerFocusRestore(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Open and close the link picker modal on the tview goroutine.
+	links := []Link{
+		{Label: "Example", URL: "https://example.com"},
+		{Label: "Other", URL: "https://other.com"},
+	}
+	readUI(t, app.tapp, func() {
+		app.openLinkPickerModal(links)
+	})
+
+	var mode viewMode
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeLinkPicker)
+
+	// Close modal — should restore focus to tasklist.
+	readUI(t, app.tapp, func() {
+		app.closeLinkPickerModal()
+	})
+
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeTaskList)
+
+	// Verify focus was restored to the tasklist widget.
+	var focused tview.Primitive
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.tasklist {
+		t.Error("focus should be on tasklist after link picker close, but it is not")
+	}
+}
+
 func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
