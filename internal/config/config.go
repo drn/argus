@@ -48,8 +48,9 @@ func DefaultArgusVaultPath() string {
 }
 
 type Defaults struct {
-	Backend     string `toml:"backend"`
-	TodoProject string `toml:"todo_project"` // default project for launching todos
+	Backend      string `toml:"backend"`
+	TodoProject  string `toml:"todo_project"`  // default project for launching todos
+	ReviewPrompt string `toml:"review_prompt"` // prompt sent to agent for PR review tasks
 }
 
 type Backend struct {
@@ -110,7 +111,7 @@ func (u UIConfig) ShouldCleanupWorktrees() bool {
 // DefaultConfig returns a config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Defaults: Defaults{Backend: "claude"},
+		Defaults: Defaults{Backend: "claude", ReviewPrompt: "/review"},
 		Backends: map[string]Backend{
 			"claude": {
 				Command:    "claude --dangerously-skip-permissions --permission-mode plan",

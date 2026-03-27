@@ -1604,3 +1604,59 @@ func TestDB_TasksByTodoPath(t *testing.T) {
 		}
 	})
 }
+
+func TestDB_TaskByPRURL(t *testing.T) {
+	d := testDB(t)
+
+	t.Run("returns nil when no match", func(t *testing.T) {
+		got := d.TaskByPRURL("https://github.com/org/repo/pull/999")
+		if got != nil {
+			t.Error("expected nil for non-existent PR URL")
+		}
+	})
+
+	t.Run("finds task by PR URL", func(t *testing.T) {
+		task := &model.Task{Name: "review-pr", PRURL: "https://github.com/org/repo/pull/42"}
+		if err := d.Add(task); err != nil {
+			t.Fatal(err)
+		}
+		got := d.TaskByPRURL("https://github.com/org/repo/pull/42")
+		if got == nil {
+			t.Fatal("expected non-nil task")
+		}
+		if got.Name != "review-pr" {
+			t.Errorf("Name = %q, want %q", got.Name, "review-pr")
+		}
+	})
+
+	t.Run("excludes archived tasks", func(t *testing.T) {
+		task := &model.Task{Name: "archived-review", PRURL: "https://github.com/org/repo/pull/99", Archived: true}
+		if err := d.Add(task); err != nil {
+			t.Fatal(err)
+		}
+		got := d.TaskByPRURL("https://github.com/org/repo/pull/99")
+		if got != nil {
+			t.Error("should not return archived tasks")
+		}
+	})
+
+	t.Run("returns most recent task", func(t *testing.T) {
+		url := "https://github.com/org/repo/pull/77"
+		old := &model.Task{Name: "old", PRURL: url, CreatedAt: time.Now().Add(-time.Hour)}
+		if err := d.Add(old); err != nil {
+			t.Fatal(err)
+		}
+		newer := &model.Task{Name: "newer", PRURL: url, CreatedAt: time.Now()}
+		if err := d.Add(newer); err != nil {
+			t.Fatal(err)
+		}
+		got := d.TaskByPRURL(url)
+		if got == nil || got.Name != "newer" {
+			name := ""
+			if got != nil {
+				name = got.Name
+			}
+			t.Errorf("expected 'newer', got %q", name)
+		}
+	})
+}

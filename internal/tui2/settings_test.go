@@ -718,6 +718,74 @@ func TestSettingsView_ProjectDetail_SandboxRoundTrip(t *testing.T) {
 	testutil.DeepEqual(t, pe.Project.Sandbox.ExtraWrite, []string{"/tmp/build"})
 }
 
+func TestSettingsView_ReviewPromptEdit(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Default value.
+	testutil.Equal(t, sv.reviewPrompt, "/review")
+
+	// Find review prompt row.
+	rpIdx := -1
+	for i, row := range sv.rows {
+		if row.kind == srReviewPrompt {
+			rpIdx = i
+			break
+		}
+	}
+	if rpIdx < 0 {
+		t.Fatal("no review prompt row found")
+	}
+	sv.cursor = rpIdx
+
+	t.Run("enter starts editing", func(t *testing.T) {
+		sv.handleEnter()
+		testutil.Equal(t, sv.editingPrompt, true)
+		testutil.Equal(t, sv.editPromptBuf, "/review")
+	})
+
+	t.Run("typing appends to buffer", func(t *testing.T) {
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone))
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyRune, '-', tcell.ModNone))
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyRune, '-', tcell.ModNone))
+		testutil.Equal(t, sv.editPromptBuf, "/review --")
+	})
+
+	t.Run("backspace removes last rune", func(t *testing.T) {
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editPromptBuf, "/review -")
+	})
+
+	t.Run("escape cancels without saving", func(t *testing.T) {
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editingPrompt, false)
+		testutil.Equal(t, sv.reviewPrompt, "/review") // unchanged
+	})
+
+	t.Run("enter saves and persists", func(t *testing.T) {
+		// Re-find row after rebuild.
+		for i, row := range sv.rows {
+			if row.kind == srReviewPrompt {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter() // start editing
+		sv.editPromptBuf = "/cortex:review"
+		sv.handleEditPromptKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editingPrompt, false)
+		testutil.Equal(t, sv.reviewPrompt, "/cortex:review")
+
+		// Verify persisted to DB.
+		cfg := database.Config()
+		testutil.Equal(t, cfg.Defaults.ReviewPrompt, "/cortex:review")
+	})
+}
+
 // findProjectEntry locates a project in the settings view by name.
 func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry {
 	t.Helper()

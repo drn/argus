@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -28,6 +29,7 @@ const (
 	srLogs
 	srKB
 	srToDoProject
+	srReviewPrompt
 	srAPI
 	srDaemon
 )
@@ -75,6 +77,11 @@ type SettingsView struct {
 	// ToDo defaults.
 	todoProject  string   // current default todo project
 	projectNames []string // sorted project names for cycling
+
+	// Review prompt.
+	reviewPrompt    string // current review prompt template
+	editingPrompt   bool   // true when inline-editing the review prompt
+	editPromptBuf   string // buffer for in-progress edit
 
 	// Logs detail scroll.
 	logScrollOff int
@@ -180,6 +187,9 @@ func (sv *SettingsView) Refresh() {
 	// ToDo defaults.
 	sv.todoProject = cfg.Defaults.TodoProject
 	sv.projectNames = projNames
+
+	// Review prompt.
+	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
 
 	// Task counts.
 	tasks := sv.database.Tasks()
@@ -290,6 +300,13 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srToDoProject, label: todoLabel, key: "_todo_project"})
 
+	// Review prompt.
+	rpLabel := "  Review Prompt: " + sv.reviewPrompt
+	if sv.editingPrompt {
+		rpLabel = "  Review Prompt: " + sv.editPromptBuf + "▎"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srReviewPrompt, label: rpLabel, key: "_review_prompt"})
+
 	// Logs section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
 	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
@@ -331,6 +348,22 @@ func (sv *SettingsView) SelectedRow() *settingsRow {
 	return nil
 }
 
+// PasteHandler implements tview's paste interface for the inline prompt editor.
+func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return sv.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		if !sv.editingPrompt || pastedText == "" {
+			return
+		}
+		sv.editPromptBuf += pastedText
+		sv.rebuildRows()
+	})
+}
+
+// IsEditingPrompt returns true when the user is inline-editing the review prompt.
+func (sv *SettingsView) IsEditingPrompt() bool {
+	return sv.editingPrompt
+}
+
 // SelectedProject returns the project at the cursor, or nil.
 func (sv *SettingsView) SelectedProject() *projectEntry {
 	row := sv.SelectedRow()
@@ -362,6 +395,9 @@ func (sv *SettingsView) SelectedBackend() *backendEntry {
 // --- Key handling ---
 
 func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
+	if sv.editingPrompt {
+		return sv.handleEditPromptKey(ev)
+	}
 	switch ev.Key() {
 	case tcell.KeyUp:
 		sv.moveCursor(-1)
@@ -480,6 +516,11 @@ func (sv *SettingsView) handleEnter() bool {
 	case srToDoProject:
 		sv.cycleTodoProject(1)
 		return true
+	case srReviewPrompt:
+		sv.editingPrompt = true
+		sv.editPromptBuf = sv.reviewPrompt
+		sv.rebuildRows()
+		return true
 	case srDaemon:
 		if !sv.daemonRestarting && sv.OnRestartDaemon != nil {
 			sv.daemonRestarting = true
@@ -539,6 +580,37 @@ func (sv *SettingsView) handleEdit() bool {
 			sv.OnEditBackend(be.Name, be.Backend)
 			return true
 		}
+	}
+	return false
+}
+
+// handleEditPromptKey handles keystrokes while inline-editing the review prompt.
+func (sv *SettingsView) handleEditPromptKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		sv.reviewPrompt = sv.editPromptBuf
+		sv.editingPrompt = false
+		if err := sv.database.SetConfigValue("defaults.review_prompt", sv.reviewPrompt); err != nil {
+			uxlog.Log("[settings] failed to persist review prompt: %v", err)
+		}
+		uxlog.Log("[settings] review prompt set to %q", sv.reviewPrompt)
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingPrompt = false
+		sv.rebuildRows()
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editPromptBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editPromptBuf)
+			sv.editPromptBuf = sv.editPromptBuf[:len(sv.editPromptBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editPromptBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
 	}
 	return false
 }
@@ -665,6 +737,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
 	case srToDoProject:
 		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
+	case srReviewPrompt:
+		sv.renderReviewPromptDetail(screen, innerX, innerY, innerW, innerH)
 	case srLogs:
 		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srDaemon:
@@ -920,6 +994,33 @@ func (sv *SettingsView) renderToDoProjectDetail(screen tcell.Screen, x, y, w, h 
 
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderReviewPromptDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Review Prompt", StyleTitle)
+	r := 2
+
+	prompt := sv.reviewPrompt
+	if sv.editingPrompt {
+		prompt = sv.editPromptBuf + "▎"
+	}
+	drawText(screen, x, y+r, w, prompt, tcell.StyleDefault.Foreground(ColorComplete))
+	r += 2
+
+	drawText(screen, x, y+r, w, "The prompt sent to the agent when starting", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "a PR review task (Ctrl+R in Reviews tab).", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "The PR URL is appended automatically.", StyleDimmed)
+	r += 2
+
+	if r < h {
+		if sv.editingPrompt {
+			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+		} else {
+			drawText(screen, x, y+r, w, "[enter] edit", StyleDimmed)
+		}
 	}
 }
 

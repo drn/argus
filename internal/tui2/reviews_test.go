@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/github"
 )
 
@@ -251,4 +252,110 @@ func TestReviewsView_PRURL(t *testing.T) {
 	if got := rv.prURL(); got != "https://github.com/acme/widgets/pull/42" {
 		t.Errorf("unexpected URL from selection: %q", got)
 	}
+}
+
+func TestReviewsView_CursoredPR(t *testing.T) {
+	rv := NewReviewsView()
+
+	t.Run("nil when empty", func(t *testing.T) {
+		if got := rv.cursoredPR(); got != nil {
+			t.Error("expected nil with no PRs")
+		}
+	})
+
+	t.Run("returns cursor PR", func(t *testing.T) {
+		rv.SetPRs([]github.PR{
+			{Number: 10, Repo: "alpha"},
+			{Number: 20, Repo: "beta"},
+		}, nil)
+		rv.prCursor = 1
+		got := rv.cursoredPR()
+		if got == nil || got.Number != 20 {
+			t.Errorf("expected PR #20, got %v", got)
+		}
+	})
+
+	t.Run("selected PR takes priority", func(t *testing.T) {
+		selected := &github.PR{Number: 99, Repo: "special"}
+		rv.selectedPR = selected
+		got := rv.cursoredPR()
+		if got == nil || got.Number != 99 {
+			t.Errorf("expected selected PR #99, got %v", got)
+		}
+	})
+}
+
+func TestTruncateRunes(t *testing.T) {
+	t.Run("no truncation needed", func(t *testing.T) {
+		if got := truncateRunes("hello", 10); got != "hello" {
+			t.Errorf("got %q, want %q", got, "hello")
+		}
+	})
+	t.Run("truncates ASCII", func(t *testing.T) {
+		if got := truncateRunes("abcdefghij", 5); got != "abcde" {
+			t.Errorf("got %q, want %q", got, "abcde")
+		}
+	})
+	t.Run("truncates multi-byte runes cleanly", func(t *testing.T) {
+		// "héllo" has 5 runes but 6 bytes
+		if got := truncateRunes("héllo", 3); got != "hél" {
+			t.Errorf("got %q, want %q", got, "hél")
+		}
+	})
+}
+
+func TestResolveProjectForRepo(t *testing.T) {
+	projects := map[string]config.Project{
+		"myapp":   {Path: "/home/user/code/myapp"},
+		"Backend": {Path: "/home/user/code/api-service"},
+	}
+
+	t.Run("matches by project name case-insensitive", func(t *testing.T) {
+		name, proj := resolveProjectForRepo(projects, "MyApp")
+		if name != "myapp" {
+			t.Errorf("name = %q, want %q", name, "myapp")
+		}
+		if proj.Path != "/home/user/code/myapp" {
+			t.Errorf("path = %q, want %q", proj.Path, "/home/user/code/myapp")
+		}
+	})
+
+	t.Run("matches by directory basename", func(t *testing.T) {
+		name, proj := resolveProjectForRepo(projects, "api-service")
+		if name != "Backend" {
+			t.Errorf("name = %q, want %q", name, "Backend")
+		}
+		if proj.Path != "/home/user/code/api-service" {
+			t.Errorf("path = %q, want %q", proj.Path, "/home/user/code/api-service")
+		}
+	})
+
+	t.Run("returns empty when no match", func(t *testing.T) {
+		name, _ := resolveProjectForRepo(projects, "unknown-repo")
+		if name != "" {
+			t.Errorf("expected empty name, got %q", name)
+		}
+	})
+
+	t.Run("empty projects map", func(t *testing.T) {
+		name, _ := resolveProjectForRepo(nil, "anything")
+		if name != "" {
+			t.Errorf("expected empty name, got %q", name)
+		}
+	})
+
+	t.Run("name match takes priority over basename match", func(t *testing.T) {
+		// "widget" is both a project name AND the basename of another project's path.
+		ambiguous := map[string]config.Project{
+			"widget":  {Path: "/home/user/code/widget-app"},
+			"staging": {Path: "/home/user/code/widget"},
+		}
+		name, proj := resolveProjectForRepo(ambiguous, "widget")
+		if name != "widget" {
+			t.Errorf("name = %q, want %q (name match should win over basename)", name, "widget")
+		}
+		if proj.Path != "/home/user/code/widget-app" {
+			t.Errorf("path = %q, want %q", proj.Path, "/home/user/code/widget-app")
+		}
+	})
 }
