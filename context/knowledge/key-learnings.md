@@ -179,6 +179,12 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **PTY session logs contain `\u00a0` (non-breaking space) that must be normalized.** Claude Code uses NBSP in tool result formatting. Without normalization, `\s+` patterns may not match as expected.
 - **Long terminal lines (>120 bytes) need inline noise stripping, not just per-line filtering.** VT cell rendering concatenates the content area, status bar, separators, and prompt onto a single line with whitespace padding. `cleanLongLine` removes these inline patterns before per-line `isNoiseLine` runs.
 
+### MCP Task Tools
+
+- **MCP task tools use the same `TaskCreator` injection pattern as API/vault.** `SetTaskManager()` wires in the creator, querier, and stopper after construction — the same circular-import-avoidance pattern. Task tools only appear in `tools/list` when `taskMgmtEnabled()` confirms all three deps are non-nil.
+- **MCP `task_create` is rate-limited to 5 concurrent calls.** `maxConcurrentCreates` prevents unbounded process spawning from a misbehaving MCP client. Each HeadlessCreateTask creates a worktree + PTY process.
+- **MCP `task_stop` must NOT pre-check DB status before calling `Stop()`.** TOCTOU race: the process can exit between the status read and the Stop() call, causing confusing errors. Let the stopper determine whether the session is alive.
+
 ### Vault Watcher & Remote API
 
 - **Vault watcher and API server cannot import `daemon` package (circular import).** Both use `HeadlessCreateTask` from `daemon`, but `daemon` imports them. Fix: inject a `TaskCreator` function via closure at daemon wiring time, breaking the cycle.

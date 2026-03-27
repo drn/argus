@@ -1328,3 +1328,21 @@ Added `a.tapp.SetFocus(a.tasklist)` to all four ToDo-related modal close functio
 
 ### Gotchas
 - `a.tasklist` is always a valid focus target regardless of active tab. ToDos/Reviews/Settings handle keys via global input capture, so focusing `tasklist` is safe even when those tabs are active.
+
+## MCP Task Management Tools: 2026-03-26
+
+### Data Model
+- `Server` gains optional `TaskCreator`, `TaskQuerier`, `TaskStopper` fields set via `SetTaskManager()`
+- Same `TaskCreator` function signature as API/vault: `func(name, prompt, project, todoPath string) (*model.Task, error)`
+- Task tools only appear in `tools/list` when `taskMgmtEnabled()` confirms all three deps are non-nil (graceful degradation)
+
+### Flow
+- `task_create`: validates project+prompt → rate-limited (max 5 concurrent) → calls injected `TaskCreator` → returns task ID/name/status/branch
+- `task_list`: reads from `TaskQuerier.Tasks()` → filters by status/project → excludes archived
+- `task_get`: reads from `TaskQuerier.Get(id)` → returns full task details including prompt
+- `task_stop`: calls `TaskStopper.Stop()` directly (no TOCTOU status pre-check) → sends stop signal
+
+### Gotchas
+- Task tools reuse the `HeadlessCreateTask` path — same worktree-first, revert-on-failure semantics as API/vault
+- `SetTaskManager` uses the same closure injection pattern to avoid daemon↔mcp circular import
+- `task_stop` does NOT update DB status — the daemon's `onFinish` callback handles that via reconciliation

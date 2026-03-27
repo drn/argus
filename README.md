@@ -202,6 +202,28 @@ Argus includes a built-in FTS5 full-text search store that indexes Obsidian vaul
 
 Configure vault paths in the **Settings tab** under the KB section.
 
+### MCP Tools
+
+The MCP server exposes the following tools to connected agents:
+
+**Knowledge Base:**
+| Tool | Description |
+|------|-------------|
+| `kb_search` | Full-text search with ranked results and snippets |
+| `kb_read` | Read full document content by vault-relative path |
+| `kb_list` | List documents with optional path prefix filtering |
+| `kb_ingest` | Add or update a document in the knowledge base |
+
+**Task Management** (allows agents to orchestrate other agents):
+| Tool | Description |
+|------|-------------|
+| `task_create` | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project` |
+| `task_list` | List tasks, filtered by `status` and/or `project` |
+| `task_get` | Get task details by `id` |
+| `task_stop` | Stop a running agent (moves task to "in review") |
+
+Task management tools enable an external agent (e.g. Claude Code running in another terminal) to programmatically launch and monitor Argus tasks via MCP.
+
 ## Remote Control
 
 Argus includes a built-in HTTP API and mobile web dashboard for controlling agents from your phone or any device on your network.

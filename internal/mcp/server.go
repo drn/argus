@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/kb"
+	"github.com/drn/argus/internal/model"
 )
 
 // KBQuerier is the interface the MCP server needs from the database.
@@ -24,16 +26,48 @@ type KBQuerier interface {
 	KBDocumentCount() int
 }
 
+// TaskCreator creates a task with worktree and starts an agent session.
+// Same signature as daemon.HeadlessCreateTask (injected to avoid import cycle).
+type TaskCreator func(name, prompt, project, todoPath string) (*model.Task, error)
+
+// TaskQuerier provides read access to tasks.
+type TaskQuerier interface {
+	Tasks() []*model.Task
+	Get(id string) (*model.Task, error)
+}
+
+// TaskStopper can stop a running agent session.
+type TaskStopper interface {
+	Stop(taskID string) error
+}
+
+// maxConcurrentCreates limits how many task_create calls can run concurrently
+// to prevent unbounded process spawning from a misbehaving MCP client.
+const maxConcurrentCreates = 5
+
 // Server is the MCP HTTP server.
 type Server struct {
-	db      KBQuerier
-	port    int
-	httpSrv *http.Server
+	db          KBQuerier
+	port        int
+	httpSrv     *http.Server
+	createTask  TaskCreator
+	taskDB      TaskQuerier
+	taskStopper TaskStopper
+	createMu    sync.Mutex
+	creating    int // number of in-flight task_create calls
 }
 
 // New creates a new MCP server.
 func New(db KBQuerier, port int) *Server {
 	return &Server{db: db, port: port}
+}
+
+// SetTaskManager wires in task management capabilities.
+// When set, the server exposes task_create, task_list, task_get, and task_stop tools.
+func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskQuerier, stopper TaskStopper) {
+	s.createTask = creator
+	s.taskDB = taskDB
+	s.taskStopper = stopper
 }
 
 // ListenAndServe starts the HTTP server. It tries port first, then port+1..port+8.
@@ -142,7 +176,7 @@ func (s *Server) handleInitialize(req *Request) *Response {
 		Result: InitializeResult{
 			ProtocolVersion: protocolVersion,
 			ServerInfo: ServerInfo{
-				Name:    "argus-kb",
+				Name:    "argus",
 				Version: "1.0.0",
 			},
 			Capabilities: Capabilities{
@@ -202,11 +236,70 @@ var toolDefs = []Tool{
 	},
 }
 
+// taskToolDefs are exposed only when SetTaskManager has been called.
+var taskToolDefs = []Tool{
+	{
+		Name:        "task_create",
+		Description: "Create a new Argus task with a git worktree and start an agent session. Returns task ID, name, and status.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":    map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted."},
+				"prompt":  map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
+				"project": map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
+			},
+			"required": []string{"prompt", "project"},
+		},
+	},
+	{
+		Name:        "task_list",
+		Description: "List Argus tasks, optionally filtered by status and/or project.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"status":  map[string]interface{}{"type": "string", "description": "Filter by status: pending, in_progress, in_review, complete"},
+				"project": map[string]interface{}{"type": "string", "description": "Filter by project name"},
+			},
+		},
+	},
+	{
+		Name:        "task_get",
+		Description: "Get details of a specific Argus task by ID.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Task ID"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name:        "task_stop",
+		Description: "Stop a running Argus agent session. The task moves to in_review status.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Task ID to stop"},
+			},
+			"required": []string{"id"},
+		},
+	},
+}
+
+// taskMgmtEnabled returns true when all task management dependencies are wired.
+func (s *Server) taskMgmtEnabled() bool {
+	return s.createTask != nil && s.taskDB != nil && s.taskStopper != nil
+}
+
 func (s *Server) handleToolsList(req *Request) *Response {
+	tools := toolDefs
+	if s.taskMgmtEnabled() {
+		tools = append(tools, taskToolDefs...)
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result:  ToolsListResult{Tools: toolDefs},
+		Result:  ToolsListResult{Tools: tools},
 	}
 }
 
@@ -225,6 +318,14 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolKBList(req.ID, params.Arguments)
 	case "kb_ingest":
 		return s.toolKBIngest(req.ID, params.Arguments)
+	case "task_create":
+		return s.toolTaskCreate(req.ID, params.Arguments)
+	case "task_list":
+		return s.toolTaskList(req.ID, params.Arguments)
+	case "task_get":
+		return s.toolTaskGet(req.ID, params.Arguments)
+	case "task_stop":
+		return s.toolTaskStop(req.ID, params.Arguments)
 	default:
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
@@ -337,6 +438,184 @@ func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, fmt.Sprintf("Ingest failed: %v", err))
 	}
 	return toolResult(id, fmt.Sprintf("Ingested %s (%d words)", p.Path, doc.WordCount))
+}
+
+// --- task tools ---
+
+func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		Name    string `json:"name"`
+		Prompt  string `json:"prompt"`
+		Project string `json:"project"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Project == "" {
+		return toolError(id, "project is required")
+	}
+	if p.Prompt == "" {
+		return toolError(id, "prompt is required")
+	}
+
+	// Rate-limit concurrent task creation to prevent unbounded process spawning.
+	s.createMu.Lock()
+	if s.creating >= maxConcurrentCreates {
+		s.createMu.Unlock()
+		log.Printf("[mcp] task_create rejected: %d concurrent creates in flight", s.creating)
+		return toolError(id, fmt.Sprintf("too many concurrent task creations (max %d)", maxConcurrentCreates))
+	}
+	s.creating++
+	s.createMu.Unlock()
+	defer func() {
+		s.createMu.Lock()
+		s.creating--
+		s.createMu.Unlock()
+	}()
+
+	name := p.Name
+	if name == "" {
+		name = truncatePromptToName(p.Prompt)
+	}
+
+	log.Printf("[mcp] task_create name=%q project=%q", name, p.Project)
+	task, err := s.createTask(name, p.Prompt, p.Project, "")
+	if err != nil {
+		log.Printf("[mcp] task_create failed: %v", err)
+		return toolError(id, fmt.Sprintf("Failed to create task: %v", err))
+	}
+
+	log.Printf("[mcp] task_create ok: id=%s name=%s", task.ID, task.Name)
+	return toolResult(id, fmt.Sprintf("Task created.\n\n- **ID**: %s\n- **Name**: %s\n- **Status**: %s\n- **Project**: %s\n- **Branch**: %s",
+		task.ID, task.Name, task.Status.String(), task.Project, task.Branch))
+}
+
+func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		Status  string `json:"status"`
+		Project string `json:"project"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	tasks := s.taskDB.Tasks()
+	var sb strings.Builder
+	count := 0
+	for _, t := range tasks {
+		if t.Archived {
+			continue
+		}
+		if p.Status != "" && t.Status.String() != p.Status {
+			continue
+		}
+		if p.Project != "" && t.Project != p.Project {
+			continue
+		}
+		count++
+		fmt.Fprintf(&sb, "- **%s** `%s` [%s] (%s)", t.Name, t.ID, t.Status.String(), t.Project)
+		if t.Branch != "" {
+			fmt.Fprintf(&sb, " branch:%s", t.Branch)
+		}
+		if elapsed := t.ElapsedString(); elapsed != "" {
+			fmt.Fprintf(&sb, " %s", elapsed)
+		}
+		sb.WriteString("\n")
+	}
+
+	if count == 0 {
+		return toolResult(id, "No tasks found.")
+	}
+	return toolResult(id, fmt.Sprintf("%d task(s):\n\n%s", count, sb.String()))
+}
+
+func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.ID == "" {
+		return toolError(id, "id is required")
+	}
+
+	task, err := s.taskDB.Get(p.ID)
+	if err != nil || task == nil {
+		return toolError(id, "task not found")
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# %s\n\n", task.Name)
+	fmt.Fprintf(&sb, "- **ID**: %s\n", task.ID)
+	fmt.Fprintf(&sb, "- **Status**: %s\n", task.Status.String())
+	fmt.Fprintf(&sb, "- **Project**: %s\n", task.Project)
+	if task.Branch != "" {
+		fmt.Fprintf(&sb, "- **Branch**: %s\n", task.Branch)
+	}
+	if task.Backend != "" {
+		fmt.Fprintf(&sb, "- **Backend**: %s\n", task.Backend)
+	}
+	if task.PRURL != "" {
+		fmt.Fprintf(&sb, "- **PR**: %s\n", task.PRURL)
+	}
+	if elapsed := task.ElapsedString(); elapsed != "" {
+		fmt.Fprintf(&sb, "- **Elapsed**: %s\n", elapsed)
+	}
+	if task.Prompt != "" {
+		fmt.Fprintf(&sb, "\n**Prompt**: %s\n", task.Prompt)
+	}
+	return toolResult(id, sb.String())
+}
+
+func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.ID == "" {
+		return toolError(id, "id is required")
+	}
+
+	// Skip the TOCTOU-prone status pre-check — let the stopper determine
+	// whether the session is actually running. ErrSessionNotFound means
+	// the agent already exited (or was never started).
+	log.Printf("[mcp] task_stop id=%s", p.ID)
+	if err := s.taskStopper.Stop(p.ID); err != nil {
+		log.Printf("[mcp] task_stop failed: id=%s err=%v", p.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to stop task: %v", err))
+	}
+
+	return toolResult(id, fmt.Sprintf("Stop signal sent for task %s. It will transition to in_review when the agent exits.", p.ID))
+}
+
+// truncatePromptToName generates a task name from a prompt (first 40 runes).
+// This is display-name truncation only — git branch sanitization happens in
+// agent.CreateWorktree via sanitizeBranchName.
+func truncatePromptToName(prompt string) string {
+	runes := []rune(prompt)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+	for i, r := range runes {
+		if r == '\n' || r == '\r' || r == '\t' {
+			runes[i] = ' '
+		}
+	}
+	return string(runes)
 }
 
 // --- helpers ---
