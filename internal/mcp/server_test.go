@@ -501,31 +501,60 @@ func TestTaskStop(t *testing.T) {
 		if cr.IsError {
 			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
 		}
-		testutil.Contains(t, cr.Content[0].Text, "stopped")
+		testutil.Contains(t, cr.Content[0].Text, "Stop signal sent")
 		testutil.DeepEqual(t, stopper.stopped, []string{"abc123"})
 	})
 
-	t.Run("stop non-running", func(t *testing.T) {
+	t.Run("missing id", func(t *testing.T) {
 		resp := doRequest(t, s, "tools/call", ToolCallParams{
 			Name:      "task_stop",
-			Arguments: json.RawMessage(`{"id": "def456"}`),
+			Arguments: json.RawMessage(`{}`),
 		})
 		testutil.NoError(t, respErr(resp))
 		cr := callResult(t, resp)
 		testutil.Equal(t, cr.IsError, true)
-		testutil.Contains(t, cr.Content[0].Text, "not running")
+		testutil.Contains(t, cr.Content[0].Text, "id is required")
 	})
+}
 
-	t.Run("not found", func(t *testing.T) {
-		resp := doRequest(t, s, "tools/call", ToolCallParams{
-			Name:      "task_stop",
-			Arguments: json.RawMessage(`{"id": "zzz"}`),
-		})
-		testutil.NoError(t, respErr(resp))
-		cr := callResult(t, resp)
-		testutil.Equal(t, cr.IsError, true)
-		testutil.Contains(t, cr.Content[0].Text, "task not found")
+func TestTaskCreate_RateLimit(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	stopper := &mockStopper{}
+
+	// Creator that blocks until released.
+	gate := make(chan struct{})
+	creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+		<-gate
+		return &model.Task{ID: "x", Name: name, Status: model.StatusInProgress, Project: project}, nil
+	}
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	// Fill up the concurrent create slots.
+	for i := 0; i < maxConcurrentCreates; i++ {
+		go func() {
+			doRequest(t, s, "tools/call", ToolCallParams{
+				Name:      "task_create",
+				Arguments: json.RawMessage(`{"prompt": "test", "project": "p"}`),
+			})
+		}()
+	}
+
+	// Wait for all slots to fill.
+	time.Sleep(50 * time.Millisecond)
+
+	// The next request should be rejected.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"prompt": "overflow", "project": "p"}`),
 	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "too many concurrent")
+
+	// Unblock the waiting creators.
+	close(gate)
 }
 
 func TestTaskTools_NotConfigured(t *testing.T) {

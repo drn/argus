@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/kb"
@@ -40,6 +41,10 @@ type TaskStopper interface {
 	Stop(taskID string) error
 }
 
+// maxConcurrentCreates limits how many task_create calls can run concurrently
+// to prevent unbounded process spawning from a misbehaving MCP client.
+const maxConcurrentCreates = 5
+
 // Server is the MCP HTTP server.
 type Server struct {
 	db          KBQuerier
@@ -48,6 +53,8 @@ type Server struct {
 	createTask  TaskCreator
 	taskDB      TaskQuerier
 	taskStopper TaskStopper
+	createMu    sync.Mutex
+	creating    int // number of in-flight task_create calls
 }
 
 // New creates a new MCP server.
@@ -169,7 +176,7 @@ func (s *Server) handleInitialize(req *Request) *Response {
 		Result: InitializeResult{
 			ProtocolVersion: protocolVersion,
 			ServerInfo: ServerInfo{
-				Name:    "argus-kb",
+				Name:    "argus",
 				Version: "1.0.0",
 			},
 			Capabilities: Capabilities{
@@ -279,9 +286,14 @@ var taskToolDefs = []Tool{
 	},
 }
 
+// taskMgmtEnabled returns true when all task management dependencies are wired.
+func (s *Server) taskMgmtEnabled() bool {
+	return s.createTask != nil && s.taskDB != nil && s.taskStopper != nil
+}
+
 func (s *Server) handleToolsList(req *Request) *Response {
 	tools := toolDefs
-	if s.createTask != nil {
+	if s.taskMgmtEnabled() {
 		tools = append(tools, taskToolDefs...)
 	}
 	return &Response{
@@ -431,7 +443,7 @@ func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {
 // --- task tools ---
 
 func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response {
-	if s.createTask == nil {
+	if !s.taskMgmtEnabled() {
 		return toolError(id, "task management not configured")
 	}
 
@@ -449,22 +461,40 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, "prompt is required")
 	}
 
+	// Rate-limit concurrent task creation to prevent unbounded process spawning.
+	s.createMu.Lock()
+	if s.creating >= maxConcurrentCreates {
+		s.createMu.Unlock()
+		log.Printf("[mcp] task_create rejected: %d concurrent creates in flight", s.creating)
+		return toolError(id, fmt.Sprintf("too many concurrent task creations (max %d)", maxConcurrentCreates))
+	}
+	s.creating++
+	s.createMu.Unlock()
+	defer func() {
+		s.createMu.Lock()
+		s.creating--
+		s.createMu.Unlock()
+	}()
+
 	name := p.Name
 	if name == "" {
-		name = sanitizeTaskName(p.Prompt)
+		name = truncatePromptToName(p.Prompt)
 	}
 
+	log.Printf("[mcp] task_create name=%q project=%q", name, p.Project)
 	task, err := s.createTask(name, p.Prompt, p.Project, "")
 	if err != nil {
+		log.Printf("[mcp] task_create failed: %v", err)
 		return toolError(id, fmt.Sprintf("Failed to create task: %v", err))
 	}
 
+	log.Printf("[mcp] task_create ok: id=%s name=%s", task.ID, task.Name)
 	return toolResult(id, fmt.Sprintf("Task created.\n\n- **ID**: %s\n- **Name**: %s\n- **Status**: %s\n- **Project**: %s\n- **Branch**: %s",
 		task.ID, task.Name, task.Status.String(), task.Project, task.Branch))
 }
 
 func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
-	if s.taskDB == nil {
+	if !s.taskMgmtEnabled() {
 		return toolError(id, "task management not configured")
 	}
 
@@ -505,7 +535,7 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 }
 
 func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
-	if s.taskDB == nil {
+	if !s.taskMgmtEnabled() {
 		return toolError(id, "task management not configured")
 	}
 
@@ -547,7 +577,7 @@ func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
 }
 
 func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {
-	if s.taskStopper == nil || s.taskDB == nil {
+	if !s.taskMgmtEnabled() {
 		return toolError(id, "task management not configured")
 	}
 
@@ -560,24 +590,22 @@ func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {
 		return toolError(id, "id is required")
 	}
 
-	task, err := s.taskDB.Get(p.ID)
-	if err != nil || task == nil {
-		return toolError(id, "task not found")
-	}
-
-	if task.Status != model.StatusInProgress {
-		return toolError(id, fmt.Sprintf("task is not running (status: %s)", task.Status.String()))
-	}
-
+	// Skip the TOCTOU-prone status pre-check — let the stopper determine
+	// whether the session is actually running. ErrSessionNotFound means
+	// the agent already exited (or was never started).
+	log.Printf("[mcp] task_stop id=%s", p.ID)
 	if err := s.taskStopper.Stop(p.ID); err != nil {
+		log.Printf("[mcp] task_stop failed: id=%s err=%v", p.ID, err)
 		return toolError(id, fmt.Sprintf("Failed to stop task: %v", err))
 	}
 
-	return toolResult(id, fmt.Sprintf("Task %s stopped. Status: in_review.", task.Name))
+	return toolResult(id, fmt.Sprintf("Stop signal sent for task %s. It will transition to in_review when the agent exits.", p.ID))
 }
 
-// sanitizeTaskName generates a task name from a prompt (first 40 runes).
-func sanitizeTaskName(prompt string) string {
+// truncatePromptToName generates a task name from a prompt (first 40 runes).
+// This is display-name truncation only — git branch sanitization happens in
+// agent.CreateWorktree via sanitizeBranchName.
+func truncatePromptToName(prompt string) string {
 	runes := []rune(prompt)
 	if len(runes) > 40 {
 		runes = runes[:40]
