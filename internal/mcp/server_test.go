@@ -3,12 +3,16 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/kb"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 // mockDB implements KBQuerier for testing.
@@ -230,4 +234,332 @@ func TestMethodNotAllowed(t *testing.T) {
 		// Also allow 200 for SSE endpoint.
 		t.Logf("GET /mcp returned %d", w.Code)
 	}
+}
+
+// --- Task tool mocks ---
+
+type mockTaskDB struct {
+	tasks []*model.Task
+}
+
+func (m *mockTaskDB) Tasks() []*model.Task { return m.tasks }
+
+func (m *mockTaskDB) Get(id string) (*model.Task, error) {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+type mockStopper struct {
+	stopped []string
+}
+
+func (m *mockStopper) Stop(taskID string) error {
+	m.stopped = append(m.stopped, taskID)
+	return nil
+}
+
+func testServerWithTasks() (*Server, *mockTaskDB, *mockStopper) {
+	s := testServer()
+	taskDB := &mockTaskDB{
+		tasks: []*model.Task{
+			{
+				ID:      "abc123",
+				Name:    "fix-login",
+				Status:  model.StatusInProgress,
+				Project: "myapp",
+				Branch:  "argus/fix-login",
+				Backend: "claude",
+				Prompt:  "Fix the login bug",
+			},
+			{
+				ID:      "def456",
+				Name:    "add-tests",
+				Status:  model.StatusComplete,
+				Project: "myapp",
+				Branch:  "argus/add-tests",
+			},
+			{
+				ID:       "ghi789",
+				Name:     "old-task",
+				Status:   model.StatusComplete,
+				Project:  "myapp",
+				Archived: true,
+			},
+		},
+	}
+	stopper := &mockStopper{}
+
+	var createCount int
+	creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+		createCount++
+		task := &model.Task{
+			ID:      fmt.Sprintf("new-%d", createCount),
+			Name:    name,
+			Status:  model.StatusInProgress,
+			Project: project,
+			Branch:  "argus/" + name,
+			Prompt:  prompt,
+		}
+		taskDB.tasks = append(taskDB.tasks, task)
+		return task, nil
+	}
+
+	s.SetTaskManager(creator, taskDB, stopper)
+	return s, taskDB, stopper
+}
+
+// --- Task tool tests ---
+
+func TestToolsList_WithTasks(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	// 4 KB tools + 4 task tools = 8
+	testutil.Equal(t, len(list.Tools), 8)
+
+	names := make(map[string]bool)
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop"} {
+		if !names[want] {
+			t.Errorf("missing tool: %s", want)
+		}
+	}
+}
+
+func TestToolsList_WithoutTasks(t *testing.T) {
+	s := testServer() // no SetTaskManager
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	// Only 4 KB tools
+	testutil.Equal(t, len(list.Tools), 4)
+}
+
+func TestTaskCreate(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	t.Run("success", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_create",
+			Arguments: json.RawMessage(`{"name": "new-feature", "prompt": "Add a feature", "project": "myapp"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "new-feature")
+		testutil.Contains(t, cr.Content[0].Text, "myapp")
+	})
+
+	t.Run("auto name from prompt", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_create",
+			Arguments: json.RawMessage(`{"prompt": "Fix the broken auth flow", "project": "myapp"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "Fix the broken auth flow")
+	})
+
+	t.Run("missing project", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_create",
+			Arguments: json.RawMessage(`{"prompt": "do stuff"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "project is required")
+	})
+
+	t.Run("missing prompt", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_create",
+			Arguments: json.RawMessage(`{"project": "myapp"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "prompt is required")
+	})
+}
+
+func TestTaskList(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	t.Run("all", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_list",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "fix-login")
+		testutil.Contains(t, cr.Content[0].Text, "add-tests")
+		// Archived tasks should be excluded.
+		if strings.Contains(cr.Content[0].Text, "old-task") {
+			t.Error("archived task should be excluded")
+		}
+	})
+
+	t.Run("filter by status", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_list",
+			Arguments: json.RawMessage(`{"status": "in_progress"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Contains(t, cr.Content[0].Text, "fix-login")
+		if strings.Contains(cr.Content[0].Text, "add-tests") {
+			t.Error("complete task should be filtered out")
+		}
+	})
+
+	t.Run("filter by project no match", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_list",
+			Arguments: json.RawMessage(`{"project": "nonexistent"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Contains(t, cr.Content[0].Text, "No tasks found")
+	})
+}
+
+func TestTaskGet(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	t.Run("found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_get",
+			Arguments: json.RawMessage(`{"id": "abc123"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "fix-login")
+		testutil.Contains(t, cr.Content[0].Text, "abc123")
+		testutil.Contains(t, cr.Content[0].Text, "Fix the login bug")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_get",
+			Arguments: json.RawMessage(`{"id": "nonexistent"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "task not found")
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_get",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+	})
+}
+
+func TestTaskStop(t *testing.T) {
+	s, _, stopper := testServerWithTasks()
+
+	t.Run("stop running", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_stop",
+			Arguments: json.RawMessage(`{"id": "abc123"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "stopped")
+		testutil.DeepEqual(t, stopper.stopped, []string{"abc123"})
+	})
+
+	t.Run("stop non-running", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_stop",
+			Arguments: json.RawMessage(`{"id": "def456"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "not running")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_stop",
+			Arguments: json.RawMessage(`{"id": "zzz"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "task not found")
+	})
+}
+
+func TestTaskTools_NotConfigured(t *testing.T) {
+	s := testServer() // no SetTaskManager
+
+	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop"} {
+		t.Run(tool, func(t *testing.T) {
+			resp := doRequest(t, s, "tools/call", ToolCallParams{
+				Name:      tool,
+				Arguments: json.RawMessage(`{"id": "x", "prompt": "y", "project": "z"}`),
+			})
+			testutil.NoError(t, respErr(resp))
+			cr := callResult(t, resp)
+			testutil.Equal(t, cr.IsError, true)
+			testutil.Contains(t, cr.Content[0].Text, "not configured")
+		})
+	}
+}
+
+// --- test helpers ---
+
+func respErr(resp *Response) error {
+	if resp.Error != nil {
+		return fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	return nil
+}
+
+func callResult(t *testing.T, resp *Response) ToolCallResult {
+	t.Helper()
+	raw, _ := json.Marshal(resp.Result)
+	var cr ToolCallResult
+	if err := json.Unmarshal(raw, &cr); err != nil {
+		t.Fatalf("unmarshal ToolCallResult: %v", err)
+	}
+	return cr
 }

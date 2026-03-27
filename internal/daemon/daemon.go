@@ -151,6 +151,13 @@ func (d *Daemon) Serve(sockPath string) error {
 	cfg := d.db.Config()
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort)
+		mcpSrv.SetTaskManager(
+			func(name, prompt, project, todoPath string) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+			},
+			d.db,
+			d.runner,
+		)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
 		if err != nil {
