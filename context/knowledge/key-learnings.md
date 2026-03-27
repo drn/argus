@@ -181,8 +181,9 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 
 ### MCP Task Tools
 
-- **MCP task tools use the same `TaskCreator` injection pattern as API/vault.** `SetTaskManager()` wires in the creator, querier, and stopper after construction — the same circular-import-avoidance pattern. Task tools only appear in `tools/list` when `SetTaskManager` has been called.
-- **MCP `task_stop` only stops `InProgress` tasks.** Returns an error for tasks in other states to avoid confusing "stop" of already-finished tasks.
+- **MCP task tools use the same `TaskCreator` injection pattern as API/vault.** `SetTaskManager()` wires in the creator, querier, and stopper after construction — the same circular-import-avoidance pattern. Task tools only appear in `tools/list` when `taskMgmtEnabled()` confirms all three deps are non-nil.
+- **MCP `task_create` is rate-limited to 5 concurrent calls.** `maxConcurrentCreates` prevents unbounded process spawning from a misbehaving MCP client. Each HeadlessCreateTask creates a worktree + PTY process.
+- **MCP `task_stop` must NOT pre-check DB status before calling `Stop()`.** TOCTOU race: the process can exit between the status read and the Stop() call, causing confusing errors. Let the stopper determine whether the session is alive.
 
 ### Vault Watcher & Remote API
 
