@@ -1471,6 +1471,7 @@ func (a *App) switchTab(t Tab) {
 	case TabReviews:
 		a.mode = modeTaskList // reuse task list mode for non-agent tabs
 		a.pages.SwitchToPage("reviews")
+		a.tapp.SetFocus(a.reviews)
 		if a.reviews.CanFetchPRList() {
 			a.reviews.StartLoading()
 			a.reviews.fetchPRList(a)
@@ -1479,6 +1480,7 @@ func (a *App) switchTab(t Tab) {
 		a.mode = modeTaskList
 		a.settings.Refresh()
 		a.pages.SwitchToPage("settings")
+		a.tapp.SetFocus(a.settingsPage)
 	}
 }
 
