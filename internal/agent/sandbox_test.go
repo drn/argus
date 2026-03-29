@@ -2,6 +2,7 @@ package agent
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -63,9 +64,12 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
 	}
 
-	// Profile must allow pseudo-terminal operations for PTY allocation
-	if !strings.Contains(profile, "pseudo-terminal") {
-		t.Errorf("profile missing allow pseudo-terminal* rule:\n%s", profile)
+	// Profile must allow PTY device access for pseudo-terminal allocation
+	if !strings.Contains(profile, "/dev/ptmx") {
+		t.Errorf("profile missing allow file-write* for /dev/ptmx:\n%s", profile)
+	}
+	if !strings.Contains(profile, "/dev/ttys") {
+		t.Errorf("profile missing allow file-write* for /dev/ttys*:\n%s", profile)
 	}
 
 	// Params must contain HOME and WORKTREE
@@ -256,6 +260,46 @@ func TestGenerateSandboxConfig_GitDir(t *testing.T) {
 	// Profile must contain a write rule for the main repo's .git dir
 	if !strings.Contains(profile, gitDir) {
 		t.Errorf("profile missing .git dir write rule for %q:\n%s", gitDir, profile)
+	}
+}
+
+func TestGenerateSandboxConfig_ProfileValid(t *testing.T) {
+	if !IsSandboxAvailable() {
+		t.Skip("sandbox-exec not available")
+	}
+
+	// Create a fake worktree with a .git file so the gitDir rule is exercised
+	wtDir := t.TempDir()
+	mainRepo := t.TempDir()
+	gitDir := mainRepo + "/.git"
+	wtGitDir := gitDir + "/worktrees/my-task"
+	os.MkdirAll(wtGitDir, 0o755)
+	os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
+
+	sandboxCfg := config.SandboxConfig{
+		DenyRead:   []string{"/secrets"},
+		ExtraWrite: []string{"/var/cache"},
+	}
+
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, sandboxCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	// Run sandbox-exec with the generated profile — if any SBPL operation
+	// names are invalid, sandbox-exec exits with a parse error before
+	// executing the command.
+	args := []string{}
+	for _, p := range params {
+		args = append(args, "-D", p)
+	}
+	args = append(args, "-f", profilePath, "/usr/bin/true")
+
+	cmd := exec.Command(sandboxExecPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandbox-exec rejected generated profile: %v\n%s", err, out)
 	}
 }
 
