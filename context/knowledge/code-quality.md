@@ -1346,3 +1346,33 @@ Added `a.tapp.SetFocus(a.tasklist)` to all four ToDo-related modal close functio
 - Task tools reuse the `HeadlessCreateTask` path — same worktree-first, revert-on-failure semantics as API/vault
 - `SetTaskManager` uses the same closure injection pattern to avoid daemon↔mcp circular import
 - `task_stop` does NOT update DB status — the daemon's `onFinish` callback handles that via reconciliation
+
+## Mouse Click Focus Guard (2026-03-29)
+
+### Problem
+tview's default `Box.MouseHandler()` calls `setFocus(self)` on any `MouseLeftDown` event. Page wrappers (TaskPage, ToDosView) contain non-interactive child panels (GitPanel, TaskPreviewPanel, TaskDetailPanel, ToDoPreviewPanel, ToDoDetailPanel) that have no `InputHandler`. Clicking these panels silently steals focus, making all keyboard input unresponsive. Users must switch tabs and back to regain focus.
+
+### Fix
+Page wrappers override `MouseHandler` with a `guardedSetFocus` that redirects all child focus requests to the interactive panel:
+- `TaskPage.MouseHandler` → redirects to `tp.tasklist`
+- `ToDosView.MouseHandler` → redirects to `v.list`
+
+### Pattern
+```go
+func (p *PageWrapper) MouseHandler() ... {
+    return p.WrapMouseHandler(func(action, event, setFocus) {
+        guardedSetFocus := func(_ tview.Primitive) { setFocus(p.interactiveChild) }
+        innerHandler := p.inner.MouseHandler()
+        if innerHandler != nil { return innerHandler(action, event, guardedSetFocus) }
+        return false, nil
+    })
+}
+```
+
+### Testing
+Smoke test `TestSmoke_ClickNonInteractivePanelKeepsFocus` injects mouse clicks on center/right panel areas and verifies focus stays on the task list. Test confirmed the bug exists without the fix and passes with it.
+
+### Not Vulnerable
+- ReviewsView: monolithic Box, keys route through `handleGlobalKey`, no children to steal focus
+- SettingsPage: custom MouseHandler that never calls setFocus
+- Agent page: GitPanel/FilePanel have intentional interactive MouseHandlers

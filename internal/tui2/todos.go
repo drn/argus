@@ -251,9 +251,19 @@ func (v *ToDosView) InputHandler() func(event *tcell.EventKey, setFocus func(p t
 	return v.inner.InputHandler()
 }
 
-// MouseHandler delegates to the inner flex.
+// MouseHandler intercepts mouse events so that clicks on non-interactive
+// panels (preview, detail) always redirect focus to the list panel.
 func (v *ToDosView) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
-	return v.inner.MouseHandler()
+	return v.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		guardedSetFocus := func(p tview.Primitive) {
+			setFocus(v.list)
+		}
+		innerHandler := v.inner.MouseHandler()
+		if innerHandler != nil {
+			return innerHandler(action, event, guardedSetFocus)
+		}
+		return false, nil
+	})
 }
 
 // ---------------------------------------------------------------------------

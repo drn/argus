@@ -380,3 +380,50 @@ func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	readUI(t, app.tapp, func() { isTaskList = app.mode == modeTaskList })
 	testutil.Equal(t, isTaskList, true)
 }
+
+func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	task := &model.Task{
+		ID:        "click-1",
+		Name:      "click test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Verify initial focus is on the task list.
+	var focused tview.Primitive
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.tasklist {
+		t.Fatal("expected initial focus on tasklist")
+	}
+
+	// Click on the center panel area (preview/git panel) — coordinates in the
+	// non-interactive region of the 80x24 screen. The 3-column layout with
+	// proportions 1:3:1 puts the center panel around x=16..64.
+	sim.InjectMouse(40, 12, tcell.Button1, 0)
+	syncUI(t, app.tapp)
+
+	// Focus must remain on the task list, not stolen by the clicked panel.
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.tasklist {
+		t.Error("clicking non-interactive panel stole focus from tasklist")
+	}
+
+	// Also click on the detail panel (rightmost column, ~x=70).
+	sim.InjectMouse(70, 12, tcell.Button1, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.tasklist {
+		t.Error("clicking detail panel stole focus from tasklist")
+	}
+}

@@ -69,7 +69,20 @@ func (tp *TaskPage) InputHandler() func(event *tcell.EventKey, setFocus func(p t
 	return tp.inner.InputHandler()
 }
 
-// MouseHandler delegates to the inner flex.
+// MouseHandler intercepts mouse events so that clicks on non-interactive
+// panels (git status, preview, detail) always redirect focus to the task list.
 func (tp *TaskPage) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
-	return tp.inner.MouseHandler()
+	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		// Wrap setFocus so any child that tries to grab focus
+		// (e.g. tview's default Box.MouseHandler on click) is
+		// redirected to the task list instead.
+		guardedSetFocus := func(p tview.Primitive) {
+			setFocus(tp.tasklist)
+		}
+		innerHandler := tp.inner.MouseHandler()
+		if innerHandler != nil {
+			return innerHandler(action, event, guardedSetFocus)
+		}
+		return false, nil
+	})
 }
