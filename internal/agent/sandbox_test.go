@@ -43,6 +43,13 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		}
 	}
 
+	// Profile must allow read access to SSH non-secret files for git remote ops
+	for _, allowed := range []string{"/.ssh/known_hosts\")", "/.ssh/known_hosts2\")", "/.ssh/config\")"} {
+		if !strings.Contains(profile, allowed) {
+			t.Errorf("profile missing SSH allow for %q:\n%s", allowed, profile)
+		}
+	}
+
 	// Profile must allow writes to ~/.claude.json and ~/.claude/ for Claude Code startup
 	if !strings.Contains(profile, "/.claude.json") {
 		t.Errorf("profile missing allow file-write* for ~/.claude.json:\n%s", profile)
