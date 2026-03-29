@@ -63,6 +63,11 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
 	}
 
+	// Profile must allow pseudo-terminal operations for PTY allocation
+	if !strings.Contains(profile, "pseudo-terminal") {
+		t.Errorf("profile missing allow pseudo-terminal* rule:\n%s", profile)
+	}
+
 	// Params must contain HOME and WORKTREE
 	hasHome := false
 	hasWorktree := false
