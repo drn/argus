@@ -92,6 +92,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **No domain-level network filtering.** sandbox-exec works at socket/address level. Argus uses `(allow network*)`.
 - **Per-project sandbox config:** 3 columns on `projects` table. `ResolveSandboxConfig()` merges global + per-project.
 - **Per-project `DenyRead`/`ExtraWrite` are only editable outside the TUI (DB or API).** The project form only exposes the Enabled toggle. Paths are preserved through form round-trips but cannot be viewed or cleared via the form. Deleting and re-creating a project erases its per-project paths.
+- **SBPL has no `pseudo-terminal*` operation.** PTY device access requires explicit file-write rules: `(allow file-write* (regex #"^/dev/ptmx$"))` and `(allow file-write* (regex #"^/dev/ttys[0-9]+$"))`. Invalid operation names cause `sandbox-exec: unbound variable` at runtime. `TestGenerateSandboxConfig_ProfileValid` catches this by running `sandbox-exec /usr/bin/true` with the generated profile.
 - **Verify profile in effect:** Read the temp `.sb` file logged in `~/.argus/daemon.log`.
 
 ### Key Bindings & Navigation
