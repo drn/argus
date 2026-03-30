@@ -83,7 +83,9 @@ func (d *DB) seedDefaults() error {
 			"kb.http_port":         fmt.Sprintf("%d", cfg.KB.HTTPPort),
 			"kb.metis_vault_path":  config.DefaultMetisVaultPath(),
 			"kb.argus_vault_path":  config.DefaultArgusVaultPath(),
-			"kb.auto_create_tasks": fmt.Sprintf("%t", cfg.KB.AutoCreateTasks),
+			"kb.auto_create_tasks":   fmt.Sprintf("%t", cfg.KB.AutoCreateTasks),
+			"kb.auto_start_todos":    fmt.Sprintf("%t", cfg.KB.AutoStartTodos),
+			"kb.auto_start_interval": fmt.Sprintf("%d", cfg.KB.AutoStartInterval),
 			"api.http_port":        fmt.Sprintf("%d", cfg.API.HTTPPort),
 		}
 		for k, v := range defaults {

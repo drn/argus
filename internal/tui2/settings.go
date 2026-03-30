@@ -63,10 +63,12 @@ type SettingsView struct {
 	sandboxExtraWrite []string
 
 	// KB.
-	kbEnabled      bool
-	metisVaultPath string
-	argusVaultPath string
-	kbTaskSync     bool
+	kbEnabled          bool
+	metisVaultPath     string
+	argusVaultPath     string
+	kbTaskSync         bool
+	autoStartTodos     bool
+	autoStartInterval  int
 
 	// API.
 	apiEnabled       bool
@@ -172,6 +174,11 @@ func (sv *SettingsView) Refresh() {
 	sv.metisVaultPath = cfg.KB.MetisVaultPath
 	sv.argusVaultPath = cfg.KB.ArgusVaultPath
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
+	sv.autoStartTodos = cfg.KB.AutoStartTodos
+	sv.autoStartInterval = cfg.KB.AutoStartInterval
+	if sv.autoStartInterval <= 0 {
+		sv.autoStartInterval = config.DefaultAutoStartInterval
+	}
 
 	// API.
 	if !sv.apiBootRecorded {
@@ -433,9 +440,39 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return sv.handleNew()
 		case 'e':
 			return sv.handleEdit()
+		case 'a':
+			return sv.handleToggleAutoStart()
 		}
 	}
 	return false
+}
+
+func (sv *SettingsView) handleToggleAutoStart() bool {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srKB {
+		return false
+	}
+	sv.autoStartTodos = !sv.autoStartTodos
+	val := "false"
+	if sv.autoStartTodos {
+		val = "true"
+		// Auto-start implies auto-create — enable it too.
+		if !sv.kbTaskSync {
+			sv.kbTaskSync = true
+			sv.database.SetConfigValue("kb.auto_create_tasks", "true")
+		}
+	} else {
+		// Disabling auto-start also disables auto-create to avoid
+		// silently falling back to fsnotify watching on daemon restart.
+		if sv.kbTaskSync {
+			sv.kbTaskSync = false
+			sv.database.SetConfigValue("kb.auto_create_tasks", "false")
+		}
+	}
+	sv.database.SetConfigValue("kb.auto_start_todos", val)
+	uxlog.Log("[settings] auto-start todos toggled to %s", val)
+	sv.rebuildRows()
+	return true
 }
 
 // HandleMouse handles mouse events (scroll wheel on logs detail).
@@ -970,8 +1007,19 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	drawText(screen, x, y+r, w, "Task Sync: "+syncLabel, StyleDimmed)
 	r += 2
 
+	autoStartLabel := "Off"
+	autoStartColor := StyleDimmed
+	if sv.autoStartTodos {
+		autoStartLabel = fmt.Sprintf("On (every %ds)", sv.autoStartInterval)
+		autoStartColor = tcell.StyleDefault.Foreground(ColorComplete)
+	}
+	drawText(screen, x, y+r, w, "Auto-Start ToDos: "+autoStartLabel, autoStartColor)
+	r++
+	drawText(screen, x, y+r, w, "  Polls vault and starts new todos automatically", StyleDimmed)
+	r += 2
+
 	if r < h {
-		drawText(screen, x, y+r, w, "[enter] toggle KB", StyleDimmed)
+		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", StyleDimmed)
 	}
 }
 

@@ -200,7 +200,9 @@ func (d *Daemon) Serve(sockPath string) error {
 	}
 
 	// Start vault watcher for auto-task creation (when enabled).
-	if cfg.KB.AutoCreateTasks {
+	// AutoStartTodos uses polling; AutoCreateTasks uses fsnotify.
+	// AutoStartTodos implies AutoCreateTasks behavior (polling subsumes fsnotify).
+	if cfg.KB.AutoStartTodos || cfg.KB.AutoCreateTasks {
 		vaultPath := cfg.KB.ArgusVaultPath
 		if vaultPath == "" {
 			vaultPath = config.DefaultArgusVaultPath()
@@ -209,11 +211,24 @@ func (d *Daemon) Serve(sockPath string) error {
 			return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
 		})
 		d.vaultWatcher = vw
-		go func() {
-			if err := vw.Start(); err != nil {
-				log.Printf("vault watcher start: %v", err)
+		if cfg.KB.AutoStartTodos {
+			interval := time.Duration(cfg.KB.AutoStartInterval) * time.Second
+			if interval <= 0 {
+				interval = time.Duration(config.DefaultAutoStartInterval) * time.Second
+				log.Printf("[vault] auto_start_interval not set, using default %s", interval)
 			}
-		}()
+			go func() {
+				if err := vw.StartPolling(interval); err != nil {
+					log.Printf("vault poller start: %v", err)
+				}
+			}()
+		} else {
+			go func() {
+				if err := vw.Start(); err != nil {
+					log.Printf("vault watcher start: %v", err)
+				}
+			}()
+		}
 	}
 
 	// Start HTTP API server (when enabled in settings).
