@@ -2,7 +2,9 @@ package tui2
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/drn/argus/internal/spinner"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -33,9 +35,14 @@ var (
 )
 
 // Header renders the top tab bar with tmux-style powerline separators.
+// It also supports a general-purpose notice area on the left side
+// (spinner + short text) for async background operations.
 type Header struct {
 	*tview.Box
 	activeTab Tab
+
+	// Notice: general-purpose status indicator (left side of header).
+	noticeText string // empty = no notice
 }
 
 // NewHeader creates a tab bar header.
@@ -57,7 +64,23 @@ func (h *Header) ActiveTab() Tab {
 	return h.activeTab
 }
 
+// SetNotice sets the notice text displayed with a spinner on the left.
+func (h *Header) SetNotice(text string) {
+	h.noticeText = text
+}
+
+// ClearNotice removes the notice.
+func (h *Header) ClearNotice() {
+	h.noticeText = ""
+}
+
+// Notice returns the current notice text (empty if none).
+func (h *Header) Notice() string {
+	return h.noticeText
+}
+
 // Draw renders the tab bar with powerline-style segments, centered.
+// If a notice is active, a spinner + text is drawn on the left.
 func (h *Header) Draw(screen tcell.Screen) {
 	h.Box.DrawForSubclass(screen, h)
 	x, y, width, _ := h.GetInnerRect()
@@ -71,6 +94,30 @@ func (h *Header) Draw(screen tcell.Screen) {
 		screen.SetContent(x+i, y, ' ', nil, baseStyle)
 	}
 
+	// Draw notice on the left (spinner + text) if active.
+	noticeEnd := x
+	if h.noticeText != "" {
+		sp := spinner.Get(spinner.StyleProgress)
+		frame := int(time.Now().UnixMilli()/sp.TickInterval.Milliseconds()) % sp.FrameCount()
+		spinnerRune := sp.Frame(frame)
+
+		noticeStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorInProgress)
+		textStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorNormal)
+
+		col := x + 1 // 1 cell left padding
+		screen.SetContent(col, y, spinnerRune, nil, noticeStyle)
+		col++
+		col++ // space after spinner
+		for _, r := range h.noticeText {
+			if col >= x+width {
+				break
+			}
+			screen.SetContent(col, y, r, nil, textStyle)
+			col++
+		}
+		noticeEnd = col + 1 // 1 cell padding after notice
+	}
+
 	// Compute total width of all tab segments to center them.
 	// Each segment = 1 (open chevron) + len(text) + 1 (close chevron).
 	totalWidth := 0
@@ -80,8 +127,8 @@ func (h *Header) Draw(screen tcell.Screen) {
 	}
 
 	col := x + (width-totalWidth)/2
-	if col < x {
-		col = x
+	if col < noticeEnd {
+		col = noticeEnd
 	}
 
 	// Draw tabs

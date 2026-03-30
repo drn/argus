@@ -39,7 +39,6 @@ const (
 	modeAgent
 	modeNewTask
 	modeConfirmDelete
-	modePruning
 	modeProjectForm
 	modeBackendForm
 	modeLaunchToDo
@@ -88,9 +87,6 @@ type App struct {
 
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal *ConfirmDeleteModal
-
-	// Prune modal (created on demand)
-	pruneModal *PruneModal
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal    *LaunchToDoModal
@@ -432,15 +428,12 @@ func (a *App) onTick() {
 	a.tapp.QueueUpdateDraw(func() {
 		a.tickCallbackPending.Store(false)
 		// Lock a.mu to protect App-level fields (mode, agentState,
-		// pruneModal, tasks, runningIDs) during refresh.
+		// tasks, runningIDs) during refresh.
 		a.mu.Lock()
 		a.refreshTasksWithIDs(runningIDs, idleIDs)
 		taskID := ""
 		if a.mode == modeAgent {
 			taskID = a.agentState.TaskID
-		}
-		if a.pruneModal != nil {
-			a.pruneModal.Tick()
 		}
 		a.mu.Unlock()
 
@@ -863,11 +856,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm delete modal — delegate everything to the modal
 	if a.mode == modeConfirmDelete && a.confirmDeleteModal != nil {
 		a.handleConfirmDeleteKey(event)
-		return nil
-	}
-
-	// Prune modal — absorb all keys while cleanup is running
-	if a.mode == modePruning {
 		return nil
 	}
 
@@ -2667,12 +2655,8 @@ func (a *App) pruneCompletedTasks() {
 		return
 	}
 
-	// Show the prune progress modal.
-	a.pruneModal = NewPruneModal(totalClean)
-	a.mode = modePruning
-	a.pages.AddPage("pruning", a.pruneModal, true, true)
-	a.pages.SwitchToPage("pruning")
-	a.tapp.SetFocus(a.pruneModal)
+	// Show progress as a header notice (non-blocking).
+	a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (0/%d)", totalClean))
 
 	// Build project name → path map for orphan sweep.
 	projects := make(map[string]string)
@@ -2680,9 +2664,13 @@ func (a *App) pruneCompletedTasks() {
 		projects[name] = p.Path
 	}
 
+	// Refresh task list immediately so pruned tasks disappear.
+	a.refreshTasksLocal()
+
 	// Parallel cleanup in background goroutines.
 	go func() {
 		var wg sync.WaitGroup
+		var cleaned atomic.Int32
 
 		// Clean up each pruned task's worktree in parallel.
 		for _, t := range toClean {
@@ -2693,10 +2681,9 @@ func (a *App) pruneCompletedTasks() {
 				uxlog.Log("[tui2] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
 					t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
 				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+				n := cleaned.Add(1)
 				a.tapp.QueueUpdateDraw(func() {
-					if a.pruneModal != nil {
-						a.pruneModal.Increment()
-					}
+					a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", n, totalClean))
 				})
 			}(t)
 		}
@@ -2708,34 +2695,24 @@ func (a *App) pruneCompletedTasks() {
 				defer wg.Done()
 				swept := sweepOrphanedWorktrees(a.wtRoot, knownPaths, projects)
 				uxlog.Log("[tui2] orphan sweep cleaned %d directories", swept)
+				n := cleaned.Add(1)
 				a.tapp.QueueUpdateDraw(func() {
-					if a.pruneModal != nil {
-						a.pruneModal.Increment()
-					}
+					a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", n, totalClean))
 				})
 			}()
 		}
 
 		wg.Wait()
 
-		// Fetch session state off UI thread, then close modal + refresh together.
+		// Fetch session state off UI thread, then clear notice + refresh.
 		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
-			a.closePruneModal()
+			a.header.ClearNotice()
 			a.mu.Lock()
 			a.refreshTasksWithIDs(runningIDs, idleIDs)
 			a.mu.Unlock()
 		})
 	}()
-}
-
-// closePruneModal dismisses the prune modal and returns to the task list.
-func (a *App) closePruneModal() {
-	a.mode = modeTaskList
-	a.pruneModal = nil
-	a.pages.RemovePage("pruning")
-	a.pages.SwitchToPage("tasks")
-	a.tapp.SetFocus(a.tasklist)
 }
 
 // navigateAgentTask switches to the next (+1) or previous (-1) task
