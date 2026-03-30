@@ -351,8 +351,8 @@ func (a *App) tickLoop() {
 }
 
 // spinnerLoop triggers redraws for smooth spinner animation.
-// Polls at 100ms (the fastest spinner's TickInterval). The actual frame
-// selection is time-based in updateSpinnerFrame, so this just ensures
+// Polls at 100ms (the fastest non-Progress spinner's TickInterval). The actual
+// frame selection is time-based in updateSpinnerFrame, so this just ensures
 // redraws happen often enough. Only fires when tasks are running.
 func (a *App) spinnerLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
