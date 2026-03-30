@@ -179,6 +179,13 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
 - **`moveCursor` must not fire `OnCursorChange` when clamped at boundaries.** When pressing up at the top or down at the bottom, `tl.cursor` is clamped to the same value — firing the callback triggers unnecessary git diff refreshes and preview fetches. Use a deferred guard comparing `tl.cursor != prev`.
 
+### File Explorer
+
+- **`autoExpand` must only treat `indent == 0` dirs as expandable.** Synthetic sub-dir rows (indent > 0, IsDir) are display-only groupings from `buildChildTree`. Without the `row.indent == 0` guard, navigating onto a sub-dir row collapses the top-level parent, causing all children to disappear.
+- **`CursorUp` must track `wasChild` BEFORE decrementing to distinguish entering vs exiting a folder.** `wasChild = fp.rows[fp.cursor].indent > 0` captures whether the cursor is inside a folder pre-move. Without this, `skipToLastChild` traps the cursor inside the folder when navigating up from the first child (it re-enters instead of exiting).
+- **`buildChildTree` groups flat file paths into a trie and emits dirs-before-files at each level.** Sub-directories are always expanded (no interactive collapse). Only top-level directories (indent 0) toggle via `autoExpand`.
+- **`skipToLastChild` scans all nested indent levels, not just immediate children.** It finds the last non-directory row before the next `indent == 0` boundary. For deeply nested trees, this lands on the deepest last file.
+
 ### Fork Context Capture
 
 - **PTY session logs contain `\r` (carriage return) characters that must be normalized before filtering.** Claude Code uses `\r` to overwrite status indicators in-place. Without `\r→\n` normalization, multiple screen elements concatenate on one "line" and per-line noise filters fail to match.

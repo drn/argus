@@ -1407,3 +1407,25 @@ Replaced 5 separate `notifyCursorChange()` call sites with a single `defer` that
 
 ### Gotchas
 - `notifyCursorChange` is also called from `SetTasks`, `restoreCursor`, and input handlers — those callers are unaffected since they legitimately need to fire even when the cursor index hasn't changed (the task at that index may have changed after a rebuild)
+
+## File Explorer Nested Tree & CursorUp Fix: 2026-03-30
+
+### Bug Fix: CursorUp Skipping Folders
+**Problem:** Navigating up from below a folder skipped over it entirely. `CursorUp` called `skipToFile(-1)` which moved backward past the directory row. The symmetric behavior (CursorDown entering from above lands on first child) was already working.
+
+**Fix:** Added `skipToLastChild()` which finds the last non-directory row within an expanded directory's full subtree. `CursorUp` tracks `wasChild` (indent > 0) before decrementing — if entering from below (`!wasChild`), uses `skipToLastChild`; if leaving from within (`wasChild`), uses `skipToFile(-1)` to exit upward.
+
+### Feature: Nested Subdirectory Tree Display
+**What:** `FetchDirFiles` returns flat file paths (e.g., `src/components/Button.go`). Previously displayed at indent 1. Now `buildChildTree` groups them into a trie and emits tree-structured `fpRow` entries with dirs-before-files ordering at each level.
+
+**Data model:**
+- `fpRow.displayName` — sub-dir display label (e.g., `"components/"`); needed because `filepath.Base` strips trailing slash
+- `fpRow.indent` — now supports arbitrary depth (was only 0 or 1)
+- `fpIndentWidth` — named constant for chars per indent level (2)
+- Synthetic sub-dir rows: `IsDir=true`, `indent > 0`, no entry in `fp.expanded` — display-only, always expanded
+
+**Key invariant:** `autoExpand` must check `row.indent == 0` before treating an `IsDir` row as expandable. Without this, navigating onto a synthetic sub-dir row (indent > 0) collapses the top-level parent.
+
+### Gotchas
+- `buildChildTree` sorts files alphabetically at each level — test assertions must account for sort order, not insertion order
+- `skipToLastChild` scans the full subtree depth (all indent > 0 rows), not just immediate children — this is intentional for the "enter folder from below" UX

@@ -240,6 +240,119 @@ func TestFilePanel_SetDirChildrenSkipsToFile(t *testing.T) {
 	})
 }
 
+func TestFilePanel_CursorUpIntoExpandedDir(t *testing.T) {
+	t.Run("lands on last child when navigating up into folder", func(t *testing.T) {
+		fp := NewFilePanel()
+		fp.Box.SetRect(0, 0, 40, 20)
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "src/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.SetFiles(files)
+		fp.SetDirChildren("src/", []gitutil.ChangedFile{
+			{Status: "M", Path: "src/one.go"},
+			{Status: "A", Path: "src/two.go"},
+			{Status: "D", Path: "src/three.go"},
+		})
+
+		// Navigate down to b.go (past the folder)
+		// Rows: a.go, src/, src/one.go, src/two.go, src/three.go, b.go
+		// Move cursor to b.go by going down repeatedly
+		fp.cursor = len(fp.rows) - 1 // b.go
+		if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
+			t.Fatalf("setup: expected b.go, got %v", f)
+		}
+
+		// Navigate up — should enter folder and land on last child (src/two.go,
+		// alphabetically last after sorting by buildChildTree).
+		fp.CursorUp()
+		if f := fp.SelectedFile(); f == nil || f.Path != "src/two.go" {
+			t.Errorf("expected src/two.go (last child, sorted), got %v", f)
+		}
+	})
+
+	t.Run("lands on last child with single child", func(t *testing.T) {
+		fp := NewFilePanel()
+		fp.Box.SetRect(0, 0, 40, 20)
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "src/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.dirChildren["src/"] = []gitutil.ChangedFile{
+			{Status: "M", Path: "src/only.go"},
+		}
+		fp.SetFiles(files)
+
+		// Move to b.go
+		fp.CursorDown()
+		fp.CursorDown()
+		// Find b.go
+		for fp.cursor < len(fp.rows) {
+			if f := fp.SelectedFile(); f != nil && f.Path == "b.go" {
+				break
+			}
+			fp.cursor++
+		}
+		if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
+			t.Fatalf("setup: expected b.go, got %v", f)
+		}
+
+		fp.CursorUp()
+		if f := fp.SelectedFile(); f == nil || f.Path != "src/only.go" {
+			t.Errorf("expected src/only.go, got %v", f)
+		}
+	})
+
+	t.Run("navigating up from first child exits folder", func(t *testing.T) {
+		fp := NewFilePanel()
+		fp.Box.SetRect(0, 0, 40, 20)
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "src/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.SetFiles(files)
+		fp.SetDirChildren("src/", []gitutil.ChangedFile{
+			{Status: "M", Path: "src/one.go"},
+			{Status: "A", Path: "src/two.go"},
+		})
+
+		// Navigate into folder — land on first child
+		fp.CursorDown()
+		if f := fp.SelectedFile(); f == nil || f.Path != "src/one.go" {
+			t.Fatalf("setup: expected src/one.go, got %v", f)
+		}
+
+		// Navigate up from first child — should exit folder and land on a.go
+		fp.CursorUp()
+		if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
+			t.Errorf("expected a.go (exit folder), got %v", f)
+		}
+	})
+
+	t.Run("no children fetched yet skips over dir", func(t *testing.T) {
+		fp := NewFilePanel()
+		fp.Box.SetRect(0, 0, 40, 20)
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "pkg/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.SetFiles(files)
+		// Move to b.go
+		fp.CursorDown()
+		if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
+			t.Fatalf("setup: expected b.go, got %v", f)
+		}
+		// Up — no children cached, so should skip dir and land on a.go
+		fp.CursorUp()
+		if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
+			t.Errorf("expected a.go (no children to enter), got %v", f)
+		}
+	})
+}
+
 func TestFilePanel_AllDirsNoSkip(t *testing.T) {
 	fp := NewFilePanel()
 	fp.Box.SetRect(0, 0, 40, 20)
@@ -285,5 +398,167 @@ func TestFilePanel_StatusIcons(t *testing.T) {
 		if icon != tt.icon {
 			t.Errorf("statusIcon(%q) = %c, want %c", tt.status, icon, tt.icon)
 		}
+	}
+}
+
+func TestBuildChildTree_BasicGrouping(t *testing.T) {
+	children := []gitutil.ChangedFile{
+		{Status: "M", Path: "src/a/1.go"},
+		{Status: "A", Path: "src/a/2.go"},
+		{Status: "M", Path: "src/b/3.go"},
+		{Status: "M", Path: "src/main.go"},
+	}
+	rows := buildChildTree(nil, children, "src/", 1)
+
+	// Expected: a/ (dir), 1.go, 2.go, b/ (dir), 3.go, main.go
+	want := []struct {
+		path    string
+		indent  int
+		isDir   bool
+		display string
+	}{
+		{"src/a/", 1, true, "a/"},
+		{"src/a/1.go", 2, false, ""},
+		{"src/a/2.go", 2, false, ""},
+		{"src/b/", 1, true, "b/"},
+		{"src/b/3.go", 2, false, ""},
+		{"src/main.go", 1, false, ""},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for i, w := range want {
+		r := rows[i]
+		if r.Path != w.path || r.indent != w.indent || r.IsDir != w.isDir || r.displayName != w.display {
+			t.Errorf("row[%d] = {%q, indent=%d, dir=%v, display=%q}, want {%q, indent=%d, dir=%v, display=%q}",
+				i, r.Path, r.indent, r.IsDir, r.displayName,
+				w.path, w.indent, w.isDir, w.display)
+		}
+	}
+}
+
+func TestBuildChildTree_DeepNesting(t *testing.T) {
+	children := []gitutil.ChangedFile{
+		{Status: "A", Path: "src/a/b/c/file.go"},
+	}
+	rows := buildChildTree(nil, children, "src/", 1)
+
+	want := []struct {
+		path   string
+		indent int
+		isDir  bool
+	}{
+		{"src/a/", 1, true},
+		{"src/a/b/", 2, true},
+		{"src/a/b/c/", 3, true},
+		{"src/a/b/c/file.go", 4, false},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for i, w := range want {
+		if rows[i].Path != w.path || rows[i].indent != w.indent || rows[i].IsDir != w.isDir {
+			t.Errorf("row[%d] = {%q, indent=%d, dir=%v}, want {%q, indent=%d, dir=%v}",
+				i, rows[i].Path, rows[i].indent, rows[i].IsDir, w.path, w.indent, w.isDir)
+		}
+	}
+}
+
+func TestBuildChildTree_FlatOnly(t *testing.T) {
+	children := []gitutil.ChangedFile{
+		{Status: "M", Path: "src/main.go"},
+		{Status: "A", Path: "src/util.go"},
+	}
+	rows := buildChildTree(nil, children, "src/", 1)
+
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.IsDir {
+			t.Errorf("unexpected dir row: %q", r.Path)
+		}
+		if r.indent != 1 {
+			t.Errorf("expected indent 1, got %d for %q", r.indent, r.Path)
+		}
+	}
+}
+
+func TestFilePanel_NavigationWithNestedTree(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.SetFiles(files)
+	fp.SetDirChildren("src/", []gitutil.ChangedFile{
+		{Status: "M", Path: "src/components/Button.go"},
+		{Status: "A", Path: "src/components/Input.go"},
+		{Status: "M", Path: "src/utils/helper.go"},
+		{Status: "M", Path: "src/main.go"},
+	})
+
+	// Rows should be:
+	// a.go, src/, components/ (dir), Button.go, Input.go, utils/ (dir), helper.go, main.go, z.go
+	// Navigate down from a.go — should skip src/ dir, components/ dir, land on Button.go
+	fp.CursorDown()
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/components/Button.go" {
+		t.Errorf("CursorDown from a.go: expected src/components/Button.go, got %v", f)
+	}
+
+	// Keep going down — should skip utils/ dir
+	fp.CursorDown() // Input.go
+	fp.CursorDown() // skip utils/ → helper.go
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/utils/helper.go" {
+		t.Errorf("expected src/utils/helper.go, got %v", f)
+	}
+
+	// Continue to main.go then z.go
+	fp.CursorDown() // main.go
+	fp.CursorDown() // z.go
+	if f := fp.SelectedFile(); f == nil || f.Path != "z.go" {
+		t.Errorf("expected z.go, got %v", f)
+	}
+}
+
+func TestFilePanel_CursorUpIntoNestedFolder(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.dirChildren["src/"] = []gitutil.ChangedFile{
+		{Status: "M", Path: "src/components/Button.go"},
+		{Status: "A", Path: "src/utils/helper.go"},
+		{Status: "M", Path: "src/main.go"},
+	}
+	fp.SetFiles(files)
+
+	// Navigate to z.go
+	for fp.cursor < len(fp.rows)-1 {
+		fp.CursorDown()
+	}
+	// Find z.go
+	if f := fp.SelectedFile(); f == nil || f.Path != "z.go" {
+		// z.go might not be the last file row, find it
+		for i, r := range fp.rows {
+			if r.Path == "z.go" {
+				fp.cursor = i
+				break
+			}
+		}
+	}
+	if f := fp.SelectedFile(); f == nil || f.Path != "z.go" {
+		t.Fatalf("setup: expected z.go, got %v", f)
+	}
+
+	// Navigate up — should enter folder and land on deepest last file (main.go,
+	// which is the last direct child sorted after subdirs)
+	fp.CursorUp()
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/main.go" {
+		t.Errorf("expected src/main.go (last child in tree), got %v", f)
 	}
 }
