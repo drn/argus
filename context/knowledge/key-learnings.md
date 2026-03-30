@@ -157,6 +157,11 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`SetPRs` must sort review requests before "my PRs"** — visual order must match slice order.
 - **PR list has 10min cooldown.** `SetPRs` preserves cursor/selection on background refresh.
 
+### Spinner Animation
+
+- **Spinner frame computation is time-based, not tick-based.** `updateSpinnerFrame()` computes `int(time.Now().UnixMilli() / interval) % frameCount` in `Draw()`. The 1-second tick loop is too slow for 100ms spinner frames. A dedicated `spinnerLoop` (100ms ticker) triggers redraws only when `len(runningIDs) > 0`.
+- **`model.SetActiveSpinner()` is a package-level setter — not thread-safe for concurrent writers.** Currently safe because only the tview main goroutine (settings UI) calls it. If daemon or API ever sets it, add synchronization.
+
 ### Task List & UI
 
 - **Every modal close function must call `a.tapp.SetFocus(a.tasklist)`.** Without this, tview focus remains on the deleted modal widget, silently dropping focus-dependent key events (e.g., up/down in the task list). Tab switching (left/right) still works because it's handled in `handleGlobalKey` before focus-based routing, which masks the bug.

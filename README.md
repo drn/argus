@@ -196,6 +196,17 @@ Per-project deny-read and extra-write paths are appended to the global lists.
 - `~/.claude.json`, `~/.claude/`
 - The main repo's `.git` dir (for worktree git operations)
 
+## Spinner Styles
+
+The in-progress task indicator uses an animated spinner. Cycle through styles in the **Settings tab** using `Enter` or `◀`/`▶` on the **Spinner** row:
+
+| Style | Frames | Speed |
+|-------|--------|-------|
+| **Progress** (default) | Nerd Font progress icons | 100ms |
+| **Dots** | Braille dots `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | 100ms |
+| **Braille** | Braille pattern `⣷⣯⣟⡿⢿⣻⣽⣾` | 100ms |
+| **Classic** | ASCII `\|/-\\` | 150ms |
+
 ## Knowledge Base
 
 Argus includes a built-in FTS5 full-text search store that indexes Obsidian vault markdown files. The KB is exposed as an MCP server (port 7742) and auto-injected into every agent worktree, giving agents access to your notes and documentation.

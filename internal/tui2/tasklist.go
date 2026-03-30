@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -39,7 +40,7 @@ type TaskListView struct {
 	running       map[string]bool
 	idle          map[string]bool
 	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
-	tickEven      bool            // toggles each tick for status icon animation
+	animFrame     int             // current spinner frame (time-based, updated in Draw)
 
 	cursor   int
 	offset   int // scroll offset
@@ -132,9 +133,12 @@ func (tl *TaskListView) SetIdleUnvisited(ids []string) {
 	}
 }
 
-// Tick toggles the animation frame for status icons.
-func (tl *TaskListView) Tick() {
-	tl.tickEven = !tl.tickEven
+// updateSpinnerFrame computes the current spinner frame from wall clock time.
+func (tl *TaskListView) updateSpinnerFrame() {
+	interval := model.SpinnerTickInterval()
+	if interval > 0 {
+		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % model.SpinnerFrameCount()
+	}
 }
 
 // SelectedTask returns the task at the current cursor, or nil.
@@ -681,6 +685,7 @@ func (tl *TaskListView) PasteHandler() func(pastedText string, setFocus func(p t
 
 // Draw renders the task list.
 func (tl *TaskListView) Draw(screen tcell.Screen) {
+	tl.updateSpinnerFrame()
 	tl.Box.DrawForSubclass(screen, tl)
 	x, y, width, height := tl.GetInnerRect()
 	if width <= 0 || height <= 0 {
@@ -790,10 +795,7 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 		if allInProgressIdle {
 			return '☾', tcell.StyleDefault.Foreground(ColorInProgress)
 		}
-		if tl.tickEven {
-			return '\uF192', StyleInProgress
-		}
-		return '\uF10C', StyleInProgress
+		return model.SpinnerFrame(tl.animFrame), StyleInProgress
 	case hasInReview:
 		return '◎', StyleInReview
 	case hasComplete && !hasPending:
@@ -884,13 +886,9 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			// Session absent or idle (waiting for input) — moon icon.
 			statusChar = '☾'
 			statusStyle = StyleInProgress
-		} else if tl.tickEven {
-			// Actively running — animated alternate frame (nerd font dot-circle-o).
-			statusChar = '\uF192'
-			statusStyle = StyleInProgress
 		} else {
-			// Actively running — animated default frame (nerd font circle-o).
-			statusChar = '\uF10C'
+			// Actively running — animated spinner (nerd font progress spinner).
+			statusChar = model.SpinnerFrame(tl.animFrame)
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:

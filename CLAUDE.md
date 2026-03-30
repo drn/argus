@@ -79,6 +79,7 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
   - `handle.go` — `RemoteSession` implementing `SessionHandle`. Local `RingBuffer` populated by stream reader. RPC calls for WriteInput, Resize, PTYSize, etc.
   - `stream.go` — Goroutine reads raw bytes from daemon stream connection into local ring buffer.
 - `internal/gitutil/` — Git operations, diff parsing, changed files. Pure Go with no UI dependencies. Used by tui2 for git status, file diffs, and worktree management.
+- `internal/spinner/` — Reusable spinner animation definitions. Each `Spinner` has a `Style`, `Label`, `Frames` (rune slice), and `TickInterval`. Built-in styles: Progress (nerdfont ee06–ee0b, 100ms), Dots (braille dots, 100ms), Braille (braille pattern, 100ms), Classic (ASCII, 150ms). Configurable via `ui.spinner` setting. `model.SetActiveSpinner()` switches at runtime; `model.SpinnerFrame(tick)` delegates to the active spinner.
 - `internal/skills/` — Skill loading for autocomplete. Scans `~/.claude/skills/` and project-specific skill directories.
 - `internal/vault/` — Vault file watcher for auto-task creation. Uses fsnotify to watch the Argus vault directory for new `.md` files, auto-creates tasks via `HeadlessCreateTask`. Debounces iCloud sync. Wired into daemon lifecycle.
 - `internal/api/` — HTTP REST API for remote control. Bearer token auth, CORS, task CRUD, output viewing, PTY input, SSE streaming. Binds `0.0.0.0` for Tailscale access. Port-probing pattern from MCP server.

@@ -95,6 +95,7 @@ type UIConfig struct {
 	ShowElapsed      bool   `toml:"show_elapsed"`
 	ShowIcons        bool   `toml:"show_icons"`
 	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
+	SpinnerStyle     string `toml:"spinner_style"`
 }
 
 // SandboxConfig controls OS-level sandboxing of agent processes.
@@ -130,9 +131,10 @@ func DefaultConfig() Config {
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),
 		UI: UIConfig{
-			Theme:       "default",
-			ShowElapsed: true,
-			ShowIcons:   true,
+			Theme:        "default",
+			ShowElapsed:  true,
+			ShowIcons:    true,
+			SpinnerStyle: "progress",
 		},
 		KB: KBConfig{
 			HTTPPort:          7742,
