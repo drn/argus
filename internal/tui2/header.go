@@ -104,10 +104,9 @@ func (h *Header) Draw(screen tcell.Screen) {
 		noticeStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorInProgress)
 		textStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorNormal)
 
-		col := x + 1 // 1 cell left padding
+		col := x + 1 // left padding
 		screen.SetContent(col, y, spinnerRune, nil, noticeStyle)
-		col++
-		col++ // space after spinner
+		col += 2 // advance past spinner + gap
 		for _, r := range h.noticeText {
 			if col >= x+width {
 				break
@@ -115,7 +114,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 			screen.SetContent(col, y, r, nil, textStyle)
 			col++
 		}
-		noticeEnd = col + 1 // 1 cell padding after notice
+		noticeEnd = col + 1 // gap between notice and tab segments
 	}
 
 	// Compute total width of all tab segments to center them.

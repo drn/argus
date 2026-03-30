@@ -70,6 +70,10 @@ func TestHeader_DrawWithNotice(t *testing.T) {
 	if !strings.Contains(all, "Cleaning worktrees (1/5)") {
 		t.Errorf("notice text not found in screen output: %q", all)
 	}
+	// Tab labels should still be visible alongside notice.
+	if !strings.Contains(all, "Tasks") {
+		t.Errorf("tab labels missing when notice is active: %q", all)
+	}
 }
 
 func TestHeader_DrawWithoutNotice(t *testing.T) {

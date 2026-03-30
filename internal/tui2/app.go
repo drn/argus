@@ -2597,8 +2597,12 @@ func (a *App) deleteTask(t *model.Task) {
 }
 
 // pruneCompletedTasks removes all completed tasks, cleaning up worktrees and branches.
-// Shows a progress modal during cleanup to prevent premature TUI exit.
+// Progress is shown via a non-blocking header notice while cleanup runs in background goroutines.
 func (a *App) pruneCompletedTasks() {
+	// Guard against re-entrancy (rapid double Ctrl+R).
+	if a.header.Notice() != "" {
+		return
+	}
 	pruned, err := a.db.PruneCompleted()
 	if err != nil {
 		uxlog.Log("[tui2] prune error: %v", err)
@@ -2648,7 +2652,12 @@ func (a *App) pruneCompletedTasks() {
 		orphanCount = countOrphanedWorktrees(a.wtRoot, knownPaths)
 	}
 
-	totalClean := len(toClean) + orphanCount
+	// Each task worktree is one unit; orphan sweep is one batch unit.
+	orphanUnits := 0
+	if orphanCount > 0 {
+		orphanUnits = 1
+	}
+	totalClean := len(toClean) + orphanUnits
 
 	if totalClean == 0 {
 		a.refreshTasksLocal()
