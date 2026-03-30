@@ -93,6 +93,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Per-project sandbox config:** 3 columns on `projects` table. `ResolveSandboxConfig()` merges global + per-project.
 - **Per-project `DenyRead`/`ExtraWrite` are only editable outside the TUI (DB or API).** The project form only exposes the Enabled toggle. Paths are preserved through form round-trips but cannot be viewed or cleared via the form. Deleting and re-creating a project erases its per-project paths.
 - **SBPL has no `pseudo-terminal*` operation.** PTY device access requires explicit file-write rules: `(allow file-write* (regex #"^/dev/ptmx$"))` and `(allow file-write* (regex #"^/dev/ttys[0-9]+$"))`. Invalid operation names cause `sandbox-exec: unbound variable` at runtime. `TestGenerateSandboxConfig_ProfileValid` catches this by running `sandbox-exec /usr/bin/true` with the generated profile.
+- **Must allow `lsopen` for OAuth browser login flow.** `(deny default)` blocks Launch Services. Without `(allow lsopen)`, `open <url>` fails with `LSOpenURLsWithCompletionHandler() failed with error -54`, preventing Claude Code from opening a browser for OAuth login/token refresh. Symptom: agent prompts for `/login` when token expires during a sandboxed session.
 - **Verify profile in effect:** Read the temp `.sb` file logged in `~/.argus/daemon.log`.
 
 ### Key Bindings & Navigation
