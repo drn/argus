@@ -37,18 +37,16 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing HOME param reference:\n%s", profile)
 	}
 
-	// Profile must deny default credential dirs
-	for _, expected := range []string{"/.ssh", "/.aws", "/.gnupg", "/.kube"} {
+	// Profile must deny credential dirs (but NOT .ssh — needed for git over SSH)
+	for _, expected := range []string{"/.aws", "/.gnupg", "/.kube"} {
 		if !strings.Contains(profile, expected) {
 			t.Errorf("profile missing deny for %q:\n%s", expected, profile)
 		}
 	}
 
-	// Profile must allow read access to SSH non-secret files for git remote ops
-	for _, allowed := range []string{"/.ssh/known_hosts\")", "/.ssh/known_hosts2\")", "/.ssh/config\")"} {
-		if !strings.Contains(profile, allowed) {
-			t.Errorf("profile missing SSH allow for %q:\n%s", allowed, profile)
-		}
+	// Profile must NOT deny .ssh reads (SSH keys needed for git push/fetch)
+	if strings.Contains(profile, `(deny file-read* (subpath (string-append (param "HOME") "/.ssh"))`) {
+		t.Errorf("profile should not deny ~/.ssh reads — needed for git over SSH:\n%s", profile)
 	}
 
 	// Profile must allow writes to ~/.claude.json and ~/.claude/ for Claude Code startup
@@ -199,8 +197,10 @@ func TestResolveGitDir(t *testing.T) {
 		os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
 
 		result := resolveGitDir(wtDir)
-		if result != gitDir {
-			t.Errorf("expected %q, got %q", gitDir, result)
+		// resolveGitDir returns symlink-resolved paths (e.g., /var → /private/var on macOS)
+		wantGitDir := evalSymlinksOrKeep(gitDir)
+		if result != wantGitDir {
+			t.Errorf("expected %q, got %q", wantGitDir, result)
 		}
 	})
 
@@ -493,12 +493,11 @@ func TestSandbox_CredentialDirsBlocked(t *testing.T) {
 	cfg := config.SandboxConfig{}
 	homeDir, _ := os.UserHomeDir()
 
-	// Test credential directories that should be blocked
+	// Test credential directories that should be blocked (NOT .ssh — needed for git)
 	credDirs := []struct {
 		name string
 		path string
 	}{
-		{"ssh", homeDir + "/.ssh"},
 		{"aws", homeDir + "/.aws"},
 		{"gnupg", homeDir + "/.gnupg"},
 		{"kube", homeDir + "/.kube"},
@@ -517,15 +516,15 @@ func TestSandbox_CredentialDirsBlocked(t *testing.T) {
 		})
 	}
 
-	// SSH known_hosts should be readable (allowed exception)
-	t.Run("allows_ssh_known_hosts", func(t *testing.T) {
-		knownHosts := homeDir + "/.ssh/known_hosts"
-		if _, err := os.Stat(knownHosts); os.IsNotExist(err) {
-			t.Skip("~/.ssh/known_hosts does not exist")
+	// SSH directory should be fully readable (needed for git push/fetch over SSH)
+	t.Run("allows_ssh_dir", func(t *testing.T) {
+		sshDir := homeDir + "/.ssh"
+		if _, err := os.Stat(sshDir); os.IsNotExist(err) {
+			t.Skip("~/.ssh does not exist")
 		}
-		out, err := sandboxRun(t, wtDir, cfg, "cat "+shellQuote(knownHosts))
+		out, err := sandboxRun(t, wtDir, cfg, "ls "+shellQuote(sshDir))
 		if err != nil {
-			t.Fatalf("reading ~/.ssh/known_hosts should be allowed: %v\n%s", err, out)
+			t.Fatalf("reading ~/.ssh should be allowed for git over SSH: %v\n%s", err, out)
 		}
 	})
 }

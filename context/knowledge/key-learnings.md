@@ -87,8 +87,9 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 ### Sandbox (macOS sandbox-exec)
 
 - **sandbox-exec uses SBPL profiles, not JSON.** `GenerateSandboxConfig()` returns `(profilePath, params, cleanup, err)`.
-- **SBPL symlink trap:** Deny rules on symlinked paths don't work — kernel resolves symlinks first. Never test with `/tmp` paths (symlink to `/private/tmp`). Use `$HOME`-relative paths.
+- **SBPL symlink trap:** All SBPL rules (deny AND allow) must use symlink-resolved paths — kernel resolves symlinks before matching. `evalSymlinksOrKeep()` resolves HOME, WORKTREE, git dir, and custom paths. Without this, rules containing `/var/folders/...` silently fail against kernel-resolved `/private/var/folders/...`.
 - **Must allow writes to:** `~/.claude.json`, `~/.claude/` (or Claude hangs silently), `/var/folders` (macOS temp dirs), and the main repo's `.git` dir (for worktree git operations — `resolveGitDir()` handles this automatically).
+- **SSH keys must be readable for git over SSH.** The profile does NOT deny `~/.ssh` reads — blocking SSH private keys breaks `git push`/`git fetch`. Since `(allow network*)` is already granted, denying key reads provides minimal security benefit. Other credential dirs (`.aws`, `.gnupg`, `.kube`, `.config/gcloud`) remain denied.
 - **No domain-level network filtering.** sandbox-exec works at socket/address level. Argus uses `(allow network*)`.
 - **Per-project sandbox config:** 3 columns on `projects` table. `ResolveSandboxConfig()` merges global + per-project.
 - **Per-project `DenyRead`/`ExtraWrite` are only editable outside the TUI (DB or API).** The project form only exposes the Enabled toggle. Paths are preserved through form round-trips but cannot be viewed or cleared via the form. Deleting and re-creating a project erases its per-project paths.
