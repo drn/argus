@@ -185,18 +185,22 @@ func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
 	}
 }
 
-func TestTaskListView_Tick(t *testing.T) {
+func TestTaskListView_UpdateSpinnerFrame(t *testing.T) {
+	model.SetActiveSpinner("progress")
+	defer model.SetActiveSpinner("progress")
+
 	tl := NewTaskListView()
-	if tl.tickEven {
-		t.Error("tickEven should start false")
+	tl.updateSpinnerFrame()
+	// Frame should be a valid index for the active spinner.
+	if tl.animFrame < 0 || tl.animFrame >= model.SpinnerFrameCount() {
+		t.Errorf("animFrame %d out of range [0, %d)", tl.animFrame, model.SpinnerFrameCount())
 	}
-	tl.Tick()
-	if !tl.tickEven {
-		t.Error("tickEven should be true after one tick")
-	}
-	tl.Tick()
-	if tl.tickEven {
-		t.Error("tickEven should be false after two ticks")
+
+	// Switching spinner style produces valid frames too.
+	model.SetActiveSpinner("classic")
+	tl.updateSpinnerFrame()
+	if tl.animFrame < 0 || tl.animFrame >= model.SpinnerFrameCount() {
+		t.Errorf("classic: animFrame %d out of range [0, %d)", tl.animFrame, model.SpinnerFrameCount())
 	}
 }
 
@@ -233,7 +237,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			name:     "in progress running",
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
 			running:  map[string]bool{"1": true},
-			wantChar: '\uF10C', // tickEven is false (nerd font circle-o)
+			wantChar: '\uEE06', // animFrame=0 (spinner frame 1)
 		},
 		{
 			name:     "all complete",
@@ -272,7 +276,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			if tl.idle == nil {
 				tl.idle = map[string]bool{}
 			}
-			tl.tickEven = false
+			tl.animFrame = 0
 			icon, _ := tl.projectStatusIcon(tt.tasks)
 			if icon != tt.wantChar {
 				t.Errorf("projectStatusIcon() = %c, want %c", icon, tt.wantChar)
@@ -376,7 +380,7 @@ func TestTaskListView_IdleUnvisitedPromotion(t *testing.T) {
 	tl.idleUnvisited = map[string]bool{"1": true}
 	tl.running = map[string]bool{"1": true}
 	tl.idle = map[string]bool{"1": true}
-	tl.tickEven = false
+	tl.animFrame = 0
 
 	// Project icon should be InReview (◎) when the only InProgress task is idleUnvisited.
 	icon, _ := tl.projectStatusIcon(tasks)
@@ -554,18 +558,14 @@ func TestTaskListView_RunningTaskAnimation(t *testing.T) {
 	tl.running = map[string]bool{"1": true}
 	tl.idle = map[string]bool{}
 
-	// tickEven=false: running task at project level should show \uF10C (nerd font circle-o)
-	tl.tickEven = false
-	icon, _ := tl.projectStatusIcon(tasks)
-	if icon != '\uF10C' {
-		t.Errorf("tickEven=false: got %c, want \\uF10C", icon)
-	}
-
-	// tickEven=true: running task at project level should show \uF192 (nerd font dot-circle-o)
-	tl.tickEven = true
-	icon, _ = tl.projectStatusIcon(tasks)
-	if icon != '\uF192' {
-		t.Errorf("tickEven=true: got %c, want \\uF192", icon)
+	// Each tick advances through the 6 spinner frames (ee06–ee0b).
+	expected := []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}
+	for i, want := range expected {
+		tl.animFrame = i
+		icon, _ := tl.projectStatusIcon(tasks)
+		if icon != want {
+			t.Errorf("animFrame=%d: got %U, want %U", i, icon, want)
+		}
 	}
 }
 

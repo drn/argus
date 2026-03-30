@@ -197,6 +197,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.todos = NewToDosView()
 	app.todos.SetApp(app.tapp)
 	cfg := database.Config()
+	model.SetActiveSpinner(cfg.UI.SpinnerStyle)
 	vaultPath := cfg.KB.ArgusVaultPath
 	if vaultPath == "" {
 		vaultPath = config.DefaultArgusVaultPath()
@@ -327,6 +328,7 @@ func (a *App) Run() error {
 	a.tapp.EnablePaste(true)
 
 	go a.tickLoop()
+	go a.spinnerLoop()
 	defer close(a.tickDone)
 
 	uxlog.Log("[tui2] starting tcell/tview application")
@@ -344,6 +346,29 @@ func (a *App) tickLoop() {
 			return
 		case <-ticker.C:
 			a.onTick()
+		}
+	}
+}
+
+// spinnerLoop triggers redraws for smooth spinner animation.
+// Polls at 100ms (the fastest spinner's TickInterval). The actual frame
+// selection is time-based in updateSpinnerFrame, so this just ensures
+// redraws happen often enough. Only fires when tasks are running.
+func (a *App) spinnerLoop() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.tickDone:
+			return
+		case <-ticker.C:
+			a.mu.Lock()
+			hasRunning := len(a.runningIDs) > 0
+			a.mu.Unlock()
+			if hasRunning {
+				a.tapp.QueueUpdateDraw(func() {})
+			}
 		}
 	}
 }
@@ -811,7 +836,6 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
 	a.syncIdleUnvisited()
-	a.tasklist.Tick()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
 

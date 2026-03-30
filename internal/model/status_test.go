@@ -53,16 +53,58 @@ func TestStatus_Display(t *testing.T) {
 	}
 }
 
-func TestStatus_DisplayAlt(t *testing.T) {
-	if got := StatusInProgress.DisplayAlt(); got != "\uF192" {
-		t.Errorf("InProgress.DisplayAlt() = %q, want dot-circle-o", got)
+func TestSpinnerFrame(t *testing.T) {
+	// Default (progress): 6 frames cycling through ee06–ee0b.
+	SetActiveSpinner("progress")
+	defer SetActiveSpinner("progress")
+
+	expected := []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}
+	for i, want := range expected {
+		if got := SpinnerFrame(i); got != want {
+			t.Errorf("SpinnerFrame(%d) = %U, want %U", i, got, want)
+		}
 	}
-	// Non-animated statuses return same as Display
-	if got := StatusPending.DisplayAlt(); got != "\uF10C" {
-		t.Errorf("Pending.DisplayAlt() = %q", got)
+	// Wraps around.
+	if got := SpinnerFrame(6); got != '\uEE06' {
+		t.Errorf("SpinnerFrame(6) = %U, want %U (wrap)", got, '\uEE06')
 	}
-	if got := Status(99).DisplayAlt(); got != "unknown(99)" {
-		t.Errorf("out-of-range DisplayAlt() = %q", got)
+}
+
+func TestSetActiveSpinner(t *testing.T) {
+	defer SetActiveSpinner("progress")
+
+	SetActiveSpinner("classic")
+	if got := SpinnerFrameCount(); got != 4 {
+		t.Errorf("classic FrameCount = %d, want 4", got)
+	}
+	if got := SpinnerFrame(0); got != '|' {
+		t.Errorf("classic Frame(0) = %c, want |", got)
+	}
+
+	// Unknown style falls back to progress.
+	SetActiveSpinner("nonexistent")
+	if got := SpinnerFrameCount(); got != 6 {
+		t.Errorf("fallback FrameCount = %d, want 6", got)
+	}
+}
+
+func TestStatus_DisplayForFrame(t *testing.T) {
+	SetActiveSpinner("progress")
+	defer SetActiveSpinner("progress")
+
+	// InProgress cycles through spinner frames.
+	if got := StatusInProgress.DisplayForFrame(0); got != string('\uEE06') {
+		t.Errorf("InProgress.DisplayForFrame(0) = %q, want spinner frame 0", got)
+	}
+	if got := StatusInProgress.DisplayForFrame(3); got != string('\uEE09') {
+		t.Errorf("InProgress.DisplayForFrame(3) = %q, want spinner frame 3", got)
+	}
+	// Non-animated statuses ignore frame.
+	if got := StatusPending.DisplayForFrame(0); got != "\uF10C" {
+		t.Errorf("Pending.DisplayForFrame(0) = %q", got)
+	}
+	if got := StatusComplete.DisplayForFrame(5); got != "\uF00C" {
+		t.Errorf("Complete.DisplayForFrame(5) = %q", got)
 	}
 }
 

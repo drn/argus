@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/spinner"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -32,6 +33,7 @@ const (
 	srReviewPrompt
 	srAPI
 	srDaemon
+	srSpinner
 )
 
 // settingsRow is a single row in the settings section list.
@@ -75,6 +77,9 @@ type SettingsView struct {
 	apiEnabledAtBoot bool // value when daemon started; used to show "restart required"
 	apiBootRecorded  bool // true after first Refresh captures boot value
 	apiPort          int
+
+	// Spinner.
+	spinnerStyle string // current spinner style name
 
 	// ToDo defaults.
 	todoProject  string   // current default todo project
@@ -189,6 +194,12 @@ func (sv *SettingsView) Refresh() {
 	sv.apiPort = cfg.API.HTTPPort
 	if sv.apiPort == 0 {
 		sv.apiPort = 7743
+	}
+
+	// Spinner.
+	sv.spinnerStyle = cfg.UI.SpinnerStyle
+	if sv.spinnerStyle == "" {
+		sv.spinnerStyle = string(spinner.StyleProgress)
 	}
 
 	// ToDo defaults.
@@ -314,6 +325,10 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srReviewPrompt, label: rpLabel, key: "_review_prompt"})
 
+	// Spinner style.
+	spinLabel := fmt.Sprintf("  Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
+	sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
+
 	// Logs section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
 	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
@@ -413,14 +428,22 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		sv.moveCursor(1)
 		return true
 	case tcell.KeyLeft:
-		if sv.currentSection() == srToDoProject {
+		switch sv.currentSection() {
+		case srToDoProject:
 			sv.cycleTodoProject(-1)
+			return true
+		case srSpinner:
+			sv.cycleSpinner(-1)
 			return true
 		}
 		return false
 	case tcell.KeyRight:
-		if sv.currentSection() == srToDoProject {
+		switch sv.currentSection() {
+		case srToDoProject:
 			sv.cycleTodoProject(1)
+			return true
+		case srSpinner:
+			sv.cycleSpinner(1)
 			return true
 		}
 		return false
@@ -553,6 +576,9 @@ func (sv *SettingsView) handleEnter() bool {
 	case srToDoProject:
 		sv.cycleTodoProject(1)
 		return true
+	case srSpinner:
+		sv.cycleSpinner(1)
+		return true
 	case srReviewPrompt:
 		sv.editingPrompt = true
 		sv.editPromptBuf = sv.reviewPrompt
@@ -678,6 +704,23 @@ func (sv *SettingsView) cycleTodoProject(dir int) {
 	sv.rebuildRows()
 }
 
+// cycleSpinner cycles the spinner style forward or backward.
+func (sv *SettingsView) cycleSpinner(dir int) {
+	var next spinner.Style
+	if dir > 0 {
+		next = spinner.Next(spinner.Style(sv.spinnerStyle))
+	} else {
+		next = spinner.Prev(spinner.Style(sv.spinnerStyle))
+	}
+	sv.spinnerStyle = string(next)
+	if err := sv.database.SetConfigValue("ui.spinner", sv.spinnerStyle); err != nil {
+		uxlog.Log("[settings] failed to persist spinner style: %v", err)
+	}
+	model.SetActiveSpinner(sv.spinnerStyle)
+	uxlog.Log("[settings] spinner style set to %q", sv.spinnerStyle)
+	sv.rebuildRows()
+}
+
 // --- Draw ---
 
 func (sv *SettingsView) Draw(screen tcell.Screen) {
@@ -774,6 +817,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
 	case srToDoProject:
 		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
+	case srSpinner:
+		sv.renderSpinnerDetail(screen, innerX, innerY, innerW, innerH)
 	case srReviewPrompt:
 		sv.renderReviewPromptDetail(screen, innerX, innerY, innerW, innerH)
 	case srLogs:
@@ -1020,6 +1065,43 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Spinner Style", StyleTitle)
+	r := 2
+
+	active := spinner.Get(spinner.Style(sv.spinnerStyle))
+	drawText(screen, x, y+r, w, active.Label, tcell.StyleDefault.Foreground(ColorComplete))
+	r++
+
+	// Show a preview of the spinner frames.
+	preview := "  Frames: "
+	for _, f := range active.Frames {
+		preview += string(f) + " "
+	}
+	drawText(screen, x, y+r, w, preview, StyleDimmed)
+	r += 2
+
+	// List all available styles.
+	drawText(screen, x, y+r, w, "Available styles:", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	for _, s := range spinner.All {
+		if r >= h {
+			break
+		}
+		label := "  " + s.Label
+		style := StyleDimmed
+		if s.Style == active.Style {
+			style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+		}
+		drawText(screen, x, y+r, w, label, style)
+		r++
+	}
+
+	if r+1 < h {
+		drawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", StyleDimmed)
 	}
 }
 

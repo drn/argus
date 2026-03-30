@@ -1430,6 +1430,24 @@ Replaced 5 separate `notifyCursorChange()` call sites with a single `defer` that
 - `buildChildTree` sorts files alphabetically at each level — test assertions must account for sort order, not insertion order
 - `skipToLastChild` scans the full subtree depth (all indent > 0 rows), not just immediate children — this is intentional for the "enter folder from below" UX
 
+## Configurable Spinner Animation: 2026-03-30
+
+### Data Model
+- **`internal/spinner/`** — Reusable package. `Spinner{Style, Label, Frames, TickInterval}`. 4 built-in styles: Progress (nerdfont, 6f, 100ms), Dots (braille dots, 10f, 100ms), Braille (braille pattern, 8f, 100ms), Classic (ASCII, 4f, 150ms).
+- **`model.activeSpinner`** — Package-level active spinner. `SetActiveSpinner(style)` swaps it; `SpinnerFrame(tick)`, `SpinnerFrameCount()`, `SpinnerTickInterval()` delegate.
+- **`config.UIConfig.SpinnerStyle`** — String field, persisted as `ui.spinner` in DB config table. Default: `"progress"`.
+
+### Flow
+- App startup: `model.SetActiveSpinner(cfg.UI.SpinnerStyle)` in `NewApp`.
+- Settings UI: `srSpinner` row, `cycleSpinner(dir)` cycles via `spinner.Next/Prev`, persists to DB, calls `model.SetActiveSpinner` for immediate effect.
+- Animation: `updateSpinnerFrame()` computes frame from `time.Now().UnixMilli() / tickInterval` in `Draw()`. `spinnerLoop` (100ms goroutine) triggers redraws when tasks are running.
+- Used in `projectStatusIcon` and `drawTaskRow` for in-progress tasks.
+
+### Gotchas
+- Replaced `tickEven bool` toggle → time-based frame computation. Old 1-second tick was too slow for 100ms frames.
+- `spinnerLoop` only fires `QueueUpdateDraw` when `len(runningIDs) > 0` — avoids wasted redraws when idle.
+- Tests set `animFrame` directly (don't call `updateSpinnerFrame`) since time-based computation is non-deterministic.
+
 ## Tick Goroutine Thread Safety Fix: 2026-03-30
 
 ### Problem

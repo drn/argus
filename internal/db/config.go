@@ -52,6 +52,7 @@ func (d *DB) Config() config.Config {
 		{"keybindings.prompt", &cfg.Keybindings.Prompt},
 		{"keybindings.worktree", &cfg.Keybindings.Worktree},
 		{"ui.theme", &cfg.UI.Theme},
+		{"ui.spinner", &cfg.UI.SpinnerStyle},
 	}
 	for _, f := range stringFields {
 		if v, ok := kv[f.key]; ok {
