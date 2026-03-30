@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -27,6 +28,8 @@ import (
 )
 
 var prURLRe = regexp.MustCompile(`https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+`)
+
+const prScanTailSize = 32 * 1024 // bytes of session output to scan for PR URLs
 
 // viewMode identifies the active view.
 type viewMode int
@@ -141,7 +144,8 @@ type App struct {
 	restartedClient  *dclient.Client // set after daemon restart
 
 	// Tick control
-	tickDone chan struct{}
+	tickDone            chan struct{}
+	tickCallbackPending atomic.Bool // debounce: skip enqueue if prior callback hasn't run
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -364,7 +368,7 @@ func (a *App) onTick() {
 				continue // no new output since last scan
 			}
 			a.prScanTW[rid] = tw
-			tail := sess.RecentOutputTail(32 * 1024)
+			tail := sess.RecentOutputTail(prScanTailSize)
 			if matches := prURLRe.FindAll(tail, -1); len(matches) > 0 {
 				url := string(matches[len(matches)-1])
 				if t, err := a.db.Get(rid); err == nil && t.PRURL != url {
@@ -382,19 +386,90 @@ func (a *App) onTick() {
 		}
 	}
 
+	// Read daemon state for health check BEFORE QueueUpdateDraw — daemon
+	// fields are protected by a.mu and don't touch tview widgets.
 	a.mu.Lock()
-	a.refreshTasksWithIDs(runningIDs, idleIDs)
 	checkDaemon := a.daemonConnected && a.daemonClient != nil
-	taskID := ""
-	if a.mode == modeAgent {
-		taskID = a.agentState.TaskID
-	}
-	if a.pruneModal != nil {
-		a.pruneModal.Tick()
-	}
 	a.mu.Unlock()
 
-	// Daemon health check
+	// All UI state modifications must run on the tview main goroutine.
+	// TaskListView (rows, cursor, expanded), preview panels, agent pane,
+	// and reviews have no internal mutex — concurrent access from the tick
+	// goroutine races with Draw() and InputHandler() on the tview goroutine.
+	// This single QueueUpdateDraw replaces the previous pattern of separate
+	// QueueUpdateDraw calls per UI mode (agent pane, empty no-op, etc.).
+	//
+	// Debounce: skip enqueue if a prior tick callback hasn't run yet.
+	// Prevents unbounded queueing when the tview goroutine is slow.
+	if !a.tickCallbackPending.CompareAndSwap(false, true) {
+		goto healthCheck
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		a.tickCallbackPending.Store(false)
+		// Lock a.mu to protect App-level fields (mode, agentState,
+		// pruneModal, tasks, runningIDs) during refresh.
+		a.mu.Lock()
+		a.refreshTasksWithIDs(runningIDs, idleIDs)
+		taskID := ""
+		if a.mode == modeAgent {
+			taskID = a.agentState.TaskID
+		}
+		if a.pruneModal != nil {
+			a.pruneModal.Tick()
+		}
+		a.mu.Unlock()
+
+		// Refresh task list side panels.
+		// Note: refreshPreview can be expensive for large session logs on
+		// first load (up to 256KB ring buffer copy + VT emulator feed), but
+		// the TotalWritten/LogSize cache short-circuits on subsequent calls.
+		if previewTaskID := a.taskPreview.TaskID(); previewTaskID != "" && a.mode == modeTaskList {
+			a.refreshPreview(previewTaskID)
+			// Also refresh git status for the selected task periodically.
+			// lastTaskGitRefresh is only accessed on the tview goroutine.
+			if sel := a.tasklist.SelectedTask(); sel != nil && sel.Worktree != "" && time.Since(a.lastTaskGitRefresh) > 3*time.Second {
+				a.lastTaskGitRefresh = time.Now()
+				go a.fetchTaskGitStatus(sel.ID, sel.Worktree)
+			}
+		}
+
+		// Update agent pane session (taskID is non-empty only in agent mode).
+		if taskID != "" {
+			sess := a.runner.Get(taskID)
+			if sess != nil {
+				a.agentPane.SetSession(sess)
+			}
+			// Refresh git status periodically.
+			// lastGitRefresh is only accessed on the tview goroutine.
+			if a.worktreeDir != "" && time.Since(a.lastGitRefresh) > 3*time.Second {
+				go a.fetchGitStatus(taskID, a.worktreeDir)
+			}
+		}
+
+		// Reviews tab: check diff/comment staleness.
+		if a.header.ActiveTab() == TabReviews && a.reviews.SelectedPR() != nil {
+			if a.reviews.IsDiffStale() && !a.reviews.DiffFetching() {
+				a.reviews.fetchDiffAndComments(a)
+			} else if a.reviews.AreCommentsStale() && !a.reviews.CommentsFetching() {
+				pr := a.reviews.SelectedPR()
+				a.reviews.commentsFetching = true
+				go func() {
+					comments, err := github.FetchPRComments(pr.RepoOwner, pr.Repo, pr.Number)
+					a.tapp.QueueUpdateDraw(func() {
+						if err != nil {
+							uxlog.Log("[reviews] tick comment refresh error: %v", err)
+							a.reviews.commentsFetching = false
+							return
+						}
+						a.reviews.SetComments(comments)
+					})
+				}()
+			}
+		}
+	})
+
+healthCheck:
+	// Daemon health check — uses RPC (slow), must stay on tick goroutine.
 	if checkDaemon {
 		a.mu.Lock()
 		restarting := a.daemonRestarting
@@ -417,57 +492,6 @@ func (a *App) onTick() {
 				a.daemonFailures = 0
 				a.mu.Unlock()
 			}
-		}
-	}
-
-	// Refresh task list side panels.
-	if previewTaskID := a.taskPreview.TaskID(); previewTaskID != "" && a.mode == modeTaskList {
-		a.refreshPreview(previewTaskID)
-		// Also refresh git status for the selected task periodically.
-		if sel := a.tasklist.SelectedTask(); sel != nil && sel.Worktree != "" && time.Since(a.lastTaskGitRefresh) > 3*time.Second {
-			a.lastTaskGitRefresh = time.Now()
-			go a.fetchTaskGitStatus(sel.ID, sel.Worktree)
-		}
-	}
-
-	// Update agent pane session
-	if taskID != "" {
-		sess := a.runner.Get(taskID)
-
-		// PTY size sync moved to startAgentRedrawLoop (200ms) for faster
-		// initial resize. The tick no longer calls SyncPTYSize.
-
-		a.tapp.QueueUpdateDraw(func() {
-			if sess != nil {
-				a.agentPane.SetSession(sess)
-			}
-			// Refresh git status periodically
-			if a.worktreeDir != "" && time.Since(a.lastGitRefresh) > 3*time.Second {
-				go a.fetchGitStatus(taskID, a.worktreeDir)
-			}
-		})
-	} else {
-		a.tapp.QueueUpdateDraw(func() {})
-	}
-
-	// Reviews tab: check diff/comment staleness.
-	if a.header.ActiveTab() == TabReviews && a.reviews.SelectedPR() != nil {
-		if a.reviews.IsDiffStale() && !a.reviews.DiffFetching() {
-			a.reviews.fetchDiffAndComments(a)
-		} else if a.reviews.AreCommentsStale() && !a.reviews.CommentsFetching() {
-			pr := a.reviews.SelectedPR()
-			a.reviews.commentsFetching = true
-			go func() {
-				comments, err := github.FetchPRComments(pr.RepoOwner, pr.Repo, pr.Number)
-				a.tapp.QueueUpdateDraw(func() {
-					if err != nil {
-						uxlog.Log("[reviews] tick comment refresh error: %v", err)
-						a.reviews.commentsFetching = false
-						return
-					}
-					a.reviews.SetComments(comments)
-				})
-			}()
 		}
 	}
 }
@@ -1521,7 +1545,9 @@ func (a *App) fetchTaskGitStatus(taskID, dir string) {
 }
 
 // refreshPreview fetches output for the selected task and pre-renders cells.
-// Called from the tick goroutine — RPC and file I/O are safe here.
+// Called from the tview main goroutine (via QueueUpdateDraw in onTick).
+// The TotalWritten/LogSize cache short-circuits on repeated calls; first
+// load of a large dead session may briefly block the UI.
 func (a *App) refreshPreview(taskID string) {
 	w, h := a.taskPreview.DrawSize()
 	if w <= 0 || h <= 0 {
