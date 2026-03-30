@@ -34,10 +34,8 @@ const sandboxProfileBase = `(version 1)
 ; Allow Launch Services open (needed for OAuth browser login flow)
 (allow lsopen)
 (allow file-read*)
-(deny file-read* (subpath (string-append (param "HOME") "/.ssh")))
-(allow file-read* (literal (string-append (param "HOME") "/.ssh/known_hosts")))
-(allow file-read* (literal (string-append (param "HOME") "/.ssh/known_hosts2")))
-(allow file-read* (literal (string-append (param "HOME") "/.ssh/config")))
+; SSH keys are allowed — needed for git push/fetch over SSH.
+; Blocking reads provides minimal security since (allow network*) is granted.
 (deny file-read* (subpath (string-append (param "HOME") "/.gnupg")))
 (deny file-read* (subpath (string-append (param "HOME") "/.aws")))
 (deny file-read* (subpath (string-append (param "HOME") "/.kube")))
@@ -93,11 +91,17 @@ func ResetSandboxCache() {
 // The worktreePath is granted write access. Custom deny/allow paths from sandboxCfg
 // are appended to the base profile.
 // Returns the profile path, params slice (HOME=..., WORKTREE=...), cleanup func, and error.
+//
+// All paths are resolved through filepath.EvalSymlinks before being written to the
+// SBPL profile. The macOS kernel resolves symlinks before matching sandbox rules,
+// so unresolved paths silently fail to match (the "SBPL symlink trap").
 func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig) (string, []string, func(), error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("getting home dir: %w", err)
 	}
+	homeDir = evalSymlinksOrKeep(homeDir)
+	worktreePath = evalSymlinksOrKeep(worktreePath)
 
 	var profile strings.Builder
 	profile.WriteString(sandboxProfileBase)
@@ -112,6 +116,7 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 	// Append user-configured deny read paths
 	for _, p := range sandboxCfg.DenyRead {
 		p = expandHomePath(strings.TrimSpace(p), homeDir)
+		p = evalSymlinksOrKeep(p)
 		if p != "" {
 			profile.WriteString(fmt.Sprintf("(deny file-read* (subpath %s))\n", sbplQuote(p)))
 		}
@@ -120,6 +125,7 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 	// Append user-configured extra write paths
 	for _, p := range sandboxCfg.ExtraWrite {
 		p = expandHomePath(strings.TrimSpace(p), homeDir)
+		p = evalSymlinksOrKeep(p)
 		if p != "" {
 			profile.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", sbplQuote(p)))
 		}
@@ -164,6 +170,22 @@ func WrapWithSandbox(cmdStr, profilePath string, params []string) string {
 	b.WriteString(" sh -c ")
 	b.WriteString(shellQuote(cmdStr))
 	return b.String()
+}
+
+// evalSymlinksOrKeep resolves symlinks in a path. If resolution fails
+// (e.g., path doesn't exist yet), returns the original path unchanged.
+// This is critical for SBPL profiles: the macOS kernel resolves symlinks
+// before matching sandbox rules, so rules containing unresolved symlinks
+// silently fail to match.
+func evalSymlinksOrKeep(p string) string {
+	if p == "" {
+		return p
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
+	}
+	return resolved
 }
 
 // expandHomePath replaces a leading "~/" with the actual home directory.
@@ -211,6 +233,7 @@ func resolveGitDir(worktreePath string) string {
 		return ""
 	}
 
-	return dotGit
+	// Resolve symlinks so SBPL rules match kernel-resolved paths.
+	return evalSymlinksOrKeep(dotGit)
 }
 

@@ -87,13 +87,15 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 ### Sandbox (macOS sandbox-exec)
 
 - **sandbox-exec uses SBPL profiles, not JSON.** `GenerateSandboxConfig()` returns `(profilePath, params, cleanup, err)`.
-- **SBPL symlink trap:** Deny rules on symlinked paths don't work — kernel resolves symlinks first. Never test with `/tmp` paths (symlink to `/private/tmp`). Use `$HOME`-relative paths.
+- **SBPL symlink trap:** All SBPL rules (deny AND allow) must use symlink-resolved paths — kernel resolves symlinks before matching. `evalSymlinksOrKeep()` resolves HOME, WORKTREE, git dir, and custom paths. Without this, rules containing `/var/folders/...` silently fail against kernel-resolved `/private/var/folders/...`.
 - **Must allow writes to:** `~/.claude.json`, `~/.claude/` (or Claude hangs silently), `/var/folders` (macOS temp dirs), and the main repo's `.git` dir (for worktree git operations — `resolveGitDir()` handles this automatically).
+- **SSH keys must be readable for git over SSH.** The profile does NOT deny `~/.ssh` reads — blocking SSH private keys breaks `git push`/`git fetch`. Since `(allow network*)` is already granted, denying key reads provides minimal security benefit. Other credential dirs (`.aws`, `.gnupg`, `.kube`, `.config/gcloud`) remain denied.
 - **No domain-level network filtering.** sandbox-exec works at socket/address level. Argus uses `(allow network*)`.
 - **Per-project sandbox config:** 3 columns on `projects` table. `ResolveSandboxConfig()` merges global + per-project.
 - **Per-project `DenyRead`/`ExtraWrite` are only editable outside the TUI (DB or API).** The project form only exposes the Enabled toggle. Paths are preserved through form round-trips but cannot be viewed or cleared via the form. Deleting and re-creating a project erases its per-project paths.
 - **SBPL has no `pseudo-terminal*` operation.** PTY device access requires explicit file-write rules: `(allow file-write* (regex #"^/dev/ptmx$"))` and `(allow file-write* (regex #"^/dev/ttys[0-9]+$"))`. Invalid operation names cause `sandbox-exec: unbound variable` at runtime. `TestGenerateSandboxConfig_ProfileValid` catches this by running `sandbox-exec /usr/bin/true` with the generated profile.
 - **Must allow `lsopen` for OAuth browser login flow.** `(deny default)` blocks Launch Services. Without `(allow lsopen)`, `open <url>` fails with `LSOpenURLsWithCompletionHandler() failed with error -54`, preventing Claude Code from opening a browser for OAuth login/token refresh. Symptom: agent prompts for `/login` when token expires during a sandboxed session.
+- **Nested sandbox-exec fails with exit 71 (`sandbox_apply: Operation not permitted`).** If the calling process is already sandboxed (e.g., running inside Claude Code's sandbox), `sandbox-exec` cannot apply a new profile. `sandboxExecFunctional()` detects this by running a trivial profile; `IsSandboxAvailable()` only checks the binary exists. All sandbox enforcement tests must use `sandboxExecFunctional(t)` and skip when nested.
 - **Verify profile in effect:** Read the temp `.sb` file logged in `~/.argus/daemon.log`.
 
 ### Key Bindings & Navigation
