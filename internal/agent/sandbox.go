@@ -60,8 +60,9 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.cargo")))
 (allow file-write* (subpath (string-append (param "HOME") "/.local")))
 (allow file-write* (subpath (string-append (param "HOME") "/.cache")))
-; Skill usage tracking
-(allow file-write* (subpath (string-append (param "HOME") "/.dots/sys/skill-usage")))
+; Dotfiles — full write required for merge skill (git reset --hard origin/master).
+; Expands from ~/.dots/sys/skill-usage; acceptable since sole-user threat model.
+(allow file-write* (subpath (string-append (param "HOME") "/.dots")))
 `
 
 // IsSandboxAvailable checks whether sandbox-exec is available on this system.
