@@ -650,7 +650,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 		m := NewConfirmDeleteModal(task)
 
 		handler := m.InputHandler()
-		handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0), func(p tview.Primitive) {})
+		handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
 
 		if !m.Canceled() {
 			t.Error("modal should be canceled after Ctrl+Q")

@@ -153,6 +153,14 @@ argus
 | `R` | Refresh vault |
 | `ctrl+r` | Clean up completed notes |
 
+#### Modals & Forms
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `ctrl+q` | Close / cancel |
+| `Enter` | Confirm / submit |
+| `Tab` / `Shift+Tab` | Navigate fields |
+
 #### Reviews
 
 | Key | Action |

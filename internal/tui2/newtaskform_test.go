@@ -91,10 +91,36 @@ func TestNewTaskForm_CtrlQCancels(t *testing.T) {
 	)
 
 	handler := f.InputHandler()
-	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0), func(p tview.Primitive) {})
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
 
 	if !f.Canceled() {
 		t.Error("ctrl+q should cancel the form")
+	}
+}
+
+func TestNewTaskForm_CtrlQClosesAutocompleteFirst(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}},
+		"p",
+		map[string]config.Backend{"b": {}},
+		"b",
+	)
+	f.acOpen = true
+
+	handler := f.InputHandler()
+	// First ctrl+q closes autocomplete
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+	if f.Canceled() {
+		t.Error("first ctrl+q should close autocomplete, not cancel")
+	}
+	if f.acOpen {
+		t.Error("autocomplete should be closed")
+	}
+
+	// Second ctrl+q cancels the form
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+	if !f.Canceled() {
+		t.Error("second ctrl+q should cancel the form")
 	}
 }
 

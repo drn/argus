@@ -90,7 +90,7 @@ func TestProjectForm_Escape(t *testing.T) {
 
 func TestProjectForm_CtrlQ(t *testing.T) {
 	pf := NewProjectForm()
-	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0))
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
 	if !pf.Canceled() {
 		t.Error("should be canceled")
 	}
@@ -244,7 +244,7 @@ func TestBackendForm_New(t *testing.T) {
 
 func TestBackendForm_CtrlQ(t *testing.T) {
 	bf := NewBackendForm()
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0))
+	bf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
 	if !bf.Canceled() {
 		t.Error("should be canceled")
 	}
@@ -360,7 +360,7 @@ func TestRenameTaskForm_TypeAndSubmit(t *testing.T) {
 
 func TestRenameTaskForm_CtrlQ(t *testing.T) {
 	rf := NewRenameTaskForm("test")
-	rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0))
+	rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
 	if !rf.Canceled() {
 		t.Error("should be canceled")
 	}
