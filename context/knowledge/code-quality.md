@@ -1396,3 +1396,14 @@ Smoke test `TestSmoke_ClickNonInteractivePanelKeepsFocus` injects mouse clicks o
 ### Gotchas
 - Polling subsumes fsnotify — daemon starts one or the other, not both
 - Test creators for polling must persist tasks to DB or dedup fails on repeated scans
+
+## Cursor Boundary Change Suppression: 2026-03-30
+
+### Problem
+`moveCursor` unconditionally called `notifyCursorChange()` on every invocation, even when the cursor was clamped at list boundaries (top or bottom). This triggered `onTaskCursorChange` → `fetchTaskGitStatus` + `refreshPreview` with no actual task change, causing unnecessary git diff refreshes.
+
+### Fix
+Replaced 5 separate `notifyCursorChange()` call sites with a single `defer` that guards on `tl.cursor != prev`. All early returns now just `return` — the deferred closure handles notification only when the position actually changed.
+
+### Gotchas
+- `notifyCursorChange` is also called from `SetTasks`, `restoreCursor`, and input handlers — those callers are unaffected since they legitimately need to fire even when the cursor index hasn't changed (the task at that index may have changed after a rebuild)

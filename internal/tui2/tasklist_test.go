@@ -603,6 +603,35 @@ func TestTaskListView_ArchiveToggle(t *testing.T) {
 	}
 }
 
+func TestTaskListView_NoCursorChangeAtBoundary(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	changes := 0
+	tl.OnCursorChange = func(task *model.Task) {
+		changes++
+	}
+
+	// Cursor starts at the top task. Pressing up should not fire callback.
+	changes = 0
+	tl.CursorUp()
+	if changes != 0 {
+		t.Errorf("CursorUp at top: expected 0 callback fires, got %d", changes)
+	}
+
+	// Navigate to the very bottom.
+	for i := 0; i < len(tl.rows); i++ {
+		tl.CursorDown()
+	}
+
+	// Now pressing down at the bottom should not fire callback.
+	changes = 0
+	tl.CursorDown()
+	if changes != 0 {
+		t.Errorf("CursorDown at bottom: expected 0 callback fires, got %d", changes)
+	}
+}
+
 func TestTaskListView_CursorAlwaysOnTask(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks(makeTasks())
