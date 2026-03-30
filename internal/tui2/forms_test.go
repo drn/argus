@@ -88,6 +88,14 @@ func TestProjectForm_Escape(t *testing.T) {
 	}
 }
 
+func TestProjectForm_CtrlQ(t *testing.T) {
+	pf := NewProjectForm()
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	if !pf.Canceled() {
+		t.Error("should be canceled")
+	}
+}
+
 func TestProjectForm_BranchSelector(t *testing.T) {
 	// syncBranchLoader simulates the async OnBranchFocus pattern used in
 	// production (goroutine + QueueUpdateDraw) by calling SetBranchOptions
@@ -234,6 +242,14 @@ func TestBackendForm_New(t *testing.T) {
 	}
 }
 
+func TestBackendForm_CtrlQ(t *testing.T) {
+	bf := NewBackendForm()
+	bf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	if !bf.Canceled() {
+		t.Error("should be canceled")
+	}
+}
+
 func TestBackendForm_LoadBackend(t *testing.T) {
 	bf := NewBackendForm()
 	bf.LoadBackend("claude", config.Backend{Command: "claude --dangerously-skip-permissions", PromptFlag: "--"})
@@ -339,6 +355,14 @@ func TestRenameTaskForm_TypeAndSubmit(t *testing.T) {
 	}
 	if rf.Name() != "new-name" {
 		t.Errorf("name = %q", rf.Name())
+	}
+}
+
+func TestRenameTaskForm_CtrlQ(t *testing.T) {
+	rf := NewRenameTaskForm("test")
+	rf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	if !rf.Canceled() {
+		t.Error("should be canceled")
 	}
 }
 

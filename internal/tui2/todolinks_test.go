@@ -152,6 +152,14 @@ func TestLinkPickerModal_Navigation(t *testing.T) {
 		testutil.Equal(t, m.Canceled(), true)
 		testutil.Equal(t, m.Selected(), false)
 	})
+
+	t.Run("ctrl+q cancels", func(t *testing.T) {
+		m := NewLinkPickerModal(links)
+		handler := m.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+		testutil.Equal(t, m.Canceled(), true)
+		testutil.Equal(t, m.Selected(), false)
+	})
 }
 
 func TestOpenURL_RejectsNonHTTP(t *testing.T) {

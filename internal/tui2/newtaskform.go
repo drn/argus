@@ -271,8 +271,8 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 
 		// Global form keys
 		switch event.Key() {
-		case tcell.KeyEscape:
-			if f.acOpen {
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
+			if f.acOpen { // two-step: first press closes autocomplete, second cancels form
 				f.acOpen = false
 				return
 			}

@@ -147,7 +147,7 @@ func (pf *ProjectForm) maybeLoadBranches() {
 // HandleKey processes key events for the form.
 func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 	switch ev.Key() {
-	case tcell.KeyEscape:
+	case tcell.KeyEscape, tcell.KeyCtrlQ:
 		pf.canceled = true
 		return
 	case tcell.KeyEnter:

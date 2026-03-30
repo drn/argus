@@ -56,7 +56,7 @@ func (bf *BackendForm) Result() (name string, b config.Backend) {
 // HandleKey processes key events for the form.
 func (bf *BackendForm) HandleKey(ev *tcell.EventKey) {
 	switch ev.Key() {
-	case tcell.KeyEscape:
+	case tcell.KeyEscape, tcell.KeyCtrlQ:
 		bf.canceled = true
 		return
 	case tcell.KeyEnter:

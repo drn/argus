@@ -34,7 +34,7 @@ func (m *ForkTaskModal) InputHandler() func(event *tcell.EventKey, setFocus func
 		switch event.Key() {
 		case tcell.KeyEnter:
 			m.confirmed = true
-		case tcell.KeyEscape:
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
 			m.canceled = true
 		}
 	})

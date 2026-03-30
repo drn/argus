@@ -34,6 +34,16 @@ func TestConfirmCleanupToDosModal_Cancel(t *testing.T) {
 	testutil.Equal(t, m.Canceled(), true)
 }
 
+func TestConfirmCleanupToDosModal_CtrlQ(t *testing.T) {
+	m := NewConfirmCleanupToDosModal(5)
+
+	handler := m.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+
+	testutil.Equal(t, m.Confirmed(), false)
+	testutil.Equal(t, m.Canceled(), true)
+}
+
 func TestToDoCleanup_RemovesFiles(t *testing.T) {
 	dir := t.TempDir()
 

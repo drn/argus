@@ -38,7 +38,7 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 	hasAlt := mod&tcell.ModAlt != 0
 
 	switch ev.Key() {
-	case tcell.KeyEscape:
+	case tcell.KeyEscape, tcell.KeyCtrlQ:
 		rf.canceled = true
 	case tcell.KeyEnter:
 		rf.done = true

@@ -36,6 +36,17 @@ func TestConfirmDeleteToDoModal_Cancel(t *testing.T) {
 	testutil.Equal(t, m.Canceled(), true)
 }
 
+func TestConfirmDeleteToDoModal_CtrlQ(t *testing.T) {
+	item := ToDoItem{Name: "my-todo", Path: "/vault/my-todo.md"}
+	m := NewConfirmDeleteToDoModal(item)
+
+	handler := m.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+
+	testutil.Equal(t, m.Confirmed(), false)
+	testutil.Equal(t, m.Canceled(), true)
+}
+
 func TestToDoDelete_RemovesFile(t *testing.T) {
 	dir := t.TempDir()
 
