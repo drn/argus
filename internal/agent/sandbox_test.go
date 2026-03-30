@@ -72,6 +72,11 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for /dev/ttys*:\n%s", profile)
 	}
 
+	// Profile must allow lsopen for OAuth browser login flow
+	if !strings.Contains(profile, "(allow lsopen)") {
+		t.Errorf("profile missing allow lsopen for OAuth browser login:\n%s", profile)
+	}
+
 	// Params must contain HOME and WORKTREE
 	hasHome := false
 	hasWorktree := false
