@@ -60,8 +60,8 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.cargo")))
 (allow file-write* (subpath (string-append (param "HOME") "/.local")))
 (allow file-write* (subpath (string-append (param "HOME") "/.cache")))
-; Skill usage tracking
-(allow file-write* (subpath (string-append (param "HOME") "/.dots/sys/skill-usage")))
+; Dotfiles — allow full write for master branch syncing (merge skill)
+(allow file-write* (subpath (string-append (param "HOME") "/.dots")))
 `
 
 // IsSandboxAvailable checks whether sandbox-exec is available on this system.
