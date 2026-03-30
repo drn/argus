@@ -793,11 +793,11 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	switch {
 	case hasInProgress:
 		if allInProgressIdle {
-			return 0x0F0594, tcell.StyleDefault.Foreground(ColorInReview)
+			return IconMoonOutline, tcell.StyleDefault.Foreground(ColorInReview)
 		}
 		return model.SpinnerFrame(tl.animFrame), StyleInProgress
 	case hasInReview:
-		return 0xF186, StyleInReview
+		return IconMoonStars, StyleInReview
 	case hasComplete && !hasPending:
 		return '✓', StyleComplete
 	case hasComplete && hasPending:
@@ -880,11 +880,11 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	case model.StatusInProgress:
 		if tl.idleUnvisited[task.ID] {
 			// Idle and not yet viewed since going idle — moon with stars.
-			statusChar = 0xF186
+			statusChar = IconMoonStars
 			statusStyle = StyleInReview
 		} else if !tl.running[task.ID] || tl.idle[task.ID] {
 			// Session absent or idle (waiting for input) — moon icon.
-			statusChar = 0x0F0594
+			statusChar = IconMoonOutline
 			statusStyle = StyleInReview
 		} else {
 			// Actively running — animated spinner (nerd font progress spinner).
@@ -892,7 +892,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:
-		statusChar = 0xF186
+		statusChar = IconMoonStars
 		statusStyle = StyleInReview
 	case model.StatusComplete:
 		statusChar = '✓'
