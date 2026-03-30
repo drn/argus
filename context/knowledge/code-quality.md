@@ -1429,3 +1429,15 @@ Replaced 5 separate `notifyCursorChange()` call sites with a single `defer` that
 ### Gotchas
 - `buildChildTree` sorts files alphabetically at each level — test assertions must account for sort order, not insertion order
 - `skipToLastChild` scans the full subtree depth (all indent > 0 rows), not just immediate children — this is intentional for the "enter folder from below" UX
+
+## Tick Goroutine Thread Safety Fix: 2026-03-30
+
+### Problem
+`onTick` ran on a background goroutine and directly modified `TaskListView` state (via `refreshTasksWithIDs` → `SetTasks` → `buildRows`) without synchronization with the tview main goroutine. This data race between the tick goroutine writing `tl.rows` (which first nils then rebuilds) and the tview goroutine reading it in `Draw()`/`InputHandler()` could cause project folders to transiently disappear — `Draw()` sees nil/partial `tl.rows` and renders an empty task list. The same race affected preview panels, agent pane, and reviews tab reads.
+
+### Fix
+Moved all tview widget state modifications in `onTick` into a single `QueueUpdateDraw` callback. Only the daemon health check (RPC Ping) stays on the tick goroutine since it's slow I/O. The daemon state needed for the health check (`checkDaemon`) is read under `a.mu` before the QueueUpdateDraw call.
+
+### Data flow (after fix)
+- **Tick goroutine:** RPC (RunningAndIdle), PR URL scanning, daemon Ping
+- **tview goroutine (via QueueUpdateDraw):** refreshTasksWithIDs, preview refresh, agent pane update, reviews staleness check
