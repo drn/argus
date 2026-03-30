@@ -559,13 +559,13 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 ### Flow
 - **Ctrl+D**: `handleGlobalKey` → `openConfirmDelete(task)` → shows modal via `pages.AddPage("confirmdelete", ...)` → Enter triggers `deleteTask(t)` → stop session, cleanup worktree/branch, delete session log, `db.Delete(id)`, refresh.
-- **Ctrl+R**: `handleGlobalKey` → `pruneCompletedTasks()` → `db.PruneCompleted()` (atomic fetch+delete) → stop sessions → worktree cleanup in background goroutine → refresh.
+- **Ctrl+R**: `handleGlobalKey` → `pruneCompletedTasks()` → `db.PruneCompleted()` (atomic fetch+delete) → stop sessions → header notice with progress spinner → worktree cleanup in background goroutines → clear notice + refresh.
 - Both guarded by `a.mode == modeTaskList && a.header.ActiveTab() == TabTasks`.
 
 ### Gotchas
 - Worktree cleanup is unconditional — worktree, local branch, and remote branch are always removed on task delete/prune. The old `ShouldCleanupWorktrees()` config gate was removed.
 - `isWorktreeSubdir` safety check prevents `os.RemoveAll` on non-worktree paths.
-- Prune runs worktree cleanup in a goroutine to keep TUI responsive; calls `QueueUpdateDraw` on completion.
+- Prune runs worktree cleanup in goroutines with a non-blocking header notice; calls `QueueUpdateDraw` on completion.
 
 ## Mouse Focus & Diff File Navigation Fix: 2026-03-19
 
@@ -789,24 +789,23 @@ Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards 
 
 ### Data model
 - `db.WorktreePaths()` — returns `(map[string]bool, error)` of all worktree paths in the DB (used for orphan detection)
-- `PruneModal` (`prunemodal.go`) — `tview.Box` widget with animated dots, `Increment()` for progress, absorbs all keys
+- `Header.SetNotice(text)` / `Header.ClearNotice()` — general-purpose notice area on the header bar (progress spinner + text, left-aligned). Uses the progress spinner from `internal/spinner`.
 - `countOrphanedWorktrees(knownPaths)` / `sweepOrphanedWorktrees(knownPaths, projects)` in `worktree.go` — scan `~/.argus/worktrees/` for dirs not in DB
-- `modePruning` view mode in `app.go` — absorbs all keys during cleanup
 
 ### Flow
 1. `PruneCompleted()` fetches+deletes completed tasks from DB
 2. Stop sessions, remove session logs
 3. Count task worktrees + orphan worktrees
-4. Show `PruneModal` with total count
-5. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep. Each goroutine calls `QueueUpdateDraw` → `pruneModal.Increment()` on completion (thread-safe: all increments serialized on tview main goroutine).
-6. `wg.Wait()` → `QueueUpdateDraw` → `closePruneModal` + `refreshTasks`
-7. Display transitions: static "Cleaning up N worktree(s)..." → iterative "(current/total)" as each finishes
+4. Show header notice with total count (non-blocking — UI remains interactive)
+5. `refreshTasksLocal()` immediately removes pruned tasks from the list
+6. `sync.WaitGroup` with parallel goroutines: one per task cleanup + one orphan sweep. Each goroutine uses `atomic.Int32` counter + `QueueUpdateDraw` → `header.SetNotice(progress)` on completion.
+7. `wg.Wait()` → `QueueUpdateDraw` → `header.ClearNotice()` + `refreshTasksWithIDs`
 
 ### Gotchas
 - Orphan sweep infers branch as `"argus/" + filepath.Base(worktreePath)` since no DB record exists
 - `walkOrphanedWorktrees` with nil projects map just counts; with non-nil map it removes
 - Empty project directories are cleaned up after sweep
-- Modal absorbs ALL keys during cleanup — prevents premature exit
+- Prune is fully non-blocking — user can continue interacting while worktrees are cleaned up in the background
 - `WorktreePaths()` returns error; caller skips orphan sweep on failure to avoid false positives
 
 ## Terminal Style Conversion Completeness: 2026-03-20
@@ -1326,7 +1325,7 @@ All modal close functions must call `a.tapp.SetFocus(a.tasklist)` after removing
 `closeLinkPickerModal`, `closeLaunchToDoModal`, `closeCleanupToDosModal`, and `closeDeleteToDoModal` were all missing `SetFocus` calls. The link picker was most visible because it opens a browser — when the user tabs back, up/down navigation was broken. Left/right (tab switching) still worked because it's handled in `handleGlobalKey` before tview's focus-based routing.
 
 ### Fix
-Added `a.tapp.SetFocus(a.tasklist)` to all four ToDo-related modal close functions, matching the pattern used by every other modal (`closeConfirmDelete`, `closeForkModal`, `closeRenameModal`, `closePruneModal`, `closeNewTaskForm`).
+Added `a.tapp.SetFocus(a.tasklist)` to all four ToDo-related modal close functions, matching the pattern used by every other modal (`closeConfirmDelete`, `closeForkModal`, `closeRenameModal`, `closeNewTaskForm`).
 
 ### Gotchas
 - `a.tasklist` is always a valid focus target regardless of active tab. ToDos/Reviews/Settings handle keys via global input capture, so focusing `tasklist` is safe even when those tabs are active.

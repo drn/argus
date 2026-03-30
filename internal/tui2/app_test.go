@@ -3,6 +3,7 @@ package tui2
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -893,15 +894,16 @@ func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 
 	app.pruneCompletedTasks()
 
-	// The prune modal total should be 1 (the completed task), not 2.
+	// The header notice should show 1 total, not 2.
 	// Before the fix, the worktree was counted once as a pruned task
 	// AND once as an orphan (because PruneCompleted deletes the DB
 	// record before WorktreePaths runs).
-	if app.pruneModal == nil {
-		t.Fatal("expected prune modal to be shown")
+	notice := app.header.Notice()
+	if notice == "" {
+		t.Fatal("expected header notice to be shown")
 	}
-	if app.pruneModal.total != 1 {
-		t.Errorf("prune modal total = %d, want 1 (worktree double-counted as orphan)", app.pruneModal.total)
+	if !strings.Contains(notice, "0/1") {
+		t.Errorf("header notice = %q, want progress showing total of 1 (not double-counted)", notice)
 	}
 }
 
