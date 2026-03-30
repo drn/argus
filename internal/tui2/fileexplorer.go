@@ -3,6 +3,7 @@ package tui2
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/drn/argus/internal/gitutil"
 )
+
+const fpIndentWidth = 2 // characters per indent level in the file panel
 
 // FilePanel is a file explorer panel for the tcell agent view.
 // It displays changed files with status icons, directory expansion,
@@ -31,7 +34,8 @@ type FilePanel struct {
 
 type fpRow struct {
 	gitutil.ChangedFile
-	indent int
+	indent      int
+	displayName string // sub-dir display label (e.g. "components/"); needed because filepath.Base strips trailing slash
 }
 
 // NewFilePanel creates a file explorer panel.
@@ -116,6 +120,9 @@ func (fp *FilePanel) FileCount() int {
 
 // CursorUp moves cursor up, skipping directories. Returns dir needing fetch.
 func (fp *FilePanel) CursorUp() string {
+	// Track whether we're currently inside a folder (on a child row). If so,
+	// pressing up from the first child should EXIT the folder, not re-enter it.
+	wasChild := fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].indent > 0
 	if fp.cursor > 0 {
 		fp.cursor--
 		if fp.cursor < fp.offset {
@@ -123,7 +130,12 @@ func (fp *FilePanel) CursorUp() string {
 		}
 	}
 	fetch := fp.autoExpand()
-	fp.skipToFile(-1)
+	// When entering a folder from below (wasChild=false), land on the last child.
+	// When leaving a folder from within (wasChild=true), skip upward past the dir.
+	enteredFolder := !wasChild && fp.skipToLastChild()
+	if !enteredFolder {
+		fp.skipToFile(-1)
+	}
 	fp.ensureVisible()
 	return fetch
 }
@@ -142,6 +154,33 @@ func (fp *FilePanel) CursorDown() string {
 	fp.skipToFile(1)
 	fp.ensureVisible()
 	return fetch
+}
+
+// skipToLastChild moves the cursor to the last non-directory row within the
+// current expanded directory's subtree (scanning all nested indent levels).
+// Returns true if the cursor was repositioned. Returns false if the directory
+// has no file children (e.g., only contains sub-directories with no files).
+func (fp *FilePanel) skipToLastChild() bool {
+	if fp.cursor < 0 || fp.cursor >= len(fp.rows) || !fp.rows[fp.cursor].IsDir {
+		return false
+	}
+	if !fp.expanded[fp.rows[fp.cursor].Path] {
+		return false
+	}
+	last := -1
+	for i := fp.cursor + 1; i < len(fp.rows); i++ {
+		if fp.rows[i].indent == 0 {
+			break
+		}
+		if !fp.rows[i].IsDir {
+			last = i
+		}
+	}
+	if last < 0 {
+		return false
+	}
+	fp.cursor = last
+	return true
 }
 
 // skipToFile advances the cursor past directory rows in the given direction.
@@ -189,12 +228,66 @@ func (fp *FilePanel) buildRows() {
 		fp.rows = append(fp.rows, fpRow{ChangedFile: f, indent: 0})
 		if f.IsDir && fp.expanded[f.Path] {
 			if children, ok := fp.dirChildren[f.Path]; ok {
-				for _, child := range children {
-					fp.rows = append(fp.rows, fpRow{ChangedFile: child, indent: 1})
-				}
+				fp.rows = buildChildTree(fp.rows, children, f.Path, 1)
 			}
 		}
 	}
+}
+
+// buildChildTree groups flat file paths into a nested tree of fpRow entries.
+// parentDir is the prefix to strip (e.g. "src/"), baseIndent is the indent
+// level for direct children. Sub-directories are sorted before files at each level.
+func buildChildTree(rows []fpRow, children []gitutil.ChangedFile, parentDir string, baseIndent int) []fpRow {
+	type node struct {
+		files    []gitutil.ChangedFile
+		subdirs  map[string]*node
+		dirOrder []string
+	}
+
+	root := &node{subdirs: make(map[string]*node)}
+	for _, child := range children {
+		rel := strings.TrimPrefix(child.Path, parentDir)
+		parts := strings.Split(rel, "/")
+		cur := root
+		for i, part := range parts {
+			if i == len(parts)-1 {
+				cur.files = append(cur.files, child)
+			} else {
+				if _, ok := cur.subdirs[part]; !ok {
+					cur.subdirs[part] = &node{subdirs: make(map[string]*node)}
+					cur.dirOrder = append(cur.dirOrder, part)
+				}
+				cur = cur.subdirs[part]
+			}
+		}
+	}
+
+	var emit func(n *node, prefix string, indent int)
+	emit = func(n *node, prefix string, indent int) {
+		sort.Strings(n.dirOrder)
+		for _, dirName := range n.dirOrder {
+			sub := n.subdirs[dirName]
+			dirPath := prefix + dirName + "/"
+			rows = append(rows, fpRow{
+				ChangedFile: gitutil.ChangedFile{
+					Path:  dirPath,
+					IsDir: true,
+				},
+				indent:      indent,
+				displayName: dirName + "/",
+			})
+			emit(sub, dirPath, indent+1)
+		}
+		sort.Slice(n.files, func(i, j int) bool {
+			return n.files[i].Path < n.files[j].Path
+		})
+		for _, f := range n.files {
+			rows = append(rows, fpRow{ChangedFile: f, indent: indent})
+		}
+	}
+
+	emit(root, parentDir, baseIndent)
+	return rows
 }
 
 func (fp *FilePanel) clampCursor() {
@@ -210,8 +303,11 @@ func (fp *FilePanel) autoExpand() string {
 	row := fp.rows[fp.cursor]
 	cursorPath := row.Path
 
+	// Only top-level directories (indent 0) are expandable. Synthetic sub-dir
+	// rows (indent > 0, IsDir) are display-only groupings — they find their
+	// top-level parent via the else-if branch below.
 	var targetDir string
-	if row.IsDir {
+	if row.IsDir && row.indent == 0 {
 		targetDir = row.Path
 	} else if row.indent > 0 {
 		for i := fp.cursor - 1; i >= 0; i-- {
@@ -302,21 +398,28 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 
 		// Indent for children
 		if row.indent > 0 {
-			col += 2
+			col += fpIndentWidth * row.indent
 		}
 
 		// Name
 		name := row.Path
 		if row.indent > 0 {
-			name = filepath.Base(row.Path)
+			if row.displayName != "" {
+				name = row.displayName
+			} else {
+				name = filepath.Base(row.Path)
+			}
 		}
 		if row.IsDir {
-			arrow := '▶'
-			if fp.expanded[row.Path] {
-				arrow = '▼'
+			if row.indent == 0 {
+				// Top-level dir: interactive expand/collapse arrow
+				arrow := '▶'
+				if fp.expanded[row.Path] {
+					arrow = '▼'
+				}
+				screen.SetContent(col, y+i, arrow, nil, nameStyle)
+				col += 2
 			}
-			screen.SetContent(col, y+i, arrow, nil, nameStyle)
-			col += 2
 			name = strings.TrimSuffix(name, "/") + "/"
 		}
 
