@@ -26,6 +26,12 @@ var (
 	ColorHighlight  = tcell.Color236 // slightly lighter dark gray — cursor/selection highlight
 )
 
+// Icon constants for status indicators (Nerd Font codepoints).
+const (
+	IconMoonStars   = rune(0x0F0594) // 󰖔 nf-md-weather_night — unvisited / needs attention
+	IconMoonOutline = rune(0xF186)   //  nf-fa-moon_o — visited / idle
+)
+
 // Styles for common UI elements.
 var (
 	StyleDefault      = tcell.StyleDefault
