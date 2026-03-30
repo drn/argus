@@ -247,7 +247,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 		{
 			name:     "in review",
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInReview}},
-			wantChar: '◎',
+			wantChar: 0xF186,
 		},
 		{
 			name: "mixed complete and pending",
@@ -262,7 +262,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
 			running:  map[string]bool{"1": true},
 			idle:     map[string]bool{"1": true},
-			wantChar: '☾',
+			wantChar: 0x0F0594,
 		},
 	}
 
@@ -382,10 +382,10 @@ func TestTaskListView_IdleUnvisitedPromotion(t *testing.T) {
 	tl.idle = map[string]bool{"1": true}
 	tl.animFrame = 0
 
-	// Project icon should be InReview (◎) when the only InProgress task is idleUnvisited.
+	// Project icon should be moon_o when the only InProgress task is idleUnvisited.
 	icon, _ := tl.projectStatusIcon(tasks)
-	if icon != '◎' {
-		t.Errorf("projectStatusIcon with idleUnvisited = %c, want ◎", icon)
+	if icon != 0xF186 {
+		t.Errorf("projectStatusIcon with idleUnvisited = %c, want moon_o", icon)
 	}
 }
 

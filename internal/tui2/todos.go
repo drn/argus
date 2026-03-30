@@ -388,7 +388,7 @@ func (p *ToDoListPanel) Draw(screen tcell.Screen) {
 					bullet = '●'
 					bulletStyle = StyleInProgress
 				case model.StatusInReview:
-					bullet = '◎'
+					bullet = 0xF186
 					bulletStyle = StyleInReview
 				case model.StatusComplete:
 					bullet = '✓'

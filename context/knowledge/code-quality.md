@@ -640,7 +640,7 @@ The tui2 migration (Phase 11) ported individual task status icons but dropped:
 ### Data Model & Flow
 - `TaskListView.tickEven bool` — toggles each tick for status icon animation (Nerd Font \uF10C circle-o ↔ \uF192 dot-circle-o)
 - `TaskListView.Tick()` — called from `refreshTasksWithIDs` on every refresh cycle
-- `projectStatusIcon(tasks) (rune, tcell.Style)` — computes aggregated icon with priority: in_progress > in_review > all_complete > mixed(✓ dimmed) > all_pending. Idle detection: when all in-progress tasks are idle, shows moon (☾).
+- `projectStatusIcon(tasks) (rune, tcell.Style)` — computes aggregated icon with priority: in_progress > in_review > all_complete > mixed(✓ dimmed) > all_pending. Idle detection: when all in-progress tasks are idle, shows moon (󰖔 nf-md-moon_first_quarter, blue).
 - `drawProjectRow` now renders: 2-char indent + status icon + chevron (▸/▾) + project name + count `(N)`
 - `refreshTasksWithIDs(runningIDs, idleIDs []string)` — signature expanded to accept idle IDs. All three call sites updated: `onTick`, `handleSessionExitUI` goroutine, `refreshTasks`.
 - `handleSessionExitUI` now calls `exitAgentView()` when viewing a completed task's agent pane (not stopped — stopped tasks stay on agent view with cleared session).
@@ -650,9 +650,9 @@ The tui2 migration (Phase 11) ported individual task status icons but dropped:
 **Restored pre-tcell behavior for task status transitions and visual feedback:**
 
 - **Stopped agent → InReview**: `handleSessionExitUI` now sets `StatusInReview` (not Pending) when `stopped == true`. Matches the Bubble Tea `determinePostExitStatus` behavior where explicit stop = "needs human review".
-- **Idle+unvisited visual promotion**: `App` struct gains `idleUnvisited` and `viewedWhileAgent` maps. `refreshTasksWithIDs` diffs newly-idle tasks against `TaskListView.IdleSet()` to populate `idleUnvisited`. Entering agent view clears the flag via `onTaskSelect`. `drawTaskRow` renders idleUnvisited InProgress tasks with InReview icon (◎, cyan). `projectStatusIcon` counts them as InReview at project level.
+- **Idle+unvisited visual promotion**: `App` struct gains `idleUnvisited` and `viewedWhileAgent` maps. `refreshTasksWithIDs` diffs newly-idle tasks against `TaskListView.IdleSet()` to populate `idleUnvisited`. Entering agent view clears the flag via `onTaskSelect`. `drawTaskRow` renders idleUnvisited InProgress tasks with moon_o icon (nf-fa-moon_o 0xF186, blue). `projectStatusIcon` counts them as InReview at project level.
 - **Manual status cycling**: `s`/`S` keys in task list call `Status.Next()`/`Prev()` via `OnStatusChange` callback → `db.Update` + `refreshTasks`.
-- **Task row animation**: `drawTaskRow` now checks `tickEven` for running InProgress tasks, alternating Nerd Font \uF10C (circle-o) and \uF192 (dot-circle-o). Idle (visited) tasks show moon (☾). Idle+unvisited show ◎.
+- **Task row animation**: `drawTaskRow` now checks `tickEven` for running InProgress tasks, alternating Nerd Font \uF10C (circle-o) and \uF192 (dot-circle-o). Idle (visited) tasks show moon (󰖔, blue). Idle+unvisited show moon_o (nf-fa-moon_o, blue).
 
 **New fields on `TaskListView`**: `idleUnvisited map[string]bool`, `OnStatusChange func(task)`.
 **New methods**: `SetIdleUnvisited(ids)`, `IdleSet() map[string]bool`.
@@ -1033,7 +1033,7 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 1. User presses Enter on a todo → `LaunchToDoModal` shows with project selector + prompt field
 2. On confirm: `task.TodoPath = item.Path`, prompt = `buildToDoPrompt(userPrompt, noteContent)`, worktree created, task persisted
 3. `refreshTasksWithIDs` calls `a.db.TasksByTodoPath()` on every tick → `ToDosView.SyncTasks()` propagates to list panel
-4. `ToDoListPanel.Draw` renders status-aware bullets: `○` pending, `●` in progress, `◎` in review, `✓` complete
+4. `ToDoListPanel.Draw` renders status-aware bullets: `○` pending, `●` in progress, `` in review (nf-fa-moon_o), `✓` complete
 5. Ctrl+R on ToDos tab → `cleanupCompletedToDos()` → confirmation modal → `executeToDoCleanup()` removes vault `.md` files, refreshes async
 
 6. `s`/`S` keys on ToDos tab toggle linked task status via `OnStatusChange` callback → `db.Update` + `refreshTasksAsync`. No-op if todo has no linked task.

@@ -54,7 +54,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 
 - **To Dos tab** — Browse an Obsidian vault as a task inbox. Three-panel view: note list, markdown preview, and metadata
 - **Auto-launch from vault** — Select a note, pick a project, optionally add a prompt, and launch it as a new agent task. The note content becomes the agent's instructions
-- **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running, ◎ review, ✓ done) show progress inline
+- **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running,  review, ✓ done) show progress inline
 - **Vault auto-create** — When enabled, the daemon watches the vault directory for new `.md` files and automatically creates and starts agent tasks. Share a note to Obsidian from your phone, and the agent starts working
 - **Cleanup** — `ctrl+r` on the To Dos tab deletes vault files for completed tasks, keeping the inbox clean
 - **Knowledge base** — A separate FTS5-powered full-text search store indexes another Obsidian vault and exposes it as an MCP server (port 7742), auto-injected into every agent worktree
