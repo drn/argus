@@ -295,6 +295,12 @@ func (tl *TaskListView) moveCursor(dir int) {
 	}
 
 	prev := tl.cursor
+	defer func() {
+		// Only notify when the cursor actually moved to a different position.
+		if tl.cursor != prev {
+			tl.notifyCursorChange()
+		}
+	}()
 
 	// Step 1: Move one position in the given direction.
 	tl.cursor += dir
@@ -308,13 +314,11 @@ func (tl *TaskListView) moveCursor(dir int) {
 
 	c := tl.cursor
 	if c < 0 || c >= len(tl.rows) {
-		tl.notifyCursorChange()
 		return
 	}
 
 	// Already on a task row — done.
 	if tl.rows[c].kind == rowTask {
-		tl.notifyCursorChange()
 		return
 	}
 
@@ -324,7 +328,6 @@ func (tl *TaskListView) moveCursor(dir int) {
 			tl.cursor++
 		} else {
 			tl.skipUpPastHeader(prev)
-			tl.notifyCursorChange()
 			return
 		}
 		if tl.cursor < 0 {
@@ -356,7 +359,6 @@ func (tl *TaskListView) moveCursor(dir int) {
 		} else {
 			tl.skipUpPastHeader(prev)
 		}
-		tl.notifyCursorChange()
 		return
 	}
 
@@ -374,7 +376,6 @@ func (tl *TaskListView) moveCursor(dir int) {
 			tl.cursor = prev
 		}
 	}
-	tl.notifyCursorChange()
 }
 
 // skipUpPastHeader moves the cursor up past a header row (project or archive),

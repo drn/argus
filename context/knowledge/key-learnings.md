@@ -177,6 +177,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`buildRows` must expand all projects when a filter is active.** Without `filterActive` check, filtered tasks in collapsed projects are invisible — the filter matches them but they're hidden behind a collapsed project header.
 - **String slicing for backspace must use `utf8.DecodeLastRuneInString`, not `len()-1`.** `len()` counts bytes, not runes — slicing mid-rune corrupts multi-byte UTF-8 characters. Same applies to cursor column positioning: use `ansi.StringWidth()` for display width, not `len()`.
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
+- **`moveCursor` must not fire `OnCursorChange` when clamped at boundaries.** When pressing up at the top or down at the bottom, `tl.cursor` is clamped to the same value — firing the callback triggers unnecessary git diff refreshes and preview fetches. Use a deferred guard comparing `tl.cursor != prev`.
 
 ### Fork Context Capture
 
