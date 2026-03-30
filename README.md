@@ -284,6 +284,12 @@ When **Task Sync** is enabled in Settings (under Knowledge Base), the daemon wat
 
 Files are debounced (500ms) to handle iCloud sync latency. Duplicate detection prevents re-creating tasks for files that already have linked tasks.
 
+### Auto-Start ToDos
+
+When **Auto-Start ToDos** is enabled (press `a` on the Knowledge Base row in Settings), the daemon polls the vault directory on a configurable interval (default: every 2 minutes) and automatically creates and starts tasks for any new `.md` files found. This replaces the fsnotify-based watcher with a more reliable polling approach.
+
+The poll interval can be configured via `kb.auto_start_interval` in the database (value in seconds). Enabling auto-start also implicitly enables Task Sync.
+
 ## Data
 
 All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.

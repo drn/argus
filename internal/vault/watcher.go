@@ -196,6 +196,37 @@ func (w *Watcher) processFile(absPath string) {
 	log.Printf("[vault] auto-created task %s (%s) from %s", task.ID, task.Name, filepath.Base(absPath))
 }
 
+// StartPolling periodically scans the vault directory for new .md files and
+// auto-creates tasks from them. Blocks until Stop is called. The interval
+// controls how often the scan runs.
+func (w *Watcher) StartPolling(interval time.Duration) error {
+	if w.vaultPath == "" {
+		return nil
+	}
+
+	// Ensure vault directory exists.
+	if err := os.MkdirAll(w.vaultPath, 0o755); err != nil {
+		return err
+	}
+
+	log.Printf("[vault] polling %s every %s for new .md files", w.vaultPath, interval)
+
+	// Initial scan.
+	w.scanExisting()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-w.stopCh:
+			return nil
+		case <-ticker.C:
+			w.scanExisting()
+		}
+	}
+}
+
 // IsEligibleFile returns true if the path is a .md file that should be processed.
 // Excludes .icloud placeholder files, hidden files, and non-.md files.
 func IsEligibleFile(path string) bool {

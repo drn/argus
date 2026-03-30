@@ -3,7 +3,9 @@ package vault
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -170,6 +172,92 @@ func TestWatcher_scanExisting(t *testing.T) {
 	// Both .md files should be processed (order depends on ReadDir).
 	testutil.True(t, contains(created, "task1"))
 	testutil.True(t, contains(created, "task2"))
+}
+
+func TestWatcher_StartPolling(t *testing.T) {
+	t.Run("picks up new files on poll", func(t *testing.T) {
+		database := testDB(t)
+		vaultDir := t.TempDir()
+
+		database.SetConfigValue("defaults.todo_project", "proj")
+
+		var created []string
+		var mu sync.Mutex
+		creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			created = append(created, name)
+			task := &model.Task{Name: name, TodoPath: todoPath}
+			database.Add(task) // persist for dedup
+			return task, nil
+		}
+
+		w := NewWatcher(database, vaultDir, creator)
+
+		// Write initial file before polling starts.
+		os.WriteFile(filepath.Join(vaultDir, "initial.md"), []byte("initial content"), 0o644)
+
+		// Start polling with a very short interval.
+		go func() {
+			_ = w.StartPolling(50 * time.Millisecond)
+		}()
+
+		// Wait for initial scan to complete.
+		time.Sleep(100 * time.Millisecond)
+
+		mu.Lock()
+		testutil.Equal(t, len(created), 1)
+		testutil.Equal(t, created[0], "initial")
+		mu.Unlock()
+
+		// Write a new file after polling started.
+		os.WriteFile(filepath.Join(vaultDir, "later.md"), []byte("later content"), 0o644)
+
+		// Wait for next poll cycle.
+		time.Sleep(100 * time.Millisecond)
+
+		mu.Lock()
+		testutil.Equal(t, len(created), 2)
+		testutil.True(t, contains(created, "later"))
+		mu.Unlock()
+
+		w.Stop()
+	})
+
+	t.Run("stop halts polling", func(t *testing.T) {
+		database := testDB(t)
+		vaultDir := t.TempDir()
+
+		database.SetConfigValue("defaults.todo_project", "proj")
+
+		callCount := 0
+		var mu sync.Mutex
+		creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			callCount++
+			return &model.Task{ID: name, Name: name, TodoPath: todoPath}, nil
+		}
+
+		w := NewWatcher(database, vaultDir, creator)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- w.StartPolling(50 * time.Millisecond)
+		}()
+
+		time.Sleep(30 * time.Millisecond)
+		w.Stop()
+
+		err := <-done
+		testutil.NoError(t, err)
+	})
+
+	t.Run("empty vault path is no-op", func(t *testing.T) {
+		w := NewWatcher(nil, "", nil)
+		err := w.StartPolling(time.Second)
+		testutil.NoError(t, err)
+	})
 }
 
 func contains(ss []string, s string) bool {

@@ -1378,3 +1378,21 @@ Smoke test `TestSmoke_ClickNonInteractivePanelKeepsFocus` injects mouse clicks o
 - ReviewsView: monolithic Box, keys route through `handleGlobalKey`, no children to steal focus
 - SettingsPage: custom MouseHandler that never calls setFocus
 - Agent page: GitPanel/FilePanel have intentional interactive MouseHandlers
+
+## Feature: Auto-Start ToDos (2026-03-30)
+
+### Data Model
+- `KBConfig.AutoStartTodos` (bool) — enables polling-based todo auto-start
+- `KBConfig.AutoStartInterval` (int, seconds) — poll interval, default 120s
+- DB keys: `kb.auto_start_todos`, `kb.auto_start_interval`
+- Seed defaults include both keys with `false` and `120` respectively
+
+### Flow
+- Daemon `Serve()` checks `AutoStartTodos` flag → starts `vault.Watcher.StartPolling(interval)` instead of fsnotify `Start()`
+- `StartPolling` does initial `scanExisting()` then periodic scans via `time.Ticker`
+- Settings UI: `a` key on KB row toggles auto-start; auto-enables Task Sync when turning on
+- Requires daemon restart to take effect (same pattern as API toggle)
+
+### Gotchas
+- Polling subsumes fsnotify — daemon starts one or the other, not both
+- Test creators for polling must persist tasks to DB or dedup fails on repeated scans

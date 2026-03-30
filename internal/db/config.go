@@ -108,6 +108,14 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["kb.auto_create_tasks"]; ok {
 		cfg.KB.AutoCreateTasks = v == "true"
 	}
+	if v, ok := kv["kb.auto_start_todos"]; ok {
+		cfg.KB.AutoStartTodos = v == "true"
+	}
+	if v, ok := kv["kb.auto_start_interval"]; ok {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			cfg.KB.AutoStartInterval = secs
+		}
+	}
 
 	// API config
 	if v, ok := kv["api.enabled"]; ok {

@@ -786,6 +786,82 @@ func TestSettingsView_ReviewPromptEdit(t *testing.T) {
 	})
 }
 
+func TestSettingsView_AutoStartToggle(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Find KB row.
+	kbIdx := -1
+	for i, row := range sv.rows {
+		if row.kind == srKB {
+			kbIdx = i
+			break
+		}
+	}
+	if kbIdx < 0 {
+		t.Fatal("no KB row found")
+	}
+	sv.cursor = kbIdx
+
+	t.Run("initially off", func(t *testing.T) {
+		testutil.Equal(t, sv.autoStartTodos, false)
+	})
+
+	t.Run("a key toggles on", func(t *testing.T) {
+		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
+		handled := sv.HandleKey(ev)
+		testutil.Equal(t, handled, true)
+		testutil.Equal(t, sv.autoStartTodos, true)
+	})
+
+	t.Run("auto-enables task sync", func(t *testing.T) {
+		testutil.Equal(t, sv.kbTaskSync, true)
+	})
+
+	t.Run("persists to database", func(t *testing.T) {
+		cfg := database.Config()
+		testutil.Equal(t, cfg.KB.AutoStartTodos, true)
+		testutil.Equal(t, cfg.KB.AutoCreateTasks, true)
+	})
+
+	t.Run("a key toggles off and disables task sync", func(t *testing.T) {
+		// Re-find KB row after rebuild.
+		for i, row := range sv.rows {
+			if row.kind == srKB {
+				sv.cursor = i
+				break
+			}
+		}
+		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
+		sv.HandleKey(ev)
+		testutil.Equal(t, sv.autoStartTodos, false)
+		testutil.Equal(t, sv.kbTaskSync, false)
+
+		cfg := database.Config()
+		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
+		testutil.Equal(t, cfg.KB.AutoCreateTasks, false)
+	})
+
+	t.Run("a key no-op on non-KB row", func(t *testing.T) {
+		sv.cursor = 0
+		sv.skipToSelectable(1) // land on first selectable (not KB)
+		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
+		handled := sv.HandleKey(ev)
+		// Should not be handled if not on KB row.
+		if sv.rows[sv.cursor].kind != srKB {
+			testutil.Equal(t, handled, false)
+		}
+	})
+
+	t.Run("default interval is 120", func(t *testing.T) {
+		testutil.Equal(t, sv.autoStartInterval, 120)
+	})
+}
+
 // findProjectEntry locates a project in the settings view by name.
 func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry {
 	t.Helper()

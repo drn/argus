@@ -7,6 +7,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func testDB(t *testing.T) *DB {
@@ -1602,6 +1603,47 @@ func TestDB_TasksByTodoPath(t *testing.T) {
 			}
 			t.Errorf("expected most recent task 'second', got %q", name)
 		}
+	})
+}
+
+func TestDB_Config_AutoStartTodos(t *testing.T) {
+	d := testDB(t)
+
+	t.Run("defaults to false", func(t *testing.T) {
+		cfg := d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
+	})
+
+	t.Run("round-trips through SetConfigValue", func(t *testing.T) {
+		d.SetConfigValue("kb.auto_start_todos", "true")
+		cfg := d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartTodos, true)
+
+		d.SetConfigValue("kb.auto_start_todos", "false")
+		cfg = d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
+	})
+
+	t.Run("interval defaults to 120 from seed", func(t *testing.T) {
+		cfg := d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
+	})
+
+	t.Run("interval round-trips", func(t *testing.T) {
+		d.SetConfigValue("kb.auto_start_interval", "300")
+		cfg := d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartInterval, 300)
+	})
+
+	t.Run("interval ignores invalid values and keeps default", func(t *testing.T) {
+		d.SetConfigValue("kb.auto_start_interval", "abc")
+		cfg := d.Config()
+		// Invalid value is ignored; DefaultConfig() provides 120.
+		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
+
+		d.SetConfigValue("kb.auto_start_interval", "-5")
+		cfg = d.Config()
+		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
 	})
 }
 
