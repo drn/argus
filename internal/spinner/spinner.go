@@ -32,7 +32,7 @@ func (s *Spinner) FrameCount() int {
 
 // All is the ordered list of available spinner styles.
 var All = []Spinner{
-	{StyleProgress, "Progress", []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}, 100 * time.Millisecond},
+	{StyleProgress, "Progress", []rune{'\uEE06', '\uEE07', '\uEE08', '\uEE09', '\uEE0A', '\uEE0B'}, 150 * time.Millisecond},
 	{StyleDots, "Dots", []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}, 100 * time.Millisecond},
 	{StyleBraille, "Braille", []rune{'⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'}, 100 * time.Millisecond},
 	{StyleClassic, "Classic", []rune{'|', '/', '-', '\\'}, 150 * time.Millisecond},
