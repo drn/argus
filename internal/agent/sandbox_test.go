@@ -269,8 +269,8 @@ func TestGenerateSandboxConfig_GitDir(t *testing.T) {
 }
 
 func TestGenerateSandboxConfig_ProfileValid(t *testing.T) {
-	if !IsSandboxAvailable() {
-		t.Skip("sandbox-exec not available")
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
 	}
 
 	// Create a fake worktree with a .git file so the gitDir rule is exercised
@@ -306,6 +306,228 @@ func TestGenerateSandboxConfig_ProfileValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sandbox-exec rejected generated profile: %v\n%s", err, out)
 	}
+}
+
+// sandboxExecFunctional returns true if sandbox-exec can actually apply profiles.
+// On macOS, nested sandboxing is not allowed — if the current process is already
+// sandboxed (e.g., running inside Claude Code's sandbox), sandbox_apply fails
+// with "Operation not permitted" (exit 71).
+func sandboxExecFunctional(t *testing.T) bool {
+	t.Helper()
+	if !IsSandboxAvailable() {
+		return false
+	}
+	cmd := exec.Command(sandboxExecPath, "-p", "(version 1)(allow default)", "/usr/bin/true")
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
+// sandboxRun is a helper that generates a sandbox profile for the given worktree
+// and runs cmdStr under sandbox-exec. Returns combined output and error.
+func sandboxRun(t *testing.T, wtDir string, sandboxCfg config.SandboxConfig, cmdStr string) ([]byte, error) {
+	t.Helper()
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, sandboxCfg)
+	if err != nil {
+		t.Fatalf("GenerateSandboxConfig: %v", err)
+	}
+	defer cleanup()
+
+	args := []string{}
+	for _, p := range params {
+		args = append(args, "-D", p)
+	}
+	args = append(args, "-f", profilePath, "sh", "-c", cmdStr)
+
+	cmd := exec.Command(sandboxExecPath, args...)
+	return cmd.CombinedOutput()
+}
+
+func TestSandbox_EnforcesWriteRestrictions(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	wtDir := t.TempDir()
+	outsideDir := t.TempDir()
+	cfg := config.SandboxConfig{}
+
+	t.Run("allows write inside worktree", func(t *testing.T) {
+		target := wtDir + "/test-file.txt"
+		out, err := sandboxRun(t, wtDir, cfg, "echo hello > "+shellQuote(target))
+		if err != nil {
+			t.Fatalf("write inside worktree should succeed: %v\n%s", err, out)
+		}
+		data, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("file should exist: %v", err)
+		}
+		if !strings.Contains(string(data), "hello") {
+			t.Errorf("unexpected content: %s", data)
+		}
+	})
+
+	t.Run("blocks write outside worktree", func(t *testing.T) {
+		target := outsideDir + "/should-not-exist.txt"
+		_, err := sandboxRun(t, wtDir, cfg, "echo blocked > "+shellQuote(target))
+		if err == nil {
+			t.Fatal("write outside worktree should be blocked by sandbox")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Error("file should not have been created outside worktree")
+		}
+	})
+
+	t.Run("allows write to tmp", func(t *testing.T) {
+		out, err := sandboxRun(t, wtDir, cfg, "mktemp /tmp/argus-sandbox-test-XXXXXX")
+		if err != nil {
+			t.Fatalf("write to /tmp should succeed: %v\n%s", err, out)
+		}
+		tmpFile := strings.TrimSpace(string(out))
+		defer os.Remove(tmpFile)
+		if _, statErr := os.Stat(tmpFile); statErr != nil {
+			t.Errorf("temp file should exist: %v", statErr)
+		}
+	})
+}
+
+func TestSandbox_EnforcesReadRestrictions(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	wtDir := t.TempDir()
+
+	t.Run("blocks read of custom deny path", func(t *testing.T) {
+		secretDir := t.TempDir()
+		secretFile := secretDir + "/secret.txt"
+		os.WriteFile(secretFile, []byte("top-secret"), 0o644)
+
+		cfg := config.SandboxConfig{
+			DenyRead: []string{secretDir},
+		}
+		_, err := sandboxRun(t, wtDir, cfg, "cat "+shellQuote(secretFile))
+		if err == nil {
+			t.Fatal("reading denied path should be blocked by sandbox")
+		}
+	})
+
+	t.Run("allows read of worktree files", func(t *testing.T) {
+		testFile := wtDir + "/readable.txt"
+		os.WriteFile(testFile, []byte("readable"), 0o644)
+
+		cfg := config.SandboxConfig{}
+		out, err := sandboxRun(t, wtDir, cfg, "cat "+shellQuote(testFile))
+		if err != nil {
+			t.Fatalf("reading worktree file should succeed: %v\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "readable") {
+			t.Errorf("unexpected output: %s", out)
+		}
+	})
+}
+
+func TestSandbox_ExtraWritePaths(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	wtDir := t.TempDir()
+	extraDir := t.TempDir()
+
+	cfg := config.SandboxConfig{
+		ExtraWrite: []string{extraDir},
+	}
+
+	target := extraDir + "/extra-file.txt"
+	out, err := sandboxRun(t, wtDir, cfg, "echo extra > "+shellQuote(target))
+	if err != nil {
+		t.Fatalf("write to extra write path should succeed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("file should exist: %v", err)
+	}
+	if !strings.Contains(string(data), "extra") {
+		t.Errorf("unexpected content: %s", data)
+	}
+}
+
+func TestSandbox_GitDirWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	// Set up a fake worktree with .git file pointing to a main repo
+	wtDir := t.TempDir()
+	mainRepo := t.TempDir()
+	gitDir := mainRepo + "/.git"
+	wtGitDir := gitDir + "/worktrees/my-task"
+	os.MkdirAll(wtGitDir, 0o755)
+	os.WriteFile(wtDir+"/.git", []byte("gitdir: "+wtGitDir+"\n"), 0o644)
+
+	cfg := config.SandboxConfig{}
+	target := wtGitDir + "/index.lock"
+	out, err := sandboxRun(t, wtDir, cfg, "echo lock > "+shellQuote(target))
+	if err != nil {
+		t.Fatalf("write to .git dir should succeed for worktree git ops: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("lock file should exist: %v", err)
+	}
+	if !strings.Contains(string(data), "lock") {
+		t.Errorf("unexpected content: %s", data)
+	}
+}
+
+func TestSandbox_CredentialDirsBlocked(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	wtDir := t.TempDir()
+	cfg := config.SandboxConfig{}
+	homeDir, _ := os.UserHomeDir()
+
+	// Test credential directories that should be blocked
+	credDirs := []struct {
+		name string
+		path string
+	}{
+		{"ssh", homeDir + "/.ssh"},
+		{"aws", homeDir + "/.aws"},
+		{"gnupg", homeDir + "/.gnupg"},
+		{"kube", homeDir + "/.kube"},
+	}
+
+	for _, cd := range credDirs {
+		t.Run("blocks_read_"+cd.name, func(t *testing.T) {
+			// Only test if the directory actually exists
+			if _, err := os.Stat(cd.path); os.IsNotExist(err) {
+				t.Skipf("%s does not exist", cd.path)
+			}
+			_, err := sandboxRun(t, wtDir, cfg, "ls "+shellQuote(cd.path))
+			if err == nil {
+				t.Errorf("reading %s should be blocked by sandbox", cd.path)
+			}
+		})
+	}
+
+	// SSH known_hosts should be readable (allowed exception)
+	t.Run("allows_ssh_known_hosts", func(t *testing.T) {
+		knownHosts := homeDir + "/.ssh/known_hosts"
+		if _, err := os.Stat(knownHosts); os.IsNotExist(err) {
+			t.Skip("~/.ssh/known_hosts does not exist")
+		}
+		out, err := sandboxRun(t, wtDir, cfg, "cat "+shellQuote(knownHosts))
+		if err != nil {
+			t.Fatalf("reading ~/.ssh/known_hosts should be allowed: %v\n%s", err, out)
+		}
+	})
 }
 
 func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
