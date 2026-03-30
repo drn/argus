@@ -271,7 +271,7 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 
 		// Global form keys
 		switch event.Key() {
-		case tcell.KeyEscape:
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
 			if f.acOpen {
 				f.acOpen = false
 				return

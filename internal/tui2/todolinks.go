@@ -110,7 +110,7 @@ func (m *LinkPickerModal) PasteHandler() func(string, func(tview.Primitive)) {
 func (m *LinkPickerModal) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return m.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		switch event.Key() {
-		case tcell.KeyEscape:
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
 			m.canceled = true
 		case tcell.KeyEnter:
 			m.selected = true

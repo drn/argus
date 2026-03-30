@@ -82,6 +82,22 @@ func TestNewTaskForm_EscapeCancels(t *testing.T) {
 	}
 }
 
+func TestNewTaskForm_CtrlQCancels(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{},
+		"",
+		map[string]config.Backend{},
+		"",
+	)
+
+	handler := f.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, 0), func(p tview.Primitive) {})
+
+	if !f.Canceled() {
+		t.Error("ctrl+q should cancel the form")
+	}
+}
+
 func TestNewTaskForm_PromptInput(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}},

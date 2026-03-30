@@ -34,7 +34,7 @@ func (m *ConfirmDeleteModal) InputHandler() func(event *tcell.EventKey, setFocus
 		switch event.Key() {
 		case tcell.KeyEnter:
 			m.confirmed = true
-		case tcell.KeyEscape:
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
 			m.canceled = true
 		}
 	})

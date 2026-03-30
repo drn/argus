@@ -125,7 +125,7 @@ func (m *LaunchToDoModal) InputHandler() func(event *tcell.EventKey, setFocus fu
 
 		// Global keys
 		switch event.Key() {
-		case tcell.KeyEscape:
+		case tcell.KeyEscape, tcell.KeyCtrlQ:
 			m.canceled = true
 			return
 		case tcell.KeyTab:

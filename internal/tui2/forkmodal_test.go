@@ -36,6 +36,17 @@ func TestForkTaskModal_Escape(t *testing.T) {
 	testutil.Equal(t, m.Canceled(), true)
 }
 
+func TestForkTaskModal_CtrlQ(t *testing.T) {
+	task := &model.Task{Name: "test-task"}
+	m := NewForkTaskModal(task)
+
+	handler := m.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
+
+	testutil.Equal(t, m.Confirmed(), false)
+	testutil.Equal(t, m.Canceled(), true)
+}
+
 func TestForkTaskModal_Draw(t *testing.T) {
 	task := &model.Task{
 		Name:     "my-task",
