@@ -60,7 +60,8 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath (string-append (param "HOME") "/.cargo")))
 (allow file-write* (subpath (string-append (param "HOME") "/.local")))
 (allow file-write* (subpath (string-append (param "HOME") "/.cache")))
-; Dotfiles — allow full write for master branch syncing (merge skill)
+; Dotfiles — full write required for merge skill (git reset --hard origin/master).
+; Expands from ~/.dots/sys/skill-usage; acceptable since sole-user threat model.
 (allow file-write* (subpath (string-append (param "HOME") "/.dots")))
 `
 
