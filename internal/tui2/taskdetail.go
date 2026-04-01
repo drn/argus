@@ -14,8 +14,9 @@ import (
 // TaskDetailPanel displays metadata for the selected task in the right panel.
 type TaskDetailPanel struct {
 	*tview.Box
-	task    *model.Task
-	running bool
+	task      *model.Task
+	running   bool
+	sandboxed bool
 }
 
 // NewTaskDetailPanel creates a task detail panel.
@@ -26,9 +27,10 @@ func NewTaskDetailPanel() *TaskDetailPanel {
 }
 
 // SetTask updates the displayed task.
-func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
+func (td *TaskDetailPanel) SetTask(t *model.Task, running, sandboxed bool) {
 	td.task = t
 	td.running = running
+	td.sandboxed = sandboxed
 }
 
 // Draw renders the task detail panel.
@@ -85,6 +87,13 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	// Backend
 	if t.Backend != "" {
 		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, StyleNormal)
+	}
+
+	// Sandbox
+	if td.sandboxed {
+		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "Yes", StyleComplete)
+	} else {
+		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "No", StyleDimmed)
 	}
 
 	// PR URL

@@ -1,12 +1,14 @@
 package tui2
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestTaskDetailPanel_DrawNilTask(t *testing.T) {
@@ -45,7 +47,7 @@ func TestTaskDetailPanel_DrawWithTask(t *testing.T) {
 	}
 	task.SetStatus(model.StatusInProgress)
 
-	td.SetTask(task, true)
+	td.SetTask(task, true, false)
 	td.Draw(screen)
 	// Should render without panic
 }
@@ -60,6 +62,54 @@ func TestTaskDetailPanel_ZeroDimensions(t *testing.T) {
 	td := NewTaskDetailPanel()
 	td.SetRect(0, 0, 0, 0)
 	td.Draw(screen) // must not panic
+}
+
+func TestTaskDetailPanel_SandboxIndicator(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 20)
+
+	td := NewTaskDetailPanel()
+	td.SetRect(1, 1, 38, 18)
+
+	task := &model.Task{
+		ID:      "test-sb",
+		Name:    "sandbox-test",
+		Status:  model.StatusPending,
+		Project: "argus",
+		Backend: "claude",
+	}
+
+	readScreen := func() string {
+		var buf strings.Builder
+		w, h := screen.Size()
+		for row := 0; row < h; row++ {
+			for col := 0; col < w; col++ {
+				ch, _, _, _ := screen.GetContent(col, row)
+				buf.WriteRune(ch)
+			}
+			buf.WriteRune('\n')
+		}
+		return buf.String()
+	}
+
+	t.Run("sandboxed", func(t *testing.T) {
+		td.SetTask(task, false, true)
+		td.Draw(screen)
+		content := readScreen()
+		testutil.Contains(t, content, "Sandbox")
+		testutil.Contains(t, content, "Yes")
+	})
+
+	t.Run("not sandboxed", func(t *testing.T) {
+		td.SetTask(task, false, false)
+		td.Draw(screen)
+		content := readScreen()
+		testutil.Contains(t, content, "Sandbox")
+		testutil.Contains(t, content, "No")
+	})
 }
 
 func TestTaskDetailPanel_WrapText(t *testing.T) {
