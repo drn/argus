@@ -349,7 +349,10 @@ func (a *App) tickLoop() {
 // spinnerLoop triggers redraws for smooth spinner animation.
 // Polls at 100ms (the fastest non-Progress spinner's TickInterval). The actual
 // frame selection is time-based in updateSpinnerFrame, so this just ensures
-// redraws happen often enough. Only fires when tasks are running.
+// redraws happen often enough. Only fires when tasks are actively running
+// (not idle) — idle tasks show a static moon icon, not the spinner. Skipping
+// redraws when all tasks are idle prevents unnecessary full-screen repaints
+// that interfere with tmux hyperlink hover and waste CPU.
 func (a *App) spinnerLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -360,9 +363,21 @@ func (a *App) spinnerLoop() {
 			return
 		case <-ticker.C:
 			a.mu.Lock()
-			hasRunning := len(a.runningIDs) > 0
+			hasActiveRunning := false
+			if len(a.runningIDs) > 0 {
+				idleSet := make(map[string]bool, len(a.idleIDs))
+				for _, id := range a.idleIDs {
+					idleSet[id] = true
+				}
+				for _, id := range a.runningIDs {
+					if !idleSet[id] {
+						hasActiveRunning = true
+						break
+					}
+				}
+			}
 			a.mu.Unlock()
-			if hasRunning {
+			if hasActiveRunning {
 				a.tapp.QueueUpdateDraw(func() {})
 			}
 		}

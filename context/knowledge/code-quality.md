@@ -1458,3 +1458,15 @@ Moved all tview widget state modifications in `onTick` into a single `QueueUpdat
 ### Data flow (after fix)
 - **Tick goroutine:** RPC (RunningAndIdle), PR URL scanning, daemon Ping
 - **tview goroutine (via QueueUpdateDraw):** refreshTasksWithIDs, preview refresh, agent pane update, reviews staleness check
+
+## Spinner Redraw Optimization: 2026-04-01
+
+### Problem
+`spinnerLoop` fired `QueueUpdateDraw(func(){})` every 100ms when ANY task was running, even idle ones. Idle tasks show a static moon icon (☾), not the spinner — so 100ms redraws were completely wasted. Combined with `onTick` at 1s, this caused up to 11 full-screen repaints/second when tasks were idle, causing tmux hyperlink hover to flash and wasting CPU.
+
+### Fix
+`spinnerLoop` now builds an idle set from `a.idleIDs` and only fires redraws when at least one running task is NOT idle (i.e., actively showing the animated spinner). When all running tasks are idle, no 100ms redraws fire.
+
+### Gotchas
+- The spinner frame is only visible for tasks where `running[id] && !idle[id]` (see `drawTaskRow` in `tasklist.go`). All other states use static icons.
+- `onTick` still fires 1 redraw/second for reconciliation — this is acceptable and needed for status sync.
