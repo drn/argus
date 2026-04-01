@@ -852,10 +852,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		t := a.tasklist.SelectedTask()
 		if t != nil {
 			a.taskPreview.SetTaskID(t.ID)
-			a.taskDetail.SetTask(t, a.isTaskRunning(t.ID))
+			a.taskDetail.SetTask(t, a.isTaskRunning(t.ID), a.isTaskSandboxed(t))
 		} else {
 			a.taskPreview.SetTaskID("")
-			a.taskDetail.SetTask(nil, false)
+			a.taskDetail.SetTask(nil, false, false)
 		}
 	}
 }
@@ -1539,12 +1539,12 @@ func (a *App) switchTab(t Tab) {
 func (a *App) onTaskCursorChange(task *model.Task) {
 	if task == nil {
 		a.taskPreview.SetTaskID("")
-		a.taskDetail.SetTask(nil, false)
+		a.taskDetail.SetTask(nil, false, false)
 		a.taskGitPanel.Clear()
 		return
 	}
 	a.taskPreview.SetTaskID(task.ID)
-	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
+	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID), a.isTaskSandboxed(task))
 	// Kick off preview fetch immediately (don't wait for next tick).
 	go func() {
 		a.refreshPreview(task.ID)
@@ -1643,6 +1643,16 @@ func (a *App) isTaskRunning(taskID string) bool {
 		}
 	}
 	return false
+}
+
+// isTaskSandboxed returns whether the given task would run sandboxed.
+func (a *App) isTaskSandboxed(task *model.Task) bool {
+	if task == nil {
+		return false
+	}
+	cfg := a.db.Config()
+	sb := agent.ResolveSandboxConfig(task, cfg)
+	return sb.Enabled && agent.IsSandboxAvailable()
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.
