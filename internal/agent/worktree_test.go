@@ -215,6 +215,9 @@ func TestSanitizeBranchName(t *testing.T) {
 		{"???", "task"},         // all invalid → fallback
 		{"", "task"},            // empty → fallback
 		{"normal-name", "normal-name"},
+		{"Protect-production-branch-Lock-down-AWS-Lock-down-production-granting", "Protect-production-branch"},
+		{"aaaaabbbbbcccccdddddeeeeefffff-this-part-is-too-long-and-should-be-truncated", "aaaaabbbbbcccccdddddeeeeefffff"},
+		{"short-name", "short-name"},  // under limit, unchanged
 	}
 	for _, tt := range tests {
 		got := sanitizeBranchName(tt.input)

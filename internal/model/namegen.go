@@ -102,9 +102,9 @@ func extractKeywords(prompt string, maxWords int) string {
 
 	slug := strings.Join(keywords, "-")
 
-	// Cap at 40 chars, break at hyphen boundary
-	if len(slug) > 40 {
-		slug = slug[:40]
+	// Cap at 30 chars, break at hyphen boundary
+	if len(slug) > 30 {
+		slug = slug[:30]
 		if i := strings.LastIndex(slug, "-"); i > 5 {
 			slug = slug[:i]
 		}

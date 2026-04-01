@@ -16,7 +16,10 @@ import (
 // sanitizeBranchName replaces the most common invalid git branch name characters.
 // Covers spaces, control chars, and the characters forbidden by git-check-ref-format:
 //   ~ ^ : ? * [ ] { } \   plus leading/trailing dots, consecutive dots, and @{.
-var invalidBranchChars = regexp.MustCompile(`[[:cntrl:] ~^:?*\[\]{}\\]+`)
+var invalidBranchChars = regexp.MustCompile(`[[:cntrl:] ~^:?*\[\]{}\\.]+`)
+
+// maxBranchNameLen caps the length of sanitized branch/task names.
+const maxBranchNameLen = 30
 
 func sanitizeBranchName(name string) string {
 	s := invalidBranchChars.ReplaceAllString(name, "-")
@@ -28,6 +31,14 @@ func sanitizeBranchName(name string) string {
 	s = strings.Trim(s, "-")
 	if s == "" {
 		s = "task" // fallback when name is entirely invalid characters
+	}
+	// Cap length, breaking at a hyphen boundary when possible.
+	if len(s) > maxBranchNameLen {
+		s = s[:maxBranchNameLen]
+		if i := strings.LastIndex(s, "-"); i > 5 {
+			s = s[:i]
+		}
+		s = strings.TrimRight(s, "-.")
 	}
 	return s
 }

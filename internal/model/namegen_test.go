@@ -21,9 +21,9 @@ func TestGenerateNameFromPrompt(t *testing.T) {
 		prompt string
 		want   string
 	}{
-		{"fix the authentication token refresh bug", "fix-authentication-token-refresh"},
+		{"fix the authentication token refresh bug", "fix-authentication-token"},
 		{"add retry logic to the API client", "add-retry-logic-api"},
-		{"refactor database connection pooling", "refactor-database-connection-pooling"},
+		{"refactor database connection pooling", "refactor-database-connection"},
 		{"update the nav styles for mobile", "update-nav-styles-mobile"},
 	}
 	for _, tt := range tests {
