@@ -264,6 +264,25 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			idle:     map[string]bool{"1": true},
 			wantChar: IconMoonOutline,
 		},
+		{
+			name: "idle in progress plus in review shows review icon",
+			tasks: []*model.Task{
+				{ID: "1", Status: model.StatusInProgress},
+				{ID: "2", Status: model.StatusInReview},
+			},
+			running:  map[string]bool{"1": true},
+			idle:     map[string]bool{"1": true},
+			wantChar: IconMoonStars,
+		},
+		{
+			name: "running in progress plus in review shows review icon",
+			tasks: []*model.Task{
+				{ID: "1", Status: model.StatusInProgress},
+				{ID: "2", Status: model.StatusInReview},
+			},
+			running:  map[string]bool{"1": true},
+			wantChar: IconMoonStars,
+		},
 	}
 
 	for _, tt := range tests {

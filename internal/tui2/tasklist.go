@@ -764,7 +764,7 @@ func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 }
 
 // projectStatusIcon returns the aggregated status icon and style for a project's tasks.
-// Priority: in_progress > in_review > all complete > mixed > all pending.
+// Priority: any in_review > in_progress alone > all complete > mixed > all pending.
 func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
 	var hasInProgress, hasInReview, hasPending, hasComplete bool
 	allInProgressIdle := true
@@ -792,6 +792,9 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 
 	switch {
 	case hasInProgress:
+		if hasInReview {
+			return IconMoonStars, StyleInReview
+		}
 		if allInProgressIdle {
 			return IconMoonOutline, tcell.StyleDefault.Foreground(ColorInReview)
 		}
