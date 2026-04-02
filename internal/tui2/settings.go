@@ -761,6 +761,10 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 	if sv.cursor >= sv.scrollOff+innerH {
 		sv.scrollOff = sv.cursor - innerH + 1
 	}
+	// Clamp so we don't strand scroll past the end (e.g. after window resize).
+	if maxOff := max(0, len(sv.rows)-innerH); sv.scrollOff > maxOff {
+		sv.scrollOff = maxOff
+	}
 
 	for i := range innerH {
 		rowIdx := sv.scrollOff + i
