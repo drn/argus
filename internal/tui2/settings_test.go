@@ -873,3 +873,28 @@ func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry
 	t.Fatalf("project %q not found in settings view", name)
 	return nil
 }
+
+func TestSettingsView_ScrollClampOnResize(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Simulate a small viewport where scrolling is needed: move cursor to last row.
+	sv.cursor = len(sv.rows) - 1
+	sv.skipToSelectable(-1)
+
+	// Draw in a small viewport so scrollOff advances.
+	screen := tcell.NewSimulationScreen("")
+	_ = screen.Init()
+	screen.SetSize(60, 10) // only 10 rows total, border eats 2 → 8 inner rows
+	sv.SetRect(0, 0, 60, 10)
+	sv.Draw(screen)
+	testutil.Equal(t, sv.scrollOff > 0, true) // should have scrolled
+
+	// Now "maximize": grow the viewport so all rows fit.
+	bigH := len(sv.rows) + 4 // inner = bigH-2, plenty for all rows
+	screen.SetSize(60, bigH)
+	sv.SetRect(0, 0, 60, bigH)
+	sv.Draw(screen)
+
+	// scrollOff must clamp to 0 since all rows fit.
+	testutil.Equal(t, sv.scrollOff, 0)
+}

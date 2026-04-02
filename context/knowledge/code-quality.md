@@ -1470,3 +1470,16 @@ Moved all tview widget state modifications in `onTick` into a single `QueueUpdat
 ### Gotchas
 - The spinner frame is only visible for tasks where `running[id] && !idle[id]` (see `drawTaskRow` in `tasklist.go`). All other states use static icons.
 - `onTick` still fires 1 redraw/second for reconciliation — this is acceptable and needed for status sync.
+
+---
+
+## Settings Scroll Offset Clamp (2026-04-02)
+
+### Problem
+`SettingsView.renderList` scroll adjustment only tracked cursor position: if the cursor was within the visible range, `scrollOff` was left untouched. After a window resize (maximize), `scrollOff` could remain stranded at a high value even though all rows now fit — making the top rows (e.g., "System status") unreachable.
+
+### Fix
+Added a `maxOff` clamp after the cursor-based scroll adjustments: `max(0, len(sv.rows)-innerH)`. When all rows fit, this forces `scrollOff` to 0. Mirrors the existing pattern in the log detail scroll (`logScrollOff` clamp at line ~1223).
+
+### Gotchas
+- The log detail panel already had this clamp; only the settings list panel was missing it.
