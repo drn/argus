@@ -336,6 +336,7 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			f.prompt = newPrompt
 			f.cursorPos += len(runes)
 			f.updateAutocomplete()
+			// ntFieldBackend: backend selector ignores paste
 		}
 	})
 }
@@ -506,7 +507,9 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 			f.focused = ntFieldPrompt
 		}
 	case tcell.KeyUp:
-		f.focused--
+		if f.focused > ntFieldProject {
+			f.focused--
+		}
 	}
 }
 
@@ -670,6 +673,7 @@ func (f *NewTaskForm) wrapPrompt(width int) []wrappedLine {
 			break
 		}
 		// Find last space within the width to break at
+		// (i+width is safe: the remaining <= width guard above handles the boundary case)
 		breakAt := -1
 		for j := i + width; j > i; j-- {
 			if f.prompt[j] == ' ' {
@@ -1040,10 +1044,11 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 		labelStyle = StyleTitle
 	}
 	label := "Project:"
+	labelW := utf8.RuneCountInString(label)
 	drawText(screen, x, y, w, label, labelStyle)
 
-	inputX := x + len(label) + 1
-	inputW := w - len(label) - 1
+	inputX := x + labelW + 1
+	inputW := w - labelW - 1
 	if inputW <= 0 {
 		return
 	}
