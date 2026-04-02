@@ -1483,3 +1483,21 @@ Added a `maxOff` clamp after the cursor-based scroll adjustments: `max(0, len(sv
 
 ### Gotchas
 - The log detail panel already had this clamp; only the settings list panel was missing it.
+
+## Project Typeahead in New Task Form (2026-04-02)
+
+### Data Model
+Replaced `projectIdx int` (cycling index into sorted names) with typeahead state: `projInput []rune`, `projCursorPos int`, and project-specific autocomplete fields (`projACOpen`, `projACMatches`, `projACIdx`, `projACScroll`). The `resolveProject()` method resolves typed input to a known project name with case-insensitive fallback.
+
+### Flow
+1. Form opens with `projInput` pre-filled from `defaultProject`
+2. Typing triggers `updateProjectAC()` — case-insensitive substring match against sorted project names
+3. Up/Down navigate the dropdown; Enter accepts the selected match (via `projACAccept`) and reloads skills
+4. Enter with AC closed moves focus to backend field
+5. `Task()` and `SelectedProject()` call `resolveProject()` which does exact match then case-insensitive fallback
+
+### Gotchas
+- `handleSelectorKey` is now only used for the backend field — project has its own `handleProjectKey` with full text editing support (word nav, Ctrl+U/K/W, etc.)
+- `drawProjectField` uses `utf8.RuneCountInString` for label width (not `len`) — ASCII labels work either way but rune count is correct
+- Escape/Ctrl+Q closes both `acOpen` and `projACOpen` atomically — safe because only one field is focused at a time
+- `PasteHandler` routes by `f.focused`: project and prompt both accept paste, backend silently ignores it
