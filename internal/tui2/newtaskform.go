@@ -31,7 +31,6 @@ const acMaxVisible = 6
 type NewTaskForm struct {
 	*tview.Box
 	projectNames []string
-	projectIdx   int
 	backendNames []string
 	backendIdx   int
 	prompt       []rune // raw prompt text
@@ -45,6 +44,14 @@ type NewTaskForm struct {
 
 	projects map[string]config.Project
 	backends map[string]config.Backend
+
+	// project typeahead state
+	projInput     []rune   // typed text for project filter
+	projCursorPos int      // cursor position in project input
+	projACOpen    bool     // whether dropdown is showing
+	projACMatches []string // filtered project names
+	projACIdx     int      // selected item in dropdown
+	projACScroll  int      // scroll offset in dropdown
 
 	// autocomplete state
 	skills    []skills.SkillItem
@@ -62,14 +69,6 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 		projNames = append(projNames, name)
 	}
 	sort.Strings(projNames)
-
-	projIdx := 0
-	for i, n := range projNames {
-		if n == defaultProject {
-			projIdx = i
-			break
-		}
-	}
 
 	// Build sorted backend names
 	backNames := make([]string, 0, len(backends))
@@ -89,7 +88,8 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	f := &NewTaskForm{
 		Box:          tview.NewBox(),
 		projectNames: projNames,
-		projectIdx:   projIdx,
+		projInput:    []rune(defaultProject),
+		projCursorPos: len([]rune(defaultProject)),
 		backendNames: backNames,
 		backendIdx:   backIdx,
 		focused:      ntFieldPrompt,
@@ -108,12 +108,25 @@ func (f *NewTaskForm) Done() bool { return f.done }
 // Canceled returns true if the form was canceled.
 func (f *NewTaskForm) Canceled() bool { return f.canceled }
 
+// resolveProject returns the project name if it exactly matches a known project.
+func (f *NewTaskForm) resolveProject() string {
+	input := string(f.projInput)
+	if _, ok := f.projects[input]; ok {
+		return input
+	}
+	// Case-insensitive fallback
+	lower := strings.ToLower(input)
+	for _, name := range f.projectNames {
+		if strings.ToLower(name) == lower {
+			return name
+		}
+	}
+	return ""
+}
+
 // Task returns the task from the current form state.
 func (f *NewTaskForm) Task() *model.Task {
-	proj := ""
-	if f.projectIdx < len(f.projectNames) {
-		proj = f.projectNames[f.projectIdx]
-	}
+	proj := f.resolveProject()
 	backend := ""
 	if f.backendIdx < len(f.backendNames) {
 		backend = f.backendNames[f.backendIdx]
@@ -139,10 +152,7 @@ func (f *NewTaskForm) Task() *model.Task {
 
 // SelectedProject returns the selected project name.
 func (f *NewTaskForm) SelectedProject() string {
-	if f.projectIdx < len(f.projectNames) {
-		return f.projectNames[f.projectIdx]
-	}
-	return ""
+	return f.resolveProject()
 }
 
 // SetError sets an error message to display on the form and resets the
@@ -154,10 +164,11 @@ func (f *NewTaskForm) SetError(msg string) {
 
 // selectedProjectPath returns the filesystem path of the currently selected project.
 func (f *NewTaskForm) selectedProjectPath() string {
-	if len(f.projectNames) == 0 {
+	proj := f.resolveProject()
+	if proj == "" {
 		return ""
 	}
-	if p, ok := f.projects[f.projectNames[f.projectIdx]]; ok {
+	if p, ok := f.projects[proj]; ok {
 		return p.Path
 	}
 	return ""
@@ -172,6 +183,65 @@ func (f *NewTaskForm) acTrigger() string {
 		}
 	}
 	return "/"
+}
+
+// updateProjectAC recomputes the project autocomplete matches based on the current input.
+func (f *NewTaskForm) updateProjectAC() {
+	input := strings.ToLower(string(f.projInput))
+	f.projACMatches = nil
+	for _, name := range f.projectNames {
+		if input == "" || strings.Contains(strings.ToLower(name), input) {
+			f.projACMatches = append(f.projACMatches, name)
+		}
+	}
+	f.projACOpen = len(f.projACMatches) > 0
+	if f.projACIdx >= len(f.projACMatches) {
+		f.projACIdx = 0
+		f.projACScroll = 0
+	}
+}
+
+// projACMoveDown moves the project autocomplete cursor down one item (wraps).
+func (f *NewTaskForm) projACMoveDown() {
+	if len(f.projACMatches) == 0 {
+		return
+	}
+	f.projACIdx = (f.projACIdx + 1) % len(f.projACMatches)
+	if f.projACIdx == 0 {
+		f.projACScroll = 0
+	} else if f.projACIdx >= f.projACScroll+acMaxVisible {
+		f.projACScroll = f.projACIdx - acMaxVisible + 1
+	}
+}
+
+// projACMoveUp moves the project autocomplete cursor up one item (wraps).
+func (f *NewTaskForm) projACMoveUp() {
+	if len(f.projACMatches) == 0 {
+		return
+	}
+	if f.projACIdx == 0 {
+		f.projACIdx = len(f.projACMatches) - 1
+		if f.projACIdx >= acMaxVisible {
+			f.projACScroll = f.projACIdx - acMaxVisible + 1
+		}
+	} else {
+		f.projACIdx--
+		if f.projACIdx < f.projACScroll {
+			f.projACScroll = f.projACIdx
+		}
+	}
+}
+
+// projACAccept selects the current autocomplete match and closes the dropdown.
+func (f *NewTaskForm) projACAccept() {
+	if len(f.projACMatches) == 0 {
+		return
+	}
+	name := f.projACMatches[f.projACIdx]
+	f.projInput = []rune(name)
+	f.projCursorPos = len(f.projInput)
+	f.projACOpen = false
+	f.loadSkills()
 }
 
 // loadSkills scans skill directories for the currently selected project.
@@ -244,22 +314,29 @@ func (f *NewTaskForm) acMoveUp() {
 // text at the cursor position in a single operation instead of per-character.
 func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
 	return f.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
-		if f.focused != ntFieldPrompt {
-			return
-		}
 		f.errMsg = ""
 		runes := []rune(pastedText)
 		if len(runes) == 0 {
 			return
 		}
-		// Insert all runes at cursor position in one slice operation.
-		newPrompt := make([]rune, 0, len(f.prompt)+len(runes))
-		newPrompt = append(newPrompt, f.prompt[:f.cursorPos]...)
-		newPrompt = append(newPrompt, runes...)
-		newPrompt = append(newPrompt, f.prompt[f.cursorPos:]...)
-		f.prompt = newPrompt
-		f.cursorPos += len(runes)
-		f.updateAutocomplete()
+		switch f.focused {
+		case ntFieldProject:
+			newInput := make([]rune, 0, len(f.projInput)+len(runes))
+			newInput = append(newInput, f.projInput[:f.projCursorPos]...)
+			newInput = append(newInput, runes...)
+			newInput = append(newInput, f.projInput[f.projCursorPos:]...)
+			f.projInput = newInput
+			f.projCursorPos += len(runes)
+			f.updateProjectAC()
+		case ntFieldPrompt:
+			newPrompt := make([]rune, 0, len(f.prompt)+len(runes))
+			newPrompt = append(newPrompt, f.prompt[:f.cursorPos]...)
+			newPrompt = append(newPrompt, runes...)
+			newPrompt = append(newPrompt, f.prompt[f.cursorPos:]...)
+			f.prompt = newPrompt
+			f.cursorPos += len(runes)
+			f.updateAutocomplete()
+		}
 	})
 }
 
@@ -272,31 +349,140 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 		// Global form keys
 		switch event.Key() {
 		case tcell.KeyEscape, tcell.KeyCtrlQ:
-			if f.acOpen { // two-step: first press closes autocomplete, second cancels form
+			if f.acOpen || f.projACOpen { // two-step: first press closes autocomplete, second cancels form
 				f.acOpen = false
+				f.projACOpen = false
 				return
 			}
 			f.canceled = true
 			return
 		case tcell.KeyTab:
 			f.acOpen = false
+			f.projACOpen = false
 			f.focused = (f.focused + 1) % 3
 			return
 		case tcell.KeyBacktab:
 			f.acOpen = false
+			f.projACOpen = false
 			f.focused = (f.focused + 2) % 3
 			return
 		}
 
 		switch f.focused {
 		case ntFieldProject:
-			f.handleSelectorKey(event, &f.projectIdx, len(f.projectNames))
+			f.handleProjectKey(event)
 		case ntFieldBackend:
 			f.handleSelectorKey(event, &f.backendIdx, len(f.backendNames))
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
 		}
 	})
+}
+
+// handleProjectKey handles key events when the project typeahead field is focused.
+func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
+	mod := event.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
+	switch event.Key() {
+	case tcell.KeyEnter:
+		if f.projACOpen && len(f.projACMatches) > 0 {
+			f.projACAccept()
+			return
+		}
+		f.projACOpen = false
+		f.focused = ntFieldBackend
+		return
+	case tcell.KeyDown:
+		if f.projACOpen {
+			f.projACMoveDown()
+			return
+		}
+		f.projACOpen = false
+		f.focused = ntFieldBackend
+		return
+	case tcell.KeyUp:
+		if f.projACOpen {
+			f.projACMoveUp()
+			return
+		}
+		f.projACOpen = false
+		f.focused = ntFieldPrompt
+		return
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			f.projInput, f.projCursorPos = deleteWordLeft(f.projInput, f.projCursorPos)
+			f.updateProjectAC()
+			return
+		}
+		if f.projCursorPos > 0 {
+			f.projInput = append(f.projInput[:f.projCursorPos-1], f.projInput[f.projCursorPos:]...)
+			f.projCursorPos--
+			f.updateProjectAC()
+		}
+		return
+	case tcell.KeyCtrlW:
+		f.projInput, f.projCursorPos = deleteWordLeft(f.projInput, f.projCursorPos)
+		f.updateProjectAC()
+		return
+	case tcell.KeyDelete:
+		if f.projCursorPos < len(f.projInput) {
+			f.projInput = append(f.projInput[:f.projCursorPos], f.projInput[f.projCursorPos+1:]...)
+			f.updateProjectAC()
+		}
+		return
+	case tcell.KeyLeft:
+		if hasAlt {
+			f.projCursorPos = wordLeftPos(f.projInput, f.projCursorPos)
+			return
+		}
+		if f.projCursorPos > 0 {
+			f.projCursorPos--
+		}
+		return
+	case tcell.KeyRight:
+		if hasAlt {
+			f.projCursorPos = wordRightPos(f.projInput, f.projCursorPos)
+			return
+		}
+		if f.projCursorPos < len(f.projInput) {
+			f.projCursorPos++
+		}
+		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		f.projCursorPos = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		f.projCursorPos = len(f.projInput)
+		return
+	case tcell.KeyCtrlU:
+		f.projInput = f.projInput[f.projCursorPos:]
+		f.projCursorPos = 0
+		f.updateProjectAC()
+		return
+	case tcell.KeyCtrlK:
+		f.projInput = f.projInput[:f.projCursorPos]
+		f.updateProjectAC()
+		return
+	case tcell.KeyRune:
+		r := event.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				f.projCursorPos = wordLeftPos(f.projInput, f.projCursorPos)
+			case 'f', 'F':
+				f.projCursorPos = wordRightPos(f.projInput, f.projCursorPos)
+			case 'd', 'D':
+				f.projInput, f.projCursorPos = deleteWordRight(f.projInput, f.projCursorPos)
+				f.updateProjectAC()
+			}
+			return
+		}
+		f.projInput = append(f.projInput[:f.projCursorPos], append([]rune{r}, f.projInput[f.projCursorPos:]...)...)
+		f.projCursorPos++
+		f.updateProjectAC()
+		return
+	}
 }
 
 func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count int) {
@@ -306,25 +492,11 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 	switch event.Key() {
 	case tcell.KeyLeft:
 		*idx = (*idx - 1 + count) % count
-		// Reload skills when project changes
-		if idx == &f.projectIdx {
-			f.acOpen = false
-			f.acIdx = 0
-			f.acScroll = 0
-			f.loadSkills()
-		}
-		// Update autocomplete trigger when backend changes
 		if idx == &f.backendIdx {
 			f.updateAutocomplete()
 		}
 	case tcell.KeyRight:
 		*idx = (*idx + 1) % count
-		if idx == &f.projectIdx {
-			f.acOpen = false
-			f.acIdx = 0
-			f.acScroll = 0
-			f.loadSkills()
-		}
 		if idx == &f.backendIdx {
 			f.updateAutocomplete()
 		}
@@ -334,12 +506,7 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 			f.focused = ntFieldPrompt
 		}
 	case tcell.KeyUp:
-		if f.focused == ntFieldProject {
-			// Wrap to prompt from project (circular navigation)
-			f.focused = ntFieldPrompt
-		} else {
-			f.focused--
-		}
+		f.focused--
 	}
 }
 
@@ -651,9 +818,17 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(2) + backend(2) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	// = 11 + visiblePromptLines + acRows
-	modalH := 11 + visiblePromptLines + acRows
+	// Project autocomplete row count
+	projACRows := 0
+	if f.projACOpen && len(f.projACMatches) > 0 {
+		projACRows = len(f.projACMatches)
+		if projACRows > acMaxVisible {
+			projACRows = acMaxVisible + 1
+		}
+	}
+
+	// Modal height: border(1) + padding(1) + project(2) + projAC(P) + backend(2) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 11 + visiblePromptLines + acRows + projACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -687,9 +862,13 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	innerX := mx + 2
 	row := my + 2
 
-	// Project selector
-	f.drawSelector(screen, innerX, row, innerW, "Project", f.projectNames, f.projectIdx, f.focused == ntFieldProject)
+	// Project typeahead
+	f.drawProjectField(screen, innerX, row, innerW)
 	row += 2
+	if projACRows > 0 {
+		f.drawProjectAC(screen, innerX, row, innerW)
+		row += projACRows
+	}
 
 	// Backend selector
 	f.drawSelector(screen, innerX, row, innerW, "Backend", f.backendNames, f.backendIdx, f.focused == ntFieldBackend)
@@ -848,6 +1027,101 @@ func (f *NewTaskForm) drawAutocomplete(screen tcell.Screen, x, y, w int) {
 	if len(f.acMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.acIdx+1) + "/" + itoa(len(f.acMatches)) + ")"
 		drawText(screen, x, y+end-f.acScroll, w, countStr, StyleDimmed)
+	}
+}
+
+// drawProjectField renders the project typeahead input field.
+func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
+	focused := f.focused == ntFieldProject
+	modalBG := tcell.ColorDefault
+
+	labelStyle := StyleDimmed
+	if focused {
+		labelStyle = StyleTitle
+	}
+	label := "Project:"
+	drawText(screen, x, y, w, label, labelStyle)
+
+	inputX := x + len(label) + 1
+	inputW := w - len(label) - 1
+	if inputW <= 0 {
+		return
+	}
+
+	inputRow := y + 1
+	inputRunes := f.projInput
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
+
+	if focused {
+		for col := 0; col < inputW; col++ {
+			var ch rune
+			var st tcell.Style
+			if col < len(inputRunes) {
+				ch = inputRunes[col]
+				st = inputStyle
+			} else {
+				ch = ' '
+				st = inputEmptyStyle
+			}
+			if col == f.projCursorPos {
+				st = cursorStyle
+			}
+			screen.SetContent(inputX+col, inputRow, ch, nil, st)
+		}
+	} else {
+		if len(inputRunes) == 0 {
+			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholder := "Type to search..."
+			pRunes := []rune(placeholder)
+			for col := 0; col < inputW; col++ {
+				if col < len(pRunes) {
+					screen.SetContent(inputX+col, inputRow, pRunes[col], nil, placeholderStyle)
+				} else {
+					screen.SetContent(inputX+col, inputRow, ' ', nil, inputEmptyStyle)
+				}
+			}
+		} else {
+			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
+		}
+	}
+}
+
+// drawProjectAC renders the project autocomplete dropdown.
+func (f *NewTaskForm) drawProjectAC(screen tcell.Screen, x, y, w int) {
+	end := f.projACScroll + acMaxVisible
+	if end > len(f.projACMatches) {
+		end = len(f.projACMatches)
+	}
+
+	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(tcell.Color(87))
+
+	for vi, i := 0, f.projACScroll; i < end; vi, i = vi+1, i+1 {
+		name := f.projACMatches[i]
+		isSelected := i == f.projACIdx
+
+		indicator := "  "
+		if isSelected {
+			indicator = "> "
+		}
+
+		line := indicator + name
+		lineRunes := []rune(line)
+		for col := 0; col < w && col < len(lineRunes); col++ {
+			st := StyleDimmed
+			if isSelected {
+				st = selectedStyle
+			}
+			screen.SetContent(x+col, y+vi, lineRunes[col], nil, st)
+		}
+	}
+
+	// Scroll indicator
+	if len(f.projACMatches) > acMaxVisible {
+		countStr := "  (" + itoa(f.projACIdx+1) + "/" + itoa(len(f.projACMatches)) + ")"
+		drawText(screen, x, y+end-f.projACScroll, w, countStr, StyleDimmed)
 	}
 }
 

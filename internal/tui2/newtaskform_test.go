@@ -835,6 +835,167 @@ func TestNewTaskForm_PasteHandler(t *testing.T) {
 	_ = handler // ensure handler is used
 }
 
+func TestNewTaskForm_ProjectTypeahead(t *testing.T) {
+	projects := map[string]config.Project{
+		"alpha":   {Path: "/tmp/alpha"},
+		"beta":    {Path: "/tmp/beta"},
+		"charlie": {Path: "/tmp/charlie"},
+	}
+	backends := map[string]config.Backend{"b": {Command: "claude"}}
+
+	t.Run("default project pre-filled", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "beta", backends, "b")
+		if got := string(f.projInput); got != "beta" {
+			t.Errorf("projInput = %q, want %q", got, "beta")
+		}
+		if f.SelectedProject() != "beta" {
+			t.Errorf("SelectedProject() = %q, want beta", f.SelectedProject())
+		}
+	})
+
+	t.Run("typing filters projects", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		// Type "al" — should match "alpha"
+		handler(tcell.NewEventKey(tcell.KeyRune, 'a', 0), func(p tview.Primitive) {})
+		handler(tcell.NewEventKey(tcell.KeyRune, 'l', 0), func(p tview.Primitive) {})
+		if !f.projACOpen {
+			t.Error("project AC should be open")
+		}
+		if len(f.projACMatches) != 1 {
+			t.Errorf("matches = %d, want 1", len(f.projACMatches))
+		}
+		if f.projACMatches[0] != "alpha" {
+			t.Errorf("match = %q, want alpha", f.projACMatches[0])
+		}
+	})
+
+	t.Run("enter selects AC match", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		handler(tcell.NewEventKey(tcell.KeyRune, 'b', 0), func(p tview.Primitive) {})
+		if !f.projACOpen {
+			t.Fatal("AC should be open")
+		}
+
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+		if f.projACOpen {
+			t.Error("AC should close on enter")
+		}
+		if got := string(f.projInput); got != "beta" {
+			t.Errorf("projInput = %q, want beta", got)
+		}
+		if f.SelectedProject() != "beta" {
+			t.Errorf("SelectedProject() = %q, want beta", f.SelectedProject())
+		}
+	})
+
+	t.Run("down/up navigate AC", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		// Type "a" — matches alpha and charlie
+		handler(tcell.NewEventKey(tcell.KeyRune, 'a', 0), func(p tview.Primitive) {})
+		if !f.projACOpen {
+			t.Fatal("AC should be open")
+		}
+		if f.projACIdx != 0 {
+			t.Errorf("initial projACIdx = %d, want 0", f.projACIdx)
+		}
+
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(p tview.Primitive) {})
+		if f.projACIdx != 1 {
+			t.Errorf("after down: projACIdx = %d, want 1", f.projACIdx)
+		}
+
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(p tview.Primitive) {})
+		if f.projACIdx != 0 {
+			t.Errorf("after up: projACIdx = %d, want 0", f.projACIdx)
+		}
+	})
+
+	t.Run("enter without AC moves to backend", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		// AC should not be open for exact match with no filtering
+		f.projACOpen = false
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+		if f.focused != ntFieldBackend {
+			t.Errorf("focused = %d, want backend (%d)", f.focused, ntFieldBackend)
+		}
+	})
+
+	t.Run("backspace updates filter", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		for _, r := range "alpha" {
+			handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+		}
+		// Delete last char — "alph" should still match alpha
+		handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0), func(p tview.Primitive) {})
+		if got := string(f.projInput); got != "alph" {
+			t.Errorf("projInput = %q, want alph", got)
+		}
+		if !f.projACOpen {
+			t.Error("AC should still be open")
+		}
+	})
+
+	t.Run("case insensitive resolve", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.projInput = []rune("ALPHA")
+		f.projCursorPos = 5
+		if f.SelectedProject() != "alpha" {
+			t.Errorf("SelectedProject() = %q, want alpha", f.SelectedProject())
+		}
+	})
+
+	t.Run("escape closes project AC", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		handler(tcell.NewEventKey(tcell.KeyRune, 'a', 0), func(p tview.Primitive) {})
+		if !f.projACOpen {
+			t.Fatal("AC should be open")
+		}
+
+		handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(p tview.Primitive) {})
+		if f.projACOpen {
+			t.Error("AC should close on escape")
+		}
+		if f.Canceled() {
+			t.Error("should not cancel form when AC was open")
+		}
+	})
+}
+
+func TestNewTaskForm_ProjectPaste(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"myproject": {}}, "",
+		map[string]config.Backend{"b": {}}, "b",
+	)
+	f.focused = ntFieldProject
+
+	pasteHandler := f.PasteHandler()
+	pasteHandler("myproject", func(p tview.Primitive) {})
+	if got := string(f.projInput); got != "myproject" {
+		t.Errorf("projInput = %q, want myproject", got)
+	}
+	if f.SelectedProject() != "myproject" {
+		t.Errorf("SelectedProject() = %q, want myproject", f.SelectedProject())
+	}
+}
+
 func TestItoa(t *testing.T) {
 	if got := itoa(0); got != "0" {
 		t.Errorf("itoa(0) = %q", got)
