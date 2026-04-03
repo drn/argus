@@ -163,12 +163,23 @@ func (tl *TaskListView) SelectedProject() string {
 }
 
 // matchesFilter returns true if the task matches the current filter.
+// Filter terms are split by whitespace. Each term must match either the
+// project name or task name (case-insensitive substring). This allows
+// queries like "forge download" to match a task "Download-this-video" in
+// the "forge" project.
 func (tl *TaskListView) matchesFilter(t *model.Task) bool {
 	if tl.filter == "" {
 		return true
 	}
-	return strings.Contains(strings.ToLower(t.Name), strings.ToLower(tl.filter)) ||
-		strings.Contains(strings.ToLower(t.Project), strings.ToLower(tl.filter))
+	terms := strings.Fields(strings.ToLower(tl.filter))
+	name := strings.ToLower(t.Name)
+	proj := strings.ToLower(t.Project)
+	for _, term := range terms {
+		if !strings.Contains(name, term) && !strings.Contains(proj, term) {
+			return false
+		}
+	}
+	return true
 }
 
 // buildRows flattens tasks into display rows grouped by project.
