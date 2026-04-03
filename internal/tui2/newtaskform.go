@@ -831,8 +831,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + backend(2) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 10 + visiblePromptLines + acRows + projACRows
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + backend(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 9 + visiblePromptLines + acRows + projACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -876,7 +876,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Backend selector
 	f.drawSelector(screen, innerX, row, innerW, "Backend", f.backendNames, f.backendIdx, f.focused == ntFieldBackend)
-	row += 2
+	row++
 
 	// Prompt field
 	labelStyle := StyleDimmed
