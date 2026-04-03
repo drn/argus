@@ -1501,3 +1501,28 @@ Replaced `projectIdx int` (cycling index into sorted names) with typeahead state
 - `drawProjectField` uses `utf8.RuneCountInString` for label width (not `len`) — ASCII labels work either way but rune count is correct
 - Escape/Ctrl+Q closes both `acOpen` and `projACOpen` atomically — safe because only one field is focused at a time
 - `PasteHandler` routes by `f.focused`: project and prompt both accept paste, backend silently ignores it
+
+## Quick Add Projects Feature (2026-04-02)
+
+### Overview
+Two-phase modal form in Settings for bulk-importing git projects from a directory. Phase 0: directory path input with tab-completion autocomplete. Phase 1: scrollable checklist of discovered git repos.
+
+### Data Flow
+1. User presses `i` on project section in Settings → `OnQuickAdd` callback → `openQuickAddForm()`
+2. Form creates `QuickAddForm` with existing projects map for dedup
+3. Phase 0: user types path (tilde-expanded), Tab triggers directory autocomplete
+4. Enter triggers async `scanDirectory()` via `OnScan` callback → goroutine → `QueueUpdateDraw`
+5. `scanDirectory`: `os.ReadDir` → filter dirs → `EvalSymlinks` → check `.git` → dedup by path → unique name assignment
+6. Phase 1: user toggles repos (Space), confirms (Enter)
+7. `handleQuickAddKey`: iterates `SelectedRepos()`, calls `db.SetProject()` for each
+
+### Key Files
+- `internal/tui2/quickaddform.go` — form widget, `scanDirectory`, dir autocomplete, `expandTilde`/`collapseTilde`
+- `internal/tui2/app.go` — `modeQuickAdd`, `openQuickAddForm`, `handleQuickAddKey`, `closeQuickAddForm`
+- `internal/tui2/settings.go` — `OnQuickAdd` callback, `handleQuickAdd`, `'i'` key handler
+
+### Gotchas
+- **Symlink traversal**: `scanDirectory` must `EvalSymlinks` on each child before `.git` check and path dedup. Without this, symlinks in a dev directory can resolve to unintended paths (e.g., `/etc`).
+- **macOS temp path resolution**: `t.TempDir()` returns `/var/folders/...` but `EvalSymlinks` resolves to `/private/var/folders/...`. Tests that pre-register paths for dedup must resolve them with `EvalSymlinks` too.
+- **Async scan required**: `scanDirectory` does I/O (`os.ReadDir`, `os.Stat`) that can block on slow filesystems. Must run in background goroutine with results delivered via `QueueUpdateDraw`.
+- **Rune slice backspace**: `dirPath` is `[]rune`, so backspace is `f.dirCursor--`, NOT `utf8.DecodeLastRuneInString`. The latter returns byte offsets, not rune offsets.
