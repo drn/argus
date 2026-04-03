@@ -576,8 +576,7 @@ func TestTaskListView_SelectByID_AfterNewTask(t *testing.T) {
 	tl.SetTasks([]*model.Task{
 		{ID: "1", Name: "existing", Project: "proj"},
 	})
-	tl.expanded = "proj"
-	tl.buildRows()
+	tl.SetExpanded("proj")
 	testutil.Equal(t, tl.SelectedTask().ID, "1")
 
 	// Simulate creating a new task: add it to the list and select by ID.

@@ -1799,6 +1799,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		// then reconciliation sees InProgress + not-in-running-set → marks Complete.
 		// Use refreshTasksLocal (no RPC) to make the task list consistent.
 		a.refreshTasksLocal()
+		// Position cursor on the new task so it's selected when exiting agent view.
 		a.tasklist.SelectByID(task.ID)
 
 		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
