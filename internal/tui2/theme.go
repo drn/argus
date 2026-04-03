@@ -24,6 +24,7 @@ var (
 	ColorKeyHint    = tcell.Color87  // cyan — keybinding hints
 	ColorKeyLabel   = tcell.Color240 // dim — keybinding labels
 	ColorHighlight  = tcell.Color236 // slightly lighter dark gray — cursor/selection highlight
+	ColorFilter     = tcell.Color201 // magenta — active filter query
 )
 
 // Icon constants for status indicators (Nerd Font codepoints).
@@ -48,4 +49,5 @@ var (
 	StyleBorder       = tcell.StyleDefault.Foreground(ColorBorder)
 	StyleFocusedBorder = tcell.StyleDefault.Foreground(ColorTitle)
 	StyleError        = tcell.StyleDefault.Foreground(ColorError)
+	StyleFilter       = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
 )

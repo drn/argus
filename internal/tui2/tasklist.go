@@ -705,11 +705,18 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 	// Show filter text in panel title when active.
 	title := " Tasks "
-	if tl.filter != "" || tl.filtering {
-		title = " Tasks [/" + tl.filter + "] "
-	}
-
 	inner := drawBorderedPanel(screen, x, y, width, height, title, StyleBorder)
+	if tl.filter != "" || tl.filtering {
+		filterStr := "/" + tl.filter
+		col := x + 1 + ansi.StringWidth(title) // after the title text
+		for _, r := range filterStr {
+			if col >= x+width-1 {
+				break
+			}
+			screen.SetContent(col, y, r, nil, StyleFilter)
+			col++
+		}
+	}
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
