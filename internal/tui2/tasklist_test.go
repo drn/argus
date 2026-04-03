@@ -961,6 +961,36 @@ func TestTaskListView_FilterCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestTaskListView_FilterMultiTerm(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "Download-this-video", Project: "forge", Status: model.StatusPending},
+		{ID: "2", Name: "Fix-login-bug", Project: "forge", Status: model.StatusInProgress},
+		{ID: "3", Name: "Download-report", Project: "alpha", Status: model.StatusPending},
+	})
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+
+	// Type "forge download" — should match only task in forge with "download" in name
+	for _, ch := range "forge download" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+
+	var matched []string
+	for _, r := range tl.rows {
+		if r.kind == rowTask {
+			matched = append(matched, r.task.Name)
+		}
+	}
+	if len(matched) != 1 {
+		t.Fatalf("expected 1 task, got %d: %v", len(matched), matched)
+	}
+	if matched[0] != "Download-this-video" {
+		t.Errorf("expected Download-this-video, got %s", matched[0])
+	}
+}
+
 func TestTaskListView_FilterEscapeClears(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks(makeTasks())

@@ -1074,7 +1074,7 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 
 **Data Model:**
 - `TaskListView.filtering bool` — true while filter input is focused
-- `TaskListView.filter string` — current filter text (case-insensitive substring match against task name or project name)
+- `TaskListView.filter string` — current filter text; split on whitespace into terms, all terms must match at least one of task name or project name (case-insensitive substring). Enables queries like "forge download" to match across project + task name.
 
 **Flow:**
 1. User presses `/` on task list → `filtering = true`, filter input shown at bottom of panel
