@@ -163,8 +163,8 @@ func (tl *TaskListView) SelectedProject() string {
 }
 
 // matchesFilter returns true if the task matches the current filter.
-// Filter terms are split by whitespace. Each term must match either the
-// project name or task name (case-insensitive substring). This allows
+// Filter terms are split by whitespace. All terms must match at least one
+// of the project name or task name (case-insensitive substring). This allows
 // queries like "forge download" to match a task "Download-this-video" in
 // the "forge" project.
 func (tl *TaskListView) matchesFilter(t *model.Task) bool {
