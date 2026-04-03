@@ -1799,6 +1799,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		// then reconciliation sees InProgress + not-in-running-set → marks Complete.
 		// Use refreshTasksLocal (no RPC) to make the task list consistent.
 		a.refreshTasksLocal()
+		a.tasklist.SelectByID(task.ID)
 
 		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
 		a.onTaskSelect(task)
@@ -1995,6 +1996,7 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 		// reconciliation race: the session doesn't exist yet, so async RPC would
 		// see InProgress + no running session → incorrectly mark Complete.
 		a.refreshTasksLocal()
+		a.tasklist.SelectByID(task.ID)
 		a.onTaskSelect(task)
 		a.startSession(task)
 	}
@@ -2049,6 +2051,7 @@ func (a *App) startReviewTask(pr *github.PR) {
 		uxlog.Log("[reviews] found existing review task %s for %s", existing.ID, prURL)
 		a.switchTab(TabTasks)
 		a.refreshTasksLocal()
+		a.tasklist.SelectByID(existing.ID)
 		a.onTaskSelect(existing)
 		return
 	}
@@ -2089,6 +2092,7 @@ func (a *App) startReviewTask(pr *github.PR) {
 		uxlog.Log("[reviews] created review task %s (%s) for %s", task.ID, task.Name, prURL)
 		a.switchTab(TabTasks)
 		a.refreshTasksLocal()
+		a.tasklist.SelectByID(task.ID)
 		a.onTaskSelect(task)
 		a.startSession(task)
 		return
@@ -2131,6 +2135,7 @@ func (a *App) startReviewTask(pr *github.PR) {
 
 			a.switchTab(TabTasks)
 			a.refreshTasksLocal()
+			a.tasklist.SelectByID(task.ID)
 			a.onTaskSelect(task)
 			a.startSession(task)
 		})
@@ -2503,6 +2508,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			uxlog.Log("[fork] created task %s (%s) forked from %s", task.ID, task.Name, source.ID)
 
 			a.refreshTasksLocal()
+			a.tasklist.SelectByID(task.ID)
 			a.onTaskSelect(task)
 			a.startSession(task)
 		})
