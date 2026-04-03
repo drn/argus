@@ -143,7 +143,9 @@ func writeForkContextFiles(destWorktree string, ctx *forkContext) error {
 
 // buildForkPrompt creates the prompt for the forked task, referencing .context/ files.
 // Only references files that were actually written based on the extracted context.
-func buildForkPrompt(source *model.Task, ctx *forkContext) string {
+// targetProject is the project the fork is being created in; if it differs from
+// the source task's project, a note is included in the prompt.
+func buildForkPrompt(source *model.Task, ctx *forkContext, targetProject string) string {
 	var sb strings.Builder
 	sb.WriteString("Continue the work from a previous attempt. Context from the previous agent session is available in `.context/` files in the working directory:\n\n")
 	sb.WriteString("- `.context/fork-source.md` — source task metadata and original prompt\n")
@@ -154,6 +156,9 @@ func buildForkPrompt(source *model.Task, ctx *forkContext) string {
 		sb.WriteString("- `.context/fork-diff.patch` — code changes made so far\n")
 	}
 	sb.WriteString("\nRead these files first to understand what was done and what remains.\n\n")
+	if targetProject != source.Project {
+		sb.WriteString("Note: This task was forked from the \"" + source.Project + "\" project into \"" + targetProject + "\". The context files reference work done in the original project.\n\n")
+	}
 	sb.WriteString("Original prompt:\n")
 	sb.WriteString(source.Prompt)
 	return sb.String()

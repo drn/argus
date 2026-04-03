@@ -2297,7 +2297,8 @@ func (a *App) closeConfirmDelete() {
 
 // openForkModal shows the fork confirmation modal for the given task.
 func (a *App) openForkModal(t *model.Task) {
-	a.forkModal = NewForkTaskModal(t)
+	cfg := a.db.Config()
+	a.forkModal = NewForkTaskModal(t, cfg.Projects)
 	a.mode = modeForkTask
 	a.pages.AddPage("forktask", a.forkModal, true, true)
 	a.pages.SwitchToPage("forktask")
@@ -2316,8 +2317,12 @@ func (a *App) handleForkTaskKey(event *tcell.EventKey) {
 
 	if a.forkModal.Confirmed() {
 		source := a.forkModal.Task()
+		selectedProj := a.forkModal.SelectedProject()
+		if selectedProj == "" {
+			selectedProj = source.Project
+		}
 		a.closeForkModal()
-		a.executeFork(source)
+		a.executeFork(source, selectedProj)
 	}
 }
 
@@ -2403,9 +2408,10 @@ func (a *App) closeRenameModal() {
 // executeFork creates a new task forked from the source, extracting context
 // and starting a new agent session. Worktree creation and context extraction
 // run in a background goroutine to avoid blocking the UI thread.
-func (a *App) executeFork(source *model.Task) {
+// targetProject is the project to create the fork in (may differ from source).
+func (a *App) executeFork(source *model.Task, targetProject string) {
 	cfg := a.db.Config()
-	proj := source.Project
+	proj := targetProject
 	var projCfg config.Project
 	if p, ok := cfg.Projects[proj]; ok {
 		projCfg = p
@@ -2417,7 +2423,11 @@ func (a *App) executeFork(source *model.Task) {
 		return
 	}
 
-	uxlog.Log("[fork] starting fork of task %s (%s)", source.ID, source.Name)
+	if proj != source.Project {
+		uxlog.Log("[fork] starting fork of task %s (%s) into project %s (was %s)", source.ID, source.Name, proj, source.Project)
+	} else {
+		uxlog.Log("[fork] starting fork of task %s (%s)", source.ID, source.Name)
+	}
 
 	go func() {
 		// Extract context from the source task (reads session log + git diff).
@@ -2452,7 +2462,7 @@ func (a *App) executeFork(source *model.Task) {
 				Name:     finalName,
 				Status:   model.StatusPending,
 				Project:  proj,
-				Prompt:   buildForkPrompt(source, ctx),
+				Prompt:   buildForkPrompt(source, ctx, proj),
 				Backend:  source.Backend,
 				Branch:   branchName,
 				Worktree: wtPath,
