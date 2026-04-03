@@ -31,6 +31,11 @@ var prURLRe = regexp.MustCompile(`https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-
 
 const prScanTailSize = 32 * 1024 // bytes of session output to scan for PR URLs
 
+// recentStartGrace is the time window after startSession during which a task
+// is immune from reconciliation. Protects against false completion when
+// ListSessions returns stale data after a daemon restart cascade.
+const recentStartGrace = 5 * time.Second
+
 // viewMode identifies the active view.
 type viewMode int
 
@@ -137,7 +142,7 @@ type App struct {
 	// Daemon health
 	daemonFailures    int
 	daemonRestarting  bool
-	daemonFreshStart  bool            // daemon was auto-started (no prior sessions)
+	daemonFreshStart  bool            // no prior sessions (fresh auto-start or restart); first reconciliation uses InReview
 	lastDaemonRestart time.Time       // cooldown: minimum 30s between restart attempts
 	daemonClient      *dclient.Client
 	restartedClient   *dclient.Client // set after daemon restart
@@ -848,7 +853,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 				// Grace period: don't reconcile tasks that were started within
 				// the last 5 seconds. The daemon may not have registered the
 				// session in ListSessions yet (e.g., after restart cascade).
-				if startedAt, ok := a.recentStarts[t.ID]; ok && now.Sub(startedAt) < 5*time.Second {
+				if startedAt, ok := a.recentStarts[t.ID]; ok && now.Sub(startedAt) < recentStartGrace {
 					uxlog.Log("[tui2] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
 					continue
 				}
@@ -869,7 +874,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		}
 		// Clean up expired grace periods.
 		for id, startedAt := range a.recentStarts {
-			if now.Sub(startedAt) >= 5*time.Second {
+			if now.Sub(startedAt) >= recentStartGrace {
 				delete(a.recentStarts, id)
 			}
 		}

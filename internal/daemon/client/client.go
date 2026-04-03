@@ -36,9 +36,9 @@ type Client struct {
 	rpc        *rpc.Client
 	sockPath   string
 	sessions   map[string]*RemoteSession
-	freshStart bool // true when the daemon was auto-started (no prior sessions)
-	closed     chan struct{} // closed by Close(); stops connectStream retries
+	freshStart bool          // true when the daemon was auto-started (no prior sessions)
 	mu         sync.Mutex
+	closed     chan struct{} // closed by Close(); stops connectStream retries
 
 	// leakedCalls tracks goroutines from timed-out RPC calls that are still
 	// blocked in rpc.Call. Logged for observability — drain goroutines
