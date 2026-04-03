@@ -1323,6 +1323,56 @@ func TestTaskListView_CopyPromptKey(t *testing.T) {
 	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
 }
 
+func TestTaskListView_FilterOptionDelete(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "hello world" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+	testutil.Equal(t, tl.Filter(), "hello world")
+
+	// Option+Delete: delete word left ("world")
+	handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModAlt), func(tview.Primitive) {})
+	testutil.Equal(t, tl.Filter(), "hello ")
+}
+
+func TestTaskListView_FilterCmdDelete(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "hello world" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+	testutil.Equal(t, tl.Filter(), "hello world")
+
+	// Cmd+Delete (Ctrl+U): clear entire filter text
+	handler(tcell.NewEventKey(tcell.KeyCtrlU, 0, tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, tl.Filter(), "")
+	// Should still be in filter mode
+	testutil.Equal(t, tl.Filtering(), true)
+}
+
+func TestTaskListView_FilterCtrlW(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	for _, ch := range "foo bar" {
+		handler(tcell.NewEventKey(tcell.KeyRune, ch, tcell.ModNone), func(tview.Primitive) {})
+	}
+	testutil.Equal(t, tl.Filter(), "foo bar")
+
+	// Ctrl+W: delete word left
+	handler(tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, tl.Filter(), "foo ")
+}
+
 func TestSanitizeTaskName(t *testing.T) {
 	tests := []struct {
 		name string

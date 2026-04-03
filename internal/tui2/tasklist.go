@@ -587,6 +587,7 @@ func (tl *TaskListView) applyFilter() {
 // handleFilterInput processes key events while the filter input is active.
 // Returns true if the event was consumed.
 func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
+	hasAlt := event.Modifiers()&tcell.ModAlt != 0
 	switch event.Key() {
 	case tcell.KeyEscape:
 		tl.ClearFilter()
@@ -596,11 +597,31 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 		tl.filtering = false
 		return true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			// Option+Delete: delete word left.
+			runes := []rune(tl.filter)
+			runes, _ = deleteWordLeft(runes, len(runes))
+			tl.filter = string(runes)
+			tl.applyFilter()
+			return true
+		}
 		if len(tl.filter) > 0 {
 			_, size := utf8.DecodeLastRuneInString(tl.filter)
 			tl.filter = tl.filter[:len(tl.filter)-size]
 			tl.applyFilter()
 		}
+		return true
+	case tcell.KeyCtrlU:
+		// Cmd+Delete: clear entire filter text.
+		tl.filter = ""
+		tl.applyFilter()
+		return true
+	case tcell.KeyCtrlW:
+		// Ctrl+W: delete word left.
+		runes := []rune(tl.filter)
+		runes, _ = deleteWordLeft(runes, len(runes))
+		tl.filter = string(runes)
+		tl.applyFilter()
 		return true
 	case tcell.KeyUp:
 		tl.CursorUp()
