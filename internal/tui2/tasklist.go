@@ -709,12 +709,19 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 	if tl.filter != "" || tl.filtering {
 		filterStr := "/" + tl.filter
 		col := x + 1 + ansi.StringWidth(title) // after the title text
+		if col < x+width-1 {
+			screen.SetContent(col, y, '[', nil, StyleBorder)
+			col++
+		}
 		for _, r := range filterStr {
 			if col >= x+width-1 {
 				break
 			}
 			screen.SetContent(col, y, r, nil, StyleFilter)
 			col++
+		}
+		if col < x+width-1 {
+			screen.SetContent(col, y, ']', nil, StyleBorder)
 		}
 	}
 	if inner.W <= 0 || inner.H <= 0 {
