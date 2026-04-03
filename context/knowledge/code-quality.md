@@ -1560,3 +1560,13 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Data model**: Single atomic counter on `App` struct, no DB changes.
 
 **Flow**: tick captures `startGen` → tick does `RunningAndIdle()` RPC → `startSession` bumps `startGen` → tick's callback detects mismatch → passes `nil` runningIDs → reconciliation skipped → next tick gets fresh IDs with the new session.
+
+### 2026-04-03: SelectByID After Task Creation
+
+**Problem**: After creating a new task (via new task form, todo launch, review task, or fork), the task list cursor stayed on the previous row. When the user exited agent view, the highlighted task was wrong.
+
+**Fix**: Added `a.tasklist.SelectByID(task.ID)` after `a.refreshTasksLocal()` at all 6 task creation sites in `app.go`. The existing `navigateAgentTask` already had this pattern.
+
+**Data model**: No changes — uses existing `SelectByID` method on `TaskListView`.
+
+**Flow**: `db.Add(task)` → `refreshTasksLocal()` (rebuilds rows) → `SelectByID(task.ID)` (positions cursor) → `onTaskSelect(task)` (enters agent view). Ordering matters: `SelectByID` must come before `onTaskSelect` because agent view covers the task list.
