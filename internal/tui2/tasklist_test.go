@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -567,6 +568,26 @@ func TestTaskListView_SelectByID(t *testing.T) {
 	if sel == nil || sel.ID != "1" {
 		t.Fatalf("expected task 1, got %v", sel)
 	}
+}
+
+func TestTaskListView_SelectByID_AfterNewTask(t *testing.T) {
+	tl := NewTaskListView()
+	// Start with one task, cursor on it.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "existing", Project: "proj"},
+	})
+	tl.SetExpanded("proj")
+	testutil.Equal(t, tl.SelectedTask().ID, "1")
+
+	// Simulate creating a new task: add it to the list and select by ID.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "existing", Project: "proj"},
+		{ID: "2", Name: "new-task", Project: "proj"},
+	})
+	tl.SelectByID("2")
+	sel := tl.SelectedTask()
+	testutil.Equal(t, sel.ID, "2")
+	testutil.Equal(t, sel.Name, "new-task")
 }
 
 func TestTaskListView_RunningTaskAnimation(t *testing.T) {
