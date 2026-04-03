@@ -3,7 +3,6 @@ package tui2
 import (
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -153,12 +152,8 @@ func (m *ForkTaskModal) InputHandler() func(event *tcell.EventKey, setFocus func
 			m.canceled = true
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
 			if m.projCursorPos > 0 {
-				_, size := utf8.DecodeLastRuneInString(string(m.projInput[:m.projCursorPos]))
-				runeCount := len([]rune(string(m.projInput[:m.projCursorPos])))
-				_ = size
 				m.projCursorPos--
 				m.projInput = append(m.projInput[:m.projCursorPos], m.projInput[m.projCursorPos+1:]...)
-				_ = runeCount
 				m.updateProjectAC()
 			}
 		case tcell.KeyLeft:
@@ -209,7 +204,7 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 	}
 
 	formW := min(60, width-4)
-	formH := 14
+	formH := 16
 	formX := x + (width-formW)/2
 	formY := max(y+(height-formH)/2, y)
 
@@ -242,14 +237,14 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 
 	inputX := formX + 4 + len(projLabel) + 1
 	inputW := formW - 6 - len(projLabel) - 1
-	projStr := string(m.projInput)
+	projRunes := []rune(m.projInput)
 	// Draw input with cursor
 	inputStyle := StyleNormal
 	for i := 0; i < inputW; i++ {
 		ch := ' '
 		style := inputStyle
-		if i < len([]rune(projStr)) {
-			ch = []rune(projStr)[i]
+		if i < len(projRunes) {
+			ch = projRunes[i]
 		}
 		if i == m.projCursorPos {
 			style = style.Reverse(true)
@@ -257,8 +252,12 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 		screen.SetContent(inputX+i, projY, ch, nil, style)
 	}
 
+	// Pre-compute selected project once for Draw.
+	selectedProj := m.SelectedProject()
+	projChanged := selectedProj != "" && selectedProj != m.task.Project
+
 	// Project changed indicator
-	if m.SelectedProject() != "" && m.SelectedProject() != m.task.Project {
+	if projChanged {
 		changeNote := "(was: " + m.task.Project + ")"
 		drawText(screen, formX+4, projY+1, formW-6, changeNote, StyleDimmed)
 	}
@@ -266,7 +265,7 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 	// Autocomplete dropdown
 	if m.projACOpen && len(m.projACMatches) > 0 {
 		acY := projY + 1
-		if m.SelectedProject() != "" && m.SelectedProject() != m.task.Project {
+		if projChanged {
 			acY = projY + 2
 		}
 		visible := min(acMaxVisible, len(m.projACMatches))

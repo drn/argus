@@ -2435,6 +2435,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 
 		// Create worktree for the new task.
 		baseBranch := projCfg.Branch
+		// Avoid "fork-fork-..." names when re-forking an existing fork.
 		forkName := "fork-" + strings.TrimPrefix(source.Name, "fork-")
 		wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, forkName, baseBranch)
 		if err != nil {
