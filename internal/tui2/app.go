@@ -192,6 +192,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.settings.OnRestartDaemon = func() {
 		app.mu.Lock()
 		app.daemonRestarting = true
+		app.lastDaemonRestart = time.Now()
 		app.mu.Unlock()
 		go app.restartDaemon()
 	}
