@@ -247,15 +247,19 @@ func (a *App) buildUI() {
 		a.openRenameModal(t)
 	}
 	a.tasklist.OnCopyPrompt = func(t *model.Task) {
-		cmd := exec.Command("pbcopy")
-		cmd.Stdin = strings.NewReader(t.Prompt)
-		if err := cmd.Run(); err != nil {
-			uxlog.Log("[tui2] clipboard copy failed: %v", err)
-			return
-		}
-		uxlog.Log("[tui2] copied prompt to clipboard: task %s (%s)", t.ID, t.Name)
-		a.header.SetNotice("Prompt copied")
+		prompt := t.Prompt
+		taskID, taskName := t.ID, t.Name
 		go func() {
+			cmd := exec.Command("pbcopy")
+			cmd.Stdin = strings.NewReader(prompt)
+			if err := cmd.Run(); err != nil {
+				uxlog.Log("[tui2] clipboard copy failed: %v", err)
+				return
+			}
+			uxlog.Log("[tui2] copied prompt to clipboard: task %s (%s)", taskID, taskName)
+			a.tapp.QueueUpdateDraw(func() {
+				a.header.SetNotice("Prompt copied")
+			})
 			time.Sleep(2 * time.Second)
 			a.tapp.QueueUpdateDraw(func() {
 				if a.header.Notice() == "Prompt copied" {
