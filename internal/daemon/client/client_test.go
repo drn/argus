@@ -353,3 +353,31 @@ func TestAlive_DaemonDown(t *testing.T) {
 		t.Error("expected alive=false when daemon is unreachable")
 	}
 }
+
+// TestClose_StopsConnectStream verifies that Client.Close() signals the
+// closed channel, which connectStream checks to stop retries.
+func TestClose_StopsRetries(t *testing.T) {
+	_, sockPath, _ := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify closed channel is open.
+	select {
+	case <-c.closed:
+		t.Fatal("closed channel should be open before Close()")
+	default:
+	}
+
+	c.Close()
+
+	// Verify closed channel is now closed.
+	select {
+	case <-c.closed:
+		// expected
+	default:
+		t.Fatal("closed channel should be closed after Close()")
+	}
+}

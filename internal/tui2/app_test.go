@@ -1076,6 +1076,41 @@ func TestReconcileSkipsOnStaleStartGen(t *testing.T) {
 	}
 }
 
+// TestRefreshTasksAsyncStartGenGuard replicates the startGen guard in
+// refreshTasksAsync. Before the fix, refreshTasksAsync had no guard — a
+// session exit calling refreshTasksAsync while a new task was starting would
+// capture stale runningIDs and reconcile the new task to Complete.
+func TestRefreshTasksAsyncStartGenGuard(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "just-started", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Simulate: refreshTasksAsync captures startGen before RPC...
+	startGen := app.startGen.Load()
+
+	// ...then startSession bumps it while the RPC is in-flight.
+	app.startGen.Add(1)
+
+	// RPC returns stale empty runningIDs (new session not yet registered).
+	runningIDs := []string{}
+
+	// Simulate what refreshTasksAsync's QueueUpdateDraw callback now does:
+	if app.startGen.Load() != startGen {
+		runningIDs = nil
+	}
+	app.refreshTasksWithIDs(runningIDs, []string{})
+
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			testutil.Equal(t, task.Status, model.StatusInProgress)
+		}
+	}
+}
+
 func TestReconcileWorksWhenStartGenUnchanged(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -1092,6 +1127,76 @@ func TestReconcileWorksWhenStartGenUnchanged(t *testing.T) {
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
 			testutil.Equal(t, task.Status, model.StatusComplete)
+		}
+	}
+}
+
+// TestReconcileGracePeriodProtectsRecentStarts verifies that tasks started
+// within the last 5 seconds are not reconciled to Complete even if they are
+// not in the running set. This protects against restart cascade races where
+// ListSessions returns stale data.
+func TestReconcileGracePeriodProtectsRecentStarts(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "recently-started", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Simulate startSession recording the start time.
+	app.recentStarts["t1"] = time.Now()
+
+	// Empty running set — session not yet visible to ListSessions.
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	// Task should be protected by grace period.
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			testutil.Equal(t, task.Status, model.StatusInProgress)
+		}
+	}
+}
+
+// TestReconcileGracePeriodExpiresAfterTimeout verifies that the grace period
+// expires and allows reconciliation after the timeout.
+func TestReconcileGracePeriodExpiresAfterTimeout(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "old-start", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Set start time in the past (beyond grace period).
+	app.recentStarts["t1"] = time.Now().Add(-10 * time.Second)
+
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			testutil.Equal(t, task.Status, model.StatusComplete)
+		}
+	}
+}
+
+// TestReconcileFreshStartUsesInReview verifies that after a daemon restart,
+// stale InProgress tasks are reconciled to InReview (not Complete).
+func TestReconcileFreshStartUsesInReview(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, true) // daemonFreshStart=true
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "stale-after-restart", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			testutil.Equal(t, task.Status, model.StatusInReview)
 		}
 	}
 }

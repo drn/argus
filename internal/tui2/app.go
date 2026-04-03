@@ -135,16 +135,18 @@ type App struct {
 	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
 
 	// Daemon health
-	daemonFailures   int
-	daemonRestarting bool
-	daemonFreshStart bool            // daemon was auto-started (no prior sessions)
-	daemonClient     *dclient.Client
-	restartedClient  *dclient.Client // set after daemon restart
+	daemonFailures    int
+	daemonRestarting  bool
+	daemonFreshStart  bool            // daemon was auto-started (no prior sessions)
+	lastDaemonRestart time.Time       // cooldown: minimum 30s between restart attempts
+	daemonClient      *dclient.Client
+	restartedClient   *dclient.Client // set after daemon restart
 
 	// Tick control
 	tickDone            chan struct{}
 	tickCallbackPending atomic.Bool   // debounce: skip enqueue if prior callback hasn't run
 	startGen            atomic.Uint64 // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
+	recentStarts        map[string]time.Time // task ID → time of last startSession; grace period prevents false reconciliation
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -170,6 +172,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 		daemonFreshStart: daemonFreshStart,
 		agentState:       agentview.New(),
 		tickDone:         make(chan struct{}),
+		recentStarts:     make(map[string]time.Time),
 		idleUnvisited:    make(map[string]bool),
 		viewedWhileAgent: make(map[string]bool),
 		wtRoot:           filepath.Join(db.DataDir(), "worktrees"),
@@ -419,7 +422,10 @@ func (a *App) onTick() {
 	// Capture startGen BEFORE the RPC so we can detect if startSession ran
 	// between the snapshot and the reconciliation callback.
 	startGen := a.startGen.Load()
-	runningIDs, idleIDs := a.runner.RunningAndIdle()
+	a.mu.Lock()
+	runner := a.runner
+	a.mu.Unlock()
+	runningIDs, idleIDs := runner.RunningAndIdle()
 
 	// Scan running sessions for GitHub PR URLs (last 32KB of output).
 	// Skip sessions whose output hasn't changed since last scan.
@@ -427,7 +433,7 @@ func (a *App) onTick() {
 		a.prScanTW = make(map[string]uint64)
 	}
 	for _, rid := range runningIDs {
-		if sess := a.runner.Get(rid); sess != nil {
+		if sess := runner.Get(rid); sess != nil {
 			tw := sess.TotalWritten()
 			if prev, ok := a.prScanTW[rid]; ok && prev == tw {
 				continue // no new output since last scan
@@ -549,13 +555,17 @@ healthCheck:
 				a.mu.Lock()
 				a.daemonFailures++
 				failures := a.daemonFailures
+				cooldownOK := time.Since(a.lastDaemonRestart) >= 30*time.Second
 				a.mu.Unlock()
-				if failures >= 3 {
+				if failures >= 3 && cooldownOK {
 					uxlog.Log("[tui2] daemon unreachable after %d pings, restarting...", failures)
 					a.mu.Lock()
 					a.daemonRestarting = true
+					a.lastDaemonRestart = time.Now()
 					a.mu.Unlock()
 					go a.restartDaemon()
+				} else if failures >= 3 && !cooldownOK {
+					uxlog.Log("[tui2] daemon unreachable but restart cooldown active, skipping")
 				}
 			} else {
 				a.mu.Lock()
@@ -605,6 +615,7 @@ func (a *App) restartDaemon() {
 		a.mu.Lock()
 		a.daemonRestarting = false
 		a.daemonFailures = 0
+		a.daemonFreshStart = true // new daemon has no prior sessions — use InReview for stale tasks
 		a.daemonClient = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
@@ -778,11 +789,18 @@ func (a *App) refreshTasks() {
 // updates the task list on the tview main goroutine via QueueUpdateDraw.
 // Safe to call from any goroutine including the tview main goroutine.
 func (a *App) refreshTasksAsync() {
+	startGen := a.startGen.Load()
 	go func() {
 		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
 			a.mu.Lock()
 			defer a.mu.Unlock()
+			// If a session was started between the RPC snapshot and now, the
+			// runningIDs are stale — skip reconciliation this cycle.
+			if a.startGen.Load() != startGen {
+				uxlog.Log("[tui2] refreshTasksAsync: startGen changed, skipping reconciliation with stale runningIDs")
+				runningIDs = nil
+			}
 			a.refreshTasksWithIDs(runningIDs, idleIDs)
 		})
 	}()
@@ -824,8 +842,16 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		for _, id := range runningIDs {
 			runningSet[id] = true
 		}
+		now := time.Now()
 		for _, t := range a.tasks {
 			if t.Status == model.StatusInProgress && !runningSet[t.ID] {
+				// Grace period: don't reconcile tasks that were started within
+				// the last 5 seconds. The daemon may not have registered the
+				// session in ListSessions yet (e.g., after restart cascade).
+				if startedAt, ok := a.recentStarts[t.ID]; ok && now.Sub(startedAt) < 5*time.Second {
+					uxlog.Log("[tui2] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
+					continue
+				}
 				if a.daemonFreshStart {
 					// Daemon was just auto-started — agent sessions were lost
 					// (daemon died or system restarted), not finished normally.
@@ -838,6 +864,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 					a.db.Update(t) //nolint:errcheck
 					uxlog.Log("[tui2] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
 				}
+				delete(a.recentStarts, t.ID) // consumed; no need to check again
+			}
+		}
+		// Clean up expired grace periods.
+		for id, startedAt := range a.recentStarts {
+			if now.Sub(startedAt) >= 5*time.Second {
+				delete(a.recentStarts, id)
 			}
 		}
 		// Clear fresh-start flag after first reconciliation with tasks present —
@@ -1902,6 +1935,7 @@ func (a *App) startSession(task *model.Task) {
 
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
+	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
 	a.db.Update(task) //nolint:errcheck
 
 	// Now that the session exists, attach it to the terminal pane.
@@ -2880,10 +2914,15 @@ func (a *App) pruneCompletedTasks() {
 		wg.Wait()
 
 		// Fetch session state off UI thread, then clear notice + refresh.
+		startGen := a.startGen.Load()
 		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
 			a.header.ClearNotice()
 			a.mu.Lock()
+			if a.startGen.Load() != startGen {
+				uxlog.Log("[tui2] prune: startGen changed, skipping reconciliation with stale runningIDs")
+				runningIDs = nil
+			}
 			a.refreshTasksWithIDs(runningIDs, idleIDs)
 			a.mu.Unlock()
 		})
