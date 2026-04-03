@@ -36,8 +36,9 @@ type Client struct {
 	rpc        *rpc.Client
 	sockPath   string
 	sessions   map[string]*RemoteSession
-	freshStart bool // true when the daemon was auto-started (no prior sessions)
+	freshStart bool          // true when the daemon was auto-started (no prior sessions)
 	mu         sync.Mutex
+	closed     chan struct{} // closed by Close(); stops connectStream retries
 
 	// leakedCalls tracks goroutines from timed-out RPC calls that are still
 	// blocked in rpc.Call. Logged for observability — drain goroutines
@@ -72,6 +73,7 @@ func Connect(sockPath string) (*Client, error) {
 		rpc:      jsonrpc.NewClient(conn),
 		sockPath: sockPath,
 		sessions: make(map[string]*RemoteSession),
+		closed:   make(chan struct{}),
 	}, nil
 }
 
@@ -84,7 +86,15 @@ func (c *Client) OnSessionExit(fn func(taskID string, info daemon.ExitInfo)) {
 }
 
 // Close shuts down the client and all stream connections.
+// Signals all connectStream goroutines to stop retrying via the closed channel.
 func (c *Client) Close() error {
+	// Signal all goroutines to stop before closing individual sessions.
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+
 	c.mu.Lock()
 	sessions := make(map[string]*RemoteSession, len(c.sessions))
 	for k, v := range c.sessions {

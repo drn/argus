@@ -1582,3 +1582,17 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `OnCopyPrompt` callback on `TaskListView`, `pbcopy` exec in background goroutine.
 
 **Gotcha**: `pbcopy` must run off the tview main goroutine (same async discipline as git commands). Task fields captured before goroutine spawn to avoid racing with task list mutations.
+
+## Session: 2026-04-03 — Daemon Restart Cascade Fix
+
+**Problem**: After a manual daemon restart, a feedback loop caused 13 consecutive daemon restarts in 40 seconds. Each auto-resume failure triggered health check failures, which triggered another restart, killing sessions just started on the previous daemon. Tasks were falsely reconciled to Complete because `ListSessions` RPCs returned stale data from intermediate daemon instances.
+
+**Root cause**: Five interacting issues: (1) `onTick` read `a.runner` without mutex, allowing stale client usage during restart; (2) no cooldown between restart attempts; (3) stale `connectStream` goroutines from old clients flooded new daemon; (4) `restartDaemon` didn't set `daemonFreshStart`, so reconciliation used Complete instead of safer InReview; (5) no grace period for recently-started tasks.
+
+**Data model**: `recentStarts map[string]time.Time` on `App` — records when each task's session was started. `recentStartGrace` constant (5s) — reconciliation skips tasks within this window. `lastDaemonRestart time.Time` — enforces 30s cooldown. `Client.closed chan struct{}` — signals goroutines to stop on client replacement.
+
+**Flow**: Health check pings → 3 failures → check 30s cooldown → if OK, `restartDaemon` → `Client.Close()` signals `closed` channel → old `connectStream` goroutines exit → new client created → `daemonFreshStart=true` → tasks reset to Pending → `refreshTasksAsync` → reconciliation uses InReview for stale tasks.
+
+**Key entities**: `recentStarts`, `recentStartGrace`, `lastDaemonRestart`, `Client.closed`, `daemonFreshStart` restart path, `startGen` guard in `refreshTasksAsync` and `pruneCompletedTasks`.
+
+**Gotchas**: (1) `a.runner` must be read under `a.mu` on the tick goroutine — pointer-sized writes may be atomic on modern CPUs but the Go memory model doesn't guarantee visibility without synchronization. (2) The `closed` channel exit path in `connectStream` intentionally skips `removeSession*` — cleanup is handled by `Client.Close()` iterating `c.sessions`. (3) `daemonFreshStart` must be set in BOTH `New()` (for initial auto-start) AND `restartDaemon` (for explicit restart).

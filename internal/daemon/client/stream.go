@@ -21,6 +21,22 @@ const maxStreamRetries = 3
 // is unreachable, or the session was closed externally (e.g., client shutdown).
 func (rs *RemoteSession) connectStream(sockPath string) {
 	for attempt := 0; attempt <= maxStreamRetries; attempt++ {
+		// Check if the client was closed (e.g., daemon restart replaced it).
+		// This stops stale goroutines from flooding the new daemon with
+		// stream requests after a restart cascade. No removeSession* call
+		// needed — Client.Close() iterates c.sessions to clean up.
+		select {
+		case <-rs.client.closed:
+			uxlog.Log("stream: client closed, stopping retries task=%s", rs.taskID)
+			rs.close()
+			return
+		case <-rs.done:
+			uxlog.Log("stream: session closed externally, stopping retries task=%s", rs.taskID)
+			rs.close()
+			return
+		default:
+		}
+
 		if attempt > 0 {
 			uxlog.Log("stream: retry %d/%d task=%s", attempt, maxStreamRetries, rs.taskID)
 			time.Sleep(500 * time.Millisecond)
