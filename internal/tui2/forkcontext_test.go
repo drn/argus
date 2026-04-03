@@ -90,8 +90,9 @@ func TestWriteForkContextFiles_EmptyOutput(t *testing.T) {
 
 func TestBuildForkPrompt(t *testing.T) {
 	source := &model.Task{
-		Name:   "original",
-		Prompt: "Fix the login bug",
+		Name:    "original",
+		Project: "myproject",
+		Prompt:  "Fix the login bug",
 	}
 
 	t.Run("with all context", func(t *testing.T) {
@@ -99,7 +100,7 @@ func TestBuildForkPrompt(t *testing.T) {
 			RecentOutput: "some output",
 			GitDiff:      "some diff",
 		}
-		prompt := buildForkPrompt(source, ctx)
+		prompt := buildForkPrompt(source, ctx, "myproject")
 		testutil.Contains(t, prompt, ".context/")
 		testutil.Contains(t, prompt, "Fix the login bug")
 		testutil.Contains(t, prompt, "fork-source.md")
@@ -109,7 +110,7 @@ func TestBuildForkPrompt(t *testing.T) {
 
 	t.Run("with empty context", func(t *testing.T) {
 		ctx := &forkContext{}
-		prompt := buildForkPrompt(source, ctx)
+		prompt := buildForkPrompt(source, ctx, "myproject")
 		testutil.Contains(t, prompt, "fork-source.md")
 		testutil.Contains(t, prompt, "Fix the login bug")
 		// Should NOT reference files that weren't written.
@@ -118,6 +119,23 @@ func TestBuildForkPrompt(t *testing.T) {
 		}
 		if strings.Contains(prompt, "fork-diff.patch") {
 			t.Error("prompt references fork-diff.patch but no diff was extracted")
+		}
+	})
+
+	t.Run("with different project", func(t *testing.T) {
+		ctx := &forkContext{
+			RecentOutput: "some output",
+		}
+		prompt := buildForkPrompt(source, ctx, "otherproject")
+		testutil.Contains(t, prompt, "forked from the \"myproject\" project into \"otherproject\"")
+		testutil.Contains(t, prompt, "Fix the login bug")
+	})
+
+	t.Run("same project no note", func(t *testing.T) {
+		ctx := &forkContext{}
+		prompt := buildForkPrompt(source, ctx, "myproject")
+		if strings.Contains(prompt, "forked from") {
+			t.Error("prompt should not mention project change when project is the same")
 		}
 	})
 }

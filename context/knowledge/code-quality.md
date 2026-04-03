@@ -1526,3 +1526,25 @@ Two-phase modal form in Settings for bulk-importing git projects from a director
 - **macOS temp path resolution**: `t.TempDir()` returns `/var/folders/...` but `EvalSymlinks` resolves to `/private/var/folders/...`. Tests that pre-register paths for dedup must resolve them with `EvalSymlinks` too.
 - **Async scan required**: `scanDirectory` does I/O (`os.ReadDir`, `os.Stat`) that can block on slow filesystems. Must run in background goroutine with results delivered via `QueueUpdateDraw`.
 - **Rune slice backspace**: `dirPath` is `[]rune`, so backspace is `f.dirCursor--`, NOT `utf8.DecodeLastRuneInString`. The latter returns byte offsets, not rune offsets.
+
+## Fork Task Cross-Project Support (2026-04-02)
+
+### Overview
+Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector, allowing users to fork a task into a different project. When the project changes, a note is injected into the fork prompt indicating the original project.
+
+### Data Flow
+1. User presses `Ctrl+F` on a task → `openForkModal(t)` reads `db.Config().Projects` and passes to `NewForkTaskModal`
+2. Modal pre-fills `projInput` with `task.Project`; user can type to filter and select a different project via typeahead
+3. On confirm: `handleForkTaskKey` reads `SelectedProject()` (falls back to source project if empty) and passes to `executeFork(source, targetProject)`
+4. `executeFork` resolves `projCfg` from `targetProject` (not source), creates worktree under the new project's path
+5. `buildForkPrompt(source, ctx, targetProject)` injects a cross-project note when `targetProject != source.Project`
+
+### Key Files
+- `internal/tui2/forkmodal.go` — `ForkTaskModal` with project typeahead (AC dropdown, keyboard nav, paste support)
+- `internal/tui2/forkcontext.go` — `buildForkPrompt` with `targetProject` parameter
+- `internal/tui2/app.go` — `executeFork` signature changed to `(source, targetProject)`
+
+### Gotchas
+- **AC must NOT be initialized at construction**: Calling `updateProjectAC()` in the constructor opens the dropdown immediately (pre-filled project matches itself). Then Enter/Escape are consumed by the AC instead of confirming/canceling the modal. AC should only open in response to user typing.
+- **`SelectedProject()` is expensive in `Draw()`**: 4 calls with map lookups + linear scan each. Pre-compute once into a local variable.
+- **`projInput` is `[]rune`**: Same backspace pattern as QuickAddForm — direct `projCursorPos--` decrement, not `utf8.DecodeLastRuneInString` (which returns byte offsets).
