@@ -612,7 +612,7 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 		}
 		return true
 	case tcell.KeyCtrlU:
-		// Cmd+Delete: clear entire filter text.
+		// Ctrl+U: clear entire filter text (Cmd+Delete on macOS).
 		tl.filter = ""
 		tl.applyFilter()
 		return true
