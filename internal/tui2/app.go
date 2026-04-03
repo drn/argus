@@ -143,7 +143,8 @@ type App struct {
 
 	// Tick control
 	tickDone            chan struct{}
-	tickCallbackPending atomic.Bool // debounce: skip enqueue if prior callback hasn't run
+	tickCallbackPending atomic.Bool   // debounce: skip enqueue if prior callback hasn't run
+	startGen            atomic.Uint64 // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -393,6 +394,9 @@ func (a *App) onTick() {
 	// up to 5 seconds on timeout, and holding a.mu during that blocks the
 	// entire UI (QueueUpdateDraw callbacks can't run while the tick goroutine
 	// holds the mutex and waits for RPC).
+	// Capture startGen BEFORE the RPC so we can detect if startSession ran
+	// between the snapshot and the reconciliation callback.
+	startGen := a.startGen.Load()
 	runningIDs, idleIDs := a.runner.RunningAndIdle()
 
 	// Scan running sessions for GitHub PR URLs (last 32KB of output).
@@ -448,6 +452,14 @@ func (a *App) onTick() {
 		// Lock a.mu to protect App-level fields (mode, agentState,
 		// tasks, runningIDs) during refresh.
 		a.mu.Lock()
+		// If a session was started between the RPC snapshot and now, the
+		// runningIDs are stale — the new session won't be in them, causing
+		// reconciliation to wrongly mark it Complete. Pass nil to skip
+		// reconciliation this tick; the next tick will have fresh IDs.
+		if a.startGen.Load() != startGen {
+			uxlog.Log("[tui2] tick: startGen changed (%d → %d), skipping reconciliation with stale runningIDs", startGen, a.startGen.Load())
+			runningIDs = nil
+		}
 		a.refreshTasksWithIDs(runningIDs, idleIDs)
 		taskID := ""
 		if a.mode == modeAgent {
@@ -1839,7 +1851,20 @@ func (a *App) startSession(task *model.Task) {
 		}
 	}
 
+	// Bump generation BEFORE the RPC so any tick that captured runningIDs
+	// before this session exists will detect the change and skip reconciliation.
+	a.startGen.Add(1)
+
+	// INVARIANT: runner.Start() MUST be a blocking (synchronous) call on the
+	// tview goroutine. The post-bump correctness depends on QueueUpdateDraw
+	// callbacks being unable to run until Start returns. If Start is ever made
+	// async, the post-bump race window reopens.
 	sess, err := a.runner.Start(task, cfg, rows, cols, resume)
+	// Bump again AFTER the RPC — covers ticks that captured startGen during
+	// the Start RPC (after the pre-bump but before the session was registered
+	// in the daemon). The callback runs on the tview goroutine, so it can't
+	// fire until this point, making the post-bump always visible.
+	a.startGen.Add(1)
 	if err != nil {
 		uxlog.Log("[tui2] failed to start session: %v", err)
 		a.statusbar.SetError("Start failed: " + err.Error())

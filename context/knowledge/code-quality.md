@@ -1548,3 +1548,15 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 - **AC must NOT be initialized at construction**: Calling `updateProjectAC()` in the constructor opens the dropdown immediately (pre-filled project matches itself). Then Enter/Escape are consumed by the AC instead of confirming/canceling the modal. AC should only open in response to user typing.
 - **`SelectedProject()` is expensive in `Draw()`**: 4 calls with map lookups + linear scan each. Pre-compute once into a local variable.
 - **`projInput` is `[]rune`**: Same backspace pattern as QuickAddForm — direct `projCursorPos--` decrement, not `utf8.DecodeLastRuneInString` (which returns byte offsets).
+
+## Session: 2026-04-02
+
+### Bug Fix: New task reconciled to Complete on start
+
+**Problem**: When starting a new task, the tick goroutine could capture `runningIDs` via RPC before the session existed. Then `startSession` on the tview goroutine would set the task InProgress. The tick's queued `QueueUpdateDraw` callback would then run reconciliation with the stale `runningIDs`, see InProgress + not-in-set, and mark the task Complete — while it was actually running.
+
+**Fix**: Added `startGen atomic.Uint64` on `App`. `startSession` bumps it before `runner.Start()`. The tick goroutine captures `startGen` before the RPC; the `QueueUpdateDraw` callback checks if it changed and passes `nil` runningIDs to skip reconciliation for that tick. Next tick gets fresh IDs.
+
+**Data model**: Single atomic counter on `App` struct, no DB changes.
+
+**Flow**: tick captures `startGen` → tick does `RunningAndIdle()` RPC → `startSession` bumps `startGen` → tick's callback detects mismatch → passes `nil` runningIDs → reconciliation skipped → next tick gets fresh IDs with the new session.

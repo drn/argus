@@ -12,6 +12,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -1035,6 +1036,62 @@ func TestReconcileFreshDaemonClearsFlag(t *testing.T) {
 			if task.Status != model.StatusComplete {
 				t.Errorf("task %q: got status %s, want complete (flag should be cleared after first reconciliation)", task.Name, task.Status)
 			}
+		}
+	}
+}
+
+// TestReconcileSkipsOnStaleStartGen and TestReconcileWorksWhenStartGenUnchanged
+// replicate the startGen guard logic from onTick's QueueUpdateDraw callback
+// inline. This is intentional — onTick involves a tick goroutine + RPC +
+// QueueUpdateDraw pipeline that isn't unit-testable. If the guard condition
+// in onTick changes, these tests must be updated in lockstep.
+func TestReconcileSkipsOnStaleStartGen(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "just-started", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// Simulate the race: tick captures startGen=0, then startSession bumps it.
+	startGen := app.startGen.Load()
+	app.startGen.Add(1) // simulates startSession
+
+	// Stale runningIDs (empty — captured before session existed).
+	runningIDs := []string{}
+
+	// Simulate what onTick's QueueUpdateDraw callback does:
+	// startGen changed → pass nil to skip reconciliation.
+	if app.startGen.Load() != startGen {
+		runningIDs = nil
+	}
+	app.refreshTasksWithIDs(runningIDs, []string{})
+
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			// Should NOT be reconciled — startGen mismatch skipped it.
+			testutil.Equal(t, task.Status, model.StatusInProgress)
+		}
+	}
+}
+
+func TestReconcileWorksWhenStartGenUnchanged(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "t1", Name: "stale-task", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
+
+	// No startGen change — runningIDs are fresh and trustworthy.
+	// (No guard needed; startGen unchanged means reconciliation proceeds normally.)
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	for _, task := range app.tasks {
+		if task.ID == "t1" {
+			testutil.Equal(t, task.Status, model.StatusComplete)
 		}
 	}
 }
