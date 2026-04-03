@@ -105,6 +105,7 @@ type SettingsView struct {
 	OnEditProject   func(name string, p config.Project)
 	OnNewBackend    func()
 	OnEditBackend   func(name string, b config.Backend)
+	OnQuickAdd      func()
 
 	// DB reference for toggling values.
 	database *db.DB
@@ -465,6 +466,8 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return sv.handleEdit()
 		case 'a':
 			return sv.handleToggleAutoStart()
+		case 'i':
+			return sv.handleQuickAdd()
 		}
 	}
 	return false
@@ -496,6 +499,17 @@ func (sv *SettingsView) handleToggleAutoStart() bool {
 	uxlog.Log("[settings] auto-start todos toggled to %s", val)
 	sv.rebuildRows()
 	return true
+}
+
+func (sv *SettingsView) handleQuickAdd() bool {
+	if sv.currentSection() != srProject {
+		return false
+	}
+	if sv.OnQuickAdd != nil {
+		sv.OnQuickAdd()
+		return true
+	}
+	return false
 }
 
 // HandleMouse handles mouse events (scroll wheel on logs detail).
@@ -979,7 +993,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	}
 
 	if h > 2 {
-		drawText(screen, x, y+h-1, w, "[n] new  [e] edit", StyleDimmed)
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [i] quick add", StyleDimmed)
 	}
 }
 

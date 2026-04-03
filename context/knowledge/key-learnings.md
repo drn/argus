@@ -217,3 +217,10 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **API server only starts during daemon `Serve()` init — toggling `api.enabled` in Settings requires a daemon restart.** `SetDaemonRestarting(false)` resets `apiBootRecorded` so the "(restart required)" hint re-anchors after any restart path (manual or auto).
 - **`AutoStartTodos` uses polling (`StartPolling`) instead of fsnotify (`Start`).** When enabled, it subsumes `AutoCreateTasks` — the daemon starts either polling or fsnotify, not both. Toggling auto-start in Settings requires a daemon restart to take effect.
 - **`StartPolling` test creators must persist tasks to DB for dedup to work.** The polling loop calls `scanExisting()` repeatedly; without DB persistence, the same file gets processed on every tick.
+
+### Quick Add Projects
+
+- **`scanDirectory` must `EvalSymlinks` before `.git` stat and path dedup.** Without this, symlinks in a dev directory resolve to unintended paths that get persisted as project roots for agents.
+- **macOS temp paths differ pre/post `EvalSymlinks` (`/var/` vs `/private/var/`).** Tests that build `existingPaths` maps for dedup must resolve paths with `EvalSymlinks` to match what `scanDirectory` produces internally.
+- **`dirPath` is `[]rune` — backspace must use `f.dirCursor--`, not `utf8.DecodeLastRuneInString`.** The utf8 function returns byte offsets, not rune offsets. For `[]rune` slices, each element is one rune, so a simple decrement is correct.
+- **Directory scan must run off the tview goroutine.** `os.ReadDir` on slow filesystems (NFS, iCloud) blocks for seconds. Use `OnScan` callback → goroutine → `QueueUpdateDraw` with `SetScanResult`.

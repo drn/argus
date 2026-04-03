@@ -47,6 +47,7 @@ const (
 	modeConfirmDeleteToDo
 	modeRenameTask
 	modeLinkPicker
+	modeQuickAdd
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -103,8 +104,9 @@ type App struct {
 	renameTask  *model.Task
 
 	// Settings forms (created on demand)
-	projectForm *ProjectForm
-	backendForm *BackendForm
+	projectForm  *ProjectForm
+	backendForm  *BackendForm
+	quickAddForm *QuickAddForm
 
 	// Layout containers
 	root      *tview.Flex
@@ -188,6 +190,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
 	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
 	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
+	app.settings.OnQuickAdd = func() { app.openQuickAddForm() }
 	app.settingsPage = NewSettingsPage(app.settings)
 
 	app.todos = NewToDosView()
@@ -883,6 +886,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Backend form mode — delegate everything to the form
 	if a.mode == modeBackendForm && a.backendForm != nil {
 		a.handleBackendFormKey(event)
+		return nil
+	}
+
+	// Quick-add form mode — delegate everything to the form
+	if a.mode == modeQuickAdd && a.quickAddForm != nil {
+		a.handleQuickAddKey(event)
 		return nil
 	}
 
@@ -2581,6 +2590,73 @@ func (a *App) closeBackendForm() {
 	a.mode = modeTaskList
 	a.backendForm = nil
 	a.pages.RemovePage("backendform")
+	a.settings.Refresh()
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
+}
+
+// --- Quick-add form ---
+
+func (a *App) openQuickAddForm() {
+	projects := a.db.Projects()
+	a.quickAddForm = NewQuickAddForm(projects)
+	a.quickAddForm.OnScan = func(dir string) {
+		existingPaths := a.quickAddForm.existingPaths
+		existingNames := a.quickAddForm.existingNames
+		go func() {
+			repos, err := scanDirectory(dir, existingPaths, existingNames)
+			var errMsg string
+			if err != nil {
+				errMsg = "Error: " + err.Error()
+				uxlog.Log("[quickadd] scan error for %s: %v", dir, err)
+			} else {
+				uxlog.Log("[quickadd] scanned %s, found %d repos", dir, len(repos))
+			}
+			a.tapp.QueueUpdateDraw(func() {
+				if a.quickAddForm != nil {
+					a.quickAddForm.SetScanResult(repos, errMsg)
+				}
+			})
+		}()
+	}
+	a.mode = modeQuickAdd
+	a.pages.AddPage("quickadd", a.quickAddForm, true, true)
+	a.pages.SwitchToPage("quickadd")
+	a.tapp.SetFocus(a.quickAddForm)
+}
+
+func (a *App) handleQuickAddKey(event *tcell.EventKey) {
+	a.quickAddForm.HandleKey(event)
+
+	if a.quickAddForm.Canceled() {
+		a.closeQuickAddForm()
+		return
+	}
+
+	if a.quickAddForm.Done() {
+		selected := a.quickAddForm.SelectedRepos()
+		for _, repo := range selected {
+			proj := config.Project{
+				Path:   repo.path,
+				Branch: "origin/master",
+			}
+			// Branch defaults to origin/master; worktree code has fallbacks
+			// for repos using main or other default branches.
+			if err := a.db.SetProject(repo.name, proj); err != nil {
+				uxlog.Log("[settings] quick-add: failed to save %s: %v", repo.name, err)
+				continue
+			}
+			uxlog.Log("[settings] quick-add: added project %s (path=%s)", repo.name, repo.path)
+		}
+		uxlog.Log("[settings] quick-add: added %d projects", len(selected))
+		a.closeQuickAddForm()
+	}
+}
+
+func (a *App) closeQuickAddForm() {
+	a.mode = modeTaskList
+	a.quickAddForm = nil
+	a.pages.RemovePage("quickadd")
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
