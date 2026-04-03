@@ -200,6 +200,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **PTY session logs contain `\r` (carriage return) characters that must be normalized before filtering.** Claude Code uses `\r` to overwrite status indicators in-place. Without `\r→\n` normalization, multiple screen elements concatenate on one "line" and per-line noise filters fail to match.
 - **PTY session logs contain `\u00a0` (non-breaking space) that must be normalized.** Claude Code uses NBSP in tool result formatting. Without normalization, `\s+` patterns may not match as expected.
 - **Long terminal lines (>120 bytes) need inline noise stripping, not just per-line filtering.** VT cell rendering concatenates the content area, status bar, separators, and prompt onto a single line with whitespace padding. `cleanLongLine` removes these inline patterns before per-line `isNoiseLine` runs.
+- **Modal typeahead AC must NOT be initialized at construction when input is pre-filled.** Calling `updateProjectAC()` in the constructor opens the dropdown immediately (the pre-filled name matches itself). Then Enter is consumed by `projACAccept` instead of confirming the modal, and Escape closes the AC instead of canceling. AC should only open in response to user typing — same pattern as `NewTaskForm`.
 
 ### MCP Task Tools
 
