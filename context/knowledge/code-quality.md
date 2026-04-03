@@ -1570,3 +1570,15 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Data model**: No changes — uses existing `SelectByID` method on `TaskListView`.
 
 **Flow**: `db.Add(task)` → `refreshTasksLocal()` (rebuilds rows) → `SelectByID(task.ID)` (positions cursor) → `onTaskSelect(task)` (enters agent view). Ordering matters: `SelectByID` must come before `onTaskSelect` because agent view covers the task list.
+
+## Copy Prompt Hotkey: 2026-04-03
+
+**Feature**: `'c'` hotkey in task list copies the selected task's prompt to the system clipboard via `pbcopy`. Shows a "Prompt copied" header notice that auto-clears after 2 seconds.
+
+**Data model**: No new fields. Uses existing `Task.Prompt` and `Header.SetNotice`/`ClearNotice`.
+
+**Flow**: `'c'` keypress → `OnCopyPrompt` callback → background goroutine runs `pbcopy` with prompt on stdin → `QueueUpdateDraw` sets header notice → 2s sleep → `QueueUpdateDraw` clears notice (guarded by string equality to avoid clearing a different notice).
+
+**Key entities**: `OnCopyPrompt` callback on `TaskListView`, `pbcopy` exec in background goroutine.
+
+**Gotcha**: `pbcopy` must run off the tview main goroutine (same async discipline as git commands). Task fields captured before goroutine spawn to avoid racing with task list mutations.
