@@ -117,6 +117,7 @@ argus
 | `s` / `S` | Advance / revert status |
 | `a` | Toggle archive |
 | `p` | Open PR in browser |
+| `c` | Copy task prompt to clipboard |
 | `ctrl+d` | Destroy task (kill agent + remove worktree + delete branch) |
 | `ctrl+r` | Prune completed tasks |
 | `j` / `k` | Navigate up/down |
