@@ -66,6 +66,8 @@ type TaskListView struct {
 	OnOpenPR func(task *model.Task)
 	// Callback when user presses 'r' to rename a task.
 	OnRename func(task *model.Task)
+	// Callback when user presses 'c' to copy task prompt.
+	OnCopyPrompt func(task *model.Task)
 }
 
 // NewTaskListView creates a task list view.
@@ -677,6 +679,10 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 			case 'r':
 				if t := tl.SelectedTask(); t != nil && tl.OnRename != nil {
 					tl.OnRename(t)
+				}
+			case 'c':
+				if t := tl.SelectedTask(); t != nil && t.Prompt != "" && tl.OnCopyPrompt != nil {
+					tl.OnCopyPrompt(t)
 				}
 			}
 		}

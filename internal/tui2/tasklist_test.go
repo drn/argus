@@ -1275,6 +1275,54 @@ func TestTaskListView_RenameKeyNoSelection(t *testing.T) {
 	}
 }
 
+func TestTaskListView_CopyPromptKey(t *testing.T) {
+	tl := NewTaskListView()
+	var copied *model.Task
+	tl.OnCopyPrompt = func(task *model.Task) {
+		copied = task
+	}
+
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "has-prompt", Project: "p", Prompt: "fix the bug"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
+	if copied == nil {
+		t.Fatal("OnCopyPrompt should have been called for task with prompt")
+	}
+	if copied.ID != "1" {
+		t.Errorf("OnCopyPrompt called with task %s, want 1", copied.ID)
+	}
+
+	// Task without prompt — callback should NOT fire.
+	copied = nil
+	tl.SetTasks([]*model.Task{
+		{ID: "2", Name: "no-prompt", Project: "p", Prompt: ""},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+
+	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
+	if copied != nil {
+		t.Error("OnCopyPrompt should NOT fire for task without prompt")
+	}
+
+	// No callback wired — should not panic.
+	tl.OnCopyPrompt = nil
+	tl.SetTasks([]*model.Task{
+		{ID: "3", Name: "with-prompt", Project: "p", Prompt: "hello"},
+	})
+	tl.expanded = "p"
+	tl.buildRows()
+	tl.CursorDown()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(tview.Primitive) {})
+}
+
 func TestSanitizeTaskName(t *testing.T) {
 	tests := []struct {
 		name string
