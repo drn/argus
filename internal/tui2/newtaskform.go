@@ -831,8 +831,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(2) + projAC(P) + backend(2) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 11 + visiblePromptLines + acRows + projACRows
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + backend(2) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 10 + visiblePromptLines + acRows + projACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -868,7 +868,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Project typeahead
 	f.drawProjectField(screen, innerX, row, innerW)
-	row += 2
+	row++
 	if projACRows > 0 {
 		f.drawProjectAC(screen, innerX, row, innerW)
 		row += projACRows
@@ -1053,7 +1053,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 		return
 	}
 
-	inputRow := y + 1
+	inputRow := y
 	inputRunes := f.projInput
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
