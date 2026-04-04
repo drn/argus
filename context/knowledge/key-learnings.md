@@ -113,6 +113,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`ctrl+q` in diff mode must exit diff AND refocus terminal.** Otherwise user needs a second keypress.
 - **`ctrl+d` exits agent view when session is dead.** Without this, Ctrl+D after agent exit is silently dropped.
 - **`ctrl+p` opens PR URL (works while agent runs).** `o` also works when session is finished.
+- **`ctrl+/` opens fuzzy link picker (works while agent runs).** Maps to `tcell.KeyCtrlUnderscore` (ASCII 0x1F). Reads session log in a background goroutine; the `QueueUpdateDraw` callback must guard `a.mode == modeAgent` because the user may leave agent view during I/O.
 - **Escape in agent view:** Refocuses terminal from diff/files but does NOT exit agent view. Always returns `nil` to consume the event.
 - **Mouse clicks must update `agentFocus`, not just tview focus.** Custom `MouseHandler` overrides needed.
 - **In diff mode: Up/Down switch files, j/k scroll diff.**

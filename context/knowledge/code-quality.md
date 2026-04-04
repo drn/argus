@@ -1596,3 +1596,15 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `recentStarts`, `recentStartGrace`, `lastDaemonRestart`, `Client.closed`, `daemonFreshStart` restart path, `startGen` guard in `refreshTasksAsync` and `pruneCompletedTasks`.
 
 **Gotchas**: (1) `a.runner` must be read under `a.mu` on the tick goroutine — pointer-sized writes may be atomic on modern CPUs but the Go memory model doesn't guarantee visibility without synchronization. (2) The `closed` channel exit path in `connectStream` intentionally skips `removeSession*` — cleanup is handled by `Client.Close()` iterating `c.sessions`. (3) `daemonFreshStart` must be set in BOTH `New()` (for initial auto-start) AND `restartDaemon` (for explicit restart).
+
+## Feature: Fuzzy Link Picker (2026-04-03)
+
+**What**: `Ctrl+/` hotkey in agent view opens a fuzzy-filterable modal showing all deduplicated URLs from the session log. Typing narrows the list via subsequence matching; Enter opens in browser via `open <url>`.
+
+**Data model**: `FuzzyLinkPickerModal` (fuzzylinkpicker.go) — `allLinks []Link`, `filtered []Link`, `query []rune`, `cursor int`. Reuses existing `Link` type and `ExtractLinks` from todolinks.go. `modeFuzzyLinkPicker` view mode. `fuzzyMatch(pattern, str)` — case-insensitive subsequence match.
+
+**Flow**: `handleAgentKey` → `Ctrl+/` (`KeyCtrlUnderscore`) → `openAgentLinks` → background goroutine reads `agent.SessionLogPath(taskID)` → `ExtractLinks` → `QueueUpdateDraw` with mode guard → `openFuzzyLinkPickerModal` → modal handles keys → Enter → `openURL` → `closeFuzzyLinkPickerModal` → restore `modeAgent`.
+
+**Key entities**: `FuzzyLinkPickerModal`, `fuzzyMatch`, `openAgentLinks`, `modeFuzzyLinkPicker`, `openURL` (shared with todos, uses `[links]` log prefix).
+
+**Gotchas**: (1) File I/O must run off the tview main goroutine — session logs can be large. The `QueueUpdateDraw` callback must check `a.mode == modeAgent` because the user may leave agent view during I/O. (2) `Ctrl+/` maps to `tcell.KeyCtrlUnderscore` (ASCII 0x1F), not a dedicated key constant. (3) Modal width must account for the full display string (`label + "  " + url`), not just the URL. (4) The picker is agent-only — `closeFuzzyLinkPickerModal` always restores `modeAgent` (no saved prevMode).
