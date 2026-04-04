@@ -52,6 +52,7 @@ const (
 	modeConfirmDeleteToDo
 	modeRenameTask
 	modeLinkPicker
+	modeFuzzyLinkPicker
 	modeQuickAdd
 )
 
@@ -98,8 +99,10 @@ type App struct {
 	launchToDoModal    *LaunchToDoModal
 	cleanupToDosModal    *ConfirmCleanupToDosModal
 	deleteToDoModal      *ConfirmDeleteToDoModal
-	linkPickerModal      *LinkPickerModal
-	linkPickerPrevPage  string
+	linkPickerModal          *LinkPickerModal
+	linkPickerPrevPage      string
+	fuzzyLinkPickerModal    *FuzzyLinkPickerModal
+	fuzzyLinkPickerPrevMode viewMode
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -998,6 +1001,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Fuzzy link picker modal (agent view)
+	if a.mode == modeFuzzyLinkPicker && a.fuzzyLinkPickerModal != nil {
+		a.handleFuzzyLinkPickerKey(event)
+		return nil
+	}
+
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
@@ -1185,6 +1194,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
+		return nil
+	case tcell.KeyCtrlUnderscore: // Ctrl+/
+		a.openAgentLinks()
 		return nil
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
@@ -2349,6 +2361,65 @@ func (a *App) closeLinkPickerModal() {
 		a.pages.SwitchToPage(a.linkPickerPrevPage)
 	}
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// openAgentLinks extracts links from the current agent session and opens the fuzzy link picker.
+func (a *App) openAgentLinks() {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" {
+		return
+	}
+
+	// Read from session log file (complete output, not just ring buffer).
+	logPath := agent.SessionLogPath(taskID)
+	data, err := os.ReadFile(logPath)
+	if err != nil || len(data) == 0 {
+		return
+	}
+
+	links := ExtractLinks(string(data))
+	if len(links) == 0 {
+		return
+	}
+
+	uxlog.Log("[agent] opening fuzzy link picker: %d links found", len(links))
+	a.openFuzzyLinkPickerModal(links)
+}
+
+// openFuzzyLinkPickerModal shows the fuzzy link picker dialog from the agent view.
+func (a *App) openFuzzyLinkPickerModal(links []Link) {
+	a.fuzzyLinkPickerPrevMode = a.mode
+	a.fuzzyLinkPickerModal = NewFuzzyLinkPickerModal(links)
+	a.mode = modeFuzzyLinkPicker
+	a.pages.AddPage("fuzzylinkpicker", a.fuzzyLinkPickerModal, true, true)
+	a.tapp.SetFocus(a.fuzzyLinkPickerModal)
+}
+
+// handleFuzzyLinkPickerKey processes keys in the fuzzy link picker modal.
+func (a *App) handleFuzzyLinkPickerKey(event *tcell.EventKey) {
+	handler := a.fuzzyLinkPickerModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.fuzzyLinkPickerModal.Canceled() {
+		a.closeFuzzyLinkPickerModal()
+		return
+	}
+	if a.fuzzyLinkPickerModal.Selected() {
+		link := a.fuzzyLinkPickerModal.SelectedLink()
+		a.closeFuzzyLinkPickerModal()
+		openURL(link.URL)
+	}
+}
+
+// closeFuzzyLinkPickerModal closes the fuzzy link picker and restores agent view.
+func (a *App) closeFuzzyLinkPickerModal() {
+	a.mode = a.fuzzyLinkPickerPrevMode
+	a.fuzzyLinkPickerModal = nil
+	a.pages.RemovePage("fuzzylinkpicker")
+	// Restore focus to the agent pane.
+	a.tapp.SetFocus(a.agentPane)
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.

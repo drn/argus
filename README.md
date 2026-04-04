@@ -132,6 +132,7 @@ argus
 | `Cmd+←` / `Cmd+→` | Switch panels |
 | `Cmd+↑` / `Cmd+↓` | Navigate between tasks |
 | `ctrl+p` | Open PR in browser |
+| `ctrl+/` | Open link picker (fuzzy search all session URLs) |
 | `o` | Open PR in browser (when session is finished) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration) |
 
