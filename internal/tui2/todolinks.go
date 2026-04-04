@@ -58,11 +58,11 @@ func ExtractLinks(content string) []Link {
 // file://, javascript:, or custom URI schemes from untrusted content.
 func openURL(url string) {
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
-		uxlog.Log("[todos] rejected non-http URL: %s", url)
+		uxlog.Log("[links] rejected non-http URL: %s", url)
 		return
 	}
 	exec.Command("open", url).Start() //nolint:errcheck
-	uxlog.Log("[todos] opened URL in browser: %s", url)
+	uxlog.Log("[links] opened URL in browser: %s", url)
 }
 
 // ---------------------------------------------------------------------------

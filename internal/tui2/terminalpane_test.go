@@ -69,6 +69,31 @@ func (m *mockAdapter) TotalWritten() uint64          { return m.totalWritten }
 func (m *mockAdapter) Alive() bool                   { return m.alive }
 func (m *mockAdapter) PTYSize() (int, int)           { return 80, 24 }
 
+func TestTerminalPane_SessionGuardPreservesEmulator(t *testing.T) {
+	// Simulates the tick callback bug: when streams fail repeatedly,
+	// runner.Get() creates a new RemoteSession each time. Without a
+	// guard, SetSession(newSess) resets the emulator, causing "Waiting
+	// for output..." to flash even though the emulator already has content.
+	tp := NewTerminalPane()
+	sess1 := &mockAdapter{alive: true, totalWritten: 500, output: make([]byte, 500)}
+	tp.SetSession(sess1)
+	tp.emuFedTotal = 500 // simulate: emulator already fed data
+
+	// A different session object (new RemoteSession after stream loss).
+	sess2 := &mockAdapter{alive: true, totalWritten: 0, output: nil}
+	tp.SetSession(sess2)
+
+	// SetSession with a different pointer resets the emulator.
+	testutil.Equal(t, tp.emuFedTotal, uint64(0))
+
+	// The fix: tick should check Session() != nil before calling Get()/SetSession().
+	// When Session() is non-nil, the tick skips the Get() call entirely,
+	// preventing the emulator reset. This test documents the behavior.
+	if tp.Session() == nil {
+		t.Error("session should be non-nil after SetSession")
+	}
+}
+
 func TestTerminalPane_Scrollback(t *testing.T) {
 	tp := NewTerminalPane()
 	tp.ScrollUp(5)

@@ -85,6 +85,13 @@ func (rs *RemoteSession) connectStream(sockPath string) {
 //   - (false, false) — stream dropped but process still alive, should retry
 //   - (false, true)  — daemon is unreachable, treat as stream lost
 func (rs *RemoteSession) streamOnce(sockPath string) (processExited, daemonDown bool) {
+	// Early exit if closed (e.g., client shutdown during daemon restart).
+	// Avoids dialing the new daemon's socket with stale session IDs.
+	select {
+	case <-rs.done:
+		return false, true
+	default:
+	}
 	uxlog.Log("stream: connecting task=%s", rs.taskID)
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {

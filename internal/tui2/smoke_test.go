@@ -361,7 +361,7 @@ func TestSmoke_FuzzyLinkPickerLifecycle(t *testing.T) {
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false, false)
 
-	_, stop := wireApp(t, app)
+	sim, stop := wireApp(t, app)
 	defer stop()
 
 	links := []Link{
@@ -379,10 +379,9 @@ func TestSmoke_FuzzyLinkPickerLifecycle(t *testing.T) {
 	readUI(t, app.tapp, func() { mode = app.mode })
 	testutil.Equal(t, mode, modeFuzzyLinkPicker)
 
-	// Close — should restore to agent mode.
-	readUI(t, app.tapp, func() {
-		app.closeFuzzyLinkPickerModal()
-	})
+	// Close via Escape through the event loop.
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	time.Sleep(50 * time.Millisecond)
 
 	readUI(t, app.tapp, func() { mode = app.mode })
 	testutil.Equal(t, mode, modeAgent)

@@ -129,7 +129,8 @@ func (m *FuzzyLinkPickerModal) refilter() {
 		}
 		m.filtered = matches
 	}
-	// Clamp cursor
+	// Clamp cursor. When filtered is empty, cursor stays at 0;
+	// SelectedLink() bounds-checks before returning.
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(len(m.filtered)-1, 0)
 	}
@@ -158,17 +159,20 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Compute modal dimensions
-	maxLabelW := 20
+	// Compute modal dimensions from the full display string.
+	maxDisplayW := 20
 	for _, l := range m.allLinks {
 		w := utf8.RuneCountInString(l.URL)
-		if w > maxLabelW {
-			maxLabelW = w
+		if l.Label != "" && l.Label != l.URL {
+			w += utf8.RuneCountInString(l.Label) + 2 // "label  url"
+		}
+		if w > maxDisplayW {
+			maxDisplayW = w
 		}
 	}
 
 	// modal width: label + padding + border
-	modalW := max(maxLabelW+6, 40)
+	modalW := max(maxDisplayW+6, 40)
 	modalW = min(modalW, width-4)
 	innerW := modalW - 4
 
