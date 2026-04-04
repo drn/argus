@@ -52,6 +52,7 @@ const (
 	modeConfirmDeleteToDo
 	modeRenameTask
 	modeLinkPicker
+	modeFuzzyLinkPicker
 	modeQuickAdd
 )
 
@@ -98,8 +99,9 @@ type App struct {
 	launchToDoModal    *LaunchToDoModal
 	cleanupToDosModal    *ConfirmCleanupToDosModal
 	deleteToDoModal      *ConfirmDeleteToDoModal
-	linkPickerModal      *LinkPickerModal
-	linkPickerPrevPage  string
+	linkPickerModal          *LinkPickerModal
+	linkPickerPrevPage      string
+	fuzzyLinkPickerModal *FuzzyLinkPickerModal
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -428,6 +430,11 @@ func (a *App) onTick() {
 	// Capture startGen BEFORE the RPC so we can detect if startSession ran
 	// between the snapshot and the reconciliation callback.
 	startGen := a.startGen.Load()
+	// Snapshot runner under lock — restartDaemon swaps a.runner on the tview
+	// goroutine, and reading it without the lock is a data race. A stale
+	// pointer hits the old client whose RPC connection may be reused by the
+	// new daemon (same socket path), returning an empty session list that
+	// triggers false reconciliation.
 	a.mu.Lock()
 	runner := a.runner
 	a.mu.Unlock()
@@ -516,10 +523,18 @@ func (a *App) onTick() {
 		}
 
 		// Update agent pane session (taskID is non-empty only in agent mode).
+		// Only set the session if the pane doesn't already have one.
+		// onTaskSelect and startSession already wire the correct session;
+		// calling runner.Get here repeatedly creates new RemoteSession
+		// objects when streams are failing (connect→EOF→removeSessionStreamLost
+		// deletes from client map → next Get creates fresh session with empty
+		// buffer → SetSession resets emulator → "Waiting for output..." flash).
 		if taskID != "" {
-			sess := a.runner.Get(taskID)
-			if sess != nil {
-				a.agentPane.SetSession(sess)
+			if a.agentPane.Session() == nil {
+				sess := a.runner.Get(taskID)
+				if sess != nil {
+					a.agentPane.SetSession(sess)
+				}
 			}
 			// Refresh git status periodically.
 			// lastGitRefresh is only accessed on the tview goroutine.
@@ -625,6 +640,16 @@ func (a *App) restartDaemon() {
 		a.daemonClient = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
+		// Fresh daemon has no sessions — use InReview (not Complete) for any
+		// stale InProgress tasks that survive past the Pending reset below.
+		// This matches the initial auto-start behavior: the user decides
+		// whether to resume or discard.
+		a.daemonFreshStart = true
+		// Clear stale running/idle IDs from old daemon — the new daemon has
+		// no sessions yet. Using nil (not empty) ensures reconciliation is
+		// skipped until the first tick fetches fresh IDs from the new daemon.
+		a.runningIDs = nil
+		a.idleIDs = nil
 		a.mu.Unlock()
 
 		a.settings.SetDaemonRestarting(false)
@@ -637,7 +662,12 @@ func (a *App) restartDaemon() {
 				uxlog.Log("[tui2] reset task %s to pending (daemon restarted)", t.ID)
 			}
 		}
-		a.refreshTasksAsync()
+		// Use refreshTasksLocal (not Async) — the new daemon has no sessions,
+		// and an async RPC would race with the user entering tasks. The async
+		// goroutine captures empty runningIDs, but by the time its callback
+		// runs, startSession may have set a task to InProgress — reconciliation
+		// then sees InProgress + not-in-running-set and marks it Complete.
+		a.refreshTasksLocal()
 	})
 }
 
@@ -799,6 +829,14 @@ func (a *App) refreshTasksAsync() {
 	go func() {
 		runningIDs, idleIDs := a.runner.RunningAndIdle()
 		a.tapp.QueueUpdateDraw(func() {
+			// If a session was started between the RPC snapshot and now,
+			// the runningIDs are stale — pass nil to skip reconciliation.
+			// Same guard as onTick to prevent the race where an async
+			// refresh marks a newly-started task Complete.
+			if a.startGen.Load() != startGen {
+				uxlog.Log("[tui2] refreshTasksAsync: startGen changed, skipping reconciliation with stale runningIDs")
+				runningIDs = nil
+			}
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			// If a session was started between the RPC snapshot and now, the
@@ -885,6 +923,12 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		// or empty first read clears the flag before InProgress tasks are seen.
 		if len(a.tasks) > 0 {
 			a.daemonFreshStart = false
+		}
+		// Evict expired grace period entries.
+		for id, startTime := range a.recentStarts {
+			if now.Sub(startTime) >= 5*time.Second {
+				delete(a.recentStarts, id)
+			}
 		}
 	}
 
@@ -995,6 +1039,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Link picker modal
 	if a.mode == modeLinkPicker && a.linkPickerModal != nil {
 		a.handleLinkPickerKey(event)
+		return nil
+	}
+
+	// Fuzzy link picker modal (agent view)
+	if a.mode == modeFuzzyLinkPicker && a.fuzzyLinkPickerModal != nil {
+		a.handleFuzzyLinkPickerKey(event)
 		return nil
 	}
 
@@ -1185,6 +1235,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
+		return nil
+	case tcell.KeyCtrlUnderscore: // Ctrl+/
+		a.openAgentLinks()
 		return nil
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
@@ -1944,6 +1997,12 @@ func (a *App) startSession(task *model.Task) {
 	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
 	a.db.Update(task) //nolint:errcheck
 
+	// Record start time for reconciliation grace period.
+	if a.recentStarts == nil {
+		a.recentStarts = make(map[string]time.Time)
+	}
+	a.recentStarts[task.ID] = time.Now()
+
 	// Now that the session exists, attach it to the terminal pane.
 	a.agentPane.SetSession(sess)
 
@@ -2349,6 +2408,74 @@ func (a *App) closeLinkPickerModal() {
 		a.pages.SwitchToPage(a.linkPickerPrevPage)
 	}
 	a.tapp.SetFocus(a.tasklist)
+}
+
+// openAgentLinks extracts links from the current agent session and opens the fuzzy link picker.
+// File I/O runs in a background goroutine to avoid blocking the tview main goroutine.
+func (a *App) openAgentLinks() {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" {
+		return
+	}
+
+	go func() {
+		// Read from session log file (complete output, not just ring buffer).
+		logPath := agent.SessionLogPath(taskID)
+		data, err := os.ReadFile(logPath)
+		if err != nil || len(data) == 0 {
+			return
+		}
+
+		links := ExtractLinks(string(data))
+		if len(links) == 0 {
+			return
+		}
+
+		uxlog.Log("[agent] opening fuzzy link picker: %d links found", len(links))
+		a.tapp.QueueUpdateDraw(func() {
+			// Guard: user may have left agent view while I/O was in-flight.
+			if a.mode != modeAgent {
+				return
+			}
+			a.openFuzzyLinkPickerModal(links)
+		})
+	}()
+}
+
+// openFuzzyLinkPickerModal shows the fuzzy link picker dialog.
+// Only callable from modeAgent — close always restores modeAgent.
+func (a *App) openFuzzyLinkPickerModal(links []Link) {
+	a.fuzzyLinkPickerModal = NewFuzzyLinkPickerModal(links)
+	a.mode = modeFuzzyLinkPicker
+	a.pages.AddPage("fuzzylinkpicker", a.fuzzyLinkPickerModal, true, true)
+	a.tapp.SetFocus(a.fuzzyLinkPickerModal)
+}
+
+// handleFuzzyLinkPickerKey processes keys in the fuzzy link picker modal.
+func (a *App) handleFuzzyLinkPickerKey(event *tcell.EventKey) {
+	handler := a.fuzzyLinkPickerModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.fuzzyLinkPickerModal.Canceled() {
+		a.closeFuzzyLinkPickerModal()
+		return
+	}
+	if a.fuzzyLinkPickerModal.Selected() {
+		link := a.fuzzyLinkPickerModal.SelectedLink()
+		a.closeFuzzyLinkPickerModal()
+		openURL(link.URL)
+	}
+}
+
+// closeFuzzyLinkPickerModal closes the fuzzy link picker and restores agent view.
+func (a *App) closeFuzzyLinkPickerModal() {
+	a.mode = modeAgent
+	a.fuzzyLinkPickerModal = nil
+	a.pages.RemovePage("fuzzylinkpicker")
+	// Restore focus to the agent pane.
+	a.tapp.SetFocus(a.agentPane)
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.

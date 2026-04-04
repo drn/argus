@@ -356,6 +356,37 @@ func TestSmoke_LinkPickerFocusRestore(t *testing.T) {
 	}
 }
 
+func TestSmoke_FuzzyLinkPickerLifecycle(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	links := []Link{
+		{Label: "GitHub", URL: "https://github.com/foo"},
+		{Label: "Docs", URL: "https://docs.example.com"},
+	}
+
+	// Open fuzzy link picker from agent mode context.
+	readUI(t, app.tapp, func() {
+		app.mode = modeAgent
+		app.openFuzzyLinkPickerModal(links)
+	})
+
+	var mode viewMode
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeFuzzyLinkPicker)
+
+	// Close via Escape through the event loop.
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	time.Sleep(50 * time.Millisecond)
+
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeAgent)
+}
+
 func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
