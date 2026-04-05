@@ -202,6 +202,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **`CursorUp` must track `wasChild` BEFORE decrementing to distinguish entering vs exiting a folder.** `wasChild = fp.rows[fp.cursor].indent > 0` captures whether the cursor is inside a folder pre-move. Without this, `skipToLastChild` traps the cursor inside the folder when navigating up from the first child (it re-enters instead of exiting).
 - **`buildChildTree` groups flat file paths into a trie and emits dirs-before-files at each level.** Sub-directories are always expanded (no interactive collapse). Only top-level directories (indent 0) toggle via `autoExpand`.
 - **`skipToLastChild` scans all nested indent levels, not just immediate children.** It finds the last non-directory row before the next `indent == 0` boundary. For deeply nested trees, this lands on the deepest last file.
+- **`CursorUp`/`CursorDown` must not `skipToFile` when `awaitingFetch` is true.** When `autoExpand` returns a non-empty fetch string and the cursor is on a dir row, the dir's children haven't arrived yet. Calling `skipToFile` skips over all stacked unfetched directories to the nearest file — e.g., pressing up from below 3 closed dirs jumps past all of them. The `awaitingFetch()` helper guards both directions.
 
 ### Fork Context Capture
 

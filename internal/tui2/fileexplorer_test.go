@@ -74,41 +74,100 @@ func TestFilePanel_DirExpansion(t *testing.T) {
 func TestFilePanel_SkipDirDown(t *testing.T) {
 	fp := NewFilePanel()
 	fp.Box.SetRect(0, 0, 40, 20)
-	files := []gitutil.ChangedFile{
-		{Status: "M", Path: "a.go"},
-		{Status: "M", Path: "pkg/", IsDir: true},
-		{Status: "A", Path: "b.go"},
-	}
-	fp.SetFiles(files)
 
-	// Start on a.go, move down — should skip pkg/ dir and land on b.go
-	fp.CursorDown()
-	if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
-		t.Errorf("should skip dir, got %v", f)
-	}
+	t.Run("unfetched dir pauses on dir", func(t *testing.T) {
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "pkg/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.SetFiles(files)
+
+		// Start on a.go, move down — stays on pkg/ while children are fetched
+		fetch := fp.CursorDown()
+		if fetch == "" {
+			t.Error("expected fetch request for unfetched dir")
+		}
+		if f := fp.SelectedFile(); f == nil || f.Path != "pkg/" {
+			t.Errorf("should stay on unfetched dir, got %v", f)
+		}
+	})
+
+	t.Run("cached empty dir skips to next file", func(t *testing.T) {
+		fp2 := NewFilePanel()
+		fp2.Box.SetRect(0, 0, 40, 20)
+		fp2.dirChildren["pkg/"] = []gitutil.ChangedFile{} // cached but empty
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "pkg/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp2.SetFiles(files)
+
+		// Cached empty dir — skip to b.go
+		fp2.cursor = 0 // a.go
+		fp2.CursorDown()
+		if f := fp2.SelectedFile(); f == nil || f.Path != "b.go" {
+			t.Errorf("should skip cached empty dir, got %v", f)
+		}
+	})
 }
 
 func TestFilePanel_SkipDirUp(t *testing.T) {
 	fp := NewFilePanel()
 	fp.Box.SetRect(0, 0, 40, 20)
-	files := []gitutil.ChangedFile{
-		{Status: "M", Path: "a.go"},
-		{Status: "M", Path: "pkg/", IsDir: true},
-		{Status: "A", Path: "b.go"},
-	}
-	fp.SetFiles(files)
 
-	// Move cursor to b.go first
-	fp.CursorDown()
-	if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
-		t.Fatalf("setup: expected b.go, got %v", f)
-	}
+	t.Run("cached empty dir skips to prev file", func(t *testing.T) {
+		fp.dirChildren["pkg/"] = []gitutil.ChangedFile{} // cached but empty
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "pkg/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp.SetFiles(files)
 
-	// Move up — should skip pkg/ dir and land on a.go
-	fp.CursorUp()
-	if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
-		t.Errorf("should skip dir going up, got %v", f)
-	}
+		// Move cursor to b.go
+		for i, r := range fp.rows {
+			if r.Path == "b.go" {
+				fp.cursor = i
+				break
+			}
+		}
+
+		// Move up — cached empty dir, skip to a.go
+		fp.CursorUp()
+		if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
+			t.Errorf("should skip cached empty dir going up, got %v", f)
+		}
+	})
+
+	t.Run("unfetched dir pauses on dir", func(t *testing.T) {
+		fp2 := NewFilePanel()
+		fp2.Box.SetRect(0, 0, 40, 20)
+		files := []gitutil.ChangedFile{
+			{Status: "M", Path: "a.go"},
+			{Status: "M", Path: "pkg/", IsDir: true},
+			{Status: "A", Path: "b.go"},
+		}
+		fp2.SetFiles(files)
+
+		// Move cursor to b.go
+		for i, r := range fp2.rows {
+			if r.Path == "b.go" {
+				fp2.cursor = i
+				break
+			}
+		}
+
+		// Move up — unfetched dir, stays on dir
+		fetch := fp2.CursorUp()
+		if fetch == "" {
+			t.Error("expected fetch request for unfetched dir")
+		}
+		if f := fp2.SelectedFile(); f == nil || f.Path != "pkg/" {
+			t.Errorf("should stay on unfetched dir, got %v", f)
+		}
+	})
 }
 
 func TestFilePanel_SetFilesAutoExpandDir(t *testing.T) {
@@ -331,7 +390,7 @@ func TestFilePanel_CursorUpIntoExpandedDir(t *testing.T) {
 		}
 	})
 
-	t.Run("no children fetched yet skips over dir", func(t *testing.T) {
+	t.Run("no children fetched yet stays on dir", func(t *testing.T) {
 		fp := NewFilePanel()
 		fp.Box.SetRect(0, 0, 40, 20)
 		files := []gitutil.ChangedFile{
@@ -341,14 +400,22 @@ func TestFilePanel_CursorUpIntoExpandedDir(t *testing.T) {
 		}
 		fp.SetFiles(files)
 		// Move to b.go
-		fp.CursorDown()
+		for i, r := range fp.rows {
+			if r.Path == "b.go" {
+				fp.cursor = i
+				break
+			}
+		}
 		if f := fp.SelectedFile(); f == nil || f.Path != "b.go" {
 			t.Fatalf("setup: expected b.go, got %v", f)
 		}
-		// Up — no children cached, so should skip dir and land on a.go
-		fp.CursorUp()
-		if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
-			t.Errorf("expected a.go (no children to enter), got %v", f)
+		// Up — no children cached, stays on dir (fetch in progress)
+		fetch := fp.CursorUp()
+		if fetch == "" {
+			t.Error("expected fetch request for unfetched dir")
+		}
+		if f := fp.SelectedFile(); f == nil || f.Path != "pkg/" {
+			t.Errorf("expected pkg/ (awaiting fetch), got %v", f)
 		}
 	})
 }
@@ -560,5 +627,136 @@ func TestFilePanel_CursorUpIntoNestedFolder(t *testing.T) {
 	fp.CursorUp()
 	if f := fp.SelectedFile(); f == nil || f.Path != "src/main.go" {
 		t.Errorf("expected src/main.go (last child in tree), got %v", f)
+	}
+}
+
+func TestFilePanel_CursorDownStaysOnUnfetchedDir(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "api/", IsDir: true},
+		{Status: "M", Path: "lib/", IsDir: true},
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.SetFiles(files)
+
+	// Start on a.go, press down — should land on api/ (unfetched), not jump to z.go
+	fetch := fp.CursorDown()
+	if fetch == "" {
+		t.Error("expected fetch request for unfetched dir")
+	}
+	f := fp.SelectedFile()
+	if f == nil || f.Path == "z.go" {
+		t.Errorf("should NOT jump over unfetched dirs to z.go, got %v", f)
+	}
+	if f == nil || f.Path != "api/" {
+		t.Errorf("expected cursor on api/ (awaiting fetch), got %v", f)
+	}
+}
+
+func TestFilePanel_ConsecutiveUpThroughUnfetchedDirs(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "api/", IsDir: true},
+		{Status: "M", Path: "lib/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.SetFiles(files)
+
+	// Start on z.go
+	for i, r := range fp.rows {
+		if r.Path == "z.go" {
+			fp.cursor = i
+			break
+		}
+	}
+
+	// First up: lands on lib/ (unfetched)
+	fp.CursorUp()
+	if f := fp.SelectedFile(); f == nil || f.Path != "lib/" {
+		t.Fatalf("first up: expected lib/, got %v", f)
+	}
+
+	// Second up: lands on api/ (unfetched) — not a.go
+	fp.CursorUp()
+	if f := fp.SelectedFile(); f == nil || f.Path != "api/" {
+		t.Fatalf("second up: expected api/, got %v", f)
+	}
+
+	// Third up: lands on a.go (file)
+	fp.CursorUp()
+	if f := fp.SelectedFile(); f == nil || f.Path != "a.go" {
+		t.Errorf("third up: expected a.go, got %v", f)
+	}
+}
+
+func TestFilePanel_SetDirChildrenAfterPauseOnDir(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.SetFiles(files)
+
+	// Navigate down from a.go — lands on src/ (unfetched, pauses)
+	fetch := fp.CursorDown()
+	if fetch != "src/" {
+		t.Fatalf("setup: expected fetch for src/, got %q", fetch)
+	}
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/" {
+		t.Fatalf("setup: expected cursor on src/, got %v", f)
+	}
+
+	// Children arrive — cursor should move to first child file
+	fp.SetDirChildren("src/", []gitutil.ChangedFile{
+		{Status: "M", Path: "src/main.go"},
+		{Status: "A", Path: "src/util.go"},
+	})
+	if f := fp.SelectedFile(); f == nil || f.Path != "src/main.go" {
+		t.Errorf("after SetDirChildren, expected src/main.go, got %v", f)
+	}
+}
+
+func TestFilePanel_CursorUpStaysOnUnfetchedDir(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "docker-compose.e2e.yml"},
+		{Status: "M", Path: "api/", IsDir: true},
+		{Status: "M", Path: "lib/", IsDir: true},
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	}
+	fp.SetFiles(files)
+
+	// Navigate to z.go
+	for i, r := range fp.rows {
+		if r.Path == "z.go" {
+			fp.cursor = i
+			break
+		}
+	}
+	if f := fp.SelectedFile(); f == nil || f.Path != "z.go" {
+		t.Fatalf("setup: expected z.go, got %v", f)
+	}
+
+	// Press up — should land on the dir above (src/), not jump to docker-compose.
+	// The dir needs fetching (no cached children), so cursor stays on the dir row.
+	fetch := fp.CursorUp()
+	if fetch == "" {
+		t.Error("expected fetch request for the unfetched dir")
+	}
+	f := fp.SelectedFile()
+	if f == nil || f.Path == "docker-compose.e2e.yml" {
+		t.Errorf("should NOT jump over unfetched dirs to docker-compose.e2e.yml, got %v", f)
+	}
+	if f != nil && !f.IsDir {
+		t.Errorf("expected cursor on a directory row awaiting fetch, got file %v", f.Path)
 	}
 }
