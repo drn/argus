@@ -134,7 +134,13 @@ func (fp *FilePanel) CursorUp() string {
 	// When leaving a folder from within (wasChild=true), skip upward past the dir.
 	enteredFolder := !wasChild && fp.skipToLastChild()
 	if !enteredFolder {
-		fp.skipToFile(-1)
+		// If we just expanded a dir that needs children fetched, stay on the dir
+		// row — children will arrive via SetDirChildren. Without this guard,
+		// skipToFile(-1) skips over all stacked directories to the nearest file above.
+		awaitingFetch := fetch != "" && fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir
+		if !awaitingFetch {
+			fp.skipToFile(-1)
+		}
 	}
 	fp.ensureVisible()
 	return fetch
@@ -151,7 +157,13 @@ func (fp *FilePanel) CursorDown() string {
 		}
 	}
 	fetch := fp.autoExpand()
-	fp.skipToFile(1)
+	// If we just expanded a dir that needs children fetched, stay on the dir
+	// row — children will arrive via SetDirChildren. Without this guard,
+	// skipToFile(1) skips over all stacked directories to the nearest file below.
+	awaitingFetch := fetch != "" && fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir
+	if !awaitingFetch {
+		fp.skipToFile(1)
+	}
 	fp.ensureVisible()
 	return fetch
 }
