@@ -133,14 +133,8 @@ func (fp *FilePanel) CursorUp() string {
 	// When entering a folder from below (wasChild=false), land on the last child.
 	// When leaving a folder from within (wasChild=true), skip upward past the dir.
 	enteredFolder := !wasChild && fp.skipToLastChild()
-	if !enteredFolder {
-		// If we just expanded a dir that needs children fetched, stay on the dir
-		// row — children will arrive via SetDirChildren. Without this guard,
-		// skipToFile(-1) skips over all stacked directories to the nearest file above.
-		awaitingFetch := fetch != "" && fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir
-		if !awaitingFetch {
-			fp.skipToFile(-1)
-		}
+	if !enteredFolder && !fp.awaitingFetch(fetch) {
+		fp.skipToFile(-1)
 	}
 	fp.ensureVisible()
 	return fetch
@@ -157,11 +151,7 @@ func (fp *FilePanel) CursorDown() string {
 		}
 	}
 	fetch := fp.autoExpand()
-	// If we just expanded a dir that needs children fetched, stay on the dir
-	// row — children will arrive via SetDirChildren. Without this guard,
-	// skipToFile(1) skips over all stacked directories to the nearest file below.
-	awaitingFetch := fetch != "" && fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir
-	if !awaitingFetch {
+	if !fp.awaitingFetch(fetch) {
 		fp.skipToFile(1)
 	}
 	fp.ensureVisible()
@@ -197,6 +187,13 @@ func (fp *FilePanel) skipToLastChild() bool {
 
 // skipToFile advances the cursor past directory rows in the given direction.
 // If no file rows exist, the cursor stays on the current row (directory).
+// awaitingFetch reports whether the cursor is on a directory row whose children
+// are being fetched asynchronously. When true, callers should NOT skipToFile —
+// the cursor stays on the dir until SetDirChildren arrives.
+func (fp *FilePanel) awaitingFetch(fetch string) bool {
+	return fetch != "" && fp.cursor >= 0 && fp.cursor < len(fp.rows) && fp.rows[fp.cursor].IsDir
+}
+
 func (fp *FilePanel) skipToFile(dir int) {
 	start := fp.cursor
 	for fp.cursor >= 0 && fp.cursor < len(fp.rows) {
