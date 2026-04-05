@@ -1428,6 +1428,7 @@ Replaced 5 separate `notifyCursorChange()` call sites with a single `defer` that
 ### Gotchas
 - `buildChildTree` sorts files alphabetically at each level — test assertions must account for sort order, not insertion order
 - `skipToLastChild` scans the full subtree depth (all indent > 0 rows), not just immediate children — this is intentional for the "enter folder from below" UX
+- `CursorUp`/`CursorDown` must guard `skipToFile` with `awaitingFetch()` — when `autoExpand` returns a fetch request and the cursor is on a dir row, the children haven't arrived yet. Without this, `skipToFile` jumps past all stacked unfetched directories to the nearest file (e.g., pressing up from below 3 closed dirs jumps to the file above all of them instead of pausing on each dir)
 
 ## Configurable Spinner Animation: 2026-03-30
 
