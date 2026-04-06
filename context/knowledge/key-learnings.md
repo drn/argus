@@ -120,6 +120,8 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **Cmd+Up/Down navigates between tasks in agent view** via `ModCtrl|ModAlt` check.
 - **tcell has no `KeyCtrlLeft`/`KeyCtrlRight`.** Check `event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0`.
 
+- **Settings `d` key is context-dependent: project rows → delete (with confirmation), backend rows → set default.** `handleDeleteOrDefault` dispatches on `currentSection()`. Deleting a project orphans its tasks (no FK constraint) — the confirmation modal counts tasks via `a.tasks` and warns the user.
+
 ### Database Patterns
 
 - **New columns use `ALTER TABLE ... ADD COLUMN ... DEFAULT ''` after `CREATE TABLE IF NOT EXISTS`.** Error for duplicate column silently ignored.

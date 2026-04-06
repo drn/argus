@@ -173,6 +173,17 @@ argus
 | `r` | Request changes |
 | `c` | Line comment |
 
+#### Settings
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate rows |
+| `n` | New project / backend |
+| `e` | Edit project / backend |
+| `d` | Delete project / set default backend |
+| `i` | Quick add projects |
+| `Enter` / `◀` / `▶` | Toggle / cycle settings |
+
 ## Sandbox
 
 Argus can run agent processes inside macOS `sandbox-exec` for filesystem and credential isolation. Each agent session gets an SBPL profile that restricts reads and writes.

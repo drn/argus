@@ -1625,3 +1625,13 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `ntFieldBranch`, `handleBranchKey`, `onProjectChanged`, `SetBranchOptions`, `updateBranchAC`, `drawBranchField`, `drawBranchAC`.
 
 **Gotchas**: (1) Field indices shifted — `ntFieldBranch=1`, `ntFieldBackend=2`, `ntFieldPrompt=3`. Tab cycling uses `ntFieldCount=4`. (2) `projACAccept()` must call `onProjectChanged()` to reset the branch field when a project is selected from the autocomplete dropdown. (3) `onProjectChanged()` clears `branchACAll` and resets `branchPath` to force a fresh branch load. (4) Initial branch load is triggered in `onNewTask()` via `maybeLoadBranches()` after wiring `OnBranchFocus`. (5) Modal height increased by 1 base row (branch field) plus dynamic `branchACRows`.
+
+## Settings: Delete Project — 2026-04-06
+
+**Data model**: `ConfirmDeleteProjectModal` (`confirmdeleteproject.go`) — lightweight modal with `name`, `taskCount`, `confirmed`, `canceled` fields. `modeConfirmDeleteProject` view mode. `OnDeleteProject func(name string)` callback on `SettingsView`.
+
+**Flow**: `HandleKey 'd'` → `handleDeleteOrDefault` (context-dependent: `srProject` → delete, `srBackend` → set default) → `handleDeleteProject` → `OnDeleteProject(name)` → `App.deleteProject` counts tasks → `openConfirmDeleteProject(name, taskCount)` → modal shows orphan warning if tasks exist → Enter → `db.DeleteProject(name)` → `settings.Refresh()` + `refreshTasksLocal()`.
+
+**Key entities**: `ConfirmDeleteProjectModal`, `modeConfirmDeleteProject`, `handleDeleteOrDefault`, `handleDeleteProject`, `OnDeleteProject`, `openConfirmDeleteProject`, `handleConfirmDeleteProjectKey`, `closeConfirmDeleteProject`.
+
+**Gotchas**: (1) `d` key is context-dependent — `srProject` deletes, `srBackend` sets default. Must use `currentSection()` dispatch. (2) Deleting a project orphans its tasks (no FK constraint). The confirmation modal warns "N task(s) will be orphaned" using `a.tasks` count. (3) `closeConfirmDeleteProject` must switch back to settings page and focus `settingsPage` — same pattern as `closeConfirmDelete` for tasks.
