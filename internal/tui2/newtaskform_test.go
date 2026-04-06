@@ -1,6 +1,8 @@
 package tui2
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -986,6 +988,85 @@ func TestNewTaskForm_ProjectTypeahead(t *testing.T) {
 		}
 		if f.Canceled() {
 			t.Error("should not cancel form when AC was open")
+		}
+	})
+}
+
+func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
+	// Create two projects with different skill directories.
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+
+	// Project A has skill "deploy"
+	skillDirA := filepath.Join(dirA, ".claude", "skills", "deploy")
+	os.MkdirAll(skillDirA, 0o755)
+	os.WriteFile(filepath.Join(skillDirA, "SKILL.md"), []byte("---\ndescription: Deploy app\n---\n"), 0o644)
+
+	// Project B has skill "file-scenes"
+	skillDirB := filepath.Join(dirB, ".claude", "skills", "file-scenes")
+	os.MkdirAll(skillDirB, 0o755)
+	os.WriteFile(filepath.Join(skillDirB, "SKILL.md"), []byte("---\ndescription: Manage file scenes\n---\n"), 0o644)
+
+	projects := map[string]config.Project{
+		"alpha": {Path: dirA},
+		"bravo": {Path: dirB},
+	}
+	backends := map[string]config.Backend{"b": {Command: "claude"}}
+
+	t.Run("enter without AC reloads skills", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+
+		// Verify initial skills loaded from project alpha.
+		hasSkill := func(name string) bool {
+			for _, s := range f.skills {
+				if s.Name == name {
+					return true
+				}
+			}
+			return false
+		}
+		if !hasSkill("deploy") {
+			t.Error("initial skills should include deploy from alpha")
+		}
+		if hasSkill("file-scenes") {
+			t.Error("initial skills should not include file-scenes")
+		}
+
+		// Switch to project bravo by typing the name and pressing Enter
+		// (without using AC selection).
+		f.focused = ntFieldProject
+		f.projInput = []rune("bravo")
+		f.projCursorPos = 5
+		f.projACOpen = false
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+
+		if !hasSkill("file-scenes") {
+			t.Error("skills should include file-scenes after switching to bravo")
+		}
+	})
+
+	t.Run("down arrow without AC reloads skills", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+
+		f.focused = ntFieldProject
+		f.projInput = []rune("bravo")
+		f.projCursorPos = 5
+		f.projACOpen = false
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(p tview.Primitive) {})
+
+		hasFileScenes := false
+		for _, s := range f.skills {
+			if s.Name == "file-scenes" {
+				hasFileScenes = true
+				break
+			}
+		}
+		if !hasFileScenes {
+			t.Error("skills should include file-scenes after down-arrow project change")
 		}
 	})
 }

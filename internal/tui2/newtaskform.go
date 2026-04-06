@@ -279,13 +279,13 @@ func (f *NewTaskForm) projACAccept() {
 	f.projInput = []rune(name)
 	f.projCursorPos = len(f.projInput)
 	f.projACOpen = false
-	f.loadSkills()
 	f.onProjectChanged()
 }
 
 // onProjectChanged resets the branch field to the new project's default
 // branch and triggers async branch loading.
 func (f *NewTaskForm) onProjectChanged() {
+	f.loadSkills()
 	proj := f.resolveProject()
 	defaultBranch := ""
 	if proj != "" {
