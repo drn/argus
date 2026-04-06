@@ -1866,6 +1866,18 @@ func (a *App) onNewTask() {
 		cfg.Projects, a.tasklist.SelectedProject(),
 		cfg.Backends, cfg.Defaults.Backend,
 	)
+	a.newTaskForm.OnBranchFocus = func(path string) {
+		go func() {
+			branches := gitutil.ListRemoteBranches(path)
+			a.tapp.QueueUpdateDraw(func() {
+				if a.newTaskForm != nil {
+					a.newTaskForm.SetBranchOptions(branches)
+				}
+			})
+		}()
+	}
+	// Trigger initial branch load for the default project.
+	a.newTaskForm.maybeLoadBranches()
 
 	a.mode = modeNewTask
 	a.pages.AddPage("newtask", a.newTaskForm, true, true)

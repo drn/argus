@@ -61,8 +61,13 @@ func TestNewTaskForm_TabCycling(t *testing.T) {
 	}
 
 	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldBranch {
+		t.Errorf("after 2nd tab: focus = %d, want %d", f.focused, ntFieldBranch)
+	}
+
+	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldBackend {
-		t.Errorf("after 2nd tab: focus = %d, want %d", f.focused, ntFieldBackend)
+		t.Errorf("after 3rd tab: focus = %d, want %d", f.focused, ntFieldBackend)
 	}
 }
 
@@ -730,10 +735,16 @@ func TestNewTaskForm_EnterOnSelector(t *testing.T) {
 		t.Fatalf("focused = %d, want project", f.focused)
 	}
 
-	// Enter on project → backend
+	// Enter on project → branch
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+	if f.focused != ntFieldBranch {
+		t.Errorf("enter on project: focused = %d, want branch", f.focused)
+	}
+
+	// Enter on branch → backend
 	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
 	if f.focused != ntFieldBackend {
-		t.Errorf("enter on project: focused = %d, want backend", f.focused)
+		t.Errorf("enter on branch: focused = %d, want backend", f.focused)
 	}
 
 	// Enter on backend → prompt
@@ -919,7 +930,7 @@ func TestNewTaskForm_ProjectTypeahead(t *testing.T) {
 		}
 	})
 
-	t.Run("enter without AC moves to backend", func(t *testing.T) {
+	t.Run("enter without AC moves to branch", func(t *testing.T) {
 		f := NewNewTaskForm(projects, "alpha", backends, "b")
 		f.focused = ntFieldProject
 		handler := f.InputHandler()
@@ -927,8 +938,8 @@ func TestNewTaskForm_ProjectTypeahead(t *testing.T) {
 		// AC should not be open for exact match with no filtering
 		f.projACOpen = false
 		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
-		if f.focused != ntFieldBackend {
-			t.Errorf("focused = %d, want backend (%d)", f.focused, ntFieldBackend)
+		if f.focused != ntFieldBranch {
+			t.Errorf("focused = %d, want branch (%d)", f.focused, ntFieldBranch)
 		}
 	})
 
@@ -994,6 +1005,220 @@ func TestNewTaskForm_ProjectPaste(t *testing.T) {
 	if f.SelectedProject() != "myproject" {
 		t.Errorf("SelectedProject() = %q, want myproject", f.SelectedProject())
 	}
+}
+
+func TestNewTaskForm_BranchTypeahead(t *testing.T) {
+	projects := map[string]config.Project{
+		"alpha": {Path: "/tmp/alpha", Branch: "origin/main"},
+		"beta":  {Path: "/tmp/beta", Branch: "origin/develop"},
+	}
+	backends := map[string]config.Backend{"b": {}}
+
+	t.Run("default branch from project config", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		task := f.Task()
+		if task.Branch != "origin/main" {
+			t.Errorf("branch = %q, want origin/main", task.Branch)
+		}
+	})
+
+	t.Run("branch changes when project changes", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		// Clear and type "beta"
+		f.projInput = nil
+		f.projCursorPos = 0
+		for _, r := range "beta" {
+			handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+		}
+		f.projACAccept()
+
+		task := f.Task()
+		if task.Branch != "origin/develop" {
+			t.Errorf("branch = %q, want origin/develop", task.Branch)
+		}
+	})
+
+	t.Run("SetBranchOptions enables filtering", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.SetBranchOptions([]string{"origin/main", "origin/develop", "origin/feature-x"})
+
+		f.focused = ntFieldBranch
+		handler := f.InputHandler()
+
+		// Clear input and type "feat"
+		f.branchInput = nil
+		f.branchCursorPos = 0
+		for _, r := range "feat" {
+			handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+		}
+
+		if !f.branchACOpen {
+			t.Fatal("branch AC should be open after typing")
+		}
+		if len(f.branchACMatches) != 1 {
+			t.Errorf("branchACMatches = %d, want 1", len(f.branchACMatches))
+		}
+		if f.branchACMatches[0] != "origin/feature-x" {
+			t.Errorf("match = %q, want origin/feature-x", f.branchACMatches[0])
+		}
+	})
+
+	t.Run("accept branch AC sets input", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.SetBranchOptions([]string{"origin/main", "origin/develop"})
+
+		f.focused = ntFieldBranch
+		f.branchInput = []rune("dev")
+		f.branchCursorPos = 3
+		f.updateBranchAC()
+
+		if !f.branchACOpen {
+			t.Fatal("AC should be open")
+		}
+
+		f.branchACAccept()
+		if got := string(f.branchInput); got != "origin/develop" {
+			t.Errorf("branchInput = %q, want origin/develop", got)
+		}
+		task := f.Task()
+		if task.Branch != "origin/develop" {
+			t.Errorf("task branch = %q, want origin/develop", task.Branch)
+		}
+	})
+
+	t.Run("enter on branch with AC accepts and stays", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.SetBranchOptions([]string{"origin/main", "origin/develop"})
+		f.focused = ntFieldBranch
+		f.branchInput = []rune("dev")
+		f.branchCursorPos = 3
+		f.updateBranchAC()
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+
+		if got := string(f.branchInput); got != "origin/develop" {
+			t.Errorf("branchInput = %q, want origin/develop", got)
+		}
+		if f.branchACOpen {
+			t.Error("AC should be closed after accept")
+		}
+	})
+
+	t.Run("enter on branch without AC moves to backend", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldBranch
+		f.branchACOpen = false
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+		if f.focused != ntFieldBackend {
+			t.Errorf("focused = %d, want backend (%d)", f.focused, ntFieldBackend)
+		}
+	})
+
+	t.Run("down/up navigate AC", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.SetBranchOptions([]string{"origin/main", "origin/develop", "origin/feature-x"})
+		f.focused = ntFieldBranch
+		f.branchInput = nil
+		f.branchCursorPos = 0
+		f.updateBranchAC()
+
+		handler := f.InputHandler()
+
+		handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(p tview.Primitive) {})
+		if f.branchACIdx != 1 {
+			t.Errorf("after down: branchACIdx = %d, want 1", f.branchACIdx)
+		}
+
+		handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(p tview.Primitive) {})
+		if f.branchACIdx != 0 {
+			t.Errorf("after up: branchACIdx = %d, want 0", f.branchACIdx)
+		}
+	})
+
+	t.Run("typed branch overrides project default", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldBranch
+		handler := f.InputHandler()
+
+		// Clear and type custom branch
+		f.branchInput = nil
+		f.branchCursorPos = 0
+		for _, r := range "my-custom-branch" {
+			handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+		}
+
+		task := f.Task()
+		if task.Branch != "my-custom-branch" {
+			t.Errorf("branch = %q, want my-custom-branch", task.Branch)
+		}
+	})
+
+	t.Run("empty branch falls back to project default", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.branchInput = nil
+		f.branchCursorPos = 0
+
+		task := f.Task()
+		if task.Branch != "origin/main" {
+			t.Errorf("branch = %q, want origin/main (project default)", task.Branch)
+		}
+	})
+
+	t.Run("OnBranchFocus callback fires on project change", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		var calledPath string
+		f.OnBranchFocus = func(path string) {
+			calledPath = path
+		}
+
+		// Trigger project change
+		f.focused = ntFieldProject
+		f.projInput = []rune("beta")
+		f.projCursorPos = 4
+		f.projACOpen = false
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+
+		if calledPath != "/tmp/beta" {
+			t.Errorf("OnBranchFocus path = %q, want /tmp/beta", calledPath)
+		}
+	})
+
+	t.Run("branch paste inserts text", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldBranch
+		f.branchInput = nil
+		f.branchCursorPos = 0
+
+		pasteHandler := f.PasteHandler()
+		pasteHandler("origin/hotfix", func(p tview.Primitive) {})
+
+		if got := string(f.branchInput); got != "origin/hotfix" {
+			t.Errorf("branchInput = %q, want origin/hotfix", got)
+		}
+	})
+
+	t.Run("escape closes branch AC first", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.branchACOpen = true
+
+		handler := f.InputHandler()
+		handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(p tview.Primitive) {})
+
+		if f.branchACOpen {
+			t.Error("branch AC should be closed")
+		}
+		if f.Canceled() {
+			t.Error("should not cancel when AC was open")
+		}
+	})
 }
 
 func TestItoa(t *testing.T) {

@@ -17,8 +17,10 @@ import (
 
 const (
 	ntFieldProject = 0
-	ntFieldBackend = 1
-	ntFieldPrompt  = 2
+	ntFieldBranch  = 1
+	ntFieldBackend = 2
+	ntFieldPrompt  = 3
+	ntFieldCount   = 4
 )
 
 // maxPromptLines is the maximum visible lines for the prompt textarea.
@@ -53,6 +55,21 @@ type NewTaskForm struct {
 	projACIdx     int      // selected item in dropdown
 	projACScroll  int      // scroll offset in dropdown
 
+	// branch typeahead state
+	branchInput     []rune   // typed text for branch filter
+	branchCursorPos int      // cursor position in branch input
+	branchACOpen    bool     // whether dropdown is showing
+	branchACAll     []string // all branch options (populated via SetBranchOptions)
+	branchACMatches []string // filtered branch names
+	branchACIdx     int      // selected item in dropdown
+	branchACScroll  int      // scroll offset in dropdown
+	branchPath      string   // project path for which branches were last loaded
+
+	// OnBranchFocus is called when the branch field needs branches loaded
+	// for a project path. The caller should fetch branches in a background
+	// goroutine and call SetBranchOptions with the results.
+	OnBranchFocus func(path string)
+
 	// autocomplete state
 	skills    []skills.SkillItem
 	acOpen    bool
@@ -85,16 +102,26 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 		}
 	}
 
+	// Pre-fill branch from the default project's config.
+	defaultBranch := ""
+	if defaultProject != "" {
+		if p, ok := projects[defaultProject]; ok {
+			defaultBranch = p.Branch
+		}
+	}
+
 	f := &NewTaskForm{
-		Box:          tview.NewBox(),
-		projectNames: projNames,
-		projInput:    []rune(defaultProject),
-		projCursorPos: len([]rune(defaultProject)),
-		backendNames: backNames,
-		backendIdx:   backIdx,
-		focused:      ntFieldPrompt,
-		projects:     projects,
-		backends:     backends,
+		Box:             tview.NewBox(),
+		projectNames:    projNames,
+		projInput:       []rune(defaultProject),
+		projCursorPos:   len([]rune(defaultProject)),
+		branchInput:     []rune(defaultBranch),
+		branchCursorPos: len([]rune(defaultBranch)),
+		backendNames:    backNames,
+		backendIdx:      backIdx,
+		focused:         ntFieldPrompt,
+		projects:        projects,
+		backends:        backends,
 	}
 
 	// Load skills for the default project
@@ -132,12 +159,7 @@ func (f *NewTaskForm) Task() *model.Task {
 		backend = f.backendNames[f.backendIdx]
 	}
 
-	branch := ""
-	if proj != "" {
-		if p, ok := f.projects[proj]; ok {
-			branch = p.Branch
-		}
-	}
+	branch := f.resolvedBranch()
 
 	prompt := strings.TrimSpace(string(f.prompt))
 	return &model.Task{
@@ -148,6 +170,22 @@ func (f *NewTaskForm) Task() *model.Task {
 		Prompt:  prompt,
 		Backend: backend,
 	}
+}
+
+// resolvedBranch returns the branch to use: the typed text if non-empty,
+// otherwise falls back to the project's configured default branch.
+func (f *NewTaskForm) resolvedBranch() string {
+	branch := strings.TrimSpace(string(f.branchInput))
+	if branch != "" {
+		return branch
+	}
+	proj := f.resolveProject()
+	if proj != "" {
+		if p, ok := f.projects[proj]; ok {
+			return p.Branch
+		}
+	}
+	return ""
 }
 
 // SelectedProject returns the selected project name.
@@ -242,6 +280,101 @@ func (f *NewTaskForm) projACAccept() {
 	f.projCursorPos = len(f.projInput)
 	f.projACOpen = false
 	f.loadSkills()
+	f.onProjectChanged()
+}
+
+// onProjectChanged resets the branch field to the new project's default
+// branch and triggers async branch loading.
+func (f *NewTaskForm) onProjectChanged() {
+	proj := f.resolveProject()
+	defaultBranch := ""
+	if proj != "" {
+		if p, ok := f.projects[proj]; ok {
+			defaultBranch = p.Branch
+		}
+	}
+	f.branchInput = []rune(defaultBranch)
+	f.branchCursorPos = len(f.branchInput)
+	f.branchACAll = nil
+	f.branchACMatches = nil
+	f.branchACOpen = false
+	f.maybeLoadBranches()
+}
+
+// SetBranchOptions populates the branch autocomplete options. Called from a
+// background goroutine via QueueUpdateDraw after fetching branches.
+func (f *NewTaskForm) SetBranchOptions(options []string) {
+	f.branchACAll = options
+	f.updateBranchAC()
+}
+
+// maybeLoadBranches fires OnBranchFocus when the project path has changed
+// since the last load.
+func (f *NewTaskForm) maybeLoadBranches() {
+	path := f.selectedProjectPath()
+	if path == "" || path == f.branchPath || f.OnBranchFocus == nil {
+		return
+	}
+	f.branchPath = path
+	f.OnBranchFocus(path)
+}
+
+// updateBranchAC recomputes the branch autocomplete matches based on current input.
+func (f *NewTaskForm) updateBranchAC() {
+	input := strings.ToLower(string(f.branchInput))
+	f.branchACMatches = nil
+	for _, name := range f.branchACAll {
+		if input == "" || strings.Contains(strings.ToLower(name), input) {
+			f.branchACMatches = append(f.branchACMatches, name)
+		}
+	}
+	f.branchACOpen = len(f.branchACMatches) > 0
+	if f.branchACIdx >= len(f.branchACMatches) {
+		f.branchACIdx = 0
+		f.branchACScroll = 0
+	}
+}
+
+// branchACMoveDown moves the branch autocomplete cursor down one item (wraps).
+func (f *NewTaskForm) branchACMoveDown() {
+	if len(f.branchACMatches) == 0 {
+		return
+	}
+	f.branchACIdx = (f.branchACIdx + 1) % len(f.branchACMatches)
+	if f.branchACIdx == 0 {
+		f.branchACScroll = 0
+	} else if f.branchACIdx >= f.branchACScroll+acMaxVisible {
+		f.branchACScroll = f.branchACIdx - acMaxVisible + 1
+	}
+}
+
+// branchACMoveUp moves the branch autocomplete cursor up one item (wraps).
+func (f *NewTaskForm) branchACMoveUp() {
+	if len(f.branchACMatches) == 0 {
+		return
+	}
+	if f.branchACIdx == 0 {
+		f.branchACIdx = len(f.branchACMatches) - 1
+		if f.branchACIdx >= acMaxVisible {
+			f.branchACScroll = f.branchACIdx - acMaxVisible + 1
+		}
+	} else {
+		f.branchACIdx--
+		if f.branchACIdx < f.branchACScroll {
+			f.branchACScroll = f.branchACIdx
+		}
+	}
+}
+
+// branchACAccept selects the current autocomplete match and closes the dropdown.
+func (f *NewTaskForm) branchACAccept() {
+	if len(f.branchACMatches) == 0 {
+		return
+	}
+	name := f.branchACMatches[f.branchACIdx]
+	f.branchInput = []rune(name)
+	f.branchCursorPos = len(f.branchInput)
+	f.branchACOpen = false
 }
 
 // loadSkills scans skill directories for the currently selected project.
@@ -328,6 +461,14 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			f.projInput = newInput
 			f.projCursorPos += len(runes)
 			f.updateProjectAC()
+		case ntFieldBranch:
+			newInput := make([]rune, 0, len(f.branchInput)+len(runes))
+			newInput = append(newInput, f.branchInput[:f.branchCursorPos]...)
+			newInput = append(newInput, runes...)
+			newInput = append(newInput, f.branchInput[f.branchCursorPos:]...)
+			f.branchInput = newInput
+			f.branchCursorPos += len(runes)
+			f.updateBranchAC()
 		case ntFieldPrompt:
 			newPrompt := make([]rune, 0, len(f.prompt)+len(runes))
 			newPrompt = append(newPrompt, f.prompt[:f.cursorPos]...)
@@ -350,9 +491,10 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 		// Global form keys
 		switch event.Key() {
 		case tcell.KeyEscape, tcell.KeyCtrlQ:
-			if f.acOpen || f.projACOpen { // two-step: first press closes autocomplete, second cancels form
+			if f.acOpen || f.projACOpen || f.branchACOpen { // two-step: first press closes autocomplete, second cancels form
 				f.acOpen = false
 				f.projACOpen = false
+				f.branchACOpen = false
 				return
 			}
 			f.canceled = true
@@ -360,18 +502,29 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 		case tcell.KeyTab:
 			f.acOpen = false
 			f.projACOpen = false
-			f.focused = (f.focused + 1) % 3
+			f.branchACOpen = false
+			prev := f.focused
+			f.focused = (f.focused + 1) % ntFieldCount
+			if prev == ntFieldProject && f.focused == ntFieldBranch {
+				f.maybeLoadBranches()
+			}
 			return
 		case tcell.KeyBacktab:
 			f.acOpen = false
 			f.projACOpen = false
-			f.focused = (f.focused + 2) % 3
+			f.branchACOpen = false
+			f.focused = (f.focused + ntFieldCount - 1) % ntFieldCount
+			if f.focused == ntFieldBranch {
+				f.maybeLoadBranches()
+			}
 			return
 		}
 
 		switch f.focused {
 		case ntFieldProject:
 			f.handleProjectKey(event)
+		case ntFieldBranch:
+			f.handleBranchKey(event)
 		case ntFieldBackend:
 			f.handleSelectorKey(event, &f.backendIdx, len(f.backendNames))
 		case ntFieldPrompt:
@@ -392,7 +545,8 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 			return
 		}
 		f.projACOpen = false
-		f.focused = ntFieldBackend
+		f.focused = ntFieldBranch
+		f.onProjectChanged()
 		return
 	case tcell.KeyDown:
 		if f.projACOpen {
@@ -400,7 +554,8 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 			return
 		}
 		f.projACOpen = false
-		f.focused = ntFieldBackend
+		f.focused = ntFieldBranch
+		f.onProjectChanged()
 		return
 	case tcell.KeyUp:
 		if f.projACOpen {
@@ -486,6 +641,112 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 	}
 }
 
+// handleBranchKey handles key events when the branch typeahead field is focused.
+func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
+	mod := event.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
+	switch event.Key() {
+	case tcell.KeyEnter:
+		if f.branchACOpen && len(f.branchACMatches) > 0 {
+			f.branchACAccept()
+			return
+		}
+		f.branchACOpen = false
+		f.focused = ntFieldBackend
+		return
+	case tcell.KeyDown:
+		if f.branchACOpen {
+			f.branchACMoveDown()
+			return
+		}
+		f.branchACOpen = false
+		f.focused = ntFieldBackend
+		return
+	case tcell.KeyUp:
+		if f.branchACOpen {
+			f.branchACMoveUp()
+			return
+		}
+		f.branchACOpen = false
+		f.focused = ntFieldProject
+		return
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			f.branchInput, f.branchCursorPos = deleteWordLeft(f.branchInput, f.branchCursorPos)
+			f.updateBranchAC()
+			return
+		}
+		if f.branchCursorPos > 0 {
+			f.branchInput = append(f.branchInput[:f.branchCursorPos-1], f.branchInput[f.branchCursorPos:]...)
+			f.branchCursorPos--
+			f.updateBranchAC()
+		}
+		return
+	case tcell.KeyCtrlW:
+		f.branchInput, f.branchCursorPos = deleteWordLeft(f.branchInput, f.branchCursorPos)
+		f.updateBranchAC()
+		return
+	case tcell.KeyDelete:
+		if f.branchCursorPos < len(f.branchInput) {
+			f.branchInput = append(f.branchInput[:f.branchCursorPos], f.branchInput[f.branchCursorPos+1:]...)
+			f.updateBranchAC()
+		}
+		return
+	case tcell.KeyLeft:
+		if hasAlt {
+			f.branchCursorPos = wordLeftPos(f.branchInput, f.branchCursorPos)
+			return
+		}
+		if f.branchCursorPos > 0 {
+			f.branchCursorPos--
+		}
+		return
+	case tcell.KeyRight:
+		if hasAlt {
+			f.branchCursorPos = wordRightPos(f.branchInput, f.branchCursorPos)
+			return
+		}
+		if f.branchCursorPos < len(f.branchInput) {
+			f.branchCursorPos++
+		}
+		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		f.branchCursorPos = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		f.branchCursorPos = len(f.branchInput)
+		return
+	case tcell.KeyCtrlU:
+		f.branchInput = f.branchInput[f.branchCursorPos:]
+		f.branchCursorPos = 0
+		f.updateBranchAC()
+		return
+	case tcell.KeyCtrlK:
+		f.branchInput = f.branchInput[:f.branchCursorPos]
+		f.updateBranchAC()
+		return
+	case tcell.KeyRune:
+		r := event.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				f.branchCursorPos = wordLeftPos(f.branchInput, f.branchCursorPos)
+			case 'f', 'F':
+				f.branchCursorPos = wordRightPos(f.branchInput, f.branchCursorPos)
+			case 'd', 'D':
+				f.branchInput, f.branchCursorPos = deleteWordRight(f.branchInput, f.branchCursorPos)
+				f.updateBranchAC()
+			}
+			return
+		}
+		f.branchInput = append(f.branchInput[:f.branchCursorPos], append([]rune{r}, f.branchInput[f.branchCursorPos:]...)...)
+		f.branchCursorPos++
+		f.updateBranchAC()
+		return
+	}
+}
+
 func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count int) {
 	if count == 0 {
 		return
@@ -502,9 +763,8 @@ func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count i
 			f.updateAutocomplete()
 		}
 	case tcell.KeyDown, tcell.KeyEnter:
-		f.focused++
-		if f.focused > ntFieldPrompt {
-			f.focused = ntFieldPrompt
+		if f.focused < ntFieldPrompt {
+			f.focused++
 		}
 	case tcell.KeyUp:
 		if f.focused > ntFieldProject {
@@ -831,8 +1091,17 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + backend(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 9 + visiblePromptLines + acRows + projACRows
+	// Branch autocomplete row count
+	branchACRows := 0
+	if f.branchACOpen && len(f.branchACMatches) > 0 {
+		branchACRows = len(f.branchACMatches)
+		if branchACRows > acMaxVisible {
+			branchACRows = acMaxVisible + 1
+		}
+	}
+
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 10 + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -872,6 +1141,14 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	if projACRows > 0 {
 		f.drawProjectAC(screen, innerX, row, innerW)
 		row += projACRows
+	}
+
+	// Branch typeahead
+	f.drawBranchField(screen, innerX, row, innerW)
+	row++
+	if branchACRows > 0 {
+		f.drawBranchAC(screen, innerX, row, innerW)
+		row += branchACRows
 	}
 
 	// Backend selector
@@ -1127,6 +1404,102 @@ func (f *NewTaskForm) drawProjectAC(screen tcell.Screen, x, y, w int) {
 	if len(f.projACMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.projACIdx+1) + "/" + itoa(len(f.projACMatches)) + ")"
 		drawText(screen, x, y+end-f.projACScroll, w, countStr, StyleDimmed)
+	}
+}
+
+// drawBranchField renders the branch typeahead input field.
+func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
+	focused := f.focused == ntFieldBranch
+	modalBG := tcell.ColorDefault
+
+	labelStyle := StyleDimmed
+	if focused {
+		labelStyle = StyleTitle
+	}
+	label := "Branch:"
+	labelW := utf8.RuneCountInString(label)
+	drawText(screen, x, y, w, label, labelStyle)
+
+	inputX := x + labelW + 1
+	inputW := w - labelW - 1
+	if inputW <= 0 {
+		return
+	}
+
+	inputRow := y
+	inputRunes := f.branchInput
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
+
+	if focused {
+		for col := 0; col < inputW; col++ {
+			var ch rune
+			var st tcell.Style
+			if col < len(inputRunes) {
+				ch = inputRunes[col]
+				st = inputStyle
+			} else {
+				ch = ' '
+				st = inputEmptyStyle
+			}
+			if col == f.branchCursorPos {
+				st = cursorStyle
+			}
+			screen.SetContent(inputX+col, inputRow, ch, nil, st)
+		}
+	} else {
+		if len(inputRunes) == 0 {
+			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholder := "default"
+			pRunes := []rune(placeholder)
+			for col := 0; col < inputW; col++ {
+				if col < len(pRunes) {
+					screen.SetContent(inputX+col, inputRow, pRunes[col], nil, placeholderStyle)
+				} else {
+					screen.SetContent(inputX+col, inputRow, ' ', nil, inputEmptyStyle)
+				}
+			}
+		} else {
+			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
+		}
+	}
+}
+
+// drawBranchAC renders the branch autocomplete dropdown.
+func (f *NewTaskForm) drawBranchAC(screen tcell.Screen, x, y, w int) {
+	end := f.branchACScroll + acMaxVisible
+	if end > len(f.branchACMatches) {
+		end = len(f.branchACMatches)
+	}
+
+	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(tcell.Color(87))
+
+	for vi, i := 0, f.branchACScroll; i < end; vi, i = vi+1, i+1 {
+		name := f.branchACMatches[i]
+		isSelected := i == f.branchACIdx
+
+		indicator := "  "
+		if isSelected {
+			indicator = "> "
+		}
+
+		line := indicator + name
+		lineRunes := []rune(line)
+		for col := 0; col < w && col < len(lineRunes); col++ {
+			st := StyleDimmed
+			if isSelected {
+				st = selectedStyle
+			}
+			screen.SetContent(x+col, y+vi, lineRunes[col], nil, st)
+		}
+	}
+
+	// Scroll indicator
+	if len(f.branchACMatches) > acMaxVisible {
+		countStr := "  (" + itoa(f.branchACIdx+1) + "/" + itoa(len(f.branchACMatches)) + ")"
+		drawText(screen, x, y+end-f.branchACScroll, w, countStr, StyleDimmed)
 	}
 }
 

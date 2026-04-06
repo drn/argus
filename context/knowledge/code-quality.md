@@ -1613,3 +1613,15 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `FuzzyLinkPickerModal`, `fuzzyMatch`, `openAgentLinks`, `modeFuzzyLinkPicker`, `openURL` (shared with todos, uses `[links]` log prefix).
 
 **Gotchas**: (1) File I/O must run off the tview main goroutine — session logs can be large. The `QueueUpdateDraw` callback must check `a.mode == modeAgent` because the user may leave agent view during I/O. (2) `Ctrl+/` requires dual-encoding handling: legacy terminals send 0x1F (`KeyCtrlUnderscore`), but kitty/CSI-u terminals send `KeyRune '/' + ModCtrl`. tcell v2.13.8 enables CSI-u for XTerm-like terminals; codepoint 47 (`/`) is ≥32 so `NewEventKey` does NOT remap it to `KeyCtrlUnderscore`. Other ctrl+letter keys (A-Z, codepoints < 32) are safe — `NewEventKey` remaps them regardless of protocol. (3) Modal width must account for the full display string (`label + "  " + url`), not just the URL. (4) The picker is agent-only — `closeFuzzyLinkPickerModal` always restores `modeAgent` (no saved prevMode).
+
+## 2026-04-06 — Branch Selector in New Task Form
+
+**Feature**: The new task form now has a Branch field (between Project and Backend) with fuzzy-search typeahead autocomplete, matching the same pattern as the Project field. Remote branches are loaded asynchronously when the project changes or the branch field gains focus.
+
+**Data model**: No schema changes. Uses existing `Task.Branch` field. New state on `NewTaskForm`: `branchInput`, `branchCursorPos`, `branchACAll/Matches/Idx/Scroll/Open`, `branchPath`, `OnBranchFocus` callback.
+
+**Flow**: Project selection → `onProjectChanged()` resets branch to project's configured default → `maybeLoadBranches()` fires `OnBranchFocus(path)` → background goroutine calls `gitutil.ListRemoteBranches(path)` → `QueueUpdateDraw` → `SetBranchOptions(branches)` → `updateBranchAC()` populates dropdown. Typing filters with substring matching (same as project typeahead). `resolvedBranch()` returns typed text if non-empty, else falls back to project default.
+
+**Key entities**: `ntFieldBranch`, `handleBranchKey`, `onProjectChanged`, `SetBranchOptions`, `updateBranchAC`, `drawBranchField`, `drawBranchAC`.
+
+**Gotchas**: (1) Field indices shifted — `ntFieldBranch=1`, `ntFieldBackend=2`, `ntFieldPrompt=3`. Tab cycling uses `ntFieldCount=4`. (2) `projACAccept()` must call `onProjectChanged()` to reset the branch field when a project is selected from the autocomplete dropdown. (3) `onProjectChanged()` clears `branchACAll` and resets `branchPath` to force a fresh branch load. (4) Initial branch load is triggered in `onNewTask()` via `maybeLoadBranches()` after wiring `OnBranchFocus`. (5) Modal height increased by 1 base row (branch field) plus dynamic `branchACRows`.

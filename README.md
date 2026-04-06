@@ -17,7 +17,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 </p>
 
 <p align="center">
-  <img src="screenshots/new-task.png" width="720" alt="New task form with project and backend selection">
+  <img src="screenshots/new-task.png" width="720" alt="New task form with project, branch, and backend selection">
 </p>
 
 <p align="center">
