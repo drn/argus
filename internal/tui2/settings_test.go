@@ -874,6 +874,63 @@ func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry
 	return nil
 }
 
+func TestSettingsView_DeleteProjectCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Move cursor to a project row.
+	for i, row := range sv.rows {
+		if row.kind == srProject && row.key == "test-proj" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var gotName string
+	sv.OnDeleteProject = func(name string) { gotName = name }
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
+	handled := sv.HandleKey(ev)
+	testutil.Equal(t, handled, true)
+	testutil.Equal(t, gotName, "test-proj")
+}
+
+func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Move cursor to a non-default backend row.
+	for i, row := range sv.rows {
+		if row.kind == srBackend && row.key != sv.defaultBackend {
+			sv.cursor = i
+			break
+		}
+	}
+	be := sv.SelectedBackend()
+	if be == nil {
+		t.Skip("no non-default backend to test")
+	}
+	oldDefault := sv.defaultBackend
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
+	handled := sv.HandleKey(ev)
+	testutil.Equal(t, handled, true)
+	if sv.defaultBackend == oldDefault {
+		t.Error("expected default backend to change")
+	}
+}
+
+func TestSettingsView_DKeyOnOtherSectionIgnored(t *testing.T) {
+	sv := testSettingsView(t)
+
+	// Cursor on section header (not project or backend).
+	sv.cursor = 0
+	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
+	handled := sv.HandleKey(ev)
+	testutil.Equal(t, handled, false)
+}
+
 func TestSettingsView_ScrollClampOnResize(t *testing.T) {
 	sv := testSettingsView(t)
 

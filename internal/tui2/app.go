@@ -200,6 +200,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	}
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
+	app.settings.OnDeleteProject = func(name string) { app.deleteProject(name) }
 	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
 	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
 	app.settings.OnQuickAdd = func() { app.openQuickAddForm() }
@@ -2911,6 +2912,17 @@ func (a *App) closeQuickAddForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+}
+
+// deleteProject removes a project from the database and refreshes the settings view.
+func (a *App) deleteProject(name string) {
+	uxlog.Log("[settings] deleting project %s", name)
+	if err := a.db.DeleteProject(name); err != nil {
+		uxlog.Log("[settings] failed to delete project %s: %v", name, err)
+		return
+	}
+	a.settings.Refresh()
+	a.refreshTasksLocal()
 }
 
 // deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.

@@ -103,6 +103,7 @@ type SettingsView struct {
 	OnRestartDaemon func()
 	OnNewProject    func()
 	OnEditProject   func(name string, p config.Project)
+	OnDeleteProject func(name string)
 	OnNewBackend    func()
 	OnEditBackend   func(name string, b config.Backend)
 	OnQuickAdd      func()
@@ -459,7 +460,7 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			sv.moveCursor(1)
 			return true
 		case 'd':
-			return sv.handleSetDefault()
+			return sv.handleDKey()
 		case 'n':
 			return sv.handleNew()
 		case 'e':
@@ -604,6 +605,28 @@ func (sv *SettingsView) handleEnter() bool {
 			sv.rebuildRows()
 			sv.OnRestartDaemon()
 		}
+		return true
+	}
+	return false
+}
+
+func (sv *SettingsView) handleDKey() bool {
+	switch sv.currentSection() {
+	case srProject:
+		return sv.handleDeleteProject()
+	case srBackend:
+		return sv.handleSetDefault()
+	}
+	return false
+}
+
+func (sv *SettingsView) handleDeleteProject() bool {
+	pe := sv.SelectedProject()
+	if pe == nil {
+		return false
+	}
+	if sv.OnDeleteProject != nil {
+		sv.OnDeleteProject(pe.Name)
 		return true
 	}
 	return false
@@ -993,7 +1016,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	}
 
 	if h > 2 {
-		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [i] quick add", StyleDimmed)
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add", StyleDimmed)
 	}
 }
 
