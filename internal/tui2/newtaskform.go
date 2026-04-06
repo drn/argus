@@ -39,7 +39,7 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=backend, 2=prompt
+	focused      int    // 0=project, 1=branch, 2=backend, 3=prompt
 	done         bool
 	canceled     bool
 	errMsg       string
@@ -59,7 +59,7 @@ type NewTaskForm struct {
 	branchInput     []rune   // typed text for branch filter
 	branchCursorPos int      // cursor position in branch input
 	branchACOpen    bool     // whether dropdown is showing
-	branchACAll     []string // all branch options (populated via SetBranchOptions)
+	branchACAll     []string // all branch options (async-loaded via SetBranchOptions, unlike projACMatches which filters the static projectNames slice)
 	branchACMatches []string // filtered branch names
 	branchACIdx     int      // selected item in dropdown
 	branchACScroll  int      // scroll offset in dropdown
@@ -298,6 +298,7 @@ func (f *NewTaskForm) onProjectChanged() {
 	f.branchACAll = nil
 	f.branchACMatches = nil
 	f.branchACOpen = false
+	f.branchPath = "" // clear so maybeLoadBranches reloads even for the same project
 	f.maybeLoadBranches()
 }
 
