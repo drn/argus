@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/inject"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -69,12 +70,18 @@ func Connect(sockPath string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{
+	c := &Client{
 		rpc:      jsonrpc.NewClient(conn),
 		sockPath: sockPath,
 		sessions: make(map[string]*RemoteSession),
 		closed:   make(chan struct{}),
-	}, nil
+	}
+
+	// Fetch the MCP port eagerly so TUI-created worktrees get .mcp.json
+	// injection even before the first health-check tick fires.
+	c.Ping() //nolint:errcheck — best-effort; health check will retry
+
+	return c, nil
 }
 
 // OnSessionExit registers a callback invoked when a session's stream reports EOF.
@@ -365,9 +372,17 @@ func WaitForShutdown(sockPath string, timeout time.Duration) {
 }
 
 // Ping verifies the daemon is responsive. Returns nil on success.
+// Also propagates the daemon's MCP port to the in-process inject package
+// so that TUI-created worktrees receive .mcp.json injection.
 func (c *Client) Ping() error {
 	var resp daemon.PongResp
-	return c.call("Daemon.Ping", &daemon.Empty{}, &resp)
+	if err := c.call("Daemon.Ping", &daemon.Empty{}, &resp); err != nil {
+		return err
+	}
+	if resp.MCPPort > 0 {
+		inject.SetMCPPort(resp.MCPPort)
+	}
+	return nil
 }
 
 // removeSessionStreamLost cleans up a session from the client's map and fires
