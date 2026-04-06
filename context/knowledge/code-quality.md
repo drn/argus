@@ -1635,3 +1635,15 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `ConfirmDeleteProjectModal`, `modeConfirmDeleteProject`, `handleDeleteOrDefault`, `handleDeleteProject`, `OnDeleteProject`, `openConfirmDeleteProject`, `handleConfirmDeleteProjectKey`, `closeConfirmDeleteProject`.
 
 **Gotchas**: (1) `d` key is context-dependent — `srProject` deletes, `srBackend` sets default. Must use `currentSection()` dispatch. (2) Deleting a project orphans its tasks (no FK constraint). The confirmation modal warns "N task(s) will be orphaned" using `a.tasks` count. (3) `closeConfirmDeleteProject` must switch back to settings page and focus `settingsPage` — same pattern as `closeConfirmDelete` for tasks.
+
+## 2026-04-06 — Project Form Path Autocomplete
+
+**Feature**: The project form (new/edit) now has directory path autocomplete on the Path field with tilde expansion. Typing a path opens a dropdown of matching subdirectories; Tab/Enter accepts, Up/Down navigates, Escape dismisses. `Result()` expands `~` to the absolute home directory path and trims whitespace.
+
+**Data model**: No schema changes. Three new fields on `ProjectForm`: `pathACMatches []string`, `pathACIdx int`, `pathACOpen bool`.
+
+**Flow**: Keystroke in path field → `updatePathAC()` → `dirCompletions(raw)` (shared pure function) → `os.ReadDir` + prefix filter → populate dropdown state. Tab/Enter → `acceptPathAC()` → replace path input with `collapseTilde(match) + "/"` → re-trigger AC for deeper navigation. On form submit → `Result()` calls `expandTilde(strings.TrimSpace(...))` so stored paths are always absolute.
+
+**Key entities**: `pathACMatches`, `pathACIdx`, `pathACOpen`, `handlePathACKey`, `updatePathAC`, `acceptPathAC`, `closePathAC`, `drawPathAC`, `dirCompletions` (shared), `pfMaxACVisible`.
+
+**Gotchas**: (1) `dirCompletions` is a shared pure function in `quickaddform.go` used by both `QuickAddForm` and `ProjectForm` — keep them in sync. (2) `os.ReadDir` runs synchronously on the tview main goroutine on each keystroke — acceptable for local filesystems but may lag on NFS/iCloud. (3) `acceptPathAC` calls `closePathAC()` then `updatePathAC()` to re-open the dropdown if the accepted directory has sub-dirs. (4) AC dropdown dynamically adjusts form height via `acRows` + `extraOffset` pattern — fields below the Path field shift down. (5) `handlePathACKey` intercepts Escape/Tab/Enter/Up/Down only when AC is relevant (open or triggerable), falling through to normal form handling otherwise.
