@@ -1,6 +1,10 @@
 package tui2
 
 import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -8,6 +12,9 @@ import (
 
 	"github.com/drn/argus/internal/config"
 )
+
+// pfMaxACVisible is the maximum number of autocomplete rows shown at once.
+const pfMaxACVisible = 8
 
 const (
 	pfFieldName    = 0
@@ -49,6 +56,11 @@ type ProjectForm struct {
 	// Preserved per-project sandbox paths (not editable in form, survives round-trip).
 	sandboxDenyRead   []string
 	sandboxExtraWrite []string
+
+	// Path autocomplete state.
+	pathACMatches []string // full paths of matching dirs
+	pathACIdx     int
+	pathACOpen    bool
 
 	// OnBranchFocus is called when the branch field gains focus and the
 	// path has changed since the last load. The caller should fetch branches
@@ -109,14 +121,16 @@ func (pf *ProjectForm) SetBranchOptions(options []string) {
 	}
 }
 
-// Result returns the form values.
+// Result returns the form values. Tilde in the path is expanded to an
+// absolute path so downstream code (worktree creation, git commands) gets
+// a real filesystem path.
 func (pf *ProjectForm) Result() (name string, p config.Project) {
 	branch := string(pf.fields[pfFieldBranch])
 	if pf.branchIsSelector() && pf.branchIdx < len(pf.branchOptions) {
 		branch = pf.branchOptions[pf.branchIdx]
 	}
 	proj := config.Project{
-		Path:    string(pf.fields[pfFieldPath]),
+		Path:    expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath]))),
 		Branch:  branch,
 		Backend: string(pf.fields[pfFieldBackend]),
 	}
@@ -146,6 +160,13 @@ func (pf *ProjectForm) maybeLoadBranches() {
 
 // HandleKey processes key events for the form.
 func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
+	// Path field autocomplete intercepts certain keys.
+	if pf.focused == pfFieldPath {
+		if pf.handlePathACKey(ev) {
+			return
+		}
+	}
+
 	switch ev.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlQ:
 		pf.canceled = true
@@ -164,6 +185,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyTab:
+		pf.closePathAC()
 		pf.focused = (pf.focused + 1) % pfFieldCount
 		if pf.editMode && pf.focused == pfFieldName {
 			pf.focused++
@@ -173,6 +195,7 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyBacktab:
+		pf.closePathAC()
 		pf.focused = (pf.focused + pfFieldCount - 1) % pfFieldCount
 		if pf.editMode && pf.focused == pfFieldName {
 			pf.focused = pfFieldSandbox
@@ -204,6 +227,9 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 			pf.fields[f] = append(pf.fields[f][:pf.cursors[f]-1], pf.fields[f][pf.cursors[f]:]...)
 			pf.cursors[f]--
 		}
+		if f == pfFieldPath {
+			pf.updatePathAC()
+		}
 		return
 	case tcell.KeyLeft:
 		if pf.cursors[pf.focused] > 0 {
@@ -223,8 +249,137 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 		r := ev.Rune()
 		pf.fields[f] = append(pf.fields[f][:pf.cursors[f]], append([]rune{r}, pf.fields[f][pf.cursors[f]:]...)...)
 		pf.cursors[f]++
+		if f == pfFieldPath {
+			pf.updatePathAC()
+		}
 		return
 	}
+}
+
+// handlePathACKey handles autocomplete-specific keys when the path field is
+// focused. Returns true if the event was consumed.
+func (pf *ProjectForm) handlePathACKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		if pf.pathACOpen {
+			pf.closePathAC()
+			return true
+		}
+		return false
+	case tcell.KeyTab:
+		if pf.pathACOpen {
+			pf.acceptPathAC()
+			return true
+		}
+		// Trigger autocomplete on first Tab press.
+		pf.updatePathAC()
+		if pf.pathACOpen {
+			pf.acceptPathAC()
+			return true
+		}
+		return false
+	case tcell.KeyEnter:
+		if pf.pathACOpen {
+			pf.acceptPathAC()
+			return true
+		}
+		return false
+	case tcell.KeyDown:
+		if pf.pathACOpen && len(pf.pathACMatches) > 0 {
+			pf.pathACIdx = (pf.pathACIdx + 1) % len(pf.pathACMatches)
+			return true
+		}
+		return false
+	case tcell.KeyUp:
+		if pf.pathACOpen && len(pf.pathACMatches) > 0 {
+			if pf.pathACIdx == 0 {
+				pf.pathACIdx = len(pf.pathACMatches) - 1
+			} else {
+				pf.pathACIdx--
+			}
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// updatePathAC computes directory completions for the current path input.
+func (pf *ProjectForm) updatePathAC() {
+	raw := string(pf.fields[pfFieldPath])
+	if raw == "" {
+		pf.closePathAC()
+		return
+	}
+
+	expanded := expandTilde(raw)
+
+	var parentDir, prefix string
+	if strings.HasSuffix(expanded, "/") {
+		parentDir = expanded
+		prefix = ""
+	} else {
+		parentDir = filepath.Dir(expanded)
+		prefix = filepath.Base(expanded)
+	}
+
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		pf.closePathAC()
+		return
+	}
+
+	var matches []string
+	lowerPrefix := strings.ToLower(prefix)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
+			continue
+		}
+		matches = append(matches, filepath.Join(parentDir, name))
+	}
+	sort.Strings(matches)
+
+	if len(matches) == 0 {
+		pf.closePathAC()
+		return
+	}
+	// Don't show AC if input already exactly matches the sole entry.
+	if len(matches) == 1 && (matches[0] == expanded || matches[0]+"/" == expanded) {
+		pf.closePathAC()
+		return
+	}
+
+	pf.pathACMatches = matches
+	pf.pathACOpen = true
+	if pf.pathACIdx >= len(pf.pathACMatches) {
+		pf.pathACIdx = 0
+	}
+}
+
+// acceptPathAC replaces the path input with the selected autocomplete match.
+func (pf *ProjectForm) acceptPathAC() {
+	if !pf.pathACOpen || pf.pathACIdx >= len(pf.pathACMatches) {
+		return
+	}
+	path := collapseTilde(pf.pathACMatches[pf.pathACIdx]) + "/"
+	pf.fields[pfFieldPath] = []rune(path)
+	pf.cursors[pfFieldPath] = len(pf.fields[pfFieldPath])
+	pf.closePathAC()
+	pf.updatePathAC()
+}
+
+// closePathAC dismisses the autocomplete dropdown.
+func (pf *ProjectForm) closePathAC() {
+	pf.pathACOpen = false
+	pf.pathACMatches = nil
+	pf.pathACIdx = 0
 }
 
 // handleBranchSelector processes keys when the branch field is in selector mode.
@@ -277,6 +432,9 @@ func (pf *ProjectForm) PasteHandler() func(pastedText string, setFocus func(p tv
 		newField = append(newField, pf.fields[f][pf.cursors[f]:]...)
 		pf.fields[f] = newField
 		pf.cursors[f] += len(runes)
+		if f == pfFieldPath {
+			pf.updatePathAC()
+		}
 	})
 }
 
@@ -288,9 +446,18 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		return
 	}
 
+	// Compute autocomplete row count for dynamic form height.
+	acRows := 0
+	if pf.pathACOpen && len(pf.pathACMatches) > 0 {
+		acRows = len(pf.pathACMatches)
+		if acRows > pfMaxACVisible {
+			acRows = pfMaxACVisible
+		}
+	}
+
 	// Center the form.
 	formW := min(60, width-4)
-	formH := 13 // pfFieldCount*2 rows + 3 overhead (title, border, error)
+	formH := 13 + acRows // pfFieldCount*2 rows + 3 overhead (title, border, error)
 	formX := x + (width-formW)/2
 	formY := y + (height-formH)/2
 	if formY < y {
@@ -312,8 +479,9 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 
 	labels := [pfFieldCount]string{"Name:", "Path:", "Branch:", "Backend:", "Sandbox:"}
 	maxW := formW - 14
+	extraOffset := 0 // extra rows inserted after path field for AC dropdown
 	for i := range pfFieldCount {
-		ly := formY + 2 + i*2
+		ly := formY + 2 + i*2 + extraOffset
 		if ly >= formY+formH-1 {
 			break
 		}
@@ -349,11 +517,54 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 			val = val[len(val)-maxW:]
 		}
 		drawText(screen, formX+12, ly, maxW, val, style)
+
+		// Draw autocomplete dropdown right after the path field.
+		if i == pfFieldPath && pf.pathACOpen && len(pf.pathACMatches) > 0 {
+			extraOffset += pf.drawPathAC(screen, formX+12, ly+1, maxW)
+		}
 	}
 
 	if pf.errMsg != "" {
 		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, StyleError)
 	}
+}
+
+// drawPathAC renders the autocomplete dropdown below the path input.
+// Returns the number of rows drawn.
+func (pf *ProjectForm) drawPathAC(screen tcell.Screen, x, y, w int) int {
+	visible := len(pf.pathACMatches)
+	if visible > pfMaxACVisible {
+		visible = pfMaxACVisible
+	}
+
+	acScroll := 0
+	if pf.pathACIdx >= visible {
+		acScroll = pf.pathACIdx - visible + 1
+	}
+
+	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(ColorSelected)
+	for vi := 0; vi < visible; vi++ {
+		idx := acScroll + vi
+		if idx >= len(pf.pathACMatches) {
+			break
+		}
+		display := collapseTilde(pf.pathACMatches[idx])
+
+		indicator := "  "
+		if idx == pf.pathACIdx {
+			indicator = "> "
+		}
+		line := indicator + display
+		st := StyleDimmed
+		if idx == pf.pathACIdx {
+			st = selectedStyle
+		}
+		lineRunes := []rune(line)
+		for c := 0; c < w && c < len(lineRunes); c++ {
+			screen.SetContent(x+c, y+vi, lineRunes[c], nil, st)
+		}
+	}
+	return visible
 }
 
 // drawSandboxSelector renders the sandbox field as a ◀/▶ selector.
