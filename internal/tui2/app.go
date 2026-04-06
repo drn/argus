@@ -1236,9 +1236,15 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
 		return nil
-	case tcell.KeyCtrlUnderscore: // Ctrl+/
+	case tcell.KeyCtrlUnderscore: // Ctrl+/ (legacy terminals send 0x1F)
 		a.openAgentLinks()
 		return nil
+	case tcell.KeyRune:
+		// Kitty/CSI-u terminals send Ctrl+/ as KeyRune '/' with ModCtrl
+		if event.Rune() == '/' && event.Modifiers()&tcell.ModCtrl != 0 {
+			a.openAgentLinks()
+			return nil
+		}
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
 			if a.agentFocus > focusTerminal {

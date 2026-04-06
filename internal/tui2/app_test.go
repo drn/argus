@@ -428,6 +428,38 @@ func TestEscapeStaysInAgentView(t *testing.T) {
 	}
 }
 
+func TestCtrlSlashOpensLinkPicker(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "test")
+
+	tests := []struct {
+		name  string
+		event *tcell.EventKey
+	}{
+		{
+			name:  "legacy 0x1F",
+			event: tcell.NewEventKey(tcell.KeyCtrlUnderscore, 0, tcell.ModNone),
+		},
+		{
+			name:  "CSI-u Ctrl+/",
+			event: tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModCtrl),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app.mode = modeAgent
+			result := app.handleAgentKey(tt.event)
+			if result != nil {
+				t.Error("Ctrl+/ should return nil (consumed)")
+			}
+		})
+	}
+}
+
 func TestFilePanelKeyRouting(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
