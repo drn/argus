@@ -1,9 +1,6 @@
 package tui2
 
 import (
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -289,7 +286,7 @@ func (pf *ProjectForm) handlePathACKey(ev *tcell.EventKey) bool {
 			pf.pathACIdx = (pf.pathACIdx + 1) % len(pf.pathACMatches)
 			return true
 		}
-		return false
+		return false // no-op when AC is closed
 	case tcell.KeyUp:
 		if pf.pathACOpen && len(pf.pathACMatches) > 0 {
 			if pf.pathACIdx == 0 {
@@ -299,63 +296,21 @@ func (pf *ProjectForm) handlePathACKey(ev *tcell.EventKey) bool {
 			}
 			return true
 		}
-		return false
+		return false // no-op when AC is closed
 	}
 	return false
 }
 
 // updatePathAC computes directory completions for the current path input.
+// Note: os.ReadDir runs synchronously — acceptable for local filesystems
+// (same pattern as QuickAddForm), but may lag on NFS/iCloud mounts.
 func (pf *ProjectForm) updatePathAC() {
 	raw := string(pf.fields[pfFieldPath])
-	if raw == "" {
+	matches := dirCompletions(raw)
+	if matches == nil {
 		pf.closePathAC()
 		return
 	}
-
-	expanded := expandTilde(raw)
-
-	var parentDir, prefix string
-	if strings.HasSuffix(expanded, "/") {
-		parentDir = expanded
-		prefix = ""
-	} else {
-		parentDir = filepath.Dir(expanded)
-		prefix = filepath.Base(expanded)
-	}
-
-	entries, err := os.ReadDir(parentDir)
-	if err != nil {
-		pf.closePathAC()
-		return
-	}
-
-	var matches []string
-	lowerPrefix := strings.ToLower(prefix)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
-			continue
-		}
-		matches = append(matches, filepath.Join(parentDir, name))
-	}
-	sort.Strings(matches)
-
-	if len(matches) == 0 {
-		pf.closePathAC()
-		return
-	}
-	// Don't show AC if input already exactly matches the sole entry.
-	if len(matches) == 1 && (matches[0] == expanded || matches[0]+"/" == expanded) {
-		pf.closePathAC()
-		return
-	}
-
 	pf.pathACMatches = matches
 	pf.pathACOpen = true
 	if pf.pathACIdx >= len(pf.pathACMatches) {
@@ -372,6 +327,7 @@ func (pf *ProjectForm) acceptPathAC() {
 	pf.fields[pfFieldPath] = []rune(path)
 	pf.cursors[pfFieldPath] = len(pf.fields[pfFieldPath])
 	pf.closePathAC()
+	// Re-open dropdown if the accepted directory has sub-directories.
 	pf.updatePathAC()
 }
 

@@ -145,13 +145,14 @@ func collapseTilde(path string) string {
 	return path
 }
 
-// updateDirAutocomplete computes directory completions for the current input.
-func (f *QuickAddForm) updateDirAutocomplete() {
-	raw := string(f.dirPath)
+// dirCompletions returns sorted directory completions for the given path input.
+// Returns nil when there are no matches or the input is empty.
+// Expands tilde, filters hidden directories, and suppresses the dropdown when
+// the input already exactly matches the sole result.
+// Used by both QuickAddForm and ProjectForm — keep in sync.
+func dirCompletions(raw string) []string {
 	if raw == "" {
-		f.acOpen = false
-		f.acMatches = nil
-		return
+		return nil
 	}
 
 	expanded := expandTilde(raw)
@@ -169,9 +170,7 @@ func (f *QuickAddForm) updateDirAutocomplete() {
 
 	entries, err := os.ReadDir(parentDir)
 	if err != nil {
-		f.acOpen = false
-		f.acMatches = nil
-		return
+		return nil
 	}
 
 	var matches []string
@@ -187,25 +186,29 @@ func (f *QuickAddForm) updateDirAutocomplete() {
 		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), lowerPrefix) {
 			continue
 		}
-		fullPath := filepath.Join(parentDir, name)
-		matches = append(matches, fullPath)
+		matches = append(matches, filepath.Join(parentDir, name))
 	}
 	sort.Strings(matches)
 
 	if len(matches) == 0 {
-		f.acOpen = false
-		f.acMatches = nil
-		return
+		return nil
 	}
-
-	// Don't show autocomplete if the input already exactly matches one entry
-	// (with or without trailing slash).
+	// Don't show AC if input already exactly matches the sole entry.
 	if len(matches) == 1 && (matches[0] == expanded || matches[0]+"/" == expanded) {
+		return nil
+	}
+	return matches
+}
+
+// updateDirAutocomplete computes directory completions for the current input.
+func (f *QuickAddForm) updateDirAutocomplete() {
+	raw := string(f.dirPath)
+	matches := dirCompletions(raw)
+	if matches == nil {
 		f.acOpen = false
 		f.acMatches = nil
 		return
 	}
-
 	f.acMatches = matches
 	f.acOpen = true
 	if f.acIdx >= len(f.acMatches) {
