@@ -1869,6 +1869,7 @@ func (a *App) onNewTask() {
 	a.newTaskForm.OnBranchFocus = func(path string) {
 		go func() {
 			branches := gitutil.ListRemoteBranches(path)
+			uxlog.Log("[newtask] loaded %d branches for %s", len(branches), path)
 			a.tapp.QueueUpdateDraw(func() {
 				if a.newTaskForm != nil {
 					a.newTaskForm.SetBranchOptions(branches)
