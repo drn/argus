@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	injectcodex "github.com/drn/argus/internal/inject/codex"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // mcpPort holds the actual MCP server port for worktree injection.
@@ -27,6 +28,7 @@ func MCPPort() int {
 func InjectWorktreeAll(worktreePath string) {
 	port := MCPPort()
 	if port == 0 {
+		uxlog.Log("[inject] skipping worktree injection: MCP port not set")
 		return
 	}
 	if err := InjectWorktree(worktreePath, port); err != nil {
@@ -35,4 +37,5 @@ func InjectWorktreeAll(worktreePath string) {
 	if err := injectcodex.InjectWorktree(worktreePath, port); err != nil {
 		log.Printf("inject worktree codex: %v", err)
 	}
+	uxlog.Log("[inject] worktree injection complete: path=%s port=%d", worktreePath, port)
 }

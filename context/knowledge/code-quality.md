@@ -502,6 +502,10 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **`path/filepath.IsAbs` + `strings.Contains(path, "..")` path validation**: The `kb_ingest` MCP tool validates incoming paths before calling `KBUpsert`. Absolute paths and paths with `..` components are rejected. This prevents agents from injecting arbitrary paths into the FTS5 index.
 
+**Claude Code MCP entries require `"transport": "http"` field**: A bare `{"url": "..."}` entry in `mcpServers` fails to parse. The injected entry must be `{"transport": "http", "url": "..."}`. Idempotency checks must verify both fields to detect and upgrade entries from the old format (pre-2026-04-06).
+
+**`inject.SetMCPPort` is per-process (atomic variable)**: The daemon calls `SetMCPPort` in `Serve()`, but the TUI is a separate process. `PongResp.MCPPort` carries the port over RPC; the client's `Ping()` calls `inject.SetMCPPort()` locally. `Connect()` calls `Ping()` eagerly so TUI-created worktrees get injection before the first health-check tick. The `InjectWorktreeAll` logs to uxlog on both skip (port == 0) and success for debuggability.
+
 ### Config Keys
 - `kb.enabled` — `"true"` / `""` (default `""` = off)
 - `kb.http_port` — integer string (default `"7742"`)
