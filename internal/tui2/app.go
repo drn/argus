@@ -54,6 +54,7 @@ const (
 	modeLinkPicker
 	modeFuzzyLinkPicker
 	modeQuickAdd
+	modeConfirmDeleteProject
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -93,7 +94,8 @@ type App struct {
 	newTaskForm *NewTaskForm
 
 	// Confirm delete modal (created on demand)
-	confirmDeleteModal *ConfirmDeleteModal
+	confirmDeleteModal        *ConfirmDeleteModal
+	confirmDeleteProjectModal *ConfirmDeleteProjectModal
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal    *LaunchToDoModal
@@ -992,6 +994,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm delete modal — delegate everything to the modal
 	if a.mode == modeConfirmDelete && a.confirmDeleteModal != nil {
 		a.handleConfirmDeleteKey(event)
+		return nil
+	}
+
+	// Confirm delete project modal
+	if a.mode == modeConfirmDeleteProject && a.confirmDeleteProjectModal != nil {
+		a.handleConfirmDeleteProjectKey(event)
 		return nil
 	}
 
@@ -2914,15 +2922,56 @@ func (a *App) closeQuickAddForm() {
 	a.tapp.SetFocus(a.settingsPage)
 }
 
-// deleteProject removes a project from the database and refreshes the settings view.
+// deleteProject opens a confirmation modal before removing a project.
 func (a *App) deleteProject(name string) {
-	uxlog.Log("[settings] deleting project %s", name)
-	if err := a.db.DeleteProject(name); err != nil {
-		uxlog.Log("[settings] failed to delete project %s: %v", name, err)
+	// Count tasks belonging to this project.
+	taskCount := 0
+	for _, t := range a.tasks {
+		if t.Project == name {
+			taskCount++
+		}
+	}
+	a.openConfirmDeleteProject(name, taskCount)
+}
+
+// openConfirmDeleteProject shows the confirm delete modal for the given project.
+func (a *App) openConfirmDeleteProject(name string, taskCount int) {
+	a.confirmDeleteProjectModal = NewConfirmDeleteProjectModal(name, taskCount)
+	a.mode = modeConfirmDeleteProject
+	a.pages.AddPage("confirmdeleteproject", a.confirmDeleteProjectModal, true, true)
+	a.pages.SwitchToPage("confirmdeleteproject")
+	a.tapp.SetFocus(a.confirmDeleteProjectModal)
+}
+
+// handleConfirmDeleteProjectKey processes keys for the project delete confirmation modal.
+func (a *App) handleConfirmDeleteProjectKey(event *tcell.EventKey) {
+	handler := a.confirmDeleteProjectModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.confirmDeleteProjectModal.Canceled() {
+		a.closeConfirmDeleteProject()
 		return
 	}
-	a.settings.Refresh()
-	a.refreshTasksLocal()
+
+	if a.confirmDeleteProjectModal.Confirmed() {
+		name := a.confirmDeleteProjectModal.Name()
+		uxlog.Log("[settings] deleting project %s", name)
+		if err := a.db.DeleteProject(name); err != nil {
+			uxlog.Log("[settings] failed to delete project %s: %v", name, err)
+		}
+		a.closeConfirmDeleteProject()
+		a.settings.Refresh()
+		a.refreshTasksLocal()
+	}
+}
+
+// closeConfirmDeleteProject dismisses the project delete confirmation modal.
+func (a *App) closeConfirmDeleteProject() {
+	a.mode = modeTaskList
+	a.confirmDeleteProjectModal = nil
+	a.pages.RemovePage("confirmdeleteproject")
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
 }
 
 // deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.

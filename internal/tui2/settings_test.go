@@ -897,6 +897,36 @@ func TestSettingsView_DeleteProjectCallback(t *testing.T) {
 	testutil.Equal(t, gotName, "test-proj")
 }
 
+func TestSettingsView_DeleteProjectRoundTrip(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	database.SetProject("proj-a", config.Project{Path: "/tmp/a", Branch: "main"})
+	database.SetProject("proj-b", config.Project{Path: "/tmp/b", Branch: "main"})
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	testutil.Equal(t, len(sv.projects), 2)
+
+	// Simulate the full delete flow: callback deletes from DB and refreshes.
+	sv.OnDeleteProject = func(name string) {
+		database.DeleteProject(name)
+		sv.Refresh()
+	}
+
+	// Move cursor to proj-a.
+	for i, row := range sv.rows {
+		if row.kind == srProject && row.key == "proj-a" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
+	sv.HandleKey(ev)
+
+	// After refresh, only proj-b should remain.
+	testutil.Equal(t, len(sv.projects), 1)
+	testutil.Equal(t, sv.projects[0].Name, "proj-b")
+}
+
 func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
 	sv := testSettingsView(t)
 
@@ -909,7 +939,7 @@ func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
 	}
 	be := sv.SelectedBackend()
 	if be == nil {
-		t.Skip("no non-default backend to test")
+		t.Fatal("test setup: expected at least one non-default backend")
 	}
 	oldDefault := sv.defaultBackend
 

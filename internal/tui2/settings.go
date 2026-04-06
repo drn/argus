@@ -460,7 +460,7 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			sv.moveCursor(1)
 			return true
 		case 'd':
-			return sv.handleDKey()
+			return sv.handleDeleteOrDefault()
 		case 'n':
 			return sv.handleNew()
 		case 'e':
@@ -610,7 +610,7 @@ func (sv *SettingsView) handleEnter() bool {
 	return false
 }
 
-func (sv *SettingsView) handleDKey() bool {
+func (sv *SettingsView) handleDeleteOrDefault() bool {
 	switch sv.currentSection() {
 	case srProject:
 		return sv.handleDeleteProject()
