@@ -23,6 +23,10 @@
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
 - **`moveCursor` must not fire `OnCursorChange` when clamped at boundaries.** When pressing up at the top or down at the bottom, `tl.cursor` is clamped to the same value — firing the callback triggers unnecessary git diff refreshes and preview fetches. Use a deferred guard comparing `tl.cursor != prev`.
 
+## Task Row Rendering
+
+- **`drawTaskRow` gives the task name priority over the branch in width allocation.** The name is sized first (ignoring branch), then the branch fills remaining space. If branch is sized first (reserving space before name), narrow terminals squeeze the name to zero while showing a useless branch fragment.
+
 ## Spinner Animation
 
 - **Spinner frame computation is time-based, not tick-based.** `updateSpinnerFrame()` computes `int(time.Now().UnixMilli() / interval) % frameCount` in `Draw()`. The 1-second tick loop is too slow for 100ms spinner frames. A dedicated `spinnerLoop` (100ms ticker) triggers redraws only when `len(runningIDs) > 0`.
