@@ -29,5 +29,6 @@
 
 ## Spinner Animation
 
+- **Project status icon priority: actively running > in_review > idle in_progress.** If any task in a project is actively running (`running && !idle`), the project shows the spinner — even if other tasks are in-review. The variable is `hasActivelyRunning`, not the old `allInProgressIdle` inverse.
 - **Spinner frame computation is time-based, not tick-based.** `updateSpinnerFrame()` computes `int(time.Now().UnixMilli() / interval) % frameCount` in `Draw()`. The 1-second tick loop is too slow for 100ms spinner frames. A dedicated `spinnerLoop` (100ms ticker) triggers redraws only when `len(runningIDs) > 0`.
 - **`model.SetActiveSpinner()` is a package-level setter — not thread-safe for concurrent writers.** Currently safe because only the tview main goroutine (settings UI) calls it. If daemon or API ever sets it, add synchronization.
