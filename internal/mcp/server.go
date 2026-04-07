@@ -218,12 +218,13 @@ CONTENT STRUCTURE:
 - Lead with the key insight, rule, or summary — not background or preamble.
 - Use ## H2 sections for subtopics. Each H2 should be independently useful.
 - Bullet lists with **bold keys** for structured data (specs, criteria, evaluations).
+- Cross-reference related docs with Obsidian wikilinks: [[filename]] or [[filename|display text]]
 - Keep entries focused: 50-500 words is the sweet spot for retrieval quality.
 - Source and date claims when possible: "— Source: website Apr 2026"
 
 WHAT NOT TO DO:
 - Don't create near-empty stubs — every entry should be immediately useful.
-- Don't duplicate content across files. Cross-reference instead.
+- Don't duplicate content across files. Cross-reference with [[wikilinks]] instead.
 - Don't use inline #hashtags — put all tags in YAML frontmatter.
 - Don't nest folders more than 2 levels deep.`
 
@@ -281,7 +282,7 @@ Content body here with ## sections.
 
 PATH RULES: Use kebab-case filenames in topic folders (e.g. 'thanx/hiring.md', 'tools/vendor-evaluations.md'). Match existing folder structure — use kb_list to see current organization.
 
-CONTENT RULES: One topic per document. Lead with the key insight. Use ## H2 for subtopics. Bold key terms in bullet lists. Keep entries 50-500 words.`,
+CONTENT RULES: One topic per document. Lead with the key insight. Use ## H2 for subtopics. Bold key terms in bullet lists. Cross-reference with [[wikilinks]]. Keep entries 50-500 words.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
