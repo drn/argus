@@ -228,20 +228,9 @@ func (v *ToDosView) Draw(screen tcell.Screen) {
 
 	// Empty state: draw banner centered vertically.
 	bh := todoBannerHeight()
-	hintRow := 1 // single line for "No to-do notes found" hint
-	totalH := bh + hintRow
-	topPad := max((height-totalH)/2, 0)
+	topPad := max((height-bh)/2, 0)
 
 	drawTodoBanner(screen, x, y+topPad, width)
-
-	// Draw hint below the banner.
-	hint := "No to-do notes found"
-	if v.vaultPath != "" {
-		hint += fmt.Sprintf(" in %s", v.vaultPath)
-	}
-	hintY := y + topPad + bh
-	hintPad := max((width-len(hint))/2, 0)
-	drawText(screen, x+hintPad, hintY, width-hintPad, hint, StyleDimmed)
 }
 
 // Focus delegates to the inner flex.
