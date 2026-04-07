@@ -3,7 +3,6 @@ package agent
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -358,8 +357,8 @@ func TestSandbox_EnforcesWriteRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	outsideDir := filepath.Join(homeDir, ".argus-sandbox-test-blocked")
-	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+	outsideDir, err := os.MkdirTemp(homeDir, ".argus-sandbox-test-")
+	if err != nil {
 		t.Fatalf("create outsideDir: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(outsideDir) })
