@@ -143,9 +143,11 @@ func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	after := string(rf.name[rf.cursor:])
 	val := before + "█" + after
 	maxW := formW - 4
-	if len(val) > maxW {
-		val = val[len(val)-maxW:]
+	valRunes := []rune(val)
+	if len(valRunes) > maxW {
+		valRunes = valRunes[len(valRunes)-maxW:]
 	}
+	val = string(valRunes)
 	drawText(screen, formX+2, formY+3, maxW, val, tcell.StyleDefault)
 
 	if rf.errMsg != "" {

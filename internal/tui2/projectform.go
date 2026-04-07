@@ -147,8 +147,8 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 // maybeLoadBranches fires OnBranchFocus when the path has changed since
 // the last load. The actual git call happens in a background goroutine.
 func (pf *ProjectForm) maybeLoadBranches() {
-	path := string(pf.fields[pfFieldPath])
-	if path == pf.branchPath || pf.OnBranchFocus == nil {
+	path := expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath])))
+	if path == "" || path == pf.branchPath || pf.OnBranchFocus == nil {
 		return
 	}
 	pf.branchPath = path
@@ -469,9 +469,11 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		} else {
 			style = tcell.StyleDefault
 		}
-		if len(val) > maxW {
-			val = val[len(val)-maxW:]
+		valRunes := []rune(val)
+		if len(valRunes) > maxW {
+			valRunes = valRunes[len(valRunes)-maxW:]
 		}
+		val = string(valRunes)
 		drawText(screen, formX+12, ly, maxW, val, style)
 
 		// Draw autocomplete dropdown right after the path field.

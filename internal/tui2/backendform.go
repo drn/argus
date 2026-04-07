@@ -181,9 +181,11 @@ func (bf *BackendForm) Draw(screen tcell.Screen) {
 			fieldStyle = StyleDimmed
 		}
 		maxW := formW - 18
-		if len(val) > maxW {
-			val = val[len(val)-maxW:]
+		valRunes := []rune(val)
+		if len(valRunes) > maxW {
+			valRunes = valRunes[len(valRunes)-maxW:]
 		}
+		val = string(valRunes)
 		drawText(screen, formX+16, ly, maxW, val, fieldStyle)
 	}
 

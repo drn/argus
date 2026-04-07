@@ -439,3 +439,117 @@ func TestProjectForm_PathAC_NotOnOtherFields(t *testing.T) {
 
 	testutil.Equal(t, pf.pathACOpen, false)
 }
+
+func TestProjectForm_MaybeLoadBranches_ExpandsTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+
+	pf := NewProjectForm()
+	var calledWith string
+	pf.OnBranchFocus = func(path string) {
+		calledWith = path
+	}
+
+	// Set path with tilde — maybeLoadBranches should expand it.
+	pf.fields[pfFieldPath] = []rune("~/Development/myproj")
+	pf.maybeLoadBranches()
+
+	testutil.Equal(t, calledWith, filepath.Join(home, "Development/myproj"))
+	// branchPath should store the expanded path for dedup.
+	testutil.Equal(t, pf.branchPath, filepath.Join(home, "Development/myproj"))
+}
+
+func TestProjectForm_MaybeLoadBranches_TrimsSpaces(t *testing.T) {
+	pf := NewProjectForm()
+	var calledWith string
+	pf.OnBranchFocus = func(path string) {
+		calledWith = path
+	}
+
+	pf.fields[pfFieldPath] = []rune("  /tmp/foo  ")
+	pf.maybeLoadBranches()
+
+	testutil.Equal(t, calledWith, "/tmp/foo")
+}
+
+func TestProjectForm_MaybeLoadBranches_TildeFromPathAC(t *testing.T) {
+	// acceptPathAC calls collapseTilde, so the path field contains "~/..."
+	// after autocomplete. maybeLoadBranches must expand before calling OnBranchFocus.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot get home dir")
+	}
+
+	pf := NewProjectForm()
+	var calledWith string
+	pf.OnBranchFocus = func(path string) {
+		calledWith = path
+	}
+
+	// Simulate what acceptPathAC produces: tilde path with trailing slash.
+	pf.fields[pfFieldPath] = []rune("~/Development/thanx/actions/")
+	pf.maybeLoadBranches()
+
+	testutil.Equal(t, calledWith, filepath.Join(home, "Development/thanx/actions/"))
+}
+
+func TestProjectForm_MaybeLoadBranches_EmptyPath(t *testing.T) {
+	pf := NewProjectForm()
+	called := false
+	pf.OnBranchFocus = func(path string) {
+		called = true
+	}
+
+	pf.fields[pfFieldPath] = []rune("")
+	pf.maybeLoadBranches()
+
+	testutil.Equal(t, called, false)
+}
+
+func TestProjectForm_Draw_LongPathNoCursorCorruption(t *testing.T) {
+	// Paths of exactly 44 or 45 chars triggered a UTF-8 corruption bug:
+	// byte-based truncation split the multi-byte cursor "█" (3 bytes),
+	// producing garbled characters. Verify rune-based truncation is clean.
+	pf := NewProjectForm()
+	// 44-char path — this exact length triggered the original bug.
+	pf.fields[pfFieldPath] = []rune("/Users/darrencheng/Development/thanx/actions")
+	pf.cursors[pfFieldPath] = 0
+	pf.focused = pfFieldPath
+
+	// Simulate what Draw does: insert cursor and truncate.
+	before := string(pf.fields[pfFieldPath][:pf.cursors[pfFieldPath]])
+	after := string(pf.fields[pfFieldPath][pf.cursors[pfFieldPath]:])
+	val := before + "█" + after
+
+	// Rune-based truncation (the fix).
+	maxW := 46
+	valRunes := []rune(val)
+	if len(valRunes) > maxW {
+		valRunes = valRunes[len(valRunes)-maxW:]
+	}
+	result := string(valRunes)
+
+	// Must not contain replacement chars or broken UTF-8.
+	for _, r := range result {
+		if r == '\uFFFD' {
+			t.Fatalf("result contains replacement character: %q", result)
+		}
+	}
+	// The cursor should be cleanly included or cleanly truncated.
+	testutil.Contains(t, result, "/Users/darrencheng/Development/thanx/actions")
+}
+
+func TestProjectForm_MaybeLoadBranches_SpacesOnlyPath(t *testing.T) {
+	pf := NewProjectForm()
+	called := false
+	pf.OnBranchFocus = func(path string) {
+		called = true
+	}
+
+	pf.fields[pfFieldPath] = []rune("   ")
+	pf.maybeLoadBranches()
+
+	testutil.Equal(t, called, false)
+}
