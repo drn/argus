@@ -3170,6 +3170,8 @@ func (a *App) exitAgentView() {
 	a.worktreeDir = ""
 	// Restore the tab header when returning to root views.
 	a.root.ResizeItem(a.header, 1, 0)
+	a.header.SetTab(TabTasks)
+	a.statusbar.SetTab(TabTasks)
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()

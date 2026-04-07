@@ -319,6 +319,53 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	testutil.Equal(t, mode, modeTaskList)
 }
 
+// TestSmoke_ExitAgentViewResetsTab verifies that exiting agent view resets the
+// header tab to TabTasks. This is critical when the agent was entered from a
+// non-Tasks tab (e.g. ToDos): without the reset, the global key handler routes
+// up/down keys to the wrong tab's handler, breaking task list navigation.
+func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	task := &model.Task{
+		ID:        "tab-reset-1",
+		Name:      "tab reset test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Simulate entering agent view from the ToDos tab: set header to TabToDos,
+	// then enter agent view.
+	readUI(t, app.tapp, func() {
+		app.header.SetTab(TabToDos)
+		app.onTaskSelect(task)
+	})
+
+	var mode viewMode
+	readUI(t, app.tapp, func() { mode = app.mode })
+	testutil.Equal(t, mode, modeAgent)
+
+	// Exit agent view (Ctrl+D with no session).
+	readUI(t, app.tapp, func() {
+		app.exitAgentView()
+	})
+
+	var tab Tab
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		tab = app.header.ActiveTab()
+	})
+	testutil.Equal(t, mode, modeTaskList)
+	testutil.Equal(t, tab, TabTasks)
+}
+
 func TestSmoke_LinkPickerFocusRestore(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

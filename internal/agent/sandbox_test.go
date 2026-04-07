@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -350,7 +351,18 @@ func TestSandbox_EnforcesWriteRestrictions(t *testing.T) {
 	}
 
 	wtDir := t.TempDir()
-	outsideDir := t.TempDir()
+	// outsideDir must NOT be under any allowed write path in the sandbox profile.
+	// t.TempDir() is under /var/folders → /private/var/folders which is allowed,
+	// so we create a directory under $HOME that doesn't match any allow rule.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	outsideDir := filepath.Join(homeDir, ".argus-sandbox-test-blocked")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("create outsideDir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outsideDir) })
 	cfg := config.SandboxConfig{}
 
 	t.Run("allows write inside worktree", func(t *testing.T) {
