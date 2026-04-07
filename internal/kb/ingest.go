@@ -143,7 +143,14 @@ func RenderMarkdown(doc *Document) string {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString(tag)
+			// Quote tags that contain YAML-special characters.
+			if strings.ContainsAny(tag, ",]\"\\") {
+				sb.WriteString("\"")
+				sb.WriteString(strings.ReplaceAll(tag, "\"", "\\\""))
+				sb.WriteString("\"")
+			} else {
+				sb.WriteString(tag)
+			}
 		}
 		sb.WriteString("]\n")
 	}

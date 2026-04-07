@@ -429,11 +429,21 @@ func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {
 	if p.Path == "" || p.Content == "" {
 		return toolError(id, "path and content are required")
 	}
-	if filepath.IsAbs(p.Path) || strings.Contains(p.Path, "..") {
+
+	// Canonicalize and validate the path: must be vault-relative, no escaping.
+	cleanPath := filepath.Clean(p.Path)
+	if filepath.IsAbs(cleanPath) || strings.HasPrefix(cleanPath, "..") {
 		return toolError(id, "invalid path: must be vault-relative with no '..' components")
 	}
+	// After Clean, verify the resolved path stays within the vault.
+	if s.vaultPath != "" {
+		absPath := filepath.Join(s.vaultPath, cleanPath)
+		if !strings.HasPrefix(absPath, s.vaultPath+string(filepath.Separator)) && absPath != s.vaultPath {
+			return toolError(id, "invalid path: escapes vault directory")
+		}
+	}
 
-	doc := kb.ParseDocument(p.Path, p.Content)
+	doc := kb.ParseDocument(cleanPath, p.Content)
 	doc.IngestedAt = time.Now()
 	doc.ModifiedAt = time.Now()
 	if err := s.db.KBUpsert(&doc); err != nil {
@@ -442,7 +452,7 @@ func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {
 
 	// Write back to Obsidian vault so the file appears in the vault.
 	if s.vaultPath != "" {
-		absPath := filepath.Join(s.vaultPath, p.Path)
+		absPath := filepath.Join(s.vaultPath, cleanPath)
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 			log.Printf("[mcp] vault write-back mkdir failed: %v", err)
 		} else {
