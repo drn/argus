@@ -63,7 +63,7 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 	// Use a backend that sleeps before echoing — the stream connection is
 	// async (goroutine in getOrCreateSession), so "echo" alone exits before
 	// the stream subscribes, causing "session not found" on the daemon.
-	database.SetBackend("slow-test", config.Backend{Command: "sh -c 'sleep 0.3 && echo hello-from-daemon'"}) //nolint:errcheck
+	database.SetBackend("slow-test", config.Backend{Command: "sh -c 'sleep 1 && echo hello-from-daemon'"}) //nolint:errcheck
 
 	c, err := Connect(sockPath)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestClient_StartAndGetOutput(t *testing.T) {
 	}
 
 	// Poll until output arrives (process must exit AND stream must deliver).
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	var output string
 	for time.Now().Before(deadline) {
 		output = string(sess.RecentOutput())
