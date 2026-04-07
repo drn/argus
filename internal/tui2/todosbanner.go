@@ -21,6 +21,8 @@ var todoBannerGradient = [...]tcell.Color{
 	tcell.Color212, // pink
 }
 
+// todoBannerTextWidth is the rune count of each banner line, used for
+// centering math. Matches the bannerTextWidth convention in banner.go.
 const todoBannerTextWidth = 25
 
 const todoSubtitle = "N O T H I N G   T O   D O"
@@ -31,8 +33,8 @@ func todoBannerHeight() int {
 	return 12
 }
 
-// drawTodoBanner draws the "ZEN" ASCII banner centered at the given y offset.
-// Returns the number of rows consumed.
+// drawTodoBanner draws the To Dos tab empty-state banner centered at the
+// given y offset. Returns the number of rows consumed.
 func drawTodoBanner(screen tcell.Screen, x, y, width int) int {
 	if width <= 0 {
 		return 0

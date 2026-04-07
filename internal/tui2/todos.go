@@ -228,7 +228,7 @@ func (v *ToDosView) Draw(screen tcell.Screen) {
 
 	// Empty state: draw banner centered vertically.
 	bh := todoBannerHeight()
-	hintRow := 1
+	hintRow := 1 // single line for "No to-do notes found" hint
 	totalH := bh + hintRow
 	topPad := max((height-totalH)/2, 0)
 

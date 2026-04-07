@@ -51,7 +51,8 @@ func TestDrawTodoBanner_NarrowWidth(t *testing.T) {
 }
 
 func TestTodoBannerLineWidths(t *testing.T) {
-	// All lines must be exactly todoBannerTextWidth.
+	// All lines must have exactly todoBannerTextWidth runes so centering
+	// math in drawTodoBanner produces consistent padding.
 	for i, line := range todoBannerLines {
 		got := len([]rune(line))
 		testutil.Equal(t, got, todoBannerTextWidth)
