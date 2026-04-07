@@ -29,6 +29,8 @@
 - **MCP server echoes client's `protocolVersion`** — Codex workaround.
 - **All config file writes should be atomic** (temp + rename).
 - **KB Indexer started/stopped by daemon.** Start after MCP, stop before MCP shutdown.
+- **Incremental scan compares mtime at unix-second granularity.** Sub-second edits within the same second are missed until the next fsnotify event or daemon restart. The TOCTOU window between `KBMetadataMap()` and fsnotify watcher start means changes during scan are also deferred.
+- **`KBMetadataMap` must check `rows.Err()` after iteration.** A partial result without error check causes `IncrementalScan` to delete documents that weren't returned due to mid-stream DB errors.
 - **Claude Code MCP entries require `"type": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name).
 - **MCP config is injected globally only (`~/.claude.json`, `~/.codex/config.toml`), not per-worktree.** Per-worktree `.mcp.json`/`.codex/config.toml` injection was removed — it polluted git status in every project and was redundant since global config applies everywhere.
 
