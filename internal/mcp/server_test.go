@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,7 +71,7 @@ func testServer() *Server {
 			},
 		},
 	}
-	return New(db, 7742)
+	return New(db, 7742, "")
 }
 
 func doRequest(t *testing.T, s *Server, method string, params interface{}) *Response {
@@ -200,6 +202,45 @@ func TestToolsCall_KBIngest(t *testing.T) {
 
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+}
+
+func TestToolsCall_KBIngest_VaultWriteBack(t *testing.T) {
+	vaultDir := t.TempDir()
+	db := &mockDB{}
+	s := New(db, 7742, vaultDir)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_ingest",
+		Arguments: json.RawMessage(`{"path": "notes/test.md", "content": "---\ntitle: Vault Test\ntags: [alpha]\n---\n\nHello vault."}`),
+	})
+	testutil.Nil(t, resp.Error)
+
+	// Verify file was written to vault.
+	absPath := filepath.Join(vaultDir, "notes", "test.md")
+	data, err := os.ReadFile(absPath)
+	testutil.NoError(t, err)
+
+	content := string(data)
+	testutil.Contains(t, content, "title: \"Vault Test\"")
+	testutil.Contains(t, content, "tags: [alpha]")
+	testutil.Contains(t, content, "Hello vault.")
+}
+
+func TestToolsCall_KBIngest_NoVaultPath(t *testing.T) {
+	// When vaultPath is empty, no file should be written.
+	db := &mockDB{}
+	s := New(db, 7742, "")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_ingest",
+		Arguments: json.RawMessage(`{"path": "test.md", "content": "# Test\n\nBody."}`),
+	})
+	testutil.Nil(t, resp.Error)
+
+	// Document should be in DB.
+	if len(db.docs) == 0 {
+		t.Fatal("document not in DB")
 	}
 }
 

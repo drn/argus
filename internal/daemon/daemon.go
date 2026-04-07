@@ -150,7 +150,7 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	cfg := d.db.Config()
 	if cfg.KB.Enabled {
-		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort)
+		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
 			func(name, prompt, project, todoPath string) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)

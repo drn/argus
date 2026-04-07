@@ -1,6 +1,7 @@
 package kb
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,74 @@ func TestCountWords(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("countWords(%q): got %d, want %d", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestRenderMarkdown_WithTags(t *testing.T) {
+	doc := &Document{
+		Title: "Test Doc",
+		Tags:  []string{"go", "testing"},
+		Body:  "Some body content.",
+	}
+	got := RenderMarkdown(doc)
+
+	if !strings.Contains(got, "title: \"Test Doc\"") {
+		t.Errorf("missing title in frontmatter:\n%s", got)
+	}
+	if !strings.Contains(got, "tags: [go, testing]") {
+		t.Errorf("missing tags in frontmatter:\n%s", got)
+	}
+	if !strings.Contains(got, "Some body content.") {
+		t.Errorf("missing body:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("should end with newline")
+	}
+}
+
+func TestRenderMarkdown_NoTags(t *testing.T) {
+	doc := &Document{
+		Title: "No Tags",
+		Body:  "Body here.\n",
+	}
+	got := RenderMarkdown(doc)
+
+	if strings.Contains(got, "tags:") {
+		t.Errorf("should not contain tags line:\n%s", got)
+	}
+	if !strings.Contains(got, "title: \"No Tags\"") {
+		t.Errorf("missing title:\n%s", got)
+	}
+}
+
+func TestRenderMarkdown_QuotesInTitle(t *testing.T) {
+	doc := &Document{
+		Title: `He said "hello"`,
+		Body:  "Body.",
+	}
+	got := RenderMarkdown(doc)
+
+	if !strings.Contains(got, `title: "He said \"hello\""`) {
+		t.Errorf("quotes not escaped:\n%s", got)
+	}
+}
+
+func TestRenderMarkdown_Roundtrip(t *testing.T) {
+	doc := &Document{
+		Title: "Roundtrip Test",
+		Tags:  []string{"alpha", "beta"},
+		Body:  "The actual content.\n\nWith paragraphs.\n",
+	}
+	md := RenderMarkdown(doc)
+	parsed := ParseDocument("test.md", md)
+
+	if parsed.Title != doc.Title {
+		t.Errorf("title: got %q, want %q", parsed.Title, doc.Title)
+	}
+	if len(parsed.Tags) != len(doc.Tags) {
+		t.Errorf("tags count: got %d, want %d", len(parsed.Tags), len(doc.Tags))
+	}
+	if strings.TrimRight(parsed.Body, "\n") != strings.TrimRight(doc.Body, "\n") {
+		t.Errorf("body: got %q, want %q", parsed.Body, doc.Body)
 	}
 }

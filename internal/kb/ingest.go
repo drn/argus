@@ -130,6 +130,32 @@ func isWordChar(r rune) bool {
 	return utf8.ValidRune(r) && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r > 127)
 }
 
+// RenderMarkdown converts a Document back into markdown with YAML frontmatter.
+func RenderMarkdown(doc *Document) string {
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("title: \"")
+	sb.WriteString(strings.ReplaceAll(doc.Title, "\"", "\\\""))
+	sb.WriteString("\"\n")
+	if len(doc.Tags) > 0 {
+		sb.WriteString("tags: [")
+		for i, tag := range doc.Tags {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(tag)
+		}
+		sb.WriteString("]\n")
+	}
+	sb.WriteString("---\n\n")
+	sb.WriteString(doc.Body)
+	// Ensure trailing newline.
+	if len(doc.Body) > 0 && !strings.HasSuffix(doc.Body, "\n") {
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
 // IngestFile reads content and upserts it into the store under the given path.
 func IngestFile(store KBStore, path, content string) error {
 	doc := ParseDocument(path, content)
