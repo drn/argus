@@ -1624,7 +1624,7 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 
 **Key entities**: `ntFieldBranch`, `handleBranchKey`, `onProjectChanged`, `SetBranchOptions`, `updateBranchAC`, `drawBranchField`, `drawBranchAC`.
 
-**Gotchas**: (1) Field indices shifted — `ntFieldBranch=1`, `ntFieldBackend=2`, `ntFieldPrompt=3`. Tab cycling uses `ntFieldCount=4`. (2) `projACAccept()` must call `onProjectChanged()` to reset the branch field when a project is selected from the autocomplete dropdown. (3) `onProjectChanged()` clears `branchACAll` and resets `branchPath` to force a fresh branch load. (4) Initial branch load is triggered in `onNewTask()` via `maybeLoadBranches()` after wiring `OnBranchFocus`. (5) Modal height increased by 1 base row (branch field) plus dynamic `branchACRows`.
+**Gotchas**: (1) Field indices shifted — `ntFieldBranch=1`, `ntFieldBackend=2`, `ntFieldPrompt=3`. Tab cycling uses `ntFieldCount=4`. (2) `projACAccept()` must call `onProjectChanged()` to reset the branch field when a project is selected from the autocomplete dropdown. (3) `onProjectChanged()` clears `branchACAll` and resets `branchPath` to force a fresh branch load. It also calls `loadSkills()` to reload project-specific skill autocomplete — all project-change paths (Enter, Down, AC accept) go through `onProjectChanged`. (4) Initial branch load is triggered in `onNewTask()` via `maybeLoadBranches()` after wiring `OnBranchFocus`. (5) Modal height increased by 1 base row (branch field) plus dynamic `branchACRows`.
 
 ## Settings: Delete Project — 2026-04-06
 

@@ -214,6 +214,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **PTY session logs contain `\u00a0` (non-breaking space) that must be normalized.** Claude Code uses NBSP in tool result formatting. Without normalization, `\s+` patterns may not match as expected.
 - **Long terminal lines (>120 bytes) need inline noise stripping, not just per-line filtering.** VT cell rendering concatenates the content area, status bar, separators, and prompt onto a single line with whitespace padding. `cleanLongLine` removes these inline patterns before per-line `isNoiseLine` runs.
 - **Modal typeahead AC must NOT be initialized at construction when input is pre-filled.** Calling `updateProjectAC()` in the constructor opens the dropdown immediately (the pre-filled name matches itself). Then Enter is consumed by `projACAccept` instead of confirming the modal, and Escape closes the AC instead of canceling. AC should only open in response to user typing — same pattern as `NewTaskForm`.
+- **`onProjectChanged()` must call `loadSkills()`.** Skill autocomplete depends on the selected project's `.claude/skills/` directory. Without reloading in `onProjectChanged`, the Enter and Down-arrow non-AC paths leave stale skills cached from the previous project. `projACAccept` delegates to `onProjectChanged` — don't duplicate the call.
 
 ### MCP Task Tools
 
