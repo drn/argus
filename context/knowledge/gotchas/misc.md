@@ -33,6 +33,8 @@
 - **`KBMetadataMap` must check `rows.Err()` after iteration.** A partial result without error check causes `IncrementalScan` to delete documents that weren't returned due to mid-stream DB errors.
 - **Claude Code MCP entries require `"type": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name).
 - **MCP config is injected globally only (`~/.claude.json`, `~/.codex/config.toml`), not per-worktree.** Per-worktree `.mcp.json`/`.codex/config.toml` injection was removed — it polluted git status in every project and was redundant since global config applies everywhere.
+- **MCP `instructions` field in `InitializeResult` is truncated at ~2KB by Claude Code.** Put the most critical rules first. The `kb_ingest` tool description intentionally duplicates key rules from `kbInstructions` because not all MCP clients surface server instructions at tool-call time.
+- **`toolDefs` slice must be copied before append in `handleToolsList`.** The package-level `var` could be corrupted if `append` reuses its backing array when adding task tools.
 
 ## Todo-Task Association
 
