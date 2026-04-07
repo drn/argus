@@ -966,7 +966,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	// Elapsed time
 	elapsed := task.ElapsedString()
 
-	// Layout: "    ● name                    3m"
+	// Layout: "    ● name  branch              3m"
 	prefix := "    "
 	col := x
 	drawText(screen, col, y, len(prefix), prefix, StyleDefault)
@@ -975,14 +975,9 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
 	col += 2 // status char + space
 
-	// Branch label (shown dimmed after name).
-	branch := ""
-	if task.Branch != "" {
-		branch = "  " + task.Branch
-	}
-
+	// Name gets priority; branch fills remaining space after name.
 	nameStr := task.Name
-	maxNameW := w - (col - x) - len(elapsed) - len(branch) - 2
+	maxNameW := w - (col - x) - len(elapsed) - 2 // space for name (ignoring branch)
 	if maxNameW < 0 {
 		maxNameW = 0
 	}
@@ -992,16 +987,20 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	drawText(screen, col, y, len(nameStr), nameStr, nameStyle)
 	col += len(nameStr)
 
-	// Draw branch after name.
-	if branch != "" {
+	// Branch label (dimmed, truncated to remaining space).
+	if task.Branch != "" {
+		branch := "  " + task.Branch
 		maxBranchW := w - (col - x) - len(elapsed) - 2
-		branchStr := branch
-		if len(branchStr) > maxBranchW {
-			branchStr = branchStr[:maxBranchW]
-		}
 		if maxBranchW > 0 {
-			drawText(screen, col, y, len(branchStr), branchStr, StyleDimmed)
-			col += len(branchStr)
+			if len(branch) > maxBranchW {
+				branch = branch[:maxBranchW]
+			}
+			branchStyle := StyleDimmed
+			if cursor {
+				branchStyle = StyleDimmed.Background(tcell.ColorDefault)
+			}
+			drawText(screen, col, y, len(branch), branch, branchStyle)
+			col += len(branch)
 		}
 	}
 

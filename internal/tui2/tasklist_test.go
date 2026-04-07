@@ -1428,6 +1428,35 @@ func TestDrawTaskRow_BranchDisplayed(t *testing.T) {
 	testutil.Contains(t, line, "argus/fix-bug")
 }
 
+func TestDrawTaskRow_NarrowTerminal(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(20, 5)
+
+	tl := NewTaskListView()
+	task := &model.Task{
+		ID:     "1",
+		Name:   "fix-bug",
+		Branch: "argus/very-long-branch-name-that-exceeds-width",
+		Status: model.StatusPending,
+	}
+
+	// Must not panic on narrow terminal.
+	tl.drawTaskRow(screen, 0, 0, 20, task, false)
+	screen.Show()
+
+	var line string
+	for col := 0; col < 20; col++ {
+		r, _, _, _ := screen.GetContent(col, 0)
+		line += string(r)
+	}
+
+	// Name should still appear (possibly truncated).
+	testutil.Contains(t, line, "fix")
+}
+
 func TestDrawTaskRow_NoBranch(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
