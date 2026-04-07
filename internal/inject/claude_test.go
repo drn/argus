@@ -156,7 +156,7 @@ func TestInjectClaudeJSON_UpgradesOldFormat(t *testing.T) {
 	mcpServers := config["mcpServers"].(map[string]interface{})
 	entry := mcpServers["argus-kb"].(map[string]interface{})
 	if entry["type"] != "http" {
-		t.Errorf("old format not upgraded: transport=%v, want http", entry["type"])
+		t.Errorf("old format not upgraded: type=%v, want http", entry["type"])
 	}
 }
 
@@ -183,7 +183,7 @@ func TestInjectMCPJSON_UpgradesOldFormat(t *testing.T) {
 	mcpServers := config["mcpServers"].(map[string]interface{})
 	entry := mcpServers["argus-kb"].(map[string]interface{})
 	if entry["type"] != "http" {
-		t.Errorf("old format not upgraded: transport=%v, want http", entry["type"])
+		t.Errorf("old format not upgraded: type=%v, want http", entry["type"])
 	}
 }
 
