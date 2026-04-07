@@ -1308,6 +1308,41 @@ func TestDB_UpdateAllFields(t *testing.T) {
 	}
 }
 
+func TestDB_SandboxedRoundTrip(t *testing.T) {
+	d := testDB(t)
+
+	t.Run("persisted on Add", func(t *testing.T) {
+		task := &model.Task{Name: "sandboxed task", Sandboxed: true}
+		testutil.NoError(t, d.Add(task))
+
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Sandboxed, true)
+	})
+
+	t.Run("defaults to false", func(t *testing.T) {
+		task := &model.Task{Name: "unsandboxed task"}
+		testutil.NoError(t, d.Add(task))
+
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Sandboxed, false)
+	})
+
+	t.Run("updated via Update", func(t *testing.T) {
+		task := &model.Task{Name: "toggle sandbox"}
+		testutil.NoError(t, d.Add(task))
+		testutil.Equal(t, task.Sandboxed, false)
+
+		task.Sandboxed = true
+		testutil.NoError(t, d.Update(task))
+
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Sandboxed, true)
+	})
+}
+
 func TestDB_PRURL(t *testing.T) {
 	d := testDB(t)
 

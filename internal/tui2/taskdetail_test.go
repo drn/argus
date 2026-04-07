@@ -47,7 +47,7 @@ func TestTaskDetailPanel_DrawWithTask(t *testing.T) {
 	}
 	task.SetStatus(model.StatusInProgress)
 
-	td.SetTask(task, true, false)
+	td.SetTask(task, true)
 	td.Draw(screen)
 	// Should render without panic
 }
@@ -96,7 +96,8 @@ func TestTaskDetailPanel_SandboxIndicator(t *testing.T) {
 	}
 
 	t.Run("sandboxed", func(t *testing.T) {
-		td.SetTask(task, false, true)
+		task.Sandboxed = true
+		td.SetTask(task, false)
 		td.Draw(screen)
 		content := readScreen()
 		testutil.Contains(t, content, "Sandbox")
@@ -104,7 +105,8 @@ func TestTaskDetailPanel_SandboxIndicator(t *testing.T) {
 	})
 
 	t.Run("not sandboxed", func(t *testing.T) {
-		td.SetTask(task, false, false)
+		task.Sandboxed = false
+		td.SetTask(task, false)
 		td.Draw(screen)
 		content := readScreen()
 		testutil.Contains(t, content, "Sandbox")

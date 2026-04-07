@@ -63,6 +63,9 @@ func (d *DB) createTables() error {
 	// Add archived column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
+	// Add sandboxed column to existing tasks tables.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+
 	// Add todo_path column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN todo_path TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	// Index for TasksByTodoPath queries (called on every tick).

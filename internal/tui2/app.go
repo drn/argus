@@ -975,10 +975,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		t := a.tasklist.SelectedTask()
 		if t != nil {
 			a.taskPreview.SetTaskID(t.ID)
-			a.taskDetail.SetTask(t, a.isTaskRunning(t.ID), a.isTaskSandboxed(t))
+			a.taskDetail.SetTask(t, a.isTaskRunning(t.ID))
 		} else {
 			a.taskPreview.SetTaskID("")
-			a.taskDetail.SetTask(nil, false, false)
+			a.taskDetail.SetTask(nil, false)
 		}
 	}
 }
@@ -1692,12 +1692,12 @@ func (a *App) switchTab(t Tab) {
 func (a *App) onTaskCursorChange(task *model.Task) {
 	if task == nil {
 		a.taskPreview.SetTaskID("")
-		a.taskDetail.SetTask(nil, false, false)
+		a.taskDetail.SetTask(nil, false)
 		a.taskGitPanel.Clear()
 		return
 	}
 	a.taskPreview.SetTaskID(task.ID)
-	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID), a.isTaskSandboxed(task))
+	a.taskDetail.SetTask(task, a.isTaskRunning(task.ID))
 	// Kick off preview fetch immediately (don't wait for next tick).
 	go func() {
 		a.refreshPreview(task.ID)
@@ -1798,8 +1798,11 @@ func (a *App) isTaskRunning(taskID string) bool {
 	return false
 }
 
-// isTaskSandboxed returns whether the given task would run sandboxed.
-func (a *App) isTaskSandboxed(task *model.Task) bool {
+// resolveSandboxed returns whether the given task would run sandboxed
+// based on the current config. Called at task creation time to persist
+// the sandbox state on the task, so the display reflects the setting
+// that was active when the task was launched (not the current setting).
+func (a *App) resolveSandboxed(task *model.Task) bool {
 	if task == nil {
 		return false
 	}
@@ -1933,6 +1936,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			task.Branch = branchName
 		}
 
+		task.Sandboxed = a.resolveSandboxed(task)
 		a.db.Add(task)
 		uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
 
@@ -2141,6 +2145,7 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 			task.Branch = branchName
 		}
 
+		task.Sandboxed = a.resolveSandboxed(task)
 		a.db.Add(task)
 		uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
 
@@ -2237,6 +2242,7 @@ func (a *App) startReviewTask(pr *github.PR) {
 			Backend: backend,
 			PRURL:   prURL,
 		}
+		task.Sandboxed = a.resolveSandboxed(task)
 		if err := a.db.Add(task); err != nil {
 			uxlog.Log("[reviews] failed to persist review task: %v", err)
 			a.statusbar.SetError("Failed to create task: " + err.Error())
@@ -2278,6 +2284,7 @@ func (a *App) startReviewTask(pr *github.PR) {
 				Branch:   branchName,
 				Worktree: wtPath,
 			}
+			task.Sandboxed = a.resolveSandboxed(task)
 			if err := a.db.Add(task); err != nil {
 				uxlog.Log("[reviews] failed to persist review task: %v — cleaning up worktree", err)
 				a.statusbar.SetError("Failed to create task: " + err.Error())
@@ -2738,6 +2745,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 				Worktree: wtPath,
 			}
 
+			task.Sandboxed = a.resolveSandboxed(task)
 			if err := a.db.Add(task); err != nil {
 				uxlog.Log("[fork] db.Add failed: %v — cleaning up worktree", err)
 				a.statusbar.SetError("Fork failed: " + err.Error())

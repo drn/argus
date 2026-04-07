@@ -44,6 +44,11 @@ func HeadlessCreateTask(database *db.DB, runner *agent.Runner, name, prompt, pro
 		TodoPath: todoPath,
 	}
 
+	// Persist sandbox state at creation time so the display reflects the
+	// setting active when the task was launched, not the current setting.
+	sb := agent.ResolveSandboxConfig(task, cfg)
+	task.Sandboxed = sb.Enabled && agent.IsSandboxAvailable()
+
 	if err := database.Add(task); err != nil {
 		return nil, fmt.Errorf("db add: %w", err)
 	}
