@@ -41,7 +41,7 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 	row := y
 
 	// Top accent line.
-	drawFadingAccent(screen, x, row, width)
+	drawFadingAccent(screen, x, row, width, bannerTextWidth)
 	row++
 	row++ // blank line
 
@@ -57,7 +57,7 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 	}
 
 	// Gradient underline beneath banner.
-	drawGradientUnderline(screen, x, row, width)
+	drawGradientUnderline(screen, x, row, width, bannerTextWidth, bannerGradient[:])
 	row++
 	row++ // blank line
 
@@ -71,15 +71,15 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 	row++ // blank line
 
 	// Bottom accent line.
-	drawFadingAccent(screen, x, row, width)
+	drawFadingAccent(screen, x, row, width, bannerTextWidth)
 	row++
 
 	return row - y
 }
 
 // drawFadingAccent draws two fading dash lines from center with a hexagon.
-func drawFadingAccent(screen tcell.Screen, x, y, width int) {
-	sideLen := max((width-bannerTextWidth)/2-2, 3)
+func drawFadingAccent(screen tcell.Screen, x, y, width, textWidth int) {
+	sideLen := max((width-textWidth)/2-2, 3)
 
 	leftPattern := fadeDashes(sideLen, false)
 	rightPattern := fadeDashes(sideLen, true)
@@ -109,20 +109,20 @@ func drawFadingAccent(screen tcell.Screen, x, y, width int) {
 	drawGradientChars(screen, col, y, rightPattern, rgbVal{255, 135, 215}, rgbVal{98, 98, 98})
 }
 
-// drawGradientUnderline draws a centered underline with the banner gradient colors.
-func drawGradientUnderline(screen tcell.Screen, x, y, width int) {
-	lineLen := bannerTextWidth
-	segLen := max(lineLen/len(bannerGradient), 1)
+// drawGradientUnderline draws a centered underline with the given gradient colors.
+func drawGradientUnderline(screen tcell.Screen, x, y, width, textWidth int, gradient []tcell.Color) {
+	lineLen := textWidth
+	segLen := max(lineLen/len(gradient), 1)
 	padLeft := (width - lineLen) / 2
 	if padLeft < 0 {
 		padLeft = 0
 	}
 
 	col := x + padLeft
-	for i, c := range bannerGradient {
+	for i, c := range gradient {
 		n := segLen
-		if i == len(bannerGradient)-1 {
-			n = lineLen - segLen*(len(bannerGradient)-1)
+		if i == len(gradient)-1 {
+			n = lineLen - segLen*(len(gradient)-1)
 		}
 		style := tcell.StyleDefault.Foreground(c)
 		for range n {
