@@ -1287,6 +1287,21 @@ func TestNewTaskForm_BranchTypeahead(t *testing.T) {
 		}
 	})
 
+	t.Run("SetBranchOptions does not open AC when branch field not focused", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		// Focus is on prompt (default), not branch.
+		// Pre-filled branchInput is "origin/main" which matches branches.
+		f.SetBranchOptions([]string{"origin/main", "origin/develop"})
+
+		if f.branchACOpen {
+			t.Error("branch AC should NOT open when branch field is not focused")
+		}
+		// Matches should still be computed for when the field gains focus.
+		if len(f.branchACMatches) != 1 {
+			t.Errorf("branchACMatches = %d, want 1", len(f.branchACMatches))
+		}
+	})
+
 	t.Run("escape closes branch AC first", func(t *testing.T) {
 		f := NewNewTaskForm(projects, "alpha", backends, "b")
 		f.branchACOpen = true

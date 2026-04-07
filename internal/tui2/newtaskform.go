@@ -329,7 +329,7 @@ func (f *NewTaskForm) updateBranchAC() {
 			f.branchACMatches = append(f.branchACMatches, name)
 		}
 	}
-	f.branchACOpen = len(f.branchACMatches) > 0
+	f.branchACOpen = len(f.branchACMatches) > 0 && f.focused == ntFieldBranch
 	if f.branchACIdx >= len(f.branchACMatches) {
 		f.branchACIdx = 0
 		f.branchACScroll = 0
