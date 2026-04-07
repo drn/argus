@@ -962,7 +962,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	// Elapsed time
 	elapsed := task.ElapsedString()
 
-	// Layout: "    ● name  branch              3m"
+	// Layout: "    ● name              3m"
 	prefix := "    "
 	col := x
 	drawText(screen, col, y, len(prefix), prefix, StyleDefault)
@@ -971,9 +971,9 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
 	col += 2 // status char + space
 
-	// Name gets priority; branch fills remaining space after name.
+	// Name gets priority; elapsed is right-aligned.
 	nameStr := task.Name
-	maxNameW := w - (col - x) - len(elapsed) - 2 // space for name (ignoring branch)
+	maxNameW := w - (col - x) - len(elapsed) - 2
 	if maxNameW < 0 {
 		maxNameW = 0
 	}
@@ -982,23 +982,6 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	}
 	drawText(screen, col, y, len(nameStr), nameStr, nameStyle)
 	col += len(nameStr)
-
-	// Branch label (dimmed, truncated to remaining space).
-	if task.Branch != "" {
-		branch := "  " + task.Branch
-		maxBranchW := w - (col - x) - len(elapsed) - 2
-		if maxBranchW > 0 {
-			if len(branch) > maxBranchW {
-				branch = branch[:maxBranchW]
-			}
-			branchStyle := StyleDimmed
-			if cursor {
-				branchStyle = StyleDimmed.Background(tcell.ColorDefault)
-			}
-			drawText(screen, col, y, len(branch), branch, branchStyle)
-			col += len(branch)
-		}
-	}
 
 	// Right-align elapsed time. elapsedCol also limits cursor fill below.
 	elapsedCol := -1
