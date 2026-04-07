@@ -1647,3 +1647,11 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Key entities**: `pathACMatches`, `pathACIdx`, `pathACOpen`, `handlePathACKey`, `updatePathAC`, `acceptPathAC`, `closePathAC`, `drawPathAC`, `dirCompletions` (shared), `pfMaxACVisible`.
 
 **Gotchas**: (1) `dirCompletions` is a shared pure function in `quickaddform.go` used by both `QuickAddForm` and `ProjectForm` — keep them in sync. (2) `os.ReadDir` runs synchronously on the tview main goroutine on each keystroke — acceptable for local filesystems but may lag on NFS/iCloud. (3) `acceptPathAC` calls `closePathAC()` then `updatePathAC()` to re-open the dropdown if the accepted directory has sub-dirs. (4) AC dropdown dynamically adjusts form height via `acRows` + `extraOffset` pattern — fields below the Path field shift down. (5) `handlePathACKey` intercepts Escape/Tab/Enter/Up/Down only when AC is relevant (open or triggerable), falling through to normal form handling otherwise.
+
+## 2026-04-06 — Branch AC Focus Guard Fix
+
+**Bug**: Branch autocomplete dropdown appeared on new task form open despite the branch field not being focused. `SetBranchOptions` (async callback after fetching remote branches) called `updateBranchAC()`, which matched the pre-filled branch text (e.g., "origin/master") against the options and set `branchACOpen = true`.
+
+**Fix**: `updateBranchAC()` now gates `branchACOpen` on `f.focused == ntFieldBranch`. Matches are still computed regardless of focus so the dropdown opens immediately when the user types.
+
+**Gotcha**: Any `update*AC()` function that sets `*ACOpen = true` must verify the corresponding field is focused. This is a generalization of the project AC constructor bug — async data arrival is a second trigger path.
