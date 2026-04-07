@@ -128,7 +128,7 @@ Non-obvious invariants and gotchas are in `context/knowledge/gotchas/`. **Read t
 - Development rules (testing, logging, documentation) — put in dedicated sections of CLAUDE.md
 - Implementation details that are clear from reading the function
 
-**Format:** Each entry is 1-2 sentences: the rule in bold, then minimal context. Add to the appropriate topic file in `context/knowledge/gotchas/`. If no file fits, add to `gotchas/misc.md`.
+**Format:** Each entry is 1-2 sentences: the rule in bold, then minimal context. Add to the appropriate topic file in `context/knowledge/gotchas/`. If no file fits, add to `gotchas/misc.md`. If a section in `misc.md` grows beyond 10 bullets, promote it to its own file.
 
 ### Documentation Requirements
 

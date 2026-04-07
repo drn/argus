@@ -10,4 +10,4 @@
 - **In diff mode: Up/Down switch files, j/k scroll diff.**
 - **Cmd+Up/Down navigates between tasks in agent view** via `ModCtrl|ModAlt` check.
 - **tcell has no `KeyCtrlLeft`/`KeyCtrlRight`.** Check `event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0`.
-- **Settings `d` key is context-dependent: project rows -> delete (with confirmation), backend rows -> set default.** `handleDeleteOrDefault` dispatches on `currentSection()`. Deleting a project orphans its tasks (no FK constraint) — the confirmation modal counts tasks via `a.tasks` and warns the user.
+- **Settings `d` key is context-dependent: project rows → delete (with confirmation), backend rows → set default.** `handleDeleteOrDefault` dispatches on `currentSection()`. Deleting a project orphans its tasks (no FK constraint) — the confirmation modal counts tasks via `a.tasks` and warns the user.
