@@ -1245,7 +1245,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlP:
 		a.agentPane.OpenPR()
 		return nil
-	case tcell.KeyCtrlL:
+	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
 		return nil
 	case tcell.KeyLeft:
