@@ -1296,7 +1296,7 @@ func TestNewTaskForm_BranchTypeahead(t *testing.T) {
 		if f.branchACOpen {
 			t.Error("branch AC should NOT open when branch field is not focused")
 		}
-		// Matches should still be computed for when the field gains focus.
+		// Matches are pre-computed so AC opens immediately when user types.
 		if len(f.branchACMatches) != 1 {
 			t.Errorf("branchACMatches = %d, want 1", len(f.branchACMatches))
 		}
