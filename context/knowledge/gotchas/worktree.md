@@ -1,0 +1,10 @@
+## Worktree Management
+
+- **Orphan sweep must use `App.wtRoot`, never hardcode `~/.argus/worktrees/`.** Tests MUST set `app.wtRoot = t.TempDir()` — without this, `sweepOrphanedWorktrees` scans real worktrees and deletes them (including running agents' working directories).
+- **`testGuard` prevents tests from operating on real `~/.argus/` worktrees (defense-in-depth).** `removeWorktree` and `removeWorktreeAndBranch` call `testGuard(path)` which detects `go test` (via `os.Args[0]` suffix `.test`) and blocks operations on real `~/.argus/` paths. Last-resort safety net — tests should still use `t.TempDir()` correctly.
+- **`CreateWorktree` must prune stale refs first.** `git worktree prune` runs at the top (best-effort). Without it, a deleted worktree directory leaves a stale entry that locks the branch, causing exit status 255. After cmd failure, check `os.Stat(wtDir)` for partial success from post-checkout hook failures.
+- **Worktree creation must succeed before task persistence.** Never `db.Add(task)` without a valid worktree. `CreateWorktree` returns `(wtPath, finalName, branchName, err)` — store `branchName` on `task.Branch` so cleanup deletes the correct `argus/*` branch.
+- **`removeWorktree` must validate paths before `os.RemoveAll`.** The `isWorktreeSubdir` guard ensures the path contains `/.argus/worktrees/` or `/.claude/worktrees/` before any removal.
+- **Worktree cleanup must always `os.RemoveAll` after `git worktree remove`.** The git command can exit 0 but leave behind empty dirs. Run `git worktree prune` before `git branch -D` — git refuses to delete branches with stale worktree references.
+- **`git worktree add` requires a valid local ref or remote-tracking ref.** `resolveStartPoint()` checks `git rev-parse --verify` and falls back to `upstream/<branch>` then `origin/<branch>`.
+- **Task names must be sanitized before branch/dir creation.** `sanitizeBranchName()` strips git-invalid characters. Without this, characters like `?` cause exit status 255.

@@ -111,13 +111,13 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 
 ## Key Learnings
 
-@context/knowledge/key-learnings.md
+Non-obvious invariants and gotchas are in `context/knowledge/gotchas/`. **Read the relevant file when working in that area** — they are NOT loaded automatically to save context window space.
+
+@context/knowledge/index.md
 
 ### Maintaining Key Learnings
 
-`context/knowledge/key-learnings.md` captures **non-obvious invariants and gotchas** — things an agent can't easily discover by reading the code. It is imported into this file via `@` reference, so its size directly impacts context window usage.
-
-**What belongs in key-learnings:**
+**What belongs in gotcha files:**
 - Invariants that caused bugs when violated (e.g., "must do X before Y or Z breaks")
 - Non-obvious ordering requirements, race conditions, platform quirks
 - Gotchas where the obvious approach silently fails
@@ -128,13 +128,12 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 - Development rules (testing, logging, documentation) — put in dedicated sections of CLAUDE.md
 - Implementation details that are clear from reading the function
 
-**Format:** Each entry is 1-2 sentences: the rule in bold, then minimal context. Group under topic headers. Target: under 15k chars total.
+**Format:** Each entry is 1-2 sentences: the rule in bold, then minimal context. Add to the appropriate topic file in `context/knowledge/gotchas/`. If no file fits, add to `gotchas/misc.md`.
 
 ### Documentation Requirements
 
-- **Every new feature must be documented in `context/knowledge/key-learnings.md` before the session ends** — but only the non-obvious gotchas, not a description of what the feature does.
-- **Update `context/knowledge/code-quality.md`** with a dated section summarizing the feature's data model, flow, and any gotchas. Update `context/knowledge/index.md` to include new key entities.
-- **What to document in key-learnings:** invariants that caused bugs, ordering requirements, platform quirks, silent failure modes. NOT: what the code does, feature descriptions, or UI layout.
+- **Every new feature must have its gotchas documented** in the appropriate `context/knowledge/gotchas/*.md` file before the session ends — but only the non-obvious gotchas, not a description of what the feature does.
+- **What to document:** invariants that caused bugs, ordering requirements, platform quirks, silent failure modes. NOT: what the code does, feature descriptions, or UI layout.
 - **Update README.md when adding user-facing features.** New features, configuration options, API endpoints, and keybindings must be documented in the appropriate README section before the session ends. If a feature changes how users interact with Argus, the README must reflect it.
 
 ### Logging Requirements
