@@ -788,6 +788,10 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 			f.acOpen = false
 			return
 		}
+		if f.resolveProject() == "" {
+			f.errMsg = "Unknown project"
+			return
+		}
 		if len(f.prompt) > 0 {
 			f.done = true
 		}

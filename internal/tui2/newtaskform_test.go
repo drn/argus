@@ -171,6 +171,30 @@ func TestNewTaskForm_EnterSubmits(t *testing.T) {
 	}
 }
 
+func TestNewTaskForm_EnterUnknownProjectNoSubmit(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}},
+		"", // no default project
+		map[string]config.Backend{"b": {}},
+		"b",
+	)
+
+	handler := f.InputHandler()
+	// Type a project name that doesn't exist
+	f.projInput = []rune("nonexistent")
+	f.projCursorPos = len(f.projInput)
+	// Focus prompt and type something
+	f.focused = ntFieldPrompt
+	handler(tcell.NewEventKey(tcell.KeyRune, 'x', 0), func(p tview.Primitive) {})
+	// Submit
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
+
+	if f.Done() {
+		t.Error("enter with unknown project should not submit")
+	}
+	testutil.Contains(t, f.errMsg, "Unknown project")
+}
+
 func TestNewTaskForm_EnterEmptyNoSubmit(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}},
