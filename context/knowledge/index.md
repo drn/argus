@@ -9,7 +9,7 @@ Non-obvious invariants and gotchas, split by topic. Read the relevant file when 
 | [gotchas/ui-threading.md](gotchas/ui-threading.md) | tview thread safety, tick goroutine rules, paste/input batching | 10 |
 | [gotchas/sandbox.md](gotchas/sandbox.md) | macOS sandbox-exec SBPL profiles, symlink resolution, allowed paths | 12 |
 | [gotchas/worktree.md](gotchas/worktree.md) | Worktree creation ordering, cleanup, path validation, stale ref pruning | 8 |
-| [gotchas/keybindings.md](gotchas/keybindings.md) | Key routing, ctrl sequences, tcell modifier quirks, agent view navigation | 11 |
+| [gotchas/keybindings.md](gotchas/keybindings.md) | Key routing, ctrl sequences, tcell modifier quirks, agent view navigation | 12 |
 | [gotchas/tasklist-ui.md](gotchas/tasklist-ui.md) | Task list cursor, modals, focus guards, filter, archive, spinner | 24 |
 | [gotchas/misc.md](gotchas/misc.md) | DB patterns, Go idioms, Codex, MCP, todos, PRs, file explorer, vault, quick-add | 60 |
 

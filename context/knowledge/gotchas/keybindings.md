@@ -10,4 +10,5 @@
 - **In diff mode: Up/Down switch files, j/k scroll diff.**
 - **Cmd+Up/Down navigates between tasks in agent view** via `ModCtrl|ModAlt` check.
 - **tcell has no `KeyCtrlLeft`/`KeyCtrlRight`.** Check `event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0`.
+- **`exitAgentView` must reset `header.SetTab(TabTasks)` and `statusbar.SetTab(TabTasks)`.** The global key handler routes non-agent keys based on `header.ActiveTab()` — if the tab isn't reset, up/down keys get routed to the wrong tab's handler (e.g., ToDos) instead of the task list.
 - **Settings `d` key is context-dependent: project rows → delete (with confirmation), backend rows → set default.** `handleDeleteOrDefault` dispatches on `currentSection()`. Deleting a project orphans its tasks (no FK constraint) — the confirmation modal counts tasks via `a.tasks` and warns the user.
