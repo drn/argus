@@ -816,10 +816,9 @@ func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 }
 
 // projectStatusIcon returns the aggregated status icon and style for a project's tasks.
-// Priority: any in_review > in_progress alone > all complete > mixed > all pending.
+// Priority: any actively running > any in_review > idle in_progress > all complete > mixed > all pending.
 func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
-	var hasInProgress, hasInReview, hasPending, hasComplete bool
-	allInProgressIdle := true
+	var hasActivelyRunning, hasInProgress, hasInReview, hasPending, hasComplete bool
 
 	for _, t := range tasks {
 		switch t.Status {
@@ -830,7 +829,7 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 			} else {
 				hasInProgress = true
 				if tl.running[t.ID] && !tl.idle[t.ID] {
-					allInProgressIdle = false
+					hasActivelyRunning = true
 				}
 			}
 		case model.StatusInReview:
@@ -843,16 +842,13 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	}
 
 	switch {
-	case hasInProgress:
-		if hasInReview {
-			return IconMoonStars, StyleInReview
-		}
-		if allInProgressIdle {
-			return IconMoonOutline, tcell.StyleDefault.Foreground(ColorInReview)
-		}
+	case hasActivelyRunning:
 		return model.SpinnerFrame(tl.animFrame), StyleInProgress
 	case hasInReview:
 		return IconMoonStars, StyleInReview
+	case hasInProgress:
+		// All in-progress tasks are idle (waiting for input).
+		return IconMoonOutline, tcell.StyleDefault.Foreground(ColorInReview)
 	case hasComplete && !hasPending:
 		return '✓', StyleComplete
 	case hasComplete && hasPending:
