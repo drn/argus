@@ -7,13 +7,14 @@ import (
 	"testing"
 )
 
-func TestInjectWorktree_CreatesFile(t *testing.T) {
+func TestInjectCodexTOML_CreatesFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := InjectWorktree(dir, 7742); err != nil {
-		t.Fatalf("InjectWorktree: %v", err)
+	path := filepath.Join(dir, "config.toml")
+
+	if err := injectCodexTOML(path, 7742); err != nil {
+		t.Fatalf("injectCodexTOML: %v", err)
 	}
 
-	path := filepath.Join(dir, ".codex", "config.toml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read config.toml: %v", err)

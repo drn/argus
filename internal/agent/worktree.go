@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/inject"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -131,7 +130,6 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 			// Check for a valid worktree (.git file inside) before trying the fallback.
 			if isValidWorktreeDir(wtDir) {
 				uxlog.Log("[worktree] cmd1 failed but worktree is valid (hook failure?), treating as success")
-				inject.InjectWorktreeAll(wtDir)
 				return wtDir, candidate, branch, nil
 			}
 
@@ -144,7 +142,6 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 				// Check again for partial success from cmd2.
 				if isValidWorktreeDir(wtDir) {
 					uxlog.Log("[worktree] cmd2 failed but worktree is valid (hook failure?), treating as success")
-					inject.InjectWorktreeAll(wtDir)
 					return wtDir, candidate, branch, nil
 				}
 				return "", "", "", fmt.Errorf("git worktree add: %s: %s",
@@ -152,9 +149,6 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 			}
 			uxlog.Log("[worktree] cmd2 succeeded (reused existing branch)")
 		}
-
-		// Inject MCP configs into the new worktree for both Claude and Codex.
-		inject.InjectWorktreeAll(wtDir)
 
 		uxlog.Log("[worktree] created: path=%q branch=%q", wtDir, branch)
 		return wtDir, candidate, branch, nil

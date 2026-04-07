@@ -20,14 +20,6 @@ func InjectGlobal(port int) error {
 	return injectClaudeJSON(path, port)
 }
 
-// InjectWorktree writes a .mcp.json file to the worktree root so the KB MCP
-// server is available at the project scope as well.
-// Idempotent — only writes if the entry is absent or port has changed.
-func InjectWorktree(worktreePath string, port int) error {
-	mcpPath := filepath.Join(worktreePath, ".mcp.json")
-	return injectMCPJSON(mcpPath, port)
-}
-
 // injectClaudeJSON mutates only the mcpServers.argus-kb key in the given JSON file.
 // All other keys are preserved verbatim.
 func injectClaudeJSON(path string, port int) error {
@@ -55,37 +47,6 @@ func injectClaudeJSON(path string, port int) error {
 	if existing, ok := mcpServers["argus-kb"].(map[string]interface{}); ok {
 		if existing["url"] == url && existing["type"] == "http" {
 			return nil // already correct
-		}
-	}
-
-	mcpServers["argus-kb"] = map[string]interface{}{"type": "http", "url": url}
-	data["mcpServers"] = mcpServers
-
-	return writeJSON(path, data)
-}
-
-// injectMCPJSON writes a minimal .mcp.json with only the argus-kb entry.
-// If the file exists with other entries, they are preserved.
-func injectMCPJSON(path string, port int) error {
-	var data map[string]interface{}
-
-	raw, err := os.ReadFile(path)
-	if err == nil {
-		json.Unmarshal(raw, &data) //nolint:errcheck
-	}
-	if data == nil {
-		data = make(map[string]interface{})
-	}
-
-	mcpServers, _ := data["mcpServers"].(map[string]interface{})
-	if mcpServers == nil {
-		mcpServers = make(map[string]interface{})
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/mcp", port)
-	if existing, ok := mcpServers["argus-kb"].(map[string]interface{}); ok {
-		if existing["url"] == url && existing["type"] == "http" {
-			return nil
 		}
 	}
 

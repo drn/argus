@@ -166,7 +166,6 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.mu.Lock()
 			d.mcpPort = actualPort
 			d.mu.Unlock()
-			inject.SetMCPPort(actualPort)
 			log.Printf("mcp server listening on port %d", actualPort)
 
 			// Inject MCP config into Claude Code and Codex.

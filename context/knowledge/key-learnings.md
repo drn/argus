@@ -154,7 +154,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **All config file writes should be atomic** (temp + rename).
 - **KB Indexer started/stopped by daemon.** Start after MCP, stop before MCP shutdown.
 - **Claude Code MCP entries require `"type": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name).
-- **`inject.SetMCPPort` is per-process (atomic variable).** The daemon sets it, but the TUI is a separate process. The TUI must fetch the port from the daemon via RPC (piggybacked on `Ping`) and call `SetMCPPort` locally, otherwise `InjectWorktreeAll` is a no-op for TUI-created worktrees.
+- **MCP config is injected globally only (`~/.claude.json`, `~/.codex/config.toml`), not per-worktree.** Per-worktree `.mcp.json`/`.codex/config.toml` injection was removed — it polluted git status in every project and was redundant since global config applies everywhere.
 
 ### Todo-Task Association
 

@@ -22,16 +22,6 @@ func InjectGlobal(port int) error {
 	return injectCodexTOML(path, port)
 }
 
-// InjectWorktree writes a .codex/config.toml to the worktree for project-scope config.
-func InjectWorktree(worktreePath string, port int) error {
-	dir := filepath.Join(worktreePath, ".codex")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "config.toml")
-	return injectCodexTOML(path, port)
-}
-
 // injectCodexTOML inserts or updates the [mcp_servers.argus-kb] section.
 // Uses targeted string manipulation to avoid pulling in a TOML library.
 func injectCodexTOML(path string, port int) error {

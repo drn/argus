@@ -16,7 +16,6 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/inject"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -372,17 +371,9 @@ func WaitForShutdown(sockPath string, timeout time.Duration) {
 }
 
 // Ping verifies the daemon is responsive. Returns nil on success.
-// Also propagates the daemon's MCP port to the in-process inject package
-// so that TUI-created worktrees receive .mcp.json injection.
 func (c *Client) Ping() error {
 	var resp daemon.PongResp
-	if err := c.call("Daemon.Ping", &daemon.Empty{}, &resp); err != nil {
-		return err
-	}
-	if resp.MCPPort > 0 {
-		inject.SetMCPPort(resp.MCPPort)
-	}
-	return nil
+	return c.call("Daemon.Ping", &daemon.Empty{}, &resp)
 }
 
 // removeSessionStreamLost cleans up a session from the client's map and fires
