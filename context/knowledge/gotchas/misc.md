@@ -39,8 +39,8 @@
 ## Todo-Task Association
 
 - **`TodoPath` links a task to its source vault `.md` file.** Set only during `handleLaunchToDoKey`. `TasksByTodoPath()` returns most-recent task per path (ORDER BY created_at ASC, last wins).
-- **`PruneCompleted` must skip tasks with `todo_path` set.** Without the `AND todo_path = ''` filter, pruning deletes todo-linked completed tasks. The vault files survive but the association is lost — todo bullets revert to "not started" on next scan. Todo-linked tasks should only be cleaned up via the ToDo cleanup flow (Ctrl+R on ToDos tab), which removes vault files and tasks together.
-- **Ctrl+R cleanup on ToDos tab deletes vault files, not tasks.** Only `.md` files for todos with completed linked tasks are removed. Tasks remain in Argus history.
+- **Deleting or pruning a todo-linked task auto-deletes the vault `.md` file.** `deleteTask` and `pruneCompletedTasks` both call `removeTodoVaultFile`, which canonicalizes paths with `filepath.Clean` before the vault-boundary prefix check. The vault refresh (`RefreshAsync`) fires once after the loop in prune, not per-task.
+- **`removeTodoVaultFile` must canonicalize paths before the prefix guard.** A `TodoPath` like `/vault/../../../etc/passwd` would bypass a raw `strings.HasPrefix` check. Always `filepath.Clean` both the todo path and vault path before comparing.
 - **`taskColumns`/`scanTask`/`Add`/`Update` lockstep includes `todo_path`.** Column position is after `pr_url`, before `archived`. Missing any site causes runtime panics.
 
 ## PR & Reviews
