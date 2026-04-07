@@ -16,14 +16,17 @@ import (
 const debounceDelay = 500 * time.Millisecond
 
 // Indexer watches a vault path and keeps kb_documents in sync.
-// It performs an initial full scan on Start() and then watches for changes
-// using fsnotify.
+// It performs an initial scan on Start() (incremental if the DB has data,
+// full otherwise) and then watches for changes using fsnotify.
 type Indexer struct {
 	db        KBStore
 	vaultPath string
 	stopCh    chan struct{}
 	readyCh   chan struct{} // closed when fsnotify watcher is set up
 	wg        sync.WaitGroup
+
+	scanMu   sync.Mutex
+	scanning bool // true while a background full scan is running
 }
 
 // NewIndexer creates a new Indexer for the given vault path.
@@ -36,15 +39,53 @@ func NewIndexer(db KBStore, vaultPath string) *Indexer {
 	}
 }
 
-// Start runs the initial full scan and starts the background fsnotify watcher.
+// Scanning returns true while a background full scan is in progress.
+// Callers can use this to indicate that search results may be incomplete.
+func (idx *Indexer) Scanning() bool {
+	idx.scanMu.Lock()
+	defer idx.scanMu.Unlock()
+	return idx.scanning
+}
+
+// Start runs the initial scan and starts the background fsnotify watcher.
+// If the DB already has indexed documents, it runs an incremental scan
+// (synchronous, fast — only touches changed files). Otherwise it runs a
+// full scan in the background so the daemon starts immediately.
 func (idx *Indexer) Start() error {
 	if idx.vaultPath == "" {
 		close(idx.readyCh)
 		return nil
 	}
-	if err := idx.FullScan(); err != nil {
+
+	meta, err := idx.db.KBMetadataMap()
+	if err != nil {
 		return err
 	}
+
+	if len(meta) > 0 {
+		// Fast path: incremental sync against existing data.
+		if err := idx.IncrementalScan(meta); err != nil {
+			return err
+		}
+	} else {
+		// Cold start: run full scan in background so daemon starts immediately.
+		idx.scanMu.Lock()
+		idx.scanning = true
+		idx.scanMu.Unlock()
+
+		idx.wg.Add(1)
+		go func() {
+			defer idx.wg.Done()
+			if err := idx.FullScan(); err != nil {
+				log.Printf("[kb] background full scan: %v", err)
+			}
+			idx.scanMu.Lock()
+			idx.scanning = false
+			idx.scanMu.Unlock()
+			log.Printf("[kb] background full scan complete")
+		}()
+	}
+
 	idx.wg.Add(1)
 	go func() {
 		defer idx.wg.Done()
@@ -99,6 +140,58 @@ func (idx *Indexer) DeleteFile(absPath string) error {
 		relPath = absPath
 	}
 	return idx.db.KBDelete(relPath)
+}
+
+// IncrementalScan compares disk state against the provided metadata map
+// (path → modified_at unix seconds). It only upserts files whose mtime has
+// changed or that are new, and deletes DB entries for files no longer on disk.
+func (idx *Indexer) IncrementalScan(meta map[string]int64) error {
+	// Track which DB paths we've seen on disk so we can detect deletions.
+	seen := make(map[string]bool, len(meta))
+
+	err := filepath.Walk(idx.vaultPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if path == idx.vaultPath {
+				return err
+			}
+			return nil
+		}
+		if info.IsDir() {
+			if info.Name() != "." && strings.HasPrefix(info.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(info.Name()), ".md") {
+			return nil
+		}
+
+		relPath, relErr := filepath.Rel(idx.vaultPath, path)
+		if relErr != nil {
+			relPath = path
+		}
+		seen[relPath] = true
+
+		diskMtime := info.ModTime().Unix()
+		if storedMtime, exists := meta[relPath]; exists && storedMtime == diskMtime {
+			return nil // unchanged — skip
+		}
+
+		return idx.IngestFile(path)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Delete DB entries for files that no longer exist on disk.
+	for path := range meta {
+		if !seen[path] {
+			if delErr := idx.db.KBDelete(path); delErr != nil {
+				log.Printf("[kb] incremental delete %s: %v", path, delErr)
+			}
+		}
+	}
+	return nil
 }
 
 // FullScan walks all .md files in the vault and upserts them into the KB.

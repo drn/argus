@@ -26,4 +26,7 @@ type SearchResult struct {
 type KBStore interface {
 	KBUpsert(doc *Document) error
 	KBDelete(path string) error
+	// KBMetadataMap returns a map of path → modified_at (unix seconds) for all
+	// indexed documents. Used by IncrementalScan to skip unchanged files.
+	KBMetadataMap() (map[string]int64, error)
 }

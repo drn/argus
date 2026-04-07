@@ -36,6 +36,16 @@ func (m *mockStore) KBDelete(path string) error {
 	return nil
 }
 
+func (m *mockStore) KBMetadataMap() (map[string]int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]int64, len(m.docs))
+	for path, doc := range m.docs {
+		out[path] = doc.ModifiedAt.Unix()
+	}
+	return out, nil
+}
+
 func (m *mockStore) has(path string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -142,6 +152,155 @@ func TestIsEligibleFile(t *testing.T) {
 	}
 }
 
+func TestIncrementalScan_SkipsUnchanged(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+
+	// Write a file and do an initial full scan.
+	absPath := filepath.Join(vault, "stable.md")
+	os.WriteFile(absPath, []byte("# Stable\n\nOriginal."), 0o644) //nolint:errcheck
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.FullScan())
+	testutil.Equal(t, store.count(), 1)
+
+	// Record the ingested doc's body so we can check it doesn't change.
+	store.mu.Lock()
+	origBody := store.docs["stable.md"].Body
+	store.mu.Unlock()
+
+	// Overwrite the doc in the store with a marker body (simulate "already ingested").
+	store.mu.Lock()
+	store.docs["stable.md"].Body = "MARKER"
+	store.mu.Unlock()
+
+	// Run incremental scan — file mtime hasn't changed, so it should be skipped.
+	meta, err := store.KBMetadataMap()
+	testutil.NoError(t, err)
+	testutil.NoError(t, idx.IncrementalScan(meta))
+
+	// Body should still be the marker — IngestFile was NOT called.
+	store.mu.Lock()
+	testutil.Equal(t, store.docs["stable.md"].Body, "MARKER")
+	store.mu.Unlock()
+	_ = origBody
+}
+
+func TestIncrementalScan_IngestsModified(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+
+	absPath := filepath.Join(vault, "changing.md")
+	os.WriteFile(absPath, []byte("# V1\n\nOriginal."), 0o644) //nolint:errcheck
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.FullScan())
+
+	// Build metadata with a stale mtime (1 second in the past) to simulate change.
+	meta := map[string]int64{"changing.md": time.Now().Add(-10 * time.Second).Unix()}
+
+	// Update file content.
+	os.WriteFile(absPath, []byte("# V2\n\nUpdated."), 0o644) //nolint:errcheck
+
+	testutil.NoError(t, idx.IncrementalScan(meta))
+
+	store.mu.Lock()
+	testutil.Contains(t, store.docs["changing.md"].Body, "Updated.")
+	store.mu.Unlock()
+}
+
+func TestIncrementalScan_IngestsNew(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+	idx := NewIndexer(store, vault)
+
+	// Empty metadata — everything on disk is new.
+	os.WriteFile(filepath.Join(vault, "brand-new.md"), []byte("# New"), 0o644) //nolint:errcheck
+
+	meta := map[string]int64{} // empty but non-nil — simulates "DB has data but this file is new"
+	testutil.NoError(t, idx.IncrementalScan(meta))
+
+	testutil.Equal(t, store.count(), 1)
+	if !store.has("brand-new.md") {
+		t.Error("new file should have been ingested")
+	}
+}
+
+func TestIncrementalScan_DeletesRemoved(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+	idx := NewIndexer(store, vault)
+
+	// Simulate a doc in the DB whose file no longer exists on disk.
+	meta := map[string]int64{"gone.md": time.Now().Unix()}
+
+	testutil.NoError(t, idx.IncrementalScan(meta))
+
+	store.mu.Lock()
+	deleted := store.deleted
+	store.mu.Unlock()
+
+	testutil.Equal(t, len(deleted), 1)
+	testutil.Equal(t, deleted[0], "gone.md")
+}
+
+func TestStart_EmptyDB_BackgroundFullScan(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsnotify test")
+	}
+
+	vault := t.TempDir()
+	store := newMockStore()
+
+	// Pre-create a file.
+	os.WriteFile(filepath.Join(vault, "hello.md"), []byte("# Hello"), 0o644) //nolint:errcheck
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.Start())
+	defer idx.Stop()
+
+	// Scanning should be true initially (background full scan).
+	// Wait for the scan to complete.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for background scan to complete")
+		default:
+			if !idx.Scanning() && store.has("hello.md") {
+				return // success
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+}
+
+func TestStart_ExistingDB_IncrementalSync(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsnotify test")
+	}
+
+	vault := t.TempDir()
+	store := newMockStore()
+
+	// Pre-create a file and do a full scan to populate the store.
+	absPath := filepath.Join(vault, "existing.md")
+	os.WriteFile(absPath, []byte("# Existing"), 0o644) //nolint:errcheck
+
+	preIdx := NewIndexer(store, vault)
+	testutil.NoError(t, preIdx.FullScan())
+	testutil.Equal(t, store.count(), 1)
+
+	// Now start a new indexer — should use incremental (not background).
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.Start())
+	defer idx.Stop()
+
+	// Should NOT be scanning (incremental is synchronous).
+	testutil.Equal(t, idx.Scanning(), false)
+	testutil.Equal(t, store.count(), 1)
+}
+
 func TestWatch_CreateFile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsnotify test")
@@ -193,10 +352,20 @@ func TestWatch_DeleteFile(t *testing.T) {
 	defer idx.Stop()
 	<-idx.Ready()
 
-	// Verify it was ingested.
-	if !store.has("doomed.md") {
-		t.Fatal("file should have been ingested on start")
+	// Wait for background scan to complete (cold start uses background FullScan).
+	scanDeadline := time.After(3 * time.Second)
+	for {
+		select {
+		case <-scanDeadline:
+			t.Fatal("timed out waiting for background scan")
+		default:
+			if store.has("doomed.md") {
+				goto ingested
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
+ingested:
 
 	// Remove the file.
 	os.Remove(absPath) //nolint:errcheck

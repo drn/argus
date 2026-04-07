@@ -214,6 +214,30 @@ func (d *DB) KBDocumentCount() int {
 	return count
 }
 
+// KBMetadataMap returns a map of path → modified_at (unix seconds) for all
+// indexed documents. Used by the KB indexer for incremental sync.
+func (d *DB) KBMetadataMap() (map[string]int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(`SELECT path, modified_at FROM kb_metadata`)
+	if err != nil {
+		return nil, fmt.Errorf("kb metadata map: %w", err)
+	}
+	defer rows.Close()
+
+	m := make(map[string]int64)
+	for rows.Next() {
+		var path string
+		var modAt int64
+		if err := rows.Scan(&path, &modAt); err != nil {
+			continue
+		}
+		m[path] = modAt
+	}
+	return m, nil
+}
+
 // KBPendingTask is a task parsed from the Obsidian vault awaiting approval.
 type KBPendingTask struct {
 	ID         int
