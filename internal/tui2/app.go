@@ -2392,6 +2392,21 @@ func (a *App) executeDeleteToDo() {
 	a.todos.RefreshAsync(a.tapp)
 }
 
+// deleteTodoFile removes a todo vault file if it falls within the configured vault directory.
+func (a *App) deleteTodoFile(todoPath string) {
+	vaultPath := a.todos.VaultPath()
+	if vaultPath == "" || !strings.HasPrefix(todoPath, vaultPath+string(os.PathSeparator)) {
+		uxlog.Log("[todos] auto-delete: skipping %s (not in vault %s)", todoPath, vaultPath)
+		return
+	}
+	if err := os.Remove(todoPath); err != nil {
+		uxlog.Log("[todos] auto-delete: failed to remove %s: %v", todoPath, err)
+	} else {
+		uxlog.Log("[todos] auto-delete: removed %s", todoPath)
+	}
+	a.todos.RefreshAsync(a.tapp)
+}
+
 // closeDeleteToDoModal closes the delete to-do confirmation modal.
 func (a *App) closeDeleteToDoModal() {
 	a.mode = modeTaskList
@@ -2992,6 +3007,11 @@ func (a *App) deleteTask(t *model.Task) {
 	// Remove session log file.
 	os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 
+	// Delete the linked todo vault file if present.
+	if t.TodoPath != "" {
+		a.deleteTodoFile(t.TodoPath)
+	}
+
 	// Delete from database first so the UI updates immediately.
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui2] failed to delete task %s: %v", t.ID, err)
@@ -3037,9 +3057,12 @@ func (a *App) pruneCompletedTasks() {
 		}
 	}
 
-	// Remove session logs for all pruned tasks.
+	// Remove session logs and linked todo vault files for all pruned tasks.
 	for _, t := range pruned {
 		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
+		if t.TodoPath != "" {
+			a.deleteTodoFile(t.TodoPath)
+		}
 	}
 
 	cfg := a.db.Config()

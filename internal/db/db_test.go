@@ -1417,7 +1417,7 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 	}
 }
 
-func TestDB_PruneCompleted_PreservesToDoLinked(t *testing.T) {
+func TestDB_PruneCompleted_IncludesToDoLinked(t *testing.T) {
 	d := testDB(t)
 
 	_ = d.Add(&model.Task{Name: "regular-done", Status: model.StatusComplete})
@@ -1428,22 +1428,16 @@ func TestDB_PruneCompleted_PreservesToDoLinked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pruned) != 1 {
-		t.Errorf("expected 1 pruned (regular only), got %d", len(pruned))
-	}
-	if len(pruned) > 0 && pruned[0].Name != "regular-done" {
-		t.Errorf("pruned wrong task: %q", pruned[0].Name)
+	if len(pruned) != 2 {
+		t.Errorf("expected 2 pruned (both completed), got %d", len(pruned))
 	}
 
 	remaining := d.Tasks()
-	if len(remaining) != 2 {
-		t.Errorf("expected 2 remaining (todo-done + pending), got %d", len(remaining))
+	if len(remaining) != 1 {
+		t.Errorf("expected 1 remaining (pending only), got %d", len(remaining))
 	}
-
-	// The todo-linked task should still be retrievable via TasksByTodoPath.
-	todoMap := d.TasksByTodoPath()
-	if _, ok := todoMap["/vault/task.md"]; !ok {
-		t.Error("todo-linked completed task should be preserved after prune")
+	if len(remaining) > 0 && remaining[0].Name != "pending" {
+		t.Errorf("remaining task should be pending, got %q", remaining[0].Name)
 	}
 }
 

@@ -801,6 +801,87 @@ func TestDeleteTask(t *testing.T) {
 	}
 }
 
+func TestDeleteTask_AutoDeletesTodoFile(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	// Create a vault directory with a todo file.
+	vaultDir := t.TempDir()
+	todoFile := filepath.Join(vaultDir, "my-todo.md")
+	os.WriteFile(todoFile, []byte("# My Todo"), 0644)
+
+	// Set the vault path on the todos view (no scan needed — just path).
+	app.todos.SetVaultPath(vaultDir)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "todo-triggered",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		TodoPath:  todoFile,
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	app.deleteTask(task)
+
+	// Task should be deleted from DB.
+	if len(d.Tasks()) != 0 {
+		t.Errorf("expected 0 tasks in DB, got %d", len(d.Tasks()))
+	}
+
+	// Todo vault file should be auto-deleted.
+	if _, err := os.Stat(todoFile); !os.IsNotExist(err) {
+		t.Error("todo vault file should be deleted when its task is deleted")
+	}
+}
+
+func TestDeleteTask_NoTodoPath_NoFileRemoval(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "regular task",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	// Should not panic or error when TodoPath is empty.
+	app.deleteTask(task)
+
+	if len(d.Tasks()) != 0 {
+		t.Errorf("expected 0 tasks in DB, got %d", len(d.Tasks()))
+	}
+}
+
+func TestDeleteTodoFile_OutsideVault(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	vaultDir := t.TempDir()
+	app.todos.SetVaultPath(vaultDir)
+
+	// Create a file outside the vault.
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "sneaky.md")
+	os.WriteFile(outsideFile, []byte("# Sneaky"), 0644)
+
+	app.deleteTodoFile(outsideFile)
+
+	// File should NOT be deleted — it's outside the vault.
+	if _, err := os.Stat(outsideFile); os.IsNotExist(err) {
+		t.Error("file outside vault should not be deleted")
+	}
+}
+
 func TestRefreshTasksLocal(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
