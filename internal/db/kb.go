@@ -235,6 +235,9 @@ func (d *DB) KBMetadataMap() (map[string]int64, error) {
 		}
 		m[path] = modAt
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("kb metadata map iteration: %w", err)
+	}
 	return m, nil
 }
 

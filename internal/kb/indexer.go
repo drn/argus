@@ -62,6 +62,9 @@ func (idx *Indexer) Start() error {
 		return err
 	}
 
+	// Note: there is a small TOCTOU window between KBMetadataMap() and the
+	// fsnotify watcher starting below. File changes during the scan are picked
+	// up on the next fsnotify event or daemon restart.
 	if len(meta) > 0 {
 		// Fast path: incremental sync against existing data.
 		if err := idx.IncrementalScan(meta); err != nil {
