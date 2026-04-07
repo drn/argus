@@ -1398,3 +1398,59 @@ func TestSanitizeTaskName(t *testing.T) {
 		})
 	}
 }
+
+func TestDrawTaskRow_BranchDisplayed(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(60, 5)
+
+	tl := NewTaskListView()
+	task := &model.Task{
+		ID:     "1",
+		Name:   "fix-bug",
+		Branch: "argus/fix-bug",
+		Status: model.StatusPending,
+	}
+
+	tl.drawTaskRow(screen, 0, 0, 60, task, false)
+	screen.Show()
+
+	// Read the row content.
+	var line string
+	for col := 0; col < 60; col++ {
+		r, _, _, _ := screen.GetContent(col, 0)
+		line += string(r)
+	}
+
+	testutil.Contains(t, line, "fix-bug")
+	testutil.Contains(t, line, "argus/fix-bug")
+}
+
+func TestDrawTaskRow_NoBranch(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(60, 5)
+
+	tl := NewTaskListView()
+	task := &model.Task{
+		ID:     "1",
+		Name:   "fix-bug",
+		Status: model.StatusPending,
+	}
+
+	tl.drawTaskRow(screen, 0, 0, 60, task, false)
+	screen.Show()
+
+	// Read the row content.
+	var line string
+	for col := 0; col < 60; col++ {
+		r, _, _, _ := screen.GetContent(col, 0)
+		line += string(r)
+	}
+
+	testutil.Contains(t, line, "fix-bug")
+}
