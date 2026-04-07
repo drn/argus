@@ -501,6 +501,13 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.canceled = true
 			return
 		case tcell.KeyTab:
+			// Accept any open autocomplete before advancing field
+			if f.projACOpen && len(f.projACMatches) > 0 {
+				f.projACAccept()
+			}
+			if f.branchACOpen && len(f.branchACMatches) > 0 {
+				f.branchACAccept()
+			}
 			f.acOpen = false
 			f.projACOpen = false
 			f.branchACOpen = false
@@ -511,6 +518,13 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			}
 			return
 		case tcell.KeyBacktab:
+			// Accept any open autocomplete before retreating field
+			if f.projACOpen && len(f.projACMatches) > 0 {
+				f.projACAccept()
+			}
+			if f.branchACOpen && len(f.branchACMatches) > 0 {
+				f.branchACAccept()
+			}
 			f.acOpen = false
 			f.projACOpen = false
 			f.branchACOpen = false

@@ -1015,6 +1015,46 @@ func TestNewTaskForm_ProjectTypeahead(t *testing.T) {
 			t.Error("should not cancel form when AC was open")
 		}
 	})
+
+	t.Run("tab accepts AC match and advances to branch", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "", backends, "b")
+		f.focused = ntFieldProject
+		handler := f.InputHandler()
+
+		// Type "al" — should match "alpha"
+		handler(tcell.NewEventKey(tcell.KeyRune, 'a', 0), func(p tview.Primitive) {})
+		handler(tcell.NewEventKey(tcell.KeyRune, 'l', 0), func(p tview.Primitive) {})
+		if !f.projACOpen {
+			t.Fatal("AC should be open after typing")
+		}
+
+		// Tab should accept the AC match AND move to branch
+		handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
+		if got := string(f.projInput); got != "alpha" {
+			t.Errorf("projInput = %q, want alpha (Tab should accept AC)", got)
+		}
+		if f.projACOpen {
+			t.Error("AC should be closed after Tab")
+		}
+		if f.focused != ntFieldBranch {
+			t.Errorf("focused = %d, want branch (%d)", f.focused, ntFieldBranch)
+		}
+	})
+
+	t.Run("tab without AC just advances field", func(t *testing.T) {
+		f := NewNewTaskForm(projects, "alpha", backends, "b")
+		f.focused = ntFieldProject
+		f.projACOpen = false
+		handler := f.InputHandler()
+
+		handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
+		if got := string(f.projInput); got != "alpha" {
+			t.Errorf("projInput = %q, want alpha (unchanged)", got)
+		}
+		if f.focused != ntFieldBranch {
+			t.Errorf("focused = %d, want branch (%d)", f.focused, ntFieldBranch)
+		}
+	})
 }
 
 func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
