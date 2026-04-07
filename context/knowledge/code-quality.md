@@ -1655,3 +1655,13 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Fix**: `updateBranchAC()` now gates `branchACOpen` on `f.focused == ntFieldBranch`. Matches are still computed regardless of focus so the dropdown opens immediately when the user types.
 
 **Gotcha**: Any `update*AC()` function that sets `*ACOpen = true` must verify the corresponding field is focused. This is a generalization of the project AC constructor bug — async data arrival is a second trigger path.
+
+## 2026-04-06 — Project Form Branch Loading & Rendering Fixes
+
+**Bug 1 — Tilde path in `maybeLoadBranches`**: `acceptPathAC` calls `collapseTilde`, storing `~/...` in the path field. `maybeLoadBranches` passed this raw tilde path to `ListRemoteBranches` → `runGit(repoDir, ...)` sets `cmd.Dir = "~/..."` → Go's `exec.Command` doesn't shell-expand `~` → git fails silently → no branches → empty selector.
+
+**Fix**: Extracted `pathValue()` helper that applies `expandTilde(strings.TrimSpace(...))`. Both `maybeLoadBranches` and `Result()` now use it, eliminating duplication. Added empty-path guard.
+
+**Bug 2 — Byte-based form field truncation**: Form Draw methods used `len(val)` (bytes) and `val[n:]` (byte slice) to truncate long field values. The cursor `█` (U+2588) is 3 bytes in UTF-8 but 1 display column. For paths where `pathLen + 3 > maxW > pathLen`, the byte slice cut through the cursor, producing 1-2 garbled replacement characters (`██`). The exact trigger: paths of 44-45 chars with `maxW = 46` (form width 60 - 14 label offset).
+
+**Fix**: Changed to rune-based truncation (`[]rune` conversion) in all three affected forms: `projectform.go`, `backendform.go`, `renametask.go`. `drawText` already iterates runes correctly — the corruption was solely in the pre-truncation step.
