@@ -153,6 +153,11 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **MCP server echoes client's `protocolVersion`** — Codex workaround.
 - **All config file writes should be atomic** (temp + rename).
 - **KB Indexer started/stopped by daemon.** Start after MCP, stop before MCP shutdown.
+- **KB `kb_ingest` writes back to Obsidian vault (bidirectional sync).** After `KBUpsert`, the MCP server writes the `.md` file atomically (CreateTemp + Rename) to `vaultPath/path`. The fsnotify indexer picks up the rename as a Create event and re-ingests — idempotent but one redundant DB write per ingest call.
+- **KB Indexer `Ready()` channel must be closed on all exit paths.** The `readyCh` is closed when fsnotify setup completes, or when `Start()` returns early (empty vaultPath), or when `watch()` fails to init. Without closing on the empty-vaultPath path, `<-idx.Ready()` deadlocks.
+- **KB Indexer temp files use `.tmp` suffix — `isEligibleFile` filters them.** The atomic write pattern creates `.kb-ingest-*.tmp` files. Without the `.tmp` exclusion in `isEligibleFile`, the watcher would attempt to ingest partial temp files.
+- **KB `FullScan` and `addWatchDirs` must use the same hidden-dir filter.** Both skip all hidden directories (name starts with `.`), not just `.obsidian`. Inconsistency causes files to be indexed at startup but not watched for changes.
+- **KB vault write-back path must be `filepath.Clean`ed + prefix-checked.** `strings.Contains(path, "..")` on raw input is insufficient — `filepath.Clean` canonicalizes before the prefix check against `vaultPath`.
 - **Claude Code MCP entries require `"type": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name).
 - **MCP config is injected globally only (`~/.claude.json`, `~/.codex/config.toml`), not per-worktree.** Per-worktree `.mcp.json`/`.codex/config.toml` injection was removed — it polluted git status in every project and was redundant since global config applies everywhere.
 

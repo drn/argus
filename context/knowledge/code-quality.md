@@ -1665,3 +1665,20 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 **Bug 2 — Byte-based form field truncation**: Form Draw methods used `len(val)` (bytes) and `val[n:]` (byte slice) to truncate long field values. The cursor `█` (U+2588) is 3 bytes in UTF-8 but 1 display column. For paths where `pathLen + 3 > maxW > pathLen`, the byte slice cut through the cursor, producing 1-2 garbled replacement characters (`██`). The exact trigger: paths of 44-45 chars with `maxW = 46` (form width 60 - 14 label offset).
 
 **Fix**: Changed to rune-based truncation (`[]rune` conversion) in all three affected forms: `projectform.go`, `backendform.go`, `renametask.go`. `drawText` already iterates runes correctly — the corruption was solely in the pre-truncation step.
+
+## Bidirectional KB Sync: 2026-04-06
+
+### Data Model & Flow
+
+- `mcp.Server` gains `vaultPath string` field, passed via `New(db, port, vaultPath)` from daemon
+- `kb.RenderMarkdown(*Document) string` — inverse of `ParseDocument`, produces markdown with YAML frontmatter (title quoted, tags inline `[a, b]` with special-char quoting)
+- `kb_ingest` flow: validate path (`filepath.Clean` + prefix check) → `ParseDocument` → `KBUpsert` → atomic write-back to vault (`os.CreateTemp` + `os.Rename`)
+- Indexer `watch()` replaced placeholder with full fsnotify: `addWatchDirs` recursively, debounce 500ms, handle create/write/remove/rename, auto-add new subdirs
+- `readyCh` channel signals when fsnotify watcher is set up (closed on all exit paths including empty-vaultPath early return)
+
+### Gotchas
+
+- Write-back causes one redundant re-ingest per `kb_ingest` call (idempotent, `.tmp` files filtered by `isEligibleFile`)
+- `FullScan` and `addWatchDirs` must use identical hidden-dir filters (all dirs starting with `.`, not just `.obsidian`)
+- `filepath.Clean` required before path prefix check — raw `strings.Contains("..")` is bypassable
+- Tags containing `,`, `]`, `"`, `\` must be quoted in `RenderMarkdown` to prevent YAML corruption on roundtrip
