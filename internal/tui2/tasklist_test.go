@@ -1,6 +1,7 @@
 package tui2
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/model"
@@ -1399,7 +1400,7 @@ func TestSanitizeTaskName(t *testing.T) {
 	}
 }
 
-func TestDrawTaskRow_BranchDisplayed(t *testing.T) {
+func TestDrawTaskRow_BranchNotDisplayed(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
@@ -1424,8 +1425,11 @@ func TestDrawTaskRow_BranchDisplayed(t *testing.T) {
 		line += string(r)
 	}
 
+	// Task name is displayed, but branch is not shown in rows (removed in 17243bd).
 	testutil.Contains(t, line, "fix-bug")
-	testutil.Contains(t, line, "argus/fix-bug")
+	if strings.Contains(line, "argus/fix-bug") {
+		t.Errorf("branch should not be displayed in task row, got: %q", line)
+	}
 }
 
 func TestDrawTaskRow_NarrowTerminal(t *testing.T) {
