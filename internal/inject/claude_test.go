@@ -35,8 +35,8 @@ func TestInjectWorktree_CreatesFile(t *testing.T) {
 	if entry["url"] != "http://localhost:7742/mcp" {
 		t.Errorf("url: got %v", entry["url"])
 	}
-	if entry["transport"] != "http" {
-		t.Errorf("transport: got %v, want http", entry["transport"])
+	if entry["type"] != "http" {
+		t.Errorf("type: got %v, want http", entry["type"])
 	}
 }
 
@@ -110,7 +110,7 @@ func TestInjectWorktree_PreservesOtherEntries(t *testing.T) {
 	}
 }
 
-func TestInjectClaudeJSON_TransportField(t *testing.T) {
+func TestInjectClaudeJSON_TypeField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".claude.json")
 
@@ -124,8 +124,8 @@ func TestInjectClaudeJSON_TransportField(t *testing.T) {
 
 	mcpServers := config["mcpServers"].(map[string]interface{})
 	entry := mcpServers["argus-kb"].(map[string]interface{})
-	if entry["transport"] != "http" {
-		t.Errorf("transport: got %v, want http", entry["transport"])
+	if entry["type"] != "http" {
+		t.Errorf("type: got %v, want http", entry["type"])
 	}
 	if entry["url"] != "http://localhost:7742/mcp" {
 		t.Errorf("url: got %v", entry["url"])
@@ -155,8 +155,8 @@ func TestInjectClaudeJSON_UpgradesOldFormat(t *testing.T) {
 
 	mcpServers := config["mcpServers"].(map[string]interface{})
 	entry := mcpServers["argus-kb"].(map[string]interface{})
-	if entry["transport"] != "http" {
-		t.Errorf("old format not upgraded: transport=%v, want http", entry["transport"])
+	if entry["type"] != "http" {
+		t.Errorf("old format not upgraded: transport=%v, want http", entry["type"])
 	}
 }
 
@@ -182,8 +182,8 @@ func TestInjectMCPJSON_UpgradesOldFormat(t *testing.T) {
 
 	mcpServers := config["mcpServers"].(map[string]interface{})
 	entry := mcpServers["argus-kb"].(map[string]interface{})
-	if entry["transport"] != "http" {
-		t.Errorf("old format not upgraded: transport=%v, want http", entry["transport"])
+	if entry["type"] != "http" {
+		t.Errorf("old format not upgraded: transport=%v, want http", entry["type"])
 	}
 }
 

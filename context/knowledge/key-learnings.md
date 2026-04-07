@@ -153,7 +153,7 @@ Non-obvious invariants and gotchas. For architecture, see CLAUDE.md. For feature
 - **MCP server echoes client's `protocolVersion`** — Codex workaround.
 - **All config file writes should be atomic** (temp + rename).
 - **KB Indexer started/stopped by daemon.** Start after MCP, stop before MCP shutdown.
-- **Claude Code MCP entries require `"transport": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"transport": "http", "url": "..."}`.
+- **Claude Code MCP entries require `"type": "http"`.** A bare `{"url": "..."}` entry in `mcpServers` fails to parse. Must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name).
 - **`inject.SetMCPPort` is per-process (atomic variable).** The daemon sets it, but the TUI is a separate process. The TUI must fetch the port from the daemon via RPC (piggybacked on `Ping`) and call `SetMCPPort` locally, otherwise `InjectWorktreeAll` is a no-op for TUI-created worktrees.
 
 ### Todo-Task Association

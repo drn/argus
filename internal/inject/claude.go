@@ -53,12 +53,12 @@ func injectClaudeJSON(path string, port int) error {
 
 	// Check if already correct.
 	if existing, ok := mcpServers["argus-kb"].(map[string]interface{}); ok {
-		if existing["url"] == url && existing["transport"] == "http" {
+		if existing["url"] == url && existing["type"] == "http" {
 			return nil // already correct
 		}
 	}
 
-	mcpServers["argus-kb"] = map[string]interface{}{"transport": "http", "url": url}
+	mcpServers["argus-kb"] = map[string]interface{}{"type": "http", "url": url}
 	data["mcpServers"] = mcpServers
 
 	return writeJSON(path, data)
@@ -84,12 +84,12 @@ func injectMCPJSON(path string, port int) error {
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 	if existing, ok := mcpServers["argus-kb"].(map[string]interface{}); ok {
-		if existing["url"] == url && existing["transport"] == "http" {
+		if existing["url"] == url && existing["type"] == "http" {
 			return nil
 		}
 	}
 
-	mcpServers["argus-kb"] = map[string]interface{}{"transport": "http", "url": url}
+	mcpServers["argus-kb"] = map[string]interface{}{"type": "http", "url": url}
 	data["mcpServers"] = mcpServers
 
 	return writeJSON(path, data)
