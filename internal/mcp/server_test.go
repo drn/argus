@@ -115,9 +115,7 @@ func TestInitialize(t *testing.T) {
 		t.Fatalf("result is not a map: %T", resp.Result)
 	}
 	// Should echo client's protocol version (Codex workaround).
-	if result["protocolVersion"] != "2025-06-18" {
-		t.Errorf("protocolVersion: got %v, want 2025-06-18", result["protocolVersion"])
-	}
+	testutil.Equal(t, result["protocolVersion"], "2025-06-18")
 
 	// Should include KB instructions.
 	instructions, ok := result["instructions"].(string)

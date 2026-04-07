@@ -61,6 +61,9 @@ type Server struct {
 
 // New creates a new MCP server.
 func New(db KBQuerier, port int, vaultPath string) *Server {
+	if vaultPath != "" {
+		vaultPath = filepath.Clean(vaultPath)
+	}
 	return &Server{db: db, port: port, vaultPath: vaultPath}
 }
 
@@ -191,7 +194,7 @@ func (s *Server) handleInitialize(req *Request) *Response {
 
 // kbInstructions is sent to MCP clients during initialization to guide how
 // agents interact with the knowledge base. Claude Code truncates this at ~2KB,
-// so the most critical rules come first.
+// so the most critical rules come first. Current size: ~1.8KB (~160 bytes headroom).
 const kbInstructions = `Argus KB is an Obsidian-backed knowledge base indexed with FTS5. Documents are markdown files with YAML frontmatter, organized by topic in a flat folder hierarchy.
 
 BEFORE WRITING: Always kb_search first to check if an entry already exists. Update existing documents rather than creating duplicates.
@@ -262,6 +265,8 @@ var toolDefs = []Tool{
 	},
 	{
 		Name: "kb_ingest",
+		// Description intentionally duplicates key rules from kbInstructions —
+		// not all MCP clients surface server instructions at tool-call time.
 		Description: `Add or update a document in the knowledge base. The document is indexed for search and written back to the Obsidian vault.
 
 IMPORTANT: Always kb_search first to avoid duplicates. If a document exists on the topic, kb_read it and update rather than creating a new one.
@@ -344,7 +349,9 @@ func (s *Server) taskMgmtEnabled() bool {
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
-	tools := toolDefs
+	// Copy to avoid mutating the package-level toolDefs slice via append.
+	tools := make([]Tool, len(toolDefs))
+	copy(tools, toolDefs)
 	if s.taskMgmtEnabled() {
 		tools = append(tools, taskToolDefs...)
 	}
