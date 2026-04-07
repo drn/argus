@@ -43,6 +43,15 @@ func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxCon
 	return result
 }
 
+// IsTaskSandboxed returns whether a task would run sandboxed given the
+// current config. Combines sandbox config resolution with platform
+// availability. Callers should persist the result on task.Sandboxed
+// at creation time.
+func IsTaskSandboxed(task *model.Task, cfg config.Config) bool {
+	sb := ResolveSandboxConfig(task, cfg)
+	return sb.Enabled && IsSandboxAvailable()
+}
+
 // ResolveBackend returns the backend config for a task.
 // Priority: task.Backend > project.Backend > cfg.Defaults.Backend.
 func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error) {

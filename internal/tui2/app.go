@@ -1806,9 +1806,7 @@ func (a *App) resolveSandboxed(task *model.Task) bool {
 	if task == nil {
 		return false
 	}
-	cfg := a.db.Config()
-	sb := agent.ResolveSandboxConfig(task, cfg)
-	return sb.Enabled && agent.IsSandboxAvailable()
+	return agent.IsTaskSandboxed(task, a.db.Config())
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.
