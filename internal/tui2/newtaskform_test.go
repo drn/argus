@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
+	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -997,15 +998,15 @@ func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 
-	// Project A has skill "deploy"
-	skillDirA := filepath.Join(dirA, ".claude", "skills", "deploy")
-	os.MkdirAll(skillDirA, 0o755)
-	os.WriteFile(filepath.Join(skillDirA, "SKILL.md"), []byte("---\ndescription: Deploy app\n---\n"), 0o644)
+	// Project A has skill "test-skill-alpha"
+	skillDirA := filepath.Join(dirA, ".claude", "skills", "test-skill-alpha")
+	testutil.NoError(t, os.MkdirAll(skillDirA, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(skillDirA, "SKILL.md"), []byte("---\ndescription: Alpha skill\n---\n"), 0o644))
 
-	// Project B has skill "file-scenes"
-	skillDirB := filepath.Join(dirB, ".claude", "skills", "file-scenes")
-	os.MkdirAll(skillDirB, 0o755)
-	os.WriteFile(filepath.Join(skillDirB, "SKILL.md"), []byte("---\ndescription: Manage file scenes\n---\n"), 0o644)
+	// Project B has skill "test-skill-bravo"
+	skillDirB := filepath.Join(dirB, ".claude", "skills", "test-skill-bravo")
+	testutil.NoError(t, os.MkdirAll(skillDirB, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(skillDirB, "SKILL.md"), []byte("---\ndescription: Bravo skill\n---\n"), 0o644))
 
 	projects := map[string]config.Project{
 		"alpha": {Path: dirA},
@@ -1013,23 +1014,24 @@ func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
 	}
 	backends := map[string]config.Backend{"b": {Command: "claude"}}
 
+	hasSkill := func(f *NewTaskForm, name string) bool {
+		for _, s := range f.skills {
+			if s.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
 	t.Run("enter without AC reloads skills", func(t *testing.T) {
 		f := NewNewTaskForm(projects, "alpha", backends, "b")
 
 		// Verify initial skills loaded from project alpha.
-		hasSkill := func(name string) bool {
-			for _, s := range f.skills {
-				if s.Name == name {
-					return true
-				}
-			}
-			return false
+		if !hasSkill(f, "test-skill-alpha") {
+			t.Error("initial skills should include test-skill-alpha")
 		}
-		if !hasSkill("deploy") {
-			t.Error("initial skills should include deploy from alpha")
-		}
-		if hasSkill("file-scenes") {
-			t.Error("initial skills should not include file-scenes")
+		if hasSkill(f, "test-skill-bravo") {
+			t.Error("initial skills should not include test-skill-bravo")
 		}
 
 		// Switch to project bravo by typing the name and pressing Enter
@@ -1042,8 +1044,11 @@ func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
 		handler := f.InputHandler()
 		handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(p tview.Primitive) {})
 
-		if !hasSkill("file-scenes") {
-			t.Error("skills should include file-scenes after switching to bravo")
+		if !hasSkill(f, "test-skill-bravo") {
+			t.Error("skills should include test-skill-bravo after switching")
+		}
+		if hasSkill(f, "test-skill-alpha") {
+			t.Error("test-skill-alpha from old project should be gone")
 		}
 	})
 
@@ -1058,15 +1063,11 @@ func TestNewTaskForm_ProjectChangeReloadsSkills(t *testing.T) {
 		handler := f.InputHandler()
 		handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(p tview.Primitive) {})
 
-		hasFileScenes := false
-		for _, s := range f.skills {
-			if s.Name == "file-scenes" {
-				hasFileScenes = true
-				break
-			}
+		if !hasSkill(f, "test-skill-bravo") {
+			t.Error("skills should include test-skill-bravo after down-arrow project change")
 		}
-		if !hasFileScenes {
-			t.Error("skills should include file-scenes after down-arrow project change")
+		if hasSkill(f, "test-skill-alpha") {
+			t.Error("test-skill-alpha from old project should be gone")
 		}
 	})
 }
