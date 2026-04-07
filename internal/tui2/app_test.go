@@ -861,7 +861,7 @@ func TestDeleteTask_NoTodoPath_NoFileRemoval(t *testing.T) {
 	}
 }
 
-func TestDeleteTodoFile_OutsideVault(t *testing.T) {
+func TestRemoveTodoVaultFile_OutsideVault(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false, false)
@@ -874,7 +874,7 @@ func TestDeleteTodoFile_OutsideVault(t *testing.T) {
 	outsideFile := filepath.Join(outsideDir, "sneaky.md")
 	os.WriteFile(outsideFile, []byte("# Sneaky"), 0644)
 
-	app.deleteTodoFile(outsideFile)
+	app.removeTodoVaultFile(outsideFile)
 
 	// File should NOT be deleted — it's outside the vault.
 	if _, err := os.Stat(outsideFile); os.IsNotExist(err) {
