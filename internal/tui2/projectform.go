@@ -46,7 +46,7 @@ type ProjectForm struct {
 	// Branch selector state
 	branchOptions []string // populated via SetBranchOptions
 	branchIdx     int
-	branchPath    string // path for which branches were last loaded
+	branchPath    string // expanded/normalized path for which branches were last loaded
 
 	// Sandbox selector state (0=Inherit, 1=Enabled, 2=Disabled).
 	sandboxIdx int
@@ -127,7 +127,7 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 		branch = pf.branchOptions[pf.branchIdx]
 	}
 	proj := config.Project{
-		Path:    expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath]))),
+		Path:    pf.pathValue(),
 		Branch:  branch,
 		Backend: string(pf.fields[pfFieldBackend]),
 	}
@@ -144,10 +144,15 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 	return string(pf.fields[pfFieldName]), proj
 }
 
+// pathValue returns the normalized path field value (trimmed, tilde-expanded).
+func (pf *ProjectForm) pathValue() string {
+	return expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath])))
+}
+
 // maybeLoadBranches fires OnBranchFocus when the path has changed since
 // the last load. The actual git call happens in a background goroutine.
 func (pf *ProjectForm) maybeLoadBranches() {
-	path := expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath])))
+	path := pf.pathValue()
 	if path == "" || path == pf.branchPath || pf.OnBranchFocus == nil {
 		return
 	}

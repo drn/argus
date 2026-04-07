@@ -488,7 +488,8 @@ func TestProjectForm_MaybeLoadBranches_TildeFromPathAC(t *testing.T) {
 		calledWith = path
 	}
 
-	// Simulate what acceptPathAC produces: tilde path with trailing slash.
+	// Simulate what acceptPathAC produces: tilde path with trailing slash
+	// (acceptPathAC always appends "/" after collapseTilde).
 	pf.fields[pfFieldPath] = []rune("~/Development/thanx/actions/")
 	pf.maybeLoadBranches()
 
