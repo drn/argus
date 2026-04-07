@@ -184,54 +184,104 @@ func (s *Server) handleInitialize(req *Request) *Response {
 			Capabilities: Capabilities{
 				Tools: &ToolsCapability{},
 			},
+			Instructions: kbInstructions,
 		},
 	}
 }
 
+// kbInstructions is sent to MCP clients during initialization to guide how
+// agents interact with the knowledge base. Claude Code truncates this at ~2KB,
+// so the most critical rules come first.
+const kbInstructions = `Argus KB is an Obsidian-backed knowledge base indexed with FTS5. Documents are markdown files with YAML frontmatter, organized by topic in a flat folder hierarchy.
+
+BEFORE WRITING: Always kb_search first to check if an entry already exists. Update existing documents rather than creating duplicates.
+
+DOCUMENT SCHEMA — every document MUST have YAML frontmatter:
+---
+title: "Short Descriptive Title"
+tags: [lowercase, kebab-case, terms]
+---
+
+The title and tags fields are required. Title should be concise (under 60 chars). Tags are a flat YAML array of lowercase kebab-case identifiers — use them for thematic clustering, not hierarchy. Hierarchy belongs in the folder path.
+
+PATH CONVENTIONS:
+- Vault-relative paths with topic folders: "thanx/data-investigation.md", "patterns/agent-frameworks.md"
+- Kebab-case filenames, 2-3 words: "vendor-evaluations.md" not "list-of-all-vendor-and-tool-evaluations.md"
+- File name = the topic noun, not a sentence: "hiring.md" not "how-we-hire.md"
+- Group by domain (thanx/, tools/, patterns/, knowledge/) — match existing folders
+
+CONTENT STRUCTURE:
+- One topic per document. If covering multiple unrelated things, split into separate files.
+- Lead with the key insight, rule, or summary — not background or preamble.
+- Use ## H2 sections for subtopics. Each H2 should be independently useful.
+- Bullet lists with **bold keys** for structured data (specs, criteria, evaluations).
+- Keep entries focused: 50-500 words is the sweet spot for retrieval quality.
+- Source and date claims when possible: "— Source: website Apr 2026"
+
+WHAT NOT TO DO:
+- Don't create near-empty stubs — every entry should be immediately useful.
+- Don't duplicate content across files. Cross-reference instead.
+- Don't use inline #hashtags — put all tags in YAML frontmatter.
+- Don't nest folders more than 2 levels deep.`
+
 // toolDefs defines the four KB tools exposed via MCP.
 var toolDefs = []Tool{
 	{
-		Name:        "kb_search",
-		Description: "Search the Argus knowledge base using full-text search. Returns ranked results with snippets.",
+		Name: "kb_search",
+		Description: `Search the knowledge base using full-text search (BM25 ranking). Returns results with highlighted snippets. Use this BEFORE kb_ingest to check if a document already exists on the topic — update rather than duplicate.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"query": map[string]interface{}{"type": "string", "description": "Search query"},
-				"limit": map[string]interface{}{"type": "number", "description": "Maximum results (default 10)"},
+				"query": map[string]interface{}{"type": "string", "description": "Natural language search query. Supports stemming (e.g. 'running' matches 'run')."},
+				"limit": map[string]interface{}{"type": "number", "description": "Maximum results to return (default 10, max 100)"},
 			},
 			"required": []string{"query"},
 		},
 	},
 	{
-		Name:        "kb_read",
-		Description: "Read the full content of a knowledge base document by its vault-relative path.",
+		Name: "kb_read",
+		Description: `Read the full content of a knowledge base document by vault-relative path. Use after kb_search or kb_list to get the complete document including frontmatter, body, tags, and metadata.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"path": map[string]interface{}{"type": "string", "description": "Vault-relative path, e.g. 'projects/thanx.md'"},
+				"path": map[string]interface{}{"type": "string", "description": "Vault-relative path (e.g. 'thanx/hiring.md', 'patterns/agent-frameworks.md')"},
 			},
 			"required": []string{"path"},
 		},
 	},
 	{
-		Name:        "kb_list",
-		Description: "List documents in the knowledge base, optionally filtered by path prefix.",
+		Name: "kb_list",
+		Description: `List documents in the knowledge base, optionally filtered by path prefix. Use to discover what exists in a topic area before creating new entries.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"prefix": map[string]interface{}{"type": "string", "description": "Path prefix filter (optional)"},
-				"limit":  map[string]interface{}{"type": "number", "description": "Maximum documents (default 100)"},
+				"prefix": map[string]interface{}{"type": "string", "description": "Path prefix to filter by (e.g. 'thanx/' for all Thanx docs, 'patterns/' for patterns)"},
+				"limit":  map[string]interface{}{"type": "number", "description": "Maximum documents to return (default 100)"},
 			},
 		},
 	},
 	{
-		Name:        "kb_ingest",
-		Description: "Add or update a document in the knowledge base.",
+		Name: "kb_ingest",
+		Description: `Add or update a document in the knowledge base. The document is indexed for search and written back to the Obsidian vault.
+
+IMPORTANT: Always kb_search first to avoid duplicates. If a document exists on the topic, kb_read it and update rather than creating a new one.
+
+REQUIRED FORMAT: Full markdown with YAML frontmatter. Every document must have:
+---
+title: "Descriptive Title"
+tags: [lowercase-tag, another-tag]
+---
+
+Content body here with ## sections.
+
+PATH RULES: Use kebab-case filenames in topic folders (e.g. 'thanx/hiring.md', 'tools/vendor-evaluations.md'). Match existing folder structure — use kb_list to see current organization.
+
+CONTENT RULES: One topic per document. Lead with the key insight. Use ## H2 for subtopics. Bold key terms in bullet lists. Keep entries 50-500 words.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"path":    map[string]interface{}{"type": "string", "description": "Vault-relative path for the document"},
-				"content": map[string]interface{}{"type": "string", "description": "Full markdown content to index"},
+				"path":    map[string]interface{}{"type": "string", "description": "Vault-relative path (e.g. 'thanx/data-investigation.md'). Kebab-case, 2-3 word filenames, organized in topic folders."},
+				"content": map[string]interface{}{"type": "string", "description": "Full markdown with YAML frontmatter (title and tags required). See tool description for format."},
 			},
 			"required": []string{"path", "content"},
 		},

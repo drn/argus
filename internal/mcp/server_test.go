@@ -118,6 +118,14 @@ func TestInitialize(t *testing.T) {
 	if result["protocolVersion"] != "2025-06-18" {
 		t.Errorf("protocolVersion: got %v, want 2025-06-18", result["protocolVersion"])
 	}
+
+	// Should include KB instructions.
+	instructions, ok := result["instructions"].(string)
+	if !ok || instructions == "" {
+		t.Error("initialize response missing instructions field")
+	}
+	testutil.Contains(t, instructions, "YAML frontmatter")
+	testutil.Contains(t, instructions, "kb_search")
 }
 
 func TestToolsList(t *testing.T) {
