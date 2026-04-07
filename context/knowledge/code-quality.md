@@ -504,7 +504,7 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 
 **Claude Code MCP entries require `"type": "http"` field**: A bare `{"url": "..."}` entry in `mcpServers` fails to parse. The injected entry must be `{"type": "http", "url": "..."}`. The JSON key is `"type"`, not `"transport"` (which is the CLI flag name). Idempotency checks must verify both fields to detect and upgrade entries from the old format.
 
-**`inject.SetMCPPort` is per-process (atomic variable)**: The daemon calls `SetMCPPort` in `Serve()`, but the TUI is a separate process. `PongResp.MCPPort` carries the port over RPC; the client's `Ping()` calls `inject.SetMCPPort()` locally. `Connect()` calls `Ping()` eagerly so TUI-created worktrees get injection before the first health-check tick. The `InjectWorktreeAll` logs to uxlog on both skip (port == 0) and success for debuggability.
+**MCP config is injected globally only**: The daemon calls `inject.InjectGlobal` and `injectcodex.InjectGlobal` once after the MCP server starts listening. Per-worktree injection was removed — global config (`~/.claude.json`, `~/.codex/config.toml`) applies to all sessions regardless of working directory.
 
 ### Config Keys
 - `kb.enabled` — `"true"` / `""` (default `""` = off)

@@ -68,8 +68,7 @@ type ListResp struct {
 
 // PongResp is the RPC response for a Ping request.
 type PongResp struct {
-	OK      bool
-	MCPPort int // MCP HTTP server port; 0 if KB is disabled
+	OK bool
 }
 
 // Empty is a placeholder for RPC methods that take no arguments.

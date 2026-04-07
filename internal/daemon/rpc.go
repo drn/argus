@@ -16,9 +16,6 @@ type RPCService struct {
 // Ping verifies the daemon is responsive.
 func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
 	resp.OK = true
-	s.daemon.mu.Lock()
-	resp.MCPPort = s.daemon.mcpPort
-	s.daemon.mu.Unlock()
 	return nil
 }
 

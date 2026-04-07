@@ -76,8 +76,7 @@ func Connect(sockPath string) (*Client, error) {
 		closed:   make(chan struct{}),
 	}
 
-	// Fetch the MCP port eagerly so TUI-created worktrees get .mcp.json
-	// injection even before the first health-check tick fires.
+	// Eagerly verify daemon is alive before returning the client.
 	c.Ping() //nolint:errcheck — best-effort; health check will retry
 
 	return c, nil
