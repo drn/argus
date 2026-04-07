@@ -238,7 +238,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			name:     "in progress running",
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInProgress}},
 			running:  map[string]bool{"1": true},
-			wantChar: '\uEE06', // animFrame=0 (spinner frame 1)
+			wantChar: '\uEE06', // animFrame=0, first spinner frame
 		},
 		{
 			name:     "all complete",
@@ -282,7 +282,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 				{ID: "2", Status: model.StatusInReview},
 			},
 			running:  map[string]bool{"1": true},
-			wantChar: '\uEE06', // animFrame=0 (spinner frame 1)
+			wantChar: '\uEE06', // animFrame=0, first spinner frame
 		},
 	}
 
