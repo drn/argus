@@ -90,6 +90,8 @@ func TestExtractLinks(t *testing.T) {
 			},
 		},
 		{
+			// Display text ("link") is not preserved as label — only the URL
+			// embedded in the OSC 8 tag is extracted. Dedup with the bare URL.
 			name:    "OSC 8 hyperlink with BEL terminator",
 			content: "\x1b]8;;https://example.com\x07link\x1b]8;;\x07 and https://example.com",
 			want:    []Link{{Label: "https://example.com", URL: "https://example.com"}},

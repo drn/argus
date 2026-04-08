@@ -22,8 +22,8 @@ type Link struct {
 var mdLinkRe = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s)]+)\)`)
 
 // bareLinkRe matches bare URLs not already inside markdown link syntax.
-// Excludes control characters (\x00-\x1f) to prevent matching through
-// residual escape sequence bytes.
+// Excludes all ASCII control characters (\x00-\x1f, including \x1b ESC) to
+// prevent matching through residual escape sequence bytes.
 var bareLinkRe = regexp.MustCompile(`https?://[^\s)\]>\x00-\x1f]+`)
 
 // osc8Re matches OSC 8 hyperlink tags: \x1b]8;params;URL\x07 or \x1b]8;params;URL\x1b\\
@@ -36,14 +36,8 @@ var osc8Re = regexp.MustCompile(`\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)`)
 func stripANSI(s string) string {
 	// First pass: extract URLs from OSC 8 hyperlinks before general stripping.
 	// Opening tags become "URL " (preserving the link target); closing tags
-	// (empty URL) become "" so display text stays separated.
-	s = osc8Re.ReplaceAllStringFunc(s, func(match string) string {
-		sub := osc8Re.FindStringSubmatch(match)
-		if len(sub) > 1 && sub[1] != "" {
-			return sub[1] + " "
-		}
-		return ""
-	})
+	// (empty URL) become just a space — harmless for subsequent URL matching.
+	s = osc8Re.ReplaceAllString(s, "$1 ")
 	return ansiRe.ReplaceAllString(s, "")
 }
 

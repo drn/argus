@@ -18,6 +18,8 @@ func TestSplitLines(t *testing.T) {
 		{"cr-lf", []byte("hello\r\nworld"), 80, 2},
 		{"ansi-stripped", []byte("\x1b[32mhello\x1b[0m\nworld"), 80, 2},
 		{"control-chars", []byte("he\x07llo"), 80, 1},
+		{"osc-bel", []byte("\x1b]0;title\x07text"), 80, 1},
+		{"osc-st", []byte("\x1b]0;title\x1b\\text"), 80, 1},
 	}
 
 	// Verify ANSI escapes are actually removed from content

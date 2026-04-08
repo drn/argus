@@ -11,6 +11,8 @@ import (
 
 // ansiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
 // OSC sequences are terminated by either BEL (\x07) or ST (\x1b\\).
+// NOTE: For link extraction, osc8Re in todolinks.go must run BEFORE ansiRe
+// to preserve URLs embedded in OSC 8 hyperlink tags (ansiRe strips them).
 var ansiRe = regexp.MustCompile(`\x1b(?:\[[0-9;]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[^\x1b]*|[()][0-9A-B]|[78DEHM])`)
 
 // splitLines strips ANSI escape sequences, then splits the result into
