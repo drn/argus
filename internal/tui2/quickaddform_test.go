@@ -218,7 +218,7 @@ func TestQuickAddForm_DirAutocomplete(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 	testutil.Equal(t, len(f.ac.matches), 1)
 	testutil.Equal(t, f.ac.matches[0], filepath.Join(dir, "Development"))
 }
@@ -234,7 +234,7 @@ func TestQuickAddForm_DirAutocompleteListsAll(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 	testutil.Equal(t, len(f.ac.matches), 2)
 }
 
@@ -249,7 +249,7 @@ func TestQuickAddForm_DirAutocompleteSkipsHidden(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 	testutil.Equal(t, len(f.ac.matches), 1)
 	testutil.Equal(t, f.ac.matches[0], filepath.Join(dir, "visible"))
 }
@@ -263,7 +263,7 @@ func TestQuickAddForm_AcceptAutocomplete(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 	f.updateDirAutocomplete()
 
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 
 	// Accept via Tab.
 	f.acceptAutocomplete()
@@ -280,11 +280,11 @@ func TestQuickAddForm_EscapeClosesACNotForm(t *testing.T) {
 	f.dirPath = []rune(dir + "/")
 	f.dirCursor = len(f.dirPath)
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 
 	// Escape should close AC, NOT cancel the form.
 	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
-	testutil.Equal(t, f.ac.open, false)
+	testutil.Equal(t, f.ac.Open(), false)
 	testutil.Equal(t, f.canceled, false)
 }
 
@@ -296,11 +296,11 @@ func TestQuickAddForm_CtrlQClosesACNotForm(t *testing.T) {
 	f.dirPath = []rune(dir + "/")
 	f.dirCursor = len(f.dirPath)
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, f.ac.Open(), true)
 
 	// CtrlQ should close AC, NOT cancel the form.
 	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
-	testutil.Equal(t, f.ac.open, false)
+	testutil.Equal(t, f.ac.Open(), false)
 	testutil.Equal(t, f.canceled, false)
 }
 

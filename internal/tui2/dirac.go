@@ -8,6 +8,7 @@ import (
 // state (matches, selected index, open/closed) and provides key handling and
 // rendering. Consumers call Update after every input change, HandleKey for
 // navigation events, and Draw to render the dropdown.
+// Callers must pass the same maxVisible value to both Len and Draw.
 type dirAC struct {
 	matches []string // full paths of matching dirs
 	idx     int
@@ -31,8 +32,9 @@ func (ac *dirAC) Update(input string) {
 
 // Accept selects the current autocomplete match and returns the accepted path
 // (with trailing slash, tilde-collapsed). Returns "" if the dropdown is closed
-// or the index is out of range. After accepting, the dropdown re-opens if the
-// accepted directory has sub-directories.
+// or the index is out of range. After accepting, Update is called with the
+// tilde-collapsed path to re-open the dropdown if the directory has children.
+// This works because dirCompletions calls expandTilde internally.
 func (ac *dirAC) Accept() string {
 	if !ac.open || ac.idx >= len(ac.matches) {
 		return ""

@@ -420,7 +420,6 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 }
 
-
 // drawSandboxSelector renders the sandbox field as a ◀/▶ selector.
 func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
 	name := sandboxOptions[pf.sandboxIdx]

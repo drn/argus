@@ -148,6 +148,8 @@ func collapseTilde(path string) string {
 // Expands tilde, filters hidden directories, and suppresses the dropdown when
 // the input already exactly matches the sole result.
 // Used by dirAC for directory autocomplete across all path input fields.
+// Note: os.ReadDir runs synchronously — acceptable for local filesystems
+// but may lag on NFS/iCloud mounts.
 func dirCompletions(raw string) []string {
 	if raw == "" {
 		return nil
@@ -314,6 +316,8 @@ func (f *QuickAddForm) handleDirInputKey(ev *tcell.EventKey) {
 		return
 	}
 
+	// If AC was open, HandleKey already consumed Escape/CtrlQ above.
+	// Reaching here means AC is closed — proceed with normal key handling.
 	switch ev.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlQ:
 		f.canceled = true
