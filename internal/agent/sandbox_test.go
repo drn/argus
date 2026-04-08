@@ -57,6 +57,11 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for ~/.claude/:\n%s", profile)
 	}
 
+	// Profile must allow writes to ~/Library/Keychains for API key storage
+	if !strings.Contains(profile, "/Library/Keychains") {
+		t.Errorf("profile missing allow file-write* for ~/Library/Keychains:\n%s", profile)
+	}
+
 	// Profile must allow writes to /var/folders for macOS temp/cache dirs
 	if !strings.Contains(profile, "/var/folders") {
 		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
@@ -538,6 +543,30 @@ func TestSandbox_CredentialDirsBlocked(t *testing.T) {
 			t.Fatalf("reading ~/.ssh should be allowed for git over SSH: %v\n%s", err, out)
 		}
 	})
+}
+
+func TestSandbox_KeychainWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	wtDir := t.TempDir()
+	homeDir, _ := os.UserHomeDir()
+	keychainDir := homeDir + "/Library/Keychains"
+	if _, err := os.Stat(keychainDir); os.IsNotExist(err) {
+		t.Skip("~/Library/Keychains does not exist")
+	}
+
+	cfg := config.SandboxConfig{}
+
+	// Verify we can write a temp file in the Keychains directory
+	// (security(1) needs this to store API keys)
+	target := keychainDir + "/.argus-sandbox-test"
+	out, err := sandboxRun(t, wtDir, cfg, "touch "+shellQuote(target))
+	if err != nil {
+		t.Fatalf("write to ~/Library/Keychains should succeed for API key storage: %v\n%s", err, out)
+	}
+	os.Remove(target)
 }
 
 func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
