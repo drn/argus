@@ -14,6 +14,7 @@ type StatusBar struct {
 	tasks      []*model.Task
 	running    map[string]bool
 	errMsg     string
+	infoMsg    string
 	activeTab  Tab
 }
 
@@ -54,6 +55,16 @@ func (sb *StatusBar) ClearError() {
 	sb.errMsg = ""
 }
 
+// SetInfo sets an informational (non-error) status message.
+func (sb *StatusBar) SetInfo(msg string) {
+	sb.infoMsg = msg
+}
+
+// ClearInfo clears the informational status message.
+func (sb *StatusBar) ClearInfo() {
+	sb.infoMsg = ""
+}
+
 // Draw renders the status bar.
 func (sb *StatusBar) Draw(screen tcell.Screen) {
 	sb.Box.DrawForSubclass(screen, sb)
@@ -67,10 +78,12 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 		screen.SetContent(col, y, ' ', nil, StyleStatusBar)
 	}
 
-	// Left side: error or task counts
+	// Left side: error, info, or task counts
 	var left string
 	if sb.errMsg != "" {
 		left = " ! " + sb.errMsg
+	} else if sb.infoMsg != "" {
+		left = " " + sb.infoMsg
 	} else {
 		active, pending, complete := 0, 0, 0
 		for _, t := range sb.tasks {
@@ -92,6 +105,8 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	leftStyle := StyleStatusBar
 	if sb.errMsg != "" {
 		leftStyle = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorError)
+	} else if sb.infoMsg != "" {
+		leftStyle = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorDimmed)
 	}
 	col := x
 	for _, r := range left {

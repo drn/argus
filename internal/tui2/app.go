@@ -1910,42 +1910,68 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			return
 		}
 
-		// Create worktree and persist task
+		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
 		var projCfg config.Project
 		if p, ok := a.db.Config().Projects[proj]; ok {
 			projCfg = p
 		}
 
-		if projCfg.Path != "" {
-			wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
-			if err != nil {
-				a.newTaskForm.SetError("Worktree error: " + err.Error())
-				return
-			}
-			task.Worktree = wtPath
-			task.Name = finalName
-			task.Branch = branchName
-		}
-
-		task.Sandboxed = a.resolveSandboxed(task)
-		a.db.Add(task)
-		uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
-
+		// Close form immediately so the UI feels responsive.
 		a.closeNewTaskForm()
 
-		// NOTE: Do NOT call refreshTasksAsync() here. The task was just created
-		// as Pending and startSession will set it to InProgress. An async refresh
-		// races: its RPC snapshot captures running IDs before the session exists,
-		// then reconciliation sees InProgress + not-in-running-set → marks Complete.
-		// Use refreshTasksLocal (no RPC) to make the task list consistent.
-		a.refreshTasksLocal()
-		// Position cursor on the new task so it's selected when exiting agent view.
-		a.tasklist.SelectByID(task.ID)
+		if projCfg.Path == "" {
+			// No project path — no worktree needed, persist and start inline.
+			task.Sandboxed = a.resolveSandboxed(task)
+			a.db.Add(task)
+			uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
+			a.refreshTasksLocal()
+			a.tasklist.SelectByID(task.ID)
+			a.onTaskSelect(task)
+			a.startSession(task)
+			return
+		}
 
-		// Enter agent view FIRST so panel has real dimensions for PTY sizing.
-		a.onTaskSelect(task)
-		a.startSession(task)
+		// Worktree creation runs in a background goroutine to avoid blocking
+		// the tview event loop — git fetch can take several seconds.
+		a.statusbar.SetInfo("Creating worktree…")
+		uxlog.Log("[tui2] starting worktree creation for task %q in project %q", task.Name, proj)
+		projPath := projCfg.Path
+
+		go func() {
+			wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, proj, task.Name, task.Branch)
+			if err != nil {
+				a.tapp.QueueUpdateDraw(func() {
+					a.statusbar.ClearInfo()
+					a.statusbar.SetError("Worktree error: " + err.Error())
+				})
+				uxlog.Log("[tui2] worktree creation failed: %v", err)
+				return
+			}
+
+			a.tapp.QueueUpdateDraw(func() {
+				a.statusbar.ClearInfo()
+				task.Worktree = wtPath
+				task.Name = finalName
+				task.Branch = branchName
+				task.Sandboxed = a.resolveSandboxed(task)
+				a.db.Add(task)
+				uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
+
+				// NOTE: Do NOT call refreshTasksAsync() here. The task was just
+				// created as Pending and startSession will set it to InProgress.
+				// An async refresh races: its RPC snapshot captures running IDs
+				// before the session exists, then reconciliation sees InProgress
+				// + not-in-running-set → marks Complete.
+				// Use refreshTasksLocal (no RPC) to make the task list consistent.
+				a.refreshTasksLocal()
+				a.tasklist.SelectByID(task.ID)
+
+				// Enter agent view FIRST so panel has real dimensions for PTY sizing.
+				a.onTaskSelect(task)
+				a.startSession(task)
+			})
+		}()
 	}
 }
 
@@ -2125,30 +2151,57 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 			TodoPath: item.Path,
 		}
 
-		if projCfg.Path != "" {
-			task.Branch = projCfg.Branch
-			wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, task.Name, task.Branch)
-			if err != nil {
-				a.launchToDoModal.SetError("Worktree error: " + err.Error())
-				return
-			}
-			task.Worktree = wtPath
-			task.Name = finalName
-			task.Branch = branchName
+		// Close modal immediately so the UI feels responsive.
+		a.closeLaunchToDoModal()
+
+		if projCfg.Path == "" {
+			// No project path — no worktree needed, persist and start inline.
+			task.Sandboxed = a.resolveSandboxed(task)
+			a.db.Add(task)
+			uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
+			a.refreshTasksLocal()
+			a.tasklist.SelectByID(task.ID)
+			a.onTaskSelect(task)
+			a.startSession(task)
+			return
 		}
 
-		task.Sandboxed = a.resolveSandboxed(task)
-		a.db.Add(task)
-		uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
+		// Worktree creation runs in a background goroutine to avoid blocking
+		// the tview event loop — git fetch can take several seconds.
+		a.statusbar.SetInfo("Creating worktree…")
+		uxlog.Log("[todos] starting worktree creation for to-do %q in project %q", item.Name, proj)
+		projPath := projCfg.Path
+		branch := projCfg.Branch
 
-		a.closeLaunchToDoModal()
-		// Use refreshTasksLocal (not refreshTasks/refreshTasksAsync) to avoid
-		// reconciliation race: the session doesn't exist yet, so async RPC would
-		// see InProgress + no running session → incorrectly mark Complete.
-		a.refreshTasksLocal()
-		a.tasklist.SelectByID(task.ID)
-		a.onTaskSelect(task)
-		a.startSession(task)
+		go func() {
+			wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, proj, task.Name, branch)
+			if err != nil {
+				a.tapp.QueueUpdateDraw(func() {
+					a.statusbar.ClearInfo()
+					a.statusbar.SetError("Worktree error: " + err.Error())
+				})
+				uxlog.Log("[todos] worktree creation failed: %v", err)
+				return
+			}
+
+			a.tapp.QueueUpdateDraw(func() {
+				a.statusbar.ClearInfo()
+				task.Worktree = wtPath
+				task.Name = finalName
+				task.Branch = branchName
+				task.Sandboxed = a.resolveSandboxed(task)
+				a.db.Add(task)
+				uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
+
+				// Use refreshTasksLocal (not refreshTasks/refreshTasksAsync) to avoid
+				// reconciliation race: the session doesn't exist yet, so async RPC would
+				// see InProgress + no running session → incorrectly mark Complete.
+				a.refreshTasksLocal()
+				a.tasklist.SelectByID(task.ID)
+				a.onTaskSelect(task)
+				a.startSession(task)
+			})
+		}()
 	}
 }
 
