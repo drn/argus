@@ -10,7 +10,8 @@ import (
 )
 
 // ansiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
-var ansiRe = regexp.MustCompile(`\x1b(?:\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|\[[^\x1b]*|[()][0-9A-B]|[78DEHM])`)
+// OSC sequences are terminated by either BEL (\x07) or ST (\x1b\\).
+var ansiRe = regexp.MustCompile(`\x1b(?:\[[0-9;]*[a-zA-Z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[^\x1b]*|[()][0-9A-B]|[78DEHM])`)
 
 // splitLines strips ANSI escape sequences, then splits the result into
 // display lines, wrapping at maxWidth.

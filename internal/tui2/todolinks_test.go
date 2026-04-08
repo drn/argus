@@ -90,9 +90,32 @@ func TestExtractLinks(t *testing.T) {
 			},
 		},
 		{
-			name:    "OSC escape sequences stripped",
+			name:    "OSC 8 hyperlink with BEL terminator",
 			content: "\x1b]8;;https://example.com\x07link\x1b]8;;\x07 and https://example.com",
 			want:    []Link{{Label: "https://example.com", URL: "https://example.com"}},
+		},
+		{
+			name:    "OSC 8 hyperlink with ST terminator",
+			content: "\x1b]8;;https://circleci.com/gh/org/repo/123\x1b\\CircleCI\x1b]8;;\x1b\\",
+			want:    []Link{{Label: "https://circleci.com/gh/org/repo/123", URL: "https://circleci.com/gh/org/repo/123"}},
+		},
+		{
+			name:    "OSC 8 hyperlink URL not spliced with display text",
+			content: "\x1b]8;;https://circleci.com/gh/org/repo/456\x1b\\CircleCI Build\x1b]8;;\x1b\\ passed",
+			want:    []Link{{Label: "https://circleci.com/gh/org/repo/456", URL: "https://circleci.com/gh/org/repo/456"}},
+		},
+		{
+			name:    "multiple OSC 8 hyperlinks",
+			content: "\x1b]8;;https://github.com/org/repo/pull/1\x1b\\PR #1\x1b]8;;\x1b\\ and \x1b]8;;https://circleci.com/gh/org/repo/99\x1b\\CI\x1b]8;;\x1b\\",
+			want: []Link{
+				{Label: "https://github.com/org/repo/pull/1", URL: "https://github.com/org/repo/pull/1"},
+				{Label: "https://circleci.com/gh/org/repo/99", URL: "https://circleci.com/gh/org/repo/99"},
+			},
+		},
+		{
+			name:    "OSC 8 hyperlink with params field",
+			content: "\x1b]8;id=link1;https://example.com/page\x1b\\click here\x1b]8;;\x1b\\",
+			want:    []Link{{Label: "https://example.com/page", URL: "https://example.com/page"}},
 		},
 	}
 
