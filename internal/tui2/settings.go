@@ -95,8 +95,9 @@ type SettingsView struct {
 	editPromptBuf   string // buffer for in-progress edit
 
 	// Vault path editing.
-	editingVault   string // which vault is being edited: "_metis_vault" or "_argus_vault", or "" if not editing
-	editVaultBuf   string // buffer for in-progress vault path edit
+	editingVault     string   // which vault is being edited: "_metis_vault" or "_argus_vault", or "" if not editing
+	editVaultBuf     string   // buffer for in-progress vault path edit
+	discoveredVaults []string // sorted absolute paths of discovered iCloud Obsidian vaults
 
 	// Logs detail scroll.
 	logScrollOff int
@@ -193,6 +194,8 @@ func (sv *SettingsView) Refresh() {
 		sv.argusVaultAtBoot = cfg.KB.ArgusVaultPath
 		sv.vaultBootRecorded = true
 	}
+	sv.discoveredVaults = config.DiscoverICloudVaults()
+	uxlog.Log("[settings] discovered %d iCloud vaults", len(sv.discoveredVaults))
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
 	sv.autoStartTodos = cfg.KB.AutoStartTodos
 	sv.autoStartInterval = cfg.KB.AutoStartInterval
@@ -482,6 +485,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		case srSpinner:
 			sv.cycleSpinner(-1)
 			return true
+		case srVaultPath:
+			sv.cycleVaultPath(-1)
+			return true
 		}
 		return false
 	case tcell.KeyRight:
@@ -491,6 +497,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return true
 		case srSpinner:
 			sv.cycleSpinner(1)
+			return true
+		case srVaultPath:
+			sv.cycleVaultPath(1)
 			return true
 		}
 		return false
@@ -851,6 +860,57 @@ func (sv *SettingsView) cycleSpinner(dir int) {
 	}
 	model.SetActiveSpinner(sv.spinnerStyle)
 	uxlog.Log("[settings] spinner style set to %q", sv.spinnerStyle)
+	sv.rebuildRows()
+}
+
+// cycleVaultPath cycles the vault path forward or backward through discovered iCloud vaults.
+func (sv *SettingsView) cycleVaultPath(dir int) {
+	if len(sv.discoveredVaults) == 0 {
+		return
+	}
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srVaultPath {
+		return
+	}
+
+	currentPath := sv.argusVaultPath
+	dbKey := "kb.argus_vault_path"
+	if row.key == "_metis_vault" {
+		currentPath = sv.metisVaultPath
+		dbKey = "kb.metis_vault_path"
+	}
+
+	// Find current index in discovered vaults.
+	idx := -1
+	for i, v := range sv.discoveredVaults {
+		if v == currentPath {
+			idx = i
+			break
+		}
+	}
+
+	// Cycle. If current path not in list, start at first (forward) or last (backward).
+	n := len(sv.discoveredVaults)
+	if idx < 0 {
+		if dir > 0 {
+			idx = 0
+		} else {
+			idx = n - 1
+		}
+	} else {
+		idx = (idx + dir + n) % n
+	}
+
+	newPath := sv.discoveredVaults[idx]
+	if row.key == "_metis_vault" {
+		sv.metisVaultPath = newPath
+	} else {
+		sv.argusVaultPath = newPath
+	}
+	if err := sv.database.SetConfigValue(dbKey, newPath); err != nil {
+		uxlog.Log("[settings] failed to persist vault path: %v", err)
+	}
+	uxlog.Log("[settings] %s cycled to %q", dbKey, newPath)
 	sv.rebuildRows()
 }
 
@@ -1234,9 +1294,31 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 	drawText(screen, x, y+r, w, desc, StyleDimmed)
 	r += 2
 
+	// List discovered vaults (like spinner detail lists available styles).
+	if !editing && len(sv.discoveredVaults) > 0 {
+		drawText(screen, x, y+r, w, "Discovered iCloud vaults:", tcell.StyleDefault.Foreground(ColorTitle))
+		r++
+		for _, v := range sv.discoveredVaults {
+			if r >= h-1 {
+				break
+			}
+			home, _ := os.UserHomeDir()
+			label := "  " + strings.TrimPrefix(v, home)
+			style := StyleDimmed
+			if v == path {
+				style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+			}
+			drawText(screen, x, y+r, w, label, style)
+			r++
+		}
+		r++
+	}
+
 	if r < h {
 		if editing {
 			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+		} else if len(sv.discoveredVaults) > 0 {
+			drawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", StyleDimmed)
 		} else {
 			drawText(screen, x, y+r, w, "[enter] edit path", StyleDimmed)
 		}
