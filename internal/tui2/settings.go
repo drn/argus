@@ -69,6 +69,9 @@ type SettingsView struct {
 	kbEnabled          bool
 	metisVaultPath     string
 	argusVaultPath     string
+	metisVaultAtBoot   string // value when daemon started; used to show "restart required"
+	argusVaultAtBoot   string
+	vaultBootRecorded  bool   // true after first Refresh captures boot values
 	kbTaskSync         bool
 	autoStartTodos     bool
 	autoStartInterval  int
@@ -185,6 +188,11 @@ func (sv *SettingsView) Refresh() {
 	sv.kbEnabled = cfg.KB.Enabled
 	sv.metisVaultPath = cfg.KB.MetisVaultPath
 	sv.argusVaultPath = cfg.KB.ArgusVaultPath
+	if !sv.vaultBootRecorded {
+		sv.metisVaultAtBoot = cfg.KB.MetisVaultPath
+		sv.argusVaultAtBoot = cfg.KB.ArgusVaultPath
+		sv.vaultBootRecorded = true
+	}
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
 	sv.autoStartTodos = cfg.KB.AutoStartTodos
 	sv.autoStartInterval = cfg.KB.AutoStartInterval
@@ -314,6 +322,9 @@ func (sv *SettingsView) rebuildRows() {
 	} else if sv.metisVaultPath == "" {
 		metisLabel = "  Metis: (not configured)"
 	}
+	if sv.vaultBootRecorded && sv.metisVaultPath != sv.metisVaultAtBoot {
+		metisLabel += " (restart required)"
+	}
 	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: "_metis_vault"})
 
 	argusLabel := "  Argus: " + sv.argusVaultPath
@@ -321,6 +332,9 @@ func (sv *SettingsView) rebuildRows() {
 		argusLabel = "  Argus: " + sv.editVaultBuf + "▎"
 	} else if sv.argusVaultPath == "" {
 		argusLabel = "  Argus: (not configured)"
+	}
+	if sv.vaultBootRecorded && sv.argusVaultPath != sv.argusVaultAtBoot {
+		argusLabel += " (restart required)"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: "_argus_vault"})
 
@@ -415,10 +429,6 @@ func (sv *SettingsView) IsEditing() bool {
 	return sv.editingPrompt || sv.editingVault != ""
 }
 
-// IsEditingPrompt returns true when the user is inline-editing the review prompt.
-func (sv *SettingsView) IsEditingPrompt() bool {
-	return sv.editingPrompt
-}
 
 // SelectedProject returns the project at the cursor, or nil.
 func (sv *SettingsView) SelectedProject() *projectEntry {
@@ -634,7 +644,7 @@ func (sv *SettingsView) handleEnter() bool {
 		sv.editingVault = row.key
 		if row.key == "_metis_vault" {
 			sv.editVaultBuf = sv.metisVaultPath
-		} else {
+		} else if row.key == "_argus_vault" {
 			sv.editVaultBuf = sv.argusVaultPath
 		}
 		sv.rebuildRows()
@@ -773,7 +783,7 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 				uxlog.Log("[settings] failed to persist metis vault path: %v", err)
 			}
 			uxlog.Log("[settings] metis vault path set to %q", path)
-		} else {
+		} else if key == "_argus_vault" {
 			sv.argusVaultPath = path
 			if err := sv.database.SetConfigValue("kb.argus_vault_path", path); err != nil {
 				uxlog.Log("[settings] failed to persist argus vault path: %v", err)
@@ -1338,6 +1348,7 @@ func (sv *SettingsView) SetDaemonRestarting(restarting bool) {
 	if !restarting {
 		// Daemon just came back — re-capture boot state on next Refresh.
 		sv.apiBootRecorded = false
+		sv.vaultBootRecorded = false
 	}
 	sv.rebuildRows()
 }

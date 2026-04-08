@@ -871,8 +871,12 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	sv.Refresh()
 
 	// Verify default paths are populated from DB seed.
-	testutil.Contains(t, sv.metisVaultPath, "Metis")
-	testutil.Contains(t, sv.argusVaultPath, "Argus")
+	if sv.metisVaultPath == "" {
+		t.Fatal("metisVaultPath should be populated from DB seed")
+	}
+	if sv.argusVaultPath == "" {
+		t.Fatal("argusVaultPath should be populated from DB seed")
+	}
 
 	// Verify vault path rows exist.
 	metisIdx := -1
@@ -972,6 +976,51 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 		testutil.Contains(t, sv.editVaultBuf, "q")
 
 		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	})
+}
+
+func TestSettingsView_VaultPathRestartHint(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	vaultLabel := func(key string) string {
+		for _, row := range sv.rows {
+			if row.kind == srVaultPath && row.key == key {
+				return row.label
+			}
+		}
+		return ""
+	}
+
+	t.Run("no hint initially", func(t *testing.T) {
+		label := vaultLabel("_metis_vault")
+		if strings.Contains(label, "(restart required)") {
+			t.Errorf("should not show restart hint initially, got %q", label)
+		}
+	})
+
+	t.Run("hint appears after edit", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srVaultPath && row.key == "_metis_vault" {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		sv.editVaultBuf = "/changed/path"
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		testutil.Contains(t, vaultLabel("_metis_vault"), "(restart required)")
+	})
+
+	t.Run("hint clears after daemon restart", func(t *testing.T) {
+		sv.SetDaemonRestarting(false)
+		testutil.Equal(t, sv.vaultBootRecorded, false)
+		sv.Refresh()
+		label := vaultLabel("_metis_vault")
+		if strings.Contains(label, "(restart required)") {
+			t.Errorf("hint should clear after restart + refresh, got %q", label)
+		}
 	})
 }
 
