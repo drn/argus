@@ -43,6 +43,9 @@ const (
 	vaultKeyArgus = "_argus_vault"
 )
 
+// svMaxACVisible is the maximum number of vault path autocomplete rows shown.
+const svMaxACVisible = 8
+
 // settingsRow is a single row in the settings section list.
 type settingsRow struct {
 	kind  settingsRowKind
@@ -104,6 +107,7 @@ type SettingsView struct {
 	editingVault     string   // which vault is being edited: vaultKeyMetis or vaultKeyArgus, or "" if not editing
 	editVaultBuf     string   // buffer for in-progress vault path edit
 	discoveredVaults []string // sorted absolute paths of discovered iCloud Obsidian vaults
+	vaultAC          dirAC    // directory autocomplete for vault path editing
 
 	// Logs detail scroll.
 	logScrollOff int
@@ -431,6 +435,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 			sv.rebuildRows()
 		} else if sv.editingVault != "" {
 			sv.editVaultBuf += pastedText
+			sv.vaultAC.Update(sv.editVaultBuf)
 			sv.rebuildRows()
 		}
 	})
@@ -660,6 +665,7 @@ func (sv *SettingsView) handleEnter() bool {
 	case srVaultPath:
 		// Start inline editing for the selected vault path.
 		sv.editingVault = row.key
+		sv.vaultAC.Close()
 		if row.key == vaultKeyMetis {
 			sv.editVaultBuf = sv.metisVaultPath
 		} else if row.key == vaultKeyArgus {
@@ -790,11 +796,24 @@ func (sv *SettingsView) handleEditPromptKey(ev *tcell.EventKey) bool {
 
 // handleEditVaultKey handles keystrokes while inline-editing a vault path.
 func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
+	// Delegate navigation keys to the autocomplete widget.
+	consumed, accepted := sv.vaultAC.HandleKey(ev, sv.editVaultBuf)
+	if accepted != "" {
+		sv.editVaultBuf = accepted
+		sv.rebuildRows()
+		return true
+	}
+	if consumed {
+		sv.rebuildRows()
+		return true
+	}
+
 	switch ev.Key() {
 	case tcell.KeyEnter:
 		path := sv.editVaultBuf
 		key := sv.editingVault
 		sv.editingVault = ""
+		sv.vaultAC.Close()
 		if key == vaultKeyMetis {
 			sv.metisVaultPath = path
 			if err := sv.database.SetConfigValue("kb.metis_vault_path", path); err != nil {
@@ -812,17 +831,22 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 		return true
 	case tcell.KeyEscape:
 		sv.editingVault = ""
+		sv.vaultAC.Close()
 		sv.rebuildRows()
 		return true
+	case tcell.KeyDown, tcell.KeyUp:
+		return true // consume to avoid cursor movement while editing
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(sv.editVaultBuf) > 0 {
 			_, size := utf8.DecodeLastRuneInString(sv.editVaultBuf)
 			sv.editVaultBuf = sv.editVaultBuf[:len(sv.editVaultBuf)-size]
+			sv.vaultAC.Update(sv.editVaultBuf)
 			sv.rebuildRows()
 		}
 		return true
 	case tcell.KeyRune:
 		sv.editVaultBuf += string(ev.Rune())
+		sv.vaultAC.Update(sv.editVaultBuf)
 		sv.rebuildRows()
 		return true
 	}
@@ -1298,7 +1322,13 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 		display = "(not configured)"
 	}
 	drawText(screen, x, y+r, w, display, tcell.StyleDefault.Foreground(ColorComplete))
-	r += 2
+	r++
+
+	// Autocomplete dropdown (only when editing this vault).
+	if editing {
+		r += sv.vaultAC.Draw(screen, x, y+r, w, svMaxACVisible)
+	}
+	r++
 
 	drawText(screen, x, y+r, w, desc, StyleDimmed)
 	r += 2
@@ -1325,7 +1355,7 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 
 	if r < h {
 		if editing {
-			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", StyleDimmed)
 		} else if len(sv.discoveredVaults) > 0 {
 			drawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", StyleDimmed)
 		} else {

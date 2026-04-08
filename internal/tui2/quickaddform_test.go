@@ -218,9 +218,9 @@ func TestQuickAddForm_DirAutocomplete(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.acOpen, true)
-	testutil.Equal(t, len(f.acMatches), 1)
-	testutil.Equal(t, f.acMatches[0], filepath.Join(dir, "Development"))
+	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, len(f.ac.matches), 1)
+	testutil.Equal(t, f.ac.matches[0], filepath.Join(dir, "Development"))
 }
 
 func TestQuickAddForm_DirAutocompleteListsAll(t *testing.T) {
@@ -234,8 +234,8 @@ func TestQuickAddForm_DirAutocompleteListsAll(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.acOpen, true)
-	testutil.Equal(t, len(f.acMatches), 2)
+	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, len(f.ac.matches), 2)
 }
 
 func TestQuickAddForm_DirAutocompleteSkipsHidden(t *testing.T) {
@@ -249,9 +249,9 @@ func TestQuickAddForm_DirAutocompleteSkipsHidden(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 
 	f.updateDirAutocomplete()
-	testutil.Equal(t, f.acOpen, true)
-	testutil.Equal(t, len(f.acMatches), 1)
-	testutil.Equal(t, f.acMatches[0], filepath.Join(dir, "visible"))
+	testutil.Equal(t, f.ac.open, true)
+	testutil.Equal(t, len(f.ac.matches), 1)
+	testutil.Equal(t, f.ac.matches[0], filepath.Join(dir, "visible"))
 }
 
 func TestQuickAddForm_AcceptAutocomplete(t *testing.T) {
@@ -263,13 +263,45 @@ func TestQuickAddForm_AcceptAutocomplete(t *testing.T) {
 	f.dirCursor = len(f.dirPath)
 	f.updateDirAutocomplete()
 
-	testutil.Equal(t, f.acOpen, true)
+	testutil.Equal(t, f.ac.open, true)
 
 	// Accept via Tab.
 	f.acceptAutocomplete()
 	result := string(f.dirPath)
 	expected := collapseTilde(filepath.Join(dir, "Development")) + "/"
 	testutil.Equal(t, result, expected)
+}
+
+func TestQuickAddForm_EscapeClosesACNotForm(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "alpha"), 0o755)
+
+	f := NewQuickAddForm(nil)
+	f.dirPath = []rune(dir + "/")
+	f.dirCursor = len(f.dirPath)
+	f.updateDirAutocomplete()
+	testutil.Equal(t, f.ac.open, true)
+
+	// Escape should close AC, NOT cancel the form.
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	testutil.Equal(t, f.ac.open, false)
+	testutil.Equal(t, f.canceled, false)
+}
+
+func TestQuickAddForm_CtrlQClosesACNotForm(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "alpha"), 0o755)
+
+	f := NewQuickAddForm(nil)
+	f.dirPath = []rune(dir + "/")
+	f.dirCursor = len(f.dirPath)
+	f.updateDirAutocomplete()
+	testutil.Equal(t, f.ac.open, true)
+
+	// CtrlQ should close AC, NOT cancel the form.
+	f.handleDirInputKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	testutil.Equal(t, f.ac.open, false)
+	testutil.Equal(t, f.canceled, false)
 }
 
 func TestQuickAddForm_SelectedRepos(t *testing.T) {

@@ -27,9 +27,7 @@ type QuickAddForm struct {
 	dirCursor int
 
 	// Directory autocomplete.
-	acMatches []string // full paths of matching dirs
-	acIdx     int
-	acOpen    bool
+	ac dirAC
 
 	// Phase 1: repo selection.
 	repos     []repoCandidate
@@ -149,7 +147,7 @@ func collapseTilde(path string) string {
 // Returns nil when there are no matches or the input is empty.
 // Expands tilde, filters hidden directories, and suppresses the dropdown when
 // the input already exactly matches the sole result.
-// Used by both QuickAddForm and ProjectForm — keep in sync.
+// Used by dirAC for directory autocomplete across all path input fields.
 func dirCompletions(raw string) []string {
 	if raw == "" {
 		return nil
@@ -202,31 +200,15 @@ func dirCompletions(raw string) []string {
 
 // updateDirAutocomplete computes directory completions for the current input.
 func (f *QuickAddForm) updateDirAutocomplete() {
-	raw := string(f.dirPath)
-	matches := dirCompletions(raw)
-	if matches == nil {
-		f.acOpen = false
-		f.acMatches = nil
-		return
-	}
-	f.acMatches = matches
-	f.acOpen = true
-	if f.acIdx >= len(f.acMatches) {
-		f.acIdx = 0
-	}
+	f.ac.Update(string(f.dirPath))
 }
 
 // acceptAutocomplete replaces the dir input with the selected autocomplete match.
 func (f *QuickAddForm) acceptAutocomplete() {
-	if !f.acOpen || f.acIdx >= len(f.acMatches) {
-		return
+	if accepted := f.ac.Accept(); accepted != "" {
+		f.dirPath = []rune(accepted)
+		f.dirCursor = len(f.dirPath)
 	}
-	path := collapseTilde(f.acMatches[f.acIdx]) + "/"
-	f.dirPath = []rune(path)
-	f.dirCursor = len(f.dirPath)
-	f.acOpen = false
-	f.acMatches = nil
-	f.updateDirAutocomplete()
 }
 
 // --- Directory scanning ---
@@ -321,31 +303,23 @@ func (f *QuickAddForm) HandleKey(ev *tcell.EventKey) {
 }
 
 func (f *QuickAddForm) handleDirInputKey(ev *tcell.EventKey) {
+	// Delegate navigation keys to the autocomplete widget.
+	consumed, accepted := f.ac.HandleKey(ev, string(f.dirPath))
+	if accepted != "" {
+		f.dirPath = []rune(accepted)
+		f.dirCursor = len(f.dirPath)
+		return
+	}
+	if consumed {
+		return
+	}
+
 	switch ev.Key() {
 	case tcell.KeyEscape, tcell.KeyCtrlQ:
-		if f.acOpen {
-			f.acOpen = false
-			return
-		}
 		f.canceled = true
 		return
 
-	case tcell.KeyTab:
-		if f.acOpen {
-			f.acceptAutocomplete()
-			return
-		}
-		f.updateDirAutocomplete()
-		if f.acOpen {
-			f.acceptAutocomplete()
-		}
-		return
-
 	case tcell.KeyEnter:
-		if f.acOpen {
-			f.acceptAutocomplete()
-			return
-		}
 		if f.scanning {
 			return
 		}
@@ -406,23 +380,6 @@ func (f *QuickAddForm) handleDirInputKey(ev *tcell.EventKey) {
 	case tcell.KeyCtrlK:
 		f.dirPath = f.dirPath[:f.dirCursor]
 		f.updateDirAutocomplete()
-		return
-
-	case tcell.KeyDown:
-		if f.acOpen && len(f.acMatches) > 0 {
-			f.acIdx = (f.acIdx + 1) % len(f.acMatches)
-			// scroll handled in draw
-		}
-		return
-
-	case tcell.KeyUp:
-		if f.acOpen && len(f.acMatches) > 0 {
-			if f.acIdx == 0 {
-				f.acIdx = len(f.acMatches) - 1
-			} else {
-				f.acIdx--
-			}
-		}
 		return
 
 	case tcell.KeyRune:
@@ -544,13 +501,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	innerW := modalW - 4
 
 	// Compute height: border(2) + title(1) + gap(1) + label(1) + input(1) + ac + gap(1) + help(1) + err
-	acRows := 0
-	if f.acOpen && len(f.acMatches) > 0 {
-		acRows = len(f.acMatches)
-		if acRows > qaMaxVisible {
-			acRows = qaMaxVisible
-		}
-	}
+	acRows := f.ac.Len(qaMaxVisible)
 	modalH := 8 + acRows
 	if f.scanning {
 		modalH++
@@ -646,42 +597,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	row++
 
 	// Autocomplete dropdown.
-	if f.acOpen && len(f.acMatches) > 0 {
-		visible := len(f.acMatches)
-		if visible > qaMaxVisible {
-			visible = qaMaxVisible
-		}
-		// Ensure selected item is visible.
-		acScroll := 0
-		if f.acIdx >= visible {
-			acScroll = f.acIdx - visible + 1
-		}
-
-		selectedStyle := tcell.StyleDefault.Bold(true).Foreground(ColorSelected)
-		for vi := 0; vi < visible; vi++ {
-			idx := acScroll + vi
-			if idx >= len(f.acMatches) {
-				break
-			}
-			display := collapseTilde(f.acMatches[idx])
-			isSelected := idx == f.acIdx
-
-			indicator := "  "
-			if isSelected {
-				indicator = "> "
-			}
-			line := indicator + display
-			st := StyleDimmed
-			if isSelected {
-				st = selectedStyle
-			}
-			lineRunes := []rune(line)
-			for c := 0; c < innerW && c < len(lineRunes); c++ {
-				screen.SetContent(innerX+c, row+vi, lineRunes[c], nil, st)
-			}
-		}
-		row += visible
-	}
+	row += f.ac.Draw(screen, innerX, row, innerW, qaMaxVisible)
 
 	row++ // gap
 

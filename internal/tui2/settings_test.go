@@ -1129,6 +1129,105 @@ func TestSettingsView_VaultPathCycleNoVaults(t *testing.T) {
 	testutil.Equal(t, sv.metisVaultPath, origMetis)
 }
 
+func TestSettingsView_VaultPathAutocomplete(t *testing.T) {
+	root := setupACDirs(t, "MetisVault", "ArgusVault", "OtherDir")
+
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Find metis vault row and start editing.
+	for i, row := range sv.rows {
+		if row.kind == srVaultPath && row.key == vaultKeyMetis {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	testutil.Equal(t, sv.editingVault, vaultKeyMetis)
+
+	t.Run("typing path opens autocomplete", func(t *testing.T) {
+		sv.editVaultBuf = root + "/"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		testutil.Equal(t, sv.vaultAC.Open(), true)
+		testutil.Equal(t, len(sv.vaultAC.matches), 3)
+	})
+
+	t.Run("typing prefix filters", func(t *testing.T) {
+		sv.editVaultBuf = root + "/M"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		testutil.Equal(t, sv.vaultAC.Open(), true)
+		testutil.Equal(t, len(sv.vaultAC.matches), 1)
+		testutil.Contains(t, sv.vaultAC.matches[0], "MetisVault")
+	})
+
+	t.Run("tab accepts autocomplete", func(t *testing.T) {
+		sv.editVaultBuf = root + "/M"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+		testutil.Contains(t, sv.editVaultBuf, "MetisVault/")
+	})
+
+	t.Run("tab on closed triggers and accepts", func(t *testing.T) {
+		sv.editVaultBuf = root + "/A"
+		sv.vaultAC.Close()
+		testutil.Equal(t, sv.vaultAC.Open(), false)
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
+		testutil.Contains(t, sv.editVaultBuf, "ArgusVault/")
+	})
+
+	t.Run("down/up navigates", func(t *testing.T) {
+		sv.editVaultBuf = root + "/"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		testutil.Equal(t, sv.vaultAC.idx, 0)
+
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+		testutil.Equal(t, sv.vaultAC.idx, 1)
+
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+		testutil.Equal(t, sv.vaultAC.idx, 0)
+	})
+
+	t.Run("escape closes autocomplete first", func(t *testing.T) {
+		sv.editVaultBuf = root + "/"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		testutil.Equal(t, sv.vaultAC.Open(), true)
+
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+		testutil.Equal(t, sv.vaultAC.Open(), false)
+		testutil.Equal(t, sv.editingVault, vaultKeyMetis) // still editing
+	})
+
+	t.Run("enter accepts autocomplete instead of saving", func(t *testing.T) {
+		sv.editVaultBuf = root + "/O"
+		sv.vaultAC.Update(sv.editVaultBuf)
+		testutil.Equal(t, sv.vaultAC.Open(), true)
+
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		testutil.Contains(t, sv.editVaultBuf, "OtherDir/")
+		testutil.Equal(t, sv.editingVault, vaultKeyMetis) // still editing, not saved
+	})
+
+	t.Run("paste triggers autocomplete", func(t *testing.T) {
+		sv.editVaultBuf = ""
+		sv.vaultAC.Close()
+
+		paste := sv.PasteHandler()
+		paste(root+"/", func(p tview.Primitive) {})
+
+		testutil.Equal(t, sv.editVaultBuf, root+"/")
+		testutil.Equal(t, sv.vaultAC.Open(), true)
+		testutil.Equal(t, len(sv.vaultAC.matches), 3)
+	})
+
+	// Clean up editing state.
+	sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+}
+
 // findProjectEntry locates a project in the settings view by name.
 func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry {
 	t.Helper()

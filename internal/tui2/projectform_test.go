@@ -247,8 +247,8 @@ func TestProjectForm_PathAC_TypingOpensDropdown(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/")
 
-	testutil.Equal(t, pf.pathACOpen, true)
-	testutil.Equal(t, len(pf.pathACMatches), 3)
+	testutil.Equal(t, pf.pathAC.open, true)
+	testutil.Equal(t, len(pf.pathAC.matches), 3)
 }
 
 func TestProjectForm_PathAC_PrefixFilters(t *testing.T) {
@@ -258,8 +258,8 @@ func TestProjectForm_PathAC_PrefixFilters(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/a")
 
-	testutil.Equal(t, pf.pathACOpen, true)
-	testutil.Equal(t, len(pf.pathACMatches), 2) // alpha, arc
+	testutil.Equal(t, pf.pathAC.open, true)
+	testutil.Equal(t, len(pf.pathAC.matches), 2) // alpha, arc
 }
 
 func TestProjectForm_PathAC_TabAccepts(t *testing.T) {
@@ -269,9 +269,9 @@ func TestProjectForm_PathAC_TabAccepts(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/a")
 
-	testutil.Equal(t, pf.pathACOpen, true)
+	testutil.Equal(t, pf.pathAC.open, true)
 	// First match is "alpha".
-	testutil.Contains(t, pf.pathACMatches[0], "alpha")
+	testutil.Contains(t, pf.pathAC.matches[0], "alpha")
 
 	// Tab accepts.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
@@ -286,23 +286,23 @@ func TestProjectForm_PathAC_DownUpNavigates(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/")
 
-	testutil.Equal(t, pf.pathACIdx, 0)
+	testutil.Equal(t, pf.pathAC.idx, 0)
 
 	// Down → 1
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACIdx, 1)
+	testutil.Equal(t, pf.pathAC.idx, 1)
 
 	// Down → 2
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACIdx, 2)
+	testutil.Equal(t, pf.pathAC.idx, 2)
 
 	// Down → wraps to 0
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACIdx, 0)
+	testutil.Equal(t, pf.pathAC.idx, 0)
 
 	// Up → wraps to 2
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACIdx, 2)
+	testutil.Equal(t, pf.pathAC.idx, 2)
 }
 
 func TestProjectForm_PathAC_EscapeClosesDropdown(t *testing.T) {
@@ -312,12 +312,31 @@ func TestProjectForm_PathAC_EscapeClosesDropdown(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/")
 
-	testutil.Equal(t, pf.pathACOpen, true)
+	testutil.Equal(t, pf.pathAC.open, true)
 
 	// Escape closes dropdown but does NOT cancel form.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACOpen, false)
+	testutil.Equal(t, pf.pathAC.open, false)
 	testutil.Equal(t, pf.canceled, false)
+}
+
+func TestProjectForm_PathAC_CtrlQClosesDropdown(t *testing.T) {
+	root := setupACDirs(t, "alpha", "beta")
+
+	pf := NewProjectForm()
+	pf.focused = pfFieldPath
+	typeRunes(pf, root+"/")
+
+	testutil.Equal(t, pf.pathAC.open, true)
+
+	// CtrlQ closes dropdown but does NOT cancel form.
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	testutil.Equal(t, pf.pathAC.open, false)
+	testutil.Equal(t, pf.canceled, false)
+
+	// Second CtrlQ cancels the form.
+	pf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
+	testutil.Equal(t, pf.canceled, true)
 }
 
 func TestProjectForm_PathAC_BackspaceUpdatesAC(t *testing.T) {
@@ -327,12 +346,12 @@ func TestProjectForm_PathAC_BackspaceUpdatesAC(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/al")
 
-	testutil.Equal(t, pf.pathACOpen, true)
-	testutil.Equal(t, len(pf.pathACMatches), 1) // alpha
+	testutil.Equal(t, pf.pathAC.open, true)
+	testutil.Equal(t, len(pf.pathAC.matches), 1) // alpha
 
 	// Backspace → "a" prefix → alpha + arc
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModNone))
-	testutil.Equal(t, len(pf.pathACMatches), 2) // alpha, arc
+	testutil.Equal(t, len(pf.pathAC.matches), 2) // alpha, arc
 }
 
 func TestProjectForm_PathAC_HiddenDirsExcluded(t *testing.T) {
@@ -342,14 +361,14 @@ func TestProjectForm_PathAC_HiddenDirsExcluded(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/")
 
-	testutil.Equal(t, pf.pathACOpen, true)
+	testutil.Equal(t, pf.pathAC.open, true)
 	// .hidden should not appear in matches.
-	for _, m := range pf.pathACMatches {
+	for _, m := range pf.pathAC.matches {
 		if filepath.Base(m) == ".hidden" {
 			t.Errorf("hidden dir should be excluded, got %s", m)
 		}
 	}
-	testutil.Equal(t, len(pf.pathACMatches), 2) // visible, other
+	testutil.Equal(t, len(pf.pathAC.matches), 2) // visible, other
 }
 
 func TestProjectForm_PathAC_EnterAcceptsWhenOpen(t *testing.T) {
@@ -359,7 +378,7 @@ func TestProjectForm_PathAC_EnterAcceptsWhenOpen(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/a")
 
-	testutil.Equal(t, pf.pathACOpen, true)
+	testutil.Equal(t, pf.pathAC.open, true)
 
 	// Enter accepts the autocomplete instead of advancing fields.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
@@ -374,8 +393,8 @@ func TestProjectForm_PathAC_CaseInsensitive(t *testing.T) {
 	pf.focused = pfFieldPath
 	typeRunes(pf, root+"/my")
 
-	testutil.Equal(t, pf.pathACOpen, true)
-	testutil.Equal(t, len(pf.pathACMatches), 2) // both match case-insensitively
+	testutil.Equal(t, pf.pathAC.open, true)
+	testutil.Equal(t, len(pf.pathAC.matches), 2) // both match case-insensitively
 }
 
 func TestProjectForm_Result_ExpandsTilde(t *testing.T) {
@@ -410,7 +429,7 @@ func TestProjectForm_PathAC_TabOnClosedTriggersAC(t *testing.T) {
 
 	// Close AC first.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
-	testutil.Equal(t, pf.pathACOpen, false)
+	testutil.Equal(t, pf.pathAC.open, false)
 
 	// Tab triggers + accepts.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone))
@@ -426,8 +445,8 @@ func TestProjectForm_PathAC_PasteTriggersAC(t *testing.T) {
 	paste := pf.PasteHandler()
 	paste(root+"/", func(p tview.Primitive) {})
 
-	testutil.Equal(t, pf.pathACOpen, true)
-	testutil.Equal(t, len(pf.pathACMatches), 2)
+	testutil.Equal(t, pf.pathAC.open, true)
+	testutil.Equal(t, len(pf.pathAC.matches), 2)
 }
 
 func TestProjectForm_PathAC_NotOnOtherFields(t *testing.T) {
@@ -437,7 +456,7 @@ func TestProjectForm_PathAC_NotOnOtherFields(t *testing.T) {
 	pf.focused = pfFieldName // NOT path
 	typeRunes(pf, root+"/")
 
-	testutil.Equal(t, pf.pathACOpen, false)
+	testutil.Equal(t, pf.pathAC.open, false)
 }
 
 func TestProjectForm_MaybeLoadBranches_ExpandsTilde(t *testing.T) {

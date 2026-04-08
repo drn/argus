@@ -54,10 +54,8 @@ type ProjectForm struct {
 	sandboxDenyRead   []string
 	sandboxExtraWrite []string
 
-	// Path autocomplete state.
-	pathACMatches []string // full paths of matching dirs
-	pathACIdx     int
-	pathACOpen    bool
+	// Path autocomplete.
+	pathAC dirAC
 
 	// OnBranchFocus is called when the branch field gains focus and the
 	// path has changed since the last load. The caller should fetch branches
@@ -261,86 +259,22 @@ func (pf *ProjectForm) HandleKey(ev *tcell.EventKey) {
 // handlePathACKey handles autocomplete-specific keys when the path field is
 // focused. Returns true if the event was consumed.
 func (pf *ProjectForm) handlePathACKey(ev *tcell.EventKey) bool {
-	switch ev.Key() {
-	case tcell.KeyEscape:
-		if pf.pathACOpen {
-			pf.closePathAC()
-			return true
-		}
-		return false
-	case tcell.KeyTab:
-		if pf.pathACOpen {
-			pf.acceptPathAC()
-			return true
-		}
-		// Trigger autocomplete on first Tab press.
-		pf.updatePathAC()
-		if pf.pathACOpen {
-			pf.acceptPathAC()
-			return true
-		}
-		return false
-	case tcell.KeyEnter:
-		if pf.pathACOpen {
-			pf.acceptPathAC()
-			return true
-		}
-		return false
-	case tcell.KeyDown:
-		if pf.pathACOpen && len(pf.pathACMatches) > 0 {
-			pf.pathACIdx = (pf.pathACIdx + 1) % len(pf.pathACMatches)
-			return true
-		}
-		return false // no-op when AC is closed
-	case tcell.KeyUp:
-		if pf.pathACOpen && len(pf.pathACMatches) > 0 {
-			if pf.pathACIdx == 0 {
-				pf.pathACIdx = len(pf.pathACMatches) - 1
-			} else {
-				pf.pathACIdx--
-			}
-			return true
-		}
-		return false // no-op when AC is closed
+	consumed, accepted := pf.pathAC.HandleKey(ev, string(pf.fields[pfFieldPath]))
+	if accepted != "" {
+		pf.fields[pfFieldPath] = []rune(accepted)
+		pf.cursors[pfFieldPath] = len(pf.fields[pfFieldPath])
 	}
-	return false
+	return consumed
 }
 
 // updatePathAC computes directory completions for the current path input.
-// Note: os.ReadDir runs synchronously — acceptable for local filesystems
-// (same pattern as QuickAddForm), but may lag on NFS/iCloud mounts.
 func (pf *ProjectForm) updatePathAC() {
-	raw := string(pf.fields[pfFieldPath])
-	matches := dirCompletions(raw)
-	if matches == nil {
-		pf.closePathAC()
-		return
-	}
-	pf.pathACMatches = matches
-	pf.pathACOpen = true
-	if pf.pathACIdx >= len(pf.pathACMatches) {
-		pf.pathACIdx = 0
-	}
-}
-
-// acceptPathAC replaces the path input with the selected autocomplete match.
-func (pf *ProjectForm) acceptPathAC() {
-	if !pf.pathACOpen || pf.pathACIdx >= len(pf.pathACMatches) {
-		return
-	}
-	path := collapseTilde(pf.pathACMatches[pf.pathACIdx]) + "/"
-	pf.fields[pfFieldPath] = []rune(path)
-	pf.cursors[pfFieldPath] = len(pf.fields[pfFieldPath])
-	pf.closePathAC()
-	// Re-open dropdown if the accepted directory has sub-directories.
-	pf.updatePathAC()
+	pf.pathAC.Update(string(pf.fields[pfFieldPath]))
 }
 
 // closePathAC dismisses the autocomplete dropdown.
 func (pf *ProjectForm) closePathAC() {
-	pf.pathACOpen = false
-	pf.pathACMatches = nil
-	pf.pathACIdx = 0
+	pf.pathAC.Close()
 }
 
 // handleBranchSelector processes keys when the branch field is in selector mode.
@@ -408,13 +342,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	// Compute autocomplete row count for dynamic form height.
-	acRows := 0
-	if pf.pathACOpen && len(pf.pathACMatches) > 0 {
-		acRows = len(pf.pathACMatches)
-		if acRows > pfMaxACVisible {
-			acRows = pfMaxACVisible
-		}
-	}
+	acRows := pf.pathAC.Len(pfMaxACVisible)
 
 	// Center the form.
 	formW := min(60, width-4)
@@ -482,8 +410,8 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		drawText(screen, formX+12, ly, maxW, val, style)
 
 		// Draw autocomplete dropdown right after the path field.
-		if i == pfFieldPath && pf.pathACOpen && len(pf.pathACMatches) > 0 {
-			extraOffset += pf.drawPathAC(screen, formX+12, ly+1, maxW)
+		if i == pfFieldPath {
+			extraOffset += pf.pathAC.Draw(screen, formX+12, ly+1, maxW, pfMaxACVisible)
 		}
 	}
 
@@ -492,43 +420,6 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 }
 
-// drawPathAC renders the autocomplete dropdown below the path input.
-// Returns the number of rows drawn.
-func (pf *ProjectForm) drawPathAC(screen tcell.Screen, x, y, w int) int {
-	visible := len(pf.pathACMatches)
-	if visible > pfMaxACVisible {
-		visible = pfMaxACVisible
-	}
-
-	acScroll := 0
-	if pf.pathACIdx >= visible {
-		acScroll = pf.pathACIdx - visible + 1
-	}
-
-	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(ColorSelected)
-	for vi := 0; vi < visible; vi++ {
-		idx := acScroll + vi
-		if idx >= len(pf.pathACMatches) {
-			break
-		}
-		display := collapseTilde(pf.pathACMatches[idx])
-
-		indicator := "  "
-		if idx == pf.pathACIdx {
-			indicator = "> "
-		}
-		line := indicator + display
-		st := StyleDimmed
-		if idx == pf.pathACIdx {
-			st = selectedStyle
-		}
-		lineRunes := []rune(line)
-		for c := 0; c < w && c < len(lineRunes); c++ {
-			screen.SetContent(x+c, y+vi, lineRunes[c], nil, st)
-		}
-	}
-	return visible
-}
 
 // drawSandboxSelector renders the sandbox field as a ◀/▶ selector.
 func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
