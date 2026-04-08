@@ -862,6 +862,119 @@ func TestSettingsView_AutoStartToggle(t *testing.T) {
 	})
 }
 
+func TestSettingsView_VaultPathEdit(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	// Verify default paths are populated from DB seed.
+	testutil.Contains(t, sv.metisVaultPath, "Metis")
+	testutil.Contains(t, sv.argusVaultPath, "Argus")
+
+	// Verify vault path rows exist.
+	metisIdx := -1
+	argusIdx := -1
+	for i, row := range sv.rows {
+		if row.kind == srVaultPath && row.key == "_metis_vault" {
+			metisIdx = i
+		}
+		if row.kind == srVaultPath && row.key == "_argus_vault" {
+			argusIdx = i
+		}
+	}
+	if metisIdx < 0 {
+		t.Fatal("no metis vault path row found")
+	}
+	if argusIdx < 0 {
+		t.Fatal("no argus vault path row found")
+	}
+
+	t.Run("enter starts editing metis", func(t *testing.T) {
+		sv.cursor = metisIdx
+		sv.handleEnter()
+		testutil.Equal(t, sv.editingVault, "_metis_vault")
+		testutil.Equal(t, sv.editVaultBuf, sv.metisVaultPath)
+		testutil.Equal(t, sv.IsEditing(), true)
+	})
+
+	t.Run("escape cancels without saving", func(t *testing.T) {
+		origPath := sv.metisVaultPath
+		sv.editVaultBuf = "/some/other/path"
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editingVault, "")
+		testutil.Equal(t, sv.metisVaultPath, origPath) // unchanged
+		testutil.Equal(t, sv.IsEditing(), false)
+	})
+
+	t.Run("typing appends to buffer", func(t *testing.T) {
+		// Re-find row after rebuild.
+		for i, row := range sv.rows {
+			if row.kind == srVaultPath && row.key == "_metis_vault" {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		sv.editVaultBuf = "/new"
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone))
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone))
+		testutil.Equal(t, sv.editVaultBuf, "/new/p")
+	})
+
+	t.Run("backspace removes last rune", func(t *testing.T) {
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editVaultBuf, "/new/")
+	})
+
+	t.Run("enter saves metis and persists", func(t *testing.T) {
+		sv.editVaultBuf = "/custom/metis/vault"
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		testutil.Equal(t, sv.editingVault, "")
+		testutil.Equal(t, sv.metisVaultPath, "/custom/metis/vault")
+
+		cfg := database.Config()
+		testutil.Equal(t, cfg.KB.MetisVaultPath, "/custom/metis/vault")
+	})
+
+	t.Run("enter saves argus and persists", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srVaultPath && row.key == "_argus_vault" {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		testutil.Equal(t, sv.editingVault, "_argus_vault")
+		sv.editVaultBuf = "/custom/argus/vault"
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+		testutil.Equal(t, sv.argusVaultPath, "/custom/argus/vault")
+
+		cfg := database.Config()
+		testutil.Equal(t, cfg.KB.ArgusVaultPath, "/custom/argus/vault")
+	})
+
+	t.Run("vault editing blocks global keys", func(t *testing.T) {
+		for i, row := range sv.rows {
+			if row.kind == srVaultPath && row.key == "_metis_vault" {
+				sv.cursor = i
+				break
+			}
+		}
+		sv.handleEnter()
+		testutil.Equal(t, sv.IsEditing(), true)
+
+		// 'q' should be captured as a rune, not trigger quit.
+		handled := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone))
+		testutil.Equal(t, handled, true)
+		testutil.Contains(t, sv.editVaultBuf, "q")
+
+		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	})
+}
+
 // findProjectEntry locates a project in the settings view by name.
 func findProjectEntry(t *testing.T, sv *SettingsView, name string) *projectEntry {
 	t.Helper()

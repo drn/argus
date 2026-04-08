@@ -34,6 +34,7 @@ const (
 	srAPI
 	srDaemon
 	srSpinner
+	srVaultPath
 )
 
 // settingsRow is a single row in the settings section list.
@@ -89,6 +90,10 @@ type SettingsView struct {
 	reviewPrompt    string // current review prompt template
 	editingPrompt   bool   // true when inline-editing the review prompt
 	editPromptBuf   string // buffer for in-progress edit
+
+	// Vault path editing.
+	editingVault   string // which vault is being edited: "_metis_vault" or "_argus_vault", or "" if not editing
+	editVaultBuf   string // buffer for in-progress vault path edit
 
 	// Logs detail scroll.
 	logScrollOff int
@@ -302,6 +307,23 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
 
+	// Vault path rows.
+	metisLabel := "  Metis: " + sv.metisVaultPath
+	if sv.editingVault == "_metis_vault" {
+		metisLabel = "  Metis: " + sv.editVaultBuf + "▎"
+	} else if sv.metisVaultPath == "" {
+		metisLabel = "  Metis: (not configured)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: "_metis_vault"})
+
+	argusLabel := "  Argus: " + sv.argusVaultPath
+	if sv.editingVault == "_argus_vault" {
+		argusLabel = "  Argus: " + sv.editVaultBuf + "▎"
+	} else if sv.argusVaultPath == "" {
+		argusLabel = "  Argus: (not configured)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: "_argus_vault"})
+
 	// API section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
 	apiLabel := "  Disabled"
@@ -372,15 +394,25 @@ func (sv *SettingsView) SelectedRow() *settingsRow {
 	return nil
 }
 
-// PasteHandler implements tview's paste interface for the inline prompt editor.
+// PasteHandler implements tview's paste interface for inline editors.
 func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
 	return sv.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
-		if !sv.editingPrompt || pastedText == "" {
+		if pastedText == "" {
 			return
 		}
-		sv.editPromptBuf += pastedText
-		sv.rebuildRows()
+		if sv.editingPrompt {
+			sv.editPromptBuf += pastedText
+			sv.rebuildRows()
+		} else if sv.editingVault != "" {
+			sv.editVaultBuf += pastedText
+			sv.rebuildRows()
+		}
 	})
+}
+
+// IsEditing returns true when the user is inline-editing any field.
+func (sv *SettingsView) IsEditing() bool {
+	return sv.editingPrompt || sv.editingVault != ""
 }
 
 // IsEditingPrompt returns true when the user is inline-editing the review prompt.
@@ -421,6 +453,9 @@ func (sv *SettingsView) SelectedBackend() *backendEntry {
 func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	if sv.editingPrompt {
 		return sv.handleEditPromptKey(ev)
+	}
+	if sv.editingVault != "" {
+		return sv.handleEditVaultKey(ev)
 	}
 	switch ev.Key() {
 	case tcell.KeyUp:
@@ -594,6 +629,16 @@ func (sv *SettingsView) handleEnter() bool {
 	case srSpinner:
 		sv.cycleSpinner(1)
 		return true
+	case srVaultPath:
+		// Start inline editing for the selected vault path.
+		sv.editingVault = row.key
+		if row.key == "_metis_vault" {
+			sv.editVaultBuf = sv.metisVaultPath
+		} else {
+			sv.editVaultBuf = sv.argusVaultPath
+		}
+		sv.rebuildRows()
+		return true
 	case srReviewPrompt:
 		sv.editingPrompt = true
 		sv.editPromptBuf = sv.reviewPrompt
@@ -709,6 +754,47 @@ func (sv *SettingsView) handleEditPromptKey(ev *tcell.EventKey) bool {
 		return true
 	case tcell.KeyRune:
 		sv.editPromptBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+// handleEditVaultKey handles keystrokes while inline-editing a vault path.
+func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		path := sv.editVaultBuf
+		key := sv.editingVault
+		sv.editingVault = ""
+		if key == "_metis_vault" {
+			sv.metisVaultPath = path
+			if err := sv.database.SetConfigValue("kb.metis_vault_path", path); err != nil {
+				uxlog.Log("[settings] failed to persist metis vault path: %v", err)
+			}
+			uxlog.Log("[settings] metis vault path set to %q", path)
+		} else {
+			sv.argusVaultPath = path
+			if err := sv.database.SetConfigValue("kb.argus_vault_path", path); err != nil {
+				uxlog.Log("[settings] failed to persist argus vault path: %v", err)
+			}
+			uxlog.Log("[settings] argus vault path set to %q", path)
+		}
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingVault = ""
+		sv.rebuildRows()
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editVaultBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editVaultBuf)
+			sv.editVaultBuf = sv.editVaultBuf[:len(sv.editVaultBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editVaultBuf += string(ev.Rune())
 		sv.rebuildRows()
 		return true
 	}
@@ -856,6 +942,8 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srKB:
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+	case srVaultPath:
+		sv.renderVaultPathDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srToDoProject:
 		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
 	case srSpinner:
@@ -1106,6 +1194,42 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 
 	if r < h {
 		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	isMetis := row.key == "_metis_vault"
+	title := "Argus Vault"
+	path := sv.argusVaultPath
+	desc := "Obsidian vault for task syncing."
+	if isMetis {
+		title = "Metis Vault"
+		path = sv.metisVaultPath
+		desc = "Obsidian vault for KB indexing."
+	}
+
+	drawText(screen, x, y, w, title, StyleTitle)
+	r := 2
+
+	display := path
+	editing := sv.editingVault == row.key
+	if editing {
+		display = sv.editVaultBuf + "▎"
+	} else if display == "" {
+		display = "(not configured)"
+	}
+	drawText(screen, x, y+r, w, display, tcell.StyleDefault.Foreground(ColorComplete))
+	r += 2
+
+	drawText(screen, x, y+r, w, desc, StyleDimmed)
+	r += 2
+
+	if r < h {
+		if editing {
+			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+		} else {
+			drawText(screen, x, y+r, w, "[enter] edit path", StyleDimmed)
+		}
 	}
 }
 

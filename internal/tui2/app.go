@@ -1151,7 +1151,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.mode == modeTaskList && a.tasklist.Filtering() {
 			break
 		}
-		if a.mode == modeTaskList && a.settings.IsEditingPrompt() {
+		if a.mode == modeTaskList && a.settings.IsEditing() {
 			break
 		}
 		switch event.Rune() {
