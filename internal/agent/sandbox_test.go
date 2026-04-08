@@ -562,11 +562,11 @@ func TestSandbox_KeychainWritable(t *testing.T) {
 	// Verify we can write a temp file in the Keychains directory
 	// (security(1) needs this to store API keys)
 	target := keychainDir + "/.argus-sandbox-test"
+	defer os.Remove(target)
 	out, err := sandboxRun(t, wtDir, cfg, "touch "+shellQuote(target))
 	if err != nil {
 		t.Fatalf("write to ~/Library/Keychains should succeed for API key storage: %v\n%s", err, out)
 	}
-	os.Remove(target)
 }
 
 func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
