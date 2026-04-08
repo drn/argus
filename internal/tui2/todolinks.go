@@ -32,8 +32,8 @@ func stripANSI(s string) string {
 
 // cleanURL strips trailing punctuation that is not part of the URL.
 func cleanURL(u string) string {
-	// Strip trailing characters that are common sentence punctuation but
-	// rarely valid URL endings. Repeated in case of e.g. ")."
+	// Strip trailing ASCII punctuation that commonly follows URLs in prose.
+	// Byte indexing is safe here — all stripped chars are single-byte ASCII.
 	for len(u) > 0 {
 		last := u[len(u)-1]
 		if last == '.' || last == ',' || last == ';' || last == ':' || last == '\'' || last == '"' {
