@@ -10,13 +10,25 @@ import (
 
 func TestStatusBar_InfoMessage(t *testing.T) {
 	sb := NewStatusBar()
-	testutil.Equal(t, sb.infoMsg, "")
+	sb.SetRect(0, 0, 80, 1)
 
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init()
+	screen.SetSize(80, 1)
+	defer screen.Fini()
+
+	// SetInfo shows the message on screen.
 	sb.SetInfo("Creating worktree…")
-	testutil.Equal(t, sb.infoMsg, "Creating worktree…")
+	sb.Draw(screen)
+	screen.Show()
+	testutil.Contains(t, readScreenRow(screen, 0, 80), "Creating worktree…")
 
+	// ClearInfo restores task counts.
 	sb.ClearInfo()
-	testutil.Equal(t, sb.infoMsg, "")
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, 80)
+	testutil.Contains(t, row, "0 active")
 }
 
 func TestStatusBar_ErrorTakesPrecedenceOverInfo(t *testing.T) {

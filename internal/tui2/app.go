@@ -1939,6 +1939,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		projPath := projCfg.Path
 
 		go func() {
+			// task.Branch already holds the user-resolved branch (form field
+			// or project default), so pass it directly.
 			wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, proj, task.Name, task.Branch)
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
@@ -1955,19 +1957,24 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 				task.Name = finalName
 				task.Branch = branchName
 				task.Sandboxed = a.resolveSandboxed(task)
-				a.db.Add(task)
+				if err := a.db.Add(task); err != nil {
+					uxlog.Log("[tui2] failed to persist task: %v — cleaning up worktree", err)
+					a.statusbar.SetError("Failed to create task: " + err.Error())
+					go removeWorktreeAndBranch(wtPath, branchName, projPath)
+					return
+				}
 				uxlog.Log("[tui2] created task %s (%s)", task.ID, task.Name)
 
-				// NOTE: Do NOT call refreshTasksAsync() here. The task was just
-				// created as Pending and startSession will set it to InProgress.
-				// An async refresh races: its RPC snapshot captures running IDs
-				// before the session exists, then reconciliation sees InProgress
-				// + not-in-running-set → marks Complete.
-				// Use refreshTasksLocal (no RPC) to make the task list consistent.
 				a.refreshTasksLocal()
-				a.tasklist.SelectByID(task.ID)
 
-				// Enter agent view FIRST so panel has real dimensions for PTY sizing.
+				// If the user navigated into agent view for another task while
+				// the worktree was being created, don't yank them away — just
+				// add the task to the list silently.
+				if a.mode == modeAgent {
+					uxlog.Log("[tui2] user in agent view, skipping auto-select for new task %s", task.ID)
+					return
+				}
+				a.tasklist.SelectByID(task.ID)
 				a.onTaskSelect(task)
 				a.startSession(task)
 			})
@@ -2190,13 +2197,22 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 				task.Name = finalName
 				task.Branch = branchName
 				task.Sandboxed = a.resolveSandboxed(task)
-				a.db.Add(task)
+				if err := a.db.Add(task); err != nil {
+					uxlog.Log("[todos] failed to persist task: %v — cleaning up worktree", err)
+					a.statusbar.SetError("Failed to create task: " + err.Error())
+					go removeWorktreeAndBranch(wtPath, branchName, projPath)
+					return
+				}
 				uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
 
-				// Use refreshTasksLocal (not refreshTasks/refreshTasksAsync) to avoid
-				// reconciliation race: the session doesn't exist yet, so async RPC would
-				// see InProgress + no running session → incorrectly mark Complete.
 				a.refreshTasksLocal()
+
+				// If the user navigated into agent view for another task while
+				// the worktree was being created, don't yank them away.
+				if a.mode == modeAgent {
+					uxlog.Log("[todos] user in agent view, skipping auto-select for new task %s", task.ID)
+					return
+				}
 				a.tasklist.SelectByID(task.ID)
 				a.onTaskSelect(task)
 				a.startSession(task)
