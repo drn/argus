@@ -86,6 +86,14 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 		baseBranch = "HEAD"
 	}
 
+	// Fetch all remotes so remote-tracking branches are up to date before
+	// we resolve the start point or create the worktree.
+	fetchCmd := exec.Command("git", "fetch", "--all", "--prune")
+	fetchCmd.Dir = projectPath
+	if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+		uxlog.Log("[worktree] git fetch --all --prune failed (continuing): %v: %s", fetchErr, strings.TrimSpace(string(out)))
+	}
+
 	// Resolve baseBranch to a valid ref. If the local branch doesn't exist,
 	// try remote-tracking branches (origin/<branch>, upstream/<branch>).
 	baseBranch = resolveStartPoint(projectPath, baseBranch)
