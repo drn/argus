@@ -11,7 +11,7 @@ Non-obvious invariants and gotchas, split by topic. Read the relevant file when 
 | [gotchas/worktree.md](gotchas/worktree.md) | Worktree creation ordering, cleanup, path validation, stale ref pruning | 9 |
 | [gotchas/keybindings.md](gotchas/keybindings.md) | Key routing, ctrl sequences, tcell modifier quirks, agent view navigation | 12 |
 | [gotchas/tasklist-ui.md](gotchas/tasklist-ui.md) | Task list cursor, modals, focus guards, filter, archive, spinner, row rendering | 25 |
-| [gotchas/misc.md](gotchas/misc.md) | DB patterns, Go idioms, Codex, MCP, todos, PRs, file explorer, vault, quick-add | 60 |
+| [gotchas/misc.md](gotchas/misc.md) | DB patterns, Go idioms, Codex, MCP, todos, PRs, file explorer, vault, quick-add, links | 62 |
 
 ## Other Files
 

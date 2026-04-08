@@ -92,3 +92,8 @@
 - **`dirCompletions` is the shared pure function for directory autocomplete.** Both `QuickAddForm` and `ProjectForm` call it — any change to completion logic (hidden dir filter, symlink resolution, case sensitivity) must be made in `dirCompletions`, not in the per-form `update*AC` wrappers.
 - **`maybeLoadBranches` must expand tildes before passing to `OnBranchFocus`.** `acceptPathAC` calls `collapseTilde`, so the path field contains `~/...`. Go's `exec.Command` doesn't shell-expand `~`, so `cmd.Dir = "~/..."` silently fails. Use `pathValue()` which applies `expandTilde` + `TrimSpace`.
 - **Form field truncation must use rune-based slicing, not byte-based.** The cursor character (U+2588) is 3 bytes in UTF-8. Byte-based `val[len(val)-maxW:]` splits it for paths where `pathLen + 3 > maxW > pathLen`, producing garbled symbols. Use `[]rune` conversion. Affects projectform, backendform, and renametask Draw methods.
+
+## Link Extraction
+
+- **`osc8Re` must run BEFORE `ansiRe` in `stripANSI`.** OSC 8 hyperlinks embed URLs in escape sequences (`\x1b]8;;URL\x1b\\`). If `ansiRe` strips them first, the URLs are lost. The two-pass design in `todolinks.go:stripANSI` is intentional.
+- **`tui2/ansiRe` and `sanitize/ansiRe` must both handle ST-terminated OSC (`\x1b\\`).** Claude Code uses ST (not BEL) for OSC 8 hyperlinks. Missing ST support causes URLs to splice with display text.
