@@ -433,10 +433,8 @@ func TestCreateWorktree_FetchesRemote(t *testing.T) {
 		t.Fatal("expected origin/feature-new to NOT exist before fetch")
 	}
 
-	origHome := os.Getenv("HOME")
 	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
-	defer os.Setenv("HOME", origHome)
+	t.Setenv("HOME", tmpHome)
 
 	// CreateWorktree should fetch and resolve origin/feature-new.
 	wtPath, finalName, _, err := CreateWorktree(repoDir, "testproj", "fetch-test", "feature-new")
@@ -448,6 +446,24 @@ func TestCreateWorktree_FetchesRemote(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
 		t.Errorf("expected worktree at %q", wtPath)
+	}
+
+	// Verify the worktree HEAD matches the upstream feature-new commit.
+	wtHead := exec.Command("git", "rev-parse", "HEAD")
+	wtHead.Dir = wtPath
+	wtOut, err := wtHead.Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD in worktree: %v", err)
+	}
+	upstreamHead := exec.Command("git", "rev-parse", "feature-new")
+	upstreamHead.Dir = upstreamDir
+	upOut, err := upstreamHead.Output()
+	if err != nil {
+		t.Fatalf("rev-parse feature-new in upstream: %v", err)
+	}
+	if strings.TrimSpace(string(wtOut)) != strings.TrimSpace(string(upOut)) {
+		t.Errorf("worktree HEAD %q does not match upstream feature-new %q",
+			strings.TrimSpace(string(wtOut)), strings.TrimSpace(string(upOut)))
 	}
 }
 

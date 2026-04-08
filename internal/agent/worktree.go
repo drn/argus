@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
@@ -87,11 +89,17 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 	}
 
 	// Fetch all remotes so remote-tracking branches are up to date before
-	// we resolve the start point or create the worktree.
-	fetchCmd := exec.Command("git", "fetch", "--all", "--prune")
-	fetchCmd.Dir = projectPath
-	if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
-		uxlog.Log("[worktree] git fetch --all --prune failed (continuing): %v: %s", fetchErr, strings.TrimSpace(string(out)))
+	// we resolve the start point or create the worktree. Skip for HEAD
+	// (pure-local, no remote needed). Timeout prevents blocking the TUI
+	// on slow or unreachable networks.
+	if baseBranch != "HEAD" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
+		fetchCmd.Dir = projectPath
+		if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+			uxlog.Log("[worktree] git fetch --all --prune failed (continuing): %v: %s", fetchErr, strings.TrimSpace(string(out)))
+		}
 	}
 
 	// Resolve baseBranch to a valid ref. If the local branch doesn't exist,
