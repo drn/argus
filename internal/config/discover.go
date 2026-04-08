@@ -29,7 +29,8 @@ func discoverVaultsIn(base string) []string {
 
 	var vaults []string
 
-	// Check if the base itself is a vault.
+	// Check if the base itself is a vault (the Documents root can be a vault
+	// while also containing child vaults as subdirectories).
 	if isVault(base) {
 		vaults = append(vaults, base)
 	}

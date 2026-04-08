@@ -882,10 +882,10 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	metisIdx := -1
 	argusIdx := -1
 	for i, row := range sv.rows {
-		if row.kind == srVaultPath && row.key == "_metis_vault" {
+		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			metisIdx = i
 		}
-		if row.kind == srVaultPath && row.key == "_argus_vault" {
+		if row.kind == srVaultPath && row.key == vaultKeyArgus {
 			argusIdx = i
 		}
 	}
@@ -899,7 +899,7 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	t.Run("enter starts editing metis", func(t *testing.T) {
 		sv.cursor = metisIdx
 		sv.handleEnter()
-		testutil.Equal(t, sv.editingVault, "_metis_vault")
+		testutil.Equal(t, sv.editingVault, vaultKeyMetis)
 		testutil.Equal(t, sv.editVaultBuf, sv.metisVaultPath)
 		testutil.Equal(t, sv.IsEditing(), true)
 	})
@@ -916,7 +916,7 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	t.Run("typing appends to buffer", func(t *testing.T) {
 		// Re-find row after rebuild.
 		for i, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == "_metis_vault" {
+			if row.kind == srVaultPath && row.key == vaultKeyMetis {
 				sv.cursor = i
 				break
 			}
@@ -945,13 +945,13 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 
 	t.Run("enter saves argus and persists", func(t *testing.T) {
 		for i, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == "_argus_vault" {
+			if row.kind == srVaultPath && row.key == vaultKeyArgus {
 				sv.cursor = i
 				break
 			}
 		}
 		sv.handleEnter()
-		testutil.Equal(t, sv.editingVault, "_argus_vault")
+		testutil.Equal(t, sv.editingVault, vaultKeyArgus)
 		sv.editVaultBuf = "/custom/argus/vault"
 		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 		testutil.Equal(t, sv.argusVaultPath, "/custom/argus/vault")
@@ -962,7 +962,7 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 
 	t.Run("vault editing blocks global keys", func(t *testing.T) {
 		for i, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == "_metis_vault" {
+			if row.kind == srVaultPath && row.key == vaultKeyMetis {
 				sv.cursor = i
 				break
 			}
@@ -994,7 +994,7 @@ func TestSettingsView_VaultPathRestartHint(t *testing.T) {
 	}
 
 	t.Run("no hint initially", func(t *testing.T) {
-		label := vaultLabel("_metis_vault")
+		label := vaultLabel(vaultKeyMetis)
 		if strings.Contains(label, "(restart required)") {
 			t.Errorf("should not show restart hint initially, got %q", label)
 		}
@@ -1002,7 +1002,7 @@ func TestSettingsView_VaultPathRestartHint(t *testing.T) {
 
 	t.Run("hint appears after edit", func(t *testing.T) {
 		for i, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == "_metis_vault" {
+			if row.kind == srVaultPath && row.key == vaultKeyMetis {
 				sv.cursor = i
 				break
 			}
@@ -1010,14 +1010,14 @@ func TestSettingsView_VaultPathRestartHint(t *testing.T) {
 		sv.handleEnter()
 		sv.editVaultBuf = "/changed/path"
 		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-		testutil.Contains(t, vaultLabel("_metis_vault"), "(restart required)")
+		testutil.Contains(t, vaultLabel(vaultKeyMetis), "(restart required)")
 	})
 
 	t.Run("hint clears after daemon restart", func(t *testing.T) {
 		sv.SetDaemonRestarting(false)
 		testutil.Equal(t, sv.vaultBootRecorded, false)
 		sv.Refresh()
-		label := vaultLabel("_metis_vault")
+		label := vaultLabel(vaultKeyMetis)
 		if strings.Contains(label, "(restart required)") {
 			t.Errorf("hint should clear after restart + refresh, got %q", label)
 		}
@@ -1039,10 +1039,10 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 	metisIdx := -1
 	argusIdx := -1
 	for i, row := range sv.rows {
-		if row.kind == srVaultPath && row.key == "_metis_vault" {
+		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			metisIdx = i
 		}
-		if row.kind == srVaultPath && row.key == "_argus_vault" {
+		if row.kind == srVaultPath && row.key == vaultKeyArgus {
 			argusIdx = i
 		}
 	}
@@ -1093,7 +1093,7 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 	t.Run("cycle shows restart hint", func(t *testing.T) {
 		// After cycling, vault path differs from boot value → restart hint.
 		for _, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == "_argus_vault" {
+			if row.kind == srVaultPath && row.key == vaultKeyArgus {
 				testutil.Contains(t, row.label, "(restart required)")
 				return
 			}
@@ -1115,7 +1115,7 @@ func TestSettingsView_VaultPathCycleNoVaults(t *testing.T) {
 
 	// Find metis row.
 	for i, row := range sv.rows {
-		if row.kind == srVaultPath && row.key == "_metis_vault" {
+		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			sv.cursor = i
 			break
 		}

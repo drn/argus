@@ -37,6 +37,12 @@ const (
 	srVaultPath
 )
 
+// Vault key constants used in settingsRow.key for vault path rows.
+const (
+	vaultKeyMetis = "_metis_vault"
+	vaultKeyArgus = "_argus_vault"
+)
+
 // settingsRow is a single row in the settings section list.
 type settingsRow struct {
 	kind  settingsRowKind
@@ -95,7 +101,7 @@ type SettingsView struct {
 	editPromptBuf   string // buffer for in-progress edit
 
 	// Vault path editing.
-	editingVault     string   // which vault is being edited: "_metis_vault" or "_argus_vault", or "" if not editing
+	editingVault     string   // which vault is being edited: vaultKeyMetis or vaultKeyArgus, or "" if not editing
 	editVaultBuf     string   // buffer for in-progress vault path edit
 	discoveredVaults []string // sorted absolute paths of discovered iCloud Obsidian vaults
 
@@ -194,8 +200,11 @@ func (sv *SettingsView) Refresh() {
 		sv.argusVaultAtBoot = cfg.KB.ArgusVaultPath
 		sv.vaultBootRecorded = true
 	}
-	sv.discoveredVaults = config.DiscoverICloudVaults()
-	uxlog.Log("[settings] discovered %d iCloud vaults", len(sv.discoveredVaults))
+	// Discover vaults once — filesystem scan is blocking I/O, avoid on every Refresh.
+	if sv.discoveredVaults == nil {
+		sv.discoveredVaults = config.DiscoverICloudVaults()
+		uxlog.Log("[settings] discovered %d iCloud vaults", len(sv.discoveredVaults))
+	}
 	sv.kbTaskSync = cfg.KB.AutoCreateTasks
 	sv.autoStartTodos = cfg.KB.AutoStartTodos
 	sv.autoStartInterval = cfg.KB.AutoStartInterval
@@ -320,7 +329,7 @@ func (sv *SettingsView) rebuildRows() {
 
 	// Vault path rows.
 	metisLabel := "  Metis: " + sv.metisVaultPath
-	if sv.editingVault == "_metis_vault" {
+	if sv.editingVault == vaultKeyMetis {
 		metisLabel = "  Metis: " + sv.editVaultBuf + "▎"
 	} else if sv.metisVaultPath == "" {
 		metisLabel = "  Metis: (not configured)"
@@ -328,10 +337,10 @@ func (sv *SettingsView) rebuildRows() {
 	if sv.vaultBootRecorded && sv.metisVaultPath != sv.metisVaultAtBoot {
 		metisLabel += " (restart required)"
 	}
-	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: "_metis_vault"})
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
 
 	argusLabel := "  Argus: " + sv.argusVaultPath
-	if sv.editingVault == "_argus_vault" {
+	if sv.editingVault == vaultKeyArgus {
 		argusLabel = "  Argus: " + sv.editVaultBuf + "▎"
 	} else if sv.argusVaultPath == "" {
 		argusLabel = "  Argus: (not configured)"
@@ -339,7 +348,7 @@ func (sv *SettingsView) rebuildRows() {
 	if sv.vaultBootRecorded && sv.argusVaultPath != sv.argusVaultAtBoot {
 		argusLabel += " (restart required)"
 	}
-	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: "_argus_vault"})
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: vaultKeyArgus})
 
 	// API section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
@@ -651,9 +660,9 @@ func (sv *SettingsView) handleEnter() bool {
 	case srVaultPath:
 		// Start inline editing for the selected vault path.
 		sv.editingVault = row.key
-		if row.key == "_metis_vault" {
+		if row.key == vaultKeyMetis {
 			sv.editVaultBuf = sv.metisVaultPath
-		} else if row.key == "_argus_vault" {
+		} else if row.key == vaultKeyArgus {
 			sv.editVaultBuf = sv.argusVaultPath
 		}
 		sv.rebuildRows()
@@ -786,13 +795,13 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 		path := sv.editVaultBuf
 		key := sv.editingVault
 		sv.editingVault = ""
-		if key == "_metis_vault" {
+		if key == vaultKeyMetis {
 			sv.metisVaultPath = path
 			if err := sv.database.SetConfigValue("kb.metis_vault_path", path); err != nil {
 				uxlog.Log("[settings] failed to persist metis vault path: %v", err)
 			}
 			uxlog.Log("[settings] metis vault path set to %q", path)
-		} else if key == "_argus_vault" {
+		} else if key == vaultKeyArgus {
 			sv.argusVaultPath = path
 			if err := sv.database.SetConfigValue("kb.argus_vault_path", path); err != nil {
 				uxlog.Log("[settings] failed to persist argus vault path: %v", err)
@@ -875,7 +884,7 @@ func (sv *SettingsView) cycleVaultPath(dir int) {
 
 	currentPath := sv.argusVaultPath
 	dbKey := "kb.argus_vault_path"
-	if row.key == "_metis_vault" {
+	if row.key == vaultKeyMetis {
 		currentPath = sv.metisVaultPath
 		dbKey = "kb.metis_vault_path"
 	}
@@ -902,7 +911,7 @@ func (sv *SettingsView) cycleVaultPath(dir int) {
 	}
 
 	newPath := sv.discoveredVaults[idx]
-	if row.key == "_metis_vault" {
+	if row.key == vaultKeyMetis {
 		sv.metisVaultPath = newPath
 	} else {
 		sv.argusVaultPath = newPath
@@ -1268,7 +1277,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 }
 
 func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
-	isMetis := row.key == "_metis_vault"
+	isMetis := row.key == vaultKeyMetis
 	title := "Argus Vault"
 	path := sv.argusVaultPath
 	desc := "Obsidian vault for task syncing."
@@ -1298,11 +1307,11 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 	if !editing && len(sv.discoveredVaults) > 0 {
 		drawText(screen, x, y+r, w, "Discovered iCloud vaults:", tcell.StyleDefault.Foreground(ColorTitle))
 		r++
+		home, _ := os.UserHomeDir()
 		for _, v := range sv.discoveredVaults {
 			if r >= h-1 {
 				break
 			}
-			home, _ := os.UserHomeDir()
 			label := "  " + strings.TrimPrefix(v, home)
 			style := StyleDimmed
 			if v == path {
