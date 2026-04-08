@@ -24,17 +24,42 @@ var mdLinkRe = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s)]+)\)`)
 // bareLinkRe matches bare URLs not already inside markdown link syntax.
 var bareLinkRe = regexp.MustCompile(`https?://[^\s)\]>]+`)
 
-// ExtractLinks extracts unique URLs from markdown content.
-// Markdown-style links [text](url) are preferred; bare URLs not already
-// captured by a markdown link are added with the URL as the label.
+// stripANSI removes ANSI escape sequences from raw terminal output.
+// Uses the package-level ansiRe defined in agentpane.go.
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
+
+// cleanURL strips trailing punctuation that is not part of the URL.
+func cleanURL(u string) string {
+	// Strip trailing characters that are common sentence punctuation but
+	// rarely valid URL endings. Repeated in case of e.g. ")."
+	for len(u) > 0 {
+		last := u[len(u)-1]
+		if last == '.' || last == ',' || last == ';' || last == ':' || last == '\'' || last == '"' {
+			u = u[:len(u)-1]
+		} else {
+			break
+		}
+	}
+	return u
+}
+
+// ExtractLinks extracts unique URLs from content that may contain ANSI escape
+// sequences (e.g. raw PTY session logs). Markdown-style links [text](url) are
+// preferred; bare URLs not already captured by a markdown link are added with
+// the URL as the label.
 func ExtractLinks(content string) []Link {
+	// Strip ANSI escape sequences so terminal formatting doesn't pollute URLs.
+	content = stripANSI(content)
+
 	seen := make(map[string]bool)
 	var links []Link
 
 	// First pass: markdown links
 	for _, m := range mdLinkRe.FindAllStringSubmatch(content, -1) {
-		url := m[2]
-		if seen[url] {
+		url := cleanURL(m[2])
+		if url == "" || seen[url] {
 			continue
 		}
 		seen[url] = true
@@ -42,8 +67,9 @@ func ExtractLinks(content string) []Link {
 	}
 
 	// Second pass: bare URLs not already captured
-	for _, url := range bareLinkRe.FindAllString(content, -1) {
-		if seen[url] {
+	for _, raw := range bareLinkRe.FindAllString(content, -1) {
+		url := cleanURL(raw)
+		if url == "" || seen[url] {
 			continue
 		}
 		seen[url] = true

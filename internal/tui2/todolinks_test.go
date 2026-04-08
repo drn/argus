@@ -66,6 +66,34 @@ func TestExtractLinks(t *testing.T) {
 			content: "PR: https://github.com/org/repo/pull/123",
 			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
 		},
+		{
+			name:    "URL with ANSI escape sequences",
+			content: "see \x1b[34mhttps://example.com/page\x1b[0m for info",
+			want:    []Link{{Label: "https://example.com/page", URL: "https://example.com/page"}},
+		},
+		{
+			name:    "ANSI mid-URL stripped before matching",
+			content: "visit https://example.com/\x1b[1mpath\x1b[0m done",
+			want:    []Link{{Label: "https://example.com/path", URL: "https://example.com/path"}},
+		},
+		{
+			name:    "duplicate URLs after ANSI stripping",
+			content: "\x1b[34mhttps://example.com\x1b[0m and https://example.com",
+			want:    []Link{{Label: "https://example.com", URL: "https://example.com"}},
+		},
+		{
+			name:    "trailing punctuation stripped",
+			content: "see https://example.com/page. Also https://other.com,",
+			want: []Link{
+				{Label: "https://example.com/page", URL: "https://example.com/page"},
+				{Label: "https://other.com", URL: "https://other.com"},
+			},
+		},
+		{
+			name:    "OSC escape sequences stripped",
+			content: "\x1b]8;;https://example.com\x07link\x1b]8;;\x07 and https://example.com",
+			want:    []Link{{Label: "https://example.com", URL: "https://example.com"}},
+		},
 	}
 
 	for _, tt := range tests {
