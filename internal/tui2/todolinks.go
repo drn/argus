@@ -22,9 +22,9 @@ type Link struct {
 var mdLinkRe = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s)]+)\)`)
 
 // bareLinkRe matches bare URLs not already inside markdown link syntax.
-// Excludes characters that are never valid in URLs per RFC 3986 (", `, {, }, <,
-// |, \) and all ASCII control characters (\x00-\x1f, including \x1b ESC) to
-// prevent matching through formatted/structured text containing URLs.
+// Excludes characters that are never valid in URLs per RFC 3986 (", `, {, }, <)
+// and all ASCII control characters (\x00-\x1f, including \x1b ESC) to prevent
+// matching through formatted/structured text containing URLs.
 var bareLinkRe = regexp.MustCompile(`https?://[^\s)\]<>"\x60{}\x00-\x1f]+`)
 
 // osc8Re matches OSC 8 hyperlink tags: \x1b]8;params;URL\x07 or \x1b]8;params;URL\x1b\\
@@ -47,6 +47,7 @@ func stripANSI(s string) string {
 	// Second pass: conditionally replace ANSI sequences.
 	return ansiRe.ReplaceAllStringFunc(s, func(seq string) string {
 		// SGR sequences are CSI ending in 'm' — strip to preserve URL continuity.
+		// seq[0] is always ESC (\x1b); seq[1]=='[' means CSI (vs ']' for OSC, etc.)
 		if len(seq) >= 3 && seq[1] == '[' && seq[len(seq)-1] == 'm' {
 			return ""
 		}
@@ -56,8 +57,9 @@ func stripANSI(s string) string {
 }
 
 // cleanURL strips trailing punctuation that is not part of the URL.
+// Some chars (`, {, }) are also excluded by bareLinkRe but are kept here
+// as a safety net for URLs extracted via mdLinkRe or osc8Re.
 func cleanURL(u string) string {
-	// Strip trailing ASCII punctuation that commonly follows URLs in prose.
 	// Byte indexing is safe here — all stripped chars are single-byte ASCII.
 	for len(u) > 0 {
 		last := u[len(u)-1]

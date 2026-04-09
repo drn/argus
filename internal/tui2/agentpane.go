@@ -22,6 +22,9 @@ func splitLines(data []byte, maxWidth int) []string {
 	if maxWidth <= 0 {
 		maxWidth = 80
 	}
+	// All ANSI → empty here (display wrapping, not URL extraction).
+	// stripANSI in todolinks.go uses a different strategy for link extraction:
+	// SGR → empty (preserves mid-URL colors), non-SGR → space (prevents merging).
 	clean := ansiRe.ReplaceAll(data, nil)
 
 	var lines []string
