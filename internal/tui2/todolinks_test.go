@@ -119,6 +119,46 @@ func TestExtractLinks(t *testing.T) {
 			content: "\x1b]8;id=link1;https://example.com/page\x1b\\click here\x1b]8;;\x1b\\",
 			want:    []Link{{Label: "https://example.com/page", URL: "https://example.com/page"}},
 		},
+		{
+			name:    "cursor movement prevents text merging",
+			content: "https://github.com/org/repo/pull/123\x1b[5C\x1b[1Bpublished",
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+		},
+		{
+			name:    "quoted URL stops at double quote",
+			content: `"https://github.com/org/repo/pull/123",URL,"https://github.com/org/repo/pull/123")`,
+			want:    []Link{{Label: "https://github.com/org/repo/pull/123", URL: "https://github.com/org/repo/pull/123"}},
+		},
+		{
+			name:    "backtick-wrapped URL cleaned",
+			content: "see `https://example.com/path` for details",
+			want:    []Link{{Label: "https://example.com/path", URL: "https://example.com/path"}},
+		},
+		{
+			name:    "JSON-embedded URL stops at braces",
+			content: `{"url":"https://example.com/page","title":"test"}`,
+			want:    []Link{{Label: "https://example.com/page", URL: "https://example.com/page"}},
+		},
+		{
+			name:    "trailing backtick stripped",
+			content: "https://example.com/path`",
+			want:    []Link{{Label: "https://example.com/path", URL: "https://example.com/path"}},
+		},
+		{
+			name:    "trailing curly brace stripped",
+			content: "https://example.com/path}",
+			want:    []Link{{Label: "https://example.com/path", URL: "https://example.com/path"}},
+		},
+		{
+			name:    "trailing asterisks stripped",
+			content: "**https://example.com/path**",
+			want:    []Link{{Label: "https://example.com/path", URL: "https://example.com/path"}},
+		},
+		{
+			name:    "cursor right does not merge text into URL",
+			content: "https://example.com/articles/16\x1b[39m\x1b[2C\x1b[1Bextra",
+			want:    []Link{{Label: "https://example.com/articles/16", URL: "https://example.com/articles/16"}},
+		},
 	}
 
 	for _, tt := range tests {
