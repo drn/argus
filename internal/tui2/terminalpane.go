@@ -594,6 +594,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 	tp.mu.Lock()
 	sess := tp.session
+	pending := tp.pending
 	// Compute PTY size from panel dimensions (main goroutine — safe to call GetInnerRect).
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
@@ -618,7 +619,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	tp.mu.Unlock()
 
 	if sess == nil && !tp.HasContent() {
-		if tp.pending {
+		if pending {
 			// Show launch banner while worktree is being created.
 			bannerH := pendingBannerHeight()
 			bannerY := y + (height-bannerH)/2

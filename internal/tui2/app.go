@@ -1816,6 +1816,7 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.mu.Unlock()
 
 	a.agentHeader.SetTaskName(task.Name)
+	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
 	a.agentPane.SetPRURL("")
 	a.agentPane.ResetVT()
@@ -1975,9 +1976,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
-					a.agentPane.SetPending(false)
 					a.statusbar.SetError("Worktree error: " + err.Error())
-					// Return to task list since there's nothing to show.
+					// Return to task list — exitAgentView clears pending via SetSession(nil).
 					a.exitAgentView()
 				})
 				uxlog.Log("[tui2] worktree creation failed: %v", err)
@@ -1993,7 +1993,6 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 				if err := a.db.Add(task); err != nil {
 					uxlog.Log("[tui2] failed to persist task: %v — cleaning up worktree", err)
 					a.statusbar.SetError("Failed to create task: " + err.Error())
-					a.agentPane.SetPending(false)
 					a.exitAgentView()
 					go removeWorktreeAndBranch(wtPath, branchName, projPath)
 					return
@@ -2013,6 +2012,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 				// Complete the transition: update agent header with final name,
 				// select the task in the list, and start the session.
+				// startSession must be called explicitly — new tasks have no
+				// SessionID so onTaskSelect's auto-resume guard skips it.
 				a.agentHeader.SetTaskName(task.Name)
 				a.tasklist.SelectByID(task.ID)
 				a.onTaskSelect(task)

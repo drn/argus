@@ -23,7 +23,7 @@ var pendingBannerGradient = [...]tcell.Color{
 
 const pendingBannerTextWidth = 48
 
-const pendingSubtitle = "P R E P A R I N G   W O R K T R E E …"
+const pendingSubtitle = "P R E P A R I N G   W O R K T R E E ..."
 
 // pendingBannerHeight returns the total height of the pending banner.
 func pendingBannerHeight() int {
