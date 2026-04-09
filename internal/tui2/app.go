@@ -1803,6 +1803,33 @@ func (a *App) resolveSandboxed(task *model.Task) bool {
 	return agent.IsTaskSandboxed(task, a.db.Config())
 }
 
+// enterPendingAgentView switches to the agent view with a "launching" banner
+// while the worktree is being created. This eliminates the lag between form
+// close and agent view appearing.
+func (a *App) enterPendingAgentView(task *model.Task) {
+	uxlog.Log("[tui2] entering pending agent view for task %s (%s)", task.ID, task.Name)
+
+	a.mu.Lock()
+	a.mode = modeAgent
+	a.agentFocus = focusTerminal
+	a.agentState.Reset(task.ID, task.Name)
+	a.mu.Unlock()
+
+	a.agentHeader.SetTaskName(task.Name)
+	a.agentPane.SetTaskID("")
+	a.agentPane.SetPRURL("")
+	a.agentPane.ResetVT()
+	a.agentPane.SetSession(nil)
+	a.agentPane.SetPending(true)
+	a.agentPane.SetFocused(true)
+	a.filePanel.SetFocused(false)
+
+	// Hide the tab header in agent view — only the agent header is shown.
+	a.root.ResizeItem(a.header, 0, 0)
+	a.pages.SwitchToPage("agent")
+	a.tapp.SetFocus(a.agentPane)
+}
+
 // onTaskSelect handles Enter on a task — enters the agent view.
 func (a *App) onTaskSelect(task *model.Task) {
 	uxlog.Log("[tui2] entering agent view for task %s (%s)", task.ID, task.Name)
@@ -1932,11 +1959,14 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			return
 		}
 
-		// Worktree creation runs in a background goroutine to avoid blocking
-		// the tview event loop — git fetch can take several seconds.
+		// Switch to agent view immediately with a pending banner so there's
+		// no lag after the form closes. The worktree goroutine will start
+		// the session once creation completes.
+		a.enterPendingAgentView(task)
 		a.statusbar.SetInfo("Creating worktree…")
 		uxlog.Log("[tui2] starting worktree creation for task %q in project %q", task.Name, proj)
 		projPath := projCfg.Path
+		pendingTaskID := task.ID
 
 		go func() {
 			// task.Branch already holds the user-resolved branch (form field
@@ -1945,7 +1975,10 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
+					a.agentPane.SetPending(false)
 					a.statusbar.SetError("Worktree error: " + err.Error())
+					// Return to task list since there's nothing to show.
+					a.exitAgentView()
 				})
 				uxlog.Log("[tui2] worktree creation failed: %v", err)
 				return
@@ -1960,6 +1993,8 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 				if err := a.db.Add(task); err != nil {
 					uxlog.Log("[tui2] failed to persist task: %v — cleaning up worktree", err)
 					a.statusbar.SetError("Failed to create task: " + err.Error())
+					a.agentPane.SetPending(false)
+					a.exitAgentView()
 					go removeWorktreeAndBranch(wtPath, branchName, projPath)
 					return
 				}
@@ -1967,13 +2002,18 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 				a.refreshTasksLocal()
 
-				// If the user navigated into agent view for another task while
-				// the worktree was being created, don't yank them away — just
-				// add the task to the list silently.
-				if a.mode == modeAgent {
-					uxlog.Log("[tui2] user in agent view, skipping auto-select for new task %s", task.ID)
+				// If the user navigated away from the pending agent view
+				// (escaped to task list, or opened a different task), don't
+				// yank them back — just select in the list for easy access.
+				if a.mode != modeAgent || a.agentState.TaskID != pendingTaskID {
+					uxlog.Log("[tui2] user left pending view, skipping auto-select for new task %s", task.ID)
+					a.tasklist.SelectByID(task.ID)
 					return
 				}
+
+				// Complete the transition: update agent header with final name,
+				// select the task in the list, and start the session.
+				a.agentHeader.SetTaskName(task.Name)
 				a.tasklist.SelectByID(task.ID)
 				a.onTaskSelect(task)
 				a.startSession(task)

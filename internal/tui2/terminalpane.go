@@ -154,6 +154,11 @@ type TerminalPane struct {
 	replayBuilding       bool // true while a background rebuild is in flight
 	replayRebuildPending bool // set by async rebuild to signal anchor/cache reset needed
 
+	// pending is true when a task is being prepared (worktree creation) and
+	// the session hasn't started yet. Draw() shows a launch banner instead of
+	// "No active session".
+	pending bool
+
 	// OnClick is called when the user clicks on the terminal pane.
 	// The app wires this to switch agentFocus back to the terminal.
 	OnClick func()
@@ -189,6 +194,7 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 		uxlog.Log("[terminalpane] SetSession: nil")
 	}
 	tp.session = sess
+	tp.pending = false
 	tp.emu = nil
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
@@ -233,6 +239,14 @@ func (tp *TerminalPane) loadSessionLog(taskID string) {
 	}
 	uxlog.Log("[tui2] loaded session log for %s (%d bytes)", taskID, len(data))
 	tp.replayData = data
+}
+
+// SetPending sets the pending state. When true, Draw() shows a launch banner
+// instead of "No active session". Cleared automatically by SetSession.
+func (tp *TerminalPane) SetPending(v bool) {
+	tp.mu.Lock()
+	tp.pending = v
+	tp.mu.Unlock()
 }
 
 // SetPRURL sets the PR URL for the current task.
@@ -604,6 +618,16 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	tp.mu.Unlock()
 
 	if sess == nil && !tp.HasContent() {
+		if tp.pending {
+			// Show launch banner while worktree is being created.
+			bannerH := pendingBannerHeight()
+			bannerY := y + (height-bannerH)/2
+			if bannerY < y {
+				bannerY = y
+			}
+			drawPendingBanner(screen, x, bannerY, width)
+			return
+		}
 		msg := "No active session"
 		if tp.taskID != "" {
 			msg = "Session not running - press Enter to start"
