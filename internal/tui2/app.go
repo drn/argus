@@ -2003,10 +2003,14 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 				// If the user navigated away from the pending agent view
 				// (escaped to task list, or opened a different task), don't
-				// yank them back — just select in the list for easy access.
+				// yank them back — just start the session in the background
+				// and select in the list for easy access. Without this, the
+				// session never starts because new tasks have no SessionID
+				// for onTaskSelect's auto-resume guard.
 				if a.mode != modeAgent || a.agentState.TaskID != pendingTaskID {
-					uxlog.Log("[tui2] user left pending view, skipping auto-select for new task %s", task.ID)
+					uxlog.Log("[tui2] user left pending view, starting session in background for task %s", task.ID)
 					a.tasklist.SelectByID(task.ID)
+					a.startSession(task)
 					return
 				}
 
