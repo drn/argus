@@ -521,13 +521,13 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 ## Terminal Passthrough Phase 2: tcell/tview App Shell (2026-03-18)
 
 ### Data Model & Flow
-- `internal/tui2/app.go` — `App` struct owns `tview.Application`, `*db.DB`, `agent.SessionProvider`, all sub-views. `New()` builds the widget tree, `Run()` starts the event loop + tick goroutine.
-- `internal/tui2/header.go` — `Header` (tab bar): custom `tview.Box` widget, `SetTab(t)` / `ActiveTab()`.
-- `internal/tui2/statusbar.go` — `StatusBar`: task counts + keybinding hints, changes hints per active tab.
-- `internal/tui2/tasklist.go` — `TaskListView`: flattened row model with `rowKind` (rowTask/rowProject/rowArchiveHeader), cursor navigation skipping headers, auto-expand, archive section.
-- `internal/tui2/agentpane.go` — `AgentPane`: Phase 2 placeholder showing PTY tail output. Takes `agentview.TerminalAdapter` for session display.
-- `internal/tui2/sidepanel.go` — `SidePanel`: bordered panel with title for git/files.
-- `internal/tui2/theme.go` — tcell color constants for the 256-color palette.
+- `internal/tui/app.go` — `App` struct owns `tview.Application`, `*db.DB`, `agent.SessionProvider`, all sub-views. `New()` builds the widget tree, `Run()` starts the event loop + tick goroutine.
+- `internal/tui/header.go` — `Header` (tab bar): custom `tview.Box` widget, `SetTab(t)` / `ActiveTab()`.
+- `internal/tui/statusbar.go` — `StatusBar`: task counts + keybinding hints, changes hints per active tab.
+- `internal/tui/tasklist.go` — `TaskListView`: flattened row model with `rowKind` (rowTask/rowProject/rowArchiveHeader), cursor navigation skipping headers, auto-expand, archive section.
+- `internal/tui/agentpane.go` — `AgentPane`: Phase 2 placeholder showing PTY tail output. Takes `agentview.TerminalAdapter` for session display.
+- `internal/tui/sidepanel.go` — `SidePanel`: bordered panel with title for git/files.
+- `internal/tui/theme.go` — tcell color constants for the 256-color palette.
 
 ### Key Patterns
 - **Custom tview widgets** extend `tview.Box` and implement `Draw(screen tcell.Screen)` directly.
@@ -552,14 +552,14 @@ These replaced 4 duplicate instances of the "find last task in project + set cur
 - `tcellKeyToBytes` must handle `tcell.KeyBackspace` AND `tcell.KeyBackspace2` — different terminals send different variants.
 - **tview `GetInnerRect()` is not thread-safe** — calling it from a non-main goroutine (e.g., tick goroutine) races with `Draw()` on the main goroutine. Use a pending-resize pattern: `Draw()` computes desired PTY size under mutex and stores it; the tick goroutine consumes and performs the RPC.
 - **Never call daemon RPC while holding `a.mu`** — `runner.Running()` does an RPC with up to 5s timeout. Holding the mutex blocks all `QueueUpdateDraw` callbacks (including redraws) for the duration. Extract RPC calls outside the lock, then re-acquire for state mutation.
-- **Daemon session exit callback must be wired for tui2 runtime.** Without `client.OnSessionExit()`, agent processes that finish are never detected — tasks stay `InProgress` forever. The callback must be registered before `tui2.New()` with a nil guard (`if a := appRef; a != nil`) to handle the initialization window.
+- **Daemon session exit callback must be wired for tui runtime.** Without `client.OnSessionExit()`, agent processes that finish are never detected — tasks stay `InProgress` forever. The callback must be registered before `tui.New()` with a nil guard (`if a := appRef; a != nil`) to handle the initialization window.
 
 ## Task Delete & Prune: 2026-03-19
 
 ### Data Model
 - `ConfirmDeleteModal` — tview Box widget with `confirmed`/`canceled` bools and a `*model.Task` reference.
 - `modeConfirmDelete` — new `viewMode` constant, intercepts all keys in `handleGlobalKey`.
-- Worktree helpers (`removeWorktreeAndBranch`, `isWorktreeSubdir`, etc.) ported to `internal/tui2/worktree.go`.
+- Worktree helpers (`removeWorktreeAndBranch`, `isWorktreeSubdir`, etc.) ported to `internal/tui/worktree.go`.
 
 ### Flow
 - **Ctrl+D**: `handleGlobalKey` → `openConfirmDelete(task)` → shows modal via `pages.AddPage("confirmdelete", ...)` → Enter triggers `deleteTask(t)` → stop session, cleanup worktree/branch, delete session log, `db.Delete(id)`, refresh.
@@ -608,7 +608,7 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 ## Agent View Header: 2026-03-19
 
 ### Data Model & Flow
-- `AgentHeader` widget (`internal/tui2/agentheader.go`): 1-row `tview.Box` rendering a centered powerline segment with the task name.
+- `AgentHeader` widget (`internal/tui/agentheader.go`): 1-row `tview.Box` rendering a centered powerline segment with the task name.
 - Uses the same color palette as the root `Header` (`headerActiveBG`, `headerActiveFG`, `headerBaseBG`, `powerlineSep`).
 - `SetTaskName(name)` is called from `onTaskSelect()` in `app.go` when entering the agent view.
 - Agent page layout changed from a flat `FlexColumn` to a `FlexRow` wrapping: agent header (1 row fixed) + agent panels (flex, 3-column).
@@ -635,7 +635,7 @@ Clicking on the Files panel in the agent view didn't switch keyboard focus — U
 ## Project Status Icons & Idle Wiring: 2026-03-19
 
 ### What Was Missing
-The tui2 migration (Phase 11) ported individual task status icons but dropped:
+The tui migration (Phase 11) ported individual task status icons but dropped:
 1. **Project header status icons** — `drawProjectRow` rendered only the project name, no aggregated icon
 2. **Idle state wiring** — `SetIdle()` existed on `TaskListView` but `app.go` never called `runner.Idle()`
 3. **Icon animation** — no `tickEven` toggle for alternating in-progress icons
@@ -706,7 +706,7 @@ Three visual fixes to the `NewTaskForm` modal:
 No changes — same `task.Worktree` and `task.Branch` fields.
 
 ### Flow
-- `removeWorktree()` in `internal/tui2/worktree.go`: runs `git worktree remove --force`, then ALWAYS checks `dirExists` and calls `os.RemoveAll` if the directory persists
+- `removeWorktree()` in `internal/tui/worktree.go`: runs `git worktree remove --force`, then ALWAYS checks `dirExists` and calls `os.RemoveAll` if the directory persists
 - `removeWorktreeAndBranch()`: runs `git worktree prune` before branch deletion; if `task.Branch` doesn't start with `argus/`, infers the correct branch from `"argus/" + filepath.Base(worktreePath)`
 - All functions now log to uxlog with `[worktree]` prefix for debugging
 
@@ -745,7 +745,7 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 3. **Key bindings**: `p` in task list via `OnOpenPR` callback, `ctrl+p` in task list via same callback, `ctrl+p` in agent view (existing), `o` in agent view when dead (existing)
 
 ### Data model
-- `prURLRe` — package-level compiled regex in `internal/tui2/app.go`
+- `prURLRe` — package-level compiled regex in `internal/tui/app.go`
 - `scanAndStorePRURL(taskID, lastOutput)` — shared helper for exit paths, goroutine-safe
 - `OnOpenPR` callback on `TaskListView` — same pattern as `OnArchive`, `OnStatusChange`
 
@@ -780,7 +780,7 @@ PR URL detection was lost during the Bubble Tea → tcell/tview migration. The d
 Pressing Escape in agent view (terminal focused) exited back to the task list instead of being forwarded to the PTY. The `case tcell.KeyEscape:` block had a comment-only fallthrough for the terminal-focused case, letting the event reach the generic "Forward to PTY" block gated by `sess != nil && sess.Alive()`. When the session was dead or nil, the event returned unhandled to tview, which exited the view.
 
 ### Fix
-Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to PTY when alive (with `ResetScroll()` to snap back from scrollback, matching the generic forward block's behavior), and always returns `nil` to consume the event. Location: `internal/tui2/app.go` lines 795-801.
+Escape is now explicitly handled in the `case tcell.KeyEscape:` block: forwards `0x1b` to PTY when alive (with `ResetScroll()` to snap back from scrollback, matching the generic forward block's behavior), and always returns `nil` to consume the event. Location: `internal/tui/app.go` lines 795-801.
 
 ### Gotchas
 - Must call `ResetScroll()` after writing escape to PTY — the generic forward block does this for all keys, so escape must match
@@ -1286,7 +1286,7 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 ## Shared PTY Sanitization: 2026-03-23
 
 ### Summary
-Extracted ANSI stripping and terminal noise filtering from `internal/tui2/forkcontext.go` into `internal/sanitize/` shared package. Used by both the web API (`?clean=1` output endpoint) and fork context extraction.
+Extracted ANSI stripping and terminal noise filtering from `internal/tui/forkcontext.go` into `internal/sanitize/` shared package. Used by both the web API (`?clean=1` output endpoint) and fork context extraction.
 
 ### Key entities
 - `sanitize.StripANSI` — comprehensive ANSI regex handling CSI (including DEC private mode `?`-prefixed), OSC, charset, keypad mode, DEC line attributes
@@ -1522,9 +1522,9 @@ Two-phase modal form in Settings for bulk-importing git projects from a director
 7. `handleQuickAddKey`: iterates `SelectedRepos()`, calls `db.SetProject()` for each
 
 ### Key Files
-- `internal/tui2/quickaddform.go` — form widget, `scanDirectory`, dir autocomplete, `expandTilde`/`collapseTilde`
-- `internal/tui2/app.go` — `modeQuickAdd`, `openQuickAddForm`, `handleQuickAddKey`, `closeQuickAddForm`
-- `internal/tui2/settings.go` — `OnQuickAdd` callback, `handleQuickAdd`, `'i'` key handler
+- `internal/tui/quickaddform.go` — form widget, `scanDirectory`, dir autocomplete, `expandTilde`/`collapseTilde`
+- `internal/tui/app.go` — `modeQuickAdd`, `openQuickAddForm`, `handleQuickAddKey`, `closeQuickAddForm`
+- `internal/tui/settings.go` — `OnQuickAdd` callback, `handleQuickAdd`, `'i'` key handler
 
 ### Gotchas
 - **Symlink traversal**: `scanDirectory` must `EvalSymlinks` on each child before `.git` check and path dedup. Without this, symlinks in a dev directory can resolve to unintended paths (e.g., `/etc`).
@@ -1545,9 +1545,9 @@ Extended the fork task modal (`ForkTaskModal`) with a project typeahead selector
 5. `buildForkPrompt(source, ctx, targetProject)` injects a cross-project note when `targetProject != source.Project`
 
 ### Key Files
-- `internal/tui2/forkmodal.go` — `ForkTaskModal` with project typeahead (AC dropdown, keyboard nav, paste support)
-- `internal/tui2/forkcontext.go` — `buildForkPrompt` with `targetProject` parameter
-- `internal/tui2/app.go` — `executeFork` signature changed to `(source, targetProject)`
+- `internal/tui/forkmodal.go` — `ForkTaskModal` with project typeahead (AC dropdown, keyboard nav, paste support)
+- `internal/tui/forkcontext.go` — `buildForkPrompt` with `targetProject` parameter
+- `internal/tui/app.go` — `executeFork` signature changed to `(source, targetProject)`
 
 ### Gotchas
 - **AC must NOT be initialized at construction**: Calling `updateProjectAC()` in the constructor opens the dropdown immediately (pre-filled project matches itself). Then Enter/Escape are consumed by the AC instead of confirming/canceling the modal. AC should only open in response to user typing.

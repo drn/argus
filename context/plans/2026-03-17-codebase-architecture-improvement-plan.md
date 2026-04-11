@@ -17,7 +17,7 @@ Argus already has a sensible top-level package split:
 - `internal/agent` owns local process/session lifecycle and worktree/backend setup.
 - `internal/daemon` and `internal/daemon/client` provide the persistent session layer.
 - `internal/db` persists tasks, projects, backends, and config in SQLite.
-- `internal/tui2` renders tcell/tview views and currently coordinates most workflows.
+- `internal/tui` renders tcell/tview views and currently coordinates most workflows.
 
 The codebase is healthy enough to change safely:
 
@@ -61,7 +61,7 @@ The main structural pressure points found during review:
 Refactor toward a clearer three-layer architecture:
 
 1. Presentation layer
-   `internal/tui2` should handle rendering, keyboard/mouse events, and translation between UI events and application commands.
+   `internal/tui` should handle rendering, keyboard/mouse events, and translation between UI events and application commands.
 
 2. Application layer
    New service-style packages should own workflow orchestration such as task start/stop/resume, task completion transitions, daemon health/restart policy, and settings mutation.
@@ -170,7 +170,7 @@ The design goal is not "maximum abstraction." It is to move domain decisions out
 
 ## Dependencies
 
-- Existing tcell/tview architecture in `internal/tui2`
+- Existing tcell/tview architecture in `internal/tui`
 - SQLite schema and WAL behavior in `internal/db`
 - Daemon/session runtime contracts in `internal/agent`, `internal/daemon`, and `internal/daemon/client`
 - Existing architecture notes in `context/plans/daemon-architecture.md` and `context/research/daemon-lifecycle-flows.md`

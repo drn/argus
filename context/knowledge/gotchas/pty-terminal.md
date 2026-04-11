@@ -4,7 +4,7 @@
 - **PTY needs real terminal size at launch** (`pty.StartWithSize`), not 0x0. TUI apps won't render with zero dimensions. Start at actual panel width, not 80x24 — agents format initial output for launch PTY size.
 - **Single-reader-tee pattern is critical.** Two goroutines reading the same fd causes data loss.
 - **`AddWriter` must replay before registering.** Register first → live bytes arrive before replay → duplicate data → rendering corruption.
-- **x/vt `SafeEmulator` hangs on terminal query sequences.** Use `newDrainedEmulator()` which starts `go io.Copy(io.Discard, emu)` to drain the response pipe. Never use bare `xvt.NewSafeEmulator()` in tui2.
+- **x/vt `SafeEmulator` hangs on terminal query sequences.** Use `newDrainedEmulator()` which starts `go io.Copy(io.Discard, emu)` to drain the response pipe. Never use bare `xvt.NewSafeEmulator()` in tui.
 - **x/vt can panic on replay from differently-sized terminals.** Use `safeEmuWrite()` which wraps with `recover()`.
 - **Cursor rendering respects `CursorVisibility` callback.** Tracked via `cursorVisible` field, updated by x/vt callback. Defaults to `false` on emulator creation.
 - **Ring buffer must be bounded (256KB).** Unbounded causes CPU spikes and OOM. Session log file provides full scrollback.

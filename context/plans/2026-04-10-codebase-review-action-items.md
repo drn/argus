@@ -51,13 +51,13 @@ silently return empty results on query errors, masking database failures.
 
 ### 5. Move spinner logic out of model [MEDIUM — layering]
 
-**Files:** `internal/model/status.go`, `internal/tui2/spinnerstate.go` (new)
+**Files:** `internal/model/status.go`, `internal/tui/spinnerstate.go` (new)
 
 Spinner animation state (`activeSpinner`, `SetActiveSpinner`, `SpinnerFrame`,
 `SpinnerFrameCount`, `SpinnerTickInterval`) lives in `model/status.go` — UI
 rendering logic in the domain layer.
 
-**Fix:** Move spinner state to `internal/tui2/spinnerstate.go`. Remove
+**Fix:** Move spinner state to `internal/tui/spinnerstate.go`. Remove
 `DisplayForFrame` from model (only used in model tests). Update callers.
 
 ### 6. Standardize RPC error reporting [MEDIUM — consistency]
@@ -88,11 +88,11 @@ debuggability and enables JSON log output.
 
 ## Deferred (Too Large for This Branch)
 
-### Decompose tui2 into sub-packages
+### Decompose tui into sub-packages
 
-`internal/tui2` is 17K LOC in a flat package with a 3,337-line god object
-(`App`). Should decompose into `tui2/taskview`, `tui2/agentview`,
-`tui2/reviewview`, `tui2/modals`, `tui2/theme`. This is a multi-session effort.
+`internal/tui` is 17K LOC in a flat package with a 3,337-line god object
+(`App`). Should decompose into `tui/taskview`, `tui/agentview`,
+`tui/reviewview`, `tui/modals`, `tui/theme`. This is a multi-session effort.
 
 ### Split agent package by concern
 

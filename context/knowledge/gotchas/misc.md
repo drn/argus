@@ -13,7 +13,7 @@
 - **Chroma resets after every token.** Use `injectBg(s, bgEsc)` to re-apply background after each `\033[0m`.
 - **Keep daemon client test names short.** macOS Unix socket paths have 104-byte limit.
 - **`filepath.Walk` must return error when root is inaccessible.** Check `err != nil && path == root`.
-- **CRITICAL: Tests must NEVER operate on real `~/.argus/` paths.** All worktree paths and file operations in tests MUST use `t.TempDir()`. The `testGuard` in `internal/tui2/worktree.go` is a last-resort safety net, but tests should be designed correctly.
+- **CRITICAL: Tests must NEVER operate on real `~/.argus/` paths.** All worktree paths and file operations in tests MUST use `t.TempDir()`. The `testGuard` in `internal/tui/worktree.go` is a last-resort safety net, but tests should be designed correctly.
 
 ## Codex Integration
 
@@ -97,6 +97,6 @@
 ## Link Extraction
 
 - **`osc8Re` must run BEFORE `ansiRe` in `stripANSI`.** OSC 8 hyperlinks embed URLs in escape sequences (`\x1b]8;;URL\x1b\\`). If `ansiRe` strips them first, the URLs are lost. The two-pass design in `todolinks.go:stripANSI` is intentional.
-- **`tui2/ansiRe` and `sanitize/ansiRe` must both handle ST-terminated OSC (`\x1b\\`).** Claude Code uses ST (not BEL) for OSC 8 hyperlinks. Missing ST support causes URLs to splice with display text.
+- **`tui/ansiRe` and `sanitize/ansiRe` must both handle ST-terminated OSC (`\x1b\\`).** Claude Code uses ST (not BEL) for OSC 8 hyperlinks. Missing ST support causes URLs to splice with display text.
 - **SGR sequences must strip to empty; cursor movement must strip to space.** Raw PTY logs contain cursor movement codes (`\x1b[5C`, `\x1b[1B`) that position text on different screen locations. Stripping these to empty merges unrelated text into URLs. `stripANSI` uses `ReplaceAllStringFunc` to distinguish: CSI ending in `m` → empty (preserves mid-URL colors), all else → space (prevents merging).
 - **`bareLinkRe` must exclude `"`, backtick, `{`, `}`, `<`.** These are never valid in URLs per RFC 3986. Without exclusion, the regex matches through quoted/JSON URL data producing garbage entries in the link picker.

@@ -1,0 +1,1558 @@
+package tui
+
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
+	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/uxlog"
+)
+
+// settingsRowKind identifies what kind of row this is in the settings list.
+type settingsRowKind int
+
+const (
+	srSection settingsRowKind = iota
+	srWarning
+	srProject
+	srBackend
+	srSandbox
+	srLogs
+	srKB
+	srToDoProject
+	srReviewPrompt
+	srAPI
+	srDaemon
+	srSpinner
+	srVaultPath
+)
+
+// Vault key constants used in settingsRow.key for vault path rows.
+const (
+	vaultKeyMetis = "_metis_vault"
+	vaultKeyArgus = "_argus_vault"
+)
+
+// svMaxACVisible is the maximum number of vault path autocomplete rows shown.
+const svMaxACVisible = 8
+
+// settingsRow is a single row in the settings section list.
+type settingsRow struct {
+	kind  settingsRowKind
+	label string
+	key   string // project/backend name for lookup
+}
+
+// SettingsView is the tcell settings tab with two panels.
+type SettingsView struct {
+	*tview.Box
+
+	rows    []settingsRow
+	cursor  int
+	scrollOff int
+
+	// Data.
+	warnings       []string
+	projects       []projectEntry
+	backends       []backendEntry
+	defaultBackend string
+	taskCounts     map[string]statusCounts
+
+	// Sandbox.
+	sandboxEnabled   bool
+	sandboxAvailable bool
+	sandboxDenyRead  []string
+	sandboxExtraWrite []string
+
+	// KB.
+	kbEnabled          bool
+	metisVaultPath     string
+	argusVaultPath     string
+	metisVaultAtBoot   string // value when daemon started; used to show "restart required"
+	argusVaultAtBoot   string
+	vaultBootRecorded  bool   // true after first Refresh captures boot values
+	kbTaskSync         bool
+	autoStartTodos     bool
+	autoStartInterval  int
+
+	// API.
+	apiEnabled       bool
+	apiEnabledAtBoot bool // value when daemon started; used to show "restart required"
+	apiBootRecorded  bool // true after first Refresh captures boot value
+	apiPort          int
+
+	// Spinner.
+	spinnerStyle string // current spinner style name
+
+	// ToDo defaults.
+	todoProject  string   // current default todo project
+	projectNames []string // sorted project names for cycling
+
+	// Review prompt.
+	reviewPrompt    string // current review prompt template
+	editingPrompt   bool   // true when inline-editing the review prompt
+	editPromptBuf   string // buffer for in-progress edit
+
+	// Vault path editing.
+	editingVault     string   // which vault is being edited: vaultKeyMetis or vaultKeyArgus, or "" if not editing
+	editVaultBuf     string   // buffer for in-progress vault path edit
+	discoveredVaults []string // sorted absolute paths of discovered iCloud Obsidian vaults
+	vaultAC          dirAC    // directory autocomplete for vault path editing
+
+	// Logs detail scroll.
+	logScrollOff int
+	logLines     []string // cached lines for current log
+	logKey       string   // which log is cached ("ux" or "daemon")
+
+	// Daemon.
+	daemonConnected  bool
+	daemonRestarting bool
+
+	// Callbacks.
+	OnRestartDaemon func()
+	OnNewProject    func()
+	OnEditProject   func(name string, p config.Project)
+	OnDeleteProject func(name string)
+	OnNewBackend    func()
+	OnEditBackend   func(name string, b config.Backend)
+	OnQuickAdd      func()
+
+	// DB reference for toggling values.
+	database *db.DB
+}
+
+type projectEntry struct {
+	Name    string
+	Project config.Project
+}
+
+type backendEntry struct {
+	Name    string
+	Backend config.Backend
+}
+
+type statusCounts struct {
+	pending    int
+	inProgress int
+	inReview   int
+	complete   int
+}
+
+// NewSettingsView creates a new settings panel.
+func NewSettingsView(database *db.DB) *SettingsView {
+	return &SettingsView{
+		Box:        tview.NewBox(),
+		taskCounts: make(map[string]statusCounts),
+		database:   database,
+	}
+}
+
+// Refresh reloads all settings data from the database.
+func (sv *SettingsView) Refresh() {
+	cfg := sv.database.Config()
+
+	// Warnings.
+	sv.warnings = nil
+	// Note: daemon connectivity warning is set externally via SetDaemonConnected.
+
+	// Sandbox.
+	sv.sandboxEnabled = cfg.Sandbox.Enabled
+	sv.sandboxAvailable = agent.IsSandboxAvailable()
+	sv.sandboxDenyRead = cfg.Sandbox.DenyRead
+	sv.sandboxExtraWrite = cfg.Sandbox.ExtraWrite
+
+	// Backends.
+	sv.defaultBackend = cfg.Defaults.Backend
+	sv.backends = nil
+	names := make([]string, 0, len(cfg.Backends))
+	for name := range cfg.Backends {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sv.backends = append(sv.backends, backendEntry{Name: name, Backend: cfg.Backends[name]})
+	}
+
+	// Projects.
+	projMap, _ := sv.database.Projects()
+	sv.projects = nil
+	projNames := make([]string, 0, len(projMap))
+	for name := range projMap {
+		projNames = append(projNames, name)
+	}
+	sort.Strings(projNames)
+	for _, name := range projNames {
+		sv.projects = append(sv.projects, projectEntry{Name: name, Project: projMap[name]})
+	}
+
+	// KB.
+	sv.kbEnabled = cfg.KB.Enabled
+	sv.metisVaultPath = cfg.KB.MetisVaultPath
+	sv.argusVaultPath = cfg.KB.ArgusVaultPath
+	if !sv.vaultBootRecorded {
+		sv.metisVaultAtBoot = cfg.KB.MetisVaultPath
+		sv.argusVaultAtBoot = cfg.KB.ArgusVaultPath
+		sv.vaultBootRecorded = true
+	}
+	// Discover vaults once — filesystem scan is blocking I/O, avoid on every Refresh.
+	if sv.discoveredVaults == nil {
+		sv.discoveredVaults = config.DiscoverICloudVaults()
+		uxlog.Log("[settings] discovered %d iCloud vaults", len(sv.discoveredVaults))
+	}
+	sv.kbTaskSync = cfg.KB.AutoCreateTasks
+	sv.autoStartTodos = cfg.KB.AutoStartTodos
+	sv.autoStartInterval = cfg.KB.AutoStartInterval
+	if sv.autoStartInterval <= 0 {
+		sv.autoStartInterval = config.DefaultAutoStartInterval
+	}
+
+	// API.
+	if !sv.apiBootRecorded {
+		sv.apiEnabledAtBoot = cfg.API.Enabled
+		sv.apiBootRecorded = true
+	}
+	sv.apiEnabled = cfg.API.Enabled
+	sv.apiPort = cfg.API.HTTPPort
+	if sv.apiPort == 0 {
+		sv.apiPort = 7743
+	}
+
+	// Spinner.
+	sv.spinnerStyle = cfg.UI.SpinnerStyle
+	if sv.spinnerStyle == "" {
+		sv.spinnerStyle = string(spinner.StyleProgress)
+	}
+
+	// ToDo defaults.
+	sv.todoProject = cfg.Defaults.TodoProject
+	sv.projectNames = projNames
+
+	// Review prompt.
+	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
+
+	// Task counts.
+	tasks, _ := sv.database.Tasks()
+	sv.setTasks(tasks)
+
+	sv.rebuildRows()
+}
+
+func (sv *SettingsView) SetDaemonConnected(connected bool) {
+	sv.daemonConnected = connected
+	if !connected {
+		sv.warnings = []string{"Running in-process mode (daemon not connected)"}
+	} else {
+		sv.warnings = nil
+	}
+	sv.rebuildRows()
+}
+
+func (sv *SettingsView) setTasks(tasks []*model.Task) {
+	sv.taskCounts = make(map[string]statusCounts)
+	for _, t := range tasks {
+		c := sv.taskCounts[t.Project]
+		switch t.Status {
+		case model.StatusPending:
+			c.pending++
+		case model.StatusInProgress:
+			c.inProgress++
+		case model.StatusInReview:
+			c.inReview++
+		case model.StatusComplete:
+			c.complete++
+		}
+		sv.taskCounts[t.Project] = c
+	}
+}
+
+func (sv *SettingsView) rebuildRows() {
+	sv.rows = nil
+
+	// Status section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Status"})
+	if len(sv.warnings) == 0 {
+		sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  System status", key: "_ok"})
+	} else {
+		for i, w := range sv.warnings {
+			sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  ⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
+		}
+	}
+	if sv.daemonConnected {
+		label := "  Restart Daemon"
+		if sv.daemonRestarting {
+			label = "  Restarting..."
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
+	}
+
+	// Sandbox section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Sandbox"})
+	label := "  Disabled"
+	if sv.sandboxEnabled {
+		label = "  Enabled"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
+
+	// Projects section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Projects"})
+	if len(sv.projects) == 0 {
+		sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  (no projects)"})
+	} else {
+		for _, p := range sv.projects {
+			sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  " + p.Name, key: p.Name})
+		}
+	}
+
+	// Backends section.
+	bLabel := "Backends"
+	if sv.defaultBackend != "" {
+		bLabel = fmt.Sprintf("Backends (default: %s)", sv.defaultBackend)
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: bLabel})
+	for _, b := range sv.backends {
+		sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "  " + b.Name, key: b.Name})
+	}
+
+	// Knowledge Base section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Knowledge Base"})
+	kbLabel := "  Disabled"
+	if sv.kbEnabled {
+		kbLabel = "  Enabled"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+
+	// Vault path rows.
+	metisLabel := "  Metis: " + sv.metisVaultPath
+	if sv.editingVault == vaultKeyMetis {
+		metisLabel = "  Metis: " + sv.editVaultBuf + "▎"
+	} else if sv.metisVaultPath == "" {
+		metisLabel = "  Metis: (not configured)"
+	}
+	if sv.vaultBootRecorded && sv.metisVaultPath != sv.metisVaultAtBoot {
+		metisLabel += " (restart required)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
+
+	argusLabel := "  Argus: " + sv.argusVaultPath
+	if sv.editingVault == vaultKeyArgus {
+		argusLabel = "  Argus: " + sv.editVaultBuf + "▎"
+	} else if sv.argusVaultPath == "" {
+		argusLabel = "  Argus: (not configured)"
+	}
+	if sv.vaultBootRecorded && sv.argusVaultPath != sv.argusVaultAtBoot {
+		argusLabel += " (restart required)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: vaultKeyArgus})
+
+	// API section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
+	apiLabel := "  Disabled"
+	if sv.apiEnabled {
+		apiLabel = fmt.Sprintf("  Enabled (port %d)", sv.apiPort)
+	}
+	if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
+		apiLabel += " (restart required)"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
+
+	// Default ToDo project.
+	todoLabel := "  ToDo Project: (none)"
+	if sv.todoProject != "" {
+		todoLabel = "  ToDo Project: " + sv.todoProject
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srToDoProject, label: todoLabel, key: "_todo_project"})
+
+	// Review prompt.
+	rpLabel := "  Review Prompt: " + sv.reviewPrompt
+	if sv.editingPrompt {
+		rpLabel = "  Review Prompt: " + sv.editPromptBuf + "▎"
+	}
+	sv.rows = append(sv.rows, settingsRow{kind: srReviewPrompt, label: rpLabel, key: "_review_prompt"})
+
+	// Spinner style.
+	spinLabel := fmt.Sprintf("  Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
+	sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
+
+	// Logs section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
+	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  Daemon Log", key: "daemon"})
+
+	// Clamp cursor.
+	if sv.cursor >= len(sv.rows) {
+		sv.cursor = max(0, len(sv.rows)-1)
+	}
+	sv.skipToSelectable(1)
+}
+
+// skipToSelectable moves the cursor to the next/prev selectable row.
+func (sv *SettingsView) skipToSelectable(dir int) {
+	for sv.cursor >= 0 && sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
+		sv.cursor += dir
+	}
+	if sv.cursor < 0 || (sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection) {
+		// Went past the top — search forward for the first selectable row.
+		sv.cursor = 0
+		for sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor++
+		}
+	}
+	if sv.cursor >= len(sv.rows) {
+		// Went past the bottom — search backward for the last selectable row.
+		sv.cursor = len(sv.rows) - 1
+		for sv.cursor >= 0 && sv.rows[sv.cursor].kind == srSection {
+			sv.cursor--
+		}
+	}
+}
+
+// SelectedRow returns the currently selected row.
+func (sv *SettingsView) SelectedRow() *settingsRow {
+	if sv.cursor >= 0 && sv.cursor < len(sv.rows) {
+		return &sv.rows[sv.cursor]
+	}
+	return nil
+}
+
+// PasteHandler implements tview's paste interface for inline editors.
+func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return sv.WrapPasteHandler(func(pastedText string, setFocus func(p tview.Primitive)) {
+		if pastedText == "" {
+			return
+		}
+		if sv.editingPrompt {
+			sv.editPromptBuf += pastedText
+			sv.rebuildRows()
+		} else if sv.editingVault != "" {
+			sv.editVaultBuf += pastedText
+			sv.vaultAC.Update(sv.editVaultBuf)
+			sv.rebuildRows()
+		}
+	})
+}
+
+// IsEditing returns true when the user is inline-editing any field.
+func (sv *SettingsView) IsEditing() bool {
+	return sv.editingPrompt || sv.editingVault != ""
+}
+
+
+// SelectedProject returns the project at the cursor, or nil.
+func (sv *SettingsView) SelectedProject() *projectEntry {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srProject || row.key == "" {
+		return nil
+	}
+	for i := range sv.projects {
+		if sv.projects[i].Name == row.key {
+			return &sv.projects[i]
+		}
+	}
+	return nil
+}
+
+// SelectedBackend returns the backend at the cursor, or nil.
+func (sv *SettingsView) SelectedBackend() *backendEntry {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srBackend {
+		return nil
+	}
+	for i := range sv.backends {
+		if sv.backends[i].Name == row.key {
+			return &sv.backends[i]
+		}
+	}
+	return nil
+}
+
+// --- Key handling ---
+
+func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
+	if sv.editingPrompt {
+		return sv.handleEditPromptKey(ev)
+	}
+	if sv.editingVault != "" {
+		return sv.handleEditVaultKey(ev)
+	}
+	switch ev.Key() {
+	case tcell.KeyUp:
+		sv.moveCursor(-1)
+		return true
+	case tcell.KeyDown:
+		sv.moveCursor(1)
+		return true
+	case tcell.KeyLeft:
+		switch sv.currentSection() {
+		case srToDoProject:
+			sv.cycleTodoProject(-1)
+			return true
+		case srSpinner:
+			sv.cycleSpinner(-1)
+			return true
+		case srVaultPath:
+			sv.cycleVaultPath(-1)
+			return true
+		}
+		return false
+	case tcell.KeyRight:
+		switch sv.currentSection() {
+		case srToDoProject:
+			sv.cycleTodoProject(1)
+			return true
+		case srSpinner:
+			sv.cycleSpinner(1)
+			return true
+		case srVaultPath:
+			sv.cycleVaultPath(1)
+			return true
+		}
+		return false
+	case tcell.KeyEnter:
+		return sv.handleEnter()
+	case tcell.KeyRune:
+		switch ev.Rune() {
+		case 'k':
+			sv.moveCursor(-1)
+			return true
+		case 'j':
+			sv.moveCursor(1)
+			return true
+		case 'd':
+			return sv.handleDeleteOrDefault()
+		case 'n':
+			return sv.handleNew()
+		case 'e':
+			return sv.handleEdit()
+		case 'a':
+			return sv.handleToggleAutoStart()
+		case 'i':
+			return sv.handleQuickAdd()
+		}
+	}
+	return false
+}
+
+func (sv *SettingsView) handleToggleAutoStart() bool {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srKB {
+		return false
+	}
+	sv.autoStartTodos = !sv.autoStartTodos
+	val := "false"
+	if sv.autoStartTodos {
+		val = "true"
+		// Auto-start implies auto-create — enable it too.
+		if !sv.kbTaskSync {
+			sv.kbTaskSync = true
+			sv.database.SetConfigValue("kb.auto_create_tasks", "true")
+		}
+	} else {
+		// Disabling auto-start also disables auto-create to avoid
+		// silently falling back to fsnotify watching on daemon restart.
+		if sv.kbTaskSync {
+			sv.kbTaskSync = false
+			sv.database.SetConfigValue("kb.auto_create_tasks", "false")
+		}
+	}
+	sv.database.SetConfigValue("kb.auto_start_todos", val)
+	uxlog.Log("[settings] auto-start todos toggled to %s", val)
+	sv.rebuildRows()
+	return true
+}
+
+func (sv *SettingsView) handleQuickAdd() bool {
+	if sv.currentSection() != srProject {
+		return false
+	}
+	if sv.OnQuickAdd != nil {
+		sv.OnQuickAdd()
+		return true
+	}
+	return false
+}
+
+// HandleMouse handles mouse events (scroll wheel on logs detail).
+func (sv *SettingsView) HandleMouse(action tview.MouseAction) bool {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srLogs {
+		return false
+	}
+	switch action {
+	case tview.MouseScrollUp:
+		if sv.logScrollOff > 0 {
+			sv.logScrollOff--
+		}
+		return true
+	case tview.MouseScrollDown:
+		sv.logScrollOff++
+		return true
+	}
+	return false
+}
+
+func (sv *SettingsView) moveCursor(dir int) {
+	sv.cursor += dir
+	if sv.cursor < 0 {
+		sv.cursor = 0
+	}
+	if sv.cursor >= len(sv.rows) {
+		sv.cursor = len(sv.rows) - 1
+	}
+	sv.skipToSelectable(dir)
+	// Reset log scroll when leaving a log row or switching logs.
+	if row := sv.SelectedRow(); row == nil || row.kind != srLogs || row.key != sv.logKey {
+		sv.logScrollOff = 0
+		sv.logLines = nil
+		sv.logKey = ""
+	}
+}
+
+func (sv *SettingsView) handleEnter() bool {
+	row := sv.SelectedRow()
+	if row == nil {
+		return false
+	}
+	switch row.kind {
+	case srSandbox:
+		// Toggle sandbox.
+		sv.sandboxEnabled = !sv.sandboxEnabled
+		val := "false"
+		if sv.sandboxEnabled {
+			val = "true"
+		}
+		sv.database.SetConfigValue("sandbox.enabled", val)
+		uxlog.Log("[settings] sandbox toggled to %s", val)
+		sv.rebuildRows()
+		return true
+	case srKB:
+		// Toggle KB.
+		sv.kbEnabled = !sv.kbEnabled
+		val := "false"
+		if sv.kbEnabled {
+			val = "true"
+		}
+		sv.database.SetConfigValue("kb.enabled", val)
+		uxlog.Log("[settings] KB toggled to %s", val)
+		sv.rebuildRows()
+		return true
+	case srAPI:
+		// Toggle API.
+		sv.apiEnabled = !sv.apiEnabled
+		val := "false"
+		if sv.apiEnabled {
+			val = "true"
+		}
+		sv.database.SetConfigValue("api.enabled", val)
+		uxlog.Log("[settings] API toggled to %s", val)
+		sv.rebuildRows()
+		return true
+	case srToDoProject:
+		sv.cycleTodoProject(1)
+		return true
+	case srSpinner:
+		sv.cycleSpinner(1)
+		return true
+	case srVaultPath:
+		// Start inline editing for the selected vault path.
+		sv.editingVault = row.key
+		sv.vaultAC.Close()
+		if row.key == vaultKeyMetis {
+			sv.editVaultBuf = sv.metisVaultPath
+		} else if row.key == vaultKeyArgus {
+			sv.editVaultBuf = sv.argusVaultPath
+		}
+		sv.rebuildRows()
+		return true
+	case srReviewPrompt:
+		sv.editingPrompt = true
+		sv.editPromptBuf = sv.reviewPrompt
+		sv.rebuildRows()
+		return true
+	case srDaemon:
+		if !sv.daemonRestarting && sv.OnRestartDaemon != nil {
+			sv.daemonRestarting = true
+			sv.rebuildRows()
+			sv.OnRestartDaemon()
+		}
+		return true
+	}
+	return false
+}
+
+func (sv *SettingsView) handleDeleteOrDefault() bool {
+	switch sv.currentSection() {
+	case srProject:
+		return sv.handleDeleteProject()
+	case srBackend:
+		return sv.handleSetDefault()
+	}
+	return false
+}
+
+func (sv *SettingsView) handleDeleteProject() bool {
+	pe := sv.SelectedProject()
+	if pe == nil {
+		return false
+	}
+	if sv.OnDeleteProject != nil {
+		sv.OnDeleteProject(pe.Name)
+		return true
+	}
+	return false
+}
+
+func (sv *SettingsView) handleSetDefault() bool {
+	be := sv.SelectedBackend()
+	if be == nil || be.Name == sv.defaultBackend {
+		return false
+	}
+	sv.database.SetConfigValue("default_backend", be.Name)
+	sv.defaultBackend = be.Name
+	uxlog.Log("[settings] default backend set to %s", be.Name)
+	sv.rebuildRows()
+	return true
+}
+
+// currentSection returns the section kind for the currently selected row.
+func (sv *SettingsView) currentSection() settingsRowKind {
+	if sv.cursor < 0 || sv.cursor >= len(sv.rows) {
+		return srSection
+	}
+	return sv.rows[sv.cursor].kind
+}
+
+func (sv *SettingsView) handleNew() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if sv.OnNewProject != nil {
+			sv.OnNewProject()
+			return true
+		}
+	case srBackend:
+		if sv.OnNewBackend != nil {
+			sv.OnNewBackend()
+			return true
+		}
+	}
+	return false
+}
+
+func (sv *SettingsView) handleEdit() bool {
+	switch sv.currentSection() {
+	case srProject:
+		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
+			sv.OnEditProject(pe.Name, pe.Project)
+			return true
+		}
+	case srBackend:
+		if be := sv.SelectedBackend(); be != nil && sv.OnEditBackend != nil {
+			sv.OnEditBackend(be.Name, be.Backend)
+			return true
+		}
+	}
+	return false
+}
+
+// handleEditPromptKey handles keystrokes while inline-editing the review prompt.
+func (sv *SettingsView) handleEditPromptKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		sv.reviewPrompt = sv.editPromptBuf
+		sv.editingPrompt = false
+		if err := sv.database.SetConfigValue("defaults.review_prompt", sv.reviewPrompt); err != nil {
+			uxlog.Log("[settings] failed to persist review prompt: %v", err)
+		}
+		uxlog.Log("[settings] review prompt set to %q", sv.reviewPrompt)
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingPrompt = false
+		sv.rebuildRows()
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editPromptBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editPromptBuf)
+			sv.editPromptBuf = sv.editPromptBuf[:len(sv.editPromptBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editPromptBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+// handleEditVaultKey handles keystrokes while inline-editing a vault path.
+func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
+	// Delegate navigation keys to the autocomplete widget.
+	consumed, accepted := sv.vaultAC.HandleKey(ev, sv.editVaultBuf)
+	if accepted != "" {
+		sv.editVaultBuf = accepted
+		sv.rebuildRows()
+		return true
+	}
+	if consumed {
+		sv.rebuildRows()
+		return true
+	}
+
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		path := sv.editVaultBuf
+		key := sv.editingVault
+		sv.editingVault = ""
+		sv.vaultAC.Close()
+		if key == vaultKeyMetis {
+			sv.metisVaultPath = path
+			if err := sv.database.SetConfigValue("kb.metis_vault_path", path); err != nil {
+				uxlog.Log("[settings] failed to persist metis vault path: %v", err)
+			}
+			uxlog.Log("[settings] metis vault path set to %q", path)
+		} else if key == vaultKeyArgus {
+			sv.argusVaultPath = path
+			if err := sv.database.SetConfigValue("kb.argus_vault_path", path); err != nil {
+				uxlog.Log("[settings] failed to persist argus vault path: %v", err)
+			}
+			uxlog.Log("[settings] argus vault path set to %q", path)
+		}
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingVault = ""
+		sv.vaultAC.Close()
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp:
+		return true // consume to avoid cursor movement while editing
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editVaultBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editVaultBuf)
+			sv.editVaultBuf = sv.editVaultBuf[:len(sv.editVaultBuf)-size]
+			sv.vaultAC.Update(sv.editVaultBuf)
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editVaultBuf += string(ev.Rune())
+		sv.vaultAC.Update(sv.editVaultBuf)
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+// cycleTodoProject cycles the default todo project forward or backward through
+// the sorted project list. An empty string ("none") is included as the first option.
+func (sv *SettingsView) cycleTodoProject(dir int) {
+	if len(sv.projectNames) == 0 {
+		return
+	}
+	// Prepend empty ("none") option. If todoProject was set to a since-deleted
+	// project, the lookup finds no match and idx stays at 0, effectively resetting
+	// to "none" on the first cycle — this is intentional.
+	options := append([]string{""}, sv.projectNames...)
+	idx := 0
+	for i, n := range options {
+		if n == sv.todoProject {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(options)) % len(options)
+	sv.todoProject = options[idx]
+	if err := sv.database.SetConfigValue("defaults.todo_project", sv.todoProject); err != nil {
+		uxlog.Log("[settings] failed to persist todo project: %v", err)
+	}
+	uxlog.Log("[settings] default todo project set to %q", sv.todoProject)
+	sv.rebuildRows()
+}
+
+// cycleSpinner cycles the spinner style forward or backward.
+func (sv *SettingsView) cycleSpinner(dir int) {
+	var next spinner.Style
+	if dir > 0 {
+		next = spinner.Next(spinner.Style(sv.spinnerStyle))
+	} else {
+		next = spinner.Prev(spinner.Style(sv.spinnerStyle))
+	}
+	sv.spinnerStyle = string(next)
+	if err := sv.database.SetConfigValue("ui.spinner", sv.spinnerStyle); err != nil {
+		uxlog.Log("[settings] failed to persist spinner style: %v", err)
+	}
+	SetActiveSpinner(sv.spinnerStyle)
+	uxlog.Log("[settings] spinner style set to %q", sv.spinnerStyle)
+	sv.rebuildRows()
+}
+
+// cycleVaultPath cycles the vault path forward or backward through discovered iCloud vaults.
+func (sv *SettingsView) cycleVaultPath(dir int) {
+	if len(sv.discoveredVaults) == 0 {
+		return
+	}
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srVaultPath {
+		return
+	}
+
+	currentPath := sv.argusVaultPath
+	dbKey := "kb.argus_vault_path"
+	if row.key == vaultKeyMetis {
+		currentPath = sv.metisVaultPath
+		dbKey = "kb.metis_vault_path"
+	}
+
+	// Find current index in discovered vaults.
+	idx := -1
+	for i, v := range sv.discoveredVaults {
+		if v == currentPath {
+			idx = i
+			break
+		}
+	}
+
+	// Cycle. If current path not in list, start at first (forward) or last (backward).
+	n := len(sv.discoveredVaults)
+	if idx < 0 {
+		if dir > 0 {
+			idx = 0
+		} else {
+			idx = n - 1
+		}
+	} else {
+		idx = (idx + dir + n) % n
+	}
+
+	newPath := sv.discoveredVaults[idx]
+	if row.key == vaultKeyMetis {
+		sv.metisVaultPath = newPath
+	} else {
+		sv.argusVaultPath = newPath
+	}
+	if err := sv.database.SetConfigValue(dbKey, newPath); err != nil {
+		uxlog.Log("[settings] failed to persist vault path: %v", err)
+	}
+	uxlog.Log("[settings] %s cycled to %q", dbKey, newPath)
+	sv.rebuildRows()
+}
+
+// --- Draw ---
+
+func (sv *SettingsView) Draw(screen tcell.Screen) {
+	sv.Box.DrawForSubclass(screen, sv)
+	x, y, width, height := sv.GetInnerRect()
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	// Two-panel layout: 40% list | 60% detail.
+	leftW := width * 40 / 100
+	if leftW < 25 {
+		leftW = min(25, width)
+	}
+	rightW := width - leftW
+
+	sv.renderList(screen, x, y, leftW, height)
+	if rightW > 0 {
+		sv.renderDetail(screen, x+leftW, y, rightW, height)
+	}
+}
+
+func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
+	drawBorder(screen, x, y, w, h, StyleFocusedBorder)
+
+	innerX := x + 1
+	innerY := y + 1
+	innerW := w - 2
+	innerH := h - 2
+	if innerW <= 0 || innerH <= 0 {
+		return
+	}
+
+	// Adjust scroll offset.
+	if sv.cursor < sv.scrollOff {
+		sv.scrollOff = sv.cursor
+	}
+	if sv.cursor >= sv.scrollOff+innerH {
+		sv.scrollOff = sv.cursor - innerH + 1
+	}
+	// Clamp so we don't strand scroll past the end (e.g. after window resize).
+	if maxOff := max(0, len(sv.rows)-innerH); sv.scrollOff > maxOff {
+		sv.scrollOff = maxOff
+	}
+
+	for i := range innerH {
+		rowIdx := sv.scrollOff + i
+		if rowIdx >= len(sv.rows) {
+			break
+		}
+		row := sv.rows[rowIdx]
+		style := tcell.StyleDefault
+
+		switch row.kind {
+		case srSection:
+			style = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+		case srWarning:
+			style = tcell.StyleDefault.Foreground(ColorInProgress)
+		}
+		if row.kind != srSection && rowIdx == sv.cursor {
+			style = style.Foreground(ColorSelected).Bold(true)
+		}
+
+		label := row.label
+		if len(label) > innerW {
+			label = label[:innerW]
+		}
+		drawText(screen, innerX, innerY+i, innerW, label, style)
+	}
+}
+
+func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
+	drawBorder(screen, x, y, w, h, StyleBorder)
+
+	innerX := x + 1
+	innerY := y + 1
+	innerW := w - 2
+	innerH := h - 2
+	if innerW <= 0 || innerH <= 0 {
+		return
+	}
+
+	row := sv.SelectedRow()
+	if row == nil {
+		return
+	}
+
+	switch row.kind {
+	case srWarning:
+		sv.renderWarningDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srSandbox:
+		sv.renderSandboxDetail(screen, innerX, innerY, innerW, innerH)
+	case srProject:
+		sv.renderProjectDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srBackend:
+		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srKB:
+		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+	case srVaultPath:
+		sv.renderVaultPathDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srToDoProject:
+		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
+	case srSpinner:
+		sv.renderSpinnerDetail(screen, innerX, innerY, innerW, innerH)
+	case srReviewPrompt:
+		sv.renderReviewPromptDetail(screen, innerX, innerY, innerW, innerH)
+	case srLogs:
+		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
+	case srDaemon:
+		sv.renderDaemonDetail(screen, innerX, innerY, innerW, innerH)
+	}
+}
+
+func (sv *SettingsView) renderWarningDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	if row.key == "_ok" {
+		drawText(screen, x, y, w, "System Status", StyleTitle)
+		drawText(screen, x, y+2, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+	} else {
+		drawText(screen, x, y, w, "Warning", StyleTitle)
+		drawText(screen, x, y+2, w, row.label, tcell.StyleDefault.Foreground(ColorInProgress))
+	}
+}
+
+func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Sandbox Configuration", StyleTitle)
+	row := 2
+
+	status := "Disabled"
+	statusColor := ColorError
+	if sv.sandboxEnabled {
+		status = "Enabled"
+		statusColor = ColorComplete
+	}
+	drawText(screen, x, y+row, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
+	row++
+
+	avail := "Not available"
+	if sv.sandboxAvailable {
+		avail = "Available (sandbox-exec)"
+	}
+	drawText(screen, x, y+row, w, "Runtime: "+avail, StyleDimmed)
+	row += 2
+
+	if len(sv.sandboxDenyRead) > 0 {
+		drawText(screen, x, y+row, w, "Deny Read:", tcell.StyleDefault.Foreground(ColorTitle))
+		row++
+		for _, p := range sv.sandboxDenyRead {
+			if row >= h {
+				break
+			}
+			drawText(screen, x, y+row, w, "  "+p, StyleDimmed)
+			row++
+		}
+		row++
+	}
+
+	if len(sv.sandboxExtraWrite) > 0 {
+		drawText(screen, x, y+row, w, "Extra Write:", tcell.StyleDefault.Foreground(ColorTitle))
+		row++
+		for _, p := range sv.sandboxExtraWrite {
+			if row >= h {
+				break
+			}
+			drawText(screen, x, y+row, w, "  "+p, StyleDimmed)
+			row++
+		}
+	}
+
+	if row+2 < h {
+		drawText(screen, x, y+h-1, w, "[enter] toggle", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	pe := sv.SelectedProject()
+	if pe == nil {
+		drawText(screen, x, y, w, "(no project selected)", StyleDimmed)
+		return
+	}
+
+	drawText(screen, x, y, w, pe.Name, StyleTitle)
+	r := 2
+
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	drawText(screen, x, y+r, w, "  Path: "+pe.Project.Path, StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "  Branch: "+pe.Project.Branch, StyleDimmed)
+	r++
+	backend := pe.Project.Backend
+	if backend == "" {
+		backend = "(default)"
+	}
+	drawText(screen, x, y+r, w, "  Backend: "+backend, StyleDimmed)
+	r += 2
+
+	// Sandbox override.
+	if r >= h {
+		return
+	}
+	drawText(screen, x, y+r, w, "Sandbox", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	sandboxLabel := "Inherit (global)"
+	sandboxColor := tcell.ColorDefault
+	if pe.Project.Sandbox.Enabled != nil {
+		if *pe.Project.Sandbox.Enabled {
+			sandboxLabel = "Enabled (override)"
+			sandboxColor = ColorComplete
+		} else {
+			sandboxLabel = "Disabled (override)"
+			sandboxColor = ColorError
+		}
+	}
+	if r >= h {
+		return
+	}
+	drawText(screen, x, y+r, w, "  Mode: "+sandboxLabel, tcell.StyleDefault.Foreground(sandboxColor))
+	r++
+	if len(pe.Project.Sandbox.DenyRead) > 0 && r < h {
+		drawText(screen, x, y+r, w, "  Deny Read:", StyleDimmed)
+		r++
+		for _, p := range pe.Project.Sandbox.DenyRead {
+			if r >= h {
+				break
+			}
+			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			r++
+		}
+	}
+	if len(pe.Project.Sandbox.ExtraWrite) > 0 && r < h {
+		drawText(screen, x, y+r, w, "  Extra Write:", StyleDimmed)
+		r++
+		for _, p := range pe.Project.Sandbox.ExtraWrite {
+			if r >= h {
+				break
+			}
+			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			r++
+		}
+	}
+	if len(pe.Project.Sandbox.DenyRead) > 0 || len(pe.Project.Sandbox.ExtraWrite) > 0 {
+		r++
+	}
+
+	// Task counts.
+	counts, ok := sv.taskCounts[pe.Name]
+	if ok && r+2 < h {
+		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(ColorTitle))
+		r++
+		total := counts.pending + counts.inProgress + counts.inReview + counts.complete
+		drawText(screen, x, y+r, w, fmt.Sprintf("  %d pending  %d active  %d review  %d done",
+			counts.pending, counts.inProgress, counts.inReview, counts.complete), StyleDimmed)
+		r++
+		if total > 0 && w > 4 {
+			pct := counts.complete * 100 / total
+			drawText(screen, x, y+r, w, fmt.Sprintf("  %d%% complete", pct), StyleDimmed)
+		}
+	}
+
+	if h > 2 {
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	be := sv.SelectedBackend()
+	if be == nil {
+		drawText(screen, x, y, w, "(no backend selected)", StyleDimmed)
+		return
+	}
+
+	drawText(screen, x, y, w, be.Name, StyleTitle)
+	r := 1
+	if be.Name == sv.defaultBackend {
+		drawText(screen, x, y+r, w, "★ Default backend", tcell.StyleDefault.Foreground(ColorComplete))
+		r++
+	}
+	r++
+
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	cmd := be.Backend.Command
+	if len(cmd) > w-12 {
+		cmd = cmd[:w-12] + "…"
+	}
+	drawText(screen, x, y+r, w, "  Command: "+cmd, StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, StyleDimmed)
+	r += 2
+
+	hints := "[d] set as default  [n] new  [e] edit"
+	if be.Name == sv.defaultBackend {
+		hints = "(already default)  [n] new  [e] edit"
+	}
+	if r < h {
+		drawText(screen, x, y+r, w, hints, StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Knowledge Base", StyleTitle)
+	r := 2
+
+	status := "Disabled"
+	statusColor := ColorError
+	if sv.kbEnabled {
+		status = "Enabled"
+		statusColor = ColorComplete
+	}
+	drawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
+	r += 2
+
+	drawText(screen, x, y+r, w, "Metis Vault:", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	vault := sv.metisVaultPath
+	if vault == "" {
+		vault = "(not configured)"
+	}
+	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
+	r += 2
+
+	drawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	vault = sv.argusVaultPath
+	if vault == "" {
+		vault = "(not configured)"
+	}
+	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
+	r += 2
+
+	syncLabel := "Off"
+	if sv.kbTaskSync {
+		syncLabel = "On"
+	}
+	drawText(screen, x, y+r, w, "Task Sync: "+syncLabel, StyleDimmed)
+	r += 2
+
+	autoStartLabel := "Off"
+	autoStartColor := StyleDimmed
+	if sv.autoStartTodos {
+		autoStartLabel = fmt.Sprintf("On (every %ds)", sv.autoStartInterval)
+		autoStartColor = tcell.StyleDefault.Foreground(ColorComplete)
+	}
+	drawText(screen, x, y+r, w, "Auto-Start ToDos: "+autoStartLabel, autoStartColor)
+	r++
+	drawText(screen, x, y+r, w, "  Polls vault and starts new todos automatically", StyleDimmed)
+	r += 2
+
+	if r < h {
+		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	isMetis := row.key == vaultKeyMetis
+	title := "Argus Vault"
+	path := sv.argusVaultPath
+	desc := "Obsidian vault for task syncing."
+	if isMetis {
+		title = "Metis Vault"
+		path = sv.metisVaultPath
+		desc = "Obsidian vault for KB indexing."
+	}
+
+	drawText(screen, x, y, w, title, StyleTitle)
+	r := 2
+
+	display := path
+	editing := sv.editingVault == row.key
+	if editing {
+		display = sv.editVaultBuf + "▎"
+	} else if display == "" {
+		display = "(not configured)"
+	}
+	drawText(screen, x, y+r, w, display, tcell.StyleDefault.Foreground(ColorComplete))
+	r++
+
+	// Autocomplete dropdown (only when editing this vault).
+	if editing {
+		r += sv.vaultAC.Draw(screen, x, y+r, w, svMaxACVisible)
+	}
+	r++
+
+	drawText(screen, x, y+r, w, desc, StyleDimmed)
+	r += 2
+
+	// List discovered vaults (like spinner detail lists available styles).
+	if !editing && len(sv.discoveredVaults) > 0 {
+		drawText(screen, x, y+r, w, "Discovered iCloud vaults:", tcell.StyleDefault.Foreground(ColorTitle))
+		r++
+		home, _ := os.UserHomeDir()
+		for _, v := range sv.discoveredVaults {
+			if r >= h-1 {
+				break
+			}
+			label := "  " + strings.TrimPrefix(v, home)
+			style := StyleDimmed
+			if v == path {
+				style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+			}
+			drawText(screen, x, y+r, w, label, style)
+			r++
+		}
+		r++
+	}
+
+	if r < h {
+		if editing {
+			drawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", StyleDimmed)
+		} else if len(sv.discoveredVaults) > 0 {
+			drawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", StyleDimmed)
+		} else {
+			drawText(screen, x, y+r, w, "[enter] edit path", StyleDimmed)
+		}
+	}
+}
+
+func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Spinner Style", StyleTitle)
+	r := 2
+
+	active := spinner.Get(spinner.Style(sv.spinnerStyle))
+	drawText(screen, x, y+r, w, active.Label, tcell.StyleDefault.Foreground(ColorComplete))
+	r++
+
+	// Show a preview of the spinner frames.
+	preview := "  Frames: "
+	for _, f := range active.Frames {
+		preview += string(f) + " "
+	}
+	drawText(screen, x, y+r, w, preview, StyleDimmed)
+	r += 2
+
+	// List all available styles.
+	drawText(screen, x, y+r, w, "Available styles:", tcell.StyleDefault.Foreground(ColorTitle))
+	r++
+	for _, s := range spinner.All {
+		if r >= h {
+			break
+		}
+		label := "  " + s.Label
+		style := StyleDimmed
+		if s.Style == active.Style {
+			style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+		}
+		drawText(screen, x, y+r, w, label, style)
+		r++
+	}
+
+	if r+1 < h {
+		drawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderToDoProjectDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Default ToDo Project", StyleTitle)
+	r := 2
+
+	proj := sv.todoProject
+	if proj == "" {
+		drawText(screen, x, y+r, w, "(none)", StyleDimmed)
+	} else {
+		drawText(screen, x, y+r, w, proj, tcell.StyleDefault.Foreground(ColorComplete))
+	}
+	r += 2
+
+	drawText(screen, x, y+r, w, "The project pre-selected when launching", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "a to-do note as a new task.", StyleDimmed)
+	r += 2
+
+	if r < h {
+		drawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderReviewPromptDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Review Prompt", StyleTitle)
+	r := 2
+
+	prompt := sv.reviewPrompt
+	if sv.editingPrompt {
+		prompt = sv.editPromptBuf + "▎"
+	}
+	drawText(screen, x, y+r, w, prompt, tcell.StyleDefault.Foreground(ColorComplete))
+	r += 2
+
+	drawText(screen, x, y+r, w, "The prompt sent to the agent when starting", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "a PR review task (Ctrl+R in Reviews tab).", StyleDimmed)
+	r++
+	drawText(screen, x, y+r, w, "The PR URL is appended automatically.", StyleDimmed)
+	r += 2
+
+	if r < h {
+		if sv.editingPrompt {
+			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+		} else {
+			drawText(screen, x, y+r, w, "[enter] edit", StyleDimmed)
+		}
+	}
+}
+
+func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) {
+	drawText(screen, x, y, w, "Daemon", StyleTitle)
+	r := 2
+
+	if sv.daemonRestarting {
+		drawText(screen, x, y+r, w, "Restarting daemon...", tcell.StyleDefault.Foreground(ColorInProgress))
+	} else {
+		drawText(screen, x, y+r, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+		r += 2
+		drawText(screen, x, y+r, w, "[enter] restart daemon", StyleDimmed)
+	}
+}
+
+// SetDaemonRestarting updates the restarting state from the app.
+func (sv *SettingsView) SetDaemonRestarting(restarting bool) {
+	sv.daemonRestarting = restarting
+	if !restarting {
+		// Daemon just came back — re-capture boot state on next Refresh.
+		sv.apiBootRecorded = false
+		sv.vaultBootRecorded = false
+	}
+	sv.rebuildRows()
+}
+
+func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
+	dataDir := db.DataDir()
+	var title, logPath string
+	switch row.key {
+	case "ux":
+		title = "UX Log"
+		logPath = uxlog.Path(dataDir)
+	case "daemon":
+		title = "Daemon Log"
+		logPath = dataDir + "/daemon.log"
+	default:
+		return
+	}
+
+	drawText(screen, x, y, w, title, StyleTitle)
+	drawText(screen, x, y+2, w, logPath, StyleDimmed)
+
+	// Load/cache log lines.
+	if sv.logKey != row.key {
+		sv.logLines = readLogLines(logPath)
+		sv.logKey = row.key
+		// Auto-scroll to bottom on first load.
+		visibleRows := h - 4
+		if len(sv.logLines) > visibleRows {
+			sv.logScrollOff = len(sv.logLines) - visibleRows
+		} else {
+			sv.logScrollOff = 0
+		}
+	}
+
+	// Clamp scroll offset.
+	visibleRows := h - 4
+	if visibleRows <= 0 {
+		return
+	}
+	maxScroll := len(sv.logLines) - visibleRows
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if sv.logScrollOff > maxScroll {
+		sv.logScrollOff = maxScroll
+	}
+
+	// Render visible lines.
+	for i := range visibleRows {
+		lineIdx := sv.logScrollOff + i
+		if lineIdx >= len(sv.logLines) {
+			break
+		}
+		line := sv.logLines[lineIdx]
+		if len(line) > w {
+			line = line[:w]
+		}
+		drawText(screen, x, y+4+i, w, line, tcell.StyleDefault)
+	}
+}
+
+// readLogLines reads all lines from a log file.
+func readLogLines(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return []string{"(file not found)"}
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text == "" {
+		return []string{"(empty)"}
+	}
+	return strings.Split(text, "\n")
+}
+
+// --- Helpers ---
+
+func drawMultiLine(screen tcell.Screen, x, y, w int, text string, style tcell.Style) int {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if len(line) > w {
+			line = line[:w]
+		}
+		drawText(screen, x, y+i, w, line, style)
+	}
+	return len(lines)
+}

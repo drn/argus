@@ -13,7 +13,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/tui2"
+	"github.com/drn/argus/internal/tui"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -72,8 +72,8 @@ func runTUI() {
 		client, err = dclient.AutoStart(sockPath)
 	}
 
-	// appRef is set after tui2.New so the onFinish callback can reach the app.
-	var appRef *tui2.App
+	// appRef is set after tui.New so the onFinish callback can reach the app.
+	var appRef *tui.App
 
 	if err != nil {
 		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
@@ -92,7 +92,7 @@ func runTUI() {
 
 	// Wire up session exit callback for daemon mode BEFORE creating the app,
 	// so no exit events can be missed during initialization.
-	var appRef2 *tui2.App
+	var appRef2 *tui.App
 	if client != nil {
 		client.OnSessionExit(func(taskID string, info daemon.ExitInfo) {
 			if a := appRef2; a != nil {
@@ -101,7 +101,7 @@ func runTUI() {
 		})
 	}
 
-	app := tui2.New(database, runner, daemonConnected, daemonFreshStart)
+	app := tui.New(database, runner, daemonConnected, daemonFreshStart)
 	appRef = app
 	appRef2 = app
 	if err := app.Run(); err != nil {

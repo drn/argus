@@ -1,0 +1,53 @@
+// Package tui implements the tcell/tview UI runtime for Argus.
+// This runtime uses direct cell painting for native terminal passthrough
+// in the agent view.
+package tui
+
+import "github.com/gdamore/tcell/v2"
+
+// Color constants for the 256-color palette theme.
+var (
+	ColorTitle      = tcell.Color87  // cyan — titles, focused borders
+	ColorStatusBG   = tcell.Color235 // dark gray — status bar background
+	ColorStatusFG   = tcell.Color245 // medium gray — status bar text
+	ColorSelected   = tcell.Color212 // pink — selected/cursor row
+	ColorNormal     = tcell.Color252 // light gray — default text
+	ColorDimmed     = tcell.Color240 // dim gray — secondary text
+	ColorPending    = tcell.Color245 // gray — pending status
+	ColorInProgress = tcell.Color214 // orange — in-progress status
+	ColorInReview   = tcell.Color81  // blue — in-review status
+	ColorComplete   = tcell.Color78  // green — complete status
+	ColorProject    = tcell.Color87  // cyan — project names
+	ColorElapsed    = tcell.Color243 // gray — elapsed times
+	ColorBorder     = tcell.Color238 // dark gray — unfocused borders
+	ColorError      = tcell.Color203 // red — errors
+	ColorKeyHint    = tcell.Color87  // cyan — keybinding hints
+	ColorKeyLabel   = tcell.Color240 // dim — keybinding labels
+	ColorHighlight  = tcell.Color236 // slightly lighter dark gray — cursor/selection highlight
+	ColorFilter     = tcell.Color201 // magenta — active filter query
+)
+
+// Icon constants for status indicators (Nerd Font codepoints).
+const (
+	IconMoonStars   = rune(0x0F0594) // 󰖔 nf-md-weather_night — unvisited / needs attention
+	IconMoonOutline = rune(0xF186)   //  nf-fa-moon_o — visited / idle
+)
+
+// Styles for common UI elements.
+var (
+	StyleDefault      = tcell.StyleDefault
+	StyleTitle        = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	StyleStatusBar    = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorStatusFG)
+	StyleSelected     = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+	StyleNormal       = tcell.StyleDefault.Foreground(ColorNormal)
+	StyleDimmed       = tcell.StyleDefault.Foreground(ColorDimmed)
+	StylePending      = tcell.StyleDefault.Foreground(ColorPending)
+	StyleInProgress   = tcell.StyleDefault.Foreground(ColorInProgress)
+	StyleInReview     = tcell.StyleDefault.Foreground(ColorInReview)
+	StyleComplete     = tcell.StyleDefault.Foreground(ColorComplete)
+	StyleProject      = tcell.StyleDefault.Foreground(ColorProject)
+	StyleBorder       = tcell.StyleDefault.Foreground(ColorBorder)
+	StyleFocusedBorder = tcell.StyleDefault.Foreground(ColorTitle)
+	StyleError        = tcell.StyleDefault.Foreground(ColorError)
+	StyleFilter       = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
+)
