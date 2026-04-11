@@ -24,6 +24,7 @@ type KBQuerier interface {
 	KBGet(path string) (*kb.Document, error)
 	KBList(prefix string, limit int) ([]kb.Document, error)
 	KBUpsert(doc *kb.Document) error
+	KBDelete(path string) error
 	KBDocumentCount() int
 }
 
@@ -265,6 +266,17 @@ var toolDefs = []Tool{
 		},
 	},
 	{
+		Name:        "kb_delete",
+		Description: `Delete a document from the knowledge base by vault-relative path. Also removes the file from the Obsidian vault if it exists. Use kb_search or kb_list first to confirm the path.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"path": map[string]interface{}{"type": "string", "description": "Vault-relative path of the document to delete (e.g. 'thanx/hiring.md')"},
+			},
+			"required": []string{"path"},
+		},
+	},
+	{
 		Name: "kb_ingest",
 		// Description intentionally duplicates key rules from kbInstructions —
 		// not all MCP clients surface server instructions at tool-call time.
@@ -376,6 +388,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolKBRead(req.ID, params.Arguments)
 	case "kb_list":
 		return s.toolKBList(req.ID, params.Arguments)
+	case "kb_delete":
+		return s.toolKBDelete(req.ID, params.Arguments)
 	case "kb_ingest":
 		return s.toolKBIngest(req.ID, params.Arguments)
 	case "task_create":
@@ -475,6 +489,42 @@ func (s *Server) toolKBList(id interface{}, args json.RawMessage) *Response {
 		fmt.Fprintf(&sb, "- **%s** (%s) [%d words]\n", doc.Path, doc.Tier, doc.WordCount)
 	}
 	return toolResult(id, sb.String())
+}
+
+func (s *Server) toolKBDelete(id interface{}, args json.RawMessage) *Response {
+	var p struct {
+		Path string `json:"path"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Path == "" {
+		return toolError(id, "path is required")
+	}
+
+	// Canonicalize and validate the path: must be vault-relative, no escaping.
+	cleanPath := filepath.Clean(p.Path)
+	if filepath.IsAbs(cleanPath) || strings.HasPrefix(cleanPath, "..") {
+		return toolError(id, "invalid path: must be vault-relative with no '..' components")
+	}
+
+	// Verify the document exists before deleting.
+	if _, err := s.db.KBGet(cleanPath); err != nil {
+		return toolError(id, fmt.Sprintf("Document not found: %v", err))
+	}
+
+	if err := s.db.KBDelete(cleanPath); err != nil {
+		return toolError(id, fmt.Sprintf("Delete failed: %v", err))
+	}
+
+	// Remove from Obsidian vault if configured.
+	if s.vaultPath != "" {
+		absPath := filepath.Join(s.vaultPath, cleanPath)
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[mcp] vault delete failed: %v", err)
+		}
+	}
+
+	return toolResult(id, fmt.Sprintf("Deleted %s", p.Path))
 }
 
 func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {

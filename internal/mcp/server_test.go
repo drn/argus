@@ -48,6 +48,16 @@ func (m *mockDB) KBUpsert(doc *kb.Document) error {
 	return nil
 }
 
+func (m *mockDB) KBDelete(path string) error {
+	for i, d := range m.docs {
+		if d.Path == path {
+			m.docs = append(m.docs[:i], m.docs[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
 func (m *mockDB) KBDocumentCount() int {
 	return len(m.docs)
 }
@@ -139,15 +149,15 @@ func TestToolsList(t *testing.T) {
 	if err := json.Unmarshal(result, &list); err != nil {
 		t.Fatalf("unmarshal ToolsListResult: %v", err)
 	}
-	if len(list.Tools) != 4 {
-		t.Errorf("tools count: got %d, want 4", len(list.Tools))
+	if len(list.Tools) != 5 {
+		t.Errorf("tools count: got %d, want 5", len(list.Tools))
 	}
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"kb_search", "kb_read", "kb_list", "kb_ingest"} {
+	for _, want := range []string{"kb_search", "kb_read", "kb_list", "kb_delete", "kb_ingest"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -247,6 +257,92 @@ func TestToolsCall_KBIngest_NoVaultPath(t *testing.T) {
 	// Document should be in DB.
 	if len(db.docs) == 0 {
 		t.Fatal("document not in DB")
+	}
+}
+
+func TestToolsCall_KBDelete(t *testing.T) {
+	s := testServer()
+
+	t.Run("success", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{"path": "notes/test.md"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "Deleted notes/test.md")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{"path": "nonexistent.md"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "Document not found")
+	})
+
+	t.Run("missing path", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "path is required")
+	})
+
+	t.Run("path traversal blocked", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{"path": "../etc/passwd"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "invalid path")
+	})
+}
+
+func TestToolsCall_KBDelete_VaultRemoval(t *testing.T) {
+	vaultDir := t.TempDir()
+	db := &mockDB{
+		docs: []kb.Document{
+			{Path: "notes/delete-me.md", Title: "Delete Me", Body: "body", Tier: "hot"},
+		},
+	}
+	s := New(db, 7742, vaultDir)
+
+	// Create the vault file.
+	notesDir := filepath.Join(vaultDir, "notes")
+	os.MkdirAll(notesDir, 0o755)
+	vaultFile := filepath.Join(notesDir, "delete-me.md")
+	os.WriteFile(vaultFile, []byte("# Delete Me\n\nbody"), 0o644)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_delete",
+		Arguments: json.RawMessage(`{"path": "notes/delete-me.md"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+
+	// Verify file was removed from vault.
+	if _, err := os.Stat(vaultFile); !os.IsNotExist(err) {
+		t.Error("vault file should have been deleted")
+	}
+
+	// Verify document was removed from mock DB.
+	if len(db.docs) != 0 {
+		t.Errorf("db should be empty, got %d docs", len(db.docs))
 	}
 }
 
@@ -370,8 +466,8 @@ func TestToolsList_WithTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 4 KB tools + 4 task tools = 8
-	testutil.Equal(t, len(list.Tools), 8)
+	// 5 KB tools + 4 task tools = 9
+	testutil.Equal(t, len(list.Tools), 9)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
@@ -393,8 +489,8 @@ func TestToolsList_WithoutTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// Only 4 KB tools
-	testutil.Equal(t, len(list.Tools), 4)
+	// Only 5 KB tools
+	testutil.Equal(t, len(list.Tools), 5)
 }
 
 func TestTaskCreate(t *testing.T) {
