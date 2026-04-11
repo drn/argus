@@ -55,7 +55,7 @@ func (m *mockDB) KBDelete(path string) error {
 			return nil
 		}
 	}
-	return nil
+	return fmt.Errorf("kb document not found")
 }
 
 func (m *mockDB) KBDocumentCount() int {
@@ -284,7 +284,7 @@ func TestToolsCall_KBDelete(t *testing.T) {
 		testutil.NoError(t, respErr(resp))
 		cr := callResult(t, resp)
 		testutil.Equal(t, cr.IsError, true)
-		testutil.Contains(t, cr.Content[0].Text, "Document not found")
+		testutil.Contains(t, cr.Content[0].Text, "Delete failed")
 	})
 
 	t.Run("missing path", func(t *testing.T) {
@@ -321,9 +321,13 @@ func TestToolsCall_KBDelete_VaultRemoval(t *testing.T) {
 
 	// Create the vault file.
 	notesDir := filepath.Join(vaultDir, "notes")
-	os.MkdirAll(notesDir, 0o755)
+	if err := os.MkdirAll(notesDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	vaultFile := filepath.Join(notesDir, "delete-me.md")
-	os.WriteFile(vaultFile, []byte("# Delete Me\n\nbody"), 0o644)
+	if err := os.WriteFile(vaultFile, []byte("# Delete Me\n\nbody"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "kb_delete",

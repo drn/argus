@@ -229,7 +229,7 @@ WHAT NOT TO DO:
 - Don't use inline #hashtags — put all tags in YAML frontmatter.
 - Don't nest folders more than 2 levels deep.`
 
-// toolDefs defines the four KB tools exposed via MCP.
+// toolDefs defines the KB tools exposed via MCP.
 var toolDefs = []Tool{
 	{
 		Name: "kb_search",
@@ -506,10 +506,12 @@ func (s *Server) toolKBDelete(id interface{}, args json.RawMessage) *Response {
 	if filepath.IsAbs(cleanPath) || strings.HasPrefix(cleanPath, "..") {
 		return toolError(id, "invalid path: must be vault-relative with no '..' components")
 	}
-
-	// Verify the document exists before deleting.
-	if _, err := s.db.KBGet(cleanPath); err != nil {
-		return toolError(id, fmt.Sprintf("Document not found: %v", err))
+	// After Clean, verify the resolved path stays within the vault.
+	if s.vaultPath != "" {
+		absPath := filepath.Join(s.vaultPath, cleanPath)
+		if !strings.HasPrefix(absPath, s.vaultPath+string(filepath.Separator)) && absPath != s.vaultPath {
+			return toolError(id, "invalid path: escapes vault directory")
+		}
 	}
 
 	if err := s.db.KBDelete(cleanPath); err != nil {
@@ -520,11 +522,12 @@ func (s *Server) toolKBDelete(id interface{}, args json.RawMessage) *Response {
 	if s.vaultPath != "" {
 		absPath := filepath.Join(s.vaultPath, cleanPath)
 		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("[mcp] vault delete failed: %v", err)
+			log.Printf("[mcp] vault delete failed for %s: %v", cleanPath, err)
+			return toolResult(id, fmt.Sprintf("Deleted %s from index (warning: vault file removal failed — re-index may restore it)", cleanPath))
 		}
 	}
 
-	return toolResult(id, fmt.Sprintf("Deleted %s", p.Path))
+	return toolResult(id, fmt.Sprintf("Deleted %s", cleanPath))
 }
 
 func (s *Server) toolKBIngest(id interface{}, args json.RawMessage) *Response {

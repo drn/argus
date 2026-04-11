@@ -57,22 +57,32 @@ func (d *DB) KBUpsert(doc *kb.Document) error {
 	return tx.Commit()
 }
 
+// ErrKBNotFound is returned when a KB document does not exist.
+var ErrKBNotFound = fmt.Errorf("kb document not found")
+
 // KBDelete removes a document from the knowledge base by its vault-relative path.
+// Returns ErrKBNotFound if the document does not exist.
 func (d *DB) KBDelete(path string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	tx, err := d.conn.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("kb delete begin tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if _, err := tx.Exec(`DELETE FROM kb_documents WHERE path = ?`, path); err != nil {
-		return err
+	res, err := tx.Exec(`DELETE FROM kb_documents WHERE path = ?`, path)
+	if err != nil {
+		return fmt.Errorf("kb delete documents: %w", err)
 	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrKBNotFound
+	}
+
 	if _, err := tx.Exec(`DELETE FROM kb_metadata WHERE path = ?`, path); err != nil {
-		return err
+		return fmt.Errorf("kb delete metadata: %w", err)
 	}
 	return tx.Commit()
 }

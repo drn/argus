@@ -116,6 +116,12 @@ func TestKBDelete(t *testing.T) {
 	if err == nil {
 		t.Error("expected error after delete, got nil")
 	}
+
+	// Deleting a non-existent document should return ErrKBNotFound.
+	err = d.KBDelete("notes/does-not-exist.md")
+	if err == nil {
+		t.Error("expected ErrKBNotFound for non-existent path, got nil")
+	}
 }
 
 func TestKBDocumentCount(t *testing.T) {
