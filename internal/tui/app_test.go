@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -672,7 +673,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 	}
 
 	t.Run("cancel", func(t *testing.T) {
-		m := NewConfirmDeleteModal(task)
+		m := modal.NewConfirmDeleteModal(task)
 		if m.Confirmed() || m.Canceled() {
 			t.Error("modal should not be confirmed or canceled initially")
 		}
@@ -690,7 +691,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 	})
 
 	t.Run("ctrl+q cancels", func(t *testing.T) {
-		m := NewConfirmDeleteModal(task)
+		m := modal.NewConfirmDeleteModal(task)
 
 		handler := m.InputHandler()
 		handler(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), func(p tview.Primitive) {})
@@ -704,7 +705,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 	})
 
 	t.Run("confirm", func(t *testing.T) {
-		m := NewConfirmDeleteModal(task)
+		m := modal.NewConfirmDeleteModal(task)
 
 		// Press Enter
 		handler := m.InputHandler()
@@ -719,7 +720,7 @@ func TestConfirmDeleteModal(t *testing.T) {
 	})
 
 	t.Run("task preserved", func(t *testing.T) {
-		m := NewConfirmDeleteModal(task)
+		m := modal.NewConfirmDeleteModal(task)
 		if m.Task().ID != "t1" {
 			t.Errorf("Task().ID = %q, want %q", m.Task().ID, "t1")
 		}

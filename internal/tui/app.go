@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/gitpanel"
+	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/taskview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/widget"
@@ -98,8 +99,8 @@ type App struct {
 	newTaskForm *NewTaskForm
 
 	// Confirm delete modal (created on demand)
-	confirmDeleteModal        *ConfirmDeleteModal
-	confirmDeleteProjectModal *ConfirmDeleteProjectModal
+	confirmDeleteModal        *modal.ConfirmDeleteModal
+	confirmDeleteProjectModal *modal.ConfirmDeleteProjectModal
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal      *LaunchToDoModal
@@ -2675,7 +2676,7 @@ func (a *App) closeFuzzyLinkPickerModal() {
 
 // openConfirmDelete shows the confirm delete modal for the given task.
 func (a *App) openConfirmDelete(t *model.Task) {
-	a.confirmDeleteModal = NewConfirmDeleteModal(t)
+	a.confirmDeleteModal = modal.NewConfirmDeleteModal(t)
 	a.mode = modeConfirmDelete
 	a.pages.AddPage("confirmdelete", a.confirmDeleteModal, true, true)
 	a.pages.SwitchToPage("confirmdelete")
@@ -3106,7 +3107,7 @@ func (a *App) deleteProject(name string) {
 
 // openConfirmDeleteProject shows the confirm delete modal for the given project.
 func (a *App) openConfirmDeleteProject(name string, taskCount int) {
-	a.confirmDeleteProjectModal = NewConfirmDeleteProjectModal(name, taskCount)
+	a.confirmDeleteProjectModal = modal.NewConfirmDeleteProjectModal(name, taskCount)
 	a.mode = modeConfirmDeleteProject
 	a.pages.AddPage("confirmdeleteproject", a.confirmDeleteProjectModal, true, true)
 	a.pages.SwitchToPage("confirmdeleteproject")
