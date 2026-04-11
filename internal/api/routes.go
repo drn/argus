@@ -47,7 +47,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // handleListProjects returns the list of configured project names.
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects := s.db.Projects()
+	projects, err := s.db.Projects()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects: " + err.Error()})
+		return
+	}
 	names := make([]string, 0, len(projects))
 	for name := range projects {
 		names = append(names, name)

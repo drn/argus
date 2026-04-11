@@ -803,7 +803,7 @@ func TestDeleteTask(t *testing.T) {
 	}
 
 	// Verify task is gone from DB
-	tasks := d.Tasks()
+	tasks, _ := d.Tasks()
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 tasks in DB, got %d", len(tasks))
 	}
@@ -836,8 +836,9 @@ func TestDeleteTask_AutoDeletesTodoFile(t *testing.T) {
 	app.deleteTask(task)
 
 	// Task should be deleted from DB.
-	if len(d.Tasks()) != 0 {
-		t.Errorf("expected 0 tasks in DB, got %d", len(d.Tasks()))
+	remainingTasks, _ := d.Tasks()
+	if len(remainingTasks) != 0 {
+		t.Errorf("expected 0 tasks in DB, got %d", len(remainingTasks))
 	}
 
 	// Todo vault file should be auto-deleted.
@@ -864,8 +865,9 @@ func TestDeleteTask_NoTodoPath_NoFileRemoval(t *testing.T) {
 	// Should not panic or error when TodoPath is empty.
 	app.deleteTask(task)
 
-	if len(d.Tasks()) != 0 {
-		t.Errorf("expected 0 tasks in DB, got %d", len(d.Tasks()))
+	noTodoTasks, _ := d.Tasks()
+	if len(noTodoTasks) != 0 {
+		t.Errorf("expected 0 tasks in DB, got %d", len(noTodoTasks))
 	}
 }
 

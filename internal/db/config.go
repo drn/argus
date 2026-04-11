@@ -9,11 +9,15 @@ import (
 func (d *DB) Config() config.Config {
 	cfg := config.DefaultConfig()
 
-	// Load backends
-	cfg.Backends = d.Backends()
+	// Load backends (use defaults on error).
+	if backends, err := d.Backends(); err == nil {
+		cfg.Backends = backends
+	}
 
-	// Load projects
-	cfg.Projects = d.Projects()
+	// Load projects (use defaults on error).
+	if projects, err := d.Projects(); err == nil {
+		cfg.Projects = projects
+	}
 
 	// Load scalar config values — hold mutex through iteration
 	// to prevent concurrent writes while the rows cursor is open.

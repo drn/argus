@@ -1,16 +1,18 @@
 package db
 
 import (
+	"fmt"
+
 	"github.com/drn/argus/internal/config"
 )
 
-func (d *DB) Backends() map[string]config.Backend {
+func (d *DB) Backends() (map[string]config.Backend, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(`SELECT name, command, prompt_flag FROM backends ORDER BY name`)
 	if err != nil {
-		return make(map[string]config.Backend)
+		return nil, fmt.Errorf("query backends: %w", err)
 	}
 	defer rows.Close()
 
@@ -23,7 +25,7 @@ func (d *DB) Backends() map[string]config.Backend {
 		}
 		backends[name] = b
 	}
-	return backends
+	return backends, nil
 }
 
 func (d *DB) SetBackend(name string, b config.Backend) error {

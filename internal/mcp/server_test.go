@@ -289,7 +289,7 @@ type mockTaskDB struct {
 	tasks []*model.Task
 }
 
-func (m *mockTaskDB) Tasks() []*model.Task { return m.tasks }
+func (m *mockTaskDB) Tasks() ([]*model.Task, error) { return m.tasks, nil }
 
 func (m *mockTaskDB) Get(id string) (*model.Task, error) {
 	for _, t := range m.tasks {

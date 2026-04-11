@@ -34,13 +34,13 @@ func scanTask(row scanner) (*model.Task, error) {
 	return t, nil
 }
 
-func (d *DB) Tasks() []*model.Task {
+func (d *DB) Tasks() ([]*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks ORDER BY created_at ASC`)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("query tasks: %w", err)
 	}
 	defer rows.Close()
 
@@ -50,7 +50,7 @@ func (d *DB) Tasks() []*model.Task {
 			tasks = append(tasks, t)
 		}
 	}
-	return tasks
+	return tasks, nil
 }
 
 func (d *DB) Add(t *model.Task) error {
@@ -204,28 +204,31 @@ func (d *DB) WorktreePaths() (map[string]bool, error) {
 
 // TaskByPRURL returns the most recent non-archived task linked to the given PR URL,
 // or nil if none exists. Used to detect duplicate review tasks.
-func (d *DB) TaskByPRURL(url string) *model.Task {
+func (d *DB) TaskByPRURL(url string) (*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE pr_url=? AND archived=0 ORDER BY created_at DESC LIMIT 1`, url)
 	t, err := scanTask(row)
-	if err != nil {
-		return nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	return t
+	if err != nil {
+		return nil, fmt.Errorf("query task by pr url: %w", err)
+	}
+	return t, nil
 }
 
 // TasksByTodoPath returns a map from todo_path to the most recent task with that path.
 // Only tasks with a non-empty todo_path are included. Ordered by created_at ASC so
 // later tasks overwrite earlier ones (most recent wins).
-func (d *DB) TasksByTodoPath() map[string]*model.Task {
+func (d *DB) TasksByTodoPath() (map[string]*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(`SELECT ` + taskColumns + ` FROM tasks WHERE todo_path != '' ORDER BY created_at ASC`)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("query tasks by todo path: %w", err)
 	}
 	defer rows.Close()
 
@@ -235,5 +238,5 @@ func (d *DB) TasksByTodoPath() map[string]*model.Task {
 			m[t.TodoPath] = t
 		}
 	}
-	return m
+	return m, nil
 }

@@ -33,7 +33,7 @@ type TaskCreator func(name, prompt, project, todoPath string) (*model.Task, erro
 
 // TaskQuerier provides read access to tasks.
 type TaskQuerier interface {
-	Tasks() []*model.Task
+	Tasks() ([]*model.Task, error)
 	Get(id string) (*model.Task, error)
 }
 
@@ -602,7 +602,10 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
-	tasks := s.taskDB.Tasks()
+	tasks, err := s.taskDB.Tasks()
+	if err != nil {
+		return toolError(id, fmt.Sprintf("Failed to list tasks: %v", err))
+	}
 	var sb strings.Builder
 	count := 0
 	for _, t := range tasks {

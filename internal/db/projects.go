@@ -1,18 +1,19 @@
 package db
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/drn/argus/internal/config"
 )
 
-func (d *DB) Projects() map[string]config.Project {
+func (d *DB) Projects() (map[string]config.Project, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write FROM projects ORDER BY name`)
 	if err != nil {
-		return make(map[string]config.Project)
+		return nil, fmt.Errorf("query projects: %w", err)
 	}
 	defer rows.Close()
 
@@ -40,7 +41,7 @@ func (d *DB) Projects() map[string]config.Project {
 		}
 		projects[name] = p
 	}
-	return projects
+	return projects, nil
 }
 
 func (d *DB) SetProject(name string, p config.Project) error {

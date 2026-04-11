@@ -142,7 +142,9 @@ func TestDB_Delete(t *testing.T) {
 	if _, err := d.Get(task.ID); err == nil {
 		t.Error("expected not found after delete")
 	}
-	if len(d.Tasks()) != 0 {
+	tasksAfterDel, err := d.Tasks()
+	testutil.NoError(t, err)
+	if len(tasksAfterDel) != 0 {
 		t.Error("expected empty tasks after delete")
 	}
 }
@@ -176,7 +178,8 @@ func TestDB_PruneCompleted(t *testing.T) {
 	if len(pruned) != 2 {
 		t.Errorf("expected 2 pruned, got %d", len(pruned))
 	}
-	remaining := d.Tasks()
+	remaining, err := d.Tasks()
+	testutil.NoError(t, err)
 	if len(remaining) != 2 {
 		t.Errorf("expected 2 remaining, got %d", len(remaining))
 	}
@@ -199,7 +202,9 @@ func TestDB_PruneCompleted_NoneToRemove(t *testing.T) {
 	if pruned != nil {
 		t.Errorf("expected nil pruned, got %d", len(pruned))
 	}
-	if len(d.Tasks()) != 1 {
+	tasksAfterPrune, err := d.Tasks()
+	testutil.NoError(t, err)
+	if len(tasksAfterPrune) != 1 {
 		t.Error("expected task count unchanged")
 	}
 }
@@ -223,7 +228,8 @@ func TestDB_TaskPersistence(t *testing.T) {
 	}
 	defer d2.Close()
 
-	tasks := d2.Tasks()
+	tasks, err := d2.Tasks()
+	testutil.NoError(t, err)
 	if len(tasks) != 1 || tasks[0].Name != "persisted" {
 		t.Errorf("persistence failed: got %d tasks", len(tasks))
 	}
@@ -238,7 +244,8 @@ func TestDB_Projects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	if len(projects) != 1 {
 		t.Fatalf("expected 1 project, got %d", len(projects))
 	}
@@ -261,7 +268,9 @@ func TestDB_DeleteProject(t *testing.T) {
 	if err := d.DeleteProject("myapp"); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Projects()) != 0 {
+	projectsAfterDel, err := d.Projects()
+	testutil.NoError(t, err)
+	if len(projectsAfterDel) != 0 {
 		t.Error("expected 0 projects")
 	}
 }
@@ -272,7 +281,8 @@ func TestDB_SetProjectUpdates(t *testing.T) {
 	_ = d.SetProject("myapp", config.Project{Path: "/old"})
 	_ = d.SetProject("myapp", config.Project{Path: "/new"})
 
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	if projects["myapp"].Path != "/new" {
 		t.Errorf("expected /new, got %q", projects["myapp"].Path)
 	}
@@ -285,7 +295,8 @@ func TestDB_Project_SandboxInherit(t *testing.T) {
 	if err := d.SetProject("myapp", config.Project{Path: "/home/user/myapp"}); err != nil {
 		t.Fatal(err)
 	}
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	p := projects["myapp"]
 	if p.Sandbox.Enabled != nil {
 		t.Errorf("expected nil Enabled (inherit), got %v", p.Sandbox.Enabled)
@@ -311,7 +322,8 @@ func TestDB_Project_SandboxEnabledTrue(t *testing.T) {
 	if err := d.SetProject("myapp", proj); err != nil {
 		t.Fatal(err)
 	}
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	p := projects["myapp"]
 	if p.Sandbox.Enabled == nil {
 		t.Fatal("expected non-nil Enabled")
@@ -334,7 +346,8 @@ func TestDB_Project_SandboxEnabledFalse(t *testing.T) {
 	if err := d.SetProject("myapp", proj); err != nil {
 		t.Fatal(err)
 	}
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	p := projects["myapp"]
 	if p.Sandbox.Enabled == nil {
 		t.Fatal("expected non-nil Enabled")
@@ -357,7 +370,8 @@ func TestDB_Project_SandboxPaths(t *testing.T) {
 	if err := d.SetProject("myapp", proj); err != nil {
 		t.Fatal(err)
 	}
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	p := projects["myapp"]
 	if len(p.Sandbox.DenyRead) != 2 {
 		t.Fatalf("expected 2 DenyRead paths, got %d: %v", len(p.Sandbox.DenyRead), p.Sandbox.DenyRead)
@@ -405,7 +419,8 @@ func TestDB_Project_SandboxRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects := d.Projects()
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
 	p := projects["myapp"]
 	if p.Sandbox.Enabled == nil || *p.Sandbox.Enabled {
 		t.Errorf("expected Enabled=false after update, got %v", p.Sandbox.Enabled)
@@ -424,7 +439,8 @@ func TestDB_Backends(t *testing.T) {
 	d := testDB(t)
 
 	// Should have default backend from seedDefaults
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if _, ok := backends["claude"]; !ok {
 		t.Error("expected default claude backend")
 	}
@@ -436,7 +452,8 @@ func TestDB_SetBackend(t *testing.T) {
 	if err := d.SetBackend("codex", config.Backend{Command: "codex", PromptFlag: "--prompt"}); err != nil {
 		t.Fatal(err)
 	}
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if b, ok := backends["codex"]; !ok {
 		t.Error("codex not found")
 	} else if b.Command != "codex" {
@@ -486,7 +503,8 @@ func TestMigration_FreshDB(t *testing.T) {
 	if cfg.Defaults.Backend != "claude" {
 		t.Errorf("expected default backend, got %q", cfg.Defaults.Backend)
 	}
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if _, ok := backends["claude"]; !ok {
 		t.Error("expected default claude backend")
 	}
@@ -509,7 +527,8 @@ func TestSeedDefaults_FixesPlaceholderBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b, ok := backends["claude"]
 	if !ok {
 		t.Fatal("expected claude backend")
@@ -543,7 +562,8 @@ func TestFixupBackends_MissingDangerouslySkipPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b, ok := backends["claude"]
 	if !ok {
 		t.Fatal("expected claude backend")
@@ -576,7 +596,8 @@ func TestFixupBackends_CodexOldFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b, ok := backends["codex"]
 	if !ok {
 		t.Fatal("expected codex backend")
@@ -606,7 +627,8 @@ func TestFixupBackends_CodexFullAuto(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b := backends["codex"]
 	defaultCfg := config.DefaultConfig()
 	if b.Command != defaultCfg.Backends["codex"].Command {
@@ -633,7 +655,8 @@ func TestFixupBackends_SkipsCorrectConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	got := backends["claude"]
 	if got.Command != want.Command || got.PromptFlag != want.PromptFlag {
 		t.Errorf("fixupBackends should not modify correct config: got command=%q flag=%q", got.Command, got.PromptFlag)
@@ -665,7 +688,8 @@ func TestFixupBackends_RunsOnOpen(t *testing.T) {
 	}
 	defer d2.Close()
 
-	backends := d2.Backends()
+	backends, err := d2.Backends()
+	testutil.NoError(t, err)
 	b := backends["claude"]
 	defaultCfg := config.DefaultConfig()
 	if b.Command != defaultCfg.Backends["claude"].Command {
@@ -771,7 +795,8 @@ func TestDB_Tasks_OrderedByCreatedAt(t *testing.T) {
 	_ = d.Add(t1)
 	_ = d.Add(t2)
 
-	tasks := d.Tasks()
+	tasks, err := d.Tasks()
+	testutil.NoError(t, err)
 	if len(tasks) != 3 {
 		t.Fatalf("expected 3 tasks, got %d", len(tasks))
 	}
@@ -1124,7 +1149,8 @@ func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			backends := d.Backends()
+			backends, err := d.Backends()
+			testutil.NoError(t, err)
 			b := backends["claude"]
 			if b.Command == placeholder {
 				t.Errorf("seedDefaults should have replaced placeholder %q", placeholder)
@@ -1154,7 +1180,8 @@ func TestSeedDefaults_SkipsNonPlaceholder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if backends["claude"].Command != customCmd {
 		t.Errorf("seedDefaults overwrote custom command: got %q", backends["claude"].Command)
 	}
@@ -1180,7 +1207,8 @@ func TestFixupBackends_FixesPromptFlagOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b := backends["claude"]
 	if b.PromptFlag != "" {
 		t.Errorf("expected empty prompt_flag, got %q", b.PromptFlag)
@@ -1206,7 +1234,8 @@ func TestFixupBackends_MissingPermissionModePlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b := backends["claude"]
 	// Fixup appends --permission-mode plan to existing command (preserving customizations)
 	want := "claude --dangerously-skip-permissions --permission-mode plan"
@@ -1234,7 +1263,8 @@ func TestFixupBackends_PermissionModePreservesCustomFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b := backends["claude"]
 	want := "claude --dangerously-skip-permissions --model claude-opus-4-5 --permission-mode plan"
 	if b.Command != want {
@@ -1259,7 +1289,8 @@ func TestFixupBackends_NonClaudeBackendUntouched(t *testing.T) {
 	}
 
 	// gemini is not in DefaultConfig, so fixupBackends should not touch it
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if backends["gemini"].PromptFlag != "-p" {
 		t.Errorf("gemini prompt_flag should be untouched, got %q", backends["gemini"].PromptFlag)
 	}
@@ -1375,7 +1406,8 @@ func TestDB_BackendCommandRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	b, ok := backends["codex"]
 	if !ok {
 		t.Fatal("codex not found")
@@ -1407,7 +1439,8 @@ func TestDB_SetBackendOverwrites(t *testing.T) {
 	_ = d.SetBackend("test", config.Backend{Command: "v1", PromptFlag: "--old"})
 	_ = d.SetBackend("test", config.Backend{Command: "v2", PromptFlag: "--new"})
 
-	backends := d.Backends()
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
 	if backends["test"].Command != "v2" {
 		t.Errorf("expected v2, got %q", backends["test"].Command)
 	}
@@ -1420,7 +1453,8 @@ func TestDB_SetBackendOverwrites(t *testing.T) {
 
 func TestDB_Tasks_Empty(t *testing.T) {
 	d := testDB(t)
-	tasks := d.Tasks()
+	tasks, err := d.Tasks()
+	testutil.NoError(t, err)
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 tasks, got %d", len(tasks))
 	}
@@ -1446,7 +1480,8 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 	if pruned[0].Name != "complete" {
 		t.Errorf("pruned wrong task: %q", pruned[0].Name)
 	}
-	remaining := d.Tasks()
+	remaining, err := d.Tasks()
+	testutil.NoError(t, err)
 	if len(remaining) != 3 {
 		t.Errorf("expected 3 remaining, got %d", len(remaining))
 	}
@@ -1467,7 +1502,8 @@ func TestDB_PruneCompleted_IncludesToDoLinked(t *testing.T) {
 		t.Errorf("expected 2 pruned (both completed), got %d", len(pruned))
 	}
 
-	remaining := d.Tasks()
+	remaining, err := d.Tasks()
+	testutil.NoError(t, err)
 	if len(remaining) != 1 {
 		t.Errorf("expected 1 remaining (pending only), got %d", len(remaining))
 	}
@@ -1494,7 +1530,8 @@ func TestMigration_OnlyRunsOnce(t *testing.T) {
 	}
 	defer d2.Close()
 
-	tasks := d2.Tasks()
+	tasks, err := d2.Tasks()
+	testutil.NoError(t, err)
 	if len(tasks) != 1 {
 		t.Errorf("expected 1 task, got %d", len(tasks))
 	}
@@ -1596,7 +1633,8 @@ func TestDB_TasksByTodoPath(t *testing.T) {
 		if err := d.Add(task); err != nil {
 			t.Fatal(err)
 		}
-		m := d.TasksByTodoPath()
+		m, err := d.TasksByTodoPath()
+		testutil.NoError(t, err)
 		if _, ok := m[""]; ok {
 			t.Error("should not include tasks with empty todo_path")
 		}
@@ -1607,7 +1645,8 @@ func TestDB_TasksByTodoPath(t *testing.T) {
 		if err := d.Add(task); err != nil {
 			t.Fatal(err)
 		}
-		m := d.TasksByTodoPath()
+		m, err := d.TasksByTodoPath()
+		testutil.NoError(t, err)
 		if got, ok := m["/vault/linked.md"]; !ok {
 			t.Error("expected entry for /vault/linked.md")
 		} else if got.Name != "linked" {
@@ -1624,7 +1663,8 @@ func TestDB_TasksByTodoPath(t *testing.T) {
 		if err := d.Add(second); err != nil {
 			t.Fatal(err)
 		}
-		m := d.TasksByTodoPath()
+		m, err := d.TasksByTodoPath()
+		testutil.NoError(t, err)
 		if got := m["/vault/dup.md"]; got == nil || got.Name != "second" {
 			name := ""
 			if got != nil {
@@ -1680,7 +1720,8 @@ func TestDB_TaskByPRURL(t *testing.T) {
 	d := testDB(t)
 
 	t.Run("returns nil when no match", func(t *testing.T) {
-		got := d.TaskByPRURL("https://github.com/org/repo/pull/999")
+		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/999")
+		testutil.NoError(t, err)
 		if got != nil {
 			t.Error("expected nil for non-existent PR URL")
 		}
@@ -1691,7 +1732,8 @@ func TestDB_TaskByPRURL(t *testing.T) {
 		if err := d.Add(task); err != nil {
 			t.Fatal(err)
 		}
-		got := d.TaskByPRURL("https://github.com/org/repo/pull/42")
+		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/42")
+		testutil.NoError(t, err)
 		if got == nil {
 			t.Fatal("expected non-nil task")
 		}
@@ -1705,7 +1747,8 @@ func TestDB_TaskByPRURL(t *testing.T) {
 		if err := d.Add(task); err != nil {
 			t.Fatal(err)
 		}
-		got := d.TaskByPRURL("https://github.com/org/repo/pull/99")
+		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/99")
+		testutil.NoError(t, err)
 		if got != nil {
 			t.Error("should not return archived tasks")
 		}
@@ -1721,7 +1764,8 @@ func TestDB_TaskByPRURL(t *testing.T) {
 		if err := d.Add(newer); err != nil {
 			t.Fatal(err)
 		}
-		got := d.TaskByPRURL(url)
+		got, err := d.TaskByPRURL(url)
+		testutil.NoError(t, err)
 		if got == nil || got.Name != "newer" {
 			name := ""
 			if got != nil {

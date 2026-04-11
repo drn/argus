@@ -161,7 +161,11 @@ func (w *Watcher) processFile(absPath string) {
 	}
 
 	// Deduplication: skip if a task already exists for this path.
-	existing := w.db.TasksByTodoPath()
+	existing, err := w.db.TasksByTodoPath()
+	if err != nil {
+		log.Printf("[vault] failed to load tasks by todo path: %v", err)
+		return
+	}
 	if _, ok := existing[absPath]; ok {
 		return
 	}

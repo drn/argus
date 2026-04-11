@@ -184,7 +184,7 @@ func (sv *SettingsView) Refresh() {
 	}
 
 	// Projects.
-	projMap := sv.database.Projects()
+	projMap, _ := sv.database.Projects()
 	sv.projects = nil
 	projNames := make([]string, 0, len(projMap))
 	for name := range projMap {
@@ -241,7 +241,7 @@ func (sv *SettingsView) Refresh() {
 	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
 
 	// Task counts.
-	tasks := sv.database.Tasks()
+	tasks, _ := sv.database.Tasks()
 	sv.setTasks(tasks)
 
 	sv.rebuildRows()

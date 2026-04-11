@@ -658,7 +658,11 @@ func (a *App) restartDaemon() {
 		a.settings.SetDaemonRestarting(false)
 
 		// Reset in-progress tasks to pending, preserving SessionID for resume.
-		for _, t := range a.db.Tasks() {
+		tasks, err := a.db.Tasks()
+		if err != nil {
+			uxlog.Log("[tui2] failed to load tasks for reset: %v", err)
+		}
+		for _, t := range tasks {
 			if t.Status == model.StatusInProgress {
 				t.SetStatus(model.StatusPending)
 				a.db.Update(t) //nolint:errcheck
@@ -713,7 +717,11 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	// Update task status in DB.
 	var captureWorktree, captureTaskID string
-	tasks := a.db.Tasks()
+	tasks, err := a.db.Tasks()
+	if err != nil {
+		uxlog.Log("[tui2] handleSessionExitUI: failed to load tasks: %v", err)
+		return
+	}
 	for _, t := range tasks {
 		if t.ID == taskID && t.Status == model.StatusInProgress {
 			if stopped {
@@ -866,12 +874,20 @@ func (a *App) refreshTasksLocal() {
 // refreshTasksWithIDs updates the task list with pre-fetched running/idle IDs.
 // Used by onTick to avoid calling Running() (RPC) while holding a.mu.
 func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
-	a.tasks = a.db.Tasks()
+	tasks, err := a.db.Tasks()
+	if err != nil {
+		uxlog.Log("[tui2] refreshTasksWithIDs: failed to load tasks: %v", err)
+	}
+	a.tasks = tasks
 	a.runningIDs = runningIDs
 	a.idleIDs = idleIDs
 
 	// Sync todo-task associations so the ToDos tab shows linked task status.
-	a.todos.SyncTasks(a.db.TasksByTodoPath())
+	todoMap, err := a.db.TasksByTodoPath()
+	if err != nil {
+		uxlog.Log("[tui2] refreshTasksWithIDs: failed to load tasks by todo path: %v", err)
+	}
+	a.todos.SyncTasks(todoMap)
 
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
 	// but has no running session, mark it Complete. This handles cases where
@@ -2322,7 +2338,11 @@ func (a *App) startReviewTask(pr *github.PR) {
 	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
 
 	// Check for existing task linked to this PR.
-	if existing := a.db.TaskByPRURL(prURL); existing != nil {
+	existing, err := a.db.TaskByPRURL(prURL)
+	if err != nil {
+		uxlog.Log("[reviews] failed to look up task by PR URL: %v", err)
+	}
+	if existing != nil {
 		uxlog.Log("[reviews] found existing review task %s for %s", existing.ID, prURL)
 		a.switchTab(TabTasks)
 		a.refreshTasksLocal()
@@ -3001,7 +3021,10 @@ func (a *App) closeBackendForm() {
 // --- Quick-add form ---
 
 func (a *App) openQuickAddForm() {
-	projects := a.db.Projects()
+	projects, err := a.db.Projects()
+	if err != nil {
+		uxlog.Log("[tui2] openQuickAddForm: failed to load projects: %v", err)
+	}
 	a.quickAddForm = NewQuickAddForm(projects)
 	a.quickAddForm.OnScan = func(dir string) {
 		existingPaths := a.quickAddForm.existingPaths

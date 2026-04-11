@@ -42,7 +42,11 @@ type taskCounts struct {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	running, idle := s.runner.RunningAndIdle()
 
-	tasks := s.db.Tasks()
+	tasks, err := s.db.Tasks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load tasks: " + err.Error()})
+		return
+	}
 	var tc taskCounts
 	for _, t := range tasks {
 		if t.Archived {
@@ -96,7 +100,11 @@ func taskToJSON(t *model.Task) taskJSON {
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	tasks := s.db.Tasks()
+	tasks, err := s.db.Tasks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load tasks: " + err.Error()})
+		return
+	}
 
 	// Optional filters.
 	statusFilter := r.URL.Query().Get("status")
@@ -421,7 +429,7 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 
 	var extraDirs []string
 	if project != "" {
-		projects := s.db.Projects()
+		projects, _ := s.db.Projects()
 		if p, ok := projects[project]; ok && p.Path != "" {
 			extraDirs = []string{filepath.Join(p.Path, ".claude", "skills")}
 		}

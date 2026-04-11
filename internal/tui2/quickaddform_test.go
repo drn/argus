@@ -341,7 +341,8 @@ func TestQuickAddForm_Integration(t *testing.T) {
 	database, err := db.OpenInMemory()
 	testutil.NoError(t, err)
 
-	f := NewQuickAddForm(database.Projects())
+	projects, _ := database.Projects()
+	f := NewQuickAddForm(projects)
 	wireSyncScan(f)
 
 	// Type the directory path.
