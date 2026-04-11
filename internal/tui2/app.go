@@ -1823,6 +1823,8 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetPending(true)
 	a.agentPane.SetFocused(true)
+	a.gitPanel.Clear()
+	a.filePanel.Clear()
 	a.filePanel.SetFocused(false)
 
 	// Hide the tab header in agent view — only the agent header is shown.
@@ -1855,6 +1857,7 @@ func (a *App) onTaskSelect(task *model.Task) {
 	a.worktreeDir = task.Worktree
 	a.lastGitRefresh = time.Time{}
 	a.gitPanel.Clear()
+	a.filePanel.Clear()
 
 	sess := a.runner.Get(task.ID)
 	if sess != nil {

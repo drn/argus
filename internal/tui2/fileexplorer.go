@@ -100,6 +100,18 @@ func (fp *FilePanel) SetDirChildren(dir string, children []gitutil.ChangedFile) 
 	fp.ensureVisible()
 }
 
+// Clear resets the file panel to its empty state. Call when switching tasks
+// so stale files from the previous task are not displayed while the async
+// git status fetch runs.
+func (fp *FilePanel) Clear() {
+	fp.files = nil
+	fp.rows = nil
+	fp.expanded = make(map[string]bool)
+	fp.dirChildren = make(map[string][]gitutil.ChangedFile)
+	fp.cursor = 0
+	fp.offset = 0
+}
+
 // SetFocused updates the focus state.
 func (fp *FilePanel) SetFocused(f bool) {
 	fp.focused = f

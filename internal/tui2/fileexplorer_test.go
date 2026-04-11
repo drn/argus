@@ -760,3 +760,44 @@ func TestFilePanel_CursorUpStaysOnUnfetchedDir(t *testing.T) {
 		t.Errorf("expected cursor on a directory row awaiting fetch, got file %v", f.Path)
 	}
 }
+
+func TestFilePanel_Clear(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	files := []gitutil.ChangedFile{
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "a.go"},
+		{Status: "M", Path: "b.go"},
+	}
+	fp.SetFiles(files)
+	fp.SetDirChildren("src/", []gitutil.ChangedFile{
+		{Status: "M", Path: "src/main.go"},
+	})
+	fp.CursorDown()
+
+	// Precondition: panel has data.
+	if fp.FileCount() == 0 {
+		t.Fatal("precondition: expected files before Clear")
+	}
+
+	fp.Clear()
+
+	if fp.FileCount() != 0 {
+		t.Errorf("FileCount after Clear = %d, want 0", fp.FileCount())
+	}
+	if len(fp.rows) != 0 {
+		t.Errorf("rows after Clear = %d, want 0", len(fp.rows))
+	}
+	if len(fp.expanded) != 0 {
+		t.Errorf("expanded after Clear = %d, want 0", len(fp.expanded))
+	}
+	if len(fp.dirChildren) != 0 {
+		t.Errorf("dirChildren after Clear = %d, want 0", len(fp.dirChildren))
+	}
+	if fp.cursor != 0 {
+		t.Errorf("cursor after Clear = %d, want 0", fp.cursor)
+	}
+	if fp.SelectedFile() != nil {
+		t.Error("SelectedFile after Clear should be nil")
+	}
+}
