@@ -34,12 +34,26 @@ func NewRunner(onFinish func(taskID string, err error, stopped bool, lastOutput 
 // If resume is true, the agent reconnects to an existing conversation via --resume.
 // Returns an error if a session already exists for this task.
 func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (SessionHandle, error) {
+	// Reserve the slot under the lock to prevent TOCTOU races: two concurrent
+	// Start() calls for the same task ID could both pass an exists-check and
+	// overwrite each other, leaking PTY fds and sandbox cleanup closures.
 	r.mu.Lock()
 	if _, exists := r.sessions[task.ID]; exists {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("session already exists for task %s", task.ID)
 	}
+	// Place a nil sentinel so concurrent callers see the reservation.
+	r.sessions[task.ID] = nil
 	r.mu.Unlock()
+
+	// On failure, remove the reservation.
+	cleanup := func() {
+		r.mu.Lock()
+		if r.sessions[task.ID] == nil {
+			delete(r.sessions, task.ID)
+		}
+		r.mu.Unlock()
+	}
 
 	log.Printf("runner.Start: task=%s session=%s resume=%v pty=%dx%d dir=%s",
 		task.ID, task.SessionID, resume, cols, rows, task.Worktree)
@@ -47,6 +61,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
 	if err != nil {
 		log.Printf("runner.Start: BuildCmd FAILED task=%s err=%v", task.ID, err)
+		cleanup()
 		return nil, err
 	}
 	log.Printf("runner.Start: cmd=%v dir=%s", cmd.Args, cmd.Dir)
@@ -57,6 +72,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		if sandboxCleanup != nil {
 			sandboxCleanup()
 		}
+		cleanup()
 		return nil, err
 	}
 
@@ -106,6 +122,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 }
 
 // Get returns the session for a task, or nil if not found.
+// Returns nil for reserved-but-not-yet-started slots (nil sentinel).
 func (r *Runner) Get(taskID string) SessionHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()

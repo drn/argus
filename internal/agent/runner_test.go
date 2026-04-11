@@ -80,6 +80,45 @@ func TestRunner_DuplicateStart(t *testing.T) {
 	}
 }
 
+func TestRunner_ConcurrentStart(t *testing.T) {
+	// Verify that the sentinel reservation prevents two concurrent Start()
+	// calls for the same task ID from both succeeding (TOCTOU race).
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	const n = 10
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			task := &model.Task{ID: "race-t1", Name: "test", Worktree: t.TempDir()}
+			_, err := r.Start(task, cfg, 24, 80, false)
+			errs <- err
+		}()
+	}
+
+	var successes, failures int
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			failures++
+		} else {
+			successes++
+		}
+	}
+
+	if successes != 1 {
+		t.Errorf("expected exactly 1 success, got %d successes and %d failures", successes, failures)
+	}
+
+	r.StopAll()
+	time.Sleep(200 * time.Millisecond)
+}
+
 func TestRunner_StopAndRunning(t *testing.T) {
 	r := NewRunner(nil)
 	cfg := config.Config{
