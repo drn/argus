@@ -2001,7 +2001,9 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 				if err := a.db.Add(task); err != nil {
 					uxlog.Log("[tui2] failed to persist task: %v — cleaning up worktree", err)
 					a.statusbar.SetError("Failed to create task: " + err.Error())
-					a.exitAgentView()
+					if a.mode == modeAgent && a.agentState.TaskID == pendingTaskID {
+						a.exitAgentView()
+					}
 					go removeWorktreeAndBranch(wtPath, branchName, projPath)
 					return
 				}
@@ -2262,6 +2264,8 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 				// If the user navigated into agent view for another task while
 				// the worktree was being created, don't yank them away — but
 				// still start the session so the task isn't stuck in pending.
+				// No TaskID check needed: closeLaunchToDoModal sets modeTaskList
+				// before the goroutine runs, so modeAgent means a different task.
 				if a.mode == modeAgent {
 					uxlog.Log("[todos] user in agent view, starting session in background for new task %s", task.ID)
 					a.startSession(task)
