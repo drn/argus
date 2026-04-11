@@ -91,14 +91,17 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 	// Fetch all remotes so remote-tracking branches are up to date before
 	// we resolve the start point or create the worktree. Skip for HEAD
 	// (pure-local, no remote needed). Timeout prevents blocking the TUI
-	// on slow or unreachable networks.
+	// on slow or unreachable networks. NOTE: --prune is intentionally
+	// omitted — on macOS case-insensitive filesystems, it deletes
+	// origin/HEAD (confusing the symbolic ref with branch "head"),
+	// which causes origin/master to be lost on alternating fetches.
 	if baseBranch != "HEAD" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all", "--prune")
+		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "--all")
 		fetchCmd.Dir = projectPath
 		if out, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
-			uxlog.Log("[worktree] git fetch --all --prune failed (continuing): %v: %s", fetchErr, strings.TrimSpace(string(out)))
+			uxlog.Log("[worktree] git fetch --all failed (continuing): %v: %s", fetchErr, strings.TrimSpace(string(out)))
 		}
 	}
 
