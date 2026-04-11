@@ -59,7 +59,6 @@ type ReviewsView struct {
 	parsedDiff    *gitutil.ParsedDiff
 	diffRendered  []widget.RenderedDiffLine // pre-rendered syntax-highlighted lines
 	diffScrollOff int
-	splitMode     bool
 	diffFetching  bool
 
 	// Comments state.

@@ -831,7 +831,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
 		cursorVisible = visible
 	})
-	SafeEmuWrite(emu, raw)
+	_, _ = SafeEmuWrite(emu, raw)
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
@@ -919,10 +919,10 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			if !needRebuild {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 			}
-			SafeEmuWrite(tp.emu, raw)
+			_, _ = SafeEmuWrite(tp.emu, raw)
 			tp.emuFedTotal = totalWritten
 		} else {
-			SafeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
+			_, _ = SafeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 			tp.emuFedTotal = totalWritten
 		}
 	} else if tp.emuFedTotal == 0 {
