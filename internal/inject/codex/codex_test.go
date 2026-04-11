@@ -97,6 +97,128 @@ func TestInjectCodexTOML_PreservesExistingContent(t *testing.T) {
 	}
 }
 
+func TestInjectCodexTOML_TopLevelKeyNotInSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Simulate existing config where a section is the last thing in the file.
+	// The old code would append experimental_use_rmcp_client AFTER the section,
+	// placing it inside [notice.model_migrations] instead of at the top level.
+	existing := `model = "gpt-5.4"
+
+[notice.model_migrations]
+"gpt-5.3-codex" = "gpt-5.4"
+`
+	os.WriteFile(path, []byte(existing), 0644) //nolint:errcheck
+
+	if err := injectCodexTOML(path, 7742); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+
+	// experimental_use_rmcp_client must be before the first section header.
+	idx := strings.Index(content, "experimental_use_rmcp_client")
+	firstSection := strings.Index(content, "\n[")
+	if idx == -1 {
+		t.Fatal("missing experimental_use_rmcp_client")
+	}
+	if firstSection != -1 && idx > firstSection {
+		t.Errorf("experimental_use_rmcp_client is inside a section (pos %d > first section at %d):\n%s",
+			idx, firstSection, content)
+	}
+}
+
+func TestInjectCodexTOML_MigratesMisplacedKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Reproduce the exact broken state: experimental_use_rmcp_client inside
+	// [notice.model_migrations] with a correct MCP section already present.
+	broken := `model = "gpt-5.4"
+
+[notice.model_migrations]
+"gpt-5.3-codex" = "gpt-5.4"
+experimental_use_rmcp_client = true
+
+[mcp_servers.argus-kb]
+url = "http://localhost:7742/mcp"
+`
+	os.WriteFile(path, []byte(broken), 0644) //nolint:errcheck
+
+	if err := injectCodexTOML(path, 7742); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+
+	// Key must now be at the top level.
+	idx := strings.Index(content, "experimental_use_rmcp_client")
+	firstSection := strings.Index(content, "\n[")
+	if idx == -1 {
+		t.Fatal("missing experimental_use_rmcp_client")
+	}
+	if firstSection != -1 && idx > firstSection {
+		t.Errorf("experimental_use_rmcp_client still inside a section:\n%s", content)
+	}
+	// Must not appear twice.
+	if strings.Count(content, "experimental_use_rmcp_client") != 1 {
+		t.Errorf("expected exactly 1 occurrence, got %d:\n%s",
+			strings.Count(content, "experimental_use_rmcp_client"), content)
+	}
+	// MCP section must still be present and correct.
+	if !strings.Contains(content, `url = "http://localhost:7742/mcp"`) {
+		t.Errorf("MCP url missing:\n%s", content)
+	}
+}
+
+func TestEnsureTopLevel(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantAt  string // "top" or "absent->top"
+	}{
+		{
+			name:    "empty file",
+			content: "",
+			wantAt:  "absent->top",
+		},
+		{
+			name:    "already at top level",
+			content: "experimental_use_rmcp_client = true\n\n[section]\nkey = val\n",
+			wantAt:  "top",
+		},
+		{
+			name:    "inside section",
+			content: "model = \"gpt-5\"\n\n[section]\nexperimental_use_rmcp_client = true\n",
+			wantAt:  "absent->top",
+		},
+		{
+			name:    "no sections",
+			content: "model = \"gpt-5\"\n",
+			wantAt:  "absent->top",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureTopLevel(tt.content, "experimental_use_rmcp_client", "experimental_use_rmcp_client = true")
+			idx := strings.Index(result, "experimental_use_rmcp_client")
+			if idx == -1 {
+				t.Fatal("key missing from result")
+			}
+			firstSection := strings.Index(result, "\n[")
+			if firstSection != -1 && idx > firstSection {
+				t.Errorf("key is inside a section:\n%s", result)
+			}
+			if strings.Count(result, "experimental_use_rmcp_client") != 1 {
+				t.Errorf("duplicate keys:\n%s", result)
+			}
+		})
+	}
+}
+
 func TestRemoveSection(t *testing.T) {
 	content := "a = 1\n\n[mcp_servers.argus-kb]\nurl = \"http://localhost:7742/mcp\"\n\n[other]\nkey = val\n"
 	result := removeSection(content, "[mcp_servers.argus-kb]")

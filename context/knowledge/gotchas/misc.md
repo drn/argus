@@ -20,6 +20,7 @@
 - **`codex resume --last` is unreliable for multi-session.** Use `codex resume --dangerously-bypass-approvals-and-sandbox <session-id>`.
 - **Session ID captured post-exit from `~/.codex/state_5.sqlite`.** The `_5` suffix is codex's schema version.
 - **`fixupBackends()` migrates old codex flags** (`--yolo`, `--full-auto`) to `--dangerously-bypass-approvals-and-sandbox`.
+- **`ensureTopLevel` must insert before the first `[section]` header, not append.** Appending a top-level TOML key to the end of a file places it inside the last section (e.g. `[notice.model_migrations]`), causing type errors. `ensureTopLevel` also migrates previously misplaced keys.
 
 ## Knowledge Base & MCP
 
