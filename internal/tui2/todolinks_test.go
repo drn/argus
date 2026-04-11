@@ -179,6 +179,11 @@ func TestExtractLinks(t *testing.T) {
 			content: "https://example.com/truncated\u2026 and https://example.com/valid",
 			want:    []Link{{Label: "https://example.com/valid", URL: "https://example.com/valid"}},
 		},
+		{
+			name:    "github compare range with triple dots not excluded",
+			content: "https://github.com/org/repo/compare/v1.0...v1.1",
+			want:    []Link{{Label: "https://github.com/org/repo/compare/v1.0...v1.1", URL: "https://github.com/org/repo/compare/v1.0...v1.1"}},
+		},
 	}
 
 	for _, tt := range tests {

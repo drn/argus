@@ -73,10 +73,11 @@ func cleanURL(u string) string {
 	return u
 }
 
-// isTruncatedURL returns true if the URL contains an ellipsis ("…" or "...")
-// indicating it was truncated and is not a valid link target.
-func isTruncatedURL(url string) bool {
-	return strings.Contains(url, "\u2026") || strings.Contains(url, "...")
+// isTruncatedURL returns true if the URL contains a truncation marker.
+// Unicode ellipsis (…) can appear anywhere; ASCII "..." is only checked as a
+// suffix to avoid false-positives on legitimate URLs (e.g. GitHub compare ranges).
+func isTruncatedURL(raw string) bool {
+	return strings.Contains(raw, "\u2026") || strings.HasSuffix(raw, "...")
 }
 
 // ExtractLinks extracts unique URLs from content that may contain ANSI escape
