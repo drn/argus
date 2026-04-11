@@ -211,7 +211,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.todos = NewToDosView()
 	app.todos.SetApp(app.tapp)
 	cfg := database.Config()
-	model.SetActiveSpinner(cfg.UI.SpinnerStyle)
+	SetActiveSpinner(cfg.UI.SpinnerStyle)
 	vaultPath := cfg.KB.ArgusVaultPath
 	if vaultPath == "" {
 		vaultPath = config.DefaultArgusVaultPath()

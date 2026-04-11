@@ -188,21 +188,21 @@ func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
 }
 
 func TestTaskListView_UpdateSpinnerFrame(t *testing.T) {
-	model.SetActiveSpinner("progress")
-	defer model.SetActiveSpinner("progress")
+	SetActiveSpinner("progress")
+	defer SetActiveSpinner("progress")
 
 	tl := NewTaskListView()
 	tl.updateSpinnerFrame()
 	// Frame should be a valid index for the active spinner.
-	if tl.animFrame < 0 || tl.animFrame >= model.SpinnerFrameCount() {
-		t.Errorf("animFrame %d out of range [0, %d)", tl.animFrame, model.SpinnerFrameCount())
+	if tl.animFrame < 0 || tl.animFrame >= SpinnerFrameCount() {
+		t.Errorf("animFrame %d out of range [0, %d)", tl.animFrame, SpinnerFrameCount())
 	}
 
 	// Switching spinner style produces valid frames too.
-	model.SetActiveSpinner("classic")
+	SetActiveSpinner("classic")
 	tl.updateSpinnerFrame()
-	if tl.animFrame < 0 || tl.animFrame >= model.SpinnerFrameCount() {
-		t.Errorf("classic: animFrame %d out of range [0, %d)", tl.animFrame, model.SpinnerFrameCount())
+	if tl.animFrame < 0 || tl.animFrame >= SpinnerFrameCount() {
+		t.Errorf("classic: animFrame %d out of range [0, %d)", tl.animFrame, SpinnerFrameCount())
 	}
 }
 

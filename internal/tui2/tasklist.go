@@ -137,9 +137,9 @@ func (tl *TaskListView) SetIdleUnvisited(ids []string) {
 
 // updateSpinnerFrame computes the current spinner frame from wall clock time.
 func (tl *TaskListView) updateSpinnerFrame() {
-	interval := model.SpinnerTickInterval()
+	interval := SpinnerTickInterval()
 	if interval > 0 {
-		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % model.SpinnerFrameCount()
+		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % SpinnerFrameCount()
 	}
 }
 
@@ -843,7 +843,7 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 
 	switch {
 	case hasActivelyRunning:
-		return model.SpinnerFrame(tl.animFrame), StyleInProgress
+		return SpinnerFrame(tl.animFrame), StyleInProgress
 	case hasInReview:
 		return IconMoonStars, StyleInReview
 	case hasIdleInProgress:
@@ -939,7 +939,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			statusStyle = StyleInReview
 		} else {
 			// Actively running — animated spinner (nerd font progress spinner).
-			statusChar = model.SpinnerFrame(tl.animFrame)
+			statusChar = SpinnerFrame(tl.animFrame)
 			statusStyle = StyleInProgress
 		}
 	case model.StatusInReview:

@@ -891,7 +891,7 @@ func (sv *SettingsView) cycleSpinner(dir int) {
 	if err := sv.database.SetConfigValue("ui.spinner", sv.spinnerStyle); err != nil {
 		uxlog.Log("[settings] failed to persist spinner style: %v", err)
 	}
-	model.SetActiveSpinner(sv.spinnerStyle)
+	SetActiveSpinner(sv.spinnerStyle)
 	uxlog.Log("[settings] spinner style set to %q", sv.spinnerStyle)
 	sv.rebuildRows()
 }

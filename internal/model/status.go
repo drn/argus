@@ -2,10 +2,6 @@ package model
 
 import (
 	"fmt"
-	"sync/atomic"
-	"time"
-
-	"github.com/drn/argus/internal/spinner"
 )
 
 // Status represents the workflow state of a task.
@@ -39,34 +35,6 @@ var statusDisplay = [...]string{
 	"\uF00C",
 }
 
-// activeSpinner holds the currently active spinner. Accessed from multiple
-// goroutines (spinnerLoop reader, tview main goroutine writer) so uses atomic.
-var activeSpinner atomic.Pointer[spinner.Spinner]
-
-func init() {
-	activeSpinner.Store(spinner.Get(spinner.StyleProgress))
-}
-
-// SetActiveSpinner changes the active spinner style.
-func SetActiveSpinner(style string) {
-	activeSpinner.Store(spinner.Get(spinner.Style(style)))
-}
-
-// SpinnerFrame returns the spinner rune for the given animation frame.
-func SpinnerFrame(frame int) rune {
-	return activeSpinner.Load().Frame(frame)
-}
-
-// SpinnerFrameCount returns the number of frames in the active spinner.
-func SpinnerFrameCount() int {
-	return activeSpinner.Load().FrameCount()
-}
-
-// SpinnerTickInterval returns the tick interval of the active spinner.
-func SpinnerTickInterval() time.Duration {
-	return activeSpinner.Load().TickInterval
-}
-
 var statusBadges = [...]string{
 	"○",
 	"●",
@@ -94,15 +62,6 @@ func (s Status) Display() string {
 		return statusDisplay[s]
 	}
 	return s.String()
-}
-
-// DisplayForFrame returns the status icon for the given animation frame.
-// Non-animated statuses ignore the frame parameter.
-func (s Status) DisplayForFrame(frame int) string {
-	if s == StatusInProgress {
-		return string(SpinnerFrame(frame))
-	}
-	return s.Display()
 }
 
 func (s Status) Badge() string {
