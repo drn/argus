@@ -24,6 +24,7 @@ func InjectGlobal(port int) error {
 
 // injectCodexTOML inserts or updates the [mcp_servers.argus-kb] section.
 // Uses targeted string manipulation to avoid pulling in a TOML library.
+// Assumes standard Codex-generated TOML — no multi-line values, no inline tables.
 func injectCodexTOML(path string, port int) error {
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
@@ -96,9 +97,13 @@ func injectCodexTOML(path string, port int) error {
 // section, it is removed and re-inserted at the top level.
 func ensureTopLevel(content, key, line string) string {
 	// Determine where the top-level (pre-section) area ends.
+	// Handle files that start directly with a section header (no top-level area).
 	firstSection := strings.Index(content, "\n[")
 	topLevel := content
-	if firstSection != -1 {
+	if strings.HasPrefix(content, "[") {
+		topLevel = ""
+		firstSection = 0 // entire content is sections
+	} else if firstSection != -1 {
 		topLevel = content[:firstSection]
 	}
 	if strings.Contains(topLevel, key) {
@@ -107,6 +112,9 @@ func ensureTopLevel(content, key, line string) string {
 	// Remove from wrong section if present.
 	content = removeLine(content, key)
 	// Insert at top level (before first section header).
+	if strings.HasPrefix(content, "[") {
+		return line + "\n" + content
+	}
 	firstSection = strings.Index(content, "\n[")
 	if firstSection == -1 {
 		if content != "" && !strings.HasSuffix(content, "\n") {
@@ -117,7 +125,7 @@ func ensureTopLevel(content, key, line string) string {
 	return content[:firstSection+1] + line + "\n" + content[firstSection+1:]
 }
 
-// removeLine removes all lines containing substr from content.
+// removeLine removes all lines containing substr (substring match) from content.
 func removeLine(content, substr string) string {
 	lines := strings.Split(content, "\n")
 	out := make([]string, 0, len(lines))

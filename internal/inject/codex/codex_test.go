@@ -168,9 +168,12 @@ url = "http://localhost:7742/mcp"
 		t.Errorf("expected exactly 1 occurrence, got %d:\n%s",
 			strings.Count(content, "experimental_use_rmcp_client"), content)
 	}
-	// MCP section must still be present and correct.
+	// MCP section must still be present, correct, and not duplicated.
 	if !strings.Contains(content, `url = "http://localhost:7742/mcp"`) {
 		t.Errorf("MCP url missing:\n%s", content)
+	}
+	if strings.Count(content, "[mcp_servers.argus-kb]") != 1 {
+		t.Errorf("MCP section duplicated:\n%s", content)
 	}
 }
 
@@ -178,27 +181,26 @@ func TestEnsureTopLevel(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		wantAt  string // "top" or "absent->top"
 	}{
 		{
 			name:    "empty file",
 			content: "",
-			wantAt:  "absent->top",
 		},
 		{
 			name:    "already at top level",
 			content: "experimental_use_rmcp_client = true\n\n[section]\nkey = val\n",
-			wantAt:  "top",
 		},
 		{
 			name:    "inside section",
 			content: "model = \"gpt-5\"\n\n[section]\nexperimental_use_rmcp_client = true\n",
-			wantAt:  "absent->top",
 		},
 		{
 			name:    "no sections",
 			content: "model = \"gpt-5\"\n",
-			wantAt:  "absent->top",
+		},
+		{
+			name:    "file starts with section header",
+			content: "[section]\nkey = val\n",
 		},
 	}
 	for _, tt := range tests {
