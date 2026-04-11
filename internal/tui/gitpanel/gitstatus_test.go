@@ -1,4 +1,4 @@
-package tui
+package gitpanel
 
 import "testing"
 

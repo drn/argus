@@ -595,7 +595,7 @@ func TestFilePanelMouseFocus(t *testing.T) {
 	if app.agentFocus != focusFiles {
 		t.Errorf("after click: agentFocus = %v, want focusFiles", app.agentFocus)
 	}
-	if !app.filePanel.focused {
+	if !app.filePanel.Focused() {
 		t.Error("after click: file panel should be focused")
 	}
 

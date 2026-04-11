@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/taskview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/widget"
@@ -79,13 +80,13 @@ type App struct {
 	header       *widget.Header
 	statusbar    *widget.StatusBar
 	tasklist     *taskview.TaskListView
-	taskGitPanel *GitPanel // git status for selected task (task list center-top)
+	taskGitPanel *gitpanel.GitPanel // git status for selected task (task list center-top)
 	taskPreview  *TaskPreviewPanel
 	taskDetail   *taskview.TaskDetailPanel
 	agentPane    *terminal.TerminalPane
 	agentHeader  *widget.AgentHeader
-	gitPanel     *GitPanel // git status for agent view (left panel)
-	filePanel    *FilePanel
+	gitPanel     *gitpanel.GitPanel // git status for agent view (left panel)
+	filePanel    *gitpanel.FilePanel
 
 	// Tabs
 	todos        *ToDosView
@@ -286,12 +287,12 @@ func (a *App) buildUI() {
 		}()
 	}
 
-	a.taskGitPanel = NewGitPanel()
+	a.taskGitPanel = gitpanel.NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
 	a.taskDetail = taskview.NewTaskDetailPanel()
 
-	a.gitPanel = NewGitPanel()
-	a.filePanel = NewFilePanel()
+	a.gitPanel = gitpanel.NewGitPanel()
+	a.filePanel = gitpanel.NewFilePanel()
 	a.agentPane = terminal.NewTerminalPane()
 	a.agentHeader = widget.NewAgentHeader()
 

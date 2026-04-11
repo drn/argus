@@ -1,4 +1,4 @@
-package tui
+package gitpanel
 
 import (
 	"fmt"
@@ -117,6 +117,11 @@ func (fp *FilePanel) Clear() {
 // SetFocused updates the focus state.
 func (fp *FilePanel) SetFocused(f bool) {
 	fp.focused = f
+}
+
+// Focused returns whether the file panel is focused.
+func (fp *FilePanel) Focused() bool {
+	return fp.focused
 }
 
 // SelectedFile returns the file at the cursor, or nil.
