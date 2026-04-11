@@ -1980,8 +1980,13 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
 					a.statusbar.SetError("Worktree error: " + err.Error())
-					// Return to task list — exitAgentView clears pending via SetSession(nil).
-					a.exitAgentView()
+					// Only exit agent view if the user is still on the pending
+					// view for this task. If they navigated away (to the task
+					// list or another task's agent view), just show the error —
+					// calling exitAgentView here would disrupt their session.
+					if a.mode == modeAgent && a.agentState.TaskID == pendingTaskID {
+						a.exitAgentView()
+					}
 				})
 				uxlog.Log("[tui2] worktree creation failed: %v", err)
 				return
@@ -2255,9 +2260,11 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 				a.refreshTasksLocal()
 
 				// If the user navigated into agent view for another task while
-				// the worktree was being created, don't yank them away.
+				// the worktree was being created, don't yank them away — but
+				// still start the session so the task isn't stuck in pending.
 				if a.mode == modeAgent {
-					uxlog.Log("[todos] user in agent view, skipping auto-select for new task %s", task.ID)
+					uxlog.Log("[todos] user in agent view, starting session in background for new task %s", task.ID)
+					a.startSession(task)
 					return
 				}
 				a.tasklist.SelectByID(task.ID)
