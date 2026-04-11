@@ -175,7 +175,7 @@ func (m *LaunchToDoModal) handlePromptKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
-			m.prompt, m.cursorPos = deleteWordLeft(m.prompt, m.cursorPos)
+			m.prompt, m.cursorPos = widget.DeleteWordLeft(m.prompt, m.cursorPos)
 			return
 		}
 		if m.cursorPos > 0 {
@@ -184,11 +184,11 @@ func (m *LaunchToDoModal) handlePromptKey(event *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyCtrlW:
-		m.prompt, m.cursorPos = deleteWordLeft(m.prompt, m.cursorPos)
+		m.prompt, m.cursorPos = widget.DeleteWordLeft(m.prompt, m.cursorPos)
 		return
 	case tcell.KeyDelete:
 		if hasAlt {
-			m.prompt, m.cursorPos = deleteWordRight(m.prompt, m.cursorPos)
+			m.prompt, m.cursorPos = widget.DeleteWordRight(m.prompt, m.cursorPos)
 			return
 		}
 		if m.cursorPos < len(m.prompt) {
@@ -197,7 +197,7 @@ func (m *LaunchToDoModal) handlePromptKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyLeft:
 		if hasAlt {
-			m.cursorPos = wordLeftPos(m.prompt, m.cursorPos)
+			m.cursorPos = widget.WordLeftPos(m.prompt, m.cursorPos)
 			return
 		}
 		if m.cursorPos > 0 {
@@ -206,7 +206,7 @@ func (m *LaunchToDoModal) handlePromptKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyRight:
 		if hasAlt {
-			m.cursorPos = wordRightPos(m.prompt, m.cursorPos)
+			m.cursorPos = widget.WordRightPos(m.prompt, m.cursorPos)
 			return
 		}
 		if m.cursorPos < len(m.prompt) {
@@ -246,11 +246,11 @@ func (m *LaunchToDoModal) handlePromptKey(event *tcell.EventKey) {
 		if hasAlt {
 			switch r {
 			case 'b', 'B':
-				m.cursorPos = wordLeftPos(m.prompt, m.cursorPos)
+				m.cursorPos = widget.WordLeftPos(m.prompt, m.cursorPos)
 			case 'f', 'F':
-				m.cursorPos = wordRightPos(m.prompt, m.cursorPos)
+				m.cursorPos = widget.WordRightPos(m.prompt, m.cursorPos)
 			case 'd', 'D':
-				m.prompt, m.cursorPos = deleteWordRight(m.prompt, m.cursorPos)
+				m.prompt, m.cursorPos = widget.DeleteWordRight(m.prompt, m.cursorPos)
 			}
 			return
 		}

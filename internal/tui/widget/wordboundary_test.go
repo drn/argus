@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import "testing"
 
@@ -14,8 +14,8 @@ func TestIsWordChar(t *testing.T) {
 		{'@', false},
 	}
 	for _, tt := range tests {
-		if got := isWordChar(tt.r); got != tt.want {
-			t.Errorf("isWordChar(%q) = %v, want %v", tt.r, got, tt.want)
+		if got := IsWordChar(tt.r); got != tt.want {
+			t.Errorf("IsWordChar(%q) = %v, want %v", tt.r, got, tt.want)
 		}
 	}
 }
@@ -32,9 +32,9 @@ func TestWordLeftPos(t *testing.T) {
 		{0, 0},   // already at start
 	}
 	for _, tt := range tests {
-		got := wordLeftPos(runes, tt.pos)
+		got := WordLeftPos(runes, tt.pos)
 		if got != tt.want {
-			t.Errorf("wordLeftPos(%d) = %d, want %d", tt.pos, got, tt.want)
+			t.Errorf("WordLeftPos(%d) = %d, want %d", tt.pos, got, tt.want)
 		}
 	}
 }
@@ -51,38 +51,38 @@ func TestWordRightPos(t *testing.T) {
 		{15, 15}, // already at end
 	}
 	for _, tt := range tests {
-		got := wordRightPos(runes, tt.pos)
+		got := WordRightPos(runes, tt.pos)
 		if got != tt.want {
-			t.Errorf("wordRightPos(%d) = %d, want %d", tt.pos, got, tt.want)
+			t.Errorf("WordRightPos(%d) = %d, want %d", tt.pos, got, tt.want)
 		}
 	}
 }
 
 func TestDeleteWordLeft(t *testing.T) {
 	runes := []rune("hello world")
-	newRunes, newPos := deleteWordLeft(runes, 11) // delete "world"
+	newRunes, newPos := DeleteWordLeft(runes, 11) // delete "world"
 	got := string(newRunes)
 	if got != "hello " || newPos != 6 {
-		t.Errorf("deleteWordLeft = (%q, %d), want (\"hello \", 6)", got, newPos)
+		t.Errorf("DeleteWordLeft = (%q, %d), want (\"hello \", 6)", got, newPos)
 	}
 }
 
 func TestDeleteWordRight(t *testing.T) {
 	runes := []rune("hello world")
-	newRunes, newPos := deleteWordRight(runes, 0) // delete "hello"
+	newRunes, newPos := DeleteWordRight(runes, 0) // delete "hello"
 	got := string(newRunes)
 	if got != " world" || newPos != 0 {
-		t.Errorf("deleteWordRight = (%q, %d), want (\" world\", 0)", got, newPos)
+		t.Errorf("DeleteWordRight = (%q, %d), want (\" world\", 0)", got, newPos)
 	}
 }
 
 func TestWordBoundary_Delimiters(t *testing.T) {
 	// '/' and '-' are delimiters (not in wordCharsSet)
 	runes := []rune("foo/bar-baz")
-	if got := wordRightPos(runes, 0); got != 3 {
-		t.Errorf("wordRightPos past / = %d, want 3", got)
+	if got := WordRightPos(runes, 0); got != 3 {
+		t.Errorf("WordRightPos past / = %d, want 3", got)
 	}
-	if got := wordRightPos(runes, 3); got != 7 {
-		t.Errorf("wordRightPos past - = %d, want 7", got)
+	if got := WordRightPos(runes, 3); got != 7 {
+		t.Errorf("WordRightPos past - = %d, want 7", got)
 	}
 }

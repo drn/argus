@@ -83,14 +83,14 @@ func (m *FuzzyLinkPickerModal) InputHandler() func(event *tcell.EventKey, setFoc
 			}
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
 			if event.Modifiers()&tcell.ModAlt != 0 {
-				m.query, m.qCursor = deleteWordLeft(m.query, m.qCursor)
+				m.query, m.qCursor = widget.DeleteWordLeft(m.query, m.qCursor)
 			} else if m.qCursor > 0 {
 				m.query = append(m.query[:m.qCursor-1], m.query[m.qCursor:]...)
 				m.qCursor--
 			}
 			m.refilter()
 		case tcell.KeyCtrlW:
-			m.query, m.qCursor = deleteWordLeft(m.query, m.qCursor)
+			m.query, m.qCursor = widget.DeleteWordLeft(m.query, m.qCursor)
 			m.refilter()
 		case tcell.KeyCtrlU:
 			m.query = m.query[m.qCursor:]

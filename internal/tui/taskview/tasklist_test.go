@@ -1,4 +1,4 @@
-package tui
+package taskview
 
 import (
 	"strings"
@@ -7,6 +7,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -189,21 +190,21 @@ func TestTaskListView_CursorNavigatesCrossProject(t *testing.T) {
 }
 
 func TestTaskListView_UpdateSpinnerFrame(t *testing.T) {
-	SetActiveSpinner("progress")
-	defer SetActiveSpinner("progress")
+	widget.SetActiveSpinner("progress")
+	defer widget.SetActiveSpinner("progress")
 
 	tl := NewTaskListView()
 	tl.updateSpinnerFrame()
 	// Frame should be a valid index for the active spinner.
-	if tl.animFrame < 0 || tl.animFrame >= SpinnerFrameCount() {
-		t.Errorf("animFrame %d out of range [0, %d)", tl.animFrame, SpinnerFrameCount())
+	if tl.animFrame < 0 || tl.animFrame >= widget.SpinnerFrameCount() {
+		t.Errorf("animFrame %d out of range [0, %d)", tl.animFrame, widget.SpinnerFrameCount())
 	}
 
 	// Switching spinner style produces valid frames too.
-	SetActiveSpinner("classic")
+	widget.SetActiveSpinner("classic")
 	tl.updateSpinnerFrame()
-	if tl.animFrame < 0 || tl.animFrame >= SpinnerFrameCount() {
-		t.Errorf("classic: animFrame %d out of range [0, %d)", tl.animFrame, SpinnerFrameCount())
+	if tl.animFrame < 0 || tl.animFrame >= widget.SpinnerFrameCount() {
+		t.Errorf("classic: animFrame %d out of range [0, %d)", tl.animFrame, widget.SpinnerFrameCount())
 	}
 }
 
@@ -1373,6 +1374,21 @@ func TestTaskListView_FilterCtrlW(t *testing.T) {
 	// Ctrl+W: delete word left
 	handler(tcell.NewEventKey(tcell.KeyCtrlW, 0, tcell.ModNone), func(tview.Primitive) {})
 	testutil.Equal(t, tl.Filter(), "foo ")
+}
+
+// sanitizeTaskName duplicated from app.go for test isolation.
+func sanitizeTaskName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r == '\n' || r == '\r' || r == '\t' {
+			b.WriteRune(' ')
+		} else if r < 0x20 {
+			continue
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func TestSanitizeTaskName(t *testing.T) {

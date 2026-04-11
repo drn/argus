@@ -584,7 +584,7 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
-			f.projInput, f.projCursorPos = deleteWordLeft(f.projInput, f.projCursorPos)
+			f.projInput, f.projCursorPos = widget.DeleteWordLeft(f.projInput, f.projCursorPos)
 			f.updateProjectAC()
 			return
 		}
@@ -595,7 +595,7 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyCtrlW:
-		f.projInput, f.projCursorPos = deleteWordLeft(f.projInput, f.projCursorPos)
+		f.projInput, f.projCursorPos = widget.DeleteWordLeft(f.projInput, f.projCursorPos)
 		f.updateProjectAC()
 		return
 	case tcell.KeyDelete:
@@ -606,7 +606,7 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyLeft:
 		if hasAlt {
-			f.projCursorPos = wordLeftPos(f.projInput, f.projCursorPos)
+			f.projCursorPos = widget.WordLeftPos(f.projInput, f.projCursorPos)
 			return
 		}
 		if f.projCursorPos > 0 {
@@ -615,7 +615,7 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyRight:
 		if hasAlt {
-			f.projCursorPos = wordRightPos(f.projInput, f.projCursorPos)
+			f.projCursorPos = widget.WordRightPos(f.projInput, f.projCursorPos)
 			return
 		}
 		if f.projCursorPos < len(f.projInput) {
@@ -642,11 +642,11 @@ func (f *NewTaskForm) handleProjectKey(event *tcell.EventKey) {
 		if hasAlt {
 			switch r {
 			case 'b', 'B':
-				f.projCursorPos = wordLeftPos(f.projInput, f.projCursorPos)
+				f.projCursorPos = widget.WordLeftPos(f.projInput, f.projCursorPos)
 			case 'f', 'F':
-				f.projCursorPos = wordRightPos(f.projInput, f.projCursorPos)
+				f.projCursorPos = widget.WordRightPos(f.projInput, f.projCursorPos)
 			case 'd', 'D':
-				f.projInput, f.projCursorPos = deleteWordRight(f.projInput, f.projCursorPos)
+				f.projInput, f.projCursorPos = widget.DeleteWordRight(f.projInput, f.projCursorPos)
 				f.updateProjectAC()
 			}
 			return
@@ -690,7 +690,7 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
-			f.branchInput, f.branchCursorPos = deleteWordLeft(f.branchInput, f.branchCursorPos)
+			f.branchInput, f.branchCursorPos = widget.DeleteWordLeft(f.branchInput, f.branchCursorPos)
 			f.updateBranchAC()
 			return
 		}
@@ -701,7 +701,7 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		}
 		return
 	case tcell.KeyCtrlW:
-		f.branchInput, f.branchCursorPos = deleteWordLeft(f.branchInput, f.branchCursorPos)
+		f.branchInput, f.branchCursorPos = widget.DeleteWordLeft(f.branchInput, f.branchCursorPos)
 		f.updateBranchAC()
 		return
 	case tcell.KeyDelete:
@@ -712,7 +712,7 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyLeft:
 		if hasAlt {
-			f.branchCursorPos = wordLeftPos(f.branchInput, f.branchCursorPos)
+			f.branchCursorPos = widget.WordLeftPos(f.branchInput, f.branchCursorPos)
 			return
 		}
 		if f.branchCursorPos > 0 {
@@ -721,7 +721,7 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyRight:
 		if hasAlt {
-			f.branchCursorPos = wordRightPos(f.branchInput, f.branchCursorPos)
+			f.branchCursorPos = widget.WordRightPos(f.branchInput, f.branchCursorPos)
 			return
 		}
 		if f.branchCursorPos < len(f.branchInput) {
@@ -748,11 +748,11 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 		if hasAlt {
 			switch r {
 			case 'b', 'B':
-				f.branchCursorPos = wordLeftPos(f.branchInput, f.branchCursorPos)
+				f.branchCursorPos = widget.WordLeftPos(f.branchInput, f.branchCursorPos)
 			case 'f', 'F':
-				f.branchCursorPos = wordRightPos(f.branchInput, f.branchCursorPos)
+				f.branchCursorPos = widget.WordRightPos(f.branchInput, f.branchCursorPos)
 			case 'd', 'D':
-				f.branchInput, f.branchCursorPos = deleteWordRight(f.branchInput, f.branchCursorPos)
+				f.branchInput, f.branchCursorPos = widget.DeleteWordRight(f.branchInput, f.branchCursorPos)
 				f.updateBranchAC()
 			}
 			return
@@ -815,7 +815,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
 			// Alt+Backspace: delete word left
-			f.prompt, f.cursorPos = deleteWordLeft(f.prompt, f.cursorPos)
+			f.prompt, f.cursorPos = widget.DeleteWordLeft(f.prompt, f.cursorPos)
 			f.updateAutocomplete()
 			return
 		}
@@ -827,13 +827,13 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 		return
 	case tcell.KeyCtrlW:
 		// Ctrl+W: delete word left
-		f.prompt, f.cursorPos = deleteWordLeft(f.prompt, f.cursorPos)
+		f.prompt, f.cursorPos = widget.DeleteWordLeft(f.prompt, f.cursorPos)
 		f.updateAutocomplete()
 		return
 	case tcell.KeyDelete:
 		if hasAlt {
 			// Alt+Delete: delete word right
-			f.prompt, f.cursorPos = deleteWordRight(f.prompt, f.cursorPos)
+			f.prompt, f.cursorPos = widget.DeleteWordRight(f.prompt, f.cursorPos)
 			f.updateAutocomplete()
 			return
 		}
@@ -845,7 +845,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 	case tcell.KeyLeft:
 		if hasAlt {
 			// Alt+Left: jump word left
-			f.cursorPos = wordLeftPos(f.prompt, f.cursorPos)
+			f.cursorPos = widget.WordLeftPos(f.prompt, f.cursorPos)
 			return
 		}
 		if f.cursorPos > 0 {
@@ -855,7 +855,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 	case tcell.KeyRight:
 		if hasAlt {
 			// Alt+Right: jump word right
-			f.cursorPos = wordRightPos(f.prompt, f.cursorPos)
+			f.cursorPos = widget.WordRightPos(f.prompt, f.cursorPos)
 			return
 		}
 		if f.cursorPos < len(f.prompt) {
@@ -909,13 +909,13 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 		if hasAlt {
 			switch r {
 			case 'b', 'B':
-				f.cursorPos = wordLeftPos(f.prompt, f.cursorPos)
+				f.cursorPos = widget.WordLeftPos(f.prompt, f.cursorPos)
 				return
 			case 'f', 'F':
-				f.cursorPos = wordRightPos(f.prompt, f.cursorPos)
+				f.cursorPos = widget.WordRightPos(f.prompt, f.cursorPos)
 				return
 			case 'd', 'D':
-				f.prompt, f.cursorPos = deleteWordRight(f.prompt, f.cursorPos)
+				f.prompt, f.cursorPos = widget.DeleteWordRight(f.prompt, f.cursorPos)
 				f.updateAutocomplete()
 				return
 			}

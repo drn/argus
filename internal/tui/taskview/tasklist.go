@@ -1,4 +1,4 @@
-package tui
+package taskview
 
 import (
 	"fmt"
@@ -139,9 +139,9 @@ func (tl *TaskListView) SetIdleUnvisited(ids []string) {
 
 // updateSpinnerFrame computes the current spinner frame from wall clock time.
 func (tl *TaskListView) updateSpinnerFrame() {
-	interval := SpinnerTickInterval()
+	interval := widget.SpinnerTickInterval()
 	if interval > 0 {
-		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % SpinnerFrameCount()
+		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
 	}
 }
 
@@ -602,7 +602,7 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 		if hasAlt {
 			// Option+Delete: delete word left.
 			runes := []rune(tl.filter)
-			runes, _ = deleteWordLeft(runes, len(runes))
+			runes, _ = widget.DeleteWordLeft(runes, len(runes))
 			tl.filter = string(runes)
 			tl.applyFilter()
 			return true
@@ -621,7 +621,7 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 	case tcell.KeyCtrlW:
 		// Ctrl+W: delete word left.
 		runes := []rune(tl.filter)
-		runes, _ = deleteWordLeft(runes, len(runes))
+		runes, _ = widget.DeleteWordLeft(runes, len(runes))
 		tl.filter = string(runes)
 		tl.applyFilter()
 		return true
@@ -845,7 +845,7 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 
 	switch {
 	case hasActivelyRunning:
-		return SpinnerFrame(tl.animFrame), theme.StyleInProgress
+		return widget.SpinnerFrame(tl.animFrame), theme.StyleInProgress
 	case hasInReview:
 		return theme.IconMoonStars, theme.StyleInReview
 	case hasIdleInProgress:
@@ -941,7 +941,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			statusStyle = theme.StyleInReview
 		} else {
 			// Actively running — animated spinner (nerd font progress spinner).
-			statusChar = SpinnerFrame(tl.animFrame)
+			statusChar = widget.SpinnerFrame(tl.animFrame)
 			statusStyle = theme.StyleInProgress
 		}
 	case model.StatusInReview:

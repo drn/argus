@@ -46,7 +46,7 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 		rf.done = true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
-			rf.name, rf.cursor = deleteWordLeft(rf.name, rf.cursor)
+			rf.name, rf.cursor = widget.DeleteWordLeft(rf.name, rf.cursor)
 			return
 		}
 		if rf.cursor > 0 {
@@ -54,10 +54,10 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 			rf.cursor--
 		}
 	case tcell.KeyCtrlW:
-		rf.name, rf.cursor = deleteWordLeft(rf.name, rf.cursor)
+		rf.name, rf.cursor = widget.DeleteWordLeft(rf.name, rf.cursor)
 	case tcell.KeyDelete:
 		if hasAlt {
-			rf.name, rf.cursor = deleteWordRight(rf.name, rf.cursor)
+			rf.name, rf.cursor = widget.DeleteWordRight(rf.name, rf.cursor)
 			return
 		}
 		if rf.cursor < len(rf.name) {
@@ -65,7 +65,7 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 		}
 	case tcell.KeyLeft:
 		if hasAlt {
-			rf.cursor = wordLeftPos(rf.name, rf.cursor)
+			rf.cursor = widget.WordLeftPos(rf.name, rf.cursor)
 			return
 		}
 		if rf.cursor > 0 {
@@ -73,7 +73,7 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 		}
 	case tcell.KeyRight:
 		if hasAlt {
-			rf.cursor = wordRightPos(rf.name, rf.cursor)
+			rf.cursor = widget.WordRightPos(rf.name, rf.cursor)
 			return
 		}
 		if rf.cursor < len(rf.name) {
@@ -93,11 +93,11 @@ func (rf *RenameTaskForm) HandleKey(ev *tcell.EventKey) {
 		if hasAlt {
 			switch r {
 			case 'b', 'B':
-				rf.cursor = wordLeftPos(rf.name, rf.cursor)
+				rf.cursor = widget.WordLeftPos(rf.name, rf.cursor)
 			case 'f', 'F':
-				rf.cursor = wordRightPos(rf.name, rf.cursor)
+				rf.cursor = widget.WordRightPos(rf.name, rf.cursor)
 			case 'd', 'D':
-				rf.name, rf.cursor = deleteWordRight(rf.name, rf.cursor)
+				rf.name, rf.cursor = widget.DeleteWordRight(rf.name, rf.cursor)
 			}
 			return
 		}

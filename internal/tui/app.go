@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/taskview"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -76,10 +77,10 @@ type App struct {
 	// Sub-views
 	header       *widget.Header
 	statusbar    *widget.StatusBar
-	tasklist     *TaskListView
+	tasklist     *taskview.TaskListView
 	taskGitPanel *GitPanel // git status for selected task (task list center-top)
 	taskPreview  *TaskPreviewPanel
-	taskDetail   *TaskDetailPanel
+	taskDetail   *taskview.TaskDetailPanel
 	agentPane    *TerminalPane
 	agentHeader  *widget.AgentHeader
 	gitPanel     *GitPanel // git status for agent view (left panel)
@@ -120,7 +121,7 @@ type App struct {
 
 	// Layout containers
 	root      *tview.Flex
-	taskPage  *TaskPage
+	taskPage  *taskview.TaskPage
 	agentPage *tview.Flex
 	pages     *tview.Pages
 
@@ -212,7 +213,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.todos = NewToDosView()
 	app.todos.SetApp(app.tapp)
 	cfg := database.Config()
-	SetActiveSpinner(cfg.UI.SpinnerStyle)
+	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
 	vaultPath := cfg.KB.ArgusVaultPath
 	if vaultPath == "" {
 		vaultPath = config.DefaultArgusVaultPath()
@@ -241,7 +242,7 @@ func (a *App) buildUI() {
 	a.header = widget.NewHeader()
 	a.statusbar = widget.NewStatusBar()
 
-	a.tasklist = NewTaskListView()
+	a.tasklist = taskview.NewTaskListView()
 	a.tasklist.OnSelect = func(task *model.Task) { a.onTaskSelect(task, true) }
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
@@ -286,7 +287,7 @@ func (a *App) buildUI() {
 
 	a.taskGitPanel = NewGitPanel()
 	a.taskPreview = NewTaskPreviewPanel()
-	a.taskDetail = NewTaskDetailPanel()
+	a.taskDetail = taskview.NewTaskDetailPanel()
 
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
@@ -320,7 +321,7 @@ func (a *App) buildUI() {
 		AddItem(a.tasklist, 0, 1, true).
 		AddItem(taskCenter, 0, 3, false).
 		AddItem(a.taskDetail, 0, 1, false)
-	a.taskPage = NewTaskPage(taskFlex, a.tasklist)
+	a.taskPage = taskview.NewTaskPage(taskFlex, a.tasklist)
 
 	// Agent page — header + three-panel layout
 	agentPanels := tview.NewFlex().SetDirection(tview.FlexColumn).

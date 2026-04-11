@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"strings"
 	"testing"
 	"time"
 
@@ -1268,4 +1269,9 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 	if !foundReplay {
 		t.Error("expected replay content from stale replay emu, not live emu")
 	}
+}
+
+func containsRunes(line []rune, needle string) bool {
+	s := string(line)
+	return len(needle) > 0 && len(s) >= len(needle) && strings.Contains(s, needle)
 }

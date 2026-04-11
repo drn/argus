@@ -1,4 +1,4 @@
-package tui
+package taskview
 
 import (
 	"github.com/drn/argus/internal/tui/theme"
