@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -106,15 +107,15 @@ func TestTaskPreviewPanel_DrawSize(t *testing.T) {
 func TestSafeEmuWrite_PanicRecovery(t *testing.T) {
 	// Create a small emulator and feed data with cursor positioning
 	// beyond its bounds (simulates replaying large-terminal PTY data).
-	emu := newDrainedEmulator(10, 5)
+	emu := terminal.NewDrainedEmulator(10, 5)
 
 	// ESC[82;1H moves cursor to row 82, then ESC M (reverse index) triggers
 	// InsertLineArea which panics if row > buffer length.
 	data := []byte("\x1b[82;1H\x1bM")
-	_, err := safeEmuWrite(emu, data)
+	_, err := terminal.SafeEmuWrite(emu, data)
 	// Either it doesn't panic (upstream fixed) or we recover gracefully.
 	if err != nil {
-		t.Logf("safeEmuWrite recovered from panic: %v", err)
+		t.Logf("terminal.SafeEmuWrite recovered from panic: %v", err)
 	}
 }
 

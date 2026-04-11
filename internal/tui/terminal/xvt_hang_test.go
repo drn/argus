@@ -1,4 +1,4 @@
-package tui
+package terminal
 
 import (
 	"testing"
@@ -17,7 +17,7 @@ func TestDrainedEmulatorNoHang(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
-				emu := newDrainedEmulator(80, 24)
+				emu := NewDrainedEmulator(80, 24)
 				emu.Write(seq)
 				close(done)
 			}()

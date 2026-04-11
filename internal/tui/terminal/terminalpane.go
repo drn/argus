@@ -1,4 +1,4 @@
-package tui
+package terminal
 
 import (
 	"fmt"
@@ -31,13 +31,13 @@ import (
 // uses x/vt's default (10K lines) since only the current viewport matters.
 const replayScrollbackSize = 50_000
 
-// newDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
+// NewDrainedEmulator creates an x/vt SafeEmulator with a goroutine that drains
 // the response pipe. x/vt uses io.Pipe() internally — when the emulator
 // processes terminal query sequences (DA1, DA2, DSR, etc.), it writes responses
 // to pw which blocks until pr is read. Without draining, Write() hangs
 // indefinitely on any input containing these sequences. The drain goroutine
 // exits when the emulator is closed or garbage collected.
-func newDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
+func NewDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
 	emu := xvt.NewSafeEmulator(cols, rows)
 	go io.Copy(io.Discard, emu) //nolint:errcheck
 	return emu
@@ -53,10 +53,10 @@ func newDrainedReplayEmulator(cols, rows int) *xvt.SafeEmulator {
 	return emu
 }
 
-// safeEmuWrite writes data to an x/vt emulator, recovering from panics caused
+// SafeEmuWrite writes data to an x/vt emulator, recovering from panics caused
 // by upstream bugs (e.g., InsertLineArea index-out-of-range when replay data
 // contains cursor positions or scroll regions from a larger terminal).
-func safeEmuWrite(emu *xvt.SafeEmulator, data []byte) (n int, err error) {
+func SafeEmuWrite(emu *xvt.SafeEmulator, data []byte) (n int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			uxlog.Log("[vt] recovered from emulator panic: %v\n%s", r, debug.Stack())
@@ -831,11 +831,11 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
 		cursorVisible = visible
 	})
-	safeEmuWrite(emu, raw)
+	SafeEmuWrite(emu, raw)
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
-	lastRow := findLastContentRowEmu(emu, ptyCols, ptyRows)
+	lastRow := FindLastContentRowEmu(emu, ptyCols, ptyRows)
 	if cursorVisible {
 		cur := emu.CursorPosition()
 		if cur.Y > lastRow {
@@ -846,7 +846,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	if sbLen > 0 {
 		totalLines = sbLen + lastRow + 1
 	} else {
-		firstRow := findFirstContentRowEmu(emu, ptyCols, lastRow)
+		firstRow := FindFirstContentRowEmu(emu, ptyCols, lastRow)
 		totalLines = lastRow - firstRow + 1
 	}
 	maxScroll := totalLines - ptyRows
@@ -919,10 +919,10 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 			if !needRebuild {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
 			}
-			safeEmuWrite(tp.emu, raw)
+			SafeEmuWrite(tp.emu, raw)
 			tp.emuFedTotal = totalWritten
 		} else {
-			safeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
+			SafeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 			tp.emuFedTotal = totalWritten
 		}
 	} else if tp.emuFedTotal == 0 {
@@ -948,7 +948,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
 	// Find content bounds in the main screen area.
-	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
+	lastContentRow := FindLastContentRowEmu(emu, emuCols, emuRows)
 	// Only extend content area to include cursor when it's visible.
 	// Without this guard, a hidden cursor at (0, bottom) inflates the
 	// content region with empty rows, causing a phantom cursor artifact.
@@ -960,7 +960,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	totalLines := sbLen + lastContentRow + 1
 	firstContentRow := 0
 	if sbLen == 0 {
-		firstContentRow = findFirstContentRowEmu(emu, emuCols, lastContentRow)
+		firstContentRow = FindFirstContentRowEmu(emu, emuCols, lastContentRow)
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
@@ -1037,7 +1037,7 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 						ch = runes[0]
 					}
 				}
-				style = uvCellToTcellStyle(cell)
+				style = UvCellToTcellStyle(cell)
 			}
 
 			// Match the emulator's cursor visibility instead of forcing an Argus-owned cursor.
@@ -1093,7 +1093,7 @@ func (tp *TerminalPane) newTrackedEmulator(cols, rows int) *xvt.SafeEmulator {
 }
 
 func (tp *TerminalPane) newTrackedEmulatorWithCallback(cols, rows int, onCursorVisible func(bool)) *xvt.SafeEmulator {
-	emu := newDrainedEmulator(cols, rows)
+	emu := NewDrainedEmulator(cols, rows)
 	if onCursorVisible != nil {
 		emu.Emulator.SetCallbacks(xvt.Callbacks{
 			CursorVisibility: onCursorVisible,
@@ -1197,8 +1197,8 @@ func uvColorToTcell(c color.Color) tcell.Color {
 	}
 }
 
-// uvCellToTcellStyle converts a *uv.Cell to a tcell.Style.
-func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
+// UvCellToTcellStyle converts a *uv.Cell to a tcell.Style.
+func UvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	if cell == nil {
 		return tcell.StyleDefault
 	}
@@ -1255,8 +1255,8 @@ func uvCellToTcellStyle(cell *uv.Cell) tcell.Style {
 	return style
 }
 
-// findLastContentRowEmu scans backwards to find the last row with visible content.
-func findLastContentRowEmu(emu *xvt.SafeEmulator, cols, rows int) int {
+// FindLastContentRowEmu scans backwards to find the last row with visible content.
+func FindLastContentRowEmu(emu *xvt.SafeEmulator, cols, rows int) int {
 	for row := rows - 1; row >= 0; row-- {
 		if rowHasContentEmu(emu, row, cols) {
 			return row
@@ -1265,8 +1265,8 @@ func findLastContentRowEmu(emu *xvt.SafeEmulator, cols, rows int) int {
 	return -1
 }
 
-// findFirstContentRowEmu scans forward to find the first row with content.
-func findFirstContentRowEmu(emu *xvt.SafeEmulator, cols, maxRow int) int {
+// FindFirstContentRowEmu scans forward to find the first row with content.
+func FindFirstContentRowEmu(emu *xvt.SafeEmulator, cols, maxRow int) int {
 	for row := 0; row <= maxRow; row++ {
 		if rowHasContentEmu(emu, row, cols) {
 			return row

@@ -1,4 +1,4 @@
-package tui
+package terminal
 
 import (
 	"image/color"
@@ -254,7 +254,7 @@ func TestUvCellToTcellStyle(t *testing.T) {
 			Attrs: uv.AttrBold,
 		},
 	}
-	style := uvCellToTcellStyle(cell)
+	style := UvCellToTcellStyle(cell)
 	fg, bg, attr := style.Decompose()
 	if fg != tcell.PaletteColor(1) {
 		t.Errorf("fg = %v, want PaletteColor(1)", fg)
@@ -275,7 +275,7 @@ func TestUvCellToTcellStyle_Faint(t *testing.T) {
 			Attrs: uv.AttrFaint,
 		},
 	}
-	style := uvCellToTcellStyle(cell)
+	style := UvCellToTcellStyle(cell)
 	_, _, attr := style.Decompose()
 	if attr&tcell.AttrDim == 0 {
 		t.Error("expected dim attribute for AttrFaint")
@@ -290,7 +290,7 @@ func TestUvCellToTcellStyle_Blink(t *testing.T) {
 			Attrs: uv.AttrBlink,
 		},
 	}
-	style := uvCellToTcellStyle(cell)
+	style := UvCellToTcellStyle(cell)
 	_, _, attr := style.Decompose()
 	if attr&tcell.AttrBlink == 0 {
 		t.Error("expected blink attribute for AttrBlink")
@@ -316,7 +316,7 @@ func TestUvCellToTcellStyle_UnderlineStyles(t *testing.T) {
 				Width:   1,
 				Style:   uv.Style{Underline: tt.ul},
 			}
-			style := uvCellToTcellStyle(cell)
+			style := UvCellToTcellStyle(cell)
 			got := style.GetUnderlineStyle()
 			testutil.Equal(t, got, tt.want)
 		})
@@ -332,13 +332,13 @@ func TestUvCellToTcellStyle_UnderlineColor(t *testing.T) {
 			UnderlineColor: ansi.BasicColor(1),
 		},
 	}
-	style := uvCellToTcellStyle(cell)
+	style := UvCellToTcellStyle(cell)
 	testutil.Equal(t, style.GetUnderlineStyle(), tcell.UnderlineStyleCurly)
 	testutil.Equal(t, style.GetUnderlineColor(), tcell.PaletteColor(1))
 }
 
 func TestUvCellToTcellStyle_Nil(t *testing.T) {
-	style := uvCellToTcellStyle(nil)
+	style := UvCellToTcellStyle(nil)
 	fg, bg, _ := style.Decompose()
 	if fg != tcell.ColorDefault || bg != tcell.ColorDefault {
 		t.Error("nil cell should produce default style")
@@ -352,7 +352,7 @@ func TestUvCellToTcellStyle_NoActiveInputBG(t *testing.T) {
 		Width:   1,
 		Style:   uv.Style{},
 	}
-	style := uvCellToTcellStyle(cell)
+	style := UvCellToTcellStyle(cell)
 	_, bg, _ := style.Decompose()
 	if bg != tcell.ColorDefault {
 		t.Errorf("default cell bg = %v, want ColorDefault (no activeInputBG)", bg)
@@ -375,13 +375,13 @@ func TestFindContentRowsEmu(t *testing.T) {
 	emu := xvt.NewSafeEmulator(20, 10)
 	emu.Write([]byte("\n\nhello\nworld\n"))
 
-	last := findLastContentRowEmu(emu, 20, 10)
+	last := FindLastContentRowEmu(emu, 20, 10)
 	if last < 2 {
-		t.Errorf("findLastContentRowEmu = %d, want >= 2", last)
+		t.Errorf("FindLastContentRowEmu = %d, want >= 2", last)
 	}
-	first := findFirstContentRowEmu(emu, 20, last)
+	first := FindFirstContentRowEmu(emu, 20, last)
 	if first > 3 {
-		t.Errorf("findFirstContentRowEmu = %d, want <= 3", first)
+		t.Errorf("FindFirstContentRowEmu = %d, want <= 3", first)
 	}
 }
 
@@ -543,7 +543,7 @@ func TestTerminalPane_AnchorLock(t *testing.T) {
 
 	// paintEmu anchor-lock: when totalLines grows, scrollOffset should increase.
 	// Create an emulator with enough content to produce scrollback.
-	emu := newDrainedEmulator(20, 5)
+	emu := NewDrainedEmulator(20, 5)
 	for i := 0; i < 30; i++ {
 		emu.Write([]byte("line of content!!!!\n"))
 	}
@@ -658,7 +658,7 @@ func TestTerminalPane_ReadLogTailForTask(t *testing.T) {
 
 func TestTerminalPane_ResetVTClearsReplayCache(t *testing.T) {
 	tp := NewTerminalPane()
-	tp.replayEmu = newDrainedEmulator(80, 24)
+	tp.replayEmu = NewDrainedEmulator(80, 24)
 	tp.replayEmuBytes = 100
 	tp.replayEmuLogSize = 500
 	tp.anchorTotalLines = 50
@@ -1070,7 +1070,7 @@ func TestTerminalPane_AccelScrollUpResetsReplayState(t *testing.T) {
 	// AccelScrollUp must also invalidate replay state on 0→>0 transition.
 	tp := NewTerminalPane()
 	tp.anchorTotalLines = 500
-	tp.replayEmu = newDrainedEmulator(80, 24) // simulate cached emu
+	tp.replayEmu = NewDrainedEmulator(80, 24) // simulate cached emu
 
 	n := tp.AccelScrollUp()
 	testutil.Equal(t, tp.anchorTotalLines, 0)
@@ -1082,7 +1082,7 @@ func TestTerminalPane_MouseScrollUpResetsReplayState(t *testing.T) {
 	// Mouse wheel ScrollUp must also invalidate replay state on 0→>0 transition.
 	tp := NewTerminalPane()
 	tp.anchorTotalLines = 500
-	tp.replayEmu = newDrainedEmulator(80, 24) // simulate cached emu
+	tp.replayEmu = NewDrainedEmulator(80, 24) // simulate cached emu
 
 	tp.ScrollUp(3) // mouseScrollStep
 	testutil.Equal(t, tp.anchorTotalLines, 0)
@@ -1140,7 +1140,7 @@ func TestTerminalPane_ScrollUpWhileAlreadyScrolled(t *testing.T) {
 	// the replay emu — it's still current for the scrolled region.
 	tp := NewTerminalPane()
 	tp.scrollOffset = 5
-	emu := newDrainedEmulator(80, 24)
+	emu := NewDrainedEmulator(80, 24)
 	tp.replayEmu = emu
 	tp.anchorTotalLines = 840
 
@@ -1216,8 +1216,8 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 	tp := NewTerminalPane()
 
 	// Set up live emulator with distinctive content.
-	liveEmu := newDrainedEmulator(40, 10)
-	safeEmuWrite(liveEmu, []byte("live content\r\n"))
+	liveEmu := NewDrainedEmulator(40, 10)
+	SafeEmuWrite(liveEmu, []byte("live content\r\n"))
 	tp.emu = liveEmu
 	tp.emuCols = 40
 	tp.emuRows = 10
@@ -1229,7 +1229,7 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		replayData = append(replayData, []byte("replay content\r\n")...)
 	}
-	safeEmuWrite(staleEmu, replayData)
+	SafeEmuWrite(staleEmu, replayData)
 	tp.mu.Lock()
 	tp.replayEmu = staleEmu
 	tp.replayEmuCols = 40
@@ -1274,4 +1274,33 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 func containsRunes(line []rune, needle string) bool {
 	s := string(line)
 	return len(needle) > 0 && len(s) >= len(needle) && strings.Contains(s, needle)
+}
+
+func TestTerminalPane_PendingState(t *testing.T) {
+	tp := NewTerminalPane()
+
+	// Initially not pending.
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pending, false)
+	tp.mu.Unlock()
+
+	// Set pending.
+	tp.SetPending(true)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pending, true)
+	tp.mu.Unlock()
+
+	// SetPending(false) clears it explicitly.
+	tp.SetPending(false)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pending, false)
+	tp.mu.Unlock()
+
+	// Pending is cleared when a real session is set.
+	tp.SetPending(true)
+	mock := &mockAdapter{alive: true, totalWritten: 100, output: make([]byte, 100)}
+	tp.SetSession(mock)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pending, false)
+	tp.mu.Unlock()
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/taskview"
+	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -81,7 +82,7 @@ type App struct {
 	taskGitPanel *GitPanel // git status for selected task (task list center-top)
 	taskPreview  *TaskPreviewPanel
 	taskDetail   *taskview.TaskDetailPanel
-	agentPane    *TerminalPane
+	agentPane    *terminal.TerminalPane
 	agentHeader  *widget.AgentHeader
 	gitPanel     *GitPanel // git status for agent view (left panel)
 	filePanel    *FilePanel
@@ -291,7 +292,7 @@ func (a *App) buildUI() {
 
 	a.gitPanel = NewGitPanel()
 	a.filePanel = NewFilePanel()
-	a.agentPane = NewTerminalPane()
+	a.agentPane = terminal.NewTerminalPane()
 	a.agentHeader = widget.NewAgentHeader()
 
 	// Wire mouse click callbacks so clicking a panel switches agentFocus.

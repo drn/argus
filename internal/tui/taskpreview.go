@@ -10,6 +10,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 )
@@ -108,8 +109,8 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 
 	// Run VT emulation off the UI thread.
 	// Use drained emulator to prevent hangs on terminal query sequences.
-	emu := newDrainedEmulator(emuCols, emuRows)
-	if _, err := safeEmuWrite(emu, raw); err != nil {
+	emu := terminal.NewDrainedEmulator(emuCols, emuRows)
+	if _, err := terminal.SafeEmuWrite(emu, raw); err != nil {
 		tp.mu.Lock()
 		tp.statusMsg = "Preview unavailable"
 		tp.cells = nil
@@ -117,12 +118,12 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		return
 	}
 
-	lastContentRow := findLastContentRowEmu(emu, emuCols, emuRows)
+	lastContentRow := terminal.FindLastContentRowEmu(emu, emuCols, emuRows)
 	sbLen := emu.ScrollbackLen()
 	totalLines := sbLen + lastContentRow + 1
 	firstContentRow := 0
 	if sbLen == 0 {
-		firstContentRow = findFirstContentRowEmu(emu, emuCols, lastContentRow)
+		firstContentRow = terminal.FindFirstContentRowEmu(emu, emuCols, lastContentRow)
 		totalLines = lastContentRow - firstContentRow + 1
 	}
 
@@ -169,7 +170,7 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 			style := tcell.StyleDefault
 			if cell != nil {
 				ch = cellRune(cell)
-				style = uvCellToTcellStyle(cell)
+				style = terminal.UvCellToTcellStyle(cell)
 			}
 			grid[vy][vx] = previewCell{ch: ch, style: style}
 		}
