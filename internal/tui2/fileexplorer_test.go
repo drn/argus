@@ -797,6 +797,9 @@ func TestFilePanel_Clear(t *testing.T) {
 	if fp.cursor != 0 {
 		t.Errorf("cursor after Clear = %d, want 0", fp.cursor)
 	}
+	if fp.offset != 0 {
+		t.Errorf("offset after Clear = %d, want 0", fp.offset)
+	}
 	if fp.SelectedFile() != nil {
 		t.Error("SelectedFile after Clear should be nil")
 	}
