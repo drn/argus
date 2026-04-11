@@ -12,7 +12,6 @@ linters:
     - revive
     - ineffassign
     - unused
-    - gosimple
 
   settings:
     errcheck:
