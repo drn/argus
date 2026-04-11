@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -26,9 +27,9 @@ func NewRenameTaskForm(currentName string) *RenameTaskForm {
 	}
 }
 
-func (rf *RenameTaskForm) Done() bool      { return rf.done }
-func (rf *RenameTaskForm) Canceled() bool  { return rf.canceled }
-func (rf *RenameTaskForm) Name() string    { return string(rf.name) }
+func (rf *RenameTaskForm) Done() bool          { return rf.done }
+func (rf *RenameTaskForm) Canceled() bool      { return rf.canceled }
+func (rf *RenameTaskForm) Name() string        { return string(rf.name) }
 func (rf *RenameTaskForm) SetError(msg string) { rf.errMsg = msg }
 func (rf *RenameTaskForm) ResetDone()          { rf.done = false }
 
@@ -135,8 +136,8 @@ func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	formY := y + (height-formH)/2
 	formY = max(formY, y)
 
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Rename Task", StyleTitle)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	drawText(screen, formX+2, formY+1, formW-4, "Rename Task", theme.StyleTitle)
 
 	// Name field with cursor.
 	before := string(rf.name[:rf.cursor])
@@ -151,6 +152,6 @@ func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	drawText(screen, formX+2, formY+3, maxW, val, tcell.StyleDefault)
 
 	if rf.errMsg != "" {
-		drawText(screen, formX+2, formY+5, formW-4, rf.errMsg, StyleError)
+		drawText(screen, formX+2, formY+5, formW-4, rf.errMsg, theme.StyleError)
 	}
 }

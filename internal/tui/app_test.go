@@ -1404,4 +1404,3 @@ func TestScanAndStorePRURL(t *testing.T) {
 		t.Errorf("should not match in %q", noURLOutput)
 	}
 }
-

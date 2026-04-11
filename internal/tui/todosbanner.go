@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -68,7 +69,7 @@ func drawTodoBanner(screen tcell.Screen, x, y, width int) int {
 	if subPad < 0 {
 		subPad = 0
 	}
-	drawText(screen, x+subPad, row, width-subPad, todoSubtitle, tcell.StyleDefault.Foreground(ColorDimmed))
+	drawText(screen, x+subPad, row, width-subPad, todoSubtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	row++
 	row++ // blank line
 

@@ -10,6 +10,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 const fpIndentWidth = 2 // characters per indent level in the file panel
@@ -373,9 +374,9 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 	}
 
 	// Draw border
-	borderStyle := StyleBorder
+	borderStyle := theme.StyleBorder
 	if fp.focused {
-		borderStyle = StyleFocusedBorder
+		borderStyle = theme.StyleFocusedBorder
 	}
 	title := " Files "
 	if len(fp.files) > 0 {
@@ -388,7 +389,7 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 	}
 
 	if len(fp.rows) == 0 {
-		drawText(screen, x, y, width, "No changes", StyleDimmed)
+		drawText(screen, x, y, width, "No changes", theme.StyleDimmed)
 		return
 	}
 
@@ -401,14 +402,14 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 		row := fp.rows[idx]
 		isCursor := fp.focused && idx == fp.cursor
 
-		nameStyle := StyleNormal
+		nameStyle := theme.StyleNormal
 		if isCursor {
-			nameStyle = StyleSelected
+			nameStyle = theme.StyleSelected
 		}
 
 		col := x + 1
 		if isCursor {
-			screen.SetContent(col, y+i, '▸', nil, StyleSelected)
+			screen.SetContent(col, y+i, '▸', nil, theme.StyleSelected)
 		}
 		col += 2
 
@@ -492,16 +493,16 @@ func (fp *FilePanel) MouseHandler() func(action tview.MouseAction, event *tcell.
 func (fp *FilePanel) statusIcon(status string) (rune, tcell.Style) {
 	switch status {
 	case "M", "MM":
-		return 'M', tcell.StyleDefault.Foreground(ColorInReview)
+		return 'M', tcell.StyleDefault.Foreground(theme.ColorInReview)
 	case "A":
-		return 'A', tcell.StyleDefault.Foreground(ColorComplete)
+		return 'A', tcell.StyleDefault.Foreground(theme.ColorComplete)
 	case "D":
-		return 'D', tcell.StyleDefault.Foreground(ColorError)
+		return 'D', tcell.StyleDefault.Foreground(theme.ColorError)
 	case "??":
-		return '?', tcell.StyleDefault.Foreground(ColorComplete)
+		return '?', tcell.StyleDefault.Foreground(theme.ColorComplete)
 	case "R":
-		return 'R', tcell.StyleDefault.Foreground(ColorInReview)
+		return 'R', tcell.StyleDefault.Foreground(theme.ColorInReview)
 	default:
-		return '·', StyleDimmed
+		return '·', theme.StyleDimmed
 	}
 }

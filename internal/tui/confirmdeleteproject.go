@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -28,7 +29,7 @@ func NewConfirmDeleteProjectModal(name string, taskCount int) *ConfirmDeleteProj
 
 func (m *ConfirmDeleteProjectModal) Confirmed() bool { return m.confirmed }
 func (m *ConfirmDeleteProjectModal) Canceled() bool  { return m.canceled }
-func (m *ConfirmDeleteProjectModal) Name() string     { return m.name }
+func (m *ConfirmDeleteProjectModal) Name() string    { return m.name }
 
 // InputHandler handles key events for the confirm dialog.
 func (m *ConfirmDeleteProjectModal) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
@@ -69,19 +70,19 @@ func (m *ConfirmDeleteProjectModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Delete project?", StyleTitle)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	drawText(screen, formX+2, formY+1, formW-4, "Delete project?", theme.StyleTitle)
 
 	// Project name.
-	drawText(screen, formX+4, formY+3, formW-6, m.name, StyleNormal)
+	drawText(screen, formX+4, formY+3, formW-6, m.name, theme.StyleNormal)
 
 	row := formY + 4
 	if m.taskCount > 0 {
 		warning := fmt.Sprintf("  %d task(s) will be orphaned", m.taskCount)
-		drawText(screen, formX+2, row, formW-4, warning, tcell.StyleDefault.Foreground(ColorError))
+		drawText(screen, formX+2, row, formW-4, warning, tcell.StyleDefault.Foreground(theme.ColorError))
 		row += 2
 	}
 
 	// Hint.
-	drawText(screen, formX+4, row+1, formW-6, "[enter] confirm  [esc] cancel", StyleDimmed)
+	drawText(screen, formX+4, row+1, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }

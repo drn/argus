@@ -3,19 +3,20 @@ package tui
 import (
 	"fmt"
 
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/drn/argus/internal/model"
 )
 
 // StatusBar renders the bottom status bar with task counts and keybinding hints.
 type StatusBar struct {
 	*tview.Box
-	tasks      []*model.Task
-	running    map[string]bool
-	errMsg     string
-	infoMsg    string
-	activeTab  Tab
+	tasks     []*model.Task
+	running   map[string]bool
+	errMsg    string
+	infoMsg   string
+	activeTab Tab
 }
 
 // NewStatusBar creates a status bar.
@@ -75,7 +76,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 
 	// Fill background
 	for col := x; col < x+width; col++ {
-		screen.SetContent(col, y, ' ', nil, StyleStatusBar)
+		screen.SetContent(col, y, ' ', nil, theme.StyleStatusBar)
 	}
 
 	// Left side: error, info, or task counts
@@ -102,11 +103,11 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	}
 
 	// Draw left text
-	leftStyle := StyleStatusBar
+	leftStyle := theme.StyleStatusBar
 	if sb.errMsg != "" {
-		leftStyle = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorError)
+		leftStyle = tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorError)
 	} else if sb.infoMsg != "" {
-		leftStyle = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorDimmed)
+		leftStyle = tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorDimmed)
 	}
 	col := x
 	for _, r := range left {
@@ -153,16 +154,16 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 		style tcell.Style
 	}
 	var runs []styledRun
-	keyStyle := tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorKeyHint)
-	labelStyle := tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorKeyLabel)
+	keyStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyHint)
+	labelStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyLabel)
 	for i, h := range hints {
 		if i > 0 {
-			runs = append(runs, styledRun{"  ", StyleStatusBar})
+			runs = append(runs, styledRun{"  ", theme.StyleStatusBar})
 		}
 		runs = append(runs, styledRun{h.key, keyStyle})
 		runs = append(runs, styledRun{" " + h.label, labelStyle})
 	}
-	runs = append(runs, styledRun{" ", StyleStatusBar})
+	runs = append(runs, styledRun{" ", theme.StyleStatusBar})
 
 	rightWidth := 0
 	for _, r := range runs {

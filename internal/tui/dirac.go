@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -120,7 +121,7 @@ func (ac *dirAC) Draw(screen tcell.Screen, x, y, w, maxVisible int) int {
 		acScroll = ac.idx - visible + 1
 	}
 
-	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(ColorSelected)
+	selectedStyle := tcell.StyleDefault.Bold(true).Foreground(theme.ColorSelected)
 	for vi := 0; vi < visible; vi++ {
 		idx := acScroll + vi
 		if idx >= len(ac.matches) {
@@ -133,7 +134,7 @@ func (ac *dirAC) Draw(screen tcell.Screen, x, y, w, maxVisible int) int {
 			indicator = "> "
 		}
 		line := indicator + display
-		st := StyleDimmed
+		st := theme.StyleDimmed
 		if idx == ac.idx {
 			st = selectedStyle
 		}

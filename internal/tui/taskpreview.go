@@ -10,6 +10,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // previewCell is a pre-rendered cell for the preview panel.
@@ -208,7 +209,7 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Preview ", StyleBorder)
+	inner := drawBorderedPanel(screen, x, y, width, height, " Preview ", theme.StyleBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
@@ -255,7 +256,7 @@ func (tp *TaskPreviewPanel) drawCentered(screen tcell.Screen, x, y, w, h int, ms
 		if startX < x {
 			startX = x
 		}
-		drawText(screen, startX, row, w-(startX-x), line, StyleDimmed)
+		drawText(screen, startX, row, w-(startX-x), line, theme.StyleDimmed)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -101,8 +102,8 @@ func (h *Header) Draw(screen tcell.Screen) {
 		frame := int(time.Now().UnixMilli()/sp.TickInterval.Milliseconds()) % sp.FrameCount()
 		spinnerRune := sp.Frame(frame)
 
-		noticeStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorInProgress)
-		textStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(ColorNormal)
+		noticeStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(theme.ColorInProgress)
+		textStyle := tcell.StyleDefault.Background(headerBaseBG).Foreground(theme.ColorNormal)
 
 		col := x + 1 // left padding
 		screen.SetContent(col, y, spinnerRune, nil, noticeStyle)

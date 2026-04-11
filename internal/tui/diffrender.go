@@ -14,13 +14,13 @@ const lineNumWidth = 4
 // Diff colors. Backgrounds use fixed RGB for consistent diff tinting regardless
 // of terminal theme. Foregrounds use palette indices so they adapt to the theme.
 var (
-	diffRemovedBG = tcell.NewRGBColor(61, 16, 18)  // #3d1012
-	diffAddedBG   = tcell.NewRGBColor(13, 51, 23)  // #0d3317
-	diffRemovedFG = tcell.PaletteColor(203)         // red
-	diffAddedFG   = tcell.PaletteColor(78)          // green
-	diffLineNumFG = tcell.PaletteColor(239)         // dim gray
-	diffHunkFG    = tcell.PaletteColor(243)         // medium gray
-	diffDividerFG = tcell.PaletteColor(236)         // dark gray
+	diffRemovedBG = tcell.NewRGBColor(61, 16, 18) // #3d1012
+	diffAddedBG   = tcell.NewRGBColor(13, 51, 23) // #0d3317
+	diffRemovedFG = tcell.PaletteColor(203)       // red
+	diffAddedFG   = tcell.PaletteColor(78)        // green
+	diffLineNumFG = tcell.PaletteColor(239)       // dim gray
+	diffHunkFG    = tcell.PaletteColor(243)       // medium gray
+	diffDividerFG = tcell.PaletteColor(236)       // dark gray
 
 	// Word-level highlight: brighter backgrounds for the specific changed spans.
 	diffRemovedWordBG = tcell.NewRGBColor(110, 30, 35) // #6e1e23
@@ -386,4 +386,3 @@ func truncStr(s string, maxW int) string {
 	}
 	return string(runes[:maxW])
 }
-

@@ -5,6 +5,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // ConfirmDeleteModal shows a confirmation dialog before deleting a task.
@@ -24,8 +25,8 @@ func NewConfirmDeleteModal(task *model.Task) *ConfirmDeleteModal {
 	}
 }
 
-func (m *ConfirmDeleteModal) Confirmed() bool { return m.confirmed }
-func (m *ConfirmDeleteModal) Canceled() bool  { return m.canceled }
+func (m *ConfirmDeleteModal) Confirmed() bool   { return m.confirmed }
+func (m *ConfirmDeleteModal) Canceled() bool    { return m.canceled }
 func (m *ConfirmDeleteModal) Task() *model.Task { return m.task }
 
 // InputHandler handles key events for the confirm dialog.
@@ -64,20 +65,20 @@ func (m *ConfirmDeleteModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Delete task?", StyleTitle)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	drawText(screen, formX+2, formY+1, formW-4, "Delete task?", theme.StyleTitle)
 
 	// Task name.
-	drawText(screen, formX+4, formY+3, formW-6, m.task.Name, StyleNormal)
+	drawText(screen, formX+4, formY+3, formW-6, m.task.Name, theme.StyleNormal)
 
 	// Worktree/branch details.
 	if m.task.Worktree != "" {
-		drawText(screen, formX+4, formY+4, formW-6, "worktree: "+m.task.Worktree, StyleDimmed)
+		drawText(screen, formX+4, formY+4, formW-6, "worktree: "+m.task.Worktree, theme.StyleDimmed)
 	}
 	if m.task.Branch != "" {
-		drawText(screen, formX+4, formY+5, formW-6, "branch: "+m.task.Branch, StyleDimmed)
+		drawText(screen, formX+4, formY+5, formW-6, "branch: "+m.task.Branch, theme.StyleDimmed)
 	}
 
 	// Hint.
-	drawText(screen, formX+4, formY+7, formW-6, "[enter] confirm  [esc] cancel", StyleDimmed)
+	drawText(screen, formX+4, formY+7, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }

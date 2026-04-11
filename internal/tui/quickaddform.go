@@ -11,6 +11,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // qaMaxVisible is the maximum number of repo/autocomplete items shown at once.
@@ -34,7 +35,7 @@ type QuickAddForm struct {
 	cursor    int
 	scrollOff int
 
-	phase    int // 0 = dir input, 1 = selection
+	phase    int  // 0 = dir input, 1 = selection
 	scanning bool // true while background scan is running
 	done     bool
 	canceled bool
@@ -522,12 +523,12 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 
 	// Clear and draw border.
 	f.clearArea(screen, mx, my, modalW, modalH)
-	drawBorder(screen, mx, my, modalW, modalH, StyleFocusedBorder)
+	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title.
 	title := " Quick Add Projects "
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 	for i, r := range title {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
@@ -536,7 +537,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	row := my + 2
 
 	// Label.
-	drawText(screen, innerX, row, innerW, "Directory:", StyleTitle)
+	drawText(screen, innerX, row, innerW, "Directory:", theme.StyleTitle)
 	row++
 
 	// Input field with cursor.
@@ -544,7 +545,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	before := string(f.dirPath[:f.dirCursor])
 	after := string(f.dirPath[f.dirCursor:])
 
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	// Scroll input if wider than field.
@@ -593,7 +594,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	// Placeholder when empty.
 	if len(val) == 0 {
 		placeholder := "~/Development"
-		placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed)
+		placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed)
 		drawText(screen, innerX+1, row, innerW-1, placeholder, placeholderStyle)
 		// Redraw cursor at position 0.
 		screen.SetContent(innerX, row, ' ', nil, cursorStyle)
@@ -607,18 +608,18 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 
 	// Scanning indicator.
 	if f.scanning {
-		drawText(screen, innerX, row, innerW, "Scanning...", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, innerX, row, innerW, "Scanning...", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		row++
 	}
 
 	// Error.
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, StyleError)
+		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help.
-	drawText(screen, innerX, row, innerW, "Tab complete  Enter scan  Esc cancel", StyleDimmed)
+	drawText(screen, innerX, row, innerW, "Tab complete  Enter scan  Esc cancel", theme.StyleDimmed)
 }
 
 func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
@@ -646,7 +647,7 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 	my := sy + (sh-modalH)/2
 
 	f.clearArea(screen, mx, my, modalW, modalH)
-	drawBorder(screen, mx, my, modalW, modalH, StyleFocusedBorder)
+	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title.
 	dir := collapseTilde(strings.TrimRight(string(f.dirPath), "/"))
@@ -655,7 +656,7 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 		title = " Quick Add "
 	}
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 	for i, r := range title {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
@@ -690,12 +691,12 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 			label += " (" + repo.dirName + ")"
 		}
 
-		st := tcell.StyleDefault.Foreground(ColorNormal)
+		st := tcell.StyleDefault.Foreground(theme.ColorNormal)
 		if !repo.selected {
-			st = StyleDimmed
+			st = theme.StyleDimmed
 		}
 		if isCursor {
-			st = st.Bold(true).Foreground(ColorSelected)
+			st = st.Bold(true).Foreground(theme.ColorSelected)
 		}
 
 		lineRunes := []rune(label)
@@ -719,17 +720,17 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 		}
 	}
 	summary := itoa(selected) + "/" + itoa(len(f.repos)) + " selected"
-	drawText(screen, innerX, row, innerW, summary, tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, innerX, row, innerW, summary, tcell.StyleDefault.Foreground(theme.ColorTitle))
 	row++
 
 	// Error.
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, StyleError)
+		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help.
-	drawText(screen, innerX, row, innerW, "Space toggle  a all  x none  Enter add  Esc back", StyleDimmed)
+	drawText(screen, innerX, row, innerW, "Space toggle  a all  x none  Enter add  Esc back", theme.StyleDimmed)
 }
 
 func (f *QuickAddForm) clearArea(screen tcell.Screen, x, y, w, h int) {

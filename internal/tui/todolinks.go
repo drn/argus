@@ -9,6 +9,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -245,12 +246,12 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, mx, my, modalW, modalH, StyleFocusedBorder)
+	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " Open Link "
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 	for i, r := range title {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
@@ -281,9 +282,9 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 			}
 		}
 
-		style := StyleNormal
+		style := theme.StyleNormal
 		if isCursor {
-			style = StyleSelected
+			style = theme.StyleSelected
 		}
 		drawText(screen, innerX, row+i, innerW, label, style)
 	}
@@ -291,5 +292,5 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 	// Help text
 	helpRow := my + modalH - 2
 	help := "↑/↓ select  Enter open  Esc cancel"
-	drawText(screen, innerX, helpRow, innerW, help, StyleDimmed)
+	drawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
 }

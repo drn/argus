@@ -15,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -57,8 +58,8 @@ type settingsRow struct {
 type SettingsView struct {
 	*tview.Box
 
-	rows    []settingsRow
-	cursor  int
+	rows      []settingsRow
+	cursor    int
 	scrollOff int
 
 	// Data.
@@ -69,21 +70,21 @@ type SettingsView struct {
 	taskCounts     map[string]statusCounts
 
 	// Sandbox.
-	sandboxEnabled   bool
-	sandboxAvailable bool
-	sandboxDenyRead  []string
+	sandboxEnabled    bool
+	sandboxAvailable  bool
+	sandboxDenyRead   []string
 	sandboxExtraWrite []string
 
 	// KB.
-	kbEnabled          bool
-	metisVaultPath     string
-	argusVaultPath     string
-	metisVaultAtBoot   string // value when daemon started; used to show "restart required"
-	argusVaultAtBoot   string
-	vaultBootRecorded  bool   // true after first Refresh captures boot values
-	kbTaskSync         bool
-	autoStartTodos     bool
-	autoStartInterval  int
+	kbEnabled         bool
+	metisVaultPath    string
+	argusVaultPath    string
+	metisVaultAtBoot  string // value when daemon started; used to show "restart required"
+	argusVaultAtBoot  string
+	vaultBootRecorded bool // true after first Refresh captures boot values
+	kbTaskSync        bool
+	autoStartTodos    bool
+	autoStartInterval int
 
 	// API.
 	apiEnabled       bool
@@ -99,9 +100,9 @@ type SettingsView struct {
 	projectNames []string // sorted project names for cycling
 
 	// Review prompt.
-	reviewPrompt    string // current review prompt template
-	editingPrompt   bool   // true when inline-editing the review prompt
-	editPromptBuf   string // buffer for in-progress edit
+	reviewPrompt  string // current review prompt template
+	editingPrompt bool   // true when inline-editing the review prompt
+	editPromptBuf string // buffer for in-progress edit
 
 	// Vault path editing.
 	editingVault     string   // which vault is being edited: vaultKeyMetis or vaultKeyArgus, or "" if not editing
@@ -445,7 +446,6 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 func (sv *SettingsView) IsEditing() bool {
 	return sv.editingPrompt || sv.editingVault != ""
 }
-
 
 // SelectedProject returns the project at the cursor, or nil.
 func (sv *SettingsView) SelectedProject() *projectEntry {
@@ -970,7 +970,7 @@ func (sv *SettingsView) Draw(screen tcell.Screen) {
 }
 
 func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
-	drawBorder(screen, x, y, w, h, StyleFocusedBorder)
+	drawBorder(screen, x, y, w, h, theme.StyleFocusedBorder)
 
 	innerX := x + 1
 	innerY := y + 1
@@ -1002,12 +1002,12 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 
 		switch row.kind {
 		case srSection:
-			style = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+			style = tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 		case srWarning:
-			style = tcell.StyleDefault.Foreground(ColorInProgress)
+			style = tcell.StyleDefault.Foreground(theme.ColorInProgress)
 		}
 		if row.kind != srSection && rowIdx == sv.cursor {
-			style = style.Foreground(ColorSelected).Bold(true)
+			style = style.Foreground(theme.ColorSelected).Bold(true)
 		}
 
 		label := row.label
@@ -1019,7 +1019,7 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 }
 
 func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
-	drawBorder(screen, x, y, w, h, StyleBorder)
+	drawBorder(screen, x, y, w, h, theme.StyleBorder)
 
 	innerX := x + 1
 	innerY := y + 1
@@ -1062,23 +1062,23 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 
 func (sv *SettingsView) renderWarningDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	if row.key == "_ok" {
-		drawText(screen, x, y, w, "System Status", StyleTitle)
-		drawText(screen, x, y+2, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+		drawText(screen, x, y, w, "System Status", theme.StyleTitle)
+		drawText(screen, x, y+2, w, "Daemon is running", tcell.StyleDefault.Foreground(theme.ColorComplete))
 	} else {
-		drawText(screen, x, y, w, "Warning", StyleTitle)
-		drawText(screen, x, y+2, w, row.label, tcell.StyleDefault.Foreground(ColorInProgress))
+		drawText(screen, x, y, w, "Warning", theme.StyleTitle)
+		drawText(screen, x, y+2, w, row.label, tcell.StyleDefault.Foreground(theme.ColorInProgress))
 	}
 }
 
 func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Sandbox Configuration", StyleTitle)
+	drawText(screen, x, y, w, "Sandbox Configuration", theme.StyleTitle)
 	row := 2
 
 	status := "Disabled"
-	statusColor := ColorError
+	statusColor := theme.ColorError
 	if sv.sandboxEnabled {
 		status = "Enabled"
-		statusColor = ColorComplete
+		statusColor = theme.ColorComplete
 	}
 	drawText(screen, x, y+row, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
 	row++
@@ -1087,77 +1087,77 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	if sv.sandboxAvailable {
 		avail = "Available (sandbox-exec)"
 	}
-	drawText(screen, x, y+row, w, "Runtime: "+avail, StyleDimmed)
+	drawText(screen, x, y+row, w, "Runtime: "+avail, theme.StyleDimmed)
 	row += 2
 
 	if len(sv.sandboxDenyRead) > 0 {
-		drawText(screen, x, y+row, w, "Deny Read:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Deny Read:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		row++
 		for _, p := range sv.sandboxDenyRead {
 			if row >= h {
 				break
 			}
-			drawText(screen, x, y+row, w, "  "+p, StyleDimmed)
+			drawText(screen, x, y+row, w, "  "+p, theme.StyleDimmed)
 			row++
 		}
 		row++
 	}
 
 	if len(sv.sandboxExtraWrite) > 0 {
-		drawText(screen, x, y+row, w, "Extra Write:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+row, w, "Extra Write:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		row++
 		for _, p := range sv.sandboxExtraWrite {
 			if row >= h {
 				break
 			}
-			drawText(screen, x, y+row, w, "  "+p, StyleDimmed)
+			drawText(screen, x, y+row, w, "  "+p, theme.StyleDimmed)
 			row++
 		}
 	}
 
 	if row+2 < h {
-		drawText(screen, x, y+h-1, w, "[enter] toggle", StyleDimmed)
+		drawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	pe := sv.SelectedProject()
 	if pe == nil {
-		drawText(screen, x, y, w, "(no project selected)", StyleDimmed)
+		drawText(screen, x, y, w, "(no project selected)", theme.StyleDimmed)
 		return
 	}
 
-	drawText(screen, x, y, w, pe.Name, StyleTitle)
+	drawText(screen, x, y, w, pe.Name, theme.StyleTitle)
 	r := 2
 
-	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
-	drawText(screen, x, y+r, w, "  Path: "+pe.Project.Path, StyleDimmed)
+	drawText(screen, x, y+r, w, "  Path: "+pe.Project.Path, theme.StyleDimmed)
 	r++
-	drawText(screen, x, y+r, w, "  Branch: "+pe.Project.Branch, StyleDimmed)
+	drawText(screen, x, y+r, w, "  Branch: "+pe.Project.Branch, theme.StyleDimmed)
 	r++
 	backend := pe.Project.Backend
 	if backend == "" {
 		backend = "(default)"
 	}
-	drawText(screen, x, y+r, w, "  Backend: "+backend, StyleDimmed)
+	drawText(screen, x, y+r, w, "  Backend: "+backend, theme.StyleDimmed)
 	r += 2
 
 	// Sandbox override.
 	if r >= h {
 		return
 	}
-	drawText(screen, x, y+r, w, "Sandbox", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Sandbox", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
 	sandboxLabel := "Inherit (global)"
 	sandboxColor := tcell.ColorDefault
 	if pe.Project.Sandbox.Enabled != nil {
 		if *pe.Project.Sandbox.Enabled {
 			sandboxLabel = "Enabled (override)"
-			sandboxColor = ColorComplete
+			sandboxColor = theme.ColorComplete
 		} else {
 			sandboxLabel = "Disabled (override)"
-			sandboxColor = ColorError
+			sandboxColor = theme.ColorError
 		}
 	}
 	if r >= h {
@@ -1166,24 +1166,24 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	drawText(screen, x, y+r, w, "  Mode: "+sandboxLabel, tcell.StyleDefault.Foreground(sandboxColor))
 	r++
 	if len(pe.Project.Sandbox.DenyRead) > 0 && r < h {
-		drawText(screen, x, y+r, w, "  Deny Read:", StyleDimmed)
+		drawText(screen, x, y+r, w, "  Deny Read:", theme.StyleDimmed)
 		r++
 		for _, p := range pe.Project.Sandbox.DenyRead {
 			if r >= h {
 				break
 			}
-			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			drawText(screen, x, y+r, w, "    "+p, theme.StyleDimmed)
 			r++
 		}
 	}
 	if len(pe.Project.Sandbox.ExtraWrite) > 0 && r < h {
-		drawText(screen, x, y+r, w, "  Extra Write:", StyleDimmed)
+		drawText(screen, x, y+r, w, "  Extra Write:", theme.StyleDimmed)
 		r++
 		for _, p := range pe.Project.Sandbox.ExtraWrite {
 			if r >= h {
 				break
 			}
-			drawText(screen, x, y+r, w, "    "+p, StyleDimmed)
+			drawText(screen, x, y+r, w, "    "+p, theme.StyleDimmed)
 			r++
 		}
 	}
@@ -1194,47 +1194,47 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	// Task counts.
 	counts, ok := sv.taskCounts[pe.Name]
 	if ok && r+2 < h {
-		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+r, w, "Tasks", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		r++
 		total := counts.pending + counts.inProgress + counts.inReview + counts.complete
 		drawText(screen, x, y+r, w, fmt.Sprintf("  %d pending  %d active  %d review  %d done",
-			counts.pending, counts.inProgress, counts.inReview, counts.complete), StyleDimmed)
+			counts.pending, counts.inProgress, counts.inReview, counts.complete), theme.StyleDimmed)
 		r++
 		if total > 0 && w > 4 {
 			pct := counts.complete * 100 / total
-			drawText(screen, x, y+r, w, fmt.Sprintf("  %d%% complete", pct), StyleDimmed)
+			drawText(screen, x, y+r, w, fmt.Sprintf("  %d%% complete", pct), theme.StyleDimmed)
 		}
 	}
 
 	if h > 2 {
-		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add", StyleDimmed)
+		drawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add", theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	be := sv.SelectedBackend()
 	if be == nil {
-		drawText(screen, x, y, w, "(no backend selected)", StyleDimmed)
+		drawText(screen, x, y, w, "(no backend selected)", theme.StyleDimmed)
 		return
 	}
 
-	drawText(screen, x, y, w, be.Name, StyleTitle)
+	drawText(screen, x, y, w, be.Name, theme.StyleTitle)
 	r := 1
 	if be.Name == sv.defaultBackend {
-		drawText(screen, x, y+r, w, "★ Default backend", tcell.StyleDefault.Foreground(ColorComplete))
+		drawText(screen, x, y+r, w, "★ Default backend", tcell.StyleDefault.Foreground(theme.ColorComplete))
 		r++
 	}
 	r++
 
-	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
 	cmd := be.Backend.Command
 	if len(cmd) > w-12 {
 		cmd = cmd[:w-12] + "…"
 	}
-	drawText(screen, x, y+r, w, "  Command: "+cmd, StyleDimmed)
+	drawText(screen, x, y+r, w, "  Command: "+cmd, theme.StyleDimmed)
 	r++
-	drawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, StyleDimmed)
+	drawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, theme.StyleDimmed)
 	r += 2
 
 	hints := "[d] set as default  [n] new  [e] edit"
@@ -1242,61 +1242,61 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 		hints = "(already default)  [n] new  [e] edit"
 	}
 	if r < h {
-		drawText(screen, x, y+r, w, hints, StyleDimmed)
+		drawText(screen, x, y+r, w, hints, theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Knowledge Base", StyleTitle)
+	drawText(screen, x, y, w, "Knowledge Base", theme.StyleTitle)
 	r := 2
 
 	status := "Disabled"
-	statusColor := ColorError
+	statusColor := theme.ColorError
 	if sv.kbEnabled {
 		status = "Enabled"
-		statusColor = ColorComplete
+		statusColor = theme.ColorComplete
 	}
 	drawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
 	r += 2
 
-	drawText(screen, x, y+r, w, "Metis Vault:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Metis Vault:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
 	vault := sv.metisVaultPath
 	if vault == "" {
 		vault = "(not configured)"
 	}
-	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
+	drawText(screen, x, y+r, w, "  "+vault, theme.StyleDimmed)
 	r += 2
 
-	drawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
 	vault = sv.argusVaultPath
 	if vault == "" {
 		vault = "(not configured)"
 	}
-	drawText(screen, x, y+r, w, "  "+vault, StyleDimmed)
+	drawText(screen, x, y+r, w, "  "+vault, theme.StyleDimmed)
 	r += 2
 
 	syncLabel := "Off"
 	if sv.kbTaskSync {
 		syncLabel = "On"
 	}
-	drawText(screen, x, y+r, w, "Task Sync: "+syncLabel, StyleDimmed)
+	drawText(screen, x, y+r, w, "Task Sync: "+syncLabel, theme.StyleDimmed)
 	r += 2
 
 	autoStartLabel := "Off"
-	autoStartColor := StyleDimmed
+	autoStartColor := theme.StyleDimmed
 	if sv.autoStartTodos {
 		autoStartLabel = fmt.Sprintf("On (every %ds)", sv.autoStartInterval)
-		autoStartColor = tcell.StyleDefault.Foreground(ColorComplete)
+		autoStartColor = tcell.StyleDefault.Foreground(theme.ColorComplete)
 	}
 	drawText(screen, x, y+r, w, "Auto-Start ToDos: "+autoStartLabel, autoStartColor)
 	r++
-	drawText(screen, x, y+r, w, "  Polls vault and starts new todos automatically", StyleDimmed)
+	drawText(screen, x, y+r, w, "  Polls vault and starts new todos automatically", theme.StyleDimmed)
 	r += 2
 
 	if r < h {
-		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", StyleDimmed)
+		drawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", theme.StyleDimmed)
 	}
 }
 
@@ -1311,7 +1311,7 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 		desc = "Obsidian vault for KB indexing."
 	}
 
-	drawText(screen, x, y, w, title, StyleTitle)
+	drawText(screen, x, y, w, title, theme.StyleTitle)
 	r := 2
 
 	display := path
@@ -1321,7 +1321,7 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 	} else if display == "" {
 		display = "(not configured)"
 	}
-	drawText(screen, x, y+r, w, display, tcell.StyleDefault.Foreground(ColorComplete))
+	drawText(screen, x, y+r, w, display, tcell.StyleDefault.Foreground(theme.ColorComplete))
 	r++
 
 	// Autocomplete dropdown (only when editing this vault).
@@ -1330,12 +1330,12 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 	}
 	r++
 
-	drawText(screen, x, y+r, w, desc, StyleDimmed)
+	drawText(screen, x, y+r, w, desc, theme.StyleDimmed)
 	r += 2
 
 	// List discovered vaults (like spinner detail lists available styles).
 	if !editing && len(sv.discoveredVaults) > 0 {
-		drawText(screen, x, y+r, w, "Discovered iCloud vaults:", tcell.StyleDefault.Foreground(ColorTitle))
+		drawText(screen, x, y+r, w, "Discovered iCloud vaults:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		r++
 		home, _ := os.UserHomeDir()
 		for _, v := range sv.discoveredVaults {
@@ -1343,9 +1343,9 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 				break
 			}
 			label := "  " + strings.TrimPrefix(v, home)
-			style := StyleDimmed
+			style := theme.StyleDimmed
 			if v == path {
-				style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+				style = tcell.StyleDefault.Foreground(theme.ColorSelected).Bold(true)
 			}
 			drawText(screen, x, y+r, w, label, style)
 			r++
@@ -1355,21 +1355,21 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 
 	if r < h {
 		if editing {
-			drawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", theme.StyleDimmed)
 		} else if len(sv.discoveredVaults) > 0 {
-			drawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", theme.StyleDimmed)
 		} else {
-			drawText(screen, x, y+r, w, "[enter] edit path", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] edit path", theme.StyleDimmed)
 		}
 	}
 }
 
 func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Spinner Style", StyleTitle)
+	drawText(screen, x, y, w, "Spinner Style", theme.StyleTitle)
 	r := 2
 
 	active := spinner.Get(spinner.Style(sv.spinnerStyle))
-	drawText(screen, x, y+r, w, active.Label, tcell.StyleDefault.Foreground(ColorComplete))
+	drawText(screen, x, y+r, w, active.Label, tcell.StyleDefault.Foreground(theme.ColorComplete))
 	r++
 
 	// Show a preview of the spinner frames.
@@ -1377,89 +1377,89 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 	for _, f := range active.Frames {
 		preview += string(f) + " "
 	}
-	drawText(screen, x, y+r, w, preview, StyleDimmed)
+	drawText(screen, x, y+r, w, preview, theme.StyleDimmed)
 	r += 2
 
 	// List all available styles.
-	drawText(screen, x, y+r, w, "Available styles:", tcell.StyleDefault.Foreground(ColorTitle))
+	drawText(screen, x, y+r, w, "Available styles:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
 	for _, s := range spinner.All {
 		if r >= h {
 			break
 		}
 		label := "  " + s.Label
-		style := StyleDimmed
+		style := theme.StyleDimmed
 		if s.Style == active.Style {
-			style = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+			style = tcell.StyleDefault.Foreground(theme.ColorSelected).Bold(true)
 		}
 		drawText(screen, x, y+r, w, label, style)
 		r++
 	}
 
 	if r+1 < h {
-		drawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", StyleDimmed)
+		drawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderToDoProjectDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Default ToDo Project", StyleTitle)
+	drawText(screen, x, y, w, "Default ToDo Project", theme.StyleTitle)
 	r := 2
 
 	proj := sv.todoProject
 	if proj == "" {
-		drawText(screen, x, y+r, w, "(none)", StyleDimmed)
+		drawText(screen, x, y+r, w, "(none)", theme.StyleDimmed)
 	} else {
-		drawText(screen, x, y+r, w, proj, tcell.StyleDefault.Foreground(ColorComplete))
+		drawText(screen, x, y+r, w, proj, tcell.StyleDefault.Foreground(theme.ColorComplete))
 	}
 	r += 2
 
-	drawText(screen, x, y+r, w, "The project pre-selected when launching", StyleDimmed)
+	drawText(screen, x, y+r, w, "The project pre-selected when launching", theme.StyleDimmed)
 	r++
-	drawText(screen, x, y+r, w, "a to-do note as a new task.", StyleDimmed)
+	drawText(screen, x, y+r, w, "a to-do note as a new task.", theme.StyleDimmed)
 	r += 2
 
 	if r < h {
-		drawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", StyleDimmed)
+		drawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderReviewPromptDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Review Prompt", StyleTitle)
+	drawText(screen, x, y, w, "Review Prompt", theme.StyleTitle)
 	r := 2
 
 	prompt := sv.reviewPrompt
 	if sv.editingPrompt {
 		prompt = sv.editPromptBuf + "▎"
 	}
-	drawText(screen, x, y+r, w, prompt, tcell.StyleDefault.Foreground(ColorComplete))
+	drawText(screen, x, y+r, w, prompt, tcell.StyleDefault.Foreground(theme.ColorComplete))
 	r += 2
 
-	drawText(screen, x, y+r, w, "The prompt sent to the agent when starting", StyleDimmed)
+	drawText(screen, x, y+r, w, "The prompt sent to the agent when starting", theme.StyleDimmed)
 	r++
-	drawText(screen, x, y+r, w, "a PR review task (Ctrl+R in Reviews tab).", StyleDimmed)
+	drawText(screen, x, y+r, w, "a PR review task (Ctrl+R in Reviews tab).", theme.StyleDimmed)
 	r++
-	drawText(screen, x, y+r, w, "The PR URL is appended automatically.", StyleDimmed)
+	drawText(screen, x, y+r, w, "The PR URL is appended automatically.", theme.StyleDimmed)
 	r += 2
 
 	if r < h {
 		if sv.editingPrompt {
-			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] save  [esc] cancel", theme.StyleDimmed)
 		} else {
-			drawText(screen, x, y+r, w, "[enter] edit", StyleDimmed)
+			drawText(screen, x, y+r, w, "[enter] edit", theme.StyleDimmed)
 		}
 	}
 }
 
 func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) {
-	drawText(screen, x, y, w, "Daemon", StyleTitle)
+	drawText(screen, x, y, w, "Daemon", theme.StyleTitle)
 	r := 2
 
 	if sv.daemonRestarting {
-		drawText(screen, x, y+r, w, "Restarting daemon...", tcell.StyleDefault.Foreground(ColorInProgress))
+		drawText(screen, x, y+r, w, "Restarting daemon...", tcell.StyleDefault.Foreground(theme.ColorInProgress))
 	} else {
-		drawText(screen, x, y+r, w, "Daemon is running", tcell.StyleDefault.Foreground(ColorComplete))
+		drawText(screen, x, y+r, w, "Daemon is running", tcell.StyleDefault.Foreground(theme.ColorComplete))
 		r += 2
-		drawText(screen, x, y+r, w, "[enter] restart daemon", StyleDimmed)
+		drawText(screen, x, y+r, w, "[enter] restart daemon", theme.StyleDimmed)
 	}
 }
 
@@ -1488,8 +1488,8 @@ func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, ro
 		return
 	}
 
-	drawText(screen, x, y, w, title, StyleTitle)
-	drawText(screen, x, y+2, w, logPath, StyleDimmed)
+	drawText(screen, x, y, w, title, theme.StyleTitle)
+	drawText(screen, x, y+2, w, logPath, theme.StyleDimmed)
 
 	// Load/cache log lines.
 	if sv.logKey != row.key {

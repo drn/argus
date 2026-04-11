@@ -8,9 +8,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/drn/argus/internal/model"
 )
 
 // rowKind identifies what kind of row is displayed.
@@ -42,9 +43,9 @@ type TaskListView struct {
 	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
 	animFrame     int             // current spinner frame (time-based, updated in Draw)
 
-	cursor   int
-	offset   int // scroll offset
-	expanded string // currently expanded project
+	cursor          int
+	offset          int    // scroll offset
+	expanded        string // currently expanded project
 	archiveExpanded bool
 	archiveProject  string // expanded project within archive
 
@@ -732,23 +733,23 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 	// Show filter text in panel title when active.
 	title := " Tasks "
-	inner := drawBorderedPanel(screen, x, y, width, height, title, StyleBorder)
+	inner := drawBorderedPanel(screen, x, y, width, height, title, theme.StyleBorder)
 	if tl.filter != "" || tl.filtering {
 		filterStr := "/" + tl.filter
 		col := x + 1 + ansi.StringWidth(title) // after the title text
 		if col < x+width-1 {
-			screen.SetContent(col, y, '[', nil, StyleBorder)
+			screen.SetContent(col, y, '[', nil, theme.StyleBorder)
 			col++
 		}
 		for _, r := range filterStr {
 			if col >= x+width-1 {
 				break
 			}
-			screen.SetContent(col, y, r, nil, StyleFilter)
+			screen.SetContent(col, y, r, nil, theme.StyleFilter)
 			col++
 		}
 		if col < x+width-1 {
-			screen.SetContent(col, y, ']', nil, StyleBorder)
+			screen.SetContent(col, y, ']', nil, theme.StyleBorder)
 		}
 	}
 	if inner.W <= 0 || inner.H <= 0 {
@@ -804,14 +805,14 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 // drawFilterInput renders the filter input line at the bottom of the task list.
 func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
-	style := tcell.StyleDefault.Foreground(ColorTitle)
+	style := tcell.StyleDefault.Foreground(theme.ColorTitle)
 	drawText(screen, x, y, 2, "/ ", style)
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal)
 	drawText(screen, x+2, y, w-2, tl.filter, inputStyle)
 	// Draw cursor after filter text.
 	cursorCol := x + 2 + ansi.StringWidth(tl.filter)
 	if cursorCol < x+w {
-		screen.SetContent(cursorCol, y, ' ', nil, tcell.StyleDefault.Background(ColorNormal))
+		screen.SetContent(cursorCol, y, ' ', nil, tcell.StyleDefault.Background(theme.ColorNormal))
 	}
 }
 
@@ -843,18 +844,18 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 
 	switch {
 	case hasActivelyRunning:
-		return SpinnerFrame(tl.animFrame), StyleInProgress
+		return SpinnerFrame(tl.animFrame), theme.StyleInProgress
 	case hasInReview:
-		return IconMoonStars, StyleInReview
+		return theme.IconMoonStars, theme.StyleInReview
 	case hasIdleInProgress:
 		// All in-progress tasks are idle (waiting for input).
-		return IconMoonOutline, tcell.StyleDefault.Foreground(ColorInReview)
+		return theme.IconMoonOutline, tcell.StyleDefault.Foreground(theme.ColorInReview)
 	case hasComplete && !hasPending:
-		return '✓', StyleComplete
+		return '✓', theme.StyleComplete
 	case hasComplete && hasPending:
-		return '✓', StyleDimmed
+		return '✓', theme.StyleDimmed
 	default:
-		return '○', StylePending
+		return '○', theme.StylePending
 	}
 }
 
@@ -873,7 +874,7 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 
 	col := x
 	// "  " prefix
-	drawText(screen, col, y, 2, "  ", StyleDefault)
+	drawText(screen, col, y, 2, "  ", theme.StyleDefault)
 	col += 2
 
 	// Status icon
@@ -888,30 +889,30 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 	if proj == tl.expanded || proj == tl.archiveProject {
 		chevron = '▾'
 	}
-	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(ColorDimmed))
+	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	col += 2
 
 	// Project name
-	nameStyle := tcell.StyleDefault.Foreground(ColorProject).Bold(true)
+	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
 	drawText(screen, col, y, w-(col-x), proj, nameStyle)
 	col += len(proj)
 
 	// Task count
 	countStr := fmt.Sprintf(" (%d)", len(projTasks))
 	if col-x+len(countStr) <= w {
-		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(ColorDimmed))
+		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	}
 }
 
 func (tl *TaskListView) drawSeparator(screen tcell.Screen, x, y, w int) {
-	style := tcell.StyleDefault.Foreground(ColorDimmed)
+	style := tcell.StyleDefault.Foreground(theme.ColorDimmed)
 	for i := 0; i < w; i++ {
 		screen.SetContent(x+i, y, '─', nil, style)
 	}
 }
 
 func (tl *TaskListView) drawArchiveHeader(screen tcell.Screen, x, y, w int) {
-	style := tcell.StyleDefault.Foreground(ColorDimmed).Bold(true)
+	style := tcell.StyleDefault.Foreground(theme.ColorDimmed).Bold(true)
 	indicator := "▸"
 	if tl.archiveExpanded {
 		indicator = "▾"
@@ -927,36 +928,36 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	switch task.Status {
 	case model.StatusPending:
 		statusChar = '○'
-		statusStyle = StylePending
+		statusStyle = theme.StylePending
 	case model.StatusInProgress:
 		if tl.idleUnvisited[task.ID] {
 			// Idle and not yet viewed since going idle — moon with stars.
-			statusChar = IconMoonStars
-			statusStyle = StyleInReview
+			statusChar = theme.IconMoonStars
+			statusStyle = theme.StyleInReview
 		} else if !tl.running[task.ID] || tl.idle[task.ID] {
 			// Session absent or idle (waiting for input) — moon icon.
-			statusChar = IconMoonOutline
-			statusStyle = StyleInReview
+			statusChar = theme.IconMoonOutline
+			statusStyle = theme.StyleInReview
 		} else {
 			// Actively running — animated spinner (nerd font progress spinner).
 			statusChar = SpinnerFrame(tl.animFrame)
-			statusStyle = StyleInProgress
+			statusStyle = theme.StyleInProgress
 		}
 	case model.StatusInReview:
-		statusChar = IconMoonStars
-		statusStyle = StyleInReview
+		statusChar = theme.IconMoonStars
+		statusStyle = theme.StyleInReview
 	case model.StatusComplete:
 		statusChar = '✓'
-		statusStyle = StyleComplete
+		statusStyle = theme.StyleComplete
 	default:
 		statusChar = '○'
-		statusStyle = StylePending
+		statusStyle = theme.StylePending
 	}
 
 	// Build the row
-	nameStyle := StyleNormal
+	nameStyle := theme.StyleNormal
 	if cursor {
-		nameStyle = StyleSelected
+		nameStyle = theme.StyleSelected
 	}
 
 	// Elapsed time
@@ -965,7 +966,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	// Layout: "    ● name              3m"
 	prefix := "    "
 	col := x
-	drawText(screen, col, y, len(prefix), prefix, StyleDefault)
+	drawText(screen, col, y, len(prefix), prefix, theme.StyleDefault)
 	col += len(prefix)
 
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
@@ -989,7 +990,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		elapsedCol = x + w - len(elapsed) - 1
 	}
 	if elapsedCol > col {
-		drawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
+		drawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(theme.ColorElapsed))
 	}
 
 	// Fill remaining cells on cursor row so the highlight extends to edge.
@@ -1000,7 +1001,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			fillEnd = elapsedCol
 		}
 		for c := col; c < fillEnd; c++ {
-			screen.SetContent(c, y, ' ', nil, StyleDefault)
+			screen.SetContent(c, y, ' ', nil, theme.StyleDefault)
 		}
 	}
 }

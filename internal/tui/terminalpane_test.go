@@ -5,14 +5,15 @@ import (
 	"testing"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -57,17 +58,17 @@ type mockAdapter struct {
 }
 
 func (m *mockAdapter) WriteInput(p []byte) (int, error) { return len(p), nil }
-func (m *mockAdapter) Resize(rows, cols uint16) error    { return nil }
-func (m *mockAdapter) RecentOutput() []byte              { return m.output }
+func (m *mockAdapter) Resize(rows, cols uint16) error   { return nil }
+func (m *mockAdapter) RecentOutput() []byte             { return m.output }
 func (m *mockAdapter) RecentOutputTail(n int) []byte {
 	if n >= len(m.output) {
 		return m.output
 	}
 	return m.output[len(m.output)-n:]
 }
-func (m *mockAdapter) TotalWritten() uint64          { return m.totalWritten }
-func (m *mockAdapter) Alive() bool                   { return m.alive }
-func (m *mockAdapter) PTYSize() (int, int)           { return 80, 24 }
+func (m *mockAdapter) TotalWritten() uint64 { return m.totalWritten }
+func (m *mockAdapter) Alive() bool          { return m.alive }
+func (m *mockAdapter) PTYSize() (int, int)  { return 80, 24 }
 
 func TestTerminalPane_SessionGuardPreservesEmulator(t *testing.T) {
 	// Simulates the tick callback bug: when streams fail repeatedly,
@@ -902,7 +903,7 @@ func TestDrawBorder(t *testing.T) {
 	screen.Init()
 	screen.SetSize(20, 10)
 
-	drawBorder(screen, 0, 0, 10, 5, StyleBorder)
+	drawBorder(screen, 0, 0, 10, 5, theme.StyleBorder)
 
 	ch, _, _, _ := screen.GetContent(0, 0)
 	if ch != '╭' {
@@ -919,8 +920,8 @@ func TestDrawBorderTooSmall(t *testing.T) {
 	screen.Init()
 	screen.SetSize(20, 10)
 	// Should not panic
-	drawBorder(screen, 0, 0, 1, 1, StyleBorder)
-	drawBorder(screen, 0, 0, 0, 0, StyleBorder)
+	drawBorder(screen, 0, 0, 1, 1, theme.StyleBorder)
+	drawBorder(screen, 0, 0, 0, 0, theme.StyleBorder)
 }
 
 func TestTerminalPane_AccelScroll(t *testing.T) {

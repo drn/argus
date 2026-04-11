@@ -8,6 +8,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // pfMaxACVisible is the maximum number of autocomplete rows shown at once.
@@ -354,14 +355,14 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	modalBG := tcell.ColorDefault
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
 
 	title := " New Project "
 	if pf.editMode {
 		title = " Edit Project "
 	}
 	titleX := formX + (formW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true).Background(modalBG)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true).Background(modalBG)
 	for i, r := range title {
 		screen.SetContent(titleX+i, formY, r, nil, titleStyle)
 	}
@@ -374,9 +375,9 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		if ly >= formY+formH-1 {
 			break
 		}
-		style := StyleDimmed
+		style := theme.StyleDimmed
 		if i == pf.focused {
-			style = tcell.StyleDefault.Foreground(ColorTitle)
+			style = tcell.StyleDefault.Foreground(theme.ColorTitle)
 		}
 		drawText(screen, formX+2, ly, 10, labels[i], style)
 
@@ -398,7 +399,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 			val = before + "█" + after
 		}
 		if pf.editMode && i == pfFieldName {
-			style = StyleDimmed
+			style = theme.StyleDimmed
 		} else {
 			style = tcell.StyleDefault
 		}
@@ -416,7 +417,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	if pf.errMsg != "" {
-		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, StyleError)
+		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, theme.StyleError)
 	}
 }
 
@@ -424,9 +425,9 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
 	name := sandboxOptions[pf.sandboxIdx]
 	selector := "◀ " + name + " ▶"
-	st := StyleNormal
+	st := theme.StyleNormal
 	if pf.focused == pfFieldSandbox {
-		st = StyleSelected
+		st = theme.StyleSelected
 	}
 	drawText(screen, x, y, w, selector, st)
 }
@@ -434,15 +435,15 @@ func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
 // drawBranchSelector renders the branch field as a ◀/▶ selector.
 func (pf *ProjectForm) drawBranchSelector(screen tcell.Screen, x, y, w int) {
 	if len(pf.branchOptions) == 0 {
-		drawText(screen, x, y, w, "(none)", StyleDimmed)
+		drawText(screen, x, y, w, "(none)", theme.StyleDimmed)
 		return
 	}
 
 	name := pf.branchOptions[pf.branchIdx]
 	selector := "◀ " + name + " ▶"
-	st := StyleNormal
+	st := theme.StyleNormal
 	if pf.focused == pfFieldBranch {
-		st = StyleSelected
+		st = theme.StyleSelected
 	}
 	drawText(screen, x, y, w, selector, st)
 
@@ -450,6 +451,6 @@ func (pf *ProjectForm) drawBranchSelector(screen tcell.Screen, x, y, w int) {
 	posText := "(" + itoa(pf.branchIdx+1) + "/" + itoa(len(pf.branchOptions)) + ")"
 	posX := x + w - utf8.RuneCountInString(posText)
 	if posX > x+utf8.RuneCountInString(selector)+1 {
-		drawText(screen, posX, y, utf8.RuneCountInString(posText), posText, StyleDimmed)
+		drawText(screen, posX, y, utf8.RuneCountInString(posText), posText, theme.StyleDimmed)
 	}
 }

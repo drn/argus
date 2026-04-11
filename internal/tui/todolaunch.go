@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 const (
@@ -426,12 +427,12 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, mx, my, modalW, modalH, StyleFocusedBorder)
+	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " Launch as Task "
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 	for i, r := range title {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
@@ -444,47 +445,47 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	if len(name) > innerW {
 		name = name[:innerW-1] + "..."
 	}
-	drawText(screen, innerX, row, innerW, name, StyleNormal.Bold(true))
+	drawText(screen, innerX, row, innerW, name, theme.StyleNormal.Bold(true))
 	row += 2
 
 	// Project selector
-	projLabelStyle := StyleDimmed
+	projLabelStyle := theme.StyleDimmed
 	if m.focused == ltFieldProject {
-		projLabelStyle = StyleTitle
+		projLabelStyle = theme.StyleTitle
 	}
 	drawText(screen, innerX, row, innerW, "Project:", projLabelStyle)
 	row++
 
 	if len(m.projectNames) == 0 {
-		drawText(screen, innerX, row, innerW, "(no projects configured)", StyleDimmed)
+		drawText(screen, innerX, row, innerW, "(no projects configured)", theme.StyleDimmed)
 	} else {
 		pname := m.projectNames[m.projectIdx]
 		selector := "◀ " + pname + " ▶"
-		selectorStyle := StyleNormal
+		selectorStyle := theme.StyleNormal
 		if m.focused == ltFieldProject {
-			selectorStyle = StyleSelected
+			selectorStyle = theme.StyleSelected
 		}
 		drawText(screen, innerX, row, innerW, selector, selectorStyle)
 
 		posText := "(" + itoa(m.projectIdx+1) + "/" + itoa(len(m.projectNames)) + ")"
 		posX := innerX + innerW - len(posText)
 		if posX > innerX+len(selector)+1 {
-			drawText(screen, posX, row, len(posText), posText, StyleDimmed)
+			drawText(screen, posX, row, len(posText), posText, theme.StyleDimmed)
 		}
 	}
 	row += 2
 
 	// Prompt field
-	promptLabelStyle := StyleDimmed
+	promptLabelStyle := theme.StyleDimmed
 	if m.focused == ltFieldPrompt {
-		promptLabelStyle = StyleTitle
+		promptLabelStyle = theme.StyleTitle
 	}
 	drawText(screen, innerX, row, innerW, "Prompt:", promptLabelStyle)
 	row++
 
 	curLine, curCol := m.cursorWrappedPos(innerW)
 	modalBG := tcell.ColorDefault
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
@@ -517,7 +518,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 		}
 	} else {
 		if len(m.prompt) == 0 {
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
 			placeholder := "Additional instructions (optional)"
 			pRunes := []rune(placeholder)
 			for col := 0; col < innerW; col++ {
@@ -528,7 +529,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 				}
 			}
 		} else {
-			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 			for vi := 0; vi < visiblePromptLines; vi++ {
 				li := vi + m.scrollOffset
 				if li >= len(wrappedLines) {
@@ -546,7 +547,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	// Error
 	if m.errMsg != "" {
 		row++
-		drawText(screen, innerX, row, innerW, m.errMsg, StyleError)
+		drawText(screen, innerX, row, innerW, m.errMsg, theme.StyleError)
 		row++
 	}
 
@@ -554,5 +555,5 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 
 	// Help
 	help := "Enter launch  Tab switch  Esc cancel"
-	drawText(screen, innerX, row, innerW, help, StyleDimmed)
+	drawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
 }

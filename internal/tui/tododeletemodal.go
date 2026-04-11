@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -24,7 +25,7 @@ func NewConfirmDeleteToDoModal(item ToDoItem) *ConfirmDeleteToDoModal {
 
 func (m *ConfirmDeleteToDoModal) Confirmed() bool { return m.confirmed }
 func (m *ConfirmDeleteToDoModal) Canceled() bool  { return m.canceled }
-func (m *ConfirmDeleteToDoModal) Item() ToDoItem   { return m.item }
+func (m *ConfirmDeleteToDoModal) Item() ToDoItem  { return m.item }
 
 // InputHandler handles key events for the confirm dialog.
 func (m *ConfirmDeleteToDoModal) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
@@ -62,8 +63,8 @@ func (m *ConfirmDeleteToDoModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Delete to-do?", StyleTitle)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	drawText(screen, formX+2, formY+1, formW-4, "Delete to-do?", theme.StyleTitle)
 
 	// To-do name.
 	name := m.item.Name
@@ -71,8 +72,8 @@ func (m *ConfirmDeleteToDoModal) Draw(screen tcell.Screen) {
 	if maxW > 3 && len(name) > maxW {
 		name = name[:maxW-1] + "…"
 	}
-	drawText(screen, formX+4, formY+3, formW-6, name, StyleNormal)
+	drawText(screen, formX+4, formY+3, formW-6, name, theme.StyleNormal)
 
 	// Hint.
-	drawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", StyleDimmed)
+	drawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }

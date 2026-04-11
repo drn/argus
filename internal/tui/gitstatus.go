@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -10,11 +11,11 @@ import (
 // GitPanel displays git status in a bordered side panel.
 type GitPanel struct {
 	*tview.Box
-	statusLines  []string
-	diffLines    []string
-	branchLines  []string
-	loaded       bool
-	focused bool
+	statusLines []string
+	diffLines   []string
+	branchLines []string
+	loaded      bool
+	focused     bool
 }
 
 // NewGitPanel creates a git status panel.
@@ -54,9 +55,9 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 	}
 
 	// Draw border
-	borderStyle := StyleBorder
+	borderStyle := theme.StyleBorder
 	if gp.focused {
-		borderStyle = StyleFocusedBorder
+		borderStyle = theme.StyleFocusedBorder
 	}
 
 	inner := drawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
@@ -65,7 +66,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 	}
 
 	if !gp.loaded {
-		drawText(screen, inner.X, inner.Y, inner.W, "Loading...", StyleDimmed)
+		drawText(screen, inner.X, inner.Y, inner.W, "Loading...", theme.StyleDimmed)
 		return
 	}
 
@@ -74,7 +75,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// STATUS section
 	if len(gp.statusLines) > 0 {
-		drawText(screen, inner.X, row, inner.W, "Files", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "Files", theme.StyleTitle)
 		row++
 		for _, line := range gp.statusLines {
 			if row >= maxRow {
@@ -90,14 +91,14 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// DIFF section
 	if len(gp.diffLines) > 0 && row < maxRow {
-		drawText(screen, inner.X, row, inner.W, "Diff", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "Diff", theme.StyleTitle)
 		row++
 		for _, line := range gp.diffLines {
 			if row >= maxRow {
 				break
 			}
 			text := truncate(line, inner.W)
-			drawText(screen, inner.X, row, inner.W, text, StyleDimmed)
+			drawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
 			row++
 		}
 		row++
@@ -105,38 +106,38 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// BRANCH section
 	if len(gp.branchLines) > 0 && row < maxRow {
-		drawText(screen, inner.X, row, inner.W, "BRANCH", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "BRANCH", theme.StyleTitle)
 		row++
 		for _, line := range gp.branchLines {
 			if row >= maxRow {
 				break
 			}
 			text := truncate(line, inner.W)
-			drawText(screen, inner.X, row, inner.W, text, StyleDimmed)
+			drawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
 			row++
 		}
 	}
 
 	// Empty state
 	if len(gp.statusLines) == 0 && len(gp.diffLines) == 0 && len(gp.branchLines) == 0 {
-		drawText(screen, inner.X, inner.Y, inner.W, "Clean — no changes", StyleDimmed)
+		drawText(screen, inner.X, inner.Y, inner.W, "Clean — no changes", theme.StyleDimmed)
 	}
 }
 
 func (gp *GitPanel) statusLineStyle(line string) tcell.Style {
 	if len(line) < 2 {
-		return StyleNormal
+		return theme.StyleNormal
 	}
 	status := strings.TrimSpace(line[:2])
 	switch {
 	case status == "M" || status == "MM":
-		return tcell.StyleDefault.Foreground(ColorInReview)
+		return tcell.StyleDefault.Foreground(theme.ColorInReview)
 	case status == "A" || status == "??":
-		return tcell.StyleDefault.Foreground(ColorComplete)
+		return tcell.StyleDefault.Foreground(theme.ColorComplete)
 	case status == "D":
-		return tcell.StyleDefault.Foreground(ColorError)
+		return tcell.StyleDefault.Foreground(theme.ColorError)
 	default:
-		return StyleNormal
+		return theme.StyleNormal
 	}
 }
 

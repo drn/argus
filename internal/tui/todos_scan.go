@@ -16,10 +16,10 @@ const maxToDoFileSize = 1 << 20
 
 // ToDoItem represents a single to-do note from the Obsidian vault.
 type ToDoItem struct {
-	Name     string    // display name (filename without .md extension)
-	Path     string    // full filesystem path
-	Content  string    // raw markdown content
-	ModTime  time.Time // last modification time
+	Name    string    // display name (filename without .md extension)
+	Path    string    // full filesystem path
+	Content string    // raw markdown content
+	ModTime time.Time // last modification time
 }
 
 // ScanVaultToDos reads all .md files from the given vault directory

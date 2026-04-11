@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 const (
@@ -1141,12 +1142,12 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	}
 
 	// Border
-	drawBorder(screen, mx, my, modalW, modalH, StyleFocusedBorder)
+	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " New Task "
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
-	titleStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true).Background(modalBG)
+	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true).Background(modalBG)
 	for i, r := range title {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
@@ -1175,16 +1176,16 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	row++
 
 	// Prompt field
-	labelStyle := StyleDimmed
+	labelStyle := theme.StyleDimmed
 	if f.focused == ntFieldPrompt {
-		labelStyle = StyleTitle
+		labelStyle = theme.StyleTitle
 	}
 	drawText(screen, innerX, row, innerW, "Prompt:", labelStyle)
 	row++
 
 	// Prompt input — wrapped across multiple visual lines
 	curLine, curCol := f.cursorWrappedPos(innerW)
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
@@ -1219,7 +1220,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	} else {
 		if len(f.prompt) == 0 {
 			// Placeholder text with input background
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
 			placeholder := "Prompt for the agent"
 			pRunes := []rune(placeholder)
 			for col := 0; col < innerW; col++ {
@@ -1231,7 +1232,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 			}
 		} else {
 			// Render wrapped lines when unfocused too
-			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 			for vi := 0; vi < visiblePromptLines; vi++ {
 				li := vi + f.scrollOffset
 				if li >= len(wrappedLines) {
@@ -1256,13 +1257,13 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Error message
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, StyleError)
+		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help text
 	help := "Enter submit  Tab next  Esc cancel"
-	drawText(screen, innerX, row, innerW, help, StyleDimmed)
+	drawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
 }
 
 // drawAutocomplete renders the skill suggestion dropdown.
@@ -1315,7 +1316,7 @@ func (f *NewTaskForm) drawAutocomplete(screen tcell.Screen, x, y, w int) {
 		line := indicator + nameStr + strings.Repeat(" ", padding) + desc
 		lineRunes := []rune(line)
 		for col := 0; col < w && col < len(lineRunes); col++ {
-			st := StyleDimmed
+			st := theme.StyleDimmed
 			if isSelected {
 				st = selectedStyle
 			}
@@ -1326,7 +1327,7 @@ func (f *NewTaskForm) drawAutocomplete(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.acMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.acIdx+1) + "/" + itoa(len(f.acMatches)) + ")"
-		drawText(screen, x, y+end-f.acScroll, w, countStr, StyleDimmed)
+		drawText(screen, x, y+end-f.acScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
@@ -1335,9 +1336,9 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 	focused := f.focused == ntFieldProject
 	modalBG := tcell.ColorDefault
 
-	labelStyle := StyleDimmed
+	labelStyle := theme.StyleDimmed
 	if focused {
-		labelStyle = StyleTitle
+		labelStyle = theme.StyleTitle
 	}
 	label := "Project:"
 	labelW := utf8.RuneCountInString(label)
@@ -1352,7 +1353,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 	inputRow := y
 	inputRunes := f.projInput
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if focused {
@@ -1373,7 +1374,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 		}
 	} else {
 		if len(inputRunes) == 0 {
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
 			placeholder := "Type to search..."
 			pRunes := []rune(placeholder)
 			for col := 0; col < inputW; col++ {
@@ -1384,7 +1385,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 				}
 			}
 		} else {
-			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
@@ -1411,7 +1412,7 @@ func (f *NewTaskForm) drawProjectAC(screen tcell.Screen, x, y, w int) {
 		line := indicator + name
 		lineRunes := []rune(line)
 		for col := 0; col < w && col < len(lineRunes); col++ {
-			st := StyleDimmed
+			st := theme.StyleDimmed
 			if isSelected {
 				st = selectedStyle
 			}
@@ -1422,7 +1423,7 @@ func (f *NewTaskForm) drawProjectAC(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.projACMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.projACIdx+1) + "/" + itoa(len(f.projACMatches)) + ")"
-		drawText(screen, x, y+end-f.projACScroll, w, countStr, StyleDimmed)
+		drawText(screen, x, y+end-f.projACScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
@@ -1431,9 +1432,9 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 	focused := f.focused == ntFieldBranch
 	modalBG := tcell.ColorDefault
 
-	labelStyle := StyleDimmed
+	labelStyle := theme.StyleDimmed
 	if focused {
-		labelStyle = StyleTitle
+		labelStyle = theme.StyleTitle
 	}
 	label := "Branch:"
 	labelW := utf8.RuneCountInString(label)
@@ -1448,7 +1449,7 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 	inputRow := y
 	inputRunes := f.branchInput
 	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
-	inputStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
 
 	if focused {
@@ -1469,7 +1470,7 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 		}
 	} else {
 		if len(inputRunes) == 0 {
-			placeholderStyle := tcell.StyleDefault.Foreground(ColorDimmed).Background(modalBG)
+			placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
 			placeholder := "default"
 			pRunes := []rune(placeholder)
 			for col := 0; col < inputW; col++ {
@@ -1480,7 +1481,7 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 				}
 			}
 		} else {
-			unfocusedStyle := tcell.StyleDefault.Foreground(ColorNormal).Background(modalBG)
+			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
 			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
@@ -1507,7 +1508,7 @@ func (f *NewTaskForm) drawBranchAC(screen tcell.Screen, x, y, w int) {
 		line := indicator + name
 		lineRunes := []rune(line)
 		for col := 0; col < w && col < len(lineRunes); col++ {
-			st := StyleDimmed
+			st := theme.StyleDimmed
 			if isSelected {
 				st = selectedStyle
 			}
@@ -1518,27 +1519,27 @@ func (f *NewTaskForm) drawBranchAC(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.branchACMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.branchACIdx+1) + "/" + itoa(len(f.branchACMatches)) + ")"
-		drawText(screen, x, y+end-f.branchACScroll, w, countStr, StyleDimmed)
+		drawText(screen, x, y+end-f.branchACScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
 func (f *NewTaskForm) drawSelector(screen tcell.Screen, x, y, w int, label string, names []string, idx int, focused bool) {
-	labelStyle := StyleDimmed
+	labelStyle := theme.StyleDimmed
 	if focused {
-		labelStyle = StyleTitle
+		labelStyle = theme.StyleTitle
 	}
 	drawText(screen, x, y, w, label+":", labelStyle)
 
 	if len(names) == 0 {
-		drawText(screen, x+len(label)+2, y, w-len(label)-2, "(none)", StyleDimmed)
+		drawText(screen, x+len(label)+2, y, w-len(label)-2, "(none)", theme.StyleDimmed)
 		return
 	}
 
 	name := names[idx]
 	selector := "◀ " + name + " ▶"
-	selectorStyle := StyleNormal
+	selectorStyle := theme.StyleNormal
 	if focused {
-		selectorStyle = StyleSelected
+		selectorStyle = theme.StyleSelected
 	}
 	drawText(screen, x+len(label)+2, y, w-len(label)-2, selector, selectorStyle)
 
@@ -1546,7 +1547,7 @@ func (f *NewTaskForm) drawSelector(screen tcell.Screen, x, y, w int, label strin
 	posText := "(" + itoa(idx+1) + "/" + itoa(len(names)) + ")"
 	posX := x + w - len(posText)
 	if posX > x+len(label)+2+len(selector)+1 {
-		drawText(screen, posX, y, len(posText), posText, StyleDimmed)
+		drawText(screen, posX, y, len(posText), posText, theme.StyleDimmed)
 	}
 }
 

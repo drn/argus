@@ -1,7 +1,5 @@
-// Package tui implements the tcell/tview UI runtime for Argus.
-// This runtime uses direct cell painting for native terminal passthrough
-// in the agent view.
-package tui
+// Package theme defines colors, icons, and styles for the Argus TUI.
+package theme
 
 import "github.com/gdamore/tcell/v2"
 

@@ -98,11 +98,11 @@ type App struct {
 	confirmDeleteProjectModal *ConfirmDeleteProjectModal
 
 	// Launch to-do modal (created on demand)
-	launchToDoModal    *LaunchToDoModal
+	launchToDoModal      *LaunchToDoModal
 	cleanupToDosModal    *ConfirmCleanupToDosModal
 	deleteToDoModal      *ConfirmDeleteToDoModal
-	linkPickerModal          *LinkPickerModal
-	linkPickerPrevPage      string
+	linkPickerModal      *LinkPickerModal
+	linkPickerPrevPage   string
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
 
 	// Fork task modal (created on demand)
@@ -124,20 +124,20 @@ type App struct {
 	pages     *tview.Pages
 
 	// State
-	mode            viewMode
-	agentFocus      agentFocus
-	agentState      agentview.State
-	daemonConnected bool
-	tasks           []*model.Task
-	runningIDs      []string
-	idleIDs         []string
-	worktreeDir     string // resolved worktree dir for current agent view task
+	mode               viewMode
+	agentFocus         agentFocus
+	agentState         agentview.State
+	daemonConnected    bool
+	tasks              []*model.Task
+	runningIDs         []string
+	idleIDs            []string
+	worktreeDir        string // resolved worktree dir for current agent view task
 	lastGitRefresh     time.Time
 	lastTaskGitRefresh time.Time
-	lastPreviewTW       uint64 // TotalWritten when preview was last refreshed
-	lastPreviewTaskID   string // task ID for the cached TotalWritten
-	lastPreviewLogSize  int64  // log file size when dead-session preview was last refreshed
-	prScanTW            map[string]uint64 // per-session TotalWritten for PR URL scan throttling
+	lastPreviewTW      uint64            // TotalWritten when preview was last refreshed
+	lastPreviewTaskID  string            // task ID for the cached TotalWritten
+	lastPreviewLogSize int64             // log file size when dead-session preview was last refreshed
+	prScanTW           map[string]uint64 // per-session TotalWritten for PR URL scan throttling
 
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
@@ -146,15 +146,15 @@ type App struct {
 	// Daemon health
 	daemonFailures    int
 	daemonRestarting  bool
-	daemonFreshStart  bool            // no prior sessions (fresh auto-start or restart); first reconciliation uses InReview
-	lastDaemonRestart time.Time       // cooldown: minimum 30s between restart attempts
+	daemonFreshStart  bool      // no prior sessions (fresh auto-start or restart); first reconciliation uses InReview
+	lastDaemonRestart time.Time // cooldown: minimum 30s between restart attempts
 	daemonClient      *dclient.Client
 	restartedClient   *dclient.Client // set after daemon restart
 
 	// Tick control
 	tickDone            chan struct{}
-	tickCallbackPending atomic.Bool   // debounce: skip enqueue if prior callback hasn't run
-	startGen            atomic.Uint64 // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
+	tickCallbackPending atomic.Bool          // debounce: skip enqueue if prior callback hasn't run
+	startGen            atomic.Uint64        // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
 	recentStarts        map[string]time.Time // task ID → time of last startSession; grace period prevents false reconciliation
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
@@ -2127,7 +2127,7 @@ func (a *App) startSession(task *model.Task) {
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
 	a.recentStarts[task.ID] = time.Now() // grace period: protect from false reconciliation
-	a.db.Update(task) //nolint:errcheck
+	a.db.Update(task)                    //nolint:errcheck
 
 	// Attach to the terminal pane and start the redraw loop only if the
 	// agent view is active for this task. When startSession is called from
@@ -3357,4 +3357,3 @@ func (a *App) exitAgentView() {
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
 }
-

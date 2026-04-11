@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -48,7 +49,7 @@ func (tp *TaskPage) Draw(screen tcell.Screen) {
 	// Draw hint below the banner.
 	hintY := y + topPad + bh
 	hintPad := max((width-len(emptyHint))/2, 0)
-	drawText(screen, x+hintPad, hintY, width-hintPad, emptyHint, tcell.StyleDefault.Foreground(ColorDimmed))
+	drawText(screen, x+hintPad, hintY, width-hintPad, emptyHint, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 }
 
 // Focus delegates to the inner flex so tview's focus chain reaches the

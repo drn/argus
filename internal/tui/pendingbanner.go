@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -60,7 +61,7 @@ func drawPendingBanner(screen tcell.Screen, x, y, width int) int {
 
 	// Subtitle.
 	subPad := max((width-len(pendingSubtitle))/2, 0)
-	drawText(screen, x+subPad, row, width-subPad, pendingSubtitle, tcell.StyleDefault.Foreground(ColorDimmed))
+	drawText(screen, x+subPad, row, width-subPad, pendingSubtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	row++
 	row++ // blank line
 

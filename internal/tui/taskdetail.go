@@ -9,6 +9,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // TaskDetailPanel displays metadata for the selected task in the right panel.
@@ -39,13 +40,13 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Details ", StyleBorder)
+	inner := drawBorderedPanel(screen, x, y, width, height, " Details ", theme.StyleBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
 
 	if td.task == nil {
-		drawText(screen, inner.X, inner.Y, inner.W, "No task selected", StyleDimmed)
+		drawText(screen, inner.X, inner.Y, inner.W, "No task selected", theme.StyleDimmed)
 		return
 	}
 
@@ -57,7 +58,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	if len(name) > inner.W-1 {
 		name = name[:inner.W-4] + "..."
 	}
-	drawText(screen, inner.X, row, inner.W, name, StyleTitle)
+	drawText(screen, inner.X, row, inner.W, name, theme.StyleTitle)
 	row += 2
 
 	// Status
@@ -74,24 +75,24 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 
 	// Project
 	if t.Project != "" {
-		row = td.drawField(screen, inner.X, row, inner.W, "Project", t.Project, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Project", t.Project, theme.StyleNormal)
 	}
 
 	// Branch
 	if t.Branch != "" {
-		row = td.drawField(screen, inner.X, row, inner.W, "Branch", t.Branch, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Branch", t.Branch, theme.StyleNormal)
 	}
 
 	// Backend
 	if t.Backend != "" {
-		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Backend", t.Backend, theme.StyleNormal)
 	}
 
 	// Sandbox
 	if t.Sandboxed {
-		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "Yes", StyleComplete)
+		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "Yes", theme.StyleComplete)
 	} else {
-		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "No", StyleDimmed)
+		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "No", theme.StyleDimmed)
 	}
 
 	// PR URL
@@ -101,7 +102,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		if maxLen > 3 && len(pr) > maxLen {
 			pr = "..." + pr[len(pr)-maxLen+3:]
 		}
-		row = td.drawField(screen, inner.X, row, inner.W, "PR", pr, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "PR", pr, theme.StyleNormal)
 	}
 
 	// Worktree
@@ -111,24 +112,24 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		if maxLen > 3 && len(wt) > maxLen {
 			wt = "..." + wt[len(wt)-maxLen+3:]
 		}
-		row = td.drawField(screen, inner.X, row, inner.W, "Worktree", wt, StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Worktree", wt, theme.StyleNormal)
 	}
 
 	// Created date
 	if !t.CreatedAt.IsZero() {
-		row = td.drawField(screen, inner.X, row, inner.W, "Created", t.CreatedAt.Format(time.DateOnly), StyleNormal)
+		row = td.drawField(screen, inner.X, row, inner.W, "Created", t.CreatedAt.Format(time.DateOnly), theme.StyleNormal)
 	}
 
 	// Elapsed
 	if elapsed := t.ElapsedString(); elapsed != "" {
-		row = td.drawField(screen, inner.X, row, inner.W, "Elapsed", elapsed, tcell.StyleDefault.Foreground(ColorElapsed))
+		row = td.drawField(screen, inner.X, row, inner.W, "Elapsed", elapsed, tcell.StyleDefault.Foreground(theme.ColorElapsed))
 	}
 
 	// Prompt
 	maxRow := inner.Y + inner.H
 	if t.Prompt != "" && row < maxRow-1 {
 		row++
-		drawText(screen, inner.X, row, inner.W, "PROMPT", StyleTitle)
+		drawText(screen, inner.X, row, inner.W, "PROMPT", theme.StyleTitle)
 		row++
 		remaining := maxRow - row
 		promptLines := td.wrapText(t.Prompt, inner.W-1)
@@ -136,7 +137,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 			if i >= remaining {
 				break
 			}
-			drawText(screen, inner.X, row, inner.W, line, StyleNormal)
+			drawText(screen, inner.X, row, inner.W, line, theme.StyleNormal)
 			row++
 		}
 	}
@@ -145,7 +146,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 // drawField renders "Label: Value" and returns the next row.
 func (td *TaskDetailPanel) drawField(screen tcell.Screen, x, row, w int, label, value string, valStyle tcell.Style) int {
 	labelStr := fmt.Sprintf("%s: ", label)
-	drawText(screen, x, row, len(labelStr), labelStr, StyleDimmed)
+	drawText(screen, x, row, len(labelStr), labelStr, theme.StyleDimmed)
 	drawText(screen, x+len(labelStr), row, w-len(labelStr), value, valStyle)
 	return row + 1
 }
@@ -154,15 +155,15 @@ func (td *TaskDetailPanel) drawField(screen tcell.Screen, x, row, w int, label, 
 func (td *TaskDetailPanel) statusStyle(s model.Status) tcell.Style {
 	switch s {
 	case model.StatusPending:
-		return StylePending
+		return theme.StylePending
 	case model.StatusInProgress:
-		return StyleInProgress
+		return theme.StyleInProgress
 	case model.StatusInReview:
-		return StyleInReview
+		return theme.StyleInReview
 	case model.StatusComplete:
-		return StyleComplete
+		return theme.StyleComplete
 	default:
-		return StyleNormal
+		return theme.StyleNormal
 	}
 }
 

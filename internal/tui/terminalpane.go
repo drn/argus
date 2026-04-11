@@ -11,15 +11,16 @@ import (
 
 	"image/color"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	xvt "github.com/charmbracelet/x/vt"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -90,10 +91,10 @@ type TerminalPane struct {
 	focused bool
 
 	// Persistent x/vt emulator for live incremental rendering.
-	emu         *xvt.SafeEmulator
-	emuFedTotal uint64
-	emuCols     int
-	emuRows     int
+	emu           *xvt.SafeEmulator
+	emuFedTotal   uint64
+	emuCols       int
+	emuRows       int
 	cursorVisible bool
 
 	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
@@ -111,10 +112,10 @@ type TerminalPane struct {
 	scrollAccel    int       // current acceleration multiplier (1-based)
 
 	// Replay emulator cache: reuse when only scroll changes (no new bytes).
-	replayEmu          *xvt.SafeEmulator
-	replayEmuBytes     uint64 // TotalWritten when replayEmu was built
-	replayEmuCols      int
-	replayEmuRows      int
+	replayEmu              *xvt.SafeEmulator
+	replayEmuBytes         uint64 // TotalWritten when replayEmu was built
+	replayEmuCols          int
+	replayEmuRows          int
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
 	replayEmuMaxScroll     int   // max scrollOffset the replay emulator was built for
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
@@ -122,11 +123,11 @@ type TerminalPane struct {
 	// Paint cache: stores the last paintEmu output so keystroke-triggered
 	// redraws (no new bytes) can replay SetContent calls without touching
 	// the emulator (no mutex, no allocations, no style conversion).
-	paintCacheCells []cachedCell
-	paintCacheX     int // screen origin used when cache was built
-	paintCacheY     int
-	paintCacheW     int // viewport dimensions
-	paintCacheH     int
+	paintCacheCells  []cachedCell
+	paintCacheX      int // screen origin used when cache was built
+	paintCacheY      int
+	paintCacheW      int // viewport dimensions
+	paintCacheH      int
 	paintCacheValid  bool // true when cache can be replayed
 	paintCacheScroll int  // scrollOffset when cache was built
 
@@ -351,8 +352,13 @@ func (tp *TerminalPane) ScrollUp(n int) {
 	tp.scrollOffset += n
 	tp.paintCacheValid = false
 }
-func (tp *TerminalPane) ScrollOffset() int  { return tp.scrollOffset }
-func (tp *TerminalPane) ResetScroll()       { tp.scrollOffset = 0; tp.anchorTotalLines = 0; tp.scrollAccel = 0; tp.paintCacheValid = false }
+func (tp *TerminalPane) ScrollOffset() int { return tp.scrollOffset }
+func (tp *TerminalPane) ResetScroll() {
+	tp.scrollOffset = 0
+	tp.anchorTotalLines = 0
+	tp.scrollAccel = 0
+	tp.paintCacheValid = false
+}
 
 // AccelScrollUp performs an accelerated scroll up for keyboard key-repeat.
 // Returns the actual number of lines scrolled.
@@ -577,9 +583,9 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		return
 	}
 
-	borderStyle := StyleBorder
+	borderStyle := theme.StyleBorder
 	if tp.focused {
-		borderStyle = StyleFocusedBorder
+		borderStyle = theme.StyleFocusedBorder
 	}
 	inner := drawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
@@ -638,7 +644,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		if midX < x {
 			midX = x
 		}
-		drawText(screen, midX, midY, width, msg, StyleDimmed)
+		drawText(screen, midX, midY, width, msg, theme.StyleDimmed)
 		return
 	}
 
@@ -762,7 +768,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		}
 		if sess != nil {
 			msg := "Waiting for output..."
-			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, StyleDimmed)
+			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, theme.StyleDimmed)
 		}
 		return
 	} else {
@@ -902,7 +908,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		if len(raw) == 0 {
 			if tp.emuFedTotal == 0 {
 				msg := "Waiting for output..."
-				drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
+				drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 				return
 			}
 			// Emulator already has content — just repaint below.
@@ -921,7 +927,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	} else if tp.emuFedTotal == 0 {
 		// No data has ever arrived.
 		msg := "Waiting for output..."
-		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
+		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 		return
 	} else if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
 		tp.paintCacheW == w && tp.paintCacheH == h {
@@ -1134,7 +1140,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 
 	if len(lines) == 0 {
 		msg := "No diff available"
-		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, StyleDimmed)
+		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 		return
 	}
 
@@ -1144,7 +1150,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		mode = "split"
 	}
 	headerText := " " + tp.diffFile + "  [" + mode + "]"
-	headerStyle := tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	headerStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
 	for i, r := range headerText {
 		if i >= w {
 			break

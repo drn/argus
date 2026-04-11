@@ -9,6 +9,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/theme"
 )
 
 // ForkTaskModal shows a confirmation dialog before forking a task.
@@ -216,30 +217,30 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Fork task?", StyleTitle)
+	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	drawText(screen, formX+2, formY+1, formW-4, "Fork task?", theme.StyleTitle)
 
 	// Source task name.
-	drawText(screen, formX+4, formY+3, formW-6, m.task.Name, StyleNormal)
+	drawText(screen, formX+4, formY+3, formW-6, m.task.Name, theme.StyleNormal)
 
 	// Details.
 	if m.task.Worktree != "" {
-		drawText(screen, formX+4, formY+4, formW-6, "worktree: "+m.task.Worktree, StyleDimmed)
+		drawText(screen, formX+4, formY+4, formW-6, "worktree: "+m.task.Worktree, theme.StyleDimmed)
 	}
 	if m.task.Branch != "" {
-		drawText(screen, formX+4, formY+5, formW-6, "branch: "+m.task.Branch, StyleDimmed)
+		drawText(screen, formX+4, formY+5, formW-6, "branch: "+m.task.Branch, theme.StyleDimmed)
 	}
 
 	// Project selector.
 	projLabel := "project:"
 	projY := formY + 7
-	drawText(screen, formX+4, projY, len(projLabel), projLabel, StyleDimmed)
+	drawText(screen, formX+4, projY, len(projLabel), projLabel, theme.StyleDimmed)
 
 	inputX := formX + 4 + len(projLabel) + 1
 	inputW := formW - 6 - len(projLabel) - 1
 	projRunes := []rune(m.projInput)
 	// Draw input with cursor
-	inputStyle := StyleNormal
+	inputStyle := theme.StyleNormal
 	for i := 0; i < inputW; i++ {
 		ch := ' '
 		style := inputStyle
@@ -259,7 +260,7 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 	// Project changed indicator
 	if projChanged {
 		changeNote := "(was: " + m.task.Project + ")"
-		drawText(screen, formX+4, projY+1, formW-6, changeNote, StyleDimmed)
+		drawText(screen, formX+4, projY+1, formW-6, changeNote, theme.StyleDimmed)
 	}
 
 	// Autocomplete dropdown
@@ -275,7 +276,7 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 				break
 			}
 			name := m.projACMatches[idx]
-			style := StyleNormal
+			style := theme.StyleNormal
 			if idx == m.projACIdx {
 				style = style.Reverse(true)
 			}
@@ -290,9 +291,9 @@ func (m *ForkTaskModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawText(screen, formX+4, formY+formH-3, formW-6, "Creates a new task with context from", StyleDimmed)
-	drawText(screen, formX+4, formY+formH-2, formW-6, "the source agent's output and diff.", StyleDimmed)
+	drawText(screen, formX+4, formY+formH-3, formW-6, "Creates a new task with context from", theme.StyleDimmed)
+	drawText(screen, formX+4, formY+formH-2, formW-6, "the source agent's output and diff.", theme.StyleDimmed)
 
 	// Hint.
-	drawText(screen, formX+4, formY+formH-1, formW-6, "[enter] confirm  [esc] cancel", StyleDimmed)
+	drawText(screen, formX+4, formY+formH-1, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }
