@@ -1,0 +1,39 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosec
+    - revive
+    - ineffassign
+    - unused
+    - gosimple
+
+linters-settings:
+  errcheck:
+    # Don't flag deferred close / flush calls — common Go idiom.
+    exclude-functions:
+      - (*database/sql.Rows).Close
+      - (*database/sql.Tx).Rollback
+      - (*os.File).Close
+      - (io.Closer).Close
+      - (net.Conn).Close
+  revive:
+    rules:
+      - name: exported
+        disabled: true # too noisy for a single-user project
+  gosec:
+    excludes:
+      - G104 # unhandled errors — covered by errcheck
+      - G304 # file path from variable — expected in CLI tools
+
+issues:
+  exclude-dirs:
+    - context
+    - screenshots
+  # Don't limit per-linter issue count.
+  max-issues-per-linter: 0
+  max-same-issues: 0
