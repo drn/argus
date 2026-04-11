@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
@@ -64,7 +65,12 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 		return 0, fmt.Errorf("api listen: %w", err)
 	}
 
-	srv := &http.Server{Handler: handler}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	s.httpSrv = srv
 	go func() {
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
