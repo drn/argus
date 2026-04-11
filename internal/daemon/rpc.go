@@ -1,7 +1,7 @@
 package daemon
 
 import (
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/drn/argus/internal/kb"
@@ -21,8 +21,7 @@ func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
 
 // StartSession starts a new agent session.
 func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
-	log.Printf("rpc.StartSession: task=%s session=%s project=%s resume=%v pty=%dx%d worktree=%s",
-		req.TaskID, req.SessionID, req.Project, req.Resume, req.Cols, req.Rows, req.Worktree)
+	slog.Info("rpc.StartSession", "task", req.TaskID, "session", req.SessionID, "project", req.Project, "resume", req.Resume, "cols", req.Cols, "rows", req.Rows, "worktree", req.Worktree)
 
 	task := &model.Task{
 		ID:        req.TaskID,
@@ -37,33 +36,33 @@ func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 	cfg := s.daemon.db.Config()
 	sess, err := s.daemon.runner.Start(task, cfg, req.Rows, req.Cols, req.Resume)
 	if err != nil {
-		log.Printf("rpc.StartSession: FAILED task=%s err=%v", req.TaskID, err)
+		slog.Error("rpc.StartSession failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil
 	}
 	resp.PID = sess.PID()
-	log.Printf("rpc.StartSession: OK task=%s pid=%d", req.TaskID, resp.PID)
+	slog.Info("rpc.StartSession ok", "task", req.TaskID, "pid", resp.PID)
 	return nil
 }
 
 // StopSession stops a running session.
 func (s *RPCService) StopSession(req *TaskIDReq, resp *StatusResp) error {
-	log.Printf("rpc.StopSession: task=%s", req.TaskID)
+	slog.Info("rpc.StopSession", "task", req.TaskID)
 	if err := s.daemon.runner.Stop(req.TaskID); err != nil {
-		log.Printf("rpc.StopSession: FAILED task=%s err=%v", req.TaskID, err)
+		slog.Error("rpc.StopSession failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil
 	}
-	log.Printf("rpc.StopSession: OK task=%s", req.TaskID)
+	slog.Info("rpc.StopSession ok", "task", req.TaskID)
 	resp.OK = true
 	return nil
 }
 
 // StopAll stops all running sessions.
 func (s *RPCService) StopAll(_ *Empty, resp *StatusResp) error {
-	log.Printf("rpc.StopAll")
+	slog.Info("rpc.StopAll")
 	s.daemon.runner.StopAll()
-	log.Printf("rpc.StopAll: OK")
+	slog.Info("rpc.StopAll ok")
 	resp.OK = true
 	return nil
 }
@@ -155,7 +154,7 @@ func (s *RPCService) GetExitInfo(req *TaskIDReq, resp *ExitInfo) error {
 
 // Shutdown initiates a graceful daemon shutdown.
 func (s *RPCService) Shutdown(_ *Empty, resp *StatusResp) error {
-	log.Printf("rpc.Shutdown: requested")
+	slog.Info("rpc.Shutdown requested")
 	resp.OK = true
 	go s.daemon.Shutdown()
 	return nil
@@ -163,7 +162,7 @@ func (s *RPCService) Shutdown(_ *Empty, resp *StatusResp) error {
 
 // KBSearch performs a full-text search of the knowledge base.
 func (s *RPCService) KBSearch(req *KBSearchReq, resp *KBSearchResp) error {
-	log.Printf("rpc.KBSearch: query=%q limit=%d", req.Query, req.Limit)
+	slog.Info("rpc.KBSearch", "query", req.Query, "limit", req.Limit)
 	sanitized := kb.SanitizeQuery(req.Query)
 	if sanitized == "" {
 		resp.Results = nil
@@ -172,7 +171,7 @@ func (s *RPCService) KBSearch(req *KBSearchReq, resp *KBSearchResp) error {
 	results, err := s.daemon.db.KBSearch(sanitized, req.Limit)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("rpc.KBSearch: error: %v", err)
+		slog.Error("rpc.KBSearch", "err", err)
 		return nil
 	}
 	for _, r := range results {
@@ -184,32 +183,32 @@ func (s *RPCService) KBSearch(req *KBSearchReq, resp *KBSearchResp) error {
 			Rank:    r.Rank,
 		})
 	}
-	log.Printf("rpc.KBSearch: %d results", len(resp.Results))
+	slog.Info("rpc.KBSearch ok", "results", len(resp.Results))
 	return nil
 }
 
 // KBIngest ingests a document into the knowledge base.
 func (s *RPCService) KBIngest(req *KBIngestReq, resp *KBIngestResp) error {
-	log.Printf("rpc.KBIngest: path=%s", req.Path)
+	slog.Info("rpc.KBIngest", "path", req.Path)
 	doc := kb.ParseDocument(req.Path, req.Content)
 	doc.IngestedAt = time.Now()
 	doc.ModifiedAt = time.Now()
 	if err := s.daemon.db.KBUpsert(&doc); err != nil {
 		resp.Error = err.Error()
-		log.Printf("rpc.KBIngest: error: %v", err)
+		slog.Error("rpc.KBIngest", "err", err)
 	} else {
-		log.Printf("rpc.KBIngest: ok path=%s", req.Path)
+		slog.Info("rpc.KBIngest ok", "path", req.Path)
 	}
 	return nil
 }
 
 // KBList lists documents in the knowledge base.
 func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
-	log.Printf("rpc.KBList: prefix=%q limit=%d", req.Prefix, req.Limit)
+	slog.Info("rpc.KBList", "prefix", req.Prefix, "limit", req.Limit)
 	docs, err := s.daemon.db.KBList(req.Prefix, req.Limit)
 	if err != nil {
 		resp.Error = err.Error()
-		log.Printf("rpc.KBList: error: %v", err)
+		slog.Error("rpc.KBList", "err", err)
 		return nil
 	}
 	for _, doc := range docs {
@@ -220,7 +219,7 @@ func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
 			WordCount: doc.WordCount,
 		})
 	}
-	log.Printf("rpc.KBList: %d documents", len(resp.Documents))
+	slog.Info("rpc.KBList ok", "documents", len(resp.Documents))
 	return nil
 }
 
@@ -232,6 +231,6 @@ func (s *RPCService) KBStatus(_ *Empty, resp *KBStatusResp) error {
 	s.daemon.mu.Lock()
 	resp.Port = s.daemon.mcpPort
 	s.daemon.mu.Unlock()
-	log.Printf("rpc.KBStatus: docs=%d vault=%s port=%d", resp.DocumentCount, resp.VaultPath, resp.Port)
+	slog.Info("rpc.KBStatus", "docs", resp.DocumentCount, "vault", resp.VaultPath, "port", resp.Port)
 	return nil
 }

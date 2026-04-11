@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
@@ -75,6 +75,6 @@ func HeadlessCreateTask(database *db.DB, runner *agent.Runner, name, prompt, pro
 	task.AgentPID = sess.PID()
 	database.Update(task) //nolint:errcheck
 
-	log.Printf("[headless] created task: id=%s name=%s project=%s pid=%d", task.ID, task.Name, project, sess.PID())
+	slog.Info("headless task created", "id", task.ID, "name", task.Name, "project", project, "pid", sess.PID())
 	return task, nil
 }

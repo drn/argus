@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
@@ -85,8 +85,7 @@ func New(database *db.DB) *Daemon {
 	// Create runner with onFinish callback that caches exit info and
 	// notifies stream clients by closing their connections.
 	d.runner = agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
-		log.Printf("session exited: task=%s stopped=%v err=%v lastOutput=%d bytes",
-			taskID, stopped, err, len(lastOutput))
+		slog.Info("session exited", "task", taskID, "stopped", stopped, "err", err, "lastOutputBytes", len(lastOutput))
 
 		var errStr string
 		if err != nil {
@@ -104,7 +103,7 @@ func New(database *db.DB) *Daemon {
 		d.mu.Unlock()
 
 		// Signal stream EOF to all connected clients by closing their connections.
-		log.Printf("session exited: task=%s closing %d stream clients", taskID, len(conns))
+		slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))
 		for _, conn := range conns {
 			conn.Close()
 		}
@@ -161,27 +160,27 @@ func (d *Daemon) Serve(sockPath string) error {
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
 		if err != nil {
-			log.Printf("mcp server error: %v", err)
+			slog.Error("mcp server error", "err", err)
 		} else {
 			d.mu.Lock()
 			d.mcpPort = actualPort
 			d.mu.Unlock()
-			log.Printf("mcp server listening on port %d", actualPort)
+			slog.Info("mcp server listening", "port", actualPort)
 
 			// Inject MCP config into Claude Code and Codex.
 			go func() {
 				if err := inject.InjectGlobal(actualPort); err != nil {
-					log.Printf("inject claude: %v", err)
+					slog.Error("inject claude", "err", err)
 				} else {
-					log.Printf("inject claude: ok (port %d)", actualPort)
+					slog.Info("inject claude", "port", actualPort)
 				}
 				if err := injectcodex.InjectGlobal(actualPort); err != nil {
-					log.Printf("inject codex: %v", err)
+					slog.Error("inject codex", "err", err)
 				} else {
-					log.Printf("inject codex: ok (port %d)", actualPort)
+					slog.Info("inject codex", "port", actualPort)
 				}
 				if err := inject.SetClaudeProjectMcpTrust(); err != nil {
-					log.Printf("inject claude trust: %v", err)
+					slog.Error("inject claude trust", "err", err)
 				}
 			}()
 		}
@@ -192,7 +191,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.kbIndexer = idx
 			go func() {
 				if err := idx.Start(); err != nil {
-					log.Printf("kb indexer start: %v", err)
+					slog.Error("kb indexer start", "err", err)
 				}
 			}()
 		}
@@ -214,17 +213,17 @@ func (d *Daemon) Serve(sockPath string) error {
 			interval := time.Duration(cfg.KB.AutoStartInterval) * time.Second
 			if interval <= 0 {
 				interval = time.Duration(config.DefaultAutoStartInterval) * time.Second
-				log.Printf("[vault] auto_start_interval not set, using default %s", interval)
+				slog.Warn("auto_start_interval not set, using default", "interval", interval)
 			}
 			go func() {
 				if err := vw.StartPolling(interval); err != nil {
-					log.Printf("vault poller start: %v", err)
+					slog.Error("vault poller start", "err", err)
 				}
 			}()
 		} else {
 			go func() {
 				if err := vw.Start(); err != nil {
-					log.Printf("vault watcher start: %v", err)
+					slog.Error("vault watcher start", "err", err)
 				}
 			}()
 		}
@@ -235,7 +234,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		tokenPath := filepath.Join(db.DataDir(), "api-token")
 		token, err := api.LoadOrCreateToken(tokenPath)
 		if err != nil {
-			log.Printf("api token error: %v", err)
+			slog.Error("api token error", "err", err)
 		} else {
 			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
@@ -243,9 +242,9 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.apiServer = apiSrv
 			apiPort, err := apiSrv.ListenAndServe(cfg.API.HTTPPort)
 			if err != nil {
-				log.Printf("api server error: %v", err)
+				slog.Error("api server error", "err", err)
 			} else {
-				log.Printf("api server listening on port %d", apiPort)
+				slog.Info("api server listening", "port", apiPort)
 			}
 		}
 	}
@@ -273,7 +272,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		signal.Stop(sigCh)
 	}()
 
-	log.Printf("daemon listening on %s (pid %d)", sockPath, os.Getpid())
+	slog.Info("daemon listening", "sockPath", sockPath, "pid", os.Getpid())
 
 	for {
 		conn, err := ln.Accept()
@@ -312,7 +311,7 @@ func (d *Daemon) handleConn(conn net.Conn, server *rpc.Server) {
 	case 'S':
 		d.handleStream(conn)
 	default:
-		log.Printf("conn: unknown prefix byte 0x%02x", prefix[0])
+		slog.Warn("conn: unknown prefix byte", "byte", fmt.Sprintf("0x%02x", prefix[0]))
 	}
 }
 
@@ -364,7 +363,7 @@ func (d *Daemon) Shutdown() {
 // (signal/RPC handler), main() could return from Serve() first, killing
 // the cleanup goroutine and leaving zombie agent processes + stale files.
 func (d *Daemon) cleanup() {
-	log.Println("daemon shutting down...")
+	slog.Info("daemon shutting down")
 	d.runner.StopAll()
 
 	// Stop the vault watcher if running.
@@ -382,7 +381,7 @@ func (d *Daemon) cleanup() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.apiServer.Shutdown(ctx); err != nil {
-			log.Printf("api server shutdown: %v", err)
+			slog.Error("api server shutdown", "err", err)
 		}
 	}
 
@@ -391,7 +390,7 @@ func (d *Daemon) cleanup() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.mcpServer.Shutdown(ctx); err != nil {
-			log.Printf("mcp server shutdown: %v", err)
+			slog.Error("mcp server shutdown", "err", err)
 		}
 	}
 
@@ -442,7 +441,7 @@ func killExistingDaemon(pidPath string) {
 		return // process already dead
 	}
 
-	log.Printf("killing existing daemon pid=%d", pid)
+	slog.Info("killing existing daemon", "pid", pid)
 	_ = proc.Signal(syscall.SIGTERM)
 
 	// Wait up to 2 seconds for it to exit.
@@ -455,7 +454,7 @@ func killExistingDaemon(pidPath string) {
 	}
 
 	// Force kill if still alive.
-	log.Printf("force-killing daemon pid=%d", pid)
+	slog.Warn("force-killing daemon", "pid", pid)
 	_ = proc.Signal(syscall.SIGKILL)
 }
 
@@ -465,7 +464,7 @@ func killExistingDaemon(pidPath string) {
 func removeIfOwnedByPID(sockPath, pidPath string, ourPID int) {
 	currentPID := readPIDFile(pidPath)
 	if currentPID != ourPID {
-		log.Printf("skipping file cleanup: PID file has %d, we are %d", currentPID, ourPID)
+		slog.Warn("skipping file cleanup", "pidFileOwner", currentPID, "ourPID", ourPID)
 		return
 	}
 	os.Remove(sockPath)

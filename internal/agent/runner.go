@@ -3,7 +3,7 @@ package agent
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/drn/argus/internal/config"
@@ -55,20 +55,19 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		r.mu.Unlock()
 	}
 
-	log.Printf("runner.Start: task=%s session=%s resume=%v pty=%dx%d dir=%s",
-		task.ID, task.SessionID, resume, cols, rows, task.Worktree)
+	slog.Info("runner.Start", "task", task.ID, "session", task.SessionID, "resume", resume, "pty", fmt.Sprintf("%dx%d", cols, rows), "dir", task.Worktree)
 
 	cmd, sandboxCleanup, err := BuildCmd(task, cfg, resume)
 	if err != nil {
-		log.Printf("runner.Start: BuildCmd FAILED task=%s err=%v", task.ID, err)
+		slog.Error("runner.Start: BuildCmd failed", "task", task.ID, "err", err)
 		cleanup()
 		return nil, err
 	}
-	log.Printf("runner.Start: cmd=%v dir=%s", cmd.Args, cmd.Dir)
+	slog.Info("runner.Start", "cmd", cmd.Args, "dir", cmd.Dir)
 
 	sess, err := StartSession(task.ID, cmd, rows, cols)
 	if err != nil {
-		log.Printf("runner.Start: StartSession FAILED task=%s err=%v", task.ID, err)
+		slog.Error("runner.Start: StartSession failed", "task", task.ID, "err", err)
 		if sandboxCleanup != nil {
 			sandboxCleanup()
 		}
@@ -76,7 +75,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		return nil, err
 	}
 
-	log.Printf("runner.Start: OK task=%s pid=%d", task.ID, sess.PID())
+	slog.Info("runner.Start: OK", "task", task.ID, "pid", sess.PID())
 
 	r.mu.Lock()
 	r.sessions[task.ID] = sess
@@ -89,7 +88,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	// re-enters the runner (e.g., HasSession).
 	go func() {
 		<-sess.Done()
-		log.Printf("runner: process exited task=%s pid=%d", task.ID, sess.PID())
+		slog.Info("runner: process exited", "task", task.ID, "pid", sess.PID())
 		// Clean up sandbox config temp file
 		if sandboxCleanup != nil {
 			sandboxCleanup()
@@ -104,8 +103,7 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		delete(r.stopped, task.ID)
 		r.mu.Unlock()
 
-		log.Printf("runner: exit details task=%s err=%v stopped=%v lastOutput=%d bytes",
-			task.ID, exitErr, wasStopped, len(lastOutput))
+		slog.Info("runner: exit details", "task", task.ID, "err", exitErr, "stopped", wasStopped, "lastOutputBytes", len(lastOutput))
 
 		// Fire callback while session is still in the map.
 		if r.onFinish != nil {
@@ -167,7 +165,7 @@ func (r *Runner) Stop(taskID string) error {
 	}
 	r.stopped[taskID] = true
 	r.mu.Unlock()
-	log.Printf("runner.Stop: task=%s pid=%d", taskID, sess.PID())
+	slog.Info("runner.Stop", "task", taskID, "pid", sess.PID())
 	return sess.Stop()
 }
 
@@ -180,7 +178,7 @@ func (r *Runner) StopAll() {
 	}
 	r.mu.Unlock()
 
-	log.Printf("runner.StopAll: stopping %d sessions", len(ids))
+	slog.Info("runner.StopAll", "sessions", len(ids))
 	for _, id := range ids {
 		r.Stop(id)
 	}

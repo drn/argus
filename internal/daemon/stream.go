@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net"
 )
 
@@ -14,17 +14,17 @@ func (d *Daemon) handleStream(conn net.Conn) {
 	var header StreamHeader
 	dec := json.NewDecoder(conn)
 	if err := dec.Decode(&header); err != nil {
-		log.Printf("stream: header decode error: %v", err)
+		slog.Error("stream header decode error", "err", err)
 		return
 	}
 
 	sess := d.runner.Get(header.TaskID)
 	if sess == nil {
-		log.Printf("stream: session not found task=%s", header.TaskID)
+		slog.Warn("stream: session not found", "task", header.TaskID)
 		return
 	}
 
-	log.Printf("stream: connected task=%s", header.TaskID)
+	slog.Info("stream connected", "task", header.TaskID)
 	d.registerStream(header.TaskID, conn)
 	defer d.unregisterStream(header.TaskID, conn)
 
@@ -38,11 +38,11 @@ func (d *Daemon) handleStream(conn net.Conn) {
 	// so a read will block until the connection is closed.
 	select {
 	case <-sess.Done():
-		log.Printf("stream: session exited task=%s", header.TaskID)
+		slog.Info("stream: session exited", "task", header.TaskID)
 	case <-d.done:
-		log.Printf("stream: daemon shutting down task=%s", header.TaskID)
+		slog.Info("stream: daemon shutting down", "task", header.TaskID)
 	case <-waitForClose(conn):
-		log.Printf("stream: client disconnected task=%s", header.TaskID)
+		slog.Info("stream: client disconnected", "task", header.TaskID)
 	}
 }
 
