@@ -36,6 +36,3 @@ linters:
     paths:
       - context
       - screenshots
-    # Don't limit per-linter issue count.
-    max-issues-per-linter: 0
-    max-same-issues: 0
