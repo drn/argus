@@ -1217,7 +1217,7 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 
 	// Set up live emulator with distinctive content.
 	liveEmu := NewDrainedEmulator(40, 10)
-	SafeEmuWrite(liveEmu, []byte("live content\r\n"))
+	_, _ = SafeEmuWrite(liveEmu, []byte("live content\r\n"))
 	tp.emu = liveEmu
 	tp.emuCols = 40
 	tp.emuRows = 10
@@ -1229,7 +1229,7 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		replayData = append(replayData, []byte("replay content\r\n")...)
 	}
-	SafeEmuWrite(staleEmu, replayData)
+	_, _ = SafeEmuWrite(staleEmu, replayData)
 	tp.mu.Lock()
 	tp.replayEmu = staleEmu
 	tp.replayEmuCols = 40
