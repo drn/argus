@@ -38,7 +38,8 @@ func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 	sess, err := s.daemon.runner.Start(task, cfg, req.Rows, req.Cols, req.Resume)
 	if err != nil {
 		log.Printf("rpc.StartSession: FAILED task=%s err=%v", req.TaskID, err)
-		return err
+		resp.Error = err.Error()
+		return nil
 	}
 	resp.PID = sess.PID()
 	log.Printf("rpc.StartSession: OK task=%s pid=%d", req.TaskID, resp.PID)

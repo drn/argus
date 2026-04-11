@@ -16,7 +16,8 @@ type StartReq struct {
 
 // StartResp is the RPC response from starting a session.
 type StartResp struct {
-	PID int
+	PID   int
+	Error string
 }
 
 // TaskIDReq is an RPC request that identifies a single task.

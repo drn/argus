@@ -134,6 +134,10 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		uxlog.Log("client.Start: RPC FAILED task=%s err=%v", task.ID, err)
 		return nil, err
 	}
+	if resp.Error != "" {
+		uxlog.Log("client.Start: daemon error task=%s err=%s", task.ID, resp.Error)
+		return nil, fmt.Errorf("daemon: %s", resp.Error)
+	}
 
 	uxlog.Log("client.Start: success task=%s pid=%d", task.ID, resp.PID)
 	rs := c.getOrCreateSession(task.ID)
