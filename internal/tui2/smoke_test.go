@@ -345,7 +345,7 @@ func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 	// then enter agent view.
 	readUI(t, app.tapp, func() {
 		app.header.SetTab(TabToDos)
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 	})
 
 	var mode viewMode

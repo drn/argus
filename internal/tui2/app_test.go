@@ -83,7 +83,7 @@ func TestOnTaskSelect(t *testing.T) {
 		Name: "test task",
 	}
 
-	app.onTaskSelect(task)
+	app.onTaskSelect(task, true)
 
 	if app.mode != modeAgent {
 		t.Errorf("mode = %v, want modeAgent", app.mode)
@@ -106,7 +106,7 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		task.SetStatus(model.StatusInReview)
 		d.Add(task) //nolint:errcheck
 
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 
 		// Auto-start was attempted — the runner.Start will fail (no worktree),
 		// which reverts the task to Pending. Proves auto-start was triggered
@@ -130,7 +130,7 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		task.SetStatus(model.StatusComplete)
 		d.Add(task) //nolint:errcheck
 
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 
 		// Completed tasks should not auto-start.
 		got, _ := d.Get("t-complete")
@@ -152,7 +152,7 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		task.SetStatus(model.StatusInReview)
 		d.Add(task) //nolint:errcheck
 
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 
 		// startSession was attempted — the runner.Start will fail (no
 		// worktree), which reverts the task to Pending. Verify the revert
@@ -177,7 +177,7 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		task.SetStatus(model.StatusInReview)
 		d.Add(task) //nolint:errcheck
 
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 
 		// Archived tasks should not auto-start.
 		got, _ := d.Get("t-archived")
@@ -199,7 +199,7 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		task.SetStatus(model.StatusPending)
 		d.Add(task) //nolint:errcheck
 
-		app.onTaskSelect(task)
+		app.onTaskSelect(task, true)
 
 		// startSession was attempted — verifies auto-start triggers for
 		// Pending tasks with a SessionID (daemon restart scenario).
@@ -207,6 +207,28 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		// After failed start, task reverts to Pending with cleared SessionID.
 		if got.SessionID != "" {
 			t.Error("expected auto-start attempt to clear SessionID on failure")
+		}
+	})
+
+	t.Run("no auto-start when autoStart is false", func(t *testing.T) {
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false, false)
+
+		task := &model.Task{
+			ID:        "t-navigate",
+			Name:      "navigate target",
+			SessionID: "sess-nav",
+		}
+		task.SetStatus(model.StatusInReview)
+		d.Add(task) //nolint:errcheck
+
+		app.onTaskSelect(task, false)
+
+		// autoStart=false suppresses session start (used by navigateAgentTask).
+		got, _ := d.Get("t-navigate")
+		if got.Status != model.StatusInReview {
+			t.Errorf("status = %v, want InReview (autoStart=false should not start)", got.Status)
 		}
 	})
 }
