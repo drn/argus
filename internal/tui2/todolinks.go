@@ -73,6 +73,12 @@ func cleanURL(u string) string {
 	return u
 }
 
+// isTruncatedURL returns true if the URL contains an ellipsis ("…" or "...")
+// indicating it was truncated and is not a valid link target.
+func isTruncatedURL(url string) bool {
+	return strings.Contains(url, "\u2026") || strings.Contains(url, "...")
+}
+
 // ExtractLinks extracts unique URLs from content that may contain ANSI escape
 // sequences (e.g. raw PTY session logs). Markdown-style links [text](url) are
 // preferred; bare URLs not already captured by a markdown link are added with
@@ -86,7 +92,11 @@ func ExtractLinks(content string) []Link {
 
 	// First pass: markdown links
 	for _, m := range mdLinkRe.FindAllStringSubmatch(content, -1) {
-		url := cleanURL(m[2])
+		raw := m[2]
+		if isTruncatedURL(raw) {
+			continue
+		}
+		url := cleanURL(raw)
 		if url == "" || seen[url] {
 			continue
 		}
@@ -96,6 +106,9 @@ func ExtractLinks(content string) []Link {
 
 	// Second pass: bare URLs not already captured
 	for _, raw := range bareLinkRe.FindAllString(content, -1) {
+		if isTruncatedURL(raw) {
+			continue
+		}
 		url := cleanURL(raw)
 		if url == "" || seen[url] {
 			continue
