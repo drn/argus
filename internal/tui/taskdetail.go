@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 // TaskDetailPanel displays metadata for the selected task in the right panel.
@@ -40,13 +41,13 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Details ", theme.StyleBorder)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, " Details ", theme.StyleBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
 
 	if td.task == nil {
-		drawText(screen, inner.X, inner.Y, inner.W, "No task selected", theme.StyleDimmed)
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No task selected", theme.StyleDimmed)
 		return
 	}
 
@@ -58,7 +59,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	if len(name) > inner.W-1 {
 		name = name[:inner.W-4] + "..."
 	}
-	drawText(screen, inner.X, row, inner.W, name, theme.StyleTitle)
+	widget.DrawText(screen, inner.X, row, inner.W, name, theme.StyleTitle)
 	row += 2
 
 	// Status
@@ -129,7 +130,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 	maxRow := inner.Y + inner.H
 	if t.Prompt != "" && row < maxRow-1 {
 		row++
-		drawText(screen, inner.X, row, inner.W, "PROMPT", theme.StyleTitle)
+		widget.DrawText(screen, inner.X, row, inner.W, "PROMPT", theme.StyleTitle)
 		row++
 		remaining := maxRow - row
 		promptLines := td.wrapText(t.Prompt, inner.W-1)
@@ -137,7 +138,7 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 			if i >= remaining {
 				break
 			}
-			drawText(screen, inner.X, row, inner.W, line, theme.StyleNormal)
+			widget.DrawText(screen, inner.X, row, inner.W, line, theme.StyleNormal)
 			row++
 		}
 	}
@@ -146,8 +147,8 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 // drawField renders "Label: Value" and returns the next row.
 func (td *TaskDetailPanel) drawField(screen tcell.Screen, x, row, w int, label, value string, valStyle tcell.Style) int {
 	labelStr := fmt.Sprintf("%s: ", label)
-	drawText(screen, x, row, len(labelStr), labelStr, theme.StyleDimmed)
-	drawText(screen, x+len(labelStr), row, w-len(labelStr), value, valStyle)
+	widget.DrawText(screen, x, row, len(labelStr), labelStr, theme.StyleDimmed)
+	widget.DrawText(screen, x+len(labelStr), row, w-len(labelStr), value, valStyle)
 	return row + 1
 }
 

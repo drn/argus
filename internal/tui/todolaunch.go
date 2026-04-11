@@ -11,6 +11,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 const (
@@ -427,7 +428,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " Launch as Task "
@@ -445,7 +446,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	if len(name) > innerW {
 		name = name[:innerW-1] + "..."
 	}
-	drawText(screen, innerX, row, innerW, name, theme.StyleNormal.Bold(true))
+	widget.DrawText(screen, innerX, row, innerW, name, theme.StyleNormal.Bold(true))
 	row += 2
 
 	// Project selector
@@ -453,11 +454,11 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	if m.focused == ltFieldProject {
 		projLabelStyle = theme.StyleTitle
 	}
-	drawText(screen, innerX, row, innerW, "Project:", projLabelStyle)
+	widget.DrawText(screen, innerX, row, innerW, "Project:", projLabelStyle)
 	row++
 
 	if len(m.projectNames) == 0 {
-		drawText(screen, innerX, row, innerW, "(no projects configured)", theme.StyleDimmed)
+		widget.DrawText(screen, innerX, row, innerW, "(no projects configured)", theme.StyleDimmed)
 	} else {
 		pname := m.projectNames[m.projectIdx]
 		selector := "◀ " + pname + " ▶"
@@ -465,12 +466,12 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 		if m.focused == ltFieldProject {
 			selectorStyle = theme.StyleSelected
 		}
-		drawText(screen, innerX, row, innerW, selector, selectorStyle)
+		widget.DrawText(screen, innerX, row, innerW, selector, selectorStyle)
 
 		posText := "(" + itoa(m.projectIdx+1) + "/" + itoa(len(m.projectNames)) + ")"
 		posX := innerX + innerW - len(posText)
 		if posX > innerX+len(selector)+1 {
-			drawText(screen, posX, row, len(posText), posText, theme.StyleDimmed)
+			widget.DrawText(screen, posX, row, len(posText), posText, theme.StyleDimmed)
 		}
 	}
 	row += 2
@@ -480,7 +481,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	if m.focused == ltFieldPrompt {
 		promptLabelStyle = theme.StyleTitle
 	}
-	drawText(screen, innerX, row, innerW, "Prompt:", promptLabelStyle)
+	widget.DrawText(screen, innerX, row, innerW, "Prompt:", promptLabelStyle)
 	row++
 
 	curLine, curCol := m.cursorWrappedPos(innerW)
@@ -538,7 +539,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 				start := wrappedLines[li].start
 				length := wrappedLines[li].length
 				lineStr := string(m.prompt[start : start+length])
-				drawText(screen, innerX, row+vi, innerW, lineStr, unfocusedStyle)
+				widget.DrawText(screen, innerX, row+vi, innerW, lineStr, unfocusedStyle)
 			}
 		}
 	}
@@ -547,7 +548,7 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 	// Error
 	if m.errMsg != "" {
 		row++
-		drawText(screen, innerX, row, innerW, m.errMsg, theme.StyleError)
+		widget.DrawText(screen, innerX, row, innerW, m.errMsg, theme.StyleError)
 		row++
 	}
 
@@ -555,5 +556,5 @@ func (m *LaunchToDoModal) Draw(screen tcell.Screen) {
 
 	// Help
 	help := "Enter launch  Tab switch  Esc cancel"
-	drawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
+	widget.DrawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
 }

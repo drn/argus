@@ -11,6 +11,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 // previewCell is a pre-rendered cell for the preview panel.
@@ -209,7 +210,7 @@ func (tp *TaskPreviewPanel) Draw(screen tcell.Screen) {
 		return
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Preview ", theme.StyleBorder)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, " Preview ", theme.StyleBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
@@ -256,7 +257,7 @@ func (tp *TaskPreviewPanel) drawCentered(screen tcell.Screen, x, y, w, h int, ms
 		if startX < x {
 			startX = x
 		}
-		drawText(screen, startX, row, w-(startX-x), line, theme.StyleDimmed)
+		widget.DrawText(screen, startX, row, w-(startX-x), line, theme.StyleDimmed)
 	}
 }
 

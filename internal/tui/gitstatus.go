@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -60,13 +61,13 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 		borderStyle = theme.StyleFocusedBorder
 	}
 
-	inner := drawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, " Git Status ", borderStyle)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
 
 	if !gp.loaded {
-		drawText(screen, inner.X, inner.Y, inner.W, "Loading...", theme.StyleDimmed)
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "Loading...", theme.StyleDimmed)
 		return
 	}
 
@@ -75,7 +76,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// STATUS section
 	if len(gp.statusLines) > 0 {
-		drawText(screen, inner.X, row, inner.W, "Files", theme.StyleTitle)
+		widget.DrawText(screen, inner.X, row, inner.W, "Files", theme.StyleTitle)
 		row++
 		for _, line := range gp.statusLines {
 			if row >= maxRow {
@@ -83,7 +84,7 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 			}
 			style := gp.statusLineStyle(line)
 			text := truncate(line, inner.W)
-			drawText(screen, inner.X, row, inner.W, text, style)
+			widget.DrawText(screen, inner.X, row, inner.W, text, style)
 			row++
 		}
 		row++ // spacer
@@ -91,14 +92,14 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// DIFF section
 	if len(gp.diffLines) > 0 && row < maxRow {
-		drawText(screen, inner.X, row, inner.W, "Diff", theme.StyleTitle)
+		widget.DrawText(screen, inner.X, row, inner.W, "Diff", theme.StyleTitle)
 		row++
 		for _, line := range gp.diffLines {
 			if row >= maxRow {
 				break
 			}
 			text := truncate(line, inner.W)
-			drawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
+			widget.DrawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
 			row++
 		}
 		row++
@@ -106,21 +107,21 @@ func (gp *GitPanel) Draw(screen tcell.Screen) {
 
 	// BRANCH section
 	if len(gp.branchLines) > 0 && row < maxRow {
-		drawText(screen, inner.X, row, inner.W, "BRANCH", theme.StyleTitle)
+		widget.DrawText(screen, inner.X, row, inner.W, "BRANCH", theme.StyleTitle)
 		row++
 		for _, line := range gp.branchLines {
 			if row >= maxRow {
 				break
 			}
 			text := truncate(line, inner.W)
-			drawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
+			widget.DrawText(screen, inner.X, row, inner.W, text, theme.StyleDimmed)
 			row++
 		}
 	}
 
 	// Empty state
 	if len(gp.statusLines) == 0 && len(gp.diffLines) == 0 && len(gp.branchLines) == 0 {
-		drawText(screen, inner.X, inner.Y, inner.W, "Clean — no changes", theme.StyleDimmed)
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "Clean — no changes", theme.StyleDimmed)
 	}
 }
 

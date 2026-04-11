@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -57,19 +58,19 @@ func TestSwitchTab(t *testing.T) {
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false, false)
 
-	app.switchTab(TabReviews)
-	if app.header.ActiveTab() != TabReviews {
-		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	app.switchTab(widget.TabReviews)
+	if app.header.ActiveTab() != widget.TabReviews {
+		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
 	}
 
-	app.switchTab(TabSettings)
-	if app.header.ActiveTab() != TabSettings {
-		t.Errorf("tab = %v, want TabSettings", app.header.ActiveTab())
+	app.switchTab(widget.TabSettings)
+	if app.header.ActiveTab() != widget.TabSettings {
+		t.Errorf("tab = %v, want widget.TabSettings", app.header.ActiveTab())
 	}
 
-	app.switchTab(TabTasks)
-	if app.header.ActiveTab() != TabTasks {
-		t.Errorf("tab = %v, want TabTasks", app.header.ActiveTab())
+	app.switchTab(widget.TabTasks)
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Errorf("tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 }
 
@@ -294,8 +295,8 @@ func TestArrowTabNavigation(t *testing.T) {
 	app := New(d, runner, false, false)
 
 	// Start on Tasks tab
-	if app.header.ActiveTab() != TabTasks {
-		t.Fatalf("initial tab = %v, want TabTasks", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Fatalf("initial tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
 	// Right arrow → To Dos
@@ -304,26 +305,26 @@ func TestArrowTabNavigation(t *testing.T) {
 	if result != nil {
 		t.Error("right arrow should be consumed (return nil)")
 	}
-	if app.header.ActiveTab() != TabToDos {
-		t.Errorf("tab = %v, want TabToDos", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabToDos {
+		t.Errorf("tab = %v, want widget.TabToDos", app.header.ActiveTab())
 	}
 
 	// Right arrow → Reviews
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabReviews {
-		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabReviews {
+		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
 	}
 
 	// Right arrow → Settings
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabSettings {
-		t.Errorf("tab = %v, want TabSettings", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabSettings {
+		t.Errorf("tab = %v, want widget.TabSettings", app.header.ActiveTab())
 	}
 
 	// Right arrow at Settings — stays on Settings (no wrap)
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabSettings {
-		t.Errorf("tab = %v, want TabSettings (no wrap)", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabSettings {
+		t.Errorf("tab = %v, want widget.TabSettings (no wrap)", app.header.ActiveTab())
 	}
 
 	// Left arrow → Reviews
@@ -332,26 +333,26 @@ func TestArrowTabNavigation(t *testing.T) {
 	if result != nil {
 		t.Error("left arrow should be consumed")
 	}
-	if app.header.ActiveTab() != TabReviews {
-		t.Errorf("tab = %v, want TabReviews", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabReviews {
+		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
 	}
 
 	// Left arrow → To Dos
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabToDos {
-		t.Errorf("tab = %v, want TabToDos", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabToDos {
+		t.Errorf("tab = %v, want widget.TabToDos", app.header.ActiveTab())
 	}
 
 	// Left arrow → Tasks
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabTasks {
-		t.Errorf("tab = %v, want TabTasks", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Errorf("tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
 	// Left arrow at Tasks — stays on Tasks (no wrap)
 	result = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabTasks {
-		t.Errorf("tab = %v, want TabTasks (no wrap)", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Errorf("tab = %v, want widget.TabTasks (no wrap)", app.header.ActiveTab())
 	}
 }
 
@@ -630,7 +631,7 @@ func TestArrowsIgnoredInAgentMode(t *testing.T) {
 	// Right arrow should NOT switch tabs in agent mode
 	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
 	app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != TabTasks {
+	if app.header.ActiveTab() != widget.TabTasks {
 		t.Errorf("tab changed in agent mode: %v", app.header.ActiveTab())
 	}
 }

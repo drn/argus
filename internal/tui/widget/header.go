@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import (
 	"fmt"
@@ -20,7 +20,7 @@ const (
 	TabSettings
 )
 
-var tabLabels = [...]string{"Tasks", "To Dos", "Reviews", "Settings"}
+var TabLabels = [...]string{"Tasks", "To Dos", "Reviews", "Settings"}
 var tabKeys = [...]string{"1", "2", "3", "4"}
 
 // Powerline separator (right-facing filled chevron).
@@ -121,7 +121,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 	// Compute total width of all tab segments to center them.
 	// Each segment = 1 (open chevron) + len(text) + 1 (close chevron).
 	totalWidth := 0
-	for _, label := range tabLabels {
+	for _, label := range TabLabels {
 		text := fmt.Sprintf(" %s ", label)
 		totalWidth += 1 + len(text) + 1 // open sep + text + close sep
 	}
@@ -132,7 +132,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 	}
 
 	// Draw tabs
-	for i, label := range tabLabels {
+	for i, label := range TabLabels {
 		if col >= x+width {
 			break
 		}

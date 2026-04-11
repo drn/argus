@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -44,7 +45,7 @@ func drawTodoBanner(screen tcell.Screen, x, y, width int) int {
 	row := y
 
 	// Top accent line.
-	drawFadingAccent(screen, x, row, width, todoBannerTextWidth)
+	widget.DrawFadingAccent(screen, x, row, width, todoBannerTextWidth)
 	row++
 	row++ // blank line
 
@@ -55,12 +56,12 @@ func drawTodoBanner(screen tcell.Screen, x, y, width int) int {
 			padLeft = 0
 		}
 		style := tcell.StyleDefault.Foreground(todoBannerGradient[i]).Bold(true)
-		drawText(screen, x+padLeft, row, width-padLeft, line, style)
+		widget.DrawText(screen, x+padLeft, row, width-padLeft, line, style)
 		row++
 	}
 
 	// Gradient underline beneath banner.
-	drawGradientUnderline(screen, x, row, width, todoBannerTextWidth, todoBannerGradient[:])
+	widget.DrawGradientUnderline(screen, x, row, width, todoBannerTextWidth, todoBannerGradient[:])
 	row++
 	row++ // blank line
 
@@ -69,12 +70,12 @@ func drawTodoBanner(screen tcell.Screen, x, y, width int) int {
 	if subPad < 0 {
 		subPad = 0
 	}
-	drawText(screen, x+subPad, row, width-subPad, todoSubtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	widget.DrawText(screen, x+subPad, row, width-subPad, todoSubtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	row++
 	row++ // blank line
 
 	// Bottom accent line.
-	drawFadingAccent(screen, x, row, width, todoBannerTextWidth)
+	widget.DrawFadingAccent(screen, x, row, width, todoBannerTextWidth)
 	row++
 
 	return row - y

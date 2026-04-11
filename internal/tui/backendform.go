@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 const (
@@ -151,13 +152,13 @@ func (bf *BackendForm) Draw(screen tcell.Screen) {
 		formY = y
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
 
 	title := "New Backend"
 	if bf.editMode {
 		title = "Edit Backend"
 	}
-	drawText(screen, formX+2, formY+1, formW-4, title, theme.StyleTitle)
+	widget.DrawText(screen, formX+2, formY+1, formW-4, title, theme.StyleTitle)
 
 	labels := [3]string{"Name:", "Command:", "Prompt Flag:"}
 	for i := range 3 {
@@ -169,7 +170,7 @@ func (bf *BackendForm) Draw(screen tcell.Screen) {
 		if i == bf.focused {
 			style = tcell.StyleDefault.Foreground(theme.ColorTitle)
 		}
-		drawText(screen, formX+2, ly, 14, labels[i], style)
+		widget.DrawText(screen, formX+2, ly, 14, labels[i], style)
 
 		val := string(bf.fields[i])
 		if i == bf.focused {
@@ -187,10 +188,10 @@ func (bf *BackendForm) Draw(screen tcell.Screen) {
 			valRunes = valRunes[len(valRunes)-maxW:]
 		}
 		val = string(valRunes)
-		drawText(screen, formX+16, ly, maxW, val, fieldStyle)
+		widget.DrawText(screen, formX+16, ly, maxW, val, fieldStyle)
 	}
 
 	if bf.errMsg != "" {
-		drawText(screen, formX+2, formY+formH-2, formW-4, bf.errMsg, theme.StyleError)
+		widget.DrawText(screen, formX+2, formY+formH-2, formW-4, bf.errMsg, theme.StyleError)
 	}
 }

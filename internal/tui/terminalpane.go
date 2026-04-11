@@ -21,6 +21,7 @@ import (
 	"github.com/drn/argus/internal/app/agentview"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -137,8 +138,8 @@ type TerminalPane struct {
 	// Diff mode.
 	diffMode         bool
 	diffParsed       gitutil.ParsedDiff
-	diffUnifiedLines []renderedDiffLine
-	diffSplitLines   []renderedDiffLine
+	diffUnifiedLines []widget.RenderedDiffLine
+	diffSplitLines   []widget.RenderedDiffLine
 	diffSplitWidth   int // width used to build split lines (invalidate on resize)
 	diffSplit        bool
 	diffScroll       int
@@ -520,7 +521,7 @@ func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
 	tp.diffScroll = 0
 	tp.diffFile = fileName
 	tp.diffParsed = gitutil.ParseUnifiedDiff(diff)
-	tp.diffUnifiedLines = buildUnifiedDiffLines(tp.diffParsed, fileName)
+	tp.diffUnifiedLines = widget.BuildUnifiedDiffLines(tp.diffParsed, fileName)
 	tp.diffSplitLines = nil
 	tp.diffSplitWidth = 0
 }
@@ -587,7 +588,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if tp.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	inner := drawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return
@@ -627,12 +628,12 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if sess == nil && !tp.HasContent() {
 		if pending {
 			// Show launch banner while worktree is being created.
-			bannerH := pendingBannerHeight()
+			bannerH := widget.PendingBannerHeight()
 			bannerY := y + (height-bannerH)/2
 			if bannerY < y {
 				bannerY = y
 			}
-			drawPendingBanner(screen, x, bannerY, width)
+			widget.DrawPendingBanner(screen, x, bannerY, width)
 			return
 		}
 		msg := "No active session"
@@ -644,7 +645,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		if midX < x {
 			midX = x
 		}
-		drawText(screen, midX, midY, width, msg, theme.StyleDimmed)
+		widget.DrawText(screen, midX, midY, width, msg, theme.StyleDimmed)
 		return
 	}
 
@@ -768,7 +769,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		}
 		if sess != nil {
 			msg := "Waiting for output..."
-			drawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, theme.StyleDimmed)
+			widget.DrawText(screen, x+(width-len(msg))/2, y+height/2, width, msg, theme.StyleDimmed)
 		}
 		return
 	} else {
@@ -908,7 +909,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		if len(raw) == 0 {
 			if tp.emuFedTotal == 0 {
 				msg := "Waiting for output..."
-				drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
+				widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 				return
 			}
 			// Emulator already has content — just repaint below.
@@ -927,7 +928,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	} else if tp.emuFedTotal == 0 {
 		// No data has ever arrived.
 		msg := "Waiting for output..."
-		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
+		widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 		return
 	} else if tp.paintCacheValid && tp.paintCacheX == x && tp.paintCacheY == y &&
 		tp.paintCacheW == w && tp.paintCacheH == h {
@@ -1126,11 +1127,11 @@ func (tp *TerminalPane) newTrackedReplayEmulatorWithCallback(cols, rows int, onC
 // --- Diff rendering ---
 
 func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
-	var lines []renderedDiffLine
+	var lines []widget.RenderedDiffLine
 	if tp.diffSplit {
 		// Rebuild side-by-side lines if width changed.
 		if tp.diffSplitWidth != w || tp.diffSplitLines == nil {
-			tp.diffSplitLines = buildSideBySideDiffLines(tp.diffParsed, tp.diffFile, w)
+			tp.diffSplitLines = widget.BuildSideBySideDiffLines(tp.diffParsed, tp.diffFile, w)
 			tp.diffSplitWidth = w
 		}
 		lines = tp.diffSplitLines
@@ -1140,7 +1141,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 
 	if len(lines) == 0 {
 		msg := "No diff available"
-		drawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
+		widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
 		return
 	}
 
@@ -1172,7 +1173,7 @@ func (tp *TerminalPane) renderDiff(screen tcell.Screen, x, y, w, h int) {
 		if lineIdx >= len(lines) {
 			break
 		}
-		drawStyledLine(screen, x, y+1+i, w, lines[lineIdx].cells)
+		widget.DrawStyledLine(screen, x, y+1+i, w, lines[lineIdx].Cells)
 	}
 }
 

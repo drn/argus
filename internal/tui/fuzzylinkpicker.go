@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -199,7 +200,7 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " Open Link "
@@ -214,7 +215,7 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 	// Filter input row
 	filterY := my + 2
 	filterLabel := "› "
-	drawText(screen, innerX, filterY, 2, filterLabel, theme.StyleFilter)
+	widget.DrawText(screen, innerX, filterY, 2, filterLabel, theme.StyleFilter)
 	// Query text with cursor
 	before := string(m.query[:m.qCursor])
 	after := string(m.query[m.qCursor:])
@@ -227,14 +228,14 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 			val = string(runes[len(runes)-fieldW:])
 		}
 	}
-	drawText(screen, innerX+2, filterY, fieldW, val, theme.StyleNormal)
+	widget.DrawText(screen, innerX+2, filterY, fieldW, val, theme.StyleNormal)
 
 	// Items
 	itemsY := my + 4
 	maxVisible := min(maxItems, len(m.filtered))
 
 	if len(m.filtered) == 0 && len(m.query) > 0 {
-		drawText(screen, innerX, itemsY, innerW, "No matches", theme.StyleDimmed)
+		widget.DrawText(screen, innerX, itemsY, innerW, "No matches", theme.StyleDimmed)
 	} else {
 		// Scrolling offset
 		offset := 0
@@ -267,12 +268,12 @@ func (m *FuzzyLinkPickerModal) Draw(screen tcell.Screen) {
 			if isCursor {
 				style = theme.StyleSelected
 			}
-			drawText(screen, innerX, itemsY+i, innerW, display, style)
+			widget.DrawText(screen, innerX, itemsY+i, innerW, display, style)
 		}
 	}
 
 	// Help text
 	helpRow := my + modalH - 2
 	help := "↑/↓ select  Enter open  Esc cancel"
-	drawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
+	widget.DrawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
 }

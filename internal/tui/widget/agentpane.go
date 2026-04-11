@@ -1,4 +1,4 @@
-package tui
+package widget
 
 // agentpane.go — shared drawing utilities for the tui package.
 // The AgentPane placeholder (Phase 2) has been replaced by TerminalPane (Phase 3).
@@ -9,12 +9,12 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-// ansiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
+// AnsiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
 // CSI sequences: \x1b[ <params 0x20-0x3f>* <final 0x40-0x7e>
 // OSC sequences are terminated by either BEL (\x07) or ST (\x1b\\).
-// NOTE: For link extraction, osc8Re in todolinks.go must run BEFORE ansiRe
-// to preserve URLs embedded in OSC 8 hyperlink tags (ansiRe strips them).
-var ansiRe = regexp.MustCompile(`\x1b(?:\[[\x20-\x3f]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-B]|[78DEHM])`)
+// NOTE: For link extraction, osc8Re in todolinks.go must run BEFORE AnsiRe
+// to preserve URLs embedded in OSC 8 hyperlink tags (AnsiRe strips them).
+var AnsiRe = regexp.MustCompile(`\x1b(?:\[[\x20-\x3f]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-B]|[78DEHM])`)
 
 // splitLines strips ANSI escape sequences, then splits the result into
 // display lines, wrapping at maxWidth.
@@ -25,7 +25,7 @@ func splitLines(data []byte, maxWidth int) []string {
 	// All ANSI → empty here (display wrapping, not URL extraction).
 	// stripANSI in todolinks.go uses a different strategy for link extraction:
 	// SGR → empty (preserves mid-URL colors), non-SGR → space (prevents merging).
-	clean := ansiRe.ReplaceAll(data, nil)
+	clean := AnsiRe.ReplaceAll(data, nil)
 
 	var lines []string
 	var current []rune
@@ -53,8 +53,8 @@ func splitLines(data []byte, maxWidth int) []string {
 	return lines
 }
 
-// drawBorder draws a Unicode box border.
-func drawBorder(screen tcell.Screen, x, y, w, h int, style tcell.Style) {
+// DrawBorder draws a Unicode box border.
+func DrawBorder(screen tcell.Screen, x, y, w, h int, style tcell.Style) {
 	if w < 2 || h < 2 {
 		return
 	}
@@ -72,16 +72,16 @@ func drawBorder(screen tcell.Screen, x, y, w, h int, style tcell.Style) {
 	}
 }
 
-// innerRect holds the content area inside a bordered panel.
-type innerRect struct {
+// InnerRect holds the content area inside a bordered panel.
+type InnerRect struct {
 	X, Y, W, H int
 }
 
-// drawBorderedPanel draws a rounded border at (x, y, w, h) with an optional
+// DrawBorderedPanel draws a rounded border at (x, y, w, h) with an optional
 // title embedded in the top border, and returns the inner content rect.
 // All bordered panels should use this to guarantee consistent chrome.
-func drawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style tcell.Style) innerRect {
-	drawBorder(screen, x, y, w, h, style)
+func DrawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style tcell.Style) InnerRect {
+	DrawBorder(screen, x, y, w, h, style)
 	if title != "" {
 		for i, r := range title {
 			if x+1+i < x+w-1 {
@@ -89,5 +89,5 @@ func drawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style 
 			}
 		}
 	}
-	return innerRect{X: x + 1, Y: y + 1, W: w - 2, H: h - 2}
+	return InnerRect{X: x + 1, Y: y + 1, W: w - 2, H: h - 2}
 }

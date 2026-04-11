@@ -10,6 +10,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
 
@@ -46,7 +47,7 @@ func stripANSI(s string) string {
 	// (empty URL) become just a space — harmless for subsequent URL matching.
 	s = osc8Re.ReplaceAllString(s, "$1 ")
 	// Second pass: conditionally replace ANSI sequences.
-	return ansiRe.ReplaceAllStringFunc(s, func(seq string) string {
+	return widget.AnsiRe.ReplaceAllStringFunc(s, func(seq string) string {
 		// SGR sequences are CSI ending in 'm' — strip to preserve URL continuity.
 		// seq[0] is always ESC (\x1b); seq[1]=='[' means CSI (vs ']' for OSC, etc.)
 		if len(seq) >= 3 && seq[1] == '[' && seq[len(seq)-1] == 'm' {
@@ -246,7 +247,7 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " Open Link "
@@ -286,11 +287,11 @@ func (m *LinkPickerModal) Draw(screen tcell.Screen) {
 		if isCursor {
 			style = theme.StyleSelected
 		}
-		drawText(screen, innerX, row+i, innerW, label, style)
+		widget.DrawText(screen, innerX, row+i, innerW, label, style)
 	}
 
 	// Help text
 	helpRow := my + modalH - 2
 	help := "↑/↓ select  Enter open  Esc cancel"
-	drawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
+	widget.DrawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
 }

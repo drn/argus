@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -65,15 +66,15 @@ func (m *ConfirmCleanupToDosModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Clean up completed to-dos?", theme.StyleTitle)
+	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	widget.DrawText(screen, formX+2, formY+1, formW-4, "Clean up completed to-dos?", theme.StyleTitle)
 
 	noun := "note"
 	if m.count != 1 {
 		noun = "notes"
 	}
 	detail := fmt.Sprintf("Delete %d completed %s from vault", m.count, noun)
-	drawText(screen, formX+4, formY+3, formW-6, detail, theme.StyleNormal)
+	widget.DrawText(screen, formX+4, formY+3, formW-6, detail, theme.StyleNormal)
 
-	drawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
+	widget.DrawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }

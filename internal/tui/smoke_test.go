@@ -9,6 +9,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -232,17 +233,17 @@ func TestSmoke_TabSwitching(t *testing.T) {
 	// Switch to each tab via numeric keys.
 	for _, tc := range []struct {
 		key  rune
-		want Tab
+		want widget.Tab
 	}{
-		{'2', TabToDos},
-		{'3', TabReviews},
-		{'4', TabSettings},
-		{'1', TabTasks},
+		{'2', widget.TabToDos},
+		{'3', widget.TabReviews},
+		{'4', widget.TabSettings},
+		{'1', widget.TabTasks},
 	} {
 		sim.InjectKey(tcell.KeyRune, tc.key, 0)
 		syncUI(t, app.tapp)
 		// Read tab state on the tview goroutine to avoid data races.
-		var got Tab
+		var got widget.Tab
 		readUI(t, app.tapp, func() { got = app.header.ActiveTab() })
 		if got != tc.want {
 			t.Errorf("key %c: tab = %d, want %d", tc.key, got, tc.want)
@@ -320,7 +321,7 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 }
 
 // TestSmoke_ExitAgentViewResetsTab verifies that exiting agent view resets the
-// header tab to TabTasks. This is critical when the agent was entered from a
+// header tab to widget.TabTasks. This is critical when the agent was entered from a
 // non-Tasks tab (e.g. ToDos): without the reset, the global key handler routes
 // up/down keys to the wrong tab's handler, breaking task list navigation.
 func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
@@ -341,10 +342,10 @@ func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 	_, stop := wireApp(t, app)
 	defer stop()
 
-	// Simulate entering agent view from the ToDos tab: set header to TabToDos,
+	// Simulate entering agent view from the ToDos tab: set header to widget.TabToDos,
 	// then enter agent view.
 	readUI(t, app.tapp, func() {
-		app.header.SetTab(TabToDos)
+		app.header.SetTab(widget.TabToDos)
 		app.onTaskSelect(task, true)
 	})
 
@@ -357,13 +358,13 @@ func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 		app.exitAgentView()
 	})
 
-	var tab Tab
+	var tab widget.Tab
 	readUI(t, app.tapp, func() {
 		mode = app.mode
 		tab = app.header.ActiveTab()
 	})
 	testutil.Equal(t, mode, modeTaskList)
-	testutil.Equal(t, tab, TabTasks)
+	testutil.Equal(t, tab, widget.TabTasks)
 }
 
 func TestSmoke_LinkPickerFocusRestore(t *testing.T) {

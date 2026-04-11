@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import (
 	"strings"
@@ -9,22 +9,22 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
-// styledChar is a single character with its tcell style from syntax highlighting.
-type styledChar struct {
-	ch    rune
-	style tcell.Style
+// StyledChar is a single character with its tcell style from syntax highlighting.
+type StyledChar struct {
+	Ch    rune
+	Style tcell.Style
 }
 
-// highlightedLine is one line of syntax-highlighted text as styled characters.
-type highlightedLine struct {
-	cells []styledChar
+// HighlightedLine is one line of syntax-highlighted text as styled characters.
+type HighlightedLine struct {
+	Cells []StyledChar
 }
 
-// highlightLines applies Chroma syntax highlighting to plain-text lines,
+// HighlightLines applies Chroma syntax highlighting to plain-text lines,
 // returning per-character tcell styles. Falls back to unstyled text if
 // the language is not recognized.
-func highlightLines(lines []string, filename string) []highlightedLine {
-	result := make([]highlightedLine, len(lines))
+func HighlightLines(lines []string, filename string) []HighlightedLine {
+	result := make([]HighlightedLine, len(lines))
 
 	lexer := lexerForFile(filename)
 	if lexer == nil {
@@ -49,23 +49,23 @@ func highlightLines(lines []string, filename string) []highlightedLine {
 
 // tokenizeLine runs the chroma lexer on a single line and maps token types
 // to tcell styles using the provided chroma style.
-func tokenizeLine(lexer chroma.Lexer, style *chroma.Style, line string) highlightedLine {
+func tokenizeLine(lexer chroma.Lexer, style *chroma.Style, line string) HighlightedLine {
 	iterator, err := lexer.Tokenise(nil, line)
 	if err != nil {
 		return plainLine(line)
 	}
 
-	var cells []styledChar
+	var cells []StyledChar
 	for _, token := range iterator.Tokens() {
 		tcStyle := tokenToStyle(style, token.Type)
 		for _, r := range token.Value {
 			if r == '\n' {
 				continue // skip newlines within tokens
 			}
-			cells = append(cells, styledChar{ch: r, style: tcStyle})
+			cells = append(cells, StyledChar{Ch: r, Style: tcStyle})
 		}
 	}
-	return highlightedLine{cells: cells}
+	return HighlightedLine{Cells: cells}
 }
 
 // tokenToStyle maps a chroma token type to a tcell.Style using the given
@@ -95,12 +95,12 @@ func tokenToStyle(s *chroma.Style, tokenType chroma.TokenType) tcell.Style {
 }
 
 // plainLine returns an unhighlighted line.
-func plainLine(line string) highlightedLine {
-	cells := make([]styledChar, 0, len(line))
+func plainLine(line string) HighlightedLine {
+	cells := make([]StyledChar, 0, len(line))
 	for _, r := range line {
-		cells = append(cells, styledChar{ch: r, style: tcell.StyleDefault})
+		cells = append(cells, StyledChar{Ch: r, Style: tcell.StyleDefault})
 	}
-	return highlightedLine{cells: cells}
+	return HighlightedLine{Cells: cells}
 }
 
 // lexerForFile returns a chroma lexer for the given filename, or nil if unknown.

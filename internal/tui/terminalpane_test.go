@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 func TestTerminalPane_SetSession(t *testing.T) {
@@ -459,7 +460,7 @@ func TestPaintEmu_HiddenCursorNotRendered(t *testing.T) {
 func TestBuildUnifiedDiffLines(t *testing.T) {
 	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
 	pd := gitutil.ParseUnifiedDiff(diff)
-	lines := buildUnifiedDiffLines(pd, "test.go")
+	lines := widget.BuildUnifiedDiffLines(pd, "test.go")
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty unified diff lines")
 	}
@@ -469,7 +470,7 @@ func TestBuildUnifiedDiffLines(t *testing.T) {
 	}
 	// Each line should have styled cells
 	for i, line := range lines {
-		if len(line.cells) == 0 {
+		if len(line.Cells) == 0 {
 			t.Errorf("line %d has no cells", i)
 		}
 	}
@@ -477,7 +478,7 @@ func TestBuildUnifiedDiffLines(t *testing.T) {
 
 func TestBuildUnifiedDiffLinesEmpty(t *testing.T) {
 	pd := gitutil.ParseUnifiedDiff("")
-	lines := buildUnifiedDiffLines(pd, "test.go")
+	lines := widget.BuildUnifiedDiffLines(pd, "test.go")
 	if lines != nil {
 		t.Error("expected nil for empty diff")
 	}
@@ -486,12 +487,12 @@ func TestBuildUnifiedDiffLinesEmpty(t *testing.T) {
 func TestBuildSideBySideDiffLines(t *testing.T) {
 	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
 	pd := gitutil.ParseUnifiedDiff(diff)
-	lines := buildSideBySideDiffLines(pd, "test.go", 80)
+	lines := widget.BuildSideBySideDiffLines(pd, "test.go", 80)
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty side-by-side diff lines")
 	}
 	for i, line := range lines {
-		if len(line.cells) == 0 {
+		if len(line.Cells) == 0 {
 			t.Errorf("line %d has no cells", i)
 		}
 	}
@@ -499,7 +500,7 @@ func TestBuildSideBySideDiffLines(t *testing.T) {
 
 func TestHighlightLines(t *testing.T) {
 	lines := []string{"func main() {", "  fmt.Println(\"hello\")", "}"}
-	hl := highlightLines(lines, "test.go")
+	hl := widget.HighlightLines(lines, "test.go")
 	if len(hl) != 3 {
 		t.Fatalf("expected 3 highlighted lines, got %d", len(hl))
 	}
@@ -507,8 +508,8 @@ func TestHighlightLines(t *testing.T) {
 	// have non-default foreground.
 	hasColor := false
 	for _, line := range hl {
-		for _, c := range line.cells {
-			fg, _, _ := c.style.Decompose()
+		for _, c := range line.Cells {
+			fg, _, _ := c.Style.Decompose()
 			if fg != tcell.ColorDefault {
 				hasColor = true
 				break
@@ -522,13 +523,13 @@ func TestHighlightLines(t *testing.T) {
 
 func TestHighlightLinesUnknownExtension(t *testing.T) {
 	lines := []string{"hello world"}
-	hl := highlightLines(lines, "unknown.xyz123")
+	hl := widget.HighlightLines(lines, "unknown.xyz123")
 	if len(hl) != 1 {
 		t.Fatalf("expected 1 line, got %d", len(hl))
 	}
 	// Should return plain (unstyled) text
-	if len(hl[0].cells) != len("hello world") {
-		t.Errorf("expected %d cells, got %d", len("hello world"), len(hl[0].cells))
+	if len(hl[0].Cells) != len("hello world") {
+		t.Errorf("expected %d cells, got %d", len("hello world"), len(hl[0].Cells))
 	}
 }
 
@@ -903,7 +904,7 @@ func TestDrawBorder(t *testing.T) {
 	screen.Init()
 	screen.SetSize(20, 10)
 
-	drawBorder(screen, 0, 0, 10, 5, theme.StyleBorder)
+	widget.DrawBorder(screen, 0, 0, 10, 5, theme.StyleBorder)
 
 	ch, _, _, _ := screen.GetContent(0, 0)
 	if ch != '╭' {
@@ -920,8 +921,8 @@ func TestDrawBorderTooSmall(t *testing.T) {
 	screen.Init()
 	screen.SetSize(20, 10)
 	// Should not panic
-	drawBorder(screen, 0, 0, 1, 1, theme.StyleBorder)
-	drawBorder(screen, 0, 0, 0, 0, theme.StyleBorder)
+	widget.DrawBorder(screen, 0, 0, 1, 1, theme.StyleBorder)
+	widget.DrawBorder(screen, 0, 0, 0, 0, theme.StyleBorder)
 }
 
 func TestTerminalPane_AccelScroll(t *testing.T) {

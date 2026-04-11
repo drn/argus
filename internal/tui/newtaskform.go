@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 const (
@@ -1142,7 +1143,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	}
 
 	// Border
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
 	title := " New Task "
@@ -1180,7 +1181,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	if f.focused == ntFieldPrompt {
 		labelStyle = theme.StyleTitle
 	}
-	drawText(screen, innerX, row, innerW, "Prompt:", labelStyle)
+	widget.DrawText(screen, innerX, row, innerW, "Prompt:", labelStyle)
 	row++
 
 	// Prompt input — wrapped across multiple visual lines
@@ -1241,7 +1242,7 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 				start := wrappedLines[li].start
 				length := wrappedLines[li].length
 				lineStr := string(f.prompt[start : start+length])
-				drawText(screen, innerX, row+vi, innerW, lineStr, unfocusedStyle)
+				widget.DrawText(screen, innerX, row+vi, innerW, lineStr, unfocusedStyle)
 			}
 		}
 	}
@@ -1257,13 +1258,13 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Error message
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
+		widget.DrawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help text
 	help := "Enter submit  Tab next  Esc cancel"
-	drawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
+	widget.DrawText(screen, innerX, row, innerW, help, theme.StyleDimmed)
 }
 
 // drawAutocomplete renders the skill suggestion dropdown.
@@ -1327,7 +1328,7 @@ func (f *NewTaskForm) drawAutocomplete(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.acMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.acIdx+1) + "/" + itoa(len(f.acMatches)) + ")"
-		drawText(screen, x, y+end-f.acScroll, w, countStr, theme.StyleDimmed)
+		widget.DrawText(screen, x, y+end-f.acScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
@@ -1342,7 +1343,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 	}
 	label := "Project:"
 	labelW := utf8.RuneCountInString(label)
-	drawText(screen, x, y, w, label, labelStyle)
+	widget.DrawText(screen, x, y, w, label, labelStyle)
 
 	inputX := x + labelW + 1
 	inputW := w - labelW - 1
@@ -1386,7 +1387,7 @@ func (f *NewTaskForm) drawProjectField(screen tcell.Screen, x, y, w int) {
 			}
 		} else {
 			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
-			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
+			widget.DrawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
 }
@@ -1423,7 +1424,7 @@ func (f *NewTaskForm) drawProjectAC(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.projACMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.projACIdx+1) + "/" + itoa(len(f.projACMatches)) + ")"
-		drawText(screen, x, y+end-f.projACScroll, w, countStr, theme.StyleDimmed)
+		widget.DrawText(screen, x, y+end-f.projACScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
@@ -1438,7 +1439,7 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 	}
 	label := "Branch:"
 	labelW := utf8.RuneCountInString(label)
-	drawText(screen, x, y, w, label, labelStyle)
+	widget.DrawText(screen, x, y, w, label, labelStyle)
 
 	inputX := x + labelW + 1
 	inputW := w - labelW - 1
@@ -1482,7 +1483,7 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 			}
 		} else {
 			unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
-			drawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
+			widget.DrawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
 }
@@ -1519,7 +1520,7 @@ func (f *NewTaskForm) drawBranchAC(screen tcell.Screen, x, y, w int) {
 	// Scroll indicator
 	if len(f.branchACMatches) > acMaxVisible {
 		countStr := "  (" + itoa(f.branchACIdx+1) + "/" + itoa(len(f.branchACMatches)) + ")"
-		drawText(screen, x, y+end-f.branchACScroll, w, countStr, theme.StyleDimmed)
+		widget.DrawText(screen, x, y+end-f.branchACScroll, w, countStr, theme.StyleDimmed)
 	}
 }
 
@@ -1528,10 +1529,10 @@ func (f *NewTaskForm) drawSelector(screen tcell.Screen, x, y, w int, label strin
 	if focused {
 		labelStyle = theme.StyleTitle
 	}
-	drawText(screen, x, y, w, label+":", labelStyle)
+	widget.DrawText(screen, x, y, w, label+":", labelStyle)
 
 	if len(names) == 0 {
-		drawText(screen, x+len(label)+2, y, w-len(label)-2, "(none)", theme.StyleDimmed)
+		widget.DrawText(screen, x+len(label)+2, y, w-len(label)-2, "(none)", theme.StyleDimmed)
 		return
 	}
 
@@ -1541,13 +1542,13 @@ func (f *NewTaskForm) drawSelector(screen tcell.Screen, x, y, w int, label strin
 	if focused {
 		selectorStyle = theme.StyleSelected
 	}
-	drawText(screen, x+len(label)+2, y, w-len(label)-2, selector, selectorStyle)
+	widget.DrawText(screen, x+len(label)+2, y, w-len(label)-2, selector, selectorStyle)
 
 	// Position indicator
 	posText := "(" + itoa(idx+1) + "/" + itoa(len(names)) + ")"
 	posX := x + w - len(posText)
 	if posX > x+len(label)+2+len(selector)+1 {
-		drawText(screen, posX, y, len(posText), posText, theme.StyleDimmed)
+		widget.DrawText(screen, posX, y, len(posText), posText, theme.StyleDimmed)
 	}
 }
 

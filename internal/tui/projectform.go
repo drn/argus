@@ -9,6 +9,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 // pfMaxACVisible is the maximum number of autocomplete rows shown at once.
@@ -355,7 +356,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	modalBG := tcell.ColorDefault
-	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
 
 	title := " New Project "
 	if pf.editMode {
@@ -379,7 +380,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 		if i == pf.focused {
 			style = tcell.StyleDefault.Foreground(theme.ColorTitle)
 		}
-		drawText(screen, formX+2, ly, 10, labels[i], style)
+		widget.DrawText(screen, formX+2, ly, 10, labels[i], style)
 
 		// Selector fields.
 		if i == pfFieldBranch && pf.branchIsSelector() {
@@ -408,7 +409,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 			valRunes = valRunes[len(valRunes)-maxW:]
 		}
 		val = string(valRunes)
-		drawText(screen, formX+12, ly, maxW, val, style)
+		widget.DrawText(screen, formX+12, ly, maxW, val, style)
 
 		// Draw autocomplete dropdown right after the path field.
 		if i == pfFieldPath {
@@ -417,7 +418,7 @@ func (pf *ProjectForm) Draw(screen tcell.Screen) {
 	}
 
 	if pf.errMsg != "" {
-		drawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, theme.StyleError)
+		widget.DrawText(screen, formX+2, formY+formH-2, formW-4, pf.errMsg, theme.StyleError)
 	}
 }
 
@@ -429,13 +430,13 @@ func (pf *ProjectForm) drawSandboxSelector(screen tcell.Screen, x, y, w int) {
 	if pf.focused == pfFieldSandbox {
 		st = theme.StyleSelected
 	}
-	drawText(screen, x, y, w, selector, st)
+	widget.DrawText(screen, x, y, w, selector, st)
 }
 
 // drawBranchSelector renders the branch field as a ◀/▶ selector.
 func (pf *ProjectForm) drawBranchSelector(screen tcell.Screen, x, y, w int) {
 	if len(pf.branchOptions) == 0 {
-		drawText(screen, x, y, w, "(none)", theme.StyleDimmed)
+		widget.DrawText(screen, x, y, w, "(none)", theme.StyleDimmed)
 		return
 	}
 
@@ -445,12 +446,12 @@ func (pf *ProjectForm) drawBranchSelector(screen tcell.Screen, x, y, w int) {
 	if pf.focused == pfFieldBranch {
 		st = theme.StyleSelected
 	}
-	drawText(screen, x, y, w, selector, st)
+	widget.DrawText(screen, x, y, w, selector, st)
 
 	// Position indicator.
 	posText := "(" + itoa(pf.branchIdx+1) + "/" + itoa(len(pf.branchOptions)) + ")"
 	posX := x + w - utf8.RuneCountInString(posText)
 	if posX > x+utf8.RuneCountInString(selector)+1 {
-		drawText(screen, posX, y, utf8.RuneCountInString(posText), posText, theme.StyleDimmed)
+		widget.DrawText(screen, posX, y, utf8.RuneCountInString(posText), posText, theme.StyleDimmed)
 	}
 }

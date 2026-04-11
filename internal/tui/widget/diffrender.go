@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import (
 	"strings"
@@ -27,16 +27,16 @@ var (
 	diffAddedWordBG   = tcell.NewRGBColor(30, 100, 50) // #1e6432
 )
 
-// renderedDiffLine is a pre-rendered diff line as styled cells, ready to paint.
-type renderedDiffLine struct {
-	cells []styledChar
+// RenderedDiffLine is a pre-rendered diff line as styled cells, ready to paint.
+type RenderedDiffLine struct {
+	Cells []StyledChar
 }
 
-// buildUnifiedDiffLines creates syntax-highlighted unified diff output from a
+// BuildUnifiedDiffLines creates syntax-highlighted unified diff output from a
 // parsed diff and filename. Each line includes line numbers, +/- prefix, and
 // syntax-highlighted content with appropriate background colors. Paired
 // removed+added lines get word-level highlighting on the changed spans.
-func buildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string) []renderedDiffLine {
+func BuildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string) []RenderedDiffLine {
 	if len(pd.Hunks) == 0 {
 		return nil
 	}
@@ -64,22 +64,22 @@ func buildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string) []renderedDif
 		}
 	}
 
-	highlighted := highlightLines(contents, filename)
+	highlighted := HighlightLines(contents, filename)
 
 	// Pre-compute word diff spans for paired removed+added blocks.
 	wordSpans := computeWordSpansForHunks(pd)
 
-	var result []renderedDiffLine
+	var result []RenderedDiffLine
 	for i, ref := range refs {
 		if ref.isSep {
-			result = append(result, renderedDiffLine{
-				cells: styledString("───", tcell.StyleDefault.Foreground(diffDividerFG)),
+			result = append(result, RenderedDiffLine{
+				Cells: styledString("───", tcell.StyleDefault.Foreground(diffDividerFG)),
 			})
 			continue
 		}
 		if ref.isHunk {
-			result = append(result, renderedDiffLine{
-				cells: styledString(contents[i], tcell.StyleDefault.Foreground(diffHunkFG).Italic(true)),
+			result = append(result, RenderedDiffLine{
+				Cells: styledString(contents[i], tcell.StyleDefault.Foreground(diffHunkFG).Italic(true)),
 			})
 			continue
 		}
@@ -89,32 +89,32 @@ func buildUnifiedDiffLines(pd gitutil.ParsedDiff, filename string) []renderedDif
 
 		// Build line number portion.
 		numStyle := tcell.StyleDefault.Foreground(diffLineNumFG)
-		var numCells []styledChar
+		var numCells []StyledChar
 		numCells = append(numCells, styledString(gitutil.FormatLineNum(dl.OldNum, lineNumWidth), numStyle)...)
-		numCells = append(numCells, styledChar{ch: ' ', style: numStyle})
+		numCells = append(numCells, StyledChar{Ch: ' ', Style: numStyle})
 		numCells = append(numCells, styledString(gitutil.FormatLineNum(dl.NewNum, lineNumWidth), numStyle)...)
-		numCells = append(numCells, styledChar{ch: ' ', style: tcell.StyleDefault})
+		numCells = append(numCells, StyledChar{Ch: ' ', Style: tcell.StyleDefault})
 
 		switch dl.Type {
 		case gitutil.DiffRemoved:
 			prefixStyle := tcell.StyleDefault.Foreground(diffRemovedFG).Background(diffRemovedBG)
-			numCells = append(numCells, styledChar{ch: '-', style: prefixStyle})
-			contentCells := applyDiffBG(hl.cells, diffRemovedBG)
+			numCells = append(numCells, StyledChar{Ch: '-', Style: prefixStyle})
+			contentCells := applyDiffBG(hl.Cells, diffRemovedBG)
 			if spans, ok := wordSpans[[2]int{ref.hunkIdx, ref.lineIdx}]; ok {
 				contentCells = applyWordHighlight(contentCells, spans, diffRemovedWordBG)
 			}
-			result = append(result, renderedDiffLine{cells: append(numCells, contentCells...)})
+			result = append(result, RenderedDiffLine{Cells: append(numCells, contentCells...)})
 		case gitutil.DiffAdded:
 			prefixStyle := tcell.StyleDefault.Foreground(diffAddedFG).Background(diffAddedBG)
-			numCells = append(numCells, styledChar{ch: '+', style: prefixStyle})
-			contentCells := applyDiffBG(hl.cells, diffAddedBG)
+			numCells = append(numCells, StyledChar{Ch: '+', Style: prefixStyle})
+			contentCells := applyDiffBG(hl.Cells, diffAddedBG)
 			if spans, ok := wordSpans[[2]int{ref.hunkIdx, ref.lineIdx}]; ok {
 				contentCells = applyWordHighlight(contentCells, spans, diffAddedWordBG)
 			}
-			result = append(result, renderedDiffLine{cells: append(numCells, contentCells...)})
+			result = append(result, RenderedDiffLine{Cells: append(numCells, contentCells...)})
 		default:
-			numCells = append(numCells, styledChar{ch: ' ', style: tcell.StyleDefault})
-			result = append(result, renderedDiffLine{cells: append(numCells, hl.cells...)})
+			numCells = append(numCells, StyledChar{Ch: ' ', Style: tcell.StyleDefault})
+			result = append(result, RenderedDiffLine{Cells: append(numCells, hl.Cells...)})
 		}
 	}
 
@@ -168,8 +168,8 @@ func computeWordSpansForHunks(pd gitutil.ParsedDiff) map[[2]int][]gitutil.DiffSp
 	return result
 }
 
-// buildSideBySideDiffLines creates syntax-highlighted side-by-side diff output.
-func buildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int) []renderedDiffLine {
+// BuildSideBySideDiffLines creates syntax-highlighted side-by-side diff output.
+func BuildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int) []RenderedDiffLine {
 	rows := gitutil.BuildSideBySide(pd)
 	if len(rows) == 0 {
 		return nil
@@ -190,8 +190,8 @@ func buildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int
 		leftTexts[i] = r.LeftText
 		rightTexts[i] = r.RightText
 	}
-	leftHL := highlightLines(leftTexts, filename)
-	rightHL := highlightLines(rightTexts, filename)
+	leftHL := HighlightLines(leftTexts, filename)
+	rightHL := HighlightLines(rightTexts, filename)
 
 	numStyle := tcell.StyleDefault.Foreground(diffLineNumFG)
 	dividerStyle := tcell.StyleDefault.Foreground(diffDividerFG)
@@ -212,41 +212,41 @@ func buildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int
 		}
 	}
 
-	var result []renderedDiffLine
+	var result []RenderedDiffLine
 	for i, row := range rows {
 		// Hunk header
 		if row.LeftNum == 0 && row.RightNum == 0 && len(row.LeftText) > 0 && row.LeftText[0] == '@' {
-			result = append(result, renderedDiffLine{
-				cells: styledString(truncStr(row.LeftText, totalW), hunkStyle),
+			result = append(result, RenderedDiffLine{
+				Cells: styledString(truncStr(row.LeftText, totalW), hunkStyle),
 			})
 			continue
 		}
 		// Separator
 		if row.LeftNum == 0 && row.RightNum == 0 && row.LeftText == "───" {
-			result = append(result, renderedDiffLine{
-				cells: styledString(strings.Repeat("─", totalW), dividerStyle),
+			result = append(result, RenderedDiffLine{
+				Cells: styledString(strings.Repeat("─", totalW), dividerStyle),
 			})
 			continue
 		}
 
 		ws := wordSpans[i]
 
-		var line []styledChar
+		var line []StyledChar
 
 		// Left side
 		line = append(line, styledString(gitutil.FormatLineNum(row.LeftNum, lineNumWidth), numStyle)...)
-		line = append(line, styledChar{ch: ' ', style: numStyle})
+		line = append(line, StyledChar{Ch: ' ', Style: numStyle})
 		line = append(line, buildSideContentWithWordHL(leftHL[i], row.LeftType, contentW, ws.leftSpans)...)
 
 		// Divider
-		line = append(line, styledChar{ch: '│', style: dividerStyle})
+		line = append(line, StyledChar{Ch: '│', Style: dividerStyle})
 
 		// Right side
 		line = append(line, styledString(gitutil.FormatLineNum(row.RightNum, lineNumWidth), numStyle)...)
-		line = append(line, styledChar{ch: ' ', style: numStyle})
+		line = append(line, StyledChar{Ch: ' ', Style: numStyle})
 		line = append(line, buildSideContentWithWordHL(rightHL[i], row.RightType, contentW, ws.rightSpans)...)
 
-		result = append(result, renderedDiffLine{cells: line})
+		result = append(result, RenderedDiffLine{Cells: line})
 	}
 
 	return result
@@ -254,7 +254,7 @@ func buildSideBySideDiffLines(pd gitutil.ParsedDiff, filename string, totalW int
 
 // buildSideContentWithWordHL renders one side of a side-by-side diff line with
 // optional word-level highlighting for changed spans.
-func buildSideContentWithWordHL(hl highlightedLine, lineType gitutil.DiffLineType, contentW int, wordSpans []gitutil.DiffSpan) []styledChar {
+func buildSideContentWithWordHL(hl HighlightedLine, lineType gitutil.DiffLineType, contentW int, wordSpans []gitutil.DiffSpan) []StyledChar {
 	cells := buildSideContent(hl, lineType, contentW)
 	if len(wordSpans) == 0 {
 		return cells
@@ -272,9 +272,9 @@ func buildSideContentWithWordHL(hl highlightedLine, lineType gitutil.DiffLineTyp
 			if idx >= len(cells) {
 				break
 			}
-			cells[idx] = styledChar{
-				ch:    cells[idx].ch,
-				style: cells[idx].style.Background(wordBG),
+			cells[idx] = StyledChar{
+				Ch:    cells[idx].Ch,
+				Style: cells[idx].Style.Background(wordBG),
 			}
 		}
 	}
@@ -282,28 +282,28 @@ func buildSideContentWithWordHL(hl highlightedLine, lineType gitutil.DiffLineTyp
 }
 
 // buildSideContent renders one side of a side-by-side diff line.
-func buildSideContent(hl highlightedLine, lineType gitutil.DiffLineType, contentW int) []styledChar {
-	var prefix styledChar
+func buildSideContent(hl HighlightedLine, lineType gitutil.DiffLineType, contentW int) []StyledChar {
+	var prefix StyledChar
 	var bgColor tcell.Color
 	hasBG := false
 
 	switch lineType {
 	case gitutil.DiffRemoved:
-		prefix = styledChar{ch: '-', style: tcell.StyleDefault.Foreground(diffRemovedFG).Background(diffRemovedBG)}
+		prefix = StyledChar{Ch: '-', Style: tcell.StyleDefault.Foreground(diffRemovedFG).Background(diffRemovedBG)}
 		bgColor = diffRemovedBG
 		hasBG = true
 	case gitutil.DiffAdded:
-		prefix = styledChar{ch: '+', style: tcell.StyleDefault.Foreground(diffAddedFG).Background(diffAddedBG)}
+		prefix = StyledChar{Ch: '+', Style: tcell.StyleDefault.Foreground(diffAddedFG).Background(diffAddedBG)}
 		bgColor = diffAddedBG
 		hasBG = true
 	default:
-		prefix = styledChar{ch: ' ', style: tcell.StyleDefault}
+		prefix = StyledChar{Ch: ' ', Style: tcell.StyleDefault}
 	}
 
-	cells := []styledChar{prefix}
+	cells := []StyledChar{prefix}
 
 	// Truncate content to fit
-	content := hl.cells
+	content := hl.Cells
 	if len(content) > contentW {
 		content = content[:contentW]
 	}
@@ -322,7 +322,7 @@ func buildSideContent(hl highlightedLine, lineType gitutil.DiffLineType, content
 			padStyle = padStyle.Background(bgColor)
 		}
 		for range padLen {
-			cells = append(cells, styledChar{ch: ' ', style: padStyle})
+			cells = append(cells, StyledChar{Ch: ' ', Style: padStyle})
 		}
 	}
 
@@ -331,14 +331,14 @@ func buildSideContent(hl highlightedLine, lineType gitutil.DiffLineType, content
 
 // applyWordHighlight applies a brighter background to specific character spans
 // within already-styled cells, for word-level diff highlighting.
-func applyWordHighlight(cells []styledChar, spans []gitutil.DiffSpan, bg tcell.Color) []styledChar {
-	result := make([]styledChar, len(cells))
+func applyWordHighlight(cells []StyledChar, spans []gitutil.DiffSpan, bg tcell.Color) []StyledChar {
+	result := make([]StyledChar, len(cells))
 	copy(result, cells)
 	for _, span := range spans {
 		for j := span.Start; j < span.End && j < len(result); j++ {
-			result[j] = styledChar{
-				ch:    result[j].ch,
-				style: result[j].style.Background(bg),
+			result[j] = StyledChar{
+				Ch:    result[j].Ch,
+				Style: result[j].Style.Background(bg),
 			}
 		}
 	}
@@ -348,32 +348,32 @@ func applyWordHighlight(cells []styledChar, spans []gitutil.DiffSpan, bg tcell.C
 // applyDiffBG overlays a background color on syntax-highlighted cells.
 // Cells that already have an explicit background keep it; cells with
 // default background get the diff background.
-func applyDiffBG(cells []styledChar, bg tcell.Color) []styledChar {
-	result := make([]styledChar, len(cells))
+func applyDiffBG(cells []StyledChar, bg tcell.Color) []StyledChar {
+	result := make([]StyledChar, len(cells))
 	for i, c := range cells {
-		result[i] = styledChar{
-			ch:    c.ch,
-			style: c.style.Background(bg),
+		result[i] = StyledChar{
+			Ch:    c.Ch,
+			Style: c.Style.Background(bg),
 		}
 	}
 	return result
 }
 
-// drawStyledLine paints a slice of styledChars to the screen at the given position.
-func drawStyledLine(screen tcell.Screen, x, y, maxW int, cells []styledChar) {
+// DrawStyledLine paints a slice of styledChars to the screen at the given position.
+func DrawStyledLine(screen tcell.Screen, x, y, maxW int, cells []StyledChar) {
 	for i, c := range cells {
 		if i >= maxW {
 			break
 		}
-		screen.SetContent(x+i, y, c.ch, nil, c.style)
+		screen.SetContent(x+i, y, c.Ch, nil, c.Style)
 	}
 }
 
 // styledString converts a plain string to styled characters with a uniform style.
-func styledString(s string, style tcell.Style) []styledChar {
-	cells := make([]styledChar, 0, len(s))
+func styledString(s string, style tcell.Style) []StyledChar {
+	cells := make([]StyledChar, 0, len(s))
 	for _, r := range s {
-		cells = append(cells, styledChar{ch: r, style: style})
+		cells = append(cells, StyledChar{Ch: r, Style: style})
 	}
 	return cells
 }

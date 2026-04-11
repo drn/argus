@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import (
 	"strings"
@@ -26,8 +26,8 @@ func TestHeader_SetTab(t *testing.T) {
 }
 
 func TestTabLabels(t *testing.T) {
-	if len(tabLabels) != 4 {
-		t.Errorf("tabLabels count = %d, want 4", len(tabLabels))
+	if len(TabLabels) != 4 {
+		t.Errorf("TabLabels count = %d, want 4", len(TabLabels))
 	}
 	if len(tabKeys) != 4 {
 		t.Errorf("tabKeys count = %d, want 4", len(tabKeys))

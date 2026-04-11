@@ -1,4 +1,4 @@
-package tui
+package widget
 
 import (
 	"github.com/drn/argus/internal/tui/theme"
@@ -26,15 +26,15 @@ const bannerTextWidth = 41
 
 const subtitle = "C O D E   O R C H E S T R A T O R"
 
-// bannerHeight returns the total height of the banner (logo + spacing + subtitle + spacing + accent).
-func bannerHeight() int {
+// BannerHeight returns the total height of the banner (logo + spacing + subtitle + spacing + accent).
+func BannerHeight() int {
 	// accent(1) + blank(1) + 5 logo lines + underline(1) + blank(1) + subtitle(1) + blank(1) + accent(1) = 12
 	return 12
 }
 
-// drawBanner draws the ASCII banner centered at the given y offset.
+// DrawBanner draws the ASCII banner centered at the given y offset.
 // Returns the number of rows consumed.
-func drawBanner(screen tcell.Screen, x, y, width int) int {
+func DrawBanner(screen tcell.Screen, x, y, width int) int {
 	if width <= 0 {
 		return 0
 	}
@@ -42,7 +42,7 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 	row := y
 
 	// Top accent line.
-	drawFadingAccent(screen, x, row, width, bannerTextWidth)
+	DrawFadingAccent(screen, x, row, width, bannerTextWidth)
 	row++
 	row++ // blank line
 
@@ -53,12 +53,12 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 			padLeft = 0
 		}
 		style := tcell.StyleDefault.Foreground(bannerGradient[i]).Bold(true)
-		drawText(screen, x+padLeft, row, width-padLeft, line, style)
+		DrawText(screen, x+padLeft, row, width-padLeft, line, style)
 		row++
 	}
 
 	// Gradient underline beneath banner.
-	drawGradientUnderline(screen, x, row, width, bannerTextWidth, bannerGradient[:])
+	DrawGradientUnderline(screen, x, row, width, bannerTextWidth, bannerGradient[:])
 	row++
 	row++ // blank line
 
@@ -67,23 +67,23 @@ func drawBanner(screen tcell.Screen, x, y, width int) int {
 	if subPad < 0 {
 		subPad = 0
 	}
-	drawText(screen, x+subPad, row, width-subPad, subtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+	DrawText(screen, x+subPad, row, width-subPad, subtitle, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	row++
 	row++ // blank line
 
 	// Bottom accent line.
-	drawFadingAccent(screen, x, row, width, bannerTextWidth)
+	DrawFadingAccent(screen, x, row, width, bannerTextWidth)
 	row++
 
 	return row - y
 }
 
-// drawFadingAccent draws two fading dash lines from center with a hexagon.
-func drawFadingAccent(screen tcell.Screen, x, y, width, textWidth int) {
+// DrawFadingAccent draws two fading dash lines from center with a hexagon.
+func DrawFadingAccent(screen tcell.Screen, x, y, width, textWidth int) {
 	sideLen := max((width-textWidth)/2-2, 3)
 
-	leftPattern := fadeDashes(sideLen, false)
-	rightPattern := fadeDashes(sideLen, true)
+	leftPattern := FadeDashes(sideLen, false)
+	rightPattern := FadeDashes(sideLen, true)
 
 	// Compute where to start so it's centered.
 	totalLen := len(leftPattern) + 3 + len(rightPattern) // " ⬡ "
@@ -95,7 +95,7 @@ func drawFadingAccent(screen tcell.Screen, x, y, width, textWidth int) {
 	col := x + padLeft
 
 	// Left dashes: dim → cyan gradient.
-	drawGradientChars(screen, col, y, leftPattern, rgbVal{98, 98, 98}, rgbVal{95, 255, 255})
+	DrawGradientChars(screen, col, y, leftPattern, rgbVal{98, 98, 98}, rgbVal{95, 255, 255})
 	col += len(leftPattern)
 
 	// Space + hexagon + space.
@@ -107,11 +107,11 @@ func drawFadingAccent(screen tcell.Screen, x, y, width, textWidth int) {
 	col++
 
 	// Right dashes: pink → dim gradient.
-	drawGradientChars(screen, col, y, rightPattern, rgbVal{255, 135, 215}, rgbVal{98, 98, 98})
+	DrawGradientChars(screen, col, y, rightPattern, rgbVal{255, 135, 215}, rgbVal{98, 98, 98})
 }
 
-// drawGradientUnderline draws a centered underline with the given gradient colors.
-func drawGradientUnderline(screen tcell.Screen, x, y, width, textWidth int, gradient []tcell.Color) {
+// DrawGradientUnderline draws a centered underline with the given gradient colors.
+func DrawGradientUnderline(screen tcell.Screen, x, y, width, textWidth int, gradient []tcell.Color) {
 	lineLen := textWidth
 	segLen := max(lineLen/len(gradient), 1)
 	padLeft := (width - lineLen) / 2
@@ -144,8 +144,8 @@ func lerpRGB(a, b rgbVal, t float64) rgbVal {
 	}
 }
 
-// drawGradientChars draws a string with per-character RGB gradient.
-func drawGradientChars(screen tcell.Screen, x, y int, pattern string, from, to rgbVal) {
+// DrawGradientChars draws a string with per-character RGB gradient.
+func DrawGradientChars(screen tcell.Screen, x, y int, pattern string, from, to rgbVal) {
 	n := len(pattern)
 	if n == 0 {
 		return
@@ -163,9 +163,9 @@ func drawGradientChars(screen tcell.Screen, x, y int, pattern string, from, to r
 	}
 }
 
-// fadeDashes generates a string of dashes that fade from sparse to dense.
+// FadeDashes generates a string of dashes that fade from sparse to dense.
 // If reverse is true, the dense end is on the left.
-func fadeDashes(length int, reverse bool) string {
+func FadeDashes(length int, reverse bool) string {
 	if length <= 0 {
 		return ""
 	}

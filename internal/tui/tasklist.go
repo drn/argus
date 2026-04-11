@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -733,7 +734,7 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 	// Show filter text in panel title when active.
 	title := " Tasks "
-	inner := drawBorderedPanel(screen, x, y, width, height, title, theme.StyleBorder)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, theme.StyleBorder)
 	if tl.filter != "" || tl.filtering {
 		filterStr := "/" + tl.filter
 		col := x + 1 + ansi.StringWidth(title) // after the title text
@@ -806,9 +807,9 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 // drawFilterInput renders the filter input line at the bottom of the task list.
 func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 	style := tcell.StyleDefault.Foreground(theme.ColorTitle)
-	drawText(screen, x, y, 2, "/ ", style)
+	widget.DrawText(screen, x, y, 2, "/ ", style)
 	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal)
-	drawText(screen, x+2, y, w-2, tl.filter, inputStyle)
+	widget.DrawText(screen, x+2, y, w-2, tl.filter, inputStyle)
 	// Draw cursor after filter text.
 	cursorCol := x + 2 + ansi.StringWidth(tl.filter)
 	if cursorCol < x+w {
@@ -874,7 +875,7 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 
 	col := x
 	// "  " prefix
-	drawText(screen, col, y, 2, "  ", theme.StyleDefault)
+	widget.DrawText(screen, col, y, 2, "  ", theme.StyleDefault)
 	col += 2
 
 	// Status icon
@@ -894,13 +895,13 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 
 	// Project name
 	nameStyle := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
-	drawText(screen, col, y, w-(col-x), proj, nameStyle)
+	widget.DrawText(screen, col, y, w-(col-x), proj, nameStyle)
 	col += len(proj)
 
 	// Task count
 	countStr := fmt.Sprintf(" (%d)", len(projTasks))
 	if col-x+len(countStr) <= w {
-		drawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(theme.ColorDimmed))
+		widget.DrawText(screen, col, y, len(countStr), countStr, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	}
 }
 
@@ -918,7 +919,7 @@ func (tl *TaskListView) drawArchiveHeader(screen tcell.Screen, x, y, w int) {
 		indicator = "▾"
 	}
 	text := fmt.Sprintf("  %s Archive", indicator)
-	drawText(screen, x, y, w, text, style)
+	widget.DrawText(screen, x, y, w, text, style)
 }
 
 func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *model.Task, cursor bool) {
@@ -966,7 +967,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	// Layout: "    ● name              3m"
 	prefix := "    "
 	col := x
-	drawText(screen, col, y, len(prefix), prefix, theme.StyleDefault)
+	widget.DrawText(screen, col, y, len(prefix), prefix, theme.StyleDefault)
 	col += len(prefix)
 
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
@@ -981,7 +982,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	if len(nameStr) > maxNameW {
 		nameStr = nameStr[:maxNameW]
 	}
-	drawText(screen, col, y, len(nameStr), nameStr, nameStyle)
+	widget.DrawText(screen, col, y, len(nameStr), nameStr, nameStyle)
 	col += len(nameStr)
 
 	// Right-align elapsed time. elapsedCol also limits cursor fill below.
@@ -990,7 +991,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		elapsedCol = x + w - len(elapsed) - 1
 	}
 	if elapsedCol > col {
-		drawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(theme.ColorElapsed))
+		widget.DrawText(screen, elapsedCol, y, len(elapsed), elapsed, tcell.StyleDefault.Foreground(theme.ColorElapsed))
 	}
 
 	// Fill remaining cells on cursor row so the highlight extends to edge.
@@ -1003,18 +1004,6 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		for c := col; c < fillEnd; c++ {
 			screen.SetContent(c, y, ' ', nil, theme.StyleDefault)
 		}
-	}
-}
-
-// drawText writes a string at position, clipped to maxWidth.
-func drawText(screen tcell.Screen, x, y, maxWidth int, text string, style tcell.Style) {
-	col := x
-	for _, r := range text {
-		if col-x >= maxWidth {
-			break
-		}
-		screen.SetContent(col, y, r, nil, style)
-		col++
 	}
 }
 

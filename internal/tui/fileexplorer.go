@@ -11,6 +11,7 @@ import (
 
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 const fpIndentWidth = 2 // characters per indent level in the file panel
@@ -382,14 +383,14 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 	if len(fp.files) > 0 {
 		title = fmt.Sprintf(" Files (%d) ", len(fp.files))
 	}
-	inner := drawBorderedPanel(screen, x, y, width, height, title, borderStyle)
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, borderStyle)
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return
 	}
 
 	if len(fp.rows) == 0 {
-		drawText(screen, x, y, width, "No changes", theme.StyleDimmed)
+		widget.DrawText(screen, x, y, width, "No changes", theme.StyleDimmed)
 		return
 	}
 
@@ -449,7 +450,7 @@ func (fp *FilePanel) Draw(screen tcell.Screen) {
 		if len(name) > maxNameW && maxNameW > 3 {
 			name = "…" + name[len(name)-maxNameW+1:]
 		}
-		drawText(screen, col, y+i, maxNameW, name, nameStyle)
+		widget.DrawText(screen, col, y+i, maxNameW, name, nameStyle)
 	}
 }
 

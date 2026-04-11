@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -26,7 +27,7 @@ func (sp *SettingsPage) Draw(screen tcell.Screen) {
 		return
 	}
 
-	bh := bannerHeight()
+	bh := widget.BannerHeight()
 	if height <= bh+3 {
 		// Not enough room for banner — just draw settings directly.
 		sp.settings.SetRect(x, y, width, height)
@@ -35,7 +36,7 @@ func (sp *SettingsPage) Draw(screen tcell.Screen) {
 	}
 
 	// Draw banner.
-	drawBanner(screen, x, y, width)
+	widget.DrawBanner(screen, x, y, width)
 
 	// Draw settings below banner with centered margins matching old BT layout:
 	// 20% margin | 20% left | 40% right | 20% margin

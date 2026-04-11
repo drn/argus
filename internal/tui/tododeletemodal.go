@@ -2,6 +2,7 @@ package tui
 
 import (
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -63,8 +64,8 @@ func (m *ConfirmDeleteToDoModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Delete to-do?", theme.StyleTitle)
+	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	widget.DrawText(screen, formX+2, formY+1, formW-4, "Delete to-do?", theme.StyleTitle)
 
 	// To-do name.
 	name := m.item.Name
@@ -72,8 +73,8 @@ func (m *ConfirmDeleteToDoModal) Draw(screen tcell.Screen) {
 	if maxW > 3 && len(name) > maxW {
 		name = name[:maxW-1] + "…"
 	}
-	drawText(screen, formX+4, formY+3, formW-6, name, theme.StyleNormal)
+	widget.DrawText(screen, formX+4, formY+3, formW-6, name, theme.StyleNormal)
 
 	// Hint.
-	drawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
+	widget.DrawText(screen, formX+4, formY+5, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }

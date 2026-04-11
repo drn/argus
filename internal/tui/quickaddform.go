@@ -12,6 +12,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 // qaMaxVisible is the maximum number of repo/autocomplete items shown at once.
@@ -523,7 +524,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 
 	// Clear and draw border.
 	f.clearArea(screen, mx, my, modalW, modalH)
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title.
 	title := " Quick Add Projects "
@@ -537,7 +538,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	row := my + 2
 
 	// Label.
-	drawText(screen, innerX, row, innerW, "Directory:", theme.StyleTitle)
+	widget.DrawText(screen, innerX, row, innerW, "Directory:", theme.StyleTitle)
 	row++
 
 	// Input field with cursor.
@@ -595,7 +596,7 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 	if len(val) == 0 {
 		placeholder := "~/Development"
 		placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed)
-		drawText(screen, innerX+1, row, innerW-1, placeholder, placeholderStyle)
+		widget.DrawText(screen, innerX+1, row, innerW-1, placeholder, placeholderStyle)
 		// Redraw cursor at position 0.
 		screen.SetContent(innerX, row, ' ', nil, cursorStyle)
 	}
@@ -608,18 +609,18 @@ func (f *QuickAddForm) drawDirInput(screen tcell.Screen, sx, sy, sw, sh int) {
 
 	// Scanning indicator.
 	if f.scanning {
-		drawText(screen, innerX, row, innerW, "Scanning...", tcell.StyleDefault.Foreground(theme.ColorTitle))
+		widget.DrawText(screen, innerX, row, innerW, "Scanning...", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		row++
 	}
 
 	// Error.
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
+		widget.DrawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help.
-	drawText(screen, innerX, row, innerW, "Tab complete  Enter scan  Esc cancel", theme.StyleDimmed)
+	widget.DrawText(screen, innerX, row, innerW, "Tab complete  Enter scan  Esc cancel", theme.StyleDimmed)
 }
 
 func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
@@ -647,7 +648,7 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 	my := sy + (sh-modalH)/2
 
 	f.clearArea(screen, mx, my, modalW, modalH)
-	drawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
+	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title.
 	dir := collapseTilde(strings.TrimRight(string(f.dirPath), "/"))
@@ -720,17 +721,17 @@ func (f *QuickAddForm) drawSelection(screen tcell.Screen, sx, sy, sw, sh int) {
 		}
 	}
 	summary := itoa(selected) + "/" + itoa(len(f.repos)) + " selected"
-	drawText(screen, innerX, row, innerW, summary, tcell.StyleDefault.Foreground(theme.ColorTitle))
+	widget.DrawText(screen, innerX, row, innerW, summary, tcell.StyleDefault.Foreground(theme.ColorTitle))
 	row++
 
 	// Error.
 	if f.errMsg != "" {
-		drawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
+		widget.DrawText(screen, innerX, row, innerW, f.errMsg, theme.StyleError)
 		row++
 	}
 
 	// Help.
-	drawText(screen, innerX, row, innerW, "Space toggle  a all  x none  Enter add  Esc back", theme.StyleDimmed)
+	widget.DrawText(screen, innerX, row, innerW, "Space toggle  a all  x none  Enter add  Esc back", theme.StyleDimmed)
 }
 
 func (f *QuickAddForm) clearArea(screen tcell.Screen, x, y, w, h int) {

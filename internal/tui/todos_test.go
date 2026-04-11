@@ -7,6 +7,7 @@ import (
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/widget"
 )
 
 func TestToDoListPanel_CursorNavigation(t *testing.T) {
@@ -214,11 +215,11 @@ func TestToDosView_StatusToggle(t *testing.T) {
 }
 
 func TestTabIndices(t *testing.T) {
-	// Verify tab ordering is correct after adding TabToDos
-	testutil.Equal(t, int(TabTasks), 0)
-	testutil.Equal(t, int(TabToDos), 1)
-	testutil.Equal(t, int(TabReviews), 2)
-	testutil.Equal(t, int(TabSettings), 3)
-	testutil.Equal(t, len(tabLabels), 4)
-	testutil.Equal(t, tabLabels[TabToDos], "To Dos")
+	// Verify tab ordering is correct after adding widget.TabToDos
+	testutil.Equal(t, int(widget.TabTasks), 0)
+	testutil.Equal(t, int(widget.TabToDos), 1)
+	testutil.Equal(t, int(widget.TabReviews), 2)
+	testutil.Equal(t, int(widget.TabSettings), 3)
+	testutil.Equal(t, len(widget.TabLabels), 4)
+	testutil.Equal(t, widget.TabLabels[widget.TabToDos], "To Dos")
 }

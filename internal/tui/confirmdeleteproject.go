@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -70,19 +71,19 @@ func (m *ConfirmDeleteProjectModal) Draw(screen tcell.Screen) {
 		}
 	}
 
-	drawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
-	drawText(screen, formX+2, formY+1, formW-4, "Delete project?", theme.StyleTitle)
+	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
+	widget.DrawText(screen, formX+2, formY+1, formW-4, "Delete project?", theme.StyleTitle)
 
 	// Project name.
-	drawText(screen, formX+4, formY+3, formW-6, m.name, theme.StyleNormal)
+	widget.DrawText(screen, formX+4, formY+3, formW-6, m.name, theme.StyleNormal)
 
 	row := formY + 4
 	if m.taskCount > 0 {
 		warning := fmt.Sprintf("  %d task(s) will be orphaned", m.taskCount)
-		drawText(screen, formX+2, row, formW-4, warning, tcell.StyleDefault.Foreground(theme.ColorError))
+		widget.DrawText(screen, formX+2, row, formW-4, warning, tcell.StyleDefault.Foreground(theme.ColorError))
 		row += 2
 	}
 
 	// Hint.
-	drawText(screen, formX+4, row+1, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
+	widget.DrawText(screen, formX+4, row+1, formW-6, "[enter] confirm  [esc] cancel", theme.StyleDimmed)
 }
