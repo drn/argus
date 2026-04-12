@@ -487,6 +487,11 @@ func TestRunner_NilSentinelSafety(t *testing.T) {
 	r.mu.Unlock()
 
 	// These must not panic.
+	runningOnly := r.Running()
+	if len(runningOnly) != 0 {
+		t.Errorf("Running() should skip nil sentinel, got %v", runningOnly)
+	}
+
 	idle := r.Idle()
 	if len(idle) != 0 {
 		t.Errorf("Idle() should skip nil sentinel, got %v", idle)

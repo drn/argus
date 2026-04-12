@@ -185,12 +185,15 @@ func (r *Runner) StopAll() {
 }
 
 // Running returns the task IDs of all active sessions.
+// Skips nil-sentinel entries (reserved-but-not-yet-started slots).
 func (r *Runner) Running() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ids := make([]string, 0, len(r.sessions))
-	for id := range r.sessions {
-		ids = append(ids, id)
+	for id, sess := range r.sessions {
+		if sess != nil {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }
