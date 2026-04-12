@@ -196,12 +196,13 @@ func (r *Runner) Running() []string {
 }
 
 // Idle returns the task IDs of sessions that are alive but waiting for input.
+// Skips nil-sentinel entries (reserved-but-not-yet-started slots).
 func (r *Runner) Idle() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var ids []string
 	for id, sess := range r.sessions {
-		if sess.IsIdle() {
+		if sess != nil && sess.IsIdle() {
 			ids = append(ids, id)
 		}
 	}
@@ -219,23 +220,30 @@ func (r *Runner) WorkDir(taskID string) string {
 
 // Sessions returns a snapshot of all active sessions keyed by task ID.
 // Used by the daemon's ListSessions RPC to avoid per-session Get() calls.
+// Skips nil-sentinel entries (reserved-but-not-yet-started slots).
 func (r *Runner) Sessions() map[string]*Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]*Session, len(r.sessions))
 	for id, sess := range r.sessions {
-		out[id] = sess
+		if sess != nil {
+			out[id] = sess
+		}
 	}
 	return out
 }
 
 // RunningAndIdle returns the task IDs of all active sessions and of idle
 // sessions in a single pass under one lock acquisition.
+// Skips nil-sentinel entries (reserved-but-not-yet-started slots).
 func (r *Runner) RunningAndIdle() (running, idle []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	running = make([]string, 0, len(r.sessions))
 	for id, sess := range r.sessions {
+		if sess == nil {
+			continue
+		}
 		running = append(running, id)
 		if sess.IsIdle() {
 			idle = append(idle, id)

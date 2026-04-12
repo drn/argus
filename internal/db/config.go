@@ -1,6 +1,7 @@
 package db
 
 import (
+	"log/slog"
 	"strconv"
 
 	"github.com/drn/argus/internal/config"
@@ -12,11 +13,15 @@ func (d *DB) Config() config.Config {
 	// Load backends (use defaults on error).
 	if backends, err := d.Backends(); err == nil {
 		cfg.Backends = backends
+	} else {
+		slog.Error("db.Config: failed to load backends", "err", err)
 	}
 
 	// Load projects (use defaults on error).
 	if projects, err := d.Projects(); err == nil {
 		cfg.Projects = projects
+	} else {
+		slog.Error("db.Config: failed to load projects", "err", err)
 	}
 
 	// Load scalar config values — hold mutex through iteration

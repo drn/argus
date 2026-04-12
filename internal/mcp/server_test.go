@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -55,7 +56,7 @@ func (m *mockDB) KBDelete(path string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("kb document not found")
+	return db.ErrKBNotFound
 }
 
 func (m *mockDB) KBDocumentCount() int {
@@ -302,6 +303,28 @@ func TestToolsCall_KBDelete(t *testing.T) {
 		resp := doRequest(t, s, "tools/call", ToolCallParams{
 			Name:      "kb_delete",
 			Arguments: json.RawMessage(`{"path": "../etc/passwd"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "invalid path")
+	})
+
+	t.Run("nested path traversal blocked", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{"path": "notes/../../etc/passwd"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "invalid path")
+	})
+
+	t.Run("absolute path blocked", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_delete",
+			Arguments: json.RawMessage(`{"path": "/etc/passwd"}`),
 		})
 		testutil.NoError(t, respErr(resp))
 		cr := callResult(t, resp)

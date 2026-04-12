@@ -515,6 +515,7 @@ func (s *Server) toolKBDelete(id interface{}, args json.RawMessage) *Response {
 	}
 
 	if err := s.db.KBDelete(cleanPath); err != nil {
+		log.Printf("[mcp] kb_delete failed: path=%s err=%v", cleanPath, err)
 		return toolError(id, fmt.Sprintf("Delete failed: %v", err))
 	}
 
@@ -527,6 +528,7 @@ func (s *Server) toolKBDelete(id interface{}, args json.RawMessage) *Response {
 		}
 	}
 
+	log.Printf("[mcp] kb_delete ok: path=%s", cleanPath)
 	return toolResult(id, fmt.Sprintf("Deleted %s", cleanPath))
 }
 

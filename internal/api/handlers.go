@@ -429,8 +429,10 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 
 	var extraDirs []string
 	if project != "" {
-		projects, _ := s.db.Projects()
-		if p, ok := projects[project]; ok && p.Path != "" {
+		projects, err := s.db.Projects()
+		if err != nil {
+			log.Printf("[api] handleListSkills: failed to load projects: %v", err)
+		} else if p, ok := projects[project]; ok && p.Path != "" {
 			extraDirs = []string{filepath.Join(p.Path, ".claude", "skills")}
 		}
 	}

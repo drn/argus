@@ -474,6 +474,53 @@ func TestRunner_StopAll(t *testing.T) {
 	}
 }
 
+func TestRunner_NilSentinelSafety(t *testing.T) {
+	// Verify that observer methods (Idle, RunningAndIdle, Sessions) don't
+	// panic when a nil sentinel is present in the sessions map. The sentinel
+	// is placed by Start() during the window between slot reservation and
+	// actual session creation.
+	r := NewRunner(nil)
+
+	// Directly inject a nil sentinel to simulate the Start() window.
+	r.mu.Lock()
+	r.sessions["sentinel-task"] = nil
+	r.mu.Unlock()
+
+	// These must not panic.
+	idle := r.Idle()
+	if len(idle) != 0 {
+		t.Errorf("Idle() should skip nil sentinel, got %v", idle)
+	}
+
+	running, idleIDs := r.RunningAndIdle()
+	if len(running) != 0 {
+		t.Errorf("RunningAndIdle() should skip nil sentinel in running, got %v", running)
+	}
+	if len(idleIDs) != 0 {
+		t.Errorf("RunningAndIdle() should skip nil sentinel in idle, got %v", idleIDs)
+	}
+
+	sessions := r.Sessions()
+	if len(sessions) != 0 {
+		t.Errorf("Sessions() should skip nil sentinel, got %d entries", len(sessions))
+	}
+
+	// HasSession should still return true for the sentinel (it's a reservation).
+	if !r.HasSession("sentinel-task") {
+		t.Error("HasSession should return true for nil sentinel")
+	}
+
+	// Get should return nil for the sentinel.
+	if r.Get("sentinel-task") != nil {
+		t.Error("Get should return nil for nil sentinel")
+	}
+
+	// Clean up.
+	r.mu.Lock()
+	delete(r.sessions, "sentinel-task")
+	r.mu.Unlock()
+}
+
 func TestRunner_Detach_NoSession(t *testing.T) {
 	r := NewRunner(nil)
 	// Should not panic when detaching a nonexistent session

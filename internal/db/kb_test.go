@@ -1,6 +1,7 @@
 package db
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -119,8 +120,14 @@ func TestKBDelete(t *testing.T) {
 
 	// Deleting a non-existent document should return ErrKBNotFound.
 	err = d.KBDelete("notes/does-not-exist.md")
-	if err == nil {
-		t.Error("expected ErrKBNotFound for non-existent path, got nil")
+	if !errors.Is(err, ErrKBNotFound) {
+		t.Errorf("expected ErrKBNotFound, got %v", err)
+	}
+
+	// Metadata should also be cleaned up.
+	count := d.KBDocumentCount()
+	if count != 0 {
+		t.Errorf("expected 0 documents after delete, got %d", count)
 	}
 }
 

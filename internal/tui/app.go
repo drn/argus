@@ -882,6 +882,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	tasks, err := a.db.Tasks()
 	if err != nil {
 		uxlog.Log("[tui] refreshTasksWithIDs: failed to load tasks: %v", err)
+		return
 	}
 	a.tasks = tasks
 	a.runningIDs = runningIDs

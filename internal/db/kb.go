@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -58,7 +59,7 @@ func (d *DB) KBUpsert(doc *kb.Document) error {
 }
 
 // ErrKBNotFound is returned when a KB document does not exist.
-var ErrKBNotFound = fmt.Errorf("kb document not found")
+var ErrKBNotFound = errors.New("kb document not found")
 
 // KBDelete removes a document from the knowledge base by its vault-relative path.
 // Returns ErrKBNotFound if the document does not exist.

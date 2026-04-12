@@ -186,7 +186,10 @@ func (sv *SettingsView) Refresh() {
 	}
 
 	// Projects.
-	projMap, _ := sv.database.Projects()
+	projMap, err := sv.database.Projects()
+	if err != nil {
+		uxlog.Log("[settings] failed to load projects: %v", err)
+	}
 	sv.projects = nil
 	projNames := make([]string, 0, len(projMap))
 	for name := range projMap {
@@ -243,7 +246,10 @@ func (sv *SettingsView) Refresh() {
 	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
 
 	// Task counts.
-	tasks, _ := sv.database.Tasks()
+	tasks, err := sv.database.Tasks()
+	if err != nil {
+		uxlog.Log("[settings] failed to load tasks: %v", err)
+	}
 	sv.setTasks(tasks)
 
 	sv.rebuildRows()
