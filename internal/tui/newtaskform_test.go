@@ -617,10 +617,11 @@ func TestNewTaskForm_ACTabAccepts(t *testing.T) {
 	f.skills = []skills.SkillItem{
 		{Name: "commit", Description: "Create a commit"},
 	}
+	// Pin focus to prompt so the test is robust to changes in the default
+	// focused field of NewNewTaskForm.
+	f.focused = ntFieldPrompt
 	handler := f.InputHandler()
 
-	// Focus prompt (default focused is ntFieldProject after NewNewTaskForm).
-	// The form starts focused on prompt by default actually — verify by typing.
 	for _, r := range "/co" {
 		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
 	}
@@ -629,7 +630,6 @@ func TestNewTaskForm_ACTabAccepts(t *testing.T) {
 	}
 
 	// Tab should accept the skill and NOT advance focus
-	prevFocus := f.focused
 	handler(tcell.NewEventKey(tcell.KeyTab, 0, 0), func(p tview.Primitive) {})
 	if f.acOpen {
 		t.Error("tab should close autocomplete")
@@ -637,11 +637,42 @@ func TestNewTaskForm_ACTabAccepts(t *testing.T) {
 	if got := string(f.prompt); got != "/commit " {
 		t.Errorf("prompt = %q, want %q", got, "/commit ")
 	}
-	if f.focused != prevFocus {
-		t.Errorf("tab should not change focus when accepting AC: focused = %d, want %d", f.focused, prevFocus)
+	if f.focused != ntFieldPrompt {
+		t.Errorf("tab should not change focus when accepting AC: focused = %d, want %d", f.focused, ntFieldPrompt)
 	}
 	if f.Done() {
 		t.Error("tab accept should not submit form")
+	}
+}
+
+func TestNewTaskForm_ACBacktabAccepts(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.skills = []skills.SkillItem{
+		{Name: "commit", Description: "Create a commit"},
+	}
+	f.focused = ntFieldPrompt
+	handler := f.InputHandler()
+
+	for _, r := range "/co" {
+		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+	}
+	if !f.acOpen {
+		t.Fatal("autocomplete should be open after /co")
+	}
+
+	// Shift-Tab should accept the skill and NOT change focus (mirrors Tab).
+	handler(tcell.NewEventKey(tcell.KeyBacktab, 0, 0), func(p tview.Primitive) {})
+	if f.acOpen {
+		t.Error("backtab should close autocomplete")
+	}
+	if got := string(f.prompt); got != "/commit " {
+		t.Errorf("prompt = %q, want %q", got, "/commit ")
+	}
+	if f.focused != ntFieldPrompt {
+		t.Errorf("backtab should not change focus when accepting AC: focused = %d, want %d", f.focused, ntFieldPrompt)
 	}
 }
 
