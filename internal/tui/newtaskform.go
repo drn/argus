@@ -389,20 +389,34 @@ func (f *NewTaskForm) loadSkills() {
 	f.skills = skills.LoadSkills(extraDirs)
 }
 
-// updateAutocomplete recomputes the autocomplete matches based on the current
-// prompt value. Autocomplete is active when the value starts with the trigger
-// character ("/" for claude, "$" for codex) and contains no spaces.
+// promptTokenBounds returns the [start, end) rune indices of the
+// space-delimited token containing the cursor position.
+func (f *NewTaskForm) promptTokenBounds() (int, int) {
+	start := f.cursorPos
+	for start > 0 && f.prompt[start-1] != ' ' {
+		start--
+	}
+	end := f.cursorPos
+	for end < len(f.prompt) && f.prompt[end] != ' ' {
+		end++
+	}
+	return start, end
+}
+
+// updateAutocomplete recomputes the autocomplete matches based on the token
+// at the cursor position. Autocomplete is active when the current
+// space-delimited token starts with the trigger character ("/" for claude,
+// "$" for codex). Triggering works anywhere in the prompt, not just at the
+// start.
 func (f *NewTaskForm) updateAutocomplete() {
-	val := string(f.prompt)
 	trigger := f.acTrigger()
-	if !strings.HasPrefix(val, trigger) || (len(val) > 1 && strings.ContainsRune(val[1:], ' ')) {
+	start, end := f.promptTokenBounds()
+	token := string(f.prompt[start:end])
+	if !strings.HasPrefix(token, trigger) {
 		f.acOpen = false
 		return
 	}
-	filter := ""
-	if len(val) > 1 {
-		filter = val[1:]
-	}
+	filter := token[len(trigger):]
 	f.acMatches = skills.FilterSkills(f.skills, filter)
 	if len(f.acMatches) == 0 {
 		f.acOpen = false
@@ -413,6 +427,23 @@ func (f *NewTaskForm) updateAutocomplete() {
 		f.acIdx = 0
 		f.acScroll = 0
 	}
+}
+
+// acAccept replaces the token at the cursor with the selected skill and
+// appends a trailing space. Closes the autocomplete dropdown.
+func (f *NewTaskForm) acAccept() {
+	if !f.acOpen || len(f.acMatches) == 0 {
+		return
+	}
+	start, end := f.promptTokenBounds()
+	replacement := []rune(f.acTrigger() + f.acMatches[f.acIdx].Name + " ")
+	newPrompt := make([]rune, 0, len(f.prompt)-(end-start)+len(replacement))
+	newPrompt = append(newPrompt, f.prompt[:start]...)
+	newPrompt = append(newPrompt, replacement...)
+	newPrompt = append(newPrompt, f.prompt[end:]...)
+	f.prompt = newPrompt
+	f.cursorPos = start + len(replacement)
+	f.acOpen = false
 }
 
 // acMoveDown moves the autocomplete cursor down one item (wraps around).
@@ -503,6 +534,13 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.canceled = true
 			return
 		case tcell.KeyTab:
+			// In the prompt field, tab accepts an open skill autocomplete
+			// without advancing focus — lets the user keep typing after the
+			// skill is inserted.
+			if f.focused == ntFieldPrompt && f.acOpen && len(f.acMatches) > 0 {
+				f.acAccept()
+				return
+			}
 			// Accept any open autocomplete before advancing field
 			if f.projACOpen && len(f.projACMatches) > 0 {
 				f.projACAccept()
@@ -798,10 +836,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 	case tcell.KeyEnter:
 		// Select autocomplete suggestion if open
 		if f.acOpen && len(f.acMatches) > 0 {
-			text := f.acTrigger() + f.acMatches[f.acIdx].Name + " "
-			f.prompt = []rune(text)
-			f.cursorPos = len(f.prompt)
-			f.acOpen = false
+			f.acAccept()
 			return
 		}
 		if f.resolveProject() == "" {

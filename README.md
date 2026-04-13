@@ -40,7 +40,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows
 - **Session resume** — `--resume` for Claude Code, `codex resume <session-id>` for Codex — conversations survive daemon restarts
 - **Configurable backends** — Define command templates for any LLM CLI tool. Per-backend flags, prompt interpolation, and plan mode defaults
-- **Skill autocomplete** — `/` in the prompt field triggers autocomplete from `~/.claude/skills/` and per-project skill directories
+- **Skill autocomplete** — `/` anywhere in the prompt field triggers autocomplete from `~/.claude/skills/` and per-project skill directories (`$` for Codex backends). Select with Enter or Tab
 - **Agent forking** — Duplicate a running or finished task with full context (source info, recent output, git diff) injected into the new agent's worktree
 
 ### Task Workflow
