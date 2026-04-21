@@ -78,16 +78,26 @@ type InnerRect struct {
 }
 
 // DrawBorderedPanel draws a rounded border at (x, y, w, h) with an optional
-// title embedded in the top border, and returns the inner content rect.
-// The interior is filled with blanks on the default style before the border
-// is drawn, so that partial redraws (e.g., when the caller's Draw only paints
+// title embedded in the top border, and returns the inner content rect. All
+// bordered panels should use this to guarantee consistent chrome.
+//
+// The interior is blanked with (' ', tcell.StyleDefault) before the border
+// is drawn so that partial redraws (e.g., when the caller's Draw only paints
 // occupied rows and lazyScreen has suppressed the screen-wide Clear) don't
-// leak stale cells from the previous frame.
-// All bordered panels should use this to guarantee consistent chrome.
+// leak stale cells from the previous frame. The fill style is hardcoded to
+// tcell.StyleDefault because every current caller wants a transparent
+// interior — if a future bordered panel ever lives on top of a tinted layer
+// (e.g., a modal overlay with a coloured background), this helper will need
+// a fillStyle parameter.
+//
+// When w or h is below the 2x2 minimum required for a border, the returned
+// InnerRect is the zero value so callers can short-circuit on
+// `inner.W <= 0 || inner.H <= 0`.
 func DrawBorderedPanel(screen tcell.Screen, x, y, w, h int, title string, style tcell.Style) InnerRect {
-	if w >= 2 && h >= 2 {
-		FillArea(screen, x+1, y+1, w-2, h-2, ' ', tcell.StyleDefault)
+	if w < 2 || h < 2 {
+		return InnerRect{}
 	}
+	FillArea(screen, x+1, y+1, w-2, h-2, ' ', tcell.StyleDefault)
 	DrawBorder(screen, x, y, w, h, style)
 	if title != "" {
 		for i, r := range title {

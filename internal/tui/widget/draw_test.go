@@ -23,6 +23,10 @@ func newSimScreen(t *testing.T, cols, rows int) tcell.SimulationScreen {
 			s.SetContent(x, y, 'X', nil, garbageStyle)
 		}
 	}
+	// Sync commits the seeded cells so GetContent reads them back. Without
+	// this, GetContent would return the emulator's zero-value initial state
+	// rather than the seed, and the "overwrite" assertions below would pass
+	// trivially even if FillArea silently did nothing.
 	s.Sync()
 	t.Cleanup(s.Fini)
 	return s
@@ -52,10 +56,12 @@ func TestFillArea_OverwritesSeededCells(t *testing.T) {
 	}
 }
 
-func TestFillArea_NoopOnZeroSize(t *testing.T) {
+func TestFillArea_NoopOnZeroOrNegativeSize(t *testing.T) {
 	s := newSimScreen(t, 10, 5)
 	FillArea(s, 1, 1, 0, 3, ' ', tcell.StyleDefault)
 	FillArea(s, 1, 1, 3, 0, ' ', tcell.StyleDefault)
+	FillArea(s, 1, 1, -2, 3, ' ', tcell.StyleDefault)
+	FillArea(s, 1, 1, 3, -2, ' ', tcell.StyleDefault)
 	// All cells should still be seeded.
 	for y := 0; y < 5; y++ {
 		for x := 0; x < 10; x++ {
@@ -112,9 +118,17 @@ func TestDrawBorderedPanel_ClearsInteriorOfStaleCells(t *testing.T) {
 	}
 }
 
-func TestDrawBorderedPanel_TinyPanelDoesNotPanic(t *testing.T) {
+func TestDrawBorderedPanel_TinyPanelReturnsZeroInnerRect(t *testing.T) {
 	s := newSimScreen(t, 10, 5)
-	// 1x1 — too small for a border, must no-op safely.
-	inner := DrawBorderedPanel(s, 0, 0, 1, 1, "", tcell.StyleDefault)
-	_ = inner
+	// 1x1 — too small for a border, must no-op safely and return zero rect
+	// so callers can bail out on `inner.W <= 0 || inner.H <= 0`.
+	got := DrawBorderedPanel(s, 0, 0, 1, 1, "", tcell.StyleDefault)
+	if got != (InnerRect{}) {
+		t.Errorf("tiny panel inner rect = %+v, want zero value", got)
+	}
+	// Seeded cell must be untouched — no border, no fill, no partial writes.
+	r, _, _, _ := s.GetContent(0, 0)
+	if r != 'X' {
+		t.Errorf("tiny panel should not paint; got %q, want X", r)
+	}
 }
