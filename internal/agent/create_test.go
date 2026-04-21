@@ -255,6 +255,11 @@ func TestCreateAndStart_UnwindsOnHookFailure(t *testing.T) {
 }
 
 func TestCreateAndStart_RejectsMissingProject(t *testing.T) {
+	// Redirect HOME for consistency with other CreateAndStart tests — this
+	// test fails before any worktree op, but adding the guard now means
+	// future assertions that touch WorktreeDir() can't regress to the real
+	// ~/.argus/ path.
+	t.Setenv("HOME", t.TempDir())
 	d := createTestDB(t, t.TempDir())
 	fr := &fakeRunner{}
 

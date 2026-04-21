@@ -28,19 +28,30 @@ type CreateInput struct {
 	// OnWorktreeCreated runs after the worktree exists but before the task
 	// row is persisted. Use this for writing per-worktree context files
 	// (e.g. fork-task prompts). If it returns an error, the worktree is
-	// removed and CreateAndStart returns the error. Runs on the calling
-	// goroutine.
+	// removed and CreateAndStart returns the error.
+	//
+	// Runs on the calling goroutine — typically a background goroutine
+	// spawned by the TUI. MUST NOT call tview widget methods or mutate
+	// any state that assumes the tview main goroutine; those are data
+	// races without QueueUpdateDraw.
 	OnWorktreeCreated func(wtPath string) error
 
 	// BeforeStart runs immediately before runner.Start. Used by the TUI to
 	// bump its startGen counter so in-flight tick reconciliations see a new
-	// generation. Runs on the calling goroutine.
+	// generation.
+	//
+	// Runs on the calling goroutine (background, not tview main). Same
+	// tview-safety caveat as OnWorktreeCreated applies.
 	BeforeStart func()
 
 	// AfterStart runs immediately after runner.Start returns, whether or
-	// not it succeeded. Used by the TUI to post-bump startGen so ticks that
-	// captured runningIDs mid-RPC will skip stale reconciliation. Runs on
-	// the calling goroutine.
+	// not it succeeded — callers must not assume the session is live when
+	// this fires. On failure the unwind chain runs next. Used by the TUI
+	// to post-bump startGen so ticks that captured runningIDs mid-RPC
+	// skip stale reconciliation.
+	//
+	// Runs on the calling goroutine (background, not tview main). Same
+	// tview-safety caveat as OnWorktreeCreated applies.
 	AfterStart func()
 }
 
@@ -71,17 +82,22 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	// Compensating-action stack: each successful side effect appends an undo
 	// closure. unwind runs them LIFO. We run cleanups outside any critical
 	// section — any cleanup failure is logged but cannot stop the chain.
-	var cleanups []func()
+	// The triggering label ("runner.Start", "OnWorktreeCreated", …) flows
+	// into each cleanup via the unwindTrigger closure variable so per-step
+	// error logs carry the trigger context.
+	var cleanups []func(trigger string)
+	var unwindTrigger string
 	unwind := func(label string, cause error) {
-		slog.Warn("CreateAndStart: unwinding", "at", label, "err", cause)
+		slog.Warn("CreateAndStart: unwinding", "trigger", label, "err", cause)
+		unwindTrigger = label
 		for i := len(cleanups) - 1; i >= 0; i-- {
-			func(fn func()) {
+			func(fn func(string)) {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("CreateAndStart: unwind step panicked", "recover", r)
+						slog.Error("CreateAndStart: unwind step panicked", "trigger", unwindTrigger, "recover", r)
 					}
 				}()
-				fn()
+				fn(unwindTrigger)
 			}(cleanups[i])
 		}
 	}
@@ -97,7 +113,8 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		return nil, nil, fmt.Errorf("worktree: %w", err)
 	}
 	repoPath := projCfg.Path
-	cleanups = append(cleanups, func() {
+	cleanups = append(cleanups, func(trigger string) {
+		slog.Info("CreateAndStart unwind: remove worktree", "trigger", trigger, "path", wtPath, "branch", branchName)
 		RemoveWorktreeAndBranch(wtPath, branchName, repoPath)
 	})
 
@@ -135,9 +152,9 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	}
 	// Capture task ID before registering the cleanup so it cannot drift.
 	taskID := task.ID
-	cleanups = append(cleanups, func() {
+	cleanups = append(cleanups, func(trigger string) {
 		if dErr := database.Delete(taskID); dErr != nil {
-			slog.Error("CreateAndStart: unwind db.Delete failed", "id", taskID, "err", dErr)
+			slog.Error("CreateAndStart unwind db.Delete failed", "trigger", trigger, "id", taskID, "err", dErr)
 		}
 	})
 
