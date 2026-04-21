@@ -39,7 +39,8 @@
 
 ## Todo-Task Association
 
-- **`TodoPath` links a task to its source vault `.md` file.** Set only during `handleLaunchToDoKey`. `TasksByTodoPath()` returns most-recent task per path (ORDER BY created_at ASC, last wins).
+- **`TodoPath` links a task to its source vault `.md` file.** Set during `handleLaunchToDoKey` (interactive) and by the vault watcher via `HeadlessCreateTask` (headless). `TasksByTodoPath()` returns most-recent task per path (ORDER BY created_at ASC, last wins).
+- **Vault watcher dedup (`TasksByTodoPath()`) assumes no ghost rows.** Before `agent.CreateAndStart`, a `runner.Start` failure left a Pending row with the `TodoPath` set — the watcher would skip the file forever. The transactional create unwinds the row on any failure, so a retry on the next fsnotify/poll event will re-attempt cleanly.
 - **Deleting or pruning a todo-linked task auto-deletes the vault `.md` file.** `deleteTask` and `pruneCompletedTasks` both call `removeTodoVaultFile`, which canonicalizes paths with `filepath.Clean` before the vault-boundary prefix check. The vault refresh (`RefreshAsync`) fires once after the loop in prune, not per-task.
 - **`removeTodoVaultFile` must canonicalize paths before the prefix guard.** A `TodoPath` like `/vault/../../../etc/passwd` would bypass a raw `strings.HasPrefix` check. Always `filepath.Clean` both the todo path and vault path before comparing.
 - **`taskColumns`/`scanTask`/`Add`/`Update` lockstep includes `todo_path`.** Column position is after `pr_url`, before `archived`. Missing any site causes runtime panics.

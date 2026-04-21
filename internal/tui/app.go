@@ -1990,92 +1990,81 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		}
 
 		// Switch to agent view immediately with a pending banner so there's
-		// no lag after the form closes. The worktree goroutine will start
-		// the session once creation completes.
+		// no lag after the form closes. The CreateAndStart goroutine below
+		// does worktree creation + DB insert + session start transactionally.
 		a.enterPendingAgentView(task)
 		a.statusbar.SetInfo("Creating worktree…")
-		uxlog.Log("[tui] starting worktree creation for task %q in project %q", task.Name, proj)
-		projPath := projCfg.Path
-		pendingTaskID := task.ID
+		uxlog.Log("[tui] starting create-and-start for task %q in project %q", task.Name, proj)
+		rows, cols := a.computePTYSize()
+		input := agent.CreateInput{
+			Name:       task.Name,
+			Prompt:     task.Prompt,
+			Project:    proj,
+			Backend:    task.Backend,
+			BaseBranch: task.Branch,
+			Rows:       rows,
+			Cols:       cols,
+			BeforeStart: func() { a.startGen.Add(1) },
+			AfterStart:  func() { a.startGen.Add(1) },
+		}
 
 		go func() {
-			// task.Branch already holds the user-resolved branch (form field
-			// or project default), so pass it directly.
-			wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, proj, task.Name, task.Branch)
+			created, _, err := agent.CreateAndStart(a.db, a.runner, input)
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
-					a.statusbar.SetError("Worktree error: " + err.Error())
-					// Only exit agent view if the user is still on the pending
-					// view for this task. If they navigated away (to the task
-					// list or another task's agent view), just show the error —
-					// calling exitAgentView here would disrupt their session.
-					if a.mode == modeAgent && a.agentState.TaskID == pendingTaskID {
+					a.statusbar.SetError("Create failed: " + err.Error())
+					// pending agent view has empty agentState.TaskID — only
+					// exit if the user is still there (hasn't navigated away).
+					if a.mode == modeAgent && a.agentState.TaskID == "" {
 						a.exitAgentView()
 					}
 				})
-				uxlog.Log("[tui] worktree creation failed: %v", err)
+				uxlog.Log("[tui] create-and-start failed: %v", err)
 				return
 			}
 
 			a.tapp.QueueUpdateDraw(func() {
 				a.statusbar.ClearInfo()
-				task.Worktree = wtPath
-				task.Name = finalName
-				task.Branch = branchName
-				task.Sandboxed = a.resolveSandboxed(task)
-				if err := a.db.Add(task); err != nil {
-					uxlog.Log("[tui] failed to persist task: %v — cleaning up worktree", err)
-					a.statusbar.SetError("Failed to create task: " + err.Error())
-					if a.mode == modeAgent && a.agentState.TaskID == pendingTaskID {
-						a.exitAgentView()
-					}
-					go removeWorktreeAndBranch(wtPath, branchName, projPath)
-					return
-				}
-				uxlog.Log("[tui] created task %s (%s)", task.ID, task.Name)
-
+				a.recentStarts[created.ID] = time.Now()
+				uxlog.Log("[tui] created task %s (%s)", created.ID, created.Name)
 				a.refreshTasksLocal()
 
-				// If the user navigated away from the pending agent view
-				// (escaped to task list, or opened a different task), don't
-				// yank them back — just start the session in the background
-				// and select in the list for easy access.
-				if a.mode != modeAgent || a.agentState.TaskID != pendingTaskID {
-					uxlog.Log("[tui] user left pending view, starting session in background for task %s", task.ID)
-					a.tasklist.SelectByID(task.ID)
-					a.startSession(task)
+				stillPending := a.mode == modeAgent && a.agentState.TaskID == ""
+				if !stillPending {
+					// User moved away — just select the new task in the list.
+					a.tasklist.SelectByID(created.ID)
 					return
 				}
 
-				// Complete the transition: update agent header with final name,
-				// select the task in the list, and enter agent view (which
-				// auto-starts the session).
-				a.agentHeader.SetTaskName(task.Name)
-				a.tasklist.SelectByID(task.ID)
-				a.onTaskSelect(task, true)
+				// Complete the transition: session is already live, so
+				// onTaskSelect sees it via runner.Get and wires up the pane
+				// without re-invoking runner.Start.
+				a.agentHeader.SetTaskName(created.Name)
+				a.tasklist.SelectByID(created.ID)
+				a.onTaskSelect(created, true)
 			})
 		}()
 	}
 }
 
-// startSession starts a session for the current task. Safe to call when the
-// agent view is not active — pane attachment is skipped and deferred to onTaskSelect.
-func (a *App) startSession(task *model.Task) {
-	cfg := a.db.Config()
-
-	// Use actual panel dimensions so the agent process starts at the correct
-	// width — agents format their initial output for the PTY size at launch,
-	// and existing output isn't reflowed on later resize. GetInnerRect may
-	// return 0 before the first Draw(), so fall back to computing from the
-	// terminal size and the 1:3:1 agent page layout ratio.
-	rows, cols := uint16(24), uint16(80)
+// computePTYSize returns the best available PTY dimensions for the agent
+// terminal pane. Prefers the pane's actual inner rect (when tview has drawn);
+// falls back to the host terminal size via the 1:3:1 agent-page layout ratio;
+// finally defaults to 24x80.
+//
+// MUST be called on the tview main goroutine — GetInnerRect is not safe to
+// call concurrently with Draw.
+func (a *App) computePTYSize() (rows, cols uint16) {
+	rows, cols = 24, 80
 	_, _, pw, ph := a.agentPane.GetInnerRect()
 	if pw > 0 && ph > 0 {
 		// Border is drawn inside the box rect — content area is 2 smaller each dimension.
 		cols = uint16(max(pw-2, 20))
 		rows = uint16(max(ph-2, 5))
-	} else if tw, th, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 && th > 0 {
+		return
+	}
+	if tw, th, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 && th > 0 {
 		// Agent page is a 1:3:1 flex — center panel gets 3/5 of width.
 		// Border is drawn inside, deduct 2 for border cells.
 		centerW := tw*3/5 - 2
@@ -2090,6 +2079,19 @@ func (a *App) startSession(task *model.Task) {
 		cols = uint16(centerW)
 		rows = uint16(centerH)
 	}
+	return
+}
+
+// startSession starts a session for an *existing* task (Enter-to-restart or
+// auto-start on entering agent view). On failure, status reverts to Pending
+// but the DB row and worktree are preserved — the user may fix the underlying
+// issue (e.g. missing backend binary) and retry.
+//
+// For *fresh* task creation, callers use agent.CreateAndStart instead, which
+// unwinds the worktree and DB row on failure so no orphans remain.
+func (a *App) startSession(task *model.Task) {
+	cfg := a.db.Config()
+	rows, cols := a.computePTYSize()
 
 	resume := task.SessionID != ""
 
@@ -2248,52 +2250,49 @@ func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
 			return
 		}
 
-		// Worktree creation runs in a background goroutine to avoid blocking
-		// the tview event loop — git fetch can take several seconds.
+		// CreateAndStart runs in a background goroutine to avoid blocking the
+		// tview event loop — git fetch can take several seconds.
 		a.statusbar.SetInfo("Creating worktree…")
-		uxlog.Log("[todos] starting worktree creation for to-do %q in project %q", item.Name, proj)
-		projPath := projCfg.Path
-		branch := projCfg.Branch
+		uxlog.Log("[todos] starting create-and-start for to-do %q in project %q", item.Name, proj)
+		rows, cols := a.computePTYSize()
+		input := agent.CreateInput{
+			Name:        task.Name,
+			Prompt:      task.Prompt,
+			Project:     proj,
+			Backend:     task.Backend,
+			TodoPath:    item.Path,
+			Rows:        rows,
+			Cols:        cols,
+			BeforeStart: func() { a.startGen.Add(1) },
+			AfterStart:  func() { a.startGen.Add(1) },
+		}
 
 		go func() {
-			wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, proj, task.Name, branch)
+			created, _, err := agent.CreateAndStart(a.db, a.runner, input)
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
-					a.statusbar.SetError("Worktree error: " + err.Error())
+					a.statusbar.SetError("Failed to launch: " + err.Error())
 				})
-				uxlog.Log("[todos] worktree creation failed: %v", err)
+				uxlog.Log("[todos] create-and-start failed: %v", err)
 				return
 			}
 
 			a.tapp.QueueUpdateDraw(func() {
 				a.statusbar.ClearInfo()
-				task.Worktree = wtPath
-				task.Name = finalName
-				task.Branch = branchName
-				task.Sandboxed = a.resolveSandboxed(task)
-				if err := a.db.Add(task); err != nil {
-					uxlog.Log("[todos] failed to persist task: %v — cleaning up worktree", err)
-					a.statusbar.SetError("Failed to create task: " + err.Error())
-					go removeWorktreeAndBranch(wtPath, branchName, projPath)
-					return
-				}
-				uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
-
+				a.recentStarts[created.ID] = time.Now()
+				uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, created.ID, created.Name)
 				a.refreshTasksLocal()
 
 				// If the user navigated into agent view for another task while
-				// the worktree was being created, don't yank them away — but
-				// still start the session so the task isn't stuck in pending.
-				// No TaskID check needed: closeLaunchToDoModal sets modeTaskList
-				// before the goroutine runs, so modeAgent means a different task.
+				// the create was in flight, don't yank them away — just surface
+				// the new task in the list.
 				if a.mode == modeAgent {
-					uxlog.Log("[todos] user in agent view, starting session in background for new task %s", task.ID)
-					a.startSession(task)
+					a.tasklist.SelectByID(created.ID)
 					return
 				}
-				a.tasklist.SelectByID(task.ID)
-				a.onTaskSelect(task, true)
+				a.tasklist.SelectByID(created.ID)
+				a.onTaskSelect(created, true)
 			})
 		}()
 	}
@@ -2399,46 +2398,39 @@ func (a *App) startReviewTask(pr *github.PR) {
 		return
 	}
 
-	// Worktree creation runs in a background goroutine to avoid blocking
-	// the tview event loop — same pattern as executeFork.
-	projPath := projCfg.Path
-	branch := projCfg.Branch
+	// CreateAndStart runs in a background goroutine to avoid blocking the
+	// tview event loop — same pattern as executeFork.
 	uxlog.Log("[reviews] starting review task creation for %s", prURL)
+	rows, cols := a.computePTYSize()
+	input := agent.CreateInput{
+		Name:        taskName,
+		Prompt:      prompt,
+		Project:     projName,
+		Backend:     backend,
+		PRURL:       prURL,
+		Rows:        rows,
+		Cols:        cols,
+		BeforeStart: func() { a.startGen.Add(1) },
+		AfterStart:  func() { a.startGen.Add(1) },
+	}
 
 	go func() {
-		wtPath, finalName, branchName, err := agent.CreateWorktree(projPath, projName, taskName, branch)
+		created, _, err := agent.CreateAndStart(a.db, a.runner, input)
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Worktree error: " + err.Error())
+				a.statusbar.SetError("Review task failed: " + err.Error())
 			})
-			uxlog.Log("[reviews] worktree creation failed: %v", err)
+			uxlog.Log("[reviews] create-and-start failed: %v", err)
 			return
 		}
 
 		a.tapp.QueueUpdateDraw(func() {
-			task := &model.Task{
-				Name:     finalName,
-				Status:   model.StatusPending,
-				Project:  projName,
-				Prompt:   prompt,
-				Backend:  backend,
-				PRURL:    prURL,
-				Branch:   branchName,
-				Worktree: wtPath,
-			}
-			task.Sandboxed = a.resolveSandboxed(task)
-			if err := a.db.Add(task); err != nil {
-				uxlog.Log("[reviews] failed to persist review task: %v — cleaning up worktree", err)
-				a.statusbar.SetError("Failed to create task: " + err.Error())
-				go removeWorktreeAndBranch(wtPath, branchName, projPath)
-				return
-			}
-			uxlog.Log("[reviews] created review task %s (%s) for %s", task.ID, task.Name, prURL)
-
+			a.recentStarts[created.ID] = time.Now()
+			uxlog.Log("[reviews] created review task %s (%s) for %s", created.ID, created.Name, prURL)
 			a.switchTab(widget.TabTasks)
 			a.refreshTasksLocal()
-			a.tasklist.SelectByID(task.ID)
-			a.onTaskSelect(task, true)
+			a.tasklist.SelectByID(created.ID)
+			a.onTaskSelect(created, true)
 		})
 	}()
 }
@@ -2846,58 +2838,47 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 		uxlog.Log("[fork] starting fork of task %s (%s)", source.ID, source.Name)
 	}
 
+	// Avoid "fork-fork-..." names when re-forking an existing fork.
+	forkName := "fork-" + strings.TrimPrefix(source.Name, "fork-")
+	rows, cols := a.computePTYSize()
+
 	go func() {
 		// Extract context from the source task (reads session log + git diff).
 		ctx := extractForkContext(source)
 
-		// Create worktree for the new task.
-		baseBranch := projCfg.Branch
-		// Avoid "fork-fork-..." names when re-forking an existing fork.
-		forkName := "fork-" + strings.TrimPrefix(source.Name, "fork-")
-		wtPath, finalName, branchName, err := agent.CreateWorktree(projCfg.Path, proj, forkName, baseBranch)
+		input := agent.CreateInput{
+			Name:    forkName,
+			Prompt:  buildForkPrompt(source, ctx, proj),
+			Project: proj,
+			Backend: source.Backend,
+			Rows:    rows,
+			Cols:    cols,
+			OnWorktreeCreated: func(wtPath string) error {
+				if err := writeForkContextFiles(wtPath, ctx); err != nil {
+					return err
+				}
+				uxlog.Log("[fork] context files written to %s/.context/", wtPath)
+				return nil
+			},
+			BeforeStart: func() { a.startGen.Add(1) },
+			AfterStart:  func() { a.startGen.Add(1) },
+		}
+
+		created, _, err := agent.CreateAndStart(a.db, a.runner, input)
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Fork worktree error: " + err.Error())
-			})
-			uxlog.Log("[fork] worktree creation failed: %v", err)
-			return
-		}
-
-		// Write .context/ files into the new worktree.
-		if err := writeForkContextFiles(wtPath, ctx); err != nil {
-			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Fork context error: " + err.Error())
-			})
-			uxlog.Log("[fork] context file write failed: %v", err)
-			return
-		}
-
-		uxlog.Log("[fork] context files written to %s/.context/", wtPath)
-
-		// Create the task and start the session on the tview thread.
-		a.tapp.QueueUpdateDraw(func() {
-			task := &model.Task{
-				Name:     finalName,
-				Status:   model.StatusPending,
-				Project:  proj,
-				Prompt:   buildForkPrompt(source, ctx, proj),
-				Backend:  source.Backend,
-				Branch:   branchName,
-				Worktree: wtPath,
-			}
-
-			task.Sandboxed = a.resolveSandboxed(task)
-			if err := a.db.Add(task); err != nil {
-				uxlog.Log("[fork] db.Add failed: %v — cleaning up worktree", err)
 				a.statusbar.SetError("Fork failed: " + err.Error())
-				go removeWorktreeAndBranch(wtPath, branchName, projCfg.Path)
-				return
-			}
-			uxlog.Log("[fork] created task %s (%s) forked from %s", task.ID, task.Name, source.ID)
+			})
+			uxlog.Log("[fork] create-and-start failed: %v", err)
+			return
+		}
 
+		a.tapp.QueueUpdateDraw(func() {
+			a.recentStarts[created.ID] = time.Now()
+			uxlog.Log("[fork] created task %s (%s) forked from %s", created.ID, created.Name, source.ID)
 			a.refreshTasksLocal()
-			a.tasklist.SelectByID(task.ID)
-			a.onTaskSelect(task, true)
+			a.tasklist.SelectByID(created.ID)
+			a.onTaskSelect(created, true)
 		})
 	}()
 }
@@ -3179,10 +3160,10 @@ func (a *App) deleteTask(t *model.Task) {
 	go func() {
 		repoDir := agent.ResolveDir(t, cfg)
 		if worktree != "" {
-			removeWorktreeAndBranch(worktree, branch, repoDir)
+			agent.RemoveWorktreeAndBranch(worktree, branch, repoDir)
 		} else if branch != "" && repoDir != "" {
-			deleteBranch(repoDir, branch)
-			deleteRemoteBranch(repoDir, branch)
+			agent.DeleteBranch(repoDir, branch)
+			agent.DeleteRemoteBranch(repoDir, branch)
 		}
 	}()
 }
@@ -3288,7 +3269,7 @@ func (a *App) pruneCompletedTasks() {
 				repoDir := agent.ResolveDir(t, cfg)
 				uxlog.Log("[tui] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
 					t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
-				removeWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
+				agent.RemoveWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
 				n := cleaned.Add(1)
 				a.tapp.QueueUpdateDraw(func() {
 					a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", n, totalClean))

@@ -86,7 +86,7 @@ func readSessionLogTail(taskID string) string {
 // readGitDiff runs git diff HEAD in the worktree and returns the output.
 // Validates the worktree path is under a known worktree root before executing.
 func readGitDiff(worktree string) string {
-	if !isWorktreeSubdir(worktree) {
+	if !agent.IsWorktreeSubdir(worktree) {
 		return ""
 	}
 	cmd := exec.Command("git", "diff", "HEAD")

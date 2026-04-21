@@ -1337,8 +1337,8 @@ func TestWorktreeSubdir(t *testing.T) {
 		{"/tmp/foo", false},
 	}
 	for _, tt := range tests {
-		if got := isWorktreeSubdir(tt.path); got != tt.want {
-			t.Errorf("isWorktreeSubdir(%q) = %v, want %v", tt.path, got, tt.want)
+		if got := agent.IsWorktreeSubdir(tt.path); got != tt.want {
+			t.Errorf("agent.IsWorktreeSubdir(%q) = %v, want %v", tt.path, got, tt.want)
 		}
 	}
 }
