@@ -1101,6 +1101,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 		a.tapp.Stop()
 		return nil
+	case tcell.KeyCtrlL:
+		// Manual refresh — force a full screen re-emit to wipe ghost
+		// cells that the diff-based Show() failed to overwrite. Only
+		// active outside agent view; agent view binds Ctrl+L to the
+		// link picker (handleAgentKey).
+		if a.mode != modeAgent {
+			a.forceRedraw("ctrl+l")
+			return nil
+		}
 	case tcell.KeyCtrlQ:
 		if a.mode == modeAgent {
 			// 3-level exit: diff → files panel → agent view
@@ -1695,6 +1704,18 @@ func (a *App) switchTab(t widget.Tab) {
 		a.pages.SwitchToPage("settings")
 		a.tapp.SetFocus(a.settingsPage)
 	}
+	a.forceRedraw("tab switch")
+}
+
+// forceRedraw queues a tcell Sync (full clear + re-emit of every cell) on the
+// next event cycle. Use at layout-changing transitions (tab switch, agent
+// view enter/exit) where the diff-based Show() has been observed to leak
+// stale cells from the previous layout. Sync emits the terminal Clear escape
+// and re-sends every cell from the staging buffer, which wipes ghost content
+// that Show's dirty-cell tracking considered up-to-date.
+func (a *App) forceRedraw(reason string) {
+	uxlog.Log("[tui] force redraw: %s", reason)
+	a.tapp.Sync()
 }
 
 // onTaskCursorChange updates the preview, git status, and detail panels when the task list cursor moves.
@@ -1846,6 +1867,7 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
+	a.forceRedraw("enter agent view (launch)")
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.
@@ -1888,6 +1910,7 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
+	a.forceRedraw("enter agent view")
 
 	// Kick off initial git status
 	if a.worktreeDir != "" {
@@ -3336,4 +3359,5 @@ func (a *App) exitAgentView() {
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
+	a.forceRedraw("exit agent view")
 }
