@@ -1104,8 +1104,8 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlL:
 		// Manual refresh — force a full screen re-emit to wipe ghost
 		// cells that the diff-based Show() failed to overwrite. Only
-		// active outside agent view; agent view binds Ctrl+L to the
-		// link picker (handleAgentKey).
+		// active outside agent view; in agent mode we fall through so
+		// handleAgentKey's Ctrl+L → link-picker binding runs instead.
 		if a.mode != modeAgent {
 			a.forceRedraw("ctrl+l")
 			return nil
@@ -1679,7 +1679,8 @@ func (a *App) switchTab(t widget.Tab) {
 	case widget.TabTasks:
 		if a.mode == modeAgent {
 			// exitAgentView is a complete "return to tasks" primitive:
-			// resets mode, tab state, page, and focus. No extra work needed.
+			// resets mode, tab state, page, focus, and forces a redraw.
+			// Early return avoids a second forceRedraw call below.
 			a.exitAgentView()
 			return
 		}
@@ -1707,12 +1708,12 @@ func (a *App) switchTab(t widget.Tab) {
 	a.forceRedraw("tab switch")
 }
 
-// forceRedraw queues a tcell Sync (full clear + re-emit of every cell) on the
-// next event cycle. Use at layout-changing transitions (tab switch, agent
-// view enter/exit) where the diff-based Show() has been observed to leak
-// stale cells from the previous layout. Sync emits the terminal Clear escape
-// and re-sends every cell from the staging buffer, which wipes ghost content
-// that Show's dirty-cell tracking considered up-to-date.
+// forceRedraw queues a tcell Sync on tview's update channel; it fires on the
+// next event cycle after any in-flight Draw completes. Use at layout-changing
+// transitions (tab switch, agent view enter/exit) where the diff-based
+// `Show()` has been observed to leak stale cells from the previous layout.
+// `Sync()` invalidates tcell's dirty-cell tracking so every cell is re-emitted,
+// which overwrites ghost content that `Show` considered up-to-date.
 func (a *App) forceRedraw(reason string) {
 	uxlog.Log("[tui] force redraw: %s", reason)
 	a.tapp.Sync()

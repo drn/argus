@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -458,6 +462,75 @@ func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	var isTaskList bool
 	readUI(t, app.tapp, func() { isTaskList = app.mode == modeTaskList })
 	testutil.Equal(t, isTaskList, true)
+}
+
+// TestSmoke_ForceRedrawOnTransitions verifies that layout-changing transitions
+// (tab switch, agent view enter/exit, Ctrl+L) all invoke forceRedraw.
+// Guards against regression where a new transition path forgets to force a
+// tcell Sync, re-introducing ghost cells in Alacritty+tmux.
+func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
+	// Point uxlog at a temp file so we can inspect the "[tui] force redraw"
+	// entries produced by forceRedraw.
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	task := &model.Task{
+		ID:        "redraw-1",
+		Name:      "redraw test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	d.Add(task)
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		return string(b)
+	}
+
+	// Tab switch (1→2) fires forceRedraw.
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+	testutil.Contains(t, readLog(), "force redraw: tab switch")
+
+	// Ctrl+L in non-agent mode fires forceRedraw.
+	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
+	syncUI(t, app.tapp)
+	testutil.Contains(t, readLog(), "force redraw: ctrl+l")
+
+	// Back to Tasks so Enter can open the agent view.
+	sim.InjectKey(tcell.KeyRune, '1', 0)
+	syncUI(t, app.tapp)
+
+	// Enter agent view fires forceRedraw.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	testutil.Contains(t, readLog(), "force redraw: enter agent view")
+
+	// Exit agent view fires forceRedraw.
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+	testutil.Contains(t, readLog(), "force redraw: exit agent view")
+
+	// Sanity: only one "exit agent view" entry — confirms no double-Sync
+	// from switchTab → exitAgentView paths.
+	if count := strings.Count(readLog(), "force redraw: exit agent view"); count != 1 {
+		t.Errorf("expected 1 exit-agent-view redraw entry, got %d", count)
+	}
 }
 
 func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {

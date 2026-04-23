@@ -120,9 +120,9 @@ argus
 | `c` | Copy task prompt to clipboard |
 | `ctrl+d` | Destroy task (kill agent + remove worktree + delete branch) |
 | `ctrl+r` | Prune completed tasks |
-| `ctrl+l` | Refresh screen (wipe ghost cells) |
 | `j` / `k` | Navigate up/down |
 | `1` / `2` / `3` / `4` | Switch tabs (Tasks / To Dos / Reviews / Settings) |
+| `ctrl+l` | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q` | Quit |
 
 #### Agent View
