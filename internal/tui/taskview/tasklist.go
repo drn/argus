@@ -540,6 +540,19 @@ func (tl *TaskListView) autoExpand() {
 	}
 }
 
+// taskSection returns which section a task would appear in, using the same
+// precedence as buildRows (archive wins over waiting-for-review).
+func taskSection(t *model.Task) rowSection {
+	switch {
+	case t.Archived:
+		return sectionArchive
+	case t.WaitingReview:
+		return sectionWaitingReview
+	default:
+		return sectionActive
+	}
+}
+
 // sectionAt returns which section the row at idx belongs to. It scans upward
 // and returns the first section header encountered; rows above the first
 // section header belong to the active section.
@@ -553,11 +566,6 @@ func (tl *TaskListView) sectionAt(idx int) rowSection {
 		}
 	}
 	return sectionActive
-}
-
-// isInArchive reports whether the row at idx is inside the archive section.
-func (tl *TaskListView) isInArchive(idx int) bool {
-	return tl.sectionAt(idx) == sectionArchive
 }
 
 // restoreCursor finds the row matching target in the rebuilt rows slice
@@ -839,7 +847,7 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 
 		switch row.kind {
 		case rowProject:
-			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project)
+			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project, tl.sectionAt(idx))
 		case rowSeparator:
 			tl.drawSeparator(screen, inner.X, inner.Y+i, inner.W)
 		case rowArchiveHeader:
@@ -908,10 +916,15 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	}
 }
 
-func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj string) {
-	// Find tasks for this project to compute the aggregated status icon.
+func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj string, sec rowSection) {
+	// Find tasks for this project within the row's section. Aggregating across
+	// all sections would leak status (and expansion state) from a same-named
+	// project in a different section into this header.
 	var projTasks []*model.Task
 	for _, t := range tl.tasks {
+		if taskSection(t) != sec {
+			continue
+		}
 		p := t.Project
 		if p == "" {
 			p = "(no project)"
@@ -933,10 +946,21 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 		col += 2
 	}
 
-	// Chevron
+	// Chevron — match only the expansion that corresponds to the row's section.
 	chevron := '▸'
-	if proj == tl.expanded || proj == tl.archiveProject || proj == tl.waitingReviewProject {
-		chevron = '▾'
+	switch sec {
+	case sectionActive:
+		if proj == tl.expanded {
+			chevron = '▾'
+		}
+	case sectionWaitingReview:
+		if proj == tl.waitingReviewProject {
+			chevron = '▾'
+		}
+	case sectionArchive:
+		if proj == tl.archiveProject {
+			chevron = '▾'
+		}
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	col += 2

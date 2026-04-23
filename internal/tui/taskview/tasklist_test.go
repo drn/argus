@@ -343,7 +343,7 @@ func TestTaskListView_EnterSkipsCompleted(t *testing.T) {
 	}
 }
 
-func TestTaskListView_IsInArchive(t *testing.T) {
+func TestTaskListView_SectionAt(t *testing.T) {
 	tl := NewTaskListView()
 	tl.archiveExpanded = true
 	tl.archiveProject = "beta"
@@ -362,12 +362,12 @@ func TestTaskListView_IsInArchive(t *testing.T) {
 	}
 
 	// Rows before archive header should not be in archive
-	if archiveIdx > 0 && tl.isInArchive(0) {
+	if archiveIdx > 0 && tl.sectionAt(0) == sectionArchive {
 		t.Error("row 0 should not be in archive")
 	}
 
 	// Rows at or after archive header should be in archive
-	if !tl.isInArchive(archiveIdx) {
+	if tl.sectionAt(archiveIdx) != sectionArchive {
 		t.Error("archive header row should be in archive")
 	}
 }
@@ -803,7 +803,7 @@ func TestTaskListView_ArchiveSectionAwareCursor(t *testing.T) {
 	}
 
 	// The cursor should be in the archive section, not on the main "shared" project
-	if !tl.isInArchive(tl.cursor) {
+	if tl.sectionAt(tl.cursor) != sectionArchive {
 		t.Error("cursor should be in archive section")
 	}
 }

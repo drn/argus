@@ -1754,6 +1754,18 @@ func TestDB_TaskByPRURL(t *testing.T) {
 		}
 	})
 
+	t.Run("excludes waiting-for-review tasks", func(t *testing.T) {
+		task := &model.Task{Name: "wr-review", PRURL: "https://github.com/org/repo/pull/100", WaitingReview: true}
+		if err := d.Add(task); err != nil {
+			t.Fatal(err)
+		}
+		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/100")
+		testutil.NoError(t, err)
+		if got != nil {
+			t.Error("should not return waiting-for-review tasks")
+		}
+	})
+
 	t.Run("returns most recent task", func(t *testing.T) {
 		url := "https://github.com/org/repo/pull/77"
 		old := &model.Task{Name: "old", PRURL: url, CreatedAt: time.Now().Add(-time.Hour)}

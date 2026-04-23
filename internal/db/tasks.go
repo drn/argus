@@ -211,13 +211,16 @@ func (d *DB) WorktreePaths() (map[string]bool, error) {
 	return paths, nil
 }
 
-// TaskByPRURL returns the most recent non-archived task linked to the given PR URL,
-// or nil if none exists. Used to detect duplicate review tasks.
+// TaskByPRURL returns the most recent active (non-archived, not waiting-for-review)
+// task linked to the given PR URL, or nil if none exists. Used to detect duplicate
+// review tasks. Tasks that have been flagged as waiting-for-review are treated as
+// parked like archived tasks — they should not suppress creation of a fresh review
+// task for the same PR.
 func (d *DB) TaskByPRURL(url string) (*model.Task, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE pr_url=? AND archived=0 ORDER BY created_at DESC LIMIT 1`, url)
+	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE pr_url=? AND archived=0 AND waiting_review=0 ORDER BY created_at DESC LIMIT 1`, url)
 	t, err := scanTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
