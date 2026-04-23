@@ -3,12 +3,23 @@ package skills
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// skillManifestFile is the conventional SKILL.md file at each skill's root.
+const skillManifestFile = "SKILL.md"
+
+// frontmatterMaxLine caps per-line buffer size while reading SKILL.md
+// frontmatter. The default bufio.Scanner buffer (64 KB) silently drops
+// `ErrTooLong`, which would turn a malformed SKILL.md into a phantom empty
+// description; a higher explicit cap plus an explicit error check produces a
+// well-defined "" return path instead.
+const frontmatterMaxLine = 1 << 20 // 1 MB
 
 // SkillItem represents a discovered Claude Code skill or slash command.
 // Plugin-provided items use a "<plugin>:<name>" form (e.g. "cortex:review")
@@ -35,9 +46,9 @@ func LoadSkills(extraDirs []string) []SkillItem {
 
 	// Bare skill directories (project + user). Earlier dirs win on collision.
 	for _, dir := range extraDirs {
-		items = append(items, loadSkillDirs(dir, "", seen)...)
+		items = append(items, loadSkillDirs(dir, seen)...)
 	}
-	items = append(items, loadSkillDirs(filepath.Join(home, ".claude", "skills"), "", seen)...)
+	items = append(items, loadSkillDirs(filepath.Join(home, ".claude", "skills"), seen)...)
 
 	// Plugin-provided commands and skills, namespaced as "<plugin>:<name>".
 	items = append(items, loadPluginItems(home, seen)...)
@@ -48,9 +59,9 @@ func LoadSkills(extraDirs []string) []SkillItem {
 	return items
 }
 
-// loadSkillDirs scans dir for <name>/SKILL.md entries and returns SkillItems
-// named "<prefix><name>". Names already in seen are skipped.
-func loadSkillDirs(dir, prefix string, seen map[string]bool) []SkillItem {
+// loadSkillDirs scans dir for <name>/SKILL.md entries. Names already in seen
+// are skipped so that earlier callers win on collision.
+func loadSkillDirs(dir string, seen map[string]bool) []SkillItem {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -60,12 +71,12 @@ func loadSkillDirs(dir, prefix string, seen map[string]bool) []SkillItem {
 		if !e.IsDir() {
 			continue
 		}
-		name := prefix + e.Name()
+		name := e.Name()
 		if seen[name] {
 			continue
 		}
 		seen[name] = true
-		desc := readFrontmatterField(filepath.Join(dir, e.Name(), "SKILL.md"), "description")
+		desc := readFrontmatterField(filepath.Join(dir, name, skillManifestFile), "description")
 		items = append(items, SkillItem{Name: name, Description: desc})
 	}
 	return items
@@ -104,7 +115,7 @@ func loadPluginItems(home string, seen map[string]bool) []SkillItem {
 		}
 		// Key is "<plugin>@<marketplace>"; the plugin name is the slash-command prefix.
 		plugin, _, _ := strings.Cut(key, "@")
-		if plugin == "" {
+		if !validPluginName(plugin) {
 			continue
 		}
 		root := installs[0].InstallPath
@@ -112,6 +123,16 @@ func loadPluginItems(home string, seen map[string]bool) []SkillItem {
 		items = append(items, loadPluginSkills(root, plugin, seen)...)
 	}
 	return items
+}
+
+// validPluginName rejects empty names and names containing control characters
+// or ANSI escapes, which would otherwise flow verbatim into the SkillItem.Name
+// shown in the TUI and could corrupt the rendered output.
+func validPluginName(plugin string) bool {
+	if plugin == "" {
+		return false
+	}
+	return !strings.ContainsAny(plugin, "\x00\x1b\n\r\t")
 }
 
 // loadPluginCommands returns each commands/*.md file as "<plugin>:<basename>".
@@ -142,8 +163,18 @@ func loadPluginCommands(root, plugin string, seen map[string]bool) []SkillItem {
 // checkout) and returns each SKILL.md as "<plugin>:<frontmatter-name>".
 func loadPluginSkills(root, plugin string, seen map[string]bool) []SkillItem {
 	skillRoot := filepath.Join(root, "skills")
-	if resolved, err := filepath.EvalSymlinks(skillRoot); err == nil {
+	resolved, err := filepath.EvalSymlinks(skillRoot)
+	switch {
+	case err == nil:
 		skillRoot = resolved
+	case errors.Is(err, os.ErrNotExist):
+		// Plugin has no skills/ dir — common, nothing to discover.
+		return nil
+	default:
+		// Dangling symlink or permission error — don't fall back to the
+		// unresolved path, since WalkDir would either fail or descend a
+		// different tree than expected.
+		return nil
 	}
 	var items []SkillItem
 	_ = filepath.WalkDir(skillRoot, func(path string, d fs.DirEntry, err error) error {
@@ -154,7 +185,7 @@ func loadPluginSkills(root, plugin string, seen map[string]bool) []SkillItem {
 			}
 			return nil
 		}
-		if d.IsDir() || d.Name() != "SKILL.md" {
+		if d.IsDir() || d.Name() != skillManifestFile {
 			return nil
 		}
 		skillName := readFrontmatterField(path, "name")
@@ -177,8 +208,8 @@ func loadPluginSkills(root, plugin string, seen map[string]bool) []SkillItem {
 
 // readFrontmatterField reads a single top-level field from a YAML-ish
 // frontmatter block fenced by "---" lines at the start of the file. Quotes
-// around the value are stripped. Returns "" if the file cannot be opened or
-// the field is absent.
+// around the value are stripped. Returns "" if the file cannot be opened,
+// contains an over-long line, or the field is absent.
 func readFrontmatterField(path, field string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -187,6 +218,7 @@ func readFrontmatterField(path, field string) string {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), frontmatterMaxLine)
 	prefix := field + ":"
 	inFrontmatter := false
 	for scanner.Scan() {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -32,12 +33,9 @@ func TestFilterSkills(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := FilterSkills(items, tc.prefix)
-			names := make([]string, len(got))
-			for i, s := range got {
-				names[i] = s.Name
-			}
-			if len(names) == 0 && len(tc.want) == 0 {
-				return
+			var names []string
+			for _, s := range got {
+				names = append(names, s.Name)
 			}
 			testutil.DeepEqual(t, names, tc.want)
 		})
@@ -170,4 +168,74 @@ func TestLoadSkills_FollowsSymlinkedSkillsDir(t *testing.T) {
 	items := LoadSkills(nil)
 	testutil.Equal(t, len(items), 1)
 	testutil.Equal(t, items[0].Name, "cortex:nucleus")
+}
+
+func TestLoadSkills_RejectsMaliciousPluginNames(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	pluginRoot := filepath.Join(home, ".claude", "plugins", "cache", "mp", "evil", "1.0")
+	cmdDir := filepath.Join(pluginRoot, "commands")
+	testutil.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(cmdDir, "do.md"),
+		[]byte("---\ndescription: x\n---\n"), 0o644))
+
+	manifestDir := filepath.Join(home, ".claude", "plugins")
+	testutil.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	// Plugin name embeds ANSI escape + newline — must be filtered out.
+	manifest := map[string]any{
+		"plugins": map[string]any{
+			"evil\x1b[31m\n@mp": []map[string]any{{"installPath": pluginRoot}},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
+
+	items := LoadSkills(nil)
+	testutil.Equal(t, len(items), 0)
+}
+
+func TestLoadSkills_SkipsDanglingSkillsSymlink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	pluginRoot := filepath.Join(home, ".claude", "plugins", "cache", "mp", "cortex", "1.0")
+	testutil.NoError(t, os.MkdirAll(pluginRoot, 0o755))
+	// Point skills/ at a path that does not exist — EvalSymlinks returns an error.
+	testutil.NoError(t, os.Symlink(filepath.Join(t.TempDir(), "gone"), filepath.Join(pluginRoot, "skills")))
+
+	// But commands/ still works, so we expect only command discovery.
+	cmdDir := filepath.Join(pluginRoot, "commands")
+	testutil.NoError(t, os.MkdirAll(cmdDir, 0o755))
+	testutil.NoError(t, os.WriteFile(filepath.Join(cmdDir, "review.md"),
+		[]byte("---\ndescription: cmd\n---\n"), 0o644))
+
+	manifestDir := filepath.Join(home, ".claude", "plugins")
+	testutil.NoError(t, os.MkdirAll(manifestDir, 0o755))
+	manifest := map[string]any{
+		"plugins": map[string]any{
+			"cortex@mp": []map[string]any{{"installPath": pluginRoot}},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.WriteFile(filepath.Join(manifestDir, "installed_plugins.json"), data, 0o644))
+
+	items := LoadSkills(nil)
+	testutil.Equal(t, len(items), 1)
+	testutil.Equal(t, items[0].Name, "cortex:review")
+}
+
+func TestReadFrontmatterField_OverLongLineReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "SKILL.md")
+	// A description field whose value exceeds the 1 MB cap must produce an
+	// empty string rather than a truncated/garbled value.
+	huge := strings.Repeat("x", 2*1024*1024)
+	testutil.NoError(t, os.WriteFile(path,
+		[]byte("---\ndescription: "+huge+"\n---\n"), 0o644))
+
+	got := readFrontmatterField(path, "description")
+	testutil.Equal(t, got, "")
 }
