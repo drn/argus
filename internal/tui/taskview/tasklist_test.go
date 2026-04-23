@@ -1560,16 +1560,23 @@ func TestTaskListView_WaitingReviewSection(t *testing.T) {
 	})
 }
 
-// rowIndex returns the index of a row. Helper for tests that loop with r but
-// need the section lookup.
+// rowIndex returns the index of a row. Only supports task and project rows;
+// separator and header rows are not uniquely identifiable by this helper
+// because multiple may share kind+empty-project within one row list.
 func rowIndex(tl *TaskListView, target taskRow) int {
+	if target.kind != rowTask && target.kind != rowProject {
+		return -1
+	}
 	for i, r := range tl.rows {
-		if r.kind == target.kind && r.project == target.project {
-			if r.kind == rowTask && r.task != nil && target.task != nil && r.task.ID != target.task.ID {
+		if r.kind != target.kind || r.project != target.project {
+			continue
+		}
+		if r.kind == rowTask {
+			if r.task != nil && target.task != nil && r.task.ID != target.task.ID {
 				continue
 			}
-			return i
 		}
+		return i
 	}
 	return -1
 }
@@ -1629,6 +1636,9 @@ func TestTaskListView_WaitingReviewAndArchiveMutuallyExclusive(t *testing.T) {
 	handler := tl.InputHandler()
 	handler(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone), func(tview.Primitive) {})
 
+	// Assert via the task pointer we captured before any row rebuilds, not
+	// SelectedTask() — buildRows() moves the task into the WR section and the
+	// cursor may end up on a different row after restoration.
 	task := tl.tasks[0]
 	if !task.WaitingReview {
 		t.Error("task should be flagged WaitingReview after 'w'")
@@ -1637,7 +1647,15 @@ func TestTaskListView_WaitingReviewAndArchiveMutuallyExclusive(t *testing.T) {
 		t.Error("pressing 'w' on an archived task should clear Archived")
 	}
 
-	// Now press 'a' — should clear WaitingReview and set Archived.
+	// Now press 'a' — should clear WaitingReview and set Archived. Point the
+	// cursor back at the (now WR-section) task so the 'a' handler has a
+	// SelectedTask to act on.
+	for i, r := range tl.rows {
+		if r.kind == rowTask && r.task == task {
+			tl.cursor = i
+			break
+		}
+	}
 	tl.OnArchive = func(*model.Task) {}
 	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
 	if task.WaitingReview {
@@ -1645,6 +1663,35 @@ func TestTaskListView_WaitingReviewAndArchiveMutuallyExclusive(t *testing.T) {
 	}
 	if !task.Archived {
 		t.Error("task should be Archived after 'a'")
+	}
+}
+
+func TestTaskListView_NavigateThroughAllThreeSections(t *testing.T) {
+	// Downward navigation active → WR → archive should visit a task in each
+	// section exactly once, regardless of which section is currently expanded.
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
+		{ID: "3", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+	})
+
+	visited := []string{}
+	for i := 0; i < 20; i++ {
+		if task := tl.SelectedTask(); task != nil {
+			if len(visited) == 0 || visited[len(visited)-1] != task.ID {
+				visited = append(visited, task.ID)
+			}
+		}
+		tl.CursorDown()
+	}
+
+	// The sequence must include all three IDs in order 1 → 2 → 3.
+	want := []string{"1", "2", "3"}
+	for i, id := range want {
+		if i >= len(visited) || visited[i] != id {
+			t.Fatalf("downward visit order = %v, want %v", visited, want)
+		}
 	}
 }
 

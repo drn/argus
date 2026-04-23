@@ -533,6 +533,44 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	}
 }
 
+func TestSmoke_WaitingReviewToggle(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false, false)
+
+	task := &model.Task{
+		ID:        "wr-1",
+		Name:      "wr smoke",
+		Status:    model.StatusInReview,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Press 'w' — task should be flagged WaitingReview, persisted to DB,
+	// and the tasklist should still be focused.
+	sim.InjectKey(tcell.KeyRune, 'w', 0)
+	syncUI(t, app.tapp)
+
+	got, err := d.Get("wr-1")
+	testutil.NoError(t, err)
+	if !got.WaitingReview {
+		t.Error("'w' key did not flag task as WaitingReview in DB")
+	}
+
+	var focused tview.Primitive
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.tasklist {
+		t.Error("focus should remain on tasklist after 'w'")
+	}
+}
+
 func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

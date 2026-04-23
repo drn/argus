@@ -239,7 +239,10 @@ func (tl *TaskListView) buildRows() {
 		}
 	}
 
-	// Waiting-for-review section (between active and archive)
+	// Waiting-for-review section (between active and archive). A section's
+	// separator+header pair is only emitted when that section has tasks, so
+	// downward navigation never sees a "separator, next-section-header"
+	// sequence without an intervening section header of its own.
 	if len(waitingReview) > 0 {
 		tl.rows = append(tl.rows, taskRow{kind: rowSeparator})
 		tl.rows = append(tl.rows, taskRow{kind: rowWaitingReviewHeader})
