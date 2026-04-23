@@ -116,6 +116,7 @@ argus
 | `ctrl+f` | Fork task (duplicate with context) |
 | `s` / `S` | Advance / revert status |
 | `a` | Toggle archive |
+| `w` | Toggle "Waiting for Review" (own section above Archive) |
 | `p` | Open PR in browser |
 | `c` | Copy task prompt to clipboard |
 | `ctrl+d` | Destroy task (kill agent + remove worktree + delete branch) |

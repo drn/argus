@@ -261,6 +261,11 @@ func (a *App) buildUI() {
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
+	a.tasklist.OnWaitingReview = func(t *model.Task) {
+		uxlog.Log("[tui] waiting-for-review toggle: task %s (%s) waiting_review=%v", t.ID, t.Name, t.WaitingReview)
+		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		a.refreshTasksAsync()
+	}
 	a.tasklist.OnOpenPR = func(t *model.Task) {
 		exec.Command("open", t.PRURL).Start() //nolint:errcheck
 	}
@@ -1926,11 +1931,11 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 
 	// Auto-start sessions when entering agent view for a non-running task.
 	// Covers both fresh tasks (no SessionID) and interrupted sessions
-	// (e.g., daemon restart with a preserved SessionID). Excludes completed
-	// and archived tasks — those are view-only until the user explicitly
-	// presses Enter to restart.
+	// (e.g., daemon restart with a preserved SessionID). Excludes completed,
+	// archived, and waiting-for-review tasks — those are view-only until the
+	// user explicitly presses Enter to restart.
 	// After the sess.Alive() early-return above, any session here is dead.
-	if autoStart && task.Status != model.StatusComplete && !task.Archived {
+	if autoStart && task.Status != model.StatusComplete && !task.Archived && !task.WaitingReview {
 		sid := task.SessionID
 		if sid == "" {
 			sid = "(none)"
