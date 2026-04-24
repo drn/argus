@@ -21,8 +21,8 @@ func TestInjectCodexTOML_CreatesFile(t *testing.T) {
 	}
 	content := string(data)
 
-	if !strings.Contains(content, "[mcp_servers.argus-kb]") {
-		t.Error("missing [mcp_servers.argus-kb] section")
+	if !strings.Contains(content, "[mcp_servers.argus]") {
+		t.Error("missing [mcp_servers.argus] section")
 	}
 	if !strings.Contains(content, `url = "http://localhost:7742/mcp"`) {
 		t.Error("missing url entry")
@@ -92,8 +92,8 @@ func TestInjectCodexTOML_PreservesExistingContent(t *testing.T) {
 	if !strings.Contains(content, "[other_servers.foo]") {
 		t.Error("other section was removed")
 	}
-	if !strings.Contains(content, "[mcp_servers.argus-kb]") {
-		t.Error("argus-kb section not added")
+	if !strings.Contains(content, "[mcp_servers.argus]") {
+		t.Error("argus section not added")
 	}
 }
 
@@ -142,7 +142,7 @@ func TestInjectCodexTOML_MigratesMisplacedKey(t *testing.T) {
 "gpt-5.3-codex" = "gpt-5.4"
 experimental_use_rmcp_client = true
 
-[mcp_servers.argus-kb]
+[mcp_servers.argus]
 url = "http://localhost:7742/mcp"
 `
 	os.WriteFile(path, []byte(broken), 0644) //nolint:errcheck
@@ -172,8 +172,43 @@ url = "http://localhost:7742/mcp"
 	if !strings.Contains(content, `url = "http://localhost:7742/mcp"`) {
 		t.Errorf("MCP url missing:\n%s", content)
 	}
-	if strings.Count(content, "[mcp_servers.argus-kb]") != 1 {
+	if strings.Count(content, "[mcp_servers.argus]") != 1 {
 		t.Errorf("MCP section duplicated:\n%s", content)
+	}
+}
+
+// TestInjectCodexTOML_MigratesLegacySection verifies the pre-rename
+// [mcp_servers.argus-kb] section is removed when the new [mcp_servers.argus]
+// section is written. Simulates an upgrade from an older Argus build.
+func TestInjectCodexTOML_MigratesLegacySection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	legacy := `model = "gpt-5.4"
+
+[mcp_servers.argus-kb]
+url = "http://localhost:7742/mcp"
+
+[other]
+key = "val"
+`
+	os.WriteFile(path, []byte(legacy), 0644) //nolint:errcheck
+
+	if err := injectCodexTOML(path, 7742); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	data, _ := os.ReadFile(path)
+	content := string(data)
+
+	if strings.Contains(content, "[mcp_servers.argus-kb]") {
+		t.Errorf("legacy section not removed:\n%s", content)
+	}
+	if !strings.Contains(content, "[mcp_servers.argus]") {
+		t.Errorf("new section not added:\n%s", content)
+	}
+	if !strings.Contains(content, "[other]") {
+		t.Errorf("unrelated section was clobbered:\n%s", content)
 	}
 }
 
@@ -222,10 +257,10 @@ func TestEnsureTopLevel(t *testing.T) {
 }
 
 func TestRemoveSection(t *testing.T) {
-	content := "a = 1\n\n[mcp_servers.argus-kb]\nurl = \"http://localhost:7742/mcp\"\n\n[other]\nkey = val\n"
-	result := removeSection(content, "[mcp_servers.argus-kb]")
+	content := "a = 1\n\n[mcp_servers.argus]\nurl = \"http://localhost:7742/mcp\"\n\n[other]\nkey = val\n"
+	result := removeSection(content, "[mcp_servers.argus]")
 
-	if strings.Contains(result, "[mcp_servers.argus-kb]") {
+	if strings.Contains(result, "[mcp_servers.argus]") {
 		t.Error("section not removed")
 	}
 	if !strings.Contains(result, "[other]") {

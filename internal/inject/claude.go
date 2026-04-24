@@ -8,9 +8,17 @@ import (
 	"path/filepath"
 )
 
-// InjectGlobal reads ~/.claude.json, adds/updates the argus-kb MCP server entry,
+// mcpServerName is the key used for Argus in Claude Code's mcpServers map.
+// Previously "argus-kb"; renamed to "argus" now that the server exposes both
+// KB and task tools. The legacy key is cleaned up on inject.
+const mcpServerName = "argus"
+
+// legacyMcpServerName is the old pre-rename key, removed on the next inject.
+const legacyMcpServerName = "argus-kb"
+
+// InjectGlobal reads ~/.claude.json, adds/updates the argus MCP server entry,
 // and writes the file back. Idempotent — only writes if the entry is absent or
-// the port has changed.
+// the port has changed. Also removes the legacy "argus-kb" entry if present.
 func InjectGlobal(port int) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -20,8 +28,9 @@ func InjectGlobal(port int) error {
 	return injectClaudeJSON(path, port)
 }
 
-// injectClaudeJSON mutates only the mcpServers.argus-kb key in the given JSON file.
-// All other keys are preserved verbatim.
+// injectClaudeJSON mutates only the mcpServers.argus key in the given JSON
+// file, and removes the legacy mcpServers.argus-kb key if present. All other
+// keys are preserved verbatim.
 func injectClaudeJSON(path string, port int) error {
 	var data map[string]interface{}
 
@@ -43,14 +52,17 @@ func injectClaudeJSON(path string, port int) error {
 
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
-	// Check if already correct.
-	if existing, ok := mcpServers["argus-kb"].(map[string]interface{}); ok {
+	_, hasLegacy := mcpServers[legacyMcpServerName]
+
+	// Check if already correct (and no legacy cleanup pending).
+	if existing, ok := mcpServers[mcpServerName].(map[string]interface{}); ok && !hasLegacy {
 		if existing["url"] == url && existing["type"] == "http" {
 			return nil // already correct
 		}
 	}
 
-	mcpServers["argus-kb"] = map[string]interface{}{"type": "http", "url": url}
+	mcpServers[mcpServerName] = map[string]interface{}{"type": "http", "url": url}
+	delete(mcpServers, legacyMcpServerName)
 	data["mcpServers"] = mcpServers
 
 	return writeJSON(path, data)

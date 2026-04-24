@@ -32,10 +32,11 @@ type KBQuerier interface {
 // Same signature as daemon.HeadlessCreateTask (injected to avoid import cycle).
 type TaskCreator func(name, prompt, project, todoPath string) (*model.Task, error)
 
-// TaskQuerier provides read access to tasks.
-type TaskQuerier interface {
+// TaskStore provides read and write access to tasks.
+type TaskStore interface {
 	Tasks() ([]*model.Task, error)
 	Get(id string) (*model.Task, error)
+	Update(t *model.Task) error
 }
 
 // TaskStopper can stop a running agent session.
@@ -54,7 +55,7 @@ type Server struct {
 	vaultPath   string // Metis vault path for write-back to Obsidian
 	httpSrv     *http.Server
 	createTask  TaskCreator
-	taskDB      TaskQuerier
+	taskDB      TaskStore
 	taskStopper TaskStopper
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
@@ -69,8 +70,9 @@ func New(db KBQuerier, port int, vaultPath string) *Server {
 }
 
 // SetTaskManager wires in task management capabilities.
-// When set, the server exposes task_create, task_list, task_get, and task_stop tools.
-func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskQuerier, stopper TaskStopper) {
+// When set, the server exposes task_create, task_list, task_get, task_stop,
+// and task_archive tools.
+func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskStore, stopper TaskStopper) {
 	s.createTask = creator
 	s.taskDB = taskDB
 	s.taskStopper = stopper
@@ -354,6 +356,20 @@ var taskToolDefs = []Tool{
 			"required": []string{"id"},
 		},
 	},
+	{
+		Name: "task_archive",
+		Description: `Archive or unarchive an Argus task. Archived tasks move to the Archive section of the task list.
+
+The agent process does not know its own task ID, so the task is resolved from the working directory: pass ` + "`cwd`" + ` and Argus finds the task whose worktree matches. If ` + "`archived`" + ` is omitted, the current archive state is toggled.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":       map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd":      map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+				"archived": map[string]interface{}{"type": "boolean", "description": "Explicit archived state. If omitted, the current value is toggled."},
+			},
+		},
+	},
 }
 
 // taskMgmtEnabled returns true when all task management dependencies are wired.
@@ -400,6 +416,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskGet(req.ID, params.Arguments)
 	case "task_stop":
 		return s.toolTaskStop(req.ID, params.Arguments)
+	case "task_archive":
+		return s.toolTaskArchive(req.ID, params.Arguments)
 	default:
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
@@ -756,6 +774,95 @@ func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {
 	}
 
 	return toolResult(id, fmt.Sprintf("Stop signal sent for task %s. It will transition to in_review when the agent exits.", p.ID))
+}
+
+func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID       string `json:"id"`
+		Cwd      string `json:"cwd"`
+		Archived *bool  `json:"archived"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	newArchived := !task.Archived
+	if p.Archived != nil {
+		newArchived = *p.Archived
+	}
+
+	// No-op: report current state without a DB write.
+	if newArchived == task.Archived {
+		state := "unarchived"
+		if task.Archived {
+			state = "archived"
+		}
+		return toolResult(id, fmt.Sprintf("Task %s (%s) already %s.", task.ID, task.Name, state))
+	}
+
+	task.Archived = newArchived
+	// Mirror the TUI 'a' keybinding: archiving clears waiting-review.
+	if task.Archived {
+		task.WaitingReview = false
+	}
+	if err := s.taskDB.Update(task); err != nil {
+		log.Printf("[mcp] task_archive failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to archive task: %v", err))
+	}
+
+	action := "Archived"
+	if !task.Archived {
+		action = "Unarchived"
+	}
+	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, task.Archived)
+	return toolResult(id, fmt.Sprintf("%s task %s (%s).", action, task.ID, task.Name))
+}
+
+// resolveTask finds a task by explicit ID, or by matching cwd against
+// task worktree paths (longest prefix wins). Returns an error if neither
+// input is provided or no match is found.
+func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
+	if taskID != "" {
+		t, err := s.taskDB.Get(taskID)
+		if err != nil || t == nil {
+			return nil, fmt.Errorf("task not found: %s", taskID)
+		}
+		return t, nil
+	}
+	if cwd == "" {
+		return nil, fmt.Errorf("provide id or cwd")
+	}
+	cleanCwd := filepath.Clean(cwd)
+	tasks, err := s.taskDB.Tasks()
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	var best *model.Task
+	var bestLen int
+	for _, t := range tasks {
+		if t.Worktree == "" {
+			continue
+		}
+		wt := filepath.Clean(t.Worktree)
+		if cleanCwd != wt && !strings.HasPrefix(cleanCwd, wt+string(filepath.Separator)) {
+			continue
+		}
+		if len(wt) > bestLen {
+			best = t
+			bestLen = len(wt)
+		}
+	}
+	if best == nil {
+		return nil, fmt.Errorf("no task matches cwd: %s", cwd)
+	}
+	return best, nil
 }
 
 // truncatePromptToName generates a task name from a prompt (first 40 runes).

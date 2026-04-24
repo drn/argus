@@ -8,8 +8,18 @@ import (
 	"strings"
 )
 
-// InjectGlobal reads ~/.codex/config.toml and adds/updates the argus-kb MCP
+// mcpSection is the TOML header for the Argus MCP entry in Codex config.
+// Previously "[mcp_servers.argus-kb]"; renamed to "[mcp_servers.argus]" now
+// that the server exposes task tools alongside KB. The legacy section is
+// cleaned up on inject.
+const mcpSection = "[mcp_servers.argus]"
+
+// legacyMcpSection is the old pre-rename header, removed on the next inject.
+const legacyMcpSection = "[mcp_servers.argus-kb]"
+
+// InjectGlobal reads ~/.codex/config.toml and adds/updates the argus MCP
 // server entry. Idempotent — only writes if the entry is absent or changed.
+// Also removes the legacy [mcp_servers.argus-kb] section if present.
 func InjectGlobal(port int) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -22,9 +32,10 @@ func InjectGlobal(port int) error {
 	return injectCodexTOML(path, port)
 }
 
-// injectCodexTOML inserts or updates the [mcp_servers.argus-kb] section.
-// Uses targeted string manipulation to avoid pulling in a TOML library.
-// Assumes standard Codex-generated TOML — no multi-line values, no inline tables.
+// injectCodexTOML inserts or updates the [mcp_servers.argus] section and
+// removes any pre-existing [mcp_servers.argus-kb] section. Uses targeted
+// string manipulation to avoid pulling in a TOML library. Assumes standard
+// Codex-generated TOML — no multi-line values, no inline tables.
 func injectCodexTOML(path string, port int) error {
 	url := fmt.Sprintf("http://localhost:%d/mcp", port)
 
@@ -34,11 +45,16 @@ func injectCodexTOML(path string, port int) error {
 		content = string(raw)
 	}
 
+	// Migrate: drop the legacy section unconditionally.
+	if strings.Contains(content, legacyMcpSection) {
+		content = removeSection(content, legacyMcpSection)
+	}
+
 	// Check if MCP section already exists.
 	urlCorrect := false
-	if strings.Contains(content, "[mcp_servers.argus-kb]") {
+	if strings.Contains(content, mcpSection) {
 		// Find the url line in the section and check its value.
-		idx := strings.Index(content, "[mcp_servers.argus-kb]")
+		idx := strings.Index(content, mcpSection)
 		section := content[idx:]
 		// Find the end of this section (next [ or EOF).
 		end := strings.Index(section[1:], "\n[")
@@ -53,7 +69,7 @@ func injectCodexTOML(path string, port int) error {
 			urlCorrect = true
 		} else {
 			// Port changed — remove old section and re-add below.
-			content = removeSection(content, "[mcp_servers.argus-kb]")
+			content = removeSection(content, mcpSection)
 		}
 	}
 
@@ -68,7 +84,7 @@ func injectCodexTOML(path string, port int) error {
 		if updated != "" && !strings.HasSuffix(updated, "\n") {
 			updated += "\n"
 		}
-		updated += fmt.Sprintf("\n[mcp_servers.argus-kb]\nurl = %q\n", url)
+		updated += fmt.Sprintf("\n%s\nurl = %q\n", mcpSection, url)
 	}
 
 	if updated == content {
@@ -138,7 +154,7 @@ func removeLine(content, substr string) string {
 }
 
 // removeSection removes a TOML section header and its key-value lines.
-// section is the header line, e.g. "[mcp_servers.argus-kb]".
+// section is the header line, e.g. "[mcp_servers.argus]".
 func removeSection(content, section string) string {
 	idx := strings.Index(content, section)
 	if idx == -1 {

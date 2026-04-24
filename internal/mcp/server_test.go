@@ -423,6 +423,16 @@ func (m *mockTaskDB) Get(id string) (*model.Task, error) {
 	return nil, fmt.Errorf("not found")
 }
 
+func (m *mockTaskDB) Update(t *model.Task) error {
+	for i, existing := range m.tasks {
+		if existing.ID == t.ID {
+			m.tasks[i] = t
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 type mockStopper struct {
 	stopped []string
 }
@@ -437,20 +447,22 @@ func testServerWithTasks() (*Server, *mockTaskDB, *mockStopper) {
 	taskDB := &mockTaskDB{
 		tasks: []*model.Task{
 			{
-				ID:      "abc123",
-				Name:    "fix-login",
-				Status:  model.StatusInProgress,
-				Project: "myapp",
-				Branch:  "argus/fix-login",
-				Backend: "claude",
-				Prompt:  "Fix the login bug",
+				ID:       "abc123",
+				Name:     "fix-login",
+				Status:   model.StatusInProgress,
+				Project:  "myapp",
+				Branch:   "argus/fix-login",
+				Backend:  "claude",
+				Prompt:   "Fix the login bug",
+				Worktree: "/tmp/worktrees/myapp/fix-login",
 			},
 			{
-				ID:      "def456",
-				Name:    "add-tests",
-				Status:  model.StatusComplete,
-				Project: "myapp",
-				Branch:  "argus/add-tests",
+				ID:       "def456",
+				Name:     "add-tests",
+				Status:   model.StatusComplete,
+				Project:  "myapp",
+				Branch:   "argus/add-tests",
+				Worktree: "/tmp/worktrees/myapp/add-tests",
 			},
 			{
 				ID:       "ghi789",
@@ -493,14 +505,14 @@ func TestToolsList_WithTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 4 task tools = 9
-	testutil.Equal(t, len(list.Tools), 9)
+	// 5 KB tools + 5 task tools = 10
+	testutil.Equal(t, len(list.Tools), 10)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop"} {
+	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -730,7 +742,7 @@ func TestTaskCreate_RateLimit(t *testing.T) {
 func TestTaskTools_NotConfigured(t *testing.T) {
 	s := testServer() // no SetTaskManager
 
-	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop"} {
+	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive"} {
 		t.Run(tool, func(t *testing.T) {
 			resp := doRequest(t, s, "tools/call", ToolCallParams{
 				Name:      tool,
@@ -742,6 +754,163 @@ func TestTaskTools_NotConfigured(t *testing.T) {
 			testutil.Contains(t, cr.Content[0].Text, "not configured")
 		})
 	}
+}
+
+func TestTaskArchive(t *testing.T) {
+	t.Run("by id toggle archive", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"id": "abc123"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "Archived")
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Archived, true)
+	})
+
+	t.Run("by id explicit unarchive", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"id": "ghi789", "archived": false}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "Unarchived")
+		got, _ := taskDB.Get("ghi789")
+		testutil.Equal(t, got.Archived, false)
+	})
+
+	t.Run("by cwd exact worktree match", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"cwd": "/tmp/worktrees/myapp/fix-login"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Archived, true)
+	})
+
+	t.Run("by cwd nested subdirectory", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"cwd": "/tmp/worktrees/myapp/fix-login/internal/foo"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Archived, true)
+	})
+
+	t.Run("cwd does not match sibling worktree with shared prefix", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		// "/tmp/worktrees/myapp/add-tests" must not match a cwd under
+		// "/tmp/worktrees/myapp/add-tests-extra".
+		taskDB.tasks = append(taskDB.tasks, &model.Task{
+			ID: "zzz", Name: "sibling", Worktree: "/tmp/worktrees/myapp/add-tests-extra",
+		})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"cwd": "/tmp/worktrees/myapp/add-tests-extra/x"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		// add-tests should still be unarchived — only the sibling flipped.
+		addTests, _ := taskDB.Get("def456")
+		testutil.Equal(t, addTests.Archived, false)
+		sibling, _ := taskDB.Get("zzz")
+		testutil.Equal(t, sibling.Archived, true)
+	})
+
+	t.Run("archiving clears waiting_review", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		task, _ := taskDB.Get("abc123")
+		task.WaitingReview = true
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"id": "abc123", "archived": true}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Archived, true)
+		testutil.Equal(t, got.WaitingReview, false)
+	})
+
+	t.Run("no-op when already in desired state", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"id": "ghi789", "archived": true}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "already")
+		got, _ := taskDB.Get("ghi789")
+		testutil.Equal(t, got.Archived, true)
+	})
+
+	t.Run("missing id and cwd", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "provide id or cwd")
+	})
+
+	t.Run("unknown id", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"id": "nope"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "not found")
+	})
+
+	t.Run("cwd with no matching worktree", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_archive",
+			Arguments: json.RawMessage(`{"cwd": "/nowhere/special"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "no task matches cwd")
+	})
 }
 
 // --- test helpers ---
