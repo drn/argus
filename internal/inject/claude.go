@@ -69,6 +69,8 @@ func injectClaudeJSON(path string, port int) error {
 }
 
 // writeJSON marshals data as indented JSON and writes it to path atomically.
+// Uses os.CreateTemp for a unique tempfile name so concurrent writers do not
+// clobber each other before the rename.
 func writeJSON(path string, data map[string]interface{}) error {
 	out, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
@@ -76,13 +78,23 @@ func writeJSON(path string, data map[string]interface{}) error {
 	}
 	out = append(out, '\n')
 
-	// Atomic write via temp file.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0644); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".argus-inject-*.tmp")
+	if err != nil {
+		return fmt.Errorf("inject: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close() //nolint:errcheck
+		os.Remove(tmpName) //nolint:errcheck
 		return fmt.Errorf("inject: write temp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp) //nolint:errcheck
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName) //nolint:errcheck
+		return fmt.Errorf("inject: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName) //nolint:errcheck
 		return fmt.Errorf("inject: rename: %w", err)
 	}
 	return nil

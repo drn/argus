@@ -793,6 +793,10 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 		return toolError(id, err.Error())
 	}
 
+	// Read-then-write is not atomic — a concurrent /archive call or a
+	// TUI 'a' keypress racing this handler can blindly re-flip the toggle.
+	// Acceptable for a single-user local daemon; callers wanting determinism
+	// should pass an explicit `archived` bool instead of relying on toggle.
 	newArchived := !task.Archived
 	if p.Archived != nil {
 		newArchived = *p.Archived
@@ -818,16 +822,21 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 	}
 
 	action := "Archived"
-	if !task.Archived {
+	if !newArchived {
 		action = "Unarchived"
 	}
-	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, task.Archived)
+	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, newArchived)
 	return toolResult(id, fmt.Sprintf("%s task %s (%s).", action, task.ID, task.Name))
 }
 
 // resolveTask finds a task by explicit ID, or by matching cwd against
-// task worktree paths (longest prefix wins). Returns an error if neither
+// task worktree paths (longest prefix wins, separator-guarded so siblings
+// don't collide). Archived tasks are included in the lookup so unarchive
+// from inside an archived worktree works. Returns an error if neither
 // input is provided or no match is found.
+//
+// Callers must guarantee s.taskMgmtEnabled() — this method dereferences
+// s.taskDB without a nil check.
 func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
 	if taskID != "" {
 		t, err := s.taskDB.Get(taskID)

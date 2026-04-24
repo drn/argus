@@ -844,8 +844,13 @@ func TestTaskArchive(t *testing.T) {
 
 	t.Run("archiving clears waiting_review", func(t *testing.T) {
 		s, taskDB, _ := testServerWithTasks()
-		task, _ := taskDB.Get("abc123")
-		task.WaitingReview = true
+		// Set WaitingReview via Update so the test does not depend on
+		// mockTaskDB.Get returning the slice's pointer.
+		seed, _ := taskDB.Get("abc123")
+		seed.WaitingReview = true
+		if err := taskDB.Update(seed); err != nil {
+			t.Fatalf("seed Update: %v", err)
+		}
 		resp := doRequest(t, s, "tools/call", ToolCallParams{
 			Name:      "task_archive",
 			Arguments: json.RawMessage(`{"id": "abc123", "archived": true}`),
