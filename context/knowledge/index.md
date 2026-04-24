@@ -5,7 +5,7 @@ Non-obvious invariants and gotchas, split by topic. Read the relevant file when 
 | File | Topic | Bullets |
 |------|-------|---------|
 | [gotchas/daemon-rpc.md](gotchas/daemon-rpc.md) | Daemon lifecycle, RPC timeouts, reconciliation races, session resume | 26 |
-| [gotchas/pty-terminal.md](gotchas/pty-terminal.md) | PTY sizing, x/vt emulator, ring buffer, replay cache, paint cache, lazyScreen | 31 |
+| [gotchas/pty-terminal.md](gotchas/pty-terminal.md) | PTY sizing, x/vt emulator, ring buffer, replay cache, paint cache, lazyScreen | 32 |
 | [gotchas/ui-threading.md](gotchas/ui-threading.md) | tview thread safety, tick goroutine rules, lazyScreen fill invariant, paste/input batching | 12 |
 | [gotchas/sandbox.md](gotchas/sandbox.md) | macOS sandbox-exec SBPL profiles, symlink resolution, allowed paths | 14 |
 | [gotchas/worktree.md](gotchas/worktree.md) | Worktree creation ordering, transactional CreateAndStart, cleanup, path validation, stale ref pruning | 13 |

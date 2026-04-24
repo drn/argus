@@ -150,6 +150,11 @@ type TerminalPane struct {
 	pendingResizeRows uint16
 	pendingResizeCols uint16
 
+	// forceResync makes the next Draw() unconditionally repost a resize even
+	// when panel dimensions appear unchanged. Used on agent-view entry to
+	// recover from a stuck PTY size (e.g. a dropped SIGWINCH at session start).
+	forceResync bool
+
 	// Async replay rebuild: when Draw() hits a cache miss on the slow path,
 	// it kicks off a background goroutine instead of blocking the main goroutine.
 	// The goroutine builds the emulator and stores it, then calls OnNeedRedraw.
@@ -254,6 +259,16 @@ func (tp *TerminalPane) SetPending(v bool) {
 // SetPRURL sets the PR URL for the current task.
 func (tp *TerminalPane) SetPRURL(url string) {
 	tp.taskPR = url
+}
+
+// ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
+// Call this on agent-view entry so a session whose PTY is stuck at a stale
+// width gets reconciled to the current panel dimensions even when the delta
+// check would miss.
+func (tp *TerminalPane) ForceResyncPTY() {
+	tp.mu.Lock()
+	tp.forceResync = true
+	tp.mu.Unlock()
 }
 
 // SyncPTYSize performs a pending PTY resize (RPC). Called from the tick
@@ -606,13 +621,22 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	wantCols := max(width, 20)
 	wantRows := max(height, 5)
 	if sess != nil && sess.Alive() {
-		// Live session — resize PTY to match panel.
-		if tp.ptyCols != wantCols || tp.ptyRows != wantRows {
+		// Live session — resize PTY to match panel. The forceResync flag
+		// reposts a resize even when dimensions match our tracked ptyCols,
+		// which recovers from a PTY that's stuck at a stale width.
+		sizeChanged := tp.ptyCols != wantCols || tp.ptyRows != wantRows
+		if sizeChanged || tp.forceResync {
+			if tp.forceResync && !sizeChanged {
+				uxlog.Log("[terminalpane] force resync at %dx%d (no delta)", wantCols, wantRows)
+			} else if tp.forceResync {
+				uxlog.Log("[terminalpane] force resync corrected %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)
+			}
 			tp.ptyCols = wantCols
 			tp.ptyRows = wantRows
 			tp.pendingResizeRows = uint16(wantRows)
 			tp.pendingResizeCols = uint16(wantCols)
 		}
+		tp.forceResync = false
 	}
 	ptyCols := tp.ptyCols
 	ptyRows := tp.ptyRows

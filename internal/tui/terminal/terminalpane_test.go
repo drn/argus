@@ -1304,3 +1304,74 @@ func TestTerminalPane_PendingState(t *testing.T) {
 	testutil.Equal(t, tp.pending, false)
 	tp.mu.Unlock()
 }
+
+func TestTerminalPane_ForceResyncPTY(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.Box.SetRect(0, 0, 42, 12) // inner 40x10 after 1-cell border
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(42, 12)
+
+	sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
+	tp.SetSession(sess)
+
+	// First Draw establishes ptyCols/ptyRows and queues a resize.
+	tp.Draw(screen)
+	tp.mu.Lock()
+	firstCols, firstRows := tp.ptyCols, tp.ptyRows
+	tp.pendingResizeCols = 0
+	tp.pendingResizeRows = 0
+	tp.mu.Unlock()
+
+	// A Draw with unchanged dimensions and no force flag must NOT repost.
+	tp.Draw(screen)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
+	tp.mu.Unlock()
+
+	// ForceResyncPTY makes the next Draw repost even without a size delta.
+	tp.ForceResyncPTY()
+	tp.Draw(screen)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pendingResizeCols, uint16(firstCols))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(firstRows))
+	testutil.Equal(t, tp.forceResync, false) // flag consumed
+	tp.mu.Unlock()
+
+	// Flag is one-shot — subsequent Draws without a delta stay quiet.
+	tp.mu.Lock()
+	tp.pendingResizeCols = 0
+	tp.pendingResizeRows = 0
+	tp.mu.Unlock()
+	tp.Draw(screen)
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
+	tp.mu.Unlock()
+}
+
+func TestTerminalPane_ForceResyncPTY_DeadSessionNoop(t *testing.T) {
+	// Dead sessions have no PTY to resize — forceResync must be a no-op
+	// there but stay armed so the next live session sees it.
+	tp := NewTerminalPane()
+	tp.Box.SetRect(0, 0, 42, 12)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(42, 12)
+
+	dead := &mockAdapter{alive: false, totalWritten: 0, output: nil}
+	tp.SetSession(dead)
+	tp.ForceResyncPTY()
+	tp.Draw(screen)
+
+	tp.mu.Lock()
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
+	testutil.Equal(t, tp.forceResync, true) // still armed for future live session
+	tp.mu.Unlock()
+}
