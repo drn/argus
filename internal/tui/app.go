@@ -2169,6 +2169,11 @@ func (a *App) startSession(task *model.Task) {
 	// pane isn't visible — onTaskSelect will attach when the user returns.
 	if a.mode == modeAgent && a.agentState.TaskID == task.ID {
 		a.agentPane.SetSession(sess)
+		// Force a PTY resize repost on the next Draw. Covers the auto-start
+		// path (pending view → session starts while user is watching) where
+		// onTaskSelect isn't called and the PTY could otherwise be stuck at
+		// its launch size.
+		a.agentPane.ForceResyncPTY()
 		a.startAgentRedrawLoop(task.ID, sess)
 	}
 }

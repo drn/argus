@@ -626,16 +626,20 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// which recovers from a PTY that's stuck at a stale width.
 		sizeChanged := tp.ptyCols != wantCols || tp.ptyRows != wantRows
 		if sizeChanged || tp.forceResync {
-			if tp.forceResync && !sizeChanged {
-				uxlog.Log("[terminalpane] force resync at %dx%d (no delta)", wantCols, wantRows)
-			} else if tp.forceResync {
-				uxlog.Log("[terminalpane] force resync corrected %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)
+			if tp.forceResync {
+				if sizeChanged {
+					uxlog.Log("[terminalpane] force resync corrected %dx%d -> %dx%d", tp.ptyCols, tp.ptyRows, wantCols, wantRows)
+				} else {
+					uxlog.Log("[terminalpane] force resync at %dx%d (no delta)", wantCols, wantRows)
+				}
 			}
 			tp.ptyCols = wantCols
 			tp.ptyRows = wantRows
 			tp.pendingResizeRows = uint16(wantRows)
 			tp.pendingResizeCols = uint16(wantCols)
 		}
+		// Only clear when a live session actually consumed the flag.
+		// Dead/nil-session Draws must leave it armed for the next live session.
 		tp.forceResync = false
 	}
 	ptyCols := tp.ptyCols

@@ -1321,6 +1321,7 @@ func TestTerminalPane_ForceResyncPTY(t *testing.T) {
 	tp.Draw(screen)
 	tp.mu.Lock()
 	firstCols, firstRows := tp.ptyCols, tp.ptyRows
+	// Simulate SyncPTYSize consuming the pending resize.
 	tp.pendingResizeCols = 0
 	tp.pendingResizeRows = 0
 	tp.mu.Unlock()
@@ -1353,7 +1354,7 @@ func TestTerminalPane_ForceResyncPTY(t *testing.T) {
 	tp.mu.Unlock()
 }
 
-func TestTerminalPane_ForceResyncPTY_DeadSessionNoop(t *testing.T) {
+func TestTerminalPane_ForceResyncPTY_DeadSessionKeepsFlag(t *testing.T) {
 	// Dead sessions have no PTY to resize — forceResync must be a no-op
 	// there but stay armed so the next live session sees it.
 	tp := NewTerminalPane()
