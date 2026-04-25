@@ -314,7 +314,20 @@ func (tl *TaskListView) rowsSignature() uint64 {
 		h *= fnvPrime
 	}
 	for _, r := range tl.rows {
-		h ^= uint64(r.kind)
+		var kindByte byte
+		switch r.kind {
+		case rowTask:
+			kindByte = 't'
+		case rowProject:
+			kindByte = 'p'
+		case rowArchiveHeader:
+			kindByte = 'a'
+		case rowWaitingReviewHeader:
+			kindByte = 'w'
+		case rowSeparator:
+			kindByte = 's'
+		}
+		h ^= uint64(kindByte)
 		h *= fnvPrime
 		mix(r.project)
 		if r.task != nil {
