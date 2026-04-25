@@ -126,7 +126,8 @@ func (s *Server) handleVendor(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Write(data) //nolint:errcheck
+	// Content is from a compile-time embed.FS — not user-controlled.
+	w.Write(data) //nolint:errcheck,gosec // G705: embedded asset, name validated above
 }
 
 // handleListProjects returns the list of configured project names.

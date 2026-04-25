@@ -39,8 +39,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("mktemp: %v", err)
 	}
-	defer os.RemoveAll(tmpHome)
-	os.Setenv("HOME", tmpHome)
+	defer os.RemoveAll(tmpHome) //nolint:errcheck // best-effort cleanup
+	if err := os.Setenv("HOME", tmpHome); err != nil {
+		log.Fatalf("setenv HOME: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(tmpHome, ".argus"), 0o700); err != nil {
 		log.Fatalf("mkdir argus: %v", err)
 	}
@@ -49,7 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
-	defer d.Close()
+	defer d.Close() //nolint:errcheck // best-effort cleanup
 
 	// Backend that runs `bash` interactively. PTY echo + prompt gives a
 	// realistic terminal to exercise xterm.js with.
@@ -65,7 +67,7 @@ func main() {
 
 	// Project — points at the tempdir so worktree commands don't fail.
 	projDir := filepath.Join(tmpHome, "test-proj")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
+	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		log.Fatalf("mkdir proj: %v", err)
 	}
 	if err := d.SetProject("test-proj", config.Project{Path: projDir}); err != nil {
@@ -146,10 +148,16 @@ func main() {
 		nt.SetStatus(model.StatusInProgress)
 		d.Update(nt) //nolint:errcheck
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"reset":true,"task":%q}`, nt.ID)
+		fmt.Fprintf(w, `{"reset":true,"task":%q}`, nt.ID) //nolint:errcheck
 	})
+	resetSrv := &http.Server{
+		Addr:              fmt.Sprintf("127.0.0.1:%d", actualPort+10),
+		Handler:           resetMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	go func() {
-		if err := http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", actualPort+10), resetMux); err != nil {
+		if err := resetSrv.ListenAndServe(); err != nil {
 			log.Printf("reset port: %v", err)
 		}
 	}()
