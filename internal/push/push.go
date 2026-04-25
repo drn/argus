@@ -79,6 +79,18 @@ func New(d *db.DB) (*Manager, error) {
 // into PushManager.subscribe.
 func (m *Manager) PublicKey() string { return m.pubKey }
 
+// ForgetTask removes the throttle entry for a task. Called when a task's
+// session has exited so the in-memory lastSent map doesn't grow without
+// bound. Idempotent.
+func (m *Manager) ForgetTask(taskID string) {
+	if m == nil {
+		return
+	}
+	m.muThrottle.Lock()
+	delete(m.lastSent, "idle:"+taskID)
+	m.muThrottle.Unlock()
+}
+
 // Notify is a fire-and-forget notification: title + body + optional taskId for
 // deep-linking. Throttled to 1 push per task per 5 minutes (key="" disables
 // throttling).

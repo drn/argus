@@ -288,6 +288,106 @@ func TestHandleResize(t *testing.T) {
 	})
 }
 
+func TestHandleGitDiff_PathTraversal(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	// Seed a task with a worktree set so the early "not found" path doesn't fire.
+	task := &model.Task{Name: "diff-task", Status: model.StatusPending, Worktree: "/tmp"}
+	testutil.NoError(t, d.Add(task))
+
+	bad := []string{
+		"/etc/passwd",            // absolute
+		"../../etc/passwd",       // dotdot
+		"foo/../../etc/passwd",   // embedded dotdot
+	}
+	for _, path := range bad {
+		t.Run("rejects "+path, func(t *testing.T) {
+			req := authedReq("GET", "/api/tasks/"+task.ID+"/git/diff?path="+path, "")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			testutil.Equal(t, w.Code, http.StatusBadRequest)
+		})
+	}
+}
+
+func TestHandleStopAll_MasterOnly(t *testing.T) {
+	srv, d := testServer(t)
+	// Wrap with auth middleware so X-Argus-Auth gets set.
+	handler := authMiddleware(srv.token, d, srv.routes())
+
+	t.Run("accepts master token", func(t *testing.T) {
+		req := authedReq("POST", "/api/sessions/stop-all", "")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+	})
+
+	t.Run("rejects device token", func(t *testing.T) {
+		plain, _, err := MintToken(d, "phone")
+		testutil.NoError(t, err)
+		req := httptest.NewRequest("POST", "/api/sessions/stop-all", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+	})
+}
+
+func TestHandlePushTest_MasterOnly(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, srv.routes())
+
+	t.Run("rejects device token", func(t *testing.T) {
+		plain, _, err := MintToken(d, "phone")
+		testutil.NoError(t, err)
+		req := httptest.NewRequest("POST", "/api/push/test", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+	})
+}
+
+func TestHandleCreateToken_MasterOnly(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, srv.routes())
+
+	t.Run("device token cannot mint", func(t *testing.T) {
+		plain, _, err := MintToken(d, "phone")
+		testutil.NoError(t, err)
+		req := httptest.NewRequest("POST", "/api/tokens", strings.NewReader(`{"label":"x"}`))
+		req.Header.Set("Authorization", "Bearer "+plain)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+	})
+
+	t.Run("master token mints", func(t *testing.T) {
+		req := authedReq("POST", "/api/tokens", `{"label":"laptop"}`)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusCreated)
+	})
+}
+
+func TestHandleForkTask_RejectsEmptyProject(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	// Seed a source task with no project (legacy data).
+	src := &model.Task{Name: "src", Status: model.StatusComplete, Project: ""}
+	testutil.NoError(t, d.Add(src))
+
+	t.Run("400 when source has no project and request omits it", func(t *testing.T) {
+		req := authedReq("POST", "/api/tasks/"+src.ID+"/fork", `{"name":"forked"}`)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	})
+}
+
 func TestSanitizeName(t *testing.T) {
 	t.Run("truncates long names", func(t *testing.T) {
 		name := sanitizeName("This is a very long prompt that should be truncated at 40 characters")

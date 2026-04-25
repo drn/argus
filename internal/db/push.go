@@ -21,10 +21,16 @@ type PushSubscription struct {
 func (d *DB) AddPushSubscription(s PushSubscription) (int64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// On endpoint conflict, refresh the cryptographic keys and label.
+	// Browsers may rotate p256dh/auth on re-subscribe; keeping the stale
+	// keys would cause every subsequent push to fail VAPID encryption.
 	res, err := d.conn.Exec(
 		`INSERT INTO push_subscriptions (label, endpoint, p256dh, auth_key, created_at)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(endpoint) DO UPDATE SET label=excluded.label`,
+		 ON CONFLICT(endpoint) DO UPDATE SET
+		   label=excluded.label,
+		   p256dh=excluded.p256dh,
+		   auth_key=excluded.auth_key`,
 		s.Label, s.Endpoint, s.P256dh, s.Auth, time.Now().Unix(),
 	)
 	if err != nil {

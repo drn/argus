@@ -28,6 +28,11 @@ type Server struct {
 	createTask TaskCreator
 	httpSrv    *http.Server
 	push       *push.Manager
+
+	// stopCh is closed by Shutdown to signal background goroutines (idle
+	// watcher, push fan-out housekeeping) to terminate. Range over <-stopCh
+	// in select-loops to honour shutdown.
+	stopCh chan struct{}
 }
 
 // New creates a new API server.
@@ -37,6 +42,7 @@ func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreato
 		runner:     runner,
 		token:      token,
 		createTask: creator,
+		stopCh:     make(chan struct{}),
 	}
 	// Push manager — best-effort. If VAPID keys can't be loaded/generated we
 	// keep going without push (the endpoints just return 503).
@@ -102,8 +108,16 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 	return actualPort, nil
 }
 
-// Shutdown gracefully stops the HTTP server.
+// Shutdown gracefully stops the HTTP server and signals background goroutines
+// (idle watcher) to exit.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Signal goroutines first so they don't race with DB close downstream.
+	select {
+	case <-s.stopCh:
+		// already closed
+	default:
+		close(s.stopCh)
+	}
 	if s.httpSrv == nil {
 		return nil
 	}
@@ -114,7 +128,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")

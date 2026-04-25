@@ -379,6 +379,12 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 // --- Stop All ---
 
 func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
+	// Destructive: master-only. Device tokens can stop individual tasks but
+	// cannot halt every running agent in one call.
+	if r.Header.Get("X-Argus-Auth") != "master" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required"})
+		return
+	}
 	s.runner.StopAll()
 	// Mark every running task as in_review.
 	tasks, err := s.db.Tasks()
@@ -429,6 +435,10 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 	project := req.Project
 	if project == "" {
 		project = src.Project
+	}
+	if project == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required (source task has no project)"})
+		return
 	}
 	task, err := s.createTask(name, prompt, project, "")
 	if err != nil {
@@ -842,7 +852,10 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := r.URL.Query().Get("path")
-	if path == "" || strings.Contains(path, "..") {
+	if path == "" || strings.Contains(path, "..") || filepath.IsAbs(path) {
+		// Reject absolute paths — gitutil.FetchFileDiff falls back to
+		// `git diff --no-index <path>` which would otherwise read arbitrary
+		// files (e.g. /etc/passwd) for files not in the worktree.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid path query param required"})
 		return
 	}
@@ -858,7 +871,7 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := r.URL.Query().Get("dir")
-	if strings.Contains(dir, "..") {
+	if strings.Contains(dir, "..") || filepath.IsAbs(dir) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid dir"})
 		return
 	}

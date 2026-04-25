@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/db"
@@ -99,8 +98,14 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePushTest sends a test notification to all registered devices.
-// Useful for verifying the subscribe flow worked end-to-end.
+// Useful for verifying the subscribe flow worked end-to-end. Master-only —
+// without this guard, any device token holder could spam every registered
+// device.
 func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("X-Argus-Auth") != "master" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required"})
+		return
+	}
 	if s.push == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
 		return
@@ -111,18 +116,26 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 
 // idleWatcher periodically polls all running sessions and fires a push when a
 // session transitions from non-idle to idle. Coarse but cheap (5s tick).
+// Exits when s.stopCh is closed (Server.Shutdown).
+//
+// Single-goroutine: idleNow is only touched here so no mutex is needed.
 func (s *Server) idleWatcher() {
 	if s.push == nil {
 		return
 	}
-	var mu sync.Mutex
 	idleNow := make(map[string]bool) // taskID -> last seen idle?
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
 
 	for {
-		time.Sleep(5 * time.Second)
+		select {
+		case <-s.stopCh:
+			return
+		case <-tick.C:
+		}
 
 		running, _ := s.runner.RunningAndIdle()
-		seen := make(map[string]bool)
+		seen := make(map[string]bool, len(running))
 
 		for _, id := range running {
 			seen[id] = true
@@ -131,10 +144,8 @@ func (s *Server) idleWatcher() {
 				continue
 			}
 			isIdle := sess.IsIdle()
-			mu.Lock()
 			wasIdle := idleNow[id]
 			idleNow[id] = isIdle
-			mu.Unlock()
 			if isIdle && !wasIdle {
 				// Idle transition — fire push.
 				task, err := s.db.Get(id)
@@ -153,13 +164,13 @@ func (s *Server) idleWatcher() {
 			}
 		}
 
-		// Drop entries for sessions that exited.
-		mu.Lock()
+		// Drop entries for sessions that exited; also tell the push manager
+		// to forget throttle entries for them so the lastSent map doesn't grow.
 		for id := range idleNow {
 			if !seen[id] {
 				delete(idleNow, id)
+				s.push.ForgetTask(id)
 			}
 		}
-		mu.Unlock()
 	}
 }

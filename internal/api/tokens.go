@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 )
@@ -52,7 +54,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	var req createTokenReq
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	// Empty body is allowed (label defaults to "device"); reject other decode errors.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 		return
 	}
