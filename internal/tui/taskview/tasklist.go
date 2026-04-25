@@ -84,6 +84,14 @@ type TaskListView struct {
 	OnRename func(task *model.Task)
 	// Callback when user presses 'c' to copy task prompt.
 	OnCopyPrompt func(task *model.Task)
+	// Callback fired after buildRows when the row composition changes.
+	// Used by App to force a tcell Sync — rows shifting under tview's
+	// diff-based emit is a known source of bleed-through in tmux.
+	OnLayoutChange func()
+
+	// Signature of the last buildRows output. Used to suppress
+	// OnLayoutChange when the rebuild produced the same rows.
+	lastRowsSig uint64
 }
 
 // NewTaskListView creates a task list view.
@@ -275,6 +283,47 @@ func (tl *TaskListView) buildRows() {
 			}
 		}
 	}
+
+	// Notify on row composition change so the App can force a tcell Sync.
+	// Rows shifting under tview's diff-based emit causes bleed-through in
+	// tmux/Alacritty — see gotchas/ui-threading.md.
+	sig := tl.rowsSignature()
+	if sig != tl.lastRowsSig {
+		tl.lastRowsSig = sig
+		if tl.OnLayoutChange != nil {
+			tl.OnLayoutChange()
+		}
+	}
+}
+
+// rowsSignature returns a 64-bit FNV hash of the current row composition
+// (kind + project + task ID per row). Cheap to compute and stable across
+// rebuilds that produce the same logical layout.
+func (tl *TaskListView) rowsSignature() uint64 {
+	const (
+		fnvOffset = 1469598103934665603
+		fnvPrime  = 1099511628211
+	)
+	h := uint64(fnvOffset)
+	mix := func(s string) {
+		for i := 0; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= fnvPrime
+		}
+		h ^= '\x00'
+		h *= fnvPrime
+	}
+	for _, r := range tl.rows {
+		h ^= uint64(r.kind)
+		h *= fnvPrime
+		mix(r.project)
+		if r.task != nil {
+			mix(r.task.ID)
+		} else {
+			mix("")
+		}
+	}
+	return h
 }
 
 // groupByProject groups tasks by project name, sorted alphabetically.

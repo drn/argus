@@ -508,6 +508,51 @@ func TestTaskListView_SetTasksPreservesCursor(t *testing.T) {
 	}
 }
 
+func TestTaskListView_OnLayoutChange(t *testing.T) {
+	tl := NewTaskListView()
+	var calls int
+	tl.OnLayoutChange = func() { calls++ }
+
+	// First SetTasks → layout established → callback fires.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "alpha"},
+		{ID: "2", Name: "b", Project: "alpha"},
+	})
+	if calls != 1 {
+		t.Fatalf("expected 1 call after first SetTasks, got %d", calls)
+	}
+
+	// Same tasks → no layout change → callback should NOT fire (Sync is
+	// expensive; only fire when rows actually shift).
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "alpha"},
+		{ID: "2", Name: "b", Project: "alpha"},
+	})
+	if calls != 1 {
+		t.Errorf("expected callback suppressed on identical rebuild, got %d calls", calls)
+	}
+
+	// Adding a task in a different project changes composition → fire.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "alpha"},
+		{ID: "2", Name: "b", Project: "alpha"},
+		{ID: "3", Name: "c", Project: "beta"},
+	})
+	if calls != 2 {
+		t.Errorf("expected callback after composition change, got %d calls", calls)
+	}
+
+	// Toggling archive flag moves a task between sections → fire.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "alpha"},
+		{ID: "2", Name: "b", Project: "alpha", Archived: true},
+		{ID: "3", Name: "c", Project: "beta"},
+	})
+	if calls != 3 {
+		t.Errorf("expected callback after archive toggle, got %d calls", calls)
+	}
+}
+
 func TestTaskListView_AdjacentTask(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{

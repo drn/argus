@@ -251,6 +251,7 @@ func (a *App) buildUI() {
 	a.tasklist.OnSelect = func(task *model.Task) { a.onTaskSelect(task, true) }
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
+	a.tasklist.OnLayoutChange = func() { a.forceRedraw("tasklist rows changed") }
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
