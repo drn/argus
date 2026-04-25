@@ -58,8 +58,14 @@ func TestProjectForm_TypeAndResult(t *testing.T) {
 	}
 	// Enter → next field.
 	pf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	// Type a path.
-	for _, r := range "/tmp/test" {
+	// Type a path under a parent dir that cannot exist on any system. This
+	// keeps dirCompletions empty so the autocomplete dropdown never opens —
+	// otherwise the next Enter would Accept() a real /tmp/* directory left
+	// behind by a parallel test (e.g., a `t.TempDir()` from `vault_test.go`),
+	// replacing the typed path with whatever sorted first. Flake observed in
+	// CI when /tmp/ contained `Test*` dirs at the moment Enter fired.
+	const path = "/no-such-dir-xyzzz123/test"
+	for _, r := range path {
 		pf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
 	}
 	// Skip to done.
@@ -75,7 +81,7 @@ func TestProjectForm_TypeAndResult(t *testing.T) {
 	if name != "myproj" {
 		t.Errorf("name = %q", name)
 	}
-	if proj.Path != "/tmp/test" {
+	if proj.Path != path {
 		t.Errorf("path = %q", proj.Path)
 	}
 }
