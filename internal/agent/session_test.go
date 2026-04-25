@@ -281,12 +281,18 @@ func TestSession_RecentOutput(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	time.Sleep(50 * time.Millisecond)
-
-	output := string(sess.RecentOutput())
-	if !strings.Contains(output, "recent output test") {
-		t.Errorf("RecentOutput() = %q, want it to contain 'recent output test'", output)
+	// readLoop drains the PTY into the ring buffer asynchronously; wait for
+	// it to land rather than relying on a fixed sleep (was flaky on CI).
+	deadline := time.Now().Add(2 * time.Second)
+	var output string
+	for time.Now().Before(deadline) {
+		output = string(sess.RecentOutput())
+		if strings.Contains(output, "recent output test") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Errorf("RecentOutput() = %q, want it to contain 'recent output test'", output)
 }
 
 func TestSession_RecentOutputTail(t *testing.T) {
@@ -301,7 +307,14 @@ func TestSession_RecentOutputTail(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	time.Sleep(50 * time.Millisecond)
+	// Wait for readLoop to drain rather than fixed sleep (CI-flake fix).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(string(sess.RecentOutput()), "tail output test") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	full := sess.RecentOutput()
 	tail := sess.RecentOutputTail(10)
