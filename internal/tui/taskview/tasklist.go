@@ -2,6 +2,8 @@ package taskview
 
 import (
 	"fmt"
+	"hash/fnv"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"github.com/rivo/tview"
 )
 
-// rowKind identifies what kind of row is displayed.
-type rowKind int
+// rowKind identifies what kind of row is displayed. Underlying type is
+// uint8 (not int) so `rowsSignature` can mix it directly into the FNV
+// hash without a gosec G115 overflow check; there are only ~5 values.
+type rowKind uint8
 
 const (
 	rowTask rowKind = iota
@@ -91,6 +95,8 @@ type TaskListView struct {
 
 	// Signature of the last buildRows output. Used to suppress
 	// OnLayoutChange when the rebuild produced the same rows.
+	// Initialized to ^uint64(0) so the very first build always fires,
+	// even on the (astronomically unlikely) chance the first hash is 0.
 	lastRowsSig uint64
 }
 
@@ -101,6 +107,7 @@ func NewTaskListView() *TaskListView {
 		running:       make(map[string]bool),
 		idle:          make(map[string]bool),
 		idleUnvisited: make(map[string]bool),
+		lastRowsSig:   ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
 }
@@ -296,47 +303,23 @@ func (tl *TaskListView) buildRows() {
 	}
 }
 
-// rowsSignature returns a 64-bit FNV hash of the current row composition
+// rowsSignature returns a 64-bit FNV-1a hash of the current row composition
 // (kind + project + task ID per row). Cheap to compute and stable across
-// rebuilds that produce the same logical layout.
+// rebuilds that produce the same logical layout. Casting `r.kind` directly
+// through a byte avoids a switch and keeps any future rowKind value
+// distinct without code changes here.
 func (tl *TaskListView) rowsSignature() uint64 {
-	const (
-		fnvOffset = 1469598103934665603
-		fnvPrime  = 1099511628211
-	)
-	h := uint64(fnvOffset)
-	mix := func(s string) {
-		for i := 0; i < len(s); i++ {
-			h ^= uint64(s[i])
-			h *= fnvPrime
-		}
-		h ^= '\x00'
-		h *= fnvPrime
-	}
+	h := fnv.New64a()
 	for _, r := range tl.rows {
-		var kindByte byte
-		switch r.kind {
-		case rowTask:
-			kindByte = 't'
-		case rowProject:
-			kindByte = 'p'
-		case rowArchiveHeader:
-			kindByte = 'a'
-		case rowWaitingReviewHeader:
-			kindByte = 'w'
-		case rowSeparator:
-			kindByte = 's'
-		}
-		h ^= uint64(kindByte)
-		h *= fnvPrime
-		mix(r.project)
+		_, _ = h.Write([]byte{byte(r.kind), 0})
+		_, _ = io.WriteString(h, r.project)
+		_, _ = h.Write([]byte{0})
 		if r.task != nil {
-			mix(r.task.ID)
-		} else {
-			mix("")
+			_, _ = io.WriteString(h, r.task.ID)
 		}
+		_, _ = h.Write([]byte{0})
 	}
-	return h
+	return h.Sum64()
 }
 
 // groupByProject groups tasks by project name, sorted alphabetically.

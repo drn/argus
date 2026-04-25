@@ -553,6 +553,39 @@ func TestTaskListView_OnLayoutChange(t *testing.T) {
 	}
 }
 
+// TestTaskListView_OnLayoutChange_CursorCrossesSection covers the
+// autoExpand → buildRows → OnLayoutChange path that fires when cursor
+// movement crosses a section boundary. The SetTasks-driven path is
+// covered by TestTaskListView_OnLayoutChange above; this exercises
+// the InputHandler-driven path.
+func TestTaskListView_OnLayoutChange_CursorCrossesSection(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
+		{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
+	})
+
+	// Wire callback after initial SetTasks so we count only cursor-driven fires.
+	var calls int
+	tl.OnLayoutChange = func() { calls++ }
+
+	// Cursor starts on task 1 in the active section. Drive it down until
+	// it lands on task 2 in waiting-for-review — autoExpand toggles the
+	// WR section open, which calls buildRows and shifts rows.
+	for i := 0; i < 10; i++ {
+		tl.CursorDown()
+	}
+	if sel := tl.SelectedTask(); sel == nil || sel.ID != "2" {
+		t.Fatalf("expected to land on waiting task id=2, got %+v", sel)
+	}
+	if !tl.waitingReviewExpanded {
+		t.Fatal("waiting-for-review should be auto-expanded after cursor crossing")
+	}
+	if calls == 0 {
+		t.Error("expected OnLayoutChange to fire on section crossing, got 0 calls")
+	}
+}
+
 func TestTaskListView_AdjacentTask(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
