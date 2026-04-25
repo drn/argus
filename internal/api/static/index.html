@@ -5,7 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0d1117">
 <title>Argus</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-addon-fit.js"></script>
 <style>
 :root {
   --bg: #0d1117;
@@ -113,22 +120,59 @@ button:disabled { opacity: 0.5; cursor: default; }
 .detail-subtitle { font-size: 13px; color: var(--text-dim); }
 .detail-actions { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
 .detail-actions button { flex: 1; min-width: 80px; }
-.output-box {
+.term-wrap {
+  padding: 8px 12px 12px;
+  background: var(--bg);
+}
+#term {
+  background: #000;
+  border-radius: 8px;
+  padding: 8px;
+  height: 65vh;
+  min-height: 320px;
+  /* xterm renders into its own elements; this wrapper just sizes it. */
+}
+#term .xterm { padding: 0; }
+#term .xterm-viewport { background: transparent !important; -webkit-overflow-scrolling: touch; }
+.read-only-output {
   background: #000; color: #ccc; font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 12px; line-height: 1.4; padding: 12px; margin: 12px;
-  border-radius: 8px; min-height: 200px; max-height: 60vh;
+  font-size: 12px; line-height: 1.4; padding: 12px; margin: 8px 12px 12px;
+  border-radius: 8px; min-height: 200px; max-height: 65vh;
   overflow-y: auto; white-space: pre-wrap; word-break: break-all;
   -webkit-overflow-scrolling: touch;
 }
-.input-bar {
-  display: flex; gap: 8px; padding: 0 12px 12px;
+.term-status {
+  font-size: 11px; color: var(--text-dim); padding: 4px 12px;
+  display: flex; gap: 8px; align-items: center;
 }
-.input-bar input {
-  flex: 1; padding: 10px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--surface);
-  color: var(--text); font-size: 14px;
+.term-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
+.term-status.live .dot { background: var(--green); }
+.term-status.reconnecting .dot { background: var(--yellow); animation: pulse 1s infinite; }
+.term-status.error .dot { background: var(--red); }
+@keyframes pulse { 50% { opacity: 0.4; } }
+
+/* Virtual key row — floats above keyboard for mobile */
+.vkey-row {
+  display: none;
+  gap: 4px; padding: 6px 8px;
+  background: var(--surface); border-top: 1px solid var(--border);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  position: sticky; bottom: 0;
 }
-.input-bar button { flex-shrink: 0; }
+.vkey-row.shown { display: flex; }
+.vkey {
+  flex-shrink: 0; min-width: 36px; height: 32px;
+  padding: 0 8px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); font-size: 13px; font-weight: 500;
+  cursor: pointer; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.vkey:active { background: var(--border); }
+.vkey.sticky { background: var(--accent); color: #000; border-color: var(--accent); }
+.vkey.sticky-armed { box-shadow: 0 0 0 2px var(--accent); }
+.vkey-arrow { font-size: 16px; }
+.font-controls { display: flex; gap: 4px; margin-left: auto; }
 
 /* Create form */
 #create-view { display: none; }
@@ -161,6 +205,38 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 /* Pull to refresh indicator */
 .refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
+
+/* Settings */
+#settings-view { display: none; padding: 12px; }
+.settings-section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px; margin-bottom: 12px;
+}
+.settings-section h3 { font-size: 14px; margin-bottom: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.settings-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-row .label { font-size: 14px; }
+.settings-row .meta { font-size: 11px; color: var(--text-dim); }
+.token-mint-result {
+  background: var(--bg); padding: 10px; border-radius: 6px;
+  font-family: monospace; font-size: 12px; word-break: break-all;
+  margin-top: 8px; border: 1px solid var(--accent);
+}
+
+/* Archive toggle */
+.list-toolbar {
+  display: flex; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.list-toolbar .seg {
+  padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--text-dim);
+}
+.list-toolbar .seg.active { background: var(--surface); color: var(--accent); }
+.list-toolbar button { font-size: 12px; padding: 4px 8px; }
+.list-toolbar .spacer { flex: 1; }
 
 /* Toast notifications */
 .toast {
@@ -196,10 +272,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   <div class="tabs">
     <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Tasks</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">+ New</div>
+    <div class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
 
   <!-- Task List View -->
   <div id="tasks-view">
+    <div class="list-toolbar">
+      <span class="seg active" data-filter="active" onclick="setListFilter('active')">Active</span>
+      <span class="seg" data-filter="archived" onclick="setListFilter('archived')">Archived</span>
+      <span class="spacer"></span>
+      <button class="danger" onclick="stopAll()">Stop all</button>
+    </div>
     <div class="refresh-hint" id="refresh-hint">Pull to refresh</div>
     <div class="task-list" id="task-list"></div>
   </div>
@@ -212,10 +295,59 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div class="detail-subtitle" id="detail-subtitle"></div>
     </div>
     <div class="detail-actions" id="detail-actions"></div>
-    <div class="output-box" id="output-box"></div>
-    <div class="input-bar" id="input-bar" style="display:none">
-      <input type="text" id="input-text" placeholder="Send to agent..." autocomplete="off">
-      <button onclick="sendInput()">Send</button>
+    <div class="term-status" id="term-status" style="display:none">
+      <span class="dot"></span><span id="term-status-text">connecting…</span>
+    </div>
+    <div class="term-wrap" id="term-wrap" style="display:none"><div id="term"></div></div>
+    <div class="vkey-row" id="vkey-row">
+      <button class="vkey" data-key="esc">Esc</button>
+      <button class="vkey" data-key="tab">Tab</button>
+      <button class="vkey" data-key="ctrl" id="vkey-ctrl">Ctrl</button>
+      <button class="vkey vkey-arrow" data-key="up">↑</button>
+      <button class="vkey vkey-arrow" data-key="down">↓</button>
+      <button class="vkey vkey-arrow" data-key="left">←</button>
+      <button class="vkey vkey-arrow" data-key="right">→</button>
+      <button class="vkey" data-key="ctrl-c">^C</button>
+      <button class="vkey" data-key="enter">↵</button>
+      <span class="font-controls">
+        <button class="vkey" data-key="font-down">A−</button>
+        <button class="vkey" data-key="font-up">A+</button>
+      </span>
+    </div>
+    <div class="read-only-output" id="output-box" style="display:none"></div>
+  </div>
+
+  <!-- Settings View -->
+  <div id="settings-view">
+    <div class="settings-section">
+      <h3>Notifications</h3>
+      <div class="settings-row">
+        <div>
+          <div class="label">Push notifications</div>
+          <div class="meta" id="push-meta">Off</div>
+        </div>
+        <button id="push-toggle" onclick="togglePush()">Enable</button>
+      </div>
+      <div class="settings-row">
+        <div class="label">Send test push</div>
+        <button onclick="sendTestPush()">Send</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>API tokens</h3>
+      <div id="token-list"></div>
+      <div class="settings-row">
+        <input type="text" id="new-token-label" placeholder="Token label (e.g. iPhone)" style="flex:1; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px;">
+        <button class="primary" onclick="mintToken()" style="margin-left: 6px;">Create</button>
+      </div>
+      <div id="token-mint-result" style="display:none"></div>
+    </div>
+    <div class="settings-section">
+      <h3>This device</h3>
+      <div class="settings-row">
+        <div class="label">Sign out</div>
+        <button class="danger" onclick="logout()">Forget token</button>
+      </div>
     </div>
   </div>
 
@@ -248,10 +380,22 @@ button:disabled { opacity: 0.5; cursor: default; }
 const API = '';
 let TOKEN = localStorage.getItem('argus-token') || '';
 let currentTask = null;
-let outputInterval = null;
-let outputFirstLoad = false;
 let tasks = [];
 let actionBusy = false;
+
+let listFilter = 'active'; // 'active' or 'archived'
+let pushSubscribed = false;
+
+// Terminal session state.
+let term = null;
+let fitAddon = null;
+let evtSource = null;
+let lastTerm = { cols: 0, rows: 0 };
+let resizeDebounce = null;
+let reconnectTimer = null;
+let ctrlArmed = false;
+let ctrlLocked = false;
+let termFontSize = parseInt(localStorage.getItem('argus-font-size') || '13', 10);
 
 // --- Toast ---
 function showToast(msg, duration = 4000) {
@@ -316,7 +460,8 @@ function logout() {
 // --- Refresh ---
 async function refresh() {
   try {
-    const [statusR, tasksR] = await Promise.all([api('/api/status'), api('/api/tasks')]);
+    const tasksUrl = listFilter === 'archived' ? '/api/tasks?archived=1' : '/api/tasks';
+    const [statusR, tasksR] = await Promise.all([api('/api/status'), api(tasksUrl)]);
     if (!statusR.ok || !tasksR.ok) throw new Error('server error');
     const status = await statusR.json();
     const data = await tasksR.json();
@@ -372,14 +517,245 @@ async function openDetail(id) {
     `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
 
   renderDetailActions();
-  outputFirstLoad = true;
-  loadOutput();
-  clearInterval(outputInterval);
-  if (currentTask.status === 'in_progress') {
-    outputInterval = setInterval(loadOutput, 2000);
-    document.getElementById('input-bar').style.display = 'flex';
+  attachTerminal(currentTask);
+}
+
+function attachTerminal(task) {
+  closeStream();
+  destroyTerm();
+
+  if (task.status === 'in_progress') {
+    showTermStatus('connecting\u2026', 'reconnecting');
+    document.getElementById('term-wrap').style.display = 'block';
+    document.getElementById('output-box').style.display = 'none';
+    document.getElementById('term-status').style.display = 'flex';
+    document.getElementById('vkey-row').classList.add('shown');
+    setupTerm();
+    openStream(task.id);
   } else {
-    document.getElementById('input-bar').style.display = 'none';
+    document.getElementById('term-wrap').style.display = 'none';
+    document.getElementById('term-status').style.display = 'none';
+    document.getElementById('vkey-row').classList.remove('shown');
+    document.getElementById('output-box').style.display = 'block';
+    loadStaticOutput(task.id);
+  }
+}
+
+function setupTerm() {
+  const TerminalCtor = (window.Terminal || (window.xterm && window.xterm.Terminal));
+  const FitCtor = (window.FitAddon && window.FitAddon.FitAddon) || window.FitAddon;
+  if (!TerminalCtor || !FitCtor) {
+    showToast('Terminal library failed to load');
+    return;
+  }
+  term = new TerminalCtor({
+    fontFamily: '"SF Mono", "Menlo", "Consolas", monospace',
+    fontSize: termFontSize,
+    lineHeight: 1.2,
+    convertEol: false,
+    cursorBlink: true,
+    scrollback: 5000,
+    allowProposedApi: true,
+    theme: {
+      background: '#000000',
+      foreground: '#e6edf3',
+      cursor: '#58a6ff',
+      cursorAccent: '#000000',
+      selectionBackground: 'rgba(88,166,255,0.4)',
+    },
+  });
+  fitAddon = new FitCtor();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('term'));
+  // Expose for tests / debugging.
+  window.term = term;
+  window.fitAddon = fitAddon;
+  // Force a layout pass before fit \u2014 addon reads computed sizes.
+  requestAnimationFrame(() => {
+    fit();
+    term.focus();
+  });
+
+  // Forward keystrokes to the agent. xterm gives us already-translated bytes
+  // (e.g. arrow keys come as ESC[A). Send them raw.
+  term.onData(data => {
+    if (!currentTask || currentTask.status !== 'in_progress') return;
+    if (ctrlArmed && data.length === 1) {
+      const code = data.charCodeAt(0);
+      if (code >= 0x40 && code <= 0x7e) {
+        // Ctrl+letter / Ctrl+symbol
+        data = String.fromCharCode(code & 0x1f);
+      }
+      if (!ctrlLocked) clearCtrl();
+    }
+    sendInputBytes(data);
+  });
+}
+
+function sendInputBytes(data) {
+  if (!currentTask) return;
+  fetch(API + `/api/tasks/${currentTask.id}/input`, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'text/plain' },
+    body: data,
+  }).catch(() => {});
+}
+
+const VKEY_SEQ = {
+  esc: '\x1b',
+  tab: '\t',
+  up: '\x1b[A',
+  down: '\x1b[B',
+  left: '\x1b[D',
+  right: '\x1b[C',
+  enter: '\r',
+  'ctrl-c': '\x03',
+};
+
+function handleVirtualKey(key) {
+  if (key === 'ctrl') { toggleCtrl(); return; }
+  if (key === 'font-up') { setFontSize(termFontSize + 1); return; }
+  if (key === 'font-down') { setFontSize(termFontSize - 1); return; }
+  const seq = VKEY_SEQ[key];
+  if (seq != null) {
+    sendInputBytes(seq);
+    if (term) term.focus();
+  }
+}
+
+function toggleCtrl() {
+  // First tap: arm. Second tap: lock. Third tap: clear.
+  if (!ctrlArmed) {
+    ctrlArmed = true; ctrlLocked = false;
+  } else if (!ctrlLocked) {
+    ctrlLocked = true;
+  } else {
+    clearCtrl();
+    return;
+  }
+  updateCtrlVisual();
+}
+
+function clearCtrl() {
+  ctrlArmed = false; ctrlLocked = false;
+  updateCtrlVisual();
+}
+
+function updateCtrlVisual() {
+  const btn = document.getElementById('vkey-ctrl');
+  if (!btn) return;
+  btn.classList.toggle('sticky', ctrlArmed);
+  btn.classList.toggle('sticky-armed', ctrlLocked);
+}
+
+function setFontSize(n) {
+  if (n < 9 || n > 24) return;
+  termFontSize = n;
+  localStorage.setItem('argus-font-size', String(n));
+  if (term) {
+    term.options.fontSize = n;
+    fit();
+  }
+}
+
+// Wire all virtual key buttons once on load.
+document.getElementById('vkey-row').addEventListener('click', e => {
+  const btn = e.target.closest('.vkey');
+  if (!btn) return;
+  handleVirtualKey(btn.dataset.key);
+});
+
+function destroyTerm() {
+  if (term) {
+    try { term.dispose(); } catch(e) {}
+    term = null;
+    fitAddon = null;
+    lastTerm = { cols: 0, rows: 0 };
+    window.term = null;
+    window.fitAddon = null;
+  }
+}
+
+function fit() {
+  if (!fitAddon || !term) return;
+  try { fitAddon.fit(); } catch(e) { return; }
+  const cols = term.cols, rows = term.rows;
+  if (cols === lastTerm.cols && rows === lastTerm.rows) return;
+  lastTerm = { cols, rows };
+  if (currentTask && currentTask.status === 'in_progress') {
+    fetch(API + `/api/tasks/${currentTask.id}/resize`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols, rows }),
+    }).catch(() => {});
+  }
+}
+
+function openStream(id) {
+  // EventSource doesn't support custom headers, so pass the token as a query
+  // param. Auth middleware accepts both Bearer headers and ?token=.
+  const url = API + `/api/tasks/${id}/stream?token=` + encodeURIComponent(TOKEN);
+  const es = new EventSource(url);
+  evtSource = es;
+  es.onopen = () => showTermStatus('live', 'live');
+  es.onmessage = (e) => {
+    if (!term) return;
+    try {
+      const bytes = b64ToBytes(e.data);
+      term.write(bytes);
+    } catch(err) {
+      // Ignore malformed chunks.
+    }
+  };
+  es.addEventListener('exit', () => {
+    showTermStatus('session ended', 'error');
+    closeStream();
+  });
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      showTermStatus('disconnected', 'error');
+    } else {
+      showTermStatus('reconnecting\u2026', 'reconnecting');
+    }
+    // EventSource auto-reconnects unless we explicitly close. Let it.
+  };
+}
+
+function closeStream() {
+  if (evtSource) {
+    try { evtSource.close(); } catch(e) {}
+    evtSource = null;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function showTermStatus(text, klass) {
+  const el = document.getElementById('term-status');
+  if (!el) return;
+  el.className = 'term-status ' + (klass || '');
+  document.getElementById('term-status-text').textContent = text;
+}
+
+function b64ToBytes(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function loadStaticOutput(id) {
+  try {
+    const r = await api(`/api/tasks/${id}/output?bytes=131072&clean=1`);
+    if (!r.ok) throw new Error('output fetch failed');
+    const text = await r.text();
+    const box = document.getElementById('output-box');
+    box.textContent = text;
+    box.scrollTop = box.scrollHeight;
+  } catch(e) {
+    document.getElementById('output-box').textContent = '(no output available)';
   }
 }
 
@@ -392,6 +768,13 @@ function renderDetailActions() {
   }
   if (s === 'pending' || s === 'in_review' || s === 'complete') {
     html += '<button class="primary" id="btn-resume" onclick="resumeTask()">Resume</button>';
+  }
+  html += '<button id="btn-rename" onclick="renameTask()">Rename</button>';
+  html += '<button id="btn-fork" onclick="forkTask()">Fork</button>';
+  if (currentTask.archived) {
+    html += '<button id="btn-archive" onclick="setArchive(false)">Unarchive</button>';
+  } else {
+    html += '<button id="btn-archive" onclick="setArchive(true)">Archive</button>';
   }
   if (currentTask.pr_url) {
     html += `<button id="btn-pr" data-url="${esc(currentTask.pr_url)}">View PR</button>`;
@@ -416,42 +799,19 @@ function setActionButtons(disabled) {
   });
 }
 
-async function loadOutput() {
-  try {
-    const r = await api(`/api/tasks/${currentTask.id}/output?bytes=65536&clean=1`);
-    if (!r.ok) throw new Error('output fetch failed');
-    const text = await r.text();
-    const box = document.getElementById('output-box');
-    const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 50;
-    box.textContent = stripAnsi(text);
-    if (outputFirstLoad || wasAtBottom) box.scrollTop = box.scrollHeight;
-    outputFirstLoad = false;
-  } catch(e) {
-    document.getElementById('output-box').textContent = '(no output available)';
-  }
-}
-
-function stripAnsi(s) {
-  return s.replace(/\x1b\[\??[0-9;:]*[a-zA-Z]/g, '')
-          .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-          .replace(/\x1b[()][A-Z0-9]/g, '')
-          .replace(/\x1b[>=#]/g, '')
-          .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-}
-
 async function stopTask() {
   if (actionBusy) return;
   setActionButtons(true);
   try {
     await api(`/api/tasks/${currentTask.id}/stop`, { method: 'POST' });
-    clearInterval(outputInterval);
+    closeStream();
     await refresh();
     currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
     currentTask.status = 'in_review';
     document.getElementById('detail-subtitle').textContent =
       `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
     renderDetailActions();
-    document.getElementById('input-bar').style.display = 'none';
+    attachTerminal(currentTask);
   } catch(e) {
     showToast('Stop failed: ' + e.message);
   } finally {
@@ -471,13 +831,76 @@ async function resumeTask() {
     document.getElementById('detail-subtitle').textContent =
       `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
     renderDetailActions();
-    document.getElementById('input-bar').style.display = 'flex';
-    outputInterval = setInterval(loadOutput, 2000);
+    attachTerminal(currentTask);
   } catch(e) {
     showToast('Resume failed: ' + e.message);
   } finally {
     setActionButtons(false);
   }
+}
+
+async function renameTask() {
+  if (!currentTask) return;
+  const next = prompt('Rename task', currentTask.name);
+  if (!next || next === currentTask.name) return;
+  try {
+    const r = await api(`/api/tasks/${currentTask.id}/rename`, {
+      method: 'POST',
+      body: JSON.stringify({ name: next }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || 'rename failed');
+    currentTask.name = next;
+    document.getElementById('detail-title').textContent = next;
+    refresh();
+  } catch(e) { showToast('Rename failed: ' + e.message); }
+}
+
+async function forkTask() {
+  if (!currentTask) return;
+  const name = prompt('Fork name', currentTask.name + '-fork');
+  if (!name) return;
+  try {
+    const r = await api(`/api/tasks/${currentTask.id}/fork`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || 'fork failed');
+    const created = await r.json();
+    closeDetail();
+    await refresh();
+    if (created.id) openDetail(created.id);
+  } catch(e) { showToast('Fork failed: ' + e.message); }
+}
+
+async function setArchive(archived) {
+  if (!currentTask) return;
+  try {
+    const path = archived ? 'archive' : 'unarchive';
+    const r = await api(`/api/tasks/${currentTask.id}/${path}`, { method: 'POST' });
+    if (!r.ok) throw new Error('archive failed');
+    currentTask.archived = archived;
+    closeDetail();
+    refresh();
+  } catch(e) { showToast(e.message); }
+}
+
+async function stopAll() {
+  if (!confirm('Stop all running agents?')) return;
+  try {
+    const r = await api('/api/sessions/stop-all', { method: 'POST' });
+    if (!r.ok) throw new Error('stop-all failed');
+    const j = await r.json();
+    showToast(`Stopped ${j.stopped} agents`);
+    refresh();
+  } catch(e) { showToast(e.message); }
+}
+
+function setListFilter(f) {
+  listFilter = f;
+  document.querySelectorAll('.list-toolbar .seg').forEach(el => {
+    el.classList.toggle('active', el.dataset.filter === f);
+  });
+  refresh();
 }
 
 async function deleteTask() {
@@ -496,32 +919,22 @@ async function deleteTask() {
 }
 
 function closeDetail() {
-  clearInterval(outputInterval);
+  closeStream();
+  destroyTerm();
   currentTask = null;
   document.getElementById('detail-view').style.display = 'none';
   document.getElementById('tasks-view').style.display = 'block';
 }
 
-// --- Send Input ---
-async function sendInput() {
-  const input = document.getElementById('input-text');
-  const text = input.value;
-  if (!text || !currentTask) return;
-  try {
-    await api(`/api/tasks/${currentTask.id}/input`, {
-      method: 'POST',
-      body: text + '\n',
-      headers: { 'Content-Type': 'text/plain' }
-    });
-    input.value = '';
-    setTimeout(loadOutput, 500);
-  } catch(e) {
-    showToast('Send failed: ' + e.message);
-  }
-}
-
-document.getElementById('input-text').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); sendInput(); }
+// Refit term on viewport changes (rotation, soft-keyboard, window resize).
+window.addEventListener('resize', () => {
+  if (!term) return;
+  clearTimeout(resizeDebounce);
+  resizeDebounce = setTimeout(fit, 100);
+});
+window.addEventListener('orientationchange', () => {
+  if (!term) return;
+  setTimeout(fit, 200);
 });
 
 // --- Create Task ---
@@ -577,9 +990,148 @@ function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
   document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
+  document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
   document.getElementById('detail-view').style.display = 'none';
-  clearInterval(outputInterval);
+  closeStream();
+  destroyTerm();
   if (tab === 'tasks') refresh();
+  if (tab === 'settings') loadSettings();
+}
+
+// --- Settings tab: tokens + push ---
+async function loadSettings() {
+  await Promise.all([loadTokens(), refreshPushState()]);
+}
+
+async function loadTokens() {
+  const el = document.getElementById('token-list');
+  try {
+    const r = await api('/api/tokens');
+    if (!r.ok) throw new Error('list tokens failed');
+    const { tokens } = await r.json();
+    if (!tokens || !tokens.length) {
+      el.innerHTML = '<div class="meta" style="padding: 8px 0">No device tokens minted yet.</div>';
+      return;
+    }
+    el.innerHTML = tokens.map(t => {
+      const created = new Date((t.created_at || 0) * 1000).toLocaleDateString();
+      const used = t.last_used ? ` · last used ${new Date(t.last_used * 1000).toLocaleDateString()}` : '';
+      const revoked = t.revoked ? ' · <span style="color:var(--red)">revoked</span>' : '';
+      const action = t.revoked ? '' : `<button class="danger" onclick="revokeToken(${t.id})">Revoke</button>`;
+      return `<div class="settings-row">
+        <div>
+          <div class="label">${esc(t.label || 'device')}</div>
+          <div class="meta">…${esc(t.last4)} · ${created}${used}${revoked}</div>
+        </div>
+        ${action}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    el.innerHTML = '<div class="meta">Failed to load tokens.</div>';
+  }
+}
+
+async function mintToken() {
+  const label = (document.getElementById('new-token-label').value || 'device').trim();
+  try {
+    const r = await api('/api/tokens', { method: 'POST', body: JSON.stringify({ label }) });
+    if (!r.ok) {
+      const e = await r.json();
+      throw new Error(e.error || 'mint failed');
+    }
+    const j = await r.json();
+    const out = document.getElementById('token-mint-result');
+    out.style.display = 'block';
+    out.innerHTML = '<strong>Save this token now — it won\'t be shown again:</strong><br><br>' +
+      esc(j.token) +
+      '<br><br><button onclick="navigator.clipboard?.writeText(\'' + esc(j.token) + '\')">Copy</button>' +
+      ' <button onclick="document.getElementById(\'token-mint-result\').style.display=\'none\'">Done</button>';
+    document.getElementById('new-token-label').value = '';
+    loadTokens();
+  } catch(e) { showToast(e.message); }
+}
+
+async function revokeToken(id) {
+  if (!confirm('Revoke this token?')) return;
+  try {
+    const r = await api(`/api/tokens/${id}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error('revoke failed');
+    loadTokens();
+  } catch(e) { showToast(e.message); }
+}
+
+// --- Push notifications ---
+async function refreshPushState() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    document.getElementById('push-toggle').textContent = 'Not supported';
+    document.getElementById('push-toggle').disabled = true;
+    document.getElementById('push-meta').textContent = 'This browser does not support push';
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    pushSubscribed = !!sub;
+    document.getElementById('push-toggle').textContent = pushSubscribed ? 'Disable' : 'Enable';
+    document.getElementById('push-meta').textContent = pushSubscribed ? 'On — alerts for idle agents' : 'Off';
+  } catch(e) {}
+}
+
+async function togglePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (pushSubscribed) {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+    pushSubscribed = false;
+    refreshPushState();
+    return;
+  }
+  if (Notification.permission !== 'granted') {
+    const p = await Notification.requestPermission();
+    if (p !== 'granted') { showToast('Permission denied'); return; }
+  }
+  try {
+    const r = await api('/api/push/vapid-public-key');
+    if (!r.ok) throw new Error('vapid fetch failed');
+    const { public_key } = await r.json();
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(public_key),
+    });
+    const body = sub.toJSON();
+    await api('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({
+        label: navigator.userAgent.slice(0, 80),
+        endpoint: body.endpoint,
+        keys: body.keys,
+      }),
+    });
+    pushSubscribed = true;
+    refreshPushState();
+    showToast('Notifications enabled');
+  } catch(e) {
+    showToast('Push setup failed: ' + e.message);
+  }
+}
+
+async function sendTestPush() {
+  try {
+    const r = await api('/api/push/test', { method: 'POST' });
+    if (!r.ok) throw new Error('test failed');
+    showToast('Test push sent');
+  } catch(e) { showToast(e.message); }
+}
+
+function urlBase64ToUint8Array(s) {
+  const padding = '='.repeat((4 - s.length % 4) % 4);
+  const b64 = (s + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
 }
 
 // --- Helpers ---
@@ -678,6 +1230,29 @@ promptEl.addEventListener('keydown', function(e) {
 acDrop.addEventListener('click', function(e) {
   const item = e.target.closest('.ac-item');
   if (item) selectAC(parseInt(item.dataset.idx, 10));
+});
+
+// --- Service Worker ---
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.warn('SW register failed:', err);
+    });
+  });
+}
+
+// --- Connectivity events ---
+window.addEventListener('online', () => {
+  if (TOKEN && document.getElementById('main-app').style.display !== 'none') {
+    refresh();
+    if (currentTask && currentTask.status === 'in_progress' && !evtSource) {
+      openStream(currentTask.id);
+    }
+  }
+});
+window.addEventListener('offline', () => {
+  document.getElementById('conn-dot').className = 'status-dot err';
+  showTermStatus('offline', 'error');
 });
 
 // --- Init ---

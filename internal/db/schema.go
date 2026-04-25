@@ -108,6 +108,37 @@ func (d *DB) createTables() error {
 		return fmt.Errorf("creating kb_metadata table: %w", err)
 	}
 
+	// Push subscriptions for Web Push notifications. One row per registered
+	// device. Stored as JSON because the W3C subscription shape is opaque.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			label       TEXT NOT NULL DEFAULT '',
+			endpoint    TEXT NOT NULL UNIQUE,
+			p256dh      TEXT NOT NULL,
+			auth_key    TEXT NOT NULL,
+			created_at  INTEGER NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("creating push_subscriptions table: %w", err)
+	}
+
+	// Per-device API tokens (Phase 6). Master token in ~/.argus/api-token still
+	// works as admin and is the only credential that can mint new tokens.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS api_tokens (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			label       TEXT NOT NULL DEFAULT '',
+			hash        TEXT NOT NULL UNIQUE,
+			last4       TEXT NOT NULL DEFAULT '',
+			created_at  INTEGER NOT NULL,
+			last_used   INTEGER NOT NULL DEFAULT 0,
+			revoked_at  INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		return fmt.Errorf("creating api_tokens table: %w", err)
+	}
+
 	// KB pending tasks table for vault task imports awaiting approval.
 	if _, err := d.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS kb_pending_tasks (

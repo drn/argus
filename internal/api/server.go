@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/push"
 )
 
 // TaskCreator creates a task from name, prompt, project, and todoPath.
@@ -26,16 +27,27 @@ type Server struct {
 	token      string
 	createTask TaskCreator
 	httpSrv    *http.Server
+	push       *push.Manager
 }
 
 // New creates a new API server.
 func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreator) *Server {
-	return &Server{
+	srv := &Server{
 		db:         database,
 		runner:     runner,
 		token:      token,
 		createTask: creator,
 	}
+	// Push manager — best-effort. If VAPID keys can't be loaded/generated we
+	// keep going without push (the endpoints just return 503).
+	if mgr, err := push.New(database); err == nil {
+		srv.push = mgr
+		// Start idle watcher in the background.
+		go srv.idleWatcher()
+	} else {
+		log.Printf("api: push disabled: %v", err)
+	}
+	return srv
 }
 
 // ListenAndServe starts the HTTP server on the given port.
@@ -44,9 +56,17 @@ func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreato
 func (s *Server) ListenAndServe(port int) (int, error) {
 	mux := s.routes()
 
-	// Auth middleware skips the dashboard route (GET /) so the page can load
-	// and prompt for the token. All /api/* routes require auth.
-	handler := authMiddleware(s.token, mux, "/")
+	// Auth middleware skips the dashboard route (GET /) and /vendor/ static
+	// assets so the page can load and prompt for the token. All /api/* routes
+	// require auth.
+	handler := authMiddleware(s.token, s.db, mux, "/",
+		"/vendor/",
+		"/manifest.webmanifest",
+		"/sw.js",
+		"/icon-192.png",
+		"/icon-512.png",
+		"/apple-touch-icon.png",
+	)
 
 	// Add CORS headers for mobile browser access over Tailscale.
 	handler = corsMiddleware(handler)

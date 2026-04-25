@@ -61,10 +61,13 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 
 ### Remote Control
 
-- **HTTP REST API** — Full task management API on port 7743 (configurable). Create tasks, start/stop/resume agents, view output, send input to running agents. Bearer token authentication
-- **Mobile web dashboard** — Built-in mobile-first web UI served at `http://<host>:7743/`. Task list with status badges, output viewer with ANSI stripping, create task form, and live agent interaction. Dark theme optimized for phone screens
+- **HTTP REST API** — Full task management API on port 7743 (configurable). Tasks (create, list, get, stop, resume, delete, archive, unarchive, rename, fork, set-status), sessions (stop-all), projects + backends CRUD, git status/diff/files per worktree. Bearer token authentication
+- **Real terminal in the browser** — xterm.js + fit-addon vendored locally (no CDN). Live SSE byte stream → terminal grid, keystrokes forwarded to PTY, PTY auto-resizes on rotation. Drop-in replacement for the previous polling-based output viewer
+- **Mobile-first PWA** — Installable to home screen on iOS/Android. Manifest, service worker (cache-first shell, network-only API), apple-touch-icon, theme color
+- **Virtual key row** — Phone-friendly keys above the soft keyboard: Esc, Tab, Ctrl, ↑↓←→, Ctrl+C, Enter, plus pinch-friendly font size controls. Sticky Ctrl modifier (tap = arm, second tap = lock)
+- **Web Push notifications** — VAPID-signed push when an agent goes idle ("needs attention" / "ready for review"). Throttled to 1 push per task per 5 min. Per-device subscriptions, masked endpoints, expired subs auto-pruned
+- **Per-device API tokens** — Master token mints labeled per-device tokens. Tokens hashed with SHA-256, plaintext shown once at mint. Revocable from the Settings tab. Master required to mint new tokens
 - **Tailscale-friendly** — API binds `0.0.0.0` for access over Tailscale mesh VPN. No public exposure needed
-- **SSE streaming** — Live agent output via Server-Sent Events at `/api/tasks/{id}/stream` with 30s keepalive pings
 
 ### Git & Worktrees
 
@@ -271,34 +274,92 @@ Argus includes a built-in HTTP API and mobile web dashboard for controlling agen
 
 ### Web Dashboard
 
-Open `http://<your-machine>:7743/` in your phone browser. Enter the API token from `~/.argus/api-token` to authenticate.
+Open `http://<your-machine>:7743/` in your phone browser. Enter the API token from `~/.argus/api-token` to authenticate. Tap **Add to Home Screen** in Safari to install as a PWA.
 
 The dashboard provides:
-- **Task list** — All tasks sorted by status (running first), with project names and elapsed times
-- **Task detail** — View agent output (ANSI-stripped), stop/resume/delete agents
-- **Send input** — Type commands to running agents directly from your phone
-- **Create tasks** — Select a project, enter a prompt, and start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
+- **Task list** — Active and Archived tabs, status badges, Stop-all action
+- **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions
+- **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
+- **Settings tab** — Push notifications toggle (VAPID), test push button, API token management (mint/revoke per-device tokens), forget local token
 
-The token persists in your browser's localStorage until you clear it.
+The local token persists in `localStorage` until you clear it or tap **Forget token**.
 
 ### REST API
 
-All endpoints require `Authorization: Bearer <token>` header. Token is in `~/.argus/api-token`.
+All endpoints require auth — either `Authorization: Bearer <token>` header or `?token=<token>` query param (the latter is required for `EventSource`/SSE because browsers cannot set headers on it). The token can be the master token from `~/.argus/api-token` or any non-revoked device token.
+
+#### Tasks
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/status` | Daemon health, running/idle session counts, task counts by status |
-| `GET` | `/api/tasks` | List all tasks. Filter: `?status=in_progress&project=myproj` |
+| `GET` | `/api/status` | Running/idle session counts, task counts by status |
+| `GET` | `/api/tasks` | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`) |
 | `POST` | `/api/tasks` | Create and start a task. Body: `{"name":"...", "prompt":"...", "project":"..."}` |
-| `GET` | `/api/tasks/{id}` | Get single task detail |
-| `POST` | `/api/tasks/{id}/stop` | Stop a running agent (task moves to "in review") |
+| `GET` | `/api/tasks/{id}` | Get single task detail (includes `archived`, `worktree_path`, `prompt`) |
+| `POST` | `/api/tasks/{id}/stop` | Stop a running agent (moves to `in_review`) |
 | `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent |
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
-| `GET` | `/api/tasks/{id}/output` | Get recent agent output. Optional: `?bytes=65536` (max 1MB) |
-| `POST` | `/api/tasks/{id}/input` | Send text to the agent's PTY stdin. Body: raw text |
-| `GET` | `/api/tasks/{id}/stream` | SSE stream of live agent output (base64-encoded chunks) |
-| `GET` | `/api/projects` | List configured project names |
-| `GET` | `/api/skills` | List skills for autocomplete. Filter: `?project=myproj&prefix=dep` |
+| `POST` | `/api/tasks/{id}/archive` | Archive (hidden from default list) |
+| `POST` | `/api/tasks/{id}/unarchive` | Restore from archive |
+| `POST` | `/api/tasks/{id}/rename` | `{"name":"..."}` |
+| `POST` | `/api/tasks/{id}/fork` | Clone to a new task. Body: `{"name?":"...", "prompt?":"...", "project?":"..."}` |
+| `POST` | `/api/tasks/{id}/status` | Set status. Body: `{"status":"in_review"\|"complete"\|"pending"\|"in_progress"}` |
+
+#### Sessions / terminal
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1` |
+| `POST` | `/api/tasks/{id}/input` | Send raw bytes to PTY stdin |
+| `GET` | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks) |
+| `GET` | `/api/tasks/{id}/size` | Current PTY dimensions: `{cols, rows}` |
+| `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}` |
+| `POST` | `/api/sessions/stop-all` | Stop every running session |
+
+#### Git status / diff / files
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/tasks/{id}/git/status` | git status output + branch diff for the task's worktree |
+| `GET` | `/api/tasks/{id}/git/diff?path=<file>` | Unified diff for a single file |
+| `GET` | `/api/tasks/{id}/files?dir=<rel>` | Worktree file listing |
+
+#### Projects & backends (full CRUD)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/projects` | List project names |
+| `GET` | `/api/projects/full` | List with path, branch, default_backend |
+| `POST` | `/api/projects` | Create. Body: `{"name", "path", "branch?", "backend?"}` |
+| `PUT` | `/api/projects/{name}` | Update |
+| `DELETE` | `/api/projects/{name}` | Delete |
+| `GET` | `/api/backends` | List with command + prompt_flag |
+| `POST` | `/api/backends` | Create |
+| `PUT` | `/api/backends/{name}` | Update |
+| `DELETE` | `/api/backends/{name}` | Delete |
+| `GET` | `/api/skills` | Skill autocomplete. Filter: `?project=`, `?prefix=` |
+
+#### Push notifications (Web Push, VAPID)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/push/vapid-public-key` | VAPID public key (urlsafe base64) for `pushManager.subscribe()` |
+| `POST` | `/api/push/subscribe` | Register a subscription. Body: `{"label","endpoint","keys":{"p256dh","auth"}}` |
+| `GET` | `/api/push/subscriptions` | List with masked endpoints |
+| `DELETE` | `/api/push/subscribe/{id}` | Unsubscribe |
+| `POST` | `/api/push/test` | Fan out a test notification to every device |
+
+The daemon polls running sessions every 5s; when a session transitions to idle, every subscription receives a notification (throttled to 1 per task per 5 min). Subscriptions returning `410 Gone` are auto-pruned.
+
+#### Per-device API tokens
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/tokens` | List tokens with last-4 + label (master only? no — any token can list) |
+| `POST` | `/api/tokens` | Mint a new device token. **Master token required.** Body: `{"label":"My iPhone"}` → `{"id","label","token"}` (plaintext shown once) |
+| `DELETE` | `/api/tokens/{id}` | Revoke. **Master token required.** |
+
+Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 
 ### Tailscale Access
 

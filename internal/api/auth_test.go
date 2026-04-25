@@ -62,7 +62,7 @@ func TestLoadOrCreateToken(t *testing.T) {
 
 func TestAuthMiddleware(t *testing.T) {
 	token := "test-secret-token"
-	handler := authMiddleware(token, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := authMiddleware(token, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	}), "/public")

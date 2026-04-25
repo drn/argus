@@ -43,3 +43,10 @@ Thumbs.db
 
 # Test coverage
 coverage.out
+
+# Playwright web-tests artifacts
+web-tests/node_modules/
+web-tests/test-results/
+web-tests/playwright-report/
+web-tests/screenshots/
+web-tests/.cache/

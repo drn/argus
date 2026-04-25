@@ -2,12 +2,16 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/drn/argus/internal/db"
 )
 
 const tokenBytes = 32 // 256 bits
@@ -68,28 +72,89 @@ func LoadOrCreateToken(path string) (string, error) {
 	return token, nil
 }
 
+// hashToken returns the SHA-256 hex digest of a plaintext token, used for
+// constant-time lookup against the api_tokens table.
+func hashToken(plain string) string {
+	sum := sha256.Sum256([]byte(plain))
+	return hex.EncodeToString(sum[:])
+}
+
+// MintToken generates a new device token, persists its hash, and returns the
+// plaintext (only available at this moment).
+func MintToken(d *db.DB, label string) (string, int64, error) {
+	plain, err := GenerateToken()
+	if err != nil {
+		return "", 0, err
+	}
+	hash := hashToken(plain)
+	last4 := ""
+	if len(plain) >= 4 {
+		last4 = plain[len(plain)-4:]
+	}
+	id, err := d.AddAPIToken(label, hash, last4)
+	if err != nil {
+		return "", 0, err
+	}
+	return plain, id, nil
+}
+
 // authMiddleware returns an http.Handler that validates the Authorization header.
-// Requests to any of the skipPaths are served without auth.
-func authMiddleware(token string, next http.Handler, skipPaths ...string) http.Handler {
-	skip := make(map[string]bool, len(skipPaths))
+// Requests to any of the skipPaths are served without auth. A skipPath ending
+// in "/" matches by prefix; otherwise exact match.
+//
+// The middleware accepts both:
+//  - the master token (loaded from ~/.argus/api-token, passed in here)
+//  - any non-revoked per-device token in the api_tokens table (if `database`
+//    is non-nil)
+//
+// The master token is treated as admin and is required to mint device tokens.
+func authMiddleware(token string, database *db.DB, next http.Handler, skipPaths ...string) http.Handler {
+	exact := make(map[string]bool, len(skipPaths))
+	var prefixes []string
 	for _, p := range skipPaths {
-		skip[p] = true
+		if strings.HasSuffix(p, "/") && p != "/" {
+			prefixes = append(prefixes, p)
+		} else {
+			exact[p] = true
+		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if skip[r.URL.Path] {
+		if exact[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
+		for _, p := range prefixes {
+			if strings.HasPrefix(r.URL.Path, p) {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		// Accept either Authorization: Bearer <token> or ?token=<token>.
+		// Query param is required for EventSource (which cannot set headers).
+		var provided string
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			provided = strings.TrimPrefix(auth, "Bearer ")
+		} else if t := r.URL.Query().Get("token"); t != "" {
+			provided = t
+		} else {
 			http.Error(w, `{"error":"missing or invalid Authorization header"}`, http.StatusUnauthorized)
 			return
 		}
-		provided := strings.TrimPrefix(auth, "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
-			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
+			// Master token; mark request and proceed.
+			r.Header.Set("X-Argus-Auth", "master")
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Try device tokens.
+		if database != nil {
+			if t, _ := database.FindAPITokenByHash(hashToken(provided)); t != nil {
+				r.Header.Set("X-Argus-Auth", "device")
+				r.Header.Set("X-Argus-Token-Id", strconv.FormatInt(t.ID, 10))
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 	})
 }

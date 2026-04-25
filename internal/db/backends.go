@@ -36,3 +36,11 @@ func (d *DB) SetBackend(name string, b config.Backend) error {
 		name, b.Command, b.PromptFlag)
 	return err
 }
+
+func (d *DB) DeleteBackend(name string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`DELETE FROM backends WHERE name = ?`, name)
+	return err
+}
