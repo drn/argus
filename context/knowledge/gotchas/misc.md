@@ -14,6 +14,8 @@
 - **Keep daemon client test names short.** macOS Unix socket paths have 104-byte limit.
 - **`filepath.Walk` must return error when root is inaccessible.** Check `err != nil && path == root`.
 - **CRITICAL: Tests must NEVER operate on real `~/.argus/` paths.** All worktree paths and file operations in tests MUST use `t.TempDir()`. The `testGuard` in `internal/tui/worktree.go` is a last-resort safety net, but tests should be designed correctly.
+- **Declare small enums with `uint8` underlying type, not `int`.** gosec G115 flags every `int → byte/uint8/uint16` conversion as overflow risk, even for ~5-value enums where it's provably safe. Declaring `type rowKind uint8` (vs `int`) lets `byte(r.kind)` and `uint64(r.kind)` pass lint without `//nolint` hints. Cost is zero — `iota` and enum semantics are identical. CI will reject the wrong choice on the lint step.
+- **Reach for `hash/fnv` from stdlib instead of inlining FNV constants.** The canonical FNV-1a 64-bit offset is `14695981039346656037`; transcription errors are easy and silent (the hash still works, just isn't canonical, which fails review). `fnv.New64a()` plus `io.WriteString(h, s)` is shorter and self-documenting.
 
 ## Codex Integration
 
