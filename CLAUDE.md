@@ -82,7 +82,17 @@ All table-driven tests must use `t.Run` subtests. Guard slow tests with `testing
 - `internal/spinner/` — Reusable spinner animation definitions. Each `Spinner` has a `Style`, `Label`, `Frames` (rune slice), and `TickInterval`. Built-in styles: Progress (nerdfont ee06–ee0b, 100ms), Dots (braille dots, 100ms), Braille (braille pattern, 100ms), Classic (ASCII, 150ms). Configurable via `ui.spinner` setting. `model.SetActiveSpinner()` switches at runtime; `model.SpinnerFrame(tick)` delegates to the active spinner.
 - `internal/skills/` — Skill loading for autocomplete. Scans `~/.claude/skills/` and project-specific skill directories.
 - `internal/vault/` — Vault file watcher for auto-task creation. Uses fsnotify to watch the Argus vault directory for new `.md` files, auto-creates tasks via `HeadlessCreateTask`. Debounces iCloud sync. Wired into daemon lifecycle.
-- `internal/api/` — HTTP REST API for remote control. Bearer token auth, CORS, task CRUD, output viewing, PTY input, SSE streaming. Binds `0.0.0.0` for Tailscale access. Port-probing pattern from MCP server.
+- `internal/api/` — HTTP REST API + mobile PWA for remote control on port 7743. Binds `0.0.0.0` for Tailscale access. Port-probing pattern from MCP server. Surface area:
+  - **Tasks**: list/create/get/stop/resume/delete/archive/unarchive/rename/fork/status, sessions stop-all
+  - **Terminal**: `/output`, `/input`, SSE `/stream`, `/size`, `/resize` — feeds xterm.js in the SPA
+  - **Config CRUD**: projects + backends (master-only)
+  - **Git per worktree**: `/git/status`, `/git/diff`, `/files`
+  - **Web Push (VAPID)**: `/push/vapid-public-key`, `/push/subscribe`, `/push/subscriptions`, `/push/test` (master), idle watcher fires throttled push when sessions transition idle
+  - **Per-device tokens**: master-only mint/revoke; SHA-256 hashed in `api_tokens` table; auth middleware accepts master OR device, tags request via `X-Argus-Auth: master|device` header so destructive endpoints can `requireMaster()`
+  - **Auth**: `Authorization: Bearer <token>` or `?token=<token>` query param (required for `EventSource` which can't set headers)
+  - **PWA**: vendored xterm.js + addon-fit, `manifest.webmanifest`, service worker (cache-first shell, network-only `/api`), apple-touch-icon, icons 192/512
+- `internal/push/` — `Manager` wraps `webpush-go` with VAPID key persistence (DB `config` table), per-task throttling (`lastSent` map, pruned via `ForgetTask` from idleWatcher), expired-subscription auto-pruning on HTTP 410 from push service.
+- `cmd/argus-test-server/` — isolated API harness for Playwright. Sets `HOME=$tempdir`, seeds a `bash`-backed task that PTY-echoes input. Exposes `/test/reset` on `port+10` for between-spec state cleanup. Used by `web-tests/` Playwright project (43 specs).
 - `internal/daemon/headless.go` — Headless task creation (worktree + DB + session start) without TUI. Shared by vault watcher and HTTP API via `TaskCreator` function injection.
 
 **Key pattern:** Sub-views are custom `tview.Box` widgets with `Draw(screen tcell.Screen)` methods. Async updates via `tapp.QueueUpdateDraw()` from the tick goroutine. Key routing via `tapp.SetInputCapture()`. **Every custom widget that accepts text input must implement `PasteHandler()`** — tview's bracket paste bypasses `InputCapture` entirely, so widgets without a `PasteHandler()` silently drop pasted text. For PTY-backed widgets, wrap the pasted text in bracket paste sequences (`\x1b[200~`/`\x1b[201~`).
