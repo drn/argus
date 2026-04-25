@@ -102,8 +102,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 // without this guard, any device token holder could spam every registered
 // device.
 func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Argus-Auth") != "master" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required"})
+	if requireMaster(w, r) {
 		return
 	}
 	if s.push == nil {

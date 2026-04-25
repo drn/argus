@@ -72,6 +72,17 @@ func LoadOrCreateToken(path string) (string, error) {
 	return token, nil
 }
 
+// requireMaster writes a 403 if the request was authenticated with a device
+// token rather than the master token. Returns true if the caller should stop
+// processing. Used by destructive/configuration-mutating endpoints.
+func requireMaster(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("X-Argus-Auth") != "master" {
+		http.Error(w, `{"error":"master token required"}`, http.StatusForbidden)
+		return true
+	}
+	return false
+}
+
 // hashToken returns the SHA-256 hex digest of a plaintext token, used for
 // constant-time lookup against the api_tokens table.
 func hashToken(plain string) string {

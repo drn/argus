@@ -381,8 +381,7 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
 	// Destructive: master-only. Device tokens can stop individual tasks but
 	// cannot halt every running agent in one call.
-	if r.Header.Get("X-Argus-Auth") != "master" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required"})
+	if requireMaster(w, r) {
 		return
 	}
 	s.runner.StopAll()
@@ -697,6 +696,9 @@ func sortProjects(items []projectJSON, less func(a, b projectJSON) bool) {
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -719,6 +721,9 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
@@ -744,6 +749,9 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	if err := s.db.DeleteProject(name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -779,6 +787,9 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	var req backendJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -800,6 +811,9 @@ func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	var req backendJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
@@ -823,6 +837,9 @@ func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	name := r.PathValue("name")
 	if err := s.db.DeleteBackend(name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

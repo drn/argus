@@ -372,6 +372,46 @@ func TestHandleCreateToken_MasterOnly(t *testing.T) {
 	})
 }
 
+func TestProjectsBackends_MasterOnly(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, srv.routes())
+	plain, _, err := MintToken(d, "phone")
+	testutil.NoError(t, err)
+	device := func(method, url, body string) *http.Request {
+		var req *http.Request
+		if body != "" {
+			req = httptest.NewRequest(method, url, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(method, url, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+plain)
+		return req
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		url    string
+		body   string
+	}{
+		{"projects create", "POST", "/api/projects", `{"name":"x","path":"/tmp/x"}`},
+		{"projects update", "PUT", "/api/projects/x", `{"path":"/tmp/y"}`},
+		{"projects delete", "DELETE", "/api/projects/x", ""},
+		{"backends create", "POST", "/api/backends", `{"name":"x","command":"echo"}`},
+		{"backends update", "PUT", "/api/backends/x", `{"command":"echo y"}`},
+		{"backends delete", "DELETE", "/api/backends/x", ""},
+		{"tokens list", "GET", "/api/tokens", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name+" forbidden for device", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, device(c.method, c.url, c.body))
+			testutil.Equal(t, w.Code, http.StatusForbidden)
+		})
+	}
+}
+
 func TestHandleForkTask_RejectsEmptyProject(t *testing.T) {
 	srv, d := testServer(t)
 	mux := srv.routes()

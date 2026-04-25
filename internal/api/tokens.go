@@ -18,6 +18,12 @@ type tokenView struct {
 }
 
 func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	// Master-only — listing all tokens reveals the per-device roster
+	// (labels, last4, last_used). A compromised device token shouldn't be
+	// able to fingerprint other devices.
+	if requireMaster(w, r) {
+		return
+	}
 	tokens, err := s.db.APITokens()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -48,8 +54,7 @@ type createTokenReq struct {
 // handleCreateToken mints a new device token. Master-only — device tokens
 // can't mint more device tokens.
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Argus-Auth") != "master" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required to mint new tokens"})
+	if requireMaster(w, r) {
 		return
 	}
 	var req createTokenReq
@@ -75,8 +80,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("X-Argus-Auth") != "master" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "master token required"})
+	if requireMaster(w, r) {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

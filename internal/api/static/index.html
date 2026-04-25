@@ -392,7 +392,6 @@ let fitAddon = null;
 let evtSource = null;
 let lastTerm = { cols: 0, rows: 0 };
 let resizeDebounce = null;
-let reconnectTimer = null;
 let ctrlArmed = false;
 let ctrlLocked = false;
 let termFontSize = parseInt(localStorage.getItem('argus-font-size') || '13', 10);
@@ -490,8 +489,8 @@ function renderTaskList() {
   const order = { in_progress: 0, in_review: 1, pending: 2, complete: 3 };
   const sorted = [...tasks].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
   el.innerHTML = sorted.map(t => `
-    <div class="task-item" onclick="openDetail('${t.id}')">
-      <span class="task-badge badge-${t.status}">${statusLabel(t.status)}</span>
+    <div class="task-item" onclick="openDetail('${esc(t.id)}')">
+      <span class="task-badge badge-${esc(t.status)}">${statusLabel(t.status)}</span>
       <div class="task-info">
         <div class="task-name">${esc(t.name)}</div>
         <div class="task-meta">${esc(t.project)}${t.elapsed ? ' &middot; ' + t.elapsed : ''}</div>
@@ -725,10 +724,6 @@ function closeStream() {
   if (evtSource) {
     try { evtSource.close(); } catch(e) {}
     evtSource = null;
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
   }
 }
 
@@ -1042,10 +1037,30 @@ async function mintToken() {
     const j = await r.json();
     const out = document.getElementById('token-mint-result');
     out.style.display = 'block';
-    out.innerHTML = '<strong>Save this token now — it won\'t be shown again:</strong><br><br>' +
-      esc(j.token) +
-      '<br><br><button onclick="navigator.clipboard?.writeText(\'' + esc(j.token) + '\')">Copy</button>' +
-      ' <button onclick="document.getElementById(\'token-mint-result\').style.display=\'none\'">Done</button>';
+    // Build via DOM so the plaintext token is never embedded in an attribute
+    // (avoids the HTML-encode → JS-decode escape sequence problem).
+    out.innerHTML = '';
+    const heading = document.createElement('strong');
+    heading.textContent = 'Save this token now — it won\'t be shown again:';
+    out.appendChild(heading);
+    out.appendChild(document.createElement('br'));
+    out.appendChild(document.createElement('br'));
+    const tokenSpan = document.createElement('span');
+    tokenSpan.textContent = j.token;
+    out.appendChild(tokenSpan);
+    out.appendChild(document.createElement('br'));
+    out.appendChild(document.createElement('br'));
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(j.token);
+    });
+    out.appendChild(copyBtn);
+    out.appendChild(document.createTextNode(' '));
+    const doneBtn = document.createElement('button');
+    doneBtn.textContent = 'Done';
+    doneBtn.addEventListener('click', () => { out.style.display = 'none'; });
+    out.appendChild(doneBtn);
     document.getElementById('new-token-label').value = '';
     loadTokens();
   } catch(e) { showToast(e.message); }
