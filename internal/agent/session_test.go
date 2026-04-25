@@ -551,7 +551,10 @@ func TestSession_MultiWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var buf1, buf2 bytes.Buffer
+	// syncBuffer (not bytes.Buffer) — the readLoop goroutine may still be
+	// flushing into AddWriter consumers when the test reads, so the buffer
+	// itself must be thread-safe to satisfy `go test -race`.
+	var buf1, buf2 syncBuffer
 	sess.AddWriter(&buf1)
 	sess.AddWriter(&buf2)
 
@@ -561,9 +564,17 @@ func TestSession_MultiWriter(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	time.Sleep(100 * time.Millisecond)
 
-	// Both writers should have received the replay + any live output
+	// Poll instead of fixed sleep — readLoop may take a beat to drain.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf1.String(), "multi-writer-test") &&
+			strings.Contains(buf2.String(), "multi-writer-test") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	if !strings.Contains(buf1.String(), "multi-writer-test") {
 		t.Errorf("writer 1 missing output: %q", buf1.String())
 	}
@@ -589,6 +600,12 @@ func (sb *syncBuffer) Len() int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	return sb.buf.Len()
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
 }
 
 func TestSession_RemoveWriter(t *testing.T) {
