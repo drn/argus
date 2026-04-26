@@ -25,7 +25,7 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 
 ## HTML escaping in `index.html`
 
-- **`esc()` only escapes `<`, `>`, `&` — NOT `"` or `'`.** It builds via `textContent` → `innerHTML`, which is safe in element-content position but injectable in attribute position when the attribute value is double-quoted. Patterns like `data-foo="${esc(name)}"` or `<option value="${esc(p)}">` are vulnerable to attribute escape via a `"` in `name`. For untrusted strings going into attributes, prefer index-based lookup against a render-time array (see `renderedProjects` in `renderTaskList`) or a true attribute-aware escape. Project names, task IDs, etc. all flow from user-controlled DB rows.
+- **`esc()` only escapes `<`, `>`, `&` — NOT `"` or `'`.** It builds via `textContent` → `innerHTML`, which is safe in element-content position but injectable in attribute position when the attribute value is double-quoted. Patterns like `data-foo="${esc(name)}"` or `<option value="${esc(p)}">` are vulnerable to attribute escape via a `"` in `name`. For untrusted strings going into attributes, use `escAttr()` (which extends `esc()` by also escaping `"` and `'`), or prefer index-based lookup against a render-time array (see `renderedProjects` in `renderTaskList`). Project names, task IDs, etc. all flow from user-controlled DB rows.
 
 ## Mobile virtual key row
 
