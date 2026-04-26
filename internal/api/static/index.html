@@ -256,33 +256,28 @@ button:disabled { opacity: 0.5; cursor: default; }
 .term-status.error .dot { background: var(--red); }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
-/* Virtual key row. flex-wrap so all 11 keys fit on a 393px iPhone viewport;
-   overflow-x:auto silently hid Enter and ^C with no scroll cue. */
-.vkey-row {
-  display: none;
-  gap: 6px; padding: 8px;
-  background: var(--surface); border-top: 1px solid var(--border);
-  flex-wrap: wrap;
-  flex-shrink: 0;
-  padding-bottom: max(8px, env(safe-area-inset-bottom));
+/* Font size controls inside the overflow menu — sit as a row at the top of
+   the dropdown so taps don't require dismissing the menu between presses. */
+.overflow-font-row {
+  display: flex; gap: 6px; padding: 6px;
+  border-bottom: 1px solid var(--border); margin-bottom: 4px;
 }
-.vkey-row.shown { display: flex; }
-.vkey {
-  /* flex:0 0 auto so wrapped rows pack with identical button widths instead
-     of letting a short second row grow each key to ~88px. */
-  flex: 0 0 auto; min-width: 44px; height: 44px;
-  padding: 0 10px; border-radius: 6px;
-  background: var(--bg); border: 1px solid var(--border);
-  color: var(--text); font-size: 14px; font-weight: 500;
-  cursor: pointer; user-select: none;
-  -webkit-tap-highlight-color: transparent;
+.overflow-font-row button {
+  flex: 1 1 0; min-height: 44px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 15px; font-weight: 500;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
-.vkey:active { background: var(--border); }
-.vkey.sticky { background: var(--accent); color: #000; border-color: var(--accent); }
-.vkey.sticky-armed { box-shadow: 0 0 0 2px var(--accent); }
-.vkey-arrow { font-size: 16px; }
-/* Font controls float to the right on the row they end up on. */
-.font-controls { display: flex; gap: 4px; margin-left: auto; }
+.overflow-font-row button:active { background: var(--border); }
+
+/* Compact detail header: while the soft keyboard is up, the title block eats
+   vertical space the user needs for the terminal. Hide the back link and
+   subtitle and shrink the title so only the strict essentials remain. */
+.detail-header.compact { padding: 4px 56px 4px 12px; }
+.detail-header.compact .detail-back,
+.detail-header.compact .detail-subtitle { display: none; }
+.detail-header.compact .detail-title { font-size: 14px; margin-bottom: 0; }
+.detail-header.compact .overflow-btn { top: 0; height: 36px; font-size: 20px; }
 
 /* Create form */
 #create-view { display: none; }
@@ -409,21 +404,6 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div id="term"></div>
       <button class="jump-bottom-btn" id="jump-bottom" aria-label="Scroll to input" type="button">↓</button>
     </div>
-    <div class="vkey-row" id="vkey-row">
-      <button class="vkey" data-key="esc">Esc</button>
-      <button class="vkey" data-key="tab">Tab</button>
-      <button class="vkey" data-key="ctrl" id="vkey-ctrl">Ctrl</button>
-      <button class="vkey vkey-arrow" data-key="up">↑</button>
-      <button class="vkey vkey-arrow" data-key="down">↓</button>
-      <button class="vkey vkey-arrow" data-key="left">←</button>
-      <button class="vkey vkey-arrow" data-key="right">→</button>
-      <button class="vkey" data-key="ctrl-c">^C</button>
-      <button class="vkey" data-key="enter">↵</button>
-      <span class="font-controls">
-        <button class="vkey" data-key="font-down">A−</button>
-        <button class="vkey" data-key="font-up">A+</button>
-      </span>
-    </div>
     <div class="read-only-output" id="output-box" style="display:none"></div>
   </div>
 
@@ -534,8 +514,6 @@ let fitAddon = null;
 let evtSource = null;
 let lastTerm = { cols: 0, rows: 0 };
 let resizeDebounce = null;
-let ctrlArmed = false;
-let ctrlLocked = false;
 let termFontSize = parseInt(localStorage.getItem('argus-font-size') || '13', 10);
 
 // SSE chunks queued while the user is scrolled into history. iOS kills
@@ -776,13 +754,11 @@ function attachTerminal(task) {
     document.getElementById('term-wrap').style.display = 'flex';
     document.getElementById('output-box').style.display = 'none';
     document.getElementById('term-status').style.display = 'flex';
-    document.getElementById('vkey-row').classList.add('shown');
     setupTerm();
     openStream(task.id);
   } else {
     document.getElementById('term-wrap').style.display = 'none';
     document.getElementById('term-status').style.display = 'none';
-    document.getElementById('vkey-row').classList.remove('shown');
     document.getElementById('output-box').style.display = 'block';
     loadStaticOutput(task.id);
   }
@@ -851,14 +827,6 @@ function setupTerm() {
   // (e.g. arrow keys come as ESC[A). Send them raw.
   term.onData(data => {
     if (!currentTask || currentTask.status !== 'in_progress') return;
-    if (ctrlArmed && data.length === 1) {
-      const code = data.charCodeAt(0);
-      if (code >= 0x40 && code <= 0x7e) {
-        // Ctrl+letter / Ctrl+symbol
-        data = String.fromCharCode(code & 0x1f);
-      }
-      if (!ctrlLocked) clearCtrl();
-    }
     sendInputBytes(data);
   });
 }
@@ -872,53 +840,6 @@ function sendInputBytes(data) {
   }).catch(() => {});
 }
 
-const VKEY_SEQ = {
-  esc: '\x1b',
-  tab: '\t',
-  up: '\x1b[A',
-  down: '\x1b[B',
-  left: '\x1b[D',
-  right: '\x1b[C',
-  enter: '\r',
-  'ctrl-c': '\x03',
-};
-
-function handleVirtualKey(key) {
-  if (key === 'ctrl') { toggleCtrl(); return; }
-  if (key === 'font-up') { setFontSize(termFontSize + 1); return; }
-  if (key === 'font-down') { setFontSize(termFontSize - 1); return; }
-  const seq = VKEY_SEQ[key];
-  if (seq != null) {
-    sendInputBytes(seq);
-    if (term) term.focus();
-  }
-}
-
-function toggleCtrl() {
-  // First tap: arm. Second tap: lock. Third tap: clear.
-  if (!ctrlArmed) {
-    ctrlArmed = true; ctrlLocked = false;
-  } else if (!ctrlLocked) {
-    ctrlLocked = true;
-  } else {
-    clearCtrl();
-    return;
-  }
-  updateCtrlVisual();
-}
-
-function clearCtrl() {
-  ctrlArmed = false; ctrlLocked = false;
-  updateCtrlVisual();
-}
-
-function updateCtrlVisual() {
-  const btn = document.getElementById('vkey-ctrl');
-  if (!btn) return;
-  btn.classList.toggle('sticky', ctrlArmed);
-  btn.classList.toggle('sticky-armed', ctrlLocked);
-}
-
 function setFontSize(n) {
   if (n < 9 || n > 24) return;
   termFontSize = n;
@@ -928,13 +849,6 @@ function setFontSize(n) {
     fit();
   }
 }
-
-// Wire all virtual key buttons once on load.
-document.getElementById('vkey-row').addEventListener('click', e => {
-  const btn = e.target.closest('.vkey');
-  if (!btn) return;
-  handleVirtualKey(btn.dataset.key);
-});
 
 function destroyTerm() {
   if (term) {
@@ -1111,8 +1025,12 @@ function renderOverflowMenu() {
   const menu = document.getElementById('overflow-menu');
   const s = currentTask.status;
   const items = [];
+  // Esc and "Toggle mode" send raw key bytes to the agent. They keep the
+  // menu open on tap (handled below) so the user can spam Esc to interrupt
+  // a runaway loop or cycle modes without re-opening the dropdown.
   if (s === 'in_progress') {
-    items.push({ id: 'btn-stop', label: 'Stop', fn: stopTask, danger: true });
+    items.push({ id: 'btn-esc', label: 'Esc', fn: () => sendInputBytes('\x1b'), keepOpen: true });
+    items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
   } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
     items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
   }
@@ -1133,13 +1051,40 @@ function renderOverflowMenu() {
   items.push({ id: 'btn-delete', label: 'Delete', fn: deleteTask, danger: true });
 
   menu.innerHTML = '';
+
+  // Font-size row stays at the top of the dropdown. Buttons keep the menu
+  // open (no closeOverflowMenu) so the user can step the size in either
+  // direction with successive taps.
+  const fontRow = document.createElement('div');
+  fontRow.className = 'overflow-font-row';
+  [
+    { key: 'font-down', label: 'A−', delta: -1 },
+    { key: 'font-up', label: 'A+', delta: 1 },
+  ].forEach(f => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.key = f.key;
+    b.textContent = f.label;
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      setFontSize(termFontSize + f.delta);
+    });
+    fontRow.appendChild(b);
+  });
+  menu.appendChild(fontRow);
+
   items.forEach(it => {
     const b = document.createElement('button');
     b.type = 'button';
     b.id = it.id;
     b.textContent = it.label;
     if (it.danger) b.className = 'danger';
-    b.addEventListener('click', () => {
+    b.addEventListener('click', e => {
+      if (it.keepOpen) {
+        e.stopPropagation();
+        it.fn();
+        return;
+      }
       closeOverflowMenu();
       it.fn();
     });
@@ -1169,35 +1114,12 @@ document.addEventListener('click', e => {
 function setActionButtons(disabled) {
   actionBusy = disabled;
   // Disabling btn-overflow prevents reopening the menu mid-action; the
-  // per-item buttons (btn-stop / btn-resume / btn-delete) are inside that
-  // menu and are also disabled defensively in case the menu is left open.
-  ['btn-stop','btn-resume','btn-delete','btn-overflow'].forEach(id => {
+  // per-item buttons (btn-resume / btn-delete) are inside that menu and are
+  // also disabled defensively in case the menu is left open.
+  ['btn-resume','btn-delete','btn-overflow'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = disabled;
   });
-}
-
-async function stopTask() {
-  if (actionBusy) return;
-  setActionButtons(true);
-  try {
-    await api(`/api/tasks/${currentTask.id}/stop`, { method: 'POST' });
-    closeStream();
-    await refresh();
-    currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
-    currentTask.status = 'in_review';
-    document.getElementById('detail-subtitle').textContent =
-      `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
-    // renderOverflowMenu() must run before the finally block so the freshly
-    // rebuilt menu items (btn-resume, btn-delete, \u2026) exist when
-    // setActionButtons(false) re-enables them by ID.
-    renderOverflowMenu();
-    attachTerminal(currentTask);
-  } catch(e) {
-    showToast('Stop failed: ' + e.message);
-  } finally {
-    setActionButtons(false);
-  }
 }
 
 async function resumeTask() {
@@ -1296,6 +1218,8 @@ function closeDetail() {
   const dv = document.getElementById('detail-view');
   dv.classList.remove('open');
   dv.style.transform = '';
+  const header = dv.querySelector('.detail-header');
+  if (header) header.classList.remove('compact');
   document.getElementById('tasks-view').style.display = 'block';
 }
 
@@ -1327,6 +1251,13 @@ function syncVisualViewport() {
   if (dv) {
     const isOpen = dv.classList.contains('open');
     dv.style.transform = (isOpen && vv.offsetTop) ? `translateY(${vv.offsetTop}px)` : '';
+    // Compact the detail header when the soft keyboard is up so the title
+    // block doesn't eat scarce vertical space above the terminal. window.
+    // innerHeight stays fixed at the layout-viewport height; visualViewport
+    // shrinks by the keyboard height, so a >100px gap is the keyboard.
+    const keyboardOpen = isOpen && (window.innerHeight - vv.height) > 100;
+    const header = dv.querySelector('.detail-header');
+    if (header) header.classList.toggle('compact', keyboardOpen);
   }
   if (!term || !fitAddon) return;
   clearTimeout(resizeDebounce);

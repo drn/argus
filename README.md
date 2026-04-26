@@ -64,7 +64,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **HTTP REST API** — Full task management API on port 7743 (configurable). Tasks (create, list, get, stop, resume, delete, archive, unarchive, rename, fork, set-status), sessions (stop-all), projects + backends CRUD, git status/diff/files per worktree. Bearer token authentication
 - **Real terminal in the browser** — xterm.js + fit-addon vendored locally (no CDN). Live SSE byte stream → terminal grid, keystrokes forwarded to PTY, PTY auto-resizes on rotation. Drop-in replacement for the previous polling-based output viewer
 - **Mobile-first PWA** — Installable to home screen on iOS/Android. Manifest, service worker (cache-first shell, network-only API), apple-touch-icon, theme color
-- **Virtual key row** — Phone-friendly keys above the soft keyboard: Esc, Tab, Ctrl, ↑↓←→, Ctrl+C, Enter, plus pinch-friendly font size controls. Sticky Ctrl modifier (tap = arm, second tap = lock)
+- **Compact mobile chrome** — The agent detail header collapses (back link + subtitle hide, title shrinks) while the soft keyboard is up so the terminal keeps the vertical space. Font size A−/A+, `Esc` (interrupt the agent) and `Toggle mode` (Shift+Tab — cycle Claude Code thinking/plan/accept-edits modes) live in the overflow (⋯) menu and keep it open across taps
 - **Web Push notifications** — VAPID-signed push when an agent goes idle ("needs attention" / "ready for review"). Throttled to 1 push per task per 5 min. Per-device subscriptions, masked endpoints, expired subs auto-pruned
 - **Per-device API tokens** — Master token mints labeled per-device tokens. Tokens hashed with SHA-256, plaintext shown once at mint. Revocable from the Settings tab. Master required to mint new tokens
 - **Tailscale-friendly** — API binds `0.0.0.0` for access over Tailscale mesh VPN. No public exposure needed
@@ -284,7 +284,7 @@ Open `http://<your-machine>:7743/` in your phone browser. Enter the API token fr
 
 The dashboard provides:
 - **Task list** — Active and Archived tabs, status badges
-- **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
+- **Task detail** — Real xterm.js terminal with live SSE byte stream, plus an overflow (⋯) menu containing Esc / Toggle mode (Shift+Tab) / Resume / Rename / Fork / Archive / Delete and font size controls. The header auto-compacts when the soft keyboard is up. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 - **Settings tab** — Push notifications toggle (VAPID), test push button, API token management (mint/revoke per-device tokens), forget local token
 
