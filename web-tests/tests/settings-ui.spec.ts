@@ -80,4 +80,26 @@ test.describe('detail-view actions', () => {
     await page.locator('#btn-fork').click();
     await expect(page.locator('#detail-title')).toHaveText('forked-via-ui', { timeout: 5000 });
   });
+
+  test('overflow menu closes when navigating Back', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await expect(page.locator('#overflow-menu')).toHaveClass(/open/);
+    await page.locator('.detail-back').click();
+    // After back, detail-view is dismissed and overflow-menu is gone from DOM
+    // (innerHTML rebuild on next openDetail), or at minimum no longer .open.
+    await expect(page.locator('#tasks-view')).toBeVisible();
+    await expect(page.locator('#overflow-menu.open')).toHaveCount(0);
+  });
+
+  test('overflow menu closes when switching tabs', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await expect(page.locator('#overflow-menu')).toHaveClass(/open/);
+    await page.locator('.tab[data-tab="settings"]').click();
+    await expect(page.locator('#settings-view')).toBeVisible();
+    await expect(page.locator('#overflow-menu.open')).toHaveCount(0);
+  });
 });
