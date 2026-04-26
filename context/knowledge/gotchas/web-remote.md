@@ -21,6 +21,10 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Resize POST is debounced (100ms) on `window.resize`** — but use `setTimeout(200)` for `orientationchange` because iOS Safari fires `orientationchange` before the viewport actually settles.
 - **Empty `[]taskJSON` encodes as `null`, not `[]`** — Go's `encoding/json` will emit `null` for a nil slice. Use `make([]taskJSON, 0)` for any handler whose response slice goes through the wire (`handleListTasks` does this; if you add another, do the same). The SPA does `tasks.find(...)` and crashes on null otherwise.
 
+## HTML escaping in `index.html`
+
+- **`esc()` only escapes `<`, `>`, `&` — NOT `"` or `'`.** It builds via `textContent` → `innerHTML`, which is safe in element-content position but injectable in attribute position when the attribute value is double-quoted. Patterns like `data-foo="${esc(name)}"` or `<option value="${esc(p)}">` are vulnerable to attribute escape via a `"` in `name`. For untrusted strings going into attributes, prefer index-based lookup against a render-time array (see `renderedProjects` in `renderTaskList`) or a true attribute-aware escape. Project names, task IDs, etc. all flow from user-controlled DB rows.
+
 ## Mobile virtual key row
 
 - **Sticky Ctrl is implemented in `term.onData`, not via xterm key events** — xterm's helper textarea fires onData with the un-modified character. The handler intercepts a single ASCII character when `ctrlArmed` is true and applies `code & 0x1f`. Don't try to modify `ev.ctrlKey` on the keyboard event — it's read-only.
