@@ -6,6 +6,7 @@
 - **`TaskPreviewPanel.Draw()` must never call `runner.Get()` or create a VT emulator.** Pre-render in `RefreshOutput()` on tick goroutine; `Draw()` only paints cached cells.
 - **Never run synchronous git commands on the tick goroutine.** Blocking the tick goroutine prevents `QueueUpdateDraw` from firing, freezing the UI. Use `go` + cooldown (e.g., `lastTaskGitRefresh` with 3s interval). The agent view already follows this pattern — the task list must too.
 - **`onTick` must modify tview widget state only inside `QueueUpdateDraw`.** `TaskListView`, preview panels, agent pane, and reviews have no internal mutex. Direct modification from the tick goroutine races with `Draw()`/`InputHandler()` on the tview goroutine. Symptom: `buildRows()` sets `tl.rows = nil` then rebuilds — a concurrent `Draw()` sees the nil slice and renders an empty task list (project folders disappear).
+- **`QueueUpdateDraw` is safe to call from inside `Run()` before `tapp.Run()` starts.** The `updates` channel is buffered (cap 100 in tview v0.42), so the send returns immediately and the closure runs once the event loop drains. Wrapping in `go a.tapp.QueueUpdateDraw(...)` adds a needless goroutine and falsely implies a synchronization concern. Use this pattern to fire startup-time prompts that need the event loop running (e.g. the daemon-stale modal in `Run()`).
 
 ## lazyScreen & Widget Painting
 
