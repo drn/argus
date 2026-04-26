@@ -414,10 +414,19 @@ let currentTask = null;
 let tasks = [];
 let actionBusy = false;
 
-let listFilter = 'active'; // 'active' or 'archived'
+// Filter view keys for the task list.
+const FILTER_ACTIVE = 'active';
+const FILTER_ARCHIVED = 'archived';
+
+let listFilter = FILTER_ACTIVE;
 let pushSubscribed = false;
 // Currently expanded project per filter view (one project open at a time, like the TUI).
-let expandedProject = { active: null, archived: null };
+let expandedProject = { [FILTER_ACTIVE]: null, [FILTER_ARCHIVED]: null };
+// Project names ordered by index, populated each render. The click delegation
+// looks up the clicked project by index instead of round-tripping the name
+// through a data-project attribute, so a project name can never escape its
+// HTML context (esc() does not escape the `"` that closes an attribute).
+let renderedProjects = [];
 
 // Terminal session state.
 let term = null;
@@ -492,7 +501,7 @@ function logout() {
 // --- Refresh ---
 async function refresh() {
   try {
-    const tasksUrl = listFilter === 'archived' ? '/api/tasks?archived=1' : '/api/tasks';
+    const tasksUrl = listFilter === FILTER_ARCHIVED ? '/api/tasks?archived=1' : '/api/tasks';
     const [statusR, tasksR] = await Promise.all([api('/api/status'), api(tasksUrl)]);
     if (!statusR.ok || !tasksR.ok) throw new Error('server error');
     const status = await statusR.json();
@@ -519,7 +528,9 @@ function renderTaskList() {
     el.innerHTML = '<div class="empty-state">No tasks yet.<br>Tap + New to create one.</div>';
     return;
   }
-  // Group tasks by project (alphabetical), like the TUI task list.
+  // Group tasks by project (alphabetical), like the TUI task list. The
+  // "(no project)" fallback string matches groupByProject() in the TUI so the
+  // two clients label unrouted tasks identically.
   const groups = {};
   for (const t of tasks) {
     const p = t.project || '(no project)';
@@ -531,11 +542,15 @@ function renderTaskList() {
   if (!expandedProject[listFilter] || !groups[expandedProject[listFilter]]) {
     expandedProject[listFilter] = projects[0];
   }
+  renderedProjects = projects;
   const order = { in_progress: 0, in_review: 1, pending: 2, complete: 3 };
-  el.innerHTML = projects.map(proj => {
+  // Preserve scroll across the full re-render (5s status poll would otherwise
+  // snap the user back to the top every refresh).
+  const prevScrollY = window.scrollY;
+  el.innerHTML = projects.map((proj, idx) => {
     const list = groups[proj].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
     const isOpen = proj === expandedProject[listFilter];
-    const dot = projectDotClass(list);
+    const dot = projectDotModifier(list);
     const tasksHtml = isOpen ? list.map(t => `
       <div class="task-item" onclick="openDetail('${esc(t.id)}')">
         <span class="task-badge badge-${esc(t.status)}">${statusLabel(t.status)}</span>
@@ -547,7 +562,7 @@ function renderTaskList() {
       </div>
     `).join('') : '';
     return `<div class="project-group">
-      <div class="project-header" data-project="${esc(proj)}">
+      <div class="project-header" data-idx="${idx}">
         <span class="project-chevron${isOpen ? ' expanded' : ''}">&#9656;</span>
         <span class="project-dot ${dot}"></span>
         <span class="project-name">${esc(proj)}</span>
@@ -556,9 +571,10 @@ function renderTaskList() {
       <div class="project-tasks">${tasksHtml}</div>
     </div>`;
   }).join('');
+  if (prevScrollY > 0) window.scrollTo(0, prevScrollY);
 }
 
-function projectDotClass(list) {
+function projectDotModifier(list) {
   let running = false, review = false, pending = false, complete = false;
   for (const t of list) {
     if (t.status === 'in_progress') running = true;
@@ -572,17 +588,25 @@ function projectDotClass(list) {
   return '';
 }
 
-function toggleProject(proj) {
-  expandedProject[listFilter] = (expandedProject[listFilter] === proj) ? null : proj;
+function expandProject(proj) {
+  // "Always one open" invariant matches the TUI: re-tapping the open header
+  // is a no-op so the user can never end up with everything collapsed.
+  if (expandedProject[listFilter] === proj) return;
+  expandedProject[listFilter] = proj;
   renderTaskList();
 }
 
-// Project header click delegation — set up once so toggling never relies on
-// inline onclick (project names may contain quotes).
+// Project header click delegation. We look up the project by index into
+// renderedProjects rather than reading a data-project attribute, because
+// esc() does not escape the `"` that closes an HTML attribute — embedding
+// untrusted project names in attribute context would be injectable.
 document.getElementById('task-list').addEventListener('click', e => {
   const header = e.target.closest('.project-header');
   if (!header) return;
-  toggleProject(header.dataset.project);
+  const idx = parseInt(header.dataset.idx, 10);
+  if (Number.isInteger(idx) && idx >= 0 && idx < renderedProjects.length) {
+    expandProject(renderedProjects[idx]);
+  }
 });
 
 function statusLabel(s) {
