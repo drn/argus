@@ -88,13 +88,44 @@ button:disabled { opacity: 0.5; cursor: default; }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Task list */
-.task-list { padding: 8px 0; }
+.task-list { padding: 0; }
 .task-item {
-  display: flex; align-items: center; padding: 12px;
+  display: flex; align-items: center; padding: 12px 12px 12px 28px;
   border-bottom: 1px solid var(--border); cursor: pointer;
   transition: background 0.1s; gap: 10px;
 }
 .task-item:active { background: var(--surface); }
+
+/* Project groups */
+.project-group { border-bottom: 1px solid var(--border); }
+.project-group:last-child { border-bottom: none; }
+.project-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; cursor: pointer;
+  background: var(--surface); user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.project-header:active { background: var(--border); }
+.project-chevron {
+  color: var(--text-dim); font-size: 10px; width: 12px;
+  text-align: center; flex-shrink: 0;
+  transition: transform 0.12s ease-out;
+}
+.project-chevron.expanded { transform: rotate(90deg); }
+.project-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--text-dim);
+}
+.project-dot.running { background: var(--green); }
+.project-dot.review { background: var(--yellow); }
+.project-dot.complete { background: var(--purple); }
+.project-name {
+  flex: 1; min-width: 0; font-weight: 600; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.project-count { font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+.project-tasks { background: var(--bg); }
+.project-tasks .task-item:last-child { border-bottom: none; }
 .task-badge {
   font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px;
   white-space: nowrap; flex-shrink: 0;
@@ -385,6 +416,8 @@ let actionBusy = false;
 
 let listFilter = 'active'; // 'active' or 'archived'
 let pushSubscribed = false;
+// Currently expanded project per filter view (one project open at a time, like the TUI).
+let expandedProject = { active: null, archived: null };
 
 // Terminal session state.
 let term = null;
@@ -486,19 +519,71 @@ function renderTaskList() {
     el.innerHTML = '<div class="empty-state">No tasks yet.<br>Tap + New to create one.</div>';
     return;
   }
+  // Group tasks by project (alphabetical), like the TUI task list.
+  const groups = {};
+  for (const t of tasks) {
+    const p = t.project || '(no project)';
+    (groups[p] = groups[p] || []).push(t);
+  }
+  const projects = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  // Auto-expand the first project if none is expanded (or the expanded one
+  // disappeared after a refresh). Mirrors the TUI's "always one open" behavior.
+  if (!expandedProject[listFilter] || !groups[expandedProject[listFilter]]) {
+    expandedProject[listFilter] = projects[0];
+  }
   const order = { in_progress: 0, in_review: 1, pending: 2, complete: 3 };
-  const sorted = [...tasks].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
-  el.innerHTML = sorted.map(t => `
-    <div class="task-item" onclick="openDetail('${esc(t.id)}')">
-      <span class="task-badge badge-${esc(t.status)}">${statusLabel(t.status)}</span>
-      <div class="task-info">
-        <div class="task-name">${esc(t.name)}</div>
-        <div class="task-meta">${esc(t.project)}${t.elapsed ? ' &middot; ' + t.elapsed : ''}</div>
+  el.innerHTML = projects.map(proj => {
+    const list = groups[proj].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+    const isOpen = proj === expandedProject[listFilter];
+    const dot = projectDotClass(list);
+    const tasksHtml = isOpen ? list.map(t => `
+      <div class="task-item" onclick="openDetail('${esc(t.id)}')">
+        <span class="task-badge badge-${esc(t.status)}">${statusLabel(t.status)}</span>
+        <div class="task-info">
+          <div class="task-name">${esc(t.name)}</div>
+          <div class="task-meta">${t.elapsed ? esc(t.elapsed) : ''}</div>
+        </div>
+        <div class="task-chevron">&rsaquo;</div>
       </div>
-      <div class="task-chevron">&rsaquo;</div>
-    </div>
-  `).join('');
+    `).join('') : '';
+    return `<div class="project-group">
+      <div class="project-header" data-project="${esc(proj)}">
+        <span class="project-chevron${isOpen ? ' expanded' : ''}">&#9656;</span>
+        <span class="project-dot ${dot}"></span>
+        <span class="project-name">${esc(proj)}</span>
+        <span class="project-count">${list.length}</span>
+      </div>
+      <div class="project-tasks">${tasksHtml}</div>
+    </div>`;
+  }).join('');
 }
+
+function projectDotClass(list) {
+  let running = false, review = false, pending = false, complete = false;
+  for (const t of list) {
+    if (t.status === 'in_progress') running = true;
+    else if (t.status === 'in_review') review = true;
+    else if (t.status === 'complete') complete = true;
+    else pending = true;
+  }
+  if (running) return 'running';
+  if (review) return 'review';
+  if (complete && !pending) return 'complete';
+  return '';
+}
+
+function toggleProject(proj) {
+  expandedProject[listFilter] = (expandedProject[listFilter] === proj) ? null : proj;
+  renderTaskList();
+}
+
+// Project header click delegation — set up once so toggling never relies on
+// inline onclick (project names may contain quotes).
+document.getElementById('task-list').addEventListener('click', e => {
+  const header = e.target.closest('.project-header');
+  if (!header) return;
+  toggleProject(header.dataset.project);
+});
 
 function statusLabel(s) {
   return { pending: 'Pending', in_progress: 'Running', in_review: 'Review', complete: 'Done' }[s] || s;
