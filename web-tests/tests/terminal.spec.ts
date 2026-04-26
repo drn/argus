@@ -163,18 +163,20 @@ test.describe('terminal', () => {
     expect(drained.chunks).toBe(0);
     expect(drained.bytes).toBe(0);
 
-    // Buffered markers should now be in the terminal buffer.
-    const dump = await page.evaluate(() => {
-      const buf = (window as any).term.buffer.active;
-      let s = '';
-      for (let y = 0; y < buf.length; y++) {
-        const line = buf.getLine(y);
-        if (line) s += line.translateToString(true) + '\n';
-      }
-      return s;
-    });
-    expect(dump).toContain('LIVE_MARKER_AAA');
-    expect(dump).toContain('LIVE_MARKER_BBB');
+    // Buffered markers should now be in the terminal buffer. xterm.write
+    // queues bytes asynchronously, so poll instead of asserting on a
+    // single snapshot — the markers land within a few rAFs of flushPending.
+    await expect.poll(async () =>
+      page.evaluate(() => {
+        const buf = (window as any).term.buffer.active;
+        let s = '';
+        for (let y = 0; y < buf.length; y++) {
+          const line = buf.getLine(y);
+          if (line) s += line.translateToString(true) + '\n';
+        }
+        return s;
+      }),
+    { timeout: 3000 }).toMatch(/LIVE_MARKER_AAA[\s\S]*LIVE_MARKER_BBB/);
   });
 
   test('buffers SSE writes while finger is on the term (iOS momentum guard)', async ({ page }) => {
@@ -182,11 +184,10 @@ test.describe('terminal', () => {
     await page.locator('.task-item').first().click();
     await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
 
-    // Synthesize a touchstart on #term. TouchEvent constructor isn't
-    // reliable across browsers/profiles — a plain Event with the right
-    // type still hits our listener since we don't read any TouchEvent
-    // fields, and that's what we're actually testing here (the gating
-    // logic, not browser touch plumbing).
+    // Synthesize a touchstart on #term. The production handler reads no
+    // TouchEvent fields (just toggles `termTouching`), so a plain Event
+    // exercises the same code path without relying on Playwright's touch
+    // emulation, which differs between desktop/iphone profiles.
     await page.evaluate(() => {
       document.getElementById('term')!.dispatchEvent(new Event('touchstart'));
     });

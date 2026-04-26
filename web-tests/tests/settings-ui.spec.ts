@@ -98,7 +98,12 @@ test.describe('detail-view actions', () => {
     await page.locator('.task-item').first().click();
     await page.locator('#btn-overflow').click();
     await expect(page.locator('#overflow-menu')).toHaveClass(/open/);
-    await page.locator('.tab[data-tab="settings"]').click();
+    // #detail-view.open is fixed/z-index:50 and covers the tab bar — a real
+    // pointer click on `.tab[data-tab="settings"]` is intercepted by
+    // detail-subtitle (by design, the user must close detail before
+    // switching tabs). Drive the production handler directly so the test
+    // exercises the menu-close behavior, not the layered click path.
+    await page.evaluate(() => (window as any).switchTab('settings'));
     await expect(page.locator('#settings-view')).toBeVisible();
     await expect(page.locator('#overflow-menu.open')).toHaveCount(0);
   });

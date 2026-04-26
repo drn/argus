@@ -538,14 +538,21 @@ const PENDING_MAX_BYTES = 256 * 1024;
 let termTouching = false;
 let lastTermScroll = 0;
 let settleTimer = null;
+// 200ms covers the tail of a typical iOS mid-velocity fling without
+// introducing perceptible output lag. Higher values delay live output too
+// long; lower values let writes race the still-active momentum.
 const SETTLE_MS = 200;
 let termTouchEl = null;
 function onTermTouchStart() { termTouching = true; }
 function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
+// scheduleSettle resets a debounce timer; the callback re-checks every
+// gate that bufferOrWrite uses (at-bottom, !touching, !in-momentum) so a
+// late scroll/touch in the SETTLE_MS window can't slip a flush through.
 function scheduleSettle() {
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => {
-    if (!termTouching && termIsAtBottom()) flushPending();
+    const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
+    if (!termTouching && !inMomentum && termIsAtBottom()) flushPending();
   }, SETTLE_MS);
 }
 
@@ -792,7 +799,7 @@ function setupTerm() {
   window.bufferOrWrite = bufferOrWrite;
   window.flushPending = flushPending;
   window.argusPending = () => ({ chunks: pendingChunks.length, bytes: pendingBytes });
-  window.argusTouchState = () => ({ touching: termTouching, lastScroll: lastTermScroll });
+  window.argusTouchState = () => ({ touching: termTouching });
   // Force a layout pass before fit \u2014 addon reads computed sizes.
   requestAnimationFrame(() => {
     fit();
