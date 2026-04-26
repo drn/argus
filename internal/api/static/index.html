@@ -1829,7 +1829,7 @@ function fillSelectOptions(id, names, current, includeBlank) {
   const blank = includeBlank ? '<option value="">(none)</option>' : '';
   el.innerHTML = blank + names.map(n => {
     const sel = n === current ? 'selected' : '';
-    return `<option value="${esc(n)}" ${sel}>${esc(n)}</option>`;
+    return `<option value="${escAttr(n)}" ${sel}>${esc(n)}</option>`;
   }).join('');
   if (!names.includes(current)) el.value = '';
 }
@@ -1843,7 +1843,11 @@ async function patchSettings(body) {
     }
     settingsCache = await r.json();
     renderSettings();
-  } catch(e) { showToast('Save failed: ' + e.message); }
+    return true;
+  } catch(e) {
+    showToast('Save failed: ' + e.message);
+    return false;
+  }
 }
 
 function saveSandboxToggle() {
@@ -1851,17 +1855,16 @@ function saveSandboxToggle() {
   patchSettings({ sandbox: { enabled } });
 }
 
-function saveSandboxPaths() {
+async function saveSandboxPaths() {
   const denyRead = document.getElementById('sandbox-deny-read').value
     .split('\n').map(s => s.trim()).filter(Boolean);
   const extraWrite = document.getElementById('sandbox-extra-write').value
     .split('\n').map(s => s.trim()).filter(Boolean);
-  patchSettings({ sandbox: { deny_read: denyRead, extra_write: extraWrite } })
-    .then(() => {
-      const status = document.getElementById('sandbox-paths-status');
-      status.textContent = 'Saved';
-      setTimeout(() => { status.textContent = ''; }, 2000);
-    });
+  const ok = await patchSettings({ sandbox: { deny_read: denyRead, extra_write: extraWrite } });
+  if (!ok) return; // patchSettings already toasted; don't claim "Saved".
+  const status = document.getElementById('sandbox-paths-status');
+  status.textContent = 'Saved';
+  setTimeout(() => { status.textContent = ''; }, 2000);
 }
 
 function saveKBToggle(field, value) {
@@ -1941,7 +1944,7 @@ function openProjectEditor(p) {
   const beSel = document.getElementById('pm-backend');
   beSel.innerHTML = '<option value="">(default)</option>' + backendsCache.map(b => {
     const sel = p && p.backend === b.name ? 'selected' : '';
-    return `<option value="${esc(b.name)}" ${sel}>${esc(b.name)}</option>`;
+    return `<option value="${escAttr(b.name)}" ${sel}>${esc(b.name)}</option>`;
   }).join('');
   // Sandbox radios.
   let sandboxVal = 'inherit';
@@ -1976,8 +1979,13 @@ async function saveProjectFromModal() {
   const sandboxRadio = document.querySelector('input[name="pm-sandbox"]:checked');
   const denyRead = document.getElementById('pm-deny-read').value.split('\n').map(s => s.trim()).filter(Boolean);
   const extraWrite = document.getElementById('pm-extra-write').value.split('\n').map(s => s.trim()).filter(Boolean);
-  // Only attach sandbox section if user customized any field.
-  if (sandboxRadio && sandboxRadio.value !== 'inherit' || denyRead.length || extraWrite.length) {
+  // Only attach sandbox section if user customized any field. Omitting it
+  // tells the server to clear any prior override (PUT does a full replace
+  // via SetProject).
+  const sandboxOverridden = (sandboxRadio && sandboxRadio.value !== 'inherit')
+    || denyRead.length > 0
+    || extraWrite.length > 0;
+  if (sandboxOverridden) {
     let enabled = null;
     if (sandboxRadio.value === 'true') enabled = true;
     else if (sandboxRadio.value === 'false') enabled = false;
@@ -2021,7 +2029,7 @@ async function refreshProjectsForCreateView() {
     const sel = document.getElementById('create-project');
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = (projects || []).map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+    sel.innerHTML = (projects || []).map(p => `<option value="${escAttr(p)}">${esc(p)}</option>`).join('');
     if (projects && projects.includes(cur)) sel.value = cur;
   } catch(e) {}
 }
@@ -2284,6 +2292,14 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+// escAttr escapes for double-quoted attribute context. esc() (which builds
+// via textContent) only handles `<`, `>`, `&` — a `"` inside a project or
+// backend name would close the attribute and let the rest of the value
+// inject markup. Use escAttr for any `attr="${...}"` insertion.
+function escAttr(s) {
+  return esc(s).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
 // --- Skill Autocomplete ---

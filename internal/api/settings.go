@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -254,7 +257,7 @@ func logPath(name string) (string, error) {
 	case "ux":
 		return uxlog.Path(dataDir), nil
 	case "daemon":
-		return dataDir + "/daemon.log", nil
+		return filepath.Join(dataDir, "daemon.log"), nil
 	}
 	return "", &logNameError{name: name}
 }
@@ -278,7 +281,7 @@ func readTail(path string, n int) ([]byte, error) {
 		return nil, err
 	}
 	buf := make([]byte, info.Size()-offset)
-	if _, err := f.Read(buf); err != nil && err.Error() != "EOF" {
+	if _, err := f.Read(buf); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	return buf, nil

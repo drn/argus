@@ -153,7 +153,7 @@ func TestHandleGetLog(t *testing.T) {
 	testutil.NoError(t, os.MkdirAll(dataDir, 0o700))
 	testutil.NoError(t, os.WriteFile(filepath.Join(dataDir, "ux.log"), []byte("hello\nworld\n"), 0o600))
 
-	srv, _ := testServer(t)
+	srv, d := testServer(t)
 	mux := srv.routes()
 
 	t.Run("ux returns content", func(t *testing.T) {
@@ -176,6 +176,22 @@ func TestHandleGetLog(t *testing.T) {
 		// "(empty)" without special-casing.
 		testutil.Equal(t, w.Code, http.StatusOK)
 		testutil.Equal(t, w.Body.Len(), 0)
+	})
+
+	t.Run("device tokens can read", func(t *testing.T) {
+		// Pin the intent: log-tail is read-only and available to device
+		// tokens (same policy as GET /api/settings). If logs ever need to
+		// be master-only, this test will catch the change.
+		handler := authMiddleware(srv.token, d, srv.routes())
+		plain, _, err := MintToken(d, "phone")
+		testutil.NoError(t, err)
+
+		req := httptest.NewRequest("GET", "/api/logs/ux", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		testutil.Contains(t, w.Body.String(), "hello")
 	})
 }
 
