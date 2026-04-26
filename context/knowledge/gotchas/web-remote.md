@@ -30,6 +30,13 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Sticky Ctrl is implemented in `term.onData`, not via xterm key events** — xterm's helper textarea fires onData with the un-modified character. The handler intercepts a single ASCII character when `ctrlArmed` is true and applies `code & 0x1f`. Don't try to modify `ev.ctrlKey` on the keyboard event — it's read-only.
 - **Ctrl auto-clears after one keystroke unless locked** — the second tap on the Ctrl button locks (`ctrlLocked = true`); third tap clears. Without this, holding "Ctrl mode" feels stuck.
 
+## Detail-view layout
+
+- **`#detail-view.open` is `position: fixed; height: 100dvh` so only the xterm scrolls** — page-level scroll inside the detail view fights xterm's scrollback for touch and used to make scrolling unusable on iOS. The replacement uses a flex column where `.term-wrap` is `flex: 1`. Don't reintroduce page-flow children that grow the detail view past viewport height; nested scroll comes back the moment you do.
+- **Use `100dvh`, not `100vh`, for the fixed detail view** — Safari's address bar shrinks/grows the visual viewport but `vh` reflects the layout viewport, so `100vh` puts the bottom-anchored vkey-row behind the address bar / soft keyboard. `dvh` resizes with the visible area.
+- **Action buttons live in an overflow menu (`#overflow-menu`)** — only the primary action (Stop / Resume) is inline; Rename/Fork/Archive/PR/Delete are inside a popover toggled via `#btn-overflow`. The IDs (`#btn-rename`, `#btn-archive`, etc.) are preserved on the menu items so existing Playwright selectors still work, but tests must click `#btn-overflow` first to open the menu.
+- **Jump-to-input button visibility is driven by `term.onScroll`, not `term.write`** — the button appears whenever `buffer.active.viewportY < buffer.active.baseY` and hides when xterm auto-scrolls back to the bottom (which fires `onScroll`). Don't try to track scroll state from the SSE message handler — xterm's auto-follow already gets it right and `onScroll` covers manual moves.
+
 ## Web Push / VAPID
 
 - **VAPID keys are persisted in the `config` table** — keys `push.vapid_public` and `push.vapid_private`. Regenerating them invalidates every existing subscription (the push service rejects with 401). Only delete these if you also clear `push_subscriptions`.

@@ -51,6 +51,7 @@ test.describe('list toolbar', () => {
     // Click the seed task → archive it.
     await page.locator('.task-item').first().click();
     page.on('dialog', d => d.accept());
+    await page.locator('#btn-overflow').click();
     await page.locator('#btn-archive').click();
     await expect(page.locator('#tasks-view')).toBeVisible();
     // Active list is empty.
@@ -66,6 +67,7 @@ test.describe('detail-view actions', () => {
     await login(page);
     await page.locator('.task-item').first().click();
     page.on('dialog', d => d.accept('renamed-via-ui'));
+    await page.locator('#btn-overflow').click();
     await page.locator('#btn-rename').click();
     await expect(page.locator('#detail-title')).toHaveText('renamed-via-ui', { timeout: 3000 });
   });
@@ -74,6 +76,7 @@ test.describe('detail-view actions', () => {
     await login(page);
     await page.locator('.task-item').first().click();
     page.on('dialog', d => d.accept('forked-via-ui'));
+    await page.locator('#btn-overflow').click();
     await page.locator('#btn-fork').click();
     await expect(page.locator('#detail-title')).toHaveText('forked-via-ui', { timeout: 5000 });
   });

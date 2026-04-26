@@ -140,41 +140,92 @@ button:disabled { opacity: 0.5; cursor: default; }
 .task-chevron { color: var(--text-dim); font-size: 18px; flex-shrink: 0; }
 .empty-state { text-align: center; padding: 48px 24px; color: var(--text-dim); }
 
-/* Task detail */
+/* Task detail — fixed-height flex column so only the terminal scrolls. */
 #detail-view { display: none; }
-.detail-header {
-  padding: 12px; background: var(--surface);
-  border-bottom: 1px solid var(--border);
+#detail-view.open {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 100dvh;
+  background: var(--bg);
+  z-index: 50;
 }
-.detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 8px; display: inline-block; }
-.detail-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+.detail-header {
+  padding: 10px 12px; background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 6px; display: inline-block; }
+.detail-title { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
 .detail-subtitle { font-size: 13px; color: var(--text-dim); }
-.detail-actions { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
-.detail-actions button { flex: 1; min-width: 80px; }
+.detail-actions {
+  display: flex; gap: 8px; padding: 8px 12px;
+  align-items: center; flex-shrink: 0; position: relative;
+}
+.detail-actions .primary-action { flex: 1; min-height: 44px; }
+.detail-actions .overflow-btn {
+  width: 44px; height: 44px; min-width: 44px;
+  padding: 0; font-size: 22px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.overflow-menu {
+  position: absolute; top: calc(100% - 4px); right: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 4px; min-width: 180px;
+  z-index: 100; display: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.overflow-menu.open { display: block; }
+.overflow-menu button {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none;
+  padding: 12px; border-radius: 6px;
+  font-size: 15px; min-height: 44px; color: var(--text);
+}
+.overflow-menu button:active { background: var(--border); }
+.overflow-menu button.danger { color: var(--red); }
 .term-wrap {
-  padding: 8px 12px 12px;
+  flex: 1 1 auto; min-height: 0;
+  display: flex; position: relative;
+  padding: 8px 12px;
   background: var(--bg);
 }
 #term {
+  flex: 1 1 auto; min-height: 0;
   background: #000;
   border-radius: 8px;
   padding: 8px;
-  height: 65vh;
-  min-height: 320px;
-  /* xterm renders into its own elements; this wrapper just sizes it. */
+  position: relative;
 }
 #term .xterm { padding: 0; }
 #term .xterm-viewport { background: transparent !important; -webkit-overflow-scrolling: touch; }
+.jump-bottom-btn {
+  position: absolute;
+  right: 24px; bottom: 24px;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--accent); color: #000;
+  border: none; font-size: 22px; font-weight: bold;
+  display: none; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 5;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  -webkit-tap-highlight-color: transparent;
+}
+.jump-bottom-btn.shown { display: flex; }
+.jump-bottom-btn:active { background: var(--text); }
 .read-only-output {
+  flex: 1 1 auto; min-height: 0;
   background: #000; color: #ccc; font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 12px; line-height: 1.4; padding: 12px; margin: 8px 12px 12px;
-  border-radius: 8px; min-height: 200px; max-height: 65vh;
+  font-size: 12px; line-height: 1.4; padding: 12px; margin: 8px 12px;
+  border-radius: 8px;
   overflow-y: auto; white-space: pre-wrap; word-break: break-all;
   -webkit-overflow-scrolling: touch;
 }
 .term-status {
   font-size: 11px; color: var(--text-dim); padding: 4px 12px;
   display: flex; gap: 8px; align-items: center;
+  flex-shrink: 0;
 }
 .term-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); }
 .term-status.live .dot { background: var(--green); }
@@ -182,20 +233,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .term-status.error .dot { background: var(--red); }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
-/* Virtual key row — floats above keyboard for mobile */
+/* Virtual key row — fills bottom of fixed-flex detail view. */
 .vkey-row {
   display: none;
-  gap: 4px; padding: 6px 8px;
+  gap: 6px; padding: 8px;
   background: var(--surface); border-top: 1px solid var(--border);
   overflow-x: auto; -webkit-overflow-scrolling: touch;
-  position: sticky; bottom: 0;
+  flex-shrink: 0;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
 }
 .vkey-row.shown { display: flex; }
 .vkey {
-  flex-shrink: 0; min-width: 36px; height: 32px;
-  padding: 0 8px; border-radius: 6px;
+  flex-shrink: 0; min-width: 44px; height: 44px;
+  padding: 0 12px; border-radius: 6px;
   background: var(--bg); border: 1px solid var(--border);
-  color: var(--text); font-size: 13px; font-weight: 500;
+  color: var(--text); font-size: 14px; font-weight: 500;
   cursor: pointer; user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
@@ -325,7 +377,10 @@ button:disabled { opacity: 0.5; cursor: default; }
     <div class="term-status" id="term-status" style="display:none">
       <span class="dot"></span><span id="term-status-text">connecting…</span>
     </div>
-    <div class="term-wrap" id="term-wrap" style="display:none"><div id="term"></div></div>
+    <div class="term-wrap" id="term-wrap" style="display:none">
+      <div id="term"></div>
+      <button class="jump-bottom-btn" id="jump-bottom" aria-label="Scroll to input" type="button">↓</button>
+    </div>
     <div class="vkey-row" id="vkey-row">
       <button class="vkey" data-key="esc">Esc</button>
       <button class="vkey" data-key="tab">Tab</button>
@@ -615,7 +670,7 @@ async function openDetail(id) {
   if (!currentTask) return;
 
   document.getElementById('tasks-view').style.display = 'none';
-  document.getElementById('detail-view').style.display = 'block';
+  document.getElementById('detail-view').classList.add('open');
   document.getElementById('detail-title').textContent = currentTask.name;
   document.getElementById('detail-subtitle').textContent =
     `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
@@ -630,7 +685,7 @@ function attachTerminal(task) {
 
   if (task.status === 'in_progress') {
     showTermStatus('connecting\u2026', 'reconnecting');
-    document.getElementById('term-wrap').style.display = 'block';
+    document.getElementById('term-wrap').style.display = 'flex';
     document.getElementById('output-box').style.display = 'none';
     document.getElementById('term-status').style.display = 'flex';
     document.getElementById('vkey-row').classList.add('shown');
@@ -679,6 +734,9 @@ function setupTerm() {
     fit();
     term.focus();
   });
+  // Toggle the jump-to-input button when user scrolls up into scrollback.
+  term.onScroll(updateJumpButton);
+  updateJumpButton();
 
   // Forward keystrokes to the agent. xterm gives us already-translated bytes
   // (e.g. arrow keys come as ESC[A). Send them raw.
@@ -778,7 +836,30 @@ function destroyTerm() {
     window.term = null;
     window.fitAddon = null;
   }
+  const btn = document.getElementById('jump-bottom');
+  if (btn) btn.classList.remove('shown');
 }
+
+function termIsAtBottom() {
+  if (!term) return true;
+  try {
+    const buf = term.buffer.active;
+    return buf.viewportY >= buf.baseY;
+  } catch(e) { return true; }
+}
+
+function updateJumpButton() {
+  const btn = document.getElementById('jump-bottom');
+  if (!btn) return;
+  btn.classList.toggle('shown', !!term && !termIsAtBottom());
+}
+
+document.getElementById('jump-bottom').addEventListener('click', () => {
+  if (!term) return;
+  term.scrollToBottom();
+  term.focus();
+  updateJumpButton();
+});
 
 function fit() {
   if (!fitAddon || !term) return;
@@ -862,34 +943,65 @@ async function loadStaticOutput(id) {
 function renderDetailActions() {
   const el = document.getElementById('detail-actions');
   const s = currentTask.status;
-  let html = '';
+  let primary = '';
   if (s === 'in_progress') {
-    html += '<button class="danger" id="btn-stop" onclick="stopTask()">Stop</button>';
-  }
-  if (s === 'pending' || s === 'in_review' || s === 'complete') {
-    html += '<button class="primary" id="btn-resume" onclick="resumeTask()">Resume</button>';
-  }
-  html += '<button id="btn-rename" onclick="renameTask()">Rename</button>';
-  html += '<button id="btn-fork" onclick="forkTask()">Fork</button>';
-  if (currentTask.archived) {
-    html += '<button id="btn-archive" onclick="setArchive(false)">Unarchive</button>';
+    primary = '<button class="primary-action danger" id="btn-stop" onclick="stopTask()">Stop</button>';
+  } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
+    primary = '<button class="primary-action primary" id="btn-resume" onclick="resumeTask()">Resume</button>';
   } else {
-    html += '<button id="btn-archive" onclick="setArchive(true)">Archive</button>';
+    primary = '<div class="primary-action"></div>';
   }
+  el.innerHTML =
+    primary +
+    '<button class="overflow-btn" id="btn-overflow" aria-label="More actions" type="button">⋯</button>' +
+    '<div class="overflow-menu" id="overflow-menu"></div>';
+
+  document.getElementById('btn-overflow').addEventListener('click', e => {
+    e.stopPropagation();
+    document.getElementById('overflow-menu').classList.toggle('open');
+  });
+
+  const menu = document.getElementById('overflow-menu');
+  const items = [
+    { id: 'btn-rename', label: 'Rename', fn: renameTask },
+    { id: 'btn-fork', label: 'Fork', fn: forkTask },
+    currentTask.archived
+      ? { id: 'btn-archive', label: 'Unarchive', fn: () => setArchive(false) }
+      : { id: 'btn-archive', label: 'Archive', fn: () => setArchive(true) },
+  ];
   if (currentTask.pr_url) {
-    html += `<button id="btn-pr" data-url="${esc(currentTask.pr_url)}">View PR</button>`;
-  }
-  html += '<button class="danger" id="btn-delete" onclick="deleteTask()">Delete</button>';
-  el.innerHTML = html;
-  // Bind PR button via JS (not inline onclick) to prevent XSS from crafted URLs.
-  const prBtn = document.getElementById('btn-pr');
-  if (prBtn) {
-    prBtn.addEventListener('click', () => {
-      const url = prBtn.dataset.url;
+    items.push({ id: 'btn-pr', label: 'View PR', fn: () => {
+      const url = currentTask.pr_url;
       if (url && url.startsWith('http')) window.open(url, '_blank');
-    });
+    }});
   }
+  items.push({ id: 'btn-delete', label: 'Delete', fn: deleteTask, danger: true });
+
+  menu.innerHTML = '';
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.id = it.id;
+    b.textContent = it.label;
+    if (it.danger) b.className = 'danger';
+    b.addEventListener('click', () => {
+      closeOverflowMenu();
+      it.fn();
+    });
+    menu.appendChild(b);
+  });
 }
+
+function closeOverflowMenu() {
+  const m = document.getElementById('overflow-menu');
+  if (m) m.classList.remove('open');
+}
+
+document.addEventListener('click', e => {
+  const m = document.getElementById('overflow-menu');
+  if (!m || !m.classList.contains('open')) return;
+  if (!e.target.closest('.detail-actions')) closeOverflowMenu();
+});
 
 function setActionButtons(disabled) {
   actionBusy = disabled;
@@ -1010,8 +1122,9 @@ async function deleteTask() {
 function closeDetail() {
   closeStream();
   destroyTerm();
+  closeOverflowMenu();
   currentTask = null;
-  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-view').classList.remove('open');
   document.getElementById('tasks-view').style.display = 'block';
 }
 
@@ -1080,7 +1193,8 @@ function switchTab(tab) {
   document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
   document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
   document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
-  document.getElementById('detail-view').style.display = 'none';
+  document.getElementById('detail-view').classList.remove('open');
+  closeOverflowMenu();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
