@@ -104,10 +104,10 @@ type App struct {
 	confirmDeleteProjectModal *modal.ConfirmDeleteProjectModal
 
 	// Restart-daemon prompt (created on demand when binary mtime mismatch
-	// is detected at startup).
+	// is detected at startup). daemonStale is set by main before Run() and
+	// read once inside Run() — no concurrent access, no lock needed.
 	restartDaemonModal *modal.RestartDaemonModal
-	daemonStale        bool // set by main before Run; opens prompt on first draw
-	daemonStaleHandled bool
+	daemonStale        bool
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal      *LaunchToDoModal
@@ -366,12 +366,10 @@ func (a *App) buildUI() {
 	a.tapp.SetRoot(a.root, true)
 }
 
-// SetDaemonStale records that the connected daemon is running an older copy
-// of the argus binary than the TUI. The prompt is shown on the first draw.
+// SetDaemonStale records that the connected daemon's binary differs from the
+// TUI's. Must be called before Run() — the flag is consumed there.
 func (a *App) SetDaemonStale(stale bool) {
-	a.mu.Lock()
 	a.daemonStale = stale
-	a.mu.Unlock()
 }
 
 // openRestartDaemonPrompt shows the modal asking whether to restart the
@@ -444,17 +442,12 @@ func (a *App) Run() error {
 	go a.spinnerLoop()
 	defer close(a.tickDone)
 
-	// If main detected the daemon is running an older binary, prompt the user
-	// once the event loop has spun up. QueueUpdateDraw runs on the tview
-	// goroutine, after SetRoot, so the modal page is added safely.
-	a.mu.Lock()
-	stale := a.daemonStale && !a.daemonStaleHandled
-	if stale {
-		a.daemonStaleHandled = true
-	}
-	a.mu.Unlock()
-	if stale {
-		go a.tapp.QueueUpdateDraw(func() {
+	// If main detected the daemon's binary differs from ours, queue the prompt
+	// for the event loop. QueueUpdateDraw enqueues on a buffered channel
+	// (cap 100) and returns immediately — the closure runs once tapp.Run()
+	// starts draining.
+	if a.daemonStale {
+		a.tapp.QueueUpdateDraw(func() {
 			a.openRestartDaemonPrompt()
 		})
 	}

@@ -22,6 +22,10 @@ func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
 // BootInfo returns the daemon's boot-time identity (binary path + mtime).
 // The TUI uses this to detect when the on-disk binary has been rebuilt since
 // the daemon started, and prompt the user to restart.
+//
+// The fields read here are written once in Daemon.New() and never mutated
+// afterward, so reading without a lock is safe — the goroutine spawn that
+// runs RPC handlers happens-after New() returns.
 func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	resp.BinaryPath = s.daemon.binaryPath
 	resp.BinaryMtime = s.daemon.binaryMtime

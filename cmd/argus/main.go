@@ -190,10 +190,12 @@ func runDaemonStop() {
 	}
 }
 
-// isDaemonStale returns true when the running daemon was started from an
-// older copy of the binary than the one the TUI is running. Detection is
-// best-effort — if any step fails, we return false so we don't nag the user
-// over benign issues like a removed binary.
+// isDaemonStale returns true when the running daemon's binary mtime differs
+// from the TUI's on-disk binary — typically because argus was rebuilt while
+// the daemon kept running, but it also fires on rollbacks or any other case
+// where the two files differ. Detection is best-effort: if any step fails
+// (older daemon without BootInfo, RPC error, missing binary, stat error),
+// we return false to avoid nagging the user over benign issues.
 func isDaemonStale(client *dclient.Client) bool {
 	info, err := client.BootInfo()
 	if err != nil {
