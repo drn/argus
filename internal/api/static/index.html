@@ -1131,7 +1131,9 @@ function closeDetail() {
   destroyTerm();
   closeOverflowMenu();
   currentTask = null;
-  document.getElementById('detail-view').classList.remove('open');
+  const dv = document.getElementById('detail-view');
+  dv.classList.remove('open');
+  dv.style.transform = '';
   document.getElementById('tasks-view').style.display = 'block';
 }
 
@@ -1155,15 +1157,18 @@ window.addEventListener('orientationchange', () => {
 function syncVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
-  document.documentElement.style.setProperty('--app-height', vv.height + 'px');
+  document.documentElement.style.setProperty('--app-height', `${vv.height}px`);
+  // Only translate when the detail view is actually displayed — avoids
+  // applying a stale transform to a hidden element when the keyboard moves
+  // the create-task form's viewport.
   const dv = document.getElementById('detail-view');
   if (dv) {
-    dv.style.transform = vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
+    const isOpen = dv.classList.contains('open');
+    dv.style.transform = (isOpen && vv.offsetTop) ? `translateY(${vv.offsetTop}px)` : '';
   }
-  if (term && fitAddon) {
-    clearTimeout(resizeDebounce);
-    resizeDebounce = setTimeout(fit, 100);
-  }
+  if (!term || !fitAddon) return;
+  clearTimeout(resizeDebounce);
+  resizeDebounce = setTimeout(fit, 100);
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', syncVisualViewport);
@@ -1225,7 +1230,9 @@ function switchTab(tab) {
   document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
   document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
   document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
-  document.getElementById('detail-view').classList.remove('open');
+  const dv = document.getElementById('detail-view');
+  dv.classList.remove('open');
+  dv.style.transform = '';
   closeOverflowMenu();
   closeStream();
   destroyTerm();
