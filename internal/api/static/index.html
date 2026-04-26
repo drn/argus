@@ -155,6 +155,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   height: var(--app-height, 100dvh);
   background: var(--bg);
   z-index: 50;
+  /* Clip any horizontal bleed from xterm/canvas children so the detail view
+     never extends past the visual viewport. Without this, an xterm canvas
+     wider than the column-flex shrink limit (see min-width:0 below) is
+     visible past the right edge on phones. */
+  overflow: hidden;
 }
 .detail-header {
   padding: 10px 12px; background: var(--surface);
@@ -195,17 +200,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .overflow-menu button:active { background: var(--border); }
 .overflow-menu button.danger { color: var(--red); }
 .term-wrap {
-  flex: 1 1 auto; min-height: 0;
+  /* min-width:0 alongside min-height:0 — flex items default to min-content
+     width, which an xterm canvas blows past on a phone. Without it the
+     terminal pushes the column-flex parent past the viewport. */
+  flex: 1 1 auto; min-height: 0; min-width: 0;
   display: flex; position: relative;
   padding: 8px 12px;
   background: var(--bg);
 }
 #term {
-  flex: 1 1 auto; min-height: 0;
+  flex: 1 1 auto; min-height: 0; min-width: 0;
   background: #000;
   border-radius: 8px;
   padding: 8px;
   position: relative;
+  overflow: hidden;
 }
 #term .xterm { padding: 0; }
 #term .xterm-viewport { background: transparent !important; -webkit-overflow-scrolling: touch; }
@@ -242,19 +251,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .term-status.error .dot { background: var(--red); }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
-/* Virtual key row — fills bottom of fixed-flex detail view. */
+/* Virtual key row — fills bottom of fixed-flex detail view. Wraps onto a
+   second row on narrow phones so all keys (esc/tab/ctrl/arrows/^C/enter/font)
+   stay visible; horizontal scroll hid ^C and Enter on iPhone widths. */
 .vkey-row {
   display: none;
   gap: 6px; padding: 8px;
   background: var(--surface); border-top: 1px solid var(--border);
-  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  flex-wrap: wrap;
   flex-shrink: 0;
   padding-bottom: max(8px, env(safe-area-inset-bottom));
 }
 .vkey-row.shown { display: flex; }
 .vkey {
-  flex-shrink: 0; min-width: 44px; height: 44px;
-  padding: 0 12px; border-radius: 6px;
+  flex: 1 0 auto; min-width: 44px; height: 44px;
+  padding: 0 10px; border-radius: 6px;
   background: var(--bg); border: 1px solid var(--border);
   color: var(--text); font-size: 14px; font-weight: 500;
   cursor: pointer; user-select: none;
@@ -264,6 +275,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .vkey.sticky { background: var(--accent); color: #000; border-color: var(--accent); }
 .vkey.sticky-armed { box-shadow: 0 0 0 2px var(--accent); }
 .vkey-arrow { font-size: 16px; }
+/* Font controls float to the right on the row they end up on. */
 .font-controls { display: flex; gap: 4px; margin-left: auto; }
 
 /* Create form */
