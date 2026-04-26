@@ -160,23 +160,25 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 10px 12px; background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
+  /* Reserve space on the right so long titles don't run into the overflow button. */
+  padding-right: 56px;
 }
 .detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 6px; display: inline-block; }
 .detail-title { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
 .detail-subtitle { font-size: 13px; color: var(--text-dim); }
-.detail-actions {
-  display: flex; gap: 8px; padding: 8px 12px;
-  align-items: center; flex-shrink: 0; position: relative;
-}
-.detail-actions .primary-action { flex: 1; min-height: 44px; }
-.detail-actions .overflow-btn {
+.detail-header .overflow-btn {
+  position: absolute; top: 8px; right: 8px;
   width: 44px; height: 44px; min-width: 44px;
-  padding: 0; font-size: 22px; flex-shrink: 0;
+  padding: 0; font-size: 22px;
+  background: transparent; border: none; color: var(--text);
+  cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
+.detail-header .overflow-btn:active { background: var(--border); border-radius: 8px; }
 .overflow-menu {
-  /* -4px overlap so the menu visually merges with the action row. */
-  position: absolute; top: calc(100% - 4px); right: 12px;
+  /* Drops down from the header, right-aligned with the overflow button. */
+  position: absolute; top: calc(100% - 4px); right: 8px;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 4px; min-width: 180px;
   z-index: 100; display: none;
@@ -378,8 +380,9 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div class="detail-back" onclick="closeDetail()">&larr; Back</div>
       <div class="detail-title" id="detail-title"></div>
       <div class="detail-subtitle" id="detail-subtitle"></div>
+      <button class="overflow-btn" id="btn-overflow" aria-label="More actions" type="button">⋯</button>
+      <div class="overflow-menu" id="overflow-menu"></div>
     </div>
-    <div class="detail-actions" id="detail-actions"></div>
     <div class="term-status" id="term-status" style="display:none">
       <span class="dot"></span><span id="term-status-text">connecting…</span>
     </div>
@@ -947,32 +950,21 @@ async function loadStaticOutput(id) {
 }
 
 function renderDetailActions() {
-  const el = document.getElementById('detail-actions');
-  const s = currentTask.status;
-  let primary = '';
-  if (s === 'in_progress') {
-    primary = '<button class="primary-action danger" id="btn-stop" onclick="stopTask()">Stop</button>';
-  } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
-    primary = '<button class="primary-action primary" id="btn-resume" onclick="resumeTask()">Resume</button>';
-  }
-  el.innerHTML =
-    primary +
-    '<button class="overflow-btn" id="btn-overflow" aria-label="More actions" type="button">⋯</button>' +
-    '<div class="overflow-menu" id="overflow-menu"></div>';
-
-  document.getElementById('btn-overflow').addEventListener('click', e => {
-    e.stopPropagation();
-    document.getElementById('overflow-menu').classList.toggle('open');
-  });
-
   const menu = document.getElementById('overflow-menu');
-  const items = [
+  const s = currentTask.status;
+  const items = [];
+  if (s === 'in_progress') {
+    items.push({ id: 'btn-stop', label: 'Stop', fn: stopTask, danger: true });
+  } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
+    items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
+  }
+  items.push(
     { id: 'btn-rename', label: 'Rename', fn: renameTask },
     { id: 'btn-fork', label: 'Fork', fn: forkTask },
     currentTask.archived
       ? { id: 'btn-archive', label: 'Unarchive', fn: () => setArchive(false) }
       : { id: 'btn-archive', label: 'Archive', fn: () => setArchive(true) },
-  ];
+  );
   if (currentTask.pr_url) {
     items.push({ id: 'btn-pr', label: 'View PR', fn: () => {
       const url = currentTask.pr_url;
@@ -997,6 +989,12 @@ function renderDetailActions() {
   });
 }
 
+// btn-overflow lives in static markup, so wire its click handler once.
+document.getElementById('btn-overflow').addEventListener('click', e => {
+  e.stopPropagation();
+  document.getElementById('overflow-menu').classList.toggle('open');
+});
+
 function closeOverflowMenu() {
   const m = document.getElementById('overflow-menu');
   if (m) m.classList.remove('open');
@@ -1005,13 +1003,14 @@ function closeOverflowMenu() {
 document.addEventListener('click', e => {
   const m = document.getElementById('overflow-menu');
   if (!m || !m.classList.contains('open')) return;
-  if (!e.target.closest('.detail-actions')) closeOverflowMenu();
+  if (!e.target.closest('.detail-header')) closeOverflowMenu();
 });
 
 function setActionButtons(disabled) {
   actionBusy = disabled;
-  // btn-overflow gates Rename/Fork/Archive/PR/Delete; disabling it during
-  // an in-flight Stop/Resume/Delete prevents concurrent secondary actions.
+  // Disabling btn-overflow prevents reopening the menu mid-action; the
+  // per-item buttons (btn-stop / btn-resume / btn-delete) are inside that
+  // menu and are also disabled defensively in case the menu is left open.
   ['btn-stop','btn-resume','btn-delete','btn-overflow'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = disabled;
