@@ -317,23 +317,83 @@ button:disabled { opacity: 0.5; cursor: default; }
 .refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
 
 /* Settings */
-#settings-view { display: none; padding: 12px; }
+#settings-view { display: none; padding: 12px; padding-bottom: 80px; }
 .settings-section {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 10px; padding: 12px; margin-bottom: 12px;
 }
 .settings-section h3 { font-size: 14px; margin-bottom: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
 .settings-row {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
   padding: 8px 0; border-bottom: 1px solid var(--border);
 }
 .settings-row:last-child { border-bottom: none; }
 .settings-row .label { font-size: 14px; }
-.settings-row .meta { font-size: 11px; color: var(--text-dim); }
+.settings-row .meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.settings-row .grow { flex: 1; min-width: 0; }
+.settings-input {
+  width: 100%; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); font-size: 13px; font-family: inherit;
+}
+.settings-input.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+textarea.settings-input { min-height: 70px; resize: vertical; }
 .token-mint-result {
   background: var(--bg); padding: 10px; border-radius: 6px;
   font-family: monospace; font-size: 12px; word-break: break-all;
   margin-top: 8px; border: 1px solid var(--accent);
+}
+
+/* Switch */
+.switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; cursor: pointer; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; inset: 0; background: var(--border);
+  border-radius: 22px; transition: background 0.15s;
+}
+.switch .slider::before {
+  content: ''; position: absolute; left: 2px; top: 2px;
+  width: 18px; height: 18px; background: #fff; border-radius: 50%;
+  transition: transform 0.15s;
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(18px); }
+.switch input:disabled + .slider { opacity: 0.5; cursor: not-allowed; }
+
+/* Modal (project/backend editors) */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  z-index: 300; display: none; align-items: flex-start; justify-content: center;
+  overflow-y: auto; padding: 24px 12px;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  width: 100%; max-width: 520px; padding: 16px;
+}
+.modal h3 { font-size: 16px; margin-bottom: 12px; }
+.modal .form-group { padding: 0; margin-bottom: 12px; }
+.modal .form-group label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.modal .form-group input, .modal .form-group textarea, .modal .form-group select {
+  width: 100%; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); font-size: 13px; font-family: inherit;
+}
+.modal .form-group textarea { min-height: 60px; resize: vertical; font-family: ui-monospace, Menlo, monospace; }
+.modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal .radio-row { display: flex; gap: 12px; font-size: 13px; }
+.modal .radio-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* Logs viewer */
+.logs-pane {
+  background: var(--bg); color: var(--text); font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px; line-height: 1.45; padding: 10px; border-radius: 6px;
+  border: 1px solid var(--border); white-space: pre; overflow: auto;
+  max-height: 280px;
+}
+.restart-required {
+  display: inline-block; margin-left: 6px; font-size: 10px;
+  padding: 1px 6px; border-radius: 4px; background: var(--border); color: var(--accent);
 }
 
 /* Archive toggle */
@@ -430,6 +490,145 @@ button:disabled { opacity: 0.5; cursor: default; }
   <!-- Settings View -->
   <div id="settings-view">
     <div class="settings-section">
+      <h3>Sandbox</h3>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Sandbox agent processes</div>
+          <div class="meta" id="sandbox-meta">macOS sandbox-exec confines agents to the worktree.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="sandbox-enabled" onchange="saveSandboxToggle()">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <div>
+          <div class="label">Deny read</div>
+          <div class="meta">One path per line. Files agents must not read.</div>
+        </div>
+        <textarea class="settings-input mono" id="sandbox-deny-read" placeholder="/secrets&#10;~/.aws"></textarea>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <div>
+          <div class="label">Extra write</div>
+          <div class="meta">One path per line. Paths agents may write outside the worktree.</div>
+        </div>
+        <textarea class="settings-input mono" id="sandbox-extra-write" placeholder="~/.npm&#10;/tmp/build"></textarea>
+      </div>
+      <div class="settings-row">
+        <div class="meta" id="sandbox-paths-status"></div>
+        <button class="primary" onclick="saveSandboxPaths()">Save paths</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Knowledge Base</h3>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Knowledge base enabled</div>
+          <div class="meta">Index Obsidian vaults for cross-agent recall.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="kb-enabled" onchange="saveKBToggle('enabled', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <label class="label">Metis vault path</label>
+        <input class="settings-input mono" id="kb-metis-path" onblur="saveKBPath('metis_vault_path', this.value)">
+        <div class="meta" id="kb-metis-meta"></div>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <label class="label">Argus vault path</label>
+        <input class="settings-input mono" id="kb-argus-path" onblur="saveKBPath('argus_vault_path', this.value)">
+        <div class="meta" id="kb-argus-meta"></div>
+      </div>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Auto-create tasks</div>
+          <div class="meta">Watch the Argus vault and create tasks from new todo notes.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="kb-auto-create" onchange="saveKBToggle('auto_create_tasks', this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Auto-start todos</div>
+          <div class="meta">Poll vault and start new todo notes automatically.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="kb-auto-start" onchange="saveKBAutoStart(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Auto-start interval (sec)</div>
+          <div class="meta">Default 120. Lower = quicker pickup, more polling.</div>
+        </div>
+        <input class="settings-input" id="kb-interval" type="number" min="10" style="width: 90px"
+               onblur="saveKBInterval(this.value)">
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Defaults</h3>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Default backend</div>
+          <div class="meta">Used when a project doesn't pin one.</div>
+        </div>
+        <select class="settings-input" id="default-backend" style="width: 160px"
+                onchange="saveDefault('backend', this.value)"></select>
+      </div>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Default todo project</div>
+          <div class="meta">Pre-selected when launching a todo as a task.</div>
+        </div>
+        <select class="settings-input" id="default-todo-project" style="width: 160px"
+                onchange="saveDefault('todo_project', this.value)"></select>
+      </div>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <label class="label">Review prompt</label>
+        <input class="settings-input" id="default-review-prompt" onblur="saveDefault('review_prompt', this.value)">
+        <div class="meta">Sent to the agent when starting a PR review (PR URL appended).</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Projects</h3>
+      <div id="projects-list"></div>
+      <div class="settings-row">
+        <button class="primary" onclick="openProjectEditor()">+ New project</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Backends</h3>
+      <div id="backends-list"></div>
+      <div class="settings-row">
+        <button class="primary" onclick="openBackendEditor()">+ New backend</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Remote API<span id="api-restart-flag"></span></h3>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">HTTP API enabled</div>
+          <div class="meta" id="api-meta">Port 7743. Disabling will stop this web UI on next daemon restart.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="api-enabled" onchange="saveAPIToggle(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-section">
       <h3>Notifications</h3>
       <div class="settings-row">
         <div>
@@ -443,15 +642,32 @@ button:disabled { opacity: 0.5; cursor: default; }
         <button onclick="sendTestPush()">Send</button>
       </div>
     </div>
+
     <div class="settings-section">
       <h3>API tokens</h3>
       <div id="token-list"></div>
       <div class="settings-row">
-        <input type="text" id="new-token-label" placeholder="Token label (e.g. iPhone)" style="flex:1; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px;">
+        <input type="text" id="new-token-label" placeholder="Token label (e.g. iPhone)" class="settings-input" style="flex:1">
         <button class="primary" onclick="mintToken()" style="margin-left: 6px;">Create</button>
       </div>
       <div id="token-mint-result" style="display:none"></div>
     </div>
+
+    <div class="settings-section">
+      <h3>Logs</h3>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch">
+        <div class="settings-row" style="border: none; padding: 0">
+          <div class="label">Log file</div>
+          <select class="settings-input" id="log-name" onchange="loadLog()" style="width: 160px">
+            <option value="ux">UX log</option>
+            <option value="daemon">Daemon log</option>
+          </select>
+          <button onclick="loadLog()">Refresh</button>
+        </div>
+        <div class="logs-pane" id="logs-pane">(loading…)</div>
+      </div>
+    </div>
+
     <div class="settings-section">
       <h3>Argus update</h3>
       <div class="settings-row">
@@ -478,6 +694,74 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div class="settings-row">
         <div class="label">Sign out</div>
         <button class="danger" onclick="logout()">Forget token</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project editor modal -->
+  <div class="modal-overlay" id="project-modal">
+    <div class="modal">
+      <h3 id="project-modal-title">New project</h3>
+      <div class="form-group">
+        <label>Name</label>
+        <input id="pm-name">
+      </div>
+      <div class="form-group">
+        <label>Path</label>
+        <input id="pm-path" class="mono" placeholder="/Users/you/code/myproj">
+      </div>
+      <div class="form-group">
+        <label>Branch (optional, default master)</label>
+        <input id="pm-branch" placeholder="master">
+      </div>
+      <div class="form-group">
+        <label>Backend (blank = default)</label>
+        <select id="pm-backend"></select>
+      </div>
+      <div class="form-group">
+        <label>Sandbox</label>
+        <div class="radio-row">
+          <label><input type="radio" name="pm-sandbox" value="inherit" checked> Inherit</label>
+          <label><input type="radio" name="pm-sandbox" value="true"> On</label>
+          <label><input type="radio" name="pm-sandbox" value="false"> Off</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Sandbox deny read (one per line, appended to global)</label>
+        <textarea id="pm-deny-read"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Sandbox extra write (one per line, appended to global)</label>
+        <textarea id="pm-extra-write"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="danger" id="pm-delete" onclick="deleteProjectFromModal()" style="margin-right:auto">Delete</button>
+        <button onclick="closeProjectEditor()">Cancel</button>
+        <button class="primary" onclick="saveProjectFromModal()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backend editor modal -->
+  <div class="modal-overlay" id="backend-modal">
+    <div class="modal">
+      <h3 id="backend-modal-title">New backend</h3>
+      <div class="form-group">
+        <label>Name</label>
+        <input id="bm-name">
+      </div>
+      <div class="form-group">
+        <label>Command</label>
+        <textarea id="bm-command" class="mono" placeholder="claude --dangerously-skip-permissions"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Prompt flag (optional)</label>
+        <input id="bm-prompt-flag" placeholder="--prompt or blank for stdin">
+      </div>
+      <div class="modal-actions">
+        <button class="danger" id="bm-delete" onclick="deleteBackendFromModal()" style="margin-right:auto">Delete</button>
+        <button onclick="closeBackendEditor()">Cancel</button>
+        <button class="primary" onclick="saveBackendFromModal()">Save</button>
       </div>
     </div>
   </div>
@@ -1402,9 +1686,24 @@ function switchTab(tab) {
   if (tab === 'settings') loadSettings();
 }
 
-// --- Settings tab: tokens + push ---
+// --- Settings tab: tokens + push + sandbox + KB + projects/backends + logs ---
+let settingsCache = null;
+let settingsBootstrap = null; // sandbox/api enabled state at first load — tracks "restart required" hints
+let projectsCache = [];
+let backendsCache = [];
+let editingProject = null; // null = creating; otherwise the project being edited
+let editingBackend = null;
+
 async function loadSettings() {
-  await Promise.all([loadTokens(), refreshPushState(), loadSourcePath()]);
+  await Promise.all([
+    loadTokens(),
+    refreshPushState(),
+    loadSourcePath(),
+    loadSettingsBlock(),
+    loadProjectsBlock(),
+    loadBackendsBlock(),
+    loadLog(),
+  ]);
 }
 
 async function loadSourcePath() {
@@ -1465,6 +1764,366 @@ async function runUpdate() {
     btn.textContent = 'Update';
     btn.disabled = false;
     out.textContent += '\n\nRequest failed: ' + e.message;
+  }
+}
+
+async function loadSettingsBlock() {
+  try {
+    const r = await api('/api/settings');
+    if (!r.ok) throw new Error('settings fetch failed');
+    const data = await r.json();
+    settingsCache = data;
+    if (!settingsBootstrap) settingsBootstrap = JSON.parse(JSON.stringify(data));
+    renderSettings();
+  } catch(e) { showToast('Failed to load settings: ' + e.message); }
+}
+
+function renderSettings() {
+  const s = settingsCache;
+  if (!s) return;
+  // Sandbox
+  document.getElementById('sandbox-enabled').checked = !!s.sandbox.enabled;
+  document.getElementById('sandbox-meta').textContent =
+    s.sandbox.available
+      ? 'macOS sandbox-exec confines agents to the worktree.'
+      : 'sandbox-exec not available on this host (macOS only).';
+  document.getElementById('sandbox-enabled').disabled = !s.sandbox.available;
+  document.getElementById('sandbox-deny-read').value = (s.sandbox.deny_read || []).join('\n');
+  document.getElementById('sandbox-extra-write').value = (s.sandbox.extra_write || []).join('\n');
+  // KB
+  document.getElementById('kb-enabled').checked = !!s.kb.enabled;
+  document.getElementById('kb-metis-path').value = s.kb.metis_vault_path || '';
+  document.getElementById('kb-argus-path').value = s.kb.argus_vault_path || '';
+  document.getElementById('kb-auto-create').checked = !!s.kb.auto_create_tasks;
+  document.getElementById('kb-auto-start').checked = !!s.kb.auto_start_todos;
+  document.getElementById('kb-interval').value = s.kb.auto_start_interval || 120;
+  setRestartFlag('kb-metis-meta', settingsBootstrap?.kb.metis_vault_path, s.kb.metis_vault_path);
+  setRestartFlag('kb-argus-meta', settingsBootstrap?.kb.argus_vault_path, s.kb.argus_vault_path);
+  // Defaults
+  fillSelectOptions('default-backend', backendsCache.map(b => b.name), s.defaults.backend, true);
+  fillSelectOptions('default-todo-project', projectsCache.map(p => p.name), s.defaults.todo_project, true);
+  document.getElementById('default-review-prompt').value = s.defaults.review_prompt || '';
+  // API
+  document.getElementById('api-enabled').checked = !!s.api.enabled;
+  const apiFlag = document.getElementById('api-restart-flag');
+  if (settingsBootstrap && settingsBootstrap.api.enabled !== s.api.enabled) {
+    apiFlag.innerHTML = ' <span class="restart-required">restart required</span>';
+  } else {
+    apiFlag.innerHTML = '';
+  }
+}
+
+function setRestartFlag(metaId, original, current) {
+  const el = document.getElementById(metaId);
+  if (!el) return;
+  if (original !== undefined && original !== current) {
+    el.innerHTML = '<span class="restart-required">restart required</span>';
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function fillSelectOptions(id, names, current, includeBlank) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const blank = includeBlank ? '<option value="">(none)</option>' : '';
+  el.innerHTML = blank + names.map(n => {
+    const sel = n === current ? 'selected' : '';
+    return `<option value="${esc(n)}" ${sel}>${esc(n)}</option>`;
+  }).join('');
+  if (!names.includes(current)) el.value = '';
+}
+
+async function patchSettings(body) {
+  try {
+    const r = await api('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'save failed');
+    }
+    settingsCache = await r.json();
+    renderSettings();
+  } catch(e) { showToast('Save failed: ' + e.message); }
+}
+
+function saveSandboxToggle() {
+  const enabled = document.getElementById('sandbox-enabled').checked;
+  patchSettings({ sandbox: { enabled } });
+}
+
+function saveSandboxPaths() {
+  const denyRead = document.getElementById('sandbox-deny-read').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  const extraWrite = document.getElementById('sandbox-extra-write').value
+    .split('\n').map(s => s.trim()).filter(Boolean);
+  patchSettings({ sandbox: { deny_read: denyRead, extra_write: extraWrite } })
+    .then(() => {
+      const status = document.getElementById('sandbox-paths-status');
+      status.textContent = 'Saved';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+    });
+}
+
+function saveKBToggle(field, value) {
+  patchSettings({ kb: { [field]: value } });
+}
+
+function saveKBPath(field, value) {
+  patchSettings({ kb: { [field]: value } });
+}
+
+function saveKBAutoStart(checked) {
+  // Backend mirrors the TUI invariant: enabling auto-start implies auto-create,
+  // disabling it also disables auto-create. We send only auto_start_todos and
+  // let the server handle the dependent flag.
+  patchSettings({ kb: { auto_start_todos: checked } });
+}
+
+function saveKBInterval(value) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return;
+  patchSettings({ kb: { auto_start_interval: n } });
+}
+
+function saveAPIToggle(checked) {
+  patchSettings({ api: { enabled: checked } });
+}
+
+function saveDefault(field, value) {
+  patchSettings({ defaults: { [field]: value } });
+}
+
+// --- Projects ---
+async function loadProjectsBlock() {
+  try {
+    const r = await api('/api/projects/full');
+    if (!r.ok) throw new Error('projects fetch failed');
+    const { projects } = await r.json();
+    projectsCache = projects || [];
+    renderProjectsBlock();
+    if (settingsCache) renderSettings(); // refresh todo-project select
+  } catch(e) {
+    document.getElementById('projects-list').innerHTML = '<div class="meta">Failed to load projects.</div>';
+  }
+}
+
+function renderProjectsBlock() {
+  const el = document.getElementById('projects-list');
+  if (!projectsCache.length) {
+    el.innerHTML = '<div class="meta" style="padding: 8px 0">No projects configured.</div>';
+    return;
+  }
+  el.innerHTML = projectsCache.map((p, i) => {
+    const sandboxLabel = p.sandbox && p.sandbox.enabled !== null
+      ? (p.sandbox.enabled ? 'sandbox: on' : 'sandbox: off')
+      : 'sandbox: inherit';
+    return `<div class="settings-row">
+      <div class="grow">
+        <div class="label">${esc(p.name)}</div>
+        <div class="meta">${esc(p.path)} · ${esc(p.branch || 'master')} · ${esc(p.backend || 'default')} · ${sandboxLabel}</div>
+      </div>
+      <button data-act="edit-project" data-idx="${i}">Edit</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('[data-act="edit-project"]').forEach(b => {
+    b.addEventListener('click', () => openProjectEditor(projectsCache[parseInt(b.dataset.idx, 10)]));
+  });
+}
+
+function openProjectEditor(p) {
+  editingProject = p || null;
+  document.getElementById('project-modal-title').textContent = p ? `Edit ${p.name}` : 'New project';
+  document.getElementById('pm-name').value = p ? p.name : '';
+  document.getElementById('pm-name').disabled = !!p;
+  document.getElementById('pm-path').value = p ? p.path : '';
+  document.getElementById('pm-branch').value = p ? (p.branch || '') : '';
+  // Backend select: default + every backend.
+  const beSel = document.getElementById('pm-backend');
+  beSel.innerHTML = '<option value="">(default)</option>' + backendsCache.map(b => {
+    const sel = p && p.backend === b.name ? 'selected' : '';
+    return `<option value="${esc(b.name)}" ${sel}>${esc(b.name)}</option>`;
+  }).join('');
+  // Sandbox radios.
+  let sandboxVal = 'inherit';
+  if (p && p.sandbox && p.sandbox.enabled === true) sandboxVal = 'true';
+  else if (p && p.sandbox && p.sandbox.enabled === false) sandboxVal = 'false';
+  document.querySelectorAll('input[name="pm-sandbox"]').forEach(r => {
+    r.checked = r.value === sandboxVal;
+  });
+  document.getElementById('pm-deny-read').value =
+    (p && p.sandbox && p.sandbox.deny_read || []).join('\n');
+  document.getElementById('pm-extra-write').value =
+    (p && p.sandbox && p.sandbox.extra_write || []).join('\n');
+  document.getElementById('pm-delete').style.display = p ? 'inline-block' : 'none';
+  document.getElementById('project-modal').classList.add('open');
+}
+
+function closeProjectEditor() {
+  document.getElementById('project-modal').classList.remove('open');
+  editingProject = null;
+}
+
+async function saveProjectFromModal() {
+  const name = document.getElementById('pm-name').value.trim();
+  const path = document.getElementById('pm-path').value.trim();
+  if (!name || !path) { showToast('Name and path are required'); return; }
+  const body = {
+    name,
+    path,
+    branch: document.getElementById('pm-branch').value.trim(),
+    backend: document.getElementById('pm-backend').value,
+  };
+  const sandboxRadio = document.querySelector('input[name="pm-sandbox"]:checked');
+  const denyRead = document.getElementById('pm-deny-read').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const extraWrite = document.getElementById('pm-extra-write').value.split('\n').map(s => s.trim()).filter(Boolean);
+  // Only attach sandbox section if user customized any field.
+  if (sandboxRadio && sandboxRadio.value !== 'inherit' || denyRead.length || extraWrite.length) {
+    let enabled = null;
+    if (sandboxRadio.value === 'true') enabled = true;
+    else if (sandboxRadio.value === 'false') enabled = false;
+    body.sandbox = { enabled, deny_read: denyRead, extra_write: extraWrite };
+  }
+  try {
+    const url = editingProject ? `/api/projects/${encodeURIComponent(editingProject.name)}` : '/api/projects';
+    const method = editingProject ? 'PUT' : 'POST';
+    const r = await api(url, { method, body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'save failed');
+    }
+    closeProjectEditor();
+    loadProjectsBlock();
+    refreshProjectsForCreateView();
+  } catch(e) { showToast('Save failed: ' + e.message); }
+}
+
+async function deleteProjectFromModal() {
+  if (!editingProject) return;
+  if (!confirm(`Delete project "${editingProject.name}"? Existing tasks remain in the database.`)) return;
+  try {
+    const r = await api(`/api/projects/${encodeURIComponent(editingProject.name)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'delete failed');
+    }
+    closeProjectEditor();
+    loadProjectsBlock();
+    refreshProjectsForCreateView();
+  } catch(e) { showToast('Delete failed: ' + e.message); }
+}
+
+// Refresh the create-task project dropdown after a project change.
+async function refreshProjectsForCreateView() {
+  try {
+    const r = await api('/api/projects');
+    if (!r.ok) return;
+    const { projects } = await r.json();
+    const sel = document.getElementById('create-project');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = (projects || []).map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+    if (projects && projects.includes(cur)) sel.value = cur;
+  } catch(e) {}
+}
+
+// --- Backends ---
+async function loadBackendsBlock() {
+  try {
+    const r = await api('/api/backends');
+    if (!r.ok) throw new Error('backends fetch failed');
+    const { backends } = await r.json();
+    backendsCache = backends || [];
+    renderBackendsBlock();
+    if (settingsCache) renderSettings(); // refresh default-backend select
+  } catch(e) {
+    document.getElementById('backends-list').innerHTML = '<div class="meta">Failed to load backends.</div>';
+  }
+}
+
+function renderBackendsBlock() {
+  const el = document.getElementById('backends-list');
+  if (!backendsCache.length) {
+    el.innerHTML = '<div class="meta" style="padding: 8px 0">No backends configured.</div>';
+    return;
+  }
+  const def = settingsCache && settingsCache.defaults && settingsCache.defaults.backend;
+  el.innerHTML = backendsCache.map((b, i) => {
+    const star = b.name === def ? ' ★' : '';
+    return `<div class="settings-row">
+      <div class="grow">
+        <div class="label">${esc(b.name)}${star}</div>
+        <div class="meta">${esc(b.command)}</div>
+      </div>
+      <button data-act="edit-backend" data-idx="${i}">Edit</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('[data-act="edit-backend"]').forEach(btn => {
+    btn.addEventListener('click', () => openBackendEditor(backendsCache[parseInt(btn.dataset.idx, 10)]));
+  });
+}
+
+function openBackendEditor(b) {
+  editingBackend = b || null;
+  document.getElementById('backend-modal-title').textContent = b ? `Edit ${b.name}` : 'New backend';
+  document.getElementById('bm-name').value = b ? b.name : '';
+  document.getElementById('bm-name').disabled = !!b;
+  document.getElementById('bm-command').value = b ? b.command : '';
+  document.getElementById('bm-prompt-flag').value = b ? (b.prompt_flag || '') : '';
+  document.getElementById('bm-delete').style.display = b ? 'inline-block' : 'none';
+  document.getElementById('backend-modal').classList.add('open');
+}
+
+function closeBackendEditor() {
+  document.getElementById('backend-modal').classList.remove('open');
+  editingBackend = null;
+}
+
+async function saveBackendFromModal() {
+  const name = document.getElementById('bm-name').value.trim();
+  const command = document.getElementById('bm-command').value.trim();
+  if (!name || !command) { showToast('Name and command are required'); return; }
+  const body = { name, command, prompt_flag: document.getElementById('bm-prompt-flag').value.trim() };
+  try {
+    const url = editingBackend ? `/api/backends/${encodeURIComponent(editingBackend.name)}` : '/api/backends';
+    const method = editingBackend ? 'PUT' : 'POST';
+    const r = await api(url, { method, body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'save failed');
+    }
+    closeBackendEditor();
+    loadBackendsBlock();
+  } catch(e) { showToast('Save failed: ' + e.message); }
+}
+
+async function deleteBackendFromModal() {
+  if (!editingBackend) return;
+  if (!confirm(`Delete backend "${editingBackend.name}"?`)) return;
+  try {
+    const r = await api(`/api/backends/${encodeURIComponent(editingBackend.name)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'delete failed');
+    }
+    closeBackendEditor();
+    loadBackendsBlock();
+  } catch(e) { showToast('Delete failed: ' + e.message); }
+}
+
+// --- Logs ---
+async function loadLog() {
+  const name = document.getElementById('log-name').value;
+  const pane = document.getElementById('logs-pane');
+  pane.textContent = '(loading…)';
+  try {
+    const r = await api(`/api/logs/${encodeURIComponent(name)}?bytes=65536`);
+    if (!r.ok) throw new Error('log fetch failed');
+    const text = await r.text();
+    pane.textContent = text || '(empty)';
+    // Auto-scroll to bottom — newest entries are at the end.
+    pane.scrollTop = pane.scrollHeight;
+  } catch(e) {
+    pane.textContent = '(failed: ' + e.message + ')';
   }
 }
 

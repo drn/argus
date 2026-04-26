@@ -665,10 +665,46 @@ func (cw *channelWriter) Write(p []byte) (int, error) {
 // --- Projects (full CRUD) ---
 
 type projectJSON struct {
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	Branch  string `json:"branch,omitempty"`
-	Backend string `json:"backend,omitempty"`
+	Name    string                  `json:"name"`
+	Path    string                  `json:"path"`
+	Branch  string                  `json:"branch,omitempty"`
+	Backend string                  `json:"backend,omitempty"`
+	Sandbox *projectSandboxOverride `json:"sandbox,omitempty"`
+}
+
+// projectSandboxOverride is a JSON-friendly view of config.ProjectSandboxConfig.
+// `enabled` is a *bool because nil means "inherit global"; the JSON encoder
+// emits `null` for that, which the SPA renders as an "Inherit" radio.
+type projectSandboxOverride struct {
+	Enabled    *bool    `json:"enabled"`
+	DenyRead   []string `json:"deny_read"`
+	ExtraWrite []string `json:"extra_write"`
+}
+
+func projectToJSON(name string, p config.Project) projectJSON {
+	out := projectJSON{Name: name, Path: p.Path, Branch: p.Branch, Backend: p.Backend}
+	if p.Sandbox.Enabled != nil || len(p.Sandbox.DenyRead) > 0 || len(p.Sandbox.ExtraWrite) > 0 {
+		out.Sandbox = &projectSandboxOverride{
+			Enabled:    p.Sandbox.Enabled,
+			DenyRead:   stringsOrEmpty(p.Sandbox.DenyRead),
+			ExtraWrite: stringsOrEmpty(p.Sandbox.ExtraWrite),
+		}
+	}
+	return out
+}
+
+func projectFromJSON(req projectJSON) config.Project {
+	out := config.Project{
+		Path:    req.Path,
+		Branch:  req.Branch,
+		Backend: req.Backend,
+	}
+	if req.Sandbox != nil {
+		out.Sandbox.Enabled = req.Sandbox.Enabled
+		out.Sandbox.DenyRead = req.Sandbox.DenyRead
+		out.Sandbox.ExtraWrite = req.Sandbox.ExtraWrite
+	}
+	return out
 }
 
 func (s *Server) handleListProjectsFull(w http.ResponseWriter, r *http.Request) {
@@ -679,7 +715,7 @@ func (s *Server) handleListProjectsFull(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]projectJSON, 0, len(projects))
 	for name, p := range projects {
-		out = append(out, projectJSON{Name: name, Path: p.Path, Branch: p.Branch, Backend: p.Backend})
+		out = append(out, projectToJSON(name, p))
 	}
 	// stable order
 	sortByName := func(a, b projectJSON) bool { return a.Name < b.Name }
@@ -709,11 +745,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and path are required"})
 		return
 	}
-	if err := s.db.SetProject(req.Name, config.Project{
-		Path:    req.Path,
-		Branch:  req.Branch,
-		Backend: req.Backend,
-	}); err != nil {
+	if err := s.db.SetProject(req.Name, projectFromJSON(req)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -736,11 +768,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
 		return
 	}
-	if err := s.db.SetProject(name, config.Project{
-		Path:    req.Path,
-		Branch:  req.Branch,
-		Backend: req.Backend,
-	}); err != nil {
+	if err := s.db.SetProject(name, projectFromJSON(req)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

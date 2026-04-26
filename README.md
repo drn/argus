@@ -286,7 +286,7 @@ The dashboard provides:
 - **Task list** — Active and Archived tabs, status badges
 - **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
-- **Settings tab** — Push notifications toggle (VAPID), test push button, API token management (mint/revoke per-device tokens), forget local token
+- **Settings tab** — Full settings parity with the TUI: sandbox (toggle + global deny-read / extra-write), Knowledge Base (vault paths, task sync, auto-start), defaults (backend, todo project, review prompt), Remote API toggle, Projects CRUD (with per-project sandbox overrides), Backends CRUD, push notifications + test push, API token mint/revoke, UX/daemon log viewer, forget local token. Mutating endpoints require the master token; device tokens get read-only access.
 
 The local token persists in `localStorage` until you clear it or tap **Forget token**.
 
@@ -336,7 +336,7 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 |--------|----------|-------------|
 | `GET` | `/api/projects` | List project names |
 | `GET` | `/api/projects/full` | List with path, branch, default_backend |
-| `POST` | `/api/projects` | Create. Body: `{"name", "path", "branch?", "backend?"}` |
+| `POST` | `/api/projects` | Create. Body: `{"name", "path", "branch?", "backend?", "sandbox?"}` where `sandbox` is `{"enabled": true|false|null, "deny_read":[], "extra_write":[]}` (`null` = inherit global) |
 | `PUT` | `/api/projects/{name}` | Update |
 | `DELETE` | `/api/projects/{name}` | Delete |
 | `GET` | `/api/backends` | List with command + prompt_flag |
@@ -366,6 +366,14 @@ The daemon polls running sessions every 5s; when a session transitions to idle, 
 | `DELETE` | `/api/tokens/{id}` | Revoke. **Master token required.** |
 
 Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
+
+#### Settings & logs (master only for mutations)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/settings` | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read. |
+| `PUT` | `/api/settings` | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. Setting `kb.auto_start_todos` without `kb.auto_create_tasks` mirrors the TUI invariant: enabling auto-start implies auto-create; disabling it disables both. **Master token required.** |
+| `GET` | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body. |
 
 ### Keep the host awake
 

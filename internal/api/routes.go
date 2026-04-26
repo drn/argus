@@ -71,6 +71,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/source-path", s.handleGetSourcePath)
 	mux.HandleFunc("PUT /api/source-path", s.handleSetSourcePath)
 	mux.HandleFunc("POST /api/update", s.handleUpdateSelf)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	mux.HandleFunc("GET /api/logs/{name}", s.handleGetLog)
 
 	return mux
 }

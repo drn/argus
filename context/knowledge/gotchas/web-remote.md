@@ -54,6 +54,15 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Master token is the only credential that can mint or revoke device tokens** — auth middleware sets `X-Argus-Auth: master|device` header on the request; mint/revoke handlers check for `master`. If you want to allow device-token-initiated minting, gate it behind a separate explicit capability flag, not just `auth != nil`.
 - **`api_tokens.hash` is SHA-256 of plaintext, NOT bcrypt/argon** — bearer tokens already have ~256 bits of entropy from `crypto/rand`, so a single SHA-256 pass is sufficient. Don't switch to bcrypt thinking it's "more secure"; you'll add latency for no benefit.
 
+## Settings endpoints
+
+- **`PUT /api/settings` is partial — absent keys leave the value unchanged.** The handler dispatches to `buildSettingsUpdates`, which only emits a config write for fields whose pointer is non-nil. Slice fields use a separate sentinel: `nil` slice = leave alone, empty slice (`[]`) = clear. Sending `{"sandbox":{}}` is a no-op, not a reset.
+- **Setting `kb.auto_start_todos` without `kb.auto_create_tasks` mirrors the TUI invariant: enabling auto-start implies auto-create; disabling it disables both.** This avoids the daemon silently falling back to fsnotify watching after a restart. If you let the SPA toggle auto-create independently, send both fields explicitly.
+- **`requireMaster` checks the `X-Argus-Auth` header set by the auth middleware.** Hitting `srv.routes()` directly in tests bypasses that — every mutating settings/projects/backends test must wrap with `authMiddleware(srv.token, db, srv.routes())` or it gets 403.
+- **`projectJSON.Sandbox.Enabled` is `*bool`** so `null` (inherit), `true` (override on), and `false` (override off) all round-trip distinctly. Using a plain `bool` would conflate "inherit" with "off". The SPA project editor renders three radios (Inherit / On / Off) and only sends a `sandbox` block when the user picked anything other than Inherit OR added paths.
+- **`/api/logs/{name}` whitelists `ux` and `daemon`.** Anything else returns 400. Don't broaden by accepting arbitrary paths from the URL — `db.DataDir()` is HOME-rooted and a `..` segment would escape it.
+- **Settings GET is readable by device tokens; PUT requires master.** This matches the existing pattern (devices can stop/start tasks but can't reconfigure the host). Read-only access is fine — every value GET-able from `/api/settings` is also visible in the TUI to anyone who can run argus locally.
+
 ## Test harness
 
 - **`cmd/argus-test-server/` runs an isolated API server with `HOME=$tempdir`** — it MUST set HOME before any path resolution because `WorktreeDir()` and `db.DataDir()` resolve through `$HOME`. Without the override, the harness writes to the real `~/.argus/`.
