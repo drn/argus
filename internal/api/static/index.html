@@ -161,7 +161,8 @@ button:disabled { opacity: 0.5; cursor: default; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: relative;
-  /* Reserve space on the right so long titles don't run into the overflow button. */
+  /* Reserve space on the right for the overflow button (44px) plus its 8px
+     right offset plus 4px breathing room so long titles don't overlap it. */
   padding-right: 56px;
 }
 .detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 6px; display: inline-block; }
@@ -684,7 +685,7 @@ async function openDetail(id) {
   document.getElementById('detail-subtitle').textContent =
     `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
 
-  renderDetailActions();
+  renderOverflowMenu();
   attachTerminal(currentTask);
 }
 
@@ -949,7 +950,7 @@ async function loadStaticOutput(id) {
   }
 }
 
-function renderDetailActions() {
+function renderOverflowMenu() {
   const menu = document.getElementById('overflow-menu');
   const s = currentTask.status;
   const items = [];
@@ -990,6 +991,8 @@ function renderDetailActions() {
 }
 
 // btn-overflow lives in static markup, so wire its click handler once.
+// stopPropagation() prevents the document-level click-outside handler below
+// from immediately closing the menu we just opened.
 document.getElementById('btn-overflow').addEventListener('click', e => {
   e.stopPropagation();
   document.getElementById('overflow-menu').classList.toggle('open');
@@ -1028,7 +1031,10 @@ async function stopTask() {
     currentTask.status = 'in_review';
     document.getElementById('detail-subtitle').textContent =
       `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
-    renderDetailActions();
+    // renderOverflowMenu() must run before the finally block so the freshly
+    // rebuilt menu items (btn-resume, btn-delete, \u2026) exist when
+    // setActionButtons(false) re-enables them by ID.
+    renderOverflowMenu();
     attachTerminal(currentTask);
   } catch(e) {
     showToast('Stop failed: ' + e.message);
@@ -1048,7 +1054,7 @@ async function resumeTask() {
     currentTask.status = 'in_progress';
     document.getElementById('detail-subtitle').textContent =
       `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
-    renderDetailActions();
+    renderOverflowMenu();
     attachTerminal(currentTask);
   } catch(e) {
     showToast('Resume failed: ' + e.message);
