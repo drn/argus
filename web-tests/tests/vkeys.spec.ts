@@ -48,6 +48,11 @@ test.describe('agent detail view chrome', () => {
 
     // Simulate the soft keyboard by shrinking visualViewport.height. The
     // syncVisualViewport handler keys off (innerHeight - vv.height) > 100.
+    // This relies on the Playwright project viewport being tall enough that
+    // window.innerHeight - 200 > 100 — the iPhone 14 Pro device profile and
+    // the Desktop Chrome 1280x800 viewport both clear that easily. If a
+    // future project sets a viewport with height ≤ 300, this test will
+    // silently no-op rather than fail; raise vv.height in that case.
     await page.evaluate(() => {
       const vv: any = window.visualViewport;
       Object.defineProperty(vv, 'height', { configurable: true, get: () => 200 });

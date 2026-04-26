@@ -277,6 +277,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .detail-header.compact .detail-back,
 .detail-header.compact .detail-subtitle { display: none; }
 .detail-header.compact .detail-title { font-size: 14px; margin-bottom: 0; }
+/* Compact overflow-btn drops to 44x36 — below the 44x44 tap-target minimum
+   on the vertical axis, accepted as a deliberate space tradeoff while the
+   soft keyboard is up (the alternative is the terminal losing rows). */
 .detail-header.compact .overflow-btn { top: 0; height: 36px; font-size: 20px; }
 
 /* Create form */
@@ -1028,6 +1031,10 @@ function renderOverflowMenu() {
   // Esc and "Toggle mode" send raw key bytes to the agent. They keep the
   // menu open on tap (handled below) so the user can spam Esc to interrupt
   // a runaway loop or cycle modes without re-opening the dropdown.
+  // Items with `keepOpen: true` MUST be fire-and-forget — no client-side
+  // state mutation — because `setActionButtons` does not disable them, so
+  // they could race other in-flight actions. State-changing operations
+  // belong in the closing-menu items below.
   if (s === 'in_progress') {
     items.push({ id: 'btn-esc', label: 'Esc', fn: () => sendInputBytes('\x1b'), keepOpen: true });
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
@@ -1116,6 +1123,11 @@ function setActionButtons(disabled) {
   // Disabling btn-overflow prevents reopening the menu mid-action; the
   // per-item buttons (btn-resume / btn-delete) are inside that menu and are
   // also disabled defensively in case the menu is left open.
+  // btn-esc and btn-mode are intentionally NOT in this list: they are
+  // fire-and-forget keystroke senders with no client-side state mutation,
+  // and the server safely drops writes to a non-live session. Any future
+  // `keepOpen: true` menu item must follow the same rule (no state change),
+  // since `setActionButtons` does not gate them.
   ['btn-resume','btn-delete','btn-overflow'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = disabled;
@@ -1236,10 +1248,11 @@ window.addEventListener('orientationchange', () => {
 
 // Soft keyboard handling: visualViewport shrinks/translates when the OS
 // keyboard slides up. dvh reflects browser chrome but NOT the keyboard, so
-// without this the vkey row + detail-actions disappear behind the keyboard.
-// We sync the detail view's height to visualViewport.height and translate by
-// offsetTop for iOS, where focusing an input scrolls the layout viewport
-// behind a still-fixed-positioned element.
+// without this the detail header + terminal would disappear behind the
+// keyboard. We sync the detail view's height to visualViewport.height and
+// translate by offsetTop for iOS, where focusing an input scrolls the
+// layout viewport behind a still-fixed-positioned element. We also toggle
+// `.compact` on the detail header so it shrinks while the keyboard is up.
 function syncVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
@@ -1276,9 +1289,17 @@ async function loadProjects() {
     if (!r.ok) return;
     const data = await r.json();
     const sel = document.getElementById('create-project');
-    sel.innerHTML = (data.projects || []).map(p =>
-      `<option value="${esc(p)}">${esc(p)}</option>`
-    ).join('');
+    // Build via DOM API rather than innerHTML — esc() does not escape `"`,
+    // so `<option value="${esc(p)}">` would silently truncate or break the
+    // value if a project name contained a double quote. Setting `.value`
+    // on a real Option node handles all characters correctly.
+    sel.replaceChildren();
+    for (const p of (data.projects || [])) {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      sel.appendChild(opt);
+    }
     if (sel.value) loadSkillsForProject(sel.value);
   } catch(e) {}
 }
@@ -1326,6 +1347,9 @@ function switchTab(tab) {
   const dv = document.getElementById('detail-view');
   dv.classList.remove('open');
   dv.style.transform = '';
+  // Strip `.compact` so the next openDetail starts fresh — otherwise the
+  // class persists if the user tabs away while the soft keyboard is up.
+  dv.querySelector('.detail-header')?.classList.remove('compact');
   closeOverflowMenu();
   closeStream();
   destroyTerm();
