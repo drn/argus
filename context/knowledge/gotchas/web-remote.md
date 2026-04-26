@@ -55,5 +55,6 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 ## Test harness
 
 - **`cmd/argus-test-server/` runs an isolated API server with `HOME=$tempdir`** — it MUST set HOME before any path resolution because `WorktreeDir()` and `db.DataDir()` resolve through `$HOME`. Without the override, the harness writes to the real `~/.argus/`.
+- **Rebuild `/tmp/argus-test-server` after editing `internal/api/static/`** — `routes.go` uses `//go:embed static/...`, so the static files are baked into the binary at compile time. Editing `index.html`/`sw.js`/`vendor/*` and re-running Playwright will silently re-use the cached binary's old assets and produce confusingly green or stale results. `go build -o /tmp/argus-test-server ./cmd/argus-test-server` before each Playwright run that touches static assets.
 - **`/test/reset` is a separate HTTP listener on `port+10`** — it's not under auth, so it must NOT be on the public listener. Tests call it from beforeEach to clear state between specs.
 - **Playwright tests are NOT parallel** — `fullyParallel: false, workers: 1` in `playwright.config.ts`. The test server is single-tenant; concurrent tests would race on the seed task. Don't change this without rewriting the harness for multi-tenant isolation.
