@@ -278,7 +278,7 @@ Open `http://<your-machine>:7743/` in your phone browser. Enter the API token fr
 
 The dashboard provides:
 - **Task list** — Active and Archived tabs, status badges
-- **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions
+- **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 - **Settings tab** — Push notifications toggle (VAPID), test push button, API token management (mint/revoke per-device tokens), forget local token
 

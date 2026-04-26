@@ -113,6 +113,70 @@ test.describe('terminal', () => {
     expect(layout.docScrollWidth).toBeLessThanOrEqual(layout.docClientWidth + 1);
   });
 
+  test('buffers SSE writes while scrolled into history', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    // Populate scrollback directly so the test is independent of viewport
+    // size and shell timing.
+    await page.evaluate(() => {
+      const term = (window as any).term;
+      const enc = new TextEncoder();
+      let blob = '';
+      for (let i = 0; i < 200; i++) blob += `fillerline${i}\r\n`;
+      term.write(enc.encode(blob));
+    });
+    // Wait for xterm's writer queue to drain so baseY reflects the writes.
+    await expect.poll(async () =>
+      page.evaluate(() => (window as any).term.buffer.active.baseY)
+    , { timeout: 5000 }).toBeGreaterThan(20);
+
+    // Scroll up into history.
+    await page.evaluate(() => (window as any).term.scrollLines(-30));
+    await expect(page.locator('#jump-bottom.shown')).toBeVisible();
+    const scrolledY = await page.evaluate(() => (window as any).term.buffer.active.viewportY);
+
+    // Simulate live output arriving via the SSE path. bufferOrWrite is the
+    // single entry point the SSE handler uses, so this exercises the same
+    // branch.
+    await page.evaluate(() => {
+      const enc = new TextEncoder();
+      (window as any).bufferOrWrite(enc.encode('LIVE_MARKER_AAA\r\n'));
+      (window as any).bufferOrWrite(enc.encode('LIVE_MARKER_BBB\r\n'));
+    });
+
+    // Pending should be queued, viewport must not have moved.
+    const pending = await page.evaluate(() => (window as any).argusPending());
+    expect(pending.chunks).toBe(2);
+    expect(pending.bytes).toBeGreaterThan(0);
+    await expect(page.locator('#jump-bottom.has-pending')).toBeVisible();
+
+    const stillY = await page.evaluate(() => (window as any).term.buffer.active.viewportY);
+    expect(stillY).toEqual(scrolledY);
+
+    // Tap jump-bottom to flush. Pending should drain and indicators clear.
+    await page.locator('#jump-bottom').click();
+    await expect(page.locator('#jump-bottom.has-pending')).toHaveCount(0);
+    await expect(page.locator('#jump-bottom.shown')).toHaveCount(0);
+    const drained = await page.evaluate(() => (window as any).argusPending());
+    expect(drained.chunks).toBe(0);
+    expect(drained.bytes).toBe(0);
+
+    // Buffered markers should now be in the terminal buffer.
+    const dump = await page.evaluate(() => {
+      const buf = (window as any).term.buffer.active;
+      let s = '';
+      for (let y = 0; y < buf.length; y++) {
+        const line = buf.getLine(y);
+        if (line) s += line.translateToString(true) + '\n';
+      }
+      return s;
+    });
+    expect(dump).toContain('LIVE_MARKER_AAA');
+    expect(dump).toContain('LIVE_MARKER_BBB');
+  });
+
   test('back button cleans up stream and term', async ({ page }) => {
     await login(page);
     await page.locator('.task-item').first().click();
