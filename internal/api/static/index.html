@@ -147,8 +147,12 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-direction: column;
   position: fixed;
   top: 0; left: 0; right: 0;
-  height: 100vh;   /* fallback for Safari < 15.4 */
-  height: 100dvh;  /* shrinks with the visual viewport (address bar / soft keyboard) */
+  /* --app-height is set from JS via visualViewport.height when available, so
+     the layout shrinks above the soft keyboard. dvh alone reflects browser
+     chrome but not the keyboard on iOS. */
+  height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
   background: var(--bg);
   z-index: 50;
 }
@@ -1141,6 +1145,31 @@ window.addEventListener('orientationchange', () => {
   if (!term) return;
   setTimeout(fit, 200);
 });
+
+// Soft keyboard handling: visualViewport shrinks/translates when the OS
+// keyboard slides up. dvh reflects browser chrome but NOT the keyboard, so
+// without this the vkey row + detail-actions disappear behind the keyboard.
+// We sync the detail view's height to visualViewport.height and translate by
+// offsetTop for iOS, where focusing an input scrolls the layout viewport
+// behind a still-fixed-positioned element.
+function syncVisualViewport() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  document.documentElement.style.setProperty('--app-height', vv.height + 'px');
+  const dv = document.getElementById('detail-view');
+  if (dv) {
+    dv.style.transform = vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
+  }
+  if (term && fitAddon) {
+    clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(fit, 100);
+  }
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', syncVisualViewport);
+  window.visualViewport.addEventListener('scroll', syncVisualViewport);
+  syncVisualViewport();
+}
 
 // --- Create Task ---
 async function loadProjects() {
