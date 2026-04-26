@@ -266,8 +266,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--text-dim);
 }
 .list-toolbar .seg.active { background: var(--surface); color: var(--accent); }
-.list-toolbar button { font-size: 12px; padding: 4px 8px; }
-.list-toolbar .spacer { flex: 1; }
 
 /* Toast notifications */
 .toast {
@@ -311,7 +309,6 @@ button:disabled { opacity: 0.5; cursor: default; }
     <div class="list-toolbar">
       <span class="seg active" data-filter="active" onclick="setListFilter('active')">Active</span>
       <span class="seg" data-filter="archived" onclick="setListFilter('archived')">Archived</span>
-      <span class="spacer"></span>
     </div>
     <div class="refresh-hint" id="refresh-hint">Pull to refresh</div>
     <div class="task-list" id="task-list"></div>
