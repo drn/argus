@@ -154,12 +154,3 @@ type UpdateSelfResp struct {
 	Error  string
 }
 
-// SourcePathResp is the RPC response for reading the configured Argus source path.
-type SourcePathResp struct {
-	Path string
-}
-
-// SetSourcePathReq is the RPC request for updating the Argus source path.
-type SetSourcePathReq struct {
-	Path string
-}

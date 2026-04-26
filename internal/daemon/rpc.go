@@ -256,23 +256,6 @@ func (s *RPCService) UpdateSelf(_ *Empty, resp *UpdateSelfResp) error {
 	return nil
 }
 
-// GetSourcePath returns the configured argus source path.
-func (s *RPCService) GetSourcePath(_ *Empty, resp *SourcePathResp) error {
-	resp.Path = s.daemon.db.Config().Argus.SourcePath
-	return nil
-}
-
-// SetSourcePath persists the argus source path to the config table.
-func (s *RPCService) SetSourcePath(req *SetSourcePathReq, resp *StatusResp) error {
-	if err := s.daemon.db.SetConfigValue("argus.source_path", req.Path); err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.OK = true
-	slog.Info("rpc.SetSourcePath", "path", req.Path)
-	return nil
-}
-
 // KBStatus returns the current state of the knowledge base.
 func (s *RPCService) KBStatus(_ *Empty, resp *KBStatusResp) error {
 	resp.DocumentCount = s.daemon.db.KBDocumentCount()

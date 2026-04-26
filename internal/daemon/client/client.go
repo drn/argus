@@ -202,12 +202,19 @@ func (c *Client) Shutdown() error {
 	return nil
 }
 
+// updateSelfTimeout caps `go install ./...` runs. Generous to cover cold
+// module downloads on a fresh GOPATH; the daemon will return sooner on
+// success or compile failure.
+const updateSelfTimeout = 10 * time.Minute
+
 // UpdateSelf runs `go install ./...` against the configured Argus source path.
 // Returns the combined command output and any error. The daemon is not
-// restarted by this call — callers chain restartDaemon() afterward.
+// restarted by this call — callers chain restartDaemon() afterward. Uses a
+// long timeout because real builds can take 30s+; the default 2s rpcTimeout
+// would always trip even though the daemon-side install completes.
 func (c *Client) UpdateSelf() (string, error) {
 	var resp daemon.UpdateSelfResp
-	if err := c.call("Daemon.UpdateSelf", &daemon.Empty{}, &resp); err != nil {
+	if err := c.callWithTimeout("Daemon.UpdateSelf", &daemon.Empty{}, &resp, updateSelfTimeout); err != nil {
 		return "", err
 	}
 	if resp.Error != "" {
@@ -216,26 +223,6 @@ func (c *Client) UpdateSelf() (string, error) {
 	return resp.Output, nil
 }
 
-// GetSourcePath returns the configured Argus source path.
-func (c *Client) GetSourcePath() (string, error) {
-	var resp daemon.SourcePathResp
-	if err := c.call("Daemon.GetSourcePath", &daemon.Empty{}, &resp); err != nil {
-		return "", err
-	}
-	return resp.Path, nil
-}
-
-// SetSourcePath persists the Argus source path.
-func (c *Client) SetSourcePath(path string) error {
-	var resp daemon.StatusResp
-	if err := c.call("Daemon.SetSourcePath", &daemon.SetSourcePathReq{Path: path}, &resp); err != nil {
-		return err
-	}
-	if resp.Error != "" {
-		return fmt.Errorf("%s", resp.Error)
-	}
-	return nil
-}
 
 // Running returns task IDs of running sessions.
 func (c *Client) Running() []string {
@@ -307,12 +294,19 @@ func (c *Client) WorkDir(taskID string) string {
 // if the daemon crashes. On timeout, a background goroutine drains the
 // channel when the RPC eventually completes, preventing goroutine leaks.
 func (c *Client) call(method string, args, reply any) error {
+	return c.callWithTimeout(method, args, reply, rpcTimeout)
+}
+
+// callWithTimeout is like call but lets the caller pick the deadline. Used
+// for legitimately long-running RPCs (e.g. UpdateSelf, which shells out to
+// `go install`).
+func (c *Client) callWithTimeout(method string, args, reply any, timeout time.Duration) error {
 	ch := make(chan error, 1)
 	go func() { ch <- c.rpc.Call(method, args, reply) }()
 	select {
 	case err := <-ch:
 		return err
-	case <-time.After(rpcTimeout):
+	case <-time.After(timeout):
 		// Drain the channel in the background so the RPC goroutine can
 		// exit when it eventually completes (e.g., socket error on daemon crash).
 		c.mu.Lock()

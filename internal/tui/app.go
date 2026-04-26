@@ -690,14 +690,19 @@ healthCheck:
 // restarts the daemon so the new binary takes over. Must run in a goroutine.
 func (a *App) updateArgus() {
 	uxlog.Log("[tui] update argus: starting")
-	if a.daemonClient == nil {
+	// Snapshot the daemon client under the lock — restartDaemon swaps it on
+	// the tview goroutine and racing with that swap trips the race detector.
+	a.mu.Lock()
+	dc := a.daemonClient
+	a.mu.Unlock()
+	if dc == nil {
 		a.tapp.QueueUpdateDraw(func() {
 			a.settings.SetUpdateResult("", "Failed: no daemon connection")
 			a.statusbar.SetError("Update failed: no daemon connection")
 		})
 		return
 	}
-	output, err := a.daemonClient.UpdateSelf()
+	output, err := dc.UpdateSelf()
 	if err != nil {
 		uxlog.Log("[tui] update argus: failed: %v", err)
 		a.tapp.QueueUpdateDraw(func() {

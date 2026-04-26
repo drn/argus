@@ -61,41 +61,6 @@ func dialStream(t *testing.T, sockPath string, taskID string) net.Conn {
 	return conn
 }
 
-func TestDaemon_SrcPath(t *testing.T) {
-	d, sockPath := testDaemon(t)
-	go d.Serve(sockPath) //nolint:errcheck
-	t.Cleanup(func() { d.Shutdown() })
-	waitForSocket(t, sockPath)
-
-	client := dialRPC(t, sockPath)
-
-	// Initially empty.
-	var got SourcePathResp
-	if err := client.Call("Daemon.GetSourcePath", &Empty{}, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Path != "" {
-		t.Errorf("expected empty initial path, got %q", got.Path)
-	}
-
-	// Set it.
-	var set StatusResp
-	if err := client.Call("Daemon.SetSourcePath", &SetSourcePathReq{Path: "/some/source"}, &set); err != nil {
-		t.Fatal(err)
-	}
-	if !set.OK {
-		t.Errorf("expected OK, got %+v", set)
-	}
-
-	// Read back.
-	if err := client.Call("Daemon.GetSourcePath", &Empty{}, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Path != "/some/source" {
-		t.Errorf("expected /some/source, got %q", got.Path)
-	}
-}
-
 func TestDaemon_UpdateSelfEmpty(t *testing.T) {
 	d, sockPath := testDaemon(t)
 	go d.Serve(sockPath) //nolint:errcheck

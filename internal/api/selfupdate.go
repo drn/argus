@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/drn/argus/internal/selfupdate"
 )
+
+// spawnDelay is the gap between flushing the /api/update success response
+// and exec'ing the successor daemon. The successor's startup will SIGTERM
+// us via the PID file, so the response must reach the client first.
+const spawnDelay = 500 * time.Millisecond
 
 // handleGetSourcePath returns the configured Argus source path.
 func (s *Server) handleGetSourcePath(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +30,12 @@ type sourcePathReq struct {
 	Path string `json:"path"`
 }
 
-// handleSetSourcePath persists the Argus source path.
+// handleSetSourcePath persists the Argus source path. Master-token-only.
+//
+// We accept any directory path here without further validation: the master
+// token already grants the holder full control over a process that runs
+// arbitrary code (agent commands, go install, etc.), so additional path
+// allow-listing would not strengthen the trust model.
 func (s *Server) handleSetSourcePath(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
@@ -47,6 +58,9 @@ func (s *Server) handleSetSourcePath(w http.ResponseWriter, r *http.Request) {
 // and, on success, spawns a successor daemon to replace this one. The
 // successor's startup will SIGTERM the current daemon via the PID file, so
 // this endpoint's HTTP response must be flushed before the spawn completes.
+//
+// No request body is read — all parameters come from the server's own config
+// (the master-only `argus.source_path` setting).
 func (s *Server) handleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
@@ -55,9 +69,9 @@ func (s *Server) handleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 	output, err := selfupdate.Run(cfg.Argus.SourcePath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"output":   output,
-			"error":    err.Error(),
-			"restart":  false,
+			"output":  output,
+			"error":   err.Error(),
+			"restart": false,
 		})
 		return
 	}
@@ -74,11 +88,12 @@ func (s *Server) handleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 
 	// Brief delay so the response reaches the client before our process dies.
 	go func() {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(spawnDelay)
 		if err := spawnSuccessorDaemon(); err != nil {
 			// If spawn fails the running daemon stays alive — the user can
-			// still operate the old binary. Log via stdout (server log).
-			println("[api] update: spawn successor failed:", err.Error())
+			// still operate the old binary. The detached daemon discards
+			// stderr, so use slog (which writes to ~/.argus/daemon.log).
+			slog.Error("[api] update: spawn successor failed", "err", err)
 		}
 	}()
 }
