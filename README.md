@@ -361,6 +361,15 @@ The daemon polls running sessions every 5s; when a session transitions to idle, 
 
 Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 
+### Keep the host awake
+
+The daemon runs as a normal process on the host machine. When the host sleeps, HTTP responses stall, SSE streams disconnect, and push notifications stop firing. PTY sessions pause where they were and resume when the host wakes.
+
+For a clamshell-mode laptop driving an external display:
+- Use `caffeinate -is` (no `-d`) or [KeepingYouAwake](https://github.com/newmarcel/KeepingYouAwake) with **Allow display sleep** enabled — keeps system + idle awake while letting the display sleep.
+- For a permanent setup on AC power: `sudo pmset -c sleep 0 disablesleep 1 displaysleep 1`.
+- Sleeping the external display via `pmset displaysleepnow` (or a hot corner) is fine; physically disconnecting it will sleep the Mac because the lid is closed.
+
 ### Tailscale Access
 
 For secure remote access without exposing ports to the internet:
