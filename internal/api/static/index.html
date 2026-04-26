@@ -527,6 +527,28 @@ let pendingChunks = [];
 let pendingBytes = 0;
 const PENDING_MAX_BYTES = 256 * 1024;
 
+// Touch + scroll-momentum gating. termIsAtBottom() alone misses two windows
+// where term.write still kills iOS momentum: (1) between touchstart and the
+// first detected scroll-up event the viewport hasn't moved yet, so we look
+// at-bottom in JS state but a write mutates DOM mid-fling; (2) after
+// touchend, momentum continues firing scroll events for hundreds of ms, and
+// the moment viewportY snaps back to baseY a write races the still-active
+// fling. Block writes while the user is touching the term, and for SETTLE_MS
+// after the most recent scroll event.
+let termTouching = false;
+let lastTermScroll = 0;
+let settleTimer = null;
+const SETTLE_MS = 200;
+let termTouchEl = null;
+function onTermTouchStart() { termTouching = true; }
+function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
+function scheduleSettle() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    if (!termTouching && termIsAtBottom()) flushPending();
+  }, SETTLE_MS);
+}
+
 // --- Toast ---
 function showToast(msg, duration = 4000) {
   const existing = document.querySelector('.toast');
@@ -770,18 +792,32 @@ function setupTerm() {
   window.bufferOrWrite = bufferOrWrite;
   window.flushPending = flushPending;
   window.argusPending = () => ({ chunks: pendingChunks.length, bytes: pendingBytes });
+  window.argusTouchState = () => ({ touching: termTouching, lastScroll: lastTermScroll });
   // Force a layout pass before fit \u2014 addon reads computed sizes.
   requestAnimationFrame(() => {
     fit();
     term.focus();
   });
   // Toggle the jump-to-input button when user scrolls up into scrollback,
-  // and flush any buffered live output once we're back at the bottom.
+  // and flush any buffered live output once we're back at the bottom AND
+  // momentum has settled. Flushing immediately on the first at-bottom scroll
+  // event would race active iOS momentum and cancel the gesture.
   term.onScroll(() => {
-    if (termIsAtBottom()) flushPending();
+    lastTermScroll = Date.now();
+    scheduleSettle();
     updateJumpButton();
   });
   updateJumpButton();
+
+  // Pause writes while a finger is down on the terminal — iOS momentum
+  // dies on any DOM mutation between touchstart and the first scroll-up
+  // event, and termIsAtBottom() can't detect that window.
+  termTouchEl = document.getElementById('term');
+  if (termTouchEl) {
+    termTouchEl.addEventListener('touchstart', onTermTouchStart, { passive: true });
+    termTouchEl.addEventListener('touchend', onTermTouchEnd, { passive: true });
+    termTouchEl.addEventListener('touchcancel', onTermTouchEnd, { passive: true });
+  }
 
   // Forward keystrokes to the agent. xterm gives us already-translated bytes
   // (e.g. arrow keys come as ESC[A). Send them raw.
@@ -886,6 +922,19 @@ function destroyTerm() {
   // no late writer mutates pendingChunks after we clear it.
   pendingChunks = [];
   pendingBytes = 0;
+  // Detach touch listeners — setupTerm() reattaches them. Without removal
+  // they'd accumulate across open/close cycles and stale handlers would
+  // toggle termTouching for finger movements on a disposed term.
+  if (termTouchEl) {
+    termTouchEl.removeEventListener('touchstart', onTermTouchStart);
+    termTouchEl.removeEventListener('touchend', onTermTouchEnd);
+    termTouchEl.removeEventListener('touchcancel', onTermTouchEnd);
+    termTouchEl = null;
+  }
+  termTouching = false;
+  lastTermScroll = 0;
+  clearTimeout(settleTimer);
+  settleTimer = null;
   const btn = document.getElementById('jump-bottom');
   if (btn) { btn.classList.remove('shown'); btn.classList.remove('has-pending'); }
 }
@@ -899,7 +948,8 @@ function destroyTerm() {
 // is a defensive corner, not a hot path).
 function bufferOrWrite(bytes) {
   if (!term) return;
-  if (termIsAtBottom()) {
+  const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
+  if (termIsAtBottom() && !termTouching && !inMomentum) {
     term.write(bytes);
     return;
   }
