@@ -251,9 +251,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .term-status.error .dot { background: var(--red); }
 @keyframes pulse { 50% { opacity: 0.4; } }
 
-/* Virtual key row — fills bottom of fixed-flex detail view. Wraps onto a
-   second row on narrow phones so all keys (esc/tab/ctrl/arrows/^C/enter/font)
-   stay visible; horizontal scroll hid ^C and Enter on iPhone widths. */
+/* Virtual key row. flex-wrap so all 11 keys fit on a 393px iPhone viewport;
+   overflow-x:auto silently hid Enter and ^C with no scroll cue. */
 .vkey-row {
   display: none;
   gap: 6px; padding: 8px;
@@ -264,7 +263,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .vkey-row.shown { display: flex; }
 .vkey {
-  flex: 1 0 auto; min-width: 44px; height: 44px;
+  /* flex:0 0 auto so wrapped rows pack with identical button widths instead
+     of letting a short second row grow each key to ~88px. */
+  flex: 0 0 auto; min-width: 44px; height: 44px;
   padding: 0 10px; border-radius: 6px;
   background: var(--bg); border: 1px solid var(--border);
   color: var(--text); font-size: 14px; font-weight: 500;
