@@ -1,5 +1,16 @@
 package daemon
 
+import "time"
+
+// BootInfoResp describes the daemon's boot-time identity. Used by the TUI to
+// detect when the daemon binary is older than the TUI binary (e.g. after a
+// rebuild) and prompt the user to restart it.
+type BootInfoResp struct {
+	BinaryPath  string    // resolved path of the daemon executable at boot
+	BinaryMtime time.Time // mtime of the binary at boot (zero if stat failed)
+	BootedAt    time.Time // wall-clock time the daemon started
+}
+
 // StartReq is the RPC request to start a new agent session.
 type StartReq struct {
 	TaskID    string

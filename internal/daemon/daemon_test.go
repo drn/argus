@@ -61,6 +61,35 @@ func dialStream(t *testing.T, sockPath string, taskID string) net.Conn {
 	return conn
 }
 
+func TestDaemon_BootInfo(t *testing.T) {
+	d, sockPath := testDaemon(t)
+
+	bootStart := time.Now()
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+	var resp BootInfoResp
+	if err := client.Call("Daemon.BootInfo", &Empty{}, &resp); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.BinaryPath == "" {
+		t.Error("expected BinaryPath to be populated")
+	}
+	if resp.BootedAt.Before(bootStart.Add(-time.Second)) || resp.BootedAt.After(time.Now().Add(time.Second)) {
+		t.Errorf("BootedAt %v outside expected range", resp.BootedAt)
+	}
+	// BinaryMtime is best-effort; if the test binary exists, it should be
+	// non-zero. If not, that's a pre-existing environment issue, not a bug.
+	if resp.BinaryPath != "" {
+		if _, err := os.Stat(resp.BinaryPath); err == nil && resp.BinaryMtime.IsZero() {
+			t.Error("expected BinaryMtime to be populated when binary exists")
+		}
+	}
+}
+
 func TestDaemon_Ping(t *testing.T) {
 	d, sockPath := testDaemon(t)
 

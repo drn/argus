@@ -226,6 +226,58 @@ func TestLazyScreen_EnableDisableDoesNotPanic(t *testing.T) {
 
 // ---------- 2. App smoke tests for major UI paths ----------
 
+func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true, false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Open the modal on the tview goroutine (mimics what Run() does when
+	// SetDaemonStale was called before the event loop started).
+	readUI(t, app.tapp, func() { app.openRestartDaemonPrompt() })
+
+	var mode viewMode
+	var hasModal bool
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		hasModal = app.restartDaemonModal != nil
+	})
+	if mode != modeRestartDaemonPrompt || !hasModal {
+		t.Fatalf("modal not open: mode=%v hasModal=%v", mode, hasModal)
+	}
+
+	// Pressing Esc should choose Skip and dismiss.
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		mode = app.mode
+		hasModal = app.restartDaemonModal != nil
+	})
+	if mode != modeTaskList {
+		t.Errorf("mode after skip = %v, want modeTaskList", mode)
+	}
+	if hasModal {
+		t.Error("restartDaemonModal should be cleared after skip")
+	}
+}
+
+func TestSetDaemonStale_StoresFlag(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true, false)
+
+	if app.daemonStale {
+		t.Error("daemonStale should default to false")
+	}
+	app.SetDaemonStale(true)
+	if !app.daemonStale {
+		t.Error("SetDaemonStale(true) should set the flag")
+	}
+}
+
 func TestSmoke_TabSwitching(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

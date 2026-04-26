@@ -65,6 +65,12 @@ type Daemon struct {
 	kbIndexer    *kb.Indexer    // set when KB is enabled, stopped in cleanup
 	vaultWatcher stopper        // set when auto_create_tasks is enabled
 	apiServer    *api.Server    // set when API is enabled, shut down in cleanup
+
+	// Boot identity — recorded once at New() so the TUI can detect when the
+	// on-disk binary has been rebuilt since the daemon started.
+	binaryPath  string
+	binaryMtime time.Time
+	bootedAt    time.Time
 }
 
 // stopper is an interface for anything with a Stop() method.
@@ -80,6 +86,20 @@ func New(database *db.DB) *Daemon {
 		exitInfos: make(map[string]ExitInfo),
 		done:      make(chan struct{}),
 		ready:     make(chan struct{}),
+		bootedAt:  time.Now(),
+	}
+
+	// Capture the binary path + mtime at startup. The on-disk binary may be
+	// rebuilt while the daemon keeps running with the old in-memory image —
+	// the TUI compares its current binary mtime against this snapshot.
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		d.binaryPath = exe
+		if st, err := os.Stat(exe); err == nil {
+			d.binaryMtime = st.ModTime()
+		}
 	}
 
 	// Create runner with onFinish callback that caches exit info and

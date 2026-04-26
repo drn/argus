@@ -64,12 +64,20 @@ func runTUI() {
 	var runner agent.SessionProvider
 	var daemonConnected bool
 	var daemonFreshStart bool
+	var daemonStale bool
 
 	sockPath := daemon.DefaultSocketPath()
 	client, err := dclient.Connect(sockPath)
+	preExisting := err == nil // connected without auto-starting
 	if err != nil {
 		uxlog.Log("no daemon at %s, auto-starting...", sockPath)
 		client, err = dclient.AutoStart(sockPath)
+	}
+	// Only meaningful when we connected to a daemon we did NOT just spawn.
+	// AutoStart fork/execs the current binary, so the daemon's binary always
+	// matches the TUI in that case — checking would just produce false alarms.
+	if err == nil && preExisting {
+		daemonStale = isDaemonStale(client)
 	}
 
 	// appRef is set after tui.New so the onFinish callback can reach the app.
@@ -102,6 +110,7 @@ func runTUI() {
 	}
 
 	app := tui.New(database, runner, daemonConnected, daemonFreshStart)
+	app.SetDaemonStale(daemonStale)
 	appRef = app
 	appRef2 = app
 	if err := app.Run(); err != nil {
@@ -179,6 +188,38 @@ func runDaemonStop() {
 	} else {
 		fmt.Println("no daemon running")
 	}
+}
+
+// isDaemonStale returns true when the running daemon was started from an
+// older copy of the binary than the one the TUI is running. Detection is
+// best-effort — if any step fails, we return false so we don't nag the user
+// over benign issues like a removed binary.
+func isDaemonStale(client *dclient.Client) bool {
+	info, err := client.BootInfo()
+	if err != nil {
+		uxlog.Log("[tui] BootInfo failed: %v", err)
+		return false
+	}
+	if info.BinaryMtime.IsZero() {
+		return false // older daemon without BootInfo, or stat failed at boot
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	st, err := os.Stat(exe)
+	if err != nil {
+		return false
+	}
+	if st.ModTime().Equal(info.BinaryMtime) {
+		return false
+	}
+	uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
+		info.BinaryMtime.Format(time.RFC3339), st.ModTime().Format(time.RFC3339))
+	return true
 }
 
 func runDaemonRestart() {

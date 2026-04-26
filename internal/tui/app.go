@@ -60,6 +60,7 @@ const (
 	modeFuzzyLinkPicker
 	modeQuickAdd
 	modeConfirmDeleteProject
+	modeRestartDaemonPrompt
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -101,6 +102,12 @@ type App struct {
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal        *modal.ConfirmDeleteModal
 	confirmDeleteProjectModal *modal.ConfirmDeleteProjectModal
+
+	// Restart-daemon prompt (created on demand when binary mtime mismatch
+	// is detected at startup).
+	restartDaemonModal *modal.RestartDaemonModal
+	daemonStale        bool // set by main before Run; opens prompt on first draw
+	daemonStaleHandled bool
 
 	// Launch to-do modal (created on demand)
 	launchToDoModal      *LaunchToDoModal
@@ -359,6 +366,62 @@ func (a *App) buildUI() {
 	a.tapp.SetRoot(a.root, true)
 }
 
+// SetDaemonStale records that the connected daemon is running an older copy
+// of the argus binary than the TUI. The prompt is shown on the first draw.
+func (a *App) SetDaemonStale(stale bool) {
+	a.mu.Lock()
+	a.daemonStale = stale
+	a.mu.Unlock()
+}
+
+// openRestartDaemonPrompt shows the modal asking whether to restart the
+// out-of-date daemon. Idempotent.
+func (a *App) openRestartDaemonPrompt() {
+	if a.restartDaemonModal != nil {
+		return
+	}
+	a.restartDaemonModal = modal.NewRestartDaemonModal()
+	a.mode = modeRestartDaemonPrompt
+	a.pages.AddPage("restartdaemon", a.restartDaemonModal, true, true)
+	a.pages.SwitchToPage("restartdaemon")
+	a.tapp.SetFocus(a.restartDaemonModal)
+}
+
+// closeRestartDaemonPrompt dismisses the modal and returns to the task list.
+func (a *App) closeRestartDaemonPrompt() {
+	a.mode = modeTaskList
+	a.restartDaemonModal = nil
+	a.pages.RemovePage("restartdaemon")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
+}
+
+// handleRestartDaemonKey dispatches keys to the restart-daemon modal and
+// reacts when the user picks Restart or Skip.
+func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
+	if a.restartDaemonModal == nil {
+		return
+	}
+	handler := a.restartDaemonModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+	if !a.restartDaemonModal.Done() {
+		return
+	}
+	chooseRestart := a.restartDaemonModal.ChoseRestart()
+	a.closeRestartDaemonPrompt()
+	if chooseRestart {
+		uxlog.Log("[tui] user chose to restart out-of-date daemon")
+		a.mu.Lock()
+		a.daemonRestarting = true
+		a.lastDaemonRestart = time.Now()
+		a.mu.Unlock()
+		a.settings.SetDaemonRestarting(true)
+		go a.restartDaemon()
+	} else {
+		uxlog.Log("[tui] user skipped daemon restart")
+	}
+}
+
 // Run starts the application event loop.
 func (a *App) Run() error {
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
@@ -380,6 +443,21 @@ func (a *App) Run() error {
 	go a.tickLoop()
 	go a.spinnerLoop()
 	defer close(a.tickDone)
+
+	// If main detected the daemon is running an older binary, prompt the user
+	// once the event loop has spun up. QueueUpdateDraw runs on the tview
+	// goroutine, after SetRoot, so the modal page is added safely.
+	a.mu.Lock()
+	stale := a.daemonStale && !a.daemonStaleHandled
+	if stale {
+		a.daemonStaleHandled = true
+	}
+	a.mu.Unlock()
+	if stale {
+		go a.tapp.QueueUpdateDraw(func() {
+			a.openRestartDaemonPrompt()
+		})
+	}
 
 	uxlog.Log("[tui] starting tcell/tview application")
 	return a.tapp.Run()
@@ -1031,6 +1109,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Confirm delete project modal
 	if a.mode == modeConfirmDeleteProject && a.confirmDeleteProjectModal != nil {
 		a.handleConfirmDeleteProjectKey(event)
+		return nil
+	}
+
+	// Restart-daemon prompt — shown on startup when daemon binary is stale.
+	if a.mode == modeRestartDaemonPrompt && a.restartDaemonModal != nil {
+		a.handleRestartDaemonKey(event)
 		return nil
 	}
 

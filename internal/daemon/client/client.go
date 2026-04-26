@@ -379,6 +379,15 @@ func (c *Client) Ping() error {
 	return c.call("Daemon.Ping", &daemon.Empty{}, &resp)
 }
 
+// BootInfo returns the daemon's boot-time identity (binary path + mtime).
+func (c *Client) BootInfo() (daemon.BootInfoResp, error) {
+	var resp daemon.BootInfoResp
+	if err := c.call("Daemon.BootInfo", &daemon.Empty{}, &resp); err != nil {
+		return daemon.BootInfoResp{}, err
+	}
+	return resp, nil
+}
+
 // removeSessionStreamLost cleans up a session from the client's map and fires
 // the callback with StreamLost=true. Used when stream retries are exhausted or
 // the daemon is unreachable — the process may still be alive.

@@ -19,6 +19,16 @@ func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
 	return nil
 }
 
+// BootInfo returns the daemon's boot-time identity (binary path + mtime).
+// The TUI uses this to detect when the on-disk binary has been rebuilt since
+// the daemon started, and prompt the user to restart.
+func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
+	resp.BinaryPath = s.daemon.binaryPath
+	resp.BinaryMtime = s.daemon.binaryMtime
+	resp.BootedAt = s.daemon.bootedAt
+	return nil
+}
+
 // StartSession starts a new agent session.
 func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 	slog.Info("rpc.StartSession", "task", req.TaskID, "session", req.SessionID, "project", req.Project, "resume", req.Resume, "cols", req.Cols, "rows", req.Rows, "worktree", req.Worktree)

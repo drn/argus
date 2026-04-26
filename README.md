@@ -37,7 +37,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 ### Agent Management
 
 - **Multi-session orchestration** — Run multiple Claude Code / Codex / custom LLM agents simultaneously with PTY-backed terminal sessions
-- **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows
+- **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows. On TUI startup, if the daemon is running an older copy of the binary (e.g. after a rebuild), a modal prompts you to **Restart** or **Skip**
 - **Session resume** — `--resume` for Claude Code, `codex resume <session-id>` for Codex — conversations survive daemon restarts
 - **Configurable backends** — Define command templates for any LLM CLI tool. Per-backend flags, prompt interpolation, and plan mode defaults
 - **Skill autocomplete** — `/` anywhere in the prompt field triggers autocomplete from `~/.claude/skills/`, per-project skill directories, and installed Claude Code plugins (plugin items appear as `<plugin>:<name>`, e.g. `/cortex:review`). `$` triggers the same for Codex backends. Select with Enter or Tab
