@@ -520,6 +520,9 @@ let termFontSize = parseInt(localStorage.getItem('argus-font-size') || '13', 10)
 // SSE chunks queued while the user is scrolled into history. iOS kills
 // momentum scroll when JS mutates the xterm viewport, so we hold writes
 // until the user returns to the bottom (or taps the jump-bottom button).
+// Cap matches the daemon's session ring buffer (256KB) — anything older
+// than that is already lost server-side, so the cap can't drop content
+// the user could otherwise have seen by reattaching.
 let pendingChunks = [];
 let pendingBytes = 0;
 const PENDING_MAX_BYTES = 256 * 1024;
@@ -878,6 +881,9 @@ function destroyTerm() {
     window.term = null;
     window.fitAddon = null;
   }
+  // SSE onmessage is a macrotask that can't interleave with this synchronous
+  // teardown, so closeStream() before destroyTerm() is enough to guarantee
+  // no late writer mutates pendingChunks after we clear it.
   pendingChunks = [];
   pendingBytes = 0;
   const btn = document.getElementById('jump-bottom');
@@ -887,6 +893,10 @@ function destroyTerm() {
 // Buffer SSE bytes when the user is scrolled into scrollback so that
 // term.write doesn't kill the active iOS momentum-scroll fling. Cap the
 // buffer to PENDING_MAX_BYTES; older chunks are dropped FIFO once full.
+// The `length > 1` guard always keeps at least one chunk so we never
+// silently drop everything — a single chunk larger than the cap is
+// kept whole rather than discarded (PTY-read chunks are ~4KB, so this
+// is a defensive corner, not a hot path).
 function bufferOrWrite(bytes) {
   if (!term) return;
   if (termIsAtBottom()) {
@@ -902,6 +912,12 @@ function bufferOrWrite(bytes) {
   updateJumpButton();
 }
 
+// Swap-before-iterate so re-entrant calls (term.write fires onScroll
+// synchronously, which can re-enter flushPending if we're still at the
+// bottom) see an empty queue and exit early. The trailing
+// updateJumpButton() is the safety net for the case where xterm's last
+// write doesn't emit an onScroll event (e.g. pure-text bytes that don't
+// move the viewport).
 function flushPending() {
   if (!term || pendingChunks.length === 0) return;
   const chunks = pendingChunks;
