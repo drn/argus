@@ -312,7 +312,6 @@ button:disabled { opacity: 0.5; cursor: default; }
       <span class="seg active" data-filter="active" onclick="setListFilter('active')">Active</span>
       <span class="seg" data-filter="archived" onclick="setListFilter('archived')">Archived</span>
       <span class="spacer"></span>
-      <button class="danger" onclick="stopAll()">Stop all</button>
     </div>
     <div class="refresh-hint" id="refresh-hint">Pull to refresh</div>
     <div class="task-list" id="task-list"></div>
@@ -984,17 +983,6 @@ async function setArchive(archived) {
     if (!r.ok) throw new Error('archive failed');
     currentTask.archived = archived;
     closeDetail();
-    refresh();
-  } catch(e) { showToast(e.message); }
-}
-
-async function stopAll() {
-  if (!confirm('Stop all running agents?')) return;
-  try {
-    const r = await api('/api/sessions/stop-all', { method: 'POST' });
-    if (!r.ok) throw new Error('stop-all failed');
-    const j = await r.json();
-    showToast(`Stopped ${j.stopped} agents`);
     refresh();
   } catch(e) { showToast(e.message); }
 }

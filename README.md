@@ -277,7 +277,7 @@ Argus includes a built-in HTTP API and mobile web dashboard for controlling agen
 Open `http://<your-machine>:7743/` in your phone browser. Enter the API token from `~/.argus/api-token` to authenticate. Tap **Add to Home Screen** in Safari to install as a PWA.
 
 The dashboard provides:
-- **Task list** — Active and Archived tabs, status badges, Stop-all action
+- **Task list** — Active and Archived tabs, status badges
 - **Task detail** — Real xterm.js terminal with live SSE byte stream, virtual key row, Stop / Resume / Rename / Fork / Archive / Delete actions
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 - **Settings tab** — Push notifications toggle (VAPID), test push button, API token management (mint/revoke per-device tokens), forget local token
