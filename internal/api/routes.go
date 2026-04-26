@@ -68,6 +68,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.handleRevokeToken)
+	mux.HandleFunc("GET /api/source-path", s.handleGetSourcePath)
+	mux.HandleFunc("PUT /api/source-path", s.handleSetSourcePath)
+	mux.HandleFunc("POST /api/update", s.handleUpdateSelf)
 
 	return mux
 }

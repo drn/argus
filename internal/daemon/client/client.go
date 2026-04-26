@@ -202,6 +202,41 @@ func (c *Client) Shutdown() error {
 	return nil
 }
 
+// UpdateSelf runs `go install ./...` against the configured Argus source path.
+// Returns the combined command output and any error. The daemon is not
+// restarted by this call — callers chain restartDaemon() afterward.
+func (c *Client) UpdateSelf() (string, error) {
+	var resp daemon.UpdateSelfResp
+	if err := c.call("Daemon.UpdateSelf", &daemon.Empty{}, &resp); err != nil {
+		return "", err
+	}
+	if resp.Error != "" {
+		return resp.Output, fmt.Errorf("%s", resp.Error)
+	}
+	return resp.Output, nil
+}
+
+// GetSourcePath returns the configured Argus source path.
+func (c *Client) GetSourcePath() (string, error) {
+	var resp daemon.SourcePathResp
+	if err := c.call("Daemon.GetSourcePath", &daemon.Empty{}, &resp); err != nil {
+		return "", err
+	}
+	return resp.Path, nil
+}
+
+// SetSourcePath persists the Argus source path.
+func (c *Client) SetSourcePath(path string) error {
+	var resp daemon.StatusResp
+	if err := c.call("Daemon.SetSourcePath", &daemon.SetSourcePathReq{Path: path}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
 // Running returns task IDs of running sessions.
 func (c *Client) Running() []string {
 	var resp daemon.ListResp

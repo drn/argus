@@ -15,6 +15,12 @@ type Config struct {
 	Sandbox     SandboxConfig      `toml:"sandbox"`
 	KB          KBConfig           `toml:"kb"`
 	API         APIConfig          `toml:"api"`
+	Argus       ArgusConfig        `toml:"argus"`
+}
+
+// ArgusConfig holds settings for self-updating the Argus binary.
+type ArgusConfig struct {
+	SourcePath string `toml:"source_path"` // local clone of the Argus repo for go install
 }
 
 // APIConfig controls the HTTP REST API for remote control.

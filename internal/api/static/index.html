@@ -453,6 +453,27 @@ button:disabled { opacity: 0.5; cursor: default; }
       <div id="token-mint-result" style="display:none"></div>
     </div>
     <div class="settings-section">
+      <h3>Argus update</h3>
+      <div class="settings-row">
+        <div style="flex:1">
+          <div class="label">Source path</div>
+          <div class="meta">Local clone of github.com/drn/argus</div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <input type="text" id="argus-source-path" placeholder="/path/to/argus" style="flex:1; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px;">
+        <button onclick="saveSourcePath()" style="margin-left: 6px;">Save</button>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="label">Update Argus</div>
+          <div class="meta">Runs go install ./... and restarts the daemon</div>
+        </div>
+        <button class="primary" id="update-btn" onclick="runUpdate()">Update</button>
+      </div>
+      <pre id="update-output" style="display:none; white-space:pre-wrap; font-size:12px; background: var(--bg); border: 1px solid var(--border); padding: 8px; border-radius: 6px; max-height: 240px; overflow:auto"></pre>
+    </div>
+    <div class="settings-section">
       <h3>This device</h3>
       <div class="settings-row">
         <div class="label">Sign out</div>
@@ -1383,7 +1404,68 @@ function switchTab(tab) {
 
 // --- Settings tab: tokens + push ---
 async function loadSettings() {
-  await Promise.all([loadTokens(), refreshPushState()]);
+  await Promise.all([loadTokens(), refreshPushState(), loadSourcePath()]);
+}
+
+async function loadSourcePath() {
+  const input = document.getElementById('argus-source-path');
+  if (!input) return;
+  try {
+    const r = await api('/api/source-path');
+    if (!r.ok) return;
+    const { path } = await r.json();
+    input.value = path || '';
+  } catch(e) {}
+}
+
+async function saveSourcePath() {
+  const input = document.getElementById('argus-source-path');
+  const path = (input.value || '').trim();
+  try {
+    const r = await api('/api/source-path', { method: 'PUT', body: JSON.stringify({ path }) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'save failed');
+    }
+    showToast('Source path saved');
+  } catch(e) { showToast(e.message); }
+}
+
+async function runUpdate() {
+  const path = (document.getElementById('argus-source-path').value || '').trim();
+  if (!path) {
+    showToast('Set source path first');
+    return;
+  }
+  if (!confirm('Run go install ./... and restart the daemon? Active sessions will be reattached after restart.')) return;
+  const btn = document.getElementById('update-btn');
+  const out = document.getElementById('update-output');
+  btn.disabled = true;
+  btn.textContent = 'Updating...';
+  out.style.display = 'block';
+  out.textContent = 'Running go install ./...';
+  try {
+    const r = await api('/api/update', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    out.textContent = j.output || '(no output)';
+    if (!r.ok) {
+      btn.textContent = 'Update';
+      btn.disabled = false;
+      showToast('Update failed');
+      return;
+    }
+    if (j.restart) {
+      out.textContent += '\n\nDaemon restarting — this page will reload in 5 seconds.';
+      setTimeout(() => location.reload(), 5000);
+    } else {
+      btn.textContent = 'Update';
+      btn.disabled = false;
+    }
+  } catch(e) {
+    btn.textContent = 'Update';
+    btn.disabled = false;
+    out.textContent += '\n\nRequest failed: ' + e.message;
+  }
 }
 
 async function loadTokens() {

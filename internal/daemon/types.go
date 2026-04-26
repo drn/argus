@@ -145,3 +145,21 @@ type KBStatusResp struct {
 	VaultPath     string
 	Port          int
 }
+
+// UpdateSelfResp is the RPC response from running `go install ./...` against
+// the configured Argus source path. Output is the combined stdout+stderr of
+// the run regardless of success — clients display it to the user.
+type UpdateSelfResp struct {
+	Output string
+	Error  string
+}
+
+// SourcePathResp is the RPC response for reading the configured Argus source path.
+type SourcePathResp struct {
+	Path string
+}
+
+// SetSourcePathReq is the RPC request for updating the Argus source path.
+type SetSourcePathReq struct {
+	Path string
+}

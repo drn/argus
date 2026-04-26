@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/selfupdate"
 )
 
 // RPCService implements the JSON-RPC methods exposed by the daemon.
@@ -234,6 +235,41 @@ func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
 		})
 	}
 	slog.Info("rpc.KBList ok", "documents", len(resp.Documents))
+	return nil
+}
+
+// UpdateSelf runs `git pull --ff-only` (best-effort) followed by
+// `go install ./...` against the configured argus source path. The combined
+// command output is returned regardless of success so callers can show it to
+// the user. The daemon is NOT restarted by this RPC — the caller decides.
+func (s *RPCService) UpdateSelf(_ *Empty, resp *UpdateSelfResp) error {
+	cfg := s.daemon.db.Config()
+	slog.Info("rpc.UpdateSelf", "source", cfg.Argus.SourcePath)
+	out, err := selfupdate.Run(cfg.Argus.SourcePath)
+	resp.Output = out
+	if err != nil {
+		resp.Error = err.Error()
+		slog.Error("rpc.UpdateSelf failed", "err", err)
+	} else {
+		slog.Info("rpc.UpdateSelf ok")
+	}
+	return nil
+}
+
+// GetSourcePath returns the configured argus source path.
+func (s *RPCService) GetSourcePath(_ *Empty, resp *SourcePathResp) error {
+	resp.Path = s.daemon.db.Config().Argus.SourcePath
+	return nil
+}
+
+// SetSourcePath persists the argus source path to the config table.
+func (s *RPCService) SetSourcePath(req *SetSourcePathReq, resp *StatusResp) error {
+	if err := s.daemon.db.SetConfigValue("argus.source_path", req.Path); err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
+	resp.OK = true
+	slog.Info("rpc.SetSourcePath", "path", req.Path)
 	return nil
 }
 

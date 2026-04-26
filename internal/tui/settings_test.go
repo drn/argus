@@ -443,6 +443,99 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 	}
 }
 
+func TestSettingsView_UpdateArgusRow(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetDaemonConnected(true)
+
+	hasUpdate, hasSource := false, false
+	for _, row := range sv.rows {
+		if row.kind == srUpdateArgus {
+			hasUpdate = true
+		}
+		if row.kind == srSourcePath {
+			hasSource = true
+		}
+	}
+	if !hasUpdate || !hasSource {
+		t.Fatalf("expected both srUpdateArgus and srSourcePath rows; update=%v source=%v", hasUpdate, hasSource)
+	}
+
+	// Disconnect — neither row should appear.
+	sv.SetDaemonConnected(false)
+	for _, row := range sv.rows {
+		if row.kind == srUpdateArgus || row.kind == srSourcePath {
+			t.Errorf("row %v should not appear when daemon disconnected", row.kind)
+		}
+	}
+}
+
+func TestSettingsView_UpdateArgusEnter(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetDaemonConnected(true)
+	called := false
+	sv.OnUpdateArgus = func() { called = true }
+
+	for i, row := range sv.rows {
+		if row.kind == srUpdateArgus {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !called {
+		t.Error("OnUpdateArgus should fire on enter")
+	}
+	if !sv.updating {
+		t.Error("updating flag should be set")
+	}
+
+	// While updating, second enter is a no-op.
+	called = false
+	sv.handleEnter()
+	if called {
+		t.Error("OnUpdateArgus should not fire while updating")
+	}
+
+	// SetUpdateResult clears the flag and persists status/output for the detail panel.
+	sv.SetUpdateResult("install output", "Update succeeded")
+	if sv.updating {
+		t.Error("updating flag should be cleared")
+	}
+	if sv.updateOutput != "install output" || sv.updateStatus != "Update succeeded" {
+		t.Errorf("unexpected post-update state: out=%q status=%q", sv.updateOutput, sv.updateStatus)
+	}
+}
+
+func TestSettingsView_SourcePathEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetDaemonConnected(true)
+
+	for i, row := range sv.rows {
+		if row.kind == srSourcePath {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if !sv.editingSource {
+		t.Fatal("expected editingSource to be true after enter")
+	}
+	for _, r := range "/tmp/argus" {
+		sv.handleEditSourceKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	sv.handleEditSourceKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if sv.editingSource {
+		t.Error("editingSource should be false after enter")
+	}
+	if sv.argusSourcePath != "/tmp/argus" {
+		t.Errorf("argusSourcePath = %q, want /tmp/argus", sv.argusSourcePath)
+	}
+	cfg := sv.database.Config()
+	if cfg.Argus.SourcePath != "/tmp/argus" {
+		t.Errorf("persisted SourcePath = %q, want /tmp/argus", cfg.Argus.SourcePath)
+	}
+}
+
 func TestSettingsView_APIRestartHint(t *testing.T) {
 	sv := testSettingsView(t)
 

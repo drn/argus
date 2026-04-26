@@ -214,6 +214,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 		app.mu.Unlock()
 		go app.restartDaemon()
 	}
+	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
 	app.settings.OnDeleteProject = func(name string) { app.deleteProject(name) }
@@ -683,6 +684,38 @@ healthCheck:
 			}
 		}
 	}
+}
+
+// updateArgus runs `go install ./...` on the daemon side and, on success,
+// restarts the daemon so the new binary takes over. Must run in a goroutine.
+func (a *App) updateArgus() {
+	uxlog.Log("[tui] update argus: starting")
+	if a.daemonClient == nil {
+		a.tapp.QueueUpdateDraw(func() {
+			a.settings.SetUpdateResult("", "Failed: no daemon connection")
+			a.statusbar.SetError("Update failed: no daemon connection")
+		})
+		return
+	}
+	output, err := a.daemonClient.UpdateSelf()
+	if err != nil {
+		uxlog.Log("[tui] update argus: failed: %v", err)
+		a.tapp.QueueUpdateDraw(func() {
+			a.settings.SetUpdateResult(output, "Failed: "+err.Error())
+			a.statusbar.SetError("Update failed: " + err.Error())
+		})
+		return
+	}
+	uxlog.Log("[tui] update argus: go install ok, restarting daemon")
+	a.tapp.QueueUpdateDraw(func() {
+		a.settings.SetUpdateResult(output, "Update succeeded — restarting daemon...")
+		a.mu.Lock()
+		a.daemonRestarting = true
+		a.lastDaemonRestart = time.Now()
+		a.mu.Unlock()
+		a.settings.SetDaemonRestarting(true)
+	})
+	a.restartDaemon()
 }
 
 // restartDaemon kills the old daemon, auto-starts a new one, and reconnects.

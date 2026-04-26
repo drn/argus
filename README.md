@@ -189,6 +189,12 @@ argus
 | `i` | Quick add projects |
 | `Enter` / `◀` / `▶` | Toggle / cycle settings |
 
+## Self-Update
+
+Argus can install a freshly-built version of itself when you've merged a change into your local clone. From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` (best-effort) followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart.
+
+The same controls are exposed in the web UI under **Settings → Argus update** (master token only). The combined output of the install run is shown inline so failures are visible.
+
 ## Sandbox
 
 Argus can run agent processes inside macOS `sandbox-exec` for filesystem and credential isolation. Each agent session gets an SBPL profile that restricts reads and writes.

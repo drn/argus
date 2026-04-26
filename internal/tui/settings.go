@@ -37,6 +37,8 @@ const (
 	srDaemon
 	srSpinner
 	srVaultPath
+	srUpdateArgus
+	srSourcePath
 )
 
 // Vault key constants used in settingsRow.key for vault path rows.
@@ -120,8 +122,17 @@ type SettingsView struct {
 	daemonConnected  bool
 	daemonRestarting bool
 
+	// Self-update.
+	argusSourcePath string
+	editingSource   bool   // true while inline-editing the source path
+	editSourceBuf   string // buffer for the source-path edit
+	updating        bool   // true while go install is running
+	updateStatus    string // last-result status line shown in detail panel
+	updateOutput    string // last go-install output (for detail panel)
+
 	// Callbacks.
 	OnRestartDaemon func()
+	OnUpdateArgus   func() // triggered by the "Update Argus" row
 	OnNewProject    func()
 	OnEditProject   func(name string, p config.Project)
 	OnDeleteProject func(name string)
@@ -246,6 +257,9 @@ func (sv *SettingsView) Refresh() {
 	// Review prompt.
 	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
 
+	// Argus self-update source path.
+	sv.argusSourcePath = cfg.Argus.SourcePath
+
 	// Task counts — show empty on error (same graceful degradation as projects).
 	tasks, err := sv.database.Tasks()
 	if err != nil {
@@ -302,6 +316,20 @@ func (sv *SettingsView) rebuildRows() {
 			label = "  Restarting..."
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
+
+		sourceLabel := "  Source path: " + sv.argusSourcePath
+		if sv.editingSource {
+			sourceLabel = "  Source path: " + sv.editSourceBuf + "▎"
+		} else if sv.argusSourcePath == "" {
+			sourceLabel = "  Source path: (not configured)"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srSourcePath, label: sourceLabel, key: "_argus_source"})
+
+		updateLabel := "  Update Argus (go install + restart)"
+		if sv.updating {
+			updateLabel = "  Updating..."
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srUpdateArgus, label: updateLabel, key: "_argus_update"})
 	}
 
 	// Sandbox section.
@@ -446,13 +474,16 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 			sv.editVaultBuf += pastedText
 			sv.vaultAC.Update(sv.editVaultBuf)
 			sv.rebuildRows()
+		} else if sv.editingSource {
+			sv.editSourceBuf += pastedText
+			sv.rebuildRows()
 		}
 	})
 }
 
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
-	return sv.editingPrompt || sv.editingVault != ""
+	return sv.editingPrompt || sv.editingVault != "" || sv.editingSource
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -491,6 +522,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	if sv.editingVault != "" {
 		return sv.handleEditVaultKey(ev)
+	}
+	if sv.editingSource {
+		return sv.handleEditSourceKey(ev)
 	}
 	switch ev.Key() {
 	case tcell.KeyUp:
@@ -693,6 +727,20 @@ func (sv *SettingsView) handleEnter() bool {
 			sv.OnRestartDaemon()
 		}
 		return true
+	case srSourcePath:
+		sv.editingSource = true
+		sv.editSourceBuf = sv.argusSourcePath
+		sv.rebuildRows()
+		return true
+	case srUpdateArgus:
+		if !sv.updating && sv.OnUpdateArgus != nil {
+			sv.updating = true
+			sv.updateStatus = "Running go install ./..."
+			sv.updateOutput = ""
+			sv.rebuildRows()
+			sv.OnUpdateArgus()
+		}
+		return true
 	}
 	return false
 }
@@ -769,6 +817,47 @@ func (sv *SettingsView) handleEdit() bool {
 		}
 	}
 	return false
+}
+
+// handleEditSourceKey handles keystrokes while inline-editing the Argus source path.
+func (sv *SettingsView) handleEditSourceKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		sv.argusSourcePath = sv.editSourceBuf
+		sv.editingSource = false
+		if err := sv.database.SetConfigValue("argus.source_path", sv.argusSourcePath); err != nil {
+			uxlog.Log("[settings] failed to persist argus source path: %v", err)
+		}
+		uxlog.Log("[settings] argus source path set to %q", sv.argusSourcePath)
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingSource = false
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp:
+		return true
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editSourceBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editSourceBuf)
+			sv.editSourceBuf = sv.editSourceBuf[:len(sv.editSourceBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editSourceBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+// SetUpdateResult records the outcome of a self-update run for display.
+func (sv *SettingsView) SetUpdateResult(output, status string) {
+	sv.updating = false
+	sv.updateOutput = output
+	sv.updateStatus = status
+	sv.rebuildRows()
 }
 
 // handleEditPromptKey handles keystrokes while inline-editing the review prompt.
@@ -1065,6 +1154,73 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srDaemon:
 		sv.renderDaemonDetail(screen, innerX, innerY, innerW, innerH)
+	case srSourcePath:
+		sv.renderSourcePathDetail(screen, innerX, innerY, innerW, innerH)
+	case srUpdateArgus:
+		sv.renderUpdateArgusDetail(screen, innerX, innerY, innerW, innerH)
+	}
+}
+
+func (sv *SettingsView) renderSourcePathDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Argus Source Path", theme.StyleTitle)
+	r := 2
+	path := sv.argusSourcePath
+	if sv.editingSource {
+		path = sv.editSourceBuf + "▎"
+	} else if path == "" {
+		path = "(not configured)"
+	}
+	widget.DrawText(screen, x, y+r, w, "Path: "+path, theme.StyleDimmed)
+	r += 2
+	if r >= h {
+		return
+	}
+	widget.DrawText(screen, x, y+r, w, "Local clone of github.com/drn/argus used by", theme.StyleDimmed)
+	r++
+	widget.DrawText(screen, x, y+r, w, "the \"Update Argus\" action to run go install.", theme.StyleDimmed)
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] edit", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderUpdateArgusDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Update Argus", theme.StyleTitle)
+	r := 2
+	if sv.argusSourcePath == "" {
+		widget.DrawText(screen, x, y+r, w, "Source path not configured.", tcell.StyleDefault.Foreground(theme.ColorError))
+		r++
+		widget.DrawText(screen, x, y+r, w, "Set it on the row above first.", theme.StyleDimmed)
+		return
+	}
+	widget.DrawText(screen, x, y+r, w, "Source: "+sv.argusSourcePath, theme.StyleDimmed)
+	r += 2
+	if sv.updating {
+		widget.DrawText(screen, x, y+r, w, "Running go install...", tcell.StyleDefault.Foreground(theme.ColorInProgress))
+		r++
+	} else if sv.updateStatus != "" {
+		color := theme.ColorComplete
+		if strings.HasPrefix(sv.updateStatus, "Failed") {
+			color = theme.ColorError
+		}
+		widget.DrawText(screen, x, y+r, w, sv.updateStatus, tcell.StyleDefault.Foreground(color))
+		r += 2
+	}
+	if sv.updateOutput != "" {
+		for line := range strings.SplitSeq(strings.TrimRight(sv.updateOutput, "\n"), "\n") {
+			if r >= h-1 {
+				widget.DrawText(screen, x, y+r, w, "...", theme.StyleDimmed)
+				break
+			}
+			widget.DrawText(screen, x, y+r, w, line, theme.StyleDimmed)
+			r++
+		}
+	} else if !sv.updating && r < h-1 {
+		widget.DrawText(screen, x, y+r, w, "Runs git pull --ff-only and go install ./...", theme.StyleDimmed)
+		r++
+		widget.DrawText(screen, x, y+r, w, "then restarts the daemon.", theme.StyleDimmed)
+	}
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] update & restart", theme.StyleDimmed)
 	}
 }
 

@@ -137,6 +137,11 @@ func (d *DB) Config() config.Config {
 		}
 	}
 
+	// Argus self-update config.
+	if v, ok := kv["argus.source_path"]; ok {
+		cfg.Argus.SourcePath = v
+	}
+
 	return cfg
 }
 
