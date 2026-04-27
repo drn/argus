@@ -944,21 +944,24 @@ const SCROLLEND_FALLBACK_MS = 100;
 // trivially correct (no risk of adding a listener that destroyTerm misses).
 const HAS_NATIVE_SCROLLEND = typeof window !== 'undefined' && 'onscrollend' in window;
 
-function onTermTouchStart() {
-  termTouching = true;
-  // Restore tap-to-focus: lifting .xterm-viewport above .xterm-screen
-  // (the z-index fix that makes touch scrolling actually reach the
-  // scrollable element) means xterm's own focus handlers on .xterm-screen
-  // no longer fire. Focus the term ourselves so the soft keyboard still
-  // pops up when the user taps to type.
-  if (term) try { term.focus(); } catch(e) {}
-}
+function onTermTouchStart() { termTouching = true; }
 function onTermTouchEnd() {
   termTouching = false;
-  // If touch ends without producing any scroll events (passive tap),
-  // nothing else will trigger a drain — kick the polyfill timer so a
-  // pending viewport sync from earlier doesn't get stuck queued.
-  if (!isTermScrolling) drainIfSettled();
+  // Tap-to-focus: only focus the term if NO scroll happened during this
+  // touch — i.e., the user tapped, didn't swipe. Focusing on touchstart
+  // (the previous approach) put iOS into "is this a tap on a focusable
+  // input?" mode, which delayed scroll engagement until the user either
+  // held still long enough for iOS to give up on the tap OR moved far
+  // enough to commit to scroll. The "had to hold my finger in one spot
+  // to start scrolling" symptom. Deferring focus to touchend with the
+  // scroll-vs-tap discriminator removes the hesitation entirely.
+  const wasTap = !isTermScrolling;
+  if (wasTap) {
+    if (term) try { term.focus(); } catch(e) {}
+    // No scroll happened, so nothing else will trigger a drain — kick
+    // it now so a pending viewport sync from earlier isn't stuck queued.
+    drainIfSettled();
+  }
 }
 
 function onTermScroll() {
@@ -1483,6 +1486,7 @@ function destroyTerm() {
   termTouching = false;
   isTermScrolling = false;
   pendingViewportSync = false;
+  inflightWrite = false;
   clearTimeout(scrollendFallbackTimer);
   scrollendFallbackTimer = null;
   const btn = document.getElementById('jump-bottom');
@@ -1499,30 +1503,67 @@ function destroyTerm() {
 function bufferOrWrite(bytes) {
   if (!term) return;
   if (termIsAtBottom() && !termTouching && !isTermScrolling) {
-    term.write(bytes);
+    queueWrite(bytes);
     return;
   }
+  enqueuePending(bytes);
+  updateJumpButton();
+}
+
+function enqueuePending(bytes) {
   pendingChunks.push(bytes);
   pendingBytes += bytes.length;
   while (pendingBytes > PENDING_MAX_BYTES && pendingChunks.length > 1) {
     pendingBytes -= pendingChunks[0].length;
     pendingChunks.shift();
   }
-  updateJumpButton();
 }
 
-// Swap-before-iterate as defensive insurance: the DOM `scroll` event the
-// gate now listens to is dispatched async, so term.write here cannot
-// synchronously re-enter flushPending via onTermScroll. But the swap is
-// cheap and survives any future change that resynchronizes the path.
-// The trailing updateJumpButton() covers the case where xterm's last write
-// doesn't move the viewport (pure-text bytes, no scroll event fires).
+// Serialize term.write through xterm's parser so at most one chunk is in
+// flight at a time. xterm processes writes asynchronously, mutating
+// `.xterm-scroll-area.style.height` (a child of `.xterm-viewport`) while
+// it parses. iOS kills momentum on any DOM mutation inside the scroll
+// container, so an in-flight write that started BEFORE the user touched
+// keeps shaking the viewport mid-fling — the user sees scroll get stuck
+// or the flick stop short. By chaining via the write callback we guarantee
+// only one chunk is parsing; once the user touches, the lone in-flight
+// chunk drains within ~one frame and no more mutations occur until they
+// release. Any subsequent writes go to pendingChunks via bufferOrWrite.
+let inflightWrite = false;
+function queueWrite(bytes) {
+  if (!term) return;
+  if (inflightWrite) {
+    enqueuePending(bytes);
+    updateJumpButton();
+    return;
+  }
+  inflightWrite = true;
+  term.write(bytes, () => {
+    inflightWrite = false;
+    // Re-check the gate from scratch — it may have flipped while xterm
+    // was parsing (user touched, scrolled, etc.). If the gate is closed,
+    // bytes stay in pendingChunks until drainIfSettled fires from
+    // scrollend / touchend-without-scroll.
+    if (!term) return;
+    if (pendingChunks.length === 0) return;
+    if (termIsAtBottom() && !termTouching && !isTermScrolling) {
+      const next = pendingChunks.shift();
+      pendingBytes -= next.length;
+      queueWrite(next);
+    }
+    updateJumpButton();
+  });
+}
+
+// Drain pendingChunks back into the serial write queue. queueWrite handles
+// inflight tracking, so this only needs to kick off the first chunk.
 function flushPending() {
   if (!term || pendingChunks.length === 0) return;
-  const chunks = pendingChunks;
-  pendingChunks = [];
-  pendingBytes = 0;
-  for (const chunk of chunks) term.write(chunk);
+  if (!inflightWrite) {
+    const next = pendingChunks.shift();
+    pendingBytes -= next.length;
+    queueWrite(next);
+  }
   updateJumpButton();
 }
 
