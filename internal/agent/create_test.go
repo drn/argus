@@ -93,6 +93,7 @@ func (s *fakeSession) TotalWritten() uint64             { return 0 }
 func (s *fakeSession) IsIdle() bool                     { return false }
 func (s *fakeSession) Alive() bool                      { return true }
 func (s *fakeSession) PTYSize() (int, int)              { return 80, 24 }
+func (s *fakeSession) InitialPTYSize() (int, int)       { return 80, 24 }
 func (s *fakeSession) Done() <-chan struct{}            { ch := make(chan struct{}); return ch }
 func (s *fakeSession) Err() error                       { return nil }
 func (s *fakeSession) WorkDir() string                  { return "" }

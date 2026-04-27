@@ -1406,3 +1406,145 @@ func TestScanAndStorePRURL(t *testing.T) {
 		t.Errorf("should not match in %q", noURLOutput)
 	}
 }
+
+func TestPTYSizeFromHostTerm(t *testing.T) {
+	cases := []struct {
+		name              string
+		tw, th            int
+		err               error
+		wantRows, wantCol uint16
+	}{
+		{"typical wide", 320, 100, nil, 95, 190},
+		{"standard 80x24", 80, 24, nil, 19, 46},
+		// 50-col host: 50*3/5-2 = 28 ⇒ no clamp.
+		{"narrow 50x20", 50, 20, nil, 15, 28},
+		// Pathological tiny host triggers both clamps.
+		{"tiny clamps both floors", 30, 8, nil, 5, 20},
+		// Real-world reproduction of the original bug. Anything works as long
+		// as it isn't 20x8 — the PTY size that left Claude rendering narrow.
+		{"realistic iTerm2 split", 200, 60, nil, 55, 118},
+		// Unusable signals: function must yield 0,0 so callers fall back.
+		{"err short-circuits", 320, 100, errFakeNoTTY, 0, 0},
+		{"zero width", 0, 100, nil, 0, 0},
+		{"zero height", 320, 0, nil, 0, 0},
+		{"negative", -1, -1, nil, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotRows, gotCols := ptySizeFromHostTerm(tc.tw, tc.th, tc.err)
+			testutil.Equal(t, gotRows, tc.wantRows)
+			testutil.Equal(t, gotCols, tc.wantCol)
+		})
+	}
+}
+
+func TestPTYSizeFromPaneRect(t *testing.T) {
+	cases := []struct {
+		name              string
+		pw, ph            int
+		wantRows, wantCol uint16
+	}{
+		// The bug: tview's NewBox returns 15x10 before Flex lays it out.
+		// Reading that as authoritative produced a 20x8 PTY.
+		{"tview Box default rejected", 15, 10, 0, 0},
+		// Anything at-or-below the threshold falls through too.
+		{"30x10 still rejected", 30, 10, 0, 0},
+		{"20x8 (pre-fix output) rejected", 20, 8, 0, 0},
+		// Genuinely laid-out panes pass.
+		{"laid-out wide pane", 192, 84, 82, 190},
+		{"31x11 (just above floor)", 31, 11, 9, 29},
+		// Zero / negative are noise.
+		{"zero rejected", 0, 0, 0, 0},
+		{"negative rejected", -1, -1, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotRows, gotCols := ptySizeFromPaneRect(tc.pw, tc.ph)
+			testutil.Equal(t, gotRows, tc.wantRows)
+			testutil.Equal(t, gotCols, tc.wantCol)
+		})
+	}
+}
+
+// errFakeNoTTY stands in for term.GetSize's "inappropriate ioctl for device"
+// error when stdout isn't a TTY.
+var errFakeNoTTY = &fakeErr{msg: "inappropriate ioctl for device"}
+
+type fakeErr struct{ msg string }
+
+func (e *fakeErr) Error() string { return e.msg }
+
+func TestShouldKickNarrowRerender(t *testing.T) {
+	cases := []struct {
+		name           string
+		hasSessionID   bool
+		initCols       int
+		panelCols      int
+		idle           bool
+		alreadyPending bool
+		want           narrowRerenderDecision
+	}{
+		{
+			// The literal repro: 20-col PTY, 190-col panel, idle Claude.
+			name:         "kick when narrow start, wide panel, idle",
+			hasSessionID: true, initCols: 20, panelCols: 190, idle: true,
+			want: narrowRerenderKick,
+		},
+		{
+			// Don't kill Claude mid-tool-call. Wait for it to go idle.
+			name:         "defer when busy",
+			hasSessionID: true, initCols: 20, panelCols: 190, idle: false,
+			want: narrowRerenderDeferBusy,
+		},
+		{
+			// Codex and other backends without --session-id resume can't
+			// re-flow on restart, so don't bother killing them.
+			name:         "skip when no SessionID",
+			hasSessionID: false, initCols: 20, panelCols: 190, idle: true,
+			want: narrowRerenderSkip,
+		},
+		{
+			// Once we've stopped a session, don't queue another stop on top.
+			name:         "skip when already pending",
+			hasSessionID: true, initCols: 20, panelCols: 190, idle: true, alreadyPending: true,
+			want: narrowRerenderSkip,
+		},
+		{
+			// Sane initial size — nothing to repair. Anything ≥60 means
+			// Claude saw a usable PTY when it first rendered.
+			name:         "skip at threshold",
+			hasSessionID: true, initCols: 60, panelCols: 190, idle: true,
+			want: narrowRerenderSkip,
+		},
+		{
+			name:         "skip just-below threshold + huge panel",
+			hasSessionID: true, initCols: 59, panelCols: 190, idle: true,
+			want: narrowRerenderKick,
+		},
+		{
+			// Old daemon without InitialPTYSize support reports 0 — treat
+			// as unknown rather than triggering surprise restarts.
+			name:         "skip when initCols unknown (0)",
+			hasSessionID: true, initCols: 0, panelCols: 190, idle: true,
+			want: narrowRerenderSkip,
+		},
+		{
+			// Margin guard: panel only barely wider than init. Disrupting
+			// Claude isn't worth a tiny gain.
+			name:         "skip when margin too thin",
+			hasSessionID: true, initCols: 50, panelCols: 70, idle: true,
+			want: narrowRerenderSkip,
+		},
+		{
+			name:         "kick at exact margin floor",
+			hasSessionID: true, initCols: 50, panelCols: 80, idle: true,
+			want: narrowRerenderKick,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldKickNarrowRerender(tc.hasSessionID, tc.initCols, tc.panelCols, tc.idle, tc.alreadyPending)
+			testutil.Equal(t, got, tc.want)
+		})
+	}
+}

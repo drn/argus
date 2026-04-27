@@ -50,6 +50,8 @@ type SessionInfo struct {
 	PID          int
 	Cols         int
 	Rows         int
+	InitialCols  int // PTY width at session start; immutable
+	InitialRows  int // PTY height at session start; immutable
 	WorkDir      string
 	TotalWritten uint64
 }

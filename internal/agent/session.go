@@ -36,10 +36,12 @@ type Session struct {
 	err        error
 	attached   bool
 	detachCh   chan struct{}
-	ptyCols    uint16    // current PTY width
-	ptyRows    uint16    // current PTY height
-	lastOutput time.Time // last time output was received from PTY
-	ptmxClosed bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
+	ptyCols     uint16    // current PTY width
+	ptyRows     uint16    // current PTY height
+	initialCols uint16    // PTY width at StartSession; never mutated after init
+	initialRows uint16    // PTY height at StartSession; never mutated after init
+	lastOutput  time.Time // last time output was received from PTY
+	ptmxClosed  bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
 
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
 }
@@ -79,15 +81,17 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 	}
 
 	s := &Session{
-		TaskID:   taskID,
-		Cmd:      cmd,
-		ptmx:     ptmx,
-		buf:      NewRingBuffer(defaultBufSize),
-		done:     make(chan struct{}),
-		detachCh: make(chan struct{}),
-		ptyCols:  cols,
-		ptyRows:  rows,
-		logFile:  logFile,
+		TaskID:      taskID,
+		Cmd:         cmd,
+		ptmx:        ptmx,
+		buf:         NewRingBuffer(defaultBufSize),
+		done:        make(chan struct{}),
+		detachCh:    make(chan struct{}),
+		ptyCols:     cols,
+		ptyRows:     rows,
+		initialCols: cols,
+		initialRows: rows,
+		logFile:     logFile,
 	}
 
 	// Single reader: PTY → ring buffer (+ attached writer when set)
@@ -382,6 +386,12 @@ func (s *Session) PTYSize() (cols, rows int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int(s.ptyCols), int(s.ptyRows)
+}
+
+// InitialPTYSize returns the PTY dimensions the session was started with.
+// Immutable after StartSession — safe to read without the session mutex.
+func (s *Session) InitialPTYSize() (cols, rows int) {
+	return int(s.initialCols), int(s.initialRows)
 }
 
 // WriteInput writes raw bytes to the PTY master (stdin of the child process).

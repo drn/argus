@@ -34,6 +34,10 @@ type SessionHandle interface {
 	IsIdle() bool
 	Alive() bool
 	PTYSize() (cols, rows int)
+	// InitialPTYSize returns the PTY dimensions the session was started with,
+	// before any subsequent Resize calls. Used to detect "started narrow"
+	// sessions whose conversation history won't re-flow on SIGWINCH.
+	InitialPTYSize() (cols, rows int)
 	Done() <-chan struct{}
 	Err() error
 	WorkDir() string

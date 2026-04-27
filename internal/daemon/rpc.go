@@ -90,12 +90,15 @@ func (s *RPCService) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 		return nil
 	}
 	cols, rows := sess.PTYSize()
+	initCols, initRows := sess.InitialPTYSize()
 	resp.TaskID = req.TaskID
 	resp.Alive = sess.Alive()
 	resp.Idle = sess.IsIdle()
 	resp.PID = sess.PID()
 	resp.Cols = cols
 	resp.Rows = rows
+	resp.InitialCols = initCols
+	resp.InitialRows = initRows
 	resp.WorkDir = sess.WorkDir()
 	resp.TotalWritten = sess.TotalWritten()
 	return nil
@@ -107,6 +110,7 @@ func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
 	resp.Sessions = make([]SessionInfo, 0, len(sessions))
 	for id, sess := range sessions {
 		cols, rows := sess.PTYSize()
+		initCols, initRows := sess.InitialPTYSize()
 		resp.Sessions = append(resp.Sessions, SessionInfo{
 			TaskID:       id,
 			Alive:        sess.Alive(),
@@ -114,6 +118,8 @@ func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
 			PID:          sess.PID(),
 			Cols:         cols,
 			Rows:         rows,
+			InitialCols:  initCols,
+			InitialRows:  initRows,
 			WorkDir:      sess.WorkDir(),
 			TotalWritten: sess.TotalWritten(),
 		})

@@ -144,6 +144,16 @@ func (rs *RemoteSession) PTYSize() (cols, rows int) {
 	return rs.info.Cols, rs.info.Rows
 }
 
+// InitialPTYSize returns the PTY dimensions the session was started with.
+// Used by the TUI's narrow-stuck detector to spot sessions that need a
+// kill+resume to re-flow their conversation history at a wider size.
+func (rs *RemoteSession) InitialPTYSize() (cols, rows int) {
+	rs.refreshInfo()
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.info.InitialCols, rs.info.InitialRows
+}
+
 func (rs *RemoteSession) Done() <-chan struct{} {
 	return rs.done
 }
