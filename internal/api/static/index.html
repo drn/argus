@@ -117,6 +117,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: var(--text-dim);
 }
 .project-dot.running { background: var(--green); }
+.project-dot.idle { background: var(--yellow); }
 .project-dot.review { background: var(--yellow); }
 .project-dot.complete { background: var(--purple); }
 .project-name {
@@ -132,6 +133,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .badge-pending { background: #30363d; color: var(--text-dim); }
 .badge-in_progress { background: #1a3a2a; color: var(--green); }
+.badge-idle { background: #2d2000; color: var(--yellow); }
 .badge-in_review { background: #2d2000; color: var(--yellow); }
 .badge-complete { background: #1a1a3a; color: var(--purple); }
 .task-info { flex: 1; min-width: 0; }
@@ -1046,8 +1048,12 @@ async function refresh() {
 
     const s = status.sessions;
     const t = status.tasks;
+    // s.running includes idle sessions; subtract so the running count means
+    // "actively working" — matches the TUI's spinner-vs-moon distinction.
+    const active = Math.max(0, s.running - s.idle);
+    const idleSeg = s.idle > 0 ? ` / ${s.idle} idle` : '';
     document.getElementById('header-stats').textContent =
-      `${s.running} running / ${t.pending} queued`;
+      `${active} running${idleSeg} / ${t.pending} queued`;
 
     tasks = data.tasks || [];
     renderTaskList();
@@ -1141,24 +1147,30 @@ function renderTaskList() {
     expandedProject[listFilter] = projects[0];
   }
   renderedProjects = projects;
-  const order = { in_progress: 0, in_review: 1, pending: 2, complete: 3 };
+  // Sort key tracks effective state: idle in_progress sorts after actively
+  // running but before in_review, matching the TUI's project-icon priority
+  // (running > review > idle > pending > complete).
+  const order = { in_progress: 0, idle: 1, in_review: 2, pending: 3, complete: 4 };
   // Preserve scroll across the full re-render (5s status poll would otherwise
   // snap the user back to the top every refresh).
   const prevScrollY = window.scrollY;
   el.innerHTML = projects.map((proj, idx) => {
-    const list = groups[proj].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+    const list = groups[proj].sort((a, b) => (order[effectiveStatus(a)] ?? 9) - (order[effectiveStatus(b)] ?? 9));
     const isOpen = proj === expandedProject[listFilter];
     const dot = projectDotModifier(list);
-    const tasksHtml = isOpen ? list.map(t => `
+    const tasksHtml = isOpen ? list.map(t => {
+      const eff = effectiveStatus(t);
+      return `
       <div class="task-item" onclick="openDetail('${esc(t.id)}')">
-        <span class="task-badge badge-${esc(t.status)}">${statusLabel(t.status)}</span>
+        <span class="task-badge badge-${esc(eff)}">${statusLabel(eff)}</span>
         <div class="task-info">
           <div class="task-name">${esc(t.name)}</div>
           <div class="task-meta">${t.elapsed ? esc(t.elapsed) : ''}</div>
         </div>
         <div class="task-chevron">&rsaquo;</div>
       </div>
-    `).join('') : '';
+    `;
+    }).join('') : '';
     return `<div class="project-group">
       <div class="project-header" data-idx="${idx}">
         <span class="project-chevron${isOpen ? ' expanded' : ''}">&#9656;</span>
@@ -1173,15 +1185,18 @@ function renderTaskList() {
 }
 
 function projectDotModifier(list) {
-  let running = false, review = false, pending = false, complete = false;
+  // Mirrors TUI projectStatusIcon priority: running > review > idle > complete.
+  let running = false, idle = false, review = false, pending = false, complete = false;
   for (const t of list) {
-    if (t.status === 'in_progress') running = true;
-    else if (t.status === 'in_review') review = true;
+    if (t.status === 'in_progress') {
+      if (t.idle) idle = true; else running = true;
+    } else if (t.status === 'in_review') review = true;
     else if (t.status === 'complete') complete = true;
     else pending = true;
   }
   if (running) return 'running';
   if (review) return 'review';
+  if (idle) return 'idle';
   if (complete && !pending) return 'complete';
   return '';
 }
@@ -1208,7 +1223,15 @@ document.getElementById('task-list').addEventListener('click', e => {
 });
 
 function statusLabel(s) {
-  return { pending: 'Pending', in_progress: 'Running', in_review: 'Review', complete: 'Done' }[s] || s;
+  return { pending: 'Pending', in_progress: 'Running', idle: 'Idle', in_review: 'Review', complete: 'Done' }[s] || s;
+}
+
+// effectiveStatus collapses (status, idle) into a single key used for badges,
+// labels, and sort ordering. In_progress + idle becomes 'idle' so the rest of
+// the SPA can treat it like any other status string.
+function effectiveStatus(t) {
+  if (t.status === 'in_progress' && t.idle) return 'idle';
+  return t.status;
 }
 
 // --- Task Detail ---
@@ -1220,7 +1243,7 @@ async function openDetail(id) {
   document.getElementById('detail-view').classList.add('open');
   document.getElementById('detail-title').textContent = currentTask.name;
   document.getElementById('detail-subtitle').textContent =
-    `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
+    `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
 
   renderOverflowMenu();
   attachTerminal(currentTask);
@@ -1621,8 +1644,9 @@ async function resumeTask() {
     await refresh();
     currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
     currentTask.status = 'in_progress';
+    currentTask.idle = false;
     document.getElementById('detail-subtitle').textContent =
-      `${currentTask.project} \u00b7 ${statusLabel(currentTask.status)}`;
+      `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}`;
     renderOverflowMenu();
     attachTerminal(currentTask);
   } catch(e) {

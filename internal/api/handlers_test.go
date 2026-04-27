@@ -93,6 +93,29 @@ func TestHandleListTasks(t *testing.T) {
 		testutil.Equal(t, len(resp["tasks"]), 2)
 	})
 
+	t.Run("in_progress without session reports idle", func(t *testing.T) {
+		req := authedReq("GET", "/api/tasks?status=in_progress", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string][]taskJSON
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, len(resp["tasks"]), 1)
+		testutil.Equal(t, resp["tasks"][0].Name, "task-b")
+		testutil.True(t, resp["tasks"][0].Idle)
+	})
+
+	t.Run("non-in_progress task is never idle", func(t *testing.T) {
+		req := authedReq("GET", "/api/tasks?status=pending", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		var resp map[string][]taskJSON
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["tasks"][0].Idle, false)
+	})
+
 	t.Run("filters by status", func(t *testing.T) {
 		req := authedReq("GET", "/api/tasks?status=pending", "")
 		w := httptest.NewRecorder()
@@ -142,6 +165,37 @@ func TestHandleGetTask(t *testing.T) {
 		mux.ServeHTTP(w, req)
 		testutil.Equal(t, w.Code, http.StatusNotFound)
 	})
+}
+
+func TestComputeIdle(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   model.Status
+		running  bool
+		idle     bool
+		wantIdle bool
+	}{
+		{"pending never idle", model.StatusPending, false, false, false},
+		{"in_review never idle", model.StatusInReview, false, false, false},
+		{"complete never idle", model.StatusComplete, false, false, false},
+		{"in_progress no session is idle", model.StatusInProgress, false, false, true},
+		{"in_progress active session not idle", model.StatusInProgress, true, false, false},
+		{"in_progress idle session is idle", model.StatusInProgress, true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.Task{ID: "t1", Status: tc.status}
+			running := map[string]bool{}
+			idle := map[string]bool{}
+			if tc.running {
+				running["t1"] = true
+			}
+			if tc.idle {
+				idle["t1"] = true
+			}
+			testutil.Equal(t, computeIdle(task, running, idle), tc.wantIdle)
+		})
+	}
 }
 
 func TestHandleCreateTask(t *testing.T) {
@@ -297,9 +351,9 @@ func TestHandleGitDiff_PathTraversal(t *testing.T) {
 	testutil.NoError(t, d.Add(task))
 
 	bad := []string{
-		"/etc/passwd",            // absolute
-		"../../etc/passwd",       // dotdot
-		"foo/../../etc/passwd",   // embedded dotdot
+		"/etc/passwd",          // absolute
+		"../../etc/passwd",     // dotdot
+		"foo/../../etc/passwd", // embedded dotdot
 	}
 	for _, path := range bad {
 		t.Run("rejects "+path, func(t *testing.T) {

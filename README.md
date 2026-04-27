@@ -299,9 +299,9 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/status` | Running/idle session counts, task counts by status |
-| `GET` | `/api/tasks` | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`) |
+| `GET` | `/api/tasks` | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input (mirrors the TUI moon icon). |
 | `POST` | `/api/tasks` | Create and start a task. Body: `{"name":"...", "prompt":"...", "project":"..."}` |
-| `GET` | `/api/tasks/{id}` | Get single task detail (includes `archived`, `worktree_path`, `prompt`) |
+| `GET` | `/api/tasks/{id}` | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`) |
 | `POST` | `/api/tasks/{id}/stop` | Stop a running agent (moves to `in_review`) |
 | `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent |
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
