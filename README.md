@@ -392,6 +392,8 @@ For secure remote access without exposing ports to the internet:
 2. Enable the API in Argus Settings
 3. Access the dashboard at `http://<tailscale-ip>:7743/` from your phone
 
+When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale off — it flips to an offline screen with the Argus banner and a Tailscale reminder, then auto-reconnects once the daemon is reachable again.
+
 ### Vault Auto-Create
 
 When **Task Sync** is enabled in Settings (under Knowledge Base), the daemon watches your Obsidian vault for new `.md` files and automatically creates agent tasks from them.

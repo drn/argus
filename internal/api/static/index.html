@@ -404,6 +404,54 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 }
 .list-toolbar .seg.active { background: var(--surface); color: var(--accent); }
 
+/* Offline screen — shown when the SPA cannot reach the Argus API.
+   Mirrors the TUI banner gradient (tcell colors 87/81/141/177/212) so the
+   user gets the same visual signature regardless of which client they're on. */
+#offline-screen {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+  text-align: center;
+}
+#offline-screen.shown { display: flex; }
+.offline-banner {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-weight: bold;
+  /* Scale with viewport so the 41-char wide banner fits on a 393px iPhone
+     without overflow, while staying legible on desktop. */
+  font-size: clamp(7px, 2.4vw, 14px);
+  line-height: 1.05;
+  margin-bottom: 24px;
+  letter-spacing: 0;
+  user-select: none;
+}
+.banner-line { white-space: pre; }
+.banner-line:nth-child(1) { color: #5fffff; }
+.banner-line:nth-child(2) { color: #5fd7ff; }
+.banner-line:nth-child(3) { color: #af87ff; }
+.banner-line:nth-child(4) { color: #d787ff; }
+.banner-line:nth-child(5) { color: #ff87d7; }
+.offline-subtitle {
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.5em;
+  margin-bottom: 28px;
+}
+#offline-screen h2 { font-size: 20px; margin-bottom: 12px; }
+#offline-screen p {
+  color: var(--text-dim);
+  font-size: 14px;
+  max-width: 360px;
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+#offline-screen p strong { color: var(--text); }
+#offline-screen .retry-btn { width: 100%; max-width: 220px; }
+
 /* Toast notifications */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -424,6 +472,24 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
   <input type="password" id="token-input" placeholder="API Token" autocomplete="off">
   <button class="primary" onclick="authenticate()">Connect</button>
   <div id="auth-error">Invalid token. Check ~/.argus/api-token</div>
+</div>
+
+<!-- Offline Screen — shown when the SPA cannot reach /api/* (network error,
+     daemon down, Tailscale off). Distinct from auth-error, which is shown for
+     401 (bad token). -->
+<div id="offline-screen" aria-live="polite">
+  <div class="offline-banner" aria-hidden="true">
+    <div class="banner-line"> █████  ██████   ██████  ██    ██ ███████</div>
+    <div class="banner-line">██   ██ ██   ██ ██       ██    ██ ██     </div>
+    <div class="banner-line">███████ ██████  ██   ███ ██    ██ ███████</div>
+    <div class="banner-line">██   ██ ██   ██ ██    ██ ██    ██      ██</div>
+    <div class="banner-line">██   ██ ██   ██  ██████   ██████  ███████</div>
+  </div>
+  <div class="offline-subtitle">CODE ORCHESTRATOR</div>
+  <h2>Cannot reach Argus</h2>
+  <p>If you're connecting from outside your local network, enable
+  <strong>Tailscale</strong> on this device and make sure your Mac is awake.</p>
+  <button class="primary retry-btn" id="retry-btn" onclick="retryConnection()">Retry</button>
 </div>
 
 <!-- Main App -->
@@ -787,6 +853,17 @@ const FILTER_ARCHIVED = 'archived';
 
 let listFilter = FILTER_ACTIVE;
 let pushSubscribed = false;
+
+// Offline tracking. The SPA shows a full-screen offline view when /api requests
+// fail repeatedly (network down, daemon stopped, Tailscale off). A single
+// transient hiccup shouldn't yank the user out of the app, so we wait for two
+// consecutive failures before flipping to the offline screen — except for the
+// initial tryConnect() (no cached state) and the browser `offline` event
+// (definitive), which flip immediately.
+let offlineShown = false;
+let connectFailures = 0;
+const OFFLINE_FAIL_THRESHOLD = 2;
+let refreshTimer = null;
 // Currently expanded project per filter view (one project open at a time, like the TUI).
 let expandedProject = { [FILTER_ACTIVE]: null, [FILTER_ARCHIVED]: null };
 // Project names ordered by index, populated each render. The click delegation
@@ -861,21 +938,39 @@ function authenticate() {
 }
 
 async function tryConnect() {
+  // api() throws Error('unauthorized') on 401 (after clearing the token); any
+  // other thrown error is a network failure. Differentiating these matters
+  // because the auth-error message ("Invalid token. Check ~/.argus/api-token")
+  // is wrong when the daemon simply isn't reachable — that's the offline view.
+  let networkError = false;
   try {
     const r = await api('/api/status');
     if (r.ok) {
+      onConnectSuccess();
       localStorage.setItem('argus-token', TOKEN);
       document.getElementById('auth-screen').style.display = 'none';
       document.getElementById('main-app').style.display = 'block';
       refresh();
       loadProjects();
-      setInterval(refresh, 5000);
-    } else {
-      document.getElementById('auth-error').style.display = 'block';
+      startRefreshTimer();
+      return;
     }
+    // Non-2xx, non-401: treat as auth error so the user can re-enter the token.
   } catch(e) {
+    if (!e || e.message !== 'unauthorized') networkError = true;
+  }
+  if (networkError) {
+    showOffline();
+    // Keep polling so the screen self-clears once the daemon is reachable.
+    startRefreshTimer();
+  } else {
     document.getElementById('auth-error').style.display = 'block';
   }
+}
+
+function startRefreshTimer() {
+  if (refreshTimer) return;
+  refreshTimer = setInterval(refresh, 5000);
 }
 
 // --- API (with 10s timeout) ---
@@ -911,6 +1006,7 @@ async function refresh() {
     const status = await statusR.json();
     const data = await tasksR.json();
 
+    onConnectSuccess();
     document.getElementById('conn-dot').className = 'status-dot ok';
 
     const s = status.sessions;
@@ -922,6 +1018,64 @@ async function refresh() {
     renderTaskList();
   } catch(e) {
     document.getElementById('conn-dot').className = 'status-dot err';
+    onConnectFailure();
+  }
+}
+
+// Promote the user to the offline view after OFFLINE_FAIL_THRESHOLD consecutive
+// /api failures. A single 5s-poll miss is too jumpy — but two means the daemon
+// is genuinely unreachable.
+function onConnectFailure() {
+  connectFailures++;
+  if (connectFailures >= OFFLINE_FAIL_THRESHOLD) showOffline();
+}
+
+function onConnectSuccess() {
+  connectFailures = 0;
+  hideOffline();
+}
+
+function showOffline() {
+  if (offlineShown) return;
+  offlineShown = true;
+  // Tear down terminal/SSE so we don't leave the EventSource auto-reconnecting
+  // in the background while the offline view is showing. The detail view also
+  // closes so the user lands on the task list when reconnect succeeds.
+  closeStream();
+  destroyTerm();
+  closeOverflowMenu();
+  const dv = document.getElementById('detail-view');
+  if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
+  currentTask = null;
+  document.getElementById('main-app').style.display = 'none';
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('offline-screen').classList.add('shown');
+}
+
+function hideOffline() {
+  if (!offlineShown) return;
+  offlineShown = false;
+  document.getElementById('offline-screen').classList.remove('shown');
+  if (TOKEN) {
+    document.getElementById('main-app').style.display = 'block';
+  } else {
+    document.getElementById('auth-screen').style.display = 'flex';
+  }
+}
+
+async function retryConnection() {
+  const btn = document.getElementById('retry-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  try {
+    if (!TOKEN) {
+      // No saved token — bounce back to auth screen so the user can enter one.
+      hideOffline();
+      return;
+    }
+    await refresh();
+    if (!offlineShown) loadProjects();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
   }
 }
 
@@ -2358,6 +2512,10 @@ if ('serviceWorker' in navigator) {
 
 // --- Connectivity events ---
 window.addEventListener('online', () => {
+  if (offlineShown) {
+    retryConnection();
+    return;
+  }
   if (TOKEN && document.getElementById('main-app').style.display !== 'none') {
     refresh();
     if (currentTask && currentTask.status === 'in_progress' && !evtSource) {
@@ -2368,6 +2526,9 @@ window.addEventListener('online', () => {
 window.addEventListener('offline', () => {
   document.getElementById('conn-dot').className = 'status-dot err';
   showTermStatus('offline', 'error');
+  // The browser is definitive: if it says offline, /api/* won't work — flip
+  // straight to the offline view rather than wait for the next poll's threshold.
+  if (TOKEN) showOffline();
 });
 
 // --- Init ---
