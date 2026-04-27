@@ -925,6 +925,10 @@ let pendingViewportSync = false;
 // that the modern iOS scroll-throttle (~60Hz worst case) can't be mistaken
 // for a stop, short enough that flush latency is invisible.
 const SCROLLEND_FALLBACK_MS = 100;
+// Evaluated once at parse time. Locking the native-vs-polyfill path for the
+// page lifetime is intentional — `scrollend` support doesn't change at
+// runtime, and a single decision means setupTerm/destroyTerm symmetry is
+// trivially correct (no risk of adding a listener that destroyTerm misses).
 const HAS_NATIVE_SCROLLEND = typeof window !== 'undefined' && 'onscrollend' in window;
 
 function onTermTouchStart() { termTouching = true; }
@@ -939,6 +943,9 @@ function onTermTouchEnd() {
 function onTermScroll() {
   isTermScrolling = true;
   updateJumpButton();
+  // scrollendFallbackTimer is only ever set on the polyfill path. Native
+  // browsers reach onTermScrollEnd via the `scrollend` event listener
+  // attached in setupTerm.
   if (HAS_NATIVE_SCROLLEND) return;
   // Polyfill: every scroll event resets a debounce timer; if no further
   // scroll fires within SCROLLEND_FALLBACK_MS AND no touch pointer is
@@ -949,7 +956,10 @@ function onTermScroll() {
 
 function maybeFireScrollend() {
   // Re-arm if a finger is still on the term — the gesture isn't actually
-  // over yet, even if scroll events stopped flowing.
+  // over yet, even if scroll events stopped flowing. The re-arm loop is
+  // intentionally unbounded because the gesture lifecycle is bounded:
+  // touchend / touchcancel both clear termTouching, and destroyTerm clears
+  // the timer outright. A stuck-touch state would be a separate bug.
   if (termTouching) {
     scrollendFallbackTimer = setTimeout(maybeFireScrollend, SCROLLEND_FALLBACK_MS);
     return;
@@ -1339,7 +1349,10 @@ function setupTerm() {
   fitAddon = new FitCtor();
   term.loadAddon(fitAddon);
   term.open(document.getElementById('term'));
-  // Expose for tests / debugging.
+  // Expose for tests / debugging. argusPending and argusTouchState are
+  // intentional test-harness surfaces — Playwright specs read them through
+  // `window.*` to assert internal gate state without coupling to specific
+  // DOM selectors. Keep the shape stable; specs in web-tests/ depend on it.
   window.term = term;
   window.fitAddon = fitAddon;
   window.bufferOrWrite = bufferOrWrite;
@@ -1368,6 +1381,12 @@ function setupTerm() {
     if (HAS_NATIVE_SCROLLEND) {
       termViewportEl.addEventListener('scrollend', onTermScrollEnd, { passive: true });
     }
+  } else {
+    // Loud failure: if a future xterm.js version restructures its DOM and
+    // .xterm-viewport disappears, the gate would silently stay open and
+    // every term.write would fire mid-fling — reproducing the original bug
+    // with no diagnostic. Surface it instead.
+    console.warn('[argus] .xterm-viewport not found; scroll gating disabled');
   }
   updateJumpButton();
 
@@ -1471,12 +1490,12 @@ function bufferOrWrite(bytes) {
   updateJumpButton();
 }
 
-// Swap-before-iterate so re-entrant calls (term.write fires onScroll
-// synchronously, which can re-enter flushPending if we're still at the
-// bottom) see an empty queue and exit early. The trailing
-// updateJumpButton() is the safety net for the case where xterm's last
-// write doesn't emit an onScroll event (e.g. pure-text bytes that don't
-// move the viewport).
+// Swap-before-iterate as defensive insurance: the DOM `scroll` event the
+// gate now listens to is dispatched async, so term.write here cannot
+// synchronously re-enter flushPending via onTermScroll. But the swap is
+// cheap and survives any future change that resynchronizes the path.
+// The trailing updateJumpButton() covers the case where xterm's last write
+// doesn't move the viewport (pure-text bytes, no scroll event fires).
 function flushPending() {
   if (!term || pendingChunks.length === 0) return;
   const chunks = pendingChunks;
