@@ -902,9 +902,19 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	// re-loads the conversation and renders history at the wider size. Skip
 	// the post-exit clearing/navigation below — startSession will reattach
 	// the agent pane in place.
+	//
+	// Only restart if the user is still viewing this task. If they navigated
+	// away after the kick, fall through to the normal exit path so the task
+	// settles at InReview and the user can resume it manually later.
 	if stopped && a.pendingNarrowRestart[taskID] {
 		delete(a.pendingNarrowRestart, taskID)
-		if t, err := a.db.Get(taskID); err == nil && t != nil {
+		a.mu.Lock()
+		stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
+		a.mu.Unlock()
+		if !stillViewing {
+			uxlog.Log("[tui] narrow-rerender: user navigated away from task=%s, skipping auto-restart", taskID)
+			a.statusbar.ClearInfo()
+		} else if t, err := a.db.Get(taskID); err == nil && t != nil {
 			uxlog.Log("[tui] narrow-rerender: restarting task=%s session=%s", t.ID, t.SessionID)
 			// Force the resumed task back into InProgress; handleSessionExitUI
 			// flipped it to InReview a moment ago.
@@ -914,9 +924,10 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			a.statusbar.ClearInfo()
 			a.refreshTasksAsync()
 			return
+		} else {
+			uxlog.Log("[tui] narrow-rerender: task %s vanished from DB, falling through", taskID)
+			a.statusbar.ClearInfo()
 		}
-		uxlog.Log("[tui] narrow-rerender: task %s vanished from DB, falling through", taskID)
-		a.statusbar.ClearInfo()
 	}
 
 	// If we're viewing this task's agent pane and it completed, navigate back
@@ -2087,6 +2098,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 		a.maybeKickNarrowRerender(task, sess)
 		return
 	}
+	// No live session — clear any leaked pending-restart marker so a future
+	// re-entry isn't silently blocked from kicking again.
+	a.reapStaleNarrowRestart(task.ID, sess)
 
 	// Auto-start sessions when entering agent view for a non-running task.
 	// Covers both fresh tasks (no SessionID) and interrupted sessions
@@ -2156,35 +2170,71 @@ func shouldKickNarrowRerender(hasSessionID bool, initCols, panelCols int, idle, 
 // pendingNarrowRestart. No-op for backends that can't resume (no SessionID),
 // for already-restarted tasks, or when the session is busy (don't kill mid
 // tool-call).
+//
+// The decision RPCs (`InitialPTYSize`, `IsIdle`) hit the daemon over the
+// Unix socket, so we do them on a background goroutine and dispatch the
+// kick back via QueueUpdateDraw — never block the tview main goroutine on
+// network I/O. The panel size and the session pointer are captured up front
+// on the main goroutine where it's safe to read them.
 func (a *App) maybeKickNarrowRerender(task *model.Task, sess agent.SessionHandle) {
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
-	initCols, _ := sess.InitialPTYSize()
-	_, panelCols := a.computePTYSize()
-	decision := shouldKickNarrowRerender(
-		task.SessionID != "",
-		initCols,
-		int(panelCols),
-		sess.IsIdle(),
-		a.pendingNarrowRestart[task.ID],
-	)
-	switch decision {
-	case narrowRerenderSkip:
-		return
-	case narrowRerenderDeferBusy:
-		uxlog.Log("[tui] narrow-rerender deferred: task=%s busy (init=%d panel=%d)", task.ID, initCols, panelCols)
-		return
-	case narrowRerenderKick:
-		uxlog.Log("[tui] narrow-rerender: stopping task=%s session=%s (init=%dx panel=%dx)", task.ID, task.SessionID, initCols, panelCols)
-		a.statusbar.SetInfo("Re-rendering at full width…")
-		a.pendingNarrowRestart[task.ID] = true
-		if err := sess.Stop(); err != nil {
-			uxlog.Log("[tui] narrow-rerender: stop failed task=%s err=%v", task.ID, err)
-			delete(a.pendingNarrowRestart, task.ID)
-			a.statusbar.ClearInfo()
-		}
+	if task.SessionID == "" {
+		return // backend doesn't support --session-id resume; nothing to do
 	}
+	if a.pendingNarrowRestart[task.ID] {
+		return // a kick is already in flight for this task
+	}
+	taskID := task.ID
+	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
+
+	go func() {
+		// RPC calls — must NOT happen on the tview main goroutine.
+		initCols, _ := sess.InitialPTYSize()
+		idle := sess.IsIdle()
+		a.tapp.QueueUpdateDraw(func() {
+			// Re-check liveness and the pending flag — anything could have
+			// changed during the RPC round-trip.
+			if !sess.Alive() || a.pendingNarrowRestart[taskID] {
+				return
+			}
+			decision := shouldKickNarrowRerender(true, initCols, int(panelCols), idle, false)
+			switch decision {
+			case narrowRerenderSkip:
+				return
+			case narrowRerenderDeferBusy:
+				uxlog.Log("[tui] narrow-rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
+				return
+			case narrowRerenderKick:
+				uxlog.Log("[tui] narrow-rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
+				a.statusbar.SetInfo("Re-rendering at full width…")
+				a.pendingNarrowRestart[taskID] = true
+				if err := sess.Stop(); err != nil {
+					uxlog.Log("[tui] narrow-rerender: stop failed task=%s err=%v", taskID, err)
+					delete(a.pendingNarrowRestart, taskID)
+					a.statusbar.ClearInfo()
+				}
+			}
+		})
+	}()
+}
+
+// reapStaleNarrowRestart clears a leaked pendingNarrowRestart entry when the
+// session it referred to has died without firing handleSessionExitUI (daemon
+// crash mid-stop, lost stream notification, etc.). Called from onTaskSelect
+// before maybeKickNarrowRerender so a stuck flag can't permanently block
+// recovery.
+func (a *App) reapStaleNarrowRestart(taskID string, sess agent.SessionHandle) {
+	if !a.pendingNarrowRestart[taskID] {
+		return
+	}
+	if sess != nil && sess.Alive() {
+		return // exit notification still pending; let it run
+	}
+	uxlog.Log("[tui] narrow-rerender: reaping stale pending flag for task=%s", taskID)
+	delete(a.pendingNarrowRestart, taskID)
+	a.statusbar.ClearInfo()
 }
 
 // onNewTask opens the new task form.
@@ -2356,18 +2406,24 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	return uint16(centerH), uint16(centerW)
 }
 
-// ptySizeFromPaneRect derives the agent PTY size from the agent pane's outer
-// rect (as returned by GetInnerRect on a borderless tview Box). Rejects the
-// tview Box default of 15x10 — that rect surfaces before Flex has laid the
-// pane out and would produce a 20x8 PTY (Claude renders narrow forever).
+// ptySizeFromPaneRect derives the agent PTY size from the agent pane's full
+// box rect (as returned by GetInnerRect — the agent pane has no native tview
+// border, so its inner rect equals its outer rect). The pane draws its own
+// 1-cell border via widget.DrawBorderedPanel, so the visible content area is
+// pw-2 by ph-2.
+//
+// Rejects the tview Box default of 15x10 — that rect surfaces before Flex
+// has laid the pane out and would produce a 20x8 PTY (Claude renders narrow
+// forever).
 func ptySizeFromPaneRect(pw, ph int) (rows, cols uint16) {
 	if pw <= 0 || ph <= 0 {
 		return 0, 0
 	}
 	// tview's NewBox defaults to 15x10. Any laid-out agent pane is wider
-	// than that on a usable terminal, so we treat anything ≤ those as the
-	// uninitialized default. 30x10 stays generous enough that even a tiny
-	// 50-col host fed via the fallback would not falsely match.
+	// AND taller than those defaults on a usable terminal, so we treat
+	// anything ≤ either as the uninitialized default. 30x10 stays generous
+	// enough that even a tiny 50-col host fed via the fallback would not
+	// falsely match.
 	if pw <= 30 || ph <= 10 {
 		return 0, 0
 	}

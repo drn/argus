@@ -1517,7 +1517,7 @@ func TestShouldKickNarrowRerender(t *testing.T) {
 			want: narrowRerenderSkip,
 		},
 		{
-			name:         "skip just-below threshold + huge panel",
+			name:         "kick just-below threshold + huge panel",
 			hasSessionID: true, initCols: 59, panelCols: 190, idle: true,
 			want: narrowRerenderKick,
 		},
