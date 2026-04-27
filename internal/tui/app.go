@@ -448,9 +448,10 @@ func (a *App) Run() error {
 	// synchronous (it sends on a buffered channel, then blocks on a per-call
 	// done channel until the event loop executes the closure). The event loop
 	// only starts inside tapp.Run() below, so queuing now would deadlock the
-	// TUI before any frame is painted. Setting modal state directly is safe —
-	// we're on the main goroutine, no event loop is running yet, and tview
-	// Pages/SetFocus take their own locks.
+	// TUI before any frame is painted. Setting modal state directly is safe
+	// because no Draw goroutine exists yet — Pages.AddPage / SwitchToPage
+	// don't take their own locks (only SetFocus does), so the safety comes
+	// from the absence of a concurrent reader, not internal synchronization.
 	if a.daemonStale {
 		a.openRestartDaemonPrompt()
 	}

@@ -278,6 +278,52 @@ func TestSetDaemonStale_StoresFlag(t *testing.T) {
 	}
 }
 
+// Regression test for the startup deadlock fixed in 67eda38. Run() opens the
+// daemon-stale prompt directly because tview v0.42's QueueUpdate is
+// synchronous (sends on `updates`, then blocks on a per-call done channel
+// until the event loop runs the closure). The contract this test pins:
+// openRestartDaemonPrompt itself must remain safe to call without an event
+// loop running, because Run() calls it directly before tapp.Run(). If
+// someone modifies openRestartDaemonPrompt to internally use QueueUpdate /
+// QueueUpdateDraw, this test will time out.
+//
+// Note: this test does NOT cover the case of Run() itself re-wrapping the
+// call in QueueUpdateDraw — that regression is guarded by the explicit
+// comment in app.go and the gotcha entry in ui-threading.md, plus would
+// require a Run()-with-sim-screen harness we don't have.
+func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true, false)
+
+	tApp, _, ls := simApp(t)
+	app.tapp = tApp
+	app.screen = ls
+	app.tapp.SetInputCapture(app.handleGlobalKey)
+	app.tapp.SetRoot(app.root, true)
+	// Deliberately NOT starting the event loop — this mimics the window
+	// inside Run() between SetScreen and tapp.Run().
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app.openRestartDaemonPrompt()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("openRestartDaemonPrompt blocked before tapp.Run() — likely re-introduced QueueUpdateDraw deadlock")
+	}
+
+	if app.mode != modeRestartDaemonPrompt {
+		t.Errorf("mode = %v, want modeRestartDaemonPrompt", app.mode)
+	}
+	if app.restartDaemonModal == nil {
+		t.Error("restartDaemonModal should be set")
+	}
+}
+
 func TestSmoke_TabSwitching(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
