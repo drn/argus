@@ -76,4 +76,33 @@ test.describe('offline view', () => {
     });
     await expect(page.locator('#offline-screen')).toBeVisible();
   });
+
+  test('retry with no token bounces back to the auth screen', async ({ page }) => {
+    // Edge case: the offline screen is reachable without a saved token (e.g.,
+    // user hit it via showOffline() before authenticating). Retry should send
+    // them to the auth screen, not loop on /api/status with an empty Bearer.
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto('/');
+    await expect(page.locator('#auth-screen')).toBeVisible();
+    await page.evaluate(() => (window as any).showOffline());
+    await expect(page.locator('#offline-screen')).toBeVisible();
+    await page.locator('#retry-btn').click();
+    await expect(page.locator('#auth-screen')).toBeVisible();
+    await expect(page.locator('#offline-screen')).toBeHidden();
+  });
+
+  test('logout while connected stops the poll loop', async ({ page }) => {
+    // Regression for review W1: setInterval used to keep firing after logout,
+    // which 401s with the empty token and tripped the offline screen on top
+    // of the auth screen. Verify the timer is cleared on logout.
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+
+    await page.evaluate(() => (window as any).logout());
+    await expect(page.locator('#auth-screen')).toBeVisible();
+
+    const timerCleared = await page.evaluate(() => (window as any).__argusRefreshTimer() === null);
+    expect(timerCleared).toBe(true);
+  });
 });

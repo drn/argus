@@ -973,6 +973,11 @@ function startRefreshTimer() {
   refreshTimer = setInterval(refresh, 5000);
 }
 
+// Test hook: lets specs verify logout()/showOffline() lifecycle clears the
+// poll timer. Returning the variable rather than exposing it directly keeps
+// the rest of the SPA from accidentally mutating it.
+function __argusRefreshTimer() { return refreshTimer; }
+
 // --- API (with 10s timeout) ---
 async function api(path, opts = {}) {
   const controller = new AbortController();
@@ -993,11 +998,21 @@ async function api(path, opts = {}) {
 function logout() {
   localStorage.removeItem('argus-token');
   TOKEN = '';
+  // Stop the poll loop. Without this, setInterval keeps calling refresh(),
+  // which 401s with the empty token and would trip the offline screen
+  // (after two failures) on top of the auth screen.
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  connectFailures = 0;
+  offlineShown = false;
+  document.getElementById('offline-screen').classList.remove('shown');
   document.getElementById('main-app').style.display = 'none';
   document.getElementById('auth-screen').style.display = 'flex';
 }
 
 // --- Refresh ---
+// Returns true on success, false on any failure (network or non-2xx). Callers
+// like retryConnection() use the return value as an explicit success signal
+// instead of inferring it from connectFailures or offlineShown.
 async function refresh() {
   try {
     const tasksUrl = listFilter === FILTER_ARCHIVED ? '/api/tasks?archived=1' : '/api/tasks';
@@ -1016,9 +1031,11 @@ async function refresh() {
 
     tasks = data.tasks || [];
     renderTaskList();
+    return true;
   } catch(e) {
     document.getElementById('conn-dot').className = 'status-dot err';
     onConnectFailure();
+    return false;
   }
 }
 
@@ -1038,6 +1055,9 @@ function onConnectSuccess() {
 function showOffline() {
   if (offlineShown) return;
   offlineShown = true;
+  // Reset the counter so subsequent failures while offline don't keep
+  // incrementing it; the `offlineShown` guard above is what gates re-entry.
+  connectFailures = 0;
   // Tear down terminal/SSE so we don't leave the EventSource auto-reconnecting
   // in the background while the offline view is showing. The detail view also
   // closes so the user lands on the task list when reconnect succeeds.
@@ -1072,8 +1092,8 @@ async function retryConnection() {
       hideOffline();
       return;
     }
-    await refresh();
-    if (!offlineShown) loadProjects();
+    const ok = await refresh();
+    if (ok) loadProjects();
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
   }
@@ -2525,10 +2545,14 @@ window.addEventListener('online', () => {
 });
 window.addEventListener('offline', () => {
   document.getElementById('conn-dot').className = 'status-dot err';
-  showTermStatus('offline', 'error');
-  // The browser is definitive: if it says offline, /api/* won't work — flip
-  // straight to the offline view rather than wait for the next poll's threshold.
-  if (TOKEN) showOffline();
+  // showTermStatus only makes sense when a term/detail view is up — gate it
+  // alongside showOffline (which itself does nothing without a token).
+  if (TOKEN) {
+    showTermStatus('offline', 'error');
+    // The browser is definitive: if it says offline, /api/* won't work — flip
+    // straight to the offline view rather than wait for the next poll's threshold.
+    showOffline();
+  }
 });
 
 // --- Init ---
