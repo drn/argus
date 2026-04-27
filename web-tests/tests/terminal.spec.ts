@@ -302,6 +302,34 @@ test.describe('terminal', () => {
     expect(result.final.pendingViewportSync).toBe(false);
   });
 
+  test('xterm-viewport is the topmost element so touches reach the scroll target', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    // Without the z-index fix, .xterm-screen paints on top of .xterm-viewport
+    // and elementFromPoint at the visual centre of the term returns the
+    // canvas / screen layer — touches go there and never hit the scrollable
+    // viewport. Confirm the lift worked: the topmost element at the term's
+    // centre must be inside .xterm-viewport's subtree.
+    const result = await page.evaluate(() => {
+      const term = document.getElementById('term')!;
+      const rect = term.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const top = document.elementFromPoint(cx, cy);
+      const viewport = document.querySelector('.xterm-viewport')!;
+      return {
+        topTag: top?.tagName,
+        topClass: top?.className,
+        topInViewport: top !== null && (top === viewport || viewport.contains(top)),
+        viewportZIndex: getComputedStyle(viewport).zIndex,
+      };
+    });
+    expect(result.viewportZIndex).toBe('1');
+    expect(result.topInViewport).toBe(true);
+  });
+
   test('isTermScrolling gate blocks writes until scrollend fires', async ({ page }) => {
     await login(page);
     await page.locator('.task-item').first().click();

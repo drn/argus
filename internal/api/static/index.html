@@ -228,6 +228,19 @@ button:disabled { opacity: 0.5; cursor: default; }
      container from rubber-banding and hijacking the gesture. */
   touch-action: pan-y;
   overscroll-behavior-y: contain;
+  /* CRITICAL: lift the viewport above .xterm-screen / canvas so touches
+     actually reach it. xterm.js's default DOM order paints .xterm-screen
+     (canvas) on top of .xterm-viewport, so on touch devices iOS routes
+     gestures to the non-scrollable canvas layer — that's the real cause
+     of "scrolling sometimes doesn't sense" on the PWA. See xterm.js
+     issue #512. The viewport's background is transparent and its only
+     child (.xterm-scroll-area) is visibility:hidden, so lifting it on
+     top is visually invisible — but turns it into the actual touch
+     target. Selection and mouse-mode forwarding via .xterm-screen
+     listeners stop working as a tradeoff; for a mobile PWA viewing
+     agent output, that's acceptable. Tap-to-focus is restored manually
+     in onTermTouchStart. */
+  z-index: 1;
 }
 .jump-bottom-btn {
   position: absolute;
@@ -931,7 +944,15 @@ const SCROLLEND_FALLBACK_MS = 100;
 // trivially correct (no risk of adding a listener that destroyTerm misses).
 const HAS_NATIVE_SCROLLEND = typeof window !== 'undefined' && 'onscrollend' in window;
 
-function onTermTouchStart() { termTouching = true; }
+function onTermTouchStart() {
+  termTouching = true;
+  // Restore tap-to-focus: lifting .xterm-viewport above .xterm-screen
+  // (the z-index fix that makes touch scrolling actually reach the
+  // scrollable element) means xterm's own focus handlers on .xterm-screen
+  // no longer fire. Focus the term ourselves so the soft keyboard still
+  // pops up when the user taps to type.
+  if (term) try { term.focus(); } catch(e) {}
+}
 function onTermTouchEnd() {
   termTouching = false;
   // If touch ends without producing any scroll events (passive tap),
