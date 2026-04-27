@@ -1048,8 +1048,14 @@ async function refresh() {
 
     const s = status.sessions;
     const t = status.tasks;
-    // s.running includes idle sessions; subtract so the running count means
+    // s.running includes idle sessions; subtract so the count means
     // "actively working" — matches the TUI's spinner-vs-moon distinction.
+    // /api/status and /api/tasks are separate snapshots, so a session that
+    // transitions between the two requests can briefly leave s.idle > s.running
+    // (a session became idle then exited); clamp to 0 to keep the glanceable
+    // header sane. The per-task badges are still authoritative for any
+    // individual task — this is a cosmetic header counter, not a source of
+    // truth.
     const active = Math.max(0, s.running - s.idle);
     const idleSeg = s.idle > 0 ? ` / ${s.idle} idle` : '';
     document.getElementById('header-stats').textContent =
@@ -1186,13 +1192,18 @@ function renderTaskList() {
 
 function projectDotModifier(list) {
   // Mirrors TUI projectStatusIcon priority: running > review > idle > complete.
+  // `pending` looks unused at first read — it gates the "all complete vs
+  // mixed complete+pending" distinction at the bottom (only show purple when
+  // there is no pending work left).
   let running = false, idle = false, review = false, pending = false, complete = false;
   for (const t of list) {
-    if (t.status === 'in_progress') {
-      if (t.idle) idle = true; else running = true;
-    } else if (t.status === 'in_review') review = true;
-    else if (t.status === 'complete') complete = true;
-    else pending = true;
+    switch (effectiveStatus(t)) {
+      case 'in_progress': running = true; break;
+      case 'idle':        idle = true; break;
+      case 'in_review':   review = true; break;
+      case 'complete':    complete = true; break;
+      default:            pending = true;
+    }
   }
   if (running) return 'running';
   if (review) return 'review';
@@ -1229,6 +1240,10 @@ function statusLabel(s) {
 // effectiveStatus collapses (status, idle) into a single key used for badges,
 // labels, and sort ordering. In_progress + idle becomes 'idle' so the rest of
 // the SPA can treat it like any other status string.
+//
+// 'idle' is a display-only key, not a real model.Status — the Go model only
+// has pending/in_progress/in_review/complete. Don't compare t.status === 'idle'
+// anywhere; always go through this function.
 function effectiveStatus(t) {
   if (t.status === 'in_progress' && t.idle) return 'idle';
   return t.status;
@@ -1641,10 +1656,11 @@ async function resumeTask() {
   try {
     const r = await api(`/api/tasks/${currentTask.id}/resume`, { method: 'POST' });
     if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'resume failed'); }
+    // refresh() repopulates `tasks` with server data; pick the fresh row so
+    // currentTask reflects the authoritative status/idle/elapsed (no need to
+    // optimistically write fields the server already set).
     await refresh();
     currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
-    currentTask.status = 'in_progress';
-    currentTask.idle = false;
     document.getElementById('detail-subtitle').textContent =
       `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}`;
     renderOverflowMenu();

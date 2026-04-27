@@ -167,7 +167,7 @@ func TestHandleGetTask(t *testing.T) {
 	})
 }
 
-func TestComputeIdle(t *testing.T) {
+func TestComputeRuntimeState(t *testing.T) {
 	cases := []struct {
 		name     string
 		status   model.Status
@@ -193,7 +193,7 @@ func TestComputeIdle(t *testing.T) {
 			if tc.idle {
 				idle["t1"] = true
 			}
-			testutil.Equal(t, computeIdle(task, running, idle), tc.wantIdle)
+			testutil.Equal(t, computeRuntimeState(task, running, idle).Idle, tc.wantIdle)
 		})
 	}
 }
