@@ -24,6 +24,22 @@ type SessionProvider interface {
 
 // SessionHandle abstracts a single agent session.
 // Implemented by Session (in-process) and RemoteSession (daemon client).
+//
+// IMPORTANT: most read methods on RemoteSession block on a SessionStatus
+// JSON-RPC round-trip — never call them from the tview main goroutine.
+// Specifically: PID, IsIdle, PTYSize, InitialPTYSize, WorkDir, TotalWritten
+// (when refreshed). And every write method (WriteInput, Resize, Stop)
+// hits the daemon over the Unix socket.
+//
+// The lock-free / local-only methods (safe on the main goroutine):
+//   - Alive() — non-blocking channel select.
+//   - Done() — returns the channel itself.
+//   - Err() — local field.
+//   - RecentOutput, RecentOutputTail — local ring buffer.
+//   - AddWriter, RemoveWriter — local writer registration.
+//
+// Use a goroutine + QueueUpdateDraw for everything else, the same pattern
+// refreshTasksAsync uses. See context/knowledge/gotchas/daemon-rpc.md.
 type SessionHandle interface {
 	PID() int
 	WriteInput(p []byte) (int, error)
