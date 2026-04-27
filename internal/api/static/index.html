@@ -236,10 +236,11 @@ button:disabled { opacity: 0.5; cursor: default; }
      issue #512. The viewport's background is transparent and its only
      child (.xterm-scroll-area) is visibility:hidden, so lifting it on
      top is visually invisible — but turns it into the actual touch
-     target. Selection and mouse-mode forwarding via .xterm-screen
-     listeners stop working as a tradeoff; for a mobile PWA viewing
-     agent output, that's acceptable. Tap-to-focus is restored manually
-     in onTermTouchStart. */
+     target. Selection, mouse-mode forwarding, and link click handlers
+     via .xterm-screen listeners stop working as a tradeoff; for a
+     mobile PWA viewing agent output, that's acceptable. Tap-to-focus
+     is restored manually in onTermTouchEnd (gated on !isTermScrolling
+     so a swipe doesn't pop the soft keyboard). */
   z-index: 1;
 }
 .jump-bottom-btn {
@@ -928,6 +929,10 @@ let isTermScrolling = false;
 let scrollendFallbackTimer = null;
 let termViewportEl = null;
 let termTouchEl = null;
+// Tracks whether a chunk is currently in xterm's parser (term.write
+// callback hasn't fired yet). Defined here with the other gate state
+// for locality. See queueWrite below for the serialization rationale.
+let inflightWrite = false;
 // syncVisualViewport mutates `--app-height` on <html> and `transform` on
 // #detail-view — both ancestors of `.xterm-viewport`. iOS kills momentum on
 // any ancestor mutation, and visualViewport.resize fires mid-flick when the
@@ -962,6 +967,22 @@ function onTermTouchEnd() {
     // it now so a pending viewport sync from earlier isn't stuck queued.
     drainIfSettled();
   }
+  // If wasTap is false, drain happens via the upcoming `scrollend`
+  // (or polyfilled equivalent). onTermTouchCancel handles the case
+  // where iOS interrupts mid-scroll and `scrollend` may never arrive.
+}
+function onTermTouchCancel() {
+  // iOS dispatches `touchcancel` when the system steals the gesture
+  // (incoming call, alert overlay, etc.). If a scroll was in progress
+  // when the cancel landed, native `scrollend` is not guaranteed to
+  // fire afterward — leaving isTermScrolling stuck `true` forever and
+  // wedging every subsequent SSE write into pendingChunks until
+  // destroyTerm. Force the gate open so the queue can drain.
+  termTouching = false;
+  isTermScrolling = false;
+  clearTimeout(scrollendFallbackTimer);
+  scrollendFallbackTimer = null;
+  drainIfSettled();
 }
 
 function onTermScroll() {
@@ -1423,7 +1444,7 @@ function setupTerm() {
   if (termTouchEl) {
     termTouchEl.addEventListener('touchstart', onTermTouchStart, { passive: true });
     termTouchEl.addEventListener('touchend', onTermTouchEnd, { passive: true });
-    termTouchEl.addEventListener('touchcancel', onTermTouchEnd, { passive: true });
+    termTouchEl.addEventListener('touchcancel', onTermTouchCancel, { passive: true });
   }
 
   // Forward keystrokes to the agent. xterm gives us already-translated bytes
@@ -1473,7 +1494,7 @@ function destroyTerm() {
   if (termTouchEl) {
     termTouchEl.removeEventListener('touchstart', onTermTouchStart);
     termTouchEl.removeEventListener('touchend', onTermTouchEnd);
-    termTouchEl.removeEventListener('touchcancel', onTermTouchEnd);
+    termTouchEl.removeEventListener('touchcancel', onTermTouchCancel);
     termTouchEl = null;
   }
   if (termViewportEl) {
@@ -1529,7 +1550,13 @@ function enqueuePending(bytes) {
 // only one chunk is parsing; once the user touches, the lone in-flight
 // chunk drains within ~one frame and no more mutations occur until they
 // release. Any subsequent writes go to pendingChunks via bufferOrWrite.
-let inflightWrite = false;
+//
+// xterm 5.x calls the write callback synchronously when its parser has no
+// backpressure, so the recursive queueWrite inside the callback can
+// stack-recurse for the duration of a drain. Recursion depth is bounded
+// by `pendingChunks.length`, which is capped by PENDING_MAX_BYTES /
+// chunk_size (~64 frames at typical 4KB PTY chunks) — well within V8's
+// limit. Mentioning here so the depth isn't a surprise during debugging.
 function queueWrite(bytes) {
   if (!term) return;
   if (inflightWrite) {
@@ -1556,7 +1583,12 @@ function queueWrite(bytes) {
 }
 
 // Drain pendingChunks back into the serial write queue. queueWrite handles
-// inflight tracking, so this only needs to kick off the first chunk.
+// inflight tracking, so this only needs to kick off the first chunk — the
+// write callback chain drains the rest. If a write is already in flight
+// when flushPending is called, this is a no-op (kicking another chunk
+// into queueWrite would just re-enqueue it via the inflight branch, then
+// the in-flight callback's gate check picks it up — same outcome, fewer
+// hops).
 function flushPending() {
   if (!term || pendingChunks.length === 0) return;
   if (!inflightWrite) {
@@ -1564,6 +1596,7 @@ function flushPending() {
     pendingBytes -= next.length;
     queueWrite(next);
   }
+  // else: in-flight callback's gate check will drain; nothing to do here.
   updateJumpButton();
 }
 
