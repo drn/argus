@@ -50,13 +50,22 @@ func Run(sourceDir string) (string, error) {
 		out, err := runCmd(dir, "git", "fetch", "origin", "master")
 		log.WriteString(out)
 		if err != nil {
-			fmt.Fprintf(&log, "(git fetch failed: %v — continuing with local source)\n\n", err)
+			// Most common causes: offline, or origin uses `main` not
+			// `master` (e.g. fork). Either way, the existing local source
+			// is left untouched — `go install` will rebuild from whatever
+			// the clone already contains.
+			fmt.Fprintf(&log, "(git fetch failed: %v — leaving source clone untouched)\n\n", err)
 		} else {
 			log.WriteString("\n$ git reset --hard origin/master\n")
 			out, err := runCmd(dir, "git", "reset", "--hard", "origin/master")
 			log.WriteString(out)
 			if err != nil {
-				fmt.Fprintf(&log, "(git reset failed: %v — continuing with local source)\n", err)
+				// `git reset --hard` is not atomic at the file level: a
+				// mid-operation failure can leave the working tree mixing
+				// origin/master files with the previous HEAD. `go install`
+				// runs against that mixed state and will surface its own
+				// errors if the result doesn't compile.
+				fmt.Fprintf(&log, "(git reset failed: %v — working tree may be partially reset)\n", err)
 			}
 			log.WriteString("\n")
 		}

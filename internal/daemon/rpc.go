@@ -244,7 +244,7 @@ func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
 	return nil
 }
 
-// UpdateSelf runs `git pull --ff-only` (best-effort) followed by
+// UpdateSelf fetches origin and hard-resets to `origin/master`, then runs
 // `go install ./...` against the configured argus source path. The combined
 // command output is returned regardless of success so callers can show it to
 // the user. The daemon is NOT restarted by this RPC — the caller decides.
