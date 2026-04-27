@@ -1,7 +1,8 @@
-// Package selfupdate runs `git pull --ff-only` and `go install ./...` against
-// a configured Argus source clone so the running binary can be replaced with
-// a freshly-built one. Callers (daemon RPC, web API) are responsible for
-// triggering the daemon respawn after a successful run.
+// Package selfupdate fetches origin, hard-resets to origin/master, and runs
+// `go install ./...` against a configured Argus source clone so the running
+// binary can be replaced with a freshly-built one. Callers (daemon RPC, web
+// API) are responsible for triggering the daemon respawn after a successful
+// run.
 package selfupdate
 
 import (
@@ -16,13 +17,17 @@ import (
 // ErrSourcePathUnset is returned when no source path is configured.
 var ErrSourcePathUnset = errors.New("argus source path is not configured")
 
-// Run executes `git pull --ff-only` (best-effort) followed by `go install ./...`
-// from sourceDir. The combined stdout+stderr is returned regardless of error
-// so callers can surface the log to the user.
+// Run fetches origin, hard-resets the source clone to `origin/master`, and
+// runs `go install ./...` from sourceDir. The combined stdout+stderr is
+// returned regardless of error so callers can surface the log to the user.
 //
-// `git pull` failures are logged into the output but do not abort the run —
-// the user may already have the latest commit local, or be on a branch with
-// no upstream. A `go install` failure does abort.
+// The reset is best-effort: fetch/reset failures are logged but do not abort
+// the run — the user may be offline, or origin/master may not exist (e.g.
+// fork). A `go install` failure does abort.
+//
+// Hard-reset is intentional: this clone exists solely to produce binaries,
+// not for development, so tracking-branch state and local commits are not
+// preserved. Whatever's on origin/master is exactly what gets installed.
 func Run(sourceDir string) (string, error) {
 	if strings.TrimSpace(sourceDir) == "" {
 		return "", ErrSourcePathUnset
@@ -41,13 +46,20 @@ func Run(sourceDir string) (string, error) {
 	var log strings.Builder
 
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		log.WriteString("$ git pull --ff-only\n")
-		out, err := runCmd(dir, "git", "pull", "--ff-only")
+		log.WriteString("$ git fetch origin master\n")
+		out, err := runCmd(dir, "git", "fetch", "origin", "master")
 		log.WriteString(out)
 		if err != nil {
-			fmt.Fprintf(&log, "(git pull failed: %v — continuing with local source)\n", err)
+			fmt.Fprintf(&log, "(git fetch failed: %v — continuing with local source)\n\n", err)
+		} else {
+			log.WriteString("\n$ git reset --hard origin/master\n")
+			out, err := runCmd(dir, "git", "reset", "--hard", "origin/master")
+			log.WriteString(out)
+			if err != nil {
+				fmt.Fprintf(&log, "(git reset failed: %v — continuing with local source)\n", err)
+			}
+			log.WriteString("\n")
 		}
-		log.WriteString("\n")
 	}
 
 	log.WriteString("$ go install ./...\n")
