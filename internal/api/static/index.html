@@ -912,11 +912,14 @@ let termTouchEl = null;
 // URL bar collapses/expands. Defer the sync until momentum settles so the
 // flick survives.
 let pendingViewportSync = false;
+function isInMomentum() { return (Date.now() - lastTermScroll) < SETTLE_MS; }
 function onTermTouchStart() {
   termTouching = true;
-  // Make sure a settle pass is queued — without this, a touch that fires
-  // no scroll events (e.g. a tap that doesn't move) would never flush a
-  // pending viewport sync.
+  // Arm a settle pass on every touch — even a passive tap that fires no
+  // scroll events. Without this, a visualViewport.resize that landed
+  // immediately before the tap would leave pendingViewportSync queued
+  // forever. Tradeoff: every #term touch delays a pending sync by up to
+  // SETTLE_MS, which is acceptable vs. a stuck queue.
   scheduleSettle();
 }
 function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
@@ -926,8 +929,11 @@ function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
 function scheduleSettle() {
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => {
-    const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
-    if (termTouching || inMomentum) return;
+    if (termTouching || isInMomentum()) return;
+    // Clear pendingViewportSync BEFORE calling syncVisualViewport so a
+    // re-entrant call from inside it (currently impossible — termTouching
+    // is false and inMomentum is false here — but cheap insurance against
+    // future gate changes) cannot re-queue and lose this flush.
     if (pendingViewportSync) { pendingViewportSync = false; syncVisualViewport(); }
     if (termIsAtBottom()) flushPending();
   }, SETTLE_MS);
@@ -1366,8 +1372,7 @@ function destroyTerm() {
 // is a defensive corner, not a hot path).
 function bufferOrWrite(bytes) {
   if (!term) return;
-  const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
-  if (termIsAtBottom() && !termTouching && !inMomentum) {
+  if (termIsAtBottom() && !termTouching && !isInMomentum()) {
     term.write(bytes);
     return;
   }
@@ -1735,8 +1740,7 @@ function syncVisualViewport() {
   // resulting setProperty on <html> + style.transform on #detail-view
   // mutate ancestors of .xterm-viewport, which kills the momentum scroll.
   // The settle timer flushes pendingViewportSync once it's safe.
-  const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
-  if (termTouching || inMomentum) {
+  if (termTouching || isInMomentum()) {
     pendingViewportSync = true;
     return;
   }

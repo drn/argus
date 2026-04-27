@@ -242,24 +242,62 @@ test.describe('terminal', () => {
     expect(baseline.before).toBe(false);
     expect(baseline.after).toBe(false); // ran inline, didn't queue
 
-    // Now simulate a touch in progress and fire visualViewport.resize.
-    // syncVisualViewport must short-circuit and queue rather than mutate
-    // ancestors of .xterm-viewport mid-flick.
-    const queued = await page.evaluate(() => {
+    // Pre-set --app-height to a sentinel so the deferred sync's setProperty
+    // call has a different value to write — without this, the browser
+    // dedupes same-value writes and no mutation appears.
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty('--app-height', '1px');
+    });
+
+    // Simulate a touch in progress and fire visualViewport.resize while a
+    // MutationObserver watches the .xterm-viewport ancestor chain. The
+    // queued resize must NOT produce ancestor mutations (which is what
+    // kills iOS momentum), and the queued sync must actually run on
+    // touchend (proven by a mutation overwriting --app-height back to the
+    // real vv.height).
+    const result = await page.evaluate(async () => {
+      const viewport = document.querySelector('.xterm-viewport')!;
+      const ancestors = new Set<Element>();
+      let p: Element | null = viewport.parentElement;
+      while (p) { ancestors.add(p); p = p.parentElement; }
+      let duringTouchMutations = 0;
+      let afterSettleMutations = 0;
+      let phase: 'touch' | 'settle' = 'touch';
+      const obs = new MutationObserver(rs => {
+        for (const r of rs) {
+          if (ancestors.has(r.target as Element) || r.target === viewport) {
+            if (phase === 'touch') duringTouchMutations++;
+            else afterSettleMutations++;
+          }
+        }
+      });
+      obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+
       document.getElementById('term')!.dispatchEvent(new Event('touchstart'));
       window.visualViewport?.dispatchEvent(new Event('resize'));
-      return (window as any).argusTouchState();
-    });
-    expect(queued.touching).toBe(true);
-    expect(queued.pendingViewportSync).toBe(true);
+      const queued = (window as any).argusTouchState();
+      await new Promise(res => setTimeout(res, 30));
 
-    // After touchend the settle timer should drain the queued sync.
-    await page.evaluate(() => {
+      phase = 'settle';
       document.getElementById('term')!.dispatchEvent(new Event('touchend'));
+      // Wait for settle timer (200ms) + buffer.
+      await new Promise(res => setTimeout(res, 350));
+      obs.disconnect();
+      const final = (window as any).argusTouchState();
+      const finalAppHeight = document.documentElement.style.getPropertyValue('--app-height');
+      return { queued, final, duringTouchMutations, afterSettleMutations, finalAppHeight };
     });
-    await expect.poll(async () =>
-      page.evaluate(() => (window as any).argusTouchState().pendingViewportSync)
-    , { timeout: 2000 }).toBe(false);
+    expect(result.queued.touching).toBe(true);
+    expect(result.queued.pendingViewportSync).toBe(true);
+    // The resize fired mid-touch must NOT have mutated ancestors —
+    // otherwise iOS would have killed momentum.
+    expect(result.duringTouchMutations).toBe(0);
+    // After settle, the deferred sync must actually run: setProperty
+    // overwrites our '1px' sentinel with the real vv.height, recording
+    // a mutation on <html>[style].
+    expect(result.afterSettleMutations).toBeGreaterThan(0);
+    expect(result.finalAppHeight).not.toBe('1px');
+    expect(result.final.pendingViewportSync).toBe(false);
   });
 
   test('back button cleans up stream and term', async ({ page }) => {
