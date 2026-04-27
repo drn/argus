@@ -906,7 +906,19 @@ let settleTimer = null;
 // long; lower values let writes race the still-active momentum.
 const SETTLE_MS = 200;
 let termTouchEl = null;
-function onTermTouchStart() { termTouching = true; }
+// syncVisualViewport mutates `--app-height` on <html> and `transform` on
+// #detail-view — both ancestors of `.xterm-viewport`. iOS kills momentum on
+// any ancestor mutation, and visualViewport.resize fires mid-flick when the
+// URL bar collapses/expands. Defer the sync until momentum settles so the
+// flick survives.
+let pendingViewportSync = false;
+function onTermTouchStart() {
+  termTouching = true;
+  // Make sure a settle pass is queued — without this, a touch that fires
+  // no scroll events (e.g. a tap that doesn't move) would never flush a
+  // pending viewport sync.
+  scheduleSettle();
+}
 function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
 // scheduleSettle resets a debounce timer; the callback re-checks every
 // gate that bufferOrWrite uses (at-bottom, !touching, !in-momentum) so a
@@ -915,7 +927,9 @@ function scheduleSettle() {
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => {
     const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
-    if (!termTouching && !inMomentum && termIsAtBottom()) flushPending();
+    if (termTouching || inMomentum) return;
+    if (pendingViewportSync) { pendingViewportSync = false; syncVisualViewport(); }
+    if (termIsAtBottom()) flushPending();
   }, SETTLE_MS);
 }
 
@@ -1257,7 +1271,7 @@ function setupTerm() {
   window.bufferOrWrite = bufferOrWrite;
   window.flushPending = flushPending;
   window.argusPending = () => ({ chunks: pendingChunks.length, bytes: pendingBytes });
-  window.argusTouchState = () => ({ touching: termTouching });
+  window.argusTouchState = () => ({ touching: termTouching, pendingViewportSync });
   // Force a layout pass before fit \u2014 addon reads computed sizes.
   requestAnimationFrame(() => {
     fit();
@@ -1336,6 +1350,7 @@ function destroyTerm() {
   }
   termTouching = false;
   lastTermScroll = 0;
+  pendingViewportSync = false;
   clearTimeout(settleTimer);
   settleTimer = null;
   const btn = document.getElementById('jump-bottom');
@@ -1714,6 +1729,17 @@ window.addEventListener('orientationchange', () => {
 function syncVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
+  // Defer all DOM writes if the user is touching the term or momentum is
+  // still firing. iOS Safari fires visualViewport.resize when the URL bar
+  // collapses mid-flick on a fixed-positioned scrollable container; the
+  // resulting setProperty on <html> + style.transform on #detail-view
+  // mutate ancestors of .xterm-viewport, which kills the momentum scroll.
+  // The settle timer flushes pendingViewportSync once it's safe.
+  const inMomentum = (Date.now() - lastTermScroll) < SETTLE_MS;
+  if (termTouching || inMomentum) {
+    pendingViewportSync = true;
+    return;
+  }
   document.documentElement.style.setProperty('--app-height', `${vv.height}px`);
   // Only translate when the detail view is actually displayed — avoids
   // applying a stale transform to a hidden element when the keyboard moves

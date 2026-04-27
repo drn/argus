@@ -225,6 +225,43 @@ test.describe('terminal', () => {
     expect(dump).toContain('TOUCH_BUFFERED_AAA');
   });
 
+  test('visualViewport.resize during touch defers ancestor-mutating sync', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    // Before any touch, syncVisualViewport must run inline. Confirm the
+    // baseline so a later "no mutations" assertion isn't a vacuous pass
+    // because the listener never fired at all.
+    const baseline = await page.evaluate(() => {
+      const before = (window as any).argusTouchState();
+      window.visualViewport?.dispatchEvent(new Event('resize'));
+      const after = (window as any).argusTouchState();
+      return { before: before.pendingViewportSync, after: after.pendingViewportSync };
+    });
+    expect(baseline.before).toBe(false);
+    expect(baseline.after).toBe(false); // ran inline, didn't queue
+
+    // Now simulate a touch in progress and fire visualViewport.resize.
+    // syncVisualViewport must short-circuit and queue rather than mutate
+    // ancestors of .xterm-viewport mid-flick.
+    const queued = await page.evaluate(() => {
+      document.getElementById('term')!.dispatchEvent(new Event('touchstart'));
+      window.visualViewport?.dispatchEvent(new Event('resize'));
+      return (window as any).argusTouchState();
+    });
+    expect(queued.touching).toBe(true);
+    expect(queued.pendingViewportSync).toBe(true);
+
+    // After touchend the settle timer should drain the queued sync.
+    await page.evaluate(() => {
+      document.getElementById('term')!.dispatchEvent(new Event('touchend'));
+    });
+    await expect.poll(async () =>
+      page.evaluate(() => (window as any).argusTouchState().pendingViewportSync)
+    , { timeout: 2000 }).toBe(false);
+  });
+
   test('back button cleans up stream and term', async ({ page }) => {
     await login(page);
     await page.locator('.task-item').first().click();
