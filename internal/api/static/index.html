@@ -219,7 +219,16 @@ button:disabled { opacity: 0.5; cursor: default; }
   overflow: hidden;
 }
 #term .xterm { padding: 0; }
-#term .xterm-viewport { background: transparent !important; -webkit-overflow-scrolling: touch; }
+#term .xterm-viewport {
+  background: transparent !important;
+  -webkit-overflow-scrolling: touch;
+  /* `pan-y` tells iOS this is the vertical scroll target so it commits to a
+     scroll gesture instead of treating early movement as a tap; combined with
+     `overscroll-behavior-y: contain` it prevents the parent fixed-position
+     container from rubber-banding and hijacking the gesture. */
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
 .jump-bottom-btn {
   position: absolute;
   right: 24px; bottom: 24px;
@@ -892,21 +901,19 @@ let pendingChunks = [];
 let pendingBytes = 0;
 const PENDING_MAX_BYTES = 256 * 1024;
 
-// Touch + scroll-momentum gating. termIsAtBottom() alone misses two windows
-// where term.write still kills iOS momentum: (1) between touchstart and the
-// first detected scroll-up event the viewport hasn't moved yet, so we look
-// at-bottom in JS state but a write mutates DOM mid-fling; (2) after
-// touchend, momentum continues firing scroll events for hundreds of ms, and
-// the moment viewportY snaps back to baseY a write races the still-active
-// fling. Block writes while the user is touching the term, and for SETTLE_MS
-// after the most recent scroll event.
+// Touch + scroll gating. The previous implementation used a 200ms-since-
+// last-scroll heuristic to detect momentum, but iOS Safari throttles scroll
+// events during native fling (sometimes long gaps with no scroll dispatched)
+// so the gate opened mid-momentum and a single term.write killed the fling
+// — exactly the "scrolls one line and stops" symptom. Replaced with the
+// standard scrollend pattern (React PR #32427, argyleink/scrollyfills): use
+// native `scrollend` when available (Safari 26.2+, Chrome, Firefox), polyfill
+// otherwise via debounced scroll + active-pointer tracking. This matches
+// what every popular library does and is robust to the iOS scroll-throttle.
 let termTouching = false;
-let lastTermScroll = 0;
-let settleTimer = null;
-// 200ms covers the tail of a typical iOS mid-velocity fling without
-// introducing perceptible output lag. Higher values delay live output too
-// long; lower values let writes race the still-active momentum.
-const SETTLE_MS = 200;
+let isTermScrolling = false;
+let scrollendFallbackTimer = null;
+let termViewportEl = null;
 let termTouchEl = null;
 // syncVisualViewport mutates `--app-height` on <html> and `transform` on
 // #detail-view — both ancestors of `.xterm-viewport`. iOS kills momentum on
@@ -914,31 +921,54 @@ let termTouchEl = null;
 // URL bar collapses/expands. Defer the sync until momentum settles so the
 // flick survives.
 let pendingViewportSync = false;
-function isInMomentum() { return (Date.now() - lastTermScroll) < SETTLE_MS; }
-function onTermTouchStart() {
-  termTouching = true;
-  // Arm a settle pass on every touch — even a passive tap that fires no
-  // scroll events. Without this, a visualViewport.resize that landed
-  // immediately before the tap would leave pendingViewportSync queued
-  // forever. Tradeoff: every #term touch delays a pending sync by up to
-  // SETTLE_MS, which is acceptable vs. a stuck queue.
-  scheduleSettle();
+// Polyfill cadence: 100ms is the value React/scrollyfills use. Long enough
+// that the modern iOS scroll-throttle (~60Hz worst case) can't be mistaken
+// for a stop, short enough that flush latency is invisible.
+const SCROLLEND_FALLBACK_MS = 100;
+const HAS_NATIVE_SCROLLEND = typeof window !== 'undefined' && 'onscrollend' in window;
+
+function onTermTouchStart() { termTouching = true; }
+function onTermTouchEnd() {
+  termTouching = false;
+  // If touch ends without producing any scroll events (passive tap),
+  // nothing else will trigger a drain — kick the polyfill timer so a
+  // pending viewport sync from earlier doesn't get stuck queued.
+  if (!isTermScrolling) drainIfSettled();
 }
-function onTermTouchEnd() { termTouching = false; scheduleSettle(); }
-// scheduleSettle resets a debounce timer; the callback re-checks every
-// gate that bufferOrWrite uses (at-bottom, !touching, !in-momentum) so a
-// late scroll/touch in the SETTLE_MS window can't slip a flush through.
-function scheduleSettle() {
-  clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => {
-    if (termTouching || isInMomentum()) return;
-    // Clear pendingViewportSync BEFORE calling syncVisualViewport so a
-    // re-entrant call from inside it (currently impossible — termTouching
-    // is false and inMomentum is false here — but cheap insurance against
-    // future gate changes) cannot re-queue and lose this flush.
-    if (pendingViewportSync) { pendingViewportSync = false; syncVisualViewport(); }
-    if (termIsAtBottom()) flushPending();
-  }, SETTLE_MS);
+
+function onTermScroll() {
+  isTermScrolling = true;
+  updateJumpButton();
+  if (HAS_NATIVE_SCROLLEND) return;
+  // Polyfill: every scroll event resets a debounce timer; if no further
+  // scroll fires within SCROLLEND_FALLBACK_MS AND no touch pointer is
+  // down, treat scrolling as ended.
+  clearTimeout(scrollendFallbackTimer);
+  scrollendFallbackTimer = setTimeout(maybeFireScrollend, SCROLLEND_FALLBACK_MS);
+}
+
+function maybeFireScrollend() {
+  // Re-arm if a finger is still on the term — the gesture isn't actually
+  // over yet, even if scroll events stopped flowing.
+  if (termTouching) {
+    scrollendFallbackTimer = setTimeout(maybeFireScrollend, SCROLLEND_FALLBACK_MS);
+    return;
+  }
+  onTermScrollEnd();
+}
+
+function onTermScrollEnd() {
+  isTermScrolling = false;
+  drainIfSettled();
+}
+
+// Drain pending viewport sync + buffered SSE bytes once the term is idle
+// (not touched, not scrolling). Called from scrollend, polyfill timer, and
+// touchend-without-scroll. Cheap to call extra times — gates re-check.
+function drainIfSettled() {
+  if (termTouching || isTermScrolling) return;
+  if (pendingViewportSync) { pendingViewportSync = false; syncVisualViewport(); }
+  if (termIsAtBottom()) flushPending();
 }
 
 // --- Toast ---
@@ -1315,26 +1345,37 @@ function setupTerm() {
   window.bufferOrWrite = bufferOrWrite;
   window.flushPending = flushPending;
   window.argusPending = () => ({ chunks: pendingChunks.length, bytes: pendingBytes });
-  window.argusTouchState = () => ({ touching: termTouching, pendingViewportSync });
+  window.argusTouchState = () => ({
+    touching: termTouching,
+    scrolling: isTermScrolling,
+    pendingViewportSync,
+    nativeScrollend: HAS_NATIVE_SCROLLEND,
+  });
   // Force a layout pass before fit \u2014 addon reads computed sizes.
   requestAnimationFrame(() => {
     fit();
     term.focus();
   });
-  // Toggle the jump-to-input button when user scrolls up into scrollback,
-  // and flush any buffered live output once we're back at the bottom AND
-  // momentum has settled. Flushing immediately on the first at-bottom scroll
-  // event would race active iOS momentum and cancel the gesture.
-  term.onScroll(() => {
-    lastTermScroll = Date.now();
-    scheduleSettle();
-    updateJumpButton();
-  });
+  // Wire scroll/scrollend on `.xterm-viewport` directly (the actual scrollable
+  // element) rather than xterm's `term.onScroll`. The native `scrollend` event
+  // — supported in Safari 26.2+, Chrome, Firefox — fires only when scrolling
+  // (including iOS momentum) has fully stopped, which is the canonical signal
+  // for "safe to mutate DOM again". Polyfill via debounced scroll for older
+  // browsers. See onTermScroll/onTermScrollEnd above.
+  termViewportEl = document.querySelector('#term .xterm-viewport');
+  if (termViewportEl) {
+    termViewportEl.addEventListener('scroll', onTermScroll, { passive: true });
+    if (HAS_NATIVE_SCROLLEND) {
+      termViewportEl.addEventListener('scrollend', onTermScrollEnd, { passive: true });
+    }
+  }
   updateJumpButton();
 
-  // Pause writes while a finger is down on the terminal — iOS momentum
-  // dies on any DOM mutation between touchstart and the first scroll-up
-  // event, and termIsAtBottom() can't detect that window.
+  // Touch tracking is still needed for the polyfill (extends settle window
+  // while a finger is down even if scroll events go quiet) AND for the
+  // touchstart-before-first-scroll race — the polyfill timer can't tell the
+  // difference between "scrolling stopped" and "scrolling hasn't started",
+  // so termTouching gates writes during that window explicitly.
   termTouchEl = document.getElementById('term');
   if (termTouchEl) {
     termTouchEl.addEventListener('touchstart', onTermTouchStart, { passive: true });
@@ -1383,20 +1424,27 @@ function destroyTerm() {
   // no late writer mutates pendingChunks after we clear it.
   pendingChunks = [];
   pendingBytes = 0;
-  // Detach touch listeners — setupTerm() reattaches them. Without removal
-  // they'd accumulate across open/close cycles and stale handlers would
-  // toggle termTouching for finger movements on a disposed term.
+  // Detach touch + scroll listeners — setupTerm() reattaches them. Without
+  // removal they'd accumulate across open/close cycles and stale handlers
+  // would toggle termTouching/isTermScrolling for events on a disposed term.
   if (termTouchEl) {
     termTouchEl.removeEventListener('touchstart', onTermTouchStart);
     termTouchEl.removeEventListener('touchend', onTermTouchEnd);
     termTouchEl.removeEventListener('touchcancel', onTermTouchEnd);
     termTouchEl = null;
   }
+  if (termViewportEl) {
+    termViewportEl.removeEventListener('scroll', onTermScroll);
+    if (HAS_NATIVE_SCROLLEND) {
+      termViewportEl.removeEventListener('scrollend', onTermScrollEnd);
+    }
+    termViewportEl = null;
+  }
   termTouching = false;
-  lastTermScroll = 0;
+  isTermScrolling = false;
   pendingViewportSync = false;
-  clearTimeout(settleTimer);
-  settleTimer = null;
+  clearTimeout(scrollendFallbackTimer);
+  scrollendFallbackTimer = null;
   const btn = document.getElementById('jump-bottom');
   if (btn) { btn.classList.remove('shown'); btn.classList.remove('has-pending'); }
 }
@@ -1410,7 +1458,7 @@ function destroyTerm() {
 // is a defensive corner, not a hot path).
 function bufferOrWrite(bytes) {
   if (!term) return;
-  if (termIsAtBottom() && !termTouching && !isInMomentum()) {
+  if (termIsAtBottom() && !termTouching && !isTermScrolling) {
     term.write(bytes);
     return;
   }
@@ -1774,13 +1822,13 @@ window.addEventListener('orientationchange', () => {
 function syncVisualViewport() {
   const vv = window.visualViewport;
   if (!vv) return;
-  // Defer all DOM writes if the user is touching the term or momentum is
-  // still firing. iOS Safari fires visualViewport.resize when the URL bar
-  // collapses mid-flick on a fixed-positioned scrollable container; the
-  // resulting setProperty on <html> + style.transform on #detail-view
+  // Defer all DOM writes if the user is touching the term or scroll/momentum
+  // is still in progress. iOS Safari fires visualViewport.resize when the
+  // URL bar collapses mid-flick on a fixed-positioned scrollable container;
+  // the resulting setProperty on <html> + style.transform on #detail-view
   // mutate ancestors of .xterm-viewport, which kills the momentum scroll.
-  // The settle timer flushes pendingViewportSync once it's safe.
-  if (termTouching || isInMomentum()) {
+  // scrollend (or its polyfill) drains pendingViewportSync once it's safe.
+  if (termTouching || isTermScrolling) {
     pendingViewportSync = true;
     return;
   }

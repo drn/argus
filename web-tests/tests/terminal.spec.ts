@@ -204,8 +204,9 @@ test.describe('terminal', () => {
     const duringTouch = await page.evaluate(() => (window as any).argusPending());
     expect(duringTouch.chunks).toBe(1);
 
-    // touchend without a scroll-up leaves us at the bottom — the settle
-    // timer should auto-flush within SETTLE_MS.
+    // touchend without a scroll-up leaves us at the bottom — drainIfSettled
+    // runs synchronously on touchend (since !isTermScrolling), flushing the
+    // pending bytes immediately.
     await page.evaluate(() => {
       document.getElementById('term')!.dispatchEvent(new Event('touchend'));
     });
@@ -280,8 +281,9 @@ test.describe('terminal', () => {
 
       phase = 'settle';
       document.getElementById('term')!.dispatchEvent(new Event('touchend'));
-      // Wait for settle timer (200ms) + buffer.
-      await new Promise(res => setTimeout(res, 350));
+      // touchend with !isTermScrolling drains synchronously; allow a microtask
+      // tick for the MutationObserver to surface the resulting setProperty.
+      await new Promise(res => setTimeout(res, 50));
       obs.disconnect();
       const final = (window as any).argusTouchState();
       const finalAppHeight = document.documentElement.style.getPropertyValue('--app-height');
@@ -298,6 +300,51 @@ test.describe('terminal', () => {
     expect(result.afterSettleMutations).toBeGreaterThan(0);
     expect(result.finalAppHeight).not.toBe('1px');
     expect(result.final.pendingViewportSync).toBe(false);
+  });
+
+  test('isTermScrolling gate blocks writes until scrollend fires', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
+
+    // Populate enough scrollback that the term is not at-bottom after a
+    // programmatic scrollLines, exercising the !termIsAtBottom gate too.
+    await page.evaluate(() => {
+      const enc = new TextEncoder();
+      let out = '';
+      for (let i = 0; i < 60; i++) out += `pre${i}\r\n`;
+      (window as any).term.write(enc.encode(out));
+    });
+    await page.waitForFunction(() => (window as any).term.buffer.active.baseY > 0);
+    await page.evaluate(() => (window as any).term.scrollLines(-30));
+
+    // Dispatching a scroll event on .xterm-viewport must flip isTermScrolling
+    // to true and a write at that moment must buffer (the canonical race
+    // window: iOS would have a still-active fling here).
+    const result = await page.evaluate(async () => {
+      const viewport = document.querySelector('.xterm-viewport')!;
+      viewport.dispatchEvent(new Event('scroll'));
+      const midScroll = (window as any).argusTouchState();
+
+      const enc = new TextEncoder();
+      (window as any).bufferOrWrite(enc.encode('SCROLL_BUFFERED_AAA\r\n'));
+      const pendingDuring = (window as any).argusPending().chunks;
+
+      // scrollend (real or polyfilled) is what releases the gate. Native
+      // path: dispatch the event directly. Polyfill path: rely on the 100ms
+      // timer with no pointer down.
+      if ((window as any).argusTouchState().nativeScrollend) {
+        viewport.dispatchEvent(new Event('scrollend'));
+      } else {
+        await new Promise(res => setTimeout(res, 200));
+      }
+      const afterEnd = (window as any).argusTouchState();
+      return { midScroll, pendingDuring, afterEnd };
+    });
+
+    expect(result.midScroll.scrolling).toBe(true);
+    expect(result.pendingDuring).toBe(1);
+    expect(result.afterEnd.scrolling).toBe(false);
   });
 
   test('back button cleans up stream and term', async ({ page }) => {
