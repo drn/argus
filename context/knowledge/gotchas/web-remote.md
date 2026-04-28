@@ -106,6 +106,13 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Mid-session upload pastes paths into stdin without Enter** — `triggerUpload` → POST → `sendInputBytes(paths.join(' ') + ' ')`. The trailing space lets the user append a sentence; an Enter would auto-submit, which is wrong when the agent is mid-response. Don't change this to send `\n` "for convenience".
 - **Webkit's APIRequestContext mishandles multipart** — Playwright's `request.post(..., { multipart: ... })` under the iphone profile does not actually transmit a multipart body; the Go server returns 405 (no matching POST). The `uploads.spec.ts` file gates these tests with `test.skip(({ browserName }) => browserName === 'webkit', …)`. The Go unit tests in `internal/api/uploads_test.go` cover the same parser.
 
+## Compose bar (mobile agent input)
+
+- **xterm.js's `.xterm-helper-textarea` is invisible to iOS dictation, third-party keyboards, and Wispr Flow** — it's positioned `left: -9999em; opacity: 0; pointer-events: none` and auto-clears its `value` on every `input` event. iOS text-injection paths only target a focused, on-screen text field with stable contents. The compose bar (`#compose-input`) is a real visible textarea that forwards via `sendInputBytes(value + '\n')` to give those inputs a real target. Don't try to "fix" xterm's helper textarea — iOS will keep ignoring it.
+- **Compose bar is gated on `IS_TOUCH` so desktop's direct-into-xterm path is unchanged.** Removing the gate breaks the muscle memory of typing directly into the terminal without a Send press, and a hardware-keyboard user has no reason to dictate into a separate field.
+- **`#compose-input` font-size MUST be ≥ 16px.** iOS Safari zooms the layout viewport when focusing an input < 16px, which yanks the entire detail view scaled-up out of position above the keyboard. The detail view's `--app-height` sync recovers eventually, but the visible flicker is a bug. Don't shrink it for "density".
+- **`field-sizing: content` is the auto-grow path; the explicit `style.height = ''` reset on send is the fallback** for browsers/WebViews older than Safari 17.4. Don't replace one with the other — the reset is a no-op on supporting browsers and load-bearing on older WebViews.
+
 ## Task status & idle
 
 - **`taskJSON.idle` is true when DB status is `in_progress` AND there is no live session OR the session is `IsIdle()`** — a task with status `in_progress` and no Runner entry at all (e.g., daemon restart left the row InProgress but never re-started the agent) reports `idle: true`. Don't treat `idle && !running` as inconsistent — that's the load-bearing case the SPA needs to render the moon badge.
