@@ -325,6 +325,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   overflow: hidden;
 }
 .files-list {
+  /* 38% gives ~5 file rows visible above the diff pane on a 6" phone. */
   flex: 0 0 38%;
   overflow-y: auto;
   border-bottom: 1px solid var(--border);
@@ -1469,6 +1470,10 @@ async function openDetail(id) {
   currentTask = tasks.find(t => t.id === id);
   if (!currentTask) return;
 
+  // Close any prior overlay so opening a new task (via fork, create, deep
+  // link, etc.) doesn't leave the previous task's files-view stacked on top.
+  closeFilesView();
+
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
   document.getElementById('detail-title').textContent = currentTask.name;
@@ -2097,8 +2102,10 @@ function parseChangedFiles(msg) {
     if (!path || seen.has(path)) return;
     seen.set(path, { status, path });
   };
-  // git status --short: "XY path" — first non-space char wins. Untracked
-  // ("??") shows as A (added) since the user cares about "is this new".
+  // git status --short lines are "XY path" where X = staged status and
+  // Y = worktree status. Untracked ("??") is shown as A since the user
+  // cares about "is this new". Unmerged variants (UU/AU/DU/etc.) collapse
+  // to U via the includes('U') check.
   if (msg.Status) {
     for (const line of msg.Status.split('\n')) {
       if (line.length < 4) continue;
@@ -2162,6 +2169,8 @@ async function loadDiff(taskId, path) {
     const r = await api(`/api/tasks/${taskId}/git/diff?path=${encodeURIComponent(path)}`);
     if (!r.ok) throw new Error('git diff ' + r.status);
     const msg = await r.json();
+    // Drop stale results: the user closed the view, switched tasks, or
+    // tapped a different file before this fetch resolved.
     if (filesViewTask?.id !== taskId || filesViewSelected !== path) return;
     renderDiff(msg.Diff || '');
   } catch (e) {
