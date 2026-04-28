@@ -1050,7 +1050,7 @@ type skillJSON struct {
 
 func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
-	prefix := r.URL.Query().Get("prefix")
+	filter := r.URL.Query().Get("filter")
 
 	var extraDirs []string
 	if project != "" {
@@ -1063,8 +1063,8 @@ func (s *Server) handleListSkills(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := skills.LoadSkills(extraDirs)
-	if prefix != "" {
-		items = skills.FilterSkills(items, prefix)
+	if filter != "" {
+		items = skills.FilterSkills(items, filter)
 	}
 
 	result := make([]skillJSON, len(items))

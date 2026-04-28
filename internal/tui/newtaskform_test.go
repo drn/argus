@@ -676,6 +676,42 @@ func TestNewTaskForm_ACBacktabAccepts(t *testing.T) {
 	}
 }
 
+func TestNewTaskForm_ACSubstringMatch(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.skills = []skills.SkillItem{
+		{Name: "review", Description: "Review PR"},
+		{Name: "cortex:review", Description: "Plugin review"},
+		{Name: "test", Description: "Run tests"},
+	}
+	f.focused = ntFieldPrompt
+	handler := f.InputHandler()
+
+	// "/rev" matches BOTH "review" (prefix) and "cortex:review" (substring),
+	// mirroring how Claude Code's slash-command picker filters.
+	for _, r := range "/rev" {
+		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+	}
+	if !f.acOpen {
+		t.Fatal("AC should be open after /rev")
+	}
+	if len(f.acMatches) != 2 {
+		t.Errorf("matches = %d, want 2 (review + cortex:review)", len(f.acMatches))
+	}
+
+	// Case-insensitive: "/REV" also matches.
+	f.prompt = nil
+	f.cursorPos = 0
+	for _, r := range "/REV" {
+		handler(tcell.NewEventKey(tcell.KeyRune, r, 0), func(p tview.Primitive) {})
+	}
+	if len(f.acMatches) != 2 {
+		t.Errorf("case-insensitive: matches = %d, want 2", len(f.acMatches))
+	}
+}
+
 func TestNewTaskForm_ACMidPromptTrigger(t *testing.T) {
 	f := NewNewTaskForm(
 		map[string]config.Project{"p": {}}, "p",

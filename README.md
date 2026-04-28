@@ -40,7 +40,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows. On TUI startup, if the daemon is running an older copy of the binary (e.g. after a rebuild), a modal prompts you to **Restart** or **Skip**
 - **Session resume** — `--resume` for Claude Code, `codex resume <session-id>` for Codex — conversations survive daemon restarts
 - **Configurable backends** — Define command templates for any LLM CLI tool. Per-backend flags, prompt interpolation, and plan mode defaults
-- **Skill autocomplete** — `/` anywhere in the prompt field triggers autocomplete from `~/.claude/skills/`, per-project skill directories, and installed Claude Code plugins (plugin items appear as `<plugin>:<name>`, e.g. `/cortex:review`). `$` triggers the same for Codex backends. Select with Enter or Tab
+- **Skill autocomplete** — `/` anywhere in the prompt field (TUI or PWA) triggers autocomplete from `~/.claude/skills/`, per-project skill directories, and installed Claude Code plugins (plugin items appear as `<plugin>:<name>`, e.g. `/cortex:review`). Filter is case-insensitive substring like Claude Code's picker, so `/rev` matches both `review` and `cortex:review`. `$` triggers the same for Codex backends in the TUI. Select with Enter or Tab
 - **Agent forking** — Duplicate a running or finished task with full context (source info, recent output, git diff) injected into the new agent's worktree
 
 ### Task Workflow
@@ -365,7 +365,7 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 | `POST`   | `/api/backends`        | Create                                                                                                   |
 | `PUT`    | `/api/backends/{name}` | Update                                                                                                   |
 | `DELETE` | `/api/backends/{name}` | Delete                                                                                                   |
-| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?prefix=`                                                      |
+| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                         |
 
 #### Push notifications (Web Push, VAPID)
 

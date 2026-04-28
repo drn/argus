@@ -281,8 +281,8 @@ func TestHandleListSkills(t *testing.T) {
 		testutil.True(t, found)
 	})
 
-	t.Run("filters by prefix", func(t *testing.T) {
-		req := authedReq("GET", "/api/skills?project=myproj&prefix=dep", "")
+	t.Run("filters by substring", func(t *testing.T) {
+		req := authedReq("GET", "/api/skills?project=myproj&filter=dep", "")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		testutil.Equal(t, w.Code, http.StatusOK)
@@ -290,7 +290,7 @@ func TestHandleListSkills(t *testing.T) {
 		var resp map[string][]skillJSON
 		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		for _, s := range resp["skills"] {
-			testutil.True(t, strings.HasPrefix(s.Name, "dep"))
+			testutil.True(t, strings.Contains(strings.ToLower(s.Name), "dep"))
 		}
 	})
 

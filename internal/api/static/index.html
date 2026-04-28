@@ -3816,6 +3816,12 @@ function escAttr(s) {
 let cachedSkills = {};  // project -> [{name, description}]
 let acIdx = -1;
 let acFiltered = [];
+// Bounds of the prompt token currently being autocompleted, captured when
+// the dropdown is opened so selectAC() can replace just that token instead
+// of clobbering the entire prompt (otherwise mid-prompt triggers like
+// "fix bug /co" would lose the leading text on accept).
+let acTokenStart = 0;
+let acTokenEnd = 0;
 
 async function loadSkillsForProject(project) {
   if (cachedSkills[project]) return;
@@ -3835,18 +3841,36 @@ document.getElementById('create-project').addEventListener('change', function() 
 const promptEl = document.getElementById('create-prompt');
 const acDrop = document.getElementById('ac-dropdown');
 
-function updateAC() {
+// acTokenAtCursor returns the whitespace-delimited token containing the
+// cursor, so the trigger ("/") works anywhere in the prompt — not only
+// when it's the first character. Matches the TUI's promptTokenBounds.
+function acTokenAtCursor() {
   const val = promptEl.value;
-  if (!val.startsWith('/') || (val.length > 1 && val.indexOf(' ', 1) !== -1)) {
+  const cursor = promptEl.selectionStart || 0;
+  let start = cursor;
+  while (start > 0 && !/\s/.test(val[start - 1])) start--;
+  let end = cursor;
+  while (end < val.length && !/\s/.test(val[end])) end++;
+  return { start, end, token: val.slice(start, end) };
+}
+
+function updateAC() {
+  const { start, end, token } = acTokenAtCursor();
+  if (!token.startsWith('/')) {
     closeAC();
     return;
   }
-  const prefix = val.slice(1);
+  const filter = token.slice(1).toLowerCase();
   const project = document.getElementById('create-project').value;
   const allSkills = cachedSkills[project] || [];
-  acFiltered = prefix ? allSkills.filter(s => s.name.startsWith(prefix)) : allSkills;
+  // Case-insensitive substring match — mirrors Claude Code's slash-command
+  // filter behavior, so "/rev" matches "cortex:review" not just names that
+  // literally start with "rev".
+  acFiltered = filter ? allSkills.filter(s => s.name.toLowerCase().includes(filter)) : allSkills;
   if (!acFiltered.length) { closeAC(); return; }
   acIdx = 0;
+  acTokenStart = start;
+  acTokenEnd = end;
   renderAC();
 }
 
@@ -3870,13 +3894,29 @@ function closeAC() {
 
 function selectAC(idx) {
   if (idx >= 0 && idx < acFiltered.length) {
-    promptEl.value = '/' + acFiltered[idx].name + ' ';
+    const val = promptEl.value;
+    const replacement = '/' + acFiltered[idx].name + ' ';
+    promptEl.value = val.slice(0, acTokenStart) + replacement + val.slice(acTokenEnd);
+    const newCursor = acTokenStart + replacement.length;
+    promptEl.setSelectionRange(newCursor, newCursor);
     promptEl.focus();
   }
   closeAC();
 }
 
 promptEl.addEventListener('input', updateAC);
+// Cursor moves via mouse/arrow/Home/End don't fire `input`, so the dropdown
+// would otherwise miss when the user clicks into a "/foo" token elsewhere
+// in the prompt or out of one. `click` covers pointer moves; `keyup` filters
+// to the cursor-only keys so ArrowUp/Down (used to navigate the dropdown)
+// don't reset acIdx.
+promptEl.addEventListener('click', updateAC);
+promptEl.addEventListener('keyup', function(e) {
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+      e.key === 'Home' || e.key === 'End') {
+    updateAC();
+  }
+});
 
 promptEl.addEventListener('keydown', function(e) {
   if (!acDrop.classList.contains('open')) return;

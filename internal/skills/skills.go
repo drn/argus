@@ -239,15 +239,19 @@ func readFrontmatterField(path, field string) string {
 	return ""
 }
 
-// FilterSkills returns skills whose names have the given prefix.
-// If prefix is empty, all skills are returned.
-func FilterSkills(items []SkillItem, prefix string) []SkillItem {
-	if prefix == "" {
+// FilterSkills returns skills whose names contain the given filter as a
+// case-insensitive substring. If filter is empty, all skills are returned.
+// Substring matching mirrors Claude Code's own slash-command picker —
+// "/rev" matches "cortex:review" and "review", not only names that
+// literally start with "rev".
+func FilterSkills(items []SkillItem, filter string) []SkillItem {
+	if filter == "" {
 		return items
 	}
+	lower := strings.ToLower(filter)
 	var out []SkillItem
 	for _, s := range items {
-		if strings.HasPrefix(s.Name, prefix) {
+		if strings.Contains(strings.ToLower(s.Name), lower) {
 			out = append(out, s)
 		}
 	}

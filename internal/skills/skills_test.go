@@ -20,19 +20,20 @@ func TestFilterSkills(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		prefix string
+		filter string
 		want   []string
 	}{
 		{"empty returns all", "", []string{"commit", "review", "test", "cortex:review"}},
-		{"prefix co", "co", []string{"commit", "cortex:review"}},
-		{"prefix cortex:", "cortex:", []string{"cortex:review"}},
-		{"prefix re", "re", []string{"review"}},
+		{"substring co", "co", []string{"commit", "cortex:review"}},
+		{"substring cortex:", "cortex:", []string{"cortex:review"}},
+		{"substring re — matches user and plugin review", "re", []string{"review", "cortex:review"}},
+		{"substring rev mid-name", "rev", []string{"review", "cortex:review"}},
 		{"no match", "xyz", nil},
-		{"case sensitive", "CO", nil},
+		{"case insensitive", "CO", []string{"commit", "cortex:review"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := FilterSkills(items, tc.prefix)
+			got := FilterSkills(items, tc.filter)
 			var names []string
 			for _, s := range got {
 				names = append(names, s.Name)
