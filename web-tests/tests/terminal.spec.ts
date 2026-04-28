@@ -347,7 +347,9 @@ test.describe('terminal', () => {
     await login(page);
     await page.locator('.task-item').first().click();
     await expect(page.locator('#term-wrap')).toBeVisible();
-    await page.locator('.detail-back').click();
+    // The prompt modal's overlay has its own .detail-back link, so the
+    // unscoped locator now hits two elements — scope to the open detail view.
+    await page.locator('#detail-view .detail-back').click();
     await expect(page.locator('#tasks-view')).toBeVisible();
     // term should be disposed.
     const termInstance = await page.evaluate(() => (window as any).term);
