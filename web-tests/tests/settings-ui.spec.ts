@@ -188,4 +188,138 @@ test.describe('detail-view actions', () => {
     await expect(page.locator('#settings-view')).toBeVisible();
     await expect(page.locator('#prompt-modal.open')).toHaveCount(0);
   });
+
+  test('input history modal lists original prompt and submitted lines', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+
+    // Drive sendInputBytes the same way the terminal does — keystrokes plus
+    // CR. Mixes plain text, an arrow-key ESC sequence (must be filtered),
+    // a backspace (must pop), and bracket-paste markers (markers stripped,
+    // inner content kept).
+    await page.evaluate(() => {
+      const send = (window as any).sendInputBytes;
+      send('hello');
+      send('\x1b[A');           // up-arrow — filtered
+      send(' world');
+      send('X\x7f');             // backspace — pops X
+      send('\r');                // flush -> "hello world"
+      send('\x1b[200~pasted line\x1b[201~\r'); // bracket paste -> "pasted line"
+    });
+
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-inputs').click();
+    await expect(page.locator('#inputs-modal')).toHaveClass(/open/);
+
+    // First entry is the seeded original prompt; subsequent entries are the
+    // two submitted lines, in order.
+    const bodies = page.locator('#inputs-modal-body .prompt-body');
+    await expect(bodies).toHaveCount(3);
+    await expect(bodies.nth(0)).toHaveText(
+      'Investigate flaky CI runs and add retry logic.',
+    );
+    await expect(bodies.nth(1)).toHaveText('hello world');
+    await expect(bodies.nth(2)).toHaveText('pasted line');
+
+    // Original-prompt entry uses the literal label; submitted entries get
+    // a timestamp label (any non-empty string).
+    const labels = page.locator('#inputs-modal-body .inputs-label');
+    await expect(labels.nth(0)).toHaveText('Original prompt');
+    await expect(labels.nth(1)).not.toHaveText('');
+
+    await page.locator('#inputs-modal button.primary').click();
+    await expect(page.locator('#inputs-modal.open')).toHaveCount(0);
+  });
+
+  test('input history bodies are set via textContent (no HTML injection)', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+
+    // Inject HTML into an entry, then re-render via the production opener.
+    // A regression to innerHTML would mount the <img> and fire onerror.
+    await page.evaluate(() => {
+      const send = (window as any).sendInputBytes;
+      send('<img src=x onerror="window.__pwn=1">');
+      send('\r');
+      (window as any).openInputsModal();
+    });
+    await expect(page.locator('#inputs-modal')).toHaveClass(/open/);
+    await expect(page.locator('#inputs-modal-body img')).toHaveCount(0);
+    const pwn = await page.evaluate(() => (window as any).__pwn);
+    expect(pwn).toBeUndefined();
+    await expect(page.locator('#inputs-modal-body')).toContainText('<img');
+  });
+
+  test('input history shows placeholder when nothing has been typed', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+
+    // Empty original prompt + clean history -> only the placeholder renders.
+    await page.evaluate(() => {
+      (window as any).currentTask.prompt = '';
+      const id = (window as any).currentTask.id;
+      localStorage.removeItem('argus.inputs.v1.' + id);
+      (window as any).openInputsModal();
+    });
+    await expect(page.locator('#inputs-modal-body .prompt-body.empty')).toBeVisible();
+    await expect(page.locator('#inputs-modal-body')).toContainText('no inputs yet');
+  });
+
+  test('input history Clear wipes persisted entries', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+
+    await page.evaluate(() => {
+      const send = (window as any).sendInputBytes;
+      send('first\r');
+      send('second\r');
+      // Clear the original prompt so only the two submissions remain — that
+      // way the Clear button leaves the modal in the empty-placeholder
+      // state and we don't have to depend on it staying open.
+      (window as any).currentTask.prompt = '';
+      (window as any).openInputsModal();
+    });
+    await expect(page.locator('#inputs-modal-body .prompt-body')).toHaveCount(2);
+
+    await page.locator('#inputs-modal-clear').click();
+    await expect(page.locator('#inputs-modal-body .prompt-body.empty')).toBeVisible();
+
+    // localStorage entry is gone too — survives a re-open.
+    const remaining = await page.evaluate(() => {
+      const id = (window as any).currentTask.id;
+      return localStorage.getItem('argus.inputs.v1.' + id);
+    });
+    expect(remaining).toBeNull();
+  });
+
+  test('input history modal closes when detail view closes', async ({ page }) => {
+    // Same teardown contract as the prompt modal: closeDetail() must call
+    // closeInputsModal() so the overlay doesn't stack over the task list
+    // after backing out.
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-inputs').click();
+    await expect(page.locator('#inputs-modal')).toHaveClass(/open/);
+
+    await page.evaluate(() => (window as any).closeDetail());
+    await expect(page.locator('#tasks-view')).toBeVisible();
+    await expect(page.locator('#inputs-modal.open')).toHaveCount(0);
+  });
+
+  test('input history modal closes when switching tabs', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-inputs').click();
+    await expect(page.locator('#inputs-modal')).toHaveClass(/open/);
+
+    await page.evaluate(() => (window as any).switchTab('settings'));
+    await expect(page.locator('#settings-view')).toBeVisible();
+    await expect(page.locator('#inputs-modal.open')).toHaveCount(0);
+  });
 });

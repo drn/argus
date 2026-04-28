@@ -7,7 +7,7 @@
 //
 // Increment SW_VERSION on any shell change to bust the cache.
 
-const SW_VERSION = 'argus-shell-v4';
+const SW_VERSION = 'argus-shell-v5';
 const SHELL_ASSETS = [
   '/',
   '/manifest.webmanifest',

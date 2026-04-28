@@ -563,6 +563,20 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 }
 .prompt-body.empty { color: var(--text-dim); font-style: italic; }
 
+/* Input history list — stacked entries with a small label above each
+   `.prompt-body` block. max-height on the list (not each entry) so a long
+   history scrolls as one column instead of nested scroll regions. */
+.inputs-list {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 60vh; overflow: auto; -webkit-overflow-scrolling: touch;
+}
+.inputs-list .prompt-body { max-height: none; }
+.inputs-item { display: flex; flex-direction: column; gap: 4px; }
+.inputs-label {
+  font-size: 11px; color: var(--text-dim);
+  font-family: ui-monospace, Menlo, monospace;
+}
+
 /* Logs viewer */
 .logs-pane {
   background: var(--bg); color: var(--text); font-family: ui-monospace, Menlo, monospace;
@@ -1087,6 +1101,20 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
   </div>
 
+  <!-- Input history viewer. Lists the original task prompt plus every line
+       the user has submitted from the live terminal (segmented on Enter).
+       Captured client-side from sendInputBytes; persisted in localStorage. -->
+  <div class="modal-overlay" id="inputs-modal">
+    <div class="modal">
+      <h3>Input history</h3>
+      <div class="inputs-list" id="inputs-modal-body"></div>
+      <div class="modal-actions">
+        <button id="inputs-modal-clear" onclick="clearInputHistory()" style="margin-right:auto">Clear</button>
+        <button class="primary" onclick="closeInputsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Create Task View -->
   <div id="create-view">
     <div style="padding:16px 12px 8px"><h2 style="font-size:18px">New Task</h2></div>
@@ -1551,6 +1579,7 @@ function showOffline() {
   destroyTerm();
   closeOverflowMenu();
   closePromptModal();
+  closeInputsModal();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
   currentTask = null;
@@ -1718,6 +1747,7 @@ async function openDetail(id) {
   // stacked on top.
   closeFilesView();
   closePromptModal();
+  closeInputsModal();
 
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
@@ -1858,11 +1888,91 @@ function setupTerm() {
 
 function sendInputBytes(data) {
   if (!currentTask) return;
+  recordInputBytes(currentTask.id, data);
   fetch(API + `/api/tasks/${currentTask.id}/input`, {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'text/plain' },
     body: data,
   }).catch(() => {});
+}
+
+// --- Input history capture ---
+// Hooks every byte sent through sendInputBytes (keystrokes, paste content,
+// virtual-key items like Esc, upload-paths injection) and segments by
+// Enter (\r/\n) into discrete entries. Per-task buffer lives in memory;
+// flushed entries are persisted to localStorage so the modal survives
+// refreshes. ANSI/CSI escape sequences (arrow keys, Toggle mode, bracket
+// paste markers) are filtered out — only printable user text is recorded.
+const inputBuffers = new Map(); // taskId -> { buf: '' }
+const INPUT_HISTORY_CAP = 500;
+
+function inputHistoryKey(taskId) { return 'argus.inputs.v1.' + taskId; }
+
+function loadInputHistory(taskId) {
+  try {
+    const raw = localStorage.getItem(inputHistoryKey(taskId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+function saveInputHistory(taskId, hist) {
+  try { localStorage.setItem(inputHistoryKey(taskId), JSON.stringify(hist)); } catch {}
+}
+
+function appendInputHistory(taskId, text) {
+  const hist = loadInputHistory(taskId);
+  hist.push({ ts: Date.now(), text });
+  while (hist.length > INPUT_HISTORY_CAP) hist.shift();
+  saveInputHistory(taskId, hist);
+}
+
+// recordInputBytes parses raw PTY-bound bytes into submitted-text entries.
+// Strips ESC[…] CSI sequences (e.g. \x1b[A arrow, \x1b[Z back-tab,
+// \x1b[200~/\x1b[201~ bracket paste markers) and ESC O… SS3, applies
+// backspace (0x7f / 0x08) to the buffer, and flushes on \r or \n.
+function recordInputBytes(taskId, raw) {
+  const data = typeof raw === 'string' ? raw : String(raw);
+  let st = inputBuffers.get(taskId);
+  if (!st) { st = { buf: '' }; inputBuffers.set(taskId, st); }
+  let i = 0;
+  while (i < data.length) {
+    const code = data.charCodeAt(i);
+    if (code === 0x1b) {
+      if (data[i + 1] === '[') {
+        let j = i + 2;
+        while (j < data.length) {
+          const c = data.charCodeAt(j);
+          // Final byte of CSI is 0x40-0x7e (covers @A–Z[\]^_`a–z{|}~).
+          if (c >= 0x40 && c <= 0x7e) { j++; break; }
+          j++;
+        }
+        i = j;
+      } else if (data[i + 1] === 'O') {
+        i += 3; // SS3: ESC O <byte>
+      } else {
+        i += 2;
+      }
+      continue;
+    }
+    if (code === 0x0d || code === 0x0a) {
+      const text = st.buf.replace(/\s+$/, '');
+      if (text) appendInputHistory(taskId, text);
+      st.buf = '';
+      i++;
+      continue;
+    }
+    if (code === 0x7f || code === 0x08) {
+      st.buf = st.buf.slice(0, -1);
+      i++;
+      continue;
+    }
+    if (code === 0x09) { st.buf += '\t'; i++; continue; }
+    if (code >= 0x20) { st.buf += data[i]; i++; continue; }
+    // Other control bytes (Ctrl-C, Ctrl-D, etc.) — ignore for history.
+    i++;
+  }
 }
 
 // Mid-session file upload: triggered from the "Upload files" overflow item.
@@ -2203,6 +2313,7 @@ function renderOverflowMenu() {
   items.push(
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
     { id: 'btn-prompt', label: 'View prompt', fn: openPromptModal },
+    { id: 'btn-inputs', label: 'Input history', fn: openInputsModal },
     { id: 'btn-upload', label: 'Upload files', fn: triggerUpload },
     { id: 'btn-rename', label: 'Rename', fn: renameTask },
     { id: 'btn-fork', label: 'Fork', fn: forkTask },
@@ -2400,6 +2511,7 @@ function closeDetail() {
   closeOverflowMenu();
   closeFilesView();
   closePromptModal();
+  closeInputsModal();
   // destroyTerm() hid the compose bar; here we additionally clear the textarea
   // so the next opened task gets a fresh field.
   const ci = document.getElementById('compose-input');
@@ -2435,6 +2547,75 @@ function openPromptModal() {
 
 function closePromptModal() {
   document.getElementById('prompt-modal').classList.remove('open');
+}
+
+// --- Input history modal ---
+// Lists the original task prompt followed by every line submitted from the
+// live terminal (captured by recordInputBytes). textContent on each entry
+// keeps user input safe against HTML injection. Reads history fresh from
+// localStorage on open so a long session that overflowed the in-memory
+// buffer still surfaces persisted entries.
+function openInputsModal() {
+  if (!currentTask) return;
+  renderInputsModal();
+  document.getElementById('inputs-modal').classList.add('open');
+}
+
+function renderInputsModal() {
+  const list = document.getElementById('inputs-modal-body');
+  list.innerHTML = '';
+
+  const entries = [];
+  const original = (currentTask && currentTask.prompt) || '';
+  if (original) entries.push({ label: 'Original prompt', text: original });
+  const hist = currentTask ? loadInputHistory(currentTask.id) : [];
+  for (const e of hist) entries.push({ label: formatInputTime(e.ts), text: e.text });
+
+  const clearBtn = document.getElementById('inputs-modal-clear');
+  if (clearBtn) clearBtn.disabled = hist.length === 0;
+
+  if (entries.length === 0) {
+    const empty = document.createElement('pre');
+    empty.className = 'prompt-body empty';
+    empty.textContent = '(no inputs yet — type into the terminal and press Enter)';
+    list.appendChild(empty);
+    return;
+  }
+  for (const e of entries) {
+    const item = document.createElement('div');
+    item.className = 'inputs-item';
+    const label = document.createElement('div');
+    label.className = 'inputs-label';
+    label.textContent = e.label;
+    const body = document.createElement('pre');
+    body.className = 'prompt-body';
+    body.textContent = e.text;
+    item.appendChild(label);
+    item.appendChild(body);
+    list.appendChild(item);
+  }
+}
+
+function formatInputTime(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString();
+  } catch { return ''; }
+}
+
+function closeInputsModal() {
+  document.getElementById('inputs-modal').classList.remove('open');
+}
+
+// Clears the persisted history for the current task. The in-memory buffer
+// (the line currently being typed) is also reset so a stray half-line from
+// before "Clear" doesn't get flushed into the next entry.
+function clearInputHistory() {
+  if (!currentTask) return;
+  try { localStorage.removeItem(inputHistoryKey(currentTask.id)); } catch {}
+  inputBuffers.delete(currentTask.id);
+  renderInputsModal();
 }
 
 // --- Files & Diff View ---
@@ -2832,6 +3013,7 @@ function switchTab(tab) {
   closeOverflowMenu();
   closeFilesView();
   closePromptModal();
+  closeInputsModal();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
