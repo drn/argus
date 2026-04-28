@@ -506,8 +506,10 @@ func TestHandleShareTarget(t *testing.T) {
 
 	testutil.Equal(t, w.Code, http.StatusOK)
 	testutil.Contains(t, w.Header().Get("Content-Type"), "text/html")
-	// Confirm we're returning the dashboard, not a redirect or 404.
-	testutil.Contains(t, w.Body.String(), "argus-pending-share")
+	// Confirm we're returning the dashboard. Match a stable structural marker
+	// rather than the share JS variable name so a refactor doesn't silently
+	// turn the test into a no-op.
+	testutil.Contains(t, w.Body.String(), `id="main-app"`)
 }
 
 func TestManifestShareTarget(t *testing.T) {

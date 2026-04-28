@@ -78,7 +78,7 @@ test.describe('PWA', () => {
     expect(r.status()).toBe(200);
     expect(r.headers()['content-type']).toContain('text/html');
     const html = await r.text();
-    expect(html).toContain('argus-pending-share');
+    expect(html).toContain('id="main-app"');
   });
 
   test('/share?title=...&text=...&url=... prefills New Task prompt after auth', async ({ page }) => {

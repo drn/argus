@@ -877,17 +877,26 @@ let actionBusy = false;
 // (declared in manifest.webmanifest). We capture those params to sessionStorage
 // here, BEFORE auth, so they survive the token-entry flow. applyPendingShare()
 // later opens the New Task tab with the shared content prefilled.
+// Per-field cap on incoming share params. iOS shares are short (titles, URLs,
+// short selections); a malicious deep-link could try to push multi-MB into
+// sessionStorage. 4KB per field is generous for legitimate content.
+const SHARE_FIELD_MAX = 4096;
+function clampShareField(s) {
+  if (typeof s !== 'string') return '';
+  return s.slice(0, SHARE_FIELD_MAX).trim();
+}
+
 (function capturePendingShare() {
   if (location.pathname !== '/share') return;
   const sp = new URLSearchParams(location.search);
-  const title = (sp.get('title') || '').trim();
-  const text = (sp.get('text') || '').trim();
-  const url = (sp.get('url') || '').trim();
+  const title = clampShareField(sp.get('title'));
+  const text = clampShareField(sp.get('text'));
+  const url = clampShareField(sp.get('url'));
   if (title || text || url) {
     sessionStorage.setItem('argus-pending-share', JSON.stringify({ title, text, url }));
   }
-  // Strip /share from the URL so a refresh doesn't re-fire the share, and so
-  // the cached `/` shell controls the address bar.
+  // Strip /share from the URL so a refresh doesn't re-fire the share with the
+  // same content (the user would get the same prefill on every reload).
   history.replaceState(null, '', '/');
 })();
 
@@ -899,12 +908,20 @@ function applyPendingShare() {
   try { data = JSON.parse(raw); } catch(e) { return; }
   // Combine non-empty fields into a single prompt body. Most iOS shares supply
   // either {title,url} (Safari page share) or {text} (plain-text share).
-  const parts = [data.title, data.text, data.url].map(s => (s || '').trim()).filter(Boolean);
+  // clampShareField is also a type guard — non-string values from a malformed
+  // sessionStorage entry collapse to ''.
+  const parts = [data.title, data.text, data.url].map(clampShareField).filter(Boolean);
   if (!parts.length) return;
-  switchTab('create');
   const promptEl = document.getElementById('create-prompt');
+  // Don't clobber a partially-typed prompt if the user happened to be on the
+  // create tab when a share fired.
+  if (promptEl && promptEl.value.trim()) return;
+  switchTab('create');
   if (promptEl) {
     promptEl.value = parts.join('\n\n');
+    // Fire `input` so the slash-skill autocomplete listener stays in sync with
+    // the prefilled content. Setting .value programmatically does not.
+    promptEl.dispatchEvent(new Event('input'));
     promptEl.focus();
   }
 }
