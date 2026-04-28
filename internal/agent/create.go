@@ -3,11 +3,22 @@ package agent
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 )
+
+// Attachment is a user-uploaded file to be written into the worktree before
+// the agent starts. Name is the sanitized filename (no path components); Data
+// is the raw bytes. Saved into <worktree>/.context/<name>.
+type Attachment struct {
+	Name string
+	Data []byte
+}
 
 // CreateInput describes a new task to create and start.
 //
@@ -21,6 +32,11 @@ type CreateInput struct {
 	PRURL      string // optional; set for review tasks
 	TodoPath   string // optional; set when created from a vault .md file
 	BaseBranch string // optional; overrides projCfg.Branch for this task
+
+	// Attachments are written to <worktree>/.context/<name> after worktree
+	// creation but before the session starts, and their paths are appended
+	// to Prompt so the agent sees them on first turn.
+	Attachments []Attachment
 
 	Rows uint16 // initial PTY rows (0 → 24)
 	Cols uint16 // initial PTY cols (0 → 80)
@@ -118,12 +134,29 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		RemoveWorktreeAndBranch(wtPath, branchName, repoPath)
 	})
 
-	// Step 2: optional per-worktree hook (e.g. fork context files).
+	// Step 2a: write user-uploaded attachments into <worktree>/.context/.
+	// Done before OnWorktreeCreated so fork-context files (which write into
+	// the same dir) can't collide with attachment names by chance.
+	attachPaths, err := writeAttachments(wtPath, input.Attachments)
+	if err != nil {
+		unwind("attachments", err)
+		return nil, nil, fmt.Errorf("attachments: %w", err)
+	}
+
+	// Step 2b: optional per-worktree hook (e.g. fork context files).
 	if input.OnWorktreeCreated != nil {
 		if err := input.OnWorktreeCreated(wtPath); err != nil {
 			unwind("OnWorktreeCreated", err)
 			return nil, nil, fmt.Errorf("worktree hook: %w", err)
 		}
+	}
+
+	// Append attachment paths to the prompt so the agent sees them on the
+	// first turn. Done after the hook so any fork-context preamble appears
+	// first in the prompt — fork is the established case.
+	prompt := input.Prompt
+	if len(attachPaths) > 0 {
+		prompt = appendAttachmentList(prompt, attachPaths)
 	}
 
 	// Step 3: build task and persist.
@@ -135,7 +168,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Name:     finalName,
 		Status:   model.StatusPending,
 		Project:  input.Project,
-		Prompt:   input.Prompt,
+		Prompt:   prompt,
 		Backend:  backend,
 		Worktree: wtPath,
 		Branch:   branchName,
@@ -200,4 +233,61 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 
 	slog.Info("task created and started", "id", taskID, "name", task.Name, "project", input.Project, "pid", sess.PID())
 	return task, sess, nil
+}
+
+// AttachmentsDir is the worktree-relative directory where uploaded attachments
+// are written. Same dir used by fork-context, which is fine — names are
+// disambiguated by the API layer (see SaveAttachments).
+const AttachmentsDir = ".context"
+
+// writeAttachments saves each attachment under <wtPath>/.context/<name> and
+// returns worktree-relative paths (with leading "./") suitable for embedding
+// in a prompt. Names are sanitized by the caller before this is called; we
+// still defend with filepath.Base to refuse path traversal.
+func writeAttachments(wtPath string, atts []Attachment) ([]string, error) {
+	if len(atts) == 0 {
+		return nil, nil
+	}
+	dir := filepath.Join(wtPath, AttachmentsDir)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	paths := make([]string, 0, len(atts))
+	for _, a := range atts {
+		name := filepath.Base(a.Name)
+		if name == "" || name == "." || name == ".." {
+			return nil, fmt.Errorf("invalid attachment name %q", a.Name)
+		}
+		dst := filepath.Join(dir, name)
+		// Name is filepath.Base'd above; dst stays under dir.
+		if err := os.WriteFile(dst, a.Data, 0o600); err != nil { //nolint:gosec // path validated
+			return nil, fmt.Errorf("write %s: %w", dst, err)
+		}
+		paths = append(paths, "./"+AttachmentsDir+"/"+name)
+	}
+	return paths, nil
+}
+
+// appendAttachmentList appends a human-readable list of attachment paths to
+// the prompt so the agent sees them on the first turn. Returns the prompt
+// unchanged when paths is empty.
+func appendAttachmentList(prompt string, paths []string) string {
+	if len(paths) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	if prompt != "" {
+		b.WriteString(prompt)
+		if !strings.HasSuffix(prompt, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Attached files:\n")
+	for _, p := range paths {
+		b.WriteString("- ")
+		b.WriteString(p)
+		b.WriteString("\n")
+	}
+	return b.String()
 }

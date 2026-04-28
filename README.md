@@ -285,7 +285,8 @@ Open `http://<your-machine>:7743/` in your phone browser. Enter the API token fr
 
 The dashboard provides:
 - **Task list** — Active and Archived tabs, status badges
-- **Task detail** — Real xterm.js terminal with live SSE byte stream, plus an overflow (⋯) menu containing Esc / Toggle mode (Shift+Tab) / Resume / Files & diff / Rename / Fork / Archive / Delete and font size controls. The header auto-compacts when the soft keyboard is up. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
+- **Task detail** — Real xterm.js terminal with live SSE byte stream, plus an overflow (⋯) menu containing Esc / Toggle mode (Shift+Tab) / Resume / Files & diff / Upload files / Rename / Fork / Archive / Delete and font size controls. The header auto-compacts when the soft keyboard is up. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
+- **File uploads** — Tap **Upload files** in the overflow menu to attach files mid-session (camera, photo library, or any file). Saved to `<worktree>/.context/`, paths are pasted into the agent's stdin (no Enter) so you can add a follow-up sentence before submitting. The New Task form has an inline drop zone with the same caps (10MB per file, 50MB total, 20 files) — paths are appended to the prompt automatically
 - **Files & diff** — Tap **Files & diff** in the overflow menu to open a full-screen view (file list above, unified diff below) showing every changed file in the task's worktree (uncommitted + committed-on-branch). Tap a file to load its diff with `+`/`-`/`@@` coloring. Closing the view returns to the live terminal at full size — no re-attach
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 - **Share to Argus** — When the PWA is installed on iOS (Add to Home Screen), Argus appears in the iOS share sheet. Sharing a Safari page, a tweet, a Notes selection, etc. opens the PWA on the New Task tab with the shared title/text/URL stitched into the prompt. Pick a project and tap **Create & Start**
@@ -303,7 +304,7 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 |--------|----------|-------------|
 | `GET` | `/api/status` | Running/idle session counts, task counts by status |
 | `GET` | `/api/tasks` | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input (mirrors the TUI moon icon). |
-| `POST` | `/api/tasks` | Create and start a task. Body: `{"name":"...", "prompt":"...", "project":"..."}` |
+| `POST` | `/api/tasks` | Create and start a task. JSON body: `{"name":"...", "prompt":"...", "project":"..."}`, OR `multipart/form-data` with `name`/`prompt`/`project` fields plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
 | `GET` | `/api/tasks/{id}` | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`) |
 | `POST` | `/api/tasks/{id}/stop` | Stop a running agent (moves to `in_review`) |
 | `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent |
@@ -320,6 +321,7 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 |--------|----------|-------------|
 | `GET` | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1` |
 | `POST` | `/api/tasks/{id}/input` | Send raw bytes to PTY stdin |
+| `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create. |
 | `GET` | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks) |
 | `GET` | `/api/tasks/{id}/size` | Current PTY dimensions: `{cols, rows}` |
 | `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}` |

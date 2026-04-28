@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,6 +334,99 @@ func TestCreateAndStart_SessionIDPersistedForClaude(t *testing.T) {
 	}
 
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}
+
+// TestCreateAndStart_AttachmentsWritten verifies that attachments are saved
+// into <worktree>/.context/ before the session starts and that the prompt
+// gets the attachment list appended.
+func TestCreateAndStart_AttachmentsWritten(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "with-files",
+		Prompt:  "look at these",
+		Project: "proj",
+		Attachments: []Attachment{
+			{Name: "image.png", Data: []byte("\x89PNG\r\n\x1a\nbody")},
+			{Name: "notes.txt", Data: []byte("hello")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo) })
+
+	for _, name := range []string{"image.png", "notes.txt"} {
+		p := filepath.Join(task.Worktree, ".context", name)
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			t.Errorf("attachment %s not written: %v", name, rerr)
+			continue
+		}
+		if len(b) == 0 {
+			t.Errorf("attachment %s is empty", name)
+		}
+	}
+
+	// Prompt should preserve the user's text and append the file paths.
+	if !strings.Contains(task.Prompt,"look at these") {
+		t.Errorf("prompt missing user text: %q", task.Prompt)
+	}
+	if !strings.Contains(task.Prompt,"./.context/image.png") {
+		t.Errorf("prompt missing image path: %q", task.Prompt)
+	}
+	if !strings.Contains(task.Prompt,"./.context/notes.txt") {
+		t.Errorf("prompt missing notes path: %q", task.Prompt)
+	}
+}
+
+// TestCreateAndStart_AttachmentsBlankPrompt verifies that an upload with no
+// user-typed prompt still produces a usable "Attached files:" prompt.
+func TestCreateAndStart_AttachmentsBlankPrompt(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "files-only",
+		Project: "proj",
+		Attachments: []Attachment{
+			{Name: "snap.png", Data: []byte("data")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo) })
+
+	if !strings.Contains(task.Prompt,"Attached files:") {
+		t.Errorf("prompt missing Attached header: %q", task.Prompt)
+	}
+	if !strings.Contains(task.Prompt,"./.context/snap.png") {
+		t.Errorf("prompt missing snap.png: %q", task.Prompt)
+	}
+}
+
+// TestCreateAndStart_AttachmentsRejectTraversal verifies that filenames
+// trying to escape the worktree are rejected at the agent layer (defense in
+// depth — the API also sanitizes).
+func TestCreateAndStart_AttachmentsRejectTraversal(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	_, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "evil",
+		Project: "proj",
+		Attachments: []Attachment{
+			{Name: "..", Data: []byte("x")},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
 }
 
 // TestCreateAndStart_StartedAtSetOnSuccess verifies the StartedAt timestamp

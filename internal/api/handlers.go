@@ -20,6 +20,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/skills"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // --- Status ---
@@ -212,6 +213,15 @@ type createTaskReq struct {
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	// Multipart bodies carry user-uploaded attachments alongside the task
+	// fields. They must be handled differently because (a) we need to copy
+	// files into the worktree before the agent starts, and (b) the body
+	// can be much larger than 1MB.
+	if ct := r.Header.Get("Content-Type"); strings.HasPrefix(ct, "multipart/form-data") {
+		s.handleCreateTaskMultipart(w, r)
+		return
+	}
+
 	var req createTaskReq
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -238,6 +248,60 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":     task.ID,
+		"name":   task.Name,
+		"status": task.Status.String(),
+	})
+}
+
+// handleCreateTaskMultipart handles POST /api/tasks with a multipart body —
+// task fields (name/prompt/project) plus zero or more file parts. Attachments
+// are written to <worktree>/.context/ before the session starts; their paths
+// are appended to the prompt so the agent sees them on its first turn.
+//
+// Bypasses s.createTask (the daemon-injected callback) and calls
+// agent.CreateAndStart directly because the callback's narrow signature has
+// no place for attachments and the API server runs in the daemon process so
+// it has direct access to db/runner.
+func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Request) {
+	// 50MB total cap + headroom for the multipart envelope and text fields.
+	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentTotalBytes+1<<20)
+
+	name, prompt, project, atts, err := parseMultipartTaskForm(r)
+	if err != nil {
+		writeJSON(w, statusForUploadErr(err), map[string]string{"error": err.Error()})
+		return
+	}
+	if project == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		return
+	}
+	if prompt == "" && name == "" && len(atts) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, prompt, or files required"})
+		return
+	}
+	if name == "" {
+		if prompt != "" {
+			name = sanitizeName(prompt)
+		} else {
+			name = sanitizeName(atts[0].Name)
+		}
+	}
+
+	task, _, err := agent.CreateAndStart(s.db, s.runner, agent.CreateInput{
+		Name:        name,
+		Prompt:      prompt,
+		Project:     project,
+		Attachments: atts,
+	})
+	if err != nil {
+		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	uxlog.Log("[uploads] task created id=%s name=%q files=%d", task.ID, task.Name, len(atts))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":     task.ID,
 		"name":   task.Name,

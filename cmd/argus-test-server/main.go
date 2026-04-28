@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -65,12 +66,18 @@ func main() {
 		log.Fatalf("set default: %v", err)
 	}
 
-	// Project — points at the tempdir so worktree commands don't fail.
+	// Project — git-init the tempdir so CreateAndStart's worktree step
+	// succeeds. Used by the multipart create-task flow which exercises the
+	// full agent.CreateAndStart pipeline (the legacy JSON path goes through
+	// the local creator callback below and bypasses worktree creation).
 	projDir := filepath.Join(tmpHome, "test-proj")
 	if err := os.MkdirAll(projDir, 0o750); err != nil {
 		log.Fatalf("mkdir proj: %v", err)
 	}
-	if err := d.SetProject("test-proj", config.Project{Path: projDir}); err != nil {
+	if err := initTestRepo(projDir); err != nil {
+		log.Fatalf("init test repo: %v", err)
+	}
+	if err := d.SetProject("test-proj", config.Project{Path: projDir, Branch: "HEAD"}); err != nil {
 		log.Fatalf("set project: %v", err)
 	}
 
@@ -179,6 +186,35 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// initTestRepo creates a git repo with one commit so agent.CreateWorktree
+// (which shells out to `git worktree add`) succeeds against this dir.
+func initTestRepo(dir string) error {
+	run := func(args ...string) error {
+		c := exec.Command("git", args...) //nolint:gosec // test-only harness
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v: %w: %s", args, err, out)
+		}
+		return nil
+	}
+	if err := run("init", "-q"); err != nil {
+		return err
+	}
+	if err := run("config", "user.email", "test@test.com"); err != nil {
+		return err
+	}
+	if err := run("config", "user.name", "Test"); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("test\n"), 0o600); err != nil {
+		return err
+	}
+	if err := run("add", "."); err != nil {
+		return err
+	}
+	return run("commit", "-q", "-m", "init")
 }
 
 func envOrInt(key string, fallback int) int {

@@ -381,6 +381,35 @@ button:disabled { opacity: 0.5; cursor: default; }
 .form-actions { display: flex; gap: 8px; padding: 12px; }
 .form-actions button { flex: 1; }
 
+/* File-upload dropzone (new task form) */
+.dropzone {
+  border: 1px dashed var(--border); border-radius: 8px;
+  padding: 14px 12px; text-align: center; color: var(--text-dim);
+  font-size: 13px; background: var(--surface);
+}
+.dropzone.drag-over { border-color: var(--accent); background: var(--border); color: var(--text); }
+.dropzone-hint { color: var(--text-dim); }
+.dropzone-btn {
+  display: inline-block; padding: 6px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  font-size: 13px; cursor: pointer;
+}
+.dropzone-btn:hover { background: var(--border); }
+.upload-list { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.upload-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); font-size: 13px;
+}
+.upload-row .upload-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-row .upload-size { color: var(--text-dim); font-size: 12px; }
+.upload-row .upload-remove {
+  background: transparent; border: 0; color: var(--text-dim);
+  cursor: pointer; font-size: 16px; padding: 0 4px; line-height: 1;
+}
+.upload-row .upload-remove:hover { color: var(--red); }
+.upload-row.error { border-color: var(--red); color: var(--red); }
+
 /* Skill autocomplete */
 .prompt-wrap { position: relative; }
 .ac-dropdown {
@@ -621,6 +650,11 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
     <div class="read-only-output" id="output-box" style="display:none"></div>
   </div>
+
+  <!-- Hidden file picker for mid-session uploads. The "Upload files" overflow
+       menu item triggers this; on file selection we POST /api/tasks/{id}/upload
+       and then paste the saved paths into the agent stdin. -->
+  <input type="file" id="upload-input" multiple style="display:none" onchange="onUploadFilesPicked(event)">
 
   <!-- Files & Diff View — opened from the detail-view overflow menu. -->
   <div id="files-view">
@@ -934,6 +968,15 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <div class="ac-dropdown" id="ac-dropdown"></div>
       </div>
     </div>
+    <div class="form-group">
+      <label>Files (optional)</label>
+      <div id="create-dropzone" class="dropzone">
+        <span class="dropzone-hint">Drop files here, or </span>
+        <button type="button" class="dropzone-btn" onclick="document.getElementById('create-files').click()">Choose files</button>
+        <input type="file" id="create-files" multiple style="display:none" onchange="onCreateFilesPicked(event)">
+      </div>
+      <div id="create-files-list" class="upload-list"></div>
+    </div>
     <div class="form-actions">
       <button onclick="switchTab('tasks')">Cancel</button>
       <button class="primary" id="create-btn" onclick="createTask()">Create & Start</button>
@@ -1227,12 +1270,21 @@ function __argusRefreshTimer() { return refreshTimer; }
 // --- API (with 10s timeout) ---
 async function api(path, opts = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  // FormData uploads (file attachments) can take much longer than the
+  // typical 10s API budget. Give them 60s. Detect by body type, not path,
+  // so any future multipart endpoint inherits the longer budget.
+  const isUpload = opts.body instanceof FormData;
+  const timeoutMs = isUpload ? 60000 : 10000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // For FormData, the browser sets Content-Type with the multipart
+    // boundary; we MUST NOT override it. Otherwise default to JSON.
+    const baseHeaders = { 'Authorization': 'Bearer ' + TOKEN };
+    if (!isUpload) baseHeaders['Content-Type'] = 'application/json';
     const r = await fetch(API + path, {
       ...opts,
       signal: controller.signal,
-      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) }
+      headers: { ...baseHeaders, ...(opts.headers || {}) }
     });
     if (r.status === 401) { logout(); throw new Error('unauthorized'); }
     return r;
@@ -1611,6 +1663,63 @@ function sendInputBytes(data) {
   }).catch(() => {});
 }
 
+// Mid-session file upload: triggered from the "Upload files" overflow item.
+// Opens the system file picker; onUploadFilesPicked handles the upload and
+// pastes the saved paths into the agent's stdin (no Enter) so the user can
+// add a follow-up sentence before submitting.
+function triggerUpload() {
+  if (!currentTask) return;
+  document.getElementById('upload-input').click();
+}
+
+async function onUploadFilesPicked(e) {
+  const input = e.target;
+  const files = Array.from(input.files || []);
+  // Reset value so picking the same file twice still fires `change`.
+  input.value = '';
+  if (files.length === 0 || !currentTask) return;
+
+  // Pre-flight size + count caps so we fail fast instead of after the
+  // multipart envelope hits the wire.
+  if (files.length > MAX_UPLOAD_COUNT) {
+    showToast(`Max ${MAX_UPLOAD_COUNT} files`);
+    return;
+  }
+  let total = 0;
+  for (const f of files) {
+    if (f.size > MAX_UPLOAD_BYTES) { showToast(`${f.name}: too large (max 10MB)`); return; }
+    total += f.size;
+  }
+  if (total > MAX_UPLOAD_TOTAL_BYTES) { showToast('Total upload exceeds 50MB'); return; }
+
+  showToast(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}…`);
+  try {
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f, f.name);
+    const r = await api(`/api/tasks/${currentTask.id}/upload`, {
+      method: 'POST',
+      body: fd,
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      showToast(data.error || 'Upload failed');
+      return;
+    }
+    const paths = (data.paths || []);
+    if (paths.length === 0) {
+      showToast('No files saved');
+      return;
+    }
+    // Paste paths into stdin (no newline) so the user can add a sentence
+    // like "summarize the screenshot" before pressing Enter. Trailing space
+    // separates the paths from whatever the user types next.
+    sendInputBytes(paths.join(' ') + ' ');
+    showToast(`Uploaded ${paths.length} file${paths.length === 1 ? '' : 's'}`);
+  } catch (err) {
+    showToast('Upload error: ' + err.message);
+  }
+}
+
 function setFontSize(n) {
   if (n < 9 || n > 24) return;
   termFontSize = n;
@@ -1868,6 +1977,7 @@ function renderOverflowMenu() {
   }
   items.push(
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
+    { id: 'btn-upload', label: 'Upload files', fn: triggerUpload },
     { id: 'btn-rename', label: 'Rename', fn: renameTask },
     { id: 'btn-fork', label: 'Fork', fn: forkTask },
     currentTask.archived
@@ -2292,26 +2402,137 @@ async function loadProjects() {
   } catch(e) {}
 }
 
+// --- File upload state for the New Task form ---
+// Files accumulate across multiple picker invocations and drag-drop events
+// until createTask() resets them or the user removes them individually.
+// Per-file 10MB / total 50MB caps mirror the server limits — we reject early
+// instead of failing the upload after a long network round-trip.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_UPLOAD_COUNT = 20;
+let createFiles = [];
+
+function formatSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function onCreateFilesPicked(e) {
+  addCreateFiles(Array.from(e.target.files || []));
+  // Reset value so picking the same file twice still fires `change`.
+  e.target.value = '';
+}
+
+function addCreateFiles(picked) {
+  let total = createFiles.reduce((s, f) => s + f.size, 0);
+  for (const f of picked) {
+    if (createFiles.length >= MAX_UPLOAD_COUNT) {
+      showToast(`Max ${MAX_UPLOAD_COUNT} files`);
+      break;
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      showToast(`${f.name}: too large (max 10MB)`);
+      continue;
+    }
+    if (total + f.size > MAX_UPLOAD_TOTAL_BYTES) {
+      showToast('Total upload exceeds 50MB');
+      break;
+    }
+    total += f.size;
+    createFiles.push(f);
+  }
+  renderCreateFilesList();
+}
+
+function removeCreateFile(idx) {
+  createFiles.splice(idx, 1);
+  renderCreateFilesList();
+}
+
+function renderCreateFilesList() {
+  const list = document.getElementById('create-files-list');
+  list.innerHTML = '';
+  createFiles.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'upload-row';
+    const name = document.createElement('span');
+    name.className = 'upload-name';
+    name.textContent = f.name;
+    const size = document.createElement('span');
+    size.className = 'upload-size';
+    size.textContent = formatSize(f.size);
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'upload-remove';
+    rm.setAttribute('aria-label', 'Remove');
+    rm.textContent = '×';
+    rm.addEventListener('click', () => removeCreateFile(i));
+    row.appendChild(name);
+    row.appendChild(size);
+    row.appendChild(rm);
+    list.appendChild(row);
+  });
+}
+
+// Wire up drag-and-drop on the dropzone. `dragover` must call preventDefault
+// or the browser refuses the drop. The class toggle gives visual feedback.
+(function initCreateDropzone() {
+  const dz = document.getElementById('create-dropzone');
+  if (!dz) return;
+  ['dragenter', 'dragover'].forEach(ev => {
+    dz.addEventListener(ev, e => {
+      e.preventDefault();
+      dz.classList.add('drag-over');
+    });
+  });
+  ['dragleave', 'drop'].forEach(ev => {
+    dz.addEventListener(ev, e => {
+      e.preventDefault();
+      dz.classList.remove('drag-over');
+    });
+  });
+  dz.addEventListener('drop', e => {
+    if (!e.dataTransfer) return;
+    addCreateFiles(Array.from(e.dataTransfer.files || []));
+  });
+})();
+
 async function createTask() {
   const project = document.getElementById('create-project').value;
   const name = document.getElementById('create-name').value.trim();
   const prompt = document.getElementById('create-prompt').value.trim();
   if (!project) { showToast('Select a project'); return; }
-  if (!prompt && !name) { showToast('Enter a name or prompt'); return; }
+  if (!prompt && !name && createFiles.length === 0) {
+    showToast('Enter a name, prompt, or attach a file');
+    return;
+  }
 
   const btn = document.getElementById('create-btn');
   btn.disabled = true;
-  btn.textContent = 'Creating...';
+  btn.textContent = createFiles.length > 0 ? 'Uploading...' : 'Creating...';
 
   try {
-    const r = await api('/api/tasks', {
-      method: 'POST',
-      body: JSON.stringify({ name, prompt, project })
-    });
+    let r;
+    if (createFiles.length > 0) {
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('prompt', prompt);
+      fd.append('project', project);
+      for (const f of createFiles) fd.append('files', f, f.name);
+      r = await api('/api/tasks', { method: 'POST', body: fd });
+    } else {
+      r = await api('/api/tasks', {
+        method: 'POST',
+        body: JSON.stringify({ name, prompt, project })
+      });
+    }
     const data = await r.json();
     if (r.ok) {
       document.getElementById('create-name').value = '';
       document.getElementById('create-prompt').value = '';
+      createFiles = [];
+      renderCreateFilesList();
       switchTab('tasks');
       await refresh();
       openDetail(data.id);
