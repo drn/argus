@@ -298,6 +298,15 @@ button:disabled { opacity: 0.5; cursor: default; }
   border-top: 1px solid var(--border);
   align-items: flex-end;
 }
+/* Wrapper width is the textarea, not the full bar — the Send button must
+   stay uncovered by the AC dropdown. `display:flex` so the inner textarea's
+   `flex: 1 1 auto` keeps working. */
+.compose-input-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+}
 #compose-input {
   flex: 1 1 auto; min-width: 0;
   background: var(--surface);
@@ -467,6 +476,13 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 0 0 8px 8px; max-height: 210px; /* ~5 items */ overflow-y: auto;
   z-index: 20; display: none;
+}
+/* Compose-bar variant: anchor to the bottom of the input so the dropdown
+   grows upward — the compose bar sits at the bottom of the screen so a
+   downward dropdown would render off-viewport. */
+.ac-dropdown.up {
+  top: auto; bottom: 100%;
+  border-radius: 8px 8px 0 0;
 }
 .ac-dropdown.open { display: block; }
 .ac-item {
@@ -729,10 +745,13 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <button class="jump-bottom-btn" id="jump-bottom" aria-label="Scroll to input" type="button">↓</button>
     </div>
     <div class="compose-bar" id="compose-bar" style="display:none">
-      <textarea id="compose-input" rows="1"
-        placeholder="Type or dictate to agent…"
-        autocapitalize="off" autocorrect="off" spellcheck="false"
-        autocomplete="off" enterkeyhint="send"></textarea>
+      <div class="compose-input-wrap">
+        <textarea id="compose-input" rows="1"
+          placeholder="Type or dictate to agent…"
+          autocapitalize="off" autocorrect="off" spellcheck="false"
+          autocomplete="off" enterkeyhint="send"></textarea>
+        <div class="ac-dropdown up" id="compose-ac-dropdown"></div>
+      </div>
       <button id="compose-send" type="button" aria-label="Send">↑</button>
     </div>
     <div class="read-only-output" id="output-box" style="display:none"></div>
@@ -3813,18 +3832,15 @@ function escAttr(s) {
 }
 
 // --- Skill Autocomplete ---
+// Two text inputs need slash-skill autocomplete: the New Task prompt textarea
+// and the agent-view compose bar. Both share `cachedSkills` (project-keyed
+// global cache) but otherwise need independent state — open in one must not
+// close the other. Factored into createSkillAutocomplete so each input owns
+// its own filtered list / selection idx / token bounds.
 let cachedSkills = {};  // project -> [{name, description}]
-let acIdx = -1;
-let acFiltered = [];
-// Bounds of the prompt token currently being autocompleted, captured when
-// the dropdown is opened so selectAC() can replace just that token instead
-// of clobbering the entire prompt (otherwise mid-prompt triggers like
-// "fix bug /co" would lose the leading text on accept).
-let acTokenStart = 0;
-let acTokenEnd = 0;
 
 async function loadSkillsForProject(project) {
-  if (cachedSkills[project]) return;
+  if (!project || cachedSkills[project]) return;
   try {
     const r = await api('/api/skills?project=' + encodeURIComponent(project));
     if (r.ok) {
@@ -3834,112 +3850,137 @@ async function loadSkillsForProject(project) {
   } catch(e) {}
 }
 
+// Factory: wires `/skill` autocomplete to an input + dropdown pair. `getProject`
+// is a thunk so the project context can be dynamic — the compose bar follows
+// whichever task is currently open. Returns a small handle so callers can
+// imperatively close the dropdown (e.g. on detail-view teardown).
+function createSkillAutocomplete({ input, dropdown, getProject }) {
+  let idx = -1;
+  let filtered = [];
+  // Bounds of the prompt token currently being autocompleted, captured when
+  // the dropdown opens so select() replaces just that token instead of
+  // clobbering the entire prompt (mid-prompt triggers like "fix bug /co"
+  // would lose the leading text otherwise).
+  let tokenStart = 0;
+  let tokenEnd = 0;
+
+  // tokenAtCursor returns the whitespace-delimited token containing the
+  // cursor, so the trigger ("/") works anywhere in the prompt — not only
+  // when it's the first character. Matches the TUI's promptTokenBounds.
+  function tokenAtCursor() {
+    const val = input.value;
+    const cursor = input.selectionStart || 0;
+    let start = cursor;
+    while (start > 0 && !/\s/.test(val[start - 1])) start--;
+    let end = cursor;
+    while (end < val.length && !/\s/.test(val[end])) end++;
+    return { start, end, token: val.slice(start, end) };
+  }
+
+  function update() {
+    const { start, end, token } = tokenAtCursor();
+    if (!token.startsWith('/')) { close(); return; }
+    const filter = token.slice(1).toLowerCase();
+    const project = getProject() || '';
+    const allSkills = cachedSkills[project] || [];
+    // Case-insensitive substring match — mirrors Claude Code's slash-command
+    // filter so "/rev" matches "cortex:review" not just names starting with "rev".
+    filtered = filter ? allSkills.filter(s => s.name.toLowerCase().includes(filter)) : allSkills;
+    if (!filtered.length) { close(); return; }
+    idx = 0;
+    tokenStart = start;
+    tokenEnd = end;
+    render();
+  }
+
+  function render() {
+    dropdown.innerHTML = filtered.map((s, i) =>
+      `<div class="ac-item${i === idx ? ' selected' : ''}" data-idx="${i}">` +
+      `<span>${esc(s.name)}</span>` +
+      (s.description ? `<span class="ac-desc">${esc(s.description)}</span>` : '') +
+      `</div>`
+    ).join('');
+    dropdown.classList.add('open');
+    const sel = dropdown.querySelector('.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  function close() {
+    dropdown.classList.remove('open');
+    filtered = [];
+    idx = -1;
+  }
+
+  function select(i) {
+    if (i >= 0 && i < filtered.length) {
+      const val = input.value;
+      const replacement = '/' + filtered[i].name + ' ';
+      input.value = val.slice(0, tokenStart) + replacement + val.slice(tokenEnd);
+      const newCursor = tokenStart + replacement.length;
+      input.setSelectionRange(newCursor, newCursor);
+      input.focus();
+    }
+    close();
+  }
+
+  input.addEventListener('input', update);
+  // Cursor moves via mouse/arrow/Home/End don't fire `input`, so the dropdown
+  // would otherwise miss when the user clicks into a "/foo" token elsewhere
+  // or out of one. `click` covers pointer moves; `keyup` filters to cursor-only
+  // keys so ArrowUp/Down (used to navigate the dropdown) don't reset idx.
+  input.addEventListener('click', update);
+  input.addEventListener('keyup', function(e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
+        e.key === 'Home' || e.key === 'End') {
+      update();
+    }
+  });
+
+  // stopImmediatePropagation so peer keydown listeners on the same input
+  // (notably the compose bar's Enter→send handler) don't fire when AC
+  // consumes the key. preventDefault alone stops the browser default but
+  // not other JS listeners on the same target.
+  input.addEventListener('keydown', function(e) {
+    if (!dropdown.classList.contains('open')) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); e.stopImmediatePropagation();
+      idx = (idx + 1) % filtered.length;
+      render();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); e.stopImmediatePropagation();
+      idx = (idx - 1 + filtered.length) % filtered.length;
+      render();
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopImmediatePropagation();
+      select(idx);
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopImmediatePropagation();
+      close();
+    }
+  });
+
+  dropdown.addEventListener('click', function(e) {
+    const item = e.target.closest('.ac-item');
+    if (item) select(parseInt(item.dataset.idx, 10));
+  });
+
+  return { update, close };
+}
+
 document.getElementById('create-project').addEventListener('change', function() {
   loadSkillsForProject(this.value);
 });
 
-const promptEl = document.getElementById('create-prompt');
-const acDrop = document.getElementById('ac-dropdown');
-
-// acTokenAtCursor returns the whitespace-delimited token containing the
-// cursor, so the trigger ("/") works anywhere in the prompt — not only
-// when it's the first character. Matches the TUI's promptTokenBounds.
-function acTokenAtCursor() {
-  const val = promptEl.value;
-  const cursor = promptEl.selectionStart || 0;
-  let start = cursor;
-  while (start > 0 && !/\s/.test(val[start - 1])) start--;
-  let end = cursor;
-  while (end < val.length && !/\s/.test(val[end])) end++;
-  return { start, end, token: val.slice(start, end) };
-}
-
-function updateAC() {
-  const { start, end, token } = acTokenAtCursor();
-  if (!token.startsWith('/')) {
-    closeAC();
-    return;
-  }
-  const filter = token.slice(1).toLowerCase();
-  const project = document.getElementById('create-project').value;
-  const allSkills = cachedSkills[project] || [];
-  // Case-insensitive substring match — mirrors Claude Code's slash-command
-  // filter behavior, so "/rev" matches "cortex:review" not just names that
-  // literally start with "rev".
-  acFiltered = filter ? allSkills.filter(s => s.name.toLowerCase().includes(filter)) : allSkills;
-  if (!acFiltered.length) { closeAC(); return; }
-  acIdx = 0;
-  acTokenStart = start;
-  acTokenEnd = end;
-  renderAC();
-}
-
-function renderAC() {
-  acDrop.innerHTML = acFiltered.map((s, i) =>
-    `<div class="ac-item${i === acIdx ? ' selected' : ''}" data-idx="${i}">` +
-    `<span>${esc(s.name)}</span>` +
-    (s.description ? `<span class="ac-desc">${esc(s.description)}</span>` : '') +
-    `</div>`
-  ).join('');
-  acDrop.classList.add('open');
-  const sel = acDrop.querySelector('.selected');
-  if (sel) sel.scrollIntoView({ block: 'nearest' });
-}
-
-function closeAC() {
-  acDrop.classList.remove('open');
-  acFiltered = [];
-  acIdx = -1;
-}
-
-function selectAC(idx) {
-  if (idx >= 0 && idx < acFiltered.length) {
-    const val = promptEl.value;
-    const replacement = '/' + acFiltered[idx].name + ' ';
-    promptEl.value = val.slice(0, acTokenStart) + replacement + val.slice(acTokenEnd);
-    const newCursor = acTokenStart + replacement.length;
-    promptEl.setSelectionRange(newCursor, newCursor);
-    promptEl.focus();
-  }
-  closeAC();
-}
-
-promptEl.addEventListener('input', updateAC);
-// Cursor moves via mouse/arrow/Home/End don't fire `input`, so the dropdown
-// would otherwise miss when the user clicks into a "/foo" token elsewhere
-// in the prompt or out of one. `click` covers pointer moves; `keyup` filters
-// to the cursor-only keys so ArrowUp/Down (used to navigate the dropdown)
-// don't reset acIdx.
-promptEl.addEventListener('click', updateAC);
-promptEl.addEventListener('keyup', function(e) {
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
-      e.key === 'Home' || e.key === 'End') {
-    updateAC();
-  }
+createSkillAutocomplete({
+  input: document.getElementById('create-prompt'),
+  dropdown: document.getElementById('ac-dropdown'),
+  getProject: () => document.getElementById('create-project').value,
 });
 
-promptEl.addEventListener('keydown', function(e) {
-  if (!acDrop.classList.contains('open')) return;
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    acIdx = (acIdx + 1) % acFiltered.length;
-    renderAC();
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    acIdx = (acIdx - 1 + acFiltered.length) % acFiltered.length;
-    renderAC();
-  } else if (e.key === 'Enter') {
-    e.preventDefault();
-    selectAC(acIdx);
-  } else if (e.key === 'Escape') {
-    e.preventDefault();
-    closeAC();
-  }
-});
-
-acDrop.addEventListener('click', function(e) {
-  const item = e.target.closest('.ac-item');
-  if (item) selectAC(parseInt(item.dataset.idx, 10));
+const composeAC = createSkillAutocomplete({
+  input: document.getElementById('compose-input'),
+  dropdown: document.getElementById('compose-ac-dropdown'),
+  getProject: () => (currentTask && currentTask.project) || '',
 });
 
 // --- Compose bar ---
@@ -3954,6 +3995,15 @@ function setComposeVisible(visible) {
   const el = document.getElementById('compose-bar');
   if (!el) return;
   el.style.display = (visible && IS_TOUCH) ? 'flex' : 'none';
+  // Pre-fetch skills for the active task's project so the `/` autocomplete
+  // dropdown has data ready by the time the user types. loadSkillsForProject
+  // is a no-op on cache hit, so re-opening the same project is free.
+  if (visible && IS_TOUCH && currentTask && currentTask.project) {
+    loadSkillsForProject(currentTask.project);
+  }
+  // On hide, close any stale dropdown so a re-open into a different task
+  // doesn't briefly show the previous task's filtered list.
+  if (!visible) composeAC.close();
 }
 
 // Mirror the server-side `io.LimitReader(r.Body, 64*1024)` in handleWriteInput
@@ -3986,6 +4036,9 @@ function sendCompose() {
   // field-sizing:content handles shrink-back on supporting browsers; explicit
   // height reset is a no-op there and a fallback elsewhere.
   ci.style.height = '';
+  // Send-button path bypasses the AC keydown handler — close the dropdown
+  // explicitly so a stale filtered list doesn't linger after submit.
+  composeAC.close();
 }
 
 (function wireCompose() {

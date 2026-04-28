@@ -89,6 +89,124 @@ test.describe('compose bar', () => {
     expect(posted).toBe(false);
   });
 
+  test('skill autocomplete: / opens dropdown, Enter inserts without sending', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+
+    // The test server seeds an empty `~/.claude/skills/` (HOME is a tempdir) so
+    // /api/skills returns []. Stub the endpoint with a couple of fake skills so
+    // the AC has something to render. route() runs before the page makes its
+    // first /api/skills request, which fires the moment the agent view shows
+    // the compose bar.
+    await page.route('**/api/skills**', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        skills: [
+          { name: 'review', description: 'Review a pull request' },
+          { name: 'rereview', description: 'Re-review with fresh eyes' },
+          { name: 'test', description: 'Run tests' },
+        ],
+      }),
+    }));
+
+    await login(page);
+
+    const ci = page.locator('#compose-input');
+    const dd = page.locator('#compose-ac-dropdown');
+
+    await ci.click();
+    await page.keyboard.type('/');
+    // First character of `/` opens the dropdown with all three skills.
+    await expect(dd).toHaveClass(/open/);
+    await expect(dd.locator('.ac-item')).toHaveCount(3);
+
+    // `re` filters to review + rereview (case-insensitive substring match).
+    await page.keyboard.type('re');
+    await expect(dd.locator('.ac-item')).toHaveCount(2);
+
+    // ArrowDown moves selection from review → rereview.
+    await page.keyboard.press('ArrowDown');
+    await expect(dd.locator('.ac-item.selected')).toContainText('rereview');
+
+    // Enter while AC is open must SELECT the item — not POST to /input.
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.keyboard.press('Enter');
+    await expect(ci).toHaveValue('/rereview ');
+    await expect(dd).not.toHaveClass(/open/);
+    expect(posted).toBe(false);
+
+    // Now Enter on a non-slash value sends normally.
+    await ci.fill('hello');
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await ci.press('Enter');
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello\n');
+  });
+
+  test('skill autocomplete: tapping a dropdown item inserts and closes', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+
+    await page.route('**/api/skills**', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        skills: [
+          { name: 'review' },
+          { name: 'rereview' },
+        ],
+      }),
+    }));
+
+    await login(page);
+
+    const ci = page.locator('#compose-input');
+    const dd = page.locator('#compose-ac-dropdown');
+
+    await ci.click();
+    await page.keyboard.type('/re');
+    await expect(dd).toHaveClass(/open/);
+
+    // Tapping an item must NOT POST to /input — only insert + close.
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await dd.locator('.ac-item', { hasText: 'rereview' }).click();
+    await expect(ci).toHaveValue('/rereview ');
+    await expect(dd).not.toHaveClass(/open/);
+    expect(posted).toBe(false);
+  });
+
+  test('skill autocomplete: Escape closes dropdown without inserting', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+
+    await page.route('**/api/skills**', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ skills: [{ name: 'review' }] }),
+    }));
+
+    await login(page);
+
+    const ci = page.locator('#compose-input');
+    const dd = page.locator('#compose-ac-dropdown');
+
+    await ci.click();
+    await page.keyboard.type('/r');
+    await expect(dd).toHaveClass(/open/);
+
+    await page.keyboard.press('Escape');
+    await expect(dd).not.toHaveClass(/open/);
+    // Escape must not clear the typed prefix — the user can keep editing.
+    await expect(ci).toHaveValue('/r');
+  });
+
   test('compose bar hidden after closing the detail view', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
