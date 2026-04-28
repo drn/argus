@@ -26,6 +26,10 @@
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
 - **`moveCursor` must not fire `OnCursorChange` when clamped at boundaries.** When pressing up at the top or down at the bottom, `tl.cursor` is clamped to the same value — firing the callback triggers unnecessary git diff refreshes and preview fetches. Use a deferred guard comparing `tl.cursor != prev`.
 
+## Modal Forms (`handle*FormKey`)
+
+- **Every `handle*FormKey` early-return on validation or DB save failure MUST set `form.done = false` before returning.** `HandleKey` only ever sets `done = true` (on Enter / Ctrl+S); it never clears it. Without the reset, the next keypress flows back through `Done()`, hits the same validation failure, and the user is stuck in an infinite submit loop with no way out except Escape. `projectform`/`backendform`/`scheduleform` all have this dance — copy it verbatim when adding a new modal form.
+
 ## Task Row Rendering
 
 - **`drawTaskRow` gives the task name priority over the branch in width allocation.** The name is sized first (ignoring branch), then the branch fills remaining space. If branch is sized first (reserving space before name), narrow terminals squeeze the name to zero while showing a useless branch fragment.
