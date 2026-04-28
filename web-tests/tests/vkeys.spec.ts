@@ -105,4 +105,61 @@ test.describe('agent detail view chrome', () => {
     await page.locator('#btn-overflow').click();
     await expect(page.locator('#btn-stop')).toHaveCount(0);
   });
+
+  test('View PR appears without re-entering when pr_url becomes available', async ({ page }) => {
+    // Disable the SPA's service worker before any script runs. The SW's
+    // `/api/*` network-only handler re-issues fetches from the SW context,
+    // which bypasses Playwright's `page.route()` in WebKit (the request
+    // hits the network but the route never observes it). Patching
+    // `serviceWorker.register` to no-op leaves the rest of the
+    // `serviceWorker` API intact (push subscription code in the SPA reads
+    // `ready`/`getRegistration`) while keeping every fetch on the
+    // window-side path where `page.route()` works on every browser.
+    await page.addInitScript(() => {
+      const sw = navigator.serviceWorker;
+      if (sw) {
+        Object.defineProperty(sw, 'register', {
+          configurable: true,
+          value: () => Promise.reject(new Error('disabled in test')),
+        });
+      }
+    });
+
+    await login(page);
+
+    // Initially no PR — button must not be in the menu.
+    await page.locator('#btn-overflow').click();
+    await expect(page.locator('#overflow-menu.open')).toBeVisible();
+    await expect(page.locator('#btn-pr')).toHaveCount(0);
+    // Close so opening again picks up the rerendered DOM.
+    await page.locator('#btn-overflow').click();
+
+    // Stub the next /api/tasks response to add a pr_url, simulating the
+    // agent opening a PR while the user is parked in the detail view.
+    // Construct the body explicitly (status + body + content-type) — webkit
+    // silently drops the overridden body in `response: r, json: body` form.
+    await page.route('**/api/tasks*', async (route) => {
+      const r = await route.fetch();
+      const body = await r.json();
+      for (const t of body.tasks || []) {
+        t.pr_url = 'https://github.com/example/repo/pull/42';
+      }
+      await route.fulfill({
+        status: r.status(),
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    // Trigger a refresh immediately rather than waiting 5s for the poll.
+    // refresh() returns a Promise; page.evaluate awaits it, so the
+    // currentTask sync + renderOverflowMenu have completed before we check.
+    await page.evaluate(() => (window as any).refresh());
+
+    // Without the in-place currentTask sync, the button only appears after
+    // closeDetail() + openDetail(). With it, the menu picks up pr_url on the
+    // very next open.
+    await page.locator('#btn-overflow').click();
+    await expect(page.locator('#btn-pr')).toBeVisible();
+  });
 });

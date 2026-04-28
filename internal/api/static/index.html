@@ -1418,6 +1418,26 @@ async function refresh() {
       `${active} running${idleSeg} / ${t.pending} queued`;
 
     tasks = data.tasks || [];
+    // Sync the open detail view with the fresh server snapshot. Without this,
+    // currentTask is captured once in openDetail() and stays stale for the
+    // duration of the agent view — fields that change while the user is
+    // inside (notably pr_url, which only appears after the agent opens a
+    // PR, and archived/status flips) only take effect when the user exits
+    // and re-enters. Re-render the overflow menu only when fields it cares
+    // about change, to avoid rebuilding it under the user's finger every
+    // 5s poll cycle.
+    if (currentTask) {
+      const fresh = tasks.find(t => t.id === currentTask.id);
+      if (fresh) {
+        const menuChanged =
+          fresh.pr_url !== currentTask.pr_url ||
+          fresh.status !== currentTask.status ||
+          fresh.idle !== currentTask.idle ||
+          fresh.archived !== currentTask.archived;
+        currentTask = fresh;
+        if (menuChanged) renderOverflowMenu();
+      }
+    }
     renderTaskList();
     return true;
   } catch(e) {
