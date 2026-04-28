@@ -130,6 +130,35 @@ func (d *DB) Rename(id, name string) error {
 	return nil
 }
 
+// RenameIfName updates name only if the row's current name still equals
+// expected — a compare-and-swap that closes the TOCTOU window between a
+// caller's read and write. Returns false (no error) if the row exists but
+// the name has changed since expected was observed; returns ErrTaskNotFound
+// if the row is gone. Used by the post-creation Haiku rename so a manual
+// rename racing the LLM call is preserved.
+func (d *DB) RenameIfName(id, expected, newName string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET name=? WHERE id=? AND name=?`, newName, id, expected)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		return true, nil
+	}
+	// Disambiguate "row gone" from "row exists but name differs".
+	var exists int
+	if err := d.conn.QueryRow(`SELECT 1 FROM tasks WHERE id=?`, id).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("task not found: %s", id)
+		}
+		return false, err
+	}
+	return false, nil
+}
+
 func (d *DB) Delete(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

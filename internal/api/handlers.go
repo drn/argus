@@ -249,6 +249,9 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// task.Name here is the regex slug. When autoName is true, a Haiku
+	// rename fires asynchronously after this response — clients that re-list
+	// or stream tasks will see the updated name within a few seconds.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":     task.ID,
 		"name":   task.Name,

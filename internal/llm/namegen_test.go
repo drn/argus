@@ -54,7 +54,7 @@ func TestSanitizeAndValidate(t *testing.T) {
 
 func TestGenerateName_EmptyPrompt(t *testing.T) {
 	_, err := GenerateName(context.Background(), "   \n  ")
-	testutil.ErrorIs(t, err, ErrUnavailable)
+	testutil.ErrorIs(t, err, ErrEmptyPrompt)
 }
 
 func TestGenerateName_NoClaude(t *testing.T) {

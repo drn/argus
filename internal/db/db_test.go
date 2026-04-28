@@ -130,6 +130,50 @@ func TestDB_RenameNotFound(t *testing.T) {
 	}
 }
 
+func TestDB_RenameIfName(t *testing.T) {
+	t.Run("matches expected → renames", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		ok, err := d.RenameIfName(task.ID, "slug", "haiku-name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Error("ok = false, want true")
+		}
+		got, _ := d.Get(task.ID)
+		if got.Name != "haiku-name" {
+			t.Errorf("name = %q, want %q", got.Name, "haiku-name")
+		}
+	})
+
+	t.Run("name drifted → no-op, no error", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "user-typed", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		ok, err := d.RenameIfName(task.ID, "old-slug", "haiku-name")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			t.Error("ok = true, want false (name drifted)")
+		}
+		got, _ := d.Get(task.ID)
+		if got.Name != "user-typed" {
+			t.Errorf("name = %q, want unchanged %q", got.Name, "user-typed")
+		}
+	})
+
+	t.Run("missing task → error", func(t *testing.T) {
+		d := testDB(t)
+		_, err := d.RenameIfName("nonexistent", "slug", "haiku-name")
+		if err == nil {
+			t.Error("expected error for missing task")
+		}
+	})
+}
+
 func TestDB_Delete(t *testing.T) {
 	d := testDB(t)
 

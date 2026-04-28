@@ -2330,7 +2330,10 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Project:    proj,
 			Backend:    task.Backend,
 			BaseBranch: task.Branch,
-			AutoName:   true, // form name is always GenerateNameFromPrompt
+			// INVARIANT: the new-task form has no name field — task.Name is
+			// always GenerateNameFromPrompt(prompt). If a name field is added
+			// later, gate this on whether the user typed one.
+			AutoName: true,
 			Rows:       rows,
 			Cols:       cols,
 			BeforeStart: func() { a.startGen.Add(1) },

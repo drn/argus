@@ -27,12 +27,15 @@ func runAutoRename(database *db.DB, taskID, originalName, prompt string) {
 
 	name, err := autoRenameFn(ctx, prompt)
 	if err != nil {
-		if errors.Is(err, llm.ErrUnavailable) {
+		switch {
+		case errors.Is(err, llm.ErrUnavailable):
 			uxlog.Log("[autoname] skipped (claude CLI unavailable) task=%s", taskID)
-			return
+		case errors.Is(err, llm.ErrEmptyPrompt):
+			uxlog.Log("[autoname] skipped (empty prompt) task=%s", taskID)
+		default:
+			slog.Info("autoname: rename failed (keeping original)", "id", taskID, "name", originalName, "err", err)
+			uxlog.Log("[autoname] failed task=%s name=%q err=%v", taskID, originalName, err)
 		}
-		slog.Info("autoname: rename failed (keeping original)", "id", taskID, "name", originalName, "err", err)
-		uxlog.Log("[autoname] failed task=%s name=%q err=%v", taskID, originalName, err)
 		return
 	}
 	if name == originalName {
@@ -40,18 +43,17 @@ func runAutoRename(database *db.DB, taskID, originalName, prompt string) {
 		return
 	}
 
-	cur, err := database.Get(taskID)
+	// Atomic compare-and-swap: only rename if Name still equals the regex
+	// slug we started with. Closes the TOCTOU window between a manual rename
+	// and our write — without this guard, a user typing into the rename
+	// modal during the ~2s Haiku call could be silently overwritten.
+	ok, err := database.RenameIfName(taskID, originalName, name)
 	if err != nil {
-		uxlog.Log("[autoname] db.Get failed task=%s err=%v", taskID, err)
+		uxlog.Log("[autoname] db.RenameIfName failed task=%s err=%v", taskID, err)
 		return
 	}
-	if cur.Name != originalName {
-		uxlog.Log("[autoname] skipped task=%s (renamed externally to %q while haiku in flight)", taskID, cur.Name)
-		return
-	}
-
-	if err := database.Rename(taskID, name); err != nil {
-		uxlog.Log("[autoname] db.Rename failed task=%s err=%v", taskID, err)
+	if !ok {
+		uxlog.Log("[autoname] skipped task=%s (name changed externally while haiku in flight)", taskID)
 		return
 	}
 	uxlog.Log("[autoname] renamed task=%s %q → %q", taskID, originalName, name)

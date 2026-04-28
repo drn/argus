@@ -22,14 +22,21 @@ import (
 // 1–2s; the budget is generous to absorb CLI startup overhead.
 const DefaultTimeout = 8 * time.Second
 
+// MaxNameLen caps the kebab-case name length. The system prompt and the
+// validator both reference this so they can't drift.
+const MaxNameLen = 30
+
 // nameSystemPrompt fully overrides the default Claude Code system prompt
 // (passed via --system-prompt, not --append-system-prompt) so we don't
 // pay for the default preamble or for CLAUDE.md auto-discovery.
-const nameSystemPrompt = "You generate concise kebab-case task names. " +
-	"Reply with ONLY the name (2-4 words, lowercase letters/digits, " +
-	"hyphen-separated, no punctuation, no quotes, max 30 chars). " +
-	"Capture the core action/intent — avoid filler words like 'task', " +
-	"'help', 'please', or 'fix the'."
+var nameSystemPrompt = fmt.Sprintf(
+	"You generate concise kebab-case task names. "+
+		"Reply with ONLY the name (2-4 words, lowercase letters/digits, "+
+		"hyphen-separated, no punctuation, no quotes, max %d chars). "+
+		"Capture the core action/intent — avoid filler words like 'task', "+
+		"'help', 'please', or 'fix the'.",
+	MaxNameLen,
+)
 
 // validNamePattern matches kebab-case names: 1+ alphanumeric segments
 // joined by single hyphens, no leading/trailing hyphen.
@@ -39,6 +46,11 @@ var validNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // should treat this as a clean skip, not a failure worth surfacing.
 var ErrUnavailable = errors.New("claude CLI unavailable")
 
+// ErrEmptyPrompt indicates an empty/whitespace prompt was passed. Distinct
+// from ErrUnavailable so callers and logs can tell the two skip-cases
+// apart.
+var ErrEmptyPrompt = errors.New("empty prompt")
+
 // nameGenCmd is the exec factory used by GenerateName. Tests swap this to
 // inject a fake binary or capture invocations without shelling out.
 var nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -46,12 +58,13 @@ var nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cm
 }
 
 // GenerateName asks Haiku to summarize prompt as a kebab-case task name.
-// Returns ErrUnavailable if `claude` is not installed; other errors mean
-// the call ran but produced unusable output. Empty/whitespace prompts
-// return ErrUnavailable to spare a wasted API call.
+// Returns ErrUnavailable if `claude` is not installed, ErrEmptyPrompt if
+// prompt is empty/whitespace; other errors mean the call ran but produced
+// unusable output. Callers should fall back to their existing slug on any
+// error.
 func GenerateName(ctx context.Context, prompt string) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
-		return "", ErrUnavailable
+		return "", ErrEmptyPrompt
 	}
 	if _, err := exec.LookPath("claude"); err != nil {
 		return "", ErrUnavailable
@@ -77,6 +90,10 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 		"--system-prompt", nameSystemPrompt,
 		"--output-format", "text",
 		"--max-budget-usd", "0.01",
+		// "--" stops claude's flag parsing so a prompt that happens to start
+		// with "--" can't be interpreted as a flag. Not an OS injection risk
+		// (no shell), but prevents flag-injection against the claude CLI.
+		"--",
 		prompt,
 	}
 
@@ -98,13 +115,17 @@ func GenerateName(ctx context.Context, prompt string) (string, error) {
 	return name, nil
 }
 
-// sanitizeAndValidate trims whitespace, strips chatty wrappers (quotes,
-// code fences), lowercases, and verifies kebab-case + length. Returns
-// the empty string when the candidate is unusable.
+// sanitizeAndValidate trims whitespace, strips chatty wrappers (leading/
+// trailing quotes and backticks), lowercases, and verifies kebab-case +
+// length. Returns the empty string when the candidate is unusable.
+//
+// Note: strings.Trim treats its second arg as a character set, not as a
+// substring — `strings.Trim(s, "`+"`"+`")` strips runs of backtick chars,
+// which is exactly what we want for a "```name```" fence (each ` is
+// trimmed individually until a non-` char is reached).
 func sanitizeAndValidate(raw string) string {
 	s := strings.TrimSpace(raw)
-	// Strip code fences / backticks / quotes a chatty model might add.
-	for _, c := range []string{"```", "`", `"`, "'"} {
+	for _, c := range []string{"`", `"`, "'"} {
 		s = strings.Trim(s, c)
 	}
 	s = strings.TrimSpace(s)
@@ -112,7 +133,7 @@ func sanitizeAndValidate(raw string) string {
 	s = strings.TrimRight(s, ".!?,;:")
 	s = strings.TrimSpace(s)
 
-	if len(s) == 0 || len(s) > 30 {
+	if len(s) == 0 || len(s) > MaxNameLen {
 		return ""
 	}
 	if !validNamePattern.MatchString(s) {

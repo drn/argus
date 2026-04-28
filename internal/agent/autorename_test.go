@@ -63,7 +63,8 @@ func TestRunAutoRename_NoOp_SameName(t *testing.T) {
 
 	runAutoRename(d, id, "auth-token-refresh", "anything")
 
-	got, _ := d.Get(id)
+	got, err := d.Get(id)
+	testutil.NoError(t, err)
 	testutil.Equal(t, got.Name, "auth-token-refresh")
 }
 
@@ -80,7 +81,8 @@ func TestRunAutoRename_FailOpen_OnError(t *testing.T) {
 
 	runAutoRename(d, id, "fix-the-thing", "anything")
 
-	got, _ := d.Get(id)
+	got, err := d.Get(id)
+	testutil.NoError(t, err)
 	testutil.Equal(t, got.Name, "fix-the-thing")
 }
 
@@ -97,7 +99,8 @@ func TestRunAutoRename_SkipsWhenUnavailable(t *testing.T) {
 
 	runAutoRename(d, id, "fix-the-thing", "anything")
 
-	got, _ := d.Get(id)
+	got, err := d.Get(id)
+	testutil.NoError(t, err)
 	testutil.Equal(t, got.Name, "fix-the-thing")
 }
 
@@ -119,7 +122,8 @@ func TestRunAutoRename_RaceGuard_UserRenamed(t *testing.T) {
 
 	runAutoRename(d, id, "fix-the-thing", "anything")
 
-	got, _ := d.Get(id)
+	got, err := d.Get(id)
+	testutil.NoError(t, err)
 	testutil.Equal(t, got.Name, "user-typed-name") // user's rename preserved
 }
 
