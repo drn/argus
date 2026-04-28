@@ -39,6 +39,7 @@ const (
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
+	srSchedule
 )
 
 // Vault key constants used in settingsRow.key for vault path rows.
@@ -69,6 +70,7 @@ type SettingsView struct {
 	warnings       []string
 	projects       []projectEntry
 	backends       []backendEntry
+	schedules      []*model.ScheduledTask
 	defaultBackend string
 	taskCounts     map[string]statusCounts
 
@@ -131,14 +133,18 @@ type SettingsView struct {
 	updateOutput    string // last go-install output (for detail panel)
 
 	// Callbacks.
-	OnRestartDaemon func()
-	OnUpdateArgus   func() // triggered by the "Update Argus" row
-	OnNewProject    func()
-	OnEditProject   func(name string, p config.Project)
-	OnDeleteProject func(name string)
-	OnNewBackend    func()
-	OnEditBackend   func(name string, b config.Backend)
-	OnQuickAdd      func()
+	OnRestartDaemon  func()
+	OnUpdateArgus    func() // triggered by the "Update Argus" row
+	OnNewProject     func()
+	OnEditProject    func(name string, p config.Project)
+	OnDeleteProject  func(name string)
+	OnNewBackend     func()
+	OnEditBackend    func(name string, b config.Backend)
+	OnQuickAdd       func()
+	OnNewSchedule    func()
+	OnEditSchedule   func(s *model.ScheduledTask)
+	OnDeleteSchedule func(id string)
+	OnRunSchedule    func(id string)
 
 	// DB reference for toggling values.
 	database *db.DB
@@ -267,6 +273,13 @@ func (sv *SettingsView) Refresh() {
 	}
 	sv.setTasks(tasks)
 
+	// Schedules.
+	schedules, err := sv.database.Schedules()
+	if err != nil {
+		uxlog.Log("[settings] failed to load schedules: %v", err)
+	}
+	sv.schedules = schedules
+
 	sv.rebuildRows()
 }
 
@@ -358,6 +371,20 @@ func (sv *SettingsView) rebuildRows() {
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: bLabel})
 	for _, b := range sv.backends {
 		sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "  " + b.Name, key: b.Name})
+	}
+
+	// Scheduled tasks section.
+	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Scheduled Tasks"})
+	if len(sv.schedules) == 0 {
+		sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: "  (no schedules — press n to add)"})
+	} else {
+		for _, s := range sv.schedules {
+			marker := "  "
+			if !s.Enabled {
+				marker = "  ⊘ "
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: marker + s.Name, key: s.ID})
+		}
 	}
 
 	// Knowledge Base section.
@@ -579,6 +606,10 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return sv.handleToggleAutoStart()
 		case 'i':
 			return sv.handleQuickAdd()
+		case 't':
+			return sv.handleToggleSchedule()
+		case 'r':
+			return sv.handleRunSchedule()
 		}
 	}
 	return false
@@ -751,8 +782,19 @@ func (sv *SettingsView) handleDeleteOrDefault() bool {
 		return sv.handleDeleteProject()
 	case srBackend:
 		return sv.handleSetDefault()
+	case srSchedule:
+		return sv.handleDeleteSchedule()
 	}
 	return false
+}
+
+func (sv *SettingsView) handleDeleteSchedule() bool {
+	s := sv.SelectedSchedule()
+	if s == nil || sv.OnDeleteSchedule == nil {
+		return false
+	}
+	sv.OnDeleteSchedule(s.ID)
+	return true
 }
 
 func (sv *SettingsView) handleDeleteProject() bool {
@@ -799,6 +841,11 @@ func (sv *SettingsView) handleNew() bool {
 			sv.OnNewBackend()
 			return true
 		}
+	case srSchedule:
+		if sv.OnNewSchedule != nil {
+			sv.OnNewSchedule()
+			return true
+		}
 	}
 	return false
 }
@@ -815,8 +862,51 @@ func (sv *SettingsView) handleEdit() bool {
 			sv.OnEditBackend(be.Name, be.Backend)
 			return true
 		}
+	case srSchedule:
+		if s := sv.SelectedSchedule(); s != nil && sv.OnEditSchedule != nil {
+			sv.OnEditSchedule(s)
+			return true
+		}
 	}
 	return false
+}
+
+// SelectedSchedule returns the schedule at the cursor, or nil.
+func (sv *SettingsView) SelectedSchedule() *model.ScheduledTask {
+	row := sv.SelectedRow()
+	if row == nil || row.kind != srSchedule || row.key == "" {
+		return nil
+	}
+	for _, s := range sv.schedules {
+		if s.ID == row.key {
+			return s
+		}
+	}
+	return nil
+}
+
+func (sv *SettingsView) handleToggleSchedule() bool {
+	s := sv.SelectedSchedule()
+	if s == nil {
+		return false
+	}
+	s.Enabled = !s.Enabled
+	if err := sv.database.UpdateSchedule(s); err != nil {
+		uxlog.Log("[settings] toggle schedule %s: %v", s.ID, err)
+		return true
+	}
+	uxlog.Log("[settings] schedule %s enabled=%v", s.ID, s.Enabled)
+	sv.rebuildRows()
+	return true
+}
+
+func (sv *SettingsView) handleRunSchedule() bool {
+	s := sv.SelectedSchedule()
+	if s == nil || sv.OnRunSchedule == nil {
+		return false
+	}
+	sv.OnRunSchedule(s.ID)
+	return true
 }
 
 // handleEditSourceKey handles keystrokes while inline-editing the Argus source path.
@@ -1158,6 +1248,83 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderSourcePathDetail(screen, innerX, innerY, innerW, innerH)
 	case srUpdateArgus:
 		sv.renderUpdateArgusDetail(screen, innerX, innerY, innerW, innerH)
+	case srSchedule:
+		sv.renderScheduleDetail(screen, innerX, innerY, innerW, innerH)
+	}
+}
+
+func (sv *SettingsView) renderScheduleDetail(screen tcell.Screen, x, y, w, h int) {
+	s := sv.SelectedSchedule()
+	if s == nil {
+		widget.DrawText(screen, x, y, w, "Scheduled Tasks", theme.StyleTitle)
+		widget.DrawText(screen, x, y+2, w, "Recurring tasks fired by the daemon's", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+3, w, "scheduler. Each fire creates a fresh task", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+4, w, "and worktree.", theme.StyleDimmed)
+		if h > 1 {
+			widget.DrawText(screen, x, y+h-1, w, "[n] new schedule", theme.StyleDimmed)
+		}
+		return
+	}
+
+	widget.DrawText(screen, x, y, w, s.Name, theme.StyleTitle)
+	r := 1
+	statusLabel := "Enabled"
+	statusColor := theme.ColorComplete
+	if !s.Enabled {
+		statusLabel = "Disabled"
+		statusColor = theme.ColorError
+	}
+	widget.DrawText(screen, x, y+r, w, "Status: "+statusLabel, tcell.StyleDefault.Foreground(statusColor))
+	r += 2
+
+	widget.DrawText(screen, x, y+r, w, "Project: "+s.Project, theme.StyleDimmed)
+	r++
+	backend := s.Backend
+	if backend == "" {
+		backend = "(default)"
+	}
+	widget.DrawText(screen, x, y+r, w, "Backend: "+backend, theme.StyleDimmed)
+	r++
+	widget.DrawText(screen, x, y+r, w, "Schedule: "+s.Schedule, theme.StyleDimmed)
+	r++
+
+	if !s.NextRunAt.IsZero() {
+		widget.DrawText(screen, x, y+r, w, "Next: "+s.NextRunAt.Format("2006-01-02 15:04 MST"), theme.StyleDimmed)
+		r++
+	}
+	if !s.LastRunAt.IsZero() {
+		last := "Last: " + s.LastRunAt.Format("2006-01-02 15:04 MST")
+		if s.LastTaskID != "" {
+			last += "  task " + s.LastTaskID
+		}
+		widget.DrawText(screen, x, y+r, w, last, theme.StyleDimmed)
+		r++
+	}
+	if s.LastError != "" {
+		widget.DrawText(screen, x, y+r, w, "Error: "+s.LastError, tcell.StyleDefault.Foreground(theme.ColorError))
+		r++
+	}
+	r++
+
+	if r < h-1 {
+		widget.DrawText(screen, x, y+r, w, "Prompt:", tcell.StyleDefault.Foreground(theme.ColorTitle))
+		r++
+		for line := range strings.SplitSeq(s.Prompt, "\n") {
+			if r >= h-2 {
+				widget.DrawText(screen, x, y+r, w, "…", theme.StyleDimmed)
+				r++
+				break
+			}
+			if len(line) > w {
+				line = line[:w]
+			}
+			widget.DrawText(screen, x, y+r, w, line, theme.StyleDimmed)
+			r++
+		}
+	}
+
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[n] new  [e] edit  [t] toggle  [r] run now  [d] delete", theme.StyleDimmed)
 	}
 }
 

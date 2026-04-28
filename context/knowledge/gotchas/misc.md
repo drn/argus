@@ -101,6 +101,15 @@
 - **`maybeLoadBranches` must expand tildes before passing to `OnBranchFocus`.** `acceptPathAC` calls `collapseTilde`, so the path field contains `~/...`. Go's `exec.Command` doesn't shell-expand `~`, so `cmd.Dir = "~/..."` silently fails. Use `pathValue()` which applies `expandTilde` + `TrimSpace`.
 - **Form field truncation must use rune-based slicing, not byte-based.** The cursor character (U+2588) is 3 bytes in UTF-8. Byte-based `val[len(val)-maxW:]` splits it for paths where `pathLen + 3 > maxW > pathLen`, producing garbled symbols. Use `[]rune` conversion. Affects projectform, backendform, and renametask Draw methods.
 
+## Scheduled Tasks
+
+- **A brand-new schedule must not fire on the first tick.** `Scheduler.tickOne` only fires when `NextRunAt` is set and has passed; on the first tick it just computes `NextRunAt` and persists. Otherwise saving an `@every 1m` schedule would spawn a task the same second the user clicks Save. The first fire is always one cron interval after creation.
+- **Disabled schedules still get `NextRunAt` updated.** The web/TUI surfaces preview the next-fire time even for off rows so the user can sanity-check before flipping the toggle. Skip this and the row shows a stale value forever.
+- **`Scheduler.fire` reloads the row after `db.UpdateSchedule`.** It writes `LastRunAt`/`NextRunAt`/`LastTaskID`, then the surrounding `tickOne` reads the row again before falling through to the "compute next-run" branch — without the reload, the in-memory copy is stale and `tickOne` would overwrite the post-fire bookkeeping.
+- **Per-fire task names include a timestamp suffix.** `agent.CreateAndStart` auto-suffixes name collisions with `-1`, `-2`, …, but a schedule that fires every minute would walk that counter forever. Suffixing with `name + "  YYYY-MM-DD HH:MM"` makes each fire a fresh worktree path.
+- **The cron parser is `robfig/cron/v3` `ParseStandard` (5-field only).** 6-field (seconds-precision) expressions are rejected — Argus treats minute as the smallest unit because the scheduler ticks at one-minute intervals. Don't add `cron.Second` to the parser flags or the UI hint string in the schedule form will lie.
+- **API `PUT /api/schedules/{id}` is a partial update.** All fields are pointer-typed in the request struct; nil means "leave alone". The toggle-enabled UX in the SPA depends on this — sending `{"enabled":false}` must not blank the prompt or schedule.
+
 ## Link Extraction
 
 - **`osc8Re` must run BEFORE `ansiRe` in `stripANSI`.** OSC 8 hyperlinks embed URLs in escape sequences (`\x1b]8;;URL\x1b\\`). If `ansiRe` strips them first, the URLs are lost. The two-pass design in `todolinks.go:stripANSI` is intentional.

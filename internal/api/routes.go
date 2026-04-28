@@ -79,6 +79,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 	mux.HandleFunc("GET /api/logs/{name}", s.handleGetLog)
+	mux.HandleFunc("GET /api/schedules", s.handleListSchedules)
+	mux.HandleFunc("POST /api/schedules", s.handleCreateSchedule)
+	mux.HandleFunc("PUT /api/schedules/{id}", s.handleUpdateSchedule)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
 
 	return mux
 }

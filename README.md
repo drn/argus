@@ -50,6 +50,13 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **Live preview** — ANSI-aware agent output preview in the task list, rendered from the PTY ring buffer
 - **Idle detection** — Tasks waiting for input are visually promoted to "in review" status until visited
 
+### Scheduled Tasks
+
+- **Cron-driven recurring tasks** — Schedule a fixed prompt against a fixed project on a cron schedule. Each fire creates a fresh task and worktree, the same way the New Task form does
+- **Standard cron syntax** — 5-field cron (`m h dom mon dow`) plus descriptors (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`) and intervals (`@every 30m`, `@every 1h`)
+- **Manage from TUI or PWA** — Settings tab on both surfaces lists schedules with next-fire / last-fire bookkeeping, enable/disable toggle, and a "Run now" button to fire out-of-cycle
+- **REST API** — `GET/POST /api/schedules`, `PUT/DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/run`. Master token required for mutations; list is readable from device tokens
+
 ### Obsidian Integration
 
 - **To Dos tab** — Browse an Obsidian vault as a task inbox. Three-panel view: note list, markdown preview, and metadata
@@ -184,9 +191,11 @@ argus
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate rows |
-| `n` | New project / backend |
-| `e` | Edit project / backend |
-| `d` | Delete project / set default backend |
+| `n` | New project / backend / schedule |
+| `e` | Edit project / backend / schedule |
+| `d` | Delete project / set default backend / delete schedule |
+| `t` | Toggle schedule enabled (on the Scheduled Tasks section) |
+| `r` | Run schedule now (on the Scheduled Tasks section) |
 | `i` | Quick add projects |
 | `Enter` / `◀` / `▶` | Toggle / cycle settings |
 
@@ -372,6 +381,18 @@ The daemon polls running sessions every 5s; when a session transitions to idle, 
 | `DELETE` | `/api/tokens/{id}` | Revoke. **Master token required.** |
 
 Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
+
+#### Scheduled tasks
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/schedules` | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. Device tokens may read. |
+| `POST` | `/api/schedules` | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. **Master token required.** Returns the created row. |
+| `PUT` | `/api/schedules/{id}` | Partial update — every field optional. Useful for toggling `enabled`. **Master token required.** |
+| `DELETE` | `/api/schedules/{id}` | Remove. Tasks already created by the schedule are not affected. **Master token required.** |
+| `POST` | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. **Master token required.** |
+
+Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`), descriptors (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), and intervals (`@every 30m`).
 
 #### Settings & logs (master only for mutations)
 

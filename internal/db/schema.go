@@ -153,5 +153,27 @@ func (d *DB) createTables() error {
 		return fmt.Errorf("creating kb_pending_tasks table: %w", err)
 	}
 
+	// Scheduled tasks: cron-like definitions that fire a fresh task at each
+	// match. last_run_at, next_run_at, last_task_id, last_error are populated
+	// by the scheduler service in internal/scheduler.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS scheduled_tasks (
+			id           TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			project      TEXT NOT NULL,
+			prompt       TEXT NOT NULL,
+			backend      TEXT NOT NULL DEFAULT '',
+			schedule     TEXT NOT NULL,
+			enabled      INTEGER NOT NULL DEFAULT 1,
+			created_at   TEXT NOT NULL,
+			last_run_at  TEXT NOT NULL DEFAULT '',
+			next_run_at  TEXT NOT NULL DEFAULT '',
+			last_task_id TEXT NOT NULL DEFAULT '',
+			last_error   TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("creating scheduled_tasks table: %w", err)
+	}
+
 	return nil
 }

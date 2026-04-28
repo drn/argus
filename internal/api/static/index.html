@@ -815,6 +815,15 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
 
     <div class="settings-section">
+      <h3>Scheduled tasks</h3>
+      <div class="meta" style="padding: 0 0 8px">Recurring tasks that fire a fixed prompt at a fixed project on a cron schedule. Each fire creates a fresh task and worktree.</div>
+      <div id="schedules-list"></div>
+      <div class="settings-row">
+        <button class="primary" onclick="openScheduleEditor()">+ New schedule</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
       <h3>Remote API<span id="api-restart-flag"></span></h3>
       <div class="settings-row">
         <div class="grow">
@@ -938,6 +947,49 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <button class="danger" id="pm-delete" onclick="deleteProjectFromModal()" style="margin-right:auto">Delete</button>
         <button onclick="closeProjectEditor()">Cancel</button>
         <button class="primary" onclick="saveProjectFromModal()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Schedule editor modal -->
+  <div class="modal-overlay" id="schedule-modal">
+    <div class="modal">
+      <h3 id="schedule-modal-title">New schedule</h3>
+      <div class="form-group">
+        <label>Name</label>
+        <input id="sm-name" placeholder="e.g. Nightly tests">
+      </div>
+      <div class="form-group">
+        <label>Project</label>
+        <select id="sm-project"></select>
+      </div>
+      <div class="form-group">
+        <label>Backend (blank = default)</label>
+        <select id="sm-backend"></select>
+      </div>
+      <div class="form-group">
+        <label>Schedule</label>
+        <input id="sm-schedule" class="mono" placeholder="0 9 * * 1-5  or  @daily  or  @every 30m">
+        <div class="meta">Cron format (m h dom mon dow), or @hourly · @daily · @weekly · @monthly · @yearly · @every 30m.</div>
+      </div>
+      <div class="form-group">
+        <label>Prompt</label>
+        <textarea id="sm-prompt" rows="6" placeholder="What should the agent do each time?"></textarea>
+      </div>
+      <div class="form-group">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer">
+          <input type="checkbox" id="sm-enabled" checked>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="form-group" id="sm-summary" style="display:none">
+        <div class="meta" id="sm-summary-text"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="danger" id="sm-delete" onclick="deleteScheduleFromModal()" style="margin-right:auto">Delete</button>
+        <button id="sm-run" onclick="runScheduleFromModal()" style="margin-right:auto; display:none">Run now</button>
+        <button onclick="closeScheduleEditor()">Cancel</button>
+        <button class="primary" onclick="saveScheduleFromModal()">Save</button>
       </div>
     </div>
   </div>
@@ -2678,6 +2730,7 @@ async function loadSettings() {
     loadSettingsBlock(),
     loadProjectsBlock(),
     loadBackendsBlock(),
+    loadSchedulesBlock(),
     loadLog(),
   ]);
 }
@@ -3092,6 +3145,175 @@ async function deleteBackendFromModal() {
     closeBackendEditor();
     loadBackendsBlock();
   } catch(e) { showToast('Delete failed: ' + e.message); }
+}
+
+// --- Schedules ---
+let schedulesCache = [];
+let editingSchedule = null;
+
+async function loadSchedulesBlock() {
+  const el = document.getElementById('schedules-list');
+  try {
+    const r = await api('/api/schedules');
+    if (!r.ok) throw new Error('schedules fetch failed');
+    const { schedules } = await r.json();
+    schedulesCache = schedules || [];
+    renderSchedulesBlock();
+  } catch(e) {
+    el.innerHTML = '<div class="meta">Failed to load schedules.</div>';
+  }
+}
+
+function renderSchedulesBlock() {
+  const el = document.getElementById('schedules-list');
+  if (!schedulesCache.length) {
+    el.innerHTML = '<div class="meta" style="padding: 8px 0">No schedules. Use "+ New schedule" to create one.</div>';
+    return;
+  }
+  el.innerHTML = schedulesCache.map((s, i) => {
+    const next = s.enabled
+      ? (s.next_run_at ? `next ${formatRel(s.next_run_at)}` : 'next pending')
+      : 'disabled';
+    const last = s.last_run_at ? ` · last ${formatRel(s.last_run_at)}` : '';
+    const err = s.last_error ? ` · <span style="color:var(--red)">err: ${esc(s.last_error)}</span>` : '';
+    const backendLabel = s.backend ? ` · ${esc(s.backend)}` : '';
+    return `<div class="settings-row">
+      <div class="grow">
+        <div class="label">${esc(s.name)}${s.enabled ? '' : ' <span class="meta" style="font-weight:normal">(off)</span>'}</div>
+        <div class="meta">${esc(s.project)}${backendLabel} · <code>${esc(s.schedule)}</code> · ${esc(next)}${last}${err}</div>
+      </div>
+      <button data-act="edit-schedule" data-idx="${i}">Edit</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('[data-act="edit-schedule"]').forEach(b => {
+    b.addEventListener('click', () => openScheduleEditor(schedulesCache[parseInt(b.dataset.idx, 10)]));
+  });
+}
+
+// formatRel returns a short relative-time label (in 5m, 2h ago, …) for a
+// timestamp. Falls back to a short ISO date when the offset is large.
+function formatRel(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!t || isNaN(t)) return iso;
+  const delta = (t - Date.now()) / 1000; // positive = future
+  const abs = Math.abs(delta);
+  const fmt = (n, unit) => `${Math.round(n)}${unit}`;
+  let val;
+  if (abs < 60) val = `${Math.round(abs)}s`;
+  else if (abs < 3600) val = fmt(abs / 60, 'm');
+  else if (abs < 86400) val = fmt(abs / 3600, 'h');
+  else if (abs < 86400 * 7) val = fmt(abs / 86400, 'd');
+  else val = new Date(t).toLocaleDateString();
+  return delta >= 0 ? `in ${val}` : `${val} ago`;
+}
+
+function openScheduleEditor(s) {
+  editingSchedule = s || null;
+  document.getElementById('schedule-modal-title').textContent = s ? `Edit ${s.name}` : 'New schedule';
+  document.getElementById('sm-name').value = s ? s.name : '';
+  document.getElementById('sm-schedule').value = s ? s.schedule : '@daily';
+  document.getElementById('sm-prompt').value = s ? s.prompt : '';
+  document.getElementById('sm-enabled').checked = s ? !!s.enabled : true;
+
+  // Populate project dropdown from projects cache (loaded in Settings).
+  const projSel = document.getElementById('sm-project');
+  const projects = (projectsCache || []).map(p => p.name);
+  projSel.innerHTML = projects.map(p => {
+    const sel = s && s.project === p ? 'selected' : '';
+    return `<option value="${escAttr(p)}" ${sel}>${esc(p)}</option>`;
+  }).join('') || '<option value="">(no projects configured)</option>';
+
+  const beSel = document.getElementById('sm-backend');
+  beSel.innerHTML = '<option value="">(default)</option>' + (backendsCache || []).map(b => {
+    const sel = s && s.backend === b.name ? 'selected' : '';
+    return `<option value="${escAttr(b.name)}" ${sel}>${esc(b.name)}</option>`;
+  }).join('');
+
+  document.getElementById('sm-delete').style.display = s ? 'inline-block' : 'none';
+  document.getElementById('sm-run').style.display = s ? 'inline-block' : 'none';
+
+  // Show last/next summary so the user can sanity-check after saving.
+  const sumEl = document.getElementById('sm-summary');
+  const sumTxt = document.getElementById('sm-summary-text');
+  if (s) {
+    sumEl.style.display = 'block';
+    const parts = [];
+    if (s.last_run_at) parts.push(`Last fired ${formatRel(s.last_run_at)}`);
+    if (s.next_run_at) parts.push(`Next fire ${formatRel(s.next_run_at)}`);
+    if (s.last_task_id) parts.push(`last task ${s.last_task_id}`);
+    if (s.last_error) parts.push(`error: ${s.last_error}`);
+    sumTxt.textContent = parts.length ? parts.join(' · ') : 'Has not fired yet.';
+  } else {
+    sumEl.style.display = 'none';
+  }
+
+  document.getElementById('schedule-modal').classList.add('open');
+}
+
+function closeScheduleEditor() {
+  document.getElementById('schedule-modal').classList.remove('open');
+  editingSchedule = null;
+}
+
+async function saveScheduleFromModal() {
+  const name = document.getElementById('sm-name').value.trim();
+  const project = document.getElementById('sm-project').value;
+  const schedule = document.getElementById('sm-schedule').value.trim();
+  const prompt = document.getElementById('sm-prompt').value;
+  if (!name || !project || !schedule || !prompt.trim()) {
+    showToast('Name, project, schedule, and prompt are required');
+    return;
+  }
+  const body = {
+    name,
+    project,
+    backend: document.getElementById('sm-backend').value,
+    schedule,
+    prompt,
+    enabled: document.getElementById('sm-enabled').checked,
+  };
+  try {
+    const url = editingSchedule ? `/api/schedules/${encodeURIComponent(editingSchedule.id)}` : '/api/schedules';
+    const method = editingSchedule ? 'PUT' : 'POST';
+    const r = await api(url, { method, body: JSON.stringify(body) });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'save failed');
+    }
+    closeScheduleEditor();
+    loadSchedulesBlock();
+  } catch(e) { showToast('Save failed: ' + e.message); }
+}
+
+async function deleteScheduleFromModal() {
+  if (!editingSchedule) return;
+  if (!confirm(`Delete schedule "${editingSchedule.name}"? Tasks already created by this schedule are not affected.`)) return;
+  try {
+    const r = await api(`/api/schedules/${encodeURIComponent(editingSchedule.id)}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 204) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'delete failed');
+    }
+    closeScheduleEditor();
+    loadSchedulesBlock();
+  } catch(e) { showToast('Delete failed: ' + e.message); }
+}
+
+async function runScheduleFromModal() {
+  if (!editingSchedule) return;
+  try {
+    const r = await api(`/api/schedules/${encodeURIComponent(editingSchedule.id)}/run`, { method: 'POST' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || 'run failed');
+    }
+    const j = await r.json().catch(() => ({}));
+    showToast(j.task_id ? `Started task ${j.task_id}` : 'Schedule fired');
+    closeScheduleEditor();
+    loadSchedulesBlock();
+    refresh();
+  } catch(e) { showToast('Run failed: ' + e.message); }
 }
 
 // --- Logs ---

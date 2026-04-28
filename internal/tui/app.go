@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,7 @@ const (
 	modeConfirmDelete
 	modeProjectForm
 	modeBackendForm
+	modeScheduleForm
 	modeLaunchToDo
 	modeForkTask
 	modeConfirmCleanupToDos
@@ -127,6 +129,7 @@ type App struct {
 	// Settings forms (created on demand)
 	projectForm  *ProjectForm
 	backendForm  *BackendForm
+	scheduleForm *ScheduleForm
 	quickAddForm *QuickAddForm
 
 	// Layout containers
@@ -229,6 +232,10 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
 	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
 	app.settings.OnQuickAdd = func() { app.openQuickAddForm() }
+	app.settings.OnNewSchedule = func() { app.openScheduleForm(nil) }
+	app.settings.OnEditSchedule = func(s *model.ScheduledTask) { app.openScheduleForm(s) }
+	app.settings.OnDeleteSchedule = func(id string) { app.deleteSchedule(id) }
+	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
 	app.settingsPage = NewSettingsPage(app.settings)
 
 	app.todos = NewToDosView()
@@ -1203,6 +1210,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Backend form mode — delegate everything to the form
 	if a.mode == modeBackendForm && a.backendForm != nil {
 		a.handleBackendFormKey(event)
+		return nil
+	}
+
+	// Schedule form mode — delegate everything to the form
+	if a.mode == modeScheduleForm && a.scheduleForm != nil {
+		a.handleScheduleFormKey(event)
 		return nil
 	}
 
@@ -3356,6 +3369,105 @@ func (a *App) closeBackendForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+}
+
+// --- Schedule form ---
+
+// openScheduleForm opens the schedule editor. Pass an existing schedule to
+// edit, or nil to create a new one.
+func (a *App) openScheduleForm(s *model.ScheduledTask) {
+	cfg := a.db.Config()
+	projectNames := make([]string, 0, len(cfg.Projects))
+	for name := range cfg.Projects {
+		projectNames = append(projectNames, name)
+	}
+	sort.Strings(projectNames)
+	backendNames := make([]string, 0, len(cfg.Backends))
+	for name := range cfg.Backends {
+		backendNames = append(backendNames, name)
+	}
+	sort.Strings(backendNames)
+
+	a.scheduleForm = NewScheduleForm(projectNames, backendNames)
+	if s != nil {
+		a.scheduleForm.LoadSchedule(s)
+	}
+	a.mode = modeScheduleForm
+	a.pages.AddPage("scheduleform", a.scheduleForm, true, true)
+	a.pages.SwitchToPage("scheduleform")
+	a.tapp.SetFocus(a.scheduleForm)
+}
+
+func (a *App) handleScheduleFormKey(event *tcell.EventKey) {
+	a.scheduleForm.HandleKey(event)
+
+	if a.scheduleForm.Canceled() {
+		a.closeScheduleForm()
+		return
+	}
+
+	if a.scheduleForm.Done() {
+		s := a.scheduleForm.Result()
+		if err := s.Validate(); err != nil {
+			a.scheduleForm.SetError(err.Error())
+			return
+		}
+		var dbErr error
+		if s.ID == "" {
+			dbErr = a.db.AddSchedule(s)
+		} else {
+			dbErr = a.db.UpdateSchedule(s)
+		}
+		if dbErr != nil {
+			a.scheduleForm.SetError("Save error: " + dbErr.Error())
+			return
+		}
+		uxlog.Log("[settings] saved schedule %s (%s) project=%s schedule=%q enabled=%v", s.ID, s.Name, s.Project, s.Schedule, s.Enabled)
+		a.closeScheduleForm()
+	}
+}
+
+func (a *App) closeScheduleForm() {
+	a.mode = modeTaskList
+	a.scheduleForm = nil
+	a.pages.RemovePage("scheduleform")
+	a.settings.Refresh()
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
+}
+
+func (a *App) deleteSchedule(id string) {
+	if err := a.db.DeleteSchedule(id); err != nil {
+		uxlog.Log("[settings] delete schedule %s: %v", id, err)
+		return
+	}
+	uxlog.Log("[settings] deleted schedule %s", id)
+	a.settings.Refresh()
+}
+
+// runScheduleNow fires a schedule out-of-cycle. Falls back to creating the
+// task directly when the daemon is not connected (in-process mode has no
+// scheduler RunNow RPC, but a direct CreateAndStart is equivalent).
+func (a *App) runScheduleNow(id string) {
+	s, err := a.db.GetSchedule(id)
+	if err != nil {
+		uxlog.Log("[settings] run schedule %s: %v", id, err)
+		return
+	}
+	go func() {
+		_, _, err := agent.CreateAndStart(a.db, a.runner, agent.CreateInput{
+			Name:    s.Name + " (manual)",
+			Prompt:  s.Prompt,
+			Project: s.Project,
+			Backend: s.Backend,
+		})
+		if err != nil {
+			uxlog.Log("[settings] run schedule %s: %v", id, err)
+			return
+		}
+		uxlog.Log("[settings] manually fired schedule %s", id)
+		a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
+	}()
 }
 
 // --- Quick-add form ---

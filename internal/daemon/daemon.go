@@ -26,6 +26,7 @@ import (
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/vault"
 )
 
@@ -61,10 +62,11 @@ type Daemon struct {
 	sockPath  string         // set by Serve, used by cleanup
 	pidPath   string         // set by Serve, used by cleanup
 	mcpPort   int            // actual MCP HTTP port in use (set after listen)
-	mcpServer    *mcp.Server    // set when KB is enabled, shut down in cleanup
-	kbIndexer    *kb.Indexer    // set when KB is enabled, stopped in cleanup
-	vaultWatcher stopper        // set when auto_create_tasks is enabled
-	apiServer    *api.Server    // set when API is enabled, shut down in cleanup
+	mcpServer    *mcp.Server        // set when KB is enabled, shut down in cleanup
+	kbIndexer    *kb.Indexer        // set when KB is enabled, stopped in cleanup
+	vaultWatcher stopper            // set when auto_create_tasks is enabled
+	apiServer    *api.Server        // set when API is enabled, shut down in cleanup
+	scheduler    *scheduler.Scheduler // recurring scheduled-task firer; always started
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
 	// on-disk binary has been rebuilt since the daemon started.
@@ -249,6 +251,18 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}
 
+	// Start the scheduler (recurring scheduled tasks). Always-on — empty
+	// table is a no-op, so there's no setting to gate it.
+	sch := scheduler.New(d.db, func(name, prompt, project, todoPath string) (*model.Task, error) {
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+	})
+	d.scheduler = sch
+	go func() {
+		if err := sch.Start(); err != nil {
+			slog.Error("scheduler start", "err", err)
+		}
+	}()
+
 	// Start HTTP API server (when enabled in settings).
 	if cfg.API.Enabled {
 		tokenPath := filepath.Join(db.DataDir(), "api-token")
@@ -259,6 +273,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
 			})
+			apiSrv.SetScheduler(sch)
 			d.apiServer = apiSrv
 			apiPort, err := apiSrv.ListenAndServe(cfg.API.HTTPPort)
 			if err != nil {
@@ -389,6 +404,11 @@ func (d *Daemon) cleanup() {
 	// Stop the vault watcher if running.
 	if d.vaultWatcher != nil {
 		d.vaultWatcher.Stop()
+	}
+
+	// Stop the scheduler if running.
+	if d.scheduler != nil {
+		d.scheduler.Stop()
 	}
 
 	// Stop the KB indexer if running.

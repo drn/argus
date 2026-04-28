@@ -28,6 +28,7 @@ type Server struct {
 	createTask TaskCreator
 	httpSrv    *http.Server
 	push       *push.Manager
+	scheduler  ScheduleRunner // optional; set by SetScheduler before ListenAndServe
 
 	// stopCh is closed by Shutdown to signal background goroutines (idle
 	// watcher, push fan-out housekeeping) to terminate. Range over <-stopCh
