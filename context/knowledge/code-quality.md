@@ -1271,7 +1271,7 @@ When the daemon crashed, one task was incorrectly marked Complete despite its ag
 ## Remote API Skills Autocomplete: 2026-03-23
 
 ### Data Model & Flow
-- `GET /api/skills?project={name}&prefix={prefix}` — new endpoint in `internal/api/handlers.go`
+- `GET /api/skills?project={name}&filter={substr}` — new endpoint in `internal/api/handlers.go`
 - Reuses `skills.LoadSkills(extraDirs)` and `skills.FilterSkills()` from `internal/skills/skills.go`
 - Per-project skill dir resolved via `s.db.Projects()` → `filepath.Join(p.Path, ".claude", "skills")`
 - Returns `{"skills": [{"name": "...", "description": "..."}]}` — `skillJSON` struct with `omitempty` on description
