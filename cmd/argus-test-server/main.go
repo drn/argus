@@ -81,7 +81,12 @@ func main() {
 		log.Fatalf("set project: %v", err)
 	}
 
-	// Seed a running task using the bash backend.
+	// Seed a running task using the bash backend. Prompt is set AFTER
+	// runner.Start so the bash session itself starts clean (no extra positional
+	// argument that would make bash exit with 127), but the in-DB Prompt is
+	// non-empty so PWA specs can exercise the "View prompt" modal's content
+	// path. Specs needing the empty-prompt placeholder branch can clear it
+	// via window.currentTask.prompt = ''.
 	task := &model.Task{
 		Name:     "echo-bash",
 		Project:  "test-proj",
@@ -98,6 +103,7 @@ func main() {
 		log.Fatalf("runner.Start: %v", err)
 	}
 	task.SetStatus(model.StatusInProgress)
+	task.Prompt = "Investigate flaky CI runs and add retry logic."
 	if err := d.Update(task); err != nil {
 		log.Fatalf("db update: %v", err)
 	}
@@ -153,6 +159,7 @@ func main() {
 			return
 		}
 		nt.SetStatus(model.StatusInProgress)
+		nt.Prompt = "Investigate flaky CI runs and add retry logic."
 		d.Update(nt) //nolint:errcheck
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"reset":true,"task":%q}`, nt.ID) //nolint:errcheck

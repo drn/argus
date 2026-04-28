@@ -1558,6 +1558,10 @@ function effectiveStatus(t) {
 async function openDetail(id) {
   currentTask = tasks.find(t => t.id === id);
   if (!currentTask) return;
+  // Test hook: top-level `let` doesn't auto-attach to window, but Playwright
+  // specs need to read/mutate the active task to drive paths like the empty
+  // prompt placeholder. Same pattern as window.term/window.fitAddon.
+  window.currentTask = currentTask;
 
   // Close any prior overlay so opening a new task (via fork, create, deep
   // link, etc.) doesn't leave the previous task's files-view or prompt modal
@@ -2225,6 +2229,7 @@ function closeDetail() {
   closeFilesView();
   closePromptModal();
   currentTask = null;
+  window.currentTask = null;
   const dv = document.getElementById('detail-view');
   dv.classList.remove('open');
   dv.style.transform = '';

@@ -86,7 +86,9 @@ test.describe('detail-view actions', () => {
     await page.locator('.task-item').first().click();
     await page.locator('#btn-overflow').click();
     await expect(page.locator('#overflow-menu')).toHaveClass(/open/);
-    await page.locator('.detail-back').click();
+    // `.detail-back` matches both #detail-view's and #files-view's back link;
+    // scope to detail-view's so strict-mode resolves to a single element.
+    await page.locator('#detail-view .detail-back').click();
     // After back, detail-view is dismissed and overflow-menu is gone from DOM
     // (innerHTML rebuild on next openDetail), or at minimum no longer .open.
     await expect(page.locator('#tasks-view')).toBeVisible();
@@ -106,5 +108,84 @@ test.describe('detail-view actions', () => {
     await page.evaluate(() => (window as any).switchTab('settings'));
     await expect(page.locator('#settings-view')).toBeVisible();
     await expect(page.locator('#overflow-menu.open')).toHaveCount(0);
+  });
+
+  test('view prompt opens modal with the seeded prompt text', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-prompt').click();
+
+    // Modal becomes visible, body shows the seeded prompt verbatim.
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+    await expect(page.locator('#prompt-modal-body')).toHaveText(
+      'Investigate flaky CI runs and add retry logic.',
+    );
+    await expect(page.locator('#prompt-modal-body.empty')).toHaveCount(0);
+
+    // Close button hides it.
+    await page.locator('#prompt-modal button.primary').click();
+    await expect(page.locator('#prompt-modal.open')).toHaveCount(0);
+  });
+
+  test('view prompt body is set via textContent (no HTML injection)', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+
+    // Mutate the in-memory currentTask to contain HTML, then re-open the modal
+    // — verifying that openPromptModal renders the angle brackets verbatim
+    // (textContent), not as live DOM. A regression to innerHTML would render
+    // the <img> and execute the onerror handler.
+    await page.evaluate(() => {
+      (window as any).currentTask.prompt = '<img src=x onerror="window.__pwn=1">';
+      (window as any).openPromptModal();
+    });
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+    await expect(page.locator('#prompt-modal-body img')).toHaveCount(0);
+    const pwn = await page.evaluate(() => (window as any).__pwn);
+    expect(pwn).toBeUndefined();
+    await expect(page.locator('#prompt-modal-body')).toContainText('<img');
+  });
+
+  test('view prompt placeholder when prompt is empty', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+    await page.evaluate(() => {
+      (window as any).currentTask.prompt = '';
+      (window as any).openPromptModal();
+    });
+    await expect(page.locator('#prompt-modal-body.empty')).toBeVisible();
+    await expect(page.locator('#prompt-modal-body')).toContainText('no prompt');
+  });
+
+  test('prompt modal closes when detail view closes', async ({ page }) => {
+    // Regression: closeDetail() must call closePromptModal() so the modal
+    // doesn't stack over the task list after backing out. Drive closeDetail
+    // directly because the modal overlay (z-index 300) covers the back link
+    // when open — the same reason the existing "switching tabs" test below
+    // calls switchTab() rather than clicking the tab.
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-prompt').click();
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+
+    await page.evaluate(() => (window as any).closeDetail());
+    await expect(page.locator('#tasks-view')).toBeVisible();
+    await expect(page.locator('#prompt-modal.open')).toHaveCount(0);
+  });
+
+  test('prompt modal closes when switching tabs', async ({ page }) => {
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-prompt').click();
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+
+    await page.evaluate(() => (window as any).switchTab('settings'));
+    await expect(page.locator('#settings-view')).toBeVisible();
+    await expect(page.locator('#prompt-modal.open')).toHaveCount(0);
   });
 });
