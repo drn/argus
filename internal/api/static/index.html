@@ -1952,6 +1952,12 @@ function recordInputBytes(taskId, raw) {
       } else if (data[i + 1] === 'O') {
         i += 3; // SS3: ESC O <byte>
       } else {
+        // Bare ESC (last byte) or ESC + non-CSI/SS3 byte: treat as a 2-byte
+        // alt-key sequence and consume both bytes as control input. A caller
+        // who concatenates ESC + printable text into one sendInputBytes call
+        // will lose the byte after ESC; xterm.js itself never does this
+        // (escape sequences fire atomically), and virtual-key items send ESC
+        // alone where i += 2 just overshoots end-of-string.
         i += 2;
       }
       continue;
@@ -2495,7 +2501,10 @@ async function deleteTask() {
   if (!confirm('Delete task "' + currentTask.name + '"?')) return;
   setActionButtons(true);
   try {
-    await api(`/api/tasks/${currentTask.id}`, { method: 'DELETE' });
+    const id = currentTask.id;
+    await api(`/api/tasks/${id}`, { method: 'DELETE' });
+    try { localStorage.removeItem(inputHistoryKey(id)); } catch {}
+    inputBuffers.delete(id);
     closeDetail();
     refresh();
   } catch(e) {
@@ -2566,9 +2575,9 @@ function renderInputsModal() {
   list.innerHTML = '';
 
   const entries = [];
-  const original = (currentTask && currentTask.prompt) || '';
+  const original = currentTask.prompt || '';
   if (original) entries.push({ label: 'Original prompt', text: original });
-  const hist = currentTask ? loadInputHistory(currentTask.id) : [];
+  const hist = loadInputHistory(currentTask.id);
   for (const e of hist) entries.push({ label: formatInputTime(e.ts), text: e.text });
 
   const clearBtn = document.getElementById('inputs-modal-clear');
@@ -2598,10 +2607,7 @@ function renderInputsModal() {
 
 function formatInputTime(ts) {
   if (!ts) return '';
-  try {
-    const d = new Date(ts);
-    return d.toLocaleString();
-  } catch { return ''; }
+  return new Date(ts).toLocaleString();
 }
 
 function closeInputsModal() {
