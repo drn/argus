@@ -2007,6 +2007,7 @@ function renderOverflowMenu() {
       // github.com URLs the universal link hands off to the GitHub app and the
       // PWA stays alive in the background — assign location.href instead.
       const isStandalone = window.navigator.standalone === true;
+      // Extend this regex if other universal-link-backed providers are added (gitlab, jira, linear).
       const isGitHub = /^https:\/\/(www\.)?github\.com\//i.test(url);
       if (isStandalone && isGitHub) {
         window.location.href = url;
