@@ -1555,7 +1555,11 @@ function setupTerm() {
   // Force a layout pass before fit \u2014 addon reads computed sizes.
   requestAnimationFrame(() => {
     fit();
-    term.focus();
+    // Same at-bottom gate as onTermTouchEnd: focusing pops the iOS soft
+    // keyboard, and we don't want that on re-mount when the user is in
+    // scrollback. On a fresh mount viewportY === baseY === 0, so this is
+    // a no-op for the normal path.
+    if (termIsAtBottom()) term.focus();
   });
   // Wire scroll/scrollend on `.xterm-viewport` directly (the actual scrollable
   // element) rather than xterm's `term.onScroll`. The native `scrollend` event
