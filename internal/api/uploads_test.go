@@ -74,6 +74,20 @@ func TestSanitizeAttachmentName(t *testing.T) {
 	}
 }
 
+func TestSanitizeAttachmentName_StripsBidiOverride(t *testing.T) {
+	// U+202E reversed-then-suffixed names render in a terminal as the
+	// reverse of what's on disk — make sure the override is replaced.
+	got, err := sanitizeAttachmentName("report" + string(rune(0x202E)) + ".exe")
+	testutil.NoError(t, err)
+	testutil.Equal(t, strings.ContainsRune(got, rune(0x202E)), false)
+}
+
+func TestSanitizeAttachmentName_StripsLeadingDash(t *testing.T) {
+	got, err := sanitizeAttachmentName("-rf.txt")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "rf.txt")
+}
+
 func TestSanitizeAttachmentName_TruncatesLongNames(t *testing.T) {
 	long := strings.Repeat("a", 200) + ".png"
 	got, err := sanitizeAttachmentName(long)
@@ -264,6 +278,9 @@ func TestStatusForUploadErr(t *testing.T) {
 		{"too_many", errTooManyAttachments, http.StatusRequestEntityTooLarge},
 		{"bad_name", errBadAttachmentName, http.StatusBadRequest},
 		{"empty", errEmptyAttachment, http.StatusBadRequest},
+		// Non-sentinel errors are infrastructure failures (broken connection,
+		// malformed envelope) and should return 500, not 400.
+		{"unknown", errors.New("connection broken mid-body"), http.StatusInternalServerError},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,11 +290,42 @@ func TestStatusForUploadErr(t *testing.T) {
 }
 
 // TestHandleCreateTask_MultipartDispatch verifies that a multipart POST to
-// /api/tasks invokes the multipart handler (which exercises CreateAndStart).
-// We don't require the create to succeed (no real project is configured); we
-// only assert that the handler reaches CreateAndStart by checking the error
-// shape — a "project not found" response means dispatch worked.
-func TestHandleCreateTask_MultipartDispatch(t *testing.T) {
+// /api/tasks reaches the multipart handler (not the JSON decoder).
+//
+// We assert specific status codes for two distinct multipart inputs:
+//   - missing `project` field → 400 from handleCreateTaskMultipart's own
+//     validation (the JSON path would 400 with "invalid JSON: ..."; we
+//     check the error message body to disambiguate).
+//   - present `project` pointing at a non-existent name → 500 from
+//     CreateAndStart's project-lookup. The JSON decoder would also 400 on
+//     a multipart envelope, so a 500 here is a definitive multipart-path
+//     signal.
+func TestHandleCreateTask_MultipartDispatch_BadValidation(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	// No `project` field at all — multipart handler should 400 with
+	// "project is required". JSON decoder would 400 with "invalid JSON".
+	ct, body := buildMultipart(t,
+		[][3]string{
+			{"name", "x", ""},
+			{"prompt", "p", ""},
+		},
+		[][3]string{
+			{"files", "a.txt", "a"},
+		},
+	)
+	req := httptest.NewRequest("POST", "/api/tasks", body)
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", ct)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+	testutil.Contains(t, w.Body.String(), "project is required")
+}
+
+func TestHandleCreateTask_MultipartDispatch_UnknownProject(t *testing.T) {
 	srv, _ := testServer(t)
 	mux := srv.routes()
 
@@ -297,13 +345,9 @@ func TestHandleCreateTask_MultipartDispatch(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
-	// Project doesn't exist → 500 from CreateAndStart. JSON dispatch path
-	// would have hit the handleCreateTask JSON decoder which would yield
-	// invalid JSON (multipart is not valid JSON), so a 400 here means we
-	// took the wrong branch.
-	if w.Code == http.StatusBadRequest {
-		t.Fatalf("multipart took JSON path; body=%s", w.Body.String())
-	}
+	// CreateAndStart returns "project %q not found" → 500 in our handler.
+	testutil.Equal(t, w.Code, http.StatusInternalServerError)
+	testutil.Contains(t, w.Body.String(), "no-such-project")
 }
 
 // Avoid unused-import warning when agent isn't directly referenced — we use

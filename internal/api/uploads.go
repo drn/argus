@@ -47,11 +47,11 @@ func parseMultipartTaskForm(r *http.Request) (name, prompt, project string, atts
 		if perr != nil {
 			return "", "", "", nil, fmt.Errorf("read part: %w", perr)
 		}
-		fname := part.FileName()
-		formName := part.FormName()
-		if fname == "" {
-			// text field
+		if part.FileName() == "" {
+			// Text field — name/prompt/project. Cap at 1MB to bound a
+			// malicious client trying to push GBs through a "name" field.
 			b, rerr := io.ReadAll(io.LimitReader(part, 1<<20))
+			formName := part.FormName()
 			part.Close() //nolint:errcheck
 			if rerr != nil {
 				return "", "", "", nil, fmt.Errorf("read field %s: %w", formName, rerr)
@@ -66,33 +66,11 @@ func parseMultipartTaskForm(r *http.Request) (name, prompt, project string, atts
 			}
 			continue
 		}
-		// file part
-		if len(atts) >= maxAttachmentCount {
-			part.Close() //nolint:errcheck
-			return "", "", "", nil, errTooManyAttachments
-		}
-		clean, cerr := sanitizeAttachmentName(fname)
-		if cerr != nil {
-			part.Close() //nolint:errcheck
-			return "", "", "", nil, cerr
-		}
-		// Cap each part read to per-file limit + 1 so we can detect overrun.
-		buf, rerr := io.ReadAll(io.LimitReader(part, maxAttachmentBytes+1))
-		part.Close() //nolint:errcheck
+		att, rerr := readFilePart(part, len(atts), &totalBytes)
 		if rerr != nil {
-			return "", "", "", nil, fmt.Errorf("read file %s: %w", clean, rerr)
+			return "", "", "", nil, rerr
 		}
-		if int64(len(buf)) > maxAttachmentBytes {
-			return "", "", "", nil, errAttachmentTooLarge
-		}
-		if len(buf) == 0 {
-			return "", "", "", nil, errEmptyAttachment
-		}
-		totalBytes += int64(len(buf))
-		if totalBytes > maxAttachmentTotalBytes {
-			return "", "", "", nil, errAttachmentTotalLarge
-		}
-		atts = append(atts, agent.Attachment{Name: clean, Data: buf})
+		atts = append(atts, att)
 	}
 	return name, prompt, project, atts, nil
 }
@@ -118,44 +96,75 @@ func parseUploadOnlyForm(r *http.Request) ([]agent.Attachment, error) {
 			part.Close() //nolint:errcheck
 			continue
 		}
-		if len(atts) >= maxAttachmentCount {
-			part.Close() //nolint:errcheck
-			return nil, errTooManyAttachments
-		}
-		clean, cerr := sanitizeAttachmentName(part.FileName())
-		if cerr != nil {
-			part.Close() //nolint:errcheck
-			return nil, cerr
-		}
-		buf, rerr := io.ReadAll(io.LimitReader(part, maxAttachmentBytes+1))
-		part.Close() //nolint:errcheck
+		att, rerr := readFilePart(part, len(atts), &totalBytes)
 		if rerr != nil {
-			return nil, fmt.Errorf("read file %s: %w", clean, rerr)
+			return nil, rerr
 		}
-		if int64(len(buf)) > maxAttachmentBytes {
-			return nil, errAttachmentTooLarge
-		}
-		if len(buf) == 0 {
-			return nil, errEmptyAttachment
-		}
-		totalBytes += int64(len(buf))
-		if totalBytes > maxAttachmentTotalBytes {
-			return nil, errAttachmentTotalLarge
-		}
-		atts = append(atts, agent.Attachment{Name: clean, Data: buf})
+		atts = append(atts, att)
 	}
 	return atts, nil
 }
 
-// sanitizeAttachmentName strips path components, control chars, and any
-// characters that would be unsafe in a shell prompt or on disk. Returns
-// errBadAttachmentName if nothing usable remains.
+// readFilePart consumes one multipart file part: enforces the count cap,
+// sanitizes the filename, reads up to maxAttachmentBytes+1 (so we detect
+// overrun), and updates *totalBytes to enforce the batch cap. The part is
+// always closed before return. Caller must hold the existing attachment
+// count to enforce maxAttachmentCount across multiple parts.
+//
+// Errors returned are sentinels (errAttachmentTooLarge, errBadAttachmentName,
+// etc.) when the input is invalid; wrapped %w errors when the read itself
+// fails — statusForUploadErr maps both correctly.
+func readFilePart(part multipartPart, existingCount int, totalBytes *int64) (agent.Attachment, error) {
+	defer part.Close() //nolint:errcheck
+	if existingCount >= maxAttachmentCount {
+		return agent.Attachment{}, errTooManyAttachments
+	}
+	clean, cerr := sanitizeAttachmentName(part.FileName())
+	if cerr != nil {
+		return agent.Attachment{}, cerr
+	}
+	// Cap each part read to per-file limit + 1 so we can detect overrun.
+	buf, rerr := io.ReadAll(io.LimitReader(part, maxAttachmentBytes+1))
+	if rerr != nil {
+		return agent.Attachment{}, fmt.Errorf("read file %s: %w", clean, rerr)
+	}
+	if int64(len(buf)) > maxAttachmentBytes {
+		return agent.Attachment{}, errAttachmentTooLarge
+	}
+	if len(buf) == 0 {
+		return agent.Attachment{}, errEmptyAttachment
+	}
+	*totalBytes += int64(len(buf))
+	if *totalBytes > maxAttachmentTotalBytes {
+		return agent.Attachment{}, errAttachmentTotalLarge
+	}
+	return agent.Attachment{Name: clean, Data: buf}, nil
+}
+
+// multipartPart is the subset of *multipart.Part that readFilePart needs —
+// declared here so the helper is trivially mockable in unit tests without
+// a full multipart Reader.
+type multipartPart interface {
+	io.Reader
+	io.Closer
+	FileName() string
+}
+
+// sanitizeAttachmentName strips path components, control chars, Unicode
+// bidi overrides, and leading dashes that could be misread as CLI flags.
+// Returns errBadAttachmentName if nothing usable remains.
 //
 // Rules:
 //   - filepath.Base() removes any directory components a malicious client
-//     might have prefixed.
+//     might have prefixed (after normalizing `\` → `/` for Windows paths).
 //   - Reject ".", "..", and empty after Base.
-//   - Replace whitespace + control + backslash + null with underscore.
+//   - Replace ASCII control chars (<0x20, 0x7f), null, and path separators
+//     with underscore.
+//   - Replace Unicode bidi override codepoints (LTR/RTL marks, embeddings,
+//     isolates, BOM) with underscore — these can render filenames
+//     deceptively in a terminal even though they're not separators.
+//   - Trim leading dashes so the path can't be misread as a CLI flag if
+//     the agent ever passes it as an argument.
 //   - Cap at 100 chars (preserving extension when possible).
 func sanitizeAttachmentName(raw string) (string, error) {
 	// Strip directory parts using BOTH the OS separator and "/" — clients on
@@ -173,11 +182,14 @@ func sanitizeAttachmentName(raw string) (string, error) {
 			b.WriteRune('_')
 		case r == '/' || r == '\\' || r == 0:
 			b.WriteRune('_')
+		case isBidiOverride(r):
+			b.WriteRune('_')
 		default:
 			b.WriteRune(r)
 		}
 	}
 	clean := strings.TrimSpace(b.String())
+	clean = strings.TrimLeft(clean, "-")
 	if clean == "" || clean == "." || clean == ".." {
 		return "", errBadAttachmentName
 	}
@@ -194,6 +206,20 @@ func sanitizeAttachmentName(raw string) (string, error) {
 		clean = base[:keep] + ext
 	}
 	return clean, nil
+}
+
+// isBidiOverride returns true for Unicode codepoints that change visual text
+// direction without being visible characters — these can make a filename
+// render in the terminal as a name other than what's stored on disk.
+func isBidiOverride(r rune) bool {
+	switch r {
+	case 0x200E, 0x200F, // LTR/RTL marks
+		0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // explicit embedding/overrides
+		0x2066, 0x2067, 0x2068, 0x2069, // isolates
+		0xFEFF: // zero-width no-break space (BOM)
+		return true
+	}
+	return false
 }
 
 // handleUploadFiles writes user-uploaded attachments into the task's worktree
@@ -224,7 +250,8 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Join(task.Worktree, agent.AttachmentsDir)
 	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // path constant + worktree
 		uxlog.Log("[uploads] mkdir failed task=%s dir=%s err=%v", id, dir, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mkdir: " + err.Error()})
+		// Don't echo the absolute path back to the client — uxlog has it.
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create attachments directory"})
 		return
 	}
 
@@ -233,14 +260,14 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 		final, ferr := uniquePath(dir, a.Name)
 		if ferr != nil {
 			uxlog.Log("[uploads] uniquePath failed task=%s name=%q err=%v", id, a.Name, ferr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": ferr.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not allocate filename"})
 			return
 		}
 		// Names are sanitized by parseUploadOnlyForm (filepath.Base + ASCII filter)
 		// and written under the worktree-relative `dir`; `final` cannot escape.
 		if werr := os.WriteFile(final, a.Data, 0o600); werr != nil { //nolint:gosec // path validated above
 			uxlog.Log("[uploads] write failed task=%s path=%s err=%v", id, final, werr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write: " + werr.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not save attachment"})
 			return
 		}
 		saved = append(saved, "./"+agent.AttachmentsDir+"/"+filepath.Base(final))
@@ -279,7 +306,10 @@ func uniquePath(dir, name string) (string, error) {
 	return "", fmt.Errorf("could not find unique name for %q", name)
 }
 
-// statusForUploadErr maps the sentinel parse errors to HTTP status codes.
+// statusForUploadErr maps parse errors to HTTP status codes. Sentinel
+// "input was bad" errors map to 4xx; non-sentinel errors (typically a
+// broken connection mid-body or malformed multipart envelope) map to 500
+// because they reflect infrastructure failure, not client mistakes.
 func statusForUploadErr(err error) int {
 	switch {
 	case errors.Is(err, errAttachmentTooLarge),
@@ -290,7 +320,7 @@ func statusForUploadErr(err error) int {
 		errors.Is(err, errEmptyAttachment):
 		return http.StatusBadRequest
 	default:
-		return http.StatusBadRequest
+		return http.StatusInternalServerError
 	}
 }
 

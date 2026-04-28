@@ -1687,10 +1687,10 @@ async function onUploadFilesPicked(e) {
   }
   let total = 0;
   for (const f of files) {
-    if (f.size > MAX_UPLOAD_BYTES) { showToast(`${f.name}: too large (max 10MB)`); return; }
+    if (f.size > MAX_UPLOAD_BYTES) { showToast(`${f.name}: too large (max ${formatCap(MAX_UPLOAD_BYTES)})`); return; }
     total += f.size;
   }
-  if (total > MAX_UPLOAD_TOTAL_BYTES) { showToast('Total upload exceeds 50MB'); return; }
+  if (total > MAX_UPLOAD_TOTAL_BYTES) { showToast(`Total upload exceeds ${formatCap(MAX_UPLOAD_TOTAL_BYTES)}`); return; }
 
   showToast(`Uploading ${files.length} file${files.length === 1 ? '' : 's'}…`);
   try {
@@ -1710,11 +1710,25 @@ async function onUploadFilesPicked(e) {
       showToast('No files saved');
       return;
     }
-    // Paste paths into stdin (no newline) so the user can add a sentence
-    // like "summarize the screenshot" before pressing Enter. Trailing space
-    // separates the paths from whatever the user types next.
-    sendInputBytes(paths.join(' ') + ' ');
-    showToast(`Uploaded ${paths.length} file${paths.length === 1 ? '' : 's'}`);
+    // Paste paths into stdin only when the agent is actually running.
+    // A stopped/in_review/complete task has no live PTY — sendInputBytes
+    // would silently no-op and the user would think "Uploaded N files"
+    // implied the agent saw them. Tell the user to resume instead.
+    const agentRunning = currentTask?.status === 'in_progress' && !currentTask?.idle;
+    if (agentRunning) {
+      // No newline — user can add a sentence like "summarize the screenshot"
+      // before pressing Enter. Trailing space separates the paths from
+      // whatever the user types next.
+      sendInputBytes(paths.join(' ') + ' ');
+      showToast(`Uploaded ${paths.length} file${paths.length === 1 ? '' : 's'}`);
+    } else if (currentTask?.status === 'in_progress') {
+      // Idle: send paths so the agent picks them up on its next prompt
+      // turn but warn the user the agent is currently waiting.
+      sendInputBytes(paths.join(' ') + ' ');
+      showToast(`Uploaded ${paths.length} (agent idle — type to send)`);
+    } else {
+      showToast(`Saved ${paths.length} file${paths.length === 1 ? '' : 's'} (resume task to use)`);
+    }
   } catch (err) {
     showToast('Upload error: ' + err.message);
   }
@@ -2403,10 +2417,11 @@ async function loadProjects() {
 }
 
 // --- File upload state for the New Task form ---
-// Files accumulate across multiple picker invocations and drag-drop events
-// until createTask() resets them or the user removes them individually.
-// Per-file 10MB / total 50MB caps mirror the server limits — we reject early
-// instead of failing the upload after a long network round-trip.
+// Files accumulate across multiple picker invocations and drag-drop events.
+// Cleared on successful create() only — survives tab switches and failed
+// creates so the user can retry without re-picking. Per-file 10MB / total
+// 50MB caps mirror the server limits — we reject early instead of failing
+// the upload after a long network round-trip.
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 20;
@@ -2424,6 +2439,12 @@ function onCreateFilesPicked(e) {
   e.target.value = '';
 }
 
+// Render a byte cap as "10MB" / "50MB" — used in toasts so the strings stay
+// in sync with MAX_UPLOAD_BYTES / MAX_UPLOAD_TOTAL_BYTES if either changes.
+function formatCap(bytes) {
+  return Math.round(bytes / (1024 * 1024)) + 'MB';
+}
+
 function addCreateFiles(picked) {
   let total = createFiles.reduce((s, f) => s + f.size, 0);
   for (const f of picked) {
@@ -2432,11 +2453,11 @@ function addCreateFiles(picked) {
       break;
     }
     if (f.size > MAX_UPLOAD_BYTES) {
-      showToast(`${f.name}: too large (max 10MB)`);
+      showToast(`${f.name}: too large (max ${formatCap(MAX_UPLOAD_BYTES)})`);
       continue;
     }
     if (total + f.size > MAX_UPLOAD_TOTAL_BYTES) {
-      showToast('Total upload exceeds 50MB');
+      showToast(`Total upload exceeds ${formatCap(MAX_UPLOAD_TOTAL_BYTES)}`);
       break;
     }
     total += f.size;

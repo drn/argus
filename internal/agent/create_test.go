@@ -409,6 +409,43 @@ func TestCreateAndStart_AttachmentsBlankPrompt(t *testing.T) {
 	}
 }
 
+// TestCreateAndStart_AttachmentsDedupWithinBatch verifies that two same-named
+// attachments in one batch don't clobber each other — the second should be
+// suffixed with -1 so both files end up on disk and both paths are returned.
+func TestCreateAndStart_AttachmentsDedupWithinBatch(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "dup",
+		Project: "proj",
+		Attachments: []Attachment{
+			{Name: "shot.png", Data: []byte("first")},
+			{Name: "shot.png", Data: []byte("second")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	t.Cleanup(func() { RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo) })
+
+	for _, name := range []string{"shot.png", "shot-1.png"} {
+		p := filepath.Join(task.Worktree, ".context", name)
+		if _, rerr := os.Stat(p); rerr != nil {
+			t.Errorf("expected %s on disk, got %v", name, rerr)
+		}
+	}
+	first, _ := os.ReadFile(filepath.Join(task.Worktree, ".context", "shot.png"))
+	second, _ := os.ReadFile(filepath.Join(task.Worktree, ".context", "shot-1.png"))
+	if string(first) != "first" || string(second) != "second" {
+		t.Errorf("dedup wrote wrong contents: first=%q second=%q", first, second)
+	}
+	if !strings.Contains(task.Prompt, "./.context/shot-1.png") {
+		t.Errorf("prompt missing deduped path: %q", task.Prompt)
+	}
+}
+
 // TestCreateAndStart_AttachmentsRejectTraversal verifies that filenames
 // trying to escape the worktree are rejected at the agent layer (defense in
 // depth — the API also sanitizes).

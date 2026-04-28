@@ -244,6 +244,10 @@ const AttachmentsDir = ".context"
 // returns worktree-relative paths (with leading "./") suitable for embedding
 // in a prompt. Names are sanitized by the caller before this is called; we
 // still defend with filepath.Base to refuse path traversal.
+//
+// Within a single batch, duplicate names are auto-suffixed (foo.png,
+// foo-1.png, foo-2.png, …) so a client uploading two same-named files
+// never silently clobbers the first.
 func writeAttachments(wtPath string, atts []Attachment) ([]string, error) {
 	if len(atts) == 0 {
 		return nil, nil
@@ -253,11 +257,14 @@ func writeAttachments(wtPath string, atts []Attachment) ([]string, error) {
 		return nil, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	paths := make([]string, 0, len(atts))
+	used := make(map[string]bool, len(atts))
 	for _, a := range atts {
 		name := filepath.Base(a.Name)
 		if name == "" || name == "." || name == ".." {
 			return nil, fmt.Errorf("invalid attachment name %q", a.Name)
 		}
+		name = uniqueAttachmentName(used, name)
+		used[name] = true
 		dst := filepath.Join(dir, name)
 		// Name is filepath.Base'd above; dst stays under dir.
 		if err := os.WriteFile(dst, a.Data, 0o600); err != nil { //nolint:gosec // path validated
@@ -266,6 +273,26 @@ func writeAttachments(wtPath string, atts []Attachment) ([]string, error) {
 		paths = append(paths, "./"+AttachmentsDir+"/"+name)
 	}
 	return paths, nil
+}
+
+// uniqueAttachmentName returns name unchanged if not already in `used`; else
+// suffixes with -1, -2, … before the extension until a free slot is found.
+// Caller must add the returned name to `used`.
+func uniqueAttachmentName(used map[string]bool, name string) string {
+	if !used[name] {
+		return name
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 1; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d%s", base, i, ext)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+	// Fall back to original; the disk-write step will fail or clobber, but
+	// at this point the user is on a 1000-collision pathological input.
+	return name
 }
 
 // appendAttachmentList appends a human-readable list of attachment paths to
