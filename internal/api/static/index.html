@@ -307,6 +307,66 @@ button:disabled { opacity: 0.5; cursor: default; }
    soft keyboard is up (the alternative is the terminal losing rows). */
 .detail-header.compact .overflow-btn { top: 0; height: 36px; font-size: 20px; }
 
+/* Files & diff view — full-screen overlay opened from the overflow menu.
+   Stacks file list above diff pane so the agent terminal in #detail-view
+   keeps every pixel it had. The view is fixed-positioned and fills the
+   visual viewport, same pattern as #detail-view. */
+#files-view { display: none; }
+#files-view.open {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 100vh;
+  height: 100dvh;
+  height: var(--app-height, 100dvh);
+  background: var(--bg);
+  z-index: 60;
+  overflow: hidden;
+}
+.files-list {
+  flex: 0 0 38%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  -webkit-overflow-scrolling: touch;
+}
+.files-empty { padding: 24px 16px; color: var(--text-dim); text-align: center; font-size: 13px; }
+.files-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  min-height: 44px; cursor: pointer;
+  font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+}
+.files-row:active { background: var(--surface); }
+.files-row.selected { background: var(--surface); }
+.files-row .status {
+  flex: 0 0 24px; font-weight: 600; text-align: center;
+}
+.files-row .status.M { color: var(--yellow); }
+.files-row .status.A { color: var(--green); }
+.files-row .status.D { color: var(--red); }
+.files-row .status.U { color: var(--accent); }
+.files-row .path {
+  flex: 1 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+.diff-pane {
+  flex: 1 1 auto; min-height: 0;
+  overflow: auto; -webkit-overflow-scrolling: touch;
+  padding: 10px 12px;
+  background: var(--bg);
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  line-height: 1.4;
+  white-space: pre;
+}
+.diff-empty { color: var(--text-dim); padding: 12px; text-align: center; }
+.diff-line { display: block; }
+.diff-line.add { color: var(--green); background: rgba(46,160,67,0.10); }
+.diff-line.del { color: var(--red);   background: rgba(248,81,73,0.10); }
+.diff-line.hunk { color: var(--accent); background: rgba(88,166,255,0.08); }
+.diff-line.meta { color: var(--text-dim); }
+
 /* Create form */
 #create-view { display: none; }
 .form-group { padding: 0 12px; margin-bottom: 16px; }
@@ -559,6 +619,21 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <button class="jump-bottom-btn" id="jump-bottom" aria-label="Scroll to input" type="button">↓</button>
     </div>
     <div class="read-only-output" id="output-box" style="display:none"></div>
+  </div>
+
+  <!-- Files & Diff View — opened from the detail-view overflow menu. -->
+  <div id="files-view">
+    <div class="detail-header">
+      <div class="detail-back" onclick="closeFilesView()">&larr; Back</div>
+      <div class="detail-title" id="files-title">Files &amp; diff</div>
+      <div class="detail-subtitle" id="files-subtitle"></div>
+    </div>
+    <div class="files-list" id="files-list">
+      <div class="files-empty">Loading…</div>
+    </div>
+    <div class="diff-pane" id="diff-pane">
+      <div class="diff-empty">Tap a file to view its diff.</div>
+    </div>
   </div>
 
   <!-- Settings View -->
@@ -1775,6 +1850,7 @@ function renderOverflowMenu() {
     items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
   }
   items.push(
+    { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
     { id: 'btn-rename', label: 'Rename', fn: renameTask },
     { id: 'btn-fork', label: 'Fork', fn: forkTask },
     currentTask.archived
@@ -1961,6 +2037,7 @@ function closeDetail() {
   closeStream();
   destroyTerm();
   closeOverflowMenu();
+  closeFilesView();
   currentTask = null;
   const dv = document.getElementById('detail-view');
   dv.classList.remove('open');
@@ -1968,6 +2045,151 @@ function closeDetail() {
   const header = dv.querySelector('.detail-header');
   if (header) header.classList.remove('compact');
   document.getElementById('tasks-view').style.display = 'block';
+}
+
+// --- Files & Diff View ---
+// Full-screen overlay opened from the detail-view overflow menu. Stacks the
+// changed-file list above the diff pane so the agent terminal in #detail-view
+// keeps every pixel — closing this view drops back to the live terminal
+// without needing to re-attach.
+let filesViewTask = null;
+let filesViewSelected = null;
+
+async function openFilesView() {
+  if (!currentTask) return;
+  filesViewTask = currentTask;
+  filesViewSelected = null;
+  document.getElementById('files-title').textContent = 'Files & diff';
+  document.getElementById('files-subtitle').textContent =
+    `${filesViewTask.project} · ${filesViewTask.name}`;
+  document.getElementById('files-list').innerHTML = '<div class="files-empty">Loading…</div>';
+  document.getElementById('diff-pane').innerHTML = '<div class="diff-empty">Tap a file to view its diff.</div>';
+  document.getElementById('files-view').classList.add('open');
+  await loadFilesList(filesViewTask.id);
+}
+
+function closeFilesView() {
+  document.getElementById('files-view').classList.remove('open');
+  filesViewTask = null;
+  filesViewSelected = null;
+}
+
+async function loadFilesList(taskId) {
+  try {
+    const r = await api(`/api/tasks/${taskId}/git/status`);
+    if (!r.ok) throw new Error('git status ' + r.status);
+    const msg = await r.json();
+    if (filesViewTask?.id !== taskId) return; // user switched away
+    renderFilesList(parseChangedFiles(msg));
+  } catch (e) {
+    document.getElementById('files-list').innerHTML =
+      `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+// parseChangedFiles merges git status --short (uncommitted) with git diff
+// --name-status against the merge-base (committed-on-branch) so the user sees
+// every change the worktree has introduced. Status is normalized to one of
+// M/A/D/U for icon coloring.
+function parseChangedFiles(msg) {
+  const seen = new Map();
+  const add = (status, path) => {
+    if (!path || seen.has(path)) return;
+    seen.set(path, { status, path });
+  };
+  // git status --short: "XY path" — first non-space char wins. Untracked
+  // ("??") shows as A (added) since the user cares about "is this new".
+  if (msg.Status) {
+    for (const line of msg.Status.split('\n')) {
+      if (line.length < 4) continue;
+      const xy = line.slice(0, 2);
+      const path = line.slice(3).trim();
+      let status = 'M';
+      if (xy.includes('?')) status = 'A';
+      else if (xy.includes('A')) status = 'A';
+      else if (xy.includes('D')) status = 'D';
+      else if (xy.includes('U')) status = 'U';
+      else if (xy.includes('M')) status = 'M';
+      add(status, path);
+    }
+  }
+  // git diff --name-status base..HEAD: "X\tpath" (or "Rxxx\told\tnew" for
+  // renames — pick the new path).
+  if (msg.BranchFiles) {
+    for (const line of msg.BranchFiles.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      if (parts.length < 2) continue;
+      const code = parts[0][0];
+      let status = 'M';
+      if (code === 'A') status = 'A';
+      else if (code === 'D') status = 'D';
+      else if (code === 'M') status = 'M';
+      const path = parts[parts.length - 1].trim();
+      add(status, path);
+    }
+  }
+  return Array.from(seen.values()).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function renderFilesList(files) {
+  const el = document.getElementById('files-list');
+  if (!files.length) {
+    el.innerHTML = '<div class="files-empty">No changes in this worktree.</div>';
+    return;
+  }
+  el.innerHTML = files.map(f =>
+    `<div class="files-row" data-path="${escAttr(f.path)}">` +
+      `<div class="status ${esc(f.status)}">${esc(f.status)}</div>` +
+      `<div class="path">${esc(f.path)}</div>` +
+    `</div>`
+  ).join('');
+  el.querySelectorAll('.files-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const path = row.getAttribute('data-path');
+      el.querySelectorAll('.files-row.selected').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+      loadDiff(filesViewTask.id, path);
+    });
+  });
+}
+
+async function loadDiff(taskId, path) {
+  filesViewSelected = path;
+  const pane = document.getElementById('diff-pane');
+  pane.innerHTML = '<div class="diff-empty">Loading diff…</div>';
+  try {
+    const r = await api(`/api/tasks/${taskId}/git/diff?path=${encodeURIComponent(path)}`);
+    if (!r.ok) throw new Error('git diff ' + r.status);
+    const msg = await r.json();
+    if (filesViewTask?.id !== taskId || filesViewSelected !== path) return;
+    renderDiff(msg.Diff || '');
+  } catch (e) {
+    pane.innerHTML = `<div class="diff-empty">Failed to load diff: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderDiff(diff) {
+  const pane = document.getElementById('diff-pane');
+  if (!diff) {
+    pane.innerHTML = '<div class="diff-empty">(no diff)</div>';
+    return;
+  }
+  // Classify each line by its first character. `+++`/`---` are diff headers,
+  // not adds/dels, so check those before the single-char prefixes.
+  const html = diff.split('\n').map(line => {
+    let cls = '';
+    if (line.startsWith('+++') || line.startsWith('---')) cls = 'meta';
+    else if (line.startsWith('@@')) cls = 'hunk';
+    else if (line.startsWith('+')) cls = 'add';
+    else if (line.startsWith('-')) cls = 'del';
+    else if (line.startsWith('diff --git') || line.startsWith('index ') ||
+             line.startsWith('new file') || line.startsWith('deleted file') ||
+             line.startsWith('similarity ') || line.startsWith('rename ')) cls = 'meta';
+    return `<span class="diff-line${cls ? ' ' + cls : ''}">${esc(line)}</span>`;
+  }).join('\n');
+  pane.innerHTML = html;
+  pane.scrollTop = 0;
 }
 
 // Refit term on viewport changes (rotation, soft-keyboard, window resize).
@@ -2096,6 +2318,7 @@ function switchTab(tab) {
   // class persists if the user tabs away while the soft keyboard is up.
   dv.querySelector('.detail-header')?.classList.remove('compact');
   closeOverflowMenu();
+  closeFilesView();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
