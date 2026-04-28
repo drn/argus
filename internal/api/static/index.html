@@ -2001,8 +2001,19 @@ function renderOverflowMenu() {
   if (currentTask.pr_url) {
     items.push({ id: 'btn-pr', label: 'View PR', fn: () => {
       const url = currentTask.pr_url;
-      // noopener+noreferrer: prevent the opened tab from accessing window.opener.
-      if (url && url.startsWith('http')) window.open(url, '_blank', 'noopener,noreferrer');
+      if (!url || !url.startsWith('http')) return;
+      // iOS standalone PWA can't open a real browser tab via window.open('_blank'),
+      // so it leaves a stub about:blank window the user has to dismiss. For
+      // github.com URLs the universal link hands off to the GitHub app and the
+      // PWA stays alive in the background — assign location.href instead.
+      const isStandalone = window.navigator.standalone === true;
+      const isGitHub = /^https:\/\/(www\.)?github\.com\//i.test(url);
+      if (isStandalone && isGitHub) {
+        window.location.href = url;
+      } else {
+        // noopener+noreferrer: prevent the opened tab from accessing window.opener.
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
     }});
   }
   items.push({ id: 'btn-delete', label: 'Delete', fn: deleteTask, danger: true });
