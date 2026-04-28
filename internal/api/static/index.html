@@ -1423,9 +1423,9 @@ async function refresh() {
     // duration of the agent view — fields that change while the user is
     // inside (notably pr_url, which only appears after the agent opens a
     // PR, and archived/status flips) only take effect when the user exits
-    // and re-enters. Re-render the overflow menu only when fields it cares
-    // about change, to avoid rebuilding it under the user's finger every
-    // 5s poll cycle.
+    // and re-enters. The four fields below are the exact inputs to
+    // renderOverflowMenu()/the subtitle; gating the rerender on them
+    // avoids rebuilding the menu DOM under the user's finger every 5s.
     if (currentTask) {
       const fresh = tasks.find(t => t.id === currentTask.id);
       if (fresh) {
@@ -1435,7 +1435,14 @@ async function refresh() {
           fresh.idle !== currentTask.idle ||
           fresh.archived !== currentTask.archived;
         currentTask = fresh;
-        if (menuChanged) renderOverflowMenu();
+        // Mirror openDetail()'s window.currentTask write so Playwright specs
+        // and any test hook reading `window.currentTask` see live state.
+        window.currentTask = fresh;
+        if (menuChanged) {
+          document.getElementById('detail-subtitle').textContent =
+            `${fresh.project} · ${statusLabel(effectiveStatus(fresh))}${fresh.elapsed ? ' · ' + fresh.elapsed : ''}`;
+          renderOverflowMenu();
+        }
       }
     }
     renderTaskList();
@@ -2210,14 +2217,10 @@ async function resumeTask() {
   try {
     const r = await api(`/api/tasks/${currentTask.id}/resume`, { method: 'POST' });
     if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'resume failed'); }
-    // refresh() repopulates `tasks` with server data; pick the fresh row so
-    // currentTask reflects the authoritative status/idle/elapsed (no need to
-    // optimistically write fields the server already set).
+    // refresh() now syncs currentTask + subtitle + overflow menu inline when
+    // a watched field flips (status:complete \u2192 in_progress here), so we just
+    // need to re-attach the terminal for the live PTY.
     await refresh();
-    currentTask = tasks.find(t => t.id === currentTask.id) || currentTask;
-    document.getElementById('detail-subtitle').textContent =
-      `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}`;
-    renderOverflowMenu();
     attachTerminal(currentTask);
   } catch(e) {
     showToast('Resume failed: ' + e.message);
