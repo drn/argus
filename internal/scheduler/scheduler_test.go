@@ -50,7 +50,7 @@ func newTestScheduler(t *testing.T) (*Scheduler, *db.DB, *recordingCreator, *fak
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	rec := &recordingCreator{}
 	clk := &fakeClock{now: time.Date(2026, 4, 28, 12, 0, 0, 0, time.UTC)}
 	s := New(d, rec.Create)
@@ -189,6 +189,46 @@ func TestRunNowMissing(t *testing.T) {
 	_, err := s.RunNow("nope")
 	if !errors.Is(err, db.ErrScheduleNotFound) {
 		t.Fatalf("expected ErrScheduleNotFound, got %v", err)
+	}
+}
+
+func TestFireName(t *testing.T) {
+	now := time.Date(2026, 4, 28, 12, 5, 0, 0, time.UTC)
+	got := FireName("Nightly", now)
+	want := "Nightly 2026-04-28 12:05"
+	if got != want {
+		t.Fatalf("FireName mismatch: got %q want %q", got, want)
+	}
+}
+
+// Regression: a schedule that has already fired (NextRunAt advanced past
+// now) must not be re-fired by tick() if RunNow snuck in first. See
+// review-20260428.md WARNING #6.
+func TestSchedulerNoDoubleFireAfterRunNow(t *testing.T) {
+	s, d, rec, clk := newTestScheduler(t)
+	sched := &model.ScheduledTask{
+		Name:     "race",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	s.tick() // populate NextRunAt
+	clk.Advance(2 * time.Minute)
+
+	// Simulate RunNow firing first, then tick reading the (post-fire) row.
+	if _, err := s.RunNow(sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 fire after RunNow, got %d", len(rec.calls))
+	}
+	s.tick() // would re-fire if the race-prevention check is missing
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected still 1 fire after tick (RunNow already advanced NextRunAt), got %d", len(rec.calls))
 	}
 }
 

@@ -5,11 +5,17 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/uxlog"
 )
+
+// maxScheduleBodyBytes caps schedule create/update JSON bodies. Prompts can
+// be multi-line but anything over 1 MB is suspicious and a slow/large body
+// would otherwise tie up a goroutine for the full ReadTimeout window.
+const maxScheduleBodyBytes = 1 << 20
 
 // ScheduleRunner is the subset of *scheduler.Scheduler that the API needs.
 // Defined as an interface so the api package doesn't depend on the scheduler
@@ -79,6 +85,15 @@ type scheduleRequest struct {
 }
 
 func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
+	// Schedules carry full prompt content, which can encode operational
+	// instructions or sensitive context the master operator may not want
+	// exposed to per-device tokens. Mutating endpoints already require
+	// master; making the read master-only too keeps the surface symmetric
+	// and matches Settings → projects/backends, which device tokens
+	// (mobile clients) cannot edit but also do not need to enumerate.
+	if requireMaster(w, r) {
+		return
+	}
 	schedules, err := s.db.Schedules()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load schedules: " + err.Error()})
@@ -95,6 +110,7 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxScheduleBodyBytes)
 	var req scheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -125,6 +141,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxScheduleBodyBytes)
 	var req scheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
@@ -145,11 +162,24 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Schedule != nil {
-		// Schedule expression changed — recompute next-run from now and clear
-		// stale parse-error state.
-		sched.NextRunAt = sched.NextFire(sched.LastRunAt)
-		sched.LastError = ""
+		// Schedule expression changed — recompute next-run. Anchor on
+		// LastRunAt when the schedule has fired before (so an unchanged
+		// cadence preserves alignment with prior fires); otherwise anchor
+		// on now. `cron.Schedule.Next(time.Time{})` returns a year-0001
+		// date, which the scheduler tick would read as "due now" and fire
+		// on the very next tick — violating the "no first-tick fire"
+		// invariant.
+		anchor := sched.LastRunAt
+		if anchor.IsZero() {
+			anchor = time.Now()
+		}
+		sched.NextRunAt = sched.NextFire(anchor)
 	}
+	// Clear LastError unconditionally: Validate above passed, and none of
+	// the user-editable fields (name/project/backend/prompt/schedule/
+	// enabled) affect a previously-stored error's relevance — any stored
+	// parse error is stale by definition once Validate passes here.
+	sched.LastError = ""
 	if err := s.db.UpdateSchedule(sched); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -233,7 +233,7 @@ func (sf *ScheduleForm) PasteHandler() func(pastedText string, setFocus func(p t
 
 // Draw renders the schedule form as a centred modal.
 func (sf *ScheduleForm) Draw(screen tcell.Screen) {
-	sf.Box.DrawForSubclass(screen, sf)
+	sf.DrawForSubclass(screen, sf)
 	x, y, width, height := sf.GetInnerRect()
 	if width <= 0 || height <= 0 {
 		return

@@ -386,7 +386,7 @@ Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/schedules` | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. Device tokens may read. |
+| `GET` | `/api/schedules` | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. **Master token required** (prompts can carry sensitive instructions). |
 | `POST` | `/api/schedules` | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. **Master token required.** Returns the created row. |
 | `PUT` | `/api/schedules/{id}` | Partial update — every field optional. Useful for toggling `enabled`. **Master token required.** |
 | `DELETE` | `/api/schedules/{id}` | Remove. Tasks already created by the schedule are not affected. **Master token required.** |

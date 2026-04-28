@@ -6,9 +6,10 @@ package scheduler
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/robfig/cron/v3"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -35,6 +36,15 @@ type Scheduler struct {
 
 	stopCh chan struct{}
 	mu     sync.Mutex
+
+	// fireMu serialises all fire calls — both the per-tick path and the
+	// out-of-cycle RunNow path. Without it, an HTTP "run now" arriving
+	// during a tick can spawn a duplicate task: tick() loads schedules with
+	// stale NextRunAt, RunNow fires and persists fresh NextRunAt, then
+	// tick() resumes its loop with the stale copy and fires again. The
+	// fireMu hold is short (one create-task call + one DB update), so it
+	// does not meaningfully delay the tick loop.
+	fireMu sync.Mutex
 }
 
 // New creates a scheduler. Call Start in a goroutine and Stop on shutdown.
@@ -55,7 +65,7 @@ func New(database *db.DB, creator TaskCreator) *Scheduler {
 // next-run. Disabled schedules are left alone but still get their NextRunAt
 // recomputed so the UI shows a useful preview.
 func (s *Scheduler) Start() error {
-	log.Printf("[scheduler] starting (interval=%s)", s.interval)
+	uxlog.Log("[scheduler] starting (interval=%s)", s.interval)
 
 	// Initial seed so any schedule that never fired (NextRunAt is zero) gets
 	// its NextRunAt populated immediately. This is also a no-op when the DB
@@ -68,7 +78,7 @@ func (s *Scheduler) Start() error {
 	for {
 		select {
 		case <-s.stopCh:
-			log.Printf("[scheduler] stopped")
+			uxlog.Log("[scheduler] stopped")
 			return nil
 		case <-ticker.C:
 			s.tick()
@@ -96,7 +106,18 @@ func (s *Scheduler) RunNow(id string) (*model.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.fire(sched, s.now())
+	parsed, perr := model.ParseSchedule(sched.Schedule)
+	if perr != nil {
+		// Persist the parse error so the UI shows it, then bail. RunNow on a
+		// malformed expression is a user error; we don't try to fire anyway.
+		sched.LastError = perr.Error()
+		sched.NextRunAt = time.Time{}
+		_ = s.db.UpdateSchedule(sched)
+		return nil, perr
+	}
+	s.fireMu.Lock()
+	defer s.fireMu.Unlock()
+	return s.fire(sched, parsed, s.now())
 }
 
 // tick runs one scheduling pass. Errors are logged but never propagated —
@@ -142,15 +163,25 @@ func (s *Scheduler) tickOne(sched *model.ScheduledTask, now time.Time) {
 	shouldFire := sched.Enabled && !sched.NextRunAt.IsZero() && !now.Before(sched.NextRunAt)
 
 	if shouldFire {
-		if _, err := s.fire(sched, now); err != nil {
-			// fire already persisted LastError; nothing else to do.
+		// Acquire fireMu before the per-fire DB reread so we can't race with
+		// a concurrent RunNow on the same row. Re-check `shouldFire` after
+		// the lock — RunNow may have already fired, advancing NextRunAt past
+		// `now`. Without the recheck we'd duplicate the fire.
+		s.fireMu.Lock()
+		latest, gErr := s.db.GetSchedule(sched.ID)
+		if gErr == nil {
+			*sched = *latest
+		}
+		stillDue := sched.Enabled && !sched.NextRunAt.IsZero() && !now.Before(sched.NextRunAt)
+		if !stillDue {
+			s.fireMu.Unlock()
 			return
 		}
-		// fire updated LastRunAt/NextRunAt and persisted; reload so we don't
-		// stomp those fields below.
-		fresh, gErr := s.db.GetSchedule(sched.ID)
-		if gErr == nil {
-			*sched = *fresh
+		_, fErr := s.fire(sched, parsed, now)
+		s.fireMu.Unlock()
+		if fErr != nil {
+			// fire already persisted LastError; nothing else to do.
+			return
 		}
 		return
 	}
@@ -168,19 +199,13 @@ func (s *Scheduler) tickOne(sched *model.ScheduledTask, now time.Time) {
 
 // fire creates the task for the given schedule and updates bookkeeping.
 // The caller is responsible for honouring sched.Enabled — fire itself does
-// not consult Enabled because RunNow bypasses that check.
-func (s *Scheduler) fire(sched *model.ScheduledTask, now time.Time) (*model.Task, error) {
-	parsed, perr := model.ParseSchedule(sched.Schedule)
-	if perr != nil {
-		sched.LastError = perr.Error()
-		sched.NextRunAt = time.Time{}
-		_ = s.db.UpdateSchedule(sched)
-		return nil, perr
-	}
-
+// not consult Enabled because RunNow bypasses that check. Callers MUST
+// hold fireMu so concurrent invocations against the same row cannot
+// double-fire.
+func (s *Scheduler) fire(sched *model.ScheduledTask, parsed cron.Schedule, now time.Time) (*model.Task, error) {
 	// Generate a unique-per-fire name so worktree creation can't collide
 	// with the previous fire still being open.
-	name := fmt.Sprintf("%s %s", sched.Name, now.Format("2006-01-02 15:04"))
+	name := scheduleFireName(sched.Name, now)
 
 	task, err := s.create(name, sched.Prompt, sched.Project, "")
 	if err != nil {
@@ -225,4 +250,18 @@ func (s *Scheduler) SetClock(now func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.now = now
+}
+
+// scheduleFireName builds the per-fire task name. Exported via the package
+// so the TUI's manual run-now path uses the same convention as the
+// scheduler — preventing rapid manual triggers from colliding on worktree
+// names. Format must stay stable; tests assert it.
+func scheduleFireName(base string, now time.Time) string {
+	return fmt.Sprintf("%s %s", base, now.Format("2006-01-02 15:04"))
+}
+
+// FireName is the public alias of scheduleFireName for callers outside the
+// package.
+func FireName(base string, now time.Time) string {
+	return scheduleFireName(base, now)
 }

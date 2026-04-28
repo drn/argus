@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -56,7 +57,9 @@ func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 	var list struct {
 		Schedules []scheduleJSON `json:"schedules"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &list)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
 	testutil.Equal(t, len(list.Schedules), 1)
 
 	// Update — toggle enabled off.
@@ -65,7 +68,9 @@ func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 	handler.ServeHTTP(w, req)
 	testutil.Equal(t, w.Code, http.StatusOK)
 	var updated scheduleJSON
-	json.Unmarshal(w.Body.Bytes(), &updated)
+	if err := json.Unmarshal(w.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
 	testutil.Equal(t, updated.Enabled, false)
 
 	// Delete.
@@ -78,7 +83,9 @@ func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 	req = authedReq("GET", "/api/schedules", "")
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	json.Unmarshal(w.Body.Bytes(), &list)
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
 	testutil.Equal(t, len(list.Schedules), 0)
 }
 
@@ -100,6 +107,38 @@ func TestScheduleHandlers_CreateValidates(t *testing.T) {
 			handler.ServeHTTP(w, req)
 			testutil.Equal(t, w.Code, http.StatusBadRequest)
 		})
+	}
+}
+
+// Regression: editing the schedule expression of a never-run schedule must
+// not seed a year-0001 NextRunAt that would fire on the very next tick.
+// See review-20260428.md BLOCKING #2.
+func TestScheduleHandlers_UpdateScheduleAnchorOnNow(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, srv.db, srv.routes())
+
+	sched := &model.ScheduledTask{
+		Name:     "fresh",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@daily",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+
+	req := authedReq("PUT", "/api/schedules/"+sched.ID, `{"schedule":"@hourly"}`)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	got, _ := d.GetSchedule(sched.ID)
+	if got.NextRunAt.Year() < 2020 {
+		t.Fatalf("NextRunAt was anchored on zero time: got %v", got.NextRunAt)
+	}
+	if got.NextRunAt.Before(time.Now().Add(-time.Hour)) {
+		t.Fatalf("NextRunAt anchored in the past: got %v (now=%v)", got.NextRunAt, time.Now())
 	}
 }
 
@@ -154,6 +193,7 @@ func TestScheduleHandlers_MasterOnly(t *testing.T) {
 		url    string
 		body   string
 	}{
+		{"list", "GET", "/api/schedules", ""},
 		{"create", "POST", "/api/schedules", `{"name":"x","project":"p","prompt":"go","schedule":"@daily"}`},
 		{"update", "PUT", "/api/schedules/anything", `{"enabled":false}`},
 		{"delete", "DELETE", "/api/schedules/anything", ""},
@@ -166,11 +206,4 @@ func TestScheduleHandlers_MasterOnly(t *testing.T) {
 			testutil.Equal(t, w.Code, http.StatusForbidden)
 		})
 	}
-
-	// List is allowed for device tokens (read-only) — the SPA may surface schedules.
-	t.Run("list-allowed", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, device("GET", "/api/schedules", ""))
-		testutil.Equal(t, w.Code, http.StatusOK)
-	})
 }

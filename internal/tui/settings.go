@@ -1312,7 +1312,6 @@ func (sv *SettingsView) renderScheduleDetail(screen tcell.Screen, x, y, w, h int
 		for line := range strings.SplitSeq(s.Prompt, "\n") {
 			if r >= h-2 {
 				widget.DrawText(screen, x, y+r, w, "…", theme.StyleDimmed)
-				r++
 				break
 			}
 			if len(line) > w {

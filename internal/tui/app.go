@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/taskview"
@@ -3410,6 +3411,7 @@ func (a *App) handleScheduleFormKey(event *tcell.EventKey) {
 		s := a.scheduleForm.Result()
 		if err := s.Validate(); err != nil {
 			a.scheduleForm.SetError(err.Error())
+			a.scheduleForm.done = false
 			return
 		}
 		var dbErr error
@@ -3420,6 +3422,7 @@ func (a *App) handleScheduleFormKey(event *tcell.EventKey) {
 		}
 		if dbErr != nil {
 			a.scheduleForm.SetError("Save error: " + dbErr.Error())
+			a.scheduleForm.done = false
 			return
 		}
 		uxlog.Log("[settings] saved schedule %s (%s) project=%s schedule=%q enabled=%v", s.ID, s.Name, s.Project, s.Schedule, s.Enabled)
@@ -3445,27 +3448,59 @@ func (a *App) deleteSchedule(id string) {
 	a.settings.Refresh()
 }
 
-// runScheduleNow fires a schedule out-of-cycle. Falls back to creating the
-// task directly when the daemon is not connected (in-process mode has no
-// scheduler RunNow RPC, but a direct CreateAndStart is equivalent).
+// runScheduleNow fires a schedule out-of-cycle. The TUI does not own the
+// daemon's scheduler instance (the daemon runs it), but in-process mode has
+// no scheduler at all, so we replicate fire()'s exact behaviour here:
+//
+//   - Per-fire timestamped name (so rapid double-clicks can't collide on
+//     worktree paths) — same format as scheduler.fire via FireName.
+//   - LastRunAt/LastTaskID/NextRunAt/LastError bookkeeping update so the
+//     Settings detail panel reflects the manual fire.
+//
+// Both the scheduler and this code path serialise through the DB row's
+// last-write-wins update, so a manual fire racing with the once-a-minute
+// tick is idempotent on the bookkeeping (the second writer overwrites the
+// first; both fired tasks remain). A duplicate-fire race is improbable
+// (manual run + tick aligned to the same minute) but not impossible —
+// acceptable trade-off given this is an admin-only TUI action.
 func (a *App) runScheduleNow(id string) {
 	s, err := a.db.GetSchedule(id)
 	if err != nil {
 		uxlog.Log("[settings] run schedule %s: %v", id, err)
 		return
 	}
+	now := time.Now()
+	parsed, perr := model.ParseSchedule(s.Schedule)
+	if perr != nil {
+		s.LastError = perr.Error()
+		_ = a.db.UpdateSchedule(s)
+		uxlog.Log("[settings] run schedule %s: invalid schedule %q: %v", id, s.Schedule, perr)
+		return
+	}
 	go func() {
-		_, _, err := agent.CreateAndStart(a.db, a.runner, agent.CreateInput{
-			Name:    s.Name + " (manual)",
+		task, _, err := agent.CreateAndStart(a.db, a.runner, agent.CreateInput{
+			Name:    scheduler.FireName(s.Name, now),
 			Prompt:  s.Prompt,
 			Project: s.Project,
 			Backend: s.Backend,
 		})
 		if err != nil {
+			s.LastError = err.Error()
+			s.LastRunAt = now
+			s.NextRunAt = parsed.Next(now)
+			_ = a.db.UpdateSchedule(s)
 			uxlog.Log("[settings] run schedule %s: %v", id, err)
+			a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 			return
 		}
-		uxlog.Log("[settings] manually fired schedule %s", id)
+		s.LastRunAt = now
+		s.LastTaskID = task.ID
+		s.LastError = ""
+		s.NextRunAt = parsed.Next(now)
+		if uErr := a.db.UpdateSchedule(s); uErr != nil {
+			uxlog.Log("[settings] persist post-fire %s: %v", id, uErr)
+		}
+		uxlog.Log("[settings] manually fired schedule %s -> task %s", id, task.ID)
 		a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 	}()
 }
