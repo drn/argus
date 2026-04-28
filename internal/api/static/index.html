@@ -1090,9 +1090,17 @@ function onTermTouchEnd() {
   // enough to commit to scroll. The "had to hold my finger in one spot
   // to start scrolling" symptom. Deferring focus to touchend with the
   // scroll-vs-tap discriminator removes the hesitation entirely.
+  //
+  // Additionally gate on termIsAtBottom(): tapping while the user is
+  // reading scrollback shouldn't pull up the soft keyboard. This also
+  // covers the iOS race where a flick scroll's first `scroll` event
+  // hasn't fired by the time `touchend` lands — isTermScrolling is
+  // still false, so the swipe would otherwise be misclassified as a
+  // tap and pop the keyboard. After any upward scroll the viewport
+  // is no longer at the bottom, so the bottom check rejects it.
   const wasTap = !isTermScrolling;
   if (wasTap) {
-    if (term) try { term.focus(); } catch(e) {}
+    if (term && termIsAtBottom()) try { term.focus(); } catch(e) {}
     // No scroll happened, so nothing else will trigger a drain — kick
     // it now so a pending viewport sync from earlier isn't stuck queued.
     drainIfSettled();
