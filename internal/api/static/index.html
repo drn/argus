@@ -310,6 +310,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   resize: none;
   line-height: 1.4;
   min-height: 40px;
+  /* 30vh cap keeps the agent terminal visible even mid-dictation on small
+     phones — past 30vh the user is composing more than they're reading and
+     internal textarea scroll takes over. */
   max-height: 30vh;
   field-sizing: content;
 }
@@ -1217,6 +1220,15 @@ let resizeDebounce = null;
 let termResizeObserver = null;
 let termFontSize = parseInt(localStorage.getItem('argus-font-size') || '13', 10);
 
+// Compose bar (mobile agent input) is gated on touch devices so desktop's
+// direct-into-xterm path is unchanged. Defined here near other terminal state
+// rather than next to its handlers further down so call sites in
+// attachTerminal / destroyTerm / closeDetail can find it without scrolling
+// 2000 lines. The handlers (setComposeVisible, sendCompose, wireCompose) live
+// at the bottom of the script, near the auto-complete wiring they're peers of.
+const IS_TOUCH = ('ontouchstart' in window)
+  || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
 // SSE chunks queued while the user is scrolled into history. iOS kills
 // momentum scroll when JS mutates the xterm viewport, so we hold writes
 // until the user returns to the bottom (or taps the jump-bottom button).
@@ -1733,7 +1745,8 @@ function attachTerminal(task) {
     document.getElementById('term-wrap').style.display = 'none';
     document.getElementById('term-status').style.display = 'none';
     document.getElementById('output-box').style.display = 'block';
-    setComposeVisible(false);
+    // destroyTerm() above already hid the compose bar — non-running tasks
+    // never re-show it.
     loadStaticOutput(task.id);
   }
 }
@@ -1942,6 +1955,11 @@ function destroyTerm() {
     window.term = null;
     window.fitAddon = null;
   }
+  // Compose bar tracks term lifecycle — every teardown path (closeDetail,
+  // switchTab, showOffline, mid-attachTerminal swap) must hide it. Centralising
+  // here so callers can't forget. Re-shown by the next attachTerminal when the
+  // task is in_progress.
+  setComposeVisible(false);
   // SSE onmessage is a macrotask that can't interleave with this synchronous
   // teardown, so closeStream() before destroyTerm() is enough to guarantee
   // no late writer mutates pendingChunks after we clear it.
@@ -2382,7 +2400,8 @@ function closeDetail() {
   closeOverflowMenu();
   closeFilesView();
   closePromptModal();
-  setComposeVisible(false);
+  // destroyTerm() hid the compose bar; here we additionally clear the textarea
+  // so the next opened task gets a fresh field.
   const ci = document.getElementById('compose-input');
   if (ci) ci.value = '';
   currentTask = null;
@@ -3699,10 +3718,9 @@ acDrop.addEventListener('click', function(e) {
 // xterm.js's hidden helper textarea is invisible to iOS dictation, third-party
 // keyboards, and Wispr Flow — they only inject into a focused, on-screen, real
 // text field. The compose bar is that field: type or dictate, then Send / Enter
-// forwards the text to the PTY via the same /input endpoint xterm uses. Only
-// shown on touch devices so desktop's direct-into-xterm path is unchanged.
-const IS_TOUCH = ('ontouchstart' in window)
-  || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+// forwards the text to the PTY via the same /input endpoint xterm uses. The
+// IS_TOUCH gate is hoisted up next to the terminal-state vars so the call
+// sites in destroyTerm / attachTerminal can read it without scrolling.
 
 function setComposeVisible(visible) {
   const el = document.getElementById('compose-bar');
@@ -3710,14 +3728,27 @@ function setComposeVisible(visible) {
   el.style.display = (visible && IS_TOUCH) ? 'flex' : 'none';
 }
 
+// Mirror the server-side `io.LimitReader(r.Body, 64*1024)` in handleWriteInput
+// so a giant paste fails fast with a toast instead of POSTing megabytes that
+// the daemon silently truncates and the user sees no error from.
+const COMPOSE_MAX_BYTES = 64 * 1024;
+
 function sendCompose() {
   const ci = document.getElementById('compose-input');
   if (!ci) return;
   const v = ci.value;
   if (!v) return;
-  // Match term.onData's gate: only forward when the agent is actually accepting
-  // input. The textarea keeps the text on a non-running task so a Resume can
-  // pick up where the user left off.
+  // TextEncoder gives the actual UTF-8 byte length — `.length` would
+  // undercount multi-byte chars and let an over-cap value through.
+  const byteLen = new TextEncoder().encode(v).length;
+  if (byteLen > COMPOSE_MAX_BYTES) {
+    showToast(`Input too long (${byteLen} > ${COMPOSE_MAX_BYTES} bytes)`);
+    return;
+  }
+  // Match term.onData's gate: forward only on `in_progress` (which includes
+  // idle agents — they're still accepting input at a prompt). On a stopped or
+  // in_review task we keep the textarea contents so a Resume + send still
+  // works without retyping; closeDetail clears it on navigation away.
   if (!currentTask || currentTask.status !== 'in_progress') {
     showToast('Agent not running');
     return;
