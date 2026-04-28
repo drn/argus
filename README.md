@@ -49,6 +49,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **Collapsible project folders** — Tasks grouped by project with auto-expand/collapse. Archive section at the bottom for completed work
 - **Live preview** — ANSI-aware agent output preview in the task list, rendered from the PTY ring buffer
 - **Idle detection** — Tasks waiting for input are visually promoted to "in review" status until visited
+- **Smart auto-naming** — When a task name is auto-derived from the prompt (new-task form, web/MCP creation without an explicit name), Argus quietly asks Claude Haiku for a better kebab-case name and renames the task in place. Worktree path/branch stay locked to the original slug, so no on-disk state moves. Fails open to the regex slug if the `claude` CLI is unavailable.
 
 ### Scheduled Tasks
 
@@ -61,7 +62,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 
 - **To Dos tab** — Browse an Obsidian vault as a task inbox. Three-panel view: note list, markdown preview, and metadata
 - **Auto-launch from vault** — Select a note, pick a project, optionally add a prompt, and launch it as a new agent task. The note content becomes the agent's instructions
-- **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running,  review, ✓ done) show progress inline
+- **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running, review, ✓ done) show progress inline
 - **Vault auto-create** — When enabled, the daemon watches the vault directory for new `.md` files and automatically creates and starts agent tasks. Share a note to Obsidian from your phone, and the agent starts working
 - **Cleanup** — `ctrl+r` on the To Dos tab deletes vault files for completed tasks, keeping the inbox clean
 - **Knowledge base** — A separate FTS5-powered full-text search store indexes another Obsidian vault and exposes it as an MCP server (port 7742), auto-injected into every agent worktree
@@ -121,84 +122,84 @@ argus
 
 #### Task List
 
-| Key | Action |
-|-----|--------|
-| `n` | New task (with skill autocomplete in prompt field) |
-| `Enter` | Open agent view |
-| `ctrl+f` | Fork task (duplicate with context) |
-| `s` / `S` | Advance / revert status |
-| `a` | Toggle archive |
-| `w` | Toggle "Waiting for Review" (own section above Archive) |
-| `p` | Open PR in browser |
-| `c` | Copy task prompt to clipboard |
-| `ctrl+d` | Destroy task (kill agent + remove worktree + delete branch) |
-| `ctrl+r` | Prune completed tasks |
-| `j` / `k` | Navigate up/down |
-| `1` / `2` / `3` / `4` | Switch tabs (Tasks / To Dos / Reviews / Settings) |
-| `ctrl+l` | Refresh screen (wipe ghost cells; works in every non-agent tab) |
-| `q` | Quit |
+| Key                   | Action                                                          |
+| --------------------- | --------------------------------------------------------------- |
+| `n`                   | New task (with skill autocomplete in prompt field)              |
+| `Enter`               | Open agent view                                                 |
+| `ctrl+f`              | Fork task (duplicate with context)                              |
+| `s` / `S`             | Advance / revert status                                         |
+| `a`                   | Toggle archive                                                  |
+| `w`                   | Toggle "Waiting for Review" (own section above Archive)         |
+| `p`                   | Open PR in browser                                              |
+| `c`                   | Copy task prompt to clipboard                                   |
+| `ctrl+d`              | Destroy task (kill agent + remove worktree + delete branch)     |
+| `ctrl+r`              | Prune completed tasks                                           |
+| `j` / `k`             | Navigate up/down                                                |
+| `1` / `2` / `3` / `4` | Switch tabs (Tasks / To Dos / Reviews / Settings)               |
+| `ctrl+l`              | Refresh screen (wipe ghost cells; works in every non-agent tab) |
+| `q`                   | Quit                                                            |
 
 #### Agent View
 
-| Key | Action |
-|-----|--------|
-| `ctrl+q` / `Esc` | Back (3-level: diff → files → task list) |
-| `Cmd+←` / `Cmd+→` | Switch panels |
-| `Cmd+↑` / `Cmd+↓` | Navigate between tasks |
-| `ctrl+p` | Open PR in browser |
-| `ctrl+l` | Open link picker (fuzzy search all session URLs) |
-| `o` | Open PR in browser (when session is finished) |
-| `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration) |
+| Key                   | Action                                           |
+| --------------------- | ------------------------------------------------ |
+| `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)         |
+| `Cmd+←` / `Cmd+→`     | Switch panels                                    |
+| `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                           |
+| `ctrl+p`              | Open PR in browser                               |
+| `ctrl+l`              | Open link picker (fuzzy search all session URLs) |
+| `o`                   | Open PR in browser (when session is finished)    |
+| `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)              |
 
 #### File Panel
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Open diff |
-| `s` | Toggle split/unified diff |
-| `o` | Reveal in Finder |
-| `e` | Open in editor |
-| `t` | Open terminal in worktree |
+| Key     | Action                    |
+| ------- | ------------------------- |
+| `Enter` | Open diff                 |
+| `s`     | Toggle split/unified diff |
+| `o`     | Reveal in Finder          |
+| `e`     | Open in editor            |
+| `t`     | Open terminal in worktree |
 
 #### To Dos
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Launch note as task |
-| `j` / `k` | Navigate notes |
-| `R` | Refresh vault |
-| `ctrl+r` | Clean up completed notes |
+| Key       | Action                   |
+| --------- | ------------------------ |
+| `Enter`   | Launch note as task      |
+| `j` / `k` | Navigate notes           |
+| `R`       | Refresh vault            |
+| `ctrl+r`  | Clean up completed notes |
 
 #### Modals & Forms
 
-| Key | Action |
-|-----|--------|
-| `Esc` / `ctrl+q` | Close / cancel |
-| `Enter` | Confirm / submit |
-| `Tab` / `Shift+Tab` | Navigate fields |
+| Key                 | Action           |
+| ------------------- | ---------------- |
+| `Esc` / `ctrl+q`    | Close / cancel   |
+| `Enter`             | Confirm / submit |
+| `Tab` / `Shift+Tab` | Navigate fields  |
 
 #### Reviews
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Navigate PRs |
-| `R` | Refresh PR list |
-| `a` | Approve PR |
-| `r` | Request changes |
-| `c` | Line comment |
+| Key       | Action          |
+| --------- | --------------- |
+| `j` / `k` | Navigate PRs    |
+| `R`       | Refresh PR list |
+| `a`       | Approve PR      |
+| `r`       | Request changes |
+| `c`       | Line comment    |
 
 #### Settings
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` | Navigate rows |
-| `n` | New project / backend / schedule |
-| `e` | Edit project / backend / schedule |
-| `d` | Delete project / set default backend / delete schedule |
-| `t` | Toggle schedule enabled (on the Scheduled Tasks section) |
-| `r` | Run schedule now (on the Scheduled Tasks section) |
-| `i` | Quick add projects |
-| `Enter` / `◀` / `▶` | Toggle / cycle settings |
+| Key                   | Action                                                   |
+| --------------------- | -------------------------------------------------------- |
+| `j` / `k`             | Navigate rows                                            |
+| `n`                   | New project / backend / schedule                         |
+| `e`                   | Edit project / backend / schedule                        |
+| `d`                   | Delete project / set default backend / delete schedule   |
+| `t`                   | Toggle schedule enabled (on the Scheduled Tasks section) |
+| `r`                   | Run schedule now (on the Scheduled Tasks section)        |
+| `i`                   | Quick add projects                                       |
+| `Enter` / `◀` / `▶` | Toggle / cycle settings                                  |
 
 ## Self-Update
 
@@ -214,16 +215,16 @@ Argus can run agent processes inside macOS `sandbox-exec` for filesystem and cre
 
 Global sandbox settings are managed in the **Settings tab** (`4` key):
 
-| Setting | Description |
-|---------|-------------|
-| Enabled | Master toggle — applies to all projects by default |
-| Deny Read | Extra paths to block reads from (comma-separated) |
-| Extra Write | Extra paths to allow writes to (comma-separated) |
+| Setting     | Description                                        |
+| ----------- | -------------------------------------------------- |
+| Enabled     | Master toggle — applies to all projects by default |
+| Deny Read   | Extra paths to block reads from (comma-separated)  |
+| Extra Write | Extra paths to allow writes to (comma-separated)   |
 
 Per-project overrides are set in the **project form** (`e` on a project in Settings):
 
-| Setting | Options |
-|---------|---------|
+| Setting | Options                                                |
+| ------- | ------------------------------------------------------ |
 | Sandbox | **Inherit** (use global), **Enabled**, or **Disabled** |
 
 Per-project deny-read and extra-write paths are appended to the global lists.
@@ -231,9 +232,11 @@ Per-project deny-read and extra-write paths are appended to the global lists.
 ### Built-in defaults
 
 **Filesystem (always denied read):**
+
 - `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
 
 **Filesystem (always allowed write):**
+
 - The task's worktree directory
 - `/tmp`, `/var/folders`
 - `~/.claude.json`, `~/.claude/`
@@ -243,12 +246,12 @@ Per-project deny-read and extra-write paths are appended to the global lists.
 
 The in-progress task indicator uses an animated spinner. Cycle through styles in the **Settings tab** using `Enter` or `◀`/`▶` on the **Spinner** row:
 
-| Style | Frames | Speed |
-|-------|--------|-------|
-| **Progress** (default) | Nerd Font progress icons | 100ms |
-| **Dots** | Braille dots `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | 100ms |
-| **Braille** | Braille pattern `⣷⣯⣟⡿⢿⣻⣽⣾` | 100ms |
-| **Classic** | ASCII `\|/-\\` | 150ms |
+| Style                  | Frames                     | Speed |
+| ---------------------- | -------------------------- | ----- |
+| **Progress** (default) | Nerd Font progress icons   | 100ms |
+| **Dots**               | Braille dots `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`  | 100ms |
+| **Braille**            | Braille pattern `⣷⣯⣟⡿⢿⣻⣽⣾` | 100ms |
+| **Classic**            | ASCII `\|/-\\`             | 150ms |
 
 ## Knowledge Base
 
@@ -294,6 +297,7 @@ Argus includes a built-in HTTP API and mobile web dashboard for controlling agen
 Open `http://<your-machine>:7743/` in your phone browser. Enter the API token from `~/.argus/api-token` to authenticate. Tap **Add to Home Screen** in Safari to install as a PWA.
 
 The dashboard provides:
+
 - **Task list** — Active and Archived tabs, status badges
 - **Task detail** — Real xterm.js terminal with live SSE byte stream, plus an overflow (⋯) menu containing Esc / Toggle mode (Shift+Tab) / Resume / Files & diff / View prompt / Upload files / Rename / Fork / Archive / Delete and font size controls. The header auto-compacts when the soft keyboard is up. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
 - **Compose bar (touch only)** — A real native textarea sits below the terminal on phones/tablets. Type or dictate into it (iOS dictation, third-party keyboards, Wispr Flow) then tap **↑** or press **Enter** to send; **Shift+Enter** inserts a newline. xterm.js's hidden helper textarea is invisible to iOS text-injection — the compose bar is the on-screen field those tools need. Desktop's direct-into-xterm path is unchanged
@@ -312,103 +316,104 @@ All endpoints require auth — either `Authorization: Bearer <token>` header or 
 
 #### Tasks
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/status` | Running/idle session counts, task counts by status |
-| `GET` | `/api/tasks` | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input (mirrors the TUI moon icon). |
-| `POST` | `/api/tasks` | Create and start a task. JSON body: `{"name":"...", "prompt":"...", "project":"..."}`, OR `multipart/form-data` with `name`/`prompt`/`project` fields plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
-| `GET` | `/api/tasks/{id}` | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`) |
-| `POST` | `/api/tasks/{id}/stop` | Stop a running agent (moves to `in_review`) |
-| `POST` | `/api/tasks/{id}/resume` | Resume a stopped agent |
-| `DELETE` | `/api/tasks/{id}` | Delete a task |
-| `POST` | `/api/tasks/{id}/archive` | Archive (hidden from default list) |
-| `POST` | `/api/tasks/{id}/unarchive` | Restore from archive |
-| `POST` | `/api/tasks/{id}/rename` | `{"name":"..."}` |
-| `POST` | `/api/tasks/{id}/fork` | Clone to a new task. Body: `{"name?":"...", "prompt?":"...", "project?":"..."}` |
-| `POST` | `/api/tasks/{id}/status` | Set status. Body: `{"status":"in_review"\|"complete"\|"pending"\|"in_progress"}` |
+| Method   | Endpoint                    | Description                                                                                                                                                                                                                                                                               |
+| -------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/status`               | Running/idle session counts, task counts by status                                                                                                                                                                                                                                        |
+| `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input (mirrors the TUI moon icon).                                                                                   |
+| `POST`   | `/api/tasks`                | Create and start a task. JSON body: `{"name":"...", "prompt":"...", "project":"..."}`, OR `multipart/form-data` with `name`/`prompt`/`project` fields plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
+| `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                           |
+| `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                               |
+| `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent                                                                                                                                                                                                                                                                    |
+| `DELETE` | `/api/tasks/{id}`           | Delete a task                                                                                                                                                                                                                                                                             |
+| `POST`   | `/api/tasks/{id}/archive`   | Archive (hidden from default list)                                                                                                                                                                                                                                                        |
+| `POST`   | `/api/tasks/{id}/unarchive` | Restore from archive                                                                                                                                                                                                                                                                      |
+| `POST`   | `/api/tasks/{id}/rename`    | `{"name":"..."}`                                                                                                                                                                                                                                                                          |
+| `POST`   | `/api/tasks/{id}/fork`      | Clone to a new task. Body: `{"name?":"...", "prompt?":"...", "project?":"..."}`                                                                                                                                                                                                           |
+| `POST`   | `/api/tasks/{id}/status`    | Set status. Body: `{"status":"in_review"\|"complete"\|"pending"\|"in_progress"}`                                                                                                                                                                                                          |
 
 #### Sessions / terminal
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1` |
-| `POST` | `/api/tasks/{id}/input` | Send raw bytes to PTY stdin |
+| Method | Endpoint                 | Description                                                                                                                                                                                             |
+| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1`                                                                                                                                                    |
+| `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                             |
 | `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create. |
-| `GET` | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks) |
-| `GET` | `/api/tasks/{id}/size` | Current PTY dimensions: `{cols, rows}` |
-| `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}` |
-| `POST` | `/api/sessions/stop-all` | Stop every running session |
+| `GET`  | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks)                                                                                                                                                       |
+| `GET`  | `/api/tasks/{id}/size`   | Current PTY dimensions: `{cols, rows}`                                                                                                                                                                  |
+| `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}`                                                                                                                                                                       |
+| `POST` | `/api/sessions/stop-all` | Stop every running session                                                                                                                                                                              |
 
 #### Git status / diff / files
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/tasks/{id}/git/status` | git status output + branch diff for the task's worktree |
-| `GET` | `/api/tasks/{id}/git/diff?path=<file>` | Unified diff for a single file |
-| `GET` | `/api/tasks/{id}/files?dir=<rel>` | Worktree file listing |
+| Method | Endpoint                               | Description                                             |
+| ------ | -------------------------------------- | ------------------------------------------------------- |
+| `GET`  | `/api/tasks/{id}/git/status`           | git status output + branch diff for the task's worktree |
+| `GET`  | `/api/tasks/{id}/git/diff?path=<file>` | Unified diff for a single file                          |
+| `GET`  | `/api/tasks/{id}/files?dir=<rel>`      | Worktree file listing                                   |
 
 #### Projects & backends (full CRUD)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/projects` | List project names |
-| `GET` | `/api/projects/full` | List with path, branch, default_backend |
-| `POST` | `/api/projects` | Create. Body: `{"name", "path", "branch?", "backend?", "sandbox?"}` where `sandbox` is `{"enabled": true|false|null, "deny_read":[], "extra_write":[]}` (`null` = inherit global) |
-| `PUT` | `/api/projects/{name}` | Update |
-| `DELETE` | `/api/projects/{name}` | Delete |
-| `GET` | `/api/backends` | List with command + prompt_flag |
-| `POST` | `/api/backends` | Create |
-| `PUT` | `/api/backends/{name}` | Update |
-| `DELETE` | `/api/backends/{name}` | Delete |
-| `GET` | `/api/skills` | Skill autocomplete. Filter: `?project=`, `?prefix=` |
+| Method   | Endpoint               | Description                                                                                              |
+| -------- | ---------------------- | -------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------ |
+| `GET`    | `/api/projects`        | List project names                                                                                       |
+| `GET`    | `/api/projects/full`   | List with path, branch, default_backend                                                                  |
+| `POST`   | `/api/projects`        | Create. Body: `{"name", "path", "branch?", "backend?", "sandbox?"}` where `sandbox` is `{"enabled": true | false | null, "deny_read":[], "extra_write":[]}` (`null` = inherit global) |
+| `PUT`    | `/api/projects/{name}` | Update                                                                                                   |
+| `DELETE` | `/api/projects/{name}` | Delete                                                                                                   |
+| `GET`    | `/api/backends`        | List with command + prompt_flag                                                                          |
+| `POST`   | `/api/backends`        | Create                                                                                                   |
+| `PUT`    | `/api/backends/{name}` | Update                                                                                                   |
+| `DELETE` | `/api/backends/{name}` | Delete                                                                                                   |
+| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?prefix=`                                                      |
 
 #### Push notifications (Web Push, VAPID)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/push/vapid-public-key` | VAPID public key (urlsafe base64) for `pushManager.subscribe()` |
-| `POST` | `/api/push/subscribe` | Register a subscription. Body: `{"label","endpoint","keys":{"p256dh","auth"}}` |
-| `GET` | `/api/push/subscriptions` | List with masked endpoints |
-| `DELETE` | `/api/push/subscribe/{id}` | Unsubscribe |
-| `POST` | `/api/push/test` | Fan out a test notification to every device |
+| Method   | Endpoint                     | Description                                                                    |
+| -------- | ---------------------------- | ------------------------------------------------------------------------------ |
+| `GET`    | `/api/push/vapid-public-key` | VAPID public key (urlsafe base64) for `pushManager.subscribe()`                |
+| `POST`   | `/api/push/subscribe`        | Register a subscription. Body: `{"label","endpoint","keys":{"p256dh","auth"}}` |
+| `GET`    | `/api/push/subscriptions`    | List with masked endpoints                                                     |
+| `DELETE` | `/api/push/subscribe/{id}`   | Unsubscribe                                                                    |
+| `POST`   | `/api/push/test`             | Fan out a test notification to every device                                    |
 
 The daemon polls running sessions every 5s; when a session transitions to idle, every subscription receives a notification (throttled to 1 per task per 5 min). Subscriptions returning `410 Gone` are auto-pruned.
 
 #### Per-device API tokens
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/tokens` | List tokens with last-4 + label (master only? no — any token can list) |
-| `POST` | `/api/tokens` | Mint a new device token. **Master token required.** Body: `{"label":"My iPhone"}` → `{"id","label","token"}` (plaintext shown once) |
-| `DELETE` | `/api/tokens/{id}` | Revoke. **Master token required.** |
+| Method   | Endpoint           | Description                                                                                                                         |
+| -------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/tokens`      | List tokens with last-4 + label (master only? no — any token can list)                                                              |
+| `POST`   | `/api/tokens`      | Mint a new device token. **Master token required.** Body: `{"label":"My iPhone"}` → `{"id","label","token"}` (plaintext shown once) |
+| `DELETE` | `/api/tokens/{id}` | Revoke. **Master token required.**                                                                                                  |
 
 Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 
 #### Scheduled tasks
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/schedules` | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. **Master token required** (prompts can carry sensitive instructions). |
-| `POST` | `/api/schedules` | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. **Master token required.** Returns the created row. |
-| `PUT` | `/api/schedules/{id}` | Partial update — every field optional. Useful for toggling `enabled`. **Master token required.** |
-| `DELETE` | `/api/schedules/{id}` | Remove. Tasks already created by the schedule are not affected. **Master token required.** |
-| `POST` | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. **Master token required.** |
+| Method   | Endpoint                  | Description                                                                                                                                           |
+| -------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/schedules`          | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. **Master token required** (prompts can carry sensitive instructions). |
+| `POST`   | `/api/schedules`          | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. **Master token required.** Returns the created row.                      |
+| `PUT`    | `/api/schedules/{id}`     | Partial update — every field optional. Useful for toggling `enabled`. **Master token required.**                                                      |
+| `DELETE` | `/api/schedules/{id}`     | Remove. Tasks already created by the schedule are not affected. **Master token required.**                                                            |
+| `POST`   | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. **Master token required.**                                                   |
 
 Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`), descriptors (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), and intervals (`@every 30m`).
 
 #### Settings & logs (master only for mutations)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/settings` | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read. |
-| `PUT` | `/api/settings` | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. Setting `kb.auto_start_todos` without `kb.auto_create_tasks` mirrors the TUI invariant: enabling auto-start implies auto-create; disabling it disables both. **Master token required.** |
-| `GET` | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body. |
+| Method | Endpoint                         | Description                                                                                                                                                                                                                                                                                               |
+| ------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read.                                                                                                                                                                   |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. Setting `kb.auto_start_todos` without `kb.auto_create_tasks` mirrors the TUI invariant: enabling auto-start implies auto-create; disabling it disables both. **Master token required.** |
+| `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                                                                                                                                                                                       |
 
 ### Keep the host awake
 
 The daemon runs as a normal process on the host machine. When the host sleeps, HTTP responses stall, SSE streams disconnect, and push notifications stop firing. PTY sessions pause where they were and resume when the host wakes.
 
 For a clamshell-mode laptop driving an external display:
+
 - Use `caffeinate -is` (no `-d`) or [KeepingYouAwake](https://github.com/newmarcel/KeepingYouAwake) with **Allow display sleep** enabled — keeps system + idle awake while letting the display sleep.
 - For a permanent setup on AC power: `sudo pmset -c sleep 0 disablesleep 1 displaysleep 1`.
 - Sleeping the external display via `pmset displaysleepnow` (or a hot corner) is fine; physically disconnecting it will sleep the Mac because the lid is closed.

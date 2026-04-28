@@ -15,14 +15,19 @@ import (
 // is left behind. This is important for the vault watcher, which dedups by
 // todo_path: a ghost task row would permanently block retries for that file.
 //
+// autoName, when true, fires the post-creation Haiku rename. Callers should
+// pass true iff name was synthesized from prompt (vs typed by a user or
+// derived from a meaningful slug like a todo filename).
+//
 // BeforeStart/AfterStart hooks are intentionally nil — those are for the TUI's
 // startGen tick-reconciliation counter, which has no analogue in headless mode.
-func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, name, prompt, project, todoPath string) (*model.Task, error) {
+func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, name, prompt, project, todoPath string, autoName bool) (*model.Task, error) {
 	task, _, err := agent.CreateAndStart(database, runner, agent.CreateInput{
 		Name:     name,
 		Prompt:   prompt,
 		Project:  project,
 		TodoPath: todoPath,
+		AutoName: autoName,
 	})
 	return task, err
 }

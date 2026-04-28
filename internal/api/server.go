@@ -18,7 +18,9 @@ import (
 )
 
 // TaskCreator creates a task from name, prompt, project, and todoPath.
-type TaskCreator func(name, prompt, project, todoPath string) (*model.Task, error)
+// autoName signals the underlying creator to fire async Haiku name-gen
+// when name was string-interpolated from prompt rather than user-typed.
+type TaskCreator func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error)
 
 // Server is the HTTP REST API server.
 type Server struct {

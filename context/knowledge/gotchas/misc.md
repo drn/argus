@@ -113,6 +113,16 @@
 - **The TUI's manual run-now path must use `scheduler.FireName(name, now)`, NOT `name + " (manual)"`.** Rapid double-clicks on Run Now would otherwise hit a worktree-name collision (`agent.CreateAndStart` auto-suffixes with `-1`, `-2`, …) instead of being naturally disambiguated by the timestamp. The format also has to match `scheduler.fire()` so manually-fired and automatically-fired tasks render identically in the task list.
 - **`scheduler.fire` callers MUST hold `fireMu`.** Without it, `RunNow` from an HTTP goroutine can race with the per-minute `tick()` and double-fire the same row: the tick reads the schedule, RunNow fires + persists fresh `NextRunAt`, then the tick resumes its loop with the stale copy and fires again. `tickOne` must also re-read the schedule under `fireMu` and re-check `NextRunAt > now` before calling fire.
 
+## Task Auto-Naming (Haiku)
+
+- **Auto-rename never touches `task.Worktree` or `task.Branch` — only `task.Name`.** Both fields are locked in at creation from the original regex slug; if you ever add code that re-derives the worktree path or branch from `Name` post-creation, the auto-rename will silently corrupt it. `task.Name` is a soft display string after creation.
+- **The `claude -p` invocation MUST set both `--system-prompt` AND `--setting-sources ""`.** `--system-prompt` overrides (not appends) the default Claude Code preamble; `--setting-sources ""` is what actually disables MCP/hook loading from `~/.claude/settings.json`. Dropping either leaks tokens. `--strict-mcp-config` (with no `--mcp-config`) is the third leg — needed to suppress project-local `.mcp.json`.
+- **Don't use `claude --bare`.** It's tempting (one flag instead of seven) but it disables OAuth/keychain auth and only works with `ANTHROPIC_API_KEY` — breaking users who login via the Claude.ai subscription.
+- **`cmd.Dir = os.TempDir()` is required even with `--setting-sources ""`.** The `claude` CLI walks up from cwd to auto-discover `CLAUDE.md`; running from a worktree pulls the project's `CLAUDE.md` into context. Belt-and-suspenders with the settings flag.
+- **Race guard compares to `originalName`, not a flag column.** If user types a name equal to the regex slug, or rename modal sets it back to the slug, auto-rename will still fire. Cost of false-positive rename is low; adding a "was auto-named" boolean to the schema isn't worth it.
+- **Goroutine inherits its parent process lifecycle.** TUI-initiated tasks fire `runAutoRename` inside the TUI process; if the user quits before Haiku returns, the rename is lost. Headless paths (vault / HTTP API / MCP) run inside the daemon, so renames survive TUI restarts.
+- **`AutoName` opt-in lives on each call site, not centrally.** Only set `AutoName: true` when the name was string-interpolated from `Prompt` — NOT for review-pr (`review-pr-N-…`), fork (`<src>-fork`), todo (filename), or multipart with attachment-derived name (the filename is already meaningful).
+
 ## Link Extraction
 
 - **`osc8Re` must run BEFORE `ansiRe` in `stripANSI`.** OSC 8 hyperlinks embed URLs in escape sequences (`\x1b]8;;URL\x1b\\`). If `ansiRe` strips them first, the URLs are lost. The two-pass design in `todolinks.go:stripANSI` is intentional.

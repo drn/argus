@@ -173,8 +173,8 @@ func (d *Daemon) Serve(sockPath string) error {
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
-			func(name, prompt, project, todoPath string) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+			func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, autoName)
 			},
 			d.db,
 			d.runner,
@@ -228,7 +228,9 @@ func (d *Daemon) Serve(sockPath string) error {
 			vaultPath = config.DefaultArgusVaultPath()
 		}
 		vw := vault.NewWatcher(d.db, vaultPath, func(name, prompt, project, todoPath string) (*model.Task, error) {
-			return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+			// Vault names come from the .md filename — already meaningful;
+			// no auto-rename.
+			return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, false)
 		})
 		d.vaultWatcher = vw
 		if cfg.KB.AutoStartTodos {
@@ -254,7 +256,9 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Start the scheduler (recurring scheduled tasks). Always-on — empty
 	// table is a no-op, so there's no setting to gate it.
 	sch := scheduler.New(d.db, func(name, prompt, project, todoPath string) (*model.Task, error) {
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+		// Schedule names are user-edited (then suffixed with a timestamp) —
+		// already meaningful; no auto-rename.
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, false)
 	})
 	d.scheduler = sch
 	go func() {
@@ -270,8 +274,8 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath)
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, autoName)
 			})
 			apiSrv.SetScheduler(sch)
 			d.apiServer = apiSrv

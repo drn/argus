@@ -2330,6 +2330,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Project:    proj,
 			Backend:    task.Backend,
 			BaseBranch: task.Branch,
+			AutoName:   true, // form name is always GenerateNameFromPrompt
 			Rows:       rows,
 			Cols:       cols,
 			BeforeStart: func() { a.startGen.Add(1) },

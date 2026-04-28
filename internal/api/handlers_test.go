@@ -25,7 +25,7 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 	t.Cleanup(func() { d.Close() })
 
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+	creator := func(name, prompt, project, todoPath string, _ bool) (*model.Task, error) {
 		task := &model.Task{
 			Name:    name,
 			Prompt:  prompt,

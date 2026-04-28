@@ -236,13 +236,14 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name or prompt is required"})
 		return
 	}
+	autoName := req.Name == ""
 	name := req.Name
 	if name == "" {
 		// Generate name from prompt (first 40 chars, sanitized).
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, "")
+	task, err := s.createTask(name, req.Prompt, req.Project, "", autoName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -281,6 +282,10 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, prompt, or files required"})
 		return
 	}
+	// autoName fires only when name was synthesized from prompt — not from
+	// an attachment filename (which is already meaningful) and not when the
+	// user typed a name explicitly.
+	autoName := name == "" && prompt != ""
 	if name == "" {
 		if prompt != "" {
 			name = sanitizeName(prompt)
@@ -294,6 +299,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		Prompt:      prompt,
 		Project:     project,
 		Attachments: atts,
+		AutoName:    autoName,
 	})
 	if err != nil {
 		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
@@ -546,7 +552,8 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required (source task has no project)"})
 		return
 	}
-	task, err := s.createTask(name, prompt, project, "")
+	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
+	task, err := s.createTask(name, prompt, project, "", false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -33,6 +33,14 @@ type CreateInput struct {
 	TodoPath   string // optional; set when created from a vault .md file
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
+	// AutoName, when true, fires a fire-and-forget Haiku rename in a
+	// background goroutine after the task is fully created. The DB write
+	// is race-guarded: it only overwrites Name if the row's current Name
+	// still equals the regex-derived slug. Callers should set this only
+	// when Name was string-interpolated from Prompt (not user-typed and
+	// not a structured slug like "review-pr-123-…" worth preserving).
+	AutoName bool
+
 	// Attachments are written to <worktree>/.context/<name> after worktree
 	// creation but before the session starts, and their paths are appended
 	// to Prompt so the agent sees them on first turn.
@@ -232,6 +240,15 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	}
 
 	slog.Info("task created and started", "id", taskID, "name", task.Name, "project", input.Project, "pid", sess.PID())
+
+	// Fire-and-forget Haiku rename. Runs after the task is live so a slow
+	// or failing LLM call cannot block task startup. The goroutine is
+	// race-guarded — if the user manually renames before Haiku returns,
+	// the rename is skipped.
+	if input.AutoName {
+		go runAutoRename(database, taskID, task.Name, input.Prompt)
+	}
+
 	return task, sess, nil
 }
 

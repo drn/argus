@@ -108,7 +108,7 @@ func main() {
 		log.Fatalf("db update: %v", err)
 	}
 
-	creator := func(name, prompt, project, todoPath string) (*model.Task, error) {
+	creator := func(name, prompt, project, todoPath string, _ bool) (*model.Task, error) {
 		t := &model.Task{
 			Name:     name,
 			Prompt:   prompt,
