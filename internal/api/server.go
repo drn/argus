@@ -66,6 +66,7 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 	// assets so the page can load and prompt for the token. All /api/* routes
 	// require auth.
 	handler := authMiddleware(s.token, s.db, mux, "/",
+		"/share",
 		"/vendor/",
 		"/manifest.webmanifest",
 		"/sw.js",

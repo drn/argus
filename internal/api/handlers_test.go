@@ -493,3 +493,45 @@ func TestSanitizeName(t *testing.T) {
 		testutil.Equal(t, name, "line1 line2 tab")
 	})
 }
+
+func TestHandleShareTarget(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	// /share serves the same dashboard HTML as /; client-side JS reads the
+	// query params. Unauthenticated (the page must load before token entry).
+	req := httptest.NewRequest("GET", "/share?title=hello&text=world&url=https%3A%2F%2Fexample.com", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Contains(t, w.Header().Get("Content-Type"), "text/html")
+	// Confirm we're returning the dashboard, not a redirect or 404.
+	testutil.Contains(t, w.Body.String(), "argus-pending-share")
+}
+
+func TestManifestShareTarget(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+
+	req := httptest.NewRequest("GET", "/manifest.webmanifest", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var m struct {
+		ShareTarget struct {
+			Action string            `json:"action"`
+			Method string            `json:"method"`
+			Params map[string]string `json:"params"`
+		} `json:"share_target"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("manifest parse: %v", err)
+	}
+	testutil.Equal(t, m.ShareTarget.Action, "/share")
+	testutil.Equal(t, m.ShareTarget.Method, "GET")
+	testutil.Equal(t, m.ShareTarget.Params["title"], "title")
+	testutil.Equal(t, m.ShareTarget.Params["text"], "text")
+	testutil.Equal(t, m.ShareTarget.Params["url"], "url")
+}

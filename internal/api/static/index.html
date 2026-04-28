@@ -872,6 +872,43 @@ let currentTask = null;
 let tasks = [];
 let actionBusy = false;
 
+// --- Web Share Target capture ---
+// iOS/Android invoke the PWA share target by navigating to /share?title=...&text=...&url=...
+// (declared in manifest.webmanifest). We capture those params to sessionStorage
+// here, BEFORE auth, so they survive the token-entry flow. applyPendingShare()
+// later opens the New Task tab with the shared content prefilled.
+(function capturePendingShare() {
+  if (location.pathname !== '/share') return;
+  const sp = new URLSearchParams(location.search);
+  const title = (sp.get('title') || '').trim();
+  const text = (sp.get('text') || '').trim();
+  const url = (sp.get('url') || '').trim();
+  if (title || text || url) {
+    sessionStorage.setItem('argus-pending-share', JSON.stringify({ title, text, url }));
+  }
+  // Strip /share from the URL so a refresh doesn't re-fire the share, and so
+  // the cached `/` shell controls the address bar.
+  history.replaceState(null, '', '/');
+})();
+
+function applyPendingShare() {
+  const raw = sessionStorage.getItem('argus-pending-share');
+  if (!raw) return;
+  sessionStorage.removeItem('argus-pending-share');
+  let data;
+  try { data = JSON.parse(raw); } catch(e) { return; }
+  // Combine non-empty fields into a single prompt body. Most iOS shares supply
+  // either {title,url} (Safari page share) or {text} (plain-text share).
+  const parts = [data.title, data.text, data.url].map(s => (s || '').trim()).filter(Boolean);
+  if (!parts.length) return;
+  switchTab('create');
+  const promptEl = document.getElementById('create-prompt');
+  if (promptEl) {
+    promptEl.value = parts.join('\n\n');
+    promptEl.focus();
+  }
+}
+
 // Filter view keys for the task list.
 const FILTER_ACTIVE = 'active';
 const FILTER_ARCHIVED = 'archived';
@@ -1060,6 +1097,7 @@ async function tryConnect() {
       refresh();
       loadProjects();
       startRefreshTimer();
+      applyPendingShare();
       return;
     }
     // Non-2xx, non-401: treat as auth error so the user can re-enter the token.

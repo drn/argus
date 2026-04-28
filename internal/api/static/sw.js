@@ -7,7 +7,7 @@
 //
 // Increment SW_VERSION on any shell change to bust the cache.
 
-const SW_VERSION = 'argus-shell-v1';
+const SW_VERSION = 'argus-shell-v2';
 const SHELL_ASSETS = [
   '/',
   '/manifest.webmanifest',
@@ -43,6 +43,16 @@ self.addEventListener('fetch', (event) => {
   // /api/* — network only, never cache (auth, dynamic data).
   if (url.pathname.startsWith('/api/')) {
     return; // let the browser handle it normally
+  }
+
+  // Web Share Target lands at /share?title=...&text=...&url=...
+  // Always serve the cached app shell so the SPA boots offline; the page-level
+  // JS reads location.search to pull out the shared content.
+  if (url.pathname === '/share' && event.request.method === 'GET') {
+    event.respondWith(
+      caches.match('/').then(cached => cached || fetch('/'))
+    );
+    return;
   }
 
   // App shell — cache-first, fall back to network.

@@ -16,6 +16,10 @@ func (s *Server) routes() *http.ServeMux {
 
 	// Dashboard — served without auth so the page can load and prompt for token.
 	mux.HandleFunc("GET /", s.handleDashboard)
+	// Web Share Target lands here from iOS/Android shares. Serves the same
+	// dashboard HTML; client-side JS reads ?title/&text/&url and prefills the
+	// New Task form. Unauthenticated for the same reason as `/`.
+	mux.HandleFunc("GET /share", s.handleDashboard)
 	// Static assets (xterm.js, css, fit-addon) — also unauthenticated since
 	// the dashboard needs them before the user authenticates.
 	mux.HandleFunc("GET /vendor/", s.handleVendor)

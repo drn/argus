@@ -80,6 +80,14 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **`/test/reset` is a separate HTTP listener on `port+10`** — it's not under auth, so it must NOT be on the public listener. Tests call it from beforeEach to clear state between specs.
 - **Playwright tests are NOT parallel** — `fullyParallel: false, workers: 1` in `playwright.config.ts`. The test server is single-tenant; concurrent tests would race on the seed task. Don't change this without rewriting the harness for multi-tenant isolation.
 
+## Web Share Target
+
+- **iOS Safari only honors `share_target` with `method: "GET"` and `enctype: "application/x-www-form-urlencoded"`** — POST + multipart is supported on Chrome/Android but iOS silently drops the share if either field is wrong. Stick to GET; the params arrive as a query string.
+- **`/share` MUST be in `authMiddleware`'s skipPaths AND `routes.go` must register `GET /share`** — the share sheet hits the URL before any auth has happened, so a 401 on `/share` makes the iOS share sheet fail with no error visible to the user (the PWA just refuses to launch). Mirror the same exempt-list treatment as `/`.
+- **The service worker must intercept `/share` and serve the cached `/` shell, not let it fall through** — without the intercept, every share creates a unique cache entry keyed by query string (waste), and offline shares fail because the network request never completes. The intercept ignores query string and returns the same shell.
+- **Capture share params into `sessionStorage` BEFORE auth, apply them AFTER `tryConnect()` succeeds** — the share IIFE runs at script load and stashes `argus-pending-share`; `applyPendingShare()` is called from the success branch of `tryConnect`. Putting the apply step earlier means it runs against an unmounted New Task tab, since `loadProjects()` hasn't populated the dropdown yet. Putting the capture step later means a slow auth flow loses the params (history.replaceState already cleaned the URL).
+- **`history.replaceState(null, '', '/')` in the capture IIFE strips `/share` from the address bar** — without it, a refresh re-fires the share with the same content and the user gets a duplicate prefilled prompt every reload. The cached `/` shell controls the URL going forward.
+
 ## Task status & idle
 
 - **`taskJSON.idle` is true when DB status is `in_progress` AND there is no live session OR the session is `IsIdle()`** — a task with status `in_progress` and no Runner entry at all (e.g., daemon restart left the row InProgress but never re-started the agent) reports `idle: true`. Don't treat `idle && !running` as inconsistent — that's the load-bearing case the SPA needs to render the moon badge.
