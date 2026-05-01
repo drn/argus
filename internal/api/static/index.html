@@ -995,8 +995,8 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <div class="meta">iOS Safari does not support PWA share targets directly. Build a Shortcut with this URL to put Argus in the share sheet.</div>
         <div style="display: flex; gap: 6px; align-items: stretch">
           <input class="settings-input mono" id="ios-share-url" readonly style="flex: 1">
-          <button onclick="copyShareURL()">Copy</button>
-          <button onclick="testShareURL()" title="Open the share URL with sample text to verify routing">Test</button>
+          <button type="button" onclick="copyShareURL()">Copy</button>
+          <button type="button" onclick="testShareURL()" title="Open the share URL with sample text to verify routing">Test</button>
         </div>
       </div>
       <div class="settings-row" id="ios-share-help" style="display: none; flex-direction: column; align-items: stretch; gap: 6px">
@@ -3195,8 +3195,8 @@ let editingProject = null; // null = creating; otherwise the project being edite
 let editingBackend = null;
 
 async function loadSettings() {
-  populateShareURL();
   await Promise.all([
+    populateShareURL(),
     loadTokens(),
     refreshPushState(),
     loadSourcePath(),
@@ -3210,13 +3210,15 @@ async function loadSettings() {
 
 // iOS share sheet helper. iOS Safari ignores `share_target` in the manifest,
 // so we surface a Shortcut-friendly URL the user can paste into the iOS
-// Shortcuts app. The literal `[Shortcut Input]` token is what Shortcuts'
-// "URL" action uses as a placeholder for the magic variable; users replace
-// it with the actual Shortcut Input variable in the editor.
+// Shortcuts app. SHORTCUT_INPUT_PLACEHOLDER is the literal token Shortcuts'
+// "URL" action shows as a placeholder for the magic variable; users replace
+// it with the actual Shortcut Input variable in the editor. Keep the string
+// in lockstep with the Playwright assertion in settings-ui.spec.ts.
+const SHORTCUT_INPUT_PLACEHOLDER = '[Shortcut Input]';
 function shareShortcutURL() {
-  return `${window.location.origin}/share?text=[Shortcut Input]`;
+  return `${window.location.origin}/share?text=${SHORTCUT_INPUT_PLACEHOLDER}`;
 }
-function populateShareURL() {
+async function populateShareURL() {
   const el = document.getElementById('ios-share-url');
   if (el) el.value = shareShortcutURL();
 }
@@ -3234,7 +3236,9 @@ function testShareURL() {
   // Navigate the current PWA to /share with sample text to exercise the
   // capture IIFE — same path iOS would take. window.open leaves an
   // about:blank stub in standalone mode (see web-remote gotchas), so we
-  // navigate the current view instead.
+  // navigate the current view instead. Confirm first because the navigation
+  // discards in-memory state (active terminal, half-typed compose).
+  if (!confirm('Open /share with sample text? This navigates away from the current view.')) return;
   window.location.href = `${window.location.origin}/share?text=${encodeURIComponent('Hello from Argus test')}`;
 }
 function toggleShareHelp() {
