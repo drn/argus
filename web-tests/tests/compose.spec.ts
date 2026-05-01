@@ -27,7 +27,7 @@ test.describe('compose bar', () => {
     }
   });
 
-  test('Send button forwards value + newline to /input and clears textarea', async ({ page }, testInfo) => {
+  test('Send button forwards value + CR to /input and clears textarea', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
 
@@ -39,7 +39,9 @@ test.describe('compose bar', () => {
     );
     await page.locator('#compose-send').click();
     const req = await inputReq;
-    expect(req.postData()).toBe('hello world\n');
+    // \r (CR), not \n — raw-terminal Enter key. \n is interpreted as an
+    // embedded newline by Claude Code and would not submit the prompt.
+    expect(req.postData()).toBe('hello world\r');
 
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
@@ -65,7 +67,7 @@ test.describe('compose bar', () => {
     );
     await page.keyboard.press('Enter');
     const req = await inputReq;
-    expect(req.postData()).toBe('one\ntwo\n');
+    expect(req.postData()).toBe('one\ntwo\r');
 
     await expect(ci).toHaveValue('');
   });

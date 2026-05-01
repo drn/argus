@@ -4110,7 +4110,11 @@ function sendCompose() {
     showToast('Agent not running');
     return;
   }
-  sendInputBytes(v + '\n');
+  // \r (carriage return) is the Enter/submit key in raw-terminal-mode TUIs
+  // like Claude Code — matches what xterm.js's onData and the desktop TUI
+  // both send. \n would be interpreted as an embedded newline (Shift+Enter),
+  // leaving the prompt drafted-but-unsubmitted in the agent's buffer.
+  sendInputBytes(v + '\r');
   ci.value = '';
   // field-sizing:content handles shrink-back on supporting browsers; explicit
   // height reset is a no-op there and a fallback elsewhere.
