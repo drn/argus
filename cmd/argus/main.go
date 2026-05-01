@@ -64,7 +64,6 @@ func runTUI() {
 
 	var runner agent.SessionProvider
 	var daemonConnected bool
-	var daemonFreshStart bool
 	var daemonStale bool
 
 	sockPath := daemon.DefaultSocketPath()
@@ -86,6 +85,14 @@ func runTUI() {
 
 	if err != nil {
 		uxlog.Log("daemon connect failed: %v — falling back to in-process runner", err)
+		// In-process owns the runner exclusively, so any InProgress row in
+		// the DB is from a prior process. The daemon does the same sweep
+		// inside Serve(); this is the no-daemon analogue.
+		if n, rerr := agent.ReconcileStaleSessions(database); rerr != nil {
+			uxlog.Log("reconcile stale sessions failed: %v", rerr)
+		} else if n > 0 {
+			uxlog.Log("reconciled %d stale in_progress task(s) → in_review", n)
+		}
 		runner = agent.NewRunner(func(taskID string, exitErr error, stopped bool, lastOutput []byte) {
 			if appRef != nil {
 				appRef.NotifySessionExit(taskID, exitErr, stopped, lastOutput)
@@ -94,7 +101,6 @@ func runTUI() {
 	} else {
 		uxlog.Log("connected to daemon at %s", sockPath)
 		daemonConnected = true
-		daemonFreshStart = client.FreshStart() // true when daemon was auto-started (no prior sessions)
 		runner = client
 		defer client.Close()
 	}
@@ -110,7 +116,7 @@ func runTUI() {
 		})
 	}
 
-	app := tui.New(database, runner, daemonConnected, daemonFreshStart)
+	app := tui.New(database, runner, daemonConnected)
 	app.SetDaemonStale(daemonStale)
 	appRef = app
 	appRef2 = app

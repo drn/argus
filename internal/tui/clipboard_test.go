@@ -58,7 +58,7 @@ func (f *fakeProvider) setPayload(text string, present bool) {
 
 func TestRefreshClipboardCache_NoAccessor(t *testing.T) {
 	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false, false)
+	app := New(d, agent.NewRunner(nil), false)
 	// Plain runner is NOT a clipboardAccessor — refresh is a no-op.
 	app.refreshClipboardCache("task1")
 	testutil.Equal(t, app.clipboardPending, "")
@@ -69,7 +69,7 @@ func TestRefreshClipboardCache_PresentSetsHint(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	fp.setPayload("hello", true)
-	app := New(d, fp, false, false)
+	app := New(d, fp, false)
 
 	app.refreshClipboardCache("task1")
 	testutil.Equal(t, app.clipboardPending, "hello")
@@ -81,7 +81,7 @@ func TestRefreshClipboardCache_AbsentClearsHint(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	fp.setPayload("hi", true)
-	app := New(d, fp, false, false)
+	app := New(d, fp, false)
 
 	app.refreshClipboardCache("task1")
 	testutil.Equal(t, app.agentHeader.ClipboardHint(), true)
@@ -94,7 +94,7 @@ func TestRefreshClipboardCache_AbsentClearsHint(t *testing.T) {
 
 func TestCopyStagedClipboard_NoPayload(t *testing.T) {
 	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false, false)
+	app := New(d, agent.NewRunner(nil), false)
 
 	if app.copyStagedClipboard() {
 		t.Error("expected false when nothing staged")
@@ -104,7 +104,7 @@ func TestCopyStagedClipboard_NoPayload(t *testing.T) {
 func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
-	app := New(d, fp, false, false)
+	app := New(d, fp, false)
 
 	app.clipboardPending = "snippet"
 	app.clipboardPendingTask = "abc123"
@@ -137,7 +137,7 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	fp.clearErr = errors.New("rpc broken")
-	app := New(d, fp, false, false)
+	app := New(d, fp, false)
 
 	app.clipboardPending = "x"
 	app.clipboardPendingTask = "abc"

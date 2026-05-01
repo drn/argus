@@ -160,6 +160,17 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Remove stale socket file.
 	os.Remove(sockPath)
 
+	// Sweep DB for tasks stuck at InProgress. The previous daemon's sessions
+	// (if any) are dead; the runner here is empty, so any InProgress row is
+	// orphaned. Flip them to InReview so the TUI/PWA can resume or discard.
+	// Done before the listener accepts connections so first-poll clients see
+	// the reconciled state.
+	if n, err := agent.ReconcileStaleSessions(d.db); err != nil {
+		slog.Warn("reconcile stale sessions failed", "err", err)
+	} else if n > 0 {
+		slog.Info("reconciled stale sessions", "count", n)
+	}
+
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		close(d.ready) // unblock Shutdown even on listen failure

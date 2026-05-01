@@ -229,7 +229,7 @@ func TestLazyScreen_EnableDisableDoesNotPanic(t *testing.T) {
 func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, true, false)
+	app := New(d, runner, true)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
@@ -267,7 +267,7 @@ func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 func TestSetDaemonStale_StoresFlag(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, true, false)
+	app := New(d, runner, true)
 
 	if app.daemonStale {
 		t.Error("daemonStale should default to false")
@@ -294,7 +294,7 @@ func TestSetDaemonStale_StoresFlag(t *testing.T) {
 func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, true, false)
+	app := New(d, runner, true)
 
 	tApp, _, ls := simApp(t)
 	app.tapp = tApp
@@ -327,7 +327,7 @@ func TestSmoke_OpenRestartDaemonPromptBeforeRunDoesNotBlock(t *testing.T) {
 func TestSmoke_TabSwitching(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
@@ -355,7 +355,7 @@ func TestSmoke_TabSwitching(t *testing.T) {
 func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 	// Ensure there's a project and backend for the form.
 	d.SetProject("test", config.Project{Path: t.TempDir()})
 
@@ -389,7 +389,7 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	task := &model.Task{
 		ID:        "smoke-1",
@@ -428,7 +428,7 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	task := &model.Task{
 		ID:        "tab-reset-1",
@@ -471,7 +471,7 @@ func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 func TestSmoke_LinkPickerFocusRestore(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	_, stop := wireApp(t, app)
 	defer stop()
@@ -508,7 +508,7 @@ func TestSmoke_LinkPickerFocusRestore(t *testing.T) {
 func TestSmoke_FuzzyLinkPickerLifecycle(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	sim, stop := wireApp(t, app)
 	defer stop()
@@ -539,7 +539,7 @@ func TestSmoke_FuzzyLinkPickerLifecycle(t *testing.T) {
 func TestSmoke_NewTaskFormEscape(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 	d.SetProject("test", config.Project{Path: t.TempDir()})
 
 	sim, stop := wireApp(t, app)
@@ -576,7 +576,7 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	task := &model.Task{
 		ID:        "redraw-1",
@@ -633,7 +633,7 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 func TestSmoke_WaitingReviewToggle(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	task := &model.Task{
 		ID:        "wr-1",
@@ -671,7 +671,7 @@ func TestSmoke_WaitingReviewToggle(t *testing.T) {
 func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
-	app := New(d, runner, false, false)
+	app := New(d, runner, false)
 
 	task := &model.Task{
 		ID:        "click-1",

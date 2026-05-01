@@ -155,7 +155,6 @@ type App struct {
 	// Daemon health
 	daemonFailures    int
 	daemonRestarting  bool
-	daemonFreshStart  bool      // no prior sessions (fresh auto-start or restart); first reconciliation uses InReview
 	lastDaemonRestart time.Time // cooldown: minimum 30s between restart attempts
 	daemonClient      *dclient.Client
 	restartedClient   *dclient.Client // set after daemon restart
@@ -191,10 +190,12 @@ type App struct {
 }
 
 // New creates the tui application shell.
-// daemonFreshStart indicates this daemon instance has no prior sessions (freshly
-// auto-started or restarted), so InProgress tasks should be reconciled to
-// InReview instead of Complete on the first tick.
-func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, daemonFreshStart bool) *App {
+//
+// Stale-session reconciliation is owned by the runner-holder (daemon Serve, or
+// in-process startup in cmd/argus/main.go) — they sweep InProgress → InReview
+// before the TUI sees the DB, so the TUI's tick reconciler only handles
+// "session exited while we were watching" (always Complete).
+func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *App {
 	// Use the terminal's default background instead of tview's hard-coded black.
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 
@@ -203,7 +204,6 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 		db:               database,
 		runner:           runner,
 		daemonConnected:  daemonConnected,
-		daemonFreshStart: daemonFreshStart,
 		agentState:       agentview.New(),
 		tickDone:         make(chan struct{}),
 		recentStarts:         make(map[string]time.Time),
@@ -759,15 +759,9 @@ func (a *App) restartDaemon() {
 		a.mu.Lock()
 		a.daemonRestarting = false
 		a.daemonFailures = 0
-		a.daemonFreshStart = true // new daemon has no prior sessions — use InReview for stale tasks
 		a.daemonClient = newClient
 		a.runner = newClient
 		a.restartedClient = newClient
-		// Fresh daemon has no sessions — use InReview (not Complete) for any
-		// stale InProgress tasks that survive past the Pending reset below.
-		// This matches the initial auto-start behavior: the user decides
-		// whether to resume or discard.
-		a.daemonFreshStart = true
 		// Clear stale running/idle IDs from old daemon — the new daemon has
 		// no sessions yet. Using nil (not empty) ensures reconciliation is
 		// skipped until the first tick fetches fresh IDs from the new daemon.
@@ -777,23 +771,10 @@ func (a *App) restartDaemon() {
 
 		a.settings.SetDaemonRestarting(false)
 
-		// Reset in-progress tasks to pending, preserving SessionID for resume.
-		tasks, err := a.db.Tasks()
-		if err != nil {
-			uxlog.Log("[tui] failed to load tasks for reset: %v", err)
-		}
-		for _, t := range tasks {
-			if t.Status == model.StatusInProgress {
-				t.SetStatus(model.StatusPending)
-				a.db.Update(t) //nolint:errcheck
-				uxlog.Log("[tui] reset task %s to pending (daemon restarted)", t.ID)
-			}
-		}
-		// Use refreshTasksLocal (not Async) — the new daemon has no sessions,
-		// and an async RPC would race with the user entering tasks. The async
-		// goroutine captures empty runningIDs, but by the time its callback
-		// runs, startSession may have set a task to InProgress — reconciliation
-		// then sees InProgress + not-in-running-set and marks it Complete.
+		// The new daemon already swept InProgress → InReview during Serve()
+		// before its socket opened, so by the time we reach this code the DB
+		// is consistent. Just reload locally; an RPC would race with the user
+		// entering tasks while the new daemon is still warming up.
 		a.refreshTasksLocal()
 	})
 }
@@ -1038,16 +1019,16 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.idleIDs = idleIDs
 
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
-	// but has no running session, mark it Complete. This handles cases where
-	// the exit callback didn't fire (daemon restart, TUI restart, etc.).
+	// but has no running session, mark it Complete. This is the safety net
+	// for "session exited while we were watching but the OnSessionExit
+	// notification didn't make it through" — the genuine exit path, so
+	// Complete is correct. Stale rows from a daemon crash/restart are flipped
+	// to InReview by ReconcileStaleSessions before we ever see them, so they
+	// won't appear here.
+	//
 	// Only reconcile when connected to a daemon — the daemon is the source of
 	// truth for running sessions. In-process mode has its own onFinish callback.
-	// Note: InReview tasks are intentionally non-running (set by handleSessionExitUI
-	// when the user stops an agent) and must NOT be reconciled to Complete.
-	// IMPORTANT: runningIDs is nil when the daemon RPC failed — skip reconciliation
-	// to avoid marking all active tasks as Complete due to a transient error.
-	// Also skip during daemon restart — the new daemon has no sessions yet, so
-	// reconciliation would incorrectly mark all InProgress tasks as Complete.
+	// Skip if runningIDs is nil (transient RPC failure) or during a restart.
 	if a.daemonConnected && runningIDs != nil && !a.daemonRestarting {
 		runningSet := make(map[string]bool, len(runningIDs))
 		for _, id := range runningIDs {
@@ -1063,37 +1044,15 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 					uxlog.Log("[tui] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
 					continue
 				}
-				if a.daemonFreshStart {
-					// Daemon was just auto-started — agent sessions were lost
-					// (daemon died or system restarted), not finished normally.
-					// Mark as InReview so the user can decide what to do.
-					t.SetStatus(model.StatusInReview)
-					a.db.Update(t) //nolint:errcheck
-					uxlog.Log("[tui] reconciled stale task %s (%s) → in_review (daemon fresh start, session lost)", t.ID, t.Name)
-				} else {
-					t.SetStatus(model.StatusComplete)
-					a.db.Update(t) //nolint:errcheck
-					uxlog.Log("[tui] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
-				}
+				t.SetStatus(model.StatusComplete)
+				a.db.Update(t) //nolint:errcheck
+				uxlog.Log("[tui] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
 				delete(a.recentStarts, t.ID) // consumed; no need to check again
 			}
 		}
-		// Clean up expired grace periods.
+		// Evict expired grace period entries.
 		for id, startedAt := range a.recentStarts {
 			if now.Sub(startedAt) >= recentStartGrace {
-				delete(a.recentStarts, id)
-			}
-		}
-		// Clear fresh-start flag after first reconciliation with tasks present —
-		// subsequent ticks use normal Complete reconciliation for tasks that truly
-		// finished. Only clear when tasks were loaded to avoid a race where a slow
-		// or empty first read clears the flag before InProgress tasks are seen.
-		if len(a.tasks) > 0 {
-			a.daemonFreshStart = false
-		}
-		// Evict expired grace period entries.
-		for id, startTime := range a.recentStarts {
-			if now.Sub(startTime) >= 5*time.Second {
 				delete(a.recentStarts, id)
 			}
 		}
