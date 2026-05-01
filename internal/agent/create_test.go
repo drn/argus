@@ -181,10 +181,9 @@ func TestCreateAndStart_UnwindsOnStartFailure(t *testing.T) {
 	}
 
 	task, sess, err := CreateAndStart(d, fr, CreateInput{
-		Name:     "doomed",
-		Prompt:   "nope",
-		Project:  "proj",
-		TodoPath: "/vault/doomed.md",
+		Name:    "doomed",
+		Prompt:  "nope",
+		Project: "proj",
 	})
 	if err == nil {
 		t.Fatal("expected error from CreateAndStart")
@@ -193,15 +192,10 @@ func TestCreateAndStart_UnwindsOnStartFailure(t *testing.T) {
 		t.Errorf("expected nil task and session on failure, got task=%v sess=%v", task, sess)
 	}
 
-	// INVARIANT: no DB row left behind — the TodoPath dedup check must be
-	// free to retry the same vault file later.
+	// INVARIANT: no DB row left behind.
 	after, _ := d.Tasks()
 	if len(after) != 0 {
 		t.Errorf("expected DB unwound, got %d tasks: %+v", len(after), after)
-	}
-	byPath, _ := d.TasksByTodoPath()
-	if _, found := byPath["/vault/doomed.md"]; found {
-		t.Errorf("TasksByTodoPath should not contain the failed task")
 	}
 
 	// INVARIANT: no worktree directory left on disk.

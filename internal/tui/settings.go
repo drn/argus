@@ -31,7 +31,6 @@ const (
 	srSandbox
 	srLogs
 	srKB
-	srToDoProject
 	srReviewPrompt
 	srAPI
 	srDaemon
@@ -45,7 +44,6 @@ const (
 // Vault key constants used in settingsRow.key for vault path rows.
 const (
 	vaultKeyMetis = "_metis_vault"
-	vaultKeyArgus = "_argus_vault"
 )
 
 // svMaxACVisible is the maximum number of vault path autocomplete rows shown.
@@ -83,13 +81,8 @@ type SettingsView struct {
 	// KB.
 	kbEnabled         bool
 	metisVaultPath    string
-	argusVaultPath    string
 	metisVaultAtBoot  string // value when daemon started; used to show "restart required"
-	argusVaultAtBoot  string
-	vaultBootRecorded bool // true after first Refresh captures boot values
-	kbTaskSync        bool
-	autoStartTodos    bool
-	autoStartInterval int
+	vaultBootRecorded bool   // true after first Refresh captures boot value
 
 	// API.
 	apiEnabled       bool
@@ -100,9 +93,8 @@ type SettingsView struct {
 	// Spinner.
 	spinnerStyle string // current spinner style name
 
-	// ToDo defaults.
-	todoProject  string   // current default todo project
-	projectNames []string // sorted project names for cycling
+	// Project name list (used by other UI features).
+	projectNames []string
 
 	// Review prompt.
 	reviewPrompt  string // current review prompt template
@@ -221,22 +213,14 @@ func (sv *SettingsView) Refresh() {
 	// KB.
 	sv.kbEnabled = cfg.KB.Enabled
 	sv.metisVaultPath = cfg.KB.MetisVaultPath
-	sv.argusVaultPath = cfg.KB.ArgusVaultPath
 	if !sv.vaultBootRecorded {
 		sv.metisVaultAtBoot = cfg.KB.MetisVaultPath
-		sv.argusVaultAtBoot = cfg.KB.ArgusVaultPath
 		sv.vaultBootRecorded = true
 	}
 	// Discover vaults once — filesystem scan is blocking I/O, avoid on every Refresh.
 	if sv.discoveredVaults == nil {
 		sv.discoveredVaults = config.DiscoverICloudVaults()
 		uxlog.Log("[settings] discovered %d iCloud vaults", len(sv.discoveredVaults))
-	}
-	sv.kbTaskSync = cfg.KB.AutoCreateTasks
-	sv.autoStartTodos = cfg.KB.AutoStartTodos
-	sv.autoStartInterval = cfg.KB.AutoStartInterval
-	if sv.autoStartInterval <= 0 {
-		sv.autoStartInterval = config.DefaultAutoStartInterval
 	}
 
 	// API.
@@ -256,8 +240,6 @@ func (sv *SettingsView) Refresh() {
 		sv.spinnerStyle = string(spinner.StyleProgress)
 	}
 
-	// ToDo defaults.
-	sv.todoProject = cfg.Defaults.TodoProject
 	sv.projectNames = projNames
 
 	// Review prompt.
@@ -407,17 +389,6 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
 
-	argusLabel := "  Argus: " + sv.argusVaultPath
-	if sv.editingVault == vaultKeyArgus {
-		argusLabel = "  Argus: " + sv.editVaultBuf + "▎"
-	} else if sv.argusVaultPath == "" {
-		argusLabel = "  Argus: (not configured)"
-	}
-	if sv.vaultBootRecorded && sv.argusVaultPath != sv.argusVaultAtBoot {
-		argusLabel += " (restart required)"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: argusLabel, key: vaultKeyArgus})
-
 	// API section.
 	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
 	apiLabel := "  Disabled"
@@ -428,13 +399,6 @@ func (sv *SettingsView) rebuildRows() {
 		apiLabel += " (restart required)"
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
-
-	// Default ToDo project.
-	todoLabel := "  ToDo Project: (none)"
-	if sv.todoProject != "" {
-		todoLabel = "  ToDo Project: " + sv.todoProject
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srToDoProject, label: todoLabel, key: "_todo_project"})
 
 	// Review prompt.
 	rpLabel := "  Review Prompt: " + sv.reviewPrompt
@@ -562,9 +526,6 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		return true
 	case tcell.KeyLeft:
 		switch sv.currentSection() {
-		case srToDoProject:
-			sv.cycleTodoProject(-1)
-			return true
 		case srSpinner:
 			sv.cycleSpinner(-1)
 			return true
@@ -575,9 +536,6 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		return false
 	case tcell.KeyRight:
 		switch sv.currentSection() {
-		case srToDoProject:
-			sv.cycleTodoProject(1)
-			return true
 		case srSpinner:
 			sv.cycleSpinner(1)
 			return true
@@ -602,8 +560,6 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			return sv.handleNew()
 		case 'e':
 			return sv.handleEdit()
-		case 'a':
-			return sv.handleToggleAutoStart()
 		case 'i':
 			return sv.handleQuickAdd()
 		case 't':
@@ -613,34 +569,6 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		}
 	}
 	return false
-}
-
-func (sv *SettingsView) handleToggleAutoStart() bool {
-	row := sv.SelectedRow()
-	if row == nil || row.kind != srKB {
-		return false
-	}
-	sv.autoStartTodos = !sv.autoStartTodos
-	val := "false"
-	if sv.autoStartTodos {
-		val = "true"
-		// Auto-start implies auto-create — enable it too.
-		if !sv.kbTaskSync {
-			sv.kbTaskSync = true
-			sv.database.SetConfigValue("kb.auto_create_tasks", "true")
-		}
-	} else {
-		// Disabling auto-start also disables auto-create to avoid
-		// silently falling back to fsnotify watching on daemon restart.
-		if sv.kbTaskSync {
-			sv.kbTaskSync = false
-			sv.database.SetConfigValue("kb.auto_create_tasks", "false")
-		}
-	}
-	sv.database.SetConfigValue("kb.auto_start_todos", val)
-	uxlog.Log("[settings] auto-start todos toggled to %s", val)
-	sv.rebuildRows()
-	return true
 }
 
 func (sv *SettingsView) handleQuickAdd() bool {
@@ -729,9 +657,6 @@ func (sv *SettingsView) handleEnter() bool {
 		uxlog.Log("[settings] API toggled to %s", val)
 		sv.rebuildRows()
 		return true
-	case srToDoProject:
-		sv.cycleTodoProject(1)
-		return true
 	case srSpinner:
 		sv.cycleSpinner(1)
 		return true
@@ -741,8 +666,6 @@ func (sv *SettingsView) handleEnter() bool {
 		sv.vaultAC.Close()
 		if row.key == vaultKeyMetis {
 			sv.editVaultBuf = sv.metisVaultPath
-		} else if row.key == vaultKeyArgus {
-			sv.editVaultBuf = sv.argusVaultPath
 		}
 		sv.rebuildRows()
 		return true
@@ -1007,12 +930,6 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 				uxlog.Log("[settings] failed to persist metis vault path: %v", err)
 			}
 			uxlog.Log("[settings] metis vault path set to %q", path)
-		} else if key == vaultKeyArgus {
-			sv.argusVaultPath = path
-			if err := sv.database.SetConfigValue("kb.argus_vault_path", path); err != nil {
-				uxlog.Log("[settings] failed to persist argus vault path: %v", err)
-			}
-			uxlog.Log("[settings] argus vault path set to %q", path)
 		}
 		sv.rebuildRows()
 		return true
@@ -1038,32 +955,6 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 		return true
 	}
 	return false
-}
-
-// cycleTodoProject cycles the default todo project forward or backward through
-// the sorted project list. An empty string ("none") is included as the first option.
-func (sv *SettingsView) cycleTodoProject(dir int) {
-	if len(sv.projectNames) == 0 {
-		return
-	}
-	// Prepend empty ("none") option. If todoProject was set to a since-deleted
-	// project, the lookup finds no match and idx stays at 0, effectively resetting
-	// to "none" on the first cycle — this is intentional.
-	options := append([]string{""}, sv.projectNames...)
-	idx := 0
-	for i, n := range options {
-		if n == sv.todoProject {
-			idx = i
-			break
-		}
-	}
-	idx = (idx + dir + len(options)) % len(options)
-	sv.todoProject = options[idx]
-	if err := sv.database.SetConfigValue("defaults.todo_project", sv.todoProject); err != nil {
-		uxlog.Log("[settings] failed to persist todo project: %v", err)
-	}
-	uxlog.Log("[settings] default todo project set to %q", sv.todoProject)
-	sv.rebuildRows()
 }
 
 // cycleSpinner cycles the spinner style forward or backward.
@@ -1093,12 +984,11 @@ func (sv *SettingsView) cycleVaultPath(dir int) {
 		return
 	}
 
-	currentPath := sv.argusVaultPath
-	dbKey := "kb.argus_vault_path"
-	if row.key == vaultKeyMetis {
-		currentPath = sv.metisVaultPath
-		dbKey = "kb.metis_vault_path"
+	if row.key != vaultKeyMetis {
+		return
 	}
+	currentPath := sv.metisVaultPath
+	dbKey := "kb.metis_vault_path"
 
 	// Find current index in discovered vaults.
 	idx := -1
@@ -1122,11 +1012,7 @@ func (sv *SettingsView) cycleVaultPath(dir int) {
 	}
 
 	newPath := sv.discoveredVaults[idx]
-	if row.key == vaultKeyMetis {
-		sv.metisVaultPath = newPath
-	} else {
-		sv.argusVaultPath = newPath
-	}
+	sv.metisVaultPath = newPath
 	if err := sv.database.SetConfigValue(dbKey, newPath); err != nil {
 		uxlog.Log("[settings] failed to persist vault path: %v", err)
 	}
@@ -1234,8 +1120,6 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
 	case srVaultPath:
 		sv.renderVaultPathDetail(screen, innerX, innerY, innerW, innerH, row)
-	case srToDoProject:
-		sv.renderToDoProjectDetail(screen, innerX, innerY, innerW, innerH)
 	case srSpinner:
 		sv.renderSpinnerDetail(screen, innerX, innerY, innerW, innerH)
 	case srReviewPrompt:
@@ -1598,48 +1482,18 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	widget.DrawText(screen, x, y+r, w, "  "+vault, theme.StyleDimmed)
 	r += 2
 
-	widget.DrawText(screen, x, y+r, w, "Argus Vault:", tcell.StyleDefault.Foreground(theme.ColorTitle))
-	r++
-	vault = sv.argusVaultPath
-	if vault == "" {
-		vault = "(not configured)"
-	}
-	widget.DrawText(screen, x, y+r, w, "  "+vault, theme.StyleDimmed)
-	r += 2
-
-	syncLabel := "Off"
-	if sv.kbTaskSync {
-		syncLabel = "On"
-	}
-	widget.DrawText(screen, x, y+r, w, "Task Sync: "+syncLabel, theme.StyleDimmed)
-	r += 2
-
-	autoStartLabel := "Off"
-	autoStartColor := theme.StyleDimmed
-	if sv.autoStartTodos {
-		autoStartLabel = fmt.Sprintf("On (every %ds)", sv.autoStartInterval)
-		autoStartColor = tcell.StyleDefault.Foreground(theme.ColorComplete)
-	}
-	widget.DrawText(screen, x, y+r, w, "Auto-Start ToDos: "+autoStartLabel, autoStartColor)
-	r++
-	widget.DrawText(screen, x, y+r, w, "  Polls vault and starts new todos automatically", theme.StyleDimmed)
-	r += 2
-
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB  [a] toggle auto-start", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB", theme.StyleDimmed)
 	}
 }
 
 func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
-	isMetis := row.key == vaultKeyMetis
-	title := "Argus Vault"
-	path := sv.argusVaultPath
-	desc := "Obsidian vault for task syncing."
-	if isMetis {
-		title = "Metis Vault"
-		path = sv.metisVaultPath
-		desc = "Obsidian vault for KB indexing."
+	if row.key != vaultKeyMetis {
+		return
 	}
+	title := "Metis Vault"
+	path := sv.metisVaultPath
+	desc := "Obsidian vault for KB indexing."
 
 	widget.DrawText(screen, x, y, w, title, theme.StyleTitle)
 	r := 2
@@ -1728,28 +1582,6 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 
 	if r+1 < h {
 		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
-	}
-}
-
-func (sv *SettingsView) renderToDoProjectDetail(screen tcell.Screen, x, y, w, h int) {
-	widget.DrawText(screen, x, y, w, "Default ToDo Project", theme.StyleTitle)
-	r := 2
-
-	proj := sv.todoProject
-	if proj == "" {
-		widget.DrawText(screen, x, y+r, w, "(none)", theme.StyleDimmed)
-	} else {
-		widget.DrawText(screen, x, y+r, w, proj, tcell.StyleDefault.Foreground(theme.ColorComplete))
-	}
-	r += 2
-
-	widget.DrawText(screen, x, y+r, w, "The project pre-selected when launching", theme.StyleDimmed)
-	r++
-	widget.DrawText(screen, x, y+r, w, "a to-do note as a new task.", theme.StyleDimmed)
-	r += 2
-
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, "[enter/◀/▶] cycle projects", theme.StyleDimmed)
 	}
 }
 

@@ -49,7 +49,6 @@ func (d *DB) Config() config.Config {
 		dest *string
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
-		{"defaults.todo_project", &cfg.Defaults.TodoProject},
 		{"defaults.review_prompt", &cfg.Defaults.ReviewPrompt},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
@@ -111,20 +110,6 @@ func (d *DB) Config() config.Config {
 	}
 	if v, ok := kv["kb.metis_vault_path"]; ok {
 		cfg.KB.MetisVaultPath = v
-	}
-	if v, ok := kv["kb.argus_vault_path"]; ok {
-		cfg.KB.ArgusVaultPath = v
-	}
-	if v, ok := kv["kb.auto_create_tasks"]; ok {
-		cfg.KB.AutoCreateTasks = v == "true"
-	}
-	if v, ok := kv["kb.auto_start_todos"]; ok {
-		cfg.KB.AutoStartTodos = v == "true"
-	}
-	if v, ok := kv["kb.auto_start_interval"]; ok {
-		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			cfg.KB.AutoStartInterval = secs
-		}
 	}
 
 	// API config

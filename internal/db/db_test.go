@@ -1154,27 +1154,6 @@ func TestDB_Config_DefaultsBackendOverride(t *testing.T) {
 	}
 }
 
-func TestDB_Config_DefaultsTodoProjectOverride(t *testing.T) {
-	d := testDB(t)
-
-	if err := d.SetConfigValue("defaults.todo_project", "forge"); err != nil {
-		t.Fatal(err)
-	}
-	cfg := d.Config()
-	if cfg.Defaults.TodoProject != "forge" {
-		t.Errorf("Defaults.TodoProject = %q, want forge", cfg.Defaults.TodoProject)
-	}
-}
-
-func TestDB_Config_DefaultsTodoProjectEmpty(t *testing.T) {
-	d := testDB(t)
-
-	cfg := d.Config()
-	if cfg.Defaults.TodoProject != "" {
-		t.Errorf("Defaults.TodoProject = %q, want empty", cfg.Defaults.TodoProject)
-	}
-}
-
 func TestSeedDefaults_FixesCatAndTruePlaceholders(t *testing.T) {
 	// Test that seedDefaults also fixes "cat" and "true" placeholder commands
 	for _, placeholder := range []string{"cat", "true"} {
@@ -1531,31 +1510,6 @@ func TestDB_PruneCompleted_AllStatuses(t *testing.T) {
 	}
 }
 
-func TestDB_PruneCompleted_IncludesToDoLinked(t *testing.T) {
-	d := testDB(t)
-
-	_ = d.Add(&model.Task{Name: "regular-done", Status: model.StatusComplete})
-	_ = d.Add(&model.Task{Name: "todo-done", Status: model.StatusComplete, TodoPath: "/vault/task.md"})
-	_ = d.Add(&model.Task{Name: "pending", Status: model.StatusPending})
-
-	pruned, err := d.PruneCompleted()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pruned) != 2 {
-		t.Errorf("expected 2 pruned (both completed), got %d", len(pruned))
-	}
-
-	remaining, err := d.Tasks()
-	testutil.NoError(t, err)
-	if len(remaining) != 1 {
-		t.Errorf("expected 1 remaining (pending only), got %d", len(remaining))
-	}
-	if len(remaining) > 0 && remaining[0].Name != "pending" {
-		t.Errorf("remaining task should be pending, got %q", remaining[0].Name)
-	}
-}
-
 func TestMigration_OnlyRunsOnce(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.sql")
 
@@ -1626,138 +1580,6 @@ func TestDB_SandboxConfig_Paths(t *testing.T) {
 	if len(cfg.Sandbox.ExtraWrite) != 2 {
 		t.Fatalf("expected 2 extra_write paths, got %d", len(cfg.Sandbox.ExtraWrite))
 	}
-}
-
-// --- TodoPath tests ---
-
-func TestDB_TodoPath_RoundTrip(t *testing.T) {
-	d := testDB(t)
-
-	task := &model.Task{Name: "todo task", TodoPath: "/vault/my-note.md"}
-	if err := d.Add(task); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := d.Get(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.TodoPath != "/vault/my-note.md" {
-		t.Errorf("TodoPath = %q, want %q", got.TodoPath, "/vault/my-note.md")
-	}
-}
-
-func TestDB_TodoPath_Update(t *testing.T) {
-	d := testDB(t)
-
-	task := &model.Task{Name: "todo task", TodoPath: "/vault/old.md"}
-	if err := d.Add(task); err != nil {
-		t.Fatal(err)
-	}
-
-	task.TodoPath = "/vault/new.md"
-	if err := d.Update(task); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := d.Get(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.TodoPath != "/vault/new.md" {
-		t.Errorf("TodoPath = %q, want %q", got.TodoPath, "/vault/new.md")
-	}
-}
-
-func TestDB_TasksByTodoPath(t *testing.T) {
-	d := testDB(t)
-
-	t.Run("excludes tasks without todo_path", func(t *testing.T) {
-		task := &model.Task{Name: "no path"}
-		if err := d.Add(task); err != nil {
-			t.Fatal(err)
-		}
-		m, err := d.TasksByTodoPath()
-		testutil.NoError(t, err)
-		if _, ok := m[""]; ok {
-			t.Error("should not include tasks with empty todo_path")
-		}
-	})
-
-	t.Run("returns linked tasks", func(t *testing.T) {
-		task := &model.Task{Name: "linked", TodoPath: "/vault/linked.md"}
-		if err := d.Add(task); err != nil {
-			t.Fatal(err)
-		}
-		m, err := d.TasksByTodoPath()
-		testutil.NoError(t, err)
-		if got, ok := m["/vault/linked.md"]; !ok {
-			t.Error("expected entry for /vault/linked.md")
-		} else if got.Name != "linked" {
-			t.Errorf("Name = %q, want %q", got.Name, "linked")
-		}
-	})
-
-	t.Run("most recent task wins", func(t *testing.T) {
-		first := &model.Task{Name: "first", TodoPath: "/vault/dup.md", CreatedAt: time.Now().Add(-time.Hour)}
-		if err := d.Add(first); err != nil {
-			t.Fatal(err)
-		}
-		second := &model.Task{Name: "second", TodoPath: "/vault/dup.md", CreatedAt: time.Now()}
-		if err := d.Add(second); err != nil {
-			t.Fatal(err)
-		}
-		m, err := d.TasksByTodoPath()
-		testutil.NoError(t, err)
-		if got := m["/vault/dup.md"]; got == nil || got.Name != "second" {
-			name := ""
-			if got != nil {
-				name = got.Name
-			}
-			t.Errorf("expected most recent task 'second', got %q", name)
-		}
-	})
-}
-
-func TestDB_Config_AutoStartTodos(t *testing.T) {
-	d := testDB(t)
-
-	t.Run("defaults to false", func(t *testing.T) {
-		cfg := d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
-	})
-
-	t.Run("round-trips through SetConfigValue", func(t *testing.T) {
-		d.SetConfigValue("kb.auto_start_todos", "true")
-		cfg := d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartTodos, true)
-
-		d.SetConfigValue("kb.auto_start_todos", "false")
-		cfg = d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
-	})
-
-	t.Run("interval defaults to 120 from seed", func(t *testing.T) {
-		cfg := d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
-	})
-
-	t.Run("interval round-trips", func(t *testing.T) {
-		d.SetConfigValue("kb.auto_start_interval", "300")
-		cfg := d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartInterval, 300)
-	})
-
-	t.Run("interval ignores invalid values and keeps default", func(t *testing.T) {
-		d.SetConfigValue("kb.auto_start_interval", "abc")
-		cfg := d.Config()
-		// Invalid value is ignored; DefaultConfig() provides 120.
-		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
-
-		d.SetConfigValue("kb.auto_start_interval", "-5")
-		cfg = d.Config()
-		testutil.Equal(t, cfg.KB.AutoStartInterval, 120)
-	})
 }
 
 func TestDB_TaskByPRURL(t *testing.T) {

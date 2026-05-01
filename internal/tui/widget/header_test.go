@@ -26,11 +26,11 @@ func TestHeader_SetTab(t *testing.T) {
 }
 
 func TestTabLabels(t *testing.T) {
-	if len(TabLabels) != 4 {
-		t.Errorf("TabLabels count = %d, want 4", len(TabLabels))
+	if len(TabLabels) != 3 {
+		t.Errorf("TabLabels count = %d, want 3", len(TabLabels))
 	}
-	if len(tabKeys) != 4 {
-		t.Errorf("tabKeys count = %d, want 4", len(tabKeys))
+	if len(tabKeys) != 3 {
+		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
 	}
 }
 

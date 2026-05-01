@@ -32,47 +32,13 @@ func TestBuildSettingsUpdates(t *testing.T) {
 		testutil.Equal(t, got["sandbox.extra_write"], "")
 	})
 
-	t.Run("auto_start toggle implies auto_create", func(t *testing.T) {
-		on := true
-		got := buildSettingsUpdates(updateSettingsReq{
-			KB: &kbUpdate{AutoStartTodos: &on},
-		})
-		testutil.Equal(t, got["kb.auto_start_todos"], "true")
-		testutil.Equal(t, got["kb.auto_create_tasks"], "true")
-
-		off := false
-		got = buildSettingsUpdates(updateSettingsReq{
-			KB: &kbUpdate{AutoStartTodos: &off},
-		})
-		testutil.Equal(t, got["kb.auto_start_todos"], "false")
-		testutil.Equal(t, got["kb.auto_create_tasks"], "false")
-	})
-
-	t.Run("explicit auto_create overrides implied", func(t *testing.T) {
-		startOn := true
-		createOff := false
-		got := buildSettingsUpdates(updateSettingsReq{
-			KB: &kbUpdate{AutoStartTodos: &startOn, AutoCreateTasks: &createOff},
-		})
-		testutil.Equal(t, got["kb.auto_create_tasks"], "false")
-	})
-
-	t.Run("interval rejects zero/negative", func(t *testing.T) {
-		zero := 0
-		got := buildSettingsUpdates(updateSettingsReq{KB: &kbUpdate{AutoStartInterval: &zero}})
-		_, ok := got["kb.auto_start_interval"]
-		testutil.Equal(t, ok, false)
-	})
-
 	t.Run("defaults flow through", func(t *testing.T) {
 		backend := "claude"
-		todo := "argus"
 		prompt := "/review"
 		got := buildSettingsUpdates(updateSettingsReq{
-			Defaults: &defaultsUpdate{Backend: &backend, TodoProject: &todo, ReviewPrompt: &prompt},
+			Defaults: &defaultsUpdate{Backend: &backend, ReviewPrompt: &prompt},
 		})
 		testutil.Equal(t, got["defaults.backend"], "claude")
-		testutil.Equal(t, got["defaults.todo_project"], "argus")
 		testutil.Equal(t, got["defaults.review_prompt"], "/review")
 	})
 }

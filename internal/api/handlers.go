@@ -243,7 +243,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, "", autoName)
+	task, err := s.createTask(name, req.Prompt, req.Project, autoName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -556,7 +556,7 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
-	task, err := s.createTask(name, prompt, project, "", false)
+	task, err := s.createTask(name, prompt, project, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

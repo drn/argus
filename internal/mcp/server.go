@@ -32,7 +32,7 @@ type KBQuerier interface {
 // Same signature as daemon.HeadlessCreateTask (injected to avoid import cycle).
 // autoName signals the underlying creator to fire async Haiku name-gen
 // when name was string-interpolated from prompt rather than user-typed.
-type TaskCreator func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error)
+type TaskCreator func(name, prompt, project string, autoName bool) (*model.Task, error)
 
 // TaskStore provides read and write access to tasks.
 type TaskStore interface {
@@ -705,7 +705,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 
 	log.Printf("[mcp] task_create name=%q project=%q auto=%v", name, p.Project, autoName)
-	task, err := s.createTask(name, p.Prompt, p.Project, "", autoName)
+	task, err := s.createTask(name, p.Prompt, p.Project, autoName)
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
 		return toolError(id, fmt.Sprintf("Failed to create task: %v", err))

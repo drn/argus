@@ -21,9 +21,9 @@ import (
 // would not buy us anything because cron expressions can't fire more often.
 const defaultTickInterval = time.Minute
 
-// TaskCreator creates a task. Same shape used by the vault watcher and HTTP
-// API so the scheduler plugs into the existing headless flow.
-type TaskCreator func(name, prompt, project, todoPath string) (*model.Task, error)
+// TaskCreator creates a task. Same shape used by the HTTP API so the
+// scheduler plugs into the existing headless flow.
+type TaskCreator func(name, prompt, project string) (*model.Task, error)
 
 // Scheduler is the cron service. It owns its own ticker goroutine; methods
 // other than Start/Stop are safe to call from any goroutine but exist mostly
@@ -207,7 +207,7 @@ func (s *Scheduler) fire(sched *model.ScheduledTask, parsed cron.Schedule, now t
 	// with the previous fire still being open.
 	name := scheduleFireName(sched.Name, now)
 
-	task, err := s.create(name, sched.Prompt, sched.Project, "")
+	task, err := s.create(name, sched.Prompt, sched.Project)
 	if err != nil {
 		sched.LastError = err.Error()
 		sched.LastRunAt = now

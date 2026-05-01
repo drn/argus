@@ -34,12 +34,8 @@ type sandboxJSON struct {
 }
 
 type kbJSON struct {
-	Enabled           bool   `json:"enabled"`
-	MetisVaultPath    string `json:"metis_vault_path"`
-	ArgusVaultPath    string `json:"argus_vault_path"`
-	AutoCreateTasks   bool   `json:"auto_create_tasks"`
-	AutoStartTodos    bool   `json:"auto_start_todos"`
-	AutoStartInterval int    `json:"auto_start_interval"`
+	Enabled        bool   `json:"enabled"`
+	MetisVaultPath string `json:"metis_vault_path"`
 }
 
 type apiSettings struct {
@@ -49,7 +45,6 @@ type apiSettings struct {
 
 type defaultsJSON struct {
 	Backend      string `json:"backend"`
-	TodoProject  string `json:"todo_project"`
 	ReviewPrompt string `json:"review_prompt"`
 }
 
@@ -63,12 +58,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			ExtraWrite: stringsOrEmpty(cfg.Sandbox.ExtraWrite),
 		},
 		KB: kbJSON{
-			Enabled:           cfg.KB.Enabled,
-			MetisVaultPath:    cfg.KB.MetisVaultPath,
-			ArgusVaultPath:    cfg.KB.ArgusVaultPath,
-			AutoCreateTasks:   cfg.KB.AutoCreateTasks,
-			AutoStartTodos:    cfg.KB.AutoStartTodos,
-			AutoStartInterval: cfg.KB.AutoStartInterval,
+			Enabled:        cfg.KB.Enabled,
+			MetisVaultPath: cfg.KB.MetisVaultPath,
 		},
 		API: apiSettings{
 			Enabled:  cfg.API.Enabled,
@@ -76,7 +67,6 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		},
 		Defaults: defaultsJSON{
 			Backend:      cfg.Defaults.Backend,
-			TodoProject:  cfg.Defaults.TodoProject,
 			ReviewPrompt: cfg.Defaults.ReviewPrompt,
 		},
 	})
@@ -102,12 +92,8 @@ type sandboxUpdate struct {
 }
 
 type kbUpdate struct {
-	Enabled           *bool   `json:"enabled,omitempty"`
-	MetisVaultPath    *string `json:"metis_vault_path,omitempty"`
-	ArgusVaultPath    *string `json:"argus_vault_path,omitempty"`
-	AutoCreateTasks   *bool   `json:"auto_create_tasks,omitempty"`
-	AutoStartTodos    *bool   `json:"auto_start_todos,omitempty"`
-	AutoStartInterval *int    `json:"auto_start_interval,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	MetisVaultPath *string `json:"metis_vault_path,omitempty"`
 }
 
 type apiUpdate struct {
@@ -116,7 +102,6 @@ type apiUpdate struct {
 
 type defaultsUpdate struct {
 	Backend      *string `json:"backend,omitempty"`
-	TodoProject  *string `json:"todo_project,omitempty"`
 	ReviewPrompt *string `json:"review_prompt,omitempty"`
 }
 
@@ -164,24 +149,6 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 		if k.MetisVaultPath != nil {
 			out["kb.metis_vault_path"] = *k.MetisVaultPath
 		}
-		if k.ArgusVaultPath != nil {
-			out["kb.argus_vault_path"] = *k.ArgusVaultPath
-		}
-		if k.AutoCreateTasks != nil {
-			out["kb.auto_create_tasks"] = boolStr(*k.AutoCreateTasks)
-		}
-		if k.AutoStartTodos != nil {
-			out["kb.auto_start_todos"] = boolStr(*k.AutoStartTodos)
-			// Match TUI invariant: enabling auto-start implies auto-create.
-			// Disabling auto-start also disables auto-create so we don't
-			// silently fall back to fsnotify watching after a daemon restart.
-			if k.AutoCreateTasks == nil {
-				out["kb.auto_create_tasks"] = boolStr(*k.AutoStartTodos)
-			}
-		}
-		if k.AutoStartInterval != nil && *k.AutoStartInterval > 0 {
-			out["kb.auto_start_interval"] = strconv.Itoa(*k.AutoStartInterval)
-		}
 	}
 	if a := req.API; a != nil {
 		if a.Enabled != nil {
@@ -191,9 +158,6 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 	if d := req.Defaults; d != nil {
 		if d.Backend != nil {
 			out["defaults.backend"] = *d.Backend
-		}
-		if d.TodoProject != nil {
-			out["defaults.todo_project"] = *d.TodoProject
 		}
 		if d.ReviewPrompt != nil {
 			out["defaults.review_prompt"] = *d.ReviewPrompt

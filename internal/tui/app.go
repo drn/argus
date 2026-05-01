@@ -54,10 +54,7 @@ const (
 	modeProjectForm
 	modeBackendForm
 	modeScheduleForm
-	modeLaunchToDo
 	modeForkTask
-	modeConfirmCleanupToDos
-	modeConfirmDeleteToDo
 	modeRenameTask
 	modeLinkPicker
 	modeFuzzyLinkPicker
@@ -94,7 +91,6 @@ type App struct {
 	filePanel    *gitpanel.FilePanel
 
 	// Tabs
-	todos        *ToDosView
 	reviews      *ReviewsView
 	settings     *SettingsView
 	settingsPage *SettingsPage
@@ -112,10 +108,7 @@ type App struct {
 	restartDaemonModal *modal.RestartDaemonModal
 	daemonStale        bool
 
-	// Launch to-do modal (created on demand)
-	launchToDoModal      *LaunchToDoModal
-	cleanupToDosModal    *ConfirmCleanupToDosModal
-	deleteToDoModal      *ConfirmDeleteToDoModal
+	// Link picker modals (created on demand)
 	linkPickerModal      *LinkPickerModal
 	linkPickerPrevPage   string
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
@@ -246,26 +239,8 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool, da
 	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
 	app.settingsPage = NewSettingsPage(app.settings)
 
-	app.todos = NewToDosView()
-	app.todos.SetApp(app.tapp)
 	cfg := database.Config()
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
-	vaultPath := cfg.KB.ArgusVaultPath
-	if vaultPath == "" {
-		vaultPath = config.DefaultArgusVaultPath()
-	}
-	app.todos.SetVaultPath(vaultPath)
-	app.todos.OnLaunch = func(item ToDoItem) {
-		app.openLaunchToDoModal(item)
-	}
-	app.todos.OnOpenLinks = func(links []Link) {
-		app.openLinkPickerModal(links)
-	}
-	app.todos.OnStatusChange = func(t *model.Task) {
-		uxlog.Log("[todos] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
-		app.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
-		app.refreshTasksAsync()
-	}
 
 	app.buildUI()
 	app.refreshTasks()
@@ -360,7 +335,6 @@ func (a *App) buildUI() {
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
-		AddPage("todos", a.todos, true, false).
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("reviews", a.reviews, true, false).
 		AddPage("settings", a.settingsPage, true, false)
@@ -1063,13 +1037,6 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.runningIDs = runningIDs
 	a.idleIDs = idleIDs
 
-	// Sync todo-task associations so the ToDos tab shows linked task status.
-	todoMap, err := a.db.TasksByTodoPath()
-	if err != nil {
-		uxlog.Log("[tui] refreshTasksWithIDs: failed to load tasks by todo path: %v", err)
-	}
-	a.todos.SyncTasks(todoMap)
-
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
 	// but has no running session, mark it Complete. This handles cases where
 	// the exit callback didn't fire (daemon restart, TUI restart, etc.).
@@ -1230,27 +1197,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Launch to-do modal — delegate everything to the modal
-	if a.mode == modeLaunchToDo && a.launchToDoModal != nil {
-		a.handleLaunchToDoKey(event)
-		return nil
-	}
-
 	// Fork task modal — delegate everything to the modal
 	if a.mode == modeForkTask && a.forkModal != nil {
 		a.handleForkTaskKey(event)
-		return nil
-	}
-
-	// Cleanup to-dos confirmation modal
-	if a.mode == modeConfirmCleanupToDos && a.cleanupToDosModal != nil {
-		a.handleCleanupToDosKey(event)
-		return nil
-	}
-
-	// Delete single to-do confirmation modal
-	if a.mode == modeConfirmDeleteToDo && a.deleteToDoModal != nil {
-		a.handleDeleteToDoKey(event)
 		return nil
 	}
 
@@ -1318,12 +1267,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		}
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabToDos {
-			if item := a.todos.SelectedItem(); item != nil {
-				a.openConfirmDeleteToDo(*item)
-				return nil
-			}
-		}
 	case tcell.KeyCtrlP:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil && t.PRURL != "" && a.tasklist.OnOpenPR != nil {
@@ -1341,10 +1284,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlR:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			a.pruneCompletedTasks()
-			return nil
-		}
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabToDos {
-			a.cleanupCompletedToDos()
 			return nil
 		}
 	case tcell.KeyLeft:
@@ -1385,15 +1324,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 		case '2':
 			if a.mode != modeAgent {
-				a.switchTab(widget.TabToDos)
-				return nil
-			}
-		case '3':
-			if a.mode != modeAgent {
 				a.switchTab(widget.TabReviews)
 				return nil
 			}
-		case '4':
+		case '3':
 			if a.mode != modeAgent {
 				a.switchTab(widget.TabSettings)
 				return nil
@@ -1404,13 +1338,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	switch a.mode {
 	case modeAgent:
 		return a.handleAgentKey(event)
-	}
-
-	// To Dos tab key routing.
-	if a.header.ActiveTab() == widget.TabToDos {
-		if a.todos.HandleKey(event) {
-			return nil
-		}
 	}
 
 	// Reviews tab key routing.
@@ -1878,10 +1805,6 @@ func (a *App) switchTab(t widget.Tab) {
 		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
-	case widget.TabToDos:
-		a.mode = modeTaskList
-		a.todos.RefreshAsync(a.tapp)
-		a.pages.SwitchToPage("todos")
 	case widget.TabReviews:
 		a.mode = modeTaskList // reuse task list mode for non-agent tabs
 		a.pages.SwitchToPage("reviews")
@@ -2579,120 +2502,6 @@ func (a *App) closeNewTaskForm() {
 	a.tapp.SetFocus(a.tasklist)
 }
 
-// openLaunchToDoModal shows the project selection modal for launching a to-do as a task.
-func (a *App) openLaunchToDoModal(item ToDoItem) {
-	cfg := a.db.Config()
-	a.launchToDoModal = NewLaunchToDoModal(item, cfg.Projects, cfg.Defaults.TodoProject)
-	a.mode = modeLaunchToDo
-	a.pages.AddPage("launchtodo", a.launchToDoModal, true, true)
-	a.pages.SwitchToPage("launchtodo")
-	a.tapp.SetFocus(a.launchToDoModal)
-}
-
-// handleLaunchToDoKey processes keys in the launch to-do modal.
-func (a *App) handleLaunchToDoKey(event *tcell.EventKey) {
-	handler := a.launchToDoModal.InputHandler()
-	handler(event, func(p tview.Primitive) {})
-
-	if a.launchToDoModal.Canceled() {
-		a.closeLaunchToDoModal()
-		return
-	}
-
-	if a.launchToDoModal.Done() {
-		item := a.launchToDoModal.Item()
-		proj := a.launchToDoModal.SelectedProject()
-
-		cfg := a.db.Config()
-		var projCfg config.Project
-		if p, ok := cfg.Projects[proj]; ok {
-			projCfg = p
-		}
-
-		// Build the prompt: user instructions + note context.
-		userPrompt := a.launchToDoModal.Prompt()
-		prompt := buildToDoPrompt(userPrompt, item.Content)
-
-		task := &model.Task{
-			Name:     item.Name,
-			Status:   model.StatusPending,
-			Project:  proj,
-			Prompt:   prompt,
-			Backend:  cfg.Defaults.Backend,
-			TodoPath: item.Path,
-		}
-
-		// Close modal immediately so the UI feels responsive.
-		a.closeLaunchToDoModal()
-
-		if projCfg.Path == "" {
-			// No project path — no worktree needed, persist and start inline.
-			task.Sandboxed = a.resolveSandboxed(task)
-			a.db.Add(task)
-			uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, task.ID, task.Name)
-			a.refreshTasksLocal()
-			a.tasklist.SelectByID(task.ID)
-			a.onTaskSelect(task, true)
-			return
-		}
-
-		// CreateAndStart runs in a background goroutine to avoid blocking the
-		// tview event loop — git fetch can take several seconds.
-		a.statusbar.SetInfo("Creating worktree…")
-		uxlog.Log("[todos] starting create-and-start for to-do %q in project %q", item.Name, proj)
-		rows, cols := a.computePTYSize()
-		input := agent.CreateInput{
-			Name:        task.Name,
-			Prompt:      task.Prompt,
-			Project:     proj,
-			Backend:     task.Backend,
-			TodoPath:    item.Path,
-			Rows:        rows,
-			Cols:        cols,
-			BeforeStart: func() { a.startGen.Add(1) },
-			AfterStart:  func() { a.startGen.Add(1) },
-		}
-
-		go func() {
-			created, _, err := agent.CreateAndStart(a.db, a.runner, input)
-			if err != nil {
-				a.tapp.QueueUpdateDraw(func() {
-					a.statusbar.ClearInfo()
-					a.statusbar.SetError("Failed to launch: " + err.Error())
-				})
-				uxlog.Log("[todos] create-and-start failed: %v", err)
-				return
-			}
-
-			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.ClearInfo()
-				a.recentStarts[created.ID] = time.Now()
-				uxlog.Log("[todos] launched to-do %q as task %s (%s)", item.Name, created.ID, created.Name)
-				a.refreshTasksLocal()
-
-				// If the user navigated into agent view for another task while
-				// the create was in flight, don't yank them away — just surface
-				// the new task in the list.
-				if a.mode == modeAgent {
-					a.tasklist.SelectByID(created.ID)
-					return
-				}
-				a.tasklist.SelectByID(created.ID)
-				a.onTaskSelect(created, true)
-			})
-		}()
-	}
-}
-
-// closeLaunchToDoModal closes the launch to-do modal and returns to the To Dos tab.
-func (a *App) closeLaunchToDoModal() {
-	a.mode = modeTaskList
-	a.launchToDoModal = nil
-	a.pages.RemovePage("launchtodo")
-	a.pages.SwitchToPage("todos")
-	a.tapp.SetFocus(a.tasklist)
-}
-
 // resolveProjectForRepo finds the Argus project whose name or directory basename
 // matches the given GitHub repo name (case-insensitive). Name matches take
 // priority over basename matches for deterministic results. Returns ("", zero)
@@ -2819,130 +2628,6 @@ func (a *App) startReviewTask(pr *github.PR) {
 			a.onTaskSelect(created, true)
 		})
 	}()
-}
-
-// cleanupCompletedToDos shows a confirmation modal to delete vault files for completed to-dos.
-func (a *App) cleanupCompletedToDos() {
-	items := a.todos.CompletedItems()
-	if len(items) == 0 {
-		return
-	}
-	a.cleanupToDosModal = NewConfirmCleanupToDosModal(len(items))
-	a.mode = modeConfirmCleanupToDos
-	a.pages.AddPage("cleanuptodos", a.cleanupToDosModal, true, true)
-	a.pages.SwitchToPage("cleanuptodos")
-	a.tapp.SetFocus(a.cleanupToDosModal)
-}
-
-// handleCleanupToDosKey processes keys in the cleanup confirmation modal.
-func (a *App) handleCleanupToDosKey(event *tcell.EventKey) {
-	handler := a.cleanupToDosModal.InputHandler()
-	handler(event, func(p tview.Primitive) {})
-
-	if a.cleanupToDosModal.Canceled() {
-		a.closeCleanupToDosModal()
-		return
-	}
-	if a.cleanupToDosModal.Confirmed() {
-		a.executeToDoCleanup()
-		a.closeCleanupToDosModal()
-	}
-}
-
-// executeToDoCleanup deletes vault .md files for completed to-dos.
-func (a *App) executeToDoCleanup() {
-	items := a.todos.CompletedItems()
-	vaultPath := a.todos.VaultPath()
-	for _, item := range items {
-		// Guard: only remove files within the configured vault directory.
-		if vaultPath == "" || !strings.HasPrefix(item.Path, vaultPath+string(os.PathSeparator)) {
-			uxlog.Log("[todos] cleanup: skipping %s (not in vault %s)", item.Path, vaultPath)
-			continue
-		}
-		if err := os.Remove(item.Path); err != nil {
-			uxlog.Log("[todos] cleanup: failed to remove %s: %v", item.Path, err)
-		} else {
-			uxlog.Log("[todos] cleanup: removed %s", item.Path)
-		}
-	}
-	// Refresh vault scan async to avoid blocking the UI thread on disk I/O.
-	a.todos.RefreshAsync(a.tapp)
-}
-
-// closeCleanupToDosModal closes the cleanup confirmation modal.
-func (a *App) closeCleanupToDosModal() {
-	a.mode = modeTaskList
-	a.cleanupToDosModal = nil
-	a.pages.RemovePage("cleanuptodos")
-	a.pages.SwitchToPage("todos")
-	a.tapp.SetFocus(a.tasklist)
-}
-
-// openConfirmDeleteToDo shows a confirmation modal for deleting a single to-do vault file.
-func (a *App) openConfirmDeleteToDo(item ToDoItem) {
-	a.deleteToDoModal = NewConfirmDeleteToDoModal(item)
-	a.mode = modeConfirmDeleteToDo
-	a.pages.AddPage("deletetodo", a.deleteToDoModal, true, true)
-	a.pages.SwitchToPage("deletetodo")
-	a.tapp.SetFocus(a.deleteToDoModal)
-}
-
-// handleDeleteToDoKey processes keys in the delete to-do confirmation modal.
-func (a *App) handleDeleteToDoKey(event *tcell.EventKey) {
-	handler := a.deleteToDoModal.InputHandler()
-	handler(event, func(p tview.Primitive) {})
-
-	if a.deleteToDoModal.Canceled() {
-		a.closeDeleteToDoModal()
-		return
-	}
-	if a.deleteToDoModal.Confirmed() {
-		a.executeDeleteToDo()
-		a.closeDeleteToDoModal()
-	}
-}
-
-// executeDeleteToDo deletes the selected to-do vault file.
-func (a *App) executeDeleteToDo() {
-	item := a.deleteToDoModal.Item()
-	vaultPath := a.todos.VaultPath()
-	if vaultPath == "" || !strings.HasPrefix(item.Path, vaultPath+string(os.PathSeparator)) {
-		uxlog.Log("[todos] delete: skipping %s (not in vault %s)", item.Path, vaultPath)
-		return
-	}
-	if err := os.Remove(item.Path); err != nil {
-		uxlog.Log("[todos] delete: failed to remove %s: %v", item.Path, err)
-	} else {
-		uxlog.Log("[todos] delete: removed %s", item.Path)
-	}
-	a.todos.RefreshAsync(a.tapp)
-}
-
-// removeTodoVaultFile removes a todo vault file if it falls within the configured vault directory.
-// No-op if the vault path is unconfigured or todoPath falls outside it.
-// Does NOT trigger a vault refresh — callers must call a.todos.RefreshAsync when done.
-func (a *App) removeTodoVaultFile(todoPath string) {
-	vaultPath := a.todos.VaultPath()
-	cleanPath := filepath.Clean(todoPath)
-	cleanVault := filepath.Clean(vaultPath)
-	if cleanVault == "" || !strings.HasPrefix(cleanPath, cleanVault+string(os.PathSeparator)) {
-		uxlog.Log("[todos] auto-delete: skipping %s (not in vault %s)", todoPath, vaultPath)
-		return
-	}
-	if err := os.Remove(cleanPath); err != nil {
-		uxlog.Log("[todos] auto-delete: failed to remove %s: %v", cleanPath, err)
-	} else {
-		uxlog.Log("[todos] auto-delete: removed %s", cleanPath)
-	}
-}
-
-// closeDeleteToDoModal closes the delete to-do confirmation modal.
-func (a *App) closeDeleteToDoModal() {
-	a.mode = modeTaskList
-	a.deleteToDoModal = nil
-	a.pages.RemovePage("deletetodo")
-	a.pages.SwitchToPage("todos")
-	a.tapp.SetFocus(a.tasklist)
 }
 
 // openLinkPickerModal shows the link picker dialog.
@@ -3661,12 +3346,6 @@ func (a *App) deleteTask(t *model.Task) {
 	// Remove session log file.
 	os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 
-	// Delete the linked todo vault file if present.
-	if t.TodoPath != "" {
-		a.removeTodoVaultFile(t.TodoPath)
-		a.todos.RefreshAsync(a.tapp)
-	}
-
 	// Delete from database first so the UI updates immediately.
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui] failed to delete task %s: %v", t.ID, err)
@@ -3712,17 +3391,9 @@ func (a *App) pruneCompletedTasks() {
 		}
 	}
 
-	// Remove session logs and linked todo vault files for all pruned tasks.
-	hasTodo := false
+	// Remove session logs for all pruned tasks.
 	for _, t := range pruned {
 		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
-		if t.TodoPath != "" {
-			a.removeTodoVaultFile(t.TodoPath)
-			hasTodo = true
-		}
-	}
-	if hasTodo {
-		a.todos.RefreshAsync(a.tapp)
 	}
 
 	cfg := a.db.Config()

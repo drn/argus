@@ -476,7 +476,7 @@ func testServerWithTasks() (*Server, *mockTaskDB, *mockStopper) {
 	stopper := &mockStopper{}
 
 	var createCount int
-	creator := func(name, prompt, project, todoPath string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
 		createCount++
 		task := &model.Task{
 			ID:      fmt.Sprintf("new-%d", createCount),
@@ -706,7 +706,7 @@ func TestTaskCreate_RateLimit(t *testing.T) {
 
 	// Creator that blocks until released.
 	gate := make(chan struct{})
-	creator := func(name, prompt, project, todoPath string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
 		<-gate
 		return &model.Task{ID: "x", Name: name, Status: model.StatusInProgress, Project: project}, nil
 	}

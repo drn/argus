@@ -337,9 +337,8 @@ func TestSmoke_TabSwitching(t *testing.T) {
 		key  rune
 		want widget.Tab
 	}{
-		{'2', widget.TabToDos},
-		{'3', widget.TabReviews},
-		{'4', widget.TabSettings},
+		{'2', widget.TabReviews},
+		{'3', widget.TabSettings},
 		{'1', widget.TabTasks},
 	} {
 		sim.InjectKey(tcell.KeyRune, tc.key, 0)
@@ -424,7 +423,7 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 
 // TestSmoke_ExitAgentViewResetsTab verifies that exiting agent view resets the
 // header tab to widget.TabTasks. This is critical when the agent was entered from a
-// non-Tasks tab (e.g. ToDos): without the reset, the global key handler routes
+// non-Tasks tab (e.g. Reviews): without the reset, the global key handler routes
 // up/down keys to the wrong tab's handler, breaking task list navigation.
 func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 	d := testDB(t)
@@ -444,10 +443,10 @@ func TestSmoke_ExitAgentViewResetsTab(t *testing.T) {
 	_, stop := wireApp(t, app)
 	defer stop()
 
-	// Simulate entering agent view from the ToDos tab: set header to widget.TabToDos,
+	// Simulate entering agent view from the Reviews tab: set header to widget.TabReviews,
 	// then enter agent view.
 	readUI(t, app.tapp, func() {
-		app.header.SetTab(widget.TabToDos)
+		app.header.SetTab(widget.TabReviews)
 		app.onTaskSelect(task, true)
 	})
 

@@ -30,7 +30,6 @@ type CreateInput struct {
 	Project    string
 	Backend    string // optional; empty = cfg.Defaults.Backend
 	PRURL      string // optional; set for review tasks
-	TodoPath   string // optional; set when created from a vault .md file
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
@@ -181,7 +180,6 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Worktree: wtPath,
 		Branch:   branchName,
 		PRURL:    input.PRURL,
-		TodoPath: input.TodoPath,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

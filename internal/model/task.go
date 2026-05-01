@@ -19,7 +19,6 @@ type Task struct {
 	AgentPID      int       `json:"agent_pid,omitempty"`
 	SessionID     string    `json:"session_id,omitempty"`
 	PRURL         string    `json:"pr_url,omitempty"`
-	TodoPath      string    `json:"todo_path,omitempty"`
 	Sandboxed     bool      `json:"sandboxed,omitempty"`
 	Archived      bool      `json:"archived,omitempty"`
 	WaitingReview bool      `json:"waiting_review,omitempty"`

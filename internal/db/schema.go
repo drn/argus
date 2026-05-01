@@ -72,10 +72,12 @@ func (d *DB) createTables() error {
 	// Add sandboxed column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
-	// Add todo_path column to existing tasks tables.
-	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN todo_path TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-	// Index for TasksByTodoPath queries (called on every tick).
-	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_todo_path ON tasks(todo_path)`) //nolint:errcheck
+	// Drop the legacy todo_path column and its index. The Obsidian vault feature
+	// has been removed; the column may still exist on databases created before
+	// the removal. SQLite supports DROP COLUMN since 3.35; the IF EXISTS clauses
+	// keep this idempotent and safe on fresh databases.
+	d.conn.Exec(`DROP INDEX IF EXISTS idx_tasks_todo_path`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE tasks DROP COLUMN todo_path`)  //nolint:errcheck
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck

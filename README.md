@@ -58,14 +58,9 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 - **Manage from TUI or PWA** — Settings tab on both surfaces lists schedules with next-fire / last-fire bookkeeping, enable/disable toggle, and a "Run now" button to fire out-of-cycle
 - **REST API** — `GET/POST /api/schedules`, `PUT/DELETE /api/schedules/{id}`, `POST /api/schedules/{id}/run`. Master token required for mutations; list is readable from device tokens
 
-### Obsidian Integration
+### Knowledge Base
 
-- **To Dos tab** — Browse an Obsidian vault as a task inbox. Three-panel view: note list, markdown preview, and metadata
-- **Auto-launch from vault** — Select a note, pick a project, optionally add a prompt, and launch it as a new agent task. The note content becomes the agent's instructions
-- **Task-note linking** — Each launched task tracks its source vault file. Status badges (○ pending, ● running, review, ✓ done) show progress inline
-- **Vault auto-create** — When enabled, the daemon watches the vault directory for new `.md` files and automatically creates and starts agent tasks. Share a note to Obsidian from your phone, and the agent starts working
-- **Cleanup** — `ctrl+r` on the To Dos tab deletes vault files for completed tasks, keeping the inbox clean
-- **Knowledge base** — A separate FTS5-powered full-text search store indexes another Obsidian vault and exposes it as an MCP server (port 7742), auto-injected into every agent worktree
+- **Obsidian-backed KB** — An FTS5-powered full-text search store indexes an Obsidian vault and exposes it as an MCP server (port 7742), auto-injected into every agent worktree
 
 ### Remote Control
 
@@ -135,7 +130,7 @@ argus
 | `ctrl+d`              | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+r`              | Prune completed tasks                                           |
 | `j` / `k`             | Navigate up/down                                                |
-| `1` / `2` / `3` / `4` | Switch tabs (Tasks / To Dos / Reviews / Settings)               |
+| `1` / `2` / `3`       | Switch tabs (Tasks / Reviews / Settings)                        |
 | `ctrl+l`              | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`                   | Quit                                                            |
 
@@ -161,15 +156,6 @@ argus
 | `o`     | Reveal in Finder          |
 | `e`     | Open in editor            |
 | `t`     | Open terminal in worktree |
-
-#### To Dos
-
-| Key       | Action                   |
-| --------- | ------------------------ |
-| `Enter`   | Launch note as task      |
-| `j` / `k` | Navigate notes           |
-| `R`       | Refresh vault            |
-| `ctrl+r`  | Clean up completed notes |
 
 #### Modals & Forms
 
@@ -315,7 +301,7 @@ The dashboard provides:
 - **Files & diff** — Tap **Files & diff** in the overflow menu to open a full-screen view of every changed file in the task's worktree (uncommitted + committed-on-branch). Tap a file to load its diff with `+`/`-`/`@@` coloring; the file list auto-collapses behind a tappable bar so the diff fills nearly the whole screen. Long source lines soft-wrap by default — toggle the **Wrap** button in the bar to fall back to horizontal scroll. Closing the view returns to the live terminal at full size — no re-attach
 - **Create tasks** — Select a project, enter a prompt, start a new agent. Skill autocomplete (type `/`) suggests per-project and global skills
 - **Share to Argus** — Android PWAs register as a native `share_target` and surface in the share sheet automatically. On iOS the Web Share Target API isn't implemented; Settings → **iOS share sheet** shows a Shortcut-friendly URL (`/share?text=[Shortcut Input]`) with Copy/Test buttons and step-by-step instructions for adding "Argus" to the iOS share sheet via the Shortcuts app. Either path lands on the New Task tab with the shared title/text/URL stitched into the prompt — pick a project and tap **Create & Start**
-- **Settings tab** — Full settings parity with the TUI: sandbox (toggle + global deny-read / extra-write), Knowledge Base (vault paths, task sync, auto-start), defaults (backend, todo project, review prompt), Remote API toggle, Projects CRUD (with per-project sandbox overrides), Backends CRUD, push notifications + test push, **iOS share sheet** (Shortcut URL + setup steps), API token mint/revoke, UX/daemon log viewer, forget local token. Mutating endpoints require the master token; device tokens get read-only access.
+- **Settings tab** — Full settings parity with the TUI: sandbox (toggle + global deny-read / extra-write), Knowledge Base (Metis vault path), defaults (backend, review prompt), Remote API toggle, Projects CRUD (with per-project sandbox overrides), Backends CRUD, push notifications + test push, **iOS share sheet** (Shortcut URL + setup steps), API token mint/revoke, UX/daemon log viewer, forget local token. Mutating endpoints require the master token; device tokens get read-only access.
 
 The local token persists in `localStorage` until you clear it or tap **Forget token**.
 
@@ -414,7 +400,7 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 | Method | Endpoint                         | Description                                                                                                                                                                                                                                                                                               |
 | ------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read.                                                                                                                                                                   |
-| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. Setting `kb.auto_start_todos` without `kb.auto_create_tasks` mirrors the TUI invariant: enabling auto-start implies auto-create; disabling it disables both. **Master token required.** |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. **Master token required.**                                                                                                                                                                |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                                                                                                                                                                                       |
 
 ### Keep the host awake
@@ -436,23 +422,6 @@ For secure remote access without exposing ports to the internet:
 3. Access the dashboard at `http://<tailscale-ip>:7743/` from your phone
 
 When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale off — it flips to an offline screen with the Argus banner and a Tailscale reminder, then auto-reconnects once the daemon is reachable again.
-
-### Vault Auto-Create
-
-When **Task Sync** is enabled in Settings (under Knowledge Base), the daemon watches your Obsidian vault for new `.md` files and automatically creates agent tasks from them.
-
-1. Enable **Task Sync** in Settings
-2. Set your **ToDo Project** (the default project for auto-created tasks)
-3. Share a note to your Obsidian vault from your phone (via iOS Share Sheet or any sync method)
-4. The daemon detects the new file, creates a worktree, and starts an agent with the note content as the prompt
-
-Files are debounced (500ms) to handle iCloud sync latency. Duplicate detection prevents re-creating tasks for files that already have linked tasks.
-
-### Auto-Start ToDos
-
-When **Auto-Start ToDos** is enabled (press `a` on the Knowledge Base row in Settings), the daemon polls the vault directory on a configurable interval (default: every 2 minutes) and automatically creates and starts tasks for any new `.md` files found. This replaces the fsnotify-based watcher with a more reliable polling approach.
-
-The poll interval can be configured via `kb.auto_start_interval` in the database (value in seconds). Enabling auto-start also implicitly enables Task Sync.
 
 ## Data
 

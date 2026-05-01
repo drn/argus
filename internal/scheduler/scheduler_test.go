@@ -28,7 +28,7 @@ type recordingCreator struct {
 	failNext error
 }
 
-func (r *recordingCreator) Create(name, prompt, project, todoPath string) (*model.Task, error) {
+func (r *recordingCreator) Create(name, prompt, project string) (*model.Task, error) {
 	if r.failNext != nil {
 		err := r.failNext
 		r.failNext = nil

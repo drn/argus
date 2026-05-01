@@ -20,7 +20,6 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
 	"github.com/drn/argus/internal/clipboard"
-	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
@@ -28,7 +27,6 @@ import (
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/scheduler"
-	"github.com/drn/argus/internal/vault"
 )
 
 // DefaultSocketPath returns the default Unix socket path.
@@ -65,7 +63,6 @@ type Daemon struct {
 	mcpPort   int            // actual MCP HTTP port in use (set after listen)
 	mcpServer    *mcp.Server        // set when KB is enabled, shut down in cleanup
 	kbIndexer    *kb.Indexer        // set when KB is enabled, stopped in cleanup
-	vaultWatcher stopper            // set when auto_create_tasks is enabled
 	apiServer    *api.Server        // set when API is enabled, shut down in cleanup
 	scheduler    *scheduler.Scheduler // recurring scheduled-task firer; always started
 	clipboard    *clipboard.Store     // agent-staged clipboard, in-memory
@@ -187,8 +184,8 @@ func (d *Daemon) Serve(sockPath string) error {
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
-			func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, autoName)
+			func(name, prompt, project string, autoName bool) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, autoName)
 			},
 			d.db,
 			d.runner,
@@ -234,46 +231,12 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}
 
-	// Start vault watcher for auto-task creation (when enabled).
-	// AutoStartTodos uses polling; AutoCreateTasks uses fsnotify.
-	// AutoStartTodos implies AutoCreateTasks behavior (polling subsumes fsnotify).
-	if cfg.KB.AutoStartTodos || cfg.KB.AutoCreateTasks {
-		vaultPath := cfg.KB.ArgusVaultPath
-		if vaultPath == "" {
-			vaultPath = config.DefaultArgusVaultPath()
-		}
-		vw := vault.NewWatcher(d.db, vaultPath, func(name, prompt, project, todoPath string) (*model.Task, error) {
-			// Vault names come from the .md filename — already meaningful;
-			// no auto-rename.
-			return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, false)
-		})
-		d.vaultWatcher = vw
-		if cfg.KB.AutoStartTodos {
-			interval := time.Duration(cfg.KB.AutoStartInterval) * time.Second
-			if interval <= 0 {
-				interval = time.Duration(config.DefaultAutoStartInterval) * time.Second
-				slog.Warn("auto_start_interval not set, using default", "interval", interval)
-			}
-			go func() {
-				if err := vw.StartPolling(interval); err != nil {
-					slog.Error("vault poller start", "err", err)
-				}
-			}()
-		} else {
-			go func() {
-				if err := vw.Start(); err != nil {
-					slog.Error("vault watcher start", "err", err)
-				}
-			}()
-		}
-	}
-
 	// Start the scheduler (recurring scheduled tasks). Always-on — empty
 	// table is a no-op, so there's no setting to gate it.
-	sch := scheduler.New(d.db, func(name, prompt, project, todoPath string) (*model.Task, error) {
+	sch := scheduler.New(d.db, func(name, prompt, project string) (*model.Task, error) {
 		// Schedule names are user-edited (then suffixed with a timestamp) —
 		// already meaningful; no auto-rename.
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, false)
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, false)
 	})
 	d.scheduler = sch
 	go func() {
@@ -289,8 +252,8 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, todoPath string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, autoName)
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project string, autoName bool) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, autoName)
 			})
 			apiSrv.SetScheduler(sch)
 			apiSrv.SetClipboard(d.clipboard)
@@ -420,11 +383,6 @@ func (d *Daemon) Shutdown() {
 func (d *Daemon) cleanup() {
 	slog.Info("daemon shutting down")
 	d.runner.StopAll()
-
-	// Stop the vault watcher if running.
-	if d.vaultWatcher != nil {
-		d.vaultWatcher.Stop()
-	}
 
 	// Stop the scheduler if running.
 	if d.scheduler != nil {

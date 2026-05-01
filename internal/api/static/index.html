@@ -945,39 +945,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <input class="settings-input mono" id="kb-metis-path" onblur="saveKBPath('metis_vault_path', this.value)">
         <div class="meta" id="kb-metis-meta"></div>
       </div>
-      <div class="settings-row" style="flex-direction: column; align-items: stretch">
-        <label class="label">Argus vault path</label>
-        <input class="settings-input mono" id="kb-argus-path" onblur="saveKBPath('argus_vault_path', this.value)">
-        <div class="meta" id="kb-argus-meta"></div>
-      </div>
-      <div class="settings-row">
-        <div class="grow">
-          <div class="label">Auto-create tasks</div>
-          <div class="meta">Watch the Argus vault and create tasks from new todo notes.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="kb-auto-create" onchange="saveKBToggle('auto_create_tasks', this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <div class="grow">
-          <div class="label">Auto-start todos</div>
-          <div class="meta">Poll vault and start new todo notes automatically.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="kb-auto-start" onchange="saveKBAutoStart(this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <div class="grow">
-          <div class="label">Auto-start interval (sec)</div>
-          <div class="meta">Default 120. Lower = quicker pickup, more polling.</div>
-        </div>
-        <input class="settings-input" id="kb-interval" type="number" min="10" style="width: 90px"
-               onblur="saveKBInterval(this.value)">
-      </div>
     </div>
 
     <div class="settings-section">
@@ -989,14 +956,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         </div>
         <select class="settings-input" id="default-backend" style="width: 160px"
                 onchange="saveDefault('backend', this.value)"></select>
-      </div>
-      <div class="settings-row">
-        <div class="grow">
-          <div class="label">Default todo project</div>
-          <div class="meta">Pre-selected when launching a todo as a task.</div>
-        </div>
-        <select class="settings-input" id="default-todo-project" style="width: 160px"
-                onchange="saveDefault('todo_project', this.value)"></select>
       </div>
       <div class="settings-row" style="flex-direction: column; align-items: stretch">
         <label class="label">Review prompt</label>
@@ -3589,15 +3548,9 @@ function renderSettings() {
   // KB
   document.getElementById('kb-enabled').checked = !!s.kb.enabled;
   document.getElementById('kb-metis-path').value = s.kb.metis_vault_path || '';
-  document.getElementById('kb-argus-path').value = s.kb.argus_vault_path || '';
-  document.getElementById('kb-auto-create').checked = !!s.kb.auto_create_tasks;
-  document.getElementById('kb-auto-start').checked = !!s.kb.auto_start_todos;
-  document.getElementById('kb-interval').value = s.kb.auto_start_interval || 120;
   setRestartFlag('kb-metis-meta', settingsBootstrap?.kb.metis_vault_path, s.kb.metis_vault_path);
-  setRestartFlag('kb-argus-meta', settingsBootstrap?.kb.argus_vault_path, s.kb.argus_vault_path);
   // Defaults
   fillSelectOptions('default-backend', backendsCache.map(b => b.name), s.defaults.backend, true);
-  fillSelectOptions('default-todo-project', projectsCache.map(p => p.name), s.defaults.todo_project, true);
   document.getElementById('default-review-prompt').value = s.defaults.review_prompt || '';
   // API
   document.getElementById('api-enabled').checked = !!s.api.enabled;
@@ -3669,19 +3622,6 @@ function saveKBToggle(field, value) {
 
 function saveKBPath(field, value) {
   patchSettings({ kb: { [field]: value } });
-}
-
-function saveKBAutoStart(checked) {
-  // Backend mirrors the TUI invariant: enabling auto-start implies auto-create,
-  // disabling it also disables auto-create. We send only auto_start_todos and
-  // let the server handle the dependent flag.
-  patchSettings({ kb: { auto_start_todos: checked } });
-}
-
-function saveKBInterval(value) {
-  const n = parseInt(value, 10);
-  if (!Number.isFinite(n) || n <= 0) return;
-  patchSettings({ kb: { auto_start_interval: n } });
 }
 
 function saveAPIToggle(checked) {

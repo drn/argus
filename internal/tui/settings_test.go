@@ -181,119 +181,6 @@ func TestSettingsView_KBToggle(t *testing.T) {
 	}
 }
 
-func TestSettingsView_TodoProjectCycle(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	database.SetProject("alpha", config.Project{Path: "/a"})
-	database.SetProject("beta", config.Project{Path: "/b"})
-	sv := NewSettingsView(database)
-	sv.Refresh()
-
-	// Find the todo project row.
-	todoIdx := -1
-	for i, row := range sv.rows {
-		if row.kind == srToDoProject {
-			todoIdx = i
-			break
-		}
-	}
-	if todoIdx < 0 {
-		t.Fatal("no todo project row found")
-	}
-	sv.cursor = todoIdx
-
-	t.Run("starts empty", func(t *testing.T) {
-		testutil.Equal(t, sv.todoProject, "")
-	})
-
-	t.Run("cycle forward to first project", func(t *testing.T) {
-		sv.handleEnter()
-		testutil.Equal(t, sv.todoProject, "alpha")
-	})
-
-	t.Run("cycle forward to second project", func(t *testing.T) {
-		// Re-find row after rebuild.
-		for i, row := range sv.rows {
-			if row.kind == srToDoProject {
-				sv.cursor = i
-				break
-			}
-		}
-		sv.handleEnter()
-		testutil.Equal(t, sv.todoProject, "beta")
-	})
-
-	t.Run("cycle forward wraps to none", func(t *testing.T) {
-		for i, row := range sv.rows {
-			if row.kind == srToDoProject {
-				sv.cursor = i
-				break
-			}
-		}
-		sv.handleEnter()
-		testutil.Equal(t, sv.todoProject, "")
-	})
-
-	t.Run("cycle backward wraps to last project", func(t *testing.T) {
-		for i, row := range sv.rows {
-			if row.kind == srToDoProject {
-				sv.cursor = i
-				break
-			}
-		}
-		sv.cycleTodoProject(-1)
-		testutil.Equal(t, sv.todoProject, "beta")
-	})
-
-	t.Run("persists to database", func(t *testing.T) {
-		cfg := database.Config()
-		testutil.Equal(t, cfg.Defaults.TodoProject, "beta")
-	})
-}
-
-func TestSettingsView_TodoProjectLeftRight(t *testing.T) {
-	database, _ := db.OpenInMemory()
-	database.SetProject("proj", config.Project{Path: "/p"})
-	sv := NewSettingsView(database)
-	sv.Refresh()
-
-	for i, row := range sv.rows {
-		if row.kind == srToDoProject {
-			sv.cursor = i
-			break
-		}
-	}
-
-	// Right arrow cycles forward.
-	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
-	handled := sv.HandleKey(ev)
-	testutil.Equal(t, handled, true)
-	testutil.Equal(t, sv.todoProject, "proj")
-
-	// Left arrow cycles backward.
-	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
-	handled = sv.HandleKey(ev)
-	testutil.Equal(t, handled, true)
-	testutil.Equal(t, sv.todoProject, "")
-}
-
-func TestSettingsView_TodoProjectNoProjects(t *testing.T) {
-	sv := testSettingsView(t)
-
-	for i, row := range sv.rows {
-		if row.kind == srToDoProject {
-			sv.cursor = i
-			break
-		}
-	}
-
-	// Cycle should be a no-op with no projects.
-	sv.cycleTodoProject(1)
-	testutil.Equal(t, sv.todoProject, "")
-}
-
 func TestSettingsView_LogsSection(t *testing.T) {
 	sv := testSettingsView(t)
 	var logsRows []settingsRow
@@ -879,82 +766,6 @@ func TestSettingsView_ReviewPromptEdit(t *testing.T) {
 	})
 }
 
-func TestSettingsView_AutoStartToggle(t *testing.T) {
-	database, err := db.OpenInMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sv := NewSettingsView(database)
-	sv.Refresh()
-
-	// Find KB row.
-	kbIdx := -1
-	for i, row := range sv.rows {
-		if row.kind == srKB {
-			kbIdx = i
-			break
-		}
-	}
-	if kbIdx < 0 {
-		t.Fatal("no KB row found")
-	}
-	sv.cursor = kbIdx
-
-	t.Run("initially off", func(t *testing.T) {
-		testutil.Equal(t, sv.autoStartTodos, false)
-	})
-
-	t.Run("a key toggles on", func(t *testing.T) {
-		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
-		handled := sv.HandleKey(ev)
-		testutil.Equal(t, handled, true)
-		testutil.Equal(t, sv.autoStartTodos, true)
-	})
-
-	t.Run("auto-enables task sync", func(t *testing.T) {
-		testutil.Equal(t, sv.kbTaskSync, true)
-	})
-
-	t.Run("persists to database", func(t *testing.T) {
-		cfg := database.Config()
-		testutil.Equal(t, cfg.KB.AutoStartTodos, true)
-		testutil.Equal(t, cfg.KB.AutoCreateTasks, true)
-	})
-
-	t.Run("a key toggles off and disables task sync", func(t *testing.T) {
-		// Re-find KB row after rebuild.
-		for i, row := range sv.rows {
-			if row.kind == srKB {
-				sv.cursor = i
-				break
-			}
-		}
-		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
-		sv.HandleKey(ev)
-		testutil.Equal(t, sv.autoStartTodos, false)
-		testutil.Equal(t, sv.kbTaskSync, false)
-
-		cfg := database.Config()
-		testutil.Equal(t, cfg.KB.AutoStartTodos, false)
-		testutil.Equal(t, cfg.KB.AutoCreateTasks, false)
-	})
-
-	t.Run("a key no-op on non-KB row", func(t *testing.T) {
-		sv.cursor = 0
-		sv.skipToSelectable(1) // land on first selectable (not KB)
-		ev := tcell.NewEventKey(tcell.KeyRune, 'a', 0)
-		handled := sv.HandleKey(ev)
-		// Should not be handled if not on KB row.
-		if sv.rows[sv.cursor].kind != srKB {
-			testutil.Equal(t, handled, false)
-		}
-	})
-
-	t.Run("default interval is 120", func(t *testing.T) {
-		testutil.Equal(t, sv.autoStartInterval, 120)
-	})
-}
-
 func TestSettingsView_VaultPathEdit(t *testing.T) {
 	database, err := db.OpenInMemory()
 	if err != nil {
@@ -963,30 +774,20 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	sv := NewSettingsView(database)
 	sv.Refresh()
 
-	// Verify default paths are populated from DB seed.
+	// Verify default path is populated from DB seed.
 	if sv.metisVaultPath == "" {
 		t.Fatal("metisVaultPath should be populated from DB seed")
 	}
-	if sv.argusVaultPath == "" {
-		t.Fatal("argusVaultPath should be populated from DB seed")
-	}
 
-	// Verify vault path rows exist.
+	// Verify vault path row exists.
 	metisIdx := -1
-	argusIdx := -1
 	for i, row := range sv.rows {
 		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			metisIdx = i
 		}
-		if row.kind == srVaultPath && row.key == vaultKeyArgus {
-			argusIdx = i
-		}
 	}
 	if metisIdx < 0 {
 		t.Fatal("no metis vault path row found")
-	}
-	if argusIdx < 0 {
-		t.Fatal("no argus vault path row found")
 	}
 
 	t.Run("enter starts editing metis", func(t *testing.T) {
@@ -1034,23 +835,6 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 
 		cfg := database.Config()
 		testutil.Equal(t, cfg.KB.MetisVaultPath, "/custom/metis/vault")
-	})
-
-	t.Run("enter saves argus and persists", func(t *testing.T) {
-		for i, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == vaultKeyArgus {
-				sv.cursor = i
-				break
-			}
-		}
-		sv.handleEnter()
-		testutil.Equal(t, sv.editingVault, vaultKeyArgus)
-		sv.editVaultBuf = "/custom/argus/vault"
-		sv.handleEditVaultKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-		testutil.Equal(t, sv.argusVaultPath, "/custom/argus/vault")
-
-		cfg := database.Config()
-		testutil.Equal(t, cfg.KB.ArgusVaultPath, "/custom/argus/vault")
 	})
 
 	t.Run("vault editing blocks global keys", func(t *testing.T) {
@@ -1126,21 +910,17 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 	sv.Refresh()
 
 	// Inject discovered vaults (simulating iCloud discovery).
-	sv.discoveredVaults = []string{"/vaults/Alpha", "/vaults/Argus", "/vaults/Metis"}
+	sv.discoveredVaults = []string{"/vaults/Alpha", "/vaults/Beta", "/vaults/Metis"}
 
-	// Find vault rows.
+	// Find vault row.
 	metisIdx := -1
-	argusIdx := -1
 	for i, row := range sv.rows {
 		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			metisIdx = i
 		}
-		if row.kind == srVaultPath && row.key == vaultKeyArgus {
-			argusIdx = i
-		}
 	}
-	if metisIdx < 0 || argusIdx < 0 {
-		t.Fatal("vault path rows not found")
+	if metisIdx < 0 {
+		t.Fatal("vault path row not found")
 	}
 
 	t.Run("right arrow cycles metis to first discovered vault", func(t *testing.T) {
@@ -1154,7 +934,7 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 
 	t.Run("right arrow cycles metis forward", func(t *testing.T) {
 		sv.cycleVaultPath(1)
-		testutil.Equal(t, sv.metisVaultPath, "/vaults/Argus")
+		testutil.Equal(t, sv.metisVaultPath, "/vaults/Beta")
 	})
 
 	t.Run("left arrow cycles metis backward", func(t *testing.T) {
@@ -1172,26 +952,6 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 		sv.metisVaultPath = "/vaults/Alpha"
 		sv.cycleVaultPath(-1)
 		testutil.Equal(t, sv.metisVaultPath, "/vaults/Metis")
-	})
-
-	t.Run("right arrow cycles argus independently", func(t *testing.T) {
-		sv.cursor = argusIdx
-		sv.cycleVaultPath(1)
-		testutil.Equal(t, sv.argusVaultPath, "/vaults/Alpha")
-
-		cfg := database.Config()
-		testutil.Equal(t, cfg.KB.ArgusVaultPath, "/vaults/Alpha")
-	})
-
-	t.Run("cycle shows restart hint", func(t *testing.T) {
-		// After cycling, vault path differs from boot value → restart hint.
-		for _, row := range sv.rows {
-			if row.kind == srVaultPath && row.key == vaultKeyArgus {
-				testutil.Contains(t, row.label, "(restart required)")
-				return
-			}
-		}
-		t.Fatal("argus vault row not found after cycle")
 	})
 }
 

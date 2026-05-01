@@ -290,26 +290,3 @@ func TestOpenURL_RejectsNonHTTP(t *testing.T) {
 	// (We can't stop "open" from actually launching, so just verify no crash.)
 }
 
-func TestToDosView_OpenLinks_Callback(t *testing.T) {
-	v := NewToDosView()
-	items := []ToDoItem{
-		{
-			Name:    "multi-link",
-			Path:    "/tmp/multi.md",
-			Content: "[A](https://a.com) and [B](https://b.com)",
-		},
-	}
-	v.list.SetItems(items)
-
-	var receivedLinks []Link
-	v.OnOpenLinks = func(links []Link) {
-		receivedLinks = links
-	}
-
-	// Simulate pressing 'o'
-	v.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'o', tcell.ModNone))
-
-	testutil.Equal(t, len(receivedLinks), 2)
-	testutil.Equal(t, receivedLinks[0].Label, "A")
-	testutil.Equal(t, receivedLinks[1].Label, "B")
-}

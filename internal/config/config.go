@@ -31,17 +31,10 @@ type APIConfig struct {
 
 // KBConfig controls the knowledge base server.
 type KBConfig struct {
-	Enabled            bool   `toml:"enabled"`              // default false — must be turned on in settings
-	HTTPPort           int    `toml:"http_port"`            // default 7742
-	MetisVaultPath     string `toml:"metis_vault_path"`     // Obsidian vault for KB indexing (Metis)
-	ArgusVaultPath     string `toml:"argus_vault_path"`     // Obsidian vault for task syncing (Argus)
-	AutoCreateTasks    bool   `toml:"auto_create_tasks"`    // auto-create tasks from Argus vault
-	AutoStartTodos     bool   `toml:"auto_start_todos"`     // auto-start todos on poll interval
-	AutoStartInterval  int    `toml:"auto_start_interval"`  // poll interval in seconds (default 120)
+	Enabled        bool   `toml:"enabled"`          // default false — must be turned on in settings
+	HTTPPort       int    `toml:"http_port"`        // default 7742
+	MetisVaultPath string `toml:"metis_vault_path"` // Obsidian vault for KB indexing (Metis)
 }
-
-// DefaultAutoStartInterval is the default polling interval in seconds for auto-start todos.
-const DefaultAutoStartInterval = 120
 
 // iCloudObsidianBase is the default iCloud-synced Obsidian vault parent directory.
 const iCloudObsidianBase = "Library/Mobile Documents/iCloud~md~obsidian/Documents"
@@ -52,15 +45,8 @@ func DefaultMetisVaultPath() string {
 	return filepath.Join(home, iCloudObsidianBase, "Metis")
 }
 
-// DefaultArgusVaultPath returns the default iCloud path for the Argus (task sync) vault.
-func DefaultArgusVaultPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, iCloudObsidianBase, "Argus")
-}
-
 type Defaults struct {
 	Backend      string `toml:"backend"`
-	TodoProject  string `toml:"todo_project"`  // default project for launching todos
 	ReviewPrompt string `toml:"review_prompt"` // prompt sent to agent for PR review tasks
 }
 
@@ -143,8 +129,7 @@ func DefaultConfig() Config {
 			SpinnerStyle: "progress",
 		},
 		KB: KBConfig{
-			HTTPPort:          7742,
-			AutoStartInterval: DefaultAutoStartInterval,
+			HTTPPort: 7742,
 		},
 		API: APIConfig{
 			HTTPPort: 7743,

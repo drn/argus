@@ -80,13 +80,9 @@ func (d *DB) seedDefaults() error {
 			"ui.theme":             cfg.UI.Theme,
 			"ui.show_elapsed":      fmt.Sprintf("%t", cfg.UI.ShowElapsed),
 			"ui.show_icons":        fmt.Sprintf("%t", cfg.UI.ShowIcons),
-			"kb.http_port":         fmt.Sprintf("%d", cfg.KB.HTTPPort),
-			"kb.metis_vault_path":  config.DefaultMetisVaultPath(),
-			"kb.argus_vault_path":  config.DefaultArgusVaultPath(),
-			"kb.auto_create_tasks":   fmt.Sprintf("%t", cfg.KB.AutoCreateTasks),
-			"kb.auto_start_todos":    fmt.Sprintf("%t", cfg.KB.AutoStartTodos),
-			"kb.auto_start_interval": fmt.Sprintf("%d", cfg.KB.AutoStartInterval),
-			"api.http_port":        fmt.Sprintf("%d", cfg.API.HTTPPort),
+			"kb.http_port":        fmt.Sprintf("%d", cfg.KB.HTTPPort),
+			"kb.metis_vault_path": config.DefaultMetisVaultPath(),
+			"api.http_port":       fmt.Sprintf("%d", cfg.API.HTTPPort),
 		}
 		for k, v := range defaults {
 			if _, err := d.conn.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, k, v); err != nil {
