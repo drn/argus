@@ -21,6 +21,11 @@ const (
 	keyPrivate = "push.vapid_private"
 	keySubject = "push.vapid_subject"
 	defaultTTL = 60 // seconds
+
+	// throttleDuration is how long a per-key throttle blocks repeated Notify
+	// calls. Single source of truth — log messages reference it via
+	// time.Since() rather than hard-coding "5 minutes" prose.
+	throttleDuration = 5 * time.Minute
 )
 
 // Manager owns VAPID keys + handles fan-out.
@@ -32,7 +37,11 @@ type Manager struct {
 	httpClient *http.Client
 
 	muThrottle sync.Mutex
-	lastSent   map[string]time.Time // key: taskID, value: last push time
+	// lastSent tracks per-throttle-key send times. Keys are the same strings
+	// callers pass to Notify (e.g. "idle:<taskID>"); empty key disables
+	// throttling entirely. Values are the time of the last successful entry
+	// into the fan-out path.
+	lastSent map[string]time.Time
 }
 
 // New loads or generates a VAPID keypair from the DB and returns a Manager.
@@ -80,23 +89,19 @@ func New(d *db.DB) (*Manager, error) {
 // into PushManager.subscribe.
 func (m *Manager) PublicKey() string { return m.pubKey }
 
-// ForgetTask removes the throttle entry for a task. Called when a task's
+// ForgetTask removes the per-task idle throttle entry. Called when a task's
 // session has exited so the in-memory lastSent map doesn't grow without
-// bound. Idempotent.
+// bound. Idempotent. Implemented in terms of ResetThrottle so the
+// "idle:<taskID>" key schema lives in exactly one place.
 func (m *Manager) ForgetTask(taskID string) {
-	if m == nil {
-		return
-	}
-	m.muThrottle.Lock()
-	delete(m.lastSent, "idle:"+taskID)
-	m.muThrottle.Unlock()
+	m.ResetThrottle("idle:" + taskID)
 }
 
 // ResetThrottle clears the throttle entry for a key so the next Notify with
 // that key fires immediately. Used when an agent transitions back to busy:
 // once the user's been re-engaged with output, the next idle event is a fresh
-// "task done" signal and shouldn't be suppressed by the 5-minute window from
-// an earlier mid-run pause.
+// "task done" signal and shouldn't be suppressed by the throttleDuration
+// window from an earlier mid-run pause.
 func (m *Manager) ResetThrottle(throttleKey string) {
 	if m == nil || throttleKey == "" {
 		return
@@ -107,22 +112,28 @@ func (m *Manager) ResetThrottle(throttleKey string) {
 }
 
 // Notify is a fire-and-forget notification: title + body + optional taskId for
-// deep-linking. Throttled to 1 push per key per 5 minutes (key="" disables
-// throttling). The throttle is set only if at least one subscription exists,
-// so an empty-subs state can't poison the next 5 minutes once the user
-// subscribes mid-run.
+// deep-linking. Throttled to 1 push per key per throttleDuration (key=""
+// disables throttling). The throttle is recorded only if at least one
+// subscription exists, so an empty-subs state can't poison the next throttle
+// window once the user subscribes mid-run.
+//
+// Concurrency: the throttle mutex is held continuously from the throttle
+// check through the subscription query and the lastSent write. This
+// serializes concurrent Notify calls with the same key — only the first
+// reaches the fan-out, the rest see the recorded send and bail. Holding
+// across the (fast, in-memory SQLite) read is the simplest way to close the
+// check-then-set TOCTOU window.
 func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 	if m == nil {
 		return
 	}
 	if throttleKey != "" {
 		m.muThrottle.Lock()
-		if t, ok := m.lastSent[throttleKey]; ok && time.Since(t) < 5*time.Minute {
-			m.muThrottle.Unlock()
+		defer m.muThrottle.Unlock()
+		if t, ok := m.lastSent[throttleKey]; ok && time.Since(t) < throttleDuration {
 			uxlog.Log("[push] notify throttled key=%q (last sent %s ago)", throttleKey, time.Since(t).Round(time.Second))
 			return
 		}
-		m.muThrottle.Unlock()
 	}
 
 	subs, err := m.db.PushSubscriptions()
@@ -137,9 +148,7 @@ func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 	}
 
 	if throttleKey != "" {
-		m.muThrottle.Lock()
 		m.lastSent[throttleKey] = time.Now()
-		m.muThrottle.Unlock()
 	}
 
 	payload, _ := json.Marshal(map[string]string{
