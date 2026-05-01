@@ -862,11 +862,11 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="detail-title" id="files-title">Files &amp; diff</div>
       <div class="detail-subtitle" id="files-subtitle"></div>
     </div>
-    <div class="files-bar" id="files-bar" onclick="toggleFilesList(event)">
+    <div class="files-bar" id="files-bar" onclick="toggleFilesList()">
       <div class="chevron" id="files-bar-chevron">▸</div>
       <div class="status" id="files-bar-status"></div>
       <div class="path" id="files-bar-path"></div>
-      <button class="wrap-toggle on" id="files-wrap-toggle" onclick="toggleDiffWrap(event)">Wrap</button>
+      <button class="wrap-toggle on" id="files-wrap-toggle" onclick="toggleDiffWrap(event)">Wrap: on</button>
     </div>
     <div class="files-list" id="files-list">
       <div class="files-empty">Loading…</div>
@@ -2857,12 +2857,18 @@ async function openFilesView() {
     `${filesViewTask.project} · ${filesViewTask.name}`;
   document.getElementById('files-list').innerHTML = '<div class="files-empty">Loading…</div>';
   // Reset the layout to "no selection yet" — list takes the screen, the bar
-  // is hidden, the diff pane is hidden. As soon as the user taps a file the
-  // list collapses behind the bar and the diff fills the rest.
+  // is hidden, the diff pane is hidden, and wrap is back on. Without resetting
+  // wrap, a user who toggled it off, closed the view, and reopened it would
+  // see the diff render no-wrap with the button still in the "on" color.
   document.getElementById('files-list').classList.remove('collapsed');
   document.getElementById('files-bar').classList.remove('show');
-  document.getElementById('diff-pane').classList.add('hidden');
-  document.getElementById('diff-pane').innerHTML = '<div class="diff-empty">Tap a file to view its diff.</div>';
+  const diffPane = document.getElementById('diff-pane');
+  diffPane.classList.add('hidden');
+  diffPane.classList.remove('nowrap');
+  const wrapBtn = document.getElementById('files-wrap-toggle');
+  wrapBtn.classList.add('on');
+  wrapBtn.textContent = 'Wrap: on';
+  diffPane.innerHTML = '<div class="diff-empty">Tap a file to view its diff.</div>';
   document.getElementById('files-view').classList.add('open');
   await loadFilesList(filesViewTask.id);
 }
@@ -2883,13 +2889,17 @@ function toggleFilesList() {
 }
 
 // Toggle soft-wrap on the diff pane. Default is wrap-on so long source
-// lines stay readable on a phone; the "Wrap" button highlights when on.
+// lines stay readable on a phone; the button label flips ("Wrap: on" /
+// "Wrap: off") so the state is legible even when the accent color washes
+// out under bright sunlight.
 function toggleDiffWrap(e) {
   if (e) e.stopPropagation();
   const pane = document.getElementById('diff-pane');
   const btn = document.getElementById('files-wrap-toggle');
   pane.classList.toggle('nowrap');
-  btn.classList.toggle('on', !pane.classList.contains('nowrap'));
+  const wrapOn = !pane.classList.contains('nowrap');
+  btn.classList.toggle('on', wrapOn);
+  btn.textContent = wrapOn ? 'Wrap: on' : 'Wrap: off';
 }
 
 async function loadFilesList(taskId) {
@@ -2967,7 +2977,11 @@ function renderFilesList(files) {
   el.querySelectorAll('.files-row').forEach(row => {
     row.addEventListener('click', () => {
       const path = row.getAttribute('data-path');
-      const status = row.querySelector('.status').textContent.trim();
+      const rawStatus = row.querySelector('.status').textContent.trim();
+      // Allowlist: never trust a DOM-read string back into className. Any
+      // change to renderFilesList would otherwise turn into a silent CSS
+      // injection / style-bleed surface.
+      const status = ['M', 'A', 'D', 'U'].includes(rawStatus) ? rawStatus : 'M';
       el.querySelectorAll('.files-row.selected').forEach(r => r.classList.remove('selected'));
       row.classList.add('selected');
       // Auto-collapse the list and surface the bar so the diff gets nearly
