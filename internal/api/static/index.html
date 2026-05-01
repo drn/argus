@@ -1348,6 +1348,21 @@ const SCROLLEND_FALLBACK_MS = 100;
 // trivially correct (no risk of adding a listener that destroyTerm misses).
 const HAS_NATIVE_SCROLLEND = typeof window !== 'undefined' && 'onscrollend' in window;
 
+// Tap-to-focus target. On touch devices the compose bar is the only input
+// surface that iOS dictation, third-party keyboards, and Wispr Flow can
+// actually inject into — xterm's hidden `.xterm-helper-textarea` is invisible
+// to them. So when the compose bar is up, a tap on the term focuses the
+// compose textarea instead of the helper textarea. Desktop (no compose bar
+// visible) keeps the original term.focus() behavior.
+function focusInputOrTerm() {
+  const cb = document.getElementById('compose-bar');
+  if (cb && cb.style.display !== 'none') {
+    const ci = document.getElementById('compose-input');
+    if (ci) { try { ci.focus(); } catch(e) {} return; }
+  }
+  if (term) try { term.focus(); } catch(e) {}
+}
+
 function onTermTouchStart() { termTouching = true; }
 function onTermTouchEnd() {
   termTouching = false;
@@ -1369,7 +1384,7 @@ function onTermTouchEnd() {
   // is no longer at the bottom, so the bottom check rejects it.
   const wasTap = !isTermScrolling;
   if (wasTap) {
-    if (term && termIsAtBottom()) try { term.focus(); } catch(e) {}
+    if (termIsAtBottom()) focusInputOrTerm();
     // No scroll happened, so nothing else will trigger a drain — kick
     // it now so a pending viewport sync from earlier isn't stuck queued.
     drainIfSettled();
@@ -1898,7 +1913,7 @@ function setupTerm() {
     // keyboard, and we don't want that on re-mount when the user is in
     // scrollback. On a fresh mount viewportY === baseY === 0, so this is
     // a no-op for the normal path.
-    if (termIsAtBottom()) term.focus();
+    if (termIsAtBottom()) focusInputOrTerm();
   });
   // Wire scroll/scrollend on `.xterm-viewport` directly (the actual scrollable
   // element) rather than xterm's `term.onScroll`. The native `scrollend` event
