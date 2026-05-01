@@ -18,9 +18,12 @@ import (
 	"time"
 )
 
-// DefaultTimeout caps each name-gen call. Haiku typically responds in
-// 1–2s; the budget is generous to absorb CLI startup overhead.
-const DefaultTimeout = 8 * time.Second
+// DefaultTimeout caps each name-gen call. The claude CLI startup alone
+// runs 1-2s, and Haiku adds another 3-6s, so end-to-end commonly lands
+// at 6-8s with occasional spikes. We pick 30s to stay well above the
+// observed tail — the call is fire-and-forget in a background goroutine,
+// so a generous cap has no UX cost but prevents `signal: killed` failures.
+const DefaultTimeout = 30 * time.Second
 
 // MaxNameLen caps the kebab-case name length. The system prompt and the
 // validator both reference this so they can't drift.
