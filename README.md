@@ -117,22 +117,22 @@ argus
 
 #### Task List
 
-| Key                   | Action                                                          |
-| --------------------- | --------------------------------------------------------------- |
-| `n`                   | New task (with skill autocomplete in prompt field)              |
-| `Enter`               | Open agent view                                                 |
-| `ctrl+f`              | Fork task (duplicate with context)                              |
-| `s` / `S`             | Advance / revert status                                         |
-| `a`                   | Toggle archive                                                  |
-| `w`                   | Toggle "Waiting for Review" (own section above Archive)         |
-| `p`                   | Open PR in browser                                              |
-| `c`                   | Copy task prompt to clipboard                                   |
-| `ctrl+d`              | Destroy task (kill agent + remove worktree + delete branch)     |
-| `ctrl+r`              | Prune completed tasks                                           |
-| `j` / `k`             | Navigate up/down                                                |
-| `1` / `2` / `3`       | Switch tabs (Tasks / Reviews / Settings)                        |
-| `ctrl+l`              | Refresh screen (wipe ghost cells; works in every non-agent tab) |
-| `q`                   | Quit                                                            |
+| Key             | Action                                                          |
+| --------------- | --------------------------------------------------------------- |
+| `n`             | New task (with skill autocomplete in prompt field)              |
+| `Enter`         | Open agent view                                                 |
+| `ctrl+f`        | Fork task (duplicate with context)                              |
+| `s` / `S`       | Advance / revert status                                         |
+| `a`             | Toggle archive                                                  |
+| `w`             | Toggle "Waiting for Review" (own section above Archive)         |
+| `p`             | Open PR in browser                                              |
+| `c`             | Copy task prompt to clipboard                                   |
+| `ctrl+d`        | Destroy task (kill agent + remove worktree + delete branch)     |
+| `ctrl+r`        | Prune completed tasks                                           |
+| `j` / `k`       | Navigate up/down                                                |
+| `1` / `2` / `3` | Switch tabs (Tasks / Reviews / Settings)                        |
+| `ctrl+l`        | Refresh screen (wipe ghost cells; works in every non-agent tab) |
+| `q`             | Quit                                                            |
 
 #### Agent View
 
@@ -397,11 +397,11 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 
 #### Settings & logs (master only for mutations)
 
-| Method | Endpoint                         | Description                                                                                                                                                                                                                                                                                               |
-| ------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read.                                                                                                                                                                   |
-| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. **Master token required.**                                                                                                                                                                |
-| `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                                                                                                                                                                                       |
+| Method | Endpoint                         | Description                                                                                                                                  |
+| ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read.      |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. **Master token required.** |
+| `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
 
 ### Keep the host awake
 
