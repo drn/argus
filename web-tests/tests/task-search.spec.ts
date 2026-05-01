@@ -43,4 +43,16 @@ test.describe('task search', () => {
     await expect(page.locator('.task-item')).toHaveCount(1);
     await expect(page.locator('#task-search-clear')).toBeHidden();
   });
+
+  test('switching Active ↔ Archived clears the search', async ({ page }) => {
+    const input = page.locator('#task-search-input');
+    await input.fill('zzznomatch');
+    await expect(page.locator('.task-item')).toHaveCount(0);
+    await page.locator('.list-toolbar .seg[data-filter="archived"]').click();
+    await expect(input).toHaveValue('');
+    await expect(page.locator('#task-search-clear')).toBeHidden();
+    await page.locator('.list-toolbar .seg[data-filter="active"]').click();
+    await expect(input).toHaveValue('');
+    await expect(page.locator('.task-item')).toHaveCount(1);
+  });
 });

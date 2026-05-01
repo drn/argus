@@ -1720,7 +1720,7 @@ function renderTaskList() {
     const tasksHtml = isOpen ? list.map(t => {
       const eff = effectiveStatus(t);
       return `
-      <div class="task-item" onclick="openDetail('${esc(t.id)}')">
+      <div class="task-item" onclick="openDetail('${escAttr(t.id)}')">
         <span class="task-badge badge-${esc(eff)}">${statusLabel(eff)}</span>
         <div class="task-info">
           <div class="task-name">${esc(t.name)}</div>
@@ -2562,6 +2562,15 @@ function setListFilter(f) {
   document.querySelectorAll('.list-toolbar .seg').forEach(el => {
     el.classList.toggle('active', el.dataset.filter === f);
   });
+  // Search intent doesn't transfer between tabs — Active and Archived are
+  // independent result sets, so a stale "No tasks match foo" with an empty
+  // input on the new tab would just confuse. Reset the query, the input, and
+  // the clear button when the user flips tabs.
+  taskSearchQuery = '';
+  const sin = document.getElementById('task-search-input');
+  if (sin) sin.value = '';
+  const sclr = document.getElementById('task-search-clear');
+  if (sclr) sclr.style.display = 'none';
   refresh();
 }
 
