@@ -56,6 +56,11 @@ test.describe('agent-staged clipboard API', () => {
     expect(r.status()).toBe(400);
   });
 
+  test('unknown task ID returns 404', async ({ request }) => {
+    const r = await request.get('/api/tasks/does-not-exist/clipboard', { headers });
+    expect(r.status()).toBe(404);
+  });
+
   test('per-task isolation', async ({ request }) => {
     const id1 = await getFirstTaskID(request);
     // Create a second task to isolate against.

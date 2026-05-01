@@ -2543,7 +2543,11 @@ function hideCopyButton() {
 
 // Synchronous tap handler — must call writeText with NO awaits in front of
 // it on iOS, otherwise the browser drops the user-gesture trust and the
-// write is silently rejected. Async work (DELETE, button hide) runs after.
+// write is silently rejected. The function is intentionally NOT async: it
+// attaches .then/.catch to writeText's Promise so async work (DELETE, toast,
+// share fallback) runs from microtasks after the synchronous call returns.
+// The catch path re-shows the button so the user can retry, accepting a
+// brief visible flash from the optimistic hide above.
 function onCopyButtonTap() {
   const btn = document.getElementById('btn-copy');
   if (!btn) return;

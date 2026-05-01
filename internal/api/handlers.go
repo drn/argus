@@ -740,19 +740,16 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 	// Subscribe to agent-staged clipboard updates for this task. Any change
 	// (set or clear) queues a `clipboard` SSE event. The subscriber callback
 	// runs on the goroutine that called Set/Clear — must not block, so a
-	// buffered channel + drop-on-full keeps the producer fast.
-	clipCh := make(chan string, 16)
-	clipPresent := make(chan bool, 16)
+	// buffered channel + drop-on-full keeps the producer fast. text and
+	// present travel as a single struct so a partial drop can never desync
+	// the two halves (an earlier two-channel design could pair a fresh text
+	// with a stale present flag during bursty updates).
+	clipCh := make(chan clipEvent, 16)
 	var unsubClip func()
 	if s.clipboard != nil {
 		unsubClip = s.clipboard.Subscribe(id, func(text string) {
-			present := text != ""
 			select {
-			case clipCh <- text:
-			default:
-			}
-			select {
-			case clipPresent <- present:
+			case clipCh <- clipEvent{text: text, present: text != ""}:
 			default:
 			}
 		})
@@ -779,9 +776,8 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 			encoded := base64.StdEncoding.EncodeToString(data)
 			fmt.Fprintf(w, "data: %s\n\n", encoded)
 			flusher.Flush()
-		case text := <-clipCh:
-			present := <-clipPresent
-			fmt.Fprintf(w, "event: clipboard\ndata: %s\n\n", encodeClipboardEvent(text, present)) //nolint:errcheck
+		case ev := <-clipCh:
+			fmt.Fprintf(w, "event: clipboard\ndata: %s\n\n", encodeClipboardEvent(ev.text, ev.present)) //nolint:errcheck
 			flusher.Flush()
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
@@ -790,6 +786,13 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// clipEvent bundles the text and presence flag for a clipboard SSE update so
+// they travel through a single channel and can never desync under burst load.
+type clipEvent struct {
+	text    string
+	present bool
 }
 
 // encodeClipboardEvent renders the JSON body of a clipboard SSE event.

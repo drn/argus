@@ -2081,6 +2081,10 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.SetPRURL(task.PRURL)
 	a.agentPane.ResetVT()
+	// Refresh the clipboard hint synchronously on entry so re-opening a
+	// task with a pending payload doesn't flash a hint-less header for up
+	// to one tick. The tick loop continues to keep this in sync.
+	a.refreshClipboardCache(task.ID)
 
 	// Resolve worktree dir
 	a.worktreeDir = task.Worktree

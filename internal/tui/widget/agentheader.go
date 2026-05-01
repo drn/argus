@@ -88,9 +88,15 @@ func (h *AgentHeader) Draw(screen tcell.Screen) {
 			tcell.StyleDefault.Foreground(headerActiveBG).Background(headerBaseBG))
 	}
 
-	// Right-justified clipboard hint: " ctrl+y to copy ".
+	// Right-justified clipboard hint. Kept ASCII-only so each rune occupies
+	// exactly one terminal cell — `runeWidth` then equals the visual cell
+	// count, which is what the right-justify math needs. An earlier draft
+	// used the 📋 emoji, which most terminals render at width 2 while
+	// `range s` only yields one code point, leaving the hint placed one
+	// cell too far right. Don't reintroduce wide characters here without
+	// switching to a runewidth library.
 	if h.clipboardHint {
-		hint := " 📋 ctrl+y to copy "
+		hint := " ctrl+y to copy "
 		hintStart := x + width - runeWidth(hint)
 		if hintStart < x {
 			return
@@ -107,9 +113,9 @@ func (h *AgentHeader) Draw(screen tcell.Screen) {
 	}
 }
 
-// runeWidth is a coarse width estimate (1 cell per rune). The clipboard
-// hint uses ASCII plus a single emoji, which most terminals render in two
-// cells — close enough for our right-justify offset.
+// runeWidth counts code points. Safe as a cell-count proxy ONLY when the
+// caller passes ASCII-only input (see clipboard hint above). For arbitrary
+// Unicode (CJK, emoji, combining marks) this would mis-count.
 func runeWidth(s string) int {
 	n := 0
 	for range s {

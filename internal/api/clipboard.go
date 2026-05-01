@@ -27,13 +27,18 @@ type clipboardGetResp struct {
 
 // handleClipboardGet returns the staged text for a task. Returns 204 when
 // no payload is staged so the PWA can render an empty state without parsing
-// JSON. The {id} path parameter is the task ID.
+// JSON. The {id} path parameter is the task ID. Unknown task IDs return 404
+// to match the rest of the task-scoped API surface.
 func (s *Server) handleClipboardGet(w http.ResponseWriter, r *http.Request) {
 	if s.clipboard == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	id := r.PathValue("id")
+	if _, err := s.db.Get(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
 	text, ok := s.clipboard.Get(id)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
@@ -51,6 +56,15 @@ func (s *Server) handleClipboardSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if _, err := s.db.Get(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	// Cap body before json.Decode to prevent a streamed multi-MiB payload
+	// from being buffered into memory before the store-side size check
+	// kicks in. 1 MiB matches the store cap; the +4 KiB headroom covers
+	// the JSON envelope (`{"text":"…"}` plus any harmless whitespace).
+	r.Body = http.MaxBytesReader(w, r.Body, clipboard.MaxTextSize+4096)
 	var req clipboardSetReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -74,6 +88,10 @@ func (s *Server) handleClipboardClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if _, err := s.db.Get(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
 	s.clipboard.Clear(id)
 	uxlog.Log("[clipboard] clear: task=%s", id)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
