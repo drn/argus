@@ -32,6 +32,40 @@ test.describe('settings tab', () => {
     await expect(page.locator('#token-list')).toContainText('test-iphone');
   });
 
+  test('iOS share section pre-fills the Shortcut URL with current origin', async ({ page }) => {
+    await login(page);
+    await page.locator('.tab[data-tab="settings"]').click();
+    await expect(page.getByRole('heading', { name: 'iOS share sheet' })).toBeVisible();
+    const input = page.locator('#ios-share-url');
+    await expect(input).toBeVisible();
+    const value = await input.inputValue();
+    // URL must contain origin + /share?text=[Shortcut Input] placeholder.
+    const origin = await page.evaluate(() => window.location.origin);
+    expect(value).toBe(`${origin}/share?text=[Shortcut Input]`);
+    // readonly so the user can't edit it but can still select+copy.
+    await expect(input).toHaveAttribute('readonly', '');
+  });
+
+  test('iOS share help (?) icon toggles instructions including Shortcut Input variable', async ({ page }) => {
+    await login(page);
+    await page.locator('.tab[data-tab="settings"]').click();
+    const help = page.locator('#ios-share-help');
+    const toggle = page.locator('#ios-share-help-toggle');
+    // Hidden by default.
+    await expect(help).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // Click reveals; instructions mention the Shortcut Input magic variable.
+    await toggle.click();
+    await expect(help).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(help).toContainText('Shortcut Input');
+    await expect(help).toContainText('Show in Share Sheet');
+    // Click again hides.
+    await toggle.click();
+    await expect(help).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
   test('revoke a token from settings UI', async ({ page }) => {
     await login(page);
     await page.locator('.tab[data-tab="settings"]').click();

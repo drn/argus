@@ -517,6 +517,26 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .settings-input.mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 textarea.settings-input { min-height: 70px; resize: vertical; }
+.help-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text-dim); font-size: 11px; line-height: 1;
+  cursor: pointer; user-select: none; padding: 0;
+}
+.help-icon:hover { color: var(--text); border-color: var(--text-dim); }
+.help-body {
+  font-size: 13px; line-height: 1.5;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 12px 10px 28px;
+  margin: 0;
+}
+.help-body li { margin-bottom: 6px; }
+.help-body li:last-child { margin-bottom: 0; }
+.help-body code {
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+  background: var(--surface); padding: 1px 4px; border-radius: 3px;
+}
 .token-mint-result {
   background: var(--bg); padding: 10px; border-radius: 6px;
   font-family: monospace; font-size: 12px; word-break: break-all;
@@ -962,6 +982,33 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="settings-row">
         <div class="label">Send test push</div>
         <button onclick="sendTestPush()">Send</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>iOS share sheet</h3>
+      <div class="settings-row" style="flex-direction: column; align-items: stretch; gap: 6px">
+        <div style="display: flex; align-items: center; gap: 6px">
+          <div class="label">Argus shortcut URL</div>
+          <button class="help-icon" type="button" onclick="toggleShareHelp()" aria-controls="ios-share-help" aria-expanded="false" aria-label="Setup instructions" id="ios-share-help-toggle">?</button>
+        </div>
+        <div class="meta">iOS Safari does not support PWA share targets directly. Build a Shortcut with this URL to put Argus in the share sheet.</div>
+        <div style="display: flex; gap: 6px; align-items: stretch">
+          <input class="settings-input mono" id="ios-share-url" readonly style="flex: 1">
+          <button onclick="copyShareURL()">Copy</button>
+          <button onclick="testShareURL()" title="Open the share URL with sample text to verify routing">Test</button>
+        </div>
+      </div>
+      <div class="settings-row" id="ios-share-help" style="display: none; flex-direction: column; align-items: stretch; gap: 6px">
+        <ol class="help-body">
+          <li>Open the <b>Shortcuts</b> app on iPhone, tap <b>+</b> to create a new shortcut.</li>
+          <li>Tap the <b>(i)</b> at the bottom of the editor → enable <b>Show in Share Sheet</b> and confirm <b>Receive Text, URLs from Share Sheet</b> is on (without it, the magic variable in step 4 won't appear).</li>
+          <li>Add action <b>URL</b>, paste the URL above into it.</li>
+          <li>Tap on the <code>[Shortcut Input]</code> text and delete those characters. With the cursor still in that spot, look at the bar above the keyboard — tap <b>Select Variable</b> (or the <b>+</b> icon labeled "Variable") and pick <b>Shortcut Input</b> from the top of the list. The placeholder turns into a blue capsule. That magic variable carries whatever you share — selected text, a Safari URL, a Notes excerpt — into <code>?text=…</code>.</li>
+          <li>Add action <b>Open URLs</b> (it picks up the URL from step 3 automatically).</li>
+          <li>Rename the shortcut to <b>Argus</b> — that's the name shown in the share sheet.</li>
+          <li>Open the Argus PWA at least once and sign in so the auth token is cached; shared content lands on whatever PWA instance the URL routes to.</li>
+        </ol>
       </div>
     </div>
 
@@ -3148,6 +3195,7 @@ let editingProject = null; // null = creating; otherwise the project being edite
 let editingBackend = null;
 
 async function loadSettings() {
+  populateShareURL();
   await Promise.all([
     loadTokens(),
     refreshPushState(),
@@ -3158,6 +3206,44 @@ async function loadSettings() {
     loadSchedulesBlock(),
     loadLog(),
   ]);
+}
+
+// iOS share sheet helper. iOS Safari ignores `share_target` in the manifest,
+// so we surface a Shortcut-friendly URL the user can paste into the iOS
+// Shortcuts app. The literal `[Shortcut Input]` token is what Shortcuts'
+// "URL" action uses as a placeholder for the magic variable; users replace
+// it with the actual Shortcut Input variable in the editor.
+function shareShortcutURL() {
+  return `${window.location.origin}/share?text=[Shortcut Input]`;
+}
+function populateShareURL() {
+  const el = document.getElementById('ios-share-url');
+  if (el) el.value = shareShortcutURL();
+}
+function copyShareURL() {
+  const url = shareShortcutURL();
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(url).then(() => showToast('Copied'))
+      .catch(() => showToast('Copy failed'));
+  } else {
+    const el = document.getElementById('ios-share-url');
+    if (el) { el.select(); document.execCommand('copy'); showToast('Copied'); }
+  }
+}
+function testShareURL() {
+  // Navigate the current PWA to /share with sample text to exercise the
+  // capture IIFE — same path iOS would take. window.open leaves an
+  // about:blank stub in standalone mode (see web-remote gotchas), so we
+  // navigate the current view instead.
+  window.location.href = `${window.location.origin}/share?text=${encodeURIComponent('Hello from Argus test')}`;
+}
+function toggleShareHelp() {
+  const body = document.getElementById('ios-share-help');
+  const btn = document.getElementById('ios-share-help-toggle');
+  if (!body || !btn) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'flex';
+  btn.setAttribute('aria-expanded', open ? 'false' : 'true');
 }
 
 async function loadSourcePath() {
