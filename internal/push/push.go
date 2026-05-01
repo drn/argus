@@ -13,6 +13,7 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const (
@@ -91,9 +92,25 @@ func (m *Manager) ForgetTask(taskID string) {
 	m.muThrottle.Unlock()
 }
 
+// ResetThrottle clears the throttle entry for a key so the next Notify with
+// that key fires immediately. Used when an agent transitions back to busy:
+// once the user's been re-engaged with output, the next idle event is a fresh
+// "task done" signal and shouldn't be suppressed by the 5-minute window from
+// an earlier mid-run pause.
+func (m *Manager) ResetThrottle(throttleKey string) {
+	if m == nil || throttleKey == "" {
+		return
+	}
+	m.muThrottle.Lock()
+	delete(m.lastSent, throttleKey)
+	m.muThrottle.Unlock()
+}
+
 // Notify is a fire-and-forget notification: title + body + optional taskId for
-// deep-linking. Throttled to 1 push per task per 5 minutes (key="" disables
-// throttling).
+// deep-linking. Throttled to 1 push per key per 5 minutes (key="" disables
+// throttling). The throttle is set only if at least one subscription exists,
+// so an empty-subs state can't poison the next 5 minutes once the user
+// subscribes mid-run.
 func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 	if m == nil {
 		return
@@ -102,19 +119,27 @@ func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 		m.muThrottle.Lock()
 		if t, ok := m.lastSent[throttleKey]; ok && time.Since(t) < 5*time.Minute {
 			m.muThrottle.Unlock()
+			uxlog.Log("[push] notify throttled key=%q (last sent %s ago)", throttleKey, time.Since(t).Round(time.Second))
 			return
 		}
-		m.lastSent[throttleKey] = time.Now()
 		m.muThrottle.Unlock()
 	}
 
 	subs, err := m.db.PushSubscriptions()
 	if err != nil {
 		slog.Warn("push: list subscriptions failed", "err", err)
+		uxlog.Log("[push] list subscriptions failed: %v", err)
 		return
 	}
 	if len(subs) == 0 {
+		uxlog.Log("[push] notify skipped: no subscriptions registered (key=%q title=%q)", throttleKey, title)
 		return
+	}
+
+	if throttleKey != "" {
+		m.muThrottle.Lock()
+		m.lastSent[throttleKey] = time.Now()
+		m.muThrottle.Unlock()
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -122,6 +147,7 @@ func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 		"body":   body,
 		"taskId": taskID,
 	})
+	uxlog.Log("[push] notify fan-out subs=%d key=%q title=%q taskId=%q", len(subs), throttleKey, title, taskID)
 
 	for _, s := range subs {
 		go m.sendOne(s, payload)
@@ -145,15 +171,20 @@ func (m *Manager) sendOne(s db.PushSubscription, payload []byte) {
 	})
 	if err != nil {
 		slog.Warn("push: send failed", "endpoint", truncate(s.Endpoint, 60), "err", err)
+		uxlog.Log("[push] send failed id=%d endpoint=%s err=%v", s.ID, truncate(s.Endpoint, 60), err)
 		return
 	}
 	defer resp.Body.Close()
 	// Push services return 410 Gone or 404 for permanently expired subs.
 	if resp.StatusCode == 410 || resp.StatusCode == 404 {
 		slog.Info("push: dropping expired subscription", "id", s.ID)
+		uxlog.Log("[push] dropping expired subscription id=%d status=%d", s.ID, resp.StatusCode)
 		_ = m.db.DeletePushSubscriptionByEndpoint(s.Endpoint)
 	} else if resp.StatusCode >= 400 {
 		slog.Warn("push: non-OK response", "status", resp.StatusCode, "id", s.ID)
+		uxlog.Log("[push] non-OK response id=%d status=%d endpoint=%s", s.ID, resp.StatusCode, truncate(s.Endpoint, 60))
+	} else {
+		uxlog.Log("[push] sent id=%d status=%d", s.ID, resp.StatusCode)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/rpc/jsonrpc"
 	"os"
@@ -138,6 +139,10 @@ func runDaemon() {
 	}
 	defer logFile.Close()
 	log.SetOutput(logFile)
+	// Wire slog to the same file. Without this, slog.* calls (used in
+	// internal/push and internal/api) write to os.Stderr, which is /dev/null
+	// for the detached daemon — so push send failures are invisible.
+	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
 
 	database, err := db.Open(db.DefaultPath())
 	if err != nil {

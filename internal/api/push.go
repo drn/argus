@@ -8,6 +8,7 @@ import (
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // pushSubscribeReq matches the W3C PushSubscription serialized shape.
@@ -50,9 +51,11 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 		Auth:     req.Keys.Auth,
 	})
 	if err != nil {
+		uxlog.Log("[push] subscribe failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	uxlog.Log("[push] subscribed id=%d label=%q", id, req.Label)
 	writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 }
 
@@ -109,6 +112,7 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
 		return
 	}
+	uxlog.Log("[push] test push triggered")
 	s.push.Notify("", "Argus test", "Push notifications are working", "")
 	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
 }
@@ -145,7 +149,8 @@ func (s *Server) idleWatcher() {
 			isIdle := sess.IsIdle()
 			wasIdle := idleNow[id]
 			idleNow[id] = isIdle
-			if isIdle && !wasIdle {
+			switch {
+			case isIdle && !wasIdle:
 				// Idle transition — fire push.
 				task, err := s.db.Get(id)
 				if err != nil || task == nil {
@@ -159,7 +164,13 @@ func (s *Server) idleWatcher() {
 				if task.Status == model.StatusInReview {
 					body = "Ready for review"
 				}
+				uxlog.Log("[push] idle transition task=%s name=%q", id, name)
 				s.push.Notify("idle:"+id, name, body, id)
+			case !isIdle && wasIdle:
+				// Busy again — clear the throttle so the next genuine idle
+				// transition (e.g., agent finishing for real) fires fresh
+				// instead of being eaten by a leftover 5-minute window.
+				s.push.ResetThrottle("idle:" + id)
 			}
 		}
 
