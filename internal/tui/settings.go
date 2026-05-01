@@ -102,7 +102,7 @@ type SettingsView struct {
 	editPromptBuf string // buffer for in-progress edit
 
 	// Vault path editing.
-	editingVault     string   // which vault is being edited: vaultKeyMetis or vaultKeyArgus, or "" if not editing
+	editingVault     string   // vaultKeyMetis when editing, "" otherwise
 	editVaultBuf     string   // buffer for in-progress vault path edit
 	discoveredVaults []string // sorted absolute paths of discovered iCloud Obsidian vaults
 	vaultAC          dirAC    // directory autocomplete for vault path editing

@@ -3640,7 +3640,7 @@ async function loadProjectsBlock() {
     const { projects } = await r.json();
     projectsCache = projects || [];
     renderProjectsBlock();
-    if (settingsCache) renderSettings(); // refresh todo-project select
+    if (settingsCache) renderSettings(); // refresh project-name caches
   } catch(e) {
     document.getElementById('projects-list').innerHTML = '<div class="meta">Failed to load projects.</div>';
   }

@@ -74,11 +74,6 @@ type Daemon struct {
 	bootedAt    time.Time
 }
 
-// stopper is an interface for anything with a Stop() method.
-type stopper interface {
-	Stop()
-}
-
 // New creates a new Daemon.
 func New(database *db.DB) *Daemon {
 	d := &Daemon{
