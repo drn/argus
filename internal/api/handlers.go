@@ -737,6 +737,34 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 	sess.AddWriter(cw)
 	defer sess.RemoveWriter(cw)
 
+	// Subscribe to agent-staged clipboard updates for this task. Any change
+	// (set or clear) queues a `clipboard` SSE event. The subscriber callback
+	// runs on the goroutine that called Set/Clear — must not block, so a
+	// buffered channel + drop-on-full keeps the producer fast.
+	clipCh := make(chan string, 16)
+	clipPresent := make(chan bool, 16)
+	var unsubClip func()
+	if s.clipboard != nil {
+		unsubClip = s.clipboard.Subscribe(id, func(text string) {
+			present := text != ""
+			select {
+			case clipCh <- text:
+			default:
+			}
+			select {
+			case clipPresent <- present:
+			default:
+			}
+		})
+		defer unsubClip()
+		// Emit current state on connect so a freshly-opened tab catches a
+		// payload that was staged before the SSE was established.
+		if text, ok := s.clipboard.Get(id); ok {
+			fmt.Fprintf(w, "event: clipboard\ndata: %s\n\n", encodeClipboardEvent(text, true)) //nolint:errcheck
+			flusher.Flush()
+		}
+	}
+
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
@@ -751,6 +779,10 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 			encoded := base64.StdEncoding.EncodeToString(data)
 			fmt.Fprintf(w, "data: %s\n\n", encoded)
 			flusher.Flush()
+		case text := <-clipCh:
+			present := <-clipPresent
+			fmt.Fprintf(w, "event: clipboard\ndata: %s\n\n", encodeClipboardEvent(text, present)) //nolint:errcheck
+			flusher.Flush()
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
@@ -758,6 +790,19 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// encodeClipboardEvent renders the JSON body of a clipboard SSE event.
+// `{"text":"…"}` when a payload is present, `{"cleared":true}` otherwise.
+func encodeClipboardEvent(text string, present bool) string {
+	if !present {
+		return `{"cleared":true}`
+	}
+	body, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return `{"cleared":true}`
+	}
+	return string(body)
 }
 
 // channelWriter implements io.Writer by sending copies of written data to a

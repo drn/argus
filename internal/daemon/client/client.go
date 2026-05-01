@@ -224,6 +224,31 @@ func (c *Client) UpdateSelf() (string, error) {
 }
 
 
+// ClipboardGet fetches any agent-staged text for a task. Returns empty
+// string and ok=false when nothing is staged or RPC fails.
+func (c *Client) ClipboardGet(taskID string) (string, bool) {
+	var resp daemon.ClipboardGetResp
+	if err := c.call("Daemon.ClipboardGet", &daemon.ClipboardGetReq{TaskID: taskID}, &resp); err != nil {
+		return "", false
+	}
+	if !resp.OK {
+		return "", false
+	}
+	return resp.Text, true
+}
+
+// ClipboardClear removes any agent-staged text for a task.
+func (c *Client) ClipboardClear(taskID string) error {
+	var resp daemon.StatusResp
+	if err := c.call("Daemon.ClipboardClear", &daemon.ClipboardClearReq{TaskID: taskID}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
 // Running returns task IDs of running sessions.
 func (c *Client) Running() []string {
 	var resp daemon.ListResp

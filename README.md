@@ -148,6 +148,7 @@ argus
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                           |
 | `ctrl+p`              | Open PR in browser                               |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs) |
+| `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
 | `o`                   | Open PR in browser (when session is finished)    |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)              |
 
@@ -281,6 +282,13 @@ The MCP server exposes the following tools to connected agents:
 | `task_archive` | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve the task by worktree, or `id`. Omit `archived` to toggle. |
 
 Task management tools enable an external agent (e.g. Claude Code running in another terminal) to programmatically launch and monitor Argus tasks via MCP. A sample `/archive` skill lives at `.claude/skills/archive/SKILL.md` — it calls `task_archive` with the current working directory so an agent can mark its own task done at the end of a session.
+
+**Agent-Staged Clipboard:**
+| Tool | Description |
+|------|-------------|
+| `argus_clipboard_set` | Stage text for the user to copy with one tap (PWA Copy button) or one keypress (TUI `ctrl+y`). Params: `text` (required), `id` or `cwd`. Last-write-wins, 5-min TTL, 1 MiB max. |
+
+Solves the iOS Safari constraint that `navigator.clipboard.writeText` requires a synchronous user gesture: the agent stages text, the user taps the Copy button (PWA) or presses `ctrl+y` (TUI agent view) to perform the actual OS-clipboard write. The button hides automatically after a successful copy; the staged payload also auto-clears when the agent's session ends.
 
 ## Remote Control
 

@@ -46,6 +46,13 @@ type TaskStopper interface {
 	Stop(taskID string) error
 }
 
+// ClipboardSetter stages text in the agent-staged clipboard for the given
+// task. Used by the argus_clipboard_set MCP tool. Defined as an interface so
+// the mcp package doesn't depend on the clipboard package directly.
+type ClipboardSetter interface {
+	Set(taskID, text string) error
+}
+
 // maxConcurrentCreates limits how many task_create calls can run concurrently
 // to prevent unbounded process spawning from a misbehaving MCP client.
 const maxConcurrentCreates = 5
@@ -59,6 +66,7 @@ type Server struct {
 	createTask  TaskCreator
 	taskDB      TaskStore
 	taskStopper TaskStopper
+	clipboard   ClipboardSetter // optional; set via SetClipboard
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 }
@@ -78,6 +86,13 @@ func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskStore, stopper T
 	s.createTask = creator
 	s.taskDB = taskDB
 	s.taskStopper = stopper
+}
+
+// SetClipboard wires the agent-staged clipboard. When set (and SetTaskManager
+// has also been called so cwd-resolution works), the server exposes the
+// argus_clipboard_set tool.
+func (s *Server) SetClipboard(setter ClipboardSetter) {
+	s.clipboard = setter
 }
 
 // ListenAndServe starts the HTTP server. It tries port first, then port+1..port+8.
@@ -374,9 +389,38 @@ The agent process does not know its own task ID, so the task is resolved from th
 	},
 }
 
+// clipboardToolDefs are exposed only when SetClipboard has been called AND
+// task management is enabled (the tool needs cwd-resolution to find the
+// caller's task ID).
+var clipboardToolDefs = []Tool{
+	{
+		Name: "argus_clipboard_set",
+		Description: `Stage text for the user to copy with one tap (PWA Copy button) or one keypress (TUI ctrl+y). Use when you have produced output the user will likely want to paste — code snippets, generated text, commands, URLs.
+
+The agent process does not know its own task ID, so the task is resolved from the working directory: pass ` + "`cwd`" + ` (or omit it and Argus uses the agent's PWD when available). Last-write-wins: a second call replaces the first. Payload expires after 5 minutes if not copied. Maximum text size is 1 MiB.
+
+This does NOT write directly to the OS clipboard — it stages text the user can then copy with a single user gesture. iOS Safari requires a user tap for clipboard writes; this tool is the workaround.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"text": map[string]interface{}{"type": "string", "description": "Text to stage for the user to copy. Up to 1 MiB."},
+				"id":   map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd":  map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+			},
+			"required": []string{"text"},
+		},
+	},
+}
+
 // taskMgmtEnabled returns true when all task management dependencies are wired.
 func (s *Server) taskMgmtEnabled() bool {
 	return s.createTask != nil && s.taskDB != nil && s.taskStopper != nil
+}
+
+// clipboardEnabled returns true when both the clipboard setter and task
+// management are wired (cwd resolution requires task management).
+func (s *Server) clipboardEnabled() bool {
+	return s.clipboard != nil && s.taskMgmtEnabled()
 }
 
 func (s *Server) handleToolsList(req *Request) *Response {
@@ -385,6 +429,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	copy(tools, toolDefs)
 	if s.taskMgmtEnabled() {
 		tools = append(tools, taskToolDefs...)
+	}
+	if s.clipboardEnabled() {
+		tools = append(tools, clipboardToolDefs...)
 	}
 	return &Response{
 		JSONRPC: "2.0",
@@ -420,6 +467,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskStop(req.ID, params.Arguments)
 	case "task_archive":
 		return s.toolTaskArchive(req.ID, params.Arguments)
+	case "argus_clipboard_set":
+		return s.toolClipboardSet(req.ID, params.Arguments)
 	default:
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
@@ -830,6 +879,38 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 	}
 	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, newArchived)
 	return toolResult(id, fmt.Sprintf("%s task %s (%s).", action, task.ID, task.Name))
+}
+
+// toolClipboardSet stages text for the user to copy. Resolves the task via
+// explicit id or via cwd (matching against task worktree paths).
+func (s *Server) toolClipboardSet(id interface{}, args json.RawMessage) *Response {
+	if !s.clipboardEnabled() {
+		return toolError(id, "clipboard not configured")
+	}
+
+	var p struct {
+		Text string `json:"text"`
+		ID   string `json:"id"`
+		Cwd  string `json:"cwd"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Text == "" {
+		return toolError(id, "text is required")
+	}
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	if err := s.clipboard.Set(task.ID, p.Text); err != nil {
+		log.Printf("[mcp] clipboard_set failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to stage text: %v", err))
+	}
+
+	log.Printf("[mcp] clipboard_set ok: id=%s bytes=%d", task.ID, len(p.Text))
+	return toolResult(id, fmt.Sprintf("Staged %d bytes for task %s (%s). The user will see a Copy button (PWA) or ctrl+y hint (TUI).", len(p.Text), task.ID, task.Name))
 }
 
 // resolveTask finds a task by explicit ID, or by matching cwd against

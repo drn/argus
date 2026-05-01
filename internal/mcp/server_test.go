@@ -918,6 +918,144 @@ func TestTaskArchive(t *testing.T) {
 	})
 }
 
+// --- Clipboard tool tests ---
+
+type mockClipboard struct {
+	last map[string]string
+	err  error
+}
+
+func newMockClipboard() *mockClipboard {
+	return &mockClipboard{last: make(map[string]string)}
+}
+
+func (m *mockClipboard) Set(taskID, text string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.last[taskID] = text
+	return nil
+}
+
+func TestToolsList_WithClipboard(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetClipboard(newMockClipboard())
+
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	// 5 KB tools + 5 task tools + 1 clipboard tool = 11
+	testutil.Equal(t, len(list.Tools), 11)
+
+	names := make(map[string]bool)
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	if !names["argus_clipboard_set"] {
+		t.Errorf("missing argus_clipboard_set in tools list")
+	}
+}
+
+func TestToolsList_ClipboardWithoutTasksHidden(t *testing.T) {
+	// Without SetTaskManager, the clipboard tool should NOT appear because
+	// cwd-resolution requires task management.
+	s := testServer()
+	s.SetClipboard(newMockClipboard())
+
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	for _, tool := range list.Tools {
+		if tool.Name == "argus_clipboard_set" {
+			t.Errorf("argus_clipboard_set should not appear without task management")
+		}
+	}
+}
+
+func TestClipboardSet_ByID(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	clip := newMockClipboard()
+	s.SetClipboard(clip)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "argus_clipboard_set",
+		Arguments: json.RawMessage(`{"id":"abc123","text":"hello world"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	testutil.Equal(t, clip.last["abc123"], "hello world")
+}
+
+func TestClipboardSet_ByCwd(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	clip := newMockClipboard()
+	s.SetClipboard(clip)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "argus_clipboard_set",
+		Arguments: json.RawMessage(`{"cwd":"/tmp/worktrees/myapp/fix-login","text":"snippet"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	testutil.Equal(t, clip.last["abc123"], "snippet")
+}
+
+func TestClipboardSet_MissingTextRejected(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetClipboard(newMockClipboard())
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "argus_clipboard_set",
+		Arguments: json.RawMessage(`{"id":"abc123"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "text is required")
+}
+
+func TestClipboardSet_NoTaskMatch(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	s.SetClipboard(newMockClipboard())
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "argus_clipboard_set",
+		Arguments: json.RawMessage(`{"cwd":"/nowhere","text":"x"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "no task matches cwd")
+}
+
+func TestClipboardSet_StoreError(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+	clip := newMockClipboard()
+	clip.err = fmt.Errorf("too large")
+	s.SetClipboard(clip)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "argus_clipboard_set",
+		Arguments: json.RawMessage(`{"id":"abc123","text":"x"}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "too large")
+}
+
 // --- test helpers ---
 
 func respErr(resp *Response) error {

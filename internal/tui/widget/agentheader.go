@@ -9,7 +9,8 @@ import (
 // using the same powerline style as the root Header.
 type AgentHeader struct {
 	*tview.Box
-	taskName string
+	taskName      string
+	clipboardHint bool // when true, render a "ctrl+y to copy" affordance
 }
 
 // NewAgentHeader creates an agent view header.
@@ -22,6 +23,19 @@ func NewAgentHeader() *AgentHeader {
 // SetTaskName updates the displayed task name.
 func (h *AgentHeader) SetTaskName(name string) {
 	h.taskName = name
+}
+
+// SetClipboardHint toggles the agent-staged clipboard hint. When true, the
+// header renders a small affordance reminding the user that ctrl+y will
+// copy the pending payload to the OS clipboard.
+func (h *AgentHeader) SetClipboardHint(show bool) {
+	h.clipboardHint = show
+}
+
+// ClipboardHint returns whether the hint is currently shown. Test-only
+// accessor; production code never reads it back.
+func (h *AgentHeader) ClipboardHint() bool {
+	return h.clipboardHint
 }
 
 // Draw renders the header with a powerline-style segment containing the task name.
@@ -73,4 +87,33 @@ func (h *AgentHeader) Draw(screen tcell.Screen) {
 		screen.SetContent(col, y, powerlineSep, nil,
 			tcell.StyleDefault.Foreground(headerActiveBG).Background(headerBaseBG))
 	}
+
+	// Right-justified clipboard hint: " ctrl+y to copy ".
+	if h.clipboardHint {
+		hint := " 📋 ctrl+y to copy "
+		hintStart := x + width - runeWidth(hint)
+		if hintStart < x {
+			return
+		}
+		hintStyle := tcell.StyleDefault.Foreground(headerActiveFG).Background(headerBaseBG).Bold(true)
+		c := hintStart
+		for _, r := range hint {
+			if c >= x+width {
+				break
+			}
+			screen.SetContent(c, y, r, nil, hintStyle)
+			c++
+		}
+	}
+}
+
+// runeWidth is a coarse width estimate (1 cell per rune). The clipboard
+// hint uses ASCII plus a single emoji, which most terminals render in two
+// cells — close enough for our right-justify offset.
+func runeWidth(s string) int {
+	n := 0
+	for range s {
+		n++
+	}
+	return n
 }

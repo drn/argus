@@ -156,3 +156,26 @@ type UpdateSelfResp struct {
 	Error  string
 }
 
+// ClipboardSetReq stages text for a task in the agent-staged clipboard.
+type ClipboardSetReq struct {
+	TaskID string
+	Text   string
+}
+
+// ClipboardGetReq fetches any staged text for a task.
+type ClipboardGetReq struct {
+	TaskID string
+}
+
+// ClipboardGetResp returns the staged text and a presence flag.
+type ClipboardGetResp struct {
+	Text  string
+	OK    bool
+	Error string
+}
+
+// ClipboardClearReq clears any staged text for a task.
+type ClipboardClearReq struct {
+	TaskID string
+}
+

@@ -19,3 +19,18 @@ func TestAgentHeader_SetTaskName(t *testing.T) {
 		t.Errorf("taskName = %q, want empty", h.taskName)
 	}
 }
+
+func TestAgentHeader_ClipboardHint(t *testing.T) {
+	h := NewAgentHeader()
+	if h.ClipboardHint() {
+		t.Error("default clipboard hint should be off")
+	}
+	h.SetClipboardHint(true)
+	if !h.ClipboardHint() {
+		t.Error("SetClipboardHint(true) should turn it on")
+	}
+	h.SetClipboardHint(false)
+	if h.ClipboardHint() {
+		t.Error("SetClipboardHint(false) should turn it off")
+	}
+}

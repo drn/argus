@@ -172,6 +172,9 @@ button:disabled { opacity: 0.5; cursor: default; }
      right offset plus 4px breathing room so long titles don't overlap it. */
   padding-right: 56px;
 }
+/* When the agent-staged copy button is visible, reserve space for both
+   buttons (44 + 8 + 44 + 8 = 104px). Toggled by JS via .has-copy. */
+.detail-header.has-copy { padding-right: 104px; }
 .detail-back { color: var(--accent); font-size: 14px; cursor: pointer; margin-bottom: 6px; display: inline-block; }
 .detail-title { font-size: 17px; font-weight: 600; margin-bottom: 2px; }
 .detail-subtitle { font-size: 13px; color: var(--text-dim); }
@@ -184,6 +187,20 @@ button:disabled { opacity: 0.5; cursor: default; }
   display: flex; align-items: center; justify-content: center;
 }
 .detail-header .overflow-btn:active { background: var(--border); border-radius: 8px; }
+/* Agent-staged clipboard Copy button — sits to the left of the overflow
+   button when a payload is pending. Hidden by default; shown by JS on
+   `clipboard` SSE events. */
+.detail-header .copy-btn {
+  position: absolute; top: 8px; right: 60px;
+  width: 44px; height: 44px; min-width: 44px;
+  padding: 0; font-size: 20px;
+  background: transparent; border: none; color: var(--accent);
+  cursor: pointer;
+  display: none; align-items: center; justify-content: center;
+}
+.detail-header .copy-btn.visible { display: flex; }
+.detail-header .copy-btn:active { background: var(--border); border-radius: 8px; }
+.detail-header.compact .copy-btn { top: 0; height: 36px; font-size: 18px; }
 .overflow-menu {
   /* Drops down from the header, right-aligned with the overflow button. */
   position: absolute; top: calc(100% - 4px); right: 8px;
@@ -827,6 +844,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="detail-back" onclick="closeDetail()">&larr; Back</div>
       <div class="detail-title" id="detail-title"></div>
       <div class="detail-subtitle" id="detail-subtitle"></div>
+      <button class="copy-btn" id="btn-copy" aria-label="Copy staged text" type="button">📋</button>
       <button class="overflow-btn" id="btn-overflow" aria-label="More actions" type="button">⋯</button>
       <div class="overflow-menu" id="overflow-menu"></div>
     </div>
@@ -1943,6 +1961,12 @@ async function openDetail(id) {
     `${currentTask.project} \u00b7 ${statusLabel(effectiveStatus(currentTask))}${currentTask.elapsed ? ' \u00b7 ' + currentTask.elapsed : ''}`;
 
   renderOverflowMenu();
+  // Reset the copy button — closeDetail leaves DOM state, but a different
+  // task's payload should not leak across navigation.
+  hideCopyButton();
+  // Initial fetch in case an agent staged text BEFORE the SSE connected,
+  // or for tasks that aren't running (no SSE) but still have a payload.
+  fetchInitialClipboard(currentTask.id);
   attachTerminal(currentTask);
 }
 
@@ -2442,6 +2466,18 @@ function openStream(id) {
     showTermStatus('session ended', 'error');
     closeStream();
   });
+  es.addEventListener('clipboard', (e) => {
+    try {
+      const payload = JSON.parse(e.data);
+      if (payload.cleared) {
+        hideCopyButton();
+      } else if (typeof payload.text === 'string') {
+        showCopyButton(id, payload.text);
+      }
+    } catch (err) {
+      // Ignore malformed clipboard frames.
+    }
+  });
   es.onerror = () => {
     if (es.readyState === EventSource.CLOSED) {
       showTermStatus('disconnected', 'error');
@@ -2457,6 +2493,103 @@ function closeStream() {
     try { evtSource.close(); } catch(e) {}
     evtSource = null;
   }
+}
+
+// --- Agent-staged clipboard ---
+//
+// An agent stages text via the argus_clipboard_set MCP tool; the server
+// pushes a `clipboard` SSE event on the per-task stream, and we render a
+// Copy button next to the overflow menu. Tapping the button performs the
+// SYNCHRONOUS navigator.clipboard.writeText that iOS requires (no awaits
+// before the call!) then fires DELETE to clear server-side state. On older
+// iOS or permission denial we fall back to navigator.share.
+
+async function fetchInitialClipboard(id) {
+  try {
+    const res = await fetch(API + `/api/tasks/${id}/clipboard`, {
+      headers: { 'Authorization': 'Bearer ' + TOKEN }
+    });
+    if (res.status === 204) {
+      hideCopyButton();
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    if (typeof data.text === 'string') showCopyButton(id, data.text);
+  } catch (err) {
+    // Network errors during initial fetch are non-fatal — SSE will catch up.
+  }
+}
+
+function showCopyButton(taskID, text) {
+  const btn = document.getElementById('btn-copy');
+  if (!btn) return;
+  btn.dataset.taskId = taskID;
+  btn.dataset.text = text;
+  btn.classList.add('visible');
+  const header = document.querySelector('#detail-view .detail-header');
+  if (header) header.classList.add('has-copy');
+}
+
+function hideCopyButton() {
+  const btn = document.getElementById('btn-copy');
+  if (!btn) return;
+  btn.classList.remove('visible');
+  delete btn.dataset.taskId;
+  delete btn.dataset.text;
+  const header = document.querySelector('#detail-view .detail-header');
+  if (header) header.classList.remove('has-copy');
+}
+
+// Synchronous tap handler — must call writeText with NO awaits in front of
+// it on iOS, otherwise the browser drops the user-gesture trust and the
+// write is silently rejected. Async work (DELETE, button hide) runs after.
+function onCopyButtonTap() {
+  const btn = document.getElementById('btn-copy');
+  if (!btn) return;
+  const taskID = btn.dataset.taskId;
+  const text = btn.dataset.text;
+  if (!taskID || typeof text !== 'string') {
+    hideCopyButton();
+    return;
+  }
+  // Optimistic local hide — the SSE clear event will arrive shortly but we
+  // don't want the button to linger after the user has tapped it.
+  hideCopyButton();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      clearServerClipboard(taskID);
+      showToast('Copied');
+    }).catch(() => {
+      // iOS may reject in some contexts. Fall back to the share sheet,
+      // still inside the user-gesture window.
+      tryShareFallback(taskID, text);
+    });
+  } else {
+    tryShareFallback(taskID, text);
+  }
+}
+
+function tryShareFallback(taskID, text) {
+  if (navigator.share) {
+    navigator.share({ text }).then(() => {
+      clearServerClipboard(taskID);
+    }).catch(() => {
+      showToast('Copy unavailable');
+      // Re-show the button so the user can try again or long-press.
+      showCopyButton(taskID, text);
+    });
+  } else {
+    showToast('Copy unavailable');
+    showCopyButton(taskID, text);
+  }
+}
+
+function clearServerClipboard(taskID) {
+  fetch(API + `/api/tasks/${taskID}/clipboard`, {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + TOKEN }
+  }).catch(() => {});
 }
 
 function showTermStatus(text, klass) {
@@ -2583,6 +2716,13 @@ function renderOverflowMenu() {
 document.getElementById('btn-overflow').addEventListener('click', e => {
   e.stopPropagation();
   document.getElementById('overflow-menu').classList.toggle('open');
+});
+
+// Agent-staged clipboard Copy button. The handler must be synchronous —
+// see comment on onCopyButtonTap for the iOS user-gesture rule.
+document.getElementById('btn-copy').addEventListener('click', e => {
+  e.stopPropagation();
+  onCopyButtonTap();
 });
 
 function closeOverflowMenu() {
@@ -2737,6 +2877,7 @@ function closeDetail() {
   closeFilesView();
   closePromptModal();
   closeInputsModal();
+  hideCopyButton();
   // destroyTerm() hid the compose bar; here we additionally clear the textarea
   // so the next opened task gets a fresh field.
   const ci = document.getElementById('compose-input');

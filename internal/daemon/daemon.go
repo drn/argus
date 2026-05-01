@@ -19,6 +19,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/inject"
@@ -67,6 +68,7 @@ type Daemon struct {
 	vaultWatcher stopper            // set when auto_create_tasks is enabled
 	apiServer    *api.Server        // set when API is enabled, shut down in cleanup
 	scheduler    *scheduler.Scheduler // recurring scheduled-task firer; always started
+	clipboard    *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
 	// on-disk binary has been rebuilt since the daemon started.
@@ -89,6 +91,7 @@ func New(database *db.DB) *Daemon {
 		done:      make(chan struct{}),
 		ready:     make(chan struct{}),
 		bootedAt:  time.Now(),
+		clipboard: clipboard.New(),
 	}
 
 	// Capture the binary path + mtime at startup. The on-disk binary may be
@@ -129,6 +132,11 @@ func New(database *db.DB) *Daemon {
 		for _, conn := range conns {
 			conn.Close()
 		}
+
+		// Clear any agent-staged clipboard for the finished task — the
+		// agent that staged it is gone, the user shouldn't see a stale
+		// copy button after the session ends.
+		d.clipboard.Clear(taskID)
 	})
 
 	return d
@@ -137,6 +145,12 @@ func New(database *db.DB) *Daemon {
 // Runner returns the underlying runner for direct access (e.g., AddWriter).
 func (d *Daemon) Runner() *agent.Runner {
 	return d.runner
+}
+
+// Clipboard returns the agent-staged clipboard store. Used by the API
+// server (HTTP + SSE subscribe) and the MCP server (agent stages text).
+func (d *Daemon) Clipboard() *clipboard.Store {
+	return d.clipboard
 }
 
 // Serve starts listening on the given socket path and accepts connections.
@@ -179,6 +193,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.db,
 			d.runner,
 		)
+		mcpSrv.SetClipboard(d.clipboard)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
 		if err != nil {
@@ -278,6 +293,7 @@ func (d *Daemon) Serve(sockPath string) error {
 				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, todoPath, autoName)
 			})
 			apiSrv.SetScheduler(sch)
+			apiSrv.SetClipboard(d.clipboard)
 			d.apiServer = apiSrv
 			apiPort, err := apiSrv.ListenAndServe(cfg.API.HTTPPort)
 			if err != nil {

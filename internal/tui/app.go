@@ -184,6 +184,13 @@ type App struct {
 	// Overridden in tests to avoid scanning real worktrees.
 	wtRoot string
 
+	// Cached agent-staged clipboard text for the currently-active agent-view
+	// task. Polled from the daemon on each tick; used to (a) gate the ctrl+y
+	// hotkey so PTY pass-through wins when nothing is staged, (b) toggle the
+	// agentHeader hint. Empty string when nothing is staged.
+	clipboardPending     string
+	clipboardPendingTask string // task ID the cached payload belongs to
+
 	// Screen wrapper. lazyScreen is a passthrough today (see its doc for
 	// history); the named type is retained so smoke tests can inject a
 	// SimulationScreen through the same indirection production uses.
@@ -298,26 +305,10 @@ func (a *App) buildUI() {
 		a.openRenameModal(t)
 	}
 	a.tasklist.OnCopyPrompt = func(t *model.Task) {
-		prompt := t.Prompt
 		taskID, taskName := t.ID, t.Name
-		go func() {
-			cmd := exec.Command("pbcopy")
-			cmd.Stdin = strings.NewReader(prompt)
-			if err := cmd.Run(); err != nil {
-				uxlog.Log("[tui] clipboard copy failed: %v", err)
-				return
-			}
+		a.copyToClipboard(t.Prompt, "Prompt copied", func() {
 			uxlog.Log("[tui] copied prompt to clipboard: task %s (%s)", taskID, taskName)
-			a.tapp.QueueUpdateDraw(func() {
-				a.header.SetNotice("Prompt copied")
-			})
-			time.Sleep(2 * time.Second)
-			a.tapp.QueueUpdateDraw(func() {
-				if a.header.Notice() == "Prompt copied" {
-					a.header.ClearNotice()
-				}
-			})
-		}()
+		})
 	}
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
@@ -628,6 +619,19 @@ func (a *App) onTick() {
 				a.lastTaskGitRefresh = time.Now()
 				go a.fetchTaskGitStatus(sel.ID, sel.Worktree)
 			}
+		}
+
+		// Refresh the cached agent-staged clipboard payload for the active
+		// task. Cheap (one RPC, in-memory map lookup on the daemon side).
+		// Only meaningful when the runner is daemon-backed; in-process mode
+		// has no clipboard store. We poll here rather than subscribing
+		// because the existing RPC channel is request/response only.
+		if taskID != "" {
+			a.refreshClipboardCache(taskID)
+		} else if a.clipboardPending != "" {
+			a.clipboardPending = ""
+			a.clipboardPendingTask = ""
+			a.agentHeader.SetClipboardHint(false)
 		}
 
 		// Update agent pane session (taskID is non-empty only in agent mode).
@@ -1462,6 +1466,13 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
 		return nil
+	case tcell.KeyCtrlY:
+		// Conditional intercept: only steal ctrl+y from the PTY when an
+		// agent has staged a clipboard payload. Without a payload, fall
+		// through so `vim`/`emacs` style yank still reaches the agent.
+		if a.copyStagedClipboard() {
+			return nil
+		}
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
 			if a.agentFocus > focusTerminal {

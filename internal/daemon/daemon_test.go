@@ -309,6 +309,82 @@ func TestKillExistingDaemon_NoPIDFile(t *testing.T) {
 	killExistingDaemon(filepath.Join(t.TempDir(), "nope.pid"))
 }
 
+func TestDaemon_Clip(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	c := dialRPC(t, sockPath)
+
+	// Initially empty.
+	var getResp ClipboardGetResp
+	if err := c.Call("Daemon.ClipboardGet", &ClipboardGetReq{TaskID: "task1"}, &getResp); err != nil {
+		t.Fatal(err)
+	}
+	if getResp.OK || getResp.Text != "" {
+		t.Errorf("expected empty initial state, got %+v", getResp)
+	}
+
+	// Set.
+	var setResp StatusResp
+	if err := c.Call("Daemon.ClipboardSet", &ClipboardSetReq{TaskID: "task1", Text: "hello"}, &setResp); err != nil {
+		t.Fatal(err)
+	}
+	if !setResp.OK || setResp.Error != "" {
+		t.Errorf("set failed: %+v", setResp)
+	}
+
+	// Get back.
+	getResp = ClipboardGetResp{}
+	if err := c.Call("Daemon.ClipboardGet", &ClipboardGetReq{TaskID: "task1"}, &getResp); err != nil {
+		t.Fatal(err)
+	}
+	if !getResp.OK || getResp.Text != "hello" {
+		t.Errorf("expected hello, got %+v", getResp)
+	}
+
+	// Clear.
+	var clearResp StatusResp
+	if err := c.Call("Daemon.ClipboardClear", &ClipboardClearReq{TaskID: "task1"}, &clearResp); err != nil {
+		t.Fatal(err)
+	}
+	if !clearResp.OK {
+		t.Errorf("clear failed: %+v", clearResp)
+	}
+
+	// Confirm cleared.
+	getResp = ClipboardGetResp{}
+	if err := c.Call("Daemon.ClipboardGet", &ClipboardGetReq{TaskID: "task1"}, &getResp); err != nil {
+		t.Fatal(err)
+	}
+	if getResp.OK {
+		t.Errorf("expected cleared, got %+v", getResp)
+	}
+}
+
+func TestDaemon_ClipBig(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	c := dialRPC(t, sockPath)
+
+	// Anything over 1 MiB should be rejected with an error in the RPC response.
+	big := make([]byte, (1<<20)+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	var setResp StatusResp
+	if err := c.Call("Daemon.ClipboardSet", &ClipboardSetReq{TaskID: "task1", Text: string(big)}, &setResp); err != nil {
+		t.Fatal(err)
+	}
+	if setResp.OK || setResp.Error == "" {
+		t.Errorf("expected too-large error, got %+v", setResp)
+	}
+}
+
 func waitForSocket(t *testing.T, sockPath string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

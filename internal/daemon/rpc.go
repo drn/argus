@@ -273,3 +273,34 @@ func (s *RPCService) KBStatus(_ *Empty, resp *KBStatusResp) error {
 	slog.Info("rpc.KBStatus", "docs", resp.DocumentCount, "vault", resp.VaultPath, "port", resp.Port)
 	return nil
 }
+
+// ClipboardSet stages text for a task in the agent-staged clipboard. Used by
+// agents (via MCP) to queue text for the user to copy with a single tap or
+// keypress.
+func (s *RPCService) ClipboardSet(req *ClipboardSetReq, resp *StatusResp) error {
+	slog.Info("rpc.ClipboardSet", "task", req.TaskID, "bytes", len(req.Text))
+	if err := s.daemon.clipboard.Set(req.TaskID, req.Text); err != nil {
+		resp.Error = err.Error()
+		slog.Error("rpc.ClipboardSet failed", "task", req.TaskID, "err", err)
+		return nil
+	}
+	resp.OK = true
+	return nil
+}
+
+// ClipboardGet returns any staged text for a task. Returns OK=false when no
+// payload is staged (or it has expired).
+func (s *RPCService) ClipboardGet(req *ClipboardGetReq, resp *ClipboardGetResp) error {
+	text, ok := s.daemon.clipboard.Get(req.TaskID)
+	resp.Text = text
+	resp.OK = ok
+	return nil
+}
+
+// ClipboardClear removes any staged text for a task and notifies subscribers.
+func (s *RPCService) ClipboardClear(req *ClipboardClearReq, resp *StatusResp) error {
+	slog.Info("rpc.ClipboardClear", "task", req.TaskID)
+	s.daemon.clipboard.Clear(req.TaskID)
+	resp.OK = true
+	return nil
+}

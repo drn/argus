@@ -25,6 +25,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/api"
+	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -127,6 +128,7 @@ func main() {
 	}
 
 	srv := api.New(d, runner, *token, creator)
+	srv.SetClipboard(clipboard.New())
 	actualPort, err := srv.ListenAndServe(*port)
 	if err != nil {
 		log.Fatalf("listen: %v", err)

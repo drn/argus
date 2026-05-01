@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/push"
@@ -30,7 +31,8 @@ type Server struct {
 	createTask TaskCreator
 	httpSrv    *http.Server
 	push       *push.Manager
-	scheduler  ScheduleRunner // optional; set by SetScheduler before ListenAndServe
+	scheduler  ScheduleRunner   // optional; set by SetScheduler before ListenAndServe
+	clipboard  *clipboard.Store // optional; set by SetClipboard before ListenAndServe
 
 	// stopCh is closed by Shutdown to signal background goroutines (idle
 	// watcher, push fan-out housekeeping) to terminate. Range over <-stopCh
