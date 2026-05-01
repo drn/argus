@@ -298,7 +298,7 @@ Open `http://<your-machine>:7743/` in your phone browser. Enter the API token fr
 
 The dashboard provides:
 
-- **Task list** — Active and Archived tabs, status badges
+- **Task list** — Active and Archived tabs, status badges, free-text search box (case-insensitive substring against task name and project name; matching projects auto-expand so results aren't hidden by collapsed groups; `×` clears)
 - **Task detail** — Real xterm.js terminal with live SSE byte stream, plus an overflow (⋯) menu containing Esc / Toggle mode (Shift+Tab) / Resume / Files & diff / View prompt / Input history / Upload files / Rename / Fork / Archive / Delete and font size controls. The header auto-compacts when the soft keyboard is up. Live writes pause while you scroll into history (preserves iOS momentum-scroll); a green dot on the jump-to-input button shows new output is queued, tapping it flushes and returns to the live tail
 - **Compose bar (touch only)** — A real native textarea sits below the terminal on phones/tablets. Type or dictate into it (iOS dictation, third-party keyboards, Wispr Flow) then tap **↑** or press **Enter** to send; **Shift+Enter** inserts a newline. xterm.js's hidden helper textarea is invisible to iOS text-injection — the compose bar is the on-screen field those tools need. Type `/` to open the skill autocomplete dropdown (Enter accepts a selection, Escape closes without inserting). Desktop's direct-into-xterm path is unchanged
 - **View prompt** — Tap **View prompt** in the overflow menu to see the original prompt the task was created with in a read-only modal (scrollable, monospace, wraps long lines)

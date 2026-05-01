@@ -614,6 +614,22 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
   padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--text-dim);
 }
 .list-toolbar .seg.active { background: var(--surface); color: var(--accent); }
+.task-search { position: relative; flex: 1; min-width: 0; margin-left: 4px; }
+.task-search input {
+  width: 100%; box-sizing: border-box;
+  padding: 4px 24px 4px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font: inherit; font-size: 13px;
+  -webkit-appearance: none; appearance: none;
+}
+.task-search input::-webkit-search-cancel-button { display: none; }
+.task-search input:focus { outline: none; border-color: var(--accent); }
+#task-search-clear {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; padding: 0; border: 0; background: transparent;
+  color: var(--text-dim); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.task-empty-search { padding: 24px 16px; color: var(--text-dim); font-size: 13px; text-align: center; }
 
 /* Offline screen — shown when the SPA cannot reach the Argus API.
    Mirrors the TUI banner gradient (tcell colors 87/81/141/177/212) so the
@@ -723,6 +739,13 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     <div class="list-toolbar">
       <span class="seg active" data-filter="active" onclick="setListFilter('active')">Active</span>
       <span class="seg" data-filter="archived" onclick="setListFilter('archived')">Archived</span>
+      <div class="task-search">
+        <input type="search" id="task-search-input" placeholder="Search tasks…"
+          autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off"
+          oninput="onTaskSearchInput(event)">
+        <button type="button" id="task-search-clear" aria-label="Clear search"
+          onclick="clearTaskSearch()" style="display:none">×</button>
+      </div>
     </div>
     <div class="refresh-hint" id="refresh-hint">Pull to refresh</div>
     <div class="task-list" id="task-list"></div>
@@ -1235,6 +1258,11 @@ const FILTER_ARCHIVED = 'archived';
 
 let listFilter = FILTER_ACTIVE;
 let pushSubscribed = false;
+// Free-text search applied to the task list. Matches against task name and
+// project name, case-insensitive substring. Empty string = no filter (default).
+// Held in a module-level var so the 5s refresh poll preserves the user's query
+// across re-renders.
+let taskSearchQuery = '';
 
 // Offline tracking. The SPA shows a full-screen offline view when /api requests
 // fail repeatedly (network down, daemon stopped, Tailscale off). A single
@@ -1641,11 +1669,30 @@ function renderTaskList() {
     el.innerHTML = '<div class="empty-state">No tasks yet.<br>Tap + New to create one.</div>';
     return;
   }
+  // Apply the search filter before grouping. Empty query is the no-op path so
+  // the existing rendering (one project open at a time) is unchanged when the
+  // user hasn't typed anything. A task matches if its name OR project contains
+  // the query as a case-insensitive substring — matching project lets users
+  // narrow the list to a project even if they don't remember a task name.
+  const q = taskSearchQuery.trim().toLowerCase();
+  const searching = q.length > 0;
+  const visible = searching
+    ? tasks.filter(t => {
+        const name = (t.name || '').toLowerCase();
+        const proj = (t.project || '(no project)').toLowerCase();
+        return name.includes(q) || proj.includes(q);
+      })
+    : tasks;
+  if (searching && !visible.length) {
+    el.innerHTML = `<div class="task-empty-search">No tasks match “${esc(taskSearchQuery)}”.</div>`;
+    renderedProjects = [];
+    return;
+  }
   // Group tasks by project (alphabetical), like the TUI task list. The
   // "(no project)" fallback string matches groupByProject() in the TUI so the
   // two clients label unrouted tasks identically.
   const groups = {};
-  for (const t of tasks) {
+  for (const t of visible) {
     const p = t.project || '(no project)';
     (groups[p] = groups[p] || []).push(t);
   }
@@ -1665,7 +1712,10 @@ function renderTaskList() {
   const prevScrollY = window.scrollY;
   el.innerHTML = projects.map((proj, idx) => {
     const list = groups[proj].sort((a, b) => (order[effectiveStatus(a)] ?? 9) - (order[effectiveStatus(b)] ?? 9));
-    const isOpen = proj === expandedProject[listFilter];
+    // While searching, expand every group so matches aren't hidden behind a
+    // collapsed header. Outside search, the TUI-style "one open at a time"
+    // rule wins.
+    const isOpen = searching || proj === expandedProject[listFilter];
     const dot = projectDotModifier(list);
     const tasksHtml = isOpen ? list.map(t => {
       const eff = effectiveStatus(t);
@@ -2513,6 +2563,26 @@ function setListFilter(f) {
     el.classList.toggle('active', el.dataset.filter === f);
   });
   refresh();
+}
+
+// Free-text search input handler. Only re-renders the task list — does NOT
+// refetch from the server (the search is purely client-side over the existing
+// `tasks` array). Re-rendering against current data avoids a /api/tasks round
+// trip on every keystroke.
+function onTaskSearchInput(e) {
+  taskSearchQuery = e.target.value || '';
+  document.getElementById('task-search-clear').style.display =
+    taskSearchQuery ? 'block' : 'none';
+  renderTaskList();
+}
+
+function clearTaskSearch() {
+  const input = document.getElementById('task-search-input');
+  input.value = '';
+  taskSearchQuery = '';
+  document.getElementById('task-search-clear').style.display = 'none';
+  renderTaskList();
+  input.focus();
 }
 
 async function deleteTask() {
