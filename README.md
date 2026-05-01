@@ -141,16 +141,16 @@ argus
 
 #### Agent View
 
-| Key                   | Action                                           |
-| --------------------- | ------------------------------------------------ |
-| `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)         |
-| `Cmd+←` / `Cmd+→`     | Switch panels                                    |
-| `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                           |
-| `ctrl+p`              | Open PR in browser                               |
-| `ctrl+l`              | Open link picker (fuzzy search all session URLs) |
+| Key                   | Action                                                                    |
+| --------------------- | ------------------------------------------------------------------------- |
+| `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
+| `Cmd+←` / `Cmd+→`     | Switch panels                                                             |
+| `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
+| `ctrl+p`              | Open PR in browser                                                        |
+| `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
-| `o`                   | Open PR in browser (when session is finished)    |
-| `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)              |
+| `o`                   | Open PR in browser (when session is finished)                             |
+| `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
 
 #### File Panel
 

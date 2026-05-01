@@ -16,6 +16,7 @@ iOS Safari (and PWAs) reject `navigator.clipboard.writeText()` outside a real `c
 ## Requirements
 
 ### Must Have
+
 - MCP tool `argus_clipboard_set(text, task_id?)` — agent stages text for the user.
 - Daemon stores per-task payload (last-write-wins) with 5-min TTL.
 - HTTP API `GET/POST/DELETE /api/clipboard` (auth via existing token middleware).
@@ -25,10 +26,12 @@ iOS Safari (and PWAs) reject `navigator.clipboard.writeText()` outside a real `c
 - iOS fallback to `navigator.share({text})` if `writeText` rejects.
 
 ### Should Have
+
 - agentHeader hint "📋 ctrl+y to copy" when a payload is pending.
 - TTL-based auto-clear (5 min) so stale buttons don't sit forever.
 
 ### Won't Do (this iteration)
+
 - Cross-platform clipboard write in TUI — `pbcopy` is darwin-only, matches existing precedent. Defer Linux (`xclip`) / Windows (`clip.exe`) to a follow-up.
 - Persistence across daemon restarts — agent re-stages on demand.
 - Global (cross-task) staging — per-task only; the active task in the user's view is unambiguous.
@@ -45,22 +48,23 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 
 ## Decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| New `internal/clipboard/` package | Isolates the store from daemon/api/mcp; allows independent testing. Daemon owns the instance. |
-| Per-task scope only | Active task in PWA/TUI is unambiguous; global slot adds API surface for unclear value. |
-| In-memory, no persistence | Daemon restart is rare; agent can always re-stage. SQLite would add migrations for ephemeral data. |
-| Last-write-wins (no queue) | Simpler UX; multiple stages without copy almost always means the agent is updating, not appending. |
-| 5-min TTL | Bounds staleness; longer feels like state that should be persisted. |
-| SSE piggyback on existing per-task stream | Avoids new connection. Already has auth + reconnect. PWA only needs updates while viewing a task — perfect overlap. |
-| `Subscribe(taskID, fn)` callback in store | Lets API push live events without polling; clean lifecycle (unsub on stream close). |
-| Reclaim `ctrl+y` only when payload pending | Existing PTY pass-through preserved when nothing to copy. No surprise key-stealing. |
-| Reuse `pbcopy` (darwin-only) | Existing precedent at `app.go:300-321`. Cross-platform is a separate concern. |
-| iOS fallback to `navigator.share` | One-line addition inside the same gesture handler — covers older iOS / permission denials. |
+| Decision                                   | Rationale                                                                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| New `internal/clipboard/` package          | Isolates the store from daemon/api/mcp; allows independent testing. Daemon owns the instance.                       |
+| Per-task scope only                        | Active task in PWA/TUI is unambiguous; global slot adds API surface for unclear value.                              |
+| In-memory, no persistence                  | Daemon restart is rare; agent can always re-stage. SQLite would add migrations for ephemeral data.                  |
+| Last-write-wins (no queue)                 | Simpler UX; multiple stages without copy almost always means the agent is updating, not appending.                  |
+| 5-min TTL                                  | Bounds staleness; longer feels like state that should be persisted.                                                 |
+| SSE piggyback on existing per-task stream  | Avoids new connection. Already has auth + reconnect. PWA only needs updates while viewing a task — perfect overlap. |
+| `Subscribe(taskID, fn)` callback in store  | Lets API push live events without polling; clean lifecycle (unsub on stream close).                                 |
+| Reclaim `ctrl+y` only when payload pending | Existing PTY pass-through preserved when nothing to copy. No surprise key-stealing.                                 |
+| Reuse `pbcopy` (darwin-only)               | Existing precedent at `app.go:300-321`. Cross-platform is a separate concern.                                       |
+| iOS fallback to `navigator.share`          | One-line addition inside the same gesture handler — covers older iOS / permission denials.                          |
 
 ## Implementation Steps
 
 ### Phase 1: Daemon clipboard store + RPC
+
 **Status:** pending
 
 - [ ] Create `internal/clipboard/` package — `internal/clipboard/store.go` — `Store` type with `Set(taskID, text)`, `Get(taskID) (text, ok)`, `Clear(taskID)`, `Subscribe(taskID, fn func(text string)) (unsubscribe func())`. Mutex-protected `map[string]entry`, lazy TTL check on `Get` plus periodic prune via `time.AfterFunc`. `Subscribe` notifies on next `Set`/`Clear` for that taskID; `fn("")` signals cleared.
@@ -71,6 +75,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 - [ ] Daemon test — `internal/daemon/daemon_test.go` — round-trip Set → Get → Clear via RPC client.
 
 ### Phase 2: HTTP API + SSE event
+
 **Status:** pending
 
 - [ ] Wire store reference into `Server` — `internal/api/server.go` — accept `*clipboard.Store` in the constructor (or via setter to mirror `SetTaskManager` pattern). Daemon passes `d.Clipboard()` when starting the API server.
@@ -81,6 +86,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 - [ ] Tests — `internal/api/handlers_test.go` — POST sets, GET returns, DELETE clears; SSE delivers both `clipboard` and existing terminal frames on the same stream; TTL expiry surfaces as 204 on subsequent GET.
 
 ### Phase 3: MCP tool registration
+
 **Status:** pending
 
 - [ ] Define `ClipboardSetter` interface — `internal/mcp/server.go` — `Set(taskID, text string)`. Add `clipboard ClipboardSetter` field on `Server`. Add `SetClipboard(setter)` setter mirroring `SetTaskManager`.
@@ -90,6 +96,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 - [ ] Tests — `internal/mcp/server_test.go` — `argus_clipboard_set` invocation routes to a fake setter; cwd-resolution path works; missing task_id with no cwd returns a structured error.
 
 ### Phase 4: PWA Copy button
+
 **Status:** pending
 
 - [ ] CSS — `internal/api/static/index.html` `<style>` block — `.copy-btn` styled like `.overflow-btn` (44×44 tap target, same `top` offset, positioned to the left of `⋯` with an 8px gap). Add `.copy-btn.compact` matching `.overflow-btn.compact`. `display:none` by default.
@@ -101,6 +108,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 - [ ] Playwright spec — `web-tests/clipboard.spec.ts` — fake an MCP set via `POST /api/tasks/{id}/clipboard`, assert button becomes visible, click, assert `navigator.clipboard.readText()` matches and button hides, assert a follow-up GET returns 204.
 
 ### Phase 5: TUI hotkey
+
 **Status:** pending
 
 - [ ] Daemon client RPC wrappers — `internal/daemon/client/client.go` — `ClipboardGet(taskID)`, `ClipboardClear(taskID)` calling the new RPC methods via `c.call`. Match the existing 2-second timeout.
@@ -126,15 +134,15 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 
 ## Risks & Open Questions
 
-| Risk | Mitigation |
-|------|------------|
-| iOS rejects `writeText` despite gesture (older iOS, content too long, perms) | `navigator.share` fallback inside the same handler; visible inline error if both fail. |
-| `ctrl+y` reclaim breaks agents that send Ctrl+Y to underlying TUIs (vim, emacs `yank-pop`) | Conditional intercept — only steal when `clipboardPending != ""`. Document in `gotchas/keybindings.md`. |
-| SSE event ordering — clipboard event vs. PTY data interleaving in same stream | Both are line-buffered framed events; SSE consumers handle event types independently. Verify in Playwright spec. |
-| Subscribe leak if SSE handler doesn't unsubscribe on disconnect | Always `defer unsubscribe()` immediately after `Subscribe`. Test by cycling EventSource connections and checking goroutine count. |
-| TTL-pruned payload while user is mid-tap | TTL of 5 min is generous; pruning emits `cleared` event so PWA hides button before tap. Document. |
-| Daemon restart loses payload | Acceptable — agent re-stages. Document in user-facing release note. |
-| Per-task scoping breaks for an agent that doesn't know its task ID | MCP tool resolves via `cwd` like `task_archive` does today. Reuse that helper. |
+| Risk                                                                                       | Mitigation                                                                                                                        |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| iOS rejects `writeText` despite gesture (older iOS, content too long, perms)               | `navigator.share` fallback inside the same handler; visible inline error if both fail.                                            |
+| `ctrl+y` reclaim breaks agents that send Ctrl+Y to underlying TUIs (vim, emacs `yank-pop`) | Conditional intercept — only steal when `clipboardPending != ""`. Document in `gotchas/keybindings.md`.                           |
+| SSE event ordering — clipboard event vs. PTY data interleaving in same stream              | Both are line-buffered framed events; SSE consumers handle event types independently. Verify in Playwright spec.                  |
+| Subscribe leak if SSE handler doesn't unsubscribe on disconnect                            | Always `defer unsubscribe()` immediately after `Subscribe`. Test by cycling EventSource connections and checking goroutine count. |
+| TTL-pruned payload while user is mid-tap                                                   | TTL of 5 min is generous; pruning emits `cleared` event so PWA hides button before tap. Document.                                 |
+| Daemon restart loses payload                                                               | Acceptable — agent re-stages. Document in user-facing release note.                                                               |
+| Per-task scoping breaks for an agent that doesn't know its task ID                         | MCP tool resolves via `cwd` like `task_archive` does today. Reuse that helper.                                                    |
 
 - **Open:** Should `argus_clipboard_set` clamp text size at the MCP layer or the store? — Probably the store, with a documented max (1 MB seems generous). Return an error MCP-side if exceeded.
 - **Open:** When a session finishes (`runner.onFinish`), should we auto-clear the task's clipboard? — Lean yes; the agent that staged it is gone. Hook into the existing onFinish callback in `daemon.New`.
@@ -148,7 +156,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
-|-------|---------|------------|
+| ----- | ------- | ---------- |
 
 ## Estimated Scope
 
@@ -159,6 +167,7 @@ The TUI reuses the existing `pbcopy` pattern from `OnCopyPrompt`. `ctrl+y` is cu
 ## Gotcha File Updates (per CLAUDE.md)
 
 After implementation, capture non-obvious invariants:
+
 - `gotchas/daemon-rpc.md` — clipboard store lives on `Daemon`, subscribers must `defer unsubscribe()` to avoid goroutine leaks.
 - `gotchas/web-remote.md` — Copy button SSE event piggybacks per-task stream; PWA must fetch initial state on detail-view open because SSE may have emitted before the page mounted; `writeText` MUST be synchronous in the click handler — any `await` before it breaks iOS gesture trust.
 - `gotchas/keybindings.md` — `ctrl+y` is conditionally intercepted in agent view (only when payload pending); falls through to PTY otherwise.
