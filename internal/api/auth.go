@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -197,33 +199,49 @@ func recordVAPIDOrigin(pm *push.Manager, r *http.Request) {
 // the Origin header (set by browsers on cross-origin fetches and by the SPA
 // on subscribe POSTs) but falls back to scheme+Host so EventSource and
 // same-origin GETs still contribute. Returns "" if the result isn't an
-// https URL.
+// https URL. `X-Forwarded-Proto` is trusted only when the inbound connection
+// is from loopback — the legitimate case is `tailscale serve` terminating
+// TLS and forwarding to argus on 127.0.0.1. A non-loopback client setting
+// `X-Forwarded-Proto: https` on a plain-HTTP connection cannot be trusted
+// and would otherwise let any authenticated device token poison the subject
+// to its own LAN host.
 func vapidOriginFromRequest(r *http.Request) string {
 	if o := strings.TrimSpace(r.Header.Get("Origin")); strings.HasPrefix(o, "https://") {
-		return trimURLPath(o)
+		return canonicalHTTPSOrigin(o)
 	}
 	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+	if r.TLS != nil {
+		scheme = "https"
+	} else if r.Header.Get("X-Forwarded-Proto") == "https" && remoteIsLoopback(r) {
 		scheme = "https"
 	}
 	if scheme != "https" || r.Host == "" {
 		return ""
 	}
-	return scheme + "://" + r.Host
+	return canonicalHTTPSOrigin(scheme + "://" + r.Host)
 }
 
-// trimURLPath returns the scheme+host portion of a URL, dropping any path,
-// query, or fragment. The Origin header normally has no path, but RFC 6454
-// permits one — strip defensively so the VAPID `sub` claim is consistent.
-func trimURLPath(u string) string {
-	// Skip past "https://".
-	const prefix = "https://"
-	if !strings.HasPrefix(u, prefix) {
-		return u
+// remoteIsLoopback reports whether r.RemoteAddr is a loopback address.
+// Used to gate trust in `X-Forwarded-Proto`: a reverse proxy on the same
+// machine (tailscale serve, nginx) is trustworthy; anything else is not.
+func remoteIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	rest := u[len(prefix):]
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// canonicalHTTPSOrigin returns "https://host[:port]" with any path, query,
+// fragment, or userinfo stripped. RFC 6454 origin serialization is
+// scheme+host+port only; trimming defensively guards against odd Origin
+// headers and keeps a stray `https://user:pass@host/` from leaking
+// credentials into the VAPID JWT `sub` claim. Returns "" on parse failure.
+func canonicalHTTPSOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return ""
 	}
-	return prefix + rest
+	return "https://" + u.Host
 }
