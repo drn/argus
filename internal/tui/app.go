@@ -771,10 +771,11 @@ func (a *App) restartDaemon() {
 
 		a.settings.SetDaemonRestarting(false)
 
-		// The new daemon already swept InProgress → InReview during Serve()
-		// before its socket opened, so by the time we reach this code the DB
-		// is consistent. Just reload locally; an RPC would race with the user
-		// entering tasks while the new daemon is still warming up.
+		// agent.ReconcileStaleSessions ran inside the new daemon's Serve()
+		// before its socket opened, so by the time we reach this code stale
+		// InProgress rows are already InReview. Reload locally; an async RPC
+		// would race with the user entering tasks while the new daemon is
+		// still warming up.
 		a.refreshTasksLocal()
 	})
 }
@@ -1023,8 +1024,8 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// for "session exited while we were watching but the OnSessionExit
 	// notification didn't make it through" — the genuine exit path, so
 	// Complete is correct. Stale rows from a daemon crash/restart are flipped
-	// to InReview by ReconcileStaleSessions before we ever see them, so they
-	// won't appear here.
+	// to InReview by ReconcileStaleSessions before the listener opens, so
+	// they shouldn't reach this path in practice.
 	//
 	// Only reconcile when connected to a daemon — the daemon is the source of
 	// truth for running sessions. In-process mode has its own onFinish callback.

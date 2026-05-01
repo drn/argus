@@ -1004,6 +1004,10 @@ func TestReconcileWorksOnEmptyRunning(t *testing.T) {
 	}
 }
 
+// Covers the happy path (InProgress flipped) and idempotency on rows already
+// in a terminal state. The database.Tasks() error path is not exercised
+// directly — propagation is straight pass-through and the helper has no
+// other behavior on top of it.
 func TestReconcileStaleSessionsFlipsInProgress(t *testing.T) {
 	d := testDB(t)
 
@@ -1037,7 +1041,6 @@ func TestReconcileStaleSessionsFlipsInProgress(t *testing.T) {
 		}
 	}
 }
-
 
 // TestReconcileSkipsOnStaleStartGen and TestReconcileWorksWhenStartGenUnchanged
 // replicate the startGen guard logic from onTick's QueueUpdateDraw callback

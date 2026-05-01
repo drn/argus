@@ -29,8 +29,8 @@ func ReconcileStaleSessions(database *db.DB) (int, error) {
 			continue
 		}
 		t.SetStatus(model.StatusInReview)
-		if err := database.Update(t); err != nil {
-			slog.Warn("reconcile: update failed", "task", t.ID, "name", t.Name, "err", err)
+		if uerr := database.Update(t); uerr != nil {
+			slog.Warn("reconcile: update failed", "task", t.ID, "name", t.Name, "err", uerr)
 			continue
 		}
 		slog.Info("reconcile: stale in_progress → in_review", "task", t.ID, "name", t.Name)
