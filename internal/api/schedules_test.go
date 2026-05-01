@@ -30,7 +30,7 @@ func (s *stubScheduler) RunNow(id string) (*model.Task, error) {
 
 func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 	srv, _ := testServer(t)
-	handler := authMiddleware(srv.token, srv.db, srv.routes())
+	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
 
 	// Create.
 	body := `{"name":"Nightly","project":"argus","prompt":"run tests","schedule":"@daily","enabled":true}`
@@ -91,7 +91,7 @@ func TestScheduleHandlers_CreateListUpdateDelete(t *testing.T) {
 
 func TestScheduleHandlers_CreateValidates(t *testing.T) {
 	srv, _ := testServer(t)
-	handler := authMiddleware(srv.token, srv.db, srv.routes())
+	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
 
 	cases := map[string]string{
 		"missing-name":     `{"project":"p","prompt":"go","schedule":"@daily"}`,
@@ -115,7 +115,7 @@ func TestScheduleHandlers_CreateValidates(t *testing.T) {
 // See review-20260428.md BLOCKING #2.
 func TestScheduleHandlers_UpdateScheduleAnchorOnNow(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, srv.db, srv.routes())
+	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
 
 	sched := &model.ScheduledTask{
 		Name:     "fresh",
@@ -146,7 +146,7 @@ func TestScheduleHandlers_RunNow(t *testing.T) {
 	srv, d := testServer(t)
 	stub := &stubScheduler{task: &model.Task{ID: "task-123", Name: "fired"}}
 	srv.SetScheduler(stub)
-	handler := authMiddleware(srv.token, srv.db, srv.routes())
+	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
 
 	// Add directly to DB so RunNow can find it.
 	sched := &model.ScheduledTask{
@@ -172,7 +172,7 @@ func TestScheduleHandlers_RunNow(t *testing.T) {
 
 func TestScheduleHandlers_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
 	device := func(method, url, body string) *http.Request {

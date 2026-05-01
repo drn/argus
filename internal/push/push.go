@@ -30,11 +30,19 @@ const (
 
 // Manager owns VAPID keys + handles fan-out.
 type Manager struct {
-	db        *db.DB
-	pubKey    string
-	privKey   string
-	subject   string
+	db         *db.DB
+	pubKey     string
+	privKey    string
 	httpClient *http.Client
+
+	// muSubject guards subject. The VAPID JWT `sub` claim must be a real
+	// mailto: or https:// URL — Apple WebPush rejects unroutable values like
+	// `mailto:argus@localhost` with HTTP 403. The API server updates this
+	// from each authenticated request's Origin/Host so it tracks whatever
+	// https URL the PWA is currently being served from (typically the user's
+	// tailscale-funnel URL).
+	muSubject sync.RWMutex
+	subject   string
 
 	muThrottle sync.Mutex
 	// lastSent tracks per-throttle-key send times. Keys are the same strings
@@ -43,6 +51,11 @@ type Manager struct {
 	// into the fan-out path.
 	lastSent map[string]time.Time
 }
+
+// legacyBadSubject is the original hardcoded default that Apple WebPush
+// rejects with 403. Manager.New() clears it so SetSubject will repopulate
+// from the next authenticated request.
+const legacyBadSubject = "mailto:argus@localhost"
 
 // New loads or generates a VAPID keypair from the DB and returns a Manager.
 func New(d *db.DB) (*Manager, error) {
@@ -71,9 +84,11 @@ func New(d *db.DB) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if subj == "" {
-		subj = "mailto:argus@localhost"
-		_ = d.SetConfigValue(keySubject, subj)
+	// Drop the legacy bad default so Apple-bound pushes don't keep failing
+	// with 403 until the next authenticated request rewrites it.
+	if subj == legacyBadSubject {
+		_ = d.SetConfigValue(keySubject, "")
+		subj = ""
 	}
 	return &Manager{
 		db:         d,
@@ -88,6 +103,39 @@ func New(d *db.DB) (*Manager, error) {
 // PublicKey returns the urlsafe-base64 public VAPID key for the SPA to feed
 // into PushManager.subscribe.
 func (m *Manager) PublicKey() string { return m.pubKey }
+
+// Subject returns the current VAPID JWT `sub` claim. Empty when no
+// authenticated request has supplied an https origin yet.
+func (m *Manager) Subject() string {
+	if m == nil {
+		return ""
+	}
+	m.muSubject.RLock()
+	defer m.muSubject.RUnlock()
+	return m.subject
+}
+
+// SetSubject updates the VAPID JWT `sub` claim and persists it to the DB.
+// No-op for nil receivers, empty input, or unchanged values. Apple WebPush
+// rejects values that aren't a valid mailto: or https:// URL — callers
+// should pass an https origin (e.g. "https://host.tailnet.ts.net") that
+// matches the URL the PWA is being served from.
+func (m *Manager) SetSubject(subject string) error {
+	if m == nil || subject == "" {
+		return nil
+	}
+	m.muSubject.Lock()
+	defer m.muSubject.Unlock()
+	if m.subject == subject {
+		return nil
+	}
+	if err := m.db.SetConfigValue(keySubject, subject); err != nil {
+		return err
+	}
+	m.subject = subject
+	uxlog.Log("[push] vapid subject updated to %q", subject)
+	return nil
+}
 
 // ForgetTask removes the per-task idle throttle entry. Called when a task's
 // session has exited so the in-memory lastSent map doesn't grow without
@@ -164,6 +212,11 @@ func (m *Manager) Notify(throttleKey, title, body, taskID string) {
 }
 
 func (m *Manager) sendOne(s db.PushSubscription, payload []byte) {
+	subj := m.Subject()
+	if subj == "" {
+		uxlog.Log("[push] send skipped id=%d: vapid subject not yet set (waiting for first authenticated request)", s.ID)
+		return
+	}
 	sub := &webpush.Subscription{
 		Endpoint: s.Endpoint,
 		Keys: webpush.Keys{
@@ -173,7 +226,7 @@ func (m *Manager) sendOne(s db.PushSubscription, payload []byte) {
 	}
 	resp, err := webpush.SendNotification(payload, sub, &webpush.Options{
 		HTTPClient:      m.httpClient,
-		Subscriber:      m.subject,
+		Subscriber:      subj,
 		VAPIDPublicKey:  m.pubKey,
 		VAPIDPrivateKey: m.privKey,
 		TTL:             defaultTTL,

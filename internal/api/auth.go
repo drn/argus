@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/push"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 const tokenBytes = 32 // 256 bits
@@ -119,7 +121,7 @@ func MintToken(d *db.DB, label string) (string, int64, error) {
 //    is non-nil)
 //
 // The master token is treated as admin and is required to mint device tokens.
-func authMiddleware(token string, database *db.DB, next http.Handler, skipPaths ...string) http.Handler {
+func authMiddleware(token string, database *db.DB, pm *push.Manager, next http.Handler, skipPaths ...string) http.Handler {
 	exact := make(map[string]bool, len(skipPaths))
 	var prefixes []string
 	for _, p := range skipPaths {
@@ -154,6 +156,7 @@ func authMiddleware(token string, database *db.DB, next http.Handler, skipPaths 
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1 {
 			// Master token; mark request and proceed.
 			r.Header.Set("X-Argus-Auth", "master")
+			recordVAPIDOrigin(pm, r)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -162,10 +165,65 @@ func authMiddleware(token string, database *db.DB, next http.Handler, skipPaths 
 			if t, _ := database.FindAPITokenByHash(hashToken(provided)); t != nil {
 				r.Header.Set("X-Argus-Auth", "device")
 				r.Header.Set("X-Argus-Token-Id", strconv.FormatInt(t.ID, 10))
+				recordVAPIDOrigin(pm, r)
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
 		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 	})
+}
+
+// recordVAPIDOrigin extracts an https origin from the request and pushes it
+// into the push manager as the VAPID JWT `sub`. Apple WebPush rejects any
+// other format (mailto:argus@localhost → 403). Called on every authenticated
+// request so the subject tracks whichever https URL the PWA is being served
+// from (typically the user's tailscale-funnel host). Skips silently when the
+// derived origin isn't https — http LAN access shouldn't poison the value.
+func recordVAPIDOrigin(pm *push.Manager, r *http.Request) {
+	if pm == nil {
+		return
+	}
+	origin := vapidOriginFromRequest(r)
+	if origin == "" {
+		return
+	}
+	if err := pm.SetSubject(origin); err != nil {
+		uxlog.Log("[push] vapid subject persist failed: %v", err)
+	}
+}
+
+// vapidOriginFromRequest derives "https://<host>" from the request. Prefers
+// the Origin header (set by browsers on cross-origin fetches and by the SPA
+// on subscribe POSTs) but falls back to scheme+Host so EventSource and
+// same-origin GETs still contribute. Returns "" if the result isn't an
+// https URL.
+func vapidOriginFromRequest(r *http.Request) string {
+	if o := strings.TrimSpace(r.Header.Get("Origin")); strings.HasPrefix(o, "https://") {
+		return trimURLPath(o)
+	}
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	if scheme != "https" || r.Host == "" {
+		return ""
+	}
+	return scheme + "://" + r.Host
+}
+
+// trimURLPath returns the scheme+host portion of a URL, dropping any path,
+// query, or fragment. The Origin header normally has no path, but RFC 6454
+// permits one — strip defensively so the VAPID `sub` claim is consistent.
+func trimURLPath(u string) string {
+	// Skip past "https://".
+	const prefix = "https://"
+	if !strings.HasPrefix(u, prefix) {
+		return u
+	}
+	rest := u[len(prefix):]
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	return prefix + rest
 }

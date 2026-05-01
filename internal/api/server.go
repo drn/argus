@@ -70,7 +70,7 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 	// Auth middleware skips the dashboard route (GET /) and /vendor/ static
 	// assets so the page can load and prompt for the token. All /api/* routes
 	// require auth.
-	handler := authMiddleware(s.token, s.db, mux, "/",
+	handler := authMiddleware(s.token, s.db, s.push, mux, "/",
 		"/share",
 		"/vendor/",
 		"/manifest.webmanifest",

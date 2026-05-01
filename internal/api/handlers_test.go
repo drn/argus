@@ -368,7 +368,7 @@ func TestHandleGitDiff_PathTraversal(t *testing.T) {
 func TestHandleStopAll_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
 	// Wrap with auth middleware so X-Argus-Auth gets set.
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	t.Run("accepts master token", func(t *testing.T) {
 		req := authedReq("POST", "/api/sessions/stop-all", "")
@@ -390,7 +390,7 @@ func TestHandleStopAll_MasterOnly(t *testing.T) {
 
 func TestHandlePushTest_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	t.Run("rejects device token", func(t *testing.T) {
 		plain, _, err := MintToken(d, "phone")
@@ -405,7 +405,7 @@ func TestHandlePushTest_MasterOnly(t *testing.T) {
 
 func TestHandleCreateToken_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	t.Run("device token cannot mint", func(t *testing.T) {
 		plain, _, err := MintToken(d, "phone")
@@ -428,7 +428,7 @@ func TestHandleCreateToken_MasterOnly(t *testing.T) {
 
 func TestProjectsBackends_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
 	device := func(method, url, body string) *http.Request {

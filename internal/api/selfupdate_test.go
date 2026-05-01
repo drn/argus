@@ -12,7 +12,7 @@ import (
 
 func TestHandleGetSourcePath_DeviceTokenForbidden(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
@@ -26,7 +26,7 @@ func TestHandleGetSourcePath_DeviceTokenForbidden(t *testing.T) {
 
 func TestHandleGetSourcePath_MasterReturnsConfig(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	testutil.NoError(t, d.SetConfigValue("argus.source_path", "/path/to/argus"))
 
@@ -42,7 +42,7 @@ func TestHandleGetSourcePath_MasterReturnsConfig(t *testing.T) {
 
 func TestHandleSetSourcePath_PersistsValue(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	req := authedReq("PUT", "/api/source-path", `{"path":"/foo/bar"}`)
 	w := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestHandleSetSourcePath_PersistsValue(t *testing.T) {
 
 func TestHandleSetSourcePath_TrimsWhitespace(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	req := authedReq("PUT", "/api/source-path", `{"path":"  /foo/bar  "}`)
 	w := httptest.NewRecorder()
@@ -64,7 +64,7 @@ func TestHandleSetSourcePath_TrimsWhitespace(t *testing.T) {
 
 func TestHandleUpdateSelf_NoSourcePath(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	req := authedReq("POST", "/api/update", "")
 	w := httptest.NewRecorder()
@@ -83,7 +83,7 @@ func TestHandleUpdateSelf_NoSourcePath(t *testing.T) {
 
 func TestHandleUpdateSelf_DeviceTokenForbidden(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	plain, _, err := MintToken(d, "phone-upd")
 	testutil.NoError(t, err)

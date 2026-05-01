@@ -66,7 +66,7 @@ func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
 
 func TestHandleSettings_PutPersists(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	body := `{"sandbox": {"enabled": true, "deny_read": ["/etc"]},
 	          "kb": {"enabled": true, "metis_vault_path": "/tmp/m"},
@@ -85,7 +85,7 @@ func TestHandleSettings_PutPersists(t *testing.T) {
 
 func TestHandleSettings_PutRequiresMaster(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
 
@@ -99,7 +99,7 @@ func TestHandleSettings_PutRequiresMaster(t *testing.T) {
 
 func TestHandleSettings_GetIsAvailableToDevice(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
 
@@ -148,7 +148,7 @@ func TestHandleGetLog(t *testing.T) {
 		// Pin the intent: log-tail is read-only and available to device
 		// tokens (same policy as GET /api/settings). If logs ever need to
 		// be master-only, this test will catch the change.
-		handler := authMiddleware(srv.token, d, srv.routes())
+		handler := authMiddleware(srv.token, d, nil, srv.routes())
 		plain, _, err := MintToken(d, "phone")
 		testutil.NoError(t, err)
 
@@ -163,7 +163,7 @@ func TestHandleGetLog(t *testing.T) {
 
 func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, srv.routes())
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	body := `{
 	  "name": "alpha",

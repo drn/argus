@@ -92,3 +92,41 @@ func TestForgetTask_NilManager(t *testing.T) {
 	var m *Manager
 	m.ForgetTask("t1") // must not panic
 }
+
+func TestSetSubject_PersistsAndUpdates(t *testing.T) {
+	m, d := newManager(t)
+	testutil.Equal(t, m.Subject(), "")
+
+	testutil.NoError(t, m.SetSubject("https://host.tailnet.ts.net"))
+	testutil.Equal(t, m.Subject(), "https://host.tailnet.ts.net")
+
+	got, err := d.GetConfigValue(keySubject)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "https://host.tailnet.ts.net")
+}
+
+func TestSetSubject_EmptyAndNilNoOp(t *testing.T) {
+	m, _ := newManager(t)
+	testutil.NoError(t, m.SetSubject("https://a.example"))
+	testutil.NoError(t, m.SetSubject(""))
+	testutil.Equal(t, m.Subject(), "https://a.example")
+
+	var nilM *Manager
+	testutil.NoError(t, nilM.SetSubject("https://b.example")) // must not panic
+	testutil.Equal(t, nilM.Subject(), "")
+}
+
+func TestNew_ClearsLegacyBadSubject(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	testutil.NoError(t, d.SetConfigValue(keySubject, legacyBadSubject))
+
+	m, err := New(d)
+	testutil.NoError(t, err)
+	testutil.Equal(t, m.Subject(), "")
+
+	got, err := d.GetConfigValue(keySubject)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got, "")
+}
