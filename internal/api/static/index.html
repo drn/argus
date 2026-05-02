@@ -357,6 +357,57 @@ button:disabled { opacity: 0.5; cursor: default; }
 #compose-send:active { opacity: 0.7; }
 #compose-send:disabled { opacity: 0.3; cursor: not-allowed; }
 
+/* Key bar: horizontal row of virtual keys (Esc, Tab, ⇧Tab, arrows) iOS lacks
+   on its soft keyboard but Claude Code menus need. Sits between term and
+   compose bar so it stays above the soft keyboard along with compose. Touch
+   only; toggled by the ⌨ button in the compose bar. Visibility preference
+   persists in localStorage. Buttons send raw bytes to the PTY via the same
+   /input path the overflow Esc/Toggle items use — they never type into the
+   compose textarea. */
+.key-bar {
+  flex-shrink: 0;
+  display: none;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.key-bar::-webkit-scrollbar { display: none; }
+.key-bar.show { display: flex; }
+.key-bar button {
+  flex: 0 0 auto;
+  min-width: 44px; min-height: 36px;
+  padding: 6px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 15px; font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.key-bar button:active { background: var(--border); }
+/* Toggle for the key bar — sits on the left of the compose bar, mirroring
+   the Send button's footprint. Subdued styling so Send remains the primary
+   action. `.on` highlights with the accent border when the bar is open. */
+#compose-keybar-toggle {
+  flex-shrink: 0;
+  width: 40px; height: 40px; min-width: 40px;
+  border-radius: 8px;
+  background: var(--surface); color: var(--text-dim);
+  border: 1px solid var(--border);
+  font-size: 18px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex; align-items: center; justify-content: center;
+}
+#compose-keybar-toggle:active { background: var(--border); }
+#compose-keybar-toggle.on { color: var(--accent); border-color: var(--accent); }
+
 /* Font size controls inside the overflow menu — sit as a row at the top of
    the dropdown so taps don't require dismissing the menu between presses. */
 .overflow-font-row {
@@ -855,7 +906,17 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div id="term"></div>
       <button class="jump-bottom-btn" id="jump-bottom" aria-label="Scroll to input" type="button">↓</button>
     </div>
+    <div class="key-bar" id="key-bar">
+      <button type="button" data-keybar="esc" aria-label="Escape">Esc</button>
+      <button type="button" data-keybar="tab" aria-label="Tab">Tab</button>
+      <button type="button" data-keybar="shift-tab" aria-label="Shift Tab">⇧Tab</button>
+      <button type="button" data-keybar="up" aria-label="Up arrow">↑</button>
+      <button type="button" data-keybar="down" aria-label="Down arrow">↓</button>
+      <button type="button" data-keybar="left" aria-label="Left arrow">←</button>
+      <button type="button" data-keybar="right" aria-label="Right arrow">→</button>
+    </div>
     <div class="compose-bar" id="compose-bar" style="display:none">
+      <button id="compose-keybar-toggle" type="button" aria-label="Toggle key bar" aria-pressed="false">⌨</button>
       <div class="compose-input-wrap">
         <textarea id="compose-input" rows="1"
           placeholder="Type or dictate to agent…"
@@ -4485,10 +4546,81 @@ function setComposeVisible(visible) {
   if (visible && IS_TOUCH && currentTask && currentTask.project) {
     loadSkillsForProject(currentTask.project);
   }
+  // Key bar tracks compose-bar lifecycle: only meaningful while the agent is
+  // running and the compose bar is mounted. Re-applies the persisted user
+  // preference on show; force-hides on tear down so a stopped task never
+  // leaves an orphan key row.
+  if (visible && IS_TOUCH) {
+    setKeyBarVisible(keyBarVisible);
+  } else {
+    const kb = document.getElementById('key-bar');
+    if (kb) kb.classList.remove('show');
+  }
   // On hide, close any stale dropdown so a re-open into a different task
   // doesn't briefly show the previous task's filtered list.
   if (!visible) composeAC.close();
 }
+
+// Key bar — virtual keys (Esc, Tab, ⇧Tab, arrows) iOS doesn't expose on its
+// soft keyboard but Claude Code menus need. Touch-only, persisted preference,
+// sends raw escape sequences to the PTY via the same path the overflow menu's
+// Esc/Toggle items use.
+let keyBarVisible = (() => {
+  try { return localStorage.getItem('argus-keybar-visible') === '1'; }
+  catch { return false; }
+})();
+
+const KEY_BAR_BYTES = {
+  'esc':       '\x1b',
+  'tab':       '\t',
+  'shift-tab': '\x1b[Z',
+  'up':        '\x1b[A',
+  'down':      '\x1b[B',
+  'right':     '\x1b[C',
+  'left':      '\x1b[D',
+};
+
+function setKeyBarVisible(v) {
+  keyBarVisible = !!v;
+  try { localStorage.setItem('argus-keybar-visible', v ? '1' : '0'); } catch {}
+  const kb = document.getElementById('key-bar');
+  const tg = document.getElementById('compose-keybar-toggle');
+  // Only actually mount the row when the compose bar itself is visible —
+  // otherwise we'd float a key row above a closed/dead task.
+  const compose = document.getElementById('compose-bar');
+  const composeShown = compose && compose.style.display !== 'none';
+  if (kb) kb.classList.toggle('show', !!v && composeShown);
+  if (tg) {
+    tg.classList.toggle('on', !!v);
+    tg.setAttribute('aria-pressed', v ? 'true' : 'false');
+  }
+}
+
+(function wireKeyBar() {
+  const kb = document.getElementById('key-bar');
+  const tg = document.getElementById('compose-keybar-toggle');
+  if (!kb || !tg) return;
+  // mousedown.preventDefault keeps the compose textarea focused so the soft
+  // keyboard doesn't dismiss between key taps. click still fires normally.
+  const swallowFocus = e => e.preventDefault();
+  tg.addEventListener('mousedown', swallowFocus);
+  tg.addEventListener('click', () => setKeyBarVisible(!keyBarVisible));
+  kb.querySelectorAll('button[data-keybar]').forEach(btn => {
+    btn.addEventListener('mousedown', swallowFocus);
+    btn.addEventListener('click', () => {
+      const bytes = KEY_BAR_BYTES[btn.dataset.keybar];
+      if (!bytes) return;
+      // Match the term.onData / overflow Esc gate: only forward when the
+      // agent is live. On a stopped task the PTY is gone and a silent no-op
+      // would feel like a broken button.
+      if (!currentTask || currentTask.status !== 'in_progress') {
+        showToast('Agent not running');
+        return;
+      }
+      sendInputBytes(bytes);
+    });
+  });
+})();
 
 // Mirror the server-side `io.LimitReader(r.Body, 64*1024)` in handleWriteInput
 // so a giant paste fails fast with a toast instead of POSTing megabytes that
