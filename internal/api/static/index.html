@@ -1598,24 +1598,11 @@ function onTermTouchStart(e) {
 }
 function onTermTouchEnd(e) {
   termTouching = false;
-  // Tap-to-focus: only focus on a real tap, not a swipe/flick. We use TWO
-  // independent signals — `!isTermScrolling` AND coord-delta < threshold.
-  // Either one alone has a known failure mode: isTermScrolling is unreliable
-  // on early-flick (scroll throttling), and coord-delta misses long-hold
-  // gestures that scrolled. Requiring both makes "tap" the strict case.
-  //
-  // Focusing on touchstart (the previous-previous approach) put iOS into
-  // "is this a tap on a focusable input?" mode, which delayed scroll
-  // engagement. Deferring focus to touchend with the discriminator removes
-  // the hesitation entirely.
-  //
-  // We deliberately DO NOT gate on `termIsAtBottom()` here. The bottom-gate
-  // existed when the focus target was xterm's hidden helper textarea — a tap
-  // mid-scrollback would pop the soft keyboard for no visible reason. Now
-  // that the compose bar is the touch focus target, a tap is an explicit
-  // "I want to type" signal, and the user expects the keyboard regardless
-  // of scroll position. The coord-delta + isTermScrolling combo replaces
-  // the bottom-gate's role of rejecting flicks-misread-as-taps.
+  // Tap-to-focus requires BOTH `!isTermScrolling` AND coord-delta below the
+  // threshold. Either alone has a known failure mode (isTermScrolling lags on
+  // iOS flick scroll-event throttling; coord-delta misses long-hold gestures
+  // that scrolled), so we require both. No `termIsAtBottom()` gate — see the
+  // tap-to-focus entry in gotchas/web-remote.md for why.
   let movedFar = false;
   const t = e && e.changedTouches && e.changedTouches[0];
   if (t) {
@@ -1643,6 +1630,11 @@ function onTermTouchCancel() {
   // destroyTerm. Force the gate open so the queue can drain.
   termTouching = false;
   isTermScrolling = false;
+  // Zero touch coords too — if a fresh touch arrives without a usable
+  // `touches[0]`, onTermTouchEnd would otherwise diff against the
+  // cancelled gesture's start point.
+  touchStartX = 0;
+  touchStartY = 0;
   clearTimeout(scrollendFallbackTimer);
   scrollendFallbackTimer = null;
   drainIfSettled();
@@ -2560,11 +2552,7 @@ document.getElementById('jump-bottom').addEventListener('click', () => {
   if (!term) return;
   term.scrollToBottom();
   flushPending();
-  // Route through focusInputOrTerm so on touch the compose textarea (visible
-  // synthetic input) gets focus instead of xterm's hidden helper — iOS
-  // dictation / Wispr Flow / third-party keyboards can't inject into the
-  // helper, so a bare term.focus() here would leave the user with no usable
-  // input target after tapping a "back to typing" affordance.
+  // Prefer compose-input on touch; see focusInputOrTerm.
   focusInputOrTerm();
   updateJumpButton();
 });
