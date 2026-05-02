@@ -182,6 +182,31 @@ test.describe('detail-view actions', () => {
     await expect(page.locator('#prompt-modal-body')).toContainText('<img');
   });
 
+  test('prompt modal copy button writes prompt body to clipboard', async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await page.locator('#btn-overflow').click();
+    await page.locator('#btn-prompt').click();
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+
+    // Copy button sits to the left of Close inside .modal-actions.
+    const actions = page.locator('#prompt-modal .modal-actions button');
+    await expect(actions).toHaveCount(2);
+    await expect(actions.nth(0)).toHaveText('Copy');
+    await expect(actions.nth(1)).toHaveText('Close');
+
+    await actions.nth(0).click();
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe('Investigate flaky CI runs and add retry logic.');
+
+    // Modal stays open after copy — only Close dismisses it.
+    await expect(page.locator('#prompt-modal')).toHaveClass(/open/);
+  });
+
   test('view prompt placeholder when prompt is empty', async ({ page }) => {
     await login(page);
     await page.locator('.task-item').first().click();
