@@ -206,10 +206,30 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 
 // --- Create Task ---
 
+// validateBackend returns nil if name is empty (caller will fall back to the
+// configured default) or matches a configured backend. Returns an error if the
+// caller asked for a backend that isn't in the config — fail fast at the API
+// boundary instead of letting agent.CreateAndStart roll back the worktree
+// after the fact.
+func (s *Server) validateBackend(name string) error {
+	if name == "" {
+		return nil
+	}
+	cfg := s.db.Config()
+	if _, ok := cfg.Backends[name]; !ok {
+		return fmt.Errorf("backend %q not configured", name)
+	}
+	return nil
+}
+
 type createTaskReq struct {
 	Name    string `json:"name"`
 	Prompt  string `json:"prompt"`
 	Project string `json:"project"`
+	// Backend overrides the default backend for this task. Empty = use the
+	// per-project / global default. Validated against the configured backends
+	// before the task is created.
+	Backend string `json:"backend"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +256,10 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name or prompt is required"})
 		return
 	}
+	if err := s.validateBackend(req.Backend); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	autoName := req.Name == ""
 	name := req.Name
 	if name == "" {
@@ -243,7 +267,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, autoName)
+	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, autoName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -272,7 +296,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	// 50MB total cap + headroom for the multipart envelope and text fields.
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentTotalBytes+1<<20)
 
-	name, prompt, project, atts, err := parseMultipartTaskForm(r)
+	name, prompt, project, backend, atts, err := parseMultipartTaskForm(r)
 	if err != nil {
 		writeJSON(w, statusForUploadErr(err), map[string]string{"error": err.Error()})
 		return
@@ -283,6 +307,10 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	}
 	if prompt == "" && name == "" && len(atts) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, prompt, or files required"})
+		return
+	}
+	if err := s.validateBackend(backend); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	// autoName fires only when name was synthesized from prompt — not from
@@ -301,6 +329,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		Name:        name,
 		Prompt:      prompt,
 		Project:     project,
+		Backend:     backend,
 		Attachments: atts,
 		AutoName:    autoName,
 	})
@@ -574,7 +603,9 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
-	task, err := s.createTask(name, prompt, project, false)
+	// Forks inherit the source task's backend so the new task starts with the
+	// same agent rather than silently defaulting back to the global setting.
+	task, err := s.createTask(name, prompt, project, src.Backend, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

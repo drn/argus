@@ -109,12 +109,15 @@ func main() {
 		log.Fatalf("db update: %v", err)
 	}
 
-	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
+		if backend == "" {
+			backend = "bash-test"
+		}
 		t := &model.Task{
 			Name:     name,
 			Prompt:   prompt,
 			Project:  project,
-			Backend:  "bash-test",
+			Backend:  backend,
 			Worktree: projDir,
 			Status:   model.StatusInProgress,
 		}

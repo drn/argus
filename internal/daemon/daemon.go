@@ -192,7 +192,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
 			func(name, prompt, project string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, autoName)
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, "", autoName)
 			},
 			d.db,
 			d.runner,
@@ -251,8 +251,9 @@ func (d *Daemon) Serve(sockPath string) error {
 	// table is a no-op, so there's no setting to gate it.
 	sch := scheduler.New(d.db, func(name, prompt, project string) (*model.Task, error) {
 		// Schedule names are user-edited (then suffixed with a timestamp) —
-		// already meaningful; no auto-rename.
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, false)
+		// already meaningful; no auto-rename. Backend override (if any) is
+		// applied by the scheduler post-creation by updating task.Backend.
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, "", false)
 	})
 	if pushMgr != nil {
 		// Push when a scheduled task fires from the cron tick. RunNow
@@ -286,8 +287,8 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, autoName)
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend string, autoName bool) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, autoName)
 			}, pushMgr)
 			apiSrv.SetScheduler(sch)
 			apiSrv.SetClipboard(d.clipboard)

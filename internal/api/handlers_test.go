@@ -25,11 +25,12 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 	t.Cleanup(func() { d.Close() })
 
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
 		task := &model.Task{
 			Name:    name,
 			Prompt:  prompt,
 			Project: project,
+			Backend: backend,
 			Status:  model.StatusInProgress,
 		}
 		d.Add(task)
@@ -229,6 +230,34 @@ func TestHandleCreateTask(t *testing.T) {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	})
+
+	t.Run("rejects unknown backend", func(t *testing.T) {
+		body := `{"name":"t","prompt":"go","project":"proj","backend":"nope"}`
+		req := authedReq("POST", "/api/tasks", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+	})
+
+	// Persists the per-task backend override end-to-end: the JSON body's
+	// "backend" field must reach agent creation, not be silently dropped on
+	// the way through the handler. Uses a fresh server so the assertion
+	// isn't sensitive to which backends are seeded by other subtests.
+	t.Run("persists backend override", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+		testutil.NoError(t, d.SetBackend("codex", config.Backend{Command: "echo"}))
+		body := `{"name":"with-codex","prompt":"do it","project":"proj","backend":"codex"}`
+		req := authedReq("POST", "/api/tasks", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusCreated)
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		got, err := d.Get(resp["id"].(string))
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Backend, "codex")
 	})
 }
 

@@ -20,11 +20,12 @@ import (
 //
 // BeforeStart/AfterStart hooks are intentionally nil — those are for the TUI's
 // startGen tick-reconciliation counter, which has no analogue in headless mode.
-func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, name, prompt, project string, autoName bool) (*model.Task, error) {
+func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, name, prompt, project, backend string, autoName bool) (*model.Task, error) {
 	task, _, err := agent.CreateAndStart(database, runner, agent.CreateInput{
 		Name:     name,
 		Prompt:   prompt,
 		Project:  project,
+		Backend:  backend,
 		AutoName: autoName,
 	})
 	return task, err

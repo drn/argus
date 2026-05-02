@@ -31,12 +31,12 @@ var (
 )
 
 // parseMultipartTaskForm reads a multipart/form-data POST /api/tasks request:
-// `name`, `prompt`, `project` text fields plus zero or more `files` parts.
-// Caller is responsible for setting the body cap before calling.
-func parseMultipartTaskForm(r *http.Request) (name, prompt, project string, atts []agent.Attachment, err error) {
+// `name`, `prompt`, `project`, `backend` text fields plus zero or more `files`
+// parts. Caller is responsible for setting the body cap before calling.
+func parseMultipartTaskForm(r *http.Request) (name, prompt, project, backend string, atts []agent.Attachment, err error) {
 	mr, err := r.MultipartReader()
 	if err != nil {
-		return "", "", "", nil, fmt.Errorf("multipart: %w", err)
+		return "", "", "", "", nil, fmt.Errorf("multipart: %w", err)
 	}
 	var totalBytes int64
 	for {
@@ -45,16 +45,16 @@ func parseMultipartTaskForm(r *http.Request) (name, prompt, project string, atts
 			break
 		}
 		if perr != nil {
-			return "", "", "", nil, fmt.Errorf("read part: %w", perr)
+			return "", "", "", "", nil, fmt.Errorf("read part: %w", perr)
 		}
 		if part.FileName() == "" {
-			// Text field — name/prompt/project. Cap at 1MB to bound a
+			// Text field — name/prompt/project/backend. Cap at 1MB to bound a
 			// malicious client trying to push GBs through a "name" field.
 			b, rerr := io.ReadAll(io.LimitReader(part, 1<<20))
 			formName := part.FormName()
 			part.Close() //nolint:errcheck
 			if rerr != nil {
-				return "", "", "", nil, fmt.Errorf("read field %s: %w", formName, rerr)
+				return "", "", "", "", nil, fmt.Errorf("read field %s: %w", formName, rerr)
 			}
 			switch formName {
 			case "name":
@@ -63,16 +63,18 @@ func parseMultipartTaskForm(r *http.Request) (name, prompt, project string, atts
 				prompt = string(b)
 			case "project":
 				project = string(b)
+			case "backend":
+				backend = string(b)
 			}
 			continue
 		}
 		att, rerr := readFilePart(part, len(atts), &totalBytes)
 		if rerr != nil {
-			return "", "", "", nil, rerr
+			return "", "", "", "", nil, rerr
 		}
 		atts = append(atts, att)
 	}
-	return name, prompt, project, atts, nil
+	return name, prompt, project, backend, atts, nil
 }
 
 // parseUploadOnlyForm reads a multipart upload-only POST (no name/prompt/project

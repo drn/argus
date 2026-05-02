@@ -239,15 +239,36 @@ func TestParseMultipartTaskForm_RoundTrips(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	name, prompt, project, atts, err := parseMultipartTaskForm(req)
+	name, prompt, project, backend, atts, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, name, "task-name")
 	testutil.Equal(t, prompt, "do the thing")
 	testutil.Equal(t, project, "p1")
+	testutil.Equal(t, backend, "")
 	testutil.Equal(t, len(atts), 2)
 	testutil.Equal(t, atts[0].Name, "a.txt")
 	testutil.Equal(t, string(atts[0].Data), "alpha")
 	testutil.Equal(t, atts[1].Name, "b.png")
+}
+
+// TestParseMultipartTaskForm_ReadsBackend verifies the optional `backend`
+// text field round-trips through the parser. Required so the New Task form's
+// agent dropdown reaches CreateInput.Backend even on uploads.
+func TestParseMultipartTaskForm_ReadsBackend(t *testing.T) {
+	ct, body := buildMultipart(t,
+		[][3]string{
+			{"prompt", "go", ""},
+			{"project", "p1", ""},
+			{"backend", "codex", ""},
+		},
+		nil,
+	)
+	req := httptest.NewRequest("POST", "/api/tasks", body)
+	req.Header.Set("Content-Type", ct)
+
+	_, _, _, backend, _, err := parseMultipartTaskForm(req)
+	testutil.NoError(t, err)
+	testutil.Equal(t, backend, "codex")
 }
 
 // TestParseMultipartTaskForm_EnforcesPerFileCap verifies the 10MB per-file
@@ -261,7 +282,7 @@ func TestParseMultipartTaskForm_EnforcesPerFileCap(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, _, err := parseMultipartTaskForm(req)
 	if !errors.Is(err, errAttachmentTooLarge) {
 		t.Fatalf("got %v, want errAttachmentTooLarge", err)
 	}

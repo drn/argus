@@ -1310,6 +1310,10 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <select id="create-project"></select>
     </div>
     <div class="form-group">
+      <label>Agent</label>
+      <select id="create-backend"></select>
+    </div>
+    <div class="form-group">
       <label>Name (optional)</label>
       <input type="text" id="create-name" placeholder="Auto-generated from prompt">
     </div>
@@ -1697,6 +1701,7 @@ async function tryConnect() {
       // initial refresh resolves rather than racing it.
       refresh().then(() => applyPendingTaskOpen());
       loadProjects();
+      loadBackends();
       startRefreshTimer();
       // applyPendingShare only touches DOM + sessionStorage, not the tasks
       // list, so it can run immediately without waiting for refresh.
@@ -3395,6 +3400,48 @@ async function loadProjects() {
   } catch(e) {}
 }
 
+// Friendly labels for the New Task agent dropdown. Falls back to the raw
+// backend name for any backend we don't have a curated label for, so custom
+// backends still appear in the menu.
+const BACKEND_LABELS = { claude: 'Claude Code', codex: 'Codex' };
+// Cached so default-resolution survives between tab switches without
+// re-fetching settings on every create-view open.
+let createBackendsCache = [];
+let createDefaultBackend = '';
+
+async function loadBackends() {
+  try {
+    const [bRes, sRes] = await Promise.all([
+      api('/api/backends'),
+      api('/api/settings'),
+    ]);
+    if (!bRes.ok) return;
+    const bData = await bRes.json();
+    createBackendsCache = bData.backends || [];
+    if (sRes && sRes.ok) {
+      const sData = await sRes.json();
+      createDefaultBackend = (sData.defaults && sData.defaults.backend) || '';
+    }
+    const sel = document.getElementById('create-backend');
+    if (!sel) return;
+    sel.replaceChildren();
+    for (const b of createBackendsCache) {
+      const opt = document.createElement('option');
+      opt.value = b.name;
+      opt.textContent = BACKEND_LABELS[b.name] || b.name;
+      sel.appendChild(opt);
+    }
+    // Default selection priority: configured global default → 'claude' if
+    // configured → first backend. Matches the user's expectation that the
+    // form opens to Claude when both Claude and Codex are configured.
+    const preferred = createDefaultBackend
+      || (createBackendsCache.find(b => b.name === 'claude') ? 'claude' : '')
+      || (createBackendsCache[0] && createBackendsCache[0].name)
+      || '';
+    if (preferred) sel.value = preferred;
+  } catch(e) {}
+}
+
 // --- File upload state for the New Task form ---
 // Files accumulate across multiple picker invocations and drag-drop events.
 // Cleared on successful create() only — survives tab switches and failed
@@ -3502,6 +3549,9 @@ async function createTask() {
   const project = document.getElementById('create-project').value;
   const name = document.getElementById('create-name').value.trim();
   const prompt = document.getElementById('create-prompt').value.trim();
+  // Empty backend = let the server use the configured default. The dropdown
+  // is a no-op until /api/backends loads, so we tolerate the empty case.
+  const backend = document.getElementById('create-backend').value;
   if (!project) { showToast('Select a project'); return; }
   if (!prompt && !name && createFiles.length === 0) {
     showToast('Enter a name, prompt, or attach a file');
@@ -3519,12 +3569,13 @@ async function createTask() {
       fd.append('name', name);
       fd.append('prompt', prompt);
       fd.append('project', project);
+      if (backend) fd.append('backend', backend);
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
       r = await api('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ name, prompt, project })
+        body: JSON.stringify({ name, prompt, project, backend })
       });
     }
     const data = await r.json();
@@ -3566,7 +3617,33 @@ function switchTab(tab) {
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
+  if (tab === 'create') applyCreateDefaults();
   if (tab === 'settings') loadSettings();
+}
+
+// applyCreateDefaults seeds the New Task form with sensible defaults each time
+// the tab is opened: the project select snaps to the currently expanded folder
+// in the task list (so "+ New" feels scoped to where the user was just
+// looking), and the backend select re-resolves to the configured default if
+// it hasn't already been populated. Both are no-ops when the cached lists are
+// still loading — the underlying loaders run on connect and on settings save.
+function applyCreateDefaults() {
+  const projSel = document.getElementById('create-project');
+  if (projSel && projSel.options.length) {
+    const want = expandedProject[listFilter] || expandedProject[FILTER_ACTIVE];
+    if (want && [...projSel.options].some(o => o.value === want) && projSel.value !== want) {
+      projSel.value = want;
+      // Skills autocomplete keys off the selected project; keep it in sync
+      // when we change the value programmatically.
+      loadSkillsForProject(want);
+    }
+  }
+  const beSel = document.getElementById('create-backend');
+  if (beSel && !beSel.options.length) {
+    // Backends weren't loaded yet (e.g. user opened the tab during a slow
+    // reconnect). Trigger a fetch; it'll populate the dropdown async.
+    loadBackends();
+  }
 }
 
 // --- Settings tab: tokens + push + sandbox + KB + projects/backends + logs ---
@@ -4009,6 +4086,10 @@ async function saveBackendFromModal() {
     }
     closeBackendEditor();
     loadBackendsBlock();
+    // Settings can change backend list while New Task form is mounted; refresh
+    // its dropdown so a freshly added/renamed backend is selectable on the
+    // next "+ New" without a full reload.
+    loadBackends();
   } catch(e) { showToast('Save failed: ' + e.message); }
 }
 
@@ -4023,6 +4104,7 @@ async function deleteBackendFromModal() {
     }
     closeBackendEditor();
     loadBackendsBlock();
+    loadBackends();
   } catch(e) { showToast('Delete failed: ' + e.message); }
 }
 
