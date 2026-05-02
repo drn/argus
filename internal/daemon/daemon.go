@@ -249,11 +249,12 @@ func (d *Daemon) Serve(sockPath string) error {
 
 	// Start the scheduler (recurring scheduled tasks). Always-on — empty
 	// table is a no-op, so there's no setting to gate it.
-	sch := scheduler.New(d.db, func(name, prompt, project string) (*model.Task, error) {
+	sch := scheduler.New(d.db, func(name, prompt, project, backend string) (*model.Task, error) {
 		// Schedule names are user-edited (then suffixed with a timestamp) —
-		// already meaningful; no auto-rename. Backend override (if any) is
-		// applied by the scheduler post-creation by updating task.Backend.
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, "", false)
+		// already meaningful; no auto-rename. backend is the per-schedule
+		// override (sched.Backend); empty string falls back to the configured
+		// default inside agent.CreateAndStart.
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, false)
 	})
 	if pushMgr != nil {
 		// Push when a scheduled task fires from the cron tick. RunNow

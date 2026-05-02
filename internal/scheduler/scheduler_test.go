@@ -28,7 +28,7 @@ type recordingCreator struct {
 	failNext error
 }
 
-func (r *recordingCreator) Create(name, prompt, project string) (*model.Task, error) {
+func (r *recordingCreator) Create(name, prompt, project, backend string) (*model.Task, error) {
 	if r.failNext != nil {
 		err := r.failNext
 		r.failNext = nil
@@ -39,6 +39,7 @@ func (r *recordingCreator) Create(name, prompt, project string) (*model.Task, er
 		Name:    name,
 		Project: project,
 		Prompt:  prompt,
+		Backend: backend,
 	}
 	r.calls = append(r.calls, *t)
 	return t, nil
@@ -324,4 +325,57 @@ func TestStopExits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("scheduler.Start did not return after Stop")
 	}
+}
+
+// Regression: sched.Backend must reach TaskCreator at fire time so the agent
+// process is launched with the override. The previous implementation set
+// task.Backend AFTER agent.CreateAndStart had already resolved the backend
+// inside its transactional flow, so the live session ran on the default
+// backend even though the row read correctly.
+func TestSchedulerFiresWithBackendOverride(t *testing.T) {
+	s, d, rec, clk := newTestScheduler(t)
+	sched := &model.ScheduledTask{
+		Name:     "with-codex",
+		Project:  "p",
+		Prompt:   "go",
+		Backend:  "codex",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	s.tick()
+	clk.Advance(2 * time.Minute)
+	s.tick()
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 fire, got %d", len(rec.calls))
+	}
+	testutil.Equal(t, rec.calls[0].Backend, "codex")
+}
+
+// RunNow must also pass sched.Backend through. The cron-tick path and the
+// manual-fire path both go through Scheduler.fire; this test pins down the
+// manual path explicitly so a future refactor can't silently bypass the
+// override on RunNow.
+func TestSchedulerRunNowWithBackendOverride(t *testing.T) {
+	s, d, rec, _ := newTestScheduler(t)
+	sched := &model.ScheduledTask{
+		Name:     "manual-codex",
+		Project:  "p",
+		Prompt:   "go",
+		Backend:  "codex",
+		Schedule: "@every 1h",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RunNow(sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.calls) != 1 {
+		t.Fatalf("expected 1 fire, got %d", len(rec.calls))
+	}
+	testutil.Equal(t, rec.calls[0].Backend, "codex")
 }

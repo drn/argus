@@ -22,8 +22,10 @@ import (
 const defaultTickInterval = time.Minute
 
 // TaskCreator creates a task. Same shape used by the HTTP API so the
-// scheduler plugs into the existing headless flow.
-type TaskCreator func(name, prompt, project string) (*model.Task, error)
+// scheduler plugs into the existing headless flow. backend overrides the
+// per-project / global default backend when non-empty; empty falls back to
+// the configured default.
+type TaskCreator func(name, prompt, project, backend string) (*model.Task, error)
 
 // Scheduler is the cron service. It owns its own ticker goroutine; methods
 // other than Start/Stop are safe to call from any goroutine but exist mostly
@@ -220,7 +222,11 @@ func (s *Scheduler) fire(sched *model.ScheduledTask, parsed cron.Schedule, now t
 	// with the previous fire still being open.
 	name := scheduleFireName(sched.Name, now)
 
-	task, err := s.create(name, sched.Prompt, sched.Project)
+	// Pass sched.Backend to the creator so the agent process is launched
+	// with the override. Updating task.Backend post-creation would be a no-op
+	// for the running session — agent.CreateAndStart resolves the backend
+	// inside its transactional flow before fire() can see the task row.
+	task, err := s.create(name, sched.Prompt, sched.Project, sched.Backend)
 	if err != nil {
 		sched.LastError = err.Error()
 		sched.LastRunAt = now
@@ -230,13 +236,6 @@ func (s *Scheduler) fire(sched *model.ScheduledTask, parsed cron.Schedule, now t
 		}
 		uxlog.Log("[scheduler] fire %s: %v", sched.ID, err)
 		return nil, err
-	}
-
-	if sched.Backend != "" && task.Backend != sched.Backend {
-		task.Backend = sched.Backend
-		if uErr := s.db.Update(task); uErr != nil {
-			uxlog.Log("[scheduler] persist backend override %s: %v", task.ID, uErr)
-		}
 	}
 
 	sched.LastRunAt = now
