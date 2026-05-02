@@ -112,6 +112,7 @@ self.addEventListener('notificationclick', (event) => {
       // Send the SPA a postMessage instead; if focus() succeeds the user
       // lands on the deep-linked task with the existing app state intact.
       try { await c.focus(); } catch (e) {}
+      // Message type must match the listener in static/index.html.
       if (taskId) c.postMessage({ type: 'argus:openTask', taskId });
       return;
     }

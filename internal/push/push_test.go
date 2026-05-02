@@ -50,10 +50,10 @@ func TestResetThrottle(t *testing.T) {
 	m, _ := newManager(t)
 	setThrottle(m, "idle:t1", time.Now())
 
-	m.ResetThrottle("idle:t1")
+	m.resetThrottle("idle:t1")
 
 	if _, set := m.throttleEntry("idle:t1"); set {
-		t.Fatalf("ResetThrottle did not clear the entry")
+		t.Fatalf("resetThrottle did not clear the entry")
 	}
 }
 
@@ -61,7 +61,7 @@ func TestResetThrottle_EmptyKeyNoOp(t *testing.T) {
 	m, _ := newManager(t)
 	setThrottle(m, "idle:t1", time.Now())
 
-	m.ResetThrottle("")
+	m.resetThrottle("")
 
 	if _, set := m.throttleEntry("idle:t1"); !set {
 		t.Fatalf("empty-key reset should not affect other entries")
@@ -70,7 +70,7 @@ func TestResetThrottle_EmptyKeyNoOp(t *testing.T) {
 
 func TestResetThrottle_NilManager(t *testing.T) {
 	var m *Manager
-	m.ResetThrottle("idle:x") // must not panic
+	m.resetThrottle("idle:x") // must not panic
 }
 
 func TestForgetTask_ClearsThrottle(t *testing.T) {
@@ -85,7 +85,7 @@ func TestForgetTask_ClearsThrottle(t *testing.T) {
 }
 
 // TestForgetTask_NilManager guards the consolidation: ForgetTask now
-// delegates to ResetThrottle, which has its own nil-receiver check. A future
+// delegates to resetThrottle, which has its own nil-receiver check. A future
 // refactor that removes that check would otherwise panic for nil managers
 // (the existing api/push.go nil-pattern relies on this).
 func TestForgetTask_NilManager(t *testing.T) {

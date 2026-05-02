@@ -1325,6 +1325,11 @@ let pendingTaskOpen = null;
   history.replaceState(null, '', u.pathname + u.search + u.hash);
 })();
 
+// In-flight guard for the archived-fallback path. While true, the 5s
+// background `refresh()` poll bails out so it can't race the deep-link
+// search by re-rendering the task list with a filter we just flipped.
+let openTaskByIdInFlight = false;
+
 async function openTaskById(id) {
   if (!id) return;
   // Tasks may not have loaded yet (initial boot) or the task may live in
@@ -1335,15 +1340,23 @@ async function openTaskById(id) {
   if (tasks.find(t => t.id === id)) { openDetail(id); return; }
   if (listFilter !== FILTER_ARCHIVED) {
     const prev = listFilter;
-    listFilter = FILTER_ARCHIVED;
-    await refresh();
-    if (tasks.find(t => t.id === id)) {
-      openDetail(id);
-      return;
+    openTaskByIdInFlight = true;
+    try {
+      listFilter = FILTER_ARCHIVED;
+      await refresh();
+      if (tasks.find(t => t.id === id)) {
+        openDetail(id);
+        return;
+      }
+      listFilter = prev;
+      await refresh();
+    } finally {
+      // Always clear the flag — leaking it would freeze background polls.
+      openTaskByIdInFlight = false;
     }
-    listFilter = prev;
-    await refresh();
   }
+  // Silent no-op if the task wasn't found in either filter (e.g. stale
+  // push payload after the task was deleted).
 }
 
 function applyPendingTaskOpen() {
@@ -1355,6 +1368,7 @@ function applyPendingTaskOpen() {
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', (e) => {
+    // Message type must match the sender in static/sw.js notificationclick.
     if (e.data && e.data.type === 'argus:openTask' && e.data.taskId) {
       openTaskById(String(e.data.taskId).slice(0, 256));
     }
@@ -1619,6 +1633,8 @@ async function tryConnect() {
       refresh().then(() => applyPendingTaskOpen());
       loadProjects();
       startRefreshTimer();
+      // applyPendingShare only touches DOM + sessionStorage, not the tasks
+      // list, so it can run immediately without waiting for refresh.
       applyPendingShare();
       return;
     }
@@ -1637,7 +1653,15 @@ async function tryConnect() {
 
 function startRefreshTimer() {
   if (refreshTimer) return;
-  refreshTimer = setInterval(refresh, 5000);
+  // Skip background ticks while a deep-link search is mutating listFilter
+  // — the in-flight openTaskById will run its own refresh() with the
+  // intended filter, and we don't want a concurrent tick to fetch under
+  // a transiently flipped filter and re-render the task list with the
+  // wrong subset.
+  refreshTimer = setInterval(() => {
+    if (openTaskByIdInFlight) return;
+    refresh();
+  }, 5000);
 }
 
 // Test hook: lets specs verify logout()/showOffline() lifecycle clears the

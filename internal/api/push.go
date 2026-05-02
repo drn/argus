@@ -121,14 +121,14 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 // Pulled out as a struct so idleWatcherTick can be exercised in unit tests
 // without spinning up a real ticker.
 type idleWatcherState struct {
-	idleNow  map[string]bool // taskID -> last seen idle?
-	observed map[string]bool // taskID -> have we tickled this session at least once?
+	idleNow    map[string]bool // taskID -> last seen idle?
+	seenBefore map[string]bool // taskID -> have we observed this session on a prior tick?
 }
 
 func newIdleWatcherState() *idleWatcherState {
 	return &idleWatcherState{
-		idleNow:  make(map[string]bool),
-		observed: make(map[string]bool),
+		idleNow:    make(map[string]bool),
+		seenBefore: make(map[string]bool),
 	}
 }
 
@@ -157,9 +157,9 @@ func (s *Server) idleWatcher() {
 
 // shouldFireIdlePush applies one observation to the per-task state and
 // returns whether the watcher should fire a push for an idle transition.
-// Pure function (state mutation aside) so the firing logic can be unit-
-// tested without wiring up a real runner + session + db. It encodes two
-// invariants:
+// Deterministic and I/O-free (the only side effect is mutating the passed
+// state) so the firing logic can be unit-tested without wiring up a real
+// runner + session + db. It encodes two invariants:
 //
 //   - First observation of a session never fires: prevents spurious push
 //     when an already-idle session enters the watcher's view (e.g. fresh
@@ -169,8 +169,8 @@ func (s *Server) idleWatcher() {
 //     that flips IsIdle false→true, which would bypass the 5-min throttle
 //     and spam push for stale tasks the user already saw.
 func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool) bool {
-	if !state.observed[id] {
-		state.observed[id] = true
+	if !state.seenBefore[id] {
+		state.seenBefore[id] = true
 		state.idleNow[id] = isIdle
 		return false
 	}
@@ -180,18 +180,24 @@ func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool) bool {
 }
 
 // idleWatcherTick runs one iteration of the idle-watch loop. Extracted from
-// idleWatcher so tests can drive it deterministically.
+// idleWatcher so the DB + notify path is isolated from the ticker, and so
+// the firing decision (shouldFireIdlePush) can be unit-tested without a
+// real runner.
 func (s *Server) idleWatcherTick(state *idleWatcherState) {
-	running, _ := s.runner.RunningAndIdle()
+	running, idle := s.runner.RunningAndIdle()
 	seen := make(map[string]bool, len(running))
+	idleSet := make(map[string]bool, len(idle))
+	for _, id := range idle {
+		idleSet[id] = true
+	}
 
 	for _, id := range running {
 		seen[id] = true
-		sess := s.runner.Get(id)
-		if sess == nil {
-			continue
-		}
-		if !shouldFireIdlePush(state, id, sess.IsIdle()) {
+		// Use the snapshot from RunningAndIdle so we don't re-acquire the
+		// runner lock per session — and so the (running, idle) view stays
+		// internally consistent. A second IsIdle() call here would open a
+		// TOCTOU window between the snapshot and the per-task check.
+		if !shouldFireIdlePush(state, id, idleSet[id]) {
 			continue
 		}
 		task, err := s.db.Get(id)
@@ -215,7 +221,7 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	for id := range state.idleNow {
 		if !seen[id] {
 			delete(state.idleNow, id)
-			delete(state.observed, id)
+			delete(state.seenBefore, id)
 			s.push.ForgetTask(id)
 		}
 	}

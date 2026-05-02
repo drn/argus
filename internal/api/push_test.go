@@ -26,7 +26,7 @@ func TestShouldFireIdlePush_FirstObservationSuppressed(t *testing.T) {
 			testutil.Equal(t, fire, false)
 			// State must still be recorded so subsequent ticks know the
 			// previous observation.
-			testutil.Equal(t, state.observed["task-1"], true)
+			testutil.Equal(t, state.seenBefore["task-1"], true)
 			testutil.Equal(t, state.idleNow["task-1"], tc.isIdle)
 		})
 	}
