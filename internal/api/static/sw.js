@@ -7,7 +7,7 @@
 //
 // Increment SW_VERSION on any shell change to bust the cache.
 
-const SW_VERSION = 'argus-shell-v9';
+const SW_VERSION = 'argus-shell-v10';
 const SHELL_ASSETS = [
   '/',
   '/manifest.webmanifest',
@@ -101,16 +101,23 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const taskId = event.notification.data?.taskId;
   const url = taskId ? `/?task=${encodeURIComponent(taskId)}` : '/';
-  event.waitUntil(
-    clients.matchAll({ type: 'window' }).then(list => {
-      for (const c of list) {
-        if (c.url.includes(self.location.origin)) {
-          c.focus();
-          c.navigate(url);
-          return;
-        }
-      }
-      return clients.openWindow(url);
-    })
-  );
+  event.waitUntil((async () => {
+    const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of list) {
+      let cu;
+      try { cu = new URL(c.url); } catch (e) { continue; }
+      if (cu.origin !== self.location.origin) continue;
+      // Existing client wins. Don't c.navigate — Safari/iOS support is
+      // patchy and a full reload throws away the SPA's terminal/SSE state.
+      // Send the SPA a postMessage instead; if focus() succeeds the user
+      // lands on the deep-linked task with the existing app state intact.
+      try { await c.focus(); } catch (e) {}
+      if (taskId) c.postMessage({ type: 'argus:openTask', taskId });
+      return;
+    }
+    // No existing client. Open a fresh window with the deep link encoded
+    // in the URL — the SPA's load-time hook reads ?task= and opens it
+    // once tasks have loaded.
+    return clients.openWindow(url);
+  })());
 });

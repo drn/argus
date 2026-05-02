@@ -1306,6 +1306,61 @@ function clampShareField(s) {
   history.replaceState(null, '', '/');
 })();
 
+// --- Push notification deep link ---
+// Notification clicks land here two ways:
+//   1) Existing client: SW posts {type:'argus:openTask', taskId}. The
+//      handler below opens the task without a reload.
+//   2) Fresh window: SW openWindow('/?task=<id>'). We capture ?task= here,
+//      strip it from the URL (so a reload doesn't re-fire), then defer the
+//      open until tasks have loaded.
+let pendingTaskOpen = null;
+(function capturePendingTaskOpen() {
+  const sp = new URLSearchParams(location.search);
+  const taskId = sp.get('task');
+  if (!taskId) return;
+  // Cap to avoid pathological deep links pushing arbitrary data through.
+  pendingTaskOpen = taskId.slice(0, 256);
+  const u = new URL(location.href);
+  u.searchParams.delete('task');
+  history.replaceState(null, '', u.pathname + u.search + u.hash);
+})();
+
+async function openTaskById(id) {
+  if (!id) return;
+  // Tasks may not have loaded yet (initial boot) or the task may live in
+  // the archived filter. Try the current snapshot, then refresh, then try
+  // archived as a last resort so a push for an archived task still opens.
+  if (tasks.find(t => t.id === id)) { openDetail(id); return; }
+  await refresh();
+  if (tasks.find(t => t.id === id)) { openDetail(id); return; }
+  if (listFilter !== FILTER_ARCHIVED) {
+    const prev = listFilter;
+    listFilter = FILTER_ARCHIVED;
+    await refresh();
+    if (tasks.find(t => t.id === id)) {
+      openDetail(id);
+      return;
+    }
+    listFilter = prev;
+    await refresh();
+  }
+}
+
+function applyPendingTaskOpen() {
+  if (!pendingTaskOpen) return;
+  const id = pendingTaskOpen;
+  pendingTaskOpen = null;
+  openTaskById(id);
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'argus:openTask' && e.data.taskId) {
+      openTaskById(String(e.data.taskId).slice(0, 256));
+    }
+  });
+}
+
 function applyPendingShare() {
   const raw = sessionStorage.getItem('argus-pending-share');
   if (!raw) return;
@@ -1559,7 +1614,9 @@ async function tryConnect() {
       localStorage.setItem('argus-token', TOKEN);
       document.getElementById('auth-screen').style.display = 'none';
       document.getElementById('main-app').style.display = 'block';
-      refresh();
+      // applyPendingTaskOpen needs the tasks list, so chain it after the
+      // initial refresh resolves rather than racing it.
+      refresh().then(() => applyPendingTaskOpen());
       loadProjects();
       startRefreshTimer();
       applyPendingShare();

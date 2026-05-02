@@ -97,4 +97,32 @@ test.describe('PWA', () => {
     const pending = await page.evaluate(() => sessionStorage.getItem('argus-pending-share'));
     expect(pending).toBeNull();
   });
+
+  test('?task=<id> deep link opens the task detail view (push notification click)', async ({ page, request }) => {
+    // Read the seeded task ID from the test server so we open something real.
+    const tasksResp = await request.get('/api/tasks', {
+      headers: { Authorization: 'Bearer test-token' },
+    });
+    expect(tasksResp.status()).toBe(200);
+    const { tasks } = await tasksResp.json();
+    expect(tasks.length).toBeGreaterThan(0);
+    const taskId = tasks[0].id;
+
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto(`/?task=${encodeURIComponent(taskId)}`);
+
+    // Detail view should open with the deep-linked task.
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+    await page.waitForFunction(
+      (id) => (window as any).currentTask?.id === id,
+      taskId,
+      { timeout: 5000 }
+    );
+
+    // URL should have been cleaned up so a refresh doesn't re-fire the deep
+    // link (mirrors the share-target hygiene).
+    const url = new URL(page.url());
+    expect(url.pathname).toBe('/');
+    expect(url.searchParams.get('task')).toBeNull();
+  });
 });

@@ -117,16 +117,31 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
 }
 
+// idleWatcherState carries the per-task bookkeeping across idleWatcher ticks.
+// Pulled out as a struct so idleWatcherTick can be exercised in unit tests
+// without spinning up a real ticker.
+type idleWatcherState struct {
+	idleNow  map[string]bool // taskID -> last seen idle?
+	observed map[string]bool // taskID -> have we tickled this session at least once?
+}
+
+func newIdleWatcherState() *idleWatcherState {
+	return &idleWatcherState{
+		idleNow:  make(map[string]bool),
+		observed: make(map[string]bool),
+	}
+}
+
 // idleWatcher periodically polls all running sessions and fires a push when a
 // session transitions from non-idle to idle. Coarse but cheap (5s tick).
 // Exits when s.stopCh is closed (Server.Shutdown).
 //
-// Single-goroutine: idleNow is only touched here so no mutex is needed.
+// Single-goroutine: state is only touched here so no mutex is needed.
 func (s *Server) idleWatcher() {
 	if s.push == nil {
 		return
 	}
-	idleNow := make(map[string]bool) // taskID -> last seen idle?
+	state := newIdleWatcherState()
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 
@@ -136,51 +151,72 @@ func (s *Server) idleWatcher() {
 			return
 		case <-tick.C:
 		}
+		s.idleWatcherTick(state)
+	}
+}
 
-		running, _ := s.runner.RunningAndIdle()
-		seen := make(map[string]bool, len(running))
+// shouldFireIdlePush applies one observation to the per-task state and
+// returns whether the watcher should fire a push for an idle transition.
+// Pure function (state mutation aside) so the firing logic can be unit-
+// tested without wiring up a real runner + session + db. It encodes two
+// invariants:
+//
+//   - First observation of a session never fires: prevents spurious push
+//     when an already-idle session enters the watcher's view (e.g. fresh
+//     idleWatcher start with running sessions present).
+//   - We deliberately do NOT clear the throttle on busy transition. Long-
+//     idle agents emit incidental output (cursor redraws, status updates)
+//     that flips IsIdle false→true, which would bypass the 5-min throttle
+//     and spam push for stale tasks the user already saw.
+func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool) bool {
+	if !state.observed[id] {
+		state.observed[id] = true
+		state.idleNow[id] = isIdle
+		return false
+	}
+	wasIdle := state.idleNow[id]
+	state.idleNow[id] = isIdle
+	return isIdle && !wasIdle
+}
 
-		for _, id := range running {
-			seen[id] = true
-			sess := s.runner.Get(id)
-			if sess == nil {
-				continue
-			}
-			isIdle := sess.IsIdle()
-			wasIdle := idleNow[id]
-			idleNow[id] = isIdle
-			switch {
-			case isIdle && !wasIdle:
-				// Idle transition — fire push.
-				task, err := s.db.Get(id)
-				if err != nil || task == nil {
-					continue
-				}
-				name := task.Name
-				if name == "" {
-					name = id
-				}
-				body := "Agent idle — needs attention"
-				if task.Status == model.StatusInReview {
-					body = "Ready for review"
-				}
-				uxlog.Log("[push] idle transition task=%s name=%q", id, name)
-				s.push.Notify("idle:"+id, name, body, id)
-			case !isIdle && wasIdle:
-				// Busy again — clear the throttle so the next genuine idle
-				// transition (e.g., agent finishing for real) fires fresh
-				// instead of being eaten by a leftover 5-minute window.
-				s.push.ResetThrottle("idle:" + id)
-			}
+// idleWatcherTick runs one iteration of the idle-watch loop. Extracted from
+// idleWatcher so tests can drive it deterministically.
+func (s *Server) idleWatcherTick(state *idleWatcherState) {
+	running, _ := s.runner.RunningAndIdle()
+	seen := make(map[string]bool, len(running))
+
+	for _, id := range running {
+		seen[id] = true
+		sess := s.runner.Get(id)
+		if sess == nil {
+			continue
 		}
+		if !shouldFireIdlePush(state, id, sess.IsIdle()) {
+			continue
+		}
+		task, err := s.db.Get(id)
+		if err != nil || task == nil {
+			continue
+		}
+		name := task.Name
+		if name == "" {
+			name = id
+		}
+		body := "Agent idle — needs attention"
+		if task.Status == model.StatusInReview {
+			body = "Ready for review"
+		}
+		uxlog.Log("[push] idle transition task=%s name=%q", id, name)
+		s.push.Notify("idle:"+id, name, body, id)
+	}
 
-		// Drop entries for sessions that exited; also tell the push manager
-		// to forget throttle entries for them so the lastSent map doesn't grow.
-		for id := range idleNow {
-			if !seen[id] {
-				delete(idleNow, id)
-				s.push.ForgetTask(id)
-			}
+	// Drop entries for sessions that exited; also tell the push manager
+	// to forget throttle entries for them so the lastSent map doesn't grow.
+	for id := range state.idleNow {
+		if !seen[id] {
+			delete(state.idleNow, id)
+			delete(state.observed, id)
+			s.push.ForgetTask(id)
 		}
 	}
 }
