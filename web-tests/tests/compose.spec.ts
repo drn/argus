@@ -73,10 +73,12 @@ test.describe('compose bar', () => {
   });
 
   // Simulates iOS Safari's soft-keyboard Send key when predictive text /
-  // dictation hijacks the keydown — it dispatches keyCode 229 / key
-  // 'Unidentified' instead of a real Enter, but the textarea still fires
-  // `beforeinput` with inputType: insertLineBreak. Without the beforeinput
-  // listener the prompt sat in the textarea un-submitted.
+  // dictation hijacks the keydown. iOS surfaces keyCode 229 / key
+  // 'Unidentified' (or no keydown at all) instead of a real Enter, while
+  // still firing `beforeinput` with inputType: insertLineBreak. The pure-
+  // beforeinput dispatch below mirrors the keydown-less worst case;
+  // without the beforeinput listener the prompt sat in the textarea
+  // un-submitted.
   test('soft-keyboard Send (beforeinput insertLineBreak) sends without keydown', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);

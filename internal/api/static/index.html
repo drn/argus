@@ -4790,6 +4790,15 @@ function sendCompose() {
   // `lastEnterKeydownAt` lets us tell hardware Shift+Enter (insertLineBreak
   // following a real Enter keydown — should add a newline) from soft-keyboard
   // Send (insertLineBreak with no Enter keydown — should send).
+  // The window must be wider than any real keydown→beforeinput gap on tested
+  // hardware. Browsers dispatch them in the same task (microseconds apart),
+  // so 100ms is safely above any plausible jitter even on slow devices.
+  // Note: when the skill-AC dropdown is open and Enter is pressed, AC's
+  // `keydown` listener fires first and `stopImmediatePropagation()`s us, so
+  // `lastEnterKeydownAt` is NOT updated. We rely on AC's `preventDefault()`
+  // suppressing `beforeinput insertLineBreak` per the WHATWG event spec —
+  // verified by the existing autocomplete Playwright test.
+  const ENTER_KEYDOWN_DEBOUNCE_MS = 100;
   let lastEnterKeydownAt = 0;
   ci.addEventListener('keydown', e => {
     // Enter sends; Shift+Enter inserts a newline. Hardware keyboards on iPad
@@ -4807,7 +4816,13 @@ function sendCompose() {
     // Hardware Enter / Shift+Enter just ran the keydown handler; let the
     // browser's default newline insertion (Shift+Enter) or the prevented
     // submit (plain Enter) play out without double-firing sendCompose.
-    if (Date.now() - lastEnterKeydownAt < 100) return;
+    if (Date.now() - lastEnterKeydownAt < ENTER_KEYDOWN_DEBOUNCE_MS) {
+      // Consume the stamp so a soft-keyboard Send arriving later is treated
+      // as fresh — without this reset a Shift+Enter timestamp would suppress
+      // a real iOS Send up to 100ms later.
+      lastEnterKeydownAt = 0;
+      return;
+    }
     e.preventDefault();
     sendCompose();
   });
