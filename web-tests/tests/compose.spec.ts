@@ -139,6 +139,18 @@ test.describe('compose bar', () => {
       return t.buffer.active.viewportY === t.buffer.active.baseY;
     });
     expect(afterAtBottom).toBe(true);
+
+    // The viewport check above proves we *moved* to the bottom; this proves the
+    // bufferOrWrite gate is now open by feeding a synthetic SSE chunk through
+    // the same path xterm receives real agent replies on. If the gate were
+    // still closed (scrollToBottom didn't sync viewportY in time), the chunk
+    // would land in pendingChunks instead of being written. argusPending is
+    // exposed on window for exactly this kind of internal-state assertion.
+    const pending = await page.evaluate(() => {
+      (window as any).bufferOrWrite(new TextEncoder().encode('agent reply\r\n'));
+      return (window as any).argusPending();
+    });
+    expect(pending.chunks).toBe(0);
   });
 
   test('oversize input toasts and does not POST', async ({ page }, testInfo) => {
