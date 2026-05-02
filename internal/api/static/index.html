@@ -379,6 +379,9 @@ button:disabled { opacity: 0.5; cursor: default; }
 .key-bar.show { display: flex; }
 .key-bar button {
   flex: 0 0 auto;
+  /* min-height 36px is below the Apple HIG 44pt minimum, accepted as a
+     deliberate space tradeoff while the soft keyboard is up — same compromise
+     as `.detail-header.compact .overflow-btn`. min-width stays 44px. */
   min-width: 44px; min-height: 36px;
   padding: 6px 12px;
   background: var(--bg);
@@ -4549,7 +4552,10 @@ function setComposeVisible(visible) {
   // Key bar tracks compose-bar lifecycle: only meaningful while the agent is
   // running and the compose bar is mounted. Re-applies the persisted user
   // preference on show; force-hides on tear down so a stopped task never
-  // leaves an orphan key row.
+  // leaves an orphan key row. `keyBarVisible` and `setKeyBarVisible` are
+  // declared further down in this <script>, but `setComposeVisible` only
+  // fires from event/async callbacks (attachTerminal, destroyTerm) which
+  // run after the entire script has parsed — so the forward reference is safe.
   if (visible && IS_TOUCH) {
     setKeyBarVisible(keyBarVisible);
   } else {
@@ -4600,12 +4606,22 @@ function setKeyBarVisible(v) {
   const kb = document.getElementById('key-bar');
   const tg = document.getElementById('compose-keybar-toggle');
   if (!kb || !tg) return;
-  // mousedown.preventDefault keeps the compose textarea focused so the soft
-  // keyboard doesn't dismiss between key taps. click still fires normally.
+  // Keep the compose textarea focused so the iOS soft keyboard doesn't slide
+  // down between key-bar taps. iOS dispatches touchstart → touchend → synthetic
+  // mousedown → click; the focused element can change anywhere in that chain,
+  // so preventDefault MUST run on touchstart (the earliest event) — mousedown
+  // alone is too late on real WebKit even though desktop browsers and the
+  // Playwright iphone simulation are happy with mousedown. `passive: false`
+  // is required for touchstart preventDefault to take effect (modern browsers
+  // default touch listeners to passive on document/window, but explicit on a
+  // button is good practice). click still fires in both cases.
   const swallowFocus = e => e.preventDefault();
+  const touchOpts = { passive: false };
+  tg.addEventListener('touchstart', swallowFocus, touchOpts);
   tg.addEventListener('mousedown', swallowFocus);
   tg.addEventListener('click', () => setKeyBarVisible(!keyBarVisible));
   kb.querySelectorAll('button[data-keybar]').forEach(btn => {
+    btn.addEventListener('touchstart', swallowFocus, touchOpts);
     btn.addEventListener('mousedown', swallowFocus);
     btn.addEventListener('click', () => {
       const bytes = KEY_BAR_BYTES[btn.dataset.keybar];

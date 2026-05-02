@@ -112,9 +112,32 @@ test.describe('key bar', () => {
 
     await page.locator('#key-bar button[data-keybar="up"]').click();
 
-    // mousedown.preventDefault on the key bar buttons must keep focus on the
-    // textarea — otherwise iOS dismisses the soft keyboard between key taps.
+    // touchstart/mousedown preventDefault on the key bar buttons must keep
+    // focus on the textarea — otherwise iOS dismisses the soft keyboard
+    // between key taps.
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('compose-input');
     await expect(ci).toHaveValue('hello');
+  });
+
+  test('stopped task: key tap toasts and does not POST', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'key bar is touch-gated');
+    await login(page);
+    await page.locator('#compose-keybar-toggle').click();
+
+    // Force the cached currentTask off in_progress so the click guard fires.
+    // The compose bar normally tears down in this state via destroyTerm, but
+    // we want the key-bar click handler reachable to verify its own guard —
+    // mutating currentTask in place is the cleanest way to isolate it.
+    await page.evaluate(() => { (window as any).currentTask.status = 'complete'; });
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#key-bar button[data-keybar="esc"]').click();
+
+    await expect(page.locator('.toast')).toBeVisible();
+    await expect(page.locator('.toast')).toContainText('Agent not running');
+    expect(posted).toBe(false);
   });
 });
