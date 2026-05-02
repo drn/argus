@@ -209,10 +209,16 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 	now := time.Now()
 	for _, id := range running {
 		seen[id] = true
-		// Use the snapshot from RunningAndIdle so we don't re-acquire the
-		// runner lock per session — and so the (running, idle) view stays
-		// internally consistent. A second IsIdle() call here would open a
-		// TOCTOU window between the snapshot and the per-task check.
+		// Idle bit comes from the RunningAndIdle snapshot above so the
+		// (running, idle) view stays internally consistent within this tick.
+		// LastInput needs a fresh runner.Get because it isn't in the snapshot
+		// — that's a small TOCTOU window: the session can exit between the
+		// snapshot and Get. Get returns nil on exit, lastInput stays the
+		// zero time, and the session-exited cleanup below prunes the
+		// watcher state on the next tick. Net effect: zero lastInput on a
+		// dying session can't satisfy the re-arm condition (it's never
+		// strictly after a recorded pushedAt), so the worst case is one
+		// suppressed push for a session about to vanish.
 		var lastInput time.Time
 		if sess := s.runner.Get(id); sess != nil {
 			lastInput = sess.LastInput()
@@ -233,11 +239,9 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 			body = "Ready for review"
 		}
 		uxlog.Log("[push] idle transition task=%s name=%q", id, name)
-		// Empty throttle key: shouldFireIdlePush is the sole gate. The old
-		// "idle:<id>" 5-min throttle would block legitimate pushes after the
-		// user replied within 5 min, since input → busy → idle within that
-		// window is the canonical "user gave a follow-up, agent finished"
-		// flow we want to notify on.
+		// Empty throttle key: shouldFireIdlePush is the sole gate. See
+		// context/knowledge/gotchas/web-remote.md (Web Push / VAPID) for
+		// why the old "idle:<id>" 5-min throttle was removed.
 		s.push.Notify("", name, body, id)
 	}
 
@@ -247,7 +251,6 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 			delete(state.idleNow, id)
 			delete(state.seenBefore, id)
 			delete(state.pushedAt, id)
-			s.push.ForgetTask(id)
 		}
 	}
 }

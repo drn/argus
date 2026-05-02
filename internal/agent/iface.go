@@ -54,6 +54,12 @@ type SessionHandle interface {
 	// to gate "task done" notifications: a busy→idle transition only fires a
 	// push if input has arrived since the last push, so stale long-idle
 	// sessions emitting incidental output do not re-notify.
+	//
+	// Process-boundary note: the watcher runs inside the daemon process and
+	// reads this off the in-process *agent.Session. RemoteSession (the
+	// daemon-client implementation in TUI processes) tracks its own local
+	// timestamp so the interface contract holds, but no watcher ever reads
+	// that value — it exists only to satisfy SessionHandle.
 	LastInput() time.Time
 	Alive() bool
 	PTYSize() (cols, rows int)

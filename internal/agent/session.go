@@ -398,15 +398,20 @@ func (s *Session) InitialPTYSize() (cols, rows int) {
 // WriteInput writes raw bytes to the PTY master (stdin of the child process).
 // Used by the agent view to forward keyboard input without full Attach.
 //
-// Records the wall-clock time of the call. The idle-push watcher reads this
-// via LastInput() to decide whether a busy→idle transition represents a new
-// work cycle (input arrived since the last push) or just incidental output
-// from a stale, long-idle session.
+// Records the wall-clock time of the call ONLY on a successful write. The
+// idle-push watcher reads this via LastInput() to decide whether a busy→idle
+// transition represents a new work cycle (input arrived since the last push)
+// or just incidental output from a stale, long-idle session — so a failed
+// write (e.g. ptmx already closed by waitLoop) must not advance the
+// timestamp, or a subsequent blip-idle would falsely re-arm the gate.
 func (s *Session) WriteInput(p []byte) (int, error) {
-	s.mu.Lock()
-	s.lastInput = time.Now()
-	s.mu.Unlock()
-	return s.ptmx.Write(p)
+	n, err := s.ptmx.Write(p)
+	if err == nil {
+		s.mu.Lock()
+		s.lastInput = time.Now()
+		s.mu.Unlock()
+	}
+	return n, err
 }
 
 // LastInput returns the wall-clock time of the most recent WriteInput call,

@@ -264,7 +264,12 @@ func (d *Daemon) Serve(sockPath string) error {
 			if name == "" {
 				name = task.ID
 			}
-			pushMgr.Notify("schedule:"+task.ID, name, "Scheduled task started", task.ID)
+			// Empty throttle key: each scheduler fire creates a fresh task ID,
+			// so a "schedule:<taskID>" throttle would accumulate one entry per
+			// fire forever (memory leak) and never actually suppress anything.
+			// The scheduler's own NextRunAt bookkeeping already prevents
+			// double-fires for the same cron tick.
+			pushMgr.Notify("", name, "Scheduled task started", task.ID)
 		})
 	}
 	d.scheduler = sch

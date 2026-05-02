@@ -137,31 +137,6 @@ func (m *Manager) SetSubject(subject string) error {
 	return nil
 }
 
-// ForgetTask removes the per-task idle throttle entry. Called when a task's
-// session has exited so the in-memory lastSent map doesn't grow without
-// bound. Idempotent. Delegates to resetThrottle so the "idle:<taskID>" key
-// schema lives in exactly one place.
-func (m *Manager) ForgetTask(taskID string) {
-	m.resetThrottle("idle:" + taskID)
-}
-
-// resetThrottle clears the throttle entry for a key so the next Notify with
-// that key fires immediately. Unexported because the only legitimate caller
-// is ForgetTask (memory pruning when a session exits). The previous use case
-// — clearing the throttle on a busy transition so a "real task done" push
-// could fire fresh after a mid-run pause — was removed: long-idle agents
-// emit incidental output that briefly flips IsIdle false→true, and
-// resetting the throttle on those blips made stale tasks re-push every few
-// minutes. See context/knowledge/gotchas/web-remote.md.
-func (m *Manager) resetThrottle(throttleKey string) {
-	if m == nil || throttleKey == "" {
-		return
-	}
-	m.muThrottle.Lock()
-	delete(m.lastSent, throttleKey)
-	m.muThrottle.Unlock()
-}
-
 // Notify is a fire-and-forget notification: title + body + optional taskId for
 // deep-linking. Throttled to 1 push per key per throttleDuration (key=""
 // disables throttling). The throttle is recorded only if at least one

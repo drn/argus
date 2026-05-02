@@ -83,7 +83,9 @@ func TestShouldFireIdlePush_BlipsAfterPushStaySilent(t *testing.T) {
 	// Re-idles WITHOUT any input from the user. Suppressed.
 	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow.Add(2*time.Minute)), false)
 	// Even hours later, no input → no fire.
+	// Another output blip:
 	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow.Add(time.Hour)), false)
+	// Re-idle after that blip:
 	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow.Add(time.Hour+time.Minute)), false)
 }
 
