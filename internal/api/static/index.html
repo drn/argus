@@ -2961,17 +2961,26 @@ function closePromptModal() {
 }
 
 // Synchronous clipboard write — must call writeText with no awaits in front
-// of it on iOS so the user-gesture trust is preserved. Reads from the modal
-// body (not currentTask) so the empty-prompt placeholder isn't copied.
+// of it on iOS so the user-gesture trust is preserved. Reads from
+// currentTask.prompt (the data layer) rather than re-scraping the modal body,
+// so the empty-prompt placeholder is never copied. Falls back to
+// navigator.share on iOS versions where writeText rejects inside a tap
+// handler — same recovery shape as onCopyButtonTap's tryShareFallback.
 function copyPromptToClipboard() {
-  const body = document.getElementById('prompt-modal-body');
-  if (!body || body.classList.contains('empty')) return;
-  const text = body.textContent || '';
-  if (!text) return;
+  if (!currentTask || !currentTask.prompt) return;
+  const text = currentTask.prompt;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text)
       .then(() => showToast('Copied'))
-      .catch(() => showToast('Copy failed'));
+      .catch(() => sharePromptFallback(text));
+  } else {
+    sharePromptFallback(text);
+  }
+}
+
+function sharePromptFallback(text) {
+  if (navigator.share) {
+    navigator.share({ text }).catch(() => showToast('Copy unavailable'));
   } else {
     showToast('Copy unavailable');
   }

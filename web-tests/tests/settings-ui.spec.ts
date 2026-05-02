@@ -219,6 +219,29 @@ test.describe('detail-view actions', () => {
     await expect(page.locator('#prompt-modal-body')).toContainText('no prompt');
   });
 
+  test('prompt modal copy skips empty-prompt placeholder', async ({
+    page,
+    context,
+  }) => {
+    // Pre-seed the clipboard with a sentinel; the empty-prompt copy path
+    // must not overwrite it.
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await login(page);
+    await page.locator('.task-item').first().click();
+    await expect(page.locator('#detail-view.open')).toBeVisible();
+    await page.evaluate(async () => {
+      await navigator.clipboard.writeText('SENTINEL');
+      (window as any).currentTask.prompt = '';
+      (window as any).openPromptModal();
+    });
+    await expect(page.locator('#prompt-modal-body.empty')).toBeVisible();
+
+    // Click Copy — guard should short-circuit; clipboard must be unchanged.
+    await page.locator('#prompt-modal .modal-actions button').nth(0).click();
+    const clip = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clip).toBe('SENTINEL');
+  });
+
   test('prompt modal closes when detail view closes', async ({ page }) => {
     // Regression: closeDetail() must call closePromptModal() so the modal
     // doesn't stack over the task list after backing out. Drive closeDetail
