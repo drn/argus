@@ -246,7 +246,10 @@ func TestHandleResumeTask(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusNotFound)
 	})
 
-	t.Run("409 when already in_progress", func(t *testing.T) {
+	// "Ghost in_progress" — DB says in_progress but the runner has no
+	// session (e.g. daemon restarted and the row never reconciled). The
+	// handler short-circuits with 409; this locks in that contract.
+	t.Run("409 when already in_progress (with or without live session)", func(t *testing.T) {
 		srv, d := testServer(t)
 		mux := srv.routes()
 		task := &model.Task{Name: "running", Status: model.StatusInProgress}
@@ -264,8 +267,10 @@ func TestHandleResumeTask(t *testing.T) {
 		srv, d := testServer(t)
 		mux := srv.routes()
 
-		// Register a backend that sleeps long enough to keep the session alive
-		// for the duration of the test.
+		// `sh-sleep` works as a test backend because BuildCmd needs only a
+		// non-empty backend Command and a worktree — no prompt-flag handling
+		// or session-id pinning is involved when resume=false. If BuildCmd
+		// is ever hardened to require additional fields, update this fixture.
 		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
 
 		task := &model.Task{
@@ -281,6 +286,9 @@ func TestHandleResumeTask(t *testing.T) {
 		// produces the "session already exists for task X" error.
 		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
 		testutil.NoError(t, err)
+		// The heal path is non-destructive — it never stops the session, so
+		// the test owns the lifecycle. If the heal logic ever starts
+		// stopping/restarting, this cleanup needs revisiting.
 		t.Cleanup(func() {
 			_ = srv.runner.Stop(task.ID)
 			<-sess.Done()

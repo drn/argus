@@ -119,6 +119,24 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	return sess, nil
 }
 
+// StartOrReattach returns the live session for task.ID if one already exists,
+// otherwise behaves like Start. The reattached bool reports whether the
+// returned handle is an existing live session (true) or a newly spawned one
+// (false).
+//
+// Callers should treat reattached=true as a signal that the persisted task
+// status drifted out of sync with the runner (e.g. a row was flipped to
+// Pending while the daemon kept the PTY alive) and re-sync any state they
+// own. Without this, calling Start directly on a desynced task returns
+// "session already exists for task X".
+func (r *Runner) StartOrReattach(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (SessionHandle, bool, error) {
+	if sess := r.Get(task.ID); sess != nil {
+		return sess, true, nil
+	}
+	h, err := r.Start(task, cfg, rows, cols, resume)
+	return h, false, err
+}
+
 // Get returns the session for a task, or nil if not found.
 // Returns nil for reserved-but-not-yet-started slots (nil sentinel).
 func (r *Runner) Get(taskID string) SessionHandle {
