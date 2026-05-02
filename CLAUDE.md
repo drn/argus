@@ -149,6 +149,7 @@ Non-obvious invariants and gotchas are in `context/knowledge/gotchas/`. **Read t
 - **Every new feature must have its gotchas documented** in the appropriate `context/knowledge/gotchas/*.md` file before the session ends — but only the non-obvious gotchas, not a description of what the feature does.
 - **What to document:** invariants that caused bugs, ordering requirements, platform quirks, silent failure modes. NOT: what the code does, feature descriptions, or UI layout.
 - **Update README.md when adding user-facing features.** New features, configuration options, API endpoints, and keybindings must be documented in the appropriate README section before the session ends. If a feature changes how users interact with Argus, the README must reflect it.
+- **Bump `SW_VERSION` in `internal/api/static/sw.js` whenever any other shell asset under `internal/api/static/` changes** (`index.html`, `manifest.webmanifest`, vendor JS/CSS). The service worker serves the shell cache-first — without a version bump, every device that already installed the PWA keeps serving the stale shell forever and never sees the change. Increment by 1 (`argus-shell-vN` → `argus-shell-vN+1`).
 
 ### Logging Requirements
 
