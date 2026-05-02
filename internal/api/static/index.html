@@ -4780,13 +4780,36 @@ function sendCompose() {
   const cs = document.getElementById('compose-send');
   if (!ci || !cs) return;
   cs.addEventListener('click', sendCompose);
+
+  // iOS Safari's soft-keyboard Send key (enterkeyhint=send) does not reliably
+  // dispatch `keydown` with key === 'Enter' — predictive text and dictation
+  // intercept it, surfacing keyCode 229 / key 'Unidentified' instead. The
+  // textarea's default insertion still fires, so a literal `\n` lands in the
+  // field and the prompt never POSTs. `beforeinput` with insertLineBreak
+  // catches every line-break attempt regardless of the keydown source.
+  // `lastEnterKeydownAt` lets us tell hardware Shift+Enter (insertLineBreak
+  // following a real Enter keydown — should add a newline) from soft-keyboard
+  // Send (insertLineBreak with no Enter keydown — should send).
+  let lastEnterKeydownAt = 0;
   ci.addEventListener('keydown', e => {
     // Enter sends; Shift+Enter inserts a newline. Hardware keyboards on iPad
     // and Bluetooth-connected iPhone keyboards both pass the Shift modifier.
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      sendCompose();
+    if (e.key === 'Enter') {
+      lastEnterKeydownAt = Date.now();
+      if (!e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        sendCompose();
+      }
     }
+  });
+  ci.addEventListener('beforeinput', e => {
+    if (e.inputType !== 'insertLineBreak') return;
+    // Hardware Enter / Shift+Enter just ran the keydown handler; let the
+    // browser's default newline insertion (Shift+Enter) or the prevented
+    // submit (plain Enter) play out without double-firing sendCompose.
+    if (Date.now() - lastEnterKeydownAt < 100) return;
+    e.preventDefault();
+    sendCompose();
   });
 })();
 
