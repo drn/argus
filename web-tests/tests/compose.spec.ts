@@ -215,7 +215,12 @@ test.describe('compose bar', () => {
 
     // Start with focus elsewhere so the assertion is meaningful — login leaves
     // focus on the helper textarea (term.focus() runs in setupTerm's rAF).
-    await page.locator('body').evaluate((el: HTMLElement) => el.focus());
+    // Blur the currently-focused element. login leaves compose-input focused
+    // (setupTerm's rAF calls focusInputOrTerm), and a bare body.focus() is a
+    // no-op on a non-tabindex body — so the focus assertion would pass even
+    // when the handler did nothing. Explicit blur is the only reliable way
+    // to drop focus.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
     // Synthesize a tap (touchstart + touchend with no movement) on #term —
     // a real click on iPhone fires touch events, not mouse events.
@@ -226,6 +231,89 @@ test.describe('compose bar', () => {
     // third-party keyboards, and Wispr Flow have a real visible target.
     const focusedId = await page.evaluate(() => document.activeElement?.id);
     expect(focusedId).toBe('compose-input');
+  });
+
+  test('tap from scrollback still focuses compose-input', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Push enough content into the terminal to populate scrollback, then
+    // scroll the viewport up so the user is reading history. The previous
+    // implementation gated tap-to-focus on `termIsAtBottom()`, which silently
+    // dropped this tap and left the user with no input target. The new
+    // implementation must focus on every deliberate tap, scroll position
+    // notwithstanding.
+    //
+    // term.write is async (the parser runs on a microtask); the callback
+    // signals "data has been parsed and emitted to the buffer". Without it
+    // the subsequent scrollLines call lands before the buffer has the new
+    // rows, so baseY hasn't advanced and the scroll is a no-op.
+    await page.evaluate(async () => {
+      const t = (window as any).term;
+      let s = '';
+      for (let i = 0; i < 200; i++) s += `line ${i}\r\n`;
+      await new Promise<void>(resolve => t.write(s, () => resolve()));
+      t.scrollLines(-50);
+    });
+    // Sanity-check we are not at bottom (otherwise the test would also pass
+    // under the old bottom-gated behavior and prove nothing).
+    const atBottom = await page.evaluate(() => {
+      const t = (window as any).term;
+      return t.buffer.active.viewportY === t.buffer.active.baseY;
+    });
+    expect(atBottom).toBe(false);
+
+    // Call the touch handlers directly with plain objects matching the
+    // TouchEvent shape. We can't go through dispatchEvent: WebKit forbids
+    // `new Touch()` (Illegal constructor), and dispatching a TouchEvent with
+    // plain-object `touches` results in an empty TouchList — the handler
+    // can't capture coords and the tap-vs-swipe discriminator collapses to
+    // wasTap=true. Calling the handler directly exercises the gate logic
+    // itself without fighting the browser's Touch interface.
+    //
+    // Blur explicitly (a bare body.focus() is a no-op on a non-tabindex body,
+    // so the assertion would silently pass even if the handler did nothing).
+    // Also fire onTermScrollEnd to clear isTermScrolling — `term.scrollLines`
+    // dispatches a `scroll` event that sets the gate to true, and our handler
+    // would otherwise reject the tap as a swipe.
+    const focusedId = await page.evaluate(async () => {
+      const w = window as any;
+      await new Promise(r => requestAnimationFrame(r));
+      if (w.onTermScrollEnd) w.onTermScrollEnd();
+      (document.activeElement as HTMLElement | null)?.blur();
+      w.onTermTouchStart({ touches: [{ clientX: 100, clientY: 100 }] });
+      w.onTermTouchEnd({ changedTouches: [{ clientX: 100, clientY: 100 }] });
+      return (document.activeElement as HTMLElement | null)?.id ?? '';
+    });
+    expect(focusedId).toBe('compose-input');
+  });
+
+  test('swipe on terminal does NOT focus compose-input', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Blur the currently-focused element. login leaves compose-input focused
+    // (setupTerm's rAF calls focusInputOrTerm), and a bare body.focus() is a
+    // no-op on a non-tabindex body — so the focus assertion would pass even
+    // when the handler did nothing. Explicit blur is the only reliable way
+    // to drop focus.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+    // touchstart at (100,100), touchend at (100,250) — 150px vertical move,
+    // well past the 10px tap threshold. Without the coord-delta gate, this
+    // would be misclassified as a tap (isTermScrolling stays false on a
+    // synthesized event with no real scroll dispatch) and pop the keyboard.
+    const focusedId = await page.evaluate(async () => {
+      const w = window as any;
+      // Wait one frame so any pending setupTerm rAF (which calls
+      // focusInputOrTerm) fires before the blur.
+      await new Promise(r => requestAnimationFrame(r));
+      (document.activeElement as HTMLElement | null)?.blur();
+      w.onTermTouchStart({ touches: [{ clientX: 100, clientY: 100 }] });
+      w.onTermTouchEnd({ changedTouches: [{ clientX: 100, clientY: 250 }] });
+      return (document.activeElement as HTMLElement | null)?.id ?? '';
+    });
+    expect(focusedId).not.toBe('compose-input');
   });
 
   test('compose bar hidden after closing the detail view', async ({ page }, testInfo) => {
