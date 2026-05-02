@@ -4773,6 +4773,18 @@ function sendCompose() {
   // Send-button path bypasses the AC keydown handler — close the dropdown
   // explicitly so a stale filtered list doesn't linger after submit.
   composeAC.close();
+  // Submitting via the compose bar bypasses xterm's `onData` path (which has
+  // `scrollOnUserInput: true` baked in) — bytes go straight to /input, and the
+  // agent's response arrives via SSE through bufferOrWrite. If the user is
+  // scrolled into history, those response bytes get buffered into pendingChunks
+  // and never reach xterm, so the user submits and sees nothing change. Snap
+  // back to the bottom and drain any pending chunks so the agent's reply is
+  // visible immediately.
+  if (term) {
+    term.scrollToBottom();
+    flushPending();
+    updateJumpButton();
+  }
 }
 
 (function wireCompose() {

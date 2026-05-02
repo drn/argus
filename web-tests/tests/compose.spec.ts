@@ -102,6 +102,45 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
+  test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Populate scrollback and scroll up so the at-bottom gate is closed. Without
+    // the snap-on-send, an SSE response from the agent would buffer into
+    // pendingChunks and the user would see no feedback after pressing Send.
+    // term.write is async (microtask parser); the callback signals "buffer
+    // updated" so the subsequent scrollLines actually moves baseY.
+    await page.evaluate(async () => {
+      const t = (window as any).term;
+      let s = '';
+      for (let i = 0; i < 200; i++) s += `line ${i}\r\n`;
+      await new Promise<void>(resolve => t.write(s, () => resolve()));
+      t.scrollLines(-50);
+    });
+    const beforeAtBottom = await page.evaluate(() => {
+      const t = (window as any).term;
+      return t.buffer.active.viewportY === t.buffer.active.baseY;
+    });
+    expect(beforeAtBottom).toBe(false);
+
+    await page.locator('#compose-input').fill('reply from scrollback');
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-send').click();
+    await inputReq;
+
+    // After Send, viewport must be back at the bottom so any agent reply
+    // arriving through bufferOrWrite drains immediately into xterm.
+    const afterAtBottom = await page.evaluate(() => {
+      const t = (window as any).term;
+      return t.buffer.active.viewportY === t.buffer.active.baseY;
+    });
+    expect(afterAtBottom).toBe(true);
+  });
+
   test('oversize input toasts and does not POST', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
