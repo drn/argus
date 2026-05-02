@@ -354,11 +354,31 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Heal a desync: if the runner already owns a live session for this task
+	// the DB row drifted out of sync with reality (e.g. the row was flipped
+	// to Pending/InReview while the daemon kept the PTY alive). Calling
+	// runner.Start here would fail with "session already exists for task X".
+	// Re-sync the row to InProgress and return success so the PWA can attach
+	// the terminal stream.
+	if sess := s.runner.Get(id); sess != nil {
+		uxlog.Log("[api] resume: live session detected for task=%s status=%s; healing to in_progress pid=%d", id, task.Status, sess.PID())
+		task.SetStatus(model.StatusInProgress)
+		task.AgentPID = sess.PID()
+		s.db.Update(task) //nolint:errcheck
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "resumed",
+			"pid":    task.AgentPID,
+			"healed": true,
+		})
+		return
+	}
+
 	cfg := s.db.Config()
 	resume := task.SessionID != ""
 
 	sess, err := s.runner.Start(task, cfg, 24, 80, resume)
 	if err != nil {
+		uxlog.Log("[api] resume: start failed task=%s status=%s err=%v", id, task.Status, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -366,6 +386,8 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	task.SetStatus(model.StatusInProgress)
 	task.AgentPID = sess.PID()
 	s.db.Update(task) //nolint:errcheck
+
+	uxlog.Log("[api] resume: started task=%s pid=%d resume=%t", id, task.AgentPID, resume)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "resumed",

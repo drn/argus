@@ -232,6 +232,79 @@ func TestHandleCreateTask(t *testing.T) {
 	})
 }
 
+// TestHandleResumeTask covers the resume endpoint paths: 404 on missing task,
+// 409 on already-running task, and the heal path where the runner has a live
+// session but the DB row drifted out of sync (the original "session already
+// exists for task X" failure).
+func TestHandleResumeTask(t *testing.T) {
+	t.Run("404 when task missing", func(t *testing.T) {
+		srv, _ := testServer(t)
+		mux := srv.routes()
+		req := authedReq("POST", "/api/tasks/missing/resume", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusNotFound)
+	})
+
+	t.Run("409 when already in_progress", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+		task := &model.Task{Name: "running", Status: model.StatusInProgress}
+		d.Add(task)
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/resume", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusConflict)
+	})
+
+	t.Run("heals desync when runner has a live session", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		srv, d := testServer(t)
+		mux := srv.routes()
+
+		// Register a backend that sleeps long enough to keep the session alive
+		// for the duration of the test.
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+
+		task := &model.Task{
+			Name:     "desynced",
+			Status:   model.StatusPending,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+
+		// Populate the runner with a real live session under task.ID, then
+		// flip the DB row back to Pending to simulate the desync that
+		// produces the "session already exists for task X" error.
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+		task.SetStatus(model.StatusPending)
+		testutil.NoError(t, d.Update(task))
+
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/resume", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["status"], "resumed")
+		testutil.Equal(t, resp["healed"], true)
+
+		// DB row should be re-synced to in_progress.
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+	})
+}
+
 func TestHandleDeleteTask(t *testing.T) {
 	srv, d := testServer(t)
 	mux := srv.routes()
