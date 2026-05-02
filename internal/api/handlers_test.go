@@ -36,7 +36,7 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 		return task, nil
 	}
 
-	srv := New(d, runner, "test-token", creator)
+	srv := New(d, runner, "test-token", creator, nil)
 	return srv, d
 }
 

@@ -40,23 +40,24 @@ type Server struct {
 	stopCh chan struct{}
 }
 
-// New creates a new API server.
-func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreator) *Server {
+// New creates a new API server. pushMgr is optional; pass nil to disable
+// push notifications entirely (the /api/push/* endpoints will return 503 and
+// no idle-watcher goroutine starts). Daemon owns the manager so it can also
+// be wired into the scheduler for kick-off pushes — see daemon/daemon.go.
+func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreator, pushMgr *push.Manager) *Server {
 	srv := &Server{
 		db:         database,
 		runner:     runner,
 		token:      token,
 		createTask: creator,
+		push:       pushMgr,
 		stopCh:     make(chan struct{}),
 	}
-	// Push manager — best-effort. If VAPID keys can't be loaded/generated we
-	// keep going without push (the endpoints just return 503).
-	if mgr, err := push.New(database); err == nil {
-		srv.push = mgr
+	if pushMgr != nil {
 		// Start idle watcher in the background.
 		go srv.idleWatcher()
 	} else {
-		log.Printf("api: push disabled: %v", err)
+		log.Printf("api: push disabled (no push manager provided)")
 	}
 	return srv
 }

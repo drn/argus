@@ -41,6 +41,7 @@ type Session struct {
 	initialCols uint16    // PTY width at StartSession; never mutated after init
 	initialRows uint16    // PTY height at StartSession; never mutated after init
 	lastOutput  time.Time // last time output was received from PTY
+	lastInput   time.Time // last time WriteInput was called; idle-push gate uses this to detect new work cycles
 	ptmxClosed  bool      // true after waitLoop closes ptmx; guards Resize/WriteInput
 
 	logFile *os.File // PTY output log for post-session scrollback; nil if unavailable
@@ -396,6 +397,22 @@ func (s *Session) InitialPTYSize() (cols, rows int) {
 
 // WriteInput writes raw bytes to the PTY master (stdin of the child process).
 // Used by the agent view to forward keyboard input without full Attach.
+//
+// Records the wall-clock time of the call. The idle-push watcher reads this
+// via LastInput() to decide whether a busy→idle transition represents a new
+// work cycle (input arrived since the last push) or just incidental output
+// from a stale, long-idle session.
 func (s *Session) WriteInput(p []byte) (int, error) {
+	s.mu.Lock()
+	s.lastInput = time.Now()
+	s.mu.Unlock()
 	return s.ptmx.Write(p)
+}
+
+// LastInput returns the wall-clock time of the most recent WriteInput call,
+// or the zero time if WriteInput has never been called for this session.
+func (s *Session) LastInput() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastInput
 }

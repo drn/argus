@@ -92,6 +92,7 @@ func (s *fakeSession) RecentOutput() []byte             { return nil }
 func (s *fakeSession) RecentOutputTail(int) []byte      { return nil }
 func (s *fakeSession) TotalWritten() uint64             { return 0 }
 func (s *fakeSession) IsIdle() bool                     { return false }
+func (s *fakeSession) LastInput() time.Time             { return time.Time{} }
 func (s *fakeSession) Alive() bool                      { return true }
 func (s *fakeSession) PTYSize() (int, int)              { return 80, 24 }
 func (s *fakeSession) InitialPTYSize() (int, int)       { return 80, 24 }

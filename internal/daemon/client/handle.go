@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/daemon"
@@ -20,12 +21,13 @@ type RemoteSession struct {
 	taskID string
 	client *Client
 
-	mu      sync.Mutex
-	buf     *agent.RingBuffer // local ring buffer, populated by stream reader
-	pid     int
-	info    daemon.SessionInfo // cached session info
-	done    chan struct{}       // closed when stream EOF
-	inputCh chan []byte         // async input channel for WriteInput
+	mu        sync.Mutex
+	buf       *agent.RingBuffer  // local ring buffer, populated by stream reader
+	pid       int
+	info      daemon.SessionInfo // cached session info
+	done      chan struct{}      // closed when stream EOF
+	inputCh   chan []byte        // async input channel for WriteInput
+	lastInput time.Time          // wall-clock time of last WriteInput call
 }
 
 func newRemoteSession(taskID string, c *Client) *RemoteSession {
@@ -83,10 +85,27 @@ func (rs *RemoteSession) WriteInput(p []byte) (int, error) {
 	copy(cp, p)
 	select {
 	case rs.inputCh <- cp:
+		rs.mu.Lock()
+		rs.lastInput = time.Now()
+		rs.mu.Unlock()
 		return len(p), nil
 	case <-rs.done:
 		return 0, fmt.Errorf("session closed")
 	}
+}
+
+// LastInput returns the wall-clock time of the most recent WriteInput call,
+// or the zero time if WriteInput has never been called for this session.
+//
+// Tracked client-side so the SessionHandle interface contract holds, but
+// note: the idle-push watcher runs in the daemon process against the
+// in-process *agent.Session — so the value RemoteSession returns here is not
+// what the watcher reads. It is correct for any local consumer that calls
+// WriteInput on this handle.
+func (rs *RemoteSession) LastInput() time.Time {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.lastInput
 }
 
 func (rs *RemoteSession) Resize(rows, cols uint16) error {

@@ -127,7 +127,7 @@ func main() {
 		return t, nil
 	}
 
-	srv := api.New(d, runner, *token, creator)
+	srv := api.New(d, runner, *token, creator, nil)
 	srv.SetClipboard(clipboard.New())
 	actualPort, err := srv.ListenAndServe(*port)
 	if err != nil {

@@ -201,6 +201,83 @@ func TestFireName(t *testing.T) {
 	}
 }
 
+// TestSchedulerOnFireFiredFromTick verifies the OnFire callback runs after
+// a tick-fired schedule successfully creates a task. The callback is the
+// hook the daemon uses to send a "scheduled task started" push notification.
+func TestSchedulerOnFireFiredFromTick(t *testing.T) {
+	s, d, _, clk := newTestScheduler(t)
+	var firedTasks []string
+	s.SetOnFire(func(task *model.Task) { firedTasks = append(firedTasks, task.ID) })
+
+	sched := &model.ScheduledTask{
+		Name:     "every-1m",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+
+	s.tick()
+	clk.Advance(2 * time.Minute)
+	s.tick() // fires
+	if len(firedTasks) != 1 {
+		t.Fatalf("expected OnFire called once after tick fire, got %d invocations", len(firedTasks))
+	}
+}
+
+// TestSchedulerOnFireSkippedFromRunNow verifies the OnFire callback is NOT
+// invoked when the user manually triggers a schedule via RunNow. RunNow is
+// a UI action, so a follow-up notification would be redundant.
+func TestSchedulerOnFireSkippedFromRunNow(t *testing.T) {
+	s, d, _, _ := newTestScheduler(t)
+	var fired int
+	s.SetOnFire(func(*model.Task) { fired++ })
+
+	sched := &model.ScheduledTask{
+		Name:     "manual",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@every 1h",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RunNow(sched.ID); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Equal(t, fired, 0)
+}
+
+// TestSchedulerOnFireSkippedOnFireError verifies the callback is not invoked
+// when fire returns an error (e.g. task creator failed). Pushing for a
+// failed fire would mislead the user.
+func TestSchedulerOnFireSkippedOnFireError(t *testing.T) {
+	s, d, rec, clk := newTestScheduler(t)
+	rec.failNext = errors.New("create failed")
+
+	var fired int
+	s.SetOnFire(func(*model.Task) { fired++ })
+
+	sched := &model.ScheduledTask{
+		Name:     "every-1m",
+		Project:  "p",
+		Prompt:   "go",
+		Schedule: "@every 1m",
+		Enabled:  true,
+	}
+	if err := d.AddSchedule(sched); err != nil {
+		t.Fatal(err)
+	}
+	s.tick()
+	clk.Advance(2 * time.Minute)
+	s.tick()
+	testutil.Equal(t, fired, 0)
+}
+
 // Regression: a schedule that has already fired (NextRunAt advanced past
 // now) must not be re-fired by tick() if RunNow snuck in first. See
 // review-20260428.md WARNING #6.

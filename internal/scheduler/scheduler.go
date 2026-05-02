@@ -45,6 +45,11 @@ type Scheduler struct {
 	// fireMu hold is short (one create-task call + one DB update), so it
 	// does not meaningfully delay the tick loop.
 	fireMu sync.Mutex
+
+	// onFire, if set, is called after the cron tick path successfully
+	// creates a task. RunNow (user-triggered manual fire) is intentionally
+	// exempt — see SetOnFire's docs. Read/written under mu.
+	onFire func(*model.Task)
 }
 
 // New creates a scheduler. Call Start in a goroutine and Stop on shutdown.
@@ -177,11 +182,19 @@ func (s *Scheduler) tickOne(sched *model.ScheduledTask, now time.Time) {
 			s.fireMu.Unlock()
 			return
 		}
-		_, fErr := s.fire(sched, parsed, now)
+		task, fErr := s.fire(sched, parsed, now)
 		s.fireMu.Unlock()
 		if fErr != nil {
 			// fire already persisted LastError; nothing else to do.
 			return
+		}
+		// Invoke the OnFire callback OUTSIDE fireMu so a slow callback
+		// (network push, log write) cannot stall the tick loop or block a
+		// concurrent RunNow on a different schedule.
+		if task != nil {
+			if cb := s.fireCallback(); cb != nil {
+				cb(task)
+			}
 		}
 		return
 	}
@@ -250,6 +263,25 @@ func (s *Scheduler) SetClock(now func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.now = now
+}
+
+// SetOnFire registers a callback invoked after a cron-tick fire successfully
+// creates a task. RunNow (user-triggered manual fires from the UI) does NOT
+// invoke this callback: a manual "Run Now" click is an explicit user action,
+// so a follow-up notification is redundant. Safe to call before or after
+// Start. nil clears the callback.
+func (s *Scheduler) SetOnFire(cb func(*model.Task)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onFire = cb
+}
+
+// fireCallback returns the current OnFire callback under the mutex so
+// concurrent SetOnFire calls cannot race the tick path.
+func (s *Scheduler) fireCallback() func(*model.Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.onFire
 }
 
 // scheduleFireName builds the per-fire task name. Exported via the package

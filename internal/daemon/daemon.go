@@ -26,6 +26,7 @@ import (
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
 )
 
@@ -237,6 +238,15 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}
 
+	// Push manager — best-effort, single instance shared between the API
+	// server's idle watcher and the scheduler's kick-off hook so both use
+	// the same VAPID keypair and subscriber list. Nil disables push.
+	pushMgr, perr := push.New(d.db)
+	if perr != nil {
+		slog.Warn("push disabled", "err", perr)
+		pushMgr = nil
+	}
+
 	// Start the scheduler (recurring scheduled tasks). Always-on — empty
 	// table is a no-op, so there's no setting to gate it.
 	sch := scheduler.New(d.db, func(name, prompt, project string) (*model.Task, error) {
@@ -244,6 +254,19 @@ func (d *Daemon) Serve(sockPath string) error {
 		// already meaningful; no auto-rename.
 		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, false)
 	})
+	if pushMgr != nil {
+		// Push when a scheduled task fires from the cron tick. RunNow
+		// (manual user-triggered fires from the UI) is intentionally exempt
+		// in scheduler.go — the user is right there, they don't need a
+		// notification for an action they just took.
+		sch.SetOnFire(func(task *model.Task) {
+			name := task.Name
+			if name == "" {
+				name = task.ID
+			}
+			pushMgr.Notify("schedule:"+task.ID, name, "Scheduled task started", task.ID)
+		})
+	}
 	d.scheduler = sch
 	go func() {
 		if err := sch.Start(); err != nil {
@@ -260,7 +283,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		} else {
 			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project string, autoName bool) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, autoName)
-			})
+			}, pushMgr)
 			apiSrv.SetScheduler(sch)
 			apiSrv.SetClipboard(d.clipboard)
 			d.apiServer = apiSrv
