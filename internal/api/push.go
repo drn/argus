@@ -161,12 +161,16 @@ func (s *Server) idleWatcher() {
 // returns whether the watcher should fire a push for an idle transition.
 // Deterministic and I/O-free (the only side effect is mutating the passed
 // state) so the firing logic can be unit-tested without wiring up a real
-// runner + session + db. It encodes three invariants:
+// runner + session + db. It encodes four invariants:
 //
 //   - First observation of a session never fires: prevents spurious push
 //     when an already-idle session enters the watcher's view (e.g. fresh
 //     idleWatcher start with running sessions present).
 //   - Only busy→idle transitions fire (idle→idle and busy→busy are silent).
+//   - No input ever sent → no fire. A session that auto-started on agent-
+//     view entry boots, goes idle waiting for the user's first prompt, and
+//     would otherwise nag with a push for work the user hasn't kicked off.
+//     lastInputAt is zero until the first WriteInput on the live session.
 //   - One push per work cycle: after a push, no further pushes fire for the
 //     same task until input arrives via WriteInput. lastInputAt is the
 //     session's input timestamp; a push is suppressed if a previous push
@@ -183,6 +187,9 @@ func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool, lastInp
 	wasIdle := state.idleNow[id]
 	state.idleNow[id] = isIdle
 	if !isIdle || wasIdle {
+		return false
+	}
+	if lastInputAt.IsZero() {
 		return false
 	}
 	if pushedAt, ok := state.pushedAt[id]; ok && !lastInputAt.After(pushedAt) {

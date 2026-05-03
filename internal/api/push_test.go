@@ -37,19 +37,44 @@ func TestShouldFireIdlePush_FirstObservationSuppressed(t *testing.T) {
 }
 
 // TestShouldFireIdlePush_BusyToIdleFires verifies the canonical "agent
-// finished" path: observed busy, then idle → fire push.
+// finished" path: observed busy, then idle → fire push. Uses a non-zero
+// lastInputAt because the no-input gate suppresses fires on sessions
+// that have never received a WriteInput.
 func TestShouldFireIdlePush_BusyToIdleFires(t *testing.T) {
 	state := newIdleWatcherState()
+	inputAt := fixedNow.Add(-time.Second)
 	// First observation: busy. No fire.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow), false)
 	// Second observation: still busy. No fire.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow), false)
 	// Third observation: idle. Fire.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), true)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), true)
 	// pushedAt was recorded so subsequent calls can suppress.
 	if state.pushedAt["t1"].IsZero() {
 		t.Fatal("expected pushedAt populated after fire")
 	}
+}
+
+// TestShouldFireIdlePush_NoInputEverSuppressed is the regression test for the
+// "auto-started session fires push before the user engages" bug. A fresh task
+// auto-starts on agent-view entry, the agent boots up and goes idle waiting
+// for the user's first prompt. lastInputAt stays zero on the live session
+// until WriteInput is called. Without this gate, that boot→idle transition
+// would fire a push for work the user never kicked off.
+func TestShouldFireIdlePush_NoInputEverSuppressed(t *testing.T) {
+	state := newIdleWatcherState()
+	// First observation: busy (agent booting). No fire.
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow), false)
+	// Boot finishes, session goes idle waiting for input. Suppressed.
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), false)
+	// pushedAt stayed zero — the gate must not record a fire.
+	if !state.pushedAt["t1"].IsZero() {
+		t.Fatal("expected pushedAt to remain zero when suppressed by no-input gate")
+	}
+	// User finally types something. Next busy→idle should fire.
+	inputAt := fixedNow.Add(time.Minute)
+	shouldFireIdlePush(state, "t1", false, inputAt, fixedNow.Add(time.Minute))
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow.Add(2*time.Minute)), true)
 }
 
 // TestShouldFireIdlePush_IdleToIdleNoFire verifies that a session that
@@ -57,11 +82,12 @@ func TestShouldFireIdlePush_BusyToIdleFires(t *testing.T) {
 // transition into idle), not on every subsequent idle-tick.
 func TestShouldFireIdlePush_IdleToIdleNoFire(t *testing.T) {
 	state := newIdleWatcherState()
-	shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow) // busy first
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), true)
+	inputAt := fixedNow.Add(-time.Second)
+	shouldFireIdlePush(state, "t1", false, inputAt, fixedNow) // busy first
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), true)
 	// Stays idle: no further fires.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), false)
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), false)
 }
 
 // TestShouldFireIdlePush_IdleBlipsDoNotRefire is the regression test for the
@@ -74,19 +100,20 @@ func TestShouldFireIdlePush_IdleToIdleNoFire(t *testing.T) {
 // user reply between them stay silent forever.
 func TestShouldFireIdlePush_BlipsAfterPushStaySilent(t *testing.T) {
 	state := newIdleWatcherState()
+	inputAt := fixedNow.Add(-time.Second)
 	// First observation: busy.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow), false)
 	// Becomes idle for the first time: fires.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), true)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), true)
 	// Output blip: !isIdle. No fire on busy transition.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow.Add(time.Minute)), false)
-	// Re-idles WITHOUT any input from the user. Suppressed.
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow.Add(2*time.Minute)), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow.Add(time.Minute)), false)
+	// Re-idles WITHOUT any new input from the user. Suppressed.
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow.Add(2*time.Minute)), false)
 	// Even hours later, no input → no fire.
 	// Another output blip:
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow.Add(time.Hour)), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow.Add(time.Hour)), false)
 	// Re-idle after that blip:
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow.Add(time.Hour+time.Minute)), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow.Add(time.Hour+time.Minute)), false)
 }
 
 // TestShouldFireIdlePush_InputAfterPushReArms is the canonical "user replied,
@@ -96,9 +123,10 @@ func TestShouldFireIdlePush_BlipsAfterPushStaySilent(t *testing.T) {
 // The previous 5-minute throttle was incorrectly blocking this case.
 func TestShouldFireIdlePush_InputAfterPushReArms(t *testing.T) {
 	state := newIdleWatcherState()
+	startupInput := fixedNow.Add(-time.Second)
 	// Cycle 1: busy → idle, fire.
-	shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow)
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), true)
+	shouldFireIdlePush(state, "t1", false, startupInput, fixedNow)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, startupInput, fixedNow), true)
 
 	// User sends input. lastInputAt now after the recorded pushedAt.
 	inputAt := fixedNow.Add(30 * time.Second)
@@ -130,8 +158,9 @@ func TestShouldFireIdlePush_InputBeforePushDoesNotReArm(t *testing.T) {
 // ID so concurrent sessions don't share idle state.
 func TestShouldFireIdlePush_PerTaskIndependent(t *testing.T) {
 	state := newIdleWatcherState()
-	shouldFireIdlePush(state, "t1", false, time.Time{}, fixedNow)
-	testutil.Equal(t, shouldFireIdlePush(state, "t2", true, time.Time{}, fixedNow), false)
-	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, time.Time{}, fixedNow), true)
-	testutil.Equal(t, shouldFireIdlePush(state, "t2", true, time.Time{}, fixedNow), false)
+	inputAt := fixedNow.Add(-time.Second)
+	shouldFireIdlePush(state, "t1", false, inputAt, fixedNow)
+	testutil.Equal(t, shouldFireIdlePush(state, "t2", true, inputAt, fixedNow), false)
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow), true)
+	testutil.Equal(t, shouldFireIdlePush(state, "t2", true, inputAt, fixedNow), false)
 }
