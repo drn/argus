@@ -4714,8 +4714,16 @@ function setKeyBarVisible(v) {
   // suppress the compatibility click) and keep `click` as the desktop path,
   // gated by a flag so we don't double-fire if iOS dispatches click anyway.
   // `passive: false` is required for preventDefault to take effect.
+  // `passive: false` is REQUIRED on touchstart for preventDefault to take
+  // effect on real WebKit. Element-level touchend listeners default to
+  // non-passive in modern browsers so the option is redundant there, but
+  // we set it explicitly anyway as belt-and-suspenders against future UA
+  // default changes — don't strip it.
   const touchOpts = { passive: false };
   function bindKeyPress(el, fn) {
+    // Each call creates a fresh `suppressClick` closure — every button on
+    // the bar (and the toggle) has its own state, no aliasing across
+    // instances.
     let suppressClick = false;
     el.addEventListener('touchstart', e => { e.preventDefault(); }, touchOpts);
     el.addEventListener('touchend', e => {
@@ -4723,6 +4731,9 @@ function setKeyBarVisible(v) {
       suppressClick = true;
       // Re-arm in case the synthetic click is dropped — otherwise the next
       // mouse-only click (e.g. external trackpad on iPad) would be eaten.
+      // 400ms is intentionally generous vs WebKit's ~50–150ms synthetic-
+      // click latency; rapid re-taps within the window are safe because
+      // touchend always calls fn() directly regardless of the flag.
       setTimeout(() => { suppressClick = false; }, 400);
       fn();
     }, touchOpts);
