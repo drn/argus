@@ -1074,3 +1074,361 @@ func callResult(t *testing.T, resp *Response) ToolCallResult {
 	}
 	return cr
 }
+
+// --- Schedule tool mocks ---
+
+type mockScheduleStore struct {
+	schedules []*model.ScheduledTask
+	nextID    int
+}
+
+func (m *mockScheduleStore) Schedules() ([]*model.ScheduledTask, error) {
+	out := make([]*model.ScheduledTask, len(m.schedules))
+	copy(out, m.schedules)
+	return out, nil
+}
+
+func (m *mockScheduleStore) GetSchedule(id string) (*model.ScheduledTask, error) {
+	for _, s := range m.schedules {
+		if s.ID == id {
+			return s, nil
+		}
+	}
+	return nil, db.ErrScheduleNotFound
+}
+
+func (m *mockScheduleStore) AddSchedule(s *model.ScheduledTask) error {
+	if s.ID == "" {
+		m.nextID++
+		s.ID = fmt.Sprintf("sched-%d", m.nextID)
+	}
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = time.Now()
+	}
+	m.schedules = append(m.schedules, s)
+	return nil
+}
+
+func (m *mockScheduleStore) UpdateSchedule(s *model.ScheduledTask) error {
+	for i, existing := range m.schedules {
+		if existing.ID == s.ID {
+			m.schedules[i] = s
+			return nil
+		}
+	}
+	return db.ErrScheduleNotFound
+}
+
+func (m *mockScheduleStore) DeleteSchedule(id string) error {
+	for i, s := range m.schedules {
+		if s.ID == id {
+			m.schedules = append(m.schedules[:i], m.schedules[i+1:]...)
+			return nil
+		}
+	}
+	return db.ErrScheduleNotFound
+}
+
+type mockScheduleRunner struct {
+	store *mockScheduleStore
+	fired []string
+	err   error
+}
+
+func (m *mockScheduleRunner) RunNow(id string) (*model.Task, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	sch, err := m.store.GetSchedule(id)
+	if err != nil {
+		return nil, err
+	}
+	m.fired = append(m.fired, id)
+	return &model.Task{ID: "task-from-" + id, Name: sch.Name, Project: sch.Project}, nil
+}
+
+func testServerWithSchedules() (*Server, *mockScheduleStore, *mockScheduleRunner) {
+	s := testServer()
+	store := &mockScheduleStore{
+		schedules: []*model.ScheduledTask{
+			{
+				ID:         "existing-1",
+				Name:       "daily-report",
+				Project:    "myapp",
+				Prompt:     "Summarize yesterday's commits",
+				Schedule:   "@daily",
+				Enabled:    true,
+				CreatedAt:  time.Now(),
+				NextRunAt:  time.Now().Add(time.Hour),
+				LastRunAt:  time.Now().Add(-23 * time.Hour),
+				LastTaskID: "prev-task",
+			},
+			{
+				ID:        "existing-2",
+				Name:      "hourly-poll",
+				Project:   "myapp",
+				Prompt:    "Check the queue",
+				Schedule:  "@every 1h",
+				Enabled:   false,
+				CreatedAt: time.Now(),
+				LastError: "project missing on previous fire",
+			},
+		},
+	}
+	runner := &mockScheduleRunner{store: store}
+	s.SetScheduleManager(store, runner)
+	return s, store, runner
+}
+
+// --- Schedule tool tests ---
+
+func TestToolsList_WithSchedules(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/list", nil)
+	testutil.NoError(t, respErr(resp))
+
+	result, _ := json.Marshal(resp.Result)
+	var list ToolsListResult
+	json.Unmarshal(result, &list) //nolint:errcheck
+
+	// 5 KB tools + 5 schedule tools (no task manager wired here) = 10
+	testutil.Equal(t, len(list.Tools), 10)
+	names := make(map[string]bool)
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"schedule_list", "schedule_create", "schedule_update", "schedule_delete", "schedule_run_now"} {
+		if !names[want] {
+			t.Errorf("missing tool: %s", want)
+		}
+	}
+}
+
+func TestScheduleList(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+
+	t.Run("populated", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_list",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		text := cr.Content[0].Text
+		testutil.Contains(t, text, "daily-report")
+		testutil.Contains(t, text, "hourly-poll")
+		testutil.Contains(t, text, "@daily")
+		testutil.Contains(t, text, "[disabled]")
+		testutil.Contains(t, text, "project missing on previous fire")
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		emptyServer := testServer()
+		emptyServer.SetScheduleManager(&mockScheduleStore{}, &mockScheduleRunner{})
+		resp := doRequest(t, emptyServer, "tools/call", ToolCallParams{
+			Name:      "schedule_list",
+			Arguments: json.RawMessage(`{}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Contains(t, cr.Content[0].Text, "No scheduled tasks")
+	})
+
+	t.Run("not configured", func(t *testing.T) {
+		bare := testServer()
+		resp := doRequest(t, bare, "tools/call", ToolCallParams{
+			Name:      "schedule_list",
+			Arguments: json.RawMessage(`{}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "schedule management not configured")
+	})
+}
+
+func TestScheduleCreate(t *testing.T) {
+	s, store, _ := testServerWithSchedules()
+
+	t.Run("success", func(t *testing.T) {
+		before := len(store.schedules)
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_create",
+			Arguments: json.RawMessage(`{"name":"weekly-cleanup","project":"myapp","prompt":"Run cleanup script","schedule":"@weekly"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Equal(t, len(store.schedules), before+1)
+		created := store.schedules[len(store.schedules)-1]
+		testutil.Equal(t, created.Name, "weekly-cleanup")
+		testutil.Equal(t, created.Schedule, "@weekly")
+		testutil.Equal(t, created.Enabled, true)
+		if created.NextRunAt.IsZero() {
+			t.Error("expected NextRunAt to be precomputed")
+		}
+		testutil.Contains(t, cr.Content[0].Text, "weekly-cleanup")
+	})
+
+	t.Run("missing required field", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_create",
+			Arguments: json.RawMessage(`{"name":"x","project":"myapp","schedule":"@daily"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "prompt is required")
+	})
+
+	t.Run("invalid cron expression", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_create",
+			Arguments: json.RawMessage(`{"name":"x","project":"myapp","prompt":"do thing","schedule":"banana"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+	})
+
+	t.Run("explicit enabled false", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_create",
+			Arguments: json.RawMessage(`{"name":"paused","project":"myapp","prompt":"x","schedule":"@daily","enabled":false}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		var found *model.ScheduledTask
+		for _, sch := range store.schedules {
+			if sch.Name == "paused" {
+				found = sch
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("paused schedule not found")
+		}
+		testutil.Equal(t, found.Enabled, false)
+	})
+}
+
+func TestScheduleUpdate(t *testing.T) {
+	s, store, _ := testServerWithSchedules()
+
+	t.Run("toggle enabled", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"id":"existing-2","enabled":true}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := store.GetSchedule("existing-2")
+		testutil.Equal(t, got.Enabled, true)
+		// LastError must be cleared on successful update.
+		testutil.Equal(t, got.LastError, "")
+	})
+
+	t.Run("change schedule recomputes next_run_at", func(t *testing.T) {
+		// Capture pre-update NextRunAt to confirm it changes when the cron
+		// expression changes.
+		original, _ := store.GetSchedule("existing-1")
+		oldNext := original.NextRunAt
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"id":"existing-1","schedule":"@every 30m"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := store.GetSchedule("existing-1")
+		testutil.Equal(t, got.Schedule, "@every 30m")
+		if got.NextRunAt.Equal(oldNext) {
+			t.Error("expected NextRunAt to be recomputed when schedule changed")
+		}
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"enabled":true}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "id is required")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_update",
+			Arguments: json.RawMessage(`{"id":"does-not-exist","enabled":true}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "schedule not found")
+	})
+}
+
+func TestScheduleDelete(t *testing.T) {
+	s, store, _ := testServerWithSchedules()
+
+	t.Run("success", func(t *testing.T) {
+		before := len(store.schedules)
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_delete",
+			Arguments: json.RawMessage(`{"id":"existing-2"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Equal(t, len(store.schedules), before-1)
+	})
+
+	t.Run("missing id", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_delete",
+			Arguments: json.RawMessage(`{}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+	})
+}
+
+func TestScheduleRunNow(t *testing.T) {
+	s, _, runner := testServerWithSchedules()
+
+	t.Run("success", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_run_now",
+			Arguments: json.RawMessage(`{"id":"existing-1"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Equal(t, len(runner.fired), 1)
+		testutil.Equal(t, runner.fired[0], "existing-1")
+		testutil.Contains(t, cr.Content[0].Text, "task-from-existing-1")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "schedule_run_now",
+			Arguments: json.RawMessage(`{"id":"missing"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "Failed to run schedule")
+	})
+}

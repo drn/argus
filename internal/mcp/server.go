@@ -53,6 +53,21 @@ type ClipboardSetter interface {
 	Set(taskID, text string) error
 }
 
+// ScheduleStore provides read+write access to scheduled tasks. The signature
+// matches *db.DB so the daemon passes its DB handle directly.
+type ScheduleStore interface {
+	Schedules() ([]*model.ScheduledTask, error)
+	GetSchedule(id string) (*model.ScheduledTask, error)
+	AddSchedule(s *model.ScheduledTask) error
+	UpdateSchedule(s *model.ScheduledTask) error
+	DeleteSchedule(id string) error
+}
+
+// ScheduleRunner fires a schedule out-of-cycle. Subset of *scheduler.Scheduler.
+type ScheduleRunner interface {
+	RunNow(id string) (*model.Task, error)
+}
+
 // maxConcurrentCreates limits how many task_create calls can run concurrently
 // to prevent unbounded process spawning from a misbehaving MCP client.
 const maxConcurrentCreates = 5
@@ -67,6 +82,8 @@ type Server struct {
 	taskDB      TaskStore
 	taskStopper TaskStopper
 	clipboard   ClipboardSetter // optional; set via SetClipboard
+	schedDB     ScheduleStore   // optional; set via SetScheduleManager
+	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 }
@@ -93,6 +110,15 @@ func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskStore, stopper T
 // argus_clipboard_set tool.
 func (s *Server) SetClipboard(setter ClipboardSetter) {
 	s.clipboard = setter
+}
+
+// SetScheduleManager wires schedule CRUD + run-now capabilities. When set, the
+// server exposes schedule_list, schedule_create, schedule_update,
+// schedule_delete, and schedule_run_now tools. Must be called before
+// ListenAndServe (Set* fields are read at request time without a mutex).
+func (s *Server) SetScheduleManager(store ScheduleStore, runner ScheduleRunner) {
+	s.schedDB = store
+	s.schedRunner = runner
 }
 
 // ListenAndServe starts the HTTP server. It tries port first, then port+1..port+8.
@@ -423,6 +449,78 @@ func (s *Server) clipboardEnabled() bool {
 	return s.clipboard != nil && s.taskMgmtEnabled()
 }
 
+// scheduleMgmtEnabled returns true when both schedule store and runner are wired.
+func (s *Server) scheduleMgmtEnabled() bool {
+	return s.schedDB != nil && s.schedRunner != nil
+}
+
+// scheduleToolDefs are exposed only when SetScheduleManager has been called.
+var scheduleToolDefs = []Tool{
+	{
+		Name: "schedule_list",
+		Description: `List recurring scheduled tasks. Each row fires a fresh Argus task at its cron expression. Returns name, project, schedule, enabled, next_run_at, last_run_at, and last_error if present.`,
+		InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{},
+		},
+	},
+	{
+		Name: "schedule_create",
+		Description: `Create a recurring scheduled task. The cron expression is parsed by robfig/cron/v3 ParseStandard: 5-field cron (e.g. "0 9 * * 1-5" for 9am weekdays), descriptors (@hourly, @daily, @weekly, @monthly, @yearly), or @every <duration> (e.g. "@every 1h"). Minimum resolution is one minute. Project must match an existing Argus project. New schedules default to enabled.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":     map[string]interface{}{"type": "string", "description": "Display name. Each fire suffixes this with the UTC timestamp."},
+				"project":  map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)."},
+				"prompt":   map[string]interface{}{"type": "string", "description": "Instructions delivered to the agent at each fire."},
+				"schedule": map[string]interface{}{"type": "string", "description": "Cron expression. See description for accepted formats."},
+				"backend":  map[string]interface{}{"type": "string", "description": "Optional backend override for this schedule (e.g. 'claude-haiku')."},
+				"enabled":  map[string]interface{}{"type": "boolean", "description": "Optional. Defaults to true."},
+			},
+			"required": []string{"name", "project", "prompt", "schedule"},
+		},
+	},
+	{
+		Name: "schedule_update",
+		Description: `Partial update of a scheduled task. Only fields you pass are changed; omit a field to leave it as-is. Changing the schedule expression recomputes next_run_at. Useful for toggling enabled without resending the prompt.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":       map[string]interface{}{"type": "string", "description": "Schedule ID (from schedule_list)."},
+				"name":     map[string]interface{}{"type": "string"},
+				"project":  map[string]interface{}{"type": "string"},
+				"prompt":   map[string]interface{}{"type": "string"},
+				"schedule": map[string]interface{}{"type": "string"},
+				"backend":  map[string]interface{}{"type": "string"},
+				"enabled":  map[string]interface{}{"type": "boolean"},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name: "schedule_delete",
+		Description: `Delete a scheduled task. The row is removed; in-flight task instances already created by previous fires are unaffected.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Schedule ID."},
+			},
+			"required": []string{"id"},
+		},
+	},
+	{
+		Name: "schedule_run_now",
+		Description: `Fire a schedule immediately, out of cycle. Creates a fresh task with the schedule's prompt and project. Bookkeeping is updated so the next regular tick will not double-fire. Note: run-now does NOT send the cron-tick push notification — use it as an explicit user action only.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id": map[string]interface{}{"type": "string", "description": "Schedule ID."},
+			},
+			"required": []string{"id"},
+		},
+	},
+}
+
 func (s *Server) handleToolsList(req *Request) *Response {
 	// Copy to avoid mutating the package-level toolDefs slice via append.
 	tools := make([]Tool, len(toolDefs))
@@ -432,6 +530,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	}
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
+	}
+	if s.scheduleMgmtEnabled() {
+		tools = append(tools, scheduleToolDefs...)
 	}
 	return &Response{
 		JSONRPC: "2.0",
@@ -469,6 +570,16 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskArchive(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
+	case "schedule_list":
+		return s.toolScheduleList(req.ID, params.Arguments)
+	case "schedule_create":
+		return s.toolScheduleCreate(req.ID, params.Arguments)
+	case "schedule_update":
+		return s.toolScheduleUpdate(req.ID, params.Arguments)
+	case "schedule_delete":
+		return s.toolScheduleDelete(req.ID, params.Arguments)
+	case "schedule_run_now":
+		return s.toolScheduleRunNow(req.ID, params.Arguments)
 	default:
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
@@ -956,6 +1067,200 @@ func (s *Server) resolveTask(taskID, cwd string) (*model.Task, error) {
 		return nil, fmt.Errorf("no task matches cwd: %s", cwd)
 	}
 	return best, nil
+}
+
+// --- Schedule tool handlers ---
+
+// formatScheduleTime renders a schedule timestamp; empty for the zero value so
+// the listing tool does not show "0001-01-01T00:00:00Z" for unfired schedules.
+func formatScheduleTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+func (s *Server) toolScheduleList(id interface{}, _ json.RawMessage) *Response {
+	if !s.scheduleMgmtEnabled() {
+		return toolError(id, "schedule management not configured")
+	}
+	schedules, err := s.schedDB.Schedules()
+	if err != nil {
+		return toolError(id, fmt.Sprintf("Failed to list schedules: %v", err))
+	}
+	if len(schedules) == 0 {
+		return toolResult(id, "No scheduled tasks.")
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%d schedule(s):\n\n", len(schedules))
+	for _, sch := range schedules {
+		state := "enabled"
+		if !sch.Enabled {
+			state = "disabled"
+		}
+		fmt.Fprintf(&sb, "- **%s** `%s` [%s]\n", sch.Name, sch.ID, state)
+		fmt.Fprintf(&sb, "  - schedule: `%s`\n", sch.Schedule)
+		fmt.Fprintf(&sb, "  - project: %s\n", sch.Project)
+		if sch.Backend != "" {
+			fmt.Fprintf(&sb, "  - backend: %s\n", sch.Backend)
+		}
+		if next := formatScheduleTime(sch.NextRunAt); next != "" {
+			fmt.Fprintf(&sb, "  - next_run_at: %s\n", next)
+		}
+		if last := formatScheduleTime(sch.LastRunAt); last != "" {
+			fmt.Fprintf(&sb, "  - last_run_at: %s\n", last)
+		}
+		if sch.LastError != "" {
+			fmt.Fprintf(&sb, "  - last_error: %s\n", sch.LastError)
+		}
+	}
+	return toolResult(id, sb.String())
+}
+
+func (s *Server) toolScheduleCreate(id interface{}, args json.RawMessage) *Response {
+	if !s.scheduleMgmtEnabled() {
+		return toolError(id, "schedule management not configured")
+	}
+	var p struct {
+		Name     string `json:"name"`
+		Project  string `json:"project"`
+		Prompt   string `json:"prompt"`
+		Schedule string `json:"schedule"`
+		Backend  string `json:"backend"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	sched := &model.ScheduledTask{
+		Name:     strings.TrimSpace(p.Name),
+		Project:  strings.TrimSpace(p.Project),
+		Prompt:   p.Prompt,
+		Schedule: strings.TrimSpace(p.Schedule),
+		Backend:  strings.TrimSpace(p.Backend),
+		Enabled:  true, // default
+	}
+	if p.Enabled != nil {
+		sched.Enabled = *p.Enabled
+	}
+	if err := sched.Validate(); err != nil {
+		return toolError(id, err.Error())
+	}
+	// Pre-populate NextRunAt so the UI shows it before the first tick lands.
+	sched.NextRunAt = sched.NextFire(time.Now())
+	if err := s.schedDB.AddSchedule(sched); err != nil {
+		log.Printf("[mcp] schedule_create failed: %v", err)
+		return toolError(id, fmt.Sprintf("Failed to create schedule: %v", err))
+	}
+	log.Printf("[mcp] schedule_create ok: id=%s name=%s schedule=%q", sched.ID, sched.Name, sched.Schedule)
+	return toolResult(id, fmt.Sprintf("Schedule created.\n\n- **ID**: %s\n- **Name**: %s\n- **Schedule**: %s\n- **Project**: %s\n- **Enabled**: %v\n- **Next run**: %s",
+		sched.ID, sched.Name, sched.Schedule, sched.Project, sched.Enabled, formatScheduleTime(sched.NextRunAt)))
+}
+
+func (s *Server) toolScheduleUpdate(id interface{}, args json.RawMessage) *Response {
+	if !s.scheduleMgmtEnabled() {
+		return toolError(id, "schedule management not configured")
+	}
+	var p struct {
+		ID       string  `json:"id"`
+		Name     *string `json:"name"`
+		Project  *string `json:"project"`
+		Prompt   *string `json:"prompt"`
+		Schedule *string `json:"schedule"`
+		Backend  *string `json:"backend"`
+		Enabled  *bool   `json:"enabled"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+	sched, err := s.schedDB.GetSchedule(p.ID)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("schedule not found: %s", p.ID))
+	}
+	scheduleChanged := false
+	if p.Name != nil {
+		sched.Name = strings.TrimSpace(*p.Name)
+	}
+	if p.Project != nil {
+		sched.Project = strings.TrimSpace(*p.Project)
+	}
+	if p.Prompt != nil {
+		sched.Prompt = *p.Prompt
+	}
+	if p.Schedule != nil {
+		newExpr := strings.TrimSpace(*p.Schedule)
+		if newExpr != sched.Schedule {
+			scheduleChanged = true
+		}
+		sched.Schedule = newExpr
+	}
+	if p.Backend != nil {
+		sched.Backend = strings.TrimSpace(*p.Backend)
+	}
+	if p.Enabled != nil {
+		sched.Enabled = *p.Enabled
+	}
+	if err := sched.Validate(); err != nil {
+		return toolError(id, err.Error())
+	}
+	if scheduleChanged {
+		// Anchor on LastRunAt when previously fired so an unchanged cadence
+		// preserves alignment; otherwise anchor on now. Mirrors the API's
+		// recompute path.
+		anchor := sched.LastRunAt
+		if anchor.IsZero() {
+			anchor = time.Now()
+		}
+		sched.NextRunAt = sched.NextFire(anchor)
+	}
+	sched.LastError = ""
+	if err := s.schedDB.UpdateSchedule(sched); err != nil {
+		log.Printf("[mcp] schedule_update failed: id=%s err=%v", sched.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to update schedule: %v", err))
+	}
+	log.Printf("[mcp] schedule_update ok: id=%s schedule=%q enabled=%v", sched.ID, sched.Schedule, sched.Enabled)
+	return toolResult(id, fmt.Sprintf("Schedule updated.\n\n- **ID**: %s\n- **Name**: %s\n- **Schedule**: %s\n- **Enabled**: %v\n- **Next run**: %s",
+		sched.ID, sched.Name, sched.Schedule, sched.Enabled, formatScheduleTime(sched.NextRunAt)))
+}
+
+func (s *Server) toolScheduleDelete(id interface{}, args json.RawMessage) *Response {
+	if !s.scheduleMgmtEnabled() {
+		return toolError(id, "schedule management not configured")
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+	if err := s.schedDB.DeleteSchedule(p.ID); err != nil {
+		log.Printf("[mcp] schedule_delete failed: id=%s err=%v", p.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to delete schedule: %v", err))
+	}
+	log.Printf("[mcp] schedule_delete ok: id=%s", p.ID)
+	return toolResult(id, fmt.Sprintf("Deleted schedule %s.", p.ID))
+}
+
+func (s *Server) toolScheduleRunNow(id interface{}, args json.RawMessage) *Response {
+	if !s.scheduleMgmtEnabled() {
+		return toolError(id, "schedule management not configured")
+	}
+	var p struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+	if strings.TrimSpace(p.ID) == "" {
+		return toolError(id, "id is required")
+	}
+	task, err := s.schedRunner.RunNow(p.ID)
+	if err != nil {
+		log.Printf("[mcp] schedule_run_now failed: id=%s err=%v", p.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to run schedule: %v", err))
+	}
+	log.Printf("[mcp] schedule_run_now ok: id=%s task=%s", p.ID, task.ID)
+	return toolResult(id, fmt.Sprintf("Schedule fired. Created task %s (%s).", task.ID, task.Name))
 }
 
 // truncatePromptToName generates a task name from a prompt (first 40 runes).

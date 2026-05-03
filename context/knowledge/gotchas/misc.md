@@ -39,6 +39,7 @@
 - **MCP config is injected globally only (`~/.claude.json`, `~/.codex/config.toml`), not per-worktree.** Per-worktree `.mcp.json`/`.codex/config.toml` injection was removed — it polluted git status in every project and was redundant since global config applies everywhere.
 - **MCP `instructions` field in `InitializeResult` is truncated at ~2KB by Claude Code.** Put the most critical rules first. The `kb_ingest` tool description intentionally duplicates key rules from `kbInstructions` because not all MCP clients surface server instructions at tool-call time.
 - **`toolDefs` slice must be copied before append in `handleToolsList`.** The package-level `var` could be corrupted if `append` reuses its backing array when adding task tools.
+- **`Set*` wiring on `mcp.Server` must complete before `ListenAndServe`.** Fields like `s.taskDB`, `s.schedDB`, `s.schedRunner` are read at request time without a mutex — happens-before is guaranteed only by the daemon init order. When adding a new conditional tool family (e.g. `schedule_*`), the dependency it wraps must be constructed before the MCP block in `internal/daemon/daemon.go` so `SetXxxManager` can be called pre-listen. Reordering a later block (scheduler/pushMgr) up to before the MCP block is the standard fix.
 
 ## PR & Reviews
 

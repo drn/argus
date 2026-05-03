@@ -269,6 +269,17 @@ The MCP server exposes the following tools to connected agents:
 
 Task management tools enable an external agent (e.g. Claude Code running in another terminal) to programmatically launch and monitor Argus tasks via MCP. A sample `/archive` skill lives at `.claude/skills/archive/SKILL.md` — it calls `task_archive` with the current working directory so an agent can mark its own task done at the end of a session.
 
+**Schedule Management** (recurring scheduled tasks):
+| Tool | Description |
+|------|-------------|
+| `schedule_list` | List all schedules with name, project, cron expression, enabled state, and next/last fire timestamps |
+| `schedule_create` | Create a recurring schedule. Params: `name`, `project`, `prompt`, `schedule` (cron expression or `@every <duration>`); optional `backend`, `enabled` |
+| `schedule_update` | Partial update — pass `id` plus any fields to change. Useful for toggling `enabled` or rotating the prompt without rebuilding the schedule |
+| `schedule_delete` | Remove a schedule by `id`. Tasks already created by previous fires are unaffected |
+| `schedule_run_now` | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. Does NOT send a push notification — only cron-tick fires do |
+
+Schedule tools mirror the HTTP `/api/schedules` surface so an agent can manage recurring tasks natively without going through curl. Project must match an existing Argus project; cron expressions accept the standard 5-field syntax, descriptors (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), and the `@every <duration>` shortcut. Minimum resolution is one minute.
+
 **Agent-Staged Clipboard:**
 | Tool | Description |
 |------|-------------|

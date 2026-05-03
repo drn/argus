@@ -186,8 +186,53 @@ func (d *Daemon) Serve(sockPath string) error {
 		return fmt.Errorf("pid file: %w", err)
 	}
 
-	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	cfg := d.db.Config()
+
+	// Push manager — best-effort, single instance shared between the API
+	// server's idle watcher and the scheduler's kick-off hook so both use
+	// the same VAPID keypair and subscriber list. Nil disables push.
+	pushMgr, perr := push.New(d.db)
+	if perr != nil {
+		slog.Warn("push disabled", "err", perr)
+		pushMgr = nil
+	}
+
+	// Start the scheduler (recurring scheduled tasks). Always-on — empty
+	// table is a no-op, so there's no setting to gate it. Created before
+	// the MCP server so SetScheduleManager can be wired before listening.
+	sch := scheduler.New(d.db, func(name, prompt, project, backend string) (*model.Task, error) {
+		// Schedule names are user-edited (then suffixed with a timestamp) —
+		// already meaningful; no auto-rename. backend is the per-schedule
+		// override (sched.Backend); empty string falls back to the configured
+		// default inside agent.CreateAndStart.
+		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, false)
+	})
+	if pushMgr != nil {
+		// Push when a scheduled task fires from the cron tick. RunNow
+		// (manual user-triggered fires from the UI) is intentionally exempt
+		// in scheduler.go — the user is right there, they don't need a
+		// notification for an action they just took.
+		sch.SetOnFire(func(task *model.Task) {
+			name := task.Name
+			if name == "" {
+				name = task.ID
+			}
+			// Empty throttle key: each scheduler fire creates a fresh task ID,
+			// so a "schedule:<taskID>" throttle would accumulate one entry per
+			// fire forever (memory leak) and never actually suppress anything.
+			// The scheduler's own NextRunAt bookkeeping already prevents
+			// double-fires for the same cron tick.
+			pushMgr.Notify("", name, "Scheduled task started", task.ID)
+		})
+	}
+	d.scheduler = sch
+	go func() {
+		if err := sch.Start(); err != nil {
+			slog.Error("scheduler start", "err", err)
+		}
+	}()
+
+	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
@@ -198,6 +243,7 @@ func (d *Daemon) Serve(sockPath string) error {
 			d.runner,
 		)
 		mcpSrv.SetClipboard(d.clipboard)
+		mcpSrv.SetScheduleManager(d.db, sch)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
 		if err != nil {
@@ -237,49 +283,6 @@ func (d *Daemon) Serve(sockPath string) error {
 			}()
 		}
 	}
-
-	// Push manager — best-effort, single instance shared between the API
-	// server's idle watcher and the scheduler's kick-off hook so both use
-	// the same VAPID keypair and subscriber list. Nil disables push.
-	pushMgr, perr := push.New(d.db)
-	if perr != nil {
-		slog.Warn("push disabled", "err", perr)
-		pushMgr = nil
-	}
-
-	// Start the scheduler (recurring scheduled tasks). Always-on — empty
-	// table is a no-op, so there's no setting to gate it.
-	sch := scheduler.New(d.db, func(name, prompt, project, backend string) (*model.Task, error) {
-		// Schedule names are user-edited (then suffixed with a timestamp) —
-		// already meaningful; no auto-rename. backend is the per-schedule
-		// override (sched.Backend); empty string falls back to the configured
-		// default inside agent.CreateAndStart.
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, false)
-	})
-	if pushMgr != nil {
-		// Push when a scheduled task fires from the cron tick. RunNow
-		// (manual user-triggered fires from the UI) is intentionally exempt
-		// in scheduler.go — the user is right there, they don't need a
-		// notification for an action they just took.
-		sch.SetOnFire(func(task *model.Task) {
-			name := task.Name
-			if name == "" {
-				name = task.ID
-			}
-			// Empty throttle key: each scheduler fire creates a fresh task ID,
-			// so a "schedule:<taskID>" throttle would accumulate one entry per
-			// fire forever (memory leak) and never actually suppress anything.
-			// The scheduler's own NextRunAt bookkeeping already prevents
-			// double-fires for the same cron tick.
-			pushMgr.Notify("", name, "Scheduled task started", task.ID)
-		})
-	}
-	d.scheduler = sch
-	go func() {
-		if err := sch.Start(); err != nil {
-			slog.Error("scheduler start", "err", err)
-		}
-	}()
 
 	// Start HTTP API server (when enabled in settings).
 	if cfg.API.Enabled {
