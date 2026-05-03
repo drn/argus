@@ -119,6 +119,36 @@ test.describe('key bar', () => {
     await expect(ci).toHaveValue('hello');
   });
 
+  // `.click()` synthesizes a mouse event and bypasses the touchstart handler.
+  // `.tap()` dispatches the full touchstart → touchend → click chain — the
+  // shape real iOS Safari produces. Per the Touch Events spec, calling
+  // `preventDefault()` on touchstart suppresses the synthetic click, so any
+  // handler that relies on `click` after `touchstart.preventDefault()` is dead
+  // on real iOS. These two specs lock in the touchend-driven path.
+  test('TAP on toggle reveals key bar (real touch sequence)', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'key bar is touch-gated');
+    await login(page);
+    const bar = page.locator('#key-bar');
+    await expect(bar).not.toHaveClass(/show/);
+    await page.locator('#compose-keybar-toggle').tap();
+    await expect(bar).toHaveClass(/show/);
+  });
+
+  test('TAP on a key sends bytes (real touch sequence)', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'key bar is touch-gated');
+    await login(page);
+    await page.locator('#compose-keybar-toggle').tap();
+    await expect(page.locator('#key-bar')).toHaveClass(/show/);
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#key-bar button[data-keybar="esc"]').tap();
+    const req = await inputReq;
+    expect(req.postData()).toBe('\x1b');
+  });
+
   test('stopped task: key tap toasts and does not POST', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'key bar is touch-gated');
     await login(page);

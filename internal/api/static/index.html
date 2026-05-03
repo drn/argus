@@ -4706,22 +4706,35 @@ function setKeyBarVisible(v) {
   if (!kb || !tg) return;
   // Keep the compose textarea focused so the iOS soft keyboard doesn't slide
   // down between key-bar taps. iOS dispatches touchstart → touchend → synthetic
-  // mousedown → click; the focused element can change anywhere in that chain,
-  // so preventDefault MUST run on touchstart (the earliest event) — mousedown
-  // alone is too late on real WebKit even though desktop browsers and the
-  // Playwright iphone simulation are happy with mousedown. `passive: false`
-  // is required for touchstart preventDefault to take effect (modern browsers
-  // default touch listeners to passive on document/window, but explicit on a
-  // button is good practice). click still fires in both cases.
-  const swallowFocus = e => e.preventDefault();
+  // mousedown → click; focus can shift anywhere in that chain, so preventDefault
+  // MUST run on touchstart on real WebKit. But touchstart.preventDefault on a
+  // <button> ALSO suppresses the synthetic click per the Touch Events spec, so
+  // a click handler never fires on real iOS — the button looks dead. Fix:
+  // trigger the action from `touchend` (we already preventDefault there to
+  // suppress the compatibility click) and keep `click` as the desktop path,
+  // gated by a flag so we don't double-fire if iOS dispatches click anyway.
+  // `passive: false` is required for preventDefault to take effect.
   const touchOpts = { passive: false };
-  tg.addEventListener('touchstart', swallowFocus, touchOpts);
-  tg.addEventListener('mousedown', swallowFocus);
-  tg.addEventListener('click', () => setKeyBarVisible(!keyBarVisible));
+  function bindKeyPress(el, fn) {
+    let suppressClick = false;
+    el.addEventListener('touchstart', e => { e.preventDefault(); }, touchOpts);
+    el.addEventListener('touchend', e => {
+      e.preventDefault();
+      suppressClick = true;
+      // Re-arm in case the synthetic click is dropped — otherwise the next
+      // mouse-only click (e.g. external trackpad on iPad) would be eaten.
+      setTimeout(() => { suppressClick = false; }, 400);
+      fn();
+    }, touchOpts);
+    el.addEventListener('mousedown', e => { e.preventDefault(); });
+    el.addEventListener('click', () => {
+      if (suppressClick) { suppressClick = false; return; }
+      fn();
+    });
+  }
+  bindKeyPress(tg, () => setKeyBarVisible(!keyBarVisible));
   kb.querySelectorAll('button[data-keybar]').forEach(btn => {
-    btn.addEventListener('touchstart', swallowFocus, touchOpts);
-    btn.addEventListener('mousedown', swallowFocus);
-    btn.addEventListener('click', () => {
+    bindKeyPress(btn, () => {
       const bytes = KEY_BAR_BYTES[btn.dataset.keybar];
       if (!bytes) return;
       // Match the term.onData / overflow Esc gate: only forward when the
