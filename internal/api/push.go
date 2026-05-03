@@ -161,16 +161,21 @@ func (s *Server) idleWatcher() {
 // returns whether the watcher should fire a push for an idle transition.
 // Deterministic and I/O-free (the only side effect is mutating the passed
 // state) so the firing logic can be unit-tested without wiring up a real
-// runner + session + db. It encodes four invariants:
+// runner + session + db. The gates run in this order:
 //
+// Visibility gates — must pass before any input check matters:
 //   - First observation of a session never fires: prevents spurious push
 //     when an already-idle session enters the watcher's view (e.g. fresh
 //     idleWatcher start with running sessions present).
 //   - Only busy→idle transitions fire (idle→idle and busy→busy are silent).
-//   - No input ever sent → no fire. A session that auto-started on agent-
+//
+// Input-presence gate — unconditional suppression on no-input sessions:
+//   - lastInputAt zero → no fire. A session that auto-started on agent-
 //     view entry boots, goes idle waiting for the user's first prompt, and
 //     would otherwise nag with a push for work the user hasn't kicked off.
 //     lastInputAt is zero until the first WriteInput on the live session.
+//
+// Cycle-level gate — conditional suppression on already-notified work:
 //   - One push per work cycle: after a push, no further pushes fire for the
 //     same task until input arrives via WriteInput. lastInputAt is the
 //     session's input timestamp; a push is suppressed if a previous push
@@ -179,6 +184,7 @@ func (s *Server) idleWatcher() {
 //     whose incidental output (heartbeats, cursor redraws) keeps flipping
 //     IsIdle false→true.
 func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool, lastInputAt time.Time, now time.Time) bool {
+	// Visibility gates.
 	if !state.seenBefore[id] {
 		state.seenBefore[id] = true
 		state.idleNow[id] = isIdle
@@ -189,9 +195,11 @@ func shouldFireIdlePush(state *idleWatcherState, id string, isIdle bool, lastInp
 	if !isIdle || wasIdle {
 		return false
 	}
+	// Input-presence gate.
 	if lastInputAt.IsZero() {
 		return false
 	}
+	// Cycle-level gate.
 	if pushedAt, ok := state.pushedAt[id]; ok && !lastInputAt.After(pushedAt) {
 		// Already pushed for this work cycle and no input has arrived since.
 		// The transition is just an output blip on a stale idle session.
@@ -223,9 +231,11 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 		// snapshot and Get. Get returns nil on exit, lastInput stays the
 		// zero time, and the session-exited cleanup below prunes the
 		// watcher state on the next tick. Net effect: zero lastInput on a
-		// dying session can't satisfy the re-arm condition (it's never
-		// strictly after a recorded pushedAt), so the worst case is one
-		// suppressed push for a session about to vanish.
+		// dying session is suppressed by shouldFireIdlePush — either by the
+		// no-input gate (never-fired sessions) or by the re-arm condition
+		// (previously-fired sessions, where zero is never strictly after a
+		// recorded pushedAt). Worst case: one suppressed push for a session
+		// about to vanish.
 		var lastInput time.Time
 		if sess := s.runner.Get(id); sess != nil {
 			lastInput = sess.LastInput()

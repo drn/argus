@@ -73,7 +73,7 @@ func TestShouldFireIdlePush_NoInputEverSuppressed(t *testing.T) {
 	}
 	// User finally types something. Next busy→idle should fire.
 	inputAt := fixedNow.Add(time.Minute)
-	shouldFireIdlePush(state, "t1", false, inputAt, fixedNow.Add(time.Minute))
+	testutil.Equal(t, shouldFireIdlePush(state, "t1", false, inputAt, fixedNow.Add(time.Minute)), false)
 	testutil.Equal(t, shouldFireIdlePush(state, "t1", true, inputAt, fixedNow.Add(2*time.Minute)), true)
 }
 
