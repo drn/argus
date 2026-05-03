@@ -15,15 +15,28 @@ import (
 )
 
 // sanitizeBranchName replaces the most common invalid git branch name characters.
-// Covers spaces, control chars, and the characters forbidden by git-check-ref-format:
-//   ~ ^ : ? * [ ] { } \   plus leading/trailing dots, consecutive dots, and @{.
-var invalidBranchChars = regexp.MustCompile(`[[:cntrl:] ~^:?*\[\]{}\\.]+`)
+// Covers spaces, control chars, the characters forbidden by git-check-ref-format
+// (~ ^ : ? * [ ] { } \) plus leading/trailing dots, consecutive dots, @{, AND
+// shell-hostile characters that git itself accepts but make the worktree path
+// painful to navigate from a terminal: straight + smart quotes, backticks,
+// parens, $, |, &, ;, <, >, !, #. These pass git-check-ref-format but break
+// `cd`, glob matching, and tool autocompletion in zsh/bash.
+var invalidBranchChars = regexp.MustCompile(
+	"[[:cntrl:] ~^:?*\\[\\]{}\\\\.`$|&;<>()!#'\"‘’“”]+",
+)
+
+// multiDash collapses runs of `-` left over after the invalid-char strip.
+// Example: smart quote between two existing dashes ("foo-“-bar" → "foo---bar")
+// would otherwise survive because the regex above does not include `-` in its
+// character class (intentionally — `-` is the separator we replace with).
+var multiDash = regexp.MustCompile(`-+`)
 
 // maxBranchNameLen caps the length of sanitized branch/task names.
 const maxBranchNameLen = 30
 
 func sanitizeBranchName(name string) string {
 	s := invalidBranchChars.ReplaceAllString(name, "-")
+	s = multiDash.ReplaceAllString(s, "-") // collapse `--` → `-`
 	s = strings.Trim(s, ".")             // cannot start or end with .
 	s = strings.Trim(s, "/")             // cannot start or end with /
 	s = strings.ReplaceAll(s, "..", "-")  // no consecutive dots
