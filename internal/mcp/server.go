@@ -413,6 +413,19 @@ The agent process does not know its own task ID, so the task is resolved from th
 			},
 		},
 	},
+	{
+		Name: "task_complete",
+		Description: `Mark an Argus task as complete. Sets status to "complete" and stamps EndedAt.
+
+The agent process does not know its own task ID, so the task is resolved from the working directory: pass ` + "`cwd`" + ` and Argus finds the task whose worktree matches. Does NOT stop a running agent session — call ` + "`task_stop`" + ` first if needed. No-op when the task is already complete.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":  map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd": map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+			},
+		},
+	},
 }
 
 // clipboardToolDefs are exposed only when SetClipboard has been called AND
@@ -568,6 +581,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskStop(req.ID, params.Arguments)
 	case "task_archive":
 		return s.toolTaskArchive(req.ID, params.Arguments)
+	case "task_complete":
+		return s.toolTaskComplete(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
 	case "schedule_list":
@@ -990,6 +1005,36 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 	}
 	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, newArchived)
 	return toolResult(id, fmt.Sprintf("%s task %s (%s).", action, task.ID, task.Name))
+}
+
+func (s *Server) toolTaskComplete(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID  string `json:"id"`
+		Cwd string `json:"cwd"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	if task.Status == model.StatusComplete {
+		return toolResult(id, fmt.Sprintf("Task %s (%s) already complete.", task.ID, task.Name))
+	}
+
+	task.SetStatus(model.StatusComplete)
+	if err := s.taskDB.Update(task); err != nil {
+		log.Printf("[mcp] task_complete failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to mark task complete: %v", err))
+	}
+
+	log.Printf("[mcp] task_complete ok: id=%s", task.ID)
+	return toolResult(id, fmt.Sprintf("Marked task %s (%s) as complete.", task.ID, task.Name))
 }
 
 // toolClipboardSet stages text for the user to copy. Resolves the task via

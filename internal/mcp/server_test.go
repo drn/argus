@@ -505,14 +505,14 @@ func TestToolsList_WithTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 5 task tools = 10
-	testutil.Equal(t, len(list.Tools), 10)
+	// 5 KB tools + 6 task tools = 11
+	testutil.Equal(t, len(list.Tools), 11)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive"} {
+	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_complete"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -742,7 +742,7 @@ func TestTaskCreate_RateLimit(t *testing.T) {
 func TestTaskTools_NotConfigured(t *testing.T) {
 	s := testServer() // no SetTaskManager
 
-	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive"} {
+	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_complete"} {
 		t.Run(tool, func(t *testing.T) {
 			resp := doRequest(t, s, "tools/call", ToolCallParams{
 				Name:      tool,
@@ -918,6 +918,88 @@ func TestTaskArchive(t *testing.T) {
 	})
 }
 
+func TestTaskComplete(t *testing.T) {
+	t.Run("by id", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_complete",
+			Arguments: json.RawMessage(`{"id": "abc123"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "Marked task")
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Status, model.StatusComplete)
+		if got.EndedAt.IsZero() {
+			t.Error("EndedAt should be set when transitioning to complete")
+		}
+	})
+
+	t.Run("by cwd", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_complete",
+			Arguments: json.RawMessage(`{"cwd": "/tmp/worktrees/myapp/fix-login/internal/foo"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Status, model.StatusComplete)
+	})
+
+	t.Run("already complete is no-op", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		// def456 is seeded as StatusComplete; capture EndedAt to ensure it
+		// is not re-stamped on the no-op path.
+		seed, _ := taskDB.Get("def456")
+		seed.EndedAt = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+		_ = taskDB.Update(seed)
+
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_complete",
+			Arguments: json.RawMessage(`{"id": "def456"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "already complete")
+		got, _ := taskDB.Get("def456")
+		testutil.Equal(t, got.EndedAt.Year(), 2020)
+	})
+
+	t.Run("missing id and cwd", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_complete",
+			Arguments: json.RawMessage(`{}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "provide id or cwd")
+	})
+
+	t.Run("unknown id", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_complete",
+			Arguments: json.RawMessage(`{"id": "nope"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "not found")
+	})
+}
+
 // --- Clipboard tool tests ---
 
 type mockClipboard struct {
@@ -948,8 +1030,8 @@ func TestToolsList_WithClipboard(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 5 task tools + 1 clipboard tool = 11
-	testutil.Equal(t, len(list.Tools), 11)
+	// 5 KB tools + 6 task tools + 1 clipboard tool = 12
+	testutil.Equal(t, len(list.Tools), 12)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
