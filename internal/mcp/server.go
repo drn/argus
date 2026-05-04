@@ -1027,13 +1027,21 @@ func (s *Server) toolTaskComplete(id interface{}, args json.RawMessage) *Respons
 		return toolResult(id, fmt.Sprintf("Task %s (%s) already complete.", task.ID, task.Name))
 	}
 
+	// Read-then-write is not atomic — two concurrent task_complete calls can
+	// both read non-complete state and both stamp EndedAt; the second wins
+	// with a slightly later timestamp. Acceptable for a single-user local
+	// daemon.
+	prev := task.Status
 	task.SetStatus(model.StatusComplete)
+	// Mirror the TUI 'a' archive keybinding: completing a task means review
+	// is no longer pending, so clear the badge.
+	task.WaitingReview = false
 	if err := s.taskDB.Update(task); err != nil {
 		log.Printf("[mcp] task_complete failed: id=%s err=%v", task.ID, err)
 		return toolError(id, fmt.Sprintf("Failed to mark task complete: %v", err))
 	}
 
-	log.Printf("[mcp] task_complete ok: id=%s", task.ID)
+	log.Printf("[mcp] task_complete ok: id=%s prev=%s", task.ID, prev)
 	return toolResult(id, fmt.Sprintf("Marked task %s (%s) as complete.", task.ID, task.Name))
 }
 
