@@ -634,6 +634,14 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	d.SetProject("p", config.Project{Path: t.TempDir()})
 	sim.InjectKey(tcell.KeyRune, 'n', 0)
 	syncUI(t, app.tapp)
+	// Guard: if 'n' ever stops opening the form (binding change, missing
+	// project requirement), the close-redraw assertion below would silently
+	// never fire because Escape on no modal is a no-op.
+	var hasModal bool
+	readUI(t, app.tapp, func() { hasModal = app.pages.HasPage("newtask") })
+	if !hasModal {
+		t.Fatal("'n' did not open the new-task form — global binding may have changed")
+	}
 	sim.InjectKey(tcell.KeyEscape, 0, 0)
 	syncUI(t, app.tapp)
 	testutil.Contains(t, readLog(), "force redraw: close new-task form")
