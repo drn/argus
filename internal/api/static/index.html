@@ -1522,6 +1522,11 @@ const IS_TOUCH = ('ontouchstart' in window)
 let pendingChunks = [];
 let pendingBytes = 0;
 const PENDING_MAX_BYTES = 256 * 1024;
+// Tail size for the one-shot static replay into xterm for non-running tasks.
+// Sized to fill xterm's 5000-line scrollback for a typical session without
+// overrunning it. Bigger than PENDING_MAX_BYTES because this is the entire
+// session log tail, not a transient mid-fling buffer.
+const STATIC_OUTPUT_MAX_BYTES = 512 * 1024;
 
 // Touch + scroll gating. The previous implementation used a 200ms-since-
 // last-scroll heuristic to detect momentum, but iOS Safari throttles scroll
@@ -2116,8 +2121,11 @@ function attachTerminal(task) {
     setComposeVisible(true);
     openStream(task.id);
   } else {
-    // No live session: no status indicator, no compose bar (destroyTerm()
-    // already hid it). Replay the recent log tail into the terminal.
+    // Truly non-running (complete / in_review / pending) — note this does NOT
+    // include `idle` tasks, which have status === 'in_progress' and a live PTY
+    // (the if-branch above handles them). No live session here means no status
+    // indicator and no compose bar (destroyTerm() already hid it). Replay the
+    // recent log tail into the terminal.
     document.getElementById('term-status').style.display = 'none';
     loadStaticOutput(task.id);
   }
@@ -2754,11 +2762,15 @@ async function loadStaticOutput(id) {
   // screen the agent rendered. NO `clean=1` — xterm.js's parser executes the
   // ANSI sequences itself, and the server-side sanitizer's regex doesn't fully
   // strip kitty keyboard protocol (`\x1b[<u`, `\x1b[>1u`, etc.) which would
-  // otherwise leak as visible junk. 512 KB tail is enough to fill xterm's
-  // 5000-line scrollback for a typical session without overrunning it.
+  // otherwise leak as visible junk.
+  //
+  // Trust boundary: bytes here are untrusted PTY output, but xterm.js's parser
+  // has no DOM-write path (no innerHTML, no script eval) — the only abuse
+  // surface is terminal-level (OSC 8 hyperlinks, window-title escapes, SGR
+  // spam), which is acceptable for a single-user local daemon.
   let r;
   try {
-    r = await api(`/api/tasks/${id}/output?bytes=524288`);
+    r = await api(`/api/tasks/${id}/output?bytes=${STATIC_OUTPUT_MAX_BYTES}`);
   } catch(e) {
     if (term) term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
     return;
@@ -2766,10 +2778,12 @@ async function loadStaticOutput(id) {
   // Race: user navigated away before the fetch resolved.
   if (!term) return;
   if (!r.ok) {
-    // 404 = no log yet (Pending task that never started). Anything else =
-    // genuine error.
+    // 404 = no log yet (Pending task that never started). "no output yet"
+    // reads better than "no output available" for the common Pending case
+    // since the user can still resume the task to populate it. Other errors
+    // are flagged red as a real failure.
     if (r.status === 404) {
-      term.write('\x1b[2m(no output available)\x1b[0m\r\n');
+      term.write('\x1b[2m(no output yet)\x1b[0m\r\n');
     } else {
       term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
     }
@@ -2778,7 +2792,7 @@ async function loadStaticOutput(id) {
   const buf = await r.arrayBuffer();
   if (!term) return;
   if (buf.byteLength === 0) {
-    term.write('\x1b[2m(no output available)\x1b[0m\r\n');
+    term.write('\x1b[2m(no output yet)\x1b[0m\r\n');
     return;
   }
   // Defer the write until after setupTerm()'s rAF fit() has set proper
