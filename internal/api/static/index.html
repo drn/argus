@@ -279,14 +279,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--green); border: 2px solid var(--bg);
 }
-.read-only-output {
-  flex: 1 1 auto; min-height: 0;
-  background: #000; color: #ccc; font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-  font-size: 12px; line-height: 1.4; padding: 12px; margin: 8px 12px;
-  border-radius: 8px;
-  overflow-y: auto; white-space: pre-wrap; word-break: break-all;
-  -webkit-overflow-scrolling: touch;
-}
 .term-status {
   font-size: 11px; color: var(--text-dim); padding: 4px 12px;
   display: flex; gap: 8px; align-items: center;
@@ -929,7 +921,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       </div>
       <button id="compose-send" type="button" aria-label="Send">↑</button>
     </div>
-    <div class="read-only-output" id="output-box" style="display:none"></div>
   </div>
 
   <!-- Hidden file picker for mid-session uploads. The "Upload files" overflow
@@ -2109,20 +2100,25 @@ function attachTerminal(task) {
   closeStream();
   destroyTerm();
 
+  // Always mount xterm. Non-running tasks (Done / Pending / In Review) replay
+  // their scrollback through the same widget so escape sequences are executed
+  // (status-bar redraws collapse onto their original rows) instead of being
+  // shown as raw text. The earlier plain-text path ran bytes through
+  // sanitize.CleanPTYOutput, whose regex doesn't strip CSI sequences with
+  // `<`/`>`/`=` parameter prefixes (kitty keyboard protocol exit cleanup), so
+  // junk like "[?u]>1u[?]4;2m" leaked into the visible output.
+  document.getElementById('term-wrap').style.display = 'flex';
+  setupTerm();
+
   if (task.status === 'in_progress') {
     showTermStatus('connecting\u2026', 'reconnecting');
-    document.getElementById('term-wrap').style.display = 'flex';
-    document.getElementById('output-box').style.display = 'none';
     document.getElementById('term-status').style.display = 'flex';
     setComposeVisible(true);
-    setupTerm();
     openStream(task.id);
   } else {
-    document.getElementById('term-wrap').style.display = 'none';
+    // No live session: no status indicator, no compose bar (destroyTerm()
+    // already hid it). Replay the recent log tail into the terminal.
     document.getElementById('term-status').style.display = 'none';
-    document.getElementById('output-box').style.display = 'block';
-    // destroyTerm() above already hid the compose bar — non-running tasks
-    // never re-show it.
     loadStaticOutput(task.id);
   }
 }
@@ -2754,16 +2750,50 @@ function b64ToBytes(s) {
 }
 
 async function loadStaticOutput(id) {
+  // Replay raw PTY bytes into the xterm widget so the user sees the same final
+  // screen the agent rendered. NO `clean=1` — xterm.js's parser executes the
+  // ANSI sequences itself, and the server-side sanitizer's regex doesn't fully
+  // strip kitty keyboard protocol (`\x1b[<u`, `\x1b[>1u`, etc.) which would
+  // otherwise leak as visible junk. 512 KB tail is enough to fill xterm's
+  // 5000-line scrollback for a typical session without overrunning it.
+  let r;
   try {
-    const r = await api(`/api/tasks/${id}/output?bytes=131072&clean=1`);
-    if (!r.ok) throw new Error('output fetch failed');
-    const text = await r.text();
-    const box = document.getElementById('output-box');
-    box.textContent = text;
-    box.scrollTop = box.scrollHeight;
+    r = await api(`/api/tasks/${id}/output?bytes=524288`);
   } catch(e) {
-    document.getElementById('output-box').textContent = '(no output available)';
+    if (term) term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
+    return;
   }
+  // Race: user navigated away before the fetch resolved.
+  if (!term) return;
+  if (!r.ok) {
+    // 404 = no log yet (Pending task that never started). Anything else =
+    // genuine error.
+    if (r.status === 404) {
+      term.write('\x1b[2m(no output available)\x1b[0m\r\n');
+    } else {
+      term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
+    }
+    return;
+  }
+  const buf = await r.arrayBuffer();
+  if (!term) return;
+  if (buf.byteLength === 0) {
+    term.write('\x1b[2m(no output available)\x1b[0m\r\n');
+    return;
+  }
+  // Defer the write until after setupTerm()'s rAF fit() has set proper
+  // dimensions — writing into a default 80x24 terminal would misplace cursor
+  // moves in the replay. fetch + arrayBuffer are typically 5+ms even on
+  // localhost which usually wins the race, but the explicit double-rAF makes
+  // it deterministic.
+  await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+  if (!term) return;
+  // Uint8Array (not string) preserves raw bytes — high-byte content in status
+  // bars round-trips through JS's UTF-8 string path otherwise. Same pattern as
+  // the SSE write path (see web-remote gotcha "base64 SSE chunks → Uint8Array").
+  term.write(new Uint8Array(buf), () => {
+    if (term) term.scrollToBottom();
+  });
 }
 
 function renderOverflowMenu() {
