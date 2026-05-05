@@ -1612,6 +1612,16 @@ function onTermTouchEnd(e) {
   }
   const wasTap = !isTermScrolling && !movedFar;
   if (wasTap) {
+    // Suppress the iOS compatibility mouse chain (mousedown → mouseup → click)
+    // that follows touchend by ~50–150ms. Without this, xterm.js's mousedown
+    // handler refocuses its hidden `.xterm-helper-textarea`, undoing the
+    // compose-input focus we set below — the textarea flashes focused, then
+    // the agent view yanks it back. Per the Touch Events spec, preventDefault
+    // on a cancellable touchend cancels the synthetic mouse events. Requires
+    // `passive: false` on the listener registration. Only safe when wasTap is
+    // true — a non-tap means the user scrolled, and preventing defaults on a
+    // scroll-end could break momentum on some UAs.
+    if (e && e.cancelable) e.preventDefault();
     focusInputOrTerm();
     // No scroll happened, so nothing else will trigger a drain — kick
     // it now so a pending viewport sync from earlier isn't stuck queued.
@@ -2196,7 +2206,12 @@ function setupTerm() {
   termTouchEl = document.getElementById('term');
   if (termTouchEl) {
     termTouchEl.addEventListener('touchstart', onTermTouchStart, { passive: true });
-    termTouchEl.addEventListener('touchend', onTermTouchEnd, { passive: true });
+    // touchend is `passive: false` so onTermTouchEnd can preventDefault on a
+    // tap — that's what cancels the iOS synthetic mouse chain so xterm.js
+    // doesn't refocus its helper textarea after we focus #compose-input.
+    // touchstart stays passive so vertical pan / fling scrolling isn't gated
+    // on the JS handler.
+    termTouchEl.addEventListener('touchend', onTermTouchEnd, { passive: false });
     termTouchEl.addEventListener('touchcancel', onTermTouchCancel, { passive: true });
   }
 
