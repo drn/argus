@@ -2,7 +2,9 @@ package agent
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,14 +184,18 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		// If sandbox config generation fails, fall through to unsandboxed
 	}
 
-	// Every task must have a worktree — never run in the project directory.
-	if task.Worktree == "" {
-		// sandboxCleanup is currently always nil here (sandbox block above
-		// guards on task.Worktree != ""), but we clean up defensively in case
-		// that guard is relaxed in the future.
-		if sandboxCleanup != nil {
+	// On any error return below, run sandboxCleanup so the temp profile file
+	// isn't leaked. On success, the caller (runner.Start) takes ownership of
+	// the cleanup func and runs it after the session exits.
+	committed := false
+	defer func() {
+		if !committed && sandboxCleanup != nil {
 			sandboxCleanup()
 		}
+	}()
+
+	// Every task must have a worktree — never run in the project directory.
+	if task.Worktree == "" {
 		return nil, nil, fmt.Errorf("task %q has no worktree set — refusing to start without worktree isolation", task.Name)
 	}
 
@@ -197,11 +203,13 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	// a missing path surfaces post-fork as "fork/exec /bin/sh: no such file or
 	// directory" — Go's forkExec reports the chdir failure using the exec path,
 	// which is misleading. Fail early with an actionable message instead.
+	//
+	// This narrows but does not eliminate the race: a concurrent worktree
+	// removal (orphan sweeper, manual rm) between this stat and cmd.Start can
+	// still produce the original cryptic error. Callers should not assume a
+	// successful BuildCmd guarantees the directory still exists at exec time.
 	if _, statErr := os.Stat(task.Worktree); statErr != nil {
-		if sandboxCleanup != nil {
-			sandboxCleanup()
-		}
-		if os.IsNotExist(statErr) {
+		if errors.Is(statErr, fs.ErrNotExist) {
 			return nil, nil, fmt.Errorf("worktree path missing: %s (delete the task or recreate the worktree)", task.Worktree)
 		}
 		return nil, nil, fmt.Errorf("worktree path unreachable: %s: %w", task.Worktree, statErr)
@@ -210,6 +218,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = task.Worktree
 
+	committed = true
 	return cmd, sandboxCleanup, nil
 }
 

@@ -134,9 +134,17 @@ func TestBuildCmd_MissingWorktree(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", Worktree: missing}
 
-	_, _, err := BuildCmd(task, cfg, false)
+	cmd, cleanup, err := BuildCmd(task, cfg, false)
 	if err == nil {
 		t.Fatal("expected error when worktree directory is missing")
+	}
+	// Contract on the error path: cmd and cleanup must both be nil so callers
+	// can't accidentally exec an unconfigured command or skip cleanup.
+	if cmd != nil {
+		t.Errorf("expected nil cmd on error, got %+v", cmd)
+	}
+	if cleanup != nil {
+		t.Error("expected nil cleanup on error")
 	}
 	if !strings.Contains(err.Error(), "worktree path missing") {
 		t.Errorf("expected 'worktree path missing' error, got: %v", err)
