@@ -575,7 +575,7 @@ func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	task := &model.Task{
 		Name:     "test",
 		Prompt:   "hello",
-		Worktree: "/tmp/wt",
+		Worktree: t.TempDir(),
 	}
 
 	cmd, cleanup, err := BuildCmd(task, cfg, false)

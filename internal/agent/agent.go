@@ -193,6 +193,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		return nil, nil, fmt.Errorf("task %q has no worktree set — refusing to start without worktree isolation", task.Name)
 	}
 
+	// Pre-flight: confirm the worktree directory actually exists. Without this,
+	// a missing path surfaces post-fork as "fork/exec /bin/sh: no such file or
+	// directory" — Go's forkExec reports the chdir failure using the exec path,
+	// which is misleading. Fail early with an actionable message instead.
+	if _, statErr := os.Stat(task.Worktree); statErr != nil {
+		if sandboxCleanup != nil {
+			sandboxCleanup()
+		}
+		if os.IsNotExist(statErr) {
+			return nil, nil, fmt.Errorf("worktree path missing: %s (delete the task or recreate the worktree)", task.Worktree)
+		}
+		return nil, nil, fmt.Errorf("worktree path unreachable: %s: %w", task.Worktree, statErr)
+	}
+
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = task.Worktree
 

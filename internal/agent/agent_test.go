@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -124,6 +125,27 @@ func TestBuildCmd_NoWorktree(t *testing.T) {
 	}
 }
 
+// TestBuildCmd_MissingWorktree guards against the cryptic forkExec error
+// that surfaces when cmd.Dir doesn't exist: Go reports "fork/exec /bin/sh:
+// no such file or directory", masking the real cause (deleted worktree).
+// BuildCmd must pre-flight stat the path and return an actionable error.
+func TestBuildCmd_MissingWorktree(t *testing.T) {
+	cfg := testConfig()
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", Worktree: missing}
+
+	_, _, err := BuildCmd(task, cfg, false)
+	if err == nil {
+		t.Fatal("expected error when worktree directory is missing")
+	}
+	if !strings.Contains(err.Error(), "worktree path missing") {
+		t.Errorf("expected 'worktree path missing' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("expected error to include path %q, got: %v", missing, err)
+	}
+}
+
 func TestBuildCmd(t *testing.T) {
 	cfg := testConfig()
 	task := &model.Task{Name: "fix-bug", Prompt: "fix the bug", Worktree: t.TempDir()}
@@ -146,14 +168,15 @@ func TestBuildCmd(t *testing.T) {
 
 func TestBuildCmd_WithProject(t *testing.T) {
 	cfg := testConfig()
-	task := &model.Task{Project: "myapp", Prompt: "test", Worktree: "/home/user/.argus/worktrees/myapp/fix-bug"}
+	wt := t.TempDir()
+	task := &model.Task{Project: "myapp", Prompt: "test", Worktree: wt}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if cmd.Dir != "/home/user/.argus/worktrees/myapp/fix-bug" {
+	if cmd.Dir != wt {
 		t.Errorf("expected dir from worktree, got %q", cmd.Dir)
 	}
 	// Should use codex backend from project (no --session-id for codex backends)
@@ -225,10 +248,11 @@ func TestBuildCmd_Resume(t *testing.T) {
 
 func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
 	cfg := testConfig()
+	wt := t.TempDir()
 	task := &model.Task{
 		Prompt:    "fix the bug",
 		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
-		Worktree:  "/tmp/worktree-test",
+		Worktree:  wt,
 	}
 
 	cmd, _, err := BuildCmd(task, cfg, true)
@@ -237,18 +261,19 @@ func TestBuildCmd_ResumeWithWorktree(t *testing.T) {
 	}
 
 	// Resume should set cmd.Dir to the existing worktree
-	if cmd.Dir != "/tmp/worktree-test" {
-		t.Errorf("expected Dir %q, got %q", "/tmp/worktree-test", cmd.Dir)
+	if cmd.Dir != wt {
+		t.Errorf("expected Dir %q, got %q", wt, cmd.Dir)
 	}
 }
 
 func TestBuildCmd_ResumeWithProjectAndWorktree(t *testing.T) {
 	cfg := testConfig()
+	wt := t.TempDir()
 	task := &model.Task{
 		Project:   "other",
 		Prompt:    "fix the bug",
 		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
-		Worktree:  "/tmp/worktree-test",
+		Worktree:  wt,
 	}
 
 	cmd, _, err := BuildCmd(task, cfg, true)
@@ -259,17 +284,18 @@ func TestBuildCmd_ResumeWithProjectAndWorktree(t *testing.T) {
 	// Resume MUST use the worktree (not the project dir) because sessions
 	// are project-scoped in Claude Code — the session was created from the
 	// worktree directory, not the main project directory.
-	if cmd.Dir != "/tmp/worktree-test" {
-		t.Errorf("expected Dir %q (worktree), got %q (likely project path)", "/tmp/worktree-test", cmd.Dir)
+	if cmd.Dir != wt {
+		t.Errorf("expected Dir %q (worktree), got %q (likely project path)", wt, cmd.Dir)
 	}
 }
 
 func TestBuildCmd_WorktreeDir(t *testing.T) {
 	cfg := testConfig()
+	wt := t.TempDir()
 	task := &model.Task{
 		Name:     "fix-bug",
 		Prompt:   "fix the bug",
-		Worktree: "/tmp/test-worktree",
+		Worktree: wt,
 	}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
@@ -278,18 +304,19 @@ func TestBuildCmd_WorktreeDir(t *testing.T) {
 	}
 
 	// When Worktree is set, cmd.Dir should use it
-	if cmd.Dir != "/tmp/test-worktree" {
-		t.Errorf("expected Dir %q, got %q", "/tmp/test-worktree", cmd.Dir)
+	if cmd.Dir != wt {
+		t.Errorf("expected Dir %q, got %q", wt, cmd.Dir)
 	}
 }
 
 func TestBuildCmd_WorktreeOverridesProject(t *testing.T) {
 	cfg := testConfig()
+	wt := t.TempDir()
 	task := &model.Task{
 		Project:  "other",
 		Name:     "fix-bug",
 		Prompt:   "fix the bug",
-		Worktree: "/tmp/test-worktree",
+		Worktree: wt,
 	}
 
 	cmd, _, err := BuildCmd(task, cfg, false)
@@ -298,8 +325,8 @@ func TestBuildCmd_WorktreeOverridesProject(t *testing.T) {
 	}
 
 	// Worktree takes precedence over project path
-	if cmd.Dir != "/tmp/test-worktree" {
-		t.Errorf("expected Dir %q (worktree), got %q", "/tmp/test-worktree", cmd.Dir)
+	if cmd.Dir != wt {
+		t.Errorf("expected Dir %q (worktree), got %q", wt, cmd.Dir)
 	}
 }
 
