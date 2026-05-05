@@ -551,6 +551,29 @@ func TestTaskListView_OnLayoutChange(t *testing.T) {
 	if calls != 3 {
 		t.Errorf("expected callback after archive toggle, got %d calls", calls)
 	}
+
+	// Auto-rename: same task ID/project/section but the rendered title shrinks.
+	// Without title in the signature, ghost cells from the longer name leak
+	// past the new shorter name under tcell's diff emit.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a much longer task title that wraps", Project: "alpha"},
+		{ID: "2", Name: "b", Project: "alpha", Archived: true},
+		{ID: "3", Name: "c", Project: "beta"},
+	})
+	if calls != 4 {
+		t.Errorf("expected callback after name change, got %d calls", calls)
+	}
+
+	// Status change (pending → in_progress) flips the row's spinner/badge,
+	// changing the rendered width on either side of the title.
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a much longer task title that wraps", Project: "alpha", Status: model.StatusInProgress},
+		{ID: "2", Name: "b", Project: "alpha", Archived: true},
+		{ID: "3", Name: "c", Project: "beta"},
+	})
+	if calls != 5 {
+		t.Errorf("expected callback after status change, got %d calls", calls)
+	}
 }
 
 // TestTaskListView_OnLayoutChange_CursorCrossesSection covers the

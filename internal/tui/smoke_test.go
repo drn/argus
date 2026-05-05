@@ -628,6 +628,15 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	if count := strings.Count(readLog(), "force redraw: exit agent view"); count != 1 {
 		t.Errorf("expected 1 exit-agent-view redraw entry, got %d", count)
 	}
+
+	// Modal close path: opening and closing the new-task form must Sync.
+	// Without this, Pages.RemovePage leaves stale modal cells under tmux.
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+	sim.InjectKey(tcell.KeyRune, 'n', 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	testutil.Contains(t, readLog(), "force redraw: close new-task form")
 }
 
 func TestSmoke_WaitingReviewToggle(t *testing.T) {

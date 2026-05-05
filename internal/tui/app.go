@@ -374,6 +374,7 @@ func (a *App) closeRestartDaemonPrompt() {
 	a.pages.RemovePage("restartdaemon")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close restart-daemon modal")
 }
 
 // handleRestartDaemonKey dispatches keys to the restart-daemon modal and
@@ -2460,6 +2461,7 @@ func (a *App) closeNewTaskForm() {
 	a.pages.RemovePage("newtask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close new-task form")
 }
 
 // resolveProjectForRepo finds the Argus project whose name or directory basename
@@ -2628,6 +2630,7 @@ func (a *App) closeLinkPickerModal() {
 		a.pages.SwitchToPage(a.linkPickerPrevPage)
 	}
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close link picker")
 }
 
 // openAgentLinks extracts links from the current agent session and opens the fuzzy link picker.
@@ -2696,6 +2699,7 @@ func (a *App) closeFuzzyLinkPickerModal() {
 	a.pages.RemovePage("fuzzylinkpicker")
 	// Restore focus to the agent pane.
 	a.tapp.SetFocus(a.agentPane)
+	a.forceRedraw("close fuzzy link picker")
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.
@@ -2731,6 +2735,7 @@ func (a *App) closeConfirmDelete() {
 	a.pages.RemovePage("confirmdelete")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close confirm-delete modal")
 }
 
 // --- Fork task ---
@@ -2773,6 +2778,7 @@ func (a *App) closeForkModal() {
 	a.pages.RemovePage("forktask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close fork modal")
 }
 
 // sanitizeTaskName strips control characters and collapses whitespace for
@@ -2843,6 +2849,7 @@ func (a *App) closeRenameModal() {
 	a.pages.RemovePage("renametask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
+	a.forceRedraw("close rename modal")
 }
 
 // executeFork creates a new task forked from the source, extracting context
@@ -2982,6 +2989,7 @@ func (a *App) closeProjectForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+	a.forceRedraw("close project form")
 }
 
 // --- Backend form ---
@@ -3034,6 +3042,7 @@ func (a *App) closeBackendForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+	a.forceRedraw("close backend form")
 }
 
 // --- Schedule form ---
@@ -3101,6 +3110,7 @@ func (a *App) closeScheduleForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+	a.forceRedraw("close schedule form")
 }
 
 func (a *App) deleteSchedule(id string) {
@@ -3237,6 +3247,7 @@ func (a *App) closeQuickAddForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+	a.forceRedraw("close quick-add form")
 }
 
 // deleteProject opens a confirmation modal before removing a project.
@@ -3289,6 +3300,7 @@ func (a *App) closeConfirmDeleteProject() {
 	a.pages.RemovePage("confirmdeleteproject")
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
+	a.forceRedraw("close confirm-delete-project modal")
 }
 
 // deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.

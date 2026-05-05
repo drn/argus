@@ -303,11 +303,13 @@ func (tl *TaskListView) buildRows() {
 	}
 }
 
-// rowsSignature returns a 64-bit FNV-1a hash of the current row composition
-// (kind + project + task ID per row). Cheap to compute and stable across
-// rebuilds that produce the same logical layout. Casting `r.kind` directly
-// through a byte avoids a switch and keeps any future rowKind value
-// distinct without code changes here.
+// rowsSignature returns a 64-bit FNV-1a hash of the rendered row composition
+// (kind + project + task ID + title + status per row). Title and status are
+// included because auto-naming and status transitions change row width
+// without changing structure — and tcell's diff emit leaves stale tail
+// characters from the previous (longer) title on screen until forceRedraw
+// runs. Cheap to compute. Casting `r.kind` through a byte avoids a switch
+// and keeps any future rowKind value distinct without code changes here.
 func (tl *TaskListView) rowsSignature() uint64 {
 	h := fnv.New64a()
 	for _, r := range tl.rows {
@@ -316,6 +318,10 @@ func (tl *TaskListView) rowsSignature() uint64 {
 		_, _ = h.Write([]byte{0})
 		if r.task != nil {
 			_, _ = io.WriteString(h, r.task.ID)
+			_, _ = h.Write([]byte{0})
+			_, _ = io.WriteString(h, r.task.Name)
+			_, _ = h.Write([]byte{0})
+			_, _ = io.WriteString(h, r.task.Status.String())
 		}
 		_, _ = h.Write([]byte{0})
 	}
