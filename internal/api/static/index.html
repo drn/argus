@@ -2210,7 +2210,9 @@ function setupTerm() {
     // tap — that's what cancels the iOS synthetic mouse chain so xterm.js
     // doesn't refocus its helper textarea after we focus #compose-input.
     // touchstart stays passive so vertical pan / fling scrolling isn't gated
-    // on the JS handler.
+    // on the JS handler. See onTermTouchEnd's comment for the full rationale;
+    // dropping `passive: false` here silently neuters the preventDefault
+    // there.
     termTouchEl.addEventListener('touchend', onTermTouchEnd, { passive: false });
     termTouchEl.addEventListener('touchcancel', onTermTouchCancel, { passive: true });
   }
