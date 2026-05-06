@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -394,15 +395,126 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
-func TestMethodNotAllowed(t *testing.T) {
+// TestGET_SSEStaysOpen verifies the GET handler holds the SSE stream open
+// until the client disconnects (or the server shuts down). Closing it
+// immediately is what tripped Codex rmcp with "Transport channel closed".
+func TestGET_SSEStaysOpen(t *testing.T) {
 	s := testServer()
-	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/mcp", nil)
+	testutil.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	testutil.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck
+
+	testutil.Equal(t, resp.StatusCode, http.StatusOK)
+	testutil.Equal(t, resp.Header.Get("Content-Type"), "text/event-stream")
+
+	// Read whatever the server has flushed without blocking past a brief
+	// window. The handler should still be running — closing the body is
+	// what unblocks it.
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 64)
+		_, _ = resp.Body.Read(buf)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("GET handler closed the SSE stream prematurely")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("GET handler did not return after client disconnect")
+	}
+}
+
+// TestGET_SSEUnblocksOnShutdown verifies that Server.Shutdown promptly
+// unblocks long-lived GET handlers — without this, httpSrv.Shutdown waits
+// for them to finish, which never happens.
+func TestGET_SSEUnblocksOnShutdown(t *testing.T) {
+	s := testServer()
+	srv := httptest.NewServer(s)
+	// The httptest server ListenAndServe is separate from s.httpSrv, so
+	// wire s.httpSrv to it so Shutdown reaches the right server.
+	s.httpSrv = srv.Config
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/mcp", nil)
+	testutil.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	testutil.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck
+
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 64)
+		_, _ = resp.Body.Read(buf)
+		close(done)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("GET handler did not return after Shutdown")
+	}
+	srv.Close()
+}
+
+// TestPOST_NotificationReturns202 verifies pure JSON-RPC notifications (no
+// "id" field) get HTTP 202 Accepted with an empty body, per the Streamable
+// HTTP spec. Returning a JSON-RPC response with `"id": null` is malformed
+// and rejected by strict clients like Codex rmcp.
+func TestPOST_NotificationReturns202(t *testing.T) {
+	s := testServer()
+
+	// Notification body: no "id" field.
+	body := `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
-	// GET is allowed (returns SSE), check status.
-	if w.Code != http.StatusOK {
-		// Also allow 200 for SSE endpoint.
-		t.Logf("GET /mcp returned %d", w.Code)
+
+	testutil.Equal(t, w.Code, http.StatusAccepted)
+	testutil.Equal(t, w.Body.Len(), 0)
+}
+
+// TestPOST_RequestReturnsJSON verifies normal request/response (with id)
+// still returns a JSON-RPC response. Guards against the notification-202
+// path swallowing real requests.
+func TestPOST_RequestReturnsJSON(t *testing.T) {
+	s := testServer()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, w.Header().Get("Content-Type"), "application/json")
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	testutil.Equal(t, resp.JSONRPC, "2.0")
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
 	}
 }
 

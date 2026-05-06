@@ -86,6 +86,11 @@ type Server struct {
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
+
+	// shutdownCtx is canceled by Shutdown so long-lived GET/SSE handlers
+	// can return promptly instead of blocking httpSrv.Shutdown forever.
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // New creates a new MCP server.
@@ -93,7 +98,14 @@ func New(db KBQuerier, port int, vaultPath string) *Server {
 	if vaultPath != "" {
 		vaultPath = filepath.Clean(vaultPath)
 	}
-	return &Server{db: db, port: port, vaultPath: vaultPath}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Server{
+		db:             db,
+		port:           port,
+		vaultPath:      vaultPath,
+		shutdownCtx:    ctx,
+		shutdownCancel: cancel,
+	}
 }
 
 // SetTaskManager wires in task management capabilities.
@@ -152,28 +164,90 @@ func (s *Server) ListenAndServe() (int, error) {
 	return actualPort, nil
 }
 
-// Shutdown gracefully stops the HTTP server.
+// Shutdown gracefully stops the HTTP server. Cancels the server-wide context
+// first so any active GET/SSE handlers unblock and return — otherwise
+// httpSrv.Shutdown waits indefinitely for in-flight handlers to finish.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.shutdownCancel != nil {
+		s.shutdownCancel()
+	}
 	if s.httpSrv == nil {
 		return nil
 	}
 	return s.httpSrv.Shutdown(ctx)
 }
 
-// ServeHTTP handles MCP JSON-RPC 2.0 requests at POST /mcp.
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		// SSE endpoint for server-initiated messages — not yet used.
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// sseKeepaliveInterval is how often the GET/SSE handler emits comment-only
+// keepalive frames. Short enough that idle proxies/intermediaries don't drop
+// the connection, long enough not to be wasteful on a single-user local
+// daemon.
+const sseKeepaliveInterval = 30 * time.Second
 
+// ServeHTTP routes incoming requests on the single MCP endpoint per the
+// Streamable HTTP transport spec: POST carries client-to-server JSON-RPC,
+// GET is a long-lived SSE channel for server-initiated messages, DELETE
+// terminates a session (no-op here — Argus does not track sessions).
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGET(w, r)
+	case http.MethodPost:
+		s.handlePOST(w, r)
+	case http.MethodDelete:
+		// No session state to release; acknowledge so clients that send
+		// DELETE on transport close don't see an error.
+		w.WriteHeader(http.StatusOK)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleGET holds open the server-to-client SSE stream required by the MCP
+// Streamable HTTP transport. Codex `rmcp` (and similar clients) open this
+// stream right after `initialize` and treat early closure as a fatal
+// "transport channel closed" error. Argus does not currently emit
+// server-initiated messages, so the handler just blocks on the request
+// context (client disconnect) or s.shutdownCtx (server shutdown), emitting
+// SSE comment frames every sseKeepaliveInterval to defeat idle-connection
+// timeouts in any intermediaries.
+func (s *Server) handleGET(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ticker := time.NewTicker(sseKeepaliveInterval)
+	defer ticker.Stop()
+
+	reqCtx := r.Context()
+	for {
+		select {
+		case <-reqCtx.Done():
+			return
+		case <-s.shutdownCtx.Done():
+			return
+		case <-ticker.C:
+			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// handlePOST processes JSON-RPC requests and notifications. Per the
+// Streamable HTTP spec, requests (with `id`) get a JSON response; pure
+// notifications (no `id`) get HTTP 202 Accepted with an empty body — not a
+// JSON-RPC response with a null id, which is malformed and trips strict
+// clients like Codex rmcp.
+func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
 	if err != nil {
 		http.Error(w, "read error", http.StatusBadRequest)
@@ -181,9 +255,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	// Probe for the presence of an "id" field before structured unmarshal —
+	// json.RawMessage on an absent field is nil, but that collides with
+	// `"id": null`, so use a generic map to distinguish the two cases.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		writeError(w, nil, -32700, "parse error")
+		return
+	}
+	_, hasID := probe["id"]
+
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, nil, -32700, "parse error")
+		return
+	}
+
+	if !hasID {
+		// Notification: dispatch for any side effect, return 202.
+		s.dispatch(&req)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
