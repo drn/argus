@@ -167,10 +167,9 @@ func (s *Server) ListenAndServe() (int, error) {
 // Shutdown gracefully stops the HTTP server. Cancels the server-wide context
 // first so any active GET/SSE handlers unblock and return — otherwise
 // httpSrv.Shutdown waits indefinitely for in-flight handlers to finish.
+// shutdownCancel is always set in New(), so no nil guard is needed.
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.shutdownCancel != nil {
-		s.shutdownCancel()
-	}
+	s.shutdownCancel()
 	if s.httpSrv == nil {
 		return nil
 	}
@@ -180,8 +179,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // sseKeepaliveInterval is how often the GET/SSE handler emits comment-only
 // keepalive frames. Short enough that idle proxies/intermediaries don't drop
 // the connection, long enough not to be wasteful on a single-user local
-// daemon.
-const sseKeepaliveInterval = 30 * time.Second
+// daemon. var (not const) so tests can shrink it to verify the streaming
+// loop is alive without 30 s of dead time.
+var sseKeepaliveInterval = 30 * time.Second
+
+// maxRequestBodyBytes caps POST /mcp request size to bound memory use under
+// a misbehaving client. 4 MiB is generous for JSON-RPC; tool arguments are
+// typically a few KB.
+const maxRequestBodyBytes = 4 * 1024 * 1024
 
 // ServeHTTP routes incoming requests on the single MCP endpoint per the
 // Streamable HTTP transport spec: POST carries client-to-server JSON-RPC,
@@ -234,6 +239,10 @@ func (s *Server) handleGET(w http.ResponseWriter, r *http.Request) {
 		case <-s.shutdownCtx.Done():
 			return
 		case <-ticker.C:
+			// Silent return on write error: the only meaningful failure
+			// here is the client disconnecting mid-frame, which is not
+			// actionable and would only spam logs. Matches the SSE write
+			// pattern in internal/api.
 			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
 				return
 			}
@@ -248,7 +257,7 @@ func (s *Server) handleGET(w http.ResponseWriter, r *http.Request) {
 // JSON-RPC response with a null id, which is malformed and trips strict
 // clients like Codex rmcp.
 func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes))
 	if err != nil {
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
@@ -272,8 +281,11 @@ func (s *Server) handlePOST(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !hasID {
-		// Notification: dispatch for any side effect, return 202.
-		s.dispatch(&req)
+		// Notification: dispatch for any side effect; the returned
+		// Response (always Result: nil for the only notification we
+		// recognize, notifications/initialized) is intentionally
+		// discarded — the wire reply is 202 Accepted with empty body.
+		_ = s.dispatch(&req)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -289,7 +301,9 @@ func (s *Server) dispatch(req *Request) *Response {
 	case "initialize":
 		return s.handleInitialize(req)
 	case "notifications/initialized":
-		// No-op.
+		// No-op. Return value is discarded by handlePOST on the
+		// notification path (req.ID is nil), so this Response is only
+		// ever observed if a buggy client sends an id with this method.
 		return &Response{JSONRPC: "2.0", ID: req.ID, Result: nil}
 	case "tools/list":
 		return s.handleToolsList(req)

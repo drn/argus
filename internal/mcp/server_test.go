@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -395,10 +396,26 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
+// withShortKeepalive shrinks sseKeepaliveInterval for the duration of a
+// test so the SSE handler emits its first comment frame within a few tens
+// of milliseconds. Tests assert on actual data flow rather than waiting
+// out a 30 s production interval, eliminating timing flakiness.
+func withShortKeepalive(t *testing.T) {
+	t.Helper()
+	prev := sseKeepaliveInterval
+	sseKeepaliveInterval = 25 * time.Millisecond
+	t.Cleanup(func() { sseKeepaliveInterval = prev })
+}
+
 // TestGET_SSEStaysOpen verifies the GET handler holds the SSE stream open
-// until the client disconnects (or the server shuts down). Closing it
-// immediately is what tripped Codex rmcp with "Transport channel closed".
+// until the client disconnects. Closing it immediately on first response
+// is what tripped Codex rmcp with "Transport channel closed". The test is
+// timing-deterministic: it waits for an actual keepalive byte to confirm
+// the stream is live, then cancels the request context and confirms the
+// handler returns.
 func TestGET_SSEStaysOpen(t *testing.T) {
+	withShortKeepalive(t)
+
 	s := testServer()
 	srv := httptest.NewServer(s)
 	defer srv.Close()
@@ -415,51 +432,67 @@ func TestGET_SSEStaysOpen(t *testing.T) {
 	testutil.Equal(t, resp.StatusCode, http.StatusOK)
 	testutil.Equal(t, resp.Header.Get("Content-Type"), "text/event-stream")
 
-	// Read whatever the server has flushed without blocking past a brief
-	// window. The handler should still be running — closing the body is
-	// what unblocks it.
-	done := make(chan struct{})
-	go func() {
-		buf := make([]byte, 64)
-		_, _ = resp.Body.Read(buf)
-		close(done)
-	}()
+	// Block until at least one keepalive frame arrives. With a 25 ms
+	// interval this completes in well under a second on any CI; if it
+	// times out at 5 s the handler closed without ever streaming.
+	buf := make([]byte, 64)
+	readResult := make(chan readOutcome, 1)
+	go func() { readResult <- readOnce(resp.Body, buf) }()
+
 	select {
-	case <-done:
-		t.Fatal("GET handler closed the SSE stream prematurely")
-	case <-time.After(100 * time.Millisecond):
+	case got := <-readResult:
+		testutil.NoError(t, got.err)
+		if got.n == 0 {
+			t.Fatal("GET handler closed the SSE stream without streaming")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no keepalive frame arrived — handler may not be streaming")
 	}
 
+	// Cancel the client context; the server must observe it and return so
+	// subsequent reads error out.
 	cancel()
+	go func() { readResult <- readOnce(resp.Body, buf) }()
 	select {
-	case <-done:
-	case <-time.After(time.Second):
+	case got := <-readResult:
+		if got.err == nil {
+			t.Fatal("expected read error after client disconnect")
+		}
+	case <-time.After(2 * time.Second):
 		t.Fatal("GET handler did not return after client disconnect")
 	}
 }
 
-// TestGET_SSEUnblocksOnShutdown verifies that Server.Shutdown promptly
-// unblocks long-lived GET handlers — without this, httpSrv.Shutdown waits
-// for them to finish, which never happens.
+// TestGET_SSEUnblocksOnShutdown verifies the contract that makes
+// httpSrv.Shutdown finish: Server.Shutdown cancels shutdownCtx, the GET
+// handler observes it via select, and returns. Uses httptest.NewServer so
+// s.httpSrv stays nil (we are testing the cancellation contract, not Go's
+// own http.Server.Shutdown). No private-field mutation, no race surface.
 func TestGET_SSEUnblocksOnShutdown(t *testing.T) {
+	withShortKeepalive(t)
+
 	s := testServer()
 	srv := httptest.NewServer(s)
-	// The httptest server ListenAndServe is separate from s.httpSrv, so
-	// wire s.httpSrv to it so Shutdown reaches the right server.
-	s.httpSrv = srv.Config
+	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodGet, srv.URL+"/mcp", nil)
-	testutil.NoError(t, err)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.Get(srv.URL + "/mcp") //nolint:gosec // loopback test URL
 	testutil.NoError(t, err)
 	defer resp.Body.Close() //nolint:errcheck
 
-	done := make(chan struct{})
-	go func() {
-		buf := make([]byte, 64)
-		_, _ = resp.Body.Read(buf)
-		close(done)
-	}()
+	// Wait for a real keepalive so we know the handler is inside the
+	// select loop before we call Shutdown.
+	buf := make([]byte, 64)
+	readResult := make(chan readOutcome, 1)
+	go func() { readResult <- readOnce(resp.Body, buf) }()
+	select {
+	case got := <-readResult:
+		testutil.NoError(t, got.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no keepalive arrived — handler not in select loop")
+	}
+
+	// Subsequent read must unblock once the handler returns.
+	go func() { readResult <- readOnce(resp.Body, buf) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -468,11 +501,20 @@ func TestGET_SSEUnblocksOnShutdown(t *testing.T) {
 	}
 
 	select {
-	case <-done:
-	case <-time.After(time.Second):
+	case <-readResult:
+	case <-time.After(2 * time.Second):
 		t.Fatal("GET handler did not return after Shutdown")
 	}
-	srv.Close()
+}
+
+type readOutcome struct {
+	n   int
+	err error
+}
+
+func readOnce(r io.Reader, buf []byte) readOutcome {
+	n, err := r.Read(buf)
+	return readOutcome{n: n, err: err}
 }
 
 // TestPOST_NotificationReturns202 verifies pure JSON-RPC notifications (no
