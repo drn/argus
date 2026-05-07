@@ -4727,8 +4727,8 @@ function setComposeVisible(visible) {
   if (!visible) composeAC.close();
 }
 
-// Key bar — virtual keys (Esc, Tab, ⇧Tab, arrows) iOS doesn't expose on its
-// soft keyboard but Claude Code menus need. Touch-only, persisted preference,
+// Key bar — virtual keys (Esc, Tab, ⇧Tab, Enter, arrows) iOS doesn't expose
+// on its soft keyboard but Claude Code menus need. Touch-only, persisted preference,
 // sends raw escape sequences to the PTY via the same path the overflow menu's
 // Esc/Toggle items use.
 let keyBarVisible = (() => {
