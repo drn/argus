@@ -380,8 +380,16 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if task.Status == model.StatusInProgress {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "task already running"})
-		return
+		// Only refuse when the agent is actively working. Idle in_progress
+		// tasks (no live session OR session.IsIdle()) are exactly what the
+		// PWA's "Resume" prompt targets — the user opened a quiet task and
+		// wants to wake / restart it. StartOrReattach below handles both
+		// sub-cases: returns the existing handle for live-but-idle, or
+		// spawns fresh for ghost-in_progress.
+		if sess := s.runner.Get(task.ID); sess != nil && !sess.IsIdle() {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "task already running"})
+			return
+		}
 	}
 
 	// StartOrReattach handles the desync case where the daemon still owns a

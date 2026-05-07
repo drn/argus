@@ -1310,6 +1310,25 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
   </div>
 
+  <!-- Resume confirmation modal. Shown when the user opens an idle task
+       (status=in_progress + idle). Idle tasks are not interactable — the
+       agent is either waiting at a prompt or its session has died — so we
+       suppress the soft-keyboard-popping compose bar and prompt the user
+       to wake the task explicitly. The Resume button calls the same
+       /api/tasks/{id}/resume endpoint as the overflow menu Resume action. -->
+  <div class="modal-overlay" id="resume-modal">
+    <div class="modal">
+      <h3>Resume task?</h3>
+      <p style="font-size:13px; color: var(--text-dim); margin-bottom: 12px">
+        This task is idle. Resume it to continue working.
+      </p>
+      <div class="modal-actions">
+        <button onclick="closeResumeModal()">Cancel</button>
+        <button class="primary" id="resume-modal-confirm" onclick="confirmResumeFromModal()">Resume</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Input history viewer. Lists the original task prompt plus every line
        the user has submitted from the live terminal (segmented on Enter).
        Captured client-side from sendInputBytes; persisted in localStorage. -->
@@ -1892,6 +1911,7 @@ async function refresh() {
     if (currentTask) {
       const fresh = tasks.find(t => t.id === currentTask.id);
       if (fresh) {
+        const wasIdle = effectiveStatus(currentTask) === 'idle';
         const menuChanged =
           fresh.pr_url !== currentTask.pr_url ||
           fresh.status !== currentTask.status ||
@@ -1905,6 +1925,18 @@ async function refresh() {
           document.getElementById('detail-subtitle').textContent =
             `${fresh.project} · ${statusLabel(effectiveStatus(fresh))}${fresh.elapsed ? ' · ' + fresh.elapsed : ''}`;
           renderOverflowMenu();
+          // Idle ↔ active flip while the detail view is open. If the task
+          // left idle (resume succeeded; agent emitted output and IsIdle
+          // dropped), close the resume modal and re-attach so the live
+          // stream + compose bar replace the static log replay. The reverse
+          // flip (active → idle) is intentionally not re-attached: the user
+          // may still be reading agent output and the keyboard suddenly
+          // disappearing mid-conversation would be jarring.
+          const isIdle = effectiveStatus(fresh) === 'idle';
+          if (wasIdle && !isIdle) {
+            closeResumeModal();
+            attachTerminal(fresh);
+          }
         }
       }
     }
@@ -1945,6 +1977,7 @@ function showOffline() {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
+  closeResumeModal();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
   currentTask = null;
@@ -2136,6 +2169,7 @@ async function openDetail(id) {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
+  closeResumeModal();
 
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
@@ -2167,17 +2201,26 @@ function attachTerminal(task) {
   document.getElementById('term-wrap').style.display = 'flex';
   setupTerm();
 
-  if (task.status === 'in_progress') {
+  if (task.status === 'in_progress' && !task.idle) {
     showTermStatus('connecting\u2026', 'reconnecting');
     document.getElementById('term-status').style.display = 'flex';
     setComposeVisible(true);
     openStream(task.id);
+  } else if (task.status === 'in_progress' && task.idle) {
+    // Idle: agent is either waiting at a prompt (live session, IsIdle()) or
+    // its session has died (ghost in_progress). Either way the task is not
+    // interactable — suppress the compose bar (which would pop the iOS soft
+    // keyboard for nothing) and prompt the user to Resume. Replay the log
+    // tail so they see context. Live SSE only resumes after Resume succeeds
+    // and refresh() flips `idle` false; attachTerminal then re-enters the
+    // running branch above.
+    document.getElementById('term-status').style.display = 'none';
+    loadStaticOutput(task.id);
+    openResumeModal();
   } else {
-    // Truly non-running (complete / in_review / pending) — note this does NOT
-    // include `idle` tasks, which have status === 'in_progress' and a live PTY
-    // (the if-branch above handles them). No live session here means no status
-    // indicator and no compose bar (destroyTerm() already hid it). Replay the
-    // recent log tail into the terminal.
+    // Truly non-running (complete / in_review / pending). No live session
+    // means no status indicator and no compose bar (destroyTerm() already
+    // hid it). Replay the recent log tail into the terminal.
     document.getElementById('term-status').style.display = 'none';
     loadStaticOutput(task.id);
   }
@@ -2874,8 +2917,12 @@ function renderOverflowMenu() {
   // operations belong in the closing-menu items below.
   // Esc lives in the key bar (⌨ button below the terminal); duplicating it
   // here just bloated the menu.
-  if (s === 'in_progress') {
+  if (s === 'in_progress' && !currentTask.idle) {
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
+  } else if (s === 'in_progress' && currentTask.idle) {
+    // Idle in_progress: agent is not actively working. Surface Resume so
+    // the user can re-trigger after dismissing the resume modal.
+    items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
   } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
     items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
   }
@@ -2990,12 +3037,35 @@ async function resumeTask() {
     // a watched field flips (status:complete \u2192 in_progress here), so we just
     // need to re-attach the terminal for the live PTY.
     await refresh();
+    closeResumeModal();
     attachTerminal(currentTask);
   } catch(e) {
     showToast('Resume failed: ' + e.message);
   } finally {
     setActionButtons(false);
   }
+}
+
+// --- Resume confirmation modal ---
+// Idle tasks are not interactable, so attachTerminal opens this modal in
+// place of the compose bar. The user can confirm (Resume) or dismiss
+// (Cancel) and fall back to the overflow menu's Resume entry.
+function openResumeModal() {
+  const m = document.getElementById('resume-modal');
+  if (!m) return;
+  const btn = document.getElementById('resume-modal-confirm');
+  if (btn) btn.disabled = !!actionBusy;
+  m.classList.add('open');
+}
+
+function closeResumeModal() {
+  const m = document.getElementById('resume-modal');
+  if (m) m.classList.remove('open');
+}
+
+function confirmResumeFromModal() {
+  closeResumeModal();
+  resumeTask();
 }
 
 async function renameTask() {
@@ -3106,6 +3176,7 @@ function closeDetail() {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
+  closeResumeModal();
   hideCopyButton();
   // destroyTerm() hid the compose bar; here we additionally clear the textarea
   // so the next opened task gets a fresh field.
@@ -3877,6 +3948,7 @@ function switchTab(tab) {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
+  closeResumeModal();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();

@@ -275,18 +275,72 @@ func TestHandleResumeTask(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusNotFound)
 	})
 
-	// "Ghost in_progress" — DB says in_progress but the runner has no
-	// session (e.g. daemon restarted and the row never reconciled). The
-	// handler short-circuits with 409; this locks in that contract.
-	t.Run("409 when already in_progress (with or without live session)", func(t *testing.T) {
+	// 409 only fires when an actively-working session is attached. The
+	// PWA's "Resume" prompt targets idle in_progress tasks (no session OR
+	// IsIdle), so they must NOT short-circuit here — see the 200 cases
+	// below.
+	t.Run("409 when in_progress with a live, non-idle session", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
 		srv, d := testServer(t)
 		mux := srv.routes()
-		task := &model.Task{Name: "running", Status: model.StatusInProgress}
-		d.Add(task)
+
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "running",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+
 		req := authedReq("POST", "/api/tasks/"+task.ID+"/resume", "")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
 		testutil.Equal(t, w.Code, http.StatusConflict)
+	})
+
+	// Ghost in_progress — DB says in_progress but the runner has no live
+	// session (e.g. daemon restarted, row never reconciled). The PWA
+	// surfaces this as `idle: true`; tapping Resume must heal it instead
+	// of 409ing.
+	t.Run("resumes ghost in_progress with no live session", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		srv, d := testServer(t)
+		mux := srv.routes()
+
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "ghost",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/resume", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		t.Cleanup(func() {
+			if sess := srv.runner.Get(task.ID); sess != nil {
+				_ = srv.runner.Stop(task.ID)
+				<-sess.Done()
+			}
+		})
+
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["status"], "resumed")
 	})
 
 	t.Run("heals desync when runner has a live session", func(t *testing.T) {
