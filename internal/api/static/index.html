@@ -3264,16 +3264,22 @@ function openExternalURL(url) {
 // Lists http/https URLs found in the agent's terminal output. Re-fetched on
 // each open so a long-running agent's newly emitted URLs surface without a
 // page refresh. The filter input does case-insensitive substring matching on
-// label + URL — same shape as the TUI's fuzzy picker for users moving between
-// the two clients.
+// label + URL — analogous to the TUI's fuzzy picker; see the gotcha file for
+// why we don't try to align them.
 let linksAll = [];
+// Re-entrancy guard: rapid open/close while the first fetch is still in
+// flight could otherwise let a stale response overwrite linksAll after the
+// second open already populated it. JS is single-threaded but fetch is async;
+// without this flag the user sees a flash of empty-then-populated state.
+let linksFetching = false;
 
 async function openLinksModal() {
   if (!currentTask) return;
+  if (linksFetching) return;
   const filter = document.getElementById('links-modal-filter');
   const body = document.getElementById('links-modal-body');
   if (filter) filter.value = '';
-  body.innerHTML = '<div class="links-empty">Loading…</div>';
+  setLinksBody('Loading…');
   document.getElementById('links-modal').classList.add('open');
   // Focus the filter on desktop (a real keyboard is present); on iOS the
   // focus would pop the soft keyboard before the user has decided whether
@@ -3282,21 +3288,37 @@ async function openLinksModal() {
     setTimeout(() => filter.focus(), 0);
   }
 
+  linksFetching = true;
   try {
     const r = await fetch(API + '/api/tasks/' + currentTask.id + '/links', {
       headers: { Authorization: 'Bearer ' + TOKEN },
     });
     if (!r.ok) {
-      body.innerHTML = '<div class="links-empty">Failed to load links</div>';
+      setLinksBody('Failed to load links');
       return;
     }
     const data = await r.json();
     linksAll = Array.isArray(data.links) ? data.links : [];
   } catch {
-    body.innerHTML = '<div class="links-empty">Failed to load links</div>';
+    setLinksBody('Failed to load links');
     return;
+  } finally {
+    linksFetching = false;
   }
   renderLinksList();
+}
+
+// setLinksBody renders a single placeholder row in the modal body. Used for
+// "Loading…" / "Failed to load" / "No matches" — keeping the implementation
+// uniformly DOM-API-based (no innerHTML) makes the "no agent strings ever
+// reach innerHTML" invariant easy to audit at a glance.
+function setLinksBody(message) {
+  const body = document.getElementById('links-modal-body');
+  body.replaceChildren();
+  const empty = document.createElement('div');
+  empty.className = 'links-empty';
+  empty.textContent = message;
+  body.appendChild(empty);
 }
 
 function renderLinksList() {
@@ -3308,14 +3330,11 @@ function renderLinksList() {
         (l.url || '').toLowerCase().includes(q))
     : linksAll;
 
-  body.innerHTML = '';
   if (items.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'links-empty';
-    empty.textContent = linksAll.length === 0 ? 'No links found in this task' : 'No matches';
-    body.appendChild(empty);
+    setLinksBody(linksAll.length === 0 ? 'No links found in this task' : 'No matches');
     return;
   }
+  body.replaceChildren();
   for (const l of items) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -3857,6 +3876,7 @@ function switchTab(tab) {
   closeFilesView();
   closePromptModal();
   closeInputsModal();
+  closeLinksModal();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();

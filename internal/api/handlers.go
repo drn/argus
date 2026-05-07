@@ -707,6 +707,12 @@ func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 		logPath := agent.SessionLogPath(id)
 		f, err := os.Open(logPath) //nolint:gosec // logPath is filepath.Join(~/.argus/sessions, id+".log"); same pattern as handleGetOutput
 		if err != nil {
+			// Intentionally 200 + empty list (vs handleGetOutput's 404):
+			// the picker's caller just wants to render "No links found"
+			// uniformly, whether the task doesn't exist or simply hasn't
+			// emitted a URL yet. A 404 would force the JS into a bespoke
+			// error path for what is, from the user's perspective, the
+			// same outcome.
 			writeJSON(w, http.StatusOK, map[string]any{"links": []links.Link{}})
 			return
 		}
