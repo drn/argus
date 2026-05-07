@@ -17,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/links"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/sanitize"
 	"github.com/drn/argus/internal/skills"
@@ -678,6 +679,61 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 		f.Seek(offset, io.SeekStart) //nolint:errcheck
 		io.Copy(w, f)                //nolint:errcheck
 	}
+}
+
+// --- Get Links ---
+
+// linksReadCap bounds the bytes we scan for URLs. The full session log can be
+// many MB on long-running tasks; capping at 1MB matches the upper bound of
+// the /output endpoint and keeps the worst-case allocation predictable.
+const linksReadCap = 1 << 20
+
+// handleGetLinks returns http/https URLs extracted from the task's terminal
+// output (live ring buffer if running, otherwise the on-disk session log).
+// Mirrors the TUI's ctrl+l fuzzy link picker so the web app can offer the
+// same "Open link" affordance.
+func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var raw []byte
+	// Live session: the full ring buffer is bounded by RingBuffer capacity,
+	// so we don't need to cap further here.
+	if sess := s.runner.Get(id); sess != nil {
+		raw = sess.RecentOutputTail(linksReadCap)
+	} else {
+		// Fallback: read the tail of the session log file. Older content
+		// beyond linksReadCap is dropped so a multi-MB log doesn't pin
+		// memory just to enumerate links.
+		logPath := agent.SessionLogPath(id)
+		f, err := os.Open(logPath) //nolint:gosec // logPath is filepath.Join(~/.argus/sessions, id+".log"); same pattern as handleGetOutput
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"links": []links.Link{}})
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		offset := info.Size() - int64(linksReadCap)
+		if offset < 0 {
+			offset = 0
+		}
+		f.Seek(offset, io.SeekStart) //nolint:errcheck
+		raw, err = io.ReadAll(f)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+
+	out := links.Extract(string(raw))
+	if out == nil {
+		out = []links.Link{}
+	}
+	uxlog.Log("[api] task=%s links extracted: %d", id, len(out))
+	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }
 
 // --- Write Input ---

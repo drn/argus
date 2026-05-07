@@ -12,8 +12,9 @@ import (
 // AnsiRe matches ANSI escape sequences (CSI, OSC, simple escapes).
 // CSI sequences: \x1b[ <params 0x20-0x3f>* <final 0x40-0x7e>
 // OSC sequences are terminated by either BEL (\x07) or ST (\x1b\\).
-// NOTE: For link extraction, osc8Re in todolinks.go must run BEFORE AnsiRe
-// to preserve URLs embedded in OSC 8 hyperlink tags (AnsiRe strips them).
+// NOTE: For link extraction, osc8Re in internal/links must run BEFORE the
+// general ANSI regex to preserve URLs embedded in OSC 8 hyperlink tags
+// (AnsiRe / links.ansiRe strip them).
 var AnsiRe = regexp.MustCompile(`\x1b(?:\[[\x20-\x3f]*[\x40-\x7e]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-B]|[78DEHM])`)
 
 // splitLines strips ANSI escape sequences, then splits the result into
@@ -23,8 +24,9 @@ func splitLines(data []byte, maxWidth int) []string {
 		maxWidth = 80
 	}
 	// All ANSI → empty here (display wrapping, not URL extraction).
-	// stripANSI in todolinks.go uses a different strategy for link extraction:
-	// SGR → empty (preserves mid-URL colors), non-SGR → space (prevents merging).
+	// stripANSI in internal/links uses a different strategy for link
+	// extraction: SGR → empty (preserves mid-URL colors), non-SGR → space
+	// (prevents text from different screen positions merging into URLs).
 	clean := AnsiRe.ReplaceAll(data, nil)
 
 	var lines []string

@@ -417,6 +417,56 @@ func TestHandleListSkills(t *testing.T) {
 	})
 }
 
+func TestHandleGetLinks(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	// SessionLogPath resolves through $HOME — redirect to a tempdir so we
+	// don't read or write under the live ~/.argus/.
+	t.Setenv("HOME", t.TempDir())
+
+	t.Run("empty when no session and no log file", func(t *testing.T) {
+		req := authedReq("GET", "/api/tasks/no-such-task/links", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp struct {
+			Links []map[string]string `json:"links"`
+		}
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, len(resp.Links), 0)
+	})
+
+	t.Run("extracts URLs from on-disk session log", func(t *testing.T) {
+		task := &model.Task{Name: "with-links", Status: model.StatusComplete}
+		testutil.NoError(t, d.Add(task))
+
+		// Write a synthetic session log with ANSI noise + an OSC 8 hyperlink.
+		logPath := agent.SessionLogPath(task.ID)
+		testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o750))
+		content := "see \x1b[34mhttps://example.com/page\x1b[0m\n" +
+			"\x1b]8;;https://github.com/org/repo/pull/42\x1b\\PR\x1b]8;;\x1b\\\n"
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o600))
+
+		req := authedReq("GET", "/api/tasks/"+task.ID+"/links", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp struct {
+			Links []struct {
+				Label string `json:"label"`
+				URL   string `json:"url"`
+			} `json:"links"`
+		}
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, len(resp.Links), 2)
+		testutil.Equal(t, resp.Links[0].URL, "https://example.com/page")
+		testutil.Equal(t, resp.Links[1].URL, "https://github.com/org/repo/pull/42")
+	})
+}
+
 func TestHandleSize(t *testing.T) {
 	srv, _ := testServer(t)
 	mux := srv.routes()

@@ -726,6 +726,36 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
   font-family: ui-monospace, Menlo, monospace;
 }
 
+/* Link picker — fuzzy filter + scrollable list of URLs found in the agent's
+   terminal output. Mirrors the TUI's ctrl+l fuzzy picker; rows are <button>s
+   so keyboard focus + Enter activate naturally on desktop, and tap targets
+   stay 44px-tall on touch. */
+.links-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 60vh; overflow: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--bg);
+}
+.links-empty { padding: 12px; color: var(--text-dim); font-size: 13px; text-align: center; }
+.links-item {
+  display: flex; flex-direction: column; gap: 2px;
+  width: 100%; padding: 8px 10px; min-height: 44px;
+  background: transparent; border: 0; border-radius: 0;
+  color: var(--text); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.links-item:hover, .links-item:focus { background: var(--surface); outline: none; }
+.links-item .links-label {
+  font-size: 13px; line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.links-item .links-url {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px; color: var(--text-dim); line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.links-item.url-only .links-url { font-size: 13px; color: var(--text); }
+.links-item.url-only .links-label { display: none; }
+
 /* Logs viewer */
 .logs-pane {
   background: var(--bg); color: var(--text); font-family: ui-monospace, Menlo, monospace;
@@ -1290,6 +1320,25 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="modal-actions">
         <button id="inputs-modal-clear" onclick="clearInputHistory()" style="margin-right:auto">Clear</button>
         <button class="primary" onclick="closeInputsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Link picker. Lists http/https URLs found in the agent's terminal
+       output. Fetched fresh from /api/tasks/{id}/links each time so a
+       long-running agent's newly emitted URLs surface without a refresh.
+       Mirrors the TUI's ctrl+l fuzzy picker. -->
+  <div class="modal-overlay" id="links-modal">
+    <div class="modal">
+      <h3>Open link</h3>
+      <div class="form-group">
+        <input type="search" id="links-modal-filter"
+          placeholder="Filter…" autocapitalize="off" autocorrect="off"
+          spellcheck="false" autocomplete="off">
+      </div>
+      <div class="links-list" id="links-modal-body"></div>
+      <div class="modal-actions">
+        <button class="primary" onclick="closeLinksModal()">Close</button>
       </div>
     </div>
   </div>
@@ -1895,6 +1944,7 @@ function showOffline() {
   closeOverflowMenu();
   closePromptModal();
   closeInputsModal();
+  closeLinksModal();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
   currentTask = null;
@@ -2085,6 +2135,7 @@ async function openDetail(id) {
   closeFilesView();
   closePromptModal();
   closeInputsModal();
+  closeLinksModal();
 
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
@@ -2815,15 +2866,15 @@ function renderOverflowMenu() {
   const menu = document.getElementById('overflow-menu');
   const s = currentTask.status;
   const items = [];
-  // Esc and "Toggle mode" send raw key bytes to the agent. They keep the
-  // menu open on tap (handled below) so the user can spam Esc to interrupt
-  // a runaway loop or cycle modes without re-opening the dropdown.
-  // Items with `keepOpen: true` MUST be fire-and-forget — no client-side
-  // state mutation — because `setActionButtons` does not disable them, so
-  // they could race other in-flight actions. State-changing operations
-  // belong in the closing-menu items below.
+  // "Toggle mode" sends raw key bytes to the agent. It keeps the menu open
+  // on tap (handled below) so the user can cycle modes without re-opening
+  // the dropdown. Items with `keepOpen: true` MUST be fire-and-forget — no
+  // client-side state mutation — because `setActionButtons` does not disable
+  // them, so they could race other in-flight actions. State-changing
+  // operations belong in the closing-menu items below.
+  // Esc lives in the key bar (⌨ button below the terminal); duplicating it
+  // here just bloated the menu.
   if (s === 'in_progress') {
-    items.push({ id: 'btn-esc', label: 'Esc', fn: () => sendInputBytes('\x1b'), keepOpen: true });
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
   } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
     items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
@@ -2832,6 +2883,7 @@ function renderOverflowMenu() {
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
     { id: 'btn-prompt', label: 'View prompt', fn: openPromptModal },
     { id: 'btn-inputs', label: 'Input history', fn: openInputsModal },
+    { id: 'btn-links', label: 'Open link', fn: openLinksModal },
     { id: 'btn-upload', label: 'Upload files', fn: triggerUpload },
     { id: 'btn-rename', label: 'Rename', fn: renameTask },
     { id: 'btn-fork', label: 'Fork', fn: forkTask },
@@ -2840,23 +2892,7 @@ function renderOverflowMenu() {
       : { id: 'btn-archive', label: 'Archive', fn: () => setArchive(true) },
   );
   if (currentTask.pr_url) {
-    items.push({ id: 'btn-pr', label: 'View PR', fn: () => {
-      const url = currentTask.pr_url;
-      if (!url || !url.startsWith('http')) return;
-      // iOS standalone PWA can't open a real browser tab via window.open('_blank'),
-      // so it leaves a stub about:blank window the user has to dismiss. For
-      // github.com URLs the universal link hands off to the GitHub app and the
-      // PWA stays alive in the background — assign location.href instead.
-      const isStandalone = window.navigator.standalone === true;
-      // Extend this regex if other universal-link-backed providers are added (gitlab, jira, linear).
-      const isGitHub = /^https:\/\/(www\.)?github\.com\//i.test(url);
-      if (isStandalone && isGitHub) {
-        window.location.href = url;
-      } else {
-        // noopener+noreferrer: prevent the opened tab from accessing window.opener.
-        window.open(url, '_blank', 'noopener,noreferrer');
-      }
-    }});
+    items.push({ id: 'btn-pr', label: 'View PR', fn: () => openExternalURL(currentTask.pr_url) });
   }
   items.push({ id: 'btn-delete', label: 'Delete', fn: deleteTask, danger: true });
 
@@ -2933,11 +2969,11 @@ function setActionButtons(disabled) {
   // Disabling btn-overflow prevents reopening the menu mid-action; the
   // per-item buttons (btn-resume / btn-delete) are inside that menu and are
   // also disabled defensively in case the menu is left open.
-  // btn-esc and btn-mode are intentionally NOT in this list: they are
-  // fire-and-forget keystroke senders with no client-side state mutation,
-  // and the server safely drops writes to a non-live session. Any future
-  // `keepOpen: true` menu item must follow the same rule (no state change),
-  // since `setActionButtons` does not gate them.
+  // btn-mode is intentionally NOT in this list: it is a fire-and-forget
+  // keystroke sender with no client-side state mutation, and the server
+  // safely drops writes to a non-live session. Any future `keepOpen: true`
+  // menu item must follow the same rule (no state change), since
+  // `setActionButtons` does not gate them.
   ['btn-resume','btn-delete','btn-overflow'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = disabled;
@@ -3069,6 +3105,7 @@ function closeDetail() {
   closeFilesView();
   closePromptModal();
   closeInputsModal();
+  closeLinksModal();
   hideCopyButton();
   // destroyTerm() hid the compose bar; here we additionally clear the textarea
   // so the next opened task gets a fresh field.
@@ -3198,6 +3235,134 @@ function clearInputHistory() {
   inputBuffers.delete(currentTask.id);
   renderInputsModal();
 }
+
+// --- External URL opener ---
+// Shared by "View PR" and the link picker. iOS standalone PWAs can't open a
+// real browser tab via window.open('_blank') — they leave a stub about:blank
+// window the user has to dismiss with X. For domains that are backed by
+// universal links (GitHub, etc.), assigning location.href hands off to the
+// native app and the PWA stays alive in the background. For everything else
+// we accept the stub on iOS rather than blowing the user out of the PWA, so
+// the modal stays interactive after multiple opens. On non-PWA platforms the
+// regular new-tab behavior applies.
+//
+// Extend universalLinkRe if other universal-link-backed providers are added.
+const universalLinkRe = /^https:\/\/(www\.)?(github\.com|gitlab\.com)\//i;
+function openExternalURL(url) {
+  if (!url || typeof url !== 'string') return;
+  if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+  const isStandalone = window.navigator.standalone === true;
+  if (isStandalone && universalLinkRe.test(url)) {
+    window.location.href = url;
+  } else {
+    // noopener+noreferrer: prevent the opened tab from accessing window.opener.
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
+
+// --- Link picker modal ---
+// Lists http/https URLs found in the agent's terminal output. Re-fetched on
+// each open so a long-running agent's newly emitted URLs surface without a
+// page refresh. The filter input does case-insensitive substring matching on
+// label + URL — same shape as the TUI's fuzzy picker for users moving between
+// the two clients.
+let linksAll = [];
+
+async function openLinksModal() {
+  if (!currentTask) return;
+  const filter = document.getElementById('links-modal-filter');
+  const body = document.getElementById('links-modal-body');
+  if (filter) filter.value = '';
+  body.innerHTML = '<div class="links-empty">Loading…</div>';
+  document.getElementById('links-modal').classList.add('open');
+  // Focus the filter on desktop (a real keyboard is present); on iOS the
+  // focus would pop the soft keyboard before the user has decided whether
+  // to filter — annoying when the list is already short.
+  if (filter && !window.navigator.standalone) {
+    setTimeout(() => filter.focus(), 0);
+  }
+
+  try {
+    const r = await fetch(API + '/api/tasks/' + currentTask.id + '/links', {
+      headers: { Authorization: 'Bearer ' + TOKEN },
+    });
+    if (!r.ok) {
+      body.innerHTML = '<div class="links-empty">Failed to load links</div>';
+      return;
+    }
+    const data = await r.json();
+    linksAll = Array.isArray(data.links) ? data.links : [];
+  } catch {
+    body.innerHTML = '<div class="links-empty">Failed to load links</div>';
+    return;
+  }
+  renderLinksList();
+}
+
+function renderLinksList() {
+  const body = document.getElementById('links-modal-body');
+  const q = (document.getElementById('links-modal-filter').value || '').trim().toLowerCase();
+  const items = q
+    ? linksAll.filter(l =>
+        (l.label || '').toLowerCase().includes(q) ||
+        (l.url || '').toLowerCase().includes(q))
+    : linksAll;
+
+  body.innerHTML = '';
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'links-empty';
+    empty.textContent = linksAll.length === 0 ? 'No links found in this task' : 'No matches';
+    body.appendChild(empty);
+    return;
+  }
+  for (const l of items) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'links-item';
+    const url = l.url || '';
+    const label = l.label || url;
+    if (label === url) btn.classList.add('url-only');
+    // textContent (not innerHTML) is required — labels and URLs are
+    // attacker-controlled (they came out of the agent's stdout). textContent
+    // escapes HTML, so a label of `<img src=x onerror=...>` renders as text.
+    const labelEl = document.createElement('span');
+    labelEl.className = 'links-label';
+    labelEl.textContent = label;
+    const urlEl = document.createElement('span');
+    urlEl.className = 'links-url';
+    urlEl.textContent = url;
+    btn.appendChild(labelEl);
+    btn.appendChild(urlEl);
+    btn.addEventListener('click', () => {
+      closeLinksModal();
+      openExternalURL(url);
+    });
+    body.appendChild(btn);
+  }
+}
+
+function closeLinksModal() {
+  document.getElementById('links-modal').classList.remove('open');
+}
+
+// Wire filter input + Enter-to-open-first-match. Wired once at module load
+// because the input element is in the static markup.
+(function wireLinksModal() {
+  const filter = document.getElementById('links-modal-filter');
+  if (!filter) return;
+  filter.addEventListener('input', renderLinksList);
+  filter.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = document.querySelector('#links-modal-body .links-item');
+      if (first) first.click();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeLinksModal();
+    }
+  });
+})();
 
 // --- Files & Diff View ---
 // Full-screen overlay opened from the detail-view overflow menu. Stacks the
