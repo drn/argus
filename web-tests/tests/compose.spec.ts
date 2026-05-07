@@ -102,6 +102,47 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
+  // Regression: when iOS predictive text / autocorrect has an active
+  // composition, the soft-keyboard Send key dispatches `keydown` with
+  // key='Enter' AND isComposing=true, immediately followed by `beforeinput`
+  // with inputType='insertLineBreak'. The previous keydown handler always
+  // updated `lastEnterKeydownAt` regardless of isComposing, so the beforeinput
+  // handler treated the line break as "Shift+Enter following a real Enter
+  // keydown" and returned early without sending — the browser then inserted a
+  // literal `\n` and the prompt sat in the textarea unsubmitted. Symptom:
+  // tapping Send sometimes drops a newline instead of POSTing.
+  test('soft-keyboard Send during IME composition still sends', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello world');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      // Enter with isComposing=true — the keydown handler must NOT claim the
+      // timestamp, so the beforeinput insertLineBreak that follows is treated
+      // as a fresh soft-keyboard Send.
+      el.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        isComposing: true,
+        cancelable: true,
+        bubbles: true,
+      }));
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertLineBreak',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
   test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);

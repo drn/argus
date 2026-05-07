@@ -4898,14 +4898,23 @@ function sendCompose() {
   const ENTER_KEYDOWN_DEBOUNCE_MS = 100;
   let lastEnterKeydownAt = 0;
   ci.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    // When iOS predictive text / autocorrect has an active composition, Enter
+    // arrives with isComposing=true and we can't tell whether it'll commit
+    // the composition, insert a newline, or trigger soft-keyboard Send. Bail
+    // without claiming the timestamp — otherwise the beforeinput handler that
+    // fires next (with inputType: insertLineBreak for the soft Send case)
+    // sees a fresh `lastEnterKeydownAt`, treats it as the "Shift+Enter after
+    // real Enter keydown" path, returns early, and lets the browser insert a
+    // literal `\n` instead of submitting. Symptom: tapping Send sometimes
+    // drops a newline into the textarea instead of POSTing the prompt.
+    if (e.isComposing) return;
     // Enter sends; Shift+Enter inserts a newline. Hardware keyboards on iPad
     // and Bluetooth-connected iPhone keyboards both pass the Shift modifier.
-    if (e.key === 'Enter') {
-      lastEnterKeydownAt = Date.now();
-      if (!e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        sendCompose();
-      }
+    lastEnterKeydownAt = Date.now();
+    if (!e.shiftKey) {
+      e.preventDefault();
+      sendCompose();
     }
   });
   ci.addEventListener('beforeinput', e => {
