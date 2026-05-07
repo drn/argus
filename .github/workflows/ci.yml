@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,11 +41,26 @@ jobs:
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
       - name: Coverage Summary
-        run: go tool cover -func=coverage.out | tail -1
+        run: |
+          {
+            echo "## Coverage"
+            echo ""
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1
 
-      - name: Upload Coverage
+      - name: Upload Coverage Artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage
           path: coverage.out
           retention-days: 7
+
+      - name: Coverage Report
+        if: github.event_name == 'pull_request'
+        uses: fgrosse/go-coverage-report@v1.2.0
+        with:
+          coverage-artifact-name: coverage
+          coverage-file-name: coverage.out
