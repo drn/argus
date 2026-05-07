@@ -693,6 +693,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 }
 .modal .form-group textarea { min-height: 60px; resize: vertical; font-family: ui-monospace, Menlo, monospace; }
 .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal .modal-description { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
 .modal .radio-row { display: flex; gap: 12px; font-size: 13px; }
 .modal .radio-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 
@@ -1319,9 +1320,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
   <div class="modal-overlay" id="resume-modal">
     <div class="modal">
       <h3>Resume task?</h3>
-      <p style="font-size:13px; color: var(--text-dim); margin-bottom: 12px">
-        This task is idle. Resume it to continue working.
-      </p>
+      <p class="modal-description">This task is idle. Resume it to continue working.</p>
       <div class="modal-actions">
         <button onclick="closeResumeModal()">Cancel</button>
         <button class="primary" id="resume-modal-confirm" onclick="confirmResumeFromModal()">Resume</button>
@@ -1911,6 +1910,9 @@ async function refresh() {
     if (currentTask) {
       const fresh = tasks.find(t => t.id === currentTask.id);
       if (fresh) {
+        // Capture wasIdle BEFORE `currentTask = fresh` below — the
+        // idle-flip branch inside the menuChanged block needs the prior
+        // value to detect the transition.
         const wasIdle = effectiveStatus(currentTask) === 'idle';
         const menuChanged =
           fresh.pr_url !== currentTask.pr_url ||
@@ -1936,6 +1938,10 @@ async function refresh() {
           if (wasIdle && !isIdle) {
             closeResumeModal();
             attachTerminal(fresh);
+            // resumeTask() awaits refresh() and would call attachTerminal a
+            // second time; signal that this branch already handled it so it
+            // can skip without tearing down the freshly-opened SSE stream.
+            resumeReattachHandled = true;
           }
         }
       }
@@ -2917,14 +2923,18 @@ function renderOverflowMenu() {
   // operations belong in the closing-menu items below.
   // Esc lives in the key bar (⌨ button below the terminal); duplicating it
   // here just bloated the menu.
+  // Shared between the idle-in_progress branch and the
+  // pending/in_review/complete branch so they can never drift if the
+  // item shape changes.
+  const resumeItem = { id: 'btn-resume', label: 'Resume', fn: resumeTask };
   if (s === 'in_progress' && !currentTask.idle) {
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
   } else if (s === 'in_progress' && currentTask.idle) {
     // Idle in_progress: agent is not actively working. Surface Resume so
     // the user can re-trigger after dismissing the resume modal.
-    items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
+    items.push(resumeItem);
   } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
-    items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
+    items.push(resumeItem);
   }
   items.push(
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
@@ -3027,19 +3037,32 @@ function setActionButtons(disabled) {
   });
 }
 
+// Coordinates resumeTask() and the refresh() idle-flip handler. When the
+// poll detects wasIdle && !isIdle and re-attaches the terminal, it sets
+// this flag so the awaiting resumeTask() skips its own attachTerminal
+// call \u2014 re-running it would tear down the freshly-opened SSE stream.
+// Reset on every resumeTask entry; the flag has no meaning outside that
+// resume \u2192 refresh window.
+let resumeReattachHandled = false;
+
 async function resumeTask() {
   if (actionBusy) return;
   setActionButtons(true);
+  resumeReattachHandled = false;
   try {
     const r = await api(`/api/tasks/${currentTask.id}/resume`, { method: 'POST' });
     if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'resume failed'); }
-    // refresh() now syncs currentTask + subtitle + overflow menu inline when
-    // a watched field flips (status:complete \u2192 in_progress here), so we just
-    // need to re-attach the terminal for the live PTY.
+    // refresh() syncs currentTask + subtitle + overflow menu inline when a
+    // watched field flips. For an idle \u2192 active flip the refresh handler
+    // already calls attachTerminal and sets resumeReattachHandled; non-idle
+    // resume paths (pending / in_review / complete \u2192 in_progress) don't
+    // hit that branch, so we fall through to attach here.
     await refresh();
     closeResumeModal();
-    attachTerminal(currentTask);
+    if (!resumeReattachHandled) attachTerminal(currentTask);
   } catch(e) {
+    // Leave the resume modal open on failure so the user can retry without
+    // re-navigating into the task.
     showToast('Resume failed: ' + e.message);
   } finally {
     setActionButtons(false);
@@ -3053,8 +3076,6 @@ async function resumeTask() {
 function openResumeModal() {
   const m = document.getElementById('resume-modal');
   if (!m) return;
-  const btn = document.getElementById('resume-modal-confirm');
-  if (btn) btn.disabled = !!actionBusy;
   m.classList.add('open');
 }
 
@@ -3063,8 +3084,11 @@ function closeResumeModal() {
   if (m) m.classList.remove('open');
 }
 
+// resumeTask() handles the actionBusy guard internally and closes the
+// modal on success; on failure we deliberately leave it open so the user
+// can retry without re-navigating into the task. Don't preemptively close
+// here.
 function confirmResumeFromModal() {
-  closeResumeModal();
   resumeTask();
 }
 
