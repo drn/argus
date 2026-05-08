@@ -647,53 +647,82 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 
 	clean := r.URL.Query().Get("clean") == "1"
 
-	// Try live session first.
-	sess := s.runner.Get(id)
-	if sess != nil {
-		data := sess.RecentOutputTail(tailSize)
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("X-Source", "live")
-		if clean {
-			w.Write([]byte(sanitize.CleanPTYOutput(string(data)))) //nolint:errcheck
-		} else {
-			w.Write(data) //nolint:errcheck
-		}
-		return
-	}
-
-	// Fall back to session log file.
+	// Always read from the on-disk session log when available, even for live
+	// sessions. The log file holds the complete history; the in-memory ring
+	// buffer only retains the last 256KB. For active in_progress tasks the
+	// SPA pairs this read with /stream?since=<X-Output-Total>, where the
+	// /stream endpoint replays only the (tiny) ring delta between this read
+	// and the live attach. Together they give the client full history with
+	// no gap and no duplicates.
 	logPath := agent.SessionLogPath(id)
-	f, err := os.Open(logPath)
+	f, err := os.Open(logPath) //nolint:gosec // logPath is filepath.Join(~/.argus/sessions, id+".log")
 	if err != nil {
+		// Live session present but log unavailable (best-effort log creation
+		// failed at session start) — fall back to the ring buffer so the
+		// client sees the recent tail rather than a 404.
+		if sess := s.runner.Get(id); sess != nil {
+			data := sess.RecentOutputTail(tailSize)
+			ringTotal := sess.TotalWritten()
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("X-Source", "ring")
+			// data is the ring tail and ringTotal is the high-water mark; the
+			// client now has bytes [ringTotal-len(data) .. ringTotal]. Setting
+			// since=ringTotal on /stream attaches live with no replay (the
+			// caller-already-has-it region matches exactly). Any bytes the
+			// session writes between this header and the /stream open are
+			// covered by AddWriterFrom's same-lock replay.
+			w.Header().Set("X-Output-Total", strconv.FormatUint(ringTotal, 10))
+			if clean {
+				w.Write([]byte(sanitize.CleanPTYOutput(string(data)))) //nolint:errcheck,gosec // text/plain endpoint; bytes are PTY output for the local single-user daemon, not HTML
+			} else {
+				w.Write(data) //nolint:errcheck,gosec // text/plain endpoint; bytes are PTY output for the local single-user daemon, not HTML
+			}
+			return
+		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no output available"})
 		return
 	}
 	defer f.Close()
 
-	// Read the tail of the file.
 	info, err := f.Stat()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	offset := info.Size() - int64(tailSize)
-	if offset < 0 {
-		offset = 0
+	fileSize := info.Size()
+	startOff := fileSize - int64(tailSize)
+	if startOff < 0 {
+		startOff = 0
 	}
+	bytesToRead := fileSize - startOff
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("X-Source", "log")
+	// X-Output-Total advertises the byte position the client should pass back
+	// as ?since=<n> on the /stream endpoint to resume without overlap. We
+	// pin it to the file size we observed under Stat() and bound the body
+	// read to the same value (io.CopyN), so the count of bytes returned ==
+	// X-Output-Total - startOff exactly. Without the bound, a live session
+	// growing the file mid-read would leave the client's `since` short of
+	// the bytes they actually have.
+	w.Header().Set("X-Output-Total", strconv.FormatInt(fileSize, 10))
+	if sess := s.runner.Get(id); sess != nil {
+		w.Header().Set("X-Source", "live")
+	} else {
+		w.Header().Set("X-Source", "log")
+	}
+
+	if _, err := f.Seek(startOff, io.SeekStart); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if clean {
-		f.Seek(offset, io.SeekStart) //nolint:errcheck
-		raw, err := io.ReadAll(f)
+		raw, err := io.ReadAll(io.LimitReader(f, bytesToRead))
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		w.Write([]byte(sanitize.CleanPTYOutput(string(raw)))) //nolint:errcheck
 	} else {
-		f.Seek(offset, io.SeekStart) //nolint:errcheck
-		io.Copy(w, f)                //nolint:errcheck
+		io.CopyN(w, f, bytesToRead) //nolint:errcheck
 	}
 }
 
@@ -852,16 +881,31 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional resume cursor. Clients first read /output (which returns
+	// X-Output-Total: N from the on-disk log size) and then open this stream
+	// with ?since=N. AddWriterFrom replays only the ring delta between N and
+	// the current total under a single lock acquisition, then attaches live
+	// — no overlap with the disk-log bytes the client already has, no gap.
+	// Absent or invalid `since` defaults to 0, which replays the full ring
+	// (matches the legacy AddWriter behaviour).
+	var since uint64
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			since = n
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Use a channelWriter so AddWriter's synchronous ring buffer replay
-	// doesn't deadlock. The channel is large enough to hold the full 256KB
-	// ring buffer replay (256KB / 4KB chunks = 64 items).
+	// Use a channelWriter so AddWriterFrom's synchronous ring buffer replay
+	// doesn't block readLoop. The channel is large enough to hold the full
+	// 256KB ring buffer replay (256KB / 4KB chunks = 64 items), and Write
+	// drops on full to keep the lock-held replay non-blocking.
 	cw := &channelWriter{ch: make(chan []byte, 128)}
-	sess.AddWriter(cw)
+	sess.AddWriterFrom(cw, since)
 	defer sess.RemoveWriter(cw)
 
 	// Subscribe to agent-staged clipboard updates for this task. Any change

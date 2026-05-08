@@ -641,6 +641,211 @@ func TestSession_RemoveWriter(t *testing.T) {
 	}
 }
 
+// waitForTotalAtLeast polls TotalWritten() until it reaches at least n, or fails.
+func waitForTotalAtLeast(t *testing.T, sess *Session, n uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if sess.TotalWritten() >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for TotalWritten() >= %d (got %d)", n, sess.TotalWritten())
+}
+
+func TestSession_AddWriterFrom_NoReplayWhenCaughtUp(t *testing.T) {
+	// Two distinct printf bursts separated by a sleep so we can attach
+	// between them with a known offset. The second burst exercises live
+	// delivery; the lack of replay in the first verifies the offset gate.
+	cmd := exec.Command("sh", "-c", "printf 'aaaaaaaa'; sleep 0.5; printf 'bbbbbbbb'")
+	sess, err := StartSession("awf-noreplay", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	// Wait for the first burst to land in the ring.
+	waitForTotalAtLeast(t, sess, 8, 3*time.Second)
+
+	// Attach with offset == currentTotal: the writer must NOT receive the
+	// 8 bytes already in the ring (they're "behind" us in the byte stream).
+	var buf syncBuffer
+	sess.AddWriterFrom(&buf, sess.TotalWritten())
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	// Drain — readLoop may still be flushing the second burst.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 8 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "bbbbbbbb") {
+		t.Errorf("missing live bytes from second burst: %q", got)
+	}
+	if strings.Contains(got, "aaaa") {
+		t.Errorf("got 'aaaa' replay despite caught-up offset: %q", got)
+	}
+}
+
+func TestSession_AddWriterFrom_PartialReplay(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf 'aaaaaaaa'; sleep 0.5; printf 'bbbbbbbb'")
+	sess, err := StartSession("awf-partial", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 8, 3*time.Second)
+
+	// Attach with offset 4 bytes BEFORE the current high-water mark. The
+	// writer should receive exactly the last 4 bytes of the first burst as
+	// replay, then the 8 bytes of the second burst live — 12 bytes total
+	// and exactly the suffix of the session's logical byte stream from
+	// offset 4 onward.
+	currentTotal := sess.TotalWritten()
+	var buf syncBuffer
+	sess.AddWriterFrom(&buf, currentTotal-4)
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 12 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "aaaa") {
+		t.Errorf("missing 4-byte replay tail of first burst: %q", got)
+	}
+	// We should NOT see all 8 a's — only the tail of 4 should be replayed.
+	if strings.Count(got, "a") > 4 {
+		t.Errorf("too many 'a' chars; replay should be exactly 4: %q", got)
+	}
+	if !strings.Contains(got, "bbbbbbbb") {
+		t.Errorf("missing live bytes from second burst: %q", got)
+	}
+}
+
+func TestSession_AddWriterFrom_FullReplayAtZeroOffset(t *testing.T) {
+	// offset=0 with currentTotal=N replays the full ring (or as much as the
+	// ring retains). Mirrors legacy AddWriter behaviour and exercises the
+	// gap > ringLen branch's siblings.
+	cmd := exec.Command("sh", "-c", "printf 'helloworld'; sleep 0.3")
+	sess, err := StartSession("awf-zero", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 10, 3*time.Second)
+
+	var buf syncBuffer
+	sess.AddWriterFrom(&buf, 0)
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 10 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(buf.String(), "helloworld") {
+		t.Errorf("offset=0 should replay full ring: got %q", buf.String())
+	}
+}
+
+// TestSession_AddWriterFrom_NoGapUnderConcurrency exercises the race-free
+// guarantee: many concurrent attaches across a busy session must each
+// receive a contiguous suffix from their offset, with no missing bytes
+// between replay and live attach.
+func TestSession_AddWriterFrom_NoGapUnderConcurrency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping concurrency test in short mode")
+	}
+	// Producer that writes a known counter pattern. Each "byte" is a single
+	// digit so a missing chunk shows up as a non-monotonic sequence in the
+	// captured buffer.
+	cmd := exec.Command("sh", "-c", "for i in $(seq 1 200); do printf 'x'; done; sleep 0.5")
+	sess, err := StartSession("awf-conc", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	// Wait for at least 50 bytes so we have a meaningful baseline.
+	waitForTotalAtLeast(t, sess, 50, 3*time.Second)
+
+	// Attach 5 writers in parallel, each at the moment-of-call offset. Each
+	// writer's expected payload is `currentTotal_at_attach .. final_total`.
+	const attachers = 5
+	results := make([]struct {
+		offset uint64
+		buf    *syncBuffer
+	}, attachers)
+	var wg sync.WaitGroup
+	for i := range attachers {
+		wg.Go(func() {
+			b := &syncBuffer{}
+			results[i].buf = b
+			results[i].offset = sess.TotalWritten()
+			sess.AddWriterFrom(b, results[i].offset)
+		})
+	}
+	wg.Wait()
+
+	select {
+	case <-sess.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+
+	finalTotal := sess.TotalWritten()
+	// Wait for delivery to settle — readLoop may still be flushing.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, r := range results {
+			expected := finalTotal - r.offset
+			// syncBuffer.Len() is non-negative; gosec's int->uint64 warning
+			// is spurious here.
+			if uint64(r.buf.Len()) < expected { //nolint:gosec // Len() non-negative
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	for i, r := range results {
+		expected := finalTotal - r.offset
+		got := uint64(r.buf.Len()) //nolint:gosec // Len() non-negative
+		if got != expected {
+			t.Errorf("writer %d (offset=%d): got %d bytes, want %d (final=%d)",
+				i, r.offset, got, expected, finalTotal)
+		}
+		// Every byte should be 'x' — any other char would indicate a gap
+		// or duplication mangling. got is bounded by the test's own writes
+		// (200 bytes), comfortably within int range.
+		if !strings.HasPrefix(r.buf.String(), strings.Repeat("x", int(got))) { //nolint:gosec // got <= 200 in this test
+			t.Errorf("writer %d: non-'x' byte in stream: %q", i, r.buf.String())
+		}
+	}
+}
+
 func TestStartSession_ZeroSize(t *testing.T) {
 	// Test that zero rows/cols fall back to defaults
 	cmd := exec.Command("sleep", "10")

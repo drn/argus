@@ -241,6 +241,64 @@ func (s *Session) AddWriter(w io.Writer) {
 	s.mu.Unlock()
 }
 
+// AddWriterFrom registers a writer to receive PTY output starting at byte
+// `offset`. Bytes between `offset` and the current total are replayed from
+// the ring buffer, then the writer is appended to the live writer set —
+// both steps happen under a single s.mu acquisition that readLoop also
+// takes. Result: w sees an unbroken byte stream from `offset` onward.
+//
+// Race-free guarantee. AddWriter (above) snapshots-then-attaches with a
+// brief unlock window between the two, accepting a small gap in exchange
+// for not blocking slow writers. AddWriterFrom holds the lock through the
+// replay, so the live attach happens at exactly currentTotal — no bytes
+// can slip through between snapshot and attach. The /stream endpoint pairs
+// this with an `offset` derived from the on-disk session log size, so the
+// client's xterm sees: [0..offset] from the disk log fetch, [offset..N]
+// from this replay, and (N..) live — no gap, no duplicate.
+//
+// Constraint: w.Write MUST NOT block. AddWriterFrom holds s.mu while
+// replaying, and readLoop takes s.mu on every iteration; a blocking writer
+// would freeze the PTY reader and the agent would stall when the kernel
+// PTY buffer fills. Use a buffered-channel writer with select-default
+// (drop-on-full) — that is what the API's channelWriter does.
+//
+// If `offset` is older than the ring buffer's retention window (offset <
+// currentTotal - ringSize), the full ring is replayed; the caller will
+// see a gap relative to what they had before. In practice this only
+// happens if the session produced more than 256KB between the caller's
+// disk-log fetch and this call, which is unrealistic.
+//
+// Safe to call concurrently. If w.Write returns an error, the writer is
+// not registered.
+func (s *Session) AddWriterFrom(w io.Writer, offset uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentTotal := s.buf.TotalWritten()
+	if offset < currentTotal {
+		gap := currentTotal - offset
+		var replay []byte
+		// Len() returns int but is always >= 0; the conversion is safe and
+		// gap is bounded above by ringSize in the else branch (256KB by
+		// default), well within int range on every supported platform.
+		if gap > uint64(s.buf.Len()) { //nolint:gosec // Len() is non-negative
+			// Caller's offset predates the ring's earliest retained byte.
+			// Best effort: replay the full ring. The caller will have a
+			// gap of (gap - ringLen) bytes between their prior data and
+			// this replay, but missing bytes are preferable to stalling.
+			replay = s.buf.Bytes()
+		} else {
+			replay = s.buf.Tail(int(gap)) //nolint:gosec // gap <= Len() per branch guard
+		}
+		if len(replay) > 0 {
+			if _, err := w.Write(replay); err != nil {
+				return
+			}
+		}
+	}
+	s.writers = append(s.writers, w)
+}
+
 // RemoveWriter unregisters a writer. Safe to call concurrently.
 func (s *Session) RemoveWriter(w io.Writer) {
 	s.mu.Lock()

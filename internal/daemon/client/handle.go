@@ -215,6 +215,11 @@ func (rs *RemoteSession) refreshInfo() {
 // the client receives output via its stream connection.
 func (rs *RemoteSession) AddWriter(_ io.Writer) {}
 
+// AddWriterFrom is a no-op on RemoteSession for the same reason as AddWriter:
+// streaming is handled by the daemon-side stream connection, not by the
+// client's local writer set. Exists only to satisfy SessionHandle.
+func (rs *RemoteSession) AddWriterFrom(_ io.Writer, _ uint64) {}
+
 // RemoveWriter is a no-op on RemoteSession.
 func (rs *RemoteSession) RemoveWriter(_ io.Writer) {}
 

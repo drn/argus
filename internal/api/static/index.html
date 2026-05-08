@@ -2177,9 +2177,21 @@ async function openDetail(id) {
   attachTerminal(currentTask);
 }
 
-function attachTerminal(task) {
+// Generation counter for attachTerminal. The async work below
+// (loadStaticOutput's fetch + arrayBuffer + double-rAF) can be in flight
+// when a second attachTerminal kicks off (back-then-reopen, fork-then-open,
+// idle-to-active auto-reattach). Each call captures myGen at entry and
+// bails before any post-await side effect (openStream, openResumeModal)
+// if attachGen has advanced -- otherwise the stale generation would
+// attach an SSE stream for the previous task on top of the new task's
+// terminal.
+let attachGen = 0;
+
+async function attachTerminal(task) {
   closeStream();
   destroyTerm();
+
+  const myGen = ++attachGen;
 
   // Always mount xterm. Non-running tasks (Done / Pending / In Review) replay
   // their scrollback through the same widget so escape sequences are executed
@@ -2195,7 +2207,17 @@ function attachTerminal(task) {
     showTermStatus('connecting\u2026', 'reconnecting');
     document.getElementById('term-status').style.display = 'flex';
     setComposeVisible(true);
-    openStream(task.id);
+    // Active sessions: replay the on-disk session log first (full history,
+    // up to STATIC_OUTPUT_MAX_BYTES), then open the SSE stream with
+    // ?since=<N> where N is the byte cursor returned as the X-Output-Total
+    // header. The server's AddWriterFrom replays only the ring delta
+    // between N and the current total under a single lock acquisition,
+    // then attaches live -- no gap, no duplicate. The previous path skipped
+    // the disk replay and only got the 256KB ring buffer via SSE, silently
+    // truncating history for any session that emitted more than that.
+    const result = await loadStaticOutput(task.id);
+    if (myGen !== attachGen) return;
+    openStream(task.id, result.since);
   } else if (task.status === 'in_progress' && task.idle) {
     // Idle: agent is either waiting at a prompt (live session, IsIdle()) or
     // its session has died (ghost in_progress). Either way the task is not
@@ -2205,14 +2227,15 @@ function attachTerminal(task) {
     // and refresh() flips `idle` false; attachTerminal then re-enters the
     // running branch above.
     document.getElementById('term-status').style.display = 'none';
-    loadStaticOutput(task.id);
+    await loadStaticOutput(task.id);
+    if (myGen !== attachGen) return;
     openResumeModal();
   } else {
     // Truly non-running (complete / in_review / pending). No live session
     // means no status indicator and no compose bar (destroyTerm() already
     // hid it). Replay the recent log tail into the terminal.
     document.getElementById('term-status').style.display = 'none';
-    loadStaticOutput(task.id);
+    await loadStaticOutput(task.id);
   }
 }
 
@@ -2678,10 +2701,18 @@ function fit() {
   }
 }
 
-function openStream(id) {
+function openStream(id, since) {
   // EventSource doesn't support custom headers, so pass the token as a query
   // param. Auth middleware accepts both Bearer headers and ?token=.
-  const url = API + `/api/tasks/${id}/stream?token=` + encodeURIComponent(TOKEN);
+  // `since` is the byte cursor returned by /output as X-Output-Total -- the
+  // server's AddWriterFrom replays only the ring delta past that offset
+  // before attaching live, so the disk-log fetch + this stream cover full
+  // history without overlap. Omitted/0 falls back to a full ring replay
+  // (legacy behaviour, used by the online-event reconnect path).
+  let url = API + `/api/tasks/${id}/stream?token=` + encodeURIComponent(TOKEN);
+  if (typeof since === 'number' && since > 0) {
+    url += '&since=' + since;
+  }
   const es = new EventSource(url);
   evtSource = es;
   es.onopen = () => showTermStatus('live', 'live');
@@ -2853,15 +2884,21 @@ async function loadStaticOutput(id) {
   // has no DOM-write path (no innerHTML, no script eval) — the only abuse
   // surface is terminal-level (OSC 8 hyperlinks, window-title escapes, SGR
   // spam), which is acceptable for a single-user local daemon.
+  //
+  // Returns { since, ok } where `since` is the byte cursor (X-Output-Total)
+  // the caller can pass to openStream(id, since) to resume an active session
+  // without overlap. ok=false signals an actual failure (network / 5xx);
+  // a 404 (no log yet) returns ok=true with since=0 so the caller (which
+  // for active tasks then opens an SSE stream) still gets a live attach.
   let r;
   try {
     r = await api(`/api/tasks/${id}/output?bytes=${STATIC_OUTPUT_MAX_BYTES}`);
   } catch(e) {
     if (term) term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
-    return;
+    return { since: 0, ok: false };
   }
   // Race: user navigated away before the fetch resolved.
-  if (!term) return;
+  if (!term) return { since: 0, ok: false };
   if (!r.ok) {
     // 404 = no log yet (Pending task that never started). "no output yet"
     // reads better than "no output available" for the common Pending case
@@ -2869,16 +2906,23 @@ async function loadStaticOutput(id) {
     // are flagged red as a real failure.
     if (r.status === 404) {
       term.write('\x1b[2m(no output yet)\x1b[0m\r\n');
-    } else {
-      term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
+      return { since: 0, ok: true };
     }
-    return;
+    term.write('\x1b[31m(failed to load output)\x1b[0m\r\n');
+    return { since: 0, ok: false };
   }
+  // X-Output-Total is the disk-log byte size at read time. Pair it with
+  // openStream(id, since) so the SSE replay covers exactly the ring delta
+  // between this read and the live attach -- no gap, no duplicate. Falls
+  // back to 0 if the header is missing (older daemon, ring-only fallback);
+  // 0 makes the server replay the full ring as the legacy AddWriter did.
+  const totalHeader = r.headers.get('X-Output-Total');
+  const since = totalHeader ? Number(totalHeader) : 0;
   const buf = await r.arrayBuffer();
-  if (!term) return;
+  if (!term) return { since, ok: false };
   if (buf.byteLength === 0) {
     term.write('\x1b[2m(no output yet)\x1b[0m\r\n');
-    return;
+    return { since, ok: true };
   }
   // Defer the write until after setupTerm()'s rAF fit() has set proper
   // dimensions — writing into a default 80x24 terminal would misplace cursor
@@ -2886,13 +2930,14 @@ async function loadStaticOutput(id) {
   // localhost which usually wins the race, but the explicit double-rAF makes
   // it deterministic.
   await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
-  if (!term) return;
+  if (!term) return { since, ok: false };
   // Uint8Array (not string) preserves raw bytes — high-byte content in status
   // bars round-trips through JS's UTF-8 string path otherwise. Same pattern as
   // the SSE write path (see web-remote gotcha "base64 SSE chunks → Uint8Array").
   term.write(new Uint8Array(buf), () => {
     if (term) term.scrollToBottom();
   });
+  return { since, ok: true };
 }
 
 function renderOverflowMenu() {

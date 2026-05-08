@@ -72,6 +72,16 @@ type SessionHandle interface {
 	WorkDir() string
 	Stop() error
 	AddWriter(w io.Writer)
+	// AddWriterFrom registers w to receive output starting at byte `offset`.
+	// Bytes [offset..currentTotal] are replayed from the ring buffer in a
+	// single critical section that also appends w to the writer set, so
+	// readLoop cannot interleave — the writer sees the byte stream exactly
+	// once from `offset` onward, no gap and no duplicate. Used by the SSE
+	// /stream endpoint with an offset taken from the on-disk log size so
+	// the client gets full history (disk log + bounded ring delta) without
+	// overlap. w.Write MUST be non-blocking (e.g., buffered channel send
+	// with select-default) — see Session.AddWriterFrom for the rationale.
+	AddWriterFrom(w io.Writer, offset uint64)
 	RemoveWriter(w io.Writer)
 }
 

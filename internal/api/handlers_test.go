@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -750,4 +751,85 @@ func TestManifestShareTarget(t *testing.T) {
 	testutil.Equal(t, m.ShareTarget.Params["title"], "title")
 	testutil.Equal(t, m.ShareTarget.Params["text"], "text")
 	testutil.Equal(t, m.ShareTarget.Params["url"], "url")
+}
+
+// writeSessionLog seeds a session log file for taskID with the given content.
+// Tests must t.Setenv("HOME", t.TempDir()) before calling so the path lands
+// in the test sandbox rather than the real ~/.argus.
+func writeSessionLog(t *testing.T, taskID string, content []byte) {
+	t.Helper()
+	logPath := agent.SessionLogPath(taskID)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandleGetOutput_DiskLog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	task := &model.Task{Name: "logged", Status: model.StatusComplete}
+	d.Add(task) //nolint:errcheck
+
+	// Seed 100 bytes of log content. The endpoint must return it AND advertise
+	// X-Output-Total = 100 so the SPA can resume the SSE stream from byte 100
+	// without overlap. Without this header the previous active-task path
+	// silently truncated to the 256KB ring buffer.
+	content := bytes.Repeat([]byte("x"), 100)
+	writeSessionLog(t, task.ID, content)
+
+	req := authedReq("GET", "/api/tasks/"+task.ID+"/output?bytes=200", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, w.Header().Get("X-Output-Total"), "100")
+	testutil.Equal(t, w.Header().Get("X-Source"), "log")
+	testutil.Equal(t, len(w.Body.Bytes()), 100)
+}
+
+func TestHandleGetOutput_DiskLog_TailBound(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	task := &model.Task{Name: "logged-tail", Status: model.StatusComplete}
+	d.Add(task) //nolint:errcheck
+
+	// 1000 bytes on disk; client asks for tail of 100. The body must be the
+	// last 100 bytes, but X-Output-Total still advertises the FULL file size
+	// (1000) — that's the resume cursor for the SSE stream, not the body
+	// length. The SPA passes since=1000 to /stream so AddWriterFrom replays
+	// nothing and attaches live: the disk fetch already covers everything.
+	content := bytes.Repeat([]byte("x"), 1000)
+	writeSessionLog(t, task.ID, content)
+
+	req := authedReq("GET", "/api/tasks/"+task.ID+"/output?bytes=100", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, w.Header().Get("X-Output-Total"), "1000")
+	testutil.Equal(t, len(w.Body.Bytes()), 100)
+}
+
+func TestHandleGetOutput_NoLogNoSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	task := &model.Task{Name: "ghost", Status: model.StatusPending}
+	d.Add(task) //nolint:errcheck
+
+	// Pending task with no log file and no live session — preserve the
+	// pre-fix 404 so the SPA can render its "(no output yet)" placeholder.
+	req := authedReq("GET", "/api/tasks/"+task.ID+"/output", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	testutil.Equal(t, w.Code, http.StatusNotFound)
 }

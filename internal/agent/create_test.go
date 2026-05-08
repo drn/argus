@@ -101,6 +101,7 @@ func (s *fakeSession) Err() error                       { return nil }
 func (s *fakeSession) WorkDir() string                  { return "" }
 func (s *fakeSession) Stop() error                      { return nil }
 func (s *fakeSession) AddWriter(io.Writer)              {}
+func (s *fakeSession) AddWriterFrom(io.Writer, uint64)  {}
 func (s *fakeSession) RemoveWriter(io.Writer)           {}
 
 // hookLog records the order of pre/post/unwind hook invocations so tests can
