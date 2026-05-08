@@ -1517,10 +1517,11 @@ let offlineShown = false;
 let connectFailures = 0;
 const OFFLINE_FAIL_THRESHOLD = 2;
 let refreshTimer = null;
-// Currently expanded project per filter view (one project open at a time, like
-// the TUI). Per-filter values: undefined = first view, auto-expand the first
-// project; null = user explicitly collapsed, leave everything closed; string =
-// open that project.
+// Currently expanded project per filter view. Per-filter values: undefined =
+// first view, auto-expand the first project; null = user explicitly collapsed,
+// leave everything closed; string = open that project. The TUI keeps exactly
+// one project open because its cursor needs a row to point at; the web UI
+// allows fully-collapsed since taps are absolute pointers.
 let expandedProject = {};
 // Project names ordered by index, populated each render. The click delegation
 // looks up the clicked project by index instead of round-tripping the name
@@ -4015,7 +4016,13 @@ function switchTab(tab) {
 function applyCreateDefaults() {
   const projSel = document.getElementById('create-project');
   if (projSel && projSel.options.length) {
-    const want = expandedProject[listFilter] || expandedProject[FILTER_ACTIVE];
+    // Tri-state: only fall back to the Active filter's open project when the
+    // current filter has never been visited (undefined). An explicit collapse
+    // (null) means the user is intentionally not looking at any project, so
+    // we leave the existing selector value alone instead of cross-filling
+    // from another tab.
+    const cur = expandedProject[listFilter];
+    const want = cur !== undefined ? cur : expandedProject[FILTER_ACTIVE];
     if (want && [...projSel.options].some(o => o.value === want) && projSel.value !== want) {
       projSel.value = want;
       // Skills autocomplete keys off the selected project; keep it in sync
