@@ -47,6 +47,12 @@ type SessionHandle interface {
 	Resize(rows, cols uint16) error
 	RecentOutput() []byte
 	RecentOutputTail(n int) []byte
+	// RecentOutputTailWithTotal returns the last n bytes AND the high-water
+	// mark in a single locked snapshot. Required for the /output ring-fallback
+	// path so the advertised X-Output-Total cursor matches the bytes returned;
+	// reading tail and total separately lets readLoop advance total past the
+	// data and silently skips bytes on /stream resume.
+	RecentOutputTailWithTotal(n int) (tail []byte, total uint64)
 	TotalWritten() uint64
 	IsIdle() bool
 	// LastInput is the wall-clock time of the most recent WriteInput call,

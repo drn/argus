@@ -136,6 +136,17 @@ func (rs *RemoteSession) RecentOutputTail(n int) []byte {
 	return rs.buf.Tail(n)
 }
 
+// RecentOutputTailWithTotal mirrors Session.RecentOutputTailWithTotal — atomic
+// snapshot of (tail, total) under the local stream-buffer lock. RemoteSession
+// is only used by the TUI client (the API server runs in the daemon and talks
+// to the in-process Session), so this implementation exists purely to satisfy
+// SessionHandle; nothing in the TUI calls it.
+func (rs *RemoteSession) RecentOutputTailWithTotal(n int) (tail []byte, total uint64) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.buf.Tail(n), rs.buf.TotalWritten()
+}
+
 func (rs *RemoteSession) TotalWritten() uint64 {
 	return rs.buf.TotalWritten()
 }
@@ -217,7 +228,9 @@ func (rs *RemoteSession) AddWriter(_ io.Writer) {}
 
 // AddWriterFrom is a no-op on RemoteSession for the same reason as AddWriter:
 // streaming is handled by the daemon-side stream connection, not by the
-// client's local writer set. Exists only to satisfy SessionHandle.
+// client's local writer set. The non-blocking-writer constraint documented
+// on Session.AddWriterFrom does NOT apply here — there's no readLoop to
+// stall, and `w` is never invoked. Exists only to satisfy SessionHandle.
 func (rs *RemoteSession) AddWriterFrom(_ io.Writer, _ uint64) {}
 
 // RemoveWriter is a no-op on RemoteSession.

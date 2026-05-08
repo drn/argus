@@ -407,6 +407,18 @@ func (s *Session) RecentOutputTail(n int) []byte {
 	return s.buf.Tail(n)
 }
 
+// RecentOutputTailWithTotal returns the last n bytes AND the high-water-mark
+// byte count under a single lock acquisition. Used by /output's ring-fallback
+// path so the advertised `X-Output-Total` cursor matches the suffix that was
+// actually returned: reading tail and total in separate calls lets readLoop
+// advance `total` past the bytes in `tail`, leaving a since-cursor that
+// skips bytes never delivered to the client (silent gap, not duplicate).
+func (s *Session) RecentOutputTailWithTotal(n int) (tail []byte, total uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Tail(n), s.buf.TotalWritten()
+}
+
 // TotalWritten returns the monotonic count of bytes written to the ring buffer.
 // Lock-free via atomic — safe to call concurrently without mutex contention.
 func (s *Session) TotalWritten() uint64 {

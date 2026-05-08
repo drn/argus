@@ -90,7 +90,10 @@ func (s *fakeSession) WriteInput([]byte) (int, error)   { return 0, nil }
 func (s *fakeSession) Resize(uint16, uint16) error      { return nil }
 func (s *fakeSession) RecentOutput() []byte             { return nil }
 func (s *fakeSession) RecentOutputTail(int) []byte      { return nil }
-func (s *fakeSession) TotalWritten() uint64             { return 0 }
+func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
+	return nil, 0
+}
+func (s *fakeSession) TotalWritten() uint64 { return 0 }
 func (s *fakeSession) IsIdle() bool                     { return false }
 func (s *fakeSession) LastInput() time.Time             { return time.Time{} }
 func (s *fakeSession) Alive() bool                      { return true }

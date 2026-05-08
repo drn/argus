@@ -640,6 +640,10 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	// Parse optional tail size (default 32KB, max 1MB).
+	// 1MB ceiling is mirrored on the SPA side as STATIC_OUTPUT_MAX_BYTES
+	// (currently 512KB) in static/index.html. If the SPA constant is bumped
+	// past 1<<20 the request silently truncates here — bump this cap in
+	// lockstep, otherwise scrollback reappears short.
 	tailSize := 32 * 1024
 	if n, err := strconv.Atoi(r.URL.Query().Get("bytes")); err == nil && n > 0 {
 		tailSize = min(n, 1<<20)
@@ -655,14 +659,23 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	// and the live attach. Together they give the client full history with
 	// no gap and no duplicates.
 	logPath := agent.SessionLogPath(id)
-	f, err := os.Open(logPath) //nolint:gosec // logPath is filepath.Join(~/.argus/sessions, id+".log")
+	// id comes from the URL path but is constrained: SessionLogPath does
+	// filepath.Join(~/.argus/sessions, id+".log"), and `id` originates as
+	// a server-generated nanosecond timestamp string (see model.Task.ID).
+	// A `..` segment in the URL would produce a path like ".._.log" inside
+	// the sessions dir, not an escape. Single-user local daemon, but the
+	// invariant should be held even if a future feature accepts user IDs.
+	f, err := os.Open(logPath) //nolint:gosec // logPath rooted at ~/.argus/sessions; id is server-generated
 	if err != nil {
 		// Live session present but log unavailable (best-effort log creation
 		// failed at session start) — fall back to the ring buffer so the
 		// client sees the recent tail rather than a 404.
 		if sess := s.runner.Get(id); sess != nil {
-			data := sess.RecentOutputTail(tailSize)
-			ringTotal := sess.TotalWritten()
+			// Atomic snapshot: data and ringTotal MUST come from the same
+			// lock acquisition. Reading them in two calls lets readLoop
+			// advance ringTotal past the bytes in data, leaving the client
+			// with a since-cursor that skips bytes never delivered.
+			data, ringTotal := sess.RecentOutputTailWithTotal(tailSize)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("X-Source", "ring")
 			// data is the ring tail and ringTotal is the high-water mark; the
@@ -694,6 +707,9 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	if startOff < 0 {
 		startOff = 0
 	}
+	// Always >= 0 by construction (startOff is clamped to [0, fileSize]).
+	// The same is asserted indirectly by io.CopyN below — it errors on a
+	// negative count, but we never produce one here.
 	bytesToRead := fileSize - startOff
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -718,6 +734,12 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	if clean {
 		raw, err := io.ReadAll(io.LimitReader(f, bytesToRead))
 		if err != nil {
+			// Headers (including X-Output-Total) are already sent; we
+			// can't downgrade to 500. Returning silently truncates the
+			// 200 response; the SPA's `since` will then point past the
+			// bytes actually delivered. Rare in practice — io.ReadAll
+			// from a local file fails only on OS errors — but worth
+			// flagging if anyone hits the truncation symptom.
 			return
 		}
 		w.Write([]byte(sanitize.CleanPTYOutput(string(raw)))) //nolint:errcheck
@@ -887,7 +909,10 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 	// the current total under a single lock acquisition, then attaches live
 	// — no overlap with the disk-log bytes the client already has, no gap.
 	// Absent or invalid `since` defaults to 0, which replays the full ring
-	// (matches the legacy AddWriter behaviour).
+	// (matches the legacy AddWriter behaviour). `since` > currentTotal is
+	// also valid: AddWriterFrom skips the replay block entirely and attaches
+	// live — the client is "ahead" of the ring (e.g., reconnected with a
+	// stale-cached cursor), so no replay is the correct outcome.
 	var since uint64
 	if v := r.URL.Query().Get("since"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {

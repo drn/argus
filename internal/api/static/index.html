@@ -2217,6 +2217,12 @@ async function attachTerminal(task) {
     // truncating history for any session that emitted more than that.
     const result = await loadStaticOutput(task.id);
     if (myGen !== attachGen) return;
+    // result.ok=false (404 / 5xx / network) is intentionally NOT a gate
+    // here: the SSE stream can still deliver live output even if the disk
+    // fetch failed. loadStaticOutput already wrote a "(no output yet)" or
+    // "(failed to load output)" placeholder into xterm; with since=0 the
+    // server replays the full ring (legacy AddWriter behaviour), so the
+    // user always gets *something* without a stuck "connecting…" state.
     openStream(task.id, result.since);
   } else if (task.status === 'in_progress' && task.idle) {
     // Idle: agent is either waiting at a prompt (live session, IsIdle()) or
@@ -2916,6 +2922,12 @@ async function loadStaticOutput(id) {
   // between this read and the live attach -- no gap, no duplicate. Falls
   // back to 0 if the header is missing (older daemon, ring-only fallback);
   // 0 makes the server replay the full ring as the legacy AddWriter did.
+  //
+  // Number() is exact for integers up to 2^53-1 (~9 PB) — well above any
+  // realistic session-log size, but the cursor IS the load-bearing
+  // correctness pin for full-history scrollback. Don't blindly switch to a
+  // narrower numeric path; if anything, switch to BigInt-string round-trip
+  // through the URL param.
   const totalHeader = r.headers.get('X-Output-Total');
   const since = totalHeader ? Number(totalHeader) : 0;
   const buf = await r.arrayBuffer();
@@ -5293,7 +5305,11 @@ window.addEventListener('online', () => {
   if (TOKEN && document.getElementById('main-app').style.display !== 'none') {
     refresh();
     if (currentTask && currentTask.status === 'in_progress' && !evtSource) {
-      openStream(currentTask.id);
+      // Re-attach via attachTerminal so the disk-log replay + ?since cursor
+      // path runs on reconnect too. A bare openStream here would skip the
+      // disk fetch and fall back to the 256KB ring replay, regressing the
+      // full-history fix for any task that crossed a network blip.
+      attachTerminal(currentTask);
     }
   }
 });
