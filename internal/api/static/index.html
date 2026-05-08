@@ -430,12 +430,11 @@ button:disabled { opacity: 0.5; cursor: default; }
 .detail-header.compact .overflow-btn { top: 0; height: 36px; font-size: 20px; }
 
 /* Files & diff view — full-screen overlay opened from the overflow menu.
-   Layout: detail-header / files-bar (visible after a file is picked) /
-   files-list (capped, auto-collapses on selection) / diff-pane. The bar
-   summarizes the current selection and acts as a tap-to-expand toggle for
-   the list, so once the user drills into a file the diff gets nearly the
-   full screen. The view is fixed-positioned and fills the visual viewport,
-   same pattern as #detail-view. */
+   Layout: detail-header / files-toolbar (wrap toggle) / files-stack. The
+   stack renders every changed file as a stacked .file-panel: a sticky
+   header (chevron + status icon + path) above its diff body, GitHub-style.
+   Tapping a header collapses or expands its body. The view is fixed-
+   positioned and fills the visual viewport, same pattern as #detail-view. */
 #files-view { display: none; }
 #files-view.open {
   display: flex;
@@ -449,34 +448,18 @@ button:disabled { opacity: 0.5; cursor: default; }
   z-index: 60;
   overflow: hidden;
 }
-/* Header bar shown once a file is selected. Tapping it toggles the list
-   open/closed; the wrap-toggle inside stops propagation so it doesn't also
-   collapse the list. */
-.files-bar {
-  display: none;
-  align-items: center; gap: 8px;
-  padding: 8px 12px;
+/* Slim toolbar above the stack — currently holds the wrap toggle and the
+   expand/collapse-all button. Buttons stop propagation in JS so taps don't
+   bubble into anything below. */
+.files-toolbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
-  font-family: ui-monospace, Menlo, monospace; font-size: 13px;
-  cursor: pointer;
-  min-height: 44px;
-  -webkit-tap-highlight-color: transparent;
+  min-height: 40px;
 }
-.files-bar.show { display: flex; }
-.files-bar:active { background: var(--border); }
-.files-bar .chevron { color: var(--text-dim); font-size: 11px; flex: 0 0 auto; width: 12px; text-align: center; }
-.files-bar .status { flex: 0 0 24px; font-weight: 600; text-align: center; }
-.files-bar .status.M { color: var(--yellow); }
-.files-bar .status.A { color: var(--green); }
-.files-bar .status.D { color: var(--red); }
-.files-bar .status.U { color: var(--accent); }
-.files-bar .path {
-  flex: 1 1 auto; min-width: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  direction: rtl; text-align: left;
-}
-.files-bar .wrap-toggle {
+.files-toolbar .toolbar-spacer { flex: 1 1 auto; }
+.files-toolbar .toolbar-btn {
   flex: 0 0 auto;
   padding: 4px 10px; font-size: 12px;
   border: 1px solid var(--border); border-radius: 4px;
@@ -484,42 +467,45 @@ button:disabled { opacity: 0.5; cursor: default; }
   cursor: pointer; -webkit-tap-highlight-color: transparent;
   font-family: inherit;
 }
-.files-bar .wrap-toggle.on { color: var(--accent); border-color: var(--accent); }
-.files-list {
-  /* Caps at 35vh so even a long change set never eats more than a third of
-     the screen; the list scrolls internally past that. With 0 1 auto it
-     also shrinks to its content when there are only a couple of files. */
-  flex: 0 1 auto;
-  max-height: 35vh;
-  overflow-y: auto;
-  border-bottom: 1px solid var(--border);
-  -webkit-overflow-scrolling: touch;
+.files-toolbar .toolbar-btn.on { color: var(--accent); border-color: var(--accent); }
+.files-stack {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg);
 }
-.files-list.collapsed { display: none; }
 .files-empty { padding: 24px 16px; color: var(--text-dim); text-align: center; font-size: 13px; }
-.files-row {
+/* Each changed file is a stacked panel. The header is sticky inside the
+   scroll container so it pins as the user scrolls past long diffs (matches
+   GitHub's "Files changed" tab). The body holds the diff lines and is
+   hidden when the panel is .collapsed. */
+.file-panel { border-bottom: 1px solid var(--border); }
+.file-panel-header {
+  position: sticky; top: 0; z-index: 1;
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-bottom: 1px solid var(--border);
-  min-height: 44px; cursor: pointer;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
   font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+  min-height: 44px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
-.files-row:active { background: var(--surface); }
-.files-row.selected { background: var(--surface); }
-.files-row .status {
-  flex: 0 0 24px; font-weight: 600; text-align: center;
+.file-panel-header:active { background: var(--border); }
+.file-panel-header .chevron {
+  flex: 0 0 auto; width: 12px; text-align: center;
+  color: var(--text-dim); font-size: 11px;
 }
-.files-row .status.M { color: var(--yellow); }
-.files-row .status.A { color: var(--green); }
-.files-row .status.D { color: var(--red); }
-.files-row .status.U { color: var(--accent); }
-.files-row .path {
+.file-panel-header .status { flex: 0 0 24px; font-weight: 600; text-align: center; }
+.file-panel-header .status.M { color: var(--yellow); }
+.file-panel-header .status.A { color: var(--green); }
+.file-panel-header .status.D { color: var(--red); }
+.file-panel-header .status.U { color: var(--accent); }
+.file-panel-header .path {
   flex: 1 1 auto; min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   direction: rtl; text-align: left;
 }
-.diff-pane {
-  flex: 1 1 auto; min-height: 0;
-  overflow: auto; -webkit-overflow-scrolling: touch;
+.file-panel-body {
   padding: 10px 12px;
   background: var(--bg);
   font-family: ui-monospace, Menlo, monospace; font-size: 12px;
@@ -527,12 +513,13 @@ button:disabled { opacity: 0.5; cursor: default; }
   /* Soft-wrap by default so long source lines stay readable on a phone.
      pre-wrap preserves leading whitespace; overflow-wrap: anywhere lets
      unbroken tokens (URLs, base64, minified js) wrap mid-token instead of
-     forcing horizontal scrub. Toggleable via .nowrap from the wrap button. */
+     forcing horizontal scrub. Toggleable via .nowrap on .files-stack. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  overflow-x: auto;
 }
-.diff-pane.nowrap { white-space: pre; overflow-wrap: normal; }
-.diff-pane.hidden { display: none; }
+.file-panel.collapsed .file-panel-body { display: none; }
+.files-stack.nowrap .file-panel-body { white-space: pre; overflow-wrap: normal; }
 .diff-empty { color: var(--text-dim); padding: 12px; text-align: center; }
 .diff-line { display: block; }
 .diff-line.add { color: var(--green); background: rgba(46,160,67,0.10); }
@@ -967,17 +954,13 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="detail-title" id="files-title">Files &amp; diff</div>
       <div class="detail-subtitle" id="files-subtitle"></div>
     </div>
-    <div class="files-bar" id="files-bar" onclick="toggleFilesList()">
-      <div class="chevron" id="files-bar-chevron">▸</div>
-      <div class="status" id="files-bar-status"></div>
-      <div class="path" id="files-bar-path"></div>
-      <button class="wrap-toggle on" id="files-wrap-toggle" onclick="toggleDiffWrap(event)">Wrap: on</button>
+    <div class="files-toolbar">
+      <button class="toolbar-btn" id="files-collapse-toggle" onclick="toggleAllFilePanels()">Collapse all</button>
+      <div class="toolbar-spacer"></div>
+      <button class="toolbar-btn on" id="files-wrap-toggle" onclick="toggleDiffWrap(event)">Wrap: on</button>
     </div>
-    <div class="files-list" id="files-list">
+    <div class="files-stack" id="files-stack">
       <div class="files-empty">Loading…</div>
-    </div>
-    <div class="diff-pane hidden" id="diff-pane">
-      <div class="diff-empty">Tap a file to view its diff.</div>
     </div>
   </div>
 
@@ -3479,34 +3462,30 @@ function closeLinksModal() {
 })();
 
 // --- Files & Diff View ---
-// Full-screen overlay opened from the detail-view overflow menu. Stacks the
-// changed-file list above the diff pane so the agent terminal in #detail-view
-// keeps every pixel — closing this view drops back to the live terminal
-// without needing to re-attach.
+// Full-screen overlay opened from the detail-view overflow menu. Renders
+// every changed file as a stacked .file-panel (sticky header + collapsible
+// diff body), GitHub "Files changed" style. Per-file diffs load in parallel
+// once the file list is known. Closing the view drops back to the live
+// terminal without needing to re-attach.
 let filesViewTask = null;
-let filesViewSelected = null;
 
 async function openFilesView() {
   if (!currentTask) return;
   filesViewTask = currentTask;
-  filesViewSelected = null;
   document.getElementById('files-title').textContent = 'Files & diff';
   document.getElementById('files-subtitle').textContent =
     `${filesViewTask.project} · ${filesViewTask.name}`;
-  document.getElementById('files-list').innerHTML = '<div class="files-empty">Loading…</div>';
-  // Reset the layout to "no selection yet" — list takes the screen, the bar
-  // is hidden, the diff pane is hidden, and wrap is back on. Without resetting
-  // wrap, a user who toggled it off, closed the view, and reopened it would
-  // see the diff render no-wrap with the button still in the "on" color.
-  document.getElementById('files-list').classList.remove('collapsed');
-  document.getElementById('files-bar').classList.remove('show');
-  const diffPane = document.getElementById('diff-pane');
-  diffPane.classList.add('hidden');
-  diffPane.classList.remove('nowrap');
+  // Reset state: clear stack, force wrap-on, force collapse-toggle to its
+  // "Collapse all" label. Without resetting, a user who toggled wrap off and
+  // reopened the view would see the next diff render no-wrap with the button
+  // still saying "Wrap: on".
+  const stack = document.getElementById('files-stack');
+  stack.innerHTML = '<div class="files-empty">Loading…</div>';
+  stack.classList.remove('nowrap');
   const wrapBtn = document.getElementById('files-wrap-toggle');
   wrapBtn.classList.add('on');
   wrapBtn.textContent = 'Wrap: on';
-  diffPane.innerHTML = '<div class="diff-empty">Tap a file to view its diff.</div>';
+  document.getElementById('files-collapse-toggle').textContent = 'Collapse all';
   document.getElementById('files-view').classList.add('open');
   await loadFilesList(filesViewTask.id);
 }
@@ -3514,30 +3493,46 @@ async function openFilesView() {
 function closeFilesView() {
   document.getElementById('files-view').classList.remove('open');
   filesViewTask = null;
-  filesViewSelected = null;
 }
 
-// Tap the bar to toggle the file list. Clicks on the wrap-toggle inside the
-// bar must not bubble here, so toggleDiffWrap() calls stopPropagation().
-function toggleFilesList() {
-  const list = document.getElementById('files-list');
-  const chev = document.getElementById('files-bar-chevron');
-  list.classList.toggle('collapsed');
-  chev.textContent = list.classList.contains('collapsed') ? '▸' : '▾';
-}
-
-// Toggle soft-wrap on the diff pane. Default is wrap-on so long source
-// lines stay readable on a phone; the button label flips ("Wrap: on" /
-// "Wrap: off") so the state is legible even when the accent color washes
-// out under bright sunlight.
+// Toggle soft-wrap across every .file-panel-body in the stack. Default is
+// wrap-on so long source lines stay readable on a phone; the button label
+// flips ("Wrap: on" / "Wrap: off") so the state is legible even when the
+// accent color washes out under bright sunlight.
 function toggleDiffWrap(e) {
   if (e) e.stopPropagation();
-  const pane = document.getElementById('diff-pane');
+  const stack = document.getElementById('files-stack');
   const btn = document.getElementById('files-wrap-toggle');
-  pane.classList.toggle('nowrap');
-  const wrapOn = !pane.classList.contains('nowrap');
+  stack.classList.toggle('nowrap');
+  const wrapOn = !stack.classList.contains('nowrap');
   btn.classList.toggle('on', wrapOn);
   btn.textContent = wrapOn ? 'Wrap: on' : 'Wrap: off';
+}
+
+// Tap a file panel header to collapse/expand its diff body. Chevron flips
+// ▾ (expanded) ↔ ▸ (collapsed).
+function toggleFilePanel(headerEl) {
+  const panel = headerEl.closest('.file-panel');
+  if (!panel) return;
+  panel.classList.toggle('collapsed');
+  const chev = headerEl.querySelector('.chevron');
+  if (chev) chev.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+}
+
+// Bulk collapse/expand all panels in the stack. Toolbar button label flips
+// based on whether any panel is currently expanded.
+function toggleAllFilePanels() {
+  const stack = document.getElementById('files-stack');
+  const panels = stack.querySelectorAll('.file-panel');
+  if (!panels.length) return;
+  const anyExpanded = Array.from(panels).some(p => !p.classList.contains('collapsed'));
+  panels.forEach(p => {
+    p.classList.toggle('collapsed', anyExpanded);
+    const chev = p.querySelector('.chevron');
+    if (chev) chev.textContent = anyExpanded ? '▸' : '▾';
+  });
+  document.getElementById('files-collapse-toggle').textContent =
+    anyExpanded ? 'Expand all' : 'Collapse all';
 }
 
 async function loadFilesList(taskId) {
@@ -3546,9 +3541,9 @@ async function loadFilesList(taskId) {
     if (!r.ok) throw new Error('git status ' + r.status);
     const msg = await r.json();
     if (filesViewTask?.id !== taskId) return; // user switched away
-    renderFilesList(parseChangedFiles(msg));
+    renderFilePanels(parseChangedFiles(msg), taskId);
   } catch (e) {
-    document.getElementById('files-list').innerHTML =
+    document.getElementById('files-stack').innerHTML =
       `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
   }
 }
@@ -3600,65 +3595,56 @@ function parseChangedFiles(msg) {
   return Array.from(seen.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function renderFilesList(files) {
-  const el = document.getElementById('files-list');
+function renderFilePanels(files, taskId) {
+  const stack = document.getElementById('files-stack');
   if (!files.length) {
-    el.innerHTML = '<div class="files-empty">No changes in this worktree.</div>';
+    stack.innerHTML = '<div class="files-empty">No changes in this worktree.</div>';
     return;
   }
-  el.innerHTML = files.map(f =>
-    `<div class="files-row" data-path="${escAttr(f.path)}">` +
-      `<div class="status ${esc(f.status)}">${esc(f.status)}</div>` +
-      `<div class="path">${esc(f.path)}</div>` +
+  stack.innerHTML = files.map(f =>
+    `<div class="file-panel" data-path="${escAttr(f.path)}">` +
+      `<div class="file-panel-header" onclick="toggleFilePanel(this)">` +
+        `<div class="chevron">▾</div>` +
+        `<div class="status ${esc(f.status)}">${esc(f.status)}</div>` +
+        `<div class="path">${esc(f.path)}</div>` +
+      `</div>` +
+      `<div class="file-panel-body"><div class="diff-empty">Loading diff…</div></div>` +
     `</div>`
   ).join('');
-  el.querySelectorAll('.files-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const path = row.getAttribute('data-path');
-      const rawStatus = row.querySelector('.status').textContent.trim();
-      // Allowlist: never trust a DOM-read string back into className. Any
-      // change to renderFilesList would otherwise turn into a silent CSS
-      // injection / style-bleed surface.
-      const status = ['M', 'A', 'D', 'U'].includes(rawStatus) ? rawStatus : 'M';
-      el.querySelectorAll('.files-row.selected').forEach(r => r.classList.remove('selected'));
-      row.classList.add('selected');
-      // Auto-collapse the list and surface the bar so the diff gets nearly
-      // the full screen. The bar is tappable to re-expand the list.
-      const bar = document.getElementById('files-bar');
-      const barStatus = document.getElementById('files-bar-status');
-      barStatus.className = 'status ' + status;
-      barStatus.textContent = status;
-      document.getElementById('files-bar-path').textContent = path;
-      bar.classList.add('show');
-      el.classList.add('collapsed');
-      document.getElementById('files-bar-chevron').textContent = '▸';
-      loadDiff(filesViewTask.id, path);
-    });
-  });
+  // Kick off all per-file diff fetches in parallel. The git/diff endpoint is
+  // local so concurrency is fine; each fetch updates only its own panel.
+  for (const f of files) {
+    loadDiffIntoPanel(taskId, f.path);
+  }
 }
 
-async function loadDiff(taskId, path) {
-  filesViewSelected = path;
-  const pane = document.getElementById('diff-pane');
-  pane.classList.remove('hidden');
-  pane.innerHTML = '<div class="diff-empty">Loading diff…</div>';
+async function loadDiffIntoPanel(taskId, path) {
+  const stack = document.getElementById('files-stack');
+  // Use querySelector with an attribute selector — `path` is user-controlled
+  // (from git status) so it could contain quotes that break a CSS selector.
+  // Iterate panels and match by attribute value instead of interpolating.
+  const panel = Array.from(stack.querySelectorAll('.file-panel'))
+    .find(p => p.getAttribute('data-path') === path);
+  if (!panel) return;
+  const body = panel.querySelector('.file-panel-body');
   try {
     const r = await api(`/api/tasks/${taskId}/git/diff?path=${encodeURIComponent(path)}`);
     if (!r.ok) throw new Error('git diff ' + r.status);
     const msg = await r.json();
-    // Drop stale results: the user closed the view, switched tasks, or
-    // tapped a different file before this fetch resolved.
-    if (filesViewTask?.id !== taskId || filesViewSelected !== path) return;
-    renderDiff(msg.Diff || '');
+    // Drop stale results: the user closed the view or switched tasks while
+    // the fetch was in flight. Also re-check that the panel is still in the
+    // DOM (a re-open between requests would have cleared it).
+    if (filesViewTask?.id !== taskId) return;
+    if (!body.isConnected) return;
+    renderDiffInto(body, msg.Diff || '');
   } catch (e) {
-    pane.innerHTML = `<div class="diff-empty">Failed to load diff: ${esc(e.message)}</div>`;
+    body.innerHTML = `<div class="diff-empty">Failed to load diff: ${esc(e.message)}</div>`;
   }
 }
 
-function renderDiff(diff) {
-  const pane = document.getElementById('diff-pane');
+function renderDiffInto(bodyEl, diff) {
   if (!diff) {
-    pane.innerHTML = '<div class="diff-empty">(no diff)</div>';
+    bodyEl.innerHTML = '<div class="diff-empty">(no diff)</div>';
     return;
   }
   // Classify each line by its first character. `+++`/`---` are diff headers,
@@ -3674,8 +3660,7 @@ function renderDiff(diff) {
              line.startsWith('similarity ') || line.startsWith('rename ')) cls = 'meta';
     return `<span class="diff-line${cls ? ' ' + cls : ''}">${esc(line)}</span>`;
   }).join('\n');
-  pane.innerHTML = html;
-  pane.scrollTop = 0;
+  bodyEl.innerHTML = html;
 }
 
 // Refit term on viewport changes (rotation, soft-keyboard, window resize).
