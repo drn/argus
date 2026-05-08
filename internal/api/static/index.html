@@ -1294,23 +1294,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     </div>
   </div>
 
-  <!-- Resume confirmation modal. Shown when the user opens an idle task
-       (status=in_progress + idle). Idle tasks are not interactable — the
-       agent is either waiting at a prompt or its session has died — so we
-       suppress the soft-keyboard-popping compose bar and prompt the user
-       to wake the task explicitly. The Resume button calls the same
-       /api/tasks/{id}/resume endpoint as the overflow menu Resume action. -->
-  <div class="modal-overlay" id="resume-modal">
-    <div class="modal">
-      <h3>Resume task?</h3>
-      <p class="modal-description">This task is idle. Resume it to continue working.</p>
-      <div class="modal-actions">
-        <button onclick="closeResumeModal()">Cancel</button>
-        <button class="primary" id="resume-modal-confirm" onclick="confirmResumeFromModal()">Resume</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Input history viewer. Lists the original task prompt plus every line
        the user has submitted from the live terminal (segmented on Enter).
        Captured client-side from sendInputBytes; persisted in localStorage. -->
@@ -1910,16 +1893,14 @@ async function refresh() {
           document.getElementById('detail-subtitle').textContent =
             `${fresh.project} · ${statusLabel(effectiveStatus(fresh))}${fresh.elapsed ? ' · ' + fresh.elapsed : ''}`;
           renderOverflowMenu();
-          // Idle ↔ active flip while the detail view is open. If the task
-          // left idle (resume succeeded; agent emitted output and IsIdle
-          // dropped), close the resume modal and re-attach so the live
-          // stream + compose bar replace the static log replay. The reverse
-          // flip (active → idle) is intentionally not re-attached: the user
-          // may still be reading agent output and the keyboard suddenly
-          // disappearing mid-conversation would be jarring.
+          // Idle → active flip while the detail view is open. The static
+          // log replay needs to be torn down and the live stream + compose
+          // bar mounted in its place. The reverse flip (active → idle) is
+          // intentionally not re-attached: the user may still be reading
+          // agent output and the keyboard suddenly disappearing
+          // mid-conversation would be jarring.
           const isIdle = effectiveStatus(fresh) === 'idle';
           if (wasIdle && !isIdle) {
-            closeResumeModal();
             attachTerminal(fresh);
             // resumeTask() awaits refresh() and would call attachTerminal a
             // second time; signal that this branch already handled it so it
@@ -1966,7 +1947,6 @@ function showOffline() {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
-  closeResumeModal();
   closeFilesView();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
@@ -2159,7 +2139,6 @@ async function openDetail(id) {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
-  closeResumeModal();
 
   document.getElementById('tasks-view').style.display = 'none';
   document.getElementById('detail-view').classList.add('open');
@@ -2181,7 +2160,7 @@ async function openDetail(id) {
 // (loadStaticOutput's fetch + arrayBuffer + double-rAF) can be in flight
 // when a second attachTerminal kicks off (back-then-reopen, fork-then-open,
 // idle-to-active auto-reattach). Each call captures myGen at entry and
-// bails before any post-await side effect (openStream, openResumeModal)
+// bails before any post-await side effect (openStream, future modal hooks)
 // if attachGen has advanced -- otherwise the stale generation would
 // attach an SSE stream for the previous task on top of the new task's
 // terminal.
@@ -2224,22 +2203,14 @@ async function attachTerminal(task) {
     // server replays the full ring (legacy AddWriter behaviour), so the
     // user always gets *something* without a stuck "connecting…" state.
     openStream(task.id, result.since);
-  } else if (task.status === 'in_progress' && task.idle) {
-    // Idle: agent is either waiting at a prompt (live session, IsIdle()) or
-    // its session has died (ghost in_progress). Either way the task is not
-    // interactable — suppress the compose bar (which would pop the iOS soft
-    // keyboard for nothing) and prompt the user to Resume. Replay the log
-    // tail so they see context. Live SSE only resumes after Resume succeeds
-    // and refresh() flips `idle` false; attachTerminal then re-enters the
-    // running branch above.
-    document.getElementById('term-status').style.display = 'none';
-    await loadStaticOutput(task.id);
-    if (myGen !== attachGen) return;
-    openResumeModal();
   } else {
-    // Truly non-running (complete / in_review / pending). No live session
-    // means no status indicator and no compose bar (destroyTerm() already
-    // hid it). Replay the recent log tail into the terminal.
+    // Non-active: idle in_progress (agent waiting at a prompt or ghost
+    // session) or truly stopped (pending / in_review / complete). Both
+    // paths just replay the on-disk log into xterm. We don't pop the
+    // compose bar — input would silently vanish into a dead/idle PTY —
+    // and we no longer auto-pop the resume modal either; Resume lives in
+    // the overflow menu when applicable, which is enough recovery surface
+    // and avoids a jarring modal every time the user enters the view.
     document.getElementById('term-status').style.display = 'none';
     await loadStaticOutput(task.id);
   }
@@ -3099,38 +3070,12 @@ async function resumeTask() {
     // resume paths (pending / in_review / complete \u2192 in_progress) don't
     // hit that branch, so we fall through to attach here.
     await refresh();
-    closeResumeModal();
     if (!resumeReattachHandled) attachTerminal(currentTask);
   } catch(e) {
-    // Leave the resume modal open on failure so the user can retry without
-    // re-navigating into the task.
     showToast('Resume failed: ' + e.message);
   } finally {
     setActionButtons(false);
   }
-}
-
-// --- Resume confirmation modal ---
-// Idle tasks are not interactable, so attachTerminal opens this modal in
-// place of the compose bar. The user can confirm (Resume) or dismiss
-// (Cancel) and fall back to the overflow menu's Resume entry.
-function openResumeModal() {
-  const m = document.getElementById('resume-modal');
-  if (!m) return;
-  m.classList.add('open');
-}
-
-function closeResumeModal() {
-  const m = document.getElementById('resume-modal');
-  if (m) m.classList.remove('open');
-}
-
-// resumeTask() handles the actionBusy guard internally and closes the
-// modal on success; on failure we deliberately leave it open so the user
-// can retry without re-navigating into the task. Don't preemptively close
-// here.
-function confirmResumeFromModal() {
-  resumeTask();
 }
 
 async function renameTask() {
@@ -3241,7 +3186,6 @@ function closeDetail() {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
-  closeResumeModal();
   hideCopyButton();
   // destroyTerm() hid the compose bar; here we additionally clear the textarea
   // so the next opened task gets a fresh field.
@@ -4049,7 +3993,6 @@ function switchTab(tab) {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
-  closeResumeModal();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();

@@ -100,8 +100,8 @@ func New(database *db.DB) *Daemon {
 		}
 	}
 
-	// Create runner with onFinish callback that caches exit info and
-	// notifies stream clients by closing their connections.
+	// Create runner with onFinish callback that caches exit info, flips
+	// the DB status, and notifies stream clients by closing their connections.
 	d.runner = agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
 		slog.Info("session exited", "task", taskID, "stopped", stopped, "err", err, "lastOutputBytes", len(lastOutput))
 
@@ -119,6 +119,15 @@ func New(database *db.DB) *Daemon {
 		conns := d.streams[taskID]
 		delete(d.streams, taskID)
 		d.mu.Unlock()
+
+		// Flip the DB row out of InProgress. Without this, a daemon-only
+		// setup (web-app users with no TUI attached) leaves the row stuck
+		// in_progress forever — the API then reports idle:true and the PWA
+		// pops a Resume modal for a task whose agent has already exited.
+		// The TUI's HandleSessionExit also runs this transition; both call
+		// sites are guarded by the StatusInProgress check, so whichever
+		// fires first wins and the other becomes a no-op.
+		d.transitionTaskOnExit(taskID, stopped)
 
 		// Signal stream EOF to all connected clients by closing their connections.
 		slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))
@@ -138,6 +147,28 @@ func New(database *db.DB) *Daemon {
 // Runner returns the underlying runner for direct access (e.g., AddWriter).
 func (d *Daemon) Runner() *agent.Runner {
 	return d.runner
+}
+
+// transitionTaskOnExit flips an InProgress task to its terminal status when
+// its session exits. Stopped sessions land in InReview (manual interruption,
+// the user may want to resume); naturally-exited sessions land in Complete.
+// No-op if the row has already moved on (e.g., the TUI's HandleSessionExit
+// won the race, or the user manually changed status mid-exit).
+func (d *Daemon) transitionTaskOnExit(taskID string, stopped bool) {
+	t, err := d.db.Get(taskID)
+	if err != nil || t == nil || t.Status != model.StatusInProgress {
+		return
+	}
+	if stopped {
+		t.SetStatus(model.StatusInReview)
+	} else {
+		t.SetStatus(model.StatusComplete)
+	}
+	if uerr := d.db.Update(t); uerr != nil {
+		slog.Warn("session exit: status update failed", "task", taskID, "err", uerr)
+		return
+	}
+	slog.Info("session exit: status flipped", "task", taskID, "status", t.Status.String())
 }
 
 // Clipboard returns the agent-staged clipboard store. Used by the API

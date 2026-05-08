@@ -12,6 +12,8 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func testDaemon(t *testing.T) (*Daemon, string) {
@@ -395,4 +397,37 @@ func waitForSocket(t *testing.T, sockPath string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("socket %s did not appear", sockPath)
+}
+
+func TestDaemon_TransitionTaskOnExit(t *testing.T) {
+	tests := []struct {
+		name    string
+		initial model.Status
+		stopped bool
+		want    model.Status
+	}{
+		{"in_progress + natural exit -> complete", model.StatusInProgress, false, model.StatusComplete},
+		{"in_progress + stopped -> in_review", model.StatusInProgress, true, model.StatusInReview},
+		{"in_review + exit -> in_review (no-op)", model.StatusInReview, false, model.StatusInReview},
+		{"complete + exit -> complete (no-op)", model.StatusComplete, true, model.StatusComplete},
+		{"pending + exit -> pending (no-op)", model.StatusPending, false, model.StatusPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _ := testDaemon(t)
+			task := &model.Task{Name: "x", Status: tt.initial}
+			testutil.NoError(t, d.db.Add(task))
+
+			d.transitionTaskOnExit(task.ID, tt.stopped)
+
+			got, err := d.db.Get(task.ID)
+			testutil.NoError(t, err)
+			testutil.Equal(t, got.Status, tt.want)
+		})
+	}
+}
+
+func TestDaemon_TransitionTaskOnExit_MissingTask(t *testing.T) {
+	d, _ := testDaemon(t)
+	d.transitionTaskOnExit("nonexistent-id", false)
 }

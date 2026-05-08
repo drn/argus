@@ -863,32 +863,35 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 func (a *App) handleSessionExitUI(taskID string, stopped bool) {
-	// Update task status in DB.
+	// The daemon's onFinish callback already flips InProgress → InReview/Complete
+	// before closing the stream that triggers HandleSessionExit, so by the time
+	// we get here the row may already be in its terminal status. We still
+	// run the flip below for the in-process runner path (NotifySessionExit
+	// fires from the same callback the daemon would hit, but with no daemon
+	// in front of it) and as a defensive idempotent retry. Codex session-ID
+	// capture is hoisted out of the StatusInProgress check because that check
+	// can race with the daemon's flip and would otherwise drop the capture.
 	var captureWorktree, captureTaskID string
-	tasks, err := a.db.Tasks()
-	if err != nil {
-		uxlog.Log("[tui] handleSessionExitUI: failed to load tasks: %v", err)
+	t, err := a.db.Get(taskID)
+	if err != nil || t == nil {
+		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
 	}
-	for _, t := range tasks {
-		if t.ID == taskID && t.Status == model.StatusInProgress {
-			if stopped {
-				t.SetStatus(model.StatusInReview)
-			} else {
-				t.SetStatus(model.StatusComplete)
-			}
-			// Check if we need to capture a Codex session ID (done off-thread below).
-			if t.SessionID == "" && t.Worktree != "" {
-				cfg := a.db.Config()
-				if backend, berr := agent.ResolveBackend(t, cfg); berr == nil && agent.IsCodexBackend(backend.Command) {
-					captureWorktree = t.Worktree
-					captureTaskID = t.ID
-				}
-			}
-			a.db.Update(t) //nolint:errcheck
-			uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
-			break
+	if t.SessionID == "" && t.Worktree != "" {
+		cfg := a.db.Config()
+		if backend, berr := agent.ResolveBackend(t, cfg); berr == nil && agent.IsCodexBackend(backend.Command) {
+			captureWorktree = t.Worktree
+			captureTaskID = t.ID
 		}
+	}
+	if t.Status == model.StatusInProgress {
+		if stopped {
+			t.SetStatus(model.StatusInReview)
+		} else {
+			t.SetStatus(model.StatusComplete)
+		}
+		a.db.Update(t) //nolint:errcheck
+		uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 	}
 
 	// Capture Codex session ID in a background goroutine — CaptureCodexSessionID
