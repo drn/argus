@@ -932,6 +932,13 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     <div class="compose-bar" id="compose-bar" style="display:none">
       <button id="compose-keybar-toggle" type="button" aria-label="Toggle key bar" aria-pressed="false">⌨</button>
       <div class="compose-input-wrap">
+        <!-- autocorrect="on" is deliberate: this is the only field in the SPA
+             where prose is typed (the agent prompt). Every other input
+             (#task-search-input, #links-modal-filter, etc.) is autocorrect="off"
+             because it receives identifiers, not sentences. spellcheck stays
+             off so the textarea doesn't bloom red squiggles while the user
+             dictates. The Send-vs-IME contract in wireCompose() handles the
+             autocorrect-commit-then-Send path via the isComposing guard. -->
         <textarea id="compose-input" rows="1"
           placeholder="Type or dictate to agent…"
           autocapitalize="off" autocorrect="on" spellcheck="false"
