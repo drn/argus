@@ -3,6 +3,7 @@
 package launchagent
 
 import (
+	"encoding/xml"
 	"errors"
 	"os"
 	"path/filepath"
@@ -94,6 +95,35 @@ func TestRenderPlist(t *testing.T) {
 	}
 }
 
+func TestRenderPlist_EscapesXMLSpecialChars(t *testing.T) {
+	// Paths can contain & < > " on macOS; raw concat would produce malformed XML.
+	out := renderPlist(
+		`/path/with/<evil>&"chars"/argusd`,
+		`/Users/me/.argus/launchd<.log`,
+		`/Users/m&me`,
+	)
+	for _, escaped := range []string{
+		"/path/with/&lt;evil&gt;&amp;",
+		"launchd&lt;.log",
+		"/Users/m&amp;me",
+	} {
+		testutil.Contains(t, out, escaped)
+	}
+	// Sanity: no unescaped specials leaked through.
+	if strings.Contains(out, "<evil>") {
+		t.Errorf("plist contains unescaped <evil>: %s", out)
+	}
+	if strings.Contains(out, `&"chars"`) {
+		t.Errorf("plist contains unescaped &\"chars\": %s", out)
+	}
+	// Confirm the result parses as XML.
+	if err := xml.Unmarshal([]byte(out), new(struct {
+		XMLName xml.Name `xml:"plist"`
+	})); err != nil {
+		t.Fatalf("plist is not well-formed XML: %v", err)
+	}
+}
+
 func TestCurrentStatus_NotInstalled(t *testing.T) {
 	withTempHome(t)
 	withFakeRunner(t, &fakeRunner{
@@ -124,7 +154,6 @@ func TestCurrentStatus_InstalledAndLoaded(t *testing.T) {
 
 func TestInstall_FreshInstall(t *testing.T) {
 	withTempHome(t)
-	t.Setenv("HOME", os.Getenv("HOME")) // keep HOME consistent for db.DataDir
 
 	f := &fakeRunner{
 		// print fails (not currently loaded), bootstrap succeeds

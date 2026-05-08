@@ -3,6 +3,7 @@
 package launchagent
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,6 +150,10 @@ func EnsureDaemonSymlink(exe string) string {
 
 // renderPlist generates the LaunchAgent plist XML. Exposed at package level
 // for tests; the public API is Install/Uninstall/CurrentStatus.
+//
+// All path/user inputs are XML-escaped — paths containing `&`, `<`, `>`, or
+// `"` are legal on macOS and would otherwise produce a malformed plist that
+// launchctl silently rejects.
 func renderPlist(daemonExe, logPath, home string) string {
 	// KeepAlive { SuccessfulExit = false } means: restart the daemon if it
 	// exits non-zero (a crash), but honor a clean `argus daemon stop`.
@@ -160,7 +165,7 @@ func renderPlist(daemonExe, logPath, home string) string {
 	<string>` + Label + `</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>` + daemonExe + `</string>
+		<string>` + xmlEscape(daemonExe) + `</string>
 		<string>daemon</string>
 		<string>start</string>
 	</array>
@@ -172,14 +177,20 @@ func renderPlist(daemonExe, logPath, home string) string {
 		<false/>
 	</dict>
 	<key>StandardOutPath</key>
-	<string>` + logPath + `</string>
+	<string>` + xmlEscape(logPath) + `</string>
 	<key>StandardErrorPath</key>
-	<string>` + logPath + `</string>
+	<string>` + xmlEscape(logPath) + `</string>
 	<key>WorkingDirectory</key>
-	<string>` + home + `</string>
+	<string>` + xmlEscape(home) + `</string>
 	<key>ProcessType</key>
 	<string>Interactive</string>
 </dict>
 </plist>
 `
+}
+
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
