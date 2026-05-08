@@ -338,6 +338,12 @@ func (a *App) buildUI() {
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("reviews", a.reviews, true, false).
 		AddPage("settings", a.settingsPage, true, false)
+	// Every Pages mutation (AddPage / RemovePage / SwitchToPage / Show / Hide)
+	// is a layout change that needs a tcell Sync to wipe ghost cells under
+	// tmux/iTerm2. Wiring it once here covers every modal open/close, every
+	// tab switch, and every agent view enter/exit — so individual callsites
+	// don't have to remember. See gotchas/ui-threading.md.
+	a.pages.SetChangedFunc(func() { a.forceRedraw("pages changed") })
 
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.header, 1, 0, false).
@@ -374,7 +380,6 @@ func (a *App) closeRestartDaemonPrompt() {
 	a.pages.RemovePage("restartdaemon")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close restart-daemon modal")
 }
 
 // handleRestartDaemonKey dispatches keys to the restart-daemon modal and
@@ -1757,9 +1762,6 @@ func (a *App) switchTab(t widget.Tab) {
 	switch t {
 	case widget.TabTasks:
 		if a.mode == modeAgent {
-			// exitAgentView is a complete "return to tasks" primitive:
-			// resets mode, tab state, page, focus, and forces a redraw.
-			// Early return avoids a second forceRedraw call below.
 			a.exitAgentView()
 			return
 		}
@@ -1780,15 +1782,20 @@ func (a *App) switchTab(t widget.Tab) {
 		a.pages.SwitchToPage("settings")
 		a.tapp.SetFocus(a.settingsPage)
 	}
-	a.forceRedraw("tab switch")
 }
 
 // forceRedraw queues a tcell Sync on tview's update channel; it fires on the
-// next event cycle after any in-flight Draw completes. Use at layout-changing
-// transitions (tab switch, agent view enter/exit) where the diff-based
-// `Show()` has been observed to leak stale cells from the previous layout.
-// `Sync()` invalidates tcell's dirty-cell tracking so every cell is re-emitted,
-// which overwrites ghost content that `Show` considered up-to-date.
+// next event cycle after any in-flight Draw completes. `Sync()` invalidates
+// tcell's dirty-cell tracking so every cell is re-emitted, which overwrites
+// ghost content that the diff-based `Show()` considered up-to-date.
+//
+// Wired in two places (don't add a third without thinking hard):
+//   - `pages.SetChangedFunc` — fires on every AddPage/RemovePage/SwitchToPage,
+//     covering modal open/close, tab switch, and agent view enter/exit.
+//   - `tasklist.OnLayoutChange` — fires when row composition changes
+//     (auto-rename, status flips, archive toggles); tview can't observe these.
+//
+// The only remaining direct callsite is Ctrl+L (user-initiated refresh).
 func (a *App) forceRedraw(reason string) {
 	uxlog.Log("[tui] force redraw: %s", reason)
 	a.tapp.Sync()
@@ -1943,7 +1950,6 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.root.ResizeItem(a.header, 0, 0)
 	a.pages.SwitchToPage("agent")
 	a.tapp.SetFocus(a.agentPane)
-	a.forceRedraw("enter agent view (launch)")
 }
 
 // onTaskSelect handles Enter on a task — enters the agent view.
@@ -1994,7 +2000,6 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	// width (dropped SIGWINCH, started in a smaller window, etc.) gets resized
 	// to the current panel dimensions on the next Draw.
 	a.agentPane.ForceResyncPTY()
-	a.forceRedraw("enter agent view")
 
 	// Kick off initial git status
 	if a.worktreeDir != "" {
@@ -2461,7 +2466,6 @@ func (a *App) closeNewTaskForm() {
 	a.pages.RemovePage("newtask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close new-task form")
 }
 
 // resolveProjectForRepo finds the Argus project whose name or directory basename
@@ -2630,7 +2634,6 @@ func (a *App) closeLinkPickerModal() {
 		a.pages.SwitchToPage(a.linkPickerPrevPage)
 	}
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close link picker")
 }
 
 // openAgentLinks extracts links from the current agent session and opens the fuzzy link picker.
@@ -2699,7 +2702,6 @@ func (a *App) closeFuzzyLinkPickerModal() {
 	a.pages.RemovePage("fuzzylinkpicker")
 	// Restore focus to the agent pane.
 	a.tapp.SetFocus(a.agentPane)
-	a.forceRedraw("close fuzzy link picker")
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.
@@ -2735,7 +2737,6 @@ func (a *App) closeConfirmDelete() {
 	a.pages.RemovePage("confirmdelete")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close confirm-delete modal")
 }
 
 // --- Fork task ---
@@ -2778,7 +2779,6 @@ func (a *App) closeForkModal() {
 	a.pages.RemovePage("forktask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close fork modal")
 }
 
 // sanitizeTaskName strips control characters and collapses whitespace for
@@ -2849,7 +2849,6 @@ func (a *App) closeRenameModal() {
 	a.pages.RemovePage("renametask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-	a.forceRedraw("close rename modal")
 }
 
 // executeFork creates a new task forked from the source, extracting context
@@ -2989,7 +2988,6 @@ func (a *App) closeProjectForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
-	a.forceRedraw("close project form")
 }
 
 // --- Backend form ---
@@ -3042,7 +3040,6 @@ func (a *App) closeBackendForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
-	a.forceRedraw("close backend form")
 }
 
 // --- Schedule form ---
@@ -3110,7 +3107,6 @@ func (a *App) closeScheduleForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
-	a.forceRedraw("close schedule form")
 }
 
 func (a *App) deleteSchedule(id string) {
@@ -3247,7 +3243,6 @@ func (a *App) closeQuickAddForm() {
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
-	a.forceRedraw("close quick-add form")
 }
 
 // deleteProject opens a confirmation modal before removing a project.
@@ -3300,7 +3295,6 @@ func (a *App) closeConfirmDeleteProject() {
 	a.pages.RemovePage("confirmdeleteproject")
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)
-	a.forceRedraw("close confirm-delete-project modal")
 }
 
 // deleteTask stops the agent, cleans up the worktree/branch, and removes the task from DB.
@@ -3505,5 +3499,4 @@ func (a *App) exitAgentView() {
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
-	a.forceRedraw("exit agent view")
 }

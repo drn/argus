@@ -562,9 +562,10 @@ func TestSmoke_NewTaskFormEscape(t *testing.T) {
 }
 
 // TestSmoke_ForceRedrawOnTransitions verifies that layout-changing transitions
-// (tab switch, agent view enter/exit, Ctrl+L) all invoke forceRedraw.
-// Guards against regression where a new transition path forgets to force a
-// tcell Sync, re-introducing ghost cells in Alacritty+tmux.
+// (tab switch, agent view enter/exit, modal open/close, Ctrl+L) all invoke
+// forceRedraw. Guards against regression where the central
+// `pages.SetChangedFunc` hook gets disconnected and we go back to per-callsite
+// forceRedraw discipline (which got us into this mess once already).
 func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	// Point uxlog at a temp file so we can inspect the "[tui] force redraw"
 	// entries produced by forceRedraw.
@@ -599,12 +600,18 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 		return string(b)
 	}
 
-	// Tab switch (1→2) fires forceRedraw.
+	// Every page mutation fires `pages.SetChangedFunc` which logs this string.
+	const pagesChanged = "force redraw: pages changed"
+
+	// Tab switch (1→2) fires forceRedraw via pages.SetChangedFunc.
+	prev := strings.Count(readLog(), pagesChanged)
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "force redraw: tab switch")
+	if strings.Count(readLog(), pagesChanged) <= prev {
+		t.Errorf("tab switch did not fire pages-changed redraw")
+	}
 
-	// Ctrl+L in non-agent mode fires forceRedraw.
+	// Ctrl+L always logs explicitly (user-initiated refresh).
 	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
 	syncUI(t, app.tapp)
 	testutil.Contains(t, readLog(), "force redraw: ctrl+l")
@@ -613,38 +620,47 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '1', 0)
 	syncUI(t, app.tapp)
 
-	// Enter agent view fires forceRedraw.
+	// Enter agent view fires pages-changed (SwitchToPage("agent")).
+	prev = strings.Count(readLog(), pagesChanged)
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "force redraw: enter agent view")
-
-	// Exit agent view fires forceRedraw.
-	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
-	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "force redraw: exit agent view")
-
-	// Sanity: only one "exit agent view" entry — confirms no double-Sync
-	// from switchTab → exitAgentView paths.
-	if count := strings.Count(readLog(), "force redraw: exit agent view"); count != 1 {
-		t.Errorf("expected 1 exit-agent-view redraw entry, got %d", count)
+	if strings.Count(readLog(), pagesChanged) <= prev {
+		t.Errorf("enter agent view did not fire pages-changed redraw")
 	}
 
-	// Modal close path: opening and closing the new-task form must Sync.
-	// Without this, Pages.RemovePage leaves stale modal cells under tmux.
+	// Exit agent view fires pages-changed (SwitchToPage("tasks")).
+	prev = strings.Count(readLog(), pagesChanged)
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+	if strings.Count(readLog(), pagesChanged) <= prev {
+		t.Errorf("exit agent view did not fire pages-changed redraw")
+	}
+
+	// Modal open + close path: each AddPage / RemovePage / SwitchToPage
+	// fires pages.SetChangedFunc, so opening then closing the new-task form
+	// produces additional redraw entries. The previous bug was that opens
+	// silently skipped Sync, leaving stale cells under tmux.
 	d.SetProject("p", config.Project{Path: t.TempDir()})
+	prev = strings.Count(readLog(), pagesChanged)
 	sim.InjectKey(tcell.KeyRune, 'n', 0)
 	syncUI(t, app.tapp)
 	// Guard: if 'n' ever stops opening the form (binding change, missing
-	// project requirement), the close-redraw assertion below would silently
-	// never fire because Escape on no modal is a no-op.
+	// project requirement), the close assertion below would silently never
+	// fire because Escape on no modal is a no-op.
 	var hasModal bool
 	readUI(t, app.tapp, func() { hasModal = app.pages.HasPage("newtask") })
 	if !hasModal {
 		t.Fatal("'n' did not open the new-task form — global binding may have changed")
 	}
+	if strings.Count(readLog(), pagesChanged) <= prev {
+		t.Errorf("opening new-task form did not fire pages-changed redraw")
+	}
+	prev = strings.Count(readLog(), pagesChanged)
 	sim.InjectKey(tcell.KeyEscape, 0, 0)
 	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "force redraw: close new-task form")
+	if strings.Count(readLog(), pagesChanged) <= prev {
+		t.Errorf("closing new-task form did not fire pages-changed redraw")
+	}
 }
 
 func TestSmoke_WaitingReviewToggle(t *testing.T) {
