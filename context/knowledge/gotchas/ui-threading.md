@@ -1,6 +1,7 @@
 ## UI Threading
 
 - **Never run git commands synchronously on the UI thread.** Even fast commands take 50-500ms. Use background goroutines + `QueueUpdateDraw`.
+- **The "no sync external commands on the UI thread" rule generalizes beyond git** — `launchctl`, `gh`, `go install`, anything that shells out. The tempting "<100ms is fine" carve-out is a trap: setting `busy=true` + calling `rebuildRows()` before the blocking call has zero visible effect because the tview event loop can't repaint until your handler returns. Pattern: settings view exposes an `OnXxx` callback, app wires it to `go app.doXxx()`, the goroutine calls `tapp.QueueUpdateDraw(SetXxxResult)` to clear busy on completion. See `OnToggleAutoStart` / `app.toggleAutoStart` for a minimal example.
 - **Never call `GetInnerRect()` from the tick goroutine.** tview is not thread-safe. Store pending values under mutex in `Draw()`, read from tick goroutine.
 - **`refreshTasks()` must not do RPC while holding `a.mu`.** Fetch `runningIDs` OUTSIDE the lock.
 - **`TaskPreviewPanel.Draw()` must never call `runner.Get()` or create a VT emulator.** Pre-render in `RefreshOutput()` on tick goroutine; `Draw()` only paints cached cells.
