@@ -124,6 +124,10 @@ func parseTime(s string) time.Time {
 	return t
 }
 
+// generateID returns a digit-only string. The HTTP API and the SPA
+// interpolate task IDs into URL paths without encoding (e.g.
+// `/api/tasks/${taskId}/git/diff?...`), so the format must stay URL-safe.
+// If this ever changes to UUIDs/slugs, audit those callers.
 func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }

@@ -1967,6 +1967,7 @@ function showOffline() {
   closeInputsModal();
   closeLinksModal();
   closeResumeModal();
+  closeFilesView();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
   currentTask = null;
@@ -3510,13 +3511,15 @@ function toggleDiffWrap(e) {
 }
 
 // Tap a file panel header to collapse/expand its diff body. Chevron flips
-// ▾ (expanded) ↔ ▸ (collapsed).
+// ▾ (expanded) ↔ ▸ (collapsed). Also re-syncs the bulk toggle label so it
+// reflects current state after individual taps drift it out of sync.
 function toggleFilePanel(headerEl) {
   const panel = headerEl.closest('.file-panel');
   if (!panel) return;
   panel.classList.toggle('collapsed');
   const chev = headerEl.querySelector('.chevron');
   if (chev) chev.textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+  syncCollapseToggleLabel();
 }
 
 // Bulk collapse/expand all panels in the stack. Toolbar button label flips
@@ -3531,8 +3534,15 @@ function toggleAllFilePanels() {
     const chev = p.querySelector('.chevron');
     if (chev) chev.textContent = anyExpanded ? '▸' : '▾';
   });
+  syncCollapseToggleLabel();
+}
+
+function syncCollapseToggleLabel() {
+  const stack = document.getElementById('files-stack');
+  const panels = stack.querySelectorAll('.file-panel');
+  const anyExpanded = Array.from(panels).some(p => !p.classList.contains('collapsed'));
   document.getElementById('files-collapse-toggle').textContent =
-    anyExpanded ? 'Expand all' : 'Collapse all';
+    anyExpanded ? 'Collapse all' : 'Expand all';
 }
 
 async function loadFilesList(taskId) {
@@ -3543,6 +3553,10 @@ async function loadFilesList(taskId) {
     if (filesViewTask?.id !== taskId) return; // user switched away
     renderFilePanels(parseChangedFiles(msg), taskId);
   } catch (e) {
+    // Stale-fetch guard: same shape as the success path. If the user closed
+    // the view or switched tasks while the request was in flight, don't
+    // overwrite whatever #files-stack shows now (could be a re-opened view).
+    if (filesViewTask?.id !== taskId) return;
     document.getElementById('files-stack').innerHTML =
       `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
   }
@@ -3577,7 +3591,9 @@ function parseChangedFiles(msg) {
     }
   }
   // git diff --name-status base..HEAD: "X\tpath" (or "Rxxx\told\tnew" for
-  // renames — pick the new path).
+  // renames — pick the new path). Status codes outside A/D/M (R rename,
+  // C copy, T type change) intentionally fall through to "M" for display;
+  // the path-pick still works because we always take parts[parts.length-1].
   if (msg.BranchFiles) {
     for (const line of msg.BranchFiles.split('\n')) {
       if (!line.trim()) continue;
@@ -3601,20 +3617,39 @@ function renderFilePanels(files, taskId) {
     stack.innerHTML = '<div class="files-empty">No changes in this worktree.</div>';
     return;
   }
-  stack.innerHTML = files.map(f =>
-    `<div class="file-panel" data-path="${escAttr(f.path)}">` +
+  stack.innerHTML = files.map(f => {
+    // Whitelist the status before interpolating into a class attribute. We
+    // also use it as text content via esc(), but esc() doesn't strip spaces,
+    // so a hostile status like "M onclick=..." would inject extra classes.
+    // parseChangedFiles only emits M/A/D/U today, but a future supplier could
+    // bypass that — keep this defensive.
+    const status = ['M', 'A', 'D', 'U'].includes(f.status) ? f.status : 'M';
+    return `<div class="file-panel" data-path="${escAttr(f.path)}">` +
       `<div class="file-panel-header" onclick="toggleFilePanel(this)">` +
         `<div class="chevron">▾</div>` +
-        `<div class="status ${esc(f.status)}">${esc(f.status)}</div>` +
+        `<div class="status ${status}">${status}</div>` +
         `<div class="path">${esc(f.path)}</div>` +
       `</div>` +
       `<div class="file-panel-body"><div class="diff-empty">Loading diff…</div></div>` +
-    `</div>`
-  ).join('');
-  // Kick off all per-file diff fetches in parallel. The git/diff endpoint is
-  // local so concurrency is fine; each fetch updates only its own panel.
-  for (const f of files) {
-    loadDiffIntoPanel(taskId, f.path);
+    `</div>`;
+  }).join('');
+  // Kick off per-file diff fetches with a small concurrency cap. The git/diff
+  // endpoint is local so the cap is generous, but unbounded fan-out on a
+  // worktree with hundreds of changed files would queue hundreds of pending
+  // fetches behind the browser's per-origin connection limit (6) and stall
+  // the UI. A worker-pool pattern keeps the implementation simple while
+  // bounding pressure.
+  const POOL_SIZE = 6;
+  let next = 0;
+  for (let w = 0; w < Math.min(POOL_SIZE, files.length); w++) {
+    (async () => {
+      while (true) {
+        if (filesViewTask?.id !== taskId) return;
+        const idx = next++;
+        if (idx >= files.length) return;
+        await loadDiffIntoPanel(taskId, files[idx].path);
+      }
+    })();
   }
 }
 
