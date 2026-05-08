@@ -439,6 +439,11 @@ func (a *App) Run() error {
 	// because no Draw goroutine exists yet — Pages.AddPage / SwitchToPage
 	// don't take their own locks (only SetFocus does), so the safety comes
 	// from the absence of a concurrent reader, not internal synchronization.
+	// Note: pages.SetChangedFunc fires forceRedraw → tapp.Sync() during
+	// AddPage/SwitchToPage. Sync() pushes onto the buffered (cap-100) updates
+	// channel without blocking on a done-channel, so it's safe pre-Run; the
+	// queued Sync drains on the first event-loop iteration. The deadlock
+	// above is specific to QueueUpdateDraw's per-call done-channel.
 	if a.daemonStale {
 		a.openRestartDaemonPrompt()
 	}
@@ -1762,6 +1767,9 @@ func (a *App) switchTab(t widget.Tab) {
 	switch t {
 	case widget.TabTasks:
 		if a.mode == modeAgent {
+			// exitAgentView is a complete "return to tasks" primitive: resets
+			// mode, tab state, page, and focus. Early return skips the
+			// SwitchToPage below.
 			a.exitAgentView()
 			return
 		}
@@ -1795,7 +1803,8 @@ func (a *App) switchTab(t widget.Tab) {
 //   - `tasklist.OnLayoutChange` — fires when row composition changes
 //     (auto-rename, status flips, archive toggles); tview can't observe these.
 //
-// The only remaining direct callsite is Ctrl+L (user-initiated refresh).
+// The only intentional direct callsite is Ctrl+L (user-initiated refresh
+// where no page mutation occurs).
 func (a *App) forceRedraw(reason string) {
 	uxlog.Log("[tui] force redraw: %s", reason)
 	a.tapp.Sync()

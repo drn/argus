@@ -636,6 +636,24 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 		t.Errorf("exit agent view did not fire pages-changed redraw")
 	}
 
+	// switchTab(TabTasks) while in agent mode delegates to exitAgentView, which
+	// calls SwitchToPage("tasks") exactly once. Asserting the count goes up by
+	// exactly 1 catches a regression where the delegation grows a second
+	// redundant Sync (the bug pattern that motivated the previous early-return
+	// comment in switchTab). Drive switchTab directly on the tview goroutine
+	// so we don't depend on session-start state from the Ctrl+Q exit above.
+	readUI(t, app.tapp, func() {
+		app.mode = modeAgent
+		app.pages.SwitchToPage("agent")
+	})
+	syncUI(t, app.tapp)
+	prev = strings.Count(readLog(), pagesChanged)
+	readUI(t, app.tapp, func() { app.switchTab(widget.TabTasks) })
+	syncUI(t, app.tapp)
+	if delta := strings.Count(readLog(), pagesChanged) - prev; delta != 1 {
+		t.Errorf("switchTab(TabTasks) from agent mode: expected 1 pages-changed redraw, got %d", delta)
+	}
+
 	// Modal open + close path: each AddPage / RemovePage / SwitchToPage
 	// fires pages.SetChangedFunc, so opening then closing the new-task form
 	// produces additional redraw entries. The previous bug was that opens
