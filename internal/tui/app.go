@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/gitpanel"
@@ -227,6 +228,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		go app.restartDaemon()
 	}
 	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
+	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
 	app.settings.OnDeleteProject = func(name string) { app.deleteProject(name) }
@@ -729,6 +731,39 @@ func (a *App) updateArgus() {
 		a.settings.SetDaemonRestarting(true)
 	})
 	a.restartDaemon()
+}
+
+// toggleAutoStart installs or uninstalls the LaunchAgent. Must run in a
+// goroutine so launchctl invocations don't block the tview event loop.
+// Reports back via QueueUpdateDraw → SetAutoStartResult.
+func (a *App) toggleAutoStart(installed bool) {
+	uxlog.Log("[tui] launchagent toggle: installed=%v", installed)
+	var message string
+	if installed {
+		if err := launchagent.Uninstall(); err != nil {
+			message = "Uninstall failed: " + err.Error()
+			uxlog.Log("[tui] launchagent uninstall failed: %v", err)
+		} else {
+			message = "LaunchAgent removed"
+			uxlog.Log("[tui] launchagent uninstalled")
+		}
+	} else {
+		daemonExe, err := launchagent.ResolveDaemonExe()
+		if err != nil {
+			message = "Resolve daemon exe failed: " + err.Error()
+			uxlog.Log("[tui] launchagent install: resolve daemon exe: %v", err)
+		} else if err := launchagent.Install(daemonExe); err != nil {
+			message = "Install failed: " + err.Error()
+			uxlog.Log("[tui] launchagent install failed: %v", err)
+		} else {
+			message = "LaunchAgent installed — daemon will auto-start at login"
+			uxlog.Log("[tui] launchagent installed (exe=%s)", daemonExe)
+		}
+	}
+	status := launchagent.CurrentStatus()
+	a.tapp.QueueUpdateDraw(func() {
+		a.settings.SetAutoStartResult(message, status)
+	})
 }
 
 // restartDaemon kills the old daemon, auto-starts a new one, and reconnects.

@@ -249,15 +249,11 @@ func runDaemonInstall() {
 		fmt.Fprintln(os.Stderr, "auto-start is only supported on macOS")
 		os.Exit(1)
 	}
-	exe, err := os.Executable()
+	daemonExe, err := launchagent.ResolveDaemonExe()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve executable: %v\n", err)
+		fmt.Fprintf(os.Stderr, "resolve daemon exe: %v\n", err)
 		os.Exit(1)
 	}
-	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = resolved
-	}
-	daemonExe := launchagent.EnsureDaemonSymlink(exe)
 	if err := launchagent.Install(daemonExe); err != nil {
 		fmt.Fprintf(os.Stderr, "install: %v\n", err)
 		os.Exit(1)

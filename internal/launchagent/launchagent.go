@@ -2,8 +2,16 @@
 // argus daemon at user login.
 //
 // On non-darwin platforms every operation is a no-op: Available returns false,
-// Status returns a reason explaining why, and Install/Uninstall return errors.
+// Status returns a reason explaining why, and Install/Uninstall return
+// ErrUnsupported.
 package launchagent
+
+import "errors"
+
+// ErrUnsupported is returned by Install/Uninstall on platforms where launchd
+// is not available. Declared in the shared file so callers on darwin can use
+// errors.Is(err, launchagent.ErrUnsupported) without #ifdef-ing the import.
+var ErrUnsupported = errors.New("launchagent: unsupported on this platform")
 
 // Label is the launchd job label written into the plist.
 const Label = "com.drn.argus.daemon"

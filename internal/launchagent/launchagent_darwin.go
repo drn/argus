@@ -58,7 +58,7 @@ func CurrentStatus() Status {
 }
 
 // Install writes the plist and bootstraps it into launchd. If the agent is
-// already loaded it is bootouted first so the new plist takes effect.
+// already loaded it is booted out first so the new plist takes effect.
 //
 // daemonExe is the absolute path that launchd will exec. Callers typically
 // pass the path to a stable symlink (e.g. ~/.argus/argusd) so Activity Monitor
@@ -124,6 +124,23 @@ func Uninstall() error {
 		return fmt.Errorf("remove plist: %w", err)
 	}
 	return nil
+}
+
+// ResolveDaemonExe returns the path that should be written into the LaunchAgent
+// plist's ProgramArguments[0] for the currently-running argus binary. Resolves
+// os.Executable, follows symlinks, and ensures the ~/.argus/argusd symlink
+// points at it (so Activity Monitor displays "argusd"). Surfaces the same
+// triple-step pattern that both the CLI install path and the Settings toggle
+// would otherwise duplicate.
+func ResolveDaemonExe() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	return EnsureDaemonSymlink(exe), nil
 }
 
 // EnsureDaemonSymlink creates the ~/.argus/argusd symlink pointing at exe and

@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -133,9 +132,10 @@ type SettingsView struct {
 	updateOutput    string // last go-install output (for detail panel)
 
 	// Callbacks.
-	OnRestartDaemon  func()
-	OnUpdateArgus    func() // triggered by the "Update Argus" row
-	OnNewProject     func()
+	OnRestartDaemon    func()
+	OnUpdateArgus      func()                 // triggered by the "Update Argus" row
+	OnToggleAutoStart  func(currentlyInstalled bool) // dispatched off the UI thread by app.go
+	OnNewProject       func()
 	OnEditProject    func(name string, p config.Project)
 	OnDeleteProject  func(name string)
 	OnNewBackend     func()
@@ -341,6 +341,9 @@ func (sv *SettingsView) rebuildRows() {
 	}
 
 	// Auto-start at login (LaunchAgent on macOS only).
+	// Intentionally NOT gated on daemonConnected: the LaunchAgent operates on
+	// launchd config and is meaningful even when the daemon is offline (in fact,
+	// "no daemon running" is exactly when a user wants to enable auto-start).
 	if launchagent.Available() {
 		autoLabel := "  Auto-start at login: disabled"
 		if sv.autoStartStatus.Installed {
@@ -731,48 +734,28 @@ func (sv *SettingsView) handleEnter() bool {
 	return false
 }
 
-// toggleAutoStart installs or uninstalls the LaunchAgent based on current
-// state. Runs synchronously — launchctl invocations finish in <100ms.
+// toggleAutoStart marks the row busy and dispatches the actual install/uninstall
+// to app.go via OnToggleAutoStart, which runs the launchctl work in a goroutine
+// and reports back via SetAutoStartResult. Runs entirely on the tview goroutine
+// — never blocks on launchctl.
 func (sv *SettingsView) toggleAutoStart() {
-	if !launchagent.Available() || sv.autoStartBusy {
+	if !launchagent.Available() || sv.autoStartBusy || sv.OnToggleAutoStart == nil {
 		return
 	}
 	sv.autoStartBusy = true
+	sv.autoStartMessage = ""
 	sv.rebuildRows()
-	defer func() {
-		sv.autoStartBusy = false
-		sv.autoStartStatus = launchagent.CurrentStatus()
-		sv.rebuildRows()
-	}()
+	sv.OnToggleAutoStart(sv.autoStartStatus.Installed)
+}
 
-	if sv.autoStartStatus.Installed {
-		if err := launchagent.Uninstall(); err != nil {
-			sv.autoStartMessage = "Uninstall failed: " + err.Error()
-			uxlog.Log("[settings] launchagent uninstall failed: %v", err)
-			return
-		}
-		sv.autoStartMessage = "LaunchAgent removed"
-		uxlog.Log("[settings] launchagent uninstalled")
-		return
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		sv.autoStartMessage = "Resolve executable failed: " + err.Error()
-		uxlog.Log("[settings] launchagent install: resolve executable: %v", err)
-		return
-	}
-	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
-		exe = resolved
-	}
-	daemonExe := launchagent.EnsureDaemonSymlink(exe)
-	if err := launchagent.Install(daemonExe); err != nil {
-		sv.autoStartMessage = "Install failed: " + err.Error()
-		uxlog.Log("[settings] launchagent install failed: %v", err)
-		return
-	}
-	sv.autoStartMessage = "LaunchAgent installed — daemon will auto-start at login"
-	uxlog.Log("[settings] launchagent installed (exe=%s)", daemonExe)
+// SetAutoStartResult is called from the app goroutine (via QueueUpdateDraw)
+// once the install/uninstall completes. Clears busy, refreshes status, and
+// stores a message for the detail panel.
+func (sv *SettingsView) SetAutoStartResult(message string, status launchagent.Status) {
+	sv.autoStartBusy = false
+	sv.autoStartMessage = message
+	sv.autoStartStatus = status
+	sv.rebuildRows()
 }
 
 func (sv *SettingsView) handleDeleteOrDefault() bool {
@@ -1251,9 +1234,14 @@ func (sv *SettingsView) renderAutoStartDetail(screen tcell.Screen, x, y, w, h in
 	}
 
 	if h > 1 {
-		hint := "[enter] enable"
-		if sv.autoStartStatus.Installed {
+		var hint string
+		switch {
+		case sv.autoStartBusy:
+			hint = "working..."
+		case sv.autoStartStatus.Installed:
 			hint = "[enter] disable"
+		default:
+			hint = "[enter] enable"
 		}
 		widget.DrawText(screen, x, y+h-1, w, hint, theme.StyleDimmed)
 	}

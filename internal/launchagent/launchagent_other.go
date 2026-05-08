@@ -2,8 +2,6 @@
 
 package launchagent
 
-import "errors"
-
 func available() bool { return false }
 
 // PlistPath returns ErrUnsupported on non-darwin.
@@ -24,5 +22,5 @@ func Uninstall() error { return ErrUnsupported }
 // EnsureDaemonSymlink is a no-op on non-darwin and returns exe unchanged.
 func EnsureDaemonSymlink(exe string) string { return exe }
 
-// ErrUnsupported is returned by Install/Uninstall on non-darwin platforms.
-var ErrUnsupported = errors.New("launchagent: unsupported on this platform")
+// ResolveDaemonExe returns ErrUnsupported on non-darwin.
+func ResolveDaemonExe() (string, error) { return "", ErrUnsupported }
