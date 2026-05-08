@@ -863,14 +863,17 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 func (a *App) handleSessionExitUI(taskID string, stopped bool) {
-	// The daemon's onFinish callback already flips InProgress → InReview/Complete
-	// before closing the stream that triggers HandleSessionExit, so by the time
-	// we get here the row may already be in its terminal status. We still
-	// run the flip below for the in-process runner path (NotifySessionExit
-	// fires from the same callback the daemon would hit, but with no daemon
-	// in front of it) and as a defensive idempotent retry. Codex session-ID
-	// capture is hoisted out of the StatusInProgress check because that check
-	// can race with the daemon's flip and would otherwise drop the capture.
+	// Two callers, two flip-site stories:
+	//   - Daemon mode (HandleSessionExit): the daemon's onFinish callback
+	//     already ran transitionTaskOnExit before closing the stream that
+	//     triggered us, so t.Status may already have moved on. The flip
+	//     below is a defensive idempotent retry.
+	//   - In-process mode (NotifySessionExit): the in-process onFinish
+	//     calls only NotifySessionExit (no transitionTaskOnExit — that's
+	//     a *Daemon method), so the flip below is the *only* flip site.
+	// Codex session-ID capture is hoisted out of the StatusInProgress check
+	// because in daemon mode the check fails after the daemon's flip and
+	// would otherwise silently drop the capture.
 	var captureWorktree, captureTaskID string
 	t, err := a.db.Get(taskID)
 	if err != nil || t == nil {
@@ -933,8 +936,9 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			a.statusbar.ClearInfo()
 		} else if t, err := a.db.Get(taskID); err == nil && t != nil {
 			uxlog.Log("[tui] narrow-rerender: restarting task=%s session=%s", t.ID, t.SessionID)
-			// Force the resumed task back into InProgress; handleSessionExitUI
-			// flipped it to InReview a moment ago.
+			// Force the resumed task back into InProgress; either the daemon's
+			// onFinish callback or this function's StatusInProgress branch
+			// above has just flipped it to InReview.
 			t.SetStatus(model.StatusInProgress)
 			a.db.Update(t) //nolint:errcheck
 			a.startSession(t)

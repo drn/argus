@@ -431,3 +431,32 @@ func TestDaemon_TransitionTaskOnExit_MissingTask(t *testing.T) {
 	d, _ := testDaemon(t)
 	d.transitionTaskOnExit("nonexistent-id", false)
 }
+
+// TestDaemon_OnFinishFlipsStatus exercises the full path: a session started
+// via the runner exits naturally, the runner's onFinish goroutine fires, and
+// the DB row is flipped to Complete. This is the core fix for daemon-only
+// setups (no TUI to flip status), so unit-testing transitionTaskOnExit alone
+// isn't enough — we need to verify the wiring inside daemon.New() too.
+func TestDaemon_OnFinishFlipsStatus(t *testing.T) {
+	d, _ := testDaemon(t)
+	if err := d.db.SetBackend("test", config.Backend{Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	task := &model.Task{Name: "exit-test", Status: model.StatusInProgress, Worktree: t.TempDir(), Backend: "test"}
+	testutil.NoError(t, d.db.Add(task))
+
+	if _, err := d.runner.Start(task, d.db.Config(), 24, 80, false); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fresh, _ := d.db.Get(task.ID)
+		if fresh != nil && fresh.Status != model.StatusInProgress {
+			testutil.Equal(t, fresh.Status, model.StatusComplete)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for status flip; row stuck at %s", model.StatusInProgress)
+}

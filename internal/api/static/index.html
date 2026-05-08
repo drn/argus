@@ -2935,18 +2935,14 @@ function renderOverflowMenu() {
   // operations belong in the closing-menu items below.
   // Esc lives in the key bar (⌨ button below the terminal); duplicating it
   // here just bloated the menu.
-  // Shared between the idle-in_progress branch and the
-  // pending/in_review/complete branch so they can never drift if the
-  // item shape changes.
-  const resumeItem = { id: 'btn-resume', label: 'Resume', fn: resumeTask };
+  // Resume is the only menu item for non-active states (idle in_progress,
+  // pending, in_review, complete). Toggle mode is the only menu item for
+  // actively-running tasks. The two branches are mutually exclusive: an
+  // active in_progress task gets Toggle mode; everything else gets Resume.
   if (s === 'in_progress' && !currentTask.idle) {
     items.push({ id: 'btn-mode', label: 'Toggle mode', fn: () => sendInputBytes('\x1b[Z'), keepOpen: true });
-  } else if (s === 'in_progress' && currentTask.idle) {
-    // Idle in_progress: agent is not actively working. Surface Resume so
-    // the user can re-trigger after dismissing the resume modal.
-    items.push(resumeItem);
-  } else if (s === 'pending' || s === 'in_review' || s === 'complete') {
-    items.push(resumeItem);
+  } else {
+    items.push({ id: 'btn-resume', label: 'Resume', fn: resumeTask });
   }
   items.push(
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
