@@ -587,6 +587,16 @@ func (m *mockTaskDB) Update(t *model.Task) error {
 	return fmt.Errorf("not found")
 }
 
+func (m *mockTaskDB) Rename(id, name string) error {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			t.Name = name
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 type mockStopper struct {
 	stopped []string
 }
@@ -659,14 +669,14 @@ func TestToolsList_WithTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 6 task tools = 11
-	testutil.Equal(t, len(list.Tools), 11)
+	// 5 KB tools + 7 task tools = 12
+	testutil.Equal(t, len(list.Tools), 12)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_complete"} {
+	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_rename", "task_complete"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -896,7 +906,7 @@ func TestTaskCreate_RateLimit(t *testing.T) {
 func TestTaskTools_NotConfigured(t *testing.T) {
 	s := testServer() // no SetTaskManager
 
-	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_complete"} {
+	for _, tool := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_rename", "task_complete"} {
 		t.Run(tool, func(t *testing.T) {
 			resp := doRequest(t, s, "tools/call", ToolCallParams{
 				Name:      tool,
@@ -1175,6 +1185,114 @@ func TestTaskComplete(t *testing.T) {
 	})
 }
 
+func TestTaskRename(t *testing.T) {
+	t.Run("by id", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "abc123", "name": "fix-login-v2"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		testutil.Contains(t, cr.Content[0].Text, "fix-login")
+		testutil.Contains(t, cr.Content[0].Text, "fix-login-v2")
+
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Name, "fix-login-v2")
+	})
+
+	t.Run("by cwd", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"cwd": "/tmp/worktrees/myapp/fix-login/sub", "name": "renamed-via-cwd"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		if cr.IsError {
+			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+		}
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Name, "renamed-via-cwd")
+	})
+
+	t.Run("trims whitespace", func(t *testing.T) {
+		s, taskDB, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "abc123", "name": "  spaced  "}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, false)
+		got, _ := taskDB.Get("abc123")
+		testutil.Equal(t, got.Name, "spaced")
+	})
+
+	t.Run("no-op when same name", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "abc123", "name": "fix-login"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, false)
+		testutil.Contains(t, cr.Content[0].Text, "already named")
+	})
+
+	t.Run("missing name", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "abc123"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "name is required")
+	})
+
+	t.Run("blank name rejected", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "abc123", "name": "   "}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "name is required")
+	})
+
+	t.Run("missing id and cwd", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"name": "anything"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "provide id or cwd")
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: json.RawMessage(`{"id": "nope", "name": "foo"}`),
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "task not found")
+	})
+}
+
 // --- Clipboard tool tests ---
 
 type mockClipboard struct {
@@ -1205,8 +1323,8 @@ func TestToolsList_WithClipboard(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 6 task tools + 1 clipboard tool = 12
-	testutil.Equal(t, len(list.Tools), 12)
+	// 5 KB tools + 7 task tools + 1 clipboard tool = 13
+	testutil.Equal(t, len(list.Tools), 13)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {

@@ -39,6 +39,9 @@ type TaskStore interface {
 	Tasks() ([]*model.Task, error)
 	Get(id string) (*model.Task, error)
 	Update(t *model.Task) error
+	// Rename updates only the name column — used by task_rename to avoid
+	// racing with concurrent status changes from the agent process.
+	Rename(id, name string) error
 }
 
 // TaskStopper can stop a running agent session.
@@ -519,6 +522,21 @@ The agent process does not know its own task ID, so the task is resolved from th
 		},
 	},
 	{
+		Name: "task_rename",
+		Description: `Rename an Argus task. Updates only the display name — branch and worktree paths stay locked to the original slug.
+
+Pass ` + "`id`" + ` to target a task explicitly, or ` + "`cwd`" + ` to resolve the task from a working directory inside its worktree (the agent process does not know its own task ID). ` + "`name`" + ` is required.`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":   map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd":  map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+				"name": map[string]interface{}{"type": "string", "description": "New display name. Whitespace-trimmed; must be non-empty."},
+			},
+			"required": []string{"name"},
+		},
+	},
+	{
 		Name: "task_complete",
 		Description: `Mark an Argus task as complete. Sets status to "complete" and stamps EndedAt.
 
@@ -688,6 +706,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskStop(req.ID, params.Arguments)
 	case "task_archive":
 		return s.toolTaskArchive(req.ID, params.Arguments)
+	case "task_rename":
+		return s.toolTaskRename(req.ID, params.Arguments)
 	case "task_complete":
 		return s.toolTaskComplete(req.ID, params.Arguments)
 	case "argus_clipboard_set":
@@ -1112,6 +1132,42 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 	}
 	log.Printf("[mcp] task_archive ok: id=%s archived=%v", task.ID, newArchived)
 	return toolResult(id, fmt.Sprintf("%s task %s (%s).", action, task.ID, task.Name))
+}
+
+func (s *Server) toolTaskRename(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID   string `json:"id"`
+		Cwd  string `json:"cwd"`
+		Name string `json:"name"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return toolError(id, "name is required")
+	}
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	if name == task.Name {
+		return toolResult(id, fmt.Sprintf("Task %s already named %q.", task.ID, task.Name))
+	}
+
+	prev := task.Name
+	if err := s.taskDB.Rename(task.ID, name); err != nil {
+		log.Printf("[mcp] task_rename failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to rename task: %v", err))
+	}
+
+	log.Printf("[mcp] task_rename ok: id=%s prev=%q new=%q", task.ID, prev, name)
+	return toolResult(id, fmt.Sprintf("Renamed task %s: %q → %q.", task.ID, prev, name))
 }
 
 func (s *Server) toolTaskComplete(id interface{}, args json.RawMessage) *Response {
