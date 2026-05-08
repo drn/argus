@@ -5196,29 +5196,49 @@ function sendCompose() {
 
   // iOS Safari's soft-keyboard Send (enterkeyhint=send) doesn't reliably
   // dispatch keydown(Enter) — predictive text/dictation surface keyCode 229
-  // or key 'Unidentified' instead — but it always fires beforeinput with
-  // inputType: insertLineBreak. The two listeners cooperate via a timestamp:
+  // or key 'Unidentified' instead — but it always fires `beforeinput` with
+  // some flavor of line-break inputType. The two listeners cooperate via a
+  // timestamp:
   //   1. Hardware Enter (no shift, not composing) — keydown sends + stamps;
   //      beforeinput defers to the stamp.
   //   2. Hardware Shift+Enter — keydown stamps without sending; beforeinput
   //      defers to the stamp and the browser inserts a newline.
   //   3. iOS soft-Send (no keydown, OR keydown with isComposing) — keydown
   //      bails without stamping; beforeinput sees no fresh stamp and sends.
+  //
+  // The line-break inputType varies across iOS WebKit IME pipelines:
+  //   - `insertLineBreak`     plain soft-Send / hardware Shift+Enter
+  //   - `insertParagraph`     some WebKit builds for textarea Enter
+  //   - `insertText` w/ `\n`  predictive text / dictation committing a Send
+  // Catching only `insertLineBreak` left the latter two falling through to
+  // the browser default — a literal `\n` lands in the textarea and the
+  // prompt sits unsubmitted. `isLineBreak()` recognizes all three.
+  //
   // 100ms is wider than any real keydown→beforeinput gap (microseconds, same
   // task) but well below human reaction time, so a stale stamp can't suppress
   // a deliberate follow-up Send.
   // Skill-AC interaction: when the autocomplete dropdown is open and Enter is
   // pressed, AC's keydown listener fires first and stopImmediatePropagation()s
   // us, so the stamp isn't set. We rely on AC's preventDefault() suppressing
-  // beforeinput insertLineBreak per the WHATWG event spec — verified by the
+  // the beforeinput line-break per the WHATWG event spec — verified by the
   // autocomplete Playwright test.
   const ENTER_KEYDOWN_DEBOUNCE_MS = 100;
   let lastEnterKeydownAt = 0;
+  function isLineBreakInput(e) {
+    if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') return true;
+    // `insertText` with newline-only data is how predictive text/dictation
+    // commits a Send on some iOS builds — `e.data` is a single `\n` (or
+    // `\r\n`), not the user's prompt text.
+    if (e.inputType === 'insertText') {
+      return e.data === '\n' || e.data === '\r' || e.data === '\r\n';
+    }
+    return false;
+  }
   ci.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     // See web-remote.md gotcha: skipping the stamp on isComposing avoids the
-    // beforeinput insertLineBreak being misclassified as Shift+Enter, which
-    // would let the browser insert a literal `\n` instead of submitting.
+    // beforeinput line-break being misclassified as Shift+Enter, which would
+    // let the browser insert a literal `\n` instead of submitting.
     if (e.isComposing) return;
     lastEnterKeydownAt = Date.now();
     if (!e.shiftKey) {
@@ -5227,7 +5247,7 @@ function sendCompose() {
     }
   });
   ci.addEventListener('beforeinput', e => {
-    if (e.inputType !== 'insertLineBreak') return;
+    if (!isLineBreakInput(e)) return;
     // Hardware Enter / Shift+Enter just ran the keydown handler; let the
     // browser's default newline insertion (Shift+Enter) or the prevented
     // submit (plain Enter) play out without double-firing sendCompose.

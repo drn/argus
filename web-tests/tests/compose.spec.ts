@@ -143,6 +143,93 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
+  // Regression: iOS WebKit's predictive text / dictation sometimes commits
+  // the soft-keyboard Send by dispatching `beforeinput` with `inputType:
+  // 'insertText'` and `data: '\n'` instead of `insertLineBreak`. Catching
+  // only `insertLineBreak` let this slip through the handler, the browser
+  // inserted a literal `\n` into the textarea, and the prompt sat unsubmitted.
+  // Symptom: tapping Send sometimes drops a newline instead of POSTing.
+  test('soft-keyboard Send dispatched as insertText "\\n" still sends', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello world');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: '\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Regression: some iOS WebKit builds dispatch `beforeinput` with
+  // `inputType: 'insertParagraph'` for the soft-keyboard Send on a textarea.
+  // Catching only `insertLineBreak` left this falling through to the browser
+  // default — same newline-in-textarea, prompt-not-sent failure mode.
+  test('soft-keyboard Send dispatched as insertParagraph still sends', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello world');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertParagraph',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Guard against the broadened insertText matcher: a regular character like
+  // 'a' must NOT trigger a send. Only newline-only data counts as a line break.
+  test('beforeinput insertText with regular character does NOT send', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello');
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: 'a',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    // Give any inflight POST a moment to land — none should.
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    // Textarea unchanged because nothing was sent and we didn't preventDefault
+    // (the synthetic dispatchEvent doesn't actually mutate the textarea — but
+    // the value should at least still be the original 'hello').
+    await expect(page.locator('#compose-input')).toHaveValue('hello');
+  });
+
   test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
