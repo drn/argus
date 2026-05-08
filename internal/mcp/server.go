@@ -75,6 +75,11 @@ type ScheduleRunner interface {
 // to prevent unbounded process spawning from a misbehaving MCP client.
 const maxConcurrentCreates = 5
 
+// maxTaskNameRunes caps task display names. SQLite TEXT is unbounded and
+// the request body limit (4 MiB) would let pathologically long names through;
+// 200 runes comfortably covers any human-typeable name across every UI.
+const maxTaskNameRunes = 200
+
 // Server is the MCP HTTP server.
 type Server struct {
 	db          KBQuerier
@@ -1150,6 +1155,12 @@ func (s *Server) toolTaskRename(id interface{}, args json.RawMessage) *Response 
 	if name == "" {
 		return toolError(id, "name is required")
 	}
+	// Defensive cap: the request body limit (4 MiB) is the only other
+	// ceiling, and a 4 MiB task name would render unusably across every UI
+	// surface. 200 runes comfortably covers any human-typeable name.
+	if len([]rune(name)) > maxTaskNameRunes {
+		return toolError(id, fmt.Sprintf("name exceeds %d runes", maxTaskNameRunes))
+	}
 
 	task, err := s.resolveTask(p.ID, p.Cwd)
 	if err != nil {
@@ -1157,7 +1168,7 @@ func (s *Server) toolTaskRename(id interface{}, args json.RawMessage) *Response 
 	}
 
 	if name == task.Name {
-		return toolResult(id, fmt.Sprintf("Task %s already named %q.", task.ID, task.Name))
+		return toolResult(id, fmt.Sprintf("Task %s (%s) already named %q.", task.ID, task.Name, name))
 	}
 
 	prev := task.Name

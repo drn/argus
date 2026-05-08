@@ -507,12 +507,13 @@ func (s *Server) handleRenameTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
 		return
 	}
-	task.Name = name
-	if err := s.db.Update(task); err != nil {
+	// Targeted rename — avoids racing concurrent status changes from the
+	// agent process. Mirrors the MCP task_rename and TUI rename modal paths.
+	if err := s.db.Rename(task.ID, name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"name": task.Name})
+	writeJSON(w, http.StatusOK, map[string]string{"name": name})
 }
 
 // --- Set Status ---

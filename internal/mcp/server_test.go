@@ -1291,6 +1291,20 @@ func TestTaskRename(t *testing.T) {
 		testutil.Equal(t, cr.IsError, true)
 		testutil.Contains(t, cr.Content[0].Text, "task not found")
 	})
+
+	t.Run("name too long rejected", func(t *testing.T) {
+		s, _, _ := testServerWithTasks()
+		long := strings.Repeat("a", maxTaskNameRunes+1)
+		args, _ := json.Marshal(map[string]string{"id": "abc123", "name": long})
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_rename",
+			Arguments: args,
+		})
+		testutil.NoError(t, respErr(resp))
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "exceeds")
+	})
 }
 
 // --- Clipboard tool tests ---

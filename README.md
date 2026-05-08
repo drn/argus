@@ -282,7 +282,7 @@ The MCP server exposes the following tools to connected agents:
 | `task_get` | Get task details by `id` |
 | `task_stop` | Stop a running agent (moves task to "in review") |
 | `task_archive` | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve the task by worktree, or `id`. Omit `archived` to toggle. |
-| `task_rename` | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`. |
+| `task_rename` | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`. No-op if the new name matches the current one. |
 | `task_complete` | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed. No-op if already complete. |
 
 Task management tools enable an external agent (e.g. Claude Code running in another terminal) to programmatically launch and monitor Argus tasks via MCP. Sample skills at `.claude/skills/archive/SKILL.md` (calls `task_archive`, moves task to the Archive section) and `.claude/skills/argus-complete/SKILL.md` (calls `task_complete`, transitions status to "complete") let an agent finalize its own task at the end of a session via `cwd` resolution. The two are independent axes — completing a task does not archive it, and archiving does not change status.
