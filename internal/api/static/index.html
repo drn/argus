@@ -5202,7 +5202,8 @@ function sendCompose() {
   //   1. Hardware Enter (no shift, not composing) — keydown sends + stamps;
   //      beforeinput defers to the stamp.
   //   2. Hardware Shift+Enter — keydown stamps without sending; beforeinput
-  //      defers to the stamp and the browser inserts a newline.
+  //      (`insertLineBreak` or `insertParagraph`, browser-dependent) defers
+  //      to the stamp and the browser inserts a newline.
   //   3. iOS soft-Send (no keydown, OR keydown with isComposing) — keydown
   //      bails without stamping; beforeinput sees no fresh stamp and sends.
   //
@@ -5212,7 +5213,7 @@ function sendCompose() {
   //   - `insertText` w/ `\n`  predictive text / dictation committing a Send
   // Catching only `insertLineBreak` left the latter two falling through to
   // the browser default — a literal `\n` lands in the textarea and the
-  // prompt sits unsubmitted. `isLineBreak()` recognizes all three.
+  // prompt sits unsubmitted. `isLineBreakInput()` recognizes all three.
   //
   // 100ms is wider than any real keydown→beforeinput gap (microseconds, same
   // task) but well below human reaction time, so a stale stamp can't suppress
@@ -5228,7 +5229,10 @@ function sendCompose() {
     if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') return true;
     // `insertText` with newline-only data is how predictive text/dictation
     // commits a Send on some iOS builds — `e.data` is a single `\n` (or
-    // `\r\n`), not the user's prompt text.
+    // `\r\n`), not the user's prompt text. Bare `\r` is included defensively:
+    // no current iOS pipeline dispatches it, but it's a valid line break
+    // value under the spec and autocorrect never commits a lone control
+    // character, so the false-positive risk is zero.
     if (e.inputType === 'insertText') {
       return e.data === '\n' || e.data === '\r' || e.data === '\r\n';
     }
