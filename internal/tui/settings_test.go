@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1203,4 +1204,27 @@ func TestSettingsView_ScrollClampOnResize(t *testing.T) {
 
 	// scrollOff must clamp to 0 since all rows fit.
 	testutil.Equal(t, sv.scrollOff, 0)
+}
+
+// TestSettingsView_AutoStartRow verifies the auto-start LaunchAgent row appears
+// in the Status section on macOS when the daemon is connected.
+func TestSettingsView_AutoStartRow(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("LaunchAgent only available on darwin")
+	}
+	sv := testSettingsView(t)
+	sv.SetDaemonConnected(true)
+
+	found := false
+	for _, row := range sv.rows {
+		if row.kind == srAutoStart {
+			found = true
+			if !strings.Contains(row.label, "Auto-start at login") {
+				t.Errorf("auto-start row label = %q, want to contain 'Auto-start at login'", row.label)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected auto-start row in Status section on darwin")
+	}
 }

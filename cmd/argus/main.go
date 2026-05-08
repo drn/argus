@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/tui"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -33,6 +34,12 @@ func main() {
 				runDaemonStop()
 			case "restart":
 				runDaemonRestart()
+			case "install":
+				runDaemonInstall()
+			case "uninstall":
+				runDaemonUninstall()
+			case "status":
+				runDaemonStatus()
 			default:
 				fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", sub)
 				os.Exit(1)
@@ -233,6 +240,56 @@ func isDaemonStale(client *dclient.Client) bool {
 	uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
 		info.BinaryMtime.Format(time.RFC3339), st.ModTime().Format(time.RFC3339))
 	return true
+}
+
+// runDaemonInstall installs the LaunchAgent so the daemon auto-starts at user
+// login (macOS only). Reinstalling overwrites the previous plist.
+func runDaemonInstall() {
+	if !launchagent.Available() {
+		fmt.Fprintln(os.Stderr, "auto-start is only supported on macOS")
+		os.Exit(1)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve executable: %v\n", err)
+		os.Exit(1)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	daemonExe := launchagent.EnsureDaemonSymlink(exe)
+	if err := launchagent.Install(daemonExe); err != nil {
+		fmt.Fprintf(os.Stderr, "install: %v\n", err)
+		os.Exit(1)
+	}
+	path, _ := launchagent.PlistPath()
+	fmt.Printf("installed LaunchAgent at %s\n", path)
+	fmt.Println("daemon will auto-start at login")
+}
+
+// runDaemonUninstall removes the LaunchAgent and unloads it from launchd.
+func runDaemonUninstall() {
+	if !launchagent.Available() {
+		fmt.Fprintln(os.Stderr, "auto-start is only supported on macOS")
+		os.Exit(1)
+	}
+	if err := launchagent.Uninstall(); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("LaunchAgent removed")
+}
+
+// runDaemonStatus prints the LaunchAgent's installation state.
+func runDaemonStatus() {
+	if !launchagent.Available() {
+		fmt.Println("auto-start: not available (macOS only)")
+		return
+	}
+	s := launchagent.CurrentStatus()
+	fmt.Printf("plist: %s\n", s.PlistPath)
+	fmt.Printf("installed: %v\n", s.Installed)
+	fmt.Printf("loaded:    %v\n", s.Loaded)
 }
 
 func runDaemonRestart() {

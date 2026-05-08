@@ -39,7 +39,7 @@ A terminal-native LLM code orchestrator. Manage multiple Claude Code / Codex ses
 ### Agent Management
 
 - **Multi-session orchestration** — Run multiple Claude Code / Codex / custom LLM agents simultaneously with PTY-backed terminal sessions
-- **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows. On TUI startup, if the daemon is running an older copy of the binary (e.g. after a rebuild), a modal prompts you to **Restart** or **Skip**
+- **Persistent daemon** — Agent sessions survive TUI restarts via a background daemon that keeps PTY fds alive. Auto-starts on launch, graceful shutdown on exit. Similar to tmux, but purpose-built for agent workflows. On TUI startup, if the daemon is running an older copy of the binary (e.g. after a rebuild), a modal prompts you to **Restart** or **Skip**. On macOS, opt in to **auto-start at login** from Settings → Status (or `argus daemon install`) so the daemon survives reboots without launching the TUI
 - **Session resume** — `--resume` for Claude Code, `codex resume <session-id>` for Codex — conversations survive daemon restarts
 - **Configurable backends** — Define command templates for any LLM CLI tool. Per-backend flags, prompt interpolation, and plan mode defaults
 - **Skill autocomplete** — `/` anywhere in the prompt field (TUI or PWA) triggers autocomplete from `~/.claude/skills/`, per-project skill directories, and installed Claude Code plugins (plugin items appear as `<plugin>:<name>`, e.g. `/cortex:review`). Filter is case-insensitive substring like Claude Code's picker, so `/rev` matches both `review` and `cortex:review`. `$` triggers the same for Codex backends in the TUI. Select with Enter or Tab
@@ -195,6 +195,20 @@ argus
 Argus can install a freshly-built version of itself when you've merged a change into your local clone. From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` (best-effort) followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart.
 
 The same controls are exposed in the web UI under **Settings → Argus update** (master token only). The combined output of the install run is shown inline so failures are visible.
+
+## Auto-start at Login (macOS)
+
+The daemon can be installed as a launchd LaunchAgent so it starts at user login and survives reboots without launching the TUI. Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:
+
+```bash
+argus daemon install     # write ~/Library/LaunchAgents/com.drn.argus.daemon.plist and bootstrap into launchd
+argus daemon uninstall   # bootout and remove the plist
+argus daemon status      # show plist path + installed/loaded state
+```
+
+The plist is configured with `RunAtLoad` and `KeepAlive { SuccessfulExit = false }`, which means launchd starts the daemon at login and restarts it if it crashes (non-zero exit) — but a clean `argus daemon stop` is honored and won't trigger a respawn. Stdout/stderr are written to `~/.argus/launchd.log`.
+
+The plist points at `~/.argus/argusd`, a symlink to the resolved argus binary; reinstalling rewrites the symlink so launchd picks up the new binary on next start. Reinstall after any `go install` to a different path. macOS only — Linux/Windows show no toggle.
 
 ## Sandbox
 
