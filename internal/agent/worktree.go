@@ -42,11 +42,15 @@ var multiDash = regexp.MustCompile(`-+`)
 const maxBranchNameLen = 30
 
 func sanitizeBranchName(name string) string {
-	// invalidBranchChars covers ., {, } (and others), so consecutive dots,
-	// leading/trailing dots, and the `{` half of any `@{` sequence are all
-	// reduced to runs of `-` by the regex pass; multiDash then collapses
-	// those runs. No further string-level scrubbing is needed before the
-	// trailing `-` trim.
+	// invalidBranchChars covers ., {, }, /, and others, so the regex+multiDash
+	// pass alone subsumes the historical string-level guards (Trim ".", Trim
+	// "/", ReplaceAll "..", ReplaceAll "//", ReplaceAll "@{") that this
+	// function previously ran. Worked example:
+	//   "ref@{0}"   → "ref@-0-" → multiDash → "ref@-0-" → trim → "ref@-0"
+	//   "name..x"   → "name--x" → multiDash → "name-x"
+	//   "a/b/c"     → "a-b-c"   → multiDash → "a-b-c"
+	// Only `@` survives the regex (intentional: it's git-legal), so trailing
+	// hyphen trim is the only post-regex pass needed.
 	s := invalidBranchChars.ReplaceAllString(name, "-")
 	s = multiDash.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")

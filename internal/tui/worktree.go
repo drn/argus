@@ -22,20 +22,21 @@ func sweepOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects 
 	return walkOrphanedWorktrees(wtRoot, knownPaths, projects)
 }
 
-// isAncestorOfKnown returns true if any known worktree path lives inside
-// `dir` (i.e. dir is a strict ancestor of a tracked worktree). Defends against
-// historical task names whose stored worktree path goes deeper than the
-// fixed wtRoot/<project>/<task> layout the walker assumes — without this
-// guard the walker would misclassify the parent dir as an orphan and
-// `os.RemoveAll` it, taking the live worktree underneath with it.
-func isAncestorOfKnown(dir string, knownPaths map[string]bool) bool {
+// firstKnownDescendant returns a known worktree path that lives strictly
+// inside `dir`, or "" if there is none. Defends against historical task names
+// whose stored worktree path goes deeper than the fixed wtRoot/<project>/<task>
+// layout the walker assumes — without this guard the walker would misclassify
+// the parent dir as an orphan and `os.RemoveAll` it, taking the live worktree
+// underneath with it. Returning the descendant (rather than a bool) lets the
+// caller log which tracked path triggered the skip.
+func firstKnownDescendant(dir string, knownPaths map[string]bool) string {
 	prefix := filepath.Clean(dir) + string(filepath.Separator)
 	for known := range knownPaths {
 		if strings.HasPrefix(filepath.Clean(known), prefix) {
-			return true
+			return known
 		}
 	}
-	return false
+	return ""
 }
 
 // walkOrphanedWorktrees scans wtRoot/<project>/<task>/ dirs.
@@ -68,8 +69,8 @@ func walkOrphanedWorktrees(wtRoot string, knownPaths map[string]bool, projects m
 			if knownPaths[wtPath] {
 				continue
 			}
-			if isAncestorOfKnown(wtPath, knownPaths) {
-				uxlog.Log("[worktree] orphan sweep: skipping %q — ancestor of a tracked worktree", wtPath)
+			if known := firstKnownDescendant(wtPath, knownPaths); known != "" {
+				uxlog.Log("[worktree] orphan sweep: skipping %q — ancestor of tracked worktree %q", wtPath, known)
 				continue
 			}
 			count++
