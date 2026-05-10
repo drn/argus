@@ -342,3 +342,21 @@ func TestReadSessionLogTail(t *testing.T) {
 	result := readSessionLogTail("nonexistent-task-id-12345")
 	testutil.Equal(t, result, "")
 }
+
+func TestExtractForkContext(t *testing.T) {
+	task := &model.Task{
+		ID:     "ctx-1",
+		Name:   "name",
+		Prompt: "do it",
+		Status: model.StatusInProgress,
+		Branch: "argus/n",
+	}
+	ctx := extractForkContext(task)
+	if ctx == nil {
+		t.Fatal("ctx should be non-nil")
+	}
+	testutil.Equal(t, ctx.SourceName, "name")
+	testutil.Equal(t, ctx.SourcePrompt, "do it")
+	testutil.Equal(t, ctx.SourceStatus, "in_progress")
+	testutil.Equal(t, ctx.SourceBranch, "argus/n")
+}

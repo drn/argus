@@ -26,12 +26,23 @@ var ExtractLinks = links.Extract
 // openURL opens the given URL in the default browser (macOS).
 // Only http:// and https:// schemes are allowed to prevent opening
 // file://, javascript:, or custom URI schemes from untrusted content.
+//
+// browserOpener is the package-level seam tests stub out so they don't
+// actually launch a browser. The real implementation shells out to `open`
+// (macOS); a future cross-platform port replaces this var directly.
+var browserOpener = func(url string) error {
+	return exec.Command("open", url).Start()
+}
+
 func openURL(url string) {
 	if !strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://") {
 		uxlog.Log("[links] rejected non-http URL: %s", url)
 		return
 	}
-	exec.Command("open", url).Start() //nolint:errcheck
+	if err := browserOpener(url); err != nil {
+		uxlog.Log("[links] open URL failed: %v", err)
+		return
+	}
 	uxlog.Log("[links] opened URL in browser: %s", url)
 }
 

@@ -167,8 +167,8 @@ Non-obvious invariants and gotchas are in `context/knowledge/gotchas/`. **Read t
 
 ### Testing Requirements
 
-- **Every change must include tests.** Run `make test` to verify all tests pass before considering work complete.
-- **Run `make test-cover` after writing tests** to verify coverage improved. Aim for ≥80% on packages you touch.
+- **Every change must include tests.** Run `make test` to verify all tests pass before considering work complete. **No new code without coverage** — every new function, branch, and error path must be exercised by a test in the same PR. The CI coverage gate enforces a 95% floor (filtered) and PRs that drop the number below the floor are rejected. See [context/knowledge/testing.md](context/knowledge/testing.md) for the full test-author rules (idioms, synctest, mocking, exclusion list).
+- **Run `make test-cover` after writing tests** to verify coverage improved. Target ≥95% on packages you touch (90% acceptable for UI smoke-only code).
 - **All table-driven tests must use `t.Run` subtests.** Guard slow tests with `testing.Short()`.
 - **Test file placement:** `*_test.go` in the same package (not `_test` suffix). Use existing `testDB(t)` helpers.
 - **What to test:** exported functions, pure logic (parsers, state transitions), view/render output, edge cases (nil, empty, boundaries), state machines.

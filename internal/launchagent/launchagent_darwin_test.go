@@ -299,3 +299,19 @@ func TestEnsureDaemonSymlink_IdempotentWhenAlreadyCorrect(t *testing.T) {
 func TestAvailable(t *testing.T) {
 	testutil.Equal(t, Available(), true)
 }
+
+func TestResolveDaemonExe(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	got, err := ResolveDaemonExe()
+	testutil.NoError(t, err)
+	// Returns the ~/.argus/argusd symlink path.
+	if !strings.HasSuffix(got, "/argusd") {
+		t.Errorf("expected path ending in /argusd, got %q", got)
+	}
+	// The symlink should resolve to the running test binary (or a sibling of
+	// it after EvalSymlinks). Stat through the symlink and confirm it exists.
+	if _, err := os.Stat(got); err != nil {
+		t.Errorf("symlink target unreachable: %v", err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
@@ -423,4 +424,100 @@ func TestSettings_QuickAddNotOnOtherSections(t *testing.T) {
 
 	ev := tcell.NewEventKey(tcell.KeyRune, 'i', 0)
 	sv.HandleKey(ev)
+}
+
+func TestQuickAddForm_Draw_DirInputPhase(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.SetRect(0, 0, 80, 24)
+	f.Draw(drawSim(t))
+}
+
+func TestQuickAddForm_Draw_DirInputWithErrorAndScanning(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.dirPath = []rune("/tmp")
+	f.dirCursor = len(f.dirPath)
+	f.scanning = true
+	f.errMsg = "oops"
+	f.SetRect(0, 0, 80, 24)
+	f.Draw(drawSim(t))
+}
+
+func TestQuickAddForm_Draw_SelectionPhase(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.repos = []repoCandidate{
+		{name: "a", dirName: "a", path: "/a", selected: true},
+		{name: "b-2", dirName: "b", path: "/b", selected: false},
+	}
+	f.phase = 1
+	f.SetRect(0, 0, 80, 24)
+	f.Draw(drawSim(t))
+}
+
+func TestQuickAddForm_Draw_SelectionWithError(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.repos = []repoCandidate{{name: "a", dirName: "a", path: "/a"}}
+	f.phase = 1
+	f.errMsg = "no selected"
+	f.SetRect(0, 0, 80, 24)
+	f.Draw(drawSim(t))
+}
+
+func TestQuickAddForm_Draw_TinyRect(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.SetRect(0, 0, 0, 0)
+	f.Draw(drawSim(t))
+}
+
+func TestQuickAddForm_PasteHandler(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	paste := f.PasteHandler()
+	paste("/path", func(p tview.Primitive) {})
+	testutil.Equal(t, string(f.dirPath), "/path")
+}
+
+func TestQuickAddForm_PasteHandler_PhaseOneIgnored(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.phase = 1
+	paste := f.PasteHandler()
+	paste("garbage", func(p tview.Primitive) {})
+	testutil.Equal(t, len(f.dirPath), 0)
+}
+
+func TestQuickAddForm_PasteHandler_EmptyNoOp(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	paste := f.PasteHandler()
+	paste("", func(p tview.Primitive) {})
+	testutil.Equal(t, len(f.dirPath), 0)
+}
+
+func TestQuickAddForm_HandleSelection_Navigation(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.repos = []repoCandidate{
+		{name: "a", path: "/a", selected: true},
+		{name: "b", path: "/b", selected: true},
+	}
+	f.phase = 1
+
+	f.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0))
+	testutil.Equal(t, f.cursor, 1)
+	f.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, 0))
+	testutil.Equal(t, f.cursor, 0)
+
+	f.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'j', 0))
+	testutil.Equal(t, f.cursor, 1)
+	f.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'k', 0))
+	testutil.Equal(t, f.cursor, 0)
+
+	f.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0))
+	testutil.Equal(t, f.repos[0].selected, true)
+	f.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'x', 0))
+	testutil.Equal(t, f.repos[0].selected, false)
+}
+
+func TestQuickAddForm_HandleSelection_EnterNoSelection(t *testing.T) {
+	f := NewQuickAddForm(nil)
+	f.repos = []repoCandidate{{name: "a", path: "/a", selected: false}}
+	f.phase = 1
+	f.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Contains(t, f.errMsg, "No repos selected")
 }

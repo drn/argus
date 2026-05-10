@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-pkg lint-pr fmt fmt-check vuln
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln
 
 build:
 	go build ./...
@@ -38,7 +38,16 @@ test-watch:
 
 test-cover:
 	go test -race -count=1 -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out | tail -1
+	@echo "--- raw ---"
+	@go tool cover -func=coverage.out | tail -1
+	@echo "--- filtered (per coverage-ignore.txt) ---"
+	@go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out
+
+# CI gate. Fails if filtered coverage drops below the current floor.
+# Ratchets up over time toward the 95% target.
+test-cover-gate:
+	go test -race -count=1 -coverprofile=coverage.out ./...
+	go run ./scripts/coverfilter -in coverage.out -out coverage.filtered.out -min 88
 
 test-pkg:
 	@test -n "$(PKG)" || { echo "Usage: make test-pkg PKG=./internal/db/"; exit 1; }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -98,4 +99,91 @@ func TestOpenURL_RejectsNonHTTP(t *testing.T) {
 	openURL("")
 	// Valid schemes should not panic either.
 	// (We can't stop "open" from actually launching, so just verify no crash.)
+}
+
+func TestFuzzyLinkPickerModal_Draw(t *testing.T) {
+	links := []Link{
+		{Label: "GitHub", URL: "https://github.com/foo"},
+		{Label: "Docs", URL: "https://docs.example.com"},
+	}
+	m := NewFuzzyLinkPickerModal(links)
+	m.SetRect(0, 0, 80, 24)
+	m.Draw(drawSim(t))
+}
+
+func TestFuzzyLinkPickerModal_Draw_NoMatchesWithQuery(t *testing.T) {
+	links := []Link{{Label: "A", URL: "https://a"}}
+	m := NewFuzzyLinkPickerModal(links)
+	m.query = []rune("zzz")
+	m.qCursor = 3
+	m.refilter()
+	m.SetRect(0, 0, 80, 24)
+	m.Draw(drawSim(t))
+}
+
+func TestFuzzyLinkPickerModal_Draw_TinyRect(t *testing.T) {
+	links := []Link{{Label: "A", URL: "https://a"}}
+	m := NewFuzzyLinkPickerModal(links)
+	m.SetRect(0, 0, 0, 0)
+	m.Draw(drawSim(t))
+}
+
+func TestFuzzyLinkPickerModal_Draw_LongQueryScrolls(t *testing.T) {
+	links := []Link{{Label: "A", URL: "https://a"}}
+	m := NewFuzzyLinkPickerModal(links)
+	m.query = []rune(strings.Repeat("x", 100))
+	m.qCursor = len(m.query)
+	m.refilter()
+	m.SetRect(0, 0, 50, 10)
+	m.Draw(drawSim(t))
+}
+
+func TestFuzzyLinkPickerModal_PasteHandler(t *testing.T) {
+	links := []Link{{Label: "A", URL: "https://a.com"}}
+	m := NewFuzzyLinkPickerModal(links)
+	paste := m.PasteHandler()
+	paste("a", func(p tview.Primitive) {})
+	testutil.Equal(t, string(m.query), "a")
+}
+
+func TestFuzzyLinkPickerModal_PasteHandler_EmptyNoOp(t *testing.T) {
+	m := NewFuzzyLinkPickerModal(nil)
+	paste := m.PasteHandler()
+	paste("", func(p tview.Primitive) {})
+	testutil.Equal(t, len(m.query), 0)
+}
+
+func TestLinkPickerModal_Draw(t *testing.T) {
+	links := []Link{
+		{Label: "A short", URL: "https://a.com"},
+		{Label: "Another link", URL: "https://b.com"},
+	}
+	m := NewLinkPickerModal(links)
+	m.SetRect(0, 0, 80, 24)
+	m.Draw(drawSim(t))
+}
+
+func TestLinkPickerModal_Draw_LongLabelTruncated(t *testing.T) {
+	links := []Link{{Label: strings.Repeat("x", 100), URL: "https://a"}}
+	m := NewLinkPickerModal(links)
+	m.SetRect(0, 0, 30, 10)
+	m.Draw(drawSim(t))
+}
+
+func TestLinkPickerModal_Draw_TinyRect(t *testing.T) {
+	m := NewLinkPickerModal([]Link{{Label: "x", URL: "https://x"}})
+	m.SetRect(0, 0, 0, 0)
+	m.Draw(drawSim(t))
+}
+
+func TestLinkPickerModal_PasteHandler(t *testing.T) {
+	m := NewLinkPickerModal(nil)
+	paste := m.PasteHandler()
+	paste("anything", func(p tview.Primitive) {})
+}
+
+func TestLinkPickerModal_SelectedLink_OutOfBounds(t *testing.T) {
+	m := NewLinkPickerModal(nil)
+	link := m.SelectedLink()
+	testutil.Equal(t, link.URL, "")
 }

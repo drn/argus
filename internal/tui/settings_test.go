@@ -12,6 +12,7 @@ import (
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -1262,4 +1263,38 @@ func TestSettingsView_AutoStartToggleDispatchesCallback(t *testing.T) {
 	testutil.Equal(t, consumed, true)
 	testutil.Equal(t, got.called, true)
 	testutil.Equal(t, sv.autoStartBusy, true)
+}
+
+func TestSettings_SetTasksAllStatuses(t *testing.T) {
+	sv := makeSettings(t)
+	sv.setTasks([]*model.Task{
+		{ID: "1", Project: "p", Status: model.StatusPending},
+		{ID: "2", Project: "p", Status: model.StatusInProgress},
+		{ID: "3", Project: "p", Status: model.StatusInReview},
+		{ID: "4", Project: "p", Status: model.StatusComplete},
+	})
+	c := sv.taskCounts["p"]
+	testutil.Equal(t, c.pending, 1)
+	testutil.Equal(t, c.inProgress, 1)
+	testutil.Equal(t, c.inReview, 1)
+	testutil.Equal(t, c.complete, 1)
+}
+
+func TestSettings_HandleEdit_Schedule(t *testing.T) {
+	d := testDB(t)
+	s := &model.ScheduledTask{ID: "id", Name: "x", Project: "p", Prompt: "x", Schedule: "@daily"}
+	d.AddSchedule(s)
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	for i, row := range sv.rows {
+		if row.kind == srSchedule && row.key == "id" {
+			sv.cursor = i
+			break
+		}
+	}
+	called := false
+	sv.OnEditSchedule = func(*model.ScheduledTask) { called = true }
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, called, true)
 }

@@ -14,6 +14,12 @@ Non-obvious invariants and gotchas, split by topic. Read the relevant file when 
 | [gotchas/web-remote.md](gotchas/web-remote.md)     | SPA + REST API + service worker, EventSource auth, xterm.js, HTML escaping, virtual keys, detail-view layout, files-view overlay, prompt modal, input history, link picker, new task form defaults, file uploads, offline view, Web Push, per-device tokens, settings endpoints, share target + iOS Shortcut helper, test harness, idle task status, daemon-side status flip on session exit, static-output replay, mobile compose bar, key bar, skill autocomplete, task-list search, diff wrap & stacked file panels, full-history scrollback for active tasks | 147     |
 | [gotchas/misc.md](gotchas/misc.md)                 | DB patterns, Go idioms, Codex, MCP, PRs, file explorer, quick-add, scheduled tasks, links, task auto-naming                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 92      |
 
+## Cross-cutting Rules
+
+| File                       | Purpose                                                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------------------ |
+| [testing.md](testing.md)   | Coverage gate, stdlib idioms, synctest, SimulationScreen, httptest, daemon mocking, exclusion list. **Read before writing any test.** |
+
 ## Other Files
 
 | File                                                   | Purpose                                                      |

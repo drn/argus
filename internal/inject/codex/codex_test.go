@@ -270,3 +270,105 @@ func TestRemoveSection(t *testing.T) {
 		t.Error("content before section was removed")
 	}
 }
+
+func TestRemoveSection_Missing(t *testing.T) {
+	content := "a = 1\n[other]\nkey = val\n"
+	got := removeSection(content, "[nonexistent]")
+	if got != content {
+		t.Errorf("content unexpectedly mutated: %q -> %q", content, got)
+	}
+}
+
+func TestRemoveSection_LastSection(t *testing.T) {
+	// Section is the last one in the file — exercise the no-next-header branch.
+	content := "a = 1\n\n[mcp_servers.argus]\nurl = \"http://localhost:7742/mcp\"\n"
+	got := removeSection(content, "[mcp_servers.argus]")
+	if strings.Contains(got, "[mcp_servers.argus]") {
+		t.Error("section not removed")
+	}
+	if !strings.Contains(got, "a = 1") {
+		t.Error("preserved content lost")
+	}
+}
+
+func TestInjectGlobal_UsesHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := InjectGlobal(7742); err != nil {
+		t.Fatalf("InjectGlobal: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(raw), "http://localhost:7742/mcp") {
+		t.Errorf("missing url:\n%s", raw)
+	}
+}
+
+func TestInjectGlobal_MkdirError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Place a regular file at ~/.codex so MkdirAll fails.
+	if err := os.WriteFile(filepath.Join(home, ".codex"), []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+	if err := InjectGlobal(7742); err == nil {
+		t.Error("expected error when ~/.codex is a file, got nil")
+	}
+}
+
+func TestInjectCodexTOML_RenameTargetIsDir(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(filepath.Join(target, "child"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := injectCodexTOML(target, 7742); err == nil {
+		t.Error("expected error when rename target is a directory")
+	}
+}
+
+func TestInjectCodexTOML_UnreadableDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := injectCodexTOML(filepath.Join(dir, "config.toml"), 7742); err == nil {
+		t.Error("expected error on unwritable dir")
+	}
+}
+
+func TestEnsureTopLevel_StartsWithSection(t *testing.T) {
+	// Content starts directly with a section header — exercises the
+	// HasPrefix("[") branch.
+	got := ensureTopLevel("[a]\nx = 1\n", "key", "key = true")
+	if !strings.HasPrefix(got, "key = true\n") {
+		t.Errorf("key not at top level: %q", got)
+	}
+}
+
+func TestEnsureTopLevel_NoSections(t *testing.T) {
+	// Content has no section headers — exercises the no-firstSection branch.
+	got := ensureTopLevel("a = 1\n", "key", "key = true")
+	if !strings.Contains(got, "key = true") {
+		t.Errorf("key missing: %q", got)
+	}
+	if !strings.Contains(got, "a = 1") {
+		t.Errorf("existing content lost: %q", got)
+	}
+}
+
+func TestEnsureTopLevel_NoSectionsNoTrailingNewline(t *testing.T) {
+	got := ensureTopLevel("a = 1", "key", "key = true")
+	if !strings.HasSuffix(got, "key = true\n") {
+		t.Errorf("missing trailing newline + key: %q", got)
+	}
+}

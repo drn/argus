@@ -2,6 +2,8 @@ package terminal
 
 import (
 	"image/color"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1375,4 +1377,673 @@ func TestTerminalPane_ForceResyncPTY_DeadSessionKeepsFlag(t *testing.T) {
 	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
 	testutil.Equal(t, tp.forceResync, true) // still armed for future live session
 	tp.mu.Unlock()
+}
+
+func newSim(t *testing.T, w, h int) tcell.SimulationScreen {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	sim.SetSize(w, h)
+	t.Cleanup(sim.Fini)
+	return sim
+}
+
+func readScreen(sim tcell.SimulationScreen) string {
+	w, h := sim.Size()
+	var lines []string
+	for row := 0; row < h; row++ {
+		var buf []rune
+		for col := 0; col < w; col++ {
+			r, _, _, _ := sim.GetContent(col, row)
+			buf = append(buf, r)
+		}
+		lines = append(lines, string(buf))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ---------- Smaller setters / mutators ----------
+
+func TestTerminalPane_SyncPTYSize_NoSession(t *testing.T) {
+	tp := NewTerminalPane()
+	// No session — SyncPTYSize is a no-op.
+	tp.SyncPTYSize()
+	tp.mu.Lock()
+	rows, cols := tp.pendingResizeRows, tp.pendingResizeCols
+	tp.mu.Unlock()
+	testutil.Equal(t, rows, uint16(0))
+	testutil.Equal(t, cols, uint16(0))
+}
+
+func TestTerminalPane_SyncPTYSize_DeadSession(t *testing.T) {
+	tp := NewTerminalPane()
+	dead := &mockAdapter{alive: false}
+	tp.SetSession(dead)
+	tp.mu.Lock()
+	tp.pendingResizeCols = 80
+	tp.pendingResizeRows = 24
+	tp.mu.Unlock()
+
+	// Dead session — SyncPTYSize clears pending fields but does not call Resize.
+	tp.SyncPTYSize()
+	tp.mu.Lock()
+	cols := tp.pendingResizeCols
+	rows := tp.pendingResizeRows
+	tp.mu.Unlock()
+	// pending fields are cleared regardless.
+	testutil.Equal(t, cols, uint16(0))
+	testutil.Equal(t, rows, uint16(0))
+}
+
+// resizeRecorder counts Resize calls, fulfilling the TerminalAdapter interface.
+type resizeRecorder struct {
+	mockAdapter
+	resizeRows uint16
+	resizeCols uint16
+	resizes    int
+}
+
+func (r *resizeRecorder) Resize(rows, cols uint16) error {
+	r.resizes++
+	r.resizeRows = rows
+	r.resizeCols = cols
+	return nil
+}
+
+func TestTerminalPane_SyncPTYSize_LiveSession(t *testing.T) {
+	tp := NewTerminalPane()
+	live := &resizeRecorder{mockAdapter: mockAdapter{alive: true}}
+	tp.SetSession(live)
+	tp.mu.Lock()
+	tp.pendingResizeRows = 30
+	tp.pendingResizeCols = 100
+	tp.mu.Unlock()
+
+	tp.SyncPTYSize()
+	testutil.Equal(t, live.resizes, 1)
+	testutil.Equal(t, live.resizeRows, uint16(30))
+	testutil.Equal(t, live.resizeCols, uint16(100))
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+}
+
+func TestTerminalPane_EagerReplayBuild_NoTask(t *testing.T) {
+	tp := NewTerminalPane()
+	// No taskID — early return; replayBuilding stays false.
+	tp.EagerReplayBuild()
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	testutil.Equal(t, tp.replayBuilding, false)
+}
+
+func TestTerminalPane_EagerReplayBuild_NonexistentTask(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.taskID = "nonexistent-task-zzz-99999"
+	// async rebuild with no log file → quickly clears replayBuilding.
+	tp.EagerReplayBuild()
+
+	// Wait for the async build to complete by polling — should be fast.
+	for i := 0; i < 200; i++ {
+		tp.mu.Lock()
+		building := tp.replayBuilding
+		tp.mu.Unlock()
+		if !building {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Error("EagerReplayBuild did not finish in time")
+}
+
+func TestTerminalPane_EagerReplayBuild_AlreadyBuilding(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.taskID = "task-x"
+	tp.mu.Lock()
+	tp.replayBuilding = true
+	tp.mu.Unlock()
+
+	// Call EagerReplayBuild — should early return because already building.
+	tp.EagerReplayBuild()
+
+	// Flag should remain true (we left it that way; it's not cleared by the early return).
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	testutil.Equal(t, tp.replayBuilding, true)
+}
+
+func TestTerminalPane_ToggleDiffSplit(t *testing.T) {
+	tp := NewTerminalPane()
+	if tp.diffSplit {
+		t.Error("initial diffSplit should be false")
+	}
+	tp.diffScroll = 5
+	tp.ToggleDiffSplit()
+	if !tp.diffSplit {
+		t.Error("ToggleDiffSplit should flip on")
+	}
+	if tp.diffScroll != 0 {
+		t.Error("ToggleDiffSplit should reset scroll")
+	}
+	tp.ToggleDiffSplit()
+	if tp.diffSplit {
+		t.Error("ToggleDiffSplit should flip off")
+	}
+}
+
+func TestTerminalPane_OpenPR_EmptyURL(t *testing.T) {
+	tp := NewTerminalPane()
+	called := false
+	old := openPRFn
+	t.Cleanup(func() { openPRFn = old })
+	openPRFn = func(url string) error {
+		called = true
+		return nil
+	}
+
+	tp.OpenPR() // no taskPR — early return, fn not called
+	if called {
+		t.Error("OpenPR should not call openPRFn when taskPR is empty")
+	}
+}
+
+func TestTerminalPane_OpenPR_WithURL(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetPRURL("https://example.com/pr/1")
+
+	var got string
+	old := openPRFn
+	t.Cleanup(func() { openPRFn = old })
+	openPRFn = func(url string) error {
+		got = url
+		return nil
+	}
+
+	tp.OpenPR()
+	testutil.Equal(t, got, "https://example.com/pr/1")
+}
+
+func TestTerminalPane_PasteHandler_NoLiveSession(t *testing.T) {
+	tp := NewTerminalPane()
+	// No session — paste handler is a no-op (no panic).
+	handler := tp.PasteHandler()
+	if handler == nil {
+		t.Fatal("PasteHandler should not be nil")
+	}
+	handler("some text", func(p tview.Primitive) {})
+}
+
+// pasteRecorder records WriteInput calls for paste verification.
+type pasteRecorder struct {
+	mockAdapter
+	written []byte
+}
+
+func (p *pasteRecorder) WriteInput(b []byte) (int, error) {
+	p.written = append(p.written, b...)
+	return len(b), nil
+}
+
+func TestTerminalPane_PasteHandler_LiveSession(t *testing.T) {
+	tp := NewTerminalPane()
+	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: true}}
+	tp.SetSession(rec)
+
+	handler := tp.PasteHandler()
+	handler("hello world", func(p tview.Primitive) {})
+
+	got := string(rec.written)
+	if !strings.Contains(got, "\x1b[200~") {
+		t.Errorf("paste should be wrapped in start sequence: %q", got)
+	}
+	if !strings.Contains(got, "hello world") {
+		t.Errorf("paste should contain the text: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[201~") {
+		t.Errorf("paste should be wrapped in end sequence: %q", got)
+	}
+}
+
+func TestTerminalPane_PasteHandler_DeadSession(t *testing.T) {
+	tp := NewTerminalPane()
+	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: false}}
+	tp.SetSession(rec)
+
+	handler := tp.PasteHandler()
+	handler("ignored", func(p tview.Primitive) {})
+	if len(rec.written) != 0 {
+		t.Errorf("paste should not be sent to dead session: %q", rec.written)
+	}
+}
+
+// ---------- renderDiff ----------
+
+func TestTerminalPane_RenderDiff_Unified(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	tp.EnterDiffMode(diff, "test.go")
+	tp.renderDiff(sim, 0, 0, 80, 20)
+
+	out := readScreen(sim)
+	testutil.Contains(t, out, "test.go")
+	testutil.Contains(t, out, "[unified]")
+}
+
+func TestTerminalPane_RenderDiff_Split(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	tp.EnterDiffMode(diff, "test.go")
+	tp.diffSplit = true
+	tp.renderDiff(sim, 0, 0, 80, 20)
+
+	out := readScreen(sim)
+	testutil.Contains(t, out, "[split]")
+}
+
+func TestTerminalPane_RenderDiff_SplitRebuildOnResize(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	diff := "--- a/test.go\n+++ b/test.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added\n"
+	tp.EnterDiffMode(diff, "test.go")
+	tp.diffSplit = true
+	// First render at width 80.
+	tp.renderDiff(sim, 0, 0, 80, 20)
+	first := tp.diffSplitWidth
+	// Second render at different width — must rebuild.
+	tp.renderDiff(sim, 0, 0, 60, 20)
+	if tp.diffSplitWidth == first {
+		t.Error("diffSplitWidth should update on width change")
+	}
+}
+
+func TestTerminalPane_RenderDiff_NoLines(t *testing.T) {
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.diffMode = true
+	tp.diffFile = "empty.go"
+	// No diff lines populated — renderDiff falls back to "No diff available".
+	tp.renderDiff(sim, 0, 0, 60, 12)
+	testutil.Contains(t, readScreen(sim), "No diff available")
+}
+
+func TestTerminalPane_RenderDiff_ScrollClampsToMax(t *testing.T) {
+	sim := newSim(t, 80, 5) // very tall scrollable
+	tp := NewTerminalPane()
+	diff := "--- a/x.go\n+++ b/x.go\n@@ -1,5 +1,5 @@\n a\n b\n c\n d\n+e\n"
+	tp.EnterDiffMode(diff, "x.go")
+	// scroll way past the end — function clamps to maxScroll.
+	tp.diffScroll = 9999
+	tp.renderDiff(sim, 0, 0, 80, 5)
+	if tp.diffScroll == 9999 {
+		t.Error("renderDiff should clamp diffScroll to maxScroll")
+	}
+}
+
+// ---------- Draw exercising replay/paint paths ----------
+
+func TestTerminalPane_Draw_NoSession_NoContent(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 20)
+	tp.Draw(sim)
+	testutil.Contains(t, readScreen(sim), "No active session")
+}
+
+func TestTerminalPane_Draw_NoSession_WithTaskID(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 20)
+	tp.taskID = "some-id"
+	tp.Draw(sim)
+	testutil.Contains(t, readScreen(sim), "press Enter to start")
+}
+
+func TestTerminalPane_Draw_PendingShowsBanner(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 20)
+	tp.SetPending(true)
+	tp.Draw(sim) // must render banner without panic
+}
+
+func TestTerminalPane_Draw_DiffMode(t *testing.T) {
+	sim := newSim(t, 80, 20)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 80, 20)
+	tp.EnterDiffMode("--- a\n+++ b\n@@ -1,1 +1,1 @@\n-old\n+new\n", "x.go")
+	tp.Draw(sim)
+	testutil.Contains(t, readScreen(sim), "x.go")
+}
+
+func TestTerminalPane_Draw_TooSmall(t *testing.T) {
+	sim := newSim(t, 5, 5)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 0, 0)
+	tp.Draw(sim) // must not panic on zero dims
+}
+
+func TestTerminalPane_Draw_FocusedBorder(t *testing.T) {
+	sim := newSim(t, 60, 15)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 15)
+	tp.SetFocused(true)
+	tp.Draw(sim) // exercises focused border path
+}
+
+// ---------- MouseHandler edge cases ----------
+
+func TestTerminalPane_MouseHandler_LeftDownFocuses(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	clickCalled := false
+	tp.OnClick = func() { clickCalled = true }
+
+	handler := tp.MouseHandler()
+	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(2, 2, tcell.Button1, 0), func(p tview.Primitive) {})
+	if !consumed {
+		t.Error("LeftDown should be consumed")
+	}
+	if !clickCalled {
+		t.Error("OnClick should be called")
+	}
+}
+
+func TestTerminalPane_Draw_ScrollWithReplayData(t *testing.T) {
+	// Dead session + replayData → enters the replay/scroll path with no taskID.
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	tp.replayData = []byte(strings.Repeat("hello world\r\n", 80))
+	tp.scrollOffset = 1
+	// First Draw: cache miss → kicks off async rebuild, falls back to "Waiting" or live.
+	tp.Draw(sim)
+
+	// Wait a moment for the async build to settle, then Draw again — cache hit.
+	for i := 0; i < 100; i++ {
+		tp.mu.Lock()
+		building := tp.replayBuilding
+		emu := tp.replayEmu
+		tp.mu.Unlock()
+		if !building && emu != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	tp.Draw(sim)
+}
+
+func TestTerminalPane_Draw_DeadSessionWithLogFile(t *testing.T) {
+	// Set up HOME with a session log so loadSessionLog populates replayData.
+	setupTaskLog(t, "draw-task-1", strings.Repeat("hello\r\n", 40))
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	tp.SetTaskID("draw-task-1")
+	// scrollOffset > 0 to enter the replay path.
+	tp.scrollOffset = 1
+	tp.Draw(sim) // exercises the file-backed replay branch
+}
+
+func TestTerminalPane_Draw_NarrowPanel(t *testing.T) {
+	// Panel narrower than 20 cols / shorter than 5 rows — exercise ptyCols/ptyRows fallback.
+	sim := newSim(t, 12, 6)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 12, 6)
+	output := []byte("hi\r\n")
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+	tp.scrollOffset = 1
+	tp.Draw(sim)
+}
+
+func TestTerminalPane_Draw_LiveSessionScrollUp(t *testing.T) {
+	// Live session + scrollOffset > 0 → replay path with taskID==""
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	output := []byte(strings.Repeat("scroll line\r\n", 50))
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+	tp.scrollOffset = 2
+	tp.Draw(sim)
+}
+
+func TestTerminalPane_Draw_ReplayCacheHit(t *testing.T) {
+	// Pre-populate replay emulator so the cache-hit path runs in Draw.
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	output := []byte(strings.Repeat("hello\r\n", 30))
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+
+	// Build the replay emu via the same path the slow path would.
+	buildReplaySync(tp, output, 58, 10) // inner dims after border
+	tp.mu.Lock()
+	tp.replayEmuCols = 58
+	tp.replayEmuRows = 10
+	tp.replayEmuMaxScroll = 100
+	tp.mu.Unlock()
+	tp.scrollOffset = 1
+	tp.Draw(sim)
+}
+
+func TestTerminalPane_Draw_ReplayCacheHit_DeadSessionWithTaskLog(t *testing.T) {
+	// Dead session + taskID with log file → cache hit through taskID branch.
+	setupTaskLog(t, "rcache-task", strings.Repeat("hello\r\n", 100))
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	tp.SetTaskID("rcache-task")
+
+	// Build replay emu so cache is populated.
+	buildReplaySync(tp, tp.replayData, 58, 10)
+	logSize := int64(len(tp.replayData))
+	tp.mu.Lock()
+	tp.replayEmuCols = 58
+	tp.replayEmuRows = 10
+	tp.replayEmuLogSize = logSize
+	tp.mu.Unlock()
+	tp.scrollOffset = 1
+	tp.Draw(sim) // taskID branch — cache valid via logSize match
+}
+
+func TestTerminalPane_Draw_ReplayCacheHit_PaintCacheValid(t *testing.T) {
+	// Cache-hit + paint cache valid → replayPaintCache fast-fast path.
+	sim := newSim(t, 60, 12)
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	output := []byte(strings.Repeat("hello\r\n", 30))
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len(output)), output: output}
+	tp.SetSession(sess)
+
+	// Run Draw twice with scrollOffset > 0 so the second hits the paint cache.
+	buildReplaySync(tp, output, 58, 10)
+	tp.mu.Lock()
+	tp.replayEmuCols = 58
+	tp.replayEmuRows = 10
+	tp.replayEmuMaxScroll = 100
+	tp.mu.Unlock()
+	tp.scrollOffset = 1
+	tp.Draw(sim)
+	tp.Draw(sim) // second Draw → cache hit, paint cache valid
+}
+
+func TestTerminalPane_MouseHandler_OtherActionNotConsumed(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 60, 12)
+	handler := tp.MouseHandler()
+	// MouseMove (not left-click, not scroll) — falls through to default false.
+	consumed, _ := handler(tview.MouseMove, tcell.NewEventMouse(0, 0, tcell.ButtonNone, 0), func(p tview.Primitive) {})
+	if consumed {
+		t.Error("MouseMove should not be consumed")
+	}
+}
+
+// ---------- loadSessionLog / statLogSize / readLogTailForTask via HOME ----------
+
+// setupTaskLog redirects HOME to a tempdir and writes a session log for taskID.
+func setupTaskLog(t *testing.T, taskID, content string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".argus", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, taskID+".log"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func TestTerminalPane_LoadSessionLog_ReadsFile(t *testing.T) {
+	setupTaskLog(t, "log-task-1", "hello session log")
+	tp := NewTerminalPane()
+	// SetTaskID triggers loadSessionLog when no live session.
+	tp.SetTaskID("log-task-1")
+	if string(tp.replayData) != "hello session log" {
+		t.Errorf("replayData = %q, want session log content", string(tp.replayData))
+	}
+}
+
+func TestTerminalPane_LoadSessionLog_EmptyFile(t *testing.T) {
+	setupTaskLog(t, "empty-task", "")
+	tp := NewTerminalPane()
+	tp.SetTaskID("empty-task")
+	if len(tp.replayData) != 0 {
+		t.Errorf("empty session log should leave replayData nil, got %d bytes", len(tp.replayData))
+	}
+}
+
+func TestTerminalPane_StatLogSize_RealFile(t *testing.T) {
+	setupTaskLog(t, "stat-task", "0123456789")
+	tp := NewTerminalPane()
+	tp.taskID = "stat-task"
+	got := tp.statLogSize()
+	testutil.Equal(t, got, int64(10))
+}
+
+func TestReadLogTailForTask_RealFile(t *testing.T) {
+	const taskID = "tail-task"
+	setupTaskLog(t, taskID, "abcdefghij")
+
+	// Read full file.
+	data, size := readLogTailForTask(taskID, 100)
+	testutil.Equal(t, size, int64(10))
+	testutil.Equal(t, string(data), "abcdefghij")
+
+	// Read tail only.
+	data, size = readLogTailForTask(taskID, 3)
+	testutil.Equal(t, size, int64(10))
+	testutil.Equal(t, string(data), "hij")
+}
+
+func TestReadLogTailForTask_EmptyFile(t *testing.T) {
+	setupTaskLog(t, "tail-empty", "")
+	data, size := readLogTailForTask("tail-empty", 10)
+	if data != nil {
+		t.Errorf("empty file: data should be nil, got %q", data)
+	}
+	testutil.Equal(t, size, int64(0))
+}
+
+// ---------- DiffScrollUp clamps to 0 ----------
+
+func TestTerminalPane_DiffScrollUp_ClampsAtZero(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.diffScroll = 2
+	tp.DiffScrollUp(10)
+	testutil.Equal(t, tp.diffScroll, 0)
+}
+
+// ---------- SafeEmuWrite recovers from panic ----------
+
+// panickingEmu is not a SafeEmulator, so we exercise SafeEmuWrite via valid input
+// (which doesn't panic). The recover branch is structurally protected; we hit
+// the happy-path here.
+func TestSafeEmuWrite_ReturnsBytesWritten(t *testing.T) {
+	emu := xvt.NewSafeEmulator(20, 5)
+	n, err := SafeEmuWrite(emu, []byte("hello"))
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if n == 0 {
+		t.Error("expected bytes written > 0")
+	}
+}
+
+// ---------- HasContent variations ----------
+
+func TestTerminalPane_HasContent_LiveSessionWithBytes(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 10})
+	if !tp.HasContent() {
+		t.Error("HasContent should be true when session has bytes")
+	}
+}
+
+func TestTerminalPane_HasContent_LiveSessionEmpty(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetSession(&mockAdapter{alive: true, totalWritten: 0})
+	if tp.HasContent() {
+		t.Error("HasContent should be false when session has no bytes and no replay")
+	}
+}
+
+// ---------- FindFirstContentRowEmu / FindLastContentRowEmu edges ----------
+
+func TestFindContentRowEmu_AllEmpty(t *testing.T) {
+	emu := xvt.NewSafeEmulator(20, 5)
+	last := FindLastContentRowEmu(emu, 20, 5)
+	if last != -1 {
+		t.Errorf("FindLastContentRowEmu on empty = %d, want -1", last)
+	}
+	first := FindFirstContentRowEmu(emu, 20, 4)
+	if first != 0 {
+		t.Errorf("FindFirstContentRowEmu on empty = %d, want 0", first)
+	}
+}
+
+// ---------- UvCellToTcellStyle additional attributes ----------
+
+func TestUvCellToTcellStyle_Italic(t *testing.T) {
+	cell := &uv.Cell{Style: uv.Style{Attrs: uv.AttrItalic}}
+	style := UvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrItalic == 0 {
+		t.Error("expected italic attribute")
+	}
+}
+
+func TestUvCellToTcellStyle_Reverse(t *testing.T) {
+	cell := &uv.Cell{Style: uv.Style{Attrs: uv.AttrReverse}}
+	style := UvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrReverse == 0 {
+		t.Error("expected reverse attribute")
+	}
+}
+
+func TestUvCellToTcellStyle_Strikethrough(t *testing.T) {
+	cell := &uv.Cell{Style: uv.Style{Attrs: uv.AttrStrikethrough}}
+	style := UvCellToTcellStyle(cell)
+	_, _, attr := style.Decompose()
+	if attr&tcell.AttrStrikeThrough == 0 {
+		t.Error("expected strikethrough attribute")
+	}
+}
+
+func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
+	cell := &uv.Cell{
+		Content: "L",
+		Width:   1,
+		Style:   uv.Style{},
+		Link:    uv.Link{URL: "https://example.com"},
+	}
+	_ = UvCellToTcellStyle(cell)
 }

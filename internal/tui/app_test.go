@@ -9,7 +9,9 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -1383,3 +1385,1076 @@ var errFakeNoTTY = &fakeErr{msg: "inappropriate ioctl for device"}
 type fakeErr struct{ msg string }
 
 func (e *fakeErr) Error() string { return e.msg }
+
+// (TestShouldKickNarrowRerender lived here when the kick-narrow-rerender
+// decision was made client-side. Master moved it into the daemon's
+// KickRerender path; the new behavior is covered by
+// TestRunner_KickRerender_* in internal/agent/runner_test.go.)
+
+func TestApp_OpenAndCloseProjectForm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(false, "", config.Project{})
+	testutil.Equal(t, app.mode, modeProjectForm)
+	if app.projectForm == nil {
+		t.Fatal("projectForm should be non-nil")
+	}
+
+	app.closeProjectForm()
+	testutil.Equal(t, app.mode, modeTaskList)
+	if app.projectForm != nil {
+		t.Error("projectForm should be cleared")
+	}
+}
+
+func TestApp_OpenAndCloseProjectForm_Edit(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(true, "myproj", config.Project{Path: "/tmp"})
+	if app.projectForm == nil {
+		t.Fatal("projectForm should be non-nil")
+	}
+	testutil.Equal(t, app.projectForm.editMode, true)
+}
+
+func TestApp_HandleProjectFormKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(false, "", config.Project{})
+	app.handleProjectFormKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleProjectFormKey_DoneEmptyName(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(false, "", config.Project{})
+
+	app.projectForm.focused = pfFieldSandbox
+	app.handleProjectFormKey(formAdvanceKey)
+	testutil.Equal(t, app.projectForm.done, false)
+	testutil.Contains(t, app.projectForm.errMsg, "Name cannot be empty")
+}
+
+func TestApp_HandleProjectFormKey_DoneEmptyPath(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(false, "", config.Project{})
+	app.projectForm.fields[pfFieldName] = []rune("name")
+	app.projectForm.focused = pfFieldSandbox
+	app.handleProjectFormKey(formAdvanceKey)
+	testutil.Equal(t, app.projectForm.done, false)
+	testutil.Contains(t, app.projectForm.errMsg, "Path cannot be empty")
+}
+
+func TestApp_HandleProjectFormKey_DoneSuccess(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openProjectForm(false, "", config.Project{})
+	app.projectForm.fields[pfFieldName] = []rune("newproj")
+	app.projectForm.fields[pfFieldPath] = []rune(t.TempDir())
+	app.projectForm.focused = pfFieldSandbox
+	app.handleProjectFormKey(formAdvanceKey)
+	testutil.Equal(t, app.mode, modeTaskList)
+	cfg := d.Config()
+	if _, ok := cfg.Projects["newproj"]; !ok {
+		t.Error("project should be saved")
+	}
+}
+
+func TestApp_OpenAndCloseBackendForm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openBackendForm(false, "", config.Backend{})
+	testutil.Equal(t, app.mode, modeBackendForm)
+
+	app.closeBackendForm()
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleBackendFormKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openBackendForm(true, "claude", config.Backend{Command: "claude"})
+	app.handleBackendFormKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleBackendFormKey_DoneEmptyName(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openBackendForm(false, "", config.Backend{})
+
+	app.backendForm.focused = bfFieldPromptFlag
+	app.handleBackendFormKey(formAdvanceKey)
+	testutil.Equal(t, app.backendForm.done, false)
+	testutil.Contains(t, app.backendForm.errMsg, "Name cannot be empty")
+}
+
+func TestApp_HandleBackendFormKey_DoneEmptyCommand(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openBackendForm(false, "", config.Backend{})
+	app.backendForm.fields[bfFieldName] = []rune("be")
+	app.backendForm.focused = bfFieldPromptFlag
+	app.handleBackendFormKey(formAdvanceKey)
+	testutil.Equal(t, app.backendForm.done, false)
+	testutil.Contains(t, app.backendForm.errMsg, "Command cannot be empty")
+}
+
+func TestApp_HandleBackendFormKey_DoneSuccess(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openBackendForm(false, "", config.Backend{})
+	app.backendForm.fields[bfFieldName] = []rune("be")
+	app.backendForm.fields[bfFieldCommand] = []rune("echo hi")
+	app.backendForm.focused = bfFieldPromptFlag
+	app.handleBackendFormKey(formAdvanceKey)
+	testutil.Equal(t, app.mode, modeTaskList)
+	cfg := d.Config()
+	if _, ok := cfg.Backends["be"]; !ok {
+		t.Error("backend should be saved")
+	}
+}
+
+func TestApp_OpenAndCloseScheduleForm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openScheduleForm(nil)
+	testutil.Equal(t, app.mode, modeScheduleForm)
+	if app.scheduleForm == nil {
+		t.Fatal("scheduleForm should be non-nil")
+	}
+
+	app.closeScheduleForm()
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_OpenScheduleForm_Edit(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	s := &model.ScheduledTask{ID: "id1", Name: "x", Project: "p", Schedule: "@daily", Prompt: "go"}
+	app.openScheduleForm(s)
+	testutil.Equal(t, app.scheduleForm.editMode, true)
+}
+
+func TestApp_HandleScheduleFormKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openScheduleForm(nil)
+	app.handleScheduleFormKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleScheduleFormKey_DoneInvalid(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openScheduleForm(nil)
+	app.scheduleForm.done = true
+
+	app.handleScheduleFormKey(tcell.NewEventKey(tcell.KeyRune, ' ', 0))
+	testutil.Equal(t, app.scheduleForm.done, false)
+	if app.scheduleForm.errMsg == "" {
+		t.Error("expected validation error")
+	}
+}
+
+func TestApp_HandleScheduleFormKey_DoneCreate(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	app.openScheduleForm(nil)
+	app.scheduleForm.fields[sfFieldName] = []rune("test-sched")
+	app.scheduleForm.fields[sfFieldPrompt] = []rune("hello")
+
+	app.scheduleForm.done = true
+	app.handleScheduleFormKey(tcell.NewEventKey(tcell.KeyRune, ' ', 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	scheds, _ := d.Schedules()
+	if len(scheds) != 1 {
+		t.Fatalf("expected 1 schedule, got %d", len(scheds))
+	}
+}
+
+func TestApp_HandleScheduleFormKey_DoneUpdate(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	existing := &model.ScheduledTask{
+		ID: "sid", Name: "old", Project: "p", Prompt: "x", Schedule: "@daily", Enabled: true,
+	}
+	d.AddSchedule(existing)
+
+	app.openScheduleForm(existing)
+
+	app.scheduleForm.fields[sfFieldName] = []rune("renamed")
+	app.scheduleForm.done = true
+	app.handleScheduleFormKey(tcell.NewEventKey(tcell.KeyRune, ' ', 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	updated, _ := d.GetSchedule("sid")
+	testutil.Equal(t, updated.Name, "renamed")
+}
+
+func TestApp_DeleteSchedule(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	s := &model.ScheduledTask{ID: "id", Name: "x", Project: "p", Prompt: "x", Schedule: "@daily"}
+	d.AddSchedule(s)
+
+	app.deleteSchedule("id")
+	scheds, _ := d.Schedules()
+	testutil.Equal(t, len(scheds), 0)
+}
+
+func TestApp_DeleteSchedule_NotFound(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.deleteSchedule("nope")
+}
+
+func TestApp_RunScheduleNow_NotFound(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.runScheduleNow("nope")
+}
+
+func TestApp_RunScheduleNow_InvalidSchedule(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	s := &model.ScheduledTask{
+		ID: "id", Name: "x", Project: "p", Prompt: "x", Schedule: "not a cron",
+	}
+	d.AddSchedule(s)
+	app.runScheduleNow("id")
+
+	got, _ := d.GetSchedule("id")
+	if got.LastError == "" {
+		t.Error("expected LastError to be set")
+	}
+}
+
+func TestApp_OpenAndCloseQuickAddForm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openQuickAddForm()
+	testutil.Equal(t, app.mode, modeQuickAdd)
+	if app.quickAddForm == nil {
+		t.Fatal("quickAddForm should be non-nil")
+	}
+
+	app.closeQuickAddForm()
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleQuickAddKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openQuickAddForm()
+	app.handleQuickAddKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleQuickAddKey_Done(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.openQuickAddForm()
+	app.quickAddForm.repos = []repoCandidate{
+		{name: "p1", path: "/tmp/p1", selected: true},
+	}
+	app.quickAddForm.phase = 1
+	app.quickAddForm.done = true
+	app.handleQuickAddKey(tcell.NewEventKey(tcell.KeyRune, ' ', 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	if _, err := d.Projects(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestApp_DeleteProject_OpensConfirmModal(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("myproj", config.Project{Path: t.TempDir()})
+	d.Add(&model.Task{ID: "t1", Project: "myproj", Name: "n", Status: model.StatusPending, CreatedAt: time.Now()})
+	app.refreshTasks()
+
+	app.deleteProject("myproj")
+	testutil.Equal(t, app.mode, modeConfirmDeleteProject)
+	if app.confirmDeleteProjectModal == nil {
+		t.Fatal("confirmDeleteProjectModal should be set")
+	}
+}
+
+func TestApp_HandleConfirmDeleteProjectKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	app.openConfirmDeleteProject("p", 0)
+	app.handleConfirmDeleteProjectKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleConfirmDeleteProjectKey_Confirm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	app.openConfirmDeleteProject("p", 0)
+	app.handleConfirmDeleteProjectKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	cfg := d.Config()
+	if _, ok := cfg.Projects["p"]; ok {
+		t.Error("project should be deleted")
+	}
+}
+
+func TestApp_OpenForkModal(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Worktree: "/tmp/wt"}
+	app.openForkModal(task)
+	testutil.Equal(t, app.mode, modeForkTask)
+	if app.forkModal == nil {
+		t.Fatal("forkModal should be set")
+	}
+
+	app.closeForkModal()
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleForkTaskKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	task := &model.Task{ID: "t1", Project: "p", Name: "n"}
+	app.openForkModal(task)
+	app.handleForkTaskKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_OpenAndCloseRenameModal(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "old"}
+	d.Add(task)
+
+	app.openRenameModal(task)
+	testutil.Equal(t, app.mode, modeRenameTask)
+	if app.renameModal == nil {
+		t.Fatal("renameModal should be set")
+	}
+
+	app.closeRenameModal()
+	testutil.Equal(t, app.mode, modeTaskList)
+	if app.renameModal != nil {
+		t.Error("renameModal should be cleared")
+	}
+}
+
+func TestApp_HandleRenameTaskKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "old"}
+	d.Add(task)
+
+	app.openRenameModal(task)
+	app.handleRenameTaskKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleRenameTaskKey_DoneEmptyName(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "old"}
+	d.Add(task)
+
+	app.openRenameModal(task)
+
+	app.renameModal.name = nil
+	app.renameModal.cursor = 0
+	app.handleRenameTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	testutil.Equal(t, app.mode, modeRenameTask)
+	if app.renameModal.errMsg == "" {
+		t.Error("expected error message")
+	}
+}
+
+func TestApp_HandleRenameTaskKey_DoneNoChange(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "old"}
+	d.Add(task)
+
+	app.openRenameModal(task)
+
+	app.handleRenameTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleRenameTaskKey_DoneNewName(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "old", Project: "p"}
+	d.Add(task)
+	app.refreshTasks()
+
+	app.openRenameModal(task)
+
+	for _, r := range "-new" {
+		app.renameModal.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	app.handleRenameTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	updated, _ := d.Get("t1")
+	testutil.Equal(t, updated.Name, "old-new")
+}
+
+func TestApp_HandleConfirmDeleteKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "x"}
+	d.Add(task)
+
+	app.openConfirmDelete(task)
+	app.handleConfirmDeleteKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleConfirmDeleteKey_Confirm(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Name: "x"}
+	d.Add(task)
+	app.refreshTasks()
+
+	app.openConfirmDelete(task)
+	app.handleConfirmDeleteKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	if got, _ := d.Get("t1"); got != nil {
+		t.Error("task should be deleted")
+	}
+}
+
+func TestApp_HandleLinkPickerKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.openLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+	app.handleLinkPickerKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestSanitizeTaskName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"hello", "hello"},
+		{"hello\nworld", "hello world"},
+		{"   trim   ", "trim"},
+		{"with\x01control", "withcontrol"},
+		{"tab\there", "tab here"},
+		{"crlf\r\n", "crlf"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got := sanitizeTaskName(tt.in)
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+}
+
+func TestApp_ResolveSandboxed(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	testutil.Equal(t, app.resolveSandboxed(nil), false)
+
+	task := &model.Task{ID: "t1", Project: "p"}
+
+	app.resolveSandboxed(task)
+}
+
+func TestApp_RestartedClient(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	testutil.Nil(t, app.RestartedClient())
+}
+
+func TestApp_NotifySessionExit(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	t.Cleanup(stop)
+	_ = sim
+
+	done := make(chan struct{})
+	go func() {
+		app.NotifySessionExit("t1", nil, false, []byte("Created PR https://github.com/foo/bar/pull/1"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("NotifySessionExit blocked")
+	}
+	syncUI(t, app.tapp)
+
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.PRURL, "https://github.com/foo/bar/pull/1")
+}
+
+func TestApp_HandleSessionExit_StreamLost(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.HandleSessionExit("t1", daemon.ExitInfo{StreamLost: true})
+}
+
+func TestApp_HandleSessionExit_DispatchesToUI(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	done := make(chan struct{})
+	go func() {
+		app.HandleSessionExit("t1", daemon.ExitInfo{Stopped: false, LastOutput: []byte("done")})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("HandleSessionExit blocked")
+	}
+	syncUI(t, app.tapp)
+}
+
+func TestApp_HandleSessionExitUI_TaskNotFound(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.handleSessionExitUI("nonexistent", false, false)
+}
+
+func TestApp_HandleSessionExitUI_FlipToComplete(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+
+	app.handleSessionExitUI("t1", false, false)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusComplete)
+}
+
+func TestApp_HandleSessionExitUI_FlipToInReview(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+
+	app.handleSessionExitUI("t1", true, false)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
+func TestApp_ScanAndStorePRURL(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress}
+	d.Add(task)
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	app.scanAndStorePRURL("t1", []byte("Created PR https://github.com/owner/repo/pull/42"))
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.PRURL, "https://github.com/owner/repo/pull/42")
+}
+
+func TestApp_ScanAndStorePRURL_NoMatch(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress}
+	d.Add(task)
+
+	app.scanAndStorePRURL("t1", []byte("no pr here"))
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.PRURL, "")
+}
+
+func TestApp_ScanAndStorePRURL_Empty(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.scanAndStorePRURL("t1", nil)
+}
+
+func TestApp_OnTaskCursorChange_Nil(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.onTaskCursorChange(nil)
+	testutil.Equal(t, app.taskPreview.TaskID(), "")
+}
+
+func TestApp_OnTaskCursorChange_WithTask(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n"}
+	app.onTaskCursorChange(task)
+	testutil.Equal(t, app.taskPreview.TaskID(), "t1")
+}
+
+func TestApp_OnTaskCursorChange_WithWorktree(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Worktree: t.TempDir()}
+	app.onTaskCursorChange(task)
+	testutil.Equal(t, app.taskPreview.TaskID(), "t1")
+}
+
+func TestApp_EnterPendingAgentView(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "pending-1", Name: "creating"}
+	app.enterPendingAgentView(task)
+
+	testutil.Equal(t, app.mode, modeAgent)
+	testutil.Equal(t, app.agentState.TaskID, "pending-1")
+}
+
+func TestApp_NavigateAgentTask_NoNext(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusPending, CreatedAt: time.Now()}
+	d.Add(task)
+	app.refreshTasks()
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "n")
+	app.navigateAgentTask(1)
+	testutil.Equal(t, app.agentState.TaskID, "t1")
+}
+
+func TestApp_NavigateAgentTask_HasNext(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	now := time.Now()
+	d.Add(&model.Task{ID: "t1", Project: "p", Name: "a", Status: model.StatusPending, CreatedAt: now})
+	d.Add(&model.Task{ID: "t2", Project: "p", Name: "b", Status: model.StatusPending, CreatedAt: now.Add(time.Second)})
+	app.refreshTasks()
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "a")
+	app.navigateAgentTask(1)
+
+	testutil.Equal(t, app.agentState.TaskID, "t2")
+}
+
+func TestApp_RefreshPreview_NoSession_NoLog(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.taskPreview.SetRect(0, 0, 60, 20)
+
+	app.taskPreview.Draw(drawSim(t))
+	t.Setenv("HOME", t.TempDir())
+	app.refreshPreview("nonexistent-task")
+}
+
+func TestApp_RefreshPreview_ZeroSize(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	app.refreshPreview("anything")
+}
+
+func TestApp_StartReviewTask_NoMatchingProject(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "unknown"}
+	app.startReviewTask(pr)
+
+	tasks, _ := d.Tasks()
+	testutil.Equal(t, len(tasks), 0)
+}
+
+func TestApp_StartReviewTask_ExistingTask(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	prURL := "https://github.com/acme/widget/pull/42"
+	existing := &model.Task{ID: "tex", Project: "widget", Name: "reviewed", PRURL: prURL, Status: model.StatusPending}
+	d.Add(existing)
+	app.refreshTasks()
+
+	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "widget"}
+	app.startReviewTask(pr)
+
+	testutil.Equal(t, app.agentState.TaskID, "tex")
+}
+
+func TestApp_StartReviewTask_NoProjectPath(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("widget", config.Project{})
+
+	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "widget", Title: "test"}
+	app.startReviewTask(pr)
+
+	tasks, _ := d.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+}
+
+func TestApp_HandleSessionExitUI_NoStatusFlipForNonInProgress(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInReview, CreatedAt: time.Now()}
+	d.Add(task)
+
+	app.handleSessionExitUI("t1", false, false)
+	got, _ := d.Get("t1")
+
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
+func TestApp_ExecuteFork_NoProjectPath(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("ghost", config.Project{})
+
+	source := &model.Task{ID: "src", Name: "task", Project: "ghost"}
+	app.executeFork(source, "ghost")
+	tasks, _ := d.Tasks()
+	testutil.Equal(t, len(tasks), 0)
+}
+
+func TestApp_HandleLinkPickerKey_Selects(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.openLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+
+	app.handleLinkPickerKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleFuzzyLinkPickerKey_Cancel(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.mode = modeAgent
+	app.openFuzzyLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+	app.handleFuzzyLinkPickerKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeAgent)
+}
+
+func TestApp_HandleFuzzyLinkPickerKey_Selects(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.mode = modeAgent
+	app.openFuzzyLinkPickerModal([]Link{{Label: "X", URL: "https://x.com"}})
+	app.handleFuzzyLinkPickerKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+}
+
+func TestApp_HandleForkTaskKey_Confirmed(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	source := &model.Task{ID: "src", Project: "p", Name: "n", Worktree: "/tmp/wt"}
+	app.openForkModal(source)
+	app.handleForkTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleRestartDaemonKey_Skip(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.openRestartDaemonPrompt()
+	app.handleRestartDaemonKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleSessionExitUI_ViewingExitsAgent(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "n")
+
+	app.handleSessionExitUI("t1", false, false)
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleSessionExitUI_ViewingStoppedClearsSession(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "n")
+
+	app.handleSessionExitUI("t1", true, false)
+	testutil.Equal(t, app.mode, modeAgent)
+}
+
+func TestApp_RefreshPreview_DeadSessionWithLog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("preview-task")
+	parentDir := logPath[:strings.LastIndex(logPath, "/")]
+	os.MkdirAll(parentDir, 0o755)
+	os.WriteFile(logPath, []byte("output content"), 0o644)
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.taskPreview.SetRect(0, 0, 60, 20)
+	app.taskPreview.Draw(drawSim(t))
+
+	app.refreshPreview("preview-task")
+}
+
+func TestApp_HandleFilePanelKey_NavWithFiles(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.mode = modeAgent
+	app.agentFocus = focusFiles
+	app.filePanel.SetRect(0, 0, 40, 20)
+	app.filePanel.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a/b.go"},
+		{Status: "A", Path: "a/c.go"},
+	})
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyDown, 0, 0))
+	app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyUp, 0, 0))
+}
+
+func TestApp_OpenAgentLinks_WithTaskID(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.agentState.Reset("test-task", "n")
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	done := make(chan struct{})
+	go func() {
+		app.openAgentLinks()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("openAgentLinks blocked")
+	}
+}
+
+func TestApp_CopyToClipboard(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	done := make(chan struct{}, 1)
+	app.copyToClipboard("hello", "msg", func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestApp_HandleNewTaskKey_Done_NoProjectPath(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{})
+
+	app.onNewTask()
+
+	for _, r := range "hello" {
+		app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	app.newTaskForm.done = true
+
+	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	tasks, _ := d.Tasks()
+	if len(tasks) == 0 {
+		t.Error("expected a task to be added")
+	}
+}
+
+func TestApp_OpenProjectForm_LoadsBranches(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.SetProject("p", config.Project{Path: t.TempDir()})
+
+	app.openProjectForm(true, "p", config.Project{Path: t.TempDir()})
+
+	if app.projectForm.OnBranchFocus == nil {
+		t.Error("OnBranchFocus should be wired")
+	}
+}
+
+func TestTcellKeyToBytes_MoreCases(t *testing.T) {
+	tests := []struct {
+		name string
+		key  tcell.Key
+		mod  tcell.ModMask
+		want []byte
+	}{
+		{"home", tcell.KeyHome, 0, []byte("\x1b[H")},
+		{"end", tcell.KeyEnd, 0, []byte("\x1b[F")},
+		{"pgup", tcell.KeyPgUp, 0, []byte("\x1b[5~")},
+		{"pgdn", tcell.KeyPgDn, 0, []byte("\x1b[6~")},
+		{"ctrl-a", tcell.KeyCtrlA, 0, []byte{0x01}},
+		{"ctrl-b", tcell.KeyCtrlB, 0, []byte{0x02}},
+		{"ctrl-e", tcell.KeyCtrlE, 0, []byte{0x05}},
+		{"ctrl-f", tcell.KeyCtrlF, 0, []byte{0x06}},
+		{"ctrl-g", tcell.KeyCtrlG, 0, []byte{0x07}},
+		{"ctrl-h", tcell.KeyCtrlH, 0, []byte{0x08}},
+		{"ctrl-k", tcell.KeyCtrlK, 0, []byte{0x0b}},
+		{"ctrl-n", tcell.KeyCtrlN, 0, []byte{0x0e}},
+		{"ctrl-o", tcell.KeyCtrlO, 0, []byte{0x0f}},
+		{"ctrl-p", tcell.KeyCtrlP, 0, []byte{0x10}},
+		{"ctrl-r", tcell.KeyCtrlR, 0, []byte{0x12}},
+		{"ctrl-s", tcell.KeyCtrlS, 0, []byte{0x13}},
+		{"ctrl-t", tcell.KeyCtrlT, 0, []byte{0x14}},
+		{"ctrl-u", tcell.KeyCtrlU, 0, []byte{0x15}},
+		{"ctrl-v", tcell.KeyCtrlV, 0, []byte{0x16}},
+		{"ctrl-w", tcell.KeyCtrlW, 0, []byte{0x17}},
+		{"ctrl-x", tcell.KeyCtrlX, 0, []byte{0x18}},
+		{"ctrl-y", tcell.KeyCtrlY, 0, []byte{0x19}},
+		{"ctrl-z", tcell.KeyCtrlZ, 0, []byte{0x1a}},
+		{"alt-backspace", tcell.KeyBackspace, tcell.ModAlt, []byte{0x1b, 0x7f}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := tcell.NewEventKey(tt.key, 0, tt.mod)
+			got := tcellKeyToBytes(ev)
+			testutil.Equal(t, string(got), string(tt.want))
+		})
+	}
+}

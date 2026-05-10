@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestWorktreeDir(t *testing.T) {
@@ -532,4 +534,46 @@ func TestCreateWorktree_ExistingBranch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(wtPath, ".git")); err != nil {
 		t.Errorf("expected worktree to exist at %q", wtPath)
 	}
+}
+
+// TestCreateWorktree_PostCheckoutHookFailure exercises the cmd1 fallback path
+// where the worktree dir is valid but git exited non-zero (post-checkout
+// hook failure). We install a post-checkout hook that exits 1.
+func TestCreateWorktree_PostCheckoutHookFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-q", "-m", "init")
+
+	// Install a post-checkout hook that exits 1. git worktree add still
+	// produces a valid worktree (with .git file) but exits non-zero.
+	hookPath := filepath.Join(repo, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, finalName, branchName, err := CreateWorktree(repo, "proj", "hookfail-test", "HEAD")
+	testutil.NoError(t, err)
+	testutil.Equal(t, finalName, "hookfail-test")
+	testutil.Equal(t, branchName, "argus/hookfail-test")
+	if !dirExists(wtPath) {
+		t.Errorf("worktree dir should exist: %s", wtPath)
+	}
+
+	// Cleanup
+	RemoveWorktreeAndBranch(wtPath, branchName, repo)
 }

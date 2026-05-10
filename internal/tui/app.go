@@ -1771,19 +1771,32 @@ func (a *App) openInFinder() {
 	exec.Command("open", "-R", a.worktreeDir+"/"+f.Path).Start() //nolint:errcheck
 }
 
+// editorOpener is the package-level seam for "open file in tmux + nvim".
+// Tests stub this out so they don't actually spawn a tmux window.
+var editorOpener = func(worktreeDir, path string) error {
+	return exec.Command("tmux", "new-window", "nvim", worktreeDir+"/"+path).Start()
+}
+
+// terminalOpener is the package-level seam for "open shell in worktree dir
+// in a new tmux window". Tests stub this out so they don't actually spawn
+// tmux windows.
+var terminalOpener = func(worktreeDir string) error {
+	return exec.Command("tmux", "new-window", "-c", worktreeDir).Start()
+}
+
 func (a *App) openInEditor() {
 	f := a.filePanel.SelectedFile()
 	if f == nil || a.worktreeDir == "" {
 		return
 	}
-	exec.Command("tmux", "new-window", "nvim", a.worktreeDir+"/"+f.Path).Start() //nolint:errcheck
+	_ = editorOpener(a.worktreeDir, f.Path)
 }
 
 func (a *App) openTerminal() {
 	if a.worktreeDir == "" {
 		return
 	}
-	exec.Command("tmux", "new-window", "-c", a.worktreeDir).Start() //nolint:errcheck
+	_ = terminalOpener(a.worktreeDir)
 }
 
 // tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY input.

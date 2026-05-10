@@ -1,0 +1,24 @@
+# Paths excluded from coverage reporting.
+#
+# Each non-empty, non-comment line is a substring matched against the file
+# portion of every line in coverage.out. Matching lines are dropped before the
+# coverage total is computed and before the profile is uploaded.
+#
+# Add an entry ONLY when one of these holds, and write the reason inline:
+#   1. CLI/entry-point glue with no testable substance
+#   2. Test-only harness covered by integration tests
+#   3. Privileged/external resource (raw tty ioctl, real sandbox-exec, real launchd)
+#
+# Run `make test-cover` after editing to see the impact.
+
+# CLI entry — interactive subcommands, blocks on app.Run(). Covered by
+# Playwright + integration smoke (web-tests/) and `go run ./cmd/argus daemon`.
+cmd/argus/main.go
+cmd/argus/kb.go
+
+# Test-only HTTP harness for Playwright. Covered by web-tests/*.spec.ts.
+cmd/argus-test-server/main.go
+
+# Raw terminal mode + ioctl glue. CLAUDE.md exempts "real terminal functions
+# (raw mode, ioctl)".
+internal/agent/attach.go

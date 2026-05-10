@@ -47,29 +47,48 @@ type PRComment struct {
 // Primary rate limit: 5,000 req/hr for REST, 30 req/min for Search API.
 var ErrRateLimit = fmt.Errorf("github rate limit exceeded — try again later")
 
-// runGh runs a gh CLI command and returns stdout.
+// runGh runs a gh CLI command and returns stdout. It is a package-level
+// variable so tests can swap it with a stub. The real implementation is
+// realRunGh below.
+//
 // Timeout: 10 seconds. Returns ErrRateLimit for 403/429 responses.
-func runGh(args ...string) (string, error) {
+var runGh = realRunGh
+
+// commandBuilder produces an exec.Cmd for the given args. Overridable in
+// tests so realRunGh can be exercised against arbitrary subprocesses.
+var commandBuilder = func(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "gh", args...)
+}
+
+// realRunGh shells out to the gh CLI. Same contract as runGh.
+func realRunGh(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd := commandBuilder(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		stderrStr := stderr.String()
-		// gh CLI surfaces rate limit errors as "HTTP 403" or "HTTP 429" in stderr.
-		// Both the primary REST limit (5k/hr) and Search limit (30/min) produce these.
-		if strings.Contains(stderrStr, "HTTP 429") ||
-			strings.Contains(stderrStr, "HTTP 403") && strings.Contains(stderrStr, "rate limit") ||
-			strings.Contains(stderrStr, "API rate limit exceeded") ||
-			strings.Contains(stderrStr, "secondary rate limit") {
-			return "", ErrRateLimit
+		if rerr := classifyGhError(stderr.String()); rerr != nil {
+			return "", rerr
 		}
-		return "", fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, stderrStr)
+		return "", fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return stdout.String(), nil
+}
+
+// classifyGhError inspects gh CLI stderr output and returns ErrRateLimit when
+// it matches a known rate-limit signature. Returns nil otherwise. Both the
+// primary REST limit (5k/hr) and Search limit (30/min) surface as HTTP 403/429.
+func classifyGhError(stderrStr string) error {
+	if strings.Contains(stderrStr, "HTTP 429") ||
+		strings.Contains(stderrStr, "HTTP 403") && strings.Contains(stderrStr, "rate limit") ||
+		strings.Contains(stderrStr, "API rate limit exceeded") ||
+		strings.Contains(stderrStr, "secondary rate limit") {
+		return ErrRateLimit
+	}
+	return nil
 }
 
 // FetchPRList returns all open PRs + review requests for the authenticated user.
@@ -217,7 +236,7 @@ func FetchPRFiles(owner, repo string, number int) ([]string, error) {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if line != "" {
 			files = append(files, line)
 		}

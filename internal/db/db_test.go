@@ -1,11 +1,15 @@
 package db
 
 import (
+	"database/sql"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -1728,4 +1732,345 @@ func TestDB_TaskByPRURL(t *testing.T) {
 			t.Errorf("expected 'newer', got %q", name)
 		}
 	})
+}
+
+// TestDB_DeleteScheduleMissing covers the not-found path in DeleteSchedule.
+func TestDB_DeleteScheduleMissing(t *testing.T) {
+	d := testDB(t)
+	err := d.DeleteSchedule("nonexistent-id")
+	if !errors.Is(err, ErrScheduleNotFound) {
+		t.Fatalf("expected ErrScheduleNotFound, got %v", err)
+	}
+}
+
+// TestDB_AddSchedule_PreservesProvidedID covers the !ID == "" branch.
+func TestDB_AddSchedule_PreservesProvidedID(t *testing.T) {
+	d := testDB(t)
+	s := &model.ScheduledTask{
+		ID:       "my-fixed-id",
+		Name:     "named",
+		Project:  "p",
+		Prompt:   "do it",
+		Schedule: "@hourly",
+		Enabled:  true,
+	}
+	testutil.NoError(t, d.AddSchedule(s))
+	testutil.Equal(t, s.ID, "my-fixed-id")
+
+	got, err := d.GetSchedule("my-fixed-id")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "my-fixed-id")
+}
+
+// TestDB_KBPendingTasks_Multiple covers ordering and multi-row paths.
+func TestDB_KBPendingTasks_Multiple(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.KBAddPendingTask("first", "proj", "src1.md"))
+	testutil.NoError(t, d.KBAddPendingTask("second", "proj", "src2.md"))
+
+	tasks := d.KBPendingTasks()
+	testutil.Equal(t, len(tasks), 2)
+}
+
+// TestDB_OpenInMemoryClose covers Close on an in-memory DB.
+func TestDB_OpenInMemoryClose(t *testing.T) {
+	d, err := OpenInMemory()
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Close())
+}
+
+// TestDB_OpenAndClose covers a full disk-backed open/close lifecycle.
+func TestDB_OpenAndClose(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Close())
+}
+
+// closedDB returns a *DB whose underlying *sql.DB has been closed, so any
+// subsequent query/exec will return an error. Used to exercise the err != nil
+// branches in CRUD methods that wrap db.conn.Query / db.conn.Exec.
+func closedDB(t *testing.T) *DB {
+	t.Helper()
+	d, err := OpenInMemory()
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Close())
+	return d
+}
+
+func TestDB_ErrorPaths(t *testing.T) {
+	t.Run("Tasks query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.Tasks()
+		testutil.Error(t, err)
+	})
+
+	t.Run("Add exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.Add(&model.Task{Name: "x"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("Update exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.Update(&model.Task{ID: "x"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("Rename exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.Rename("id", "name")
+		testutil.Error(t, err)
+	})
+
+	t.Run("RenameIfName exec error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.RenameIfName("id", "old", "new")
+		testutil.Error(t, err)
+	})
+
+	t.Run("Delete exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.Delete("id")
+		testutil.Error(t, err)
+	})
+
+	t.Run("Get query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.Get("id")
+		testutil.Error(t, err)
+	})
+
+	t.Run("PruneCompleted query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.PruneCompleted()
+		testutil.Error(t, err)
+	})
+
+	t.Run("WorktreePaths query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.WorktreePaths()
+		testutil.Error(t, err)
+	})
+
+	t.Run("TaskByPRURL query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.TaskByPRURL("https://example/pr")
+		testutil.Error(t, err)
+	})
+
+	t.Run("Backends query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.Backends()
+		testutil.Error(t, err)
+	})
+
+	t.Run("SetBackend exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.SetBackend("x", config.Backend{Command: "y"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("DeleteBackend exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.DeleteBackend("x")
+		testutil.Error(t, err)
+	})
+
+	t.Run("Projects query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.Projects()
+		testutil.Error(t, err)
+	})
+
+	t.Run("SetProject exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.SetProject("x", config.Project{Path: "/tmp"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("DeleteProject exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.DeleteProject("x")
+		testutil.Error(t, err)
+	})
+
+	t.Run("SetConfigValue exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.SetConfigValue("k", "v")
+		testutil.Error(t, err)
+	})
+
+	t.Run("GetConfigValue query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.GetConfigValue("k")
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBUpsert begin error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.KBUpsert(&kb.Document{Path: "x.md"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBDelete begin error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.KBDelete("x.md")
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBSearch query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.KBSearch("foo", 10)
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBList query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.KBList("", 10)
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBList with prefix query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.KBList("notes/", 10)
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBGet query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.KBGet("x.md")
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBMetadataMap query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.KBMetadataMap()
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBAddPendingTask exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.KBAddPendingTask("n", "p", "s")
+		testutil.Error(t, err)
+	})
+
+	t.Run("KBPendingTasks returns nil on query error", func(t *testing.T) {
+		d := closedDB(t)
+		got := d.KBPendingTasks()
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("KBDeletePendingTask exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.KBDeletePendingTask(1)
+		testutil.Error(t, err)
+	})
+
+	t.Run("AddPushSubscription exec error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.AddPushSubscription(PushSubscription{Endpoint: "x"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("PushSubscriptions query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.PushSubscriptions()
+		testutil.Error(t, err)
+	})
+
+	t.Run("DeletePushSubscription exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.DeletePushSubscription(1)
+		testutil.Error(t, err)
+	})
+
+	t.Run("DeletePushSubscriptionByEndpoint exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.DeletePushSubscriptionByEndpoint("x")
+		testutil.Error(t, err)
+	})
+
+	t.Run("AddAPIToken exec error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.AddAPIToken("l", "h", "1234")
+		testutil.Error(t, err)
+	})
+
+	t.Run("APITokens query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.APITokens()
+		testutil.Error(t, err)
+	})
+
+	t.Run("FindAPITokenByHash query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.FindAPITokenByHash("h")
+		testutil.Error(t, err)
+	})
+
+	t.Run("RevokeAPIToken exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.RevokeAPIToken(1)
+		testutil.Error(t, err)
+	})
+
+	t.Run("Schedules query error", func(t *testing.T) {
+		d := closedDB(t)
+		_, err := d.Schedules()
+		testutil.Error(t, err)
+	})
+
+	t.Run("AddSchedule exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.AddSchedule(&model.ScheduledTask{Name: "x"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("UpdateSchedule exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.UpdateSchedule(&model.ScheduledTask{ID: "x"})
+		testutil.Error(t, err)
+	})
+
+	t.Run("DeleteSchedule exec error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.DeleteSchedule("x")
+		testutil.Error(t, err)
+	})
+
+	t.Run("WithTx begin error", func(t *testing.T) {
+		d := closedDB(t)
+		err := d.WithTx(func(tx *sql.Tx) error { return nil })
+		testutil.Error(t, err)
+	})
+}
+
+// TestDB_OpenInvalidDir hits the MkdirAll error path in Open.
+func TestDB_OpenInvalidDir(t *testing.T) {
+	// Create a regular file, then try to open a DB whose parent path includes
+	// that file as a "directory" — MkdirAll fails.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	testutil.NoError(t, os.WriteFile(blocker, []byte("not a dir"), 0o644))
+
+	_, err := Open(filepath.Join(blocker, "child", "data.sql"))
+	testutil.Error(t, err)
+}
+
+// TestDB_AddSchedule_DefaultsCreatedAt covers the CreatedAt.IsZero branch.
+func TestDB_AddSchedule_DefaultsCreatedAt(t *testing.T) {
+	d := testDB(t)
+	s := &model.ScheduledTask{Name: "n", Project: "p", Prompt: "x"}
+	testutil.NoError(t, d.AddSchedule(s))
+	if s.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt populated")
+	}
+	// pre-set CreatedAt should be preserved
+	custom := time.Now().Add(-time.Hour)
+	s2 := &model.ScheduledTask{Name: "n2", Project: "p", Prompt: "x", CreatedAt: custom}
+	testutil.NoError(t, d.AddSchedule(s2))
+	if !s2.CreatedAt.Equal(custom) {
+		t.Errorf("CreatedAt overwritten; got %v want %v", s2.CreatedAt, custom)
+	}
 }

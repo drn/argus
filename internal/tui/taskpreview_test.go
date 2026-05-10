@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/gdamore/tcell/v2"
 )
@@ -260,4 +263,53 @@ func previewScreenContains(screen tcell.SimulationScreen, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestReadGitDiff_NotWorktreeSubdir(t *testing.T) {
+	got := readGitDiff(t.TempDir())
+	testutil.Equal(t, got, "")
+}
+
+func TestLoadSessionLog_NoFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got := LoadSessionLog("nonexistent")
+	if got != nil {
+		t.Error("expected nil for nonexistent log")
+	}
+}
+
+func TestStatSessionLog_NoFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got := statSessionLog("nonexistent")
+	testutil.Equal(t, got, int64(0))
+}
+
+func TestLoadSessionLog_Large(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("big")
+	if err := os.MkdirAll(strings.TrimSuffix(logPath, "/big.log"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	parentDir := logPath[:strings.LastIndex(logPath, "/")]
+	os.MkdirAll(parentDir, 0o755)
+	content := strings.Repeat("a", 80*1024)
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadSessionLog("big")
+
+	if len(got) != 64*1024 {
+		t.Errorf("expected 64KB, got %d", len(got))
+	}
+}
+
+func TestStatSessionLog_RealFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logPath := agent.SessionLogPath("x")
+	parentDir := logPath[:strings.LastIndex(logPath, "/")]
+	os.MkdirAll(parentDir, 0o755)
+	os.WriteFile(logPath, []byte("hello"), 0o644)
+	got := statSessionLog("x")
+	testutil.Equal(t, got, int64(5))
 }

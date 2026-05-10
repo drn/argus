@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -584,7 +583,10 @@ func (rv *ReviewsView) openPRInBrowser() {
 	if url == "" {
 		return
 	}
-	exec.Command("open", url).Start() //nolint:errcheck
+	if err := browserOpener(url); err != nil {
+		uxlog.Log("[reviews] open PR failed: %v", err)
+		return
+	}
 	uxlog.Log("[reviews] opened PR in browser: %s", url)
 }
 

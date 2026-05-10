@@ -1,11 +1,16 @@
 package tui
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/github"
+	"github.com/drn/argus/internal/testutil"
+	"github.com/gdamore/tcell/v2"
 )
 
 func TestReviewsView_Empty(t *testing.T) {
@@ -358,4 +363,565 @@ func TestResolveProjectForRepo(t *testing.T) {
 			t.Errorf("path = %q, want %q", proj.Path, "/home/user/code/widget-app")
 		}
 	})
+}
+
+func TestReviewsView_HandleRefreshAndOpenInBrowser(t *testing.T) {
+	rv := NewReviewsView()
+
+	rv.lastFetchTime = time.Now()
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.handleRefresh(app)
+
+	rv.lastFetchTime = time.Time{}
+	rv.SetOnFetch(func(fn func()) {})
+	rv.handleRefresh(app)
+	testutil.Equal(t, rv.loading, true)
+}
+
+func TestReviewsView_HandleEnterCases(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	rv.SetPRs([]github.PR{
+		{Number: 1, Repo: "r"},
+	}, nil)
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.handleEnter(app)
+	if rv.selectedPR == nil {
+		t.Error("should have selected a PR")
+	}
+
+	rv.SetFiles([]string{"a.go"})
+	rv.focus = rfList
+	rv.handleEnter(app)
+	testutil.Equal(t, rv.focus, rfDiff)
+}
+
+func TestReviewsView_HandleEsc_DiffToList(t *testing.T) {
+	rv := NewReviewsView()
+	rv.focus = rfDiff
+	rv.handleEsc()
+	testutil.Equal(t, rv.focus, rfList)
+}
+
+func TestReviewsView_HandleApproveConfirmKey(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	t.Run("escape goes back to diff", func(t *testing.T) {
+		rv.focus = rfApproveConfirm
+		rv.handleApproveConfirmKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0), app)
+		testutil.Equal(t, rv.focus, rfDiff)
+	})
+
+	t.Run("n goes back to diff", func(t *testing.T) {
+		rv.focus = rfApproveConfirm
+		rv.handleApproveConfirmKey(tcell.NewEventKey(tcell.KeyRune, 'n', 0), app)
+		testutil.Equal(t, rv.focus, rfDiff)
+	})
+
+	t.Run("y submits", func(t *testing.T) {
+		rv.focus = rfApproveConfirm
+		rv.handleApproveConfirmKey(tcell.NewEventKey(tcell.KeyRune, 'y', 0), app)
+	})
+
+	t.Run("enter submits", func(t *testing.T) {
+		rv.focus = rfApproveConfirm
+		rv.handleApproveConfirmKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0), app)
+	})
+
+	t.Run("unknown rune returns false", func(t *testing.T) {
+		rv.focus = rfApproveConfirm
+		got := rv.handleApproveConfirmKey(tcell.NewEventKey(tcell.KeyRune, 'q', 0), app)
+		testutil.Equal(t, got, false)
+	})
+}
+
+func TestReviewsView_HandleCommentKey(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.focus = rfComment
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.handleCommentKey(tcell.NewEventKey(tcell.KeyRune, 'h', 0), app)
+	rv.handleCommentKey(tcell.NewEventKey(tcell.KeyRune, 'i', 0), app)
+	testutil.Equal(t, rv.draftBody, "hi")
+
+	rv.handleCommentKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0), app)
+	testutil.Equal(t, rv.draftBody, "hi\n")
+
+	rv.handleCommentKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0), app)
+	testutil.Equal(t, rv.draftBody, "hi")
+
+	rv.handleCommentKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0), app)
+	testutil.Equal(t, rv.focus, rfDiff)
+}
+
+func TestReviewsView_HandleNormalKey_Tab(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{{Number: 1}}, nil)
+	pr := rv.prs[0]
+	rv.selectedPR = &pr
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), app)
+	testutil.Equal(t, rv.focus, rfDiff)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), app)
+	testutil.Equal(t, rv.focus, rfList)
+}
+
+func TestReviewsView_HandleNormalKey_OAndR(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{{Number: 1, RepoOwner: "o", Repo: "r"}}, nil)
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'o', 0), app)
+
+	rv.lastFetchTime = time.Time{}
+	rv.SetOnFetch(func(fn func()) {})
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'R', 0), app)
+}
+
+func TestReviewsView_HandleNormalKey_CommentKey_NoSelection(t *testing.T) {
+	rv := NewReviewsView()
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'c', 0), app)
+}
+
+func TestReviewsView_HandleNormalKey_AKeyNoSelection(t *testing.T) {
+	rv := NewReviewsView()
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0), app)
+}
+
+func TestReviewsView_HandleNormalKey_CtrlR(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{{Number: 1, Repo: "widget"}}, nil)
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, 0), app)
+
+	tasks, _ := d.Tasks()
+	testutil.Equal(t, len(tasks), 0)
+}
+
+func TestReviewsView_HandleNormalKey_C_OnDiff(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.focus = rfDiff
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'c', 0), app)
+	testutil.Equal(t, rv.focus, rfDiff)
+}
+
+func TestReviewsView_HandleNormalKey_A_TogglesApproveConfirm(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.focus = rfDiff
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0), app)
+	testutil.Equal(t, rv.focus, rfApproveConfirm)
+}
+
+func TestReviewsView_HandleNormalKey_R_OpensRequestChanges(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.focus = rfDiff
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'r', 0), app)
+	testutil.Equal(t, rv.focus, rfComment)
+	testutil.Equal(t, rv.reviewDraftMode, true)
+}
+
+func TestReviewsView_FetchPRList_NoCallback(t *testing.T) {
+	rv := NewReviewsView()
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchPRList(app)
+}
+
+func TestReviewsView_FetchFiles_NoSelectedPR(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchFiles(app)
+}
+
+func TestReviewsView_FetchDiffAndComments_NoPR(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchDiffAndComments(app)
+}
+
+func TestReviewsView_SubmitComment_Empty(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.draftBody = "  "
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.submitComment(app)
+}
+
+func TestReviewsView_SubmitApprove_NoPR(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.submitApprove(app)
+}
+
+func TestReviewsView_Draw(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{
+		{Number: 1, Title: "PR 1", IsReviewRequest: true, RepoOwner: "o", Repo: "r"},
+		{Number: 2, Title: "PR 2", IsReviewRequest: false, RepoOwner: "o", Repo: "r"},
+	}, nil)
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_Loading(t *testing.T) {
+	rv := NewReviewsView()
+	rv.StartLoading()
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_Error(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs(nil, errors.New("boom"))
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_Empty(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_FileList(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{{Number: 1, Title: "P", RepoOwner: "o", Repo: "r"}}, nil)
+	pr := rv.prs[0]
+	rv.selectedPR = &pr
+	rv.files = []string{"a.go", "b.go", strings.Repeat("long", 30)}
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_DiffNoSelection(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetPRs([]github.PR{{Number: 1, Title: "P", RepoOwner: "o", Repo: "r"}}, nil)
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_ApproveConfirm(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, Title: "P", RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.focus = rfApproveConfirm
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_CommentMode(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.focus = rfComment
+	rv.draftPath = "a.go"
+	rv.draftLine = 10
+	rv.draftBody = "hello"
+	rv.submitErr = "submit error"
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_CommentMode_ReviewMode(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.focus = rfComment
+	rv.reviewDraftMode = true
+	rv.draftBody = "review body"
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_WithComments(t *testing.T) {
+	rv := NewReviewsView()
+	rv.comments = []github.PRComment{
+		{Author: "alice", Path: "a.go", Line: 10, Body: "looks good\nbut consider this"},
+		{Author: "bob", Body: "no path"},
+	}
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.SetRect(0, 0, 120, 30)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_Draw_TinyRect(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetRect(0, 0, 0, 0)
+	rv.Draw(drawSim(t))
+}
+
+func TestReviewsView_ApplyFileDiff_NoDiff(t *testing.T) {
+	rv := NewReviewsView()
+	rv.applyFileDiff()
+}
+
+func TestReviewsView_ApplyFileDiff_WithFile(t *testing.T) {
+	rv := NewReviewsView()
+	rv.fullDiff = `diff --git a/a.go b/a.go
+index 0000..1111 100644
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,3 @@
+-old
++new
+ same`
+	rv.files = []string{"a.go"}
+	rv.fileCursor = 0
+	rv.applyFileDiff()
+	if rv.parsedDiff == nil {
+		t.Error("parsedDiff should be non-nil")
+	}
+}
+
+func TestReviewsView_CurrentDiffLine_Empty(t *testing.T) {
+	rv := NewReviewsView()
+	path, line := rv.currentDiffLine()
+	testutil.Equal(t, path, "")
+	testutil.Equal(t, line, 0)
+}
+
+func TestReviewsView_CursorUp_DiffMode(t *testing.T) {
+	rv := NewReviewsView()
+	rv.focus = rfDiff
+	rv.diffScrollOff = 5
+	rv.cursorUp()
+	testutil.Equal(t, rv.diffScrollOff, 4)
+	rv.diffScrollOff = 0
+	rv.cursorUp()
+	testutil.Equal(t, rv.diffScrollOff, 0)
+}
+
+func TestReviewsView_CursorUp_FileMode(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.files = []string{"a.go", "b.go"}
+	rv.fileCursor = 1
+	rv.cursorUp()
+	testutil.Equal(t, rv.fileCursor, 0)
+}
+
+func TestReviewsView_CursorDown_FileMode(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.files = []string{"a.go", "b.go"}
+	rv.cursorDown()
+	testutil.Equal(t, rv.fileCursor, 1)
+
+	rv.cursorDown()
+	testutil.Equal(t, rv.fileCursor, 1)
+}
+
+func TestReviewsView_IsDiffStale(t *testing.T) {
+	rv := NewReviewsView()
+	testutil.Equal(t, rv.IsDiffStale(), false)
+
+	pr := github.PR{Number: 1, UpdatedAt: time.Now()}
+	rv.selectedPR = &pr
+	rv.fullDiff = "x"
+	rv.diffFetchedAt = time.Time{}
+	testutil.Equal(t, rv.IsDiffStale(), true)
+}
+
+func TestReviewsView_AreCommentsStale(t *testing.T) {
+	rv := NewReviewsView()
+	testutil.Equal(t, rv.AreCommentsStale(), false)
+
+	pr := github.PR{Number: 1, UpdatedAt: time.Now()}
+	rv.selectedPR = &pr
+	testutil.Equal(t, rv.AreCommentsStale(), true)
+
+	rv.commentsFetchedAt = time.Now().Add(-3 * time.Minute)
+	testutil.Equal(t, rv.AreCommentsStale(), true)
+
+	rv.commentsFetchedAt = time.Now()
+	pr.UpdatedAt = time.Now().Add(time.Minute)
+	rv.selectedPR = &pr
+	testutil.Equal(t, rv.AreCommentsStale(), true)
+}
+
+func TestReviewsView_CurrentDiffLine_Parsed(t *testing.T) {
+	rv := NewReviewsView()
+	rv.fullDiff = `diff --git a/a.go b/a.go
+index 0000..1111 100644
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,3 @@
+-old
++new
+ same`
+	rv.files = []string{"a.go"}
+	rv.applyFileDiff()
+	if rv.parsedDiff == nil {
+		t.Fatal("parsed diff should be non-nil")
+	}
+	rv.diffScrollOff = 1
+	path, _ := rv.currentDiffLine()
+	testutil.Equal(t, path, "a.go")
+}
+
+func TestReviewsView_HandleKey_RoutesByFocus(t *testing.T) {
+	rv := NewReviewsView()
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0), app)
+
+	rv.focus = rfApproveConfirm
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0), app)
+
+	rv.focus = rfComment
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0), app)
+}
+
+func TestReviewsView_SubmitComment_WithDraft(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.draftBody = "comment body"
+	rv.draftPath = "a.go"
+	rv.draftLine = 5
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.submitComment(app)
+}
+
+func TestReviewsView_SubmitComment_ReviewMode(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.draftBody = "request changes"
+	rv.reviewDraftMode = true
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.submitComment(app)
+}
+
+func TestReviewsView_SubmitApprove_WithCallback(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.submitApprove(app)
+}
+
+func TestReviewsView_FetchFiles_WithCallback(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchFiles(app)
+}
+
+func TestReviewsView_FetchDiffAndComments_WithCallback(t *testing.T) {
+	rv := NewReviewsView()
+	pr := github.PR{Number: 1, RepoOwner: "o", Repo: "r"}
+	rv.selectedPR = &pr
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchDiffAndComments(app)
+}
+
+func TestReviewsView_FetchPRList_WithCallback(t *testing.T) {
+	rv := NewReviewsView()
+	rv.SetOnFetch(func(fn func()) {})
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.fetchPRList(app)
+}
+
+func TestReviewsView_HandleKey_C_OnValidLine(t *testing.T) {
+	rv := NewReviewsView()
+	rv.fullDiff = `diff --git a/a.go b/a.go
+@@ -1 +1 @@
+-old
++new`
+	rv.files = []string{"a.go"}
+	rv.applyFileDiff()
+	pr := github.PR{Number: 1}
+	rv.selectedPR = &pr
+	rv.focus = rfDiff
+	rv.diffScrollOff = 1
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	rv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'c', 0), app)
+	testutil.Equal(t, rv.focus, rfComment)
 }

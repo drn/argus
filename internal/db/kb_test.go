@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/kb"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestKBUpsertAndGet(t *testing.T) {
@@ -266,4 +267,101 @@ func TestKBPendingTasks(t *testing.T) {
 	if remaining := d.KBPendingTasks(); len(remaining) != 0 {
 		t.Errorf("after delete: got %d tasks, want 0", len(remaining))
 	}
+}
+
+// TestKBList_DocWithTags covers the "tagsStr != ”" branch in KBList row scan.
+func TestKBList_DocWithTags(t *testing.T) {
+	d := testDB(t)
+	doc := &kb.Document{
+		Path: "tagged.md", Title: "T", Body: "b",
+		Tags: []string{"alpha", "beta"},
+		Tier: "hot", ModifiedAt: time.Now(), IngestedAt: time.Now(),
+	}
+	testutil.NoError(t, d.KBUpsert(doc))
+
+	docs, err := d.KBList("", 100)
+	testutil.NoError(t, err)
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 doc, got %d", len(docs))
+	}
+	if len(docs[0].Tags) != 2 {
+		t.Errorf("expected 2 tags, got %v", docs[0].Tags)
+	}
+}
+
+// TestKBSearch_TagsField exercises the Tags field across search.
+func TestKBSearch_TagsField(t *testing.T) {
+	d := testDB(t)
+	doc := &kb.Document{
+		Path: "x.md", Title: "T", Body: "tagtest body",
+		Tags: []string{"go"},
+		Tier: "hot", ModifiedAt: time.Now(), IngestedAt: time.Now(),
+	}
+	testutil.NoError(t, d.KBUpsert(doc))
+
+	results, err := d.KBSearch("tagtest", 5)
+	testutil.NoError(t, err)
+	if len(results) == 0 {
+		t.Error("expected match")
+	}
+}
+
+// TestKBPendingTasks_CreatedAt verifies the createdAt parse branch is used.
+func TestKBPendingTasks_CreatedAt(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.KBAddPendingTask("n", "p", "src.md"))
+	tasks := d.KBPendingTasks()
+	testutil.Equal(t, len(tasks), 1)
+	if tasks[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt should be parsed")
+	}
+}
+
+// TestKBSearch_LimitDefaulting covers the "limit <= 0 => default 10" branch.
+func TestKBSearch_LimitDefaulting(t *testing.T) {
+	d := testDB(t)
+	doc := &kb.Document{
+		Path: "x.md", Title: "Title", Body: "search me please",
+		Tier: "hot", ModifiedAt: time.Now(), IngestedAt: time.Now(),
+	}
+	testutil.NoError(t, d.KBUpsert(doc))
+
+	// limit=0 should still return matching results.
+	got, err := d.KBSearch("search", 0)
+	testutil.NoError(t, err)
+	if len(got) == 0 {
+		t.Error("expected at least one result")
+	}
+
+	// Negative limit also should default.
+	got2, err := d.KBSearch("search", -5)
+	testutil.NoError(t, err)
+	if len(got2) == 0 {
+		t.Error("expected at least one result")
+	}
+}
+
+// TestKBList_LimitDefaulting covers the "limit <= 0 => default 100" branch.
+func TestKBList_LimitDefaulting(t *testing.T) {
+	d := testDB(t)
+	doc := &kb.Document{
+		Path: "lst.md", Title: "T", Body: "b",
+		Tier: "hot", ModifiedAt: time.Now(), IngestedAt: time.Now(),
+	}
+	testutil.NoError(t, d.KBUpsert(doc))
+
+	got, err := d.KBList("", 0)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+
+	got2, err := d.KBList("", -1)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got2), 1)
+}
+
+// TestKBPendingTasks_Empty exercises the empty-rows return path.
+func TestKBPendingTasks_Empty(t *testing.T) {
+	d := testDB(t)
+	tasks := d.KBPendingTasks()
+	testutil.Equal(t, len(tasks), 0)
 }

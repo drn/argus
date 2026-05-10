@@ -573,3 +573,41 @@ func TestProjectForm_MaybeLoadBranches_SpacesOnlyPath(t *testing.T) {
 
 	testutil.Equal(t, called, false)
 }
+
+func TestProjectForm_Draw(t *testing.T) {
+	pf := NewProjectForm()
+	pf.SetRect(0, 0, 80, 24)
+	pf.Draw(drawSim(t))
+}
+
+func TestProjectForm_Draw_EditWithBranches(t *testing.T) {
+	pf := NewProjectForm()
+	pf.LoadProject("proj", config.Project{Path: "/tmp", Branch: "origin/main"})
+	pf.SetBranchOptions([]string{"origin/master", "origin/main"})
+	pf.SetError("err")
+	pf.SetRect(0, 0, 80, 24)
+	pf.Draw(drawSim(t))
+}
+
+func TestProjectForm_Draw_FocusedBranchAndSandbox(t *testing.T) {
+	pf := NewProjectForm()
+	pf.SetBranchOptions([]string{"a", "b"})
+	pf.focused = pfFieldBranch
+	pf.SetRect(0, 0, 80, 24)
+	pf.Draw(drawSim(t))
+
+	pf.focused = pfFieldSandbox
+	pf.Draw(drawSim(t))
+}
+
+func TestProjectForm_Draw_TinyRect(t *testing.T) {
+	pf := NewProjectForm()
+	pf.SetRect(0, 0, 0, 0)
+	pf.Draw(drawSim(t))
+}
+
+func TestProjectForm_SetError(t *testing.T) {
+	pf := NewProjectForm()
+	pf.SetError("oops")
+	testutil.Equal(t, pf.errMsg, "oops")
+}

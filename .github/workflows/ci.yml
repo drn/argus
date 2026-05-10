@@ -61,22 +61,56 @@ jobs:
       - name: Test
         run: go test -race -count=1 -coverprofile=coverage.out ./...
 
+      - name: Filter Coverage
+        # Strips entries listed in coverage-ignore.txt (CLI entry points,
+        # raw-tty glue, etc.) and writes coverage.filtered.out. Total floor
+        # gate is enforced via -min in the next step.
+        run: |
+          go run ./scripts/coverfilter \
+            -in coverage.out \
+            -out coverage.filtered.out \
+            -quiet > coverage.filtered.pct
+          echo "filtered=$(cat coverage.filtered.pct)" >> "$GITHUB_OUTPUT"
+        id: cover
+
       - name: Coverage Summary
         run: |
           {
             echo "## Coverage"
             echo ""
+            echo "**Filtered total: ${{ steps.cover.outputs.filtered }}%** (88% floor; ratcheting to 95%)"
+            echo ""
+            echo '<details><summary>Per-function (filtered)</summary>'
+            echo ''
+            echo '```'
+            go tool cover -func=coverage.filtered.out
+            echo '```'
+            echo '</details>'
+            echo ''
+            echo '<details><summary>Per-function (raw, includes excluded files)</summary>'
+            echo ''
             echo '```'
             go tool cover -func=coverage.out
             echo '```'
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
-          go tool cover -func=coverage.out | tail -1
+          go tool cover -func=coverage.filtered.out | tail -1
+
+      - name: Coverage Gate
+        # Hard fail if filtered coverage drops below the floor. The floor
+        # ratchets up — it is intentionally set just below the current rolling
+        # number so any regression is rejected and the project trends toward
+        # the 95% target documented in context/knowledge/testing.md.
+        run: |
+          go run ./scripts/coverfilter -in coverage.out -min 88 -quiet >/dev/null
 
       - name: Upload Coverage Artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.out
+          path: |
+            coverage.out
+            coverage.filtered.out
           retention-days: 7
 
       - name: Coverage Report

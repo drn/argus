@@ -672,11 +672,17 @@ func (tp *TerminalPane) DiffScrollDown(n int) {
 
 // --- PR ---
 
+// openPRFn is the function used to open a PR URL. Overridable in tests so
+// `OpenPR` can be exercised without launching a real `open` subprocess.
+var openPRFn = func(url string) error {
+	return exec.Command("open", url).Start()
+}
+
 func (tp *TerminalPane) OpenPR() {
 	if tp.taskPR == "" {
 		return
 	}
-	exec.Command("open", tp.taskPR).Start() //nolint:errcheck
+	openPRFn(tp.taskPR) //nolint:errcheck
 }
 
 // --- Draw ---

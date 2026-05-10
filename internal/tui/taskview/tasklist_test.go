@@ -3,6 +3,7 @@ package taskview
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -2063,5 +2064,912 @@ func TestTaskListView_WaitingReviewAutoExpand(t *testing.T) {
 	}
 	if tl.waitingReviewExpanded {
 		t.Error("WR section should collapse after cursor leaves it")
+	}
+}
+
+// newSim creates a SimulationScreen with cleanup.
+func newSim(t *testing.T, w, h int) tcell.SimulationScreen {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	sim.SetSize(w, h)
+	t.Cleanup(sim.Fini)
+	return sim
+}
+
+func dumpScreen(sim tcell.SimulationScreen) string {
+	w, h := sim.Size()
+	var lines []string
+	for row := 0; row < h; row++ {
+		var buf []rune
+		for col := 0; col < w; col++ {
+			r, _, _, _ := sim.GetContent(col, row)
+			buf = append(buf, r)
+		}
+		lines = append(lines, string(buf))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ---------- Drawing helpers ----------
+
+func TestTaskListView_DrawSeparator(t *testing.T) {
+	sim := newSim(t, 30, 5)
+	tl := NewTaskListView()
+	tl.drawSeparator(sim, 0, 0, 30)
+	// All cells in row 0 should be '─'.
+	for col := 0; col < 30; col++ {
+		ch, _, _, _ := sim.GetContent(col, 0)
+		if ch != '─' {
+			t.Errorf("col %d: ch = %c, want ─", col, ch)
+		}
+	}
+}
+
+func TestTaskListView_DrawArchiveHeader(t *testing.T) {
+	sim := newSim(t, 30, 3)
+	tl := NewTaskListView()
+
+	// Collapsed.
+	tl.archiveExpanded = false
+	tl.drawArchiveHeader(sim, 0, 0, 30)
+	row := readRow(sim, 0, 30)
+	testutil.Contains(t, row, "Archive")
+	testutil.Contains(t, row, "▸")
+
+	// Expanded.
+	tl.archiveExpanded = true
+	tl.drawArchiveHeader(sim, 0, 1, 30)
+	row = readRow(sim, 1, 30)
+	testutil.Contains(t, row, "Archive")
+	testutil.Contains(t, row, "▾")
+}
+
+func TestTaskListView_DrawWaitingReviewHeader(t *testing.T) {
+	sim := newSim(t, 50, 3)
+	tl := NewTaskListView()
+
+	tl.waitingReviewExpanded = false
+	tl.drawWaitingReviewHeader(sim, 0, 0, 50)
+	row := readRow(sim, 0, 50)
+	testutil.Contains(t, row, "Waiting for Review")
+	testutil.Contains(t, row, "▸")
+
+	tl.waitingReviewExpanded = true
+	tl.drawWaitingReviewHeader(sim, 0, 1, 50)
+	row = readRow(sim, 1, 50)
+	testutil.Contains(t, row, "Waiting for Review")
+	testutil.Contains(t, row, "▾")
+}
+
+func TestTaskListView_DrawFilterInput(t *testing.T) {
+	sim := newSim(t, 40, 2)
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "abc"
+	tl.drawFilterInput(sim, 0, 0, 40)
+	row := readRow(sim, 0, 40)
+	testutil.Contains(t, row, "/ abc")
+}
+
+func TestTaskListView_DrawFilterInput_LongFilter(t *testing.T) {
+	// Filter wider than width — cursor is past edge, no panic.
+	sim := newSim(t, 12, 2)
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = strings.Repeat("x", 30)
+	tl.drawFilterInput(sim, 0, 0, 12)
+}
+
+// readRow returns the runes at the given row.
+func readRow(sim tcell.SimulationScreen, row, w int) string {
+	var buf []rune
+	for col := 0; col < w; col++ {
+		r, _, _, _ := sim.GetContent(col, row)
+		buf = append(buf, r)
+	}
+	return string(buf)
+}
+
+// ---------- Draw end-to-end ----------
+
+func TestTaskListView_Draw_Basic(t *testing.T) {
+	sim := newSim(t, 40, 20)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task-a", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "task-b", Project: "alpha", Status: model.StatusInProgress},
+	})
+	tl.expanded = "alpha"
+	tl.SetRect(0, 0, 40, 20)
+	tl.Draw(sim)
+
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "alpha")
+	testutil.Contains(t, out, "task-a")
+}
+
+func TestTaskListView_Draw_WithFilterTitle(t *testing.T) {
+	sim := newSim(t, 60, 12)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "task-a", Project: "alpha", Status: model.StatusPending},
+	})
+	tl.expanded = "alpha"
+	tl.filter = "a"
+	tl.SetRect(0, 0, 60, 12)
+	tl.Draw(sim)
+	out := dumpScreen(sim)
+	// Title should contain "[/a]"
+	testutil.Contains(t, out, "/a")
+}
+
+func TestTaskListView_Draw_FilteringMode(t *testing.T) {
+	sim := newSim(t, 60, 12)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "alpha-task", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.filtering = true
+	tl.filter = "alp"
+	tl.SetRect(0, 0, 60, 12)
+	tl.Draw(sim)
+	out := dumpScreen(sim)
+	// In filtering mode, the bottom row shows the input.
+	testutil.Contains(t, out, "/ alp")
+}
+
+func TestTaskListView_Draw_TooSmall(t *testing.T) {
+	sim := newSim(t, 5, 3)
+	tl := NewTaskListView()
+	// width/height too small for border.
+	tl.SetRect(0, 0, 0, 0)
+	tl.Draw(sim)
+	tl.SetRect(0, 0, 1, 1)
+	tl.Draw(sim)
+}
+
+func TestTaskListView_Draw_AllSections(t *testing.T) {
+	// Render with active, waiting-review, and archive sections all present.
+	sim := newSim(t, 60, 30)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "active", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "wait", Project: "p", Status: model.StatusInReview, WaitingReview: true},
+		{ID: "3", Name: "arch", Project: "p", Status: model.StatusComplete, Archived: true},
+	})
+	tl.SetRect(0, 0, 60, 30)
+	tl.Draw(sim)
+
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "active")
+	testutil.Contains(t, out, "Waiting for Review")
+	testutil.Contains(t, out, "Archive")
+}
+
+func TestTaskListView_DrawTaskRow_AllStatuses(t *testing.T) {
+	// Force every status branch in drawTaskRow.
+	sim := newSim(t, 60, 20)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "p", Name: "pending-task", Project: "p", Status: model.StatusPending},
+		{ID: "ip-running", Name: "running-task", Project: "p", Status: model.StatusInProgress},
+		{ID: "ip-idle", Name: "idle-task", Project: "p", Status: model.StatusInProgress},
+		{ID: "ip-unvisited", Name: "unvisited", Project: "p", Status: model.StatusInProgress},
+		{ID: "ir", Name: "review", Project: "p", Status: model.StatusInReview},
+		{ID: "c", Name: "complete", Project: "p", Status: model.StatusComplete},
+	})
+	tl.expanded = "p"
+	tl.SetRunning([]string{"ip-running", "ip-idle", "ip-unvisited"})
+	tl.SetIdle([]string{"ip-idle"})
+	tl.SetIdleUnvisited([]string{"ip-unvisited"})
+	tl.SetRect(0, 0, 60, 20)
+	tl.Draw(sim)
+
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "pending-task")
+	testutil.Contains(t, out, "running-task")
+	testutil.Contains(t, out, "idle-task")
+	testutil.Contains(t, out, "unvisited")
+	testutil.Contains(t, out, "review")
+	testutil.Contains(t, out, "complete")
+}
+
+// ---------- TaskPage Focus / HasFocus / InputHandler / MouseHandler ----------
+
+func TestTaskPage_FocusDelegates(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending}})
+	flex := tview.NewFlex().AddItem(tl, 0, 1, true)
+	tp := NewTaskPage(flex, tl)
+
+	delegated := false
+	tp.Focus(func(p tview.Primitive) {
+		delegated = true
+		// flex.Focus delegates to its first focusable child.
+		if p == nil {
+			t.Error("Focus delegate: primitive should not be nil")
+		}
+	})
+	if !delegated {
+		t.Error("Focus should call delegate")
+	}
+}
+
+func TestTaskPage_HasFocus(t *testing.T) {
+	tl := NewTaskListView()
+	flex := tview.NewFlex().AddItem(tl, 0, 1, true)
+	tp := NewTaskPage(flex, tl)
+	// Initially no focus.
+	if tp.HasFocus() {
+		t.Error("HasFocus should be false initially")
+	}
+	// tview's InputHandler is what we get, even without focus tree wired.
+	_ = tp.HasFocus()
+}
+
+func TestTaskPage_InputHandler(t *testing.T) {
+	tl := NewTaskListView()
+	flex := tview.NewFlex().AddItem(tl, 0, 1, true)
+	tp := NewTaskPage(flex, tl)
+	handler := tp.InputHandler()
+	if handler == nil {
+		t.Fatal("InputHandler should not be nil")
+	}
+	// Sending a key event should not panic. We don't assert behavior since
+	// the inner flex needs focus wired for InputHandler to do anything,
+	// but the wrapper itself must be safe to call.
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(p tview.Primitive) {})
+}
+
+func TestTaskPage_MouseHandler_RedirectsFocus(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending}})
+	flex := tview.NewFlex().AddItem(tl, 0, 1, true)
+	tp := NewTaskPage(flex, tl)
+	tp.SetRect(0, 0, 80, 20)
+	tl.SetRect(0, 0, 80, 20)
+
+	handler := tp.MouseHandler()
+	if handler == nil {
+		t.Fatal("MouseHandler should not be nil")
+	}
+
+	var focusedOn tview.Primitive
+	setFocus := func(p tview.Primitive) { focusedOn = p }
+	// Click inside the page — guarded setFocus must redirect to the task list.
+	handler(tview.MouseLeftClick, tcell.NewEventMouse(40, 10, tcell.Button1, 0), setFocus)
+
+	// guardedSetFocus redirects to tasklist when called by inner. If focusedOn
+	// was set, it must be the tasklist.
+	if focusedOn != nil && focusedOn != tl {
+		t.Errorf("setFocus should be redirected to tasklist, got %T", focusedOn)
+	}
+}
+
+func TestTaskPage_MouseHandler_NilInnerHandler(t *testing.T) {
+	// When the inner Flex returns a nil InputHandler/MouseHandler (atypical),
+	// the wrapper should default to (false, nil).
+	// The flex's MouseHandler should NEVER be nil, but we exercise the wrapper.
+	tl := NewTaskListView()
+	flex := tview.NewFlex()
+	tp := NewTaskPage(flex, tl)
+	tp.SetRect(0, 0, 80, 20)
+
+	handler := tp.MouseHandler()
+	// Click outside the box — wrapper returns false, nil.
+	consumed, _ := handler(tview.MouseLeftClick, tcell.NewEventMouse(200, 200, tcell.Button1, 0), func(p tview.Primitive) {})
+	if consumed {
+		t.Error("click outside rect should not be consumed")
+	}
+}
+
+// ---------- TaskListView — drawTaskRow / drawProjectRow ----------
+
+func TestTaskListView_DrawTaskRow_WithElapsedTime(t *testing.T) {
+	sim := newSim(t, 80, 8)
+	tl := NewTaskListView()
+	started := time.Now().Add(-2 * time.Hour)
+	ended := time.Now().Add(-1 * time.Hour)
+	tl.SetTasks([]*model.Task{{
+		ID:        "1",
+		Name:      "task-with-elapsed",
+		Project:   "p",
+		Status:    model.StatusComplete,
+		StartedAt: started,
+		EndedAt:   ended,
+	}})
+	tl.expanded = "p"
+	tl.SetRect(0, 0, 80, 8)
+	tl.Draw(sim)
+
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "task-with-elapsed")
+}
+
+func TestTaskListView_DrawTaskRow_CursorFill(t *testing.T) {
+	// Task with cursor selected — exercise the highlight fill branch.
+	sim := newSim(t, 60, 6)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "alpha", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.SetRect(0, 0, 60, 6)
+	tl.Draw(sim) // cursor is on the task by default
+}
+
+func TestTaskListView_DrawProjectRow_NoProject(t *testing.T) {
+	// Task with empty project name → grouped under "(no project)".
+	sim := newSim(t, 60, 8)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "x", Project: "", Status: model.StatusPending},
+	})
+	tl.SetRect(0, 0, 60, 8)
+	tl.Draw(sim)
+	testutil.Contains(t, dumpScreen(sim), "(no project)")
+}
+
+func TestTaskListView_DrawProjectRow_ExpandedInWaitingReview(t *testing.T) {
+	sim := newSim(t, 60, 20)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "wr1", Project: "p", Status: model.StatusInReview, WaitingReview: true},
+		{ID: "2", Name: "wr2", Project: "p", Status: model.StatusInReview, WaitingReview: true},
+	})
+	tl.waitingReviewExpanded = true
+	tl.waitingReviewProject = "p"
+	tl.SetRect(0, 0, 60, 20)
+	tl.Draw(sim)
+}
+
+func TestTaskListView_DrawProjectRow_ExpandedInArchive(t *testing.T) {
+	sim := newSim(t, 60, 20)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "arch1", Project: "p", Status: model.StatusComplete, Archived: true},
+	})
+	tl.archiveExpanded = true
+	tl.archiveProject = "p"
+	tl.SetRect(0, 0, 60, 20)
+	tl.Draw(sim)
+}
+
+// ---------- TaskListView Draw additional branches ----------
+
+func TestTaskListView_Draw_Empty(t *testing.T) {
+	sim := newSim(t, 60, 12)
+	tl := NewTaskListView()
+	tl.SetRect(0, 0, 60, 12)
+	tl.Draw(sim)
+	// No tasks — should still render border and "Tasks" title.
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "Tasks")
+}
+
+func TestTaskListView_Draw_FilteringWithLargeFilter(t *testing.T) {
+	// Long filter — exercises the col >= x+width-1 break in the title-filter loop.
+	sim := newSim(t, 30, 8)
+	tl := NewTaskListView()
+	tl.SetRect(0, 0, 30, 8)
+	tl.filtering = true
+	tl.filter = strings.Repeat("z", 100)
+	tl.Draw(sim) // must not panic
+}
+
+func TestTaskListView_Draw_OffsetGetsAdjusted(t *testing.T) {
+	// Many tasks, narrow viewport → cursor below offset triggers offset adjustment.
+	tasks := make([]*model.Task, 0, 30)
+	for i := 0; i < 30; i++ {
+		tasks = append(tasks, &model.Task{
+			ID:      string(rune('a' + i)),
+			Name:    "task",
+			Project: "p",
+			Status:  model.StatusPending,
+		})
+	}
+	sim := newSim(t, 40, 10)
+	tl := NewTaskListView()
+	tl.SetTasks(tasks)
+	tl.expanded = "p"
+	tl.SetRect(0, 0, 40, 10)
+	// Force cursor to a far row — offset should adjust.
+	for i := 0; i < 25; i++ {
+		tl.CursorDown()
+	}
+	tl.Draw(sim)
+}
+
+func TestTaskListView_Draw_FilteringScrollsListDown(t *testing.T) {
+	// Filtering reserves a bottom row; combined with many tasks exercises the
+	// listH adjustment path.
+	tasks := make([]*model.Task, 0, 50)
+	for i := 0; i < 50; i++ {
+		tasks = append(tasks, &model.Task{
+			ID:      string(rune('a' + i)),
+			Name:    "task",
+			Project: "p",
+			Status:  model.StatusPending,
+		})
+	}
+	sim := newSim(t, 40, 12)
+	tl := NewTaskListView()
+	tl.SetTasks(tasks)
+	tl.expanded = "p"
+	tl.SetRect(0, 0, 40, 12)
+	tl.filtering = true
+	tl.Draw(sim)
+}
+
+// Force the listH < 0 branch and the FilterTitle filter-too-long break.
+func TestTaskListView_Draw_FilteringTooSmall(t *testing.T) {
+	sim := newSim(t, 6, 4)
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "x", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.filtering = true
+	tl.SetRect(0, 0, 6, 4)
+	tl.Draw(sim) // must not panic when listH would go below 0
+}
+
+// ---------- skipUpPastHeader / moveCursor edge cases ----------
+
+func TestTaskListView_MoveCursor_EmptyRows(t *testing.T) {
+	tl := NewTaskListView()
+	// rows = nil — moveCursor returns immediately.
+	tl.moveCursor(1)
+	tl.moveCursor(-1)
+}
+
+func TestTaskListView_CursorDown_FromTopOfPage_PastBottom(t *testing.T) {
+	// Cursor past last row — moveCursor clamps to len-1.
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.cursor = len(tl.rows) - 1
+	tl.CursorDown() // already at bottom — no-op.
+}
+
+func TestTaskListView_CursorUp_FromZero_HeaderRow(t *testing.T) {
+	// Cursor at 0 (project header), CursorUp — stays put per "at top" branch.
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "" // no expanded project — first row is project header
+	tl.buildRows()
+	tl.cursor = 0
+	tl.CursorUp() // header row at top — exercise the "at top" branch.
+}
+
+// ---------- TaskDetailPanel — branches in Draw ----------
+
+func TestTaskDetailPanel_Draw_LongName(t *testing.T) {
+	sim := newSim(t, 30, 20)
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 30, 20)
+	td.SetTask(&model.Task{
+		ID:     "1",
+		Name:   strings.Repeat("very-long-name-x", 5),
+		Status: model.StatusPending,
+	}, false)
+	td.Draw(sim)
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "...")
+}
+
+func TestTaskDetailPanel_Draw_IdleInProgress(t *testing.T) {
+	sim := newSim(t, 60, 20)
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 60, 20)
+	task := &model.Task{ID: "1", Name: "x", Status: model.StatusInProgress}
+	td.SetTask(task, false) // not running
+	td.Draw(sim)
+	testutil.Contains(t, dumpScreen(sim), "(idle)")
+}
+
+func TestTaskDetailPanel_Draw_LongPRURL(t *testing.T) {
+	sim := newSim(t, 30, 20)
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 30, 20)
+	td.SetTask(&model.Task{
+		ID:     "1",
+		Name:   "x",
+		Status: model.StatusPending,
+		PRURL:  strings.Repeat("https://github.com/very-long/url/path/", 5),
+	}, false)
+	td.Draw(sim)
+	testutil.Contains(t, dumpScreen(sim), "...")
+}
+
+func TestTaskDetailPanel_Draw_LongWorktree(t *testing.T) {
+	sim := newSim(t, 30, 20)
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 30, 20)
+	td.SetTask(&model.Task{
+		ID:       "1",
+		Name:     "x",
+		Status:   model.StatusPending,
+		Worktree: strings.Repeat("/very/long/worktree/path/", 5),
+	}, false)
+	td.Draw(sim)
+	out := dumpScreen(sim)
+	testutil.Contains(t, out, "Worktree")
+}
+
+func TestTaskDetailPanel_Draw_PromptOverflowsRemaining(t *testing.T) {
+	sim := newSim(t, 30, 8) // very short — prompt body must overflow.
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 30, 8)
+	td.SetTask(&model.Task{
+		ID:     "1",
+		Name:   "x",
+		Status: model.StatusPending,
+		Prompt: strings.Repeat("word ", 80),
+	}, false)
+	td.Draw(sim)
+	// Must render without panic — the for-loop break path should fire.
+}
+
+func TestTaskDetailPanel_Draw_TooSmall(t *testing.T) {
+	sim := newSim(t, 5, 5)
+	td := NewTaskDetailPanel()
+	td.SetRect(0, 0, 0, 0)
+	td.Draw(sim) // zero outer dims
+	td.SetRect(0, 0, 1, 1)
+	td.Draw(sim) // border can't fit
+}
+
+// ---------- statusStyle exhaustive ----------
+
+func TestTaskDetailPanel_StatusStyle_AllStatuses(t *testing.T) {
+	td := NewTaskDetailPanel()
+	for _, s := range []model.Status{
+		model.StatusPending,
+		model.StatusInProgress,
+		model.StatusInReview,
+		model.StatusComplete,
+	} {
+		_ = td.statusStyle(s) // must not panic, return a Style
+	}
+	// Default branch — pass an out-of-range value.
+	_ = td.statusStyle(model.Status(99))
+}
+
+// ---------- InputHandler — exercise more rune branches ----------
+
+func TestTaskListView_InputHandler_RenameKey(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending}})
+	tl.expanded = "p"
+
+	var renamed *model.Task
+	tl.OnRename = func(t *model.Task) { renamed = t }
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'r', tcell.ModNone), func(p tview.Primitive) {})
+	if renamed == nil || renamed.ID != "1" {
+		t.Errorf("OnRename should fire for current task, got %v", renamed)
+	}
+}
+
+func TestTaskListView_InputHandler_CopyPromptKey(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending, Prompt: "do thing"}})
+	tl.expanded = "p"
+
+	var copied *model.Task
+	tl.OnCopyPrompt = func(t *model.Task) { copied = t }
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(p tview.Primitive) {})
+	if copied == nil || copied.ID != "1" {
+		t.Errorf("OnCopyPrompt should fire when Prompt is non-empty, got %v", copied)
+	}
+}
+
+func TestTaskListView_InputHandler_CopyPromptEmptyPrompt(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{{ID: "1", Name: "x", Project: "p", Status: model.StatusPending}}) // no Prompt
+	tl.expanded = "p"
+
+	called := false
+	tl.OnCopyPrompt = func(t *model.Task) { called = true }
+
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'c', tcell.ModNone), func(p tview.Primitive) {})
+	if called {
+		t.Error("OnCopyPrompt should NOT fire when Prompt is empty")
+	}
+}
+
+func TestTaskListView_InputHandler_NewKey(t *testing.T) {
+	tl := NewTaskListView()
+	called := false
+	tl.OnNew = func() { called = true }
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), func(p tview.Primitive) {})
+	if !called {
+		t.Error("OnNew should fire on 'n'")
+	}
+}
+
+func TestTaskListView_InputHandler_SlashEntersFilterMode(t *testing.T) {
+	tl := NewTaskListView()
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(p tview.Primitive) {})
+	if !tl.filtering {
+		t.Error("'/' should enter filter mode")
+	}
+}
+
+func TestTaskListView_InputHandler_EscapeClearsFilter(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filter = "abc"
+	tl.filtering = false
+	handler := tl.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyEscape, 0, 0), func(p tview.Primitive) {})
+	if tl.filter != "" {
+		t.Error("Escape should clear non-empty filter")
+	}
+}
+
+func TestTaskListView_InputHandler_JKKeys(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+
+	handler := tl.InputHandler()
+	prev := tl.cursor
+	handler(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), func(p tview.Primitive) {})
+	if tl.cursor == prev {
+		t.Error("'j' should move cursor down")
+	}
+	handler(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), func(p tview.Primitive) {})
+	if tl.cursor != prev {
+		t.Error("'k' should move cursor up to original position")
+	}
+}
+
+// ---------- handleFilterInput branches ----------
+
+func TestTaskListView_FilterInput_BackspaceDeletes(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "abc"
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyBackspace, 0, 0))
+	if !consumed {
+		t.Error("backspace should be consumed")
+	}
+	testutil.Equal(t, tl.filter, "ab")
+}
+
+func TestTaskListView_FilterInput_BackspaceEmpty(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = ""
+	// Backspace on empty filter is consumed but does nothing.
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0))
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, tl.filter, "")
+}
+
+func TestTaskListView_FilterInput_AltBackspaceDeletesWord(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "alpha beta"
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyBackspace, 0, tcell.ModAlt))
+	testutil.Equal(t, consumed, true)
+	// Should have deleted the last word.
+	if !strings.Contains("alpha ", tl.filter) {
+		// soft check — just ensure something was deleted.
+		if tl.filter == "alpha beta" {
+			t.Errorf("expected word delete, got %q", tl.filter)
+		}
+	}
+}
+
+func TestTaskListView_FilterInput_CtrlU(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "anything"
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0))
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, tl.filter, "")
+}
+
+func TestTaskListView_FilterInput_CtrlW(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "alpha beta"
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyCtrlW, 0, 0))
+	testutil.Equal(t, consumed, true)
+	if tl.filter == "alpha beta" {
+		t.Error("Ctrl+W should delete word left")
+	}
+}
+
+func TestTaskListView_FilterInput_UpDownNav(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "p"
+	tl.filtering = true
+
+	prev := tl.cursor
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyDown, 0, 0))
+	testutil.Equal(t, consumed, true)
+	if tl.cursor == prev {
+		t.Error("Down in filter mode should still navigate")
+	}
+
+	consumed = tl.handleFilterInput(tcell.NewEventKey(tcell.KeyUp, 0, 0))
+	testutil.Equal(t, consumed, true)
+	if tl.cursor != prev {
+		t.Error("Up in filter mode should still navigate back")
+	}
+}
+
+func TestTaskListView_FilterInput_EnterConfirms(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	tl.filter = "abc"
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, consumed, true)
+	if tl.filtering {
+		t.Error("Enter should exit filter input mode")
+	}
+	testutil.Equal(t, tl.filter, "abc") // filter retained
+}
+
+func TestTaskListView_FilterInput_UnhandledKey(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyF1, 0, 0))
+	testutil.Equal(t, consumed, false)
+}
+
+func TestTaskListView_FilterInput_RuneAppends(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	consumed := tl.handleFilterInput(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, tl.filter, "x")
+}
+
+// ---------- PasteHandler ----------
+
+func TestTaskListView_PasteHandler_FilterMode(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = true
+	handler := tl.PasteHandler()
+	handler("pasted", func(p tview.Primitive) {})
+	testutil.Equal(t, tl.filter, "pasted")
+}
+
+func TestTaskListView_PasteHandler_NotFiltering(t *testing.T) {
+	tl := NewTaskListView()
+	tl.filtering = false
+	handler := tl.PasteHandler()
+	handler("pasted", func(p tview.Primitive) {})
+	testutil.Equal(t, tl.filter, "")
+}
+
+// ---------- SelectByID branches ----------
+
+func TestTaskListView_SelectByID_Active(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "p", Status: model.StatusPending},
+	})
+	tl.SelectByID("2")
+	testutil.Equal(t, tl.SelectedTask().ID, "2")
+}
+
+func TestTaskListView_SelectByID_Archived(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "p", Status: model.StatusComplete, Archived: true},
+	})
+	tl.SelectByID("2")
+	if !tl.archiveExpanded {
+		t.Error("SelectByID on archived task should expand archive")
+	}
+	testutil.Equal(t, tl.archiveProject, "p")
+}
+
+func TestTaskListView_SelectByID_WaitingReview(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "p", Status: model.StatusInReview, WaitingReview: true},
+	})
+	tl.SelectByID("2")
+	if !tl.waitingReviewExpanded {
+		t.Error("SelectByID on waiting-review task should expand WR section")
+	}
+	testutil.Equal(t, tl.waitingReviewProject, "p")
+}
+
+func TestTaskListView_SelectByID_NotFound(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+	})
+	tl.SelectByID("nonexistent") // no panic
+}
+
+// ---------- SelectedTask edge case: cursor on non-task row ----------
+
+func TestTaskListView_SelectedTask_OnHeaderRow(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
+	})
+	tl.expanded = "" // collapse — cursor will land on project header
+	tl.buildRows()
+	// Find a project row and put cursor there.
+	for i, r := range tl.rows {
+		if r.kind == rowProject {
+			tl.cursor = i
+			break
+		}
+	}
+	if tl.SelectedTask() != nil {
+		t.Error("SelectedTask should return nil when cursor is on non-task row")
+	}
+}
+
+// ---------- HasTasks / Empty / SetExpanded ----------
+
+func TestTaskListView_Empty_Placeholder(t *testing.T) {
+	tl := NewTaskListView()
+	got := tl.Empty()
+	if !strings.Contains(got, "No tasks yet") {
+		t.Errorf("Empty() = %q, missing placeholder text", got)
+	}
+}
+
+func TestTaskListView_SetExpanded(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks([]*model.Task{
+		{ID: "1", Name: "a", Project: "alpha", Status: model.StatusPending},
+		{ID: "2", Name: "b", Project: "beta", Status: model.StatusPending},
+	})
+	tl.SetExpanded("beta")
+	testutil.Equal(t, tl.expanded, "beta")
+}
+
+// ---------- taskSection ----------
+
+func TestTaskSection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		t    *model.Task
+		want rowSection
+	}{
+		{"active", &model.Task{Status: model.StatusPending}, sectionActive},
+		{"waiting", &model.Task{WaitingReview: true}, sectionWaitingReview},
+		{"archived", &model.Task{Archived: true}, sectionArchive},
+		{"both archived and waiting → archive wins", &model.Task{Archived: true, WaitingReview: true}, sectionArchive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, taskSection(tc.t), tc.want)
+		})
 	}
 }

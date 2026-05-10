@@ -1531,3 +1531,98 @@ func TestItoa(t *testing.T) {
 		t.Errorf("itoa(100) = %q", got)
 	}
 }
+
+func TestNewTaskForm_DrawProjectAC_NoOpWhenClosed(t *testing.T) {
+	f := NewNewTaskForm(map[string]config.Project{"p": {}}, "p", map[string]config.Backend{"b": {}}, "b")
+	f.SetRect(0, 0, 80, 24)
+
+	f.Draw(drawSim(t))
+}
+
+func TestNewTaskForm_HandleProjectKey_DownEnter(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"a": {}, "b": {}}, "a",
+		map[string]config.Backend{"x": {}}, "x",
+	)
+	f.focused = ntFieldProject
+	handler := f.InputHandler()
+
+	f.projInput = nil
+	f.projCursorPos = 0
+	f.updateProjectAC()
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), nil)
+
+	f.focused = ntFieldProject
+	f.projACOpen = false
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
+
+	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), nil)
+}
+
+func TestNewTaskForm_HandleProjectKey_HomeEnd(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"alpha": {}}, "alpha",
+		map[string]config.Backend{"x": {}}, "x",
+	)
+	f.focused = ntFieldProject
+	handler := f.InputHandler()
+	handler(tcell.NewEventKey(tcell.KeyHome, 0, 0), nil)
+	testutil.Equal(t, f.projCursorPos, 0)
+	handler(tcell.NewEventKey(tcell.KeyEnd, 0, 0), nil)
+	testutil.Equal(t, f.projCursorPos, len(f.projInput))
+}
+
+func TestNewTaskForm_HandleBranchKey(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"x": {}}, "x",
+	)
+	f.SetBranchOptions([]string{"origin/main", "origin/dev"})
+	f.focused = ntFieldBranch
+	handler := f.InputHandler()
+
+	handler(tcell.NewEventKey(tcell.KeyRune, 'd', 0), nil)
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, 0), nil)
+
+	f.focused = ntFieldBranch
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
+}
+
+func TestNewTaskForm_HandleSelectorKey_BackendUpEnter(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"a": {}, "b": {}}, "a",
+	)
+	f.focused = ntFieldBackend
+	handler := f.InputHandler()
+
+	handler(tcell.NewEventKey(tcell.KeyDown, 0, 0), nil)
+	testutil.Equal(t, f.focused, ntFieldPrompt)
+
+	f.focused = ntFieldBackend
+	handler(tcell.NewEventKey(tcell.KeyUp, 0, 0), nil)
+}
+
+func TestNewTaskForm_HandleProjectKey_TextEditing(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"abc": {}}, "abc",
+		map[string]config.Backend{"x": {}}, "x",
+	)
+	f.focused = ntFieldProject
+	f.projInput = []rune("abcd")
+	f.projCursorPos = 4
+	handler := f.InputHandler()
+
+	handler(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0), nil)
+	testutil.Equal(t, string(f.projInput), "abc")
+
+	handler(tcell.NewEventKey(tcell.KeyHome, 0, 0), nil)
+	testutil.Equal(t, f.projCursorPos, 0)
+
+	handler(tcell.NewEventKey(tcell.KeyDelete, 0, 0), nil)
+	testutil.Equal(t, string(f.projInput), "bc")
+
+	handler(tcell.NewEventKey(tcell.KeyEnd, 0, 0), nil)
+	handler(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0), nil)
+	testutil.Equal(t, len(f.projInput), 0)
+}

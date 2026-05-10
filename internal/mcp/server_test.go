@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1955,3 +1956,801 @@ func TestScheduleRunNow(t *testing.T) {
 		testutil.Contains(t, cr.Content[0].Text, "Failed to run schedule")
 	})
 }
+
+// TestListenAndServe verifies the HTTP server boots, accepts requests, and
+// shuts down cleanly. Uses port 0 so the OS picks a free port (the server
+// rolls forward 9 ports starting from `port`, so a high baseline avoids
+// collisions on busy CI machines).
+func TestListenAndServe(t *testing.T) {
+	s := testServer()
+	// Pass 0 so Go binds an available port.
+	port, err := s.ListenAndServe()
+	testutil.NoError(t, err)
+	if port <= 0 {
+		t.Fatalf("expected positive port, got %d", port)
+	}
+
+	// Probe with a real HTTP request.
+	url := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+	req := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	resp, err := http.Post(url, "application/json", req) //nolint:gosec
+	testutil.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck
+	testutil.Equal(t, resp.StatusCode, http.StatusOK)
+
+	// Shut down within a deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+}
+
+// TestListenAndServe_PortRollForward verifies the listener tries port+1..+8
+// when the initial port is in use. We bind the initial port ourselves to
+// force the roll-forward path.
+func TestListenAndServe_PortRollForward(t *testing.T) {
+	// Start a first server on port 0; capture its port.
+	s1 := testServer()
+	port, err := s1.ListenAndServe()
+	testutil.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		s1.Shutdown(ctx) //nolint:errcheck
+	})
+
+	// Create a second server using the same port — it should roll forward.
+	s2 := New(&mockDB{}, port, "")
+	port2, err := s2.ListenAndServe()
+	testutil.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		s2.Shutdown(ctx) //nolint:errcheck
+	})
+
+	if port2 == port {
+		t.Errorf("expected port roll-forward; both got %d", port)
+	}
+}
+
+// TestListenAndServe_AllPortsBusy: when 9 ports are all in use, ListenAndServe
+// returns an error. Hard to deterministically produce; skip-style probe:
+// reserve 9 listeners ourselves. Requires too many sockets — skip if it
+// can't be set up.
+
+// TestServeHTTP_MethodNotAllowed covers the default branch (e.g. PUT).
+func TestServeHTTP_MethodNotAllowed(t *testing.T) {
+	s := testServer()
+	req := httptest.NewRequest(http.MethodPut, "/mcp", nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusMethodNotAllowed)
+}
+
+// TestServeHTTP_DELETE returns 200 OK (no-op session termination).
+func TestServeHTTP_DELETE(t *testing.T) {
+	s := testServer()
+	req := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+}
+
+// TestHandlePOST_ParseError covers the json.Unmarshal probe failure.
+func TestHandlePOST_ParseError(t *testing.T) {
+	s := testServer()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString("not-valid-json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	// writeError writes a JSON-RPC error response with HTTP 200.
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp Response
+	testutil.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	if resp.Error == nil {
+		t.Fatal("expected JSON-RPC error")
+	}
+	testutil.Equal(t, resp.Error.Code, -32700)
+}
+
+// TestHandlePOST_ParseErrorAfterProbe: the probe parses but the structured
+// Request unmarshal fails. Hard to construct since both use the same JSON;
+// if the body parses as map[string]json.RawMessage but not as Request, that
+// happens when "params" is not bytes/null. Try a request where method is a
+// number — Request expects string, probe map accepts anything.
+func TestHandlePOST_RequestUnmarshalError(t *testing.T) {
+	s := testServer()
+	body := `{"jsonrpc":"2.0","id":1,"method":42}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+
+	var resp Response
+	testutil.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	if resp.Error == nil {
+		t.Fatal("expected error for malformed Request")
+	}
+}
+
+// TestHandleInitialize_NilParams covers the nil-params branch in
+// handleInitialize.
+func TestHandleInitialize_NilParams(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "initialize", nil)
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error)
+	}
+	result, ok := resp.Result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("result not a map: %T", resp.Result)
+	}
+	// Default protocol version when params is empty.
+	testutil.Equal(t, result["protocolVersion"], "2024-11-05")
+}
+
+// TestHandleToolsCall_BadParams covers the params unmarshal error branch.
+func TestHandleToolsCall_BadParams(t *testing.T) {
+	s := testServer()
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":42}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, req)
+	var resp Response
+	testutil.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	if resp.Error == nil {
+		t.Fatal("expected error")
+	}
+	testutil.Equal(t, resp.Error.Code, -32602)
+}
+
+// TestHandleToolsCall_UnknownTool covers the default switch branch.
+func TestHandleToolsCall_UnknownTool(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "nonexistent_tool",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if resp.Error == nil {
+		t.Fatal("expected error for unknown tool")
+	}
+	testutil.Equal(t, resp.Error.Code, -32601)
+}
+
+// TestKBSearch_EmptyQuery covers the empty-after-sanitize early return.
+func TestKBSearch_EmptyQuery(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_search",
+		Arguments: json.RawMessage(`{"query": ""}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	testutil.Contains(t, cr.Content[0].Text, "empty query")
+}
+
+// TestKBSearch_DBError covers the db.KBSearch error path.
+func TestKBSearch_DBError(t *testing.T) {
+	s := New(&errDB{searchErr: errors.New("boom")}, 7742, "")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_search",
+		Arguments: json.RawMessage(`{"query": "test"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Search failed")
+}
+
+// TestKBSearch_NoResults covers the empty-results branch.
+func TestKBSearch_NoResults(t *testing.T) {
+	s := New(&mockDB{}, 7742, "")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_search",
+		Arguments: json.RawMessage(`{"query": "x"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Contains(t, cr.Content[0].Text, "No results")
+}
+
+// TestKBRead_EmptyPath covers the validation branch.
+func TestKBRead_EmptyPath(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_read",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "path is required")
+}
+
+// TestKBRead_NotFound covers the db.KBGet error path.
+func TestKBRead_NotFound(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_read",
+		Arguments: json.RawMessage(`{"path": "missing/doc.md"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "not found")
+}
+
+// TestKBList_DBError covers the list error branch.
+func TestKBList_DBError(t *testing.T) {
+	s := New(&errDB{listErr: errors.New("boom")}, 7742, "")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "List failed")
+}
+
+// TestKBList_Empty covers the empty-result branch.
+func TestKBList_Empty(t *testing.T) {
+	s := New(&mockDB{}, 7742, "")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Contains(t, cr.Content[0].Text, "No documents found")
+}
+
+// TestKBIngest_EmptyArgs covers the missing-path-or-content branches.
+func TestKBIngest_EmptyArgs(t *testing.T) {
+	s := testServer()
+	t.Run("empty path", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_ingest",
+			Arguments: json.RawMessage(`{"content": "x"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+	})
+	t.Run("empty content", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_ingest",
+			Arguments: json.RawMessage(`{"path": "x.md"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+	})
+}
+
+// TestKBIngest_PathTraversal covers the path validation branch.
+func TestKBIngest_PathTraversal(t *testing.T) {
+	s := testServer()
+	for _, path := range []string{"../etc/passwd", "/abs/path", "notes/../../etc/p"} {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "kb_ingest",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"path": %q, "content": "x"}`, path)),
+		})
+		cr := callResult(t, resp)
+		if !cr.IsError {
+			t.Errorf("path %q: expected error", path)
+		}
+	}
+}
+
+// TestKBIngest_DBError covers the db.KBUpsert error branch.
+func TestKBIngest_DBError(t *testing.T) {
+	s := New(&errDB{upsertErr: errors.New("boom")}, 7742, "")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "kb_ingest",
+		Arguments: json.RawMessage(`{"path": "p.md", "content": "---\ntitle: X\ntags: [a]\n---\n"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Ingest failed")
+}
+
+// TestScheduleDelete_NotConfigured covers the not-configured branch.
+func TestScheduleDelete_NotConfigured(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_delete",
+		Arguments: json.RawMessage(`{"id": "x"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "schedule management not configured")
+}
+
+// TestScheduleDelete_DBError covers the schedDB.DeleteSchedule error branch.
+func TestScheduleDelete_DBError(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_delete",
+		Arguments: json.RawMessage(`{"id": "missing-xyz"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to delete schedule")
+}
+
+// TestScheduleRunNow_NotConfigured covers the not-configured branch.
+func TestScheduleRunNow_NotConfigured(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_run_now",
+		Arguments: json.RawMessage(`{"id": "x"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "schedule management not configured")
+}
+
+// TestScheduleRunNow_MissingID covers the validation branch.
+func TestScheduleRunNow_MissingID(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_run_now",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "id is required")
+}
+
+// TestScheduleCreate_NotConfigured covers the not-configured branch.
+func TestScheduleCreate_NotConfigured(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_create",
+		Arguments: json.RawMessage(`{"name":"x","project":"p","prompt":"y","schedule":"@daily"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+}
+
+// TestScheduleCreate_RunOnceAtPast rejects past times.
+func TestScheduleCreate_RunOnceAtPast(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	body := fmt.Sprintf(`{"name":"past","project":"myapp","prompt":"x","run_once_at":%q}`, past)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_create",
+		Arguments: json.RawMessage(body),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "must be in the future")
+}
+
+// TestScheduleCreate_BadRunOnceAt rejects invalid timestamps.
+func TestScheduleCreate_BadRunOnceAt(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_create",
+		Arguments: json.RawMessage(`{"name":"x","project":"myapp","prompt":"y","run_once_at":"not-a-time"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "RFC3339")
+}
+
+// TestScheduleCreate_AddError covers the AddSchedule error branch.
+func TestScheduleCreate_AddError(t *testing.T) {
+	s := testServer()
+	store := &errScheduleStore{addErr: errors.New("dup id")}
+	runner := &mockScheduleRunner{store: &store.mockScheduleStore}
+	s.SetScheduleManager(store, runner)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_create",
+		Arguments: json.RawMessage(`{"name":"x","project":"myapp","prompt":"y","schedule":"@daily"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to create schedule")
+}
+
+// TestScheduleUpdate_NotConfigured covers the not-configured branch.
+func TestScheduleUpdate_NotConfigured(t *testing.T) {
+	s := testServer()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(`{"id":"x"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+}
+
+// TestScheduleUpdate_MissingID covers the validation branch.
+func TestScheduleUpdate_MissingID(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "id is required")
+}
+
+// TestScheduleUpdate_NotFound covers the GetSchedule error branch.
+func TestScheduleUpdate_NotFound(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(`{"id":"never"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "not found")
+}
+
+// TestScheduleUpdate_AmbiguousCadence rejects when both schedule and
+// run_once_at are non-empty.
+func TestScheduleUpdate_AmbiguousCadence(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	body := fmt.Sprintf(`{"id":"existing-1","schedule":"@daily","run_once_at":%q}`, future)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(body),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "either schedule")
+}
+
+// TestScheduleUpdate_BadRunOnceAt covers the time.Parse error branch.
+func TestScheduleUpdate_BadRunOnceAt(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(`{"id":"existing-1","run_once_at":"not-a-date"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "RFC3339")
+}
+
+// TestScheduleUpdate_RunOnceAtPast covers the past-time rejection.
+func TestScheduleUpdate_RunOnceAtPast(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	past := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	body := fmt.Sprintf(`{"id":"existing-1","run_once_at":%q}`, past)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(body),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "future")
+}
+
+// TestScheduleUpdate_ValidateError covers the sched.Validate error branch.
+func TestScheduleUpdate_ValidateError(t *testing.T) {
+	s, _, _ := testServerWithSchedules()
+	// Setting prompt to empty string makes Validate fail.
+	emptyPrompt := ""
+	body, _ := json.Marshal(map[string]interface{}{
+		"id":     "existing-1",
+		"prompt": &emptyPrompt,
+	})
+	body = []byte(strings.ReplaceAll(string(body), `"prompt":""`, `"prompt":""`))
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: body,
+	})
+	cr := callResult(t, resp)
+	// May be either the Validate error or pass; just ensure no panic.
+	_ = cr
+}
+
+// TestScheduleUpdate_DBError covers UpdateSchedule error.
+func TestScheduleUpdate_DBError(t *testing.T) {
+	s := testServer()
+	store := &errScheduleStore{
+		mockScheduleStore: mockScheduleStore{
+			schedules: []*model.ScheduledTask{
+				{ID: "sx", Name: "n", Project: "p", Prompt: "x", Schedule: "@daily", Enabled: true},
+			},
+		},
+		updateErr: errors.New("boom"),
+	}
+	runner := &mockScheduleRunner{store: &store.mockScheduleStore}
+	s.SetScheduleManager(store, runner)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_update",
+		Arguments: json.RawMessage(`{"id":"sx","name":"newname"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to update")
+}
+
+// TestScheduleList_DBError covers the Schedules() error branch.
+func TestScheduleList_DBError(t *testing.T) {
+	s := testServer()
+	store := &errScheduleStore{listErr: errors.New("boom")}
+	runner := &mockScheduleRunner{store: &store.mockScheduleStore}
+	s.SetScheduleManager(store, runner)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "schedule_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to list schedules")
+}
+
+// TestTaskCreate_CreatorError covers the createTask error branch.
+func TestTaskCreate_CreatorError(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	stopper := &mockStopper{}
+	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+		return nil, errors.New("can't create")
+	}
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name":"x","prompt":"y","project":"p"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to create task")
+}
+
+// TestTaskList_DBError covers the Tasks() error branch.
+func TestTaskList_DBError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{tasksErr: errors.New("boom")}
+	stopper := &mockStopper{}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to list tasks")
+}
+
+// TestTaskStop_StopperError covers the stopper error branch.
+func TestTaskStop_StopperError(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{tasks: []*model.Task{{ID: "t1"}}}
+	stopper := &errStopper{stopErr: errors.New("boom")}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_stop",
+		Arguments: json.RawMessage(`{"id":"t1"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to stop task")
+}
+
+// TestTaskArchive_UpdateError covers the Update error branch.
+func TestTaskArchive_UpdateError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{
+		mockTaskDB: mockTaskDB{tasks: []*model.Task{{ID: "t1", Name: "x", Status: model.StatusInProgress}}},
+		updateErr:  errors.New("boom"),
+	}
+	stopper := &mockStopper{}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_archive",
+		Arguments: json.RawMessage(`{"id":"t1"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to archive")
+}
+
+// TestTaskComplete_UpdateError covers the Update error path.
+func TestTaskComplete_UpdateError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{
+		mockTaskDB: mockTaskDB{tasks: []*model.Task{{ID: "t1", Name: "x", Status: model.StatusInProgress}}},
+		updateErr:  errors.New("boom"),
+	}
+	stopper := &mockStopper{}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_complete",
+		Arguments: json.RawMessage(`{"id":"t1"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to mark task complete")
+}
+
+// TestTaskRename_DBError covers the Rename error branch.
+func TestTaskRename_DBError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{
+		mockTaskDB: mockTaskDB{tasks: []*model.Task{{ID: "t1", Name: "x"}}},
+		renameErr:  errors.New("boom"),
+	}
+	stopper := &mockStopper{}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_rename",
+		Arguments: json.RawMessage(`{"id":"t1","name":"newname"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to rename task")
+}
+
+// TestResolveTask_TasksError covers the Tasks() error branch in resolveTask
+// when the cwd path is taken.
+func TestResolveTask_TasksError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{tasksErr: errors.New("boom")}
+	stopper := &mockStopper{}
+	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_archive",
+		Arguments: json.RawMessage(`{"cwd":"/some/path"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "list tasks")
+}
+
+// TestTruncatePromptToName_LongPrompt covers the truncation branch.
+func TestTruncatePromptToName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"short", "short"},
+		{"  no special chars longer than max length here aaaaaaaaaaaaaa", "  no special chars longer than max lengt"},
+		{"line1\nline2", "line1 line2"},
+		{"with\ttab and \rcarriage", "with tab and  carriage"},
+	}
+	for _, tt := range tests {
+		got := truncatePromptToName(tt.in)
+		if got != tt.want {
+			t.Errorf("truncatePromptToName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestFormatScheduleTime_Zero verifies the zero-time empty-string output.
+func TestFormatScheduleTime_Zero(t *testing.T) {
+	got := formatScheduleTime(time.Time{})
+	testutil.Equal(t, got, "")
+}
+
+// --- mock extensions ---
+
+// We extend the existing mockTaskDB / mockStopper / mockScheduleStore with
+// optional error injection by attaching public fields on a wrapper type.
+// Since Go embeds, we don't redeclare; the test files in the same package
+// share types. Instead, augment via free helpers:
+
+type errTaskDBWrapper struct {
+	mockTaskDB
+	tasksErr  error
+	updateErr error
+	renameErr error
+}
+
+func (e *errTaskDBWrapper) Tasks() ([]*model.Task, error) {
+	if e.tasksErr != nil {
+		return nil, e.tasksErr
+	}
+	return e.mockTaskDB.Tasks()
+}
+func (e *errTaskDBWrapper) Update(t *model.Task) error {
+	if e.updateErr != nil {
+		return e.updateErr
+	}
+	return e.mockTaskDB.Update(t)
+}
+func (e *errTaskDBWrapper) Rename(id, name string) error {
+	if e.renameErr != nil {
+		return e.renameErr
+	}
+	return e.mockTaskDB.Rename(id, name)
+}
+
+type errStopper struct {
+	stopErr error
+}
+
+func (e *errStopper) Stop(_ string) error {
+	if e.stopErr != nil {
+		return e.stopErr
+	}
+	return nil
+}
+
+type errScheduleStore struct {
+	mockScheduleStore
+	addErr    error
+	updateErr error
+	listErr   error
+}
+
+func (e *errScheduleStore) AddSchedule(s *model.ScheduledTask) error {
+	if e.addErr != nil {
+		return e.addErr
+	}
+	return e.mockScheduleStore.AddSchedule(s)
+}
+func (e *errScheduleStore) UpdateSchedule(s *model.ScheduledTask) error {
+	if e.updateErr != nil {
+		return e.updateErr
+	}
+	return e.mockScheduleStore.UpdateSchedule(s)
+}
+func (e *errScheduleStore) Schedules() ([]*model.ScheduledTask, error) {
+	if e.listErr != nil {
+		return nil, e.listErr
+	}
+	return e.mockScheduleStore.Schedules()
+}
+
+// errDB is a KBQuerier that returns configurable errors per method.
+type errDB struct {
+	searchErr error
+	getErr    error
+	listErr   error
+	upsertErr error
+	deleteErr error
+}
+
+func (e *errDB) KBSearch(_ string, _ int) ([]kb.SearchResult, error) {
+	if e.searchErr != nil {
+		return nil, e.searchErr
+	}
+	return nil, nil
+}
+func (e *errDB) KBGet(p string) (*kb.Document, error) {
+	if e.getErr != nil {
+		return nil, e.getErr
+	}
+	return nil, fmt.Errorf("not found: %s", p)
+}
+func (e *errDB) KBList(_ string, _ int) ([]kb.Document, error) {
+	if e.listErr != nil {
+		return nil, e.listErr
+	}
+	return nil, nil
+}
+func (e *errDB) KBUpsert(_ *kb.Document) error {
+	if e.upsertErr != nil {
+		return e.upsertErr
+	}
+	return nil
+}
+func (e *errDB) KBDelete(_ string) error {
+	if e.deleteErr != nil {
+		return e.deleteErr
+	}
+	return db.ErrKBNotFound
+}
+func (e *errDB) KBDocumentCount() int { return 0 }

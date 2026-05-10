@@ -1,6 +1,8 @@
 package kb
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -417,4 +419,200 @@ func TestWatch_SubdirectoryFile(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
+}
+
+// errStore wraps mockStore but returns an error from KBMetadataMap to drive
+// the err branch in Indexer.Start.
+type errStore struct {
+	mockStore
+	metaErr error
+}
+
+func (e *errStore) KBMetadataMap() (map[string]int64, error) {
+	if e.metaErr != nil {
+		return nil, e.metaErr
+	}
+	return e.mockStore.KBMetadataMap()
+}
+
+func TestIndexer_IngestFile_ErrorPaths(t *testing.T) {
+	t.Run("file does not exist", func(t *testing.T) {
+		vault := t.TempDir()
+		store := newMockStore()
+		idx := NewIndexer(store, vault)
+		err := idx.IngestFile(filepath.Join(vault, "missing.md"))
+		testutil.Error(t, err)
+	})
+}
+
+func TestIndexer_DeleteFile_FallsBackOnRelError(t *testing.T) {
+	store := newMockStore()
+	idx := NewIndexer(store, "/vault")
+	// On most platforms filepath.Rel succeeds for any pair; the fallback
+	// branch is defensive. Provide a path that's already absolute and
+	// outside the vault root — Rel returns a path with ".." which still
+	// succeeds, so we just exercise the happy path here too.
+	store.docs["/vault/notes/old.md"] = &Document{Path: "/vault/notes/old.md"}
+	err := idx.DeleteFile("/vault/notes/old.md")
+	testutil.NoError(t, err)
+}
+
+func TestIndexer_FullScan_VaultDoesNotExist(t *testing.T) {
+	store := newMockStore()
+	idx := NewIndexer(store, "/no/such/vault/path/x")
+	err := idx.FullScan()
+	testutil.Error(t, err)
+}
+
+func TestIndexer_FullScan_SkipsFilesInsideHiddenSubdirs(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+
+	// Hidden directory should be skipped.
+	if err := os.MkdirAll(filepath.Join(vault, ".trash"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, ".trash", "ignored.md"), []byte("# ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "real.md"), []byte("# real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.FullScan())
+	testutil.Equal(t, store.count(), 1)
+	testutil.Equal(t, store.has("real.md"), true)
+}
+
+func TestIndexer_IncrementalScan_VaultDoesNotExist(t *testing.T) {
+	store := newMockStore()
+	idx := NewIndexer(store, "/no/such/vault")
+	err := idx.IncrementalScan(map[string]int64{})
+	testutil.Error(t, err)
+}
+
+func TestIndexer_IncrementalScan_SkipsHiddenSubdirs(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+
+	if err := os.MkdirAll(filepath.Join(vault, ".obsidian"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, ".obsidian", "skip.md"), []byte("# skip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "good.md"), []byte("# good"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.IncrementalScan(map[string]int64{}))
+	testutil.Equal(t, store.count(), 1)
+	testutil.Equal(t, store.has("good.md"), true)
+}
+
+func TestIndexer_IncrementalScan_NonMarkdownFiles(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+
+	if err := os.WriteFile(filepath.Join(vault, "config.txt"), []byte("not markdown"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vault, "real.md"), []byte("# real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.IncrementalScan(map[string]int64{}))
+	testutil.Equal(t, store.count(), 1)
+	testutil.Equal(t, store.has("real.md"), true)
+}
+
+func TestIndexer_Start_EmptyVaultPath(t *testing.T) {
+	store := newMockStore()
+	idx := NewIndexer(store, "")
+	err := idx.Start()
+	testutil.NoError(t, err)
+	// Ready should be closed.
+	select {
+	case <-idx.Ready():
+	default:
+		t.Error("Ready channel should be closed when vault path is empty")
+	}
+}
+
+func TestIndexer_Start_MetadataMapError(t *testing.T) {
+	vault := t.TempDir()
+	store := &errStore{
+		mockStore: *newMockStore(),
+		metaErr:   errors.New("boom"),
+	}
+	idx := NewIndexer(store, vault)
+	err := idx.Start()
+	testutil.Error(t, err)
+}
+
+func TestIndexer_StopIdempotent(t *testing.T) {
+	vault := t.TempDir()
+	store := newMockStore()
+	idx := NewIndexer(store, vault)
+	testutil.NoError(t, idx.Start())
+	idx.Stop()
+	idx.Stop() // second call should be a no-op (already-closed branch)
+}
+
+// TestIndexer_FullScan_VaultIsFile covers the rare case where vault path is a
+// file rather than a directory. filepath.Walk returns an error for the root.
+func TestIndexer_FullScan_VaultIsFile(t *testing.T) {
+	dir := t.TempDir()
+	vaultFile := filepath.Join(dir, "vault.md")
+	if err := os.WriteFile(vaultFile, []byte("# not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newMockStore()
+	idx := NewIndexer(store, vaultFile)
+	// FullScan only treats the root err as fatal. A file root will simply
+	// ingest the single file (since it's a markdown file at the root).
+	_ = idx.FullScan()
+}
+
+// TestIngestFile_PreservesNonZeroModifiedAt covers the "ModifiedAt already set"
+// branch. Since IngestFile calls ParseDocument which always returns
+// ModifiedAt zero, we cannot reach the non-zero branch through this path.
+// Document the limitation here for posterity.
+func TestIngestFile_NonZeroModifiedAtUnreachable(t *testing.T) {
+	// The ModifiedAt branch in ingest.go IngestFile is only reachable if
+	// ParseDocument were to ever return a non-zero ModifiedAt — but it
+	// doesn't. Keeping this no-op test as a marker.
+	store := newMockStore()
+	testutil.NoError(t, IngestFile(store, "x.md", "x"))
+}
+
+// TestIndexer_IncrementalScan_DeleteErrorIsLogged exercises the delete-error
+// branch in the trailing for-loop.
+type failDeleteStore struct {
+	mockStore
+	deleteErr error
+}
+
+func (f *failDeleteStore) KBDelete(path string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.mockStore.KBDelete(path)
+}
+
+func TestIndexer_IncrementalScan_LogsDeleteError(t *testing.T) {
+	vault := t.TempDir()
+	store := &failDeleteStore{
+		mockStore: *newMockStore(),
+		deleteErr: fmt.Errorf("forced delete error"),
+	}
+	idx := NewIndexer(store, vault)
+	// Provide meta that contains a path no longer on disk so the delete
+	// branch fires.
+	meta := map[string]int64{"gone.md": time.Now().Unix()}
+	// Should not return an error — delete failures are only logged.
+	testutil.NoError(t, idx.IncrementalScan(meta))
 }

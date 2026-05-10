@@ -1,9 +1,13 @@
 package gitpanel
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/testutil"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 func TestFilePanel_SetFiles(t *testing.T) {
@@ -803,4 +807,375 @@ func TestFilePanel_Clear(t *testing.T) {
 	if fp.SelectedFile() != nil {
 		t.Error("SelectedFile after Clear should be nil")
 	}
+}
+
+// newSim creates a SimulationScreen of the given dimensions and registers Fini cleanup.
+func newSim(t *testing.T, w, h int) tcell.SimulationScreen {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	sim.SetSize(w, h)
+	t.Cleanup(sim.Fini)
+	return sim
+}
+
+// readScreen reads all cells of the simulation screen as a single newline-joined string.
+func readScreen(sim tcell.SimulationScreen) string {
+	w, h := sim.Size()
+	var lines []string
+	for row := 0; row < h; row++ {
+		var buf []rune
+		for col := 0; col < w; col++ {
+			r, _, _, _ := sim.GetContent(col, row)
+			buf = append(buf, r)
+		}
+		lines = append(lines, string(buf))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ---------- FilePanel ----------
+
+func TestFilePanel_FocusedAccessors(t *testing.T) {
+	fp := NewFilePanel()
+	if fp.Focused() {
+		t.Error("default focused should be false")
+	}
+	fp.SetFocused(true)
+	if !fp.Focused() {
+		t.Error("SetFocused(true) should set focus")
+	}
+	fp.SetFocused(false)
+	if fp.Focused() {
+		t.Error("SetFocused(false) should clear focus")
+	}
+}
+
+func TestFilePanel_CursorIndex(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+		{Status: "D", Path: "c.go"},
+	})
+	testutil.Equal(t, fp.CursorIndex(), 0)
+	fp.CursorDown()
+	testutil.Equal(t, fp.CursorIndex(), 1)
+	fp.CursorDown()
+	testutil.Equal(t, fp.CursorIndex(), 2)
+	fp.CursorUp()
+	testutil.Equal(t, fp.CursorIndex(), 1)
+}
+
+func TestFilePanel_Draw_Empty(t *testing.T) {
+	sim := newSim(t, 40, 10)
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 10)
+	fp.Draw(sim)
+	// Empty panel renders "No changes".
+	testutil.Contains(t, readScreen(sim), "No changes")
+}
+
+func TestFilePanel_Draw_TooSmall(t *testing.T) {
+	sim := newSim(t, 5, 5)
+	fp := NewFilePanel()
+	// width/height too small for border
+	fp.Box.SetRect(0, 0, 0, 0)
+	fp.Draw(sim) // must not panic
+	fp.Box.SetRect(0, 0, 1, 1)
+	fp.Draw(sim) // panel inner is empty — early return after border draw
+}
+
+func TestFilePanel_Draw_WithFiles(t *testing.T) {
+	sim := newSim(t, 50, 15)
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 50, 15)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "alpha.go"},
+		{Status: "A", Path: "beta.go"},
+	})
+	fp.SetFocused(true)
+	fp.Draw(sim)
+
+	out := readScreen(sim)
+	testutil.Contains(t, out, "Files (2)")
+	testutil.Contains(t, out, "alpha.go")
+	testutil.Contains(t, out, "beta.go")
+}
+
+func TestFilePanel_Draw_LongPath(t *testing.T) {
+	// A path longer than the panel triggers the truncation branch.
+	sim := newSim(t, 30, 10)
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 30, 10)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a/very/deeply/nested/longpath/with/lots/of/segments/file.go"},
+	})
+	fp.Draw(sim)
+	out := readScreen(sim)
+	// Should show "…" prefix when truncated.
+	testutil.Contains(t, out, "…")
+}
+
+func TestFilePanel_Draw_DirExpansionState(t *testing.T) {
+	sim := newSim(t, 50, 15)
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 50, 15)
+	fp.dirChildren["src/"] = []gitutil.ChangedFile{
+		{Status: "M", Path: "src/main.go"},
+	}
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "src/", IsDir: true},
+		{Status: "A", Path: "z.go"},
+	})
+	// src/ should be expanded (auto-expanded on SetFiles since cursor=0 is dir).
+	fp.SetFocused(true)
+	fp.Draw(sim)
+	out := readScreen(sim)
+	// Expanded indicator
+	testutil.Contains(t, out, "▼")
+	testutil.Contains(t, out, "main.go")
+
+	// Collapse it manually and redraw — should show ▶ instead.
+	fp.expanded["src/"] = false
+	fp.buildRows()
+	fp.Draw(sim)
+	out2 := readScreen(sim)
+	testutil.Contains(t, out2, "▶")
+}
+
+func TestFilePanel_MouseHandler_LeftClick(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+		{Status: "D", Path: "c.go"},
+	})
+
+	clicked := false
+	fp.OnClick = func() { clicked = true }
+
+	handler := fp.MouseHandler()
+	if handler == nil {
+		t.Fatal("MouseHandler should not be nil")
+	}
+
+	focusedSet := false
+	setFocus := func(p tview.Primitive) { focusedSet = true }
+
+	// Click outside the rect — not consumed.
+	out := tcell.NewEventMouse(100, 100, tcell.Button1, 0)
+	consumed, _ := handler(tview.MouseLeftClick, out, setFocus)
+	if consumed {
+		t.Error("click outside rect should not be consumed")
+	}
+	if clicked {
+		t.Error("OnClick should not fire when click is outside the rect")
+	}
+
+	// Click on a row inside the rect. Box.GetInnerRect for an unstyled Box
+	// returns the same rect, so ey=0. clickedRow = offset + (my - ey - 1).
+	// With my=3, that's row 2 in the file list.
+	in := tcell.NewEventMouse(5, 3, tcell.Button1, 0)
+	consumed, _ = handler(tview.MouseLeftClick, in, setFocus)
+	if !consumed {
+		t.Error("click inside rect should be consumed")
+	}
+	if !clicked {
+		t.Error("OnClick should fire on left click")
+	}
+	if !focusedSet {
+		t.Error("setFocus should be called")
+	}
+	// Cursor should have moved to clickedRow=2.
+	testutil.Equal(t, fp.CursorIndex(), 2)
+}
+
+func TestFilePanel_MouseHandler_LeftDown(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+	})
+
+	handler := fp.MouseHandler()
+	called := false
+	setFocus := func(p tview.Primitive) { called = true }
+
+	// MouseLeftDown also focuses.
+	consumed, _ := handler(tview.MouseLeftDown, tcell.NewEventMouse(2, 2, tcell.Button1, 0), setFocus)
+	if !consumed {
+		t.Error("MouseLeftDown should be consumed")
+	}
+	if !called {
+		t.Error("setFocus should be called for MouseLeftDown")
+	}
+}
+
+func TestFilePanel_MouseHandler_Scroll(t *testing.T) {
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+		{Status: "A", Path: "b.go"},
+		{Status: "D", Path: "c.go"},
+	})
+
+	handler := fp.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	// Scroll down moves cursor.
+	prev := fp.CursorIndex()
+	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	if !consumed {
+		t.Error("scroll down should be consumed")
+	}
+	if fp.CursorIndex() == prev {
+		t.Error("scroll down should move cursor")
+	}
+
+	// Scroll up reverses.
+	consumed, _ = handler(tview.MouseScrollUp, tcell.NewEventMouse(2, 2, tcell.ButtonNone, 0), setFocus)
+	if !consumed {
+		t.Error("scroll up should be consumed")
+	}
+	testutil.Equal(t, fp.CursorIndex(), prev)
+}
+
+func TestFilePanel_MouseHandler_ClickOutOfRowRange(t *testing.T) {
+	// Click at a y that maps to clickedRow >= len(rows) — must not panic.
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "only.go"},
+	})
+
+	handler := fp.MouseHandler()
+	setFocus := func(p tview.Primitive) {}
+
+	// Click way past the row.
+	consumed, _ := handler(tview.MouseLeftClick, tcell.NewEventMouse(5, 18, tcell.Button1, 0), setFocus)
+	if !consumed {
+		t.Error("click inside rect (even past data) should still be consumed")
+	}
+	// Cursor should NOT have changed (clicked row out of range).
+	testutil.Equal(t, fp.CursorIndex(), 0)
+}
+
+func TestFilePanel_MouseHandler_NilOnClickOk(t *testing.T) {
+	// OnClick is optional — nil-safe.
+	fp := NewFilePanel()
+	fp.Box.SetRect(0, 0, 40, 20)
+	fp.SetFiles([]gitutil.ChangedFile{
+		{Status: "M", Path: "a.go"},
+	})
+	fp.OnClick = nil
+
+	handler := fp.MouseHandler()
+	consumed, _ := handler(tview.MouseLeftClick, tcell.NewEventMouse(2, 2, tcell.Button1, 0), func(p tview.Primitive) {})
+	if !consumed {
+		t.Error("click with nil OnClick should still consume")
+	}
+}
+
+// ---------- GitPanel ----------
+
+func TestGitPanel_SetFocused(t *testing.T) {
+	gp := NewGitPanel()
+	gp.SetFocused(true)
+	if !gp.focused {
+		t.Error("SetFocused(true) should set focus")
+	}
+	gp.SetFocused(false)
+	if gp.focused {
+		t.Error("SetFocused(false) should clear focus")
+	}
+}
+
+func TestGitPanel_Draw_Loading(t *testing.T) {
+	sim := newSim(t, 40, 12)
+	gp := NewGitPanel()
+	gp.Box.SetRect(0, 0, 40, 12)
+	gp.Draw(sim)
+	// Initially loaded=false → "Loading..." appears.
+	testutil.Contains(t, readScreen(sim), "Loading...")
+}
+
+func TestGitPanel_Draw_TooSmall(t *testing.T) {
+	sim := newSim(t, 5, 5)
+	gp := NewGitPanel()
+	gp.Box.SetRect(0, 0, 0, 0)
+	gp.Draw(sim) // must not panic on zero dims
+	gp.Box.SetRect(0, 0, 1, 1)
+	gp.Draw(sim) // border too small — early return inside Draw
+}
+
+func TestGitPanel_Draw_WithFocusAndContent(t *testing.T) {
+	sim := newSim(t, 60, 20)
+	gp := NewGitPanel()
+	gp.Box.SetRect(0, 0, 60, 20)
+	gp.SetFocused(true)
+	gp.SetStatus(
+		" M src/foo.go\n A new.go\nD removed.go",
+		"src/foo.go | 2 +-",
+		"M src/foo.go",
+	)
+	gp.Draw(sim)
+
+	out := readScreen(sim)
+	testutil.Contains(t, out, "Git Status")
+	testutil.Contains(t, out, "Files")
+	testutil.Contains(t, out, "Diff")
+	testutil.Contains(t, out, "BRANCH")
+	testutil.Contains(t, out, "src/foo.go")
+}
+
+func TestGitPanel_Draw_EmptyState(t *testing.T) {
+	sim := newSim(t, 40, 12)
+	gp := NewGitPanel()
+	gp.Box.SetRect(0, 0, 40, 12)
+	// Loaded but no content — should show "Clean — no changes".
+	gp.SetStatus("", "", "")
+	gp.Draw(sim)
+	testutil.Contains(t, readScreen(sim), "Clean")
+}
+
+func TestGitPanel_StatusLineStyle(t *testing.T) {
+	gp := NewGitPanel()
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{"modified", " M file.go"},
+		{"modified-staged", "MM file.go"},
+		{"added", " A new.go"},
+		{"untracked", "?? untracked.go"},
+		{"deleted", " D gone.go"},
+		{"unknown", " X weird.go"},
+		{"too-short", "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Call should not panic and return a Style.
+			_ = gp.statusLineStyle(tc.line)
+		})
+	}
+}
+
+func TestGitPanel_Draw_TruncatesLongLines(t *testing.T) {
+	// Lines longer than panel inner width must be truncated.
+	sim := newSim(t, 20, 10) // inner ~18 cols
+	gp := NewGitPanel()
+	gp.Box.SetRect(0, 0, 20, 10)
+	long := strings.Repeat("x", 100)
+	gp.SetStatus(" M "+long, "", "")
+	gp.Draw(sim) // must not panic
+
+	// Verify "…" appears (truncation marker).
+	out := readScreen(sim)
+	testutil.Contains(t, out, "…")
 }

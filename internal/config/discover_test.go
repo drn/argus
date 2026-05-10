@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -90,5 +91,48 @@ func TestDiscoverVaultsIn(t *testing.T) {
 
 		got := discoverVaultsIn(base)
 		testutil.DeepEqual(t, got, []string{filepath.Join(base, "Vault")})
+	})
+}
+
+func TestDefaultMetisVaultPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("HOME not used on windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := DefaultMetisVaultPath()
+	want := filepath.Join(home, "Library/Mobile Documents/iCloud~md~obsidian/Documents", "Metis")
+	testutil.Equal(t, got, want)
+}
+
+func TestDiscoverICloudVaults(t *testing.T) {
+	t.Run("returns nil when iCloud base does not exist", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		got := DiscoverICloudVaults()
+		testutil.Nil(t, got)
+	})
+
+	t.Run("discovers vaults under the iCloud base", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("HOME not used on windows")
+		}
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		base := filepath.Join(home, "Library/Mobile Documents/iCloud~md~obsidian/Documents")
+		if err := os.MkdirAll(filepath.Join(base, "Metis", ".obsidian"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(base, "Argus", ".obsidian"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		got := DiscoverICloudVaults()
+		testutil.DeepEqual(t, got, []string{
+			filepath.Join(base, "Argus"),
+			filepath.Join(base, "Metis"),
+		})
 	})
 }

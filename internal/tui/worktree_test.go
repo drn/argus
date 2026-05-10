@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestCountOrphanedWorktrees(t *testing.T) {
@@ -144,4 +145,27 @@ func TestSweepOrphanedWorktrees_RealRepo(t *testing.T) {
 	if checkBranch() {
 		t.Error("argus/orphan-task branch should have been deleted")
 	}
+}
+
+func TestCountOrphanedWorktrees_NoneFound(t *testing.T) {
+	root := t.TempDir()
+	count := countOrphanedWorktrees(root, map[string]bool{})
+	testutil.Equal(t, count, 0)
+}
+
+func TestCountOrphanedWorktrees_DetectsOrphans(t *testing.T) {
+	root := t.TempDir()
+
+	orphan := filepath.Join(root, "proj", "orphan-task")
+	if err := mkdirAll(orphan); err != nil {
+		t.Fatal(err)
+	}
+	count := countOrphanedWorktrees(root, map[string]bool{})
+	testutil.Equal(t, count, 1)
+}
+
+func TestSweepOrphanedWorktrees_Empty(t *testing.T) {
+	root := t.TempDir()
+	swept := sweepOrphanedWorktrees(root, map[string]bool{}, map[string]string{})
+	testutil.Equal(t, swept, 0)
 }

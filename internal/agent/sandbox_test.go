@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
@@ -590,4 +592,36 @@ func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	if cleanup != nil {
 		t.Error("cleanup should be nil when sandbox disabled")
 	}
+}
+
+// TestResetSandboxCache flips sandboxExists and confirms ResetSandboxCache
+// re-runs the sync.Once probe. Sequential: it mutates the package-level
+// sandboxOnce/sandboxExists; never call t.Parallel here.
+func TestResetSandboxCache(t *testing.T) {
+
+	_ = IsSandboxAvailable()
+
+	ResetSandboxCache()
+
+	testutil.Equal(t, sandboxExists, false)
+
+	got := IsSandboxAvailable()
+
+	testutil.Equal(t, sandboxExists, got)
+}
+
+// TestSandbox_IsAvailableConcurrent exercises the sync.Once initializer
+// concurrently to ensure the cached path is safe under parallel callers.
+func TestSandbox_IsAvailableConcurrent(t *testing.T) {
+	ResetSandboxCache()
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_ = IsSandboxAvailable()
+		}()
+	}
+	wg.Wait()
 }
