@@ -450,10 +450,28 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	// Stop the session if running.
 	_ = s.runner.Stop(id)
 
+	// Remove session log file.
+	os.Remove(agent.SessionLogPath(id)) //nolint:errcheck,gosec // G304: id was validated by db.Get above; SessionLogPath roots at ~/.argus/sessions/<id>.log
+
 	if err := s.db.Delete(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Clean up worktree and branch in background — git operations can take seconds.
+	// Mirrors tui.App.deleteTask so worktrees don't linger as orphans until the next
+	// completed-task prune sweep.
+	cfg := s.db.Config()
+	worktree, branch := task.Worktree, task.Branch
+	go func() {
+		repoDir := agent.ResolveDir(task, cfg)
+		if worktree != "" {
+			agent.RemoveWorktreeAndBranch(worktree, branch, repoDir)
+		} else if branch != "" && repoDir != "" {
+			agent.DeleteBranch(repoDir, branch)
+			agent.DeleteRemoteBranch(repoDir, branch)
+		}
+	}()
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

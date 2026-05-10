@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
@@ -412,6 +414,85 @@ func TestHandleDeleteTask(t *testing.T) {
 	// Verify deleted.
 	got, _ := d.Get(task.ID)
 	testutil.Nil(t, got)
+}
+
+// Regression: DELETE /api/tasks/{id} must clean up the worktree directory and
+// branch, mirroring the TUI's deleteTask. Otherwise the worktree lingers as an
+// orphan until the next completed-task prune sweep, making it look like
+// completion is what triggered worktree removal.
+func TestHandleDeleteTask_RemovesWorktree(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	repoDir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...) //nolint:gosec // G204: git subprocess with controlled args in test
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", ".")
+	runGit("commit", "-m", "init")
+
+	wtPath := filepath.Join(t.TempDir(), ".argus", "worktrees", "proj", "delete-me")
+	branch := "argus/delete-me"
+	runGit("worktree", "add", "-b", branch, wtPath, "HEAD")
+
+	testutil.NoError(t, d.SetProject("proj", config.Project{Path: repoDir}))
+	task := &model.Task{
+		Name:     "delete-me",
+		Project:  "proj",
+		Worktree: wtPath,
+		Branch:   branch,
+		Status:   model.StatusInReview,
+	}
+	testutil.NoError(t, d.Add(task))
+
+	req := authedReq("DELETE", "/api/tasks/"+task.ID, "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	got, _ := d.Get(task.ID)
+	testutil.Nil(t, got)
+
+	// Cleanup runs in a goroutine. Branch deletion is the last step in
+	// RemoveWorktreeAndBranch, so polling on the branch waits for the whole
+	// goroutine to finish.
+	branchListCmd := func() *exec.Cmd {
+		return exec.Command("git", "-C", repoDir, "branch", "--list", branch) //nolint:gosec // G204: git subprocess with controlled args in test
+	}
+	branchGone := func() bool {
+		out, err := branchListCmd().CombinedOutput()
+		if err != nil {
+			return false
+		}
+		return strings.TrimSpace(string(out)) == ""
+	}
+	// 10s budget to absorb slow CI runners; goroutine completes in ms locally.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if branchGone() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("worktree dir %q should have been removed (err=%v)", wtPath, err)
+	}
+	if !branchGone() {
+		out, _ := branchListCmd().CombinedOutput()
+		t.Errorf("branch %q should have been deleted, got: %s", branch, out)
+	}
 }
 
 func TestHandleListSkills(t *testing.T) {

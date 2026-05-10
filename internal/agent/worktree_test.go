@@ -229,6 +229,13 @@ func TestSanitizeBranchName(t *testing.T) {
 		{"with#hash", "with-hash"},                               // hash (comment)
 		{"name(with)parens", "name-with-parens"},                 // parens (subshell)
 		{"a<b>c", "a-b-c"},                                       // redirects
+		// Slashes must be stripped so the safe name can't introduce extra
+		// directory depth under wtRoot/<project>/<task>. A path like
+		// wtRoot/proj/Rebase-https-/github would be sliced as an orphan
+		// by the level-2 walker, taking the live worktree with it.
+		{"Rebase https://github.com/foo/bar", "Rebase-https-github-com-foo"},
+		{"a/b/c", "a-b-c"},
+		{"//leading/and/trailing//", "leading-and-trailing"},
 		{"Protect-production-branch-Lock-down-AWS-Lock-down-production-granting", "Protect-production-branch"},
 		{"aaaaabbbbbcccccdddddeeeeefffff-this-part-is-too-long-and-should-be-truncated", "aaaaabbbbbcccccdddddeeeeefffff"},
 		{"short-name", "short-name"}, // under limit, unchanged

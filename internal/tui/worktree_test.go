@@ -57,6 +57,39 @@ func TestSweepOrphanedWorktrees(t *testing.T) {
 	}
 }
 
+// Regression: a stored worktree path with extra depth (e.g. legacy task names
+// whose safe form contained a `/`, producing wtRoot/proj/foo-https-/github)
+// must NOT be classified as an orphan at the wtRoot/<project>/<task> level.
+// Without the ancestor guard, the walker `os.RemoveAll`s the parent dir and
+// destroys the live worktree underneath, surfacing later as
+// "worktree path missing" on resume.
+func TestWalkOrphanedWorktrees_SkipsAncestorsOfKnown(t *testing.T) {
+	wtRoot := filepath.Join(t.TempDir(), ".argus", "worktrees")
+	deepWT := filepath.Join(wtRoot, "nexus", "Rebase-https-", "github")
+	if err := os.MkdirAll(deepWT, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(deepWT, "marker"), []byte("alive"), 0o644) //nolint:errcheck
+
+	known := map[string]bool{deepWT: true}
+
+	t.Run("count skips ancestor", func(t *testing.T) {
+		if got := countOrphanedWorktrees(wtRoot, known); got != 0 {
+			t.Errorf("expected 0 orphans, got %d", got)
+		}
+	})
+
+	t.Run("sweep does not destroy ancestor", func(t *testing.T) {
+		swept := sweepOrphanedWorktrees(wtRoot, known, map[string]string{"nexus": ""})
+		if swept != 0 {
+			t.Errorf("expected 0 swept, got %d", swept)
+		}
+		if !agent.DirExists(deepWT) {
+			t.Error("live worktree underneath the ancestor was destroyed")
+		}
+	})
+}
+
 // TestSweepOrphanedWorktrees_RealRepo exercises the full branch-deletion path
 // that production hits — a populated projects map pointing at a real git
 // repository. The simpler TestSweepOrphanedWorktrees only checks the path
