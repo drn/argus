@@ -259,4 +259,3 @@ func (d *DB) TaskByPRURL(url string) (*model.Task, error) {
 	}
 	return t, nil
 }
-

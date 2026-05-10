@@ -37,11 +37,11 @@ const maxBranchNameLen = 30
 func sanitizeBranchName(name string) string {
 	s := invalidBranchChars.ReplaceAllString(name, "-")
 	s = multiDash.ReplaceAllString(s, "-") // collapse `--` → `-`
-	s = strings.Trim(s, ".")             // cannot start or end with .
-	s = strings.Trim(s, "/")             // cannot start or end with /
-	s = strings.ReplaceAll(s, "..", "-")  // no consecutive dots
-	s = strings.ReplaceAll(s, "//", "/")  // no consecutive slashes
-	s = strings.ReplaceAll(s, "@{", "-")  // no @{
+	s = strings.Trim(s, ".")               // cannot start or end with .
+	s = strings.Trim(s, "/")               // cannot start or end with /
+	s = strings.ReplaceAll(s, "..", "-")   // no consecutive dots
+	s = strings.ReplaceAll(s, "//", "/")   // no consecutive slashes
+	s = strings.ReplaceAll(s, "@{", "-")   // no @{
 	s = strings.Trim(s, "-")
 	if s == "" {
 		s = "task" // fallback when name is entirely invalid characters
@@ -176,7 +176,7 @@ func CreateWorktree(projectPath, projectName, taskName, baseBranch string) (wtPa
 					uxlog.Log("[worktree] cmd2 failed but worktree is valid (hook failure?), treating as success")
 					return wtDir, candidate, branch, nil
 				}
-				return "", "", "", fmt.Errorf("git worktree add: %s: %s",
+				return "", "", "", fmt.Errorf("git worktree add: %w: %s",
 					cmdErr2, cleanGitOutput(out, out2))
 			}
 			uxlog.Log("[worktree] cmd2 succeeded (reused existing branch)")

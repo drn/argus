@@ -325,4 +325,3 @@ func statusForUploadErr(err error) int {
 		return http.StatusInternalServerError
 	}
 }
-

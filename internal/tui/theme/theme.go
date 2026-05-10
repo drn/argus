@@ -33,19 +33,19 @@ const (
 
 // Styles for common UI elements.
 var (
-	StyleDefault      = tcell.StyleDefault
-	StyleTitle        = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
-	StyleStatusBar    = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorStatusFG)
-	StyleSelected     = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
-	StyleNormal       = tcell.StyleDefault.Foreground(ColorNormal)
-	StyleDimmed       = tcell.StyleDefault.Foreground(ColorDimmed)
-	StylePending      = tcell.StyleDefault.Foreground(ColorPending)
-	StyleInProgress   = tcell.StyleDefault.Foreground(ColorInProgress)
-	StyleInReview     = tcell.StyleDefault.Foreground(ColorInReview)
-	StyleComplete     = tcell.StyleDefault.Foreground(ColorComplete)
-	StyleProject      = tcell.StyleDefault.Foreground(ColorProject)
-	StyleBorder       = tcell.StyleDefault.Foreground(ColorBorder)
+	StyleDefault       = tcell.StyleDefault
+	StyleTitle         = tcell.StyleDefault.Foreground(ColorTitle).Bold(true)
+	StyleStatusBar     = tcell.StyleDefault.Background(ColorStatusBG).Foreground(ColorStatusFG)
+	StyleSelected      = tcell.StyleDefault.Foreground(ColorSelected).Bold(true)
+	StyleNormal        = tcell.StyleDefault.Foreground(ColorNormal)
+	StyleDimmed        = tcell.StyleDefault.Foreground(ColorDimmed)
+	StylePending       = tcell.StyleDefault.Foreground(ColorPending)
+	StyleInProgress    = tcell.StyleDefault.Foreground(ColorInProgress)
+	StyleInReview      = tcell.StyleDefault.Foreground(ColorInReview)
+	StyleComplete      = tcell.StyleDefault.Foreground(ColorComplete)
+	StyleProject       = tcell.StyleDefault.Foreground(ColorProject)
+	StyleBorder        = tcell.StyleDefault.Foreground(ColorBorder)
 	StyleFocusedBorder = tcell.StyleDefault.Foreground(ColorTitle)
-	StyleError        = tcell.StyleDefault.Foreground(ColorError)
-	StyleFilter       = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
+	StyleError         = tcell.StyleDefault.Foreground(ColorError)
+	StyleFilter        = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
 )

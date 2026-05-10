@@ -178,4 +178,3 @@ type ClipboardGetResp struct {
 type ClipboardClearReq struct {
 	TaskID string
 }
-

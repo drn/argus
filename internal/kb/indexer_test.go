@@ -64,8 +64,8 @@ func TestFullScan(t *testing.T) {
 	store := newMockStore()
 
 	// Create some files.
-	os.WriteFile(filepath.Join(vault, "one.md"), []byte("# One\n\nContent."), 0o644)       //nolint:errcheck
-	os.WriteFile(filepath.Join(vault, "two.md"), []byte("# Two\n\nMore content."), 0o644)  //nolint:errcheck
+	os.WriteFile(filepath.Join(vault, "one.md"), []byte("# One\n\nContent."), 0o644)        //nolint:errcheck
+	os.WriteFile(filepath.Join(vault, "two.md"), []byte("# Two\n\nMore content."), 0o644)   //nolint:errcheck
 	os.WriteFile(filepath.Join(vault, "skip.txt"), []byte("not markdown"), 0o644)           //nolint:errcheck
 	os.MkdirAll(filepath.Join(vault, ".obsidian"), 0o755)                                   //nolint:errcheck
 	os.WriteFile(filepath.Join(vault, ".obsidian", "hidden.md"), []byte("# Hidden"), 0o644) //nolint:errcheck
@@ -401,8 +401,8 @@ func TestWatch_SubdirectoryFile(t *testing.T) {
 
 	// Create a subdirectory and file.
 	subDir := filepath.Join(vault, "notes")
-	os.MkdirAll(subDir, 0o755)                                                       //nolint:errcheck
-	time.Sleep(200 * time.Millisecond) // give watcher time to pick up new dir
+	os.MkdirAll(subDir, 0o755)                                                         //nolint:errcheck
+	time.Sleep(200 * time.Millisecond)                                                 // give watcher time to pick up new dir
 	os.WriteFile(filepath.Join(subDir, "deep.md"), []byte("# Deep\n\nNested."), 0o644) //nolint:errcheck
 
 	deadline := time.After(3 * time.Second)

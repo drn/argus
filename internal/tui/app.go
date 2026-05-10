@@ -201,17 +201,17 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 
 	app := &App{
-		tapp:             tview.NewApplication(),
-		db:               database,
-		runner:           runner,
-		daemonConnected:  daemonConnected,
-		agentState:       agentview.New(),
-		tickDone:         make(chan struct{}),
+		tapp:                 tview.NewApplication(),
+		db:                   database,
+		runner:               runner,
+		daemonConnected:      daemonConnected,
+		agentState:           agentview.New(),
+		tickDone:             make(chan struct{}),
 		recentStarts:         make(map[string]time.Time),
 		idleUnvisited:        make(map[string]bool),
 		viewedWhileAgent:     make(map[string]bool),
 		pendingNarrowRestart: make(map[string]bool),
-		wtRoot:           filepath.Join(db.DataDir(), "worktrees"),
+		wtRoot:               filepath.Join(db.DataDir(), "worktrees"),
 	}
 
 	if dc, ok := runner.(*dclient.Client); ok {
@@ -2104,9 +2104,9 @@ const narrowRerenderMargin = 30
 type narrowRerenderDecision int
 
 const (
-	narrowRerenderSkip narrowRerenderDecision = iota
-	narrowRerenderDeferBusy                   // criteria match but session is busy; retry next entry
-	narrowRerenderKick                        // stop the session; handleSessionExitUI will restart it
+	narrowRerenderSkip      narrowRerenderDecision = iota
+	narrowRerenderDeferBusy                        // criteria match but session is busy; retry next entry
+	narrowRerenderKick                             // stop the session; handleSessionExitUI will restart it
 )
 
 // shouldKickNarrowRerender decides whether the live session should be
@@ -2288,9 +2288,9 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			// INVARIANT: the new-task form has no name field — task.Name is
 			// always GenerateNameFromPrompt(prompt). If a name field is added
 			// later, gate this on whether the user typed one.
-			AutoName: true,
-			Rows:       rows,
-			Cols:       cols,
+			AutoName:    true,
+			Rows:        rows,
+			Cols:        cols,
 			BeforeStart: func() { a.startGen.Add(1) },
 			AfterStart:  func() { a.startGen.Add(1) },
 		}

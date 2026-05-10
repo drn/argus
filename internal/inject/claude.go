@@ -85,7 +85,7 @@ func writeJSON(path string, data map[string]interface{}) error {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(out); err != nil {
-		tmp.Close() //nolint:errcheck
+		tmp.Close()        //nolint:errcheck
 		os.Remove(tmpName) //nolint:errcheck
 		return fmt.Errorf("inject: write temp: %w", err)
 	}

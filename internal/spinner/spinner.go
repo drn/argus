@@ -15,7 +15,7 @@ const (
 // Spinner holds the frames for an animation style.
 type Spinner struct {
 	Style        Style
-	Label        string        // human-readable name for settings UI
+	Label        string // human-readable name for settings UI
 	Frames       []rune
 	TickInterval time.Duration // time per frame
 }

@@ -18,19 +18,19 @@ var ansiRe = regexp.MustCompile(
 
 // Patterns for noise filtering.
 var (
-	spinnerRe        = regexp.MustCompile(`^[✳✶✻✽✢·\s]+$`)
-	thinkingRe       = regexp.MustCompile(`^[✳✶✻✽✢·\s]*(ping…)?\(thinking\)\s*$`)
-	warpClaudRe      = regexp.MustCompile(`^[✳✶✻✽✢·\s]*(Warping|Clauding)….*$`)
-	statusBarRe      = regexp.MustCompile(`^⏵`)
-	separatorRe      = regexp.MustCompile(`^─+\s*$`)
-	promptRe         = regexp.MustCompile(`^❯\s*$`)
+	spinnerRe   = regexp.MustCompile(`^[✳✶✻✽✢·\s]+$`)
+	thinkingRe  = regexp.MustCompile(`^[✳✶✻✽✢·\s]*(ping…)?\(thinking\)\s*$`)
+	warpClaudRe = regexp.MustCompile(`^[✳✶✻✽✢·\s]*(Warping|Clauding)….*$`)
+	statusBarRe = regexp.MustCompile(`^⏵`)
+	separatorRe = regexp.MustCompile(`^─+\s*$`)
+	promptRe    = regexp.MustCompile(`^❯\s*$`)
 	// partialRenderRe: frame-by-frame "Warping…"/"Clauding…" renders appear as 1-4 char lines.
 	// Over-broad (matches "Go", "OK") but acceptable — real content is always longer.
-	partialRenderRe = regexp.MustCompile(`^[✳✶✻✽✢·]?[A-Za-z…]{0,4}(\(thinking\))?\s*$`)
+	partialRenderRe  = regexp.MustCompile(`^[✳✶✻✽✢·]?[A-Za-z…]{0,4}(\(thinking\))?\s*$`)
 	timingRe         = regexp.MustCompile(`^[✳✶✻✽✢·]?…?\s*\(\d+s.*\)\s*$`)
 	cwdResetRe       = regexp.MustCompile(`^⎿\s+Shell cwd was reset`)
 	runningRe        = regexp.MustCompile(`^\s*⎿\s+Running…\s*$`)
-	noOutputRe = regexp.MustCompile(`\(No output\)`) // intentionally unanchored — matches inline too
+	noOutputRe       = regexp.MustCompile(`\(No output\)`) // intentionally unanchored — matches inline too
 	bakedRe          = regexp.MustCompile(`Baked for \d+s`)
 	expandHintRe     = regexp.MustCompile(`…\s*\+\d+ lines \(ctrl\+o to expand\)`)
 	loneDigitRe      = regexp.MustCompile(`^\d\s*$`)

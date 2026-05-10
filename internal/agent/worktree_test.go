@@ -210,28 +210,28 @@ func TestSanitizeBranchName(t *testing.T) {
 		{"star*name", "star-name"},
 		{"caret^ref", "caret-ref"},
 		{"ref@{0}", "ref@-0"},
-		{".hidden", "hidden"},   // leading dot stripped
-		{".dotfile.", "dotfile"},// both leading and trailing dots
-		{"???", "task"},         // all invalid → fallback
-		{"", "task"},            // empty → fallback
+		{".hidden", "hidden"},    // leading dot stripped
+		{".dotfile.", "dotfile"}, // both leading and trailing dots
+		{"???", "task"},          // all invalid → fallback
+		{"", "task"},             // empty → fallback
 		{"normal-name", "normal-name"},
 		// Shell-hostile characters: git accepts these, but they break `cd`
 		// and tool autocomplete in zsh/bash. Strip them so worktree paths
 		// stay navigable.
 		{"The-“more-keys”-button-in", "The-more-keys-button-in"}, // smart double quotes
-		{"can’t-find-it", "can-t-find-it"},                           // smart apostrophe
-		{`with "quotes" inside`, "with-quotes-inside"},                       // straight double quotes
-		{"with 'apos' inside", "with-apos-inside"},                          // straight single quotes
-		{"back`tick`name", "back-tick-name"},                                // backticks
-		{"with$var", "with-var"},                                            // dollar
-		{"a|b&c;d", "a-b-c-d"},                                              // pipe, ampersand, semicolon
-		{"with!bang", "with-bang"},                                          // bang (history expansion)
-		{"with#hash", "with-hash"},                                          // hash (comment)
-		{"name(with)parens", "name-with-parens"},                            // parens (subshell)
-		{"a<b>c", "a-b-c"},                                                  // redirects
+		{"can’t-find-it", "can-t-find-it"},                       // smart apostrophe
+		{`with "quotes" inside`, "with-quotes-inside"},           // straight double quotes
+		{"with 'apos' inside", "with-apos-inside"},               // straight single quotes
+		{"back`tick`name", "back-tick-name"},                     // backticks
+		{"with$var", "with-var"},                                 // dollar
+		{"a|b&c;d", "a-b-c-d"},                                   // pipe, ampersand, semicolon
+		{"with!bang", "with-bang"},                               // bang (history expansion)
+		{"with#hash", "with-hash"},                               // hash (comment)
+		{"name(with)parens", "name-with-parens"},                 // parens (subshell)
+		{"a<b>c", "a-b-c"},                                       // redirects
 		{"Protect-production-branch-Lock-down-AWS-Lock-down-production-granting", "Protect-production-branch"},
 		{"aaaaabbbbbcccccdddddeeeeefffff-this-part-is-too-long-and-should-be-truncated", "aaaaabbbbbcccccdddddeeeeefffff"},
-		{"short-name", "short-name"},  // under limit, unchanged
+		{"short-name", "short-name"}, // under limit, unchanged
 	}
 	for _, tt := range tests {
 		got := sanitizeBranchName(tt.input)

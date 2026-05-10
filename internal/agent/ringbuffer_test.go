@@ -20,8 +20,8 @@ func TestRingBuffer_Basic(t *testing.T) {
 
 func TestRingBuffer_Wrap(t *testing.T) {
 	rb := NewRingBuffer(5)
-	rb.Write([]byte("abcde"))   // fills buffer
-	rb.Write([]byte("fg"))      // overwrites a, b
+	rb.Write([]byte("abcde")) // fills buffer
+	rb.Write([]byte("fg"))    // overwrites a, b
 
 	if rb.Len() != 5 {
 		t.Errorf("Len() = %d, want 5", rb.Len())

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 
@@ -251,7 +252,7 @@ func TestRunner_OnFinishFiresBeforeRemoval(t *testing.T) {
 
 func TestRunner_StopNotFound(t *testing.T) {
 	r := NewRunner(nil)
-	if err := r.Stop("nonexistent"); err != ErrSessionNotFound {
+	if err := r.Stop("nonexistent"); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("expected ErrSessionNotFound, got %v", err)
 	}
 }
@@ -535,7 +536,7 @@ func TestRunner_Detach_NoSession(t *testing.T) {
 func TestRunner_Attach_NoSession(t *testing.T) {
 	r := NewRunner(nil)
 	err := r.Attach("nonexistent", &bytes.Buffer{}, &bytes.Buffer{})
-	if err != ErrSessionNotFound {
+	if !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("expected ErrSessionNotFound, got %v", err)
 	}
 }

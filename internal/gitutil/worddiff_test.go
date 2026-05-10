@@ -6,11 +6,11 @@ import (
 
 func TestWordDiff(t *testing.T) {
 	tests := []struct {
-		name     string
-		old      string
-		new      string
-		wantOld  []DiffSpan
-		wantNew  []DiffSpan
+		name    string
+		old     string
+		new     string
+		wantOld []DiffSpan
+		wantNew []DiffSpan
 	}{
 		{
 			name:    "identical lines",

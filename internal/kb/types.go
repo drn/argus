@@ -4,11 +4,11 @@ import "time"
 
 // Document represents a markdown document stored in the knowledge base.
 type Document struct {
-	Path       string    // vault-relative file path, e.g. "projects/thanx.md"
+	Path       string // vault-relative file path, e.g. "projects/thanx.md"
 	Title      string
 	Body       string
 	Tags       []string
-	Tier       string    // hot | warm | cold
+	Tier       string // hot | warm | cold
 	ModifiedAt time.Time
 	IngestedAt time.Time
 	WordCount  int

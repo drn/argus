@@ -42,9 +42,9 @@ type ParsedDiff struct {
 
 // SideBySideLine represents one row in a side-by-side diff view.
 type SideBySideLine struct {
-	LeftNum  int    // 0 = blank/padding
-	LeftText string // raw content (no ANSI yet)
-	LeftType DiffLineType
+	LeftNum   int    // 0 = blank/padding
+	LeftText  string // raw content (no ANSI yet)
+	LeftType  DiffLineType
 	RightNum  int
 	RightText string
 	RightType DiffLineType

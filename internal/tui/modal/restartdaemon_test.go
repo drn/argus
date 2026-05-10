@@ -37,11 +37,11 @@ func TestRestartDaemonModal_KeyHandling(t *testing.T) {
 			wantSelect: 1,
 		},
 		{
-			name:        "tab then enter selects skip",
-			keys:        []*tcell.EventKey{tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)},
-			wantDone:    true,
-			wantSkip:    true,
-			wantSelect:  1,
+			name:       "tab then enter selects skip",
+			keys:       []*tcell.EventKey{tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)},
+			wantDone:   true,
+			wantSkip:   true,
+			wantSelect: 1,
 		},
 		{
 			name:     "esc selects skip",

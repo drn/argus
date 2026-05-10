@@ -55,18 +55,18 @@ type Daemon struct {
 	runner    *agent.Runner
 	listener  net.Listener
 	streams   map[string][]net.Conn // taskID → connected stream clients
-	exitInfos map[string]ExitInfo    // taskID → cached exit info (brief)
+	exitInfos map[string]ExitInfo   // taskID → cached exit info (brief)
 	mu        sync.Mutex
 	done      chan struct{}
-	ready     chan struct{}  // closed when Serve has set listener (or failed)
-	sockPath  string         // set by Serve, used by cleanup
-	pidPath   string         // set by Serve, used by cleanup
-	mcpPort   int            // actual MCP HTTP port in use (set after listen)
-	mcpServer    *mcp.Server        // set when KB is enabled, shut down in cleanup
-	kbIndexer    *kb.Indexer        // set when KB is enabled, stopped in cleanup
-	apiServer    *api.Server        // set when API is enabled, shut down in cleanup
-	scheduler    *scheduler.Scheduler // recurring scheduled-task firer; always started
-	clipboard    *clipboard.Store     // agent-staged clipboard, in-memory
+	ready     chan struct{}        // closed when Serve has set listener (or failed)
+	sockPath  string               // set by Serve, used by cleanup
+	pidPath   string               // set by Serve, used by cleanup
+	mcpPort   int                  // actual MCP HTTP port in use (set after listen)
+	mcpServer *mcp.Server          // set when KB is enabled, shut down in cleanup
+	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
+	apiServer *api.Server          // set when API is enabled, shut down in cleanup
+	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
+	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
 	// on-disk binary has been rebuilt since the daemon started.

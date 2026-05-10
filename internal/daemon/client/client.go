@@ -216,7 +216,6 @@ func (c *Client) UpdateSelf() (string, error) {
 	return resp.Output, nil
 }
 
-
 // ClipboardGet fetches any agent-staged text for a task. Returns empty
 // string and ok=false when nothing is staged or RPC fails.
 func (c *Client) ClipboardGet(taskID string) (string, bool) {

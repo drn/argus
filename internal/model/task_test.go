@@ -31,9 +31,9 @@ func TestTask_Elapsed_Completed(t *testing.T) {
 
 func TestTask_ElapsedString(t *testing.T) {
 	tests := []struct {
-		name  string
-		task  Task
-		want  string
+		name string
+		task Task
+		want string
 	}{
 		{"not started", Task{}, ""},
 		{"seconds", Task{StartedAt: time.Now().Add(-30 * time.Second)}, "30s"},

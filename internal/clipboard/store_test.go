@@ -1,6 +1,7 @@
 package clipboard
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -73,7 +74,8 @@ func TestStoreTooLarge(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ErrTooLarge, got nil")
 	}
-	if _, ok := err.(*ErrTooLarge); !ok {
+	var tooLarge *ErrTooLarge
+	if !errors.As(err, &tooLarge) {
 		t.Fatalf("expected *ErrTooLarge, got %T", err)
 	}
 	_, ok := s.Get("task1")
@@ -256,8 +258,8 @@ func TestStoreConcurrent(t *testing.T) {
 		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			s.Set("task1", "x")  //nolint:errcheck
-			s.Set("task2", "y")  //nolint:errcheck
+			s.Set("task1", "x") //nolint:errcheck
+			s.Set("task2", "y") //nolint:errcheck
 		}()
 		go func() {
 			defer wg.Done()

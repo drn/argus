@@ -29,13 +29,13 @@ type Session struct {
 	Cmd    *exec.Cmd
 	ptmx   *os.File // PTY master
 
-	mu         sync.Mutex
-	buf        *RingBuffer
-	writers    []io.Writer // readLoop tees output to all attached writers
-	done       chan struct{}
-	err        error
-	attached   bool
-	detachCh   chan struct{}
+	mu          sync.Mutex
+	buf         *RingBuffer
+	writers     []io.Writer // readLoop tees output to all attached writers
+	done        chan struct{}
+	err         error
+	attached    bool
+	detachCh    chan struct{}
 	ptyCols     uint16    // current PTY width
 	ptyRows     uint16    // current PTY height
 	initialCols uint16    // PTY width at StartSession; never mutated after init

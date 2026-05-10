@@ -118,9 +118,9 @@ func MintToken(d *db.DB, label string) (string, int64, error) {
 // in "/" matches by prefix; otherwise exact match.
 //
 // The middleware accepts both:
-//  - the master token (loaded from ~/.argus/api-token, passed in here)
-//  - any non-revoked per-device token in the api_tokens table (if `database`
-//    is non-nil)
+//   - the master token (loaded from ~/.argus/api-token, passed in here)
+//   - any non-revoked per-device token in the api_tokens table (if `database`
+//     is non-nil)
 //
 // The master token is treated as admin and is required to mint device tokens.
 func authMiddleware(token string, database *db.DB, pm *push.Manager, next http.Handler, skipPaths ...string) http.Handler {

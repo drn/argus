@@ -78,10 +78,10 @@ func runGh(args ...string) (string, error) {
 // Review decisions are fetched separately via GraphQL in enrichReviewDecisions.
 func FetchPRList() ([]PR, error) {
 	type ghSearchPR struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Author struct{ Login string } `json:"author"`
-		IsDraft bool `json:"isDraft"`
+		Number     int                    `json:"number"`
+		Title      string                 `json:"title"`
+		Author     struct{ Login string } `json:"author"`
+		IsDraft    bool                   `json:"isDraft"`
 		Repository struct {
 			NameWithOwner string `json:"nameWithOwner"`
 		} `json:"repository"`
@@ -267,12 +267,12 @@ func FetchPRComments(owner, repo string, number int) ([]PRComment, error) {
 	}
 
 	type ghComment struct {
-		ID        int    `json:"id"`
+		ID        int                    `json:"id"`
 		User      struct{ Login string } `json:"user"`
-		Body      string `json:"body"`
-		Path      string `json:"path"`
-		Line      int    `json:"line"`
-		CreatedAt time.Time `json:"created_at"`
+		Body      string                 `json:"body"`
+		Path      string                 `json:"path"`
+		Line      int                    `json:"line"`
+		CreatedAt time.Time              `json:"created_at"`
 	}
 
 	var raw []ghComment

@@ -240,4 +240,3 @@ func resolveGitDir(worktreePath string) string {
 	// Resolve symlinks so SBPL rules match kernel-resolved paths.
 	return evalSymlinksOrKeep(dotGit)
 }
-

@@ -6,8 +6,9 @@
 // real ~/.argus state.
 //
 // Env:
-//   ARGUS_TEST_PORT  — port to bind (default 7744)
-//   ARGUS_TEST_TOKEN — bearer token (default "test-token")
+//
+//	ARGUS_TEST_PORT  — port to bind (default 7744)
+//	ARGUS_TEST_TOKEN — bearer token (default "test-token")
 package main
 
 import (

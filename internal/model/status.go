@@ -8,7 +8,7 @@ import (
 type Status int
 
 const (
-	StatusPending    Status = iota
+	StatusPending Status = iota
 	StatusInProgress
 	StatusInReview
 	StatusComplete

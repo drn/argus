@@ -1,6 +1,6 @@
 module github.com/drn/argus
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/SherClockHolmes/webpush-go v1.4.0

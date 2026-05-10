@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os/exec"
 	"strings"
@@ -49,7 +50,7 @@ func TestDetachReader_CtrlQAtStart(t *testing.T) {
 
 	buf := make([]byte, 64)
 	n, err := dr.Read(buf)
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got %v", err)
 	}
 	// Should return remaining bytes after ctrl+q removed
@@ -77,7 +78,7 @@ func TestDetachReader_CtrlQInMiddle(t *testing.T) {
 
 	buf := make([]byte, 64)
 	n, err := dr.Read(buf)
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got %v", err)
 	}
 	// 5 bytes read, ctrl+q removed = 4 bytes
@@ -105,7 +106,7 @@ func TestDetachReader_CtrlQOnly(t *testing.T) {
 
 	buf := make([]byte, 64)
 	n, err := dr.Read(buf)
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF, got %v", err)
 	}
 	if n != 0 {
@@ -132,7 +133,7 @@ func TestDetachReader_EmptyRead(t *testing.T) {
 	if n != 0 {
 		t.Errorf("Read() returned %d bytes, want 0", n)
 	}
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF from empty reader, got %v", err)
 	}
 }

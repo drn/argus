@@ -132,19 +132,19 @@ type SettingsView struct {
 	updateOutput    string // last go-install output (for detail panel)
 
 	// Callbacks.
-	OnRestartDaemon    func()
-	OnUpdateArgus      func()                 // triggered by the "Update Argus" row
-	OnToggleAutoStart  func(currentlyInstalled bool) // dispatched off the UI thread by app.go
-	OnNewProject       func()
-	OnEditProject    func(name string, p config.Project)
-	OnDeleteProject  func(name string)
-	OnNewBackend     func()
-	OnEditBackend    func(name string, b config.Backend)
-	OnQuickAdd       func()
-	OnNewSchedule    func()
-	OnEditSchedule   func(s *model.ScheduledTask)
-	OnDeleteSchedule func(id string)
-	OnRunSchedule    func(id string)
+	OnRestartDaemon   func()
+	OnUpdateArgus     func()                        // triggered by the "Update Argus" row
+	OnToggleAutoStart func(currentlyInstalled bool) // dispatched off the UI thread by app.go
+	OnNewProject      func()
+	OnEditProject     func(name string, p config.Project)
+	OnDeleteProject   func(name string)
+	OnNewBackend      func()
+	OnEditBackend     func(name string, b config.Backend)
+	OnQuickAdd        func()
+	OnNewSchedule     func()
+	OnEditSchedule    func(s *model.ScheduledTask)
+	OnDeleteSchedule  func(id string)
+	OnRunSchedule     func(id string)
 
 	// DB reference for toggling values.
 	database *db.DB

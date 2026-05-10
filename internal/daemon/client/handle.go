@@ -22,7 +22,7 @@ type RemoteSession struct {
 	client *Client
 
 	mu        sync.Mutex
-	buf       *agent.RingBuffer  // local ring buffer, populated by stream reader
+	buf       *agent.RingBuffer // local ring buffer, populated by stream reader
 	pid       int
 	info      daemon.SessionInfo // cached session info
 	done      chan struct{}      // closed when stream EOF

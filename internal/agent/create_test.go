@@ -74,38 +74,38 @@ func (f *fakeRunner) Start(task *model.Task, _ config.Config, _, _ uint16, _ boo
 	return &fakeSession{pid: f.sessionPID}, nil
 }
 
-func (f *fakeRunner) Stop(string) error                   { return nil }
-func (f *fakeRunner) StopAll()                            {}
-func (f *fakeRunner) Get(string) SessionHandle            { return nil }
-func (f *fakeRunner) Running() []string                   { return nil }
-func (f *fakeRunner) Idle() []string                      { return nil }
+func (f *fakeRunner) Stop(string) error                    { return nil }
+func (f *fakeRunner) StopAll()                             {}
+func (f *fakeRunner) Get(string) SessionHandle             { return nil }
+func (f *fakeRunner) Running() []string                    { return nil }
+func (f *fakeRunner) Idle() []string                       { return nil }
 func (f *fakeRunner) RunningAndIdle() ([]string, []string) { return nil, nil }
-func (f *fakeRunner) HasSession(string) bool              { return false }
-func (f *fakeRunner) WorkDir(string) string               { return "" }
+func (f *fakeRunner) HasSession(string) bool               { return false }
+func (f *fakeRunner) WorkDir(string) string                { return "" }
 
 type fakeSession struct{ pid int }
 
-func (s *fakeSession) PID() int                         { return s.pid }
-func (s *fakeSession) WriteInput([]byte) (int, error)   { return 0, nil }
-func (s *fakeSession) Resize(uint16, uint16) error      { return nil }
-func (s *fakeSession) RecentOutput() []byte             { return nil }
-func (s *fakeSession) RecentOutputTail(int) []byte      { return nil }
+func (s *fakeSession) PID() int                       { return s.pid }
+func (s *fakeSession) WriteInput([]byte) (int, error) { return 0, nil }
+func (s *fakeSession) Resize(uint16, uint16) error    { return nil }
+func (s *fakeSession) RecentOutput() []byte           { return nil }
+func (s *fakeSession) RecentOutputTail(int) []byte    { return nil }
 func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }
-func (s *fakeSession) TotalWritten() uint64 { return 0 }
-func (s *fakeSession) IsIdle() bool                     { return false }
-func (s *fakeSession) LastInput() time.Time             { return time.Time{} }
-func (s *fakeSession) Alive() bool                      { return true }
-func (s *fakeSession) PTYSize() (int, int)              { return 80, 24 }
-func (s *fakeSession) InitialPTYSize() (int, int)       { return 80, 24 }
-func (s *fakeSession) Done() <-chan struct{}            { ch := make(chan struct{}); return ch }
-func (s *fakeSession) Err() error                       { return nil }
-func (s *fakeSession) WorkDir() string                  { return "" }
-func (s *fakeSession) Stop() error                      { return nil }
-func (s *fakeSession) AddWriter(io.Writer)              {}
-func (s *fakeSession) AddWriterFrom(io.Writer, uint64)  {}
-func (s *fakeSession) RemoveWriter(io.Writer)           {}
+func (s *fakeSession) TotalWritten() uint64            { return 0 }
+func (s *fakeSession) IsIdle() bool                    { return false }
+func (s *fakeSession) LastInput() time.Time            { return time.Time{} }
+func (s *fakeSession) Alive() bool                     { return true }
+func (s *fakeSession) PTYSize() (int, int)             { return 80, 24 }
+func (s *fakeSession) InitialPTYSize() (int, int)      { return 80, 24 }
+func (s *fakeSession) Done() <-chan struct{}           { ch := make(chan struct{}); return ch }
+func (s *fakeSession) Err() error                      { return nil }
+func (s *fakeSession) WorkDir() string                 { return "" }
+func (s *fakeSession) Stop() error                     { return nil }
+func (s *fakeSession) AddWriter(io.Writer)             {}
+func (s *fakeSession) AddWriterFrom(io.Writer, uint64) {}
+func (s *fakeSession) RemoveWriter(io.Writer)          {}
 
 // hookLog records the order of pre/post/unwind hook invocations so tests can
 // assert sequencing.
@@ -370,13 +370,13 @@ func TestCreateAndStart_AttachmentsWritten(t *testing.T) {
 	}
 
 	// Prompt should preserve the user's text and append the file paths.
-	if !strings.Contains(task.Prompt,"look at these") {
+	if !strings.Contains(task.Prompt, "look at these") {
 		t.Errorf("prompt missing user text: %q", task.Prompt)
 	}
-	if !strings.Contains(task.Prompt,"./.context/image.png") {
+	if !strings.Contains(task.Prompt, "./.context/image.png") {
 		t.Errorf("prompt missing image path: %q", task.Prompt)
 	}
-	if !strings.Contains(task.Prompt,"./.context/notes.txt") {
+	if !strings.Contains(task.Prompt, "./.context/notes.txt") {
 		t.Errorf("prompt missing notes path: %q", task.Prompt)
 	}
 }
@@ -400,10 +400,10 @@ func TestCreateAndStart_AttachmentsBlankPrompt(t *testing.T) {
 	}
 	t.Cleanup(func() { RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo) })
 
-	if !strings.Contains(task.Prompt,"Attached files:") {
+	if !strings.Contains(task.Prompt, "Attached files:") {
 		t.Errorf("prompt missing Attached header: %q", task.Prompt)
 	}
-	if !strings.Contains(task.Prompt,"./.context/snap.png") {
+	if !strings.Contains(task.Prompt, "./.context/snap.png") {
 		t.Errorf("prompt missing snap.png: %q", task.Prompt)
 	}
 }

@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -476,7 +477,7 @@ func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 	offset := fileSize - readSize
 	buf := make([]byte, readSize)
 	n, err := f.ReadAt(buf, offset)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, 0
 	}
 	return buf[:n], fileSize

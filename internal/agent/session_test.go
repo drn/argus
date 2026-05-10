@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -264,7 +265,7 @@ func TestSession_Signal_NilProcess(t *testing.T) {
 	// Process still exists after exit (not nil), so test Signal on live process
 	// For nil process test, manually set it
 	sess.Cmd.Process = nil
-	if err := sess.Signal(syscall.SIGTERM); err != ErrNotRunning {
+	if err := sess.Signal(syscall.SIGTERM); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("Signal with nil process: got %v, want ErrNotRunning", err)
 	}
 }
@@ -444,7 +445,7 @@ func TestSession_Attach_AlreadyAttached(t *testing.T) {
 	pr2, pw2 := io.Pipe()
 	var stdout2 bytes.Buffer
 	err = sess.Attach(pr2, &stdout2)
-	if err != ErrAlreadyAttached {
+	if !errors.Is(err, ErrAlreadyAttached) {
 		t.Errorf("expected ErrAlreadyAttached, got %v", err)
 	}
 
@@ -536,7 +537,7 @@ func TestSession_Attach_StdinEOF(t *testing.T) {
 	select {
 	case err := <-errCh:
 		// Should get io.EOF or nil — either is acceptable
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			t.Errorf("Attach returned unexpected error: %v", err)
 		}
 	case <-time.After(5 * time.Second):

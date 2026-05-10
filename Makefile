@@ -1,10 +1,25 @@
-.PHONY: build vet test test-watch test-cover test-pkg lint-pr
+.PHONY: build vet test test-watch test-cover test-pkg lint-pr fmt fmt-check vuln
 
 build:
 	go build ./...
 
 vet:
 	go vet ./...
+
+# Format the entire tree with goimports (a superset of gofmt).
+fmt:
+	@command -v goimports >/dev/null 2>&1 || { echo "Install: go install golang.org/x/tools/cmd/goimports@latest"; exit 1; }
+	goimports -w .
+
+# Fail if any file is not goimports-clean. Mirrors the CI check.
+fmt-check:
+	@command -v goimports >/dev/null 2>&1 || { echo "Install: go install golang.org/x/tools/cmd/goimports@latest"; exit 1; }
+	@out=$$(goimports -l .); if [ -n "$$out" ]; then echo "Files not formatted:"; echo "$$out"; exit 1; fi
+
+# Scan for known vulnerabilities in stdlib and dependencies.
+vuln:
+	@command -v govulncheck >/dev/null 2>&1 || { echo "Install: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
+	govulncheck ./...
 
 # Run golangci-lint the same way CI does — only flag issues introduced by
 # this branch's diff vs origin/master. Use before pushing to catch lint

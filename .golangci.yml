@@ -6,6 +6,7 @@ run:
 linters:
   enable:
     - errcheck
+    - errorlint
     - govet
     - staticcheck
     - gosec
@@ -35,3 +36,9 @@ linters:
     paths:
       - context
       - screenshots
+    rules:
+      # gosec's filesystem-permission checks (G301/G306) are noise in test
+      # code where fixture files don't carry secrets.
+      - path: _test\.go
+        linters:
+          - gosec

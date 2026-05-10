@@ -390,7 +390,7 @@ WHAT NOT TO DO:
 // toolDefs defines the KB tools exposed via MCP.
 var toolDefs = []Tool{
 	{
-		Name: "kb_search",
+		Name:        "kb_search",
 		Description: `Search the knowledge base using full-text search (BM25 ranking). Returns results with highlighted snippets. Use this BEFORE kb_ingest to check if a document already exists on the topic — update rather than duplicate.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -402,7 +402,7 @@ var toolDefs = []Tool{
 		},
 	},
 	{
-		Name: "kb_read",
+		Name:        "kb_read",
 		Description: `Read the full content of a knowledge base document by vault-relative path. Use after kb_search or kb_list to get the complete document including frontmatter, body, tags, and metadata.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -413,7 +413,7 @@ var toolDefs = []Tool{
 		},
 	},
 	{
-		Name: "kb_list",
+		Name:        "kb_list",
 		Description: `List documents in the knowledge base, optionally filtered by path prefix. Use to discover what exists in a topic area before creating new entries.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -598,7 +598,7 @@ func (s *Server) scheduleMgmtEnabled() bool {
 // scheduleToolDefs are exposed only when SetScheduleManager has been called.
 var scheduleToolDefs = []Tool{
 	{
-		Name: "schedule_list",
+		Name:        "schedule_list",
 		Description: `List recurring scheduled tasks. Each row fires a fresh Argus task at its cron expression. Returns name, project, schedule, enabled, next_run_at, last_run_at, and last_error if present.`,
 		InputSchema: map[string]interface{}{
 			"type":       "object",
@@ -606,24 +606,24 @@ var scheduleToolDefs = []Tool{
 		},
 	},
 	{
-		Name: "schedule_create",
+		Name:        "schedule_create",
 		Description: `Create a scheduled task. Pass either ` + "`schedule`" + ` (cron expression for recurring runs) OR ` + "`run_once_at`" + ` (RFC3339 UTC timestamp for a single future run) — exactly one. The cron expression is parsed by robfig/cron/v3 ParseStandard: 5-field cron (e.g. "0 9 * * 1-5" for 9am weekdays UTC), descriptors (@hourly, @daily, @weekly, @monthly, @yearly), or @every <duration> (e.g. "@every 1h"). Minimum cron resolution is one minute. One-shot rows fire once at run_once_at then auto-disable (the row stays in the list with enabled=false for inspection). Project must match an existing Argus project. New schedules default to enabled.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"name":         map[string]interface{}{"type": "string", "description": "Display name. Each fire suffixes this with the UTC timestamp."},
-				"project":      map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)."},
-				"prompt":       map[string]interface{}{"type": "string", "description": "Instructions delivered to the agent at each fire."},
-				"schedule":     map[string]interface{}{"type": "string", "description": "Cron expression. Mutually exclusive with run_once_at."},
-				"run_once_at":  map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp (e.g. \"2026-05-17T14:00:00Z\"). Must be in the future. Mutually exclusive with schedule."},
-				"backend":      map[string]interface{}{"type": "string", "description": "Optional backend override for this schedule (e.g. 'claude-haiku')."},
-				"enabled":      map[string]interface{}{"type": "boolean", "description": "Optional. Defaults to true."},
+				"name":        map[string]interface{}{"type": "string", "description": "Display name. Each fire suffixes this with the UTC timestamp."},
+				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)."},
+				"prompt":      map[string]interface{}{"type": "string", "description": "Instructions delivered to the agent at each fire."},
+				"schedule":    map[string]interface{}{"type": "string", "description": "Cron expression. Mutually exclusive with run_once_at."},
+				"run_once_at": map[string]interface{}{"type": "string", "description": "RFC3339 UTC timestamp (e.g. \"2026-05-17T14:00:00Z\"). Must be in the future. Mutually exclusive with schedule."},
+				"backend":     map[string]interface{}{"type": "string", "description": "Optional backend override for this schedule (e.g. 'claude-haiku')."},
+				"enabled":     map[string]interface{}{"type": "boolean", "description": "Optional. Defaults to true."},
 			},
 			"required": []string{"name", "project", "prompt"},
 		},
 	},
 	{
-		Name: "schedule_update",
+		Name:        "schedule_update",
 		Description: `Partial update of a scheduled task. Only fields you pass are changed; omit a field to leave it as-is. Changing the cadence (schedule or run_once_at) recomputes next_run_at. To convert between recurring and one-shot, set the new field — the other clears automatically. Passing both schedule and run_once_at non-empty in the same call is rejected with an error.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -641,7 +641,7 @@ var scheduleToolDefs = []Tool{
 		},
 	},
 	{
-		Name: "schedule_delete",
+		Name:        "schedule_delete",
 		Description: `Delete a scheduled task. The row is removed; in-flight task instances already created by previous fires are unaffected.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
@@ -652,7 +652,7 @@ var scheduleToolDefs = []Tool{
 		},
 	},
 	{
-		Name: "schedule_run_now",
+		Name:        "schedule_run_now",
 		Description: `Fire a schedule immediately, out of cycle. Creates a fresh task with the schedule's prompt and project. Bookkeeping is updated so the next regular tick will not double-fire. Note: run-now does NOT send the cron-tick push notification — use it as an explicit user action only.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
