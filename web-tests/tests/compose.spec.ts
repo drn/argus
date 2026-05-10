@@ -201,7 +201,8 @@ test.describe('compose bar', () => {
   });
 
   // Guard against the broadened insertText matcher: a regular character like
-  // 'a' must NOT trigger a send. Only newline-only data counts as a line break.
+  // 'a' must NOT trigger a send. Only data ending in a newline counts as a
+  // line break.
   test('beforeinput insertText with regular character does NOT send', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
@@ -228,6 +229,302 @@ test.describe('compose bar', () => {
     // (the synthetic dispatchEvent doesn't actually mutate the textarea — but
     // the value should at least still be the original 'hello').
     await expect(page.locator('#compose-input')).toHaveValue('hello');
+  });
+
+  // Regression: on long prompts, iOS WebKit's predictive text / dictation /
+  // autocorrect bundles a still-composing trailing word with the Send line
+  // break in a single `beforeinput insertText` event whose `data` is `'word\n'`.
+  // The previous matcher required `data` to be exactly `'\n'` / `'\r'` /
+  // `'\r\n'`, so this fell through to the browser default — the entire data
+  // string (including the trailing newline) landed in the textarea and
+  // sendCompose() never ran. Symptom users report: "Enter on synthetic
+  // keyboard still does not always send and sometimes adds a newline,
+  // especially with long prompts." The committed prefix must survive into
+  // the POST so the user's last word isn't dropped.
+  test('soft-keyboard Send dispatched as insertText "word\\n" still sends with prefix preserved', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello ');
+    // Park the cursor at end so setRangeText appends — mirrors the typical
+    // long-prompt-then-Send shape where the user has just dictated the last
+    // word.
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: 'world\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    // The prefix ('world') must be merged into the textarea value before
+    // sendCompose reads it, so the POST contains 'hello world\r' — without
+    // the prefix-preservation the POST would be 'hello \r' and the user's
+    // last word would silently vanish.
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Same bundling but via `insertReplacementText` — iOS uses this inputType
+  // when committing an autocorrect replacement. With autocorrect=on on the
+  // compose textarea, this path is now reachable on every Send that happens
+  // mid-autocorrect.
+  test('soft-keyboard Send dispatched as insertReplacementText "word\\n" still sends', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello ');
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertReplacementText',
+        data: 'world\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Verifies that for `insertReplacementText` (autocorrect commit), the
+  // splice respects the IME's selection range — i.e. it REPLACES the
+  // autocorrect target rather than appending at end-of-text. The previous
+  // test set `selectionStart === selectionEnd === end`, exercising only the
+  // append path. Real autocorrect events arrive with the selection covering
+  // the misspelled word; this test simulates that shape.
+  test('insertReplacementText with non-collapsed selection replaces autocorrect target', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Textarea content has the misspelled word `wrold` at positions 6..11.
+    // The IME has selected that range to mark its autocorrect target.
+    await page.locator('#compose-input').fill('hello wrold');
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.setSelectionRange(6, 11);
+    });
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertReplacementText',
+        data: 'world\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    // setRangeText replaces the IME target range (6..11 = "wrold") with the
+    // corrected word "world", yielding "hello world\r" in the POST. If the
+    // splice ignored the selection range and appended instead, the POST
+    // would be "hello wroldworld\r".
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Defense-in-depth: any `input` event (post-mutation) that lands a trailing
+  // newline in the textarea via an unrecognized inputType — a future iOS
+  // variant, a third-party keyboard, Wispr Flow — must still submit. The
+  // beforeinput matcher is intentionally narrow; this fallback observes the
+  // side effect rather than the trigger and closes the open-ended whack-a-mole
+  // surface area.
+  test('input fallback: unknown inputType with trailing newline still sends', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello world');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      // Simulate the browser default having applied — the textarea ends in
+      // \n — and dispatch the post-mutation `input` event with an inputType
+      // the beforeinput matcher does NOT know about. The fallback catches
+      // it on the trailing-newline check.
+      el.value = 'hello world\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromComposition',
+        data: '\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Pathological data shape — the strict beforeinput regex rejects multi-line
+  // data so it falls through to the input fallback, which strips the trailing
+  // newlines. Without the fallback, the beforeinput's lazy regex would have
+  // spliced `'word\n'` (one newline absorbed into the prefix) into the
+  // textarea, leaving an embedded `\n` that Claude Code interprets as
+  // Shift+Enter — a multi-line POST the user didn't compose.
+  test('input fallback: pathological "word\\n\\n" data sends only the word', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello ');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      // Browser default would insert 'world\n\n' on `data: 'world\n\n'`.
+      // Simulate that landing in the textarea, then fire the post-mutation
+      // input event. The beforeinput matcher rejected this data (no match
+      // because of the embedded newline gating in `[^\r\n]*`), so the
+      // browser default applied. The fallback strips trailing newlines.
+      el.value = 'hello world\n\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertText',
+        data: 'world\n\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    // Trailing newlines stripped, no embedded `\n` smuggled into the POST.
+    expect(req.postData()).toBe('hello world\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Regression: the variant-N+1 case — `keydown(Enter, isComposing=true)`
+  // followed by a `beforeinput` inputType the matcher doesn't recognize.
+  // Earlier the keydown unconditionally stamped `lastEnterAt`, which gated
+  // the input fallback off and reproduced the original "newline lands, no
+  // submit" symptom for any future iOS IME variant. Both stamps must skip
+  // on `isComposing` so the fallback can fire.
+  test('input fallback fires after isComposing keydown + unknown beforeinput inputType', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello world');
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      // 1) iOS dispatches keydown(Enter) with isComposing=true (active
+      //    dictation/autocorrect). Both stamps must remain unset so the
+      //    input fallback isn't gated off.
+      el.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        isComposing: true,
+        cancelable: true,
+        bubbles: true,
+      }));
+      // 2) iOS dispatches a beforeinput event the matcher doesn't recognize
+      //    (simulating a future variant or third-party keyboard injection).
+      //    Our handler doesn't preventDefault.
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertSomeFutureVariant',
+        data: 'final\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+      // 3) Browser default would have inserted the data — simulate the
+      //    post-mutation state and fire the input event. The fallback must
+      //    catch the trailing newline and submit.
+      el.value = 'hello worldfinal\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertSomeFutureVariant',
+        data: 'final\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello worldfinal\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // Guard rail: the input fallback MUST NOT fire on hardware Shift+Enter
+  // (intentional newline) or on paste-with-trailing-newline (user action,
+  // not a Send signal). Without proper gating, every Shift+Enter would
+  // auto-submit and every paste of multi-line text would lose its content.
+  test('input fallback does NOT fire on hardware Shift+Enter', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    const ci = page.locator('#compose-input');
+    await ci.click();
+    await page.keyboard.type('one');
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('Enter');
+    await page.keyboard.up('Shift');
+
+    // Shift+Enter sets `lastEnterAt`, so the input fallback (which fires from
+    // the browser's default \n insertion) must bail. Give the runtime a beat
+    // for any stray POST to land — none should.
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(ci).toHaveValue('one\n');
+  });
+
+  // Guard rail: paste of multi-line text must not auto-submit even though
+  // the textarea now ends in `\n`. The fallback's allowlist explicitly
+  // excludes `insertFromPaste`.
+  test('input fallback does NOT fire on paste with trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      // Simulate a paste of "hello\n" — browser default inserts the value
+      // and fires `input` with inputType='insertFromPaste'. The fallback
+      // must reject this even though the value now ends in \n.
+      el.value = 'hello\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromPaste',
+        data: 'hello\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('hello\n');
   });
 
   test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {

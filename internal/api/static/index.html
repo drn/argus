@@ -5214,43 +5214,116 @@ function sendCompose() {
   //   3. iOS soft-Send (no keydown, OR keydown with isComposing) — keydown
   //      bails without stamping; beforeinput sees no fresh stamp and sends.
   //
-  // The line-break inputType varies across iOS WebKit IME pipelines:
-  //   - `insertLineBreak`     plain soft-Send / hardware Shift+Enter
-  //   - `insertParagraph`     some WebKit builds for textarea Enter
-  //   - `insertText` w/ `\n`  predictive text / dictation committing a Send
-  // Catching only `insertLineBreak` left the latter two falling through to
-  // the browser default — a literal `\n` lands in the textarea and the
-  // prompt sits unsubmitted. `isLineBreakInput()` recognizes all three.
+  // The line-break inputType varies across iOS WebKit IME pipelines. We've
+  // catalogued five known dispatches; each one shipped as a "final fix" before
+  // the next variant surfaced:
+  //   - `insertLineBreak`               plain soft-Send / hardware Shift+Enter
+  //   - `insertParagraph`               some WebKit builds for textarea Enter
+  //   - `insertText` w/ `\n`            predictive text / dictation committing a Send
+  //   - `insertText` w/ `'word\n'`      autocorrect/dictation bundling a still-
+  //                                     composing word + the Send line break
+  //                                     into a single beforeinput event. Common
+  //                                     on long prompts where the trailing word
+  //                                     has unfinalized composition state when
+  //                                     the user reaches Send.
+  //   - `insertReplacementText` w/ `'corrected\n'`
+  //                                     same bundling, but for an autocorrect
+  //                                     replacement commit instead of a fresh
+  //                                     insert.
+  //
+  // Defense-in-depth: we run TWO handlers cooperatively. The `beforeinput`
+  // matcher catches the known shapes early so the user never sees a newline
+  // flicker. The `input` matcher (post-mutation) catches anything the
+  // beforeinput matcher missed — observe-the-side-effect semantics, so any
+  // future iOS variant or third-party keyboard / dictation tool that lands a
+  // trailing newline in the textarea via an unrecognized inputType still
+  // submits. The two layers gate on stamps so neither double-fires the other.
+  //
+  // `lineBreakInputOf()` returns null for non-line-break events, or
+  // `{ prefix }` when the event commits a line break (with `prefix` holding
+  // any committed text that came alongside the newline in the same event).
+  // The matcher is intentionally STRICT — `[^\r\n]*` (not `[\s\S]*?`) so
+  // pathological multi-line data (e.g. `data: 'a\nb\n'`) does NOT match here
+  // and instead falls through to the input fallback, which strips trailing
+  // newlines and submits. Greedy multi-line splicing via setRangeText would
+  // pollute the POST with embedded newlines that Claude Code would treat as
+  // Shift+Enter — better to let the fallback handle it cleanly.
+  //
+  // Stamps — BOTH skip on isComposing (see keydown handler for the rationale):
+  //   - `lastEnterKeydownAt` — set on keydown(Enter) when NOT composing.
+  //     Read by the beforeinput handler to distinguish Shift+Enter (defer
+  //     to browser default) from a soft-Send (preventDefault + send).
+  //     RESET to 0 by the beforeinput handler in the Shift+Enter defer
+  //     branch so a follow-up real soft-Send within 100ms isn't suppressed.
+  //   - `lastEnterAt` — set on keydown(Enter) when NOT composing. Read by
+  //     the input fallback to suppress auto-submit when the user pressed a
+  //     hardware Shift+Enter (the only case where the keydown path doesn't
+  //     preventDefault, so an `input` event fires that the fallback could
+  //     spuriously act on). NOT reset by the beforeinput handler — kept
+  //     separate from `lastEnterKeydownAt` so the reset behavior of one
+  //     doesn't affect the gating of the other.
+  //   Both skip on isComposing because an IME-composing Enter that hits an
+  //   unrecognized beforeinput inputType is exactly the case the input
+  //   fallback was built to catch — stamping there would gate the fallback
+  //   off and reproduce the original symptom.
   //
   // 100ms is wider than any real keydown→beforeinput gap (microseconds, same
   // task) but well below human reaction time, so a stale stamp can't suppress
   // a deliberate follow-up Send.
   // Skill-AC interaction: when the autocomplete dropdown is open and Enter is
   // pressed, AC's keydown listener fires first and stopImmediatePropagation()s
-  // us, so the stamp isn't set. We rely on AC's preventDefault() suppressing
+  // us, so neither stamp is set. We rely on AC's preventDefault() suppressing
   // the beforeinput line-break per the WHATWG event spec — verified by the
   // autocomplete Playwright test.
   const ENTER_KEYDOWN_DEBOUNCE_MS = 100;
   let lastEnterKeydownAt = 0;
-  function isLineBreakInput(e) {
-    if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') return true;
-    // `insertText` with newline-only data is how predictive text/dictation
-    // commits a Send on some iOS builds — `e.data` is a single `\n` (or
-    // `\r\n`), not the user's prompt text. Bare `\r` is included defensively:
-    // no current iOS pipeline dispatches it, but it's a valid line break
-    // value under the spec and autocorrect never commits a lone control
-    // character, so the false-positive risk is zero.
-    if (e.inputType === 'insertText') {
-      return e.data === '\n' || e.data === '\r' || e.data === '\r\n';
+  let lastEnterAt = 0;
+  function lineBreakInputOf(e) {
+    if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
+      return { prefix: '' };
     }
-    return false;
+    // `insertText` and `insertReplacementText` are how predictive text /
+    // dictation / autocorrect commit a Send on iOS WebKit. The data is
+    // typically a bare newline, but on long prompts it can be `'word\n'`
+    // when the IME bundles a still-composing trailing word with the Send.
+    // Bare `\r` is included defensively under the WHATWG spec.
+    // `[^\r\n]*` (not `[\s\S]*?`) so multi-line data falls through to the
+    // input fallback rather than splicing embedded newlines via setRangeText.
+    if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') {
+      const data = e.data;
+      if (data == null) return null;
+      const m = /^([^\r\n]*)(\r\n|\r|\n)$/.exec(data);
+      if (m) return { prefix: m[1] };
+    }
+    return null;
+  }
+  // Allowlist for the input fallback: any inputType that begins with `insert`
+  // EXCEPT explicit user actions (paste / drop / yank) where auto-submitting
+  // would be unexpected. Format/delete/history/composition-update never match
+  // this prefix in the first place.
+  const PASTE_DROP_INPUT_TYPES = new Set([
+    'insertFromPaste',
+    'insertFromPasteAsQuotation',
+    'insertFromDrop',
+    'insertFromYank',
+  ]);
+  function isInsertionForSubmit(inputType) {
+    if (!inputType || !inputType.startsWith('insert')) return false;
+    return !PASTE_DROP_INPUT_TYPES.has(inputType);
   }
   ci.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
-    // See web-remote.md gotcha: skipping the stamp on isComposing avoids the
-    // beforeinput line-break being misclassified as Shift+Enter, which would
-    // let the browser insert a literal `\n` instead of submitting.
+    // Skip BOTH stamps on isComposing. `lastEnterKeydownAt` skip is the
+    // original 40c9334 fix (avoids beforeinput misclassifying an IME-composing
+    // line break as Shift+Enter follow-up). `lastEnterAt` skip closes the
+    // defense-in-depth gap: if the IME-composing Enter is followed by a
+    // beforeinput inputType the matcher doesn't recognize (a future iOS
+    // variant — exactly the case the input fallback was built for), the
+    // fallback MUST be free to fire. Stamping `lastEnterAt` here would gate
+    // the fallback on a stale stamp and reproduce the original "newline
+    // instead of submit" symptom for variant N+1.
     if (e.isComposing) return;
+    lastEnterAt = Date.now();
     lastEnterKeydownAt = Date.now();
     if (!e.shiftKey) {
       e.preventDefault();
@@ -5258,7 +5331,8 @@ function sendCompose() {
     }
   });
   ci.addEventListener('beforeinput', e => {
-    if (!isLineBreakInput(e)) return;
+    const lb = lineBreakInputOf(e);
+    if (!lb) return;
     // Hardware Enter / Shift+Enter just ran the keydown handler; let the
     // browser's default newline insertion (Shift+Enter) or the prevented
     // submit (plain Enter) play out without double-firing sendCompose.
@@ -5270,6 +5344,38 @@ function sendCompose() {
       return;
     }
     e.preventDefault();
+    // If the IME bundled a committed word with the line break (e.g.
+    // `data: 'world\n'`), preventDefault drops the whole event including
+    // the prefix. Insert it manually so the user's last word survives into
+    // the POST. setRangeText respects the IME's selection range, which is
+    // important for `insertReplacementText` autocorrect commits where the
+    // IME has set the selection to the autocorrect target before dispatch.
+    if (lb.prefix) {
+      ci.setRangeText(lb.prefix, ci.selectionStart, ci.selectionEnd, 'end');
+    }
+    sendCompose();
+  });
+  // Defense-in-depth fallback. Fires AFTER the browser default has applied,
+  // so it observes the side effect (textarea ends in `\n`) regardless of the
+  // inputType. Catches:
+  //   - Future iOS WebKit IME variants we haven't enumerated.
+  //   - Third-party keyboards / Wispr Flow / Voice Control dispatches that
+  //     don't match any of our beforeinput shapes.
+  //   - Pathological multi-line data the strict beforeinput matcher rejected.
+  // Gated on `lastEnterAt` and the inputType allowlist so it doesn't fire on
+  // hardware Shift+Enter (intentional newline) or paste/drop (user action).
+  ci.addEventListener('input', e => {
+    // Hardware Enter / Shift+Enter just ran. Whatever decision the keydown +
+    // beforeinput handlers made stands; don't second-guess them here.
+    if (Date.now() - lastEnterAt < ENTER_KEYDOWN_DEBOUNCE_MS) return;
+    if (!isInsertionForSubmit(e.inputType)) return;
+    const v = ci.value;
+    if (!v || !/[\r\n]$/.test(v)) return;
+    // Strip ALL trailing newlines (handles `'word\n\n'` and `'a\nb\n'`
+    // pathological cases) and submit. Embedded newlines mid-prompt are
+    // preserved as Shift+Enter equivalents — only the trailing run is the
+    // Send signal.
+    ci.value = v.replace(/[\r\n]+$/, '');
     sendCompose();
   });
 })();
