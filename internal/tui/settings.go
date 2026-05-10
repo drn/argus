@@ -1112,6 +1112,13 @@ func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
 		return
 	}
 
+	// Fill the interior — the row loop below paints with `break` when rows
+	// run out, leaving any unwritten rows. Defense-in-depth against future
+	// Clear-bypass optimizations (see gotchas/ui-threading.md). Mirrors
+	// renderDetail's FillArea — both panels use DrawBorder (not
+	// DrawBorderedPanel) and must fill the interior themselves.
+	widget.FillArea(screen, innerX, innerY, innerW, innerH, ' ', tcell.StyleDefault)
+
 	// Adjust scroll offset.
 	if sv.cursor < sv.scrollOff {
 		sv.scrollOff = sv.cursor
@@ -1160,6 +1167,17 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 	if innerW <= 0 || innerH <= 0 {
 		return
 	}
+
+	// Fill the interior before dispatching — sub-renderers use DrawText which
+	// only paints cells containing characters, leaving any rows/cells from
+	// the prior detail render intact. Without this, navigating the cursor
+	// between settings rows leaves ghost cells from the longer prior detail
+	// (e.g. switching from the Schedule detail to a one-line warning leaves
+	// the Schedule rows visible underneath). DrawBorderedPanel does this
+	// automatically; we explicitly mirror it here since DrawBorder does not.
+	// See gotchas/ui-threading.md "Every widget that does NOT go through
+	// DrawBorderedPanel fills its full bounding box yourself."
+	widget.FillArea(screen, innerX, innerY, innerW, innerH, ' ', tcell.StyleDefault)
 
 	row := sv.SelectedRow()
 	if row == nil {

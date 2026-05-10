@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/widget"
@@ -157,6 +158,10 @@ func wireApp(t *testing.T, app *App) (tcell.SimulationScreen, func()) {
 	app.tapp = tApp
 	app.screen = ls // match production wiring (Run sets app.screen)
 	app.tapp.SetInputCapture(app.handleGlobalKey)
+	// afterDraw is the production hook that consumes the pendingSync flag and
+	// runs screen.Sync(). buildUI wires it on the original tview.Application;
+	// re-wire it here since wireApp swapped app.tapp.
+	app.tapp.SetAfterDrawFunc(app.afterDraw)
 	app.tapp.SetRoot(app.root, true)
 	stop := runApp(t, tApp)
 	return sim, stop
@@ -678,6 +683,204 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 	syncUI(t, app.tapp)
 	if strings.Count(readLog(), pagesChanged) <= prev {
 		t.Errorf("closing new-task form did not fire pages-changed redraw")
+	}
+}
+
+// TestSmoke_FilterToggleFiresRedraw guards the filter-mode branch-change
+// wiring. Toggling `tl.filtering` swaps the bottom row between a task row and
+// the filter input WITHOUT changing rowsSignature — so the row-composition
+// signal alone won't catch it. The fix wires `setFiltering` to fire
+// OnLayoutChange, which forceRedraws. Image 1 in the bug report (project
+// header bleeding into a task row while `/nexus` filter was active) is
+// exactly this class of shift.
+func TestSmoke_FilterToggleFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.Add(&model.Task{ID: "f-1", Name: "filter test", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}) //nolint:errcheck // test setup; failure surfaces in subsequent assertion
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const tasklistChanged = "force redraw: tasklist rows changed"
+
+	// Open filter with `/`.
+	prev := strings.Count(readLog(), tasklistChanged)
+	sim.InjectKey(tcell.KeyRune, '/', 0)
+	syncUI(t, app.tapp)
+	if strings.Count(readLog(), tasklistChanged) <= prev {
+		t.Errorf("'/' did not fire tasklist redraw on filter open")
+	}
+
+	// Confirm filter (Enter) — exits input mode, keeps filter text. Bottom-row
+	// reservation lifts here, so a Sync is required.
+	prev = strings.Count(readLog(), tasklistChanged)
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	if strings.Count(readLog(), tasklistChanged) <= prev {
+		t.Errorf("Enter on active filter did not fire tasklist redraw")
+	}
+
+	// Re-enter filter, then Escape clears it (filtering=false + filter="").
+	sim.InjectKey(tcell.KeyRune, '/', 0)
+	syncUI(t, app.tapp)
+	prev = strings.Count(readLog(), tasklistChanged)
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	if strings.Count(readLog(), tasklistChanged) <= prev {
+		t.Errorf("Escape on filter did not fire tasklist redraw")
+	}
+}
+
+// TestSmoke_ReviewsBranchChangeFiresRedraw verifies the ReviewsView's
+// OnBranchChange callback fires forceRedraw on the focus and selectedPR
+// transitions that swap which Draw branch paints. The reviews widget paints
+// up to four overlapping branches in the same rect (PR list, file list with
+// diff, comment compose overlay, approve-confirm overlay). Without Sync on
+// each transition, tcell's per-cell diff leaves stale cells from the prior
+// branch.
+func TestSmoke_ReviewsBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const reviewsChanged = "force redraw: reviewsview branch changed"
+
+	// Drive transitions on the tview goroutine. Use the helper setters so
+	// we exercise the public branch-change contract, not internal fields.
+	prev := strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setFocus(rfDiff) // rfList → rfDiff
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("setFocus(rfDiff) did not fire reviewsview branch change")
+	}
+
+	prev = strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setFocus(rfComment) // rfDiff → rfComment (compose overlay)
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("setFocus(rfComment) did not fire reviewsview branch change")
+	}
+
+	prev = strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setFocus(rfApproveConfirm) // → approve-confirm overlay
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("setFocus(rfApproveConfirm) did not fire reviewsview branch change")
+	}
+
+	// No-op transition (same focus) must NOT fire a redraw — that would
+	// Sync-spam on every key press in the same panel.
+	prev = strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setFocus(rfApproveConfirm) // already there
+	})
+	if strings.Count(readLog(), reviewsChanged) != prev {
+		t.Errorf("no-op setFocus must not fire reviewsview branch change")
+	}
+
+	// selectedPR nil → non-nil transition fires; non-nil → non-nil (with
+	// different PR) does NOT fire because the Draw branch (files+diff
+	// layout) is unchanged.
+	prev = strings.Count(readLog(), reviewsChanged)
+	pr1 := &github.PR{Number: 1}
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setSelectedPR(pr1)
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("setSelectedPR(non-nil) did not fire reviewsview branch change")
+	}
+	prev = strings.Count(readLog(), reviewsChanged)
+	pr2 := &github.PR{Number: 2}
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setSelectedPR(pr2) // both non-nil — same Draw branch
+	})
+	if strings.Count(readLog(), reviewsChanged) != prev {
+		t.Errorf("setSelectedPR (non-nil → non-nil) must not fire reviewsview branch change")
+	}
+	prev = strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setSelectedPR(nil) // back to PR list
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("setSelectedPR(nil) did not fire reviewsview branch change on non-nil → nil")
+	}
+
+	// SetFullDiff transitions parsedDiff nil→non-nil. The diff panel branch
+	// flips from "Loading diff..." placeholder text to a full diff render —
+	// a genuine cell-set shift that needs Sync.
+	app.tapp.QueueUpdateDraw(func() {
+		app.reviews.setSelectedPR(&github.PR{Number: 99}) // need non-nil for SetFiles to mean something
+	})
+	prev = strings.Count(readLog(), reviewsChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		// Minimal valid unified diff so applyFileDiff produces parsedDiff != nil.
+		app.reviews.SetFiles([]string{"a.go"})
+		app.reviews.SetFullDiff("diff --git a/a.go b/a.go\nindex 0..1 100644\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n")
+	})
+	if strings.Count(readLog(), reviewsChanged) <= prev {
+		t.Errorf("SetFullDiff (parsedDiff nil → non-nil) did not fire reviewsview branch change")
+	}
+}
+
+// TestSmoke_AfterDrawSyncsOnPendingFlag verifies the architectural change:
+// forceRedraw sets a flag, afterDraw consumes it. Drives one update cycle
+// that fires several forceRedraw calls and asserts the flag clears (idempotent
+// — multiple sets collapse to one consumed flag). QueueUpdateDraw blocks
+// until BOTH f() and a.draw() complete; afterDraw runs inside a.draw(), so
+// when the call returns we're guaranteed afterDraw has run.
+func TestSmoke_AfterDrawSyncsOnPendingFlag(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	d.Add(&model.Task{ID: "ad-1", Name: "afterdraw", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}) //nolint:errcheck // test setup; failure surfaces in subsequent assertion
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Set the flag inside QueueUpdateDraw — afterDraw fires before this returns.
+	app.tapp.QueueUpdateDraw(func() {
+		app.forceRedraw("test single")
+	})
+	if app.pendingSync.Load() {
+		t.Errorf("pendingSync should have been consumed by afterDraw")
+	}
+
+	// Multiple forceRedraw calls in one update collapse to one consumed flag.
+	app.tapp.QueueUpdateDraw(func() {
+		app.forceRedraw("test a")
+		app.forceRedraw("test b")
+		app.forceRedraw("test c")
+	})
+	if app.pendingSync.Load() {
+		t.Errorf("multiple forceRedraw calls in one event must collapse to one consumed flag, got pendingSync still set")
 	}
 }
 

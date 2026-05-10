@@ -77,6 +77,48 @@ type ReviewsView struct {
 
 	// Callback to trigger async fetches from the App.
 	onFetch func(fn func())
+
+	// OnBranchChange fires when Draw() will paint a different rendering
+	// branch than the previous frame: focus changes between the four
+	// reviewFocus values (rfList / rfDiff / rfComment / rfApproveConfirm)
+	// AND selectedPR transitions (PR list ↔ files+diff). Each branch paints
+	// different cells in the same rect; tcell's diff-based Show() can leave
+	// stale cells from the previous branch on screen. The app wires this to
+	// forceRedraw so afterDraw runs Sync. See gotchas/ui-threading.md.
+	OnBranchChange func()
+}
+
+// notifyBranchChange fires OnBranchChange if set. Safe to call when the
+// callback is nil (no-op). Mirrors TerminalPane.notifyBranchChange.
+func (rv *ReviewsView) notifyBranchChange() {
+	if rv.OnBranchChange != nil {
+		rv.OnBranchChange()
+	}
+}
+
+// setFocus changes the focus and fires the branch-change callback when it
+// flips. Use this rather than direct field assignment — every focus swap
+// changes which Draw branch paints (overlay confirm prompt, comment compose
+// input, file list vs PR list), so each transition needs Sync.
+func (rv *ReviewsView) setFocus(f reviewFocus) {
+	if rv.focus == f {
+		return
+	}
+	rv.focus = f
+	rv.notifyBranchChange()
+}
+
+// setSelectedPR sets the selected PR and fires the branch-change callback
+// when the nil↔non-nil state flips (PR list ↔ files+diff is a major Draw
+// branch swap). Setting from one PR to another (both non-nil) doesn't flip
+// the Draw branch — both paint the files+diff layout — so no notify there.
+func (rv *ReviewsView) setSelectedPR(pr *github.PR) {
+	prevNil := rv.selectedPR == nil
+	nextNil := pr == nil
+	rv.selectedPR = pr
+	if prevNil != nextNil {
+		rv.notifyBranchChange()
+	}
 }
 
 // NewReviewsView creates a new reviews panel.
@@ -96,8 +138,17 @@ func (rv *ReviewsView) SetOnFetch(cb func(fn func())) {
 // --- Data setters ---
 
 func (rv *ReviewsView) StartLoading() {
+	wasLoading := rv.loading
+	hadErr := rv.loadErr != ""
 	rv.loading = true
 	rv.loadErr = ""
+	// Branch change: PR-list ↔ "Loading..." text in renderPRList. Cooldown-
+	// gated background refreshes flip these without a Pages mutation, so
+	// without a Sync the PR-list cells could ghost behind the loading text
+	// (or vice versa) on slow terminals.
+	if !wasLoading || hadErr {
+		rv.notifyBranchChange()
+	}
 }
 
 func (rv *ReviewsView) CanFetchPRList() bool {
@@ -108,11 +159,23 @@ func (rv *ReviewsView) CanFetchPRList() bool {
 }
 
 func (rv *ReviewsView) SetPRs(prs []github.PR, err error) {
+	wasLoading := rv.loading
+	prevErr := rv.loadErr
 	rv.loading = false
 	if err != nil {
 		rv.loadErr = err.Error()
 		uxlog.Log("[reviews] fetch error: %v", err)
+		// Branch change: loading → error text (or PR list → error text on
+		// a refresh failure). Different cell content in renderPRList.
+		if wasLoading || prevErr != rv.loadErr {
+			rv.notifyBranchChange()
+		}
 		return
+	}
+	rv.loadErr = ""
+	if wasLoading || prevErr != "" {
+		// Branch change: loading/error → PR list.
+		rv.notifyBranchChange()
 	}
 	uxlog.Log("[reviews] fetched %d PRs", len(prs))
 
@@ -131,9 +194,9 @@ func (rv *ReviewsView) SetPRs(prs []github.PR, err error) {
 	if firstLoad {
 		rv.prCursor = 0
 		rv.prScrollOff = 0
-		rv.selectedPR = nil
 		rv.files = nil
-		rv.focus = rfList
+		rv.setSelectedPR(nil)
+		rv.setFocus(rfList)
 	} else {
 		if rv.prCursor >= len(rv.prs) {
 			rv.prCursor = max(0, len(rv.prs)-1)
@@ -142,6 +205,8 @@ func (rv *ReviewsView) SetPRs(prs []github.PR, err error) {
 }
 
 func (rv *ReviewsView) SetFiles(files []string) {
+	prevEmpty := len(rv.files) == 0
+	prevHadDiff := rv.parsedDiff != nil
 	rv.files = files
 	rv.fileCursor = 0
 	rv.fullDiff = ""
@@ -150,21 +215,49 @@ func (rv *ReviewsView) SetFiles(files []string) {
 	rv.diffRendered = nil
 	rv.diffScrollOff = 0
 	rv.diffFetchedAt = time.Time{}
+	// Branch change: file list panel transitions between "Loading files..."
+	// (empty) and a populated list, AND the diff panel transitions from
+	// rendered diff back to placeholder text when parsedDiff clears. Fire
+	// when either transition is meaningful.
+	nextEmpty := len(files) == 0
+	if prevEmpty != nextEmpty || prevHadDiff {
+		rv.notifyBranchChange()
+	}
 }
 
 func (rv *ReviewsView) SetFullDiff(diff string) {
+	prevHadDiff := rv.parsedDiff != nil
 	rv.fullDiff = diff
 	rv.diffFetchedAt = time.Now()
 	rv.diffFetching = false
 	rv.applyFileDiff()
+	// Branch change: diff panel transitions between "Loading diff..." /
+	// "Select a file" placeholder text and the full diff render. Without
+	// this, the short placeholder leaves stale cells underneath the diff
+	// at every row the diff covers — a real ghost-cell scenario on slow
+	// terminals when GitHub's diff API is slow to respond.
+	nextHasDiff := rv.parsedDiff != nil
+	if prevHadDiff != nextHasDiff {
+		rv.notifyBranchChange()
+	}
 }
 
 func (rv *ReviewsView) SetComments(comments []github.PRComment) {
+	prevEmpty := len(rv.comments) == 0
 	rv.comments = comments
 	rv.commentsFetchedAt = time.Now()
 	rv.commentsFetching = false
 	rv.commentCursor = 0
 	uxlog.Log("[reviews] loaded %d comments", len(comments))
+	// Branch change: renderComments paints "No comments yet" + 3 hint rows
+	// when len==0, vs the populated comment list otherwise. A 0→N transition
+	// where N's row count is fewer than the hint area leaves stale hint text
+	// at lower rows. Fire on the empty↔non-empty flip; tcell's per-cell diff
+	// handles list-length changes within the non-empty branch.
+	nextEmpty := len(comments) == 0
+	if prevEmpty != nextEmpty {
+		rv.notifyBranchChange()
+	}
 }
 
 func (rv *ReviewsView) MarkReviewDecision(prNumber int, action github.ReviewAction) {
@@ -298,9 +391,9 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 	case tcell.KeyTab:
 		if rv.selectedPR != nil {
 			if rv.focus == rfList {
-				rv.focus = rfDiff
+				rv.setFocus(rfDiff)
 			} else {
-				rv.focus = rfList
+				rv.setFocus(rfList)
 			}
 		}
 		return true
@@ -332,20 +425,20 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 					rv.draftLine = line
 					rv.draftBody = ""
 					rv.reviewDraftMode = false
-					rv.focus = rfComment
+					rv.setFocus(rfComment)
 				}
 			}
 			return true
 		case 'a':
 			if rv.focus == rfDiff && rv.selectedPR != nil {
-				rv.focus = rfApproveConfirm
+				rv.setFocus(rfApproveConfirm)
 			}
 			return true
 		case 'r':
 			if rv.focus == rfDiff && rv.selectedPR != nil {
 				rv.draftBody = ""
 				rv.reviewDraftMode = true
-				rv.focus = rfComment
+				rv.setFocus(rfComment)
 			}
 			return true
 		}
@@ -356,7 +449,7 @@ func (rv *ReviewsView) handleNormalKey(ev *tcell.EventKey, app *App) bool {
 func (rv *ReviewsView) handleCommentKey(ev *tcell.EventKey, app *App) bool {
 	switch ev.Key() {
 	case tcell.KeyEscape:
-		rv.focus = rfDiff
+		rv.setFocus(rfDiff)
 		return true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(rv.draftBody) > 0 {
@@ -380,7 +473,7 @@ func (rv *ReviewsView) handleCommentKey(ev *tcell.EventKey, app *App) bool {
 func (rv *ReviewsView) handleApproveConfirmKey(ev *tcell.EventKey, app *App) bool {
 	switch ev.Key() {
 	case tcell.KeyEscape:
-		rv.focus = rfDiff
+		rv.setFocus(rfDiff)
 		return true
 	case tcell.KeyEnter:
 		rv.submitApprove(app)
@@ -391,7 +484,7 @@ func (rv *ReviewsView) handleApproveConfirmKey(ev *tcell.EventKey, app *App) boo
 			rv.submitApprove(app)
 			return true
 		case 'n':
-			rv.focus = rfDiff
+			rv.setFocus(rfDiff)
 			return true
 		}
 	}
@@ -442,32 +535,32 @@ func (rv *ReviewsView) handleEnter(app *App) {
 		// Select PR.
 		if rv.prCursor >= 0 && rv.prCursor < len(rv.prs) {
 			pr := rv.prs[rv.prCursor]
-			rv.selectedPR = &pr
+			rv.setSelectedPR(&pr)
 			rv.fetchFiles(app)
 		}
 		return
 	}
 	// Select file → fetch diff.
 	if len(rv.files) > 0 && rv.focus == rfList {
-		rv.focus = rfDiff
+		rv.setFocus(rfDiff)
 		rv.fetchDiffAndComments(app)
 	}
 }
 
 func (rv *ReviewsView) handleEsc() {
 	if rv.focus == rfDiff {
-		rv.focus = rfList
+		rv.setFocus(rfList)
 		return
 	}
 	if rv.selectedPR != nil {
-		rv.selectedPR = nil
 		rv.files = nil
 		rv.fullDiff = ""
 		rv.rawDiff = ""
 		rv.parsedDiff = nil
 		rv.diffRendered = nil
 		rv.comments = nil
-		rv.focus = rfList
+		rv.setSelectedPR(nil)
+		rv.setFocus(rfList)
 		return
 	}
 }
@@ -589,7 +682,7 @@ func (rv *ReviewsView) submitComment(app *App) {
 					rv.MarkReviewDecision(pr.Number, action)
 					uxlog.Log("[reviews] submitted REQUEST_CHANGES for #%d", pr.Number)
 				}
-				rv.focus = rfDiff
+				rv.setFocus(rfDiff)
 				rv.draftBody = ""
 			})
 		})
@@ -608,7 +701,7 @@ func (rv *ReviewsView) submitComment(app *App) {
 					rv.commentsFetching = false
 					rv.fetchDiffAndComments(app)
 				}
-				rv.focus = rfDiff
+				rv.setFocus(rfDiff)
 				rv.draftBody = ""
 			})
 		})
@@ -631,7 +724,7 @@ func (rv *ReviewsView) submitApprove(app *App) {
 				rv.MarkReviewDecision(pr.Number, action)
 				uxlog.Log("[reviews] approved #%d", pr.Number)
 			}
-			rv.focus = rfDiff
+			rv.setFocus(rfDiff)
 		})
 	})
 }

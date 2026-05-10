@@ -665,10 +665,26 @@ func (tl *TaskListView) Filter() string {
 	return tl.filter
 }
 
+// setFiltering toggles filter-input mode. When the flag flips, the panel's
+// bottom row swaps between a task row and the filter input — a layout shift
+// that doesn't change `rowsSignature` (rows are unchanged, only `listH` is
+// reduced by one). Without notifying OnLayoutChange the App can't Sync, and
+// tcell's diff-based emit leaves stale cells from the previous bottom row.
+// See gotchas/ui-threading.md.
+func (tl *TaskListView) setFiltering(v bool) {
+	if tl.filtering == v {
+		return
+	}
+	tl.filtering = v
+	if tl.OnLayoutChange != nil {
+		tl.OnLayoutChange()
+	}
+}
+
 // ClearFilter clears the filter and rebuilds rows.
 func (tl *TaskListView) ClearFilter() {
 	tl.filter = ""
-	tl.filtering = false
+	tl.setFiltering(false)
 	tl.buildRows()
 	tl.clampCursor()
 	tl.notifyCursorChange()
@@ -691,7 +707,7 @@ func (tl *TaskListView) handleFilterInput(event *tcell.EventKey) bool {
 		return true
 	case tcell.KeyEnter:
 		// Confirm filter — keep filter text active, exit input mode.
-		tl.filtering = false
+		tl.setFiltering(false)
 		return true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hasAlt {
@@ -768,7 +784,7 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 					tl.OnNew()
 				}
 			case '/':
-				tl.filtering = true
+				tl.setFiltering(true)
 			case 's':
 				if t := tl.SelectedTask(); t != nil {
 					t.SetStatus(t.Status.Next())

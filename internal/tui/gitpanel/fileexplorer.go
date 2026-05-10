@@ -2,6 +2,8 @@ package gitpanel
 
 import (
 	"fmt"
+	"hash/fnv"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,6 +34,18 @@ type FilePanel struct {
 	// OnClick is called when the user clicks on the file panel.
 	// The app wires this to switch agentFocus so keyboard events route here.
 	OnClick func()
+
+	// OnLayoutChange fires after buildRows when the row composition changes
+	// (directory expansion / collapse, file list update). The app wires this
+	// to forceRedraw so tcell Sync wipes ghost cells from a row shift —
+	// tview's diff-based emit leaves stale tail characters when a longer row
+	// is replaced by a shorter one. See gotchas/ui-threading.md.
+	OnLayoutChange func()
+
+	// Last row signature; OnLayoutChange fires only when this changes.
+	// Initialized to ^uint64(0) so the first build always fires (matching
+	// TaskListView's pattern).
+	lastRowsSig uint64
 }
 
 type fpRow struct {
@@ -46,6 +60,7 @@ func NewFilePanel() *FilePanel {
 		Box:         tview.NewBox(),
 		expanded:    make(map[string]bool),
 		dirChildren: make(map[string][]gitutil.ChangedFile),
+		lastRowsSig: ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 }
 
@@ -260,6 +275,33 @@ func (fp *FilePanel) buildRows() {
 			}
 		}
 	}
+
+	// Notify on row composition change so the App can force a tcell Sync.
+	// Mirrors TaskListView.buildRows; same tmux/iTerm2 ghost-cell motivation.
+	sig := fp.rowsSignature()
+	if sig != fp.lastRowsSig {
+		fp.lastRowsSig = sig
+		if fp.OnLayoutChange != nil {
+			fp.OnLayoutChange()
+		}
+	}
+}
+
+// rowsSignature returns a 64-bit FNV-1a hash of the rendered row composition.
+// Hashes path + indent per row; status field is included indirectly via path
+// (changed files have unique paths). Used to suppress OnLayoutChange when a
+// no-op rebuild produced identical rows.
+func (fp *FilePanel) rowsSignature() uint64 {
+	h := fnv.New64a()
+	for _, r := range fp.rows {
+		_, _ = io.WriteString(h, r.Path)
+		// Indent is a small int (directory nesting depth, <10 in practice);
+		// mask to byte to satisfy gosec G115. Collisions at indent>=256 are
+		// fine — signature is a heuristic, only false negatives risk missed
+		// Sync, and a 256-deep nesting would already break visual layout.
+		_, _ = h.Write([]byte{0, byte(r.indent & 0xff)})
+	}
+	return h.Sum64()
 }
 
 // buildChildTree groups flat file paths into a nested tree of fpRow entries.

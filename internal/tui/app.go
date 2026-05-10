@@ -188,6 +188,24 @@ type App struct {
 	// history); the named type is retained so smoke tests can inject a
 	// SimulationScreen through the same indirection production uses.
 	screen *lazyScreen
+
+	// pendingSync is set by forceRedraw and consumed by SetAfterDrawFunc to
+	// trigger a single tcell Sync per draw cycle. See `forceRedraw` doc and
+	// gotchas/ui-threading.md for the contract: any widget that conditionally
+	// renders different content in the same rect must surface a "branch
+	// changed" callback that the App wires to forceRedraw. The flag-based
+	// approach replaces the prior `tapp.Sync()` (async channel enqueue): a
+	// flag set during InputHandler / QueueUpdateDraw is consumed in the same
+	// draw cycle's afterDraw, eliminating the timing window where a queued
+	// Sync could run against a stale cell buffer between events.
+	pendingSync atomic.Bool
+
+	// lastScreenW/H tracks the most recently observed screen size so the
+	// afterDraw hook can detect terminal resize and force a Sync — tview's
+	// internal EventResize handler does Clear+draw without Sync, which leaves
+	// tmux/iTerm2 ghosts after a resize.
+	lastScreenW int
+	lastScreenH int
 }
 
 // New creates the tui application shell.
@@ -302,10 +320,12 @@ func (a *App) buildUI() {
 		a.agentFocus = focusFiles
 		a.updateFocusIndicators()
 	}
+	a.filePanel.OnLayoutChange = func() { a.forceRedraw("filepanel rows changed") }
 	a.agentPane.OnClick = func() {
 		a.agentFocus = focusTerminal
 		a.updateFocusIndicators()
 	}
+	a.agentPane.OnBranchChange = func() { a.forceRedraw("agentpane branch changed") }
 	a.agentPane.OnNeedRedraw = func() {
 		a.tapp.QueueUpdateDraw(func() {})
 	}
@@ -313,6 +333,7 @@ func (a *App) buildUI() {
 	a.reviews.SetOnFetch(func(fn func()) {
 		go fn()
 	})
+	a.reviews.OnBranchChange = func() { a.forceRedraw("reviewsview branch changed") }
 
 	// Task list page — three-panel layout: tasks | (git status + preview) | details
 	// Center column is a vertical split: git status (30%, clamped 3-15 rows) on top,
@@ -352,8 +373,44 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
+	// SetAfterDrawFunc fires after root.Draw() paints the new state into the
+	// cell buffer but BEFORE screen.Show() emits diffs. Two responsibilities:
+	//  1. Consume `pendingSync` (set by forceRedraw) and call screen.Sync() —
+	//     emits a clear-screen escape + every cell, wiping any tmux/iTerm2
+	//     ghost cells from a layout shift. After Sync, screen.Show() is a no-op
+	//     (cells are clean, so per-cell diff emits nothing).
+	//  2. Detect terminal resize (compare current size to last). tview's
+	//     EventResize handler does Clear+draw without Sync; without this the
+	//     tcell-vs-terminal cell buffer can drift across resizes.
+	// This is strictly better than the prior `tapp.Sync()` async channel: a
+	// flag set in this same draw cycle's InputHandler is consumed in this same
+	// draw cycle's afterDraw, with no timing window.
+	a.tapp.SetAfterDrawFunc(a.afterDraw)
+
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
+}
+
+// afterDraw is registered as tview's after-draw callback. Runs synchronously
+// inside `a.draw()` after `root.Draw(screen)` has populated the cell buffer
+// with new content but before `screen.Show()` emits diffs.
+//
+// Calling `screen.Sync()` here is safe — tcell's Sync() invalidates all cells
+// and immediately emits a full clear+redraw. Show() then runs but finds no
+// dirty cells, so nothing is double-emitted. Net cost: one full-screen redraw
+// per draw cycle where forceRedraw was requested or the screen was resized.
+func (a *App) afterDraw(screen tcell.Screen) {
+	w, h := screen.Size()
+	sizeChanged := w != a.lastScreenW || h != a.lastScreenH
+	a.lastScreenW = w
+	a.lastScreenH = h
+	consumed := a.pendingSync.CompareAndSwap(true, false)
+	if sizeChanged || consumed {
+		if sizeChanged {
+			uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", w, h)
+		}
+		screen.Sync()
+	}
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -441,11 +498,10 @@ func (a *App) Run() error {
 	// because no Draw goroutine exists yet — Pages.AddPage / SwitchToPage
 	// don't take their own locks (only SetFocus does), so the safety comes
 	// from the absence of a concurrent reader, not internal synchronization.
-	// Note: pages.SetChangedFunc fires forceRedraw → tapp.Sync() during
-	// AddPage/SwitchToPage. Sync() pushes onto the buffered (cap-100) updates
-	// channel without blocking on a done-channel, so it's safe pre-Run; the
-	// queued Sync drains on the first event-loop iteration. The deadlock
-	// above is specific to QueueUpdateDraw's per-call done-channel.
+	// Note: pages.SetChangedFunc fires forceRedraw which now sets a flag
+	// consumed by afterDraw — no channel send, no blocking. The flag is set
+	// pre-Run() and consumed on the very first draw inside tapp.Run() (line
+	// `a.draw()` at the top of Run() before the event loop starts).
 	if a.daemonStale {
 		a.openRestartDaemonPrompt()
 	}
@@ -1834,22 +1890,38 @@ func (a *App) switchTab(t widget.Tab) {
 	}
 }
 
-// forceRedraw queues a tcell Sync on tview's update channel; it fires on the
-// next event cycle after any in-flight Draw completes. `Sync()` invalidates
-// tcell's dirty-cell tracking so every cell is re-emitted, which overwrites
-// ghost content that the diff-based `Show()` considered up-to-date.
+// forceRedraw requests a tcell Sync on the next draw cycle. Sets a flag that
+// `afterDraw` consumes (synchronously, inside the same `a.draw()` call that
+// painted the new state). `screen.Sync()` invalidates tcell's dirty-cell
+// tracking and emits clear-screen + every cell, overwriting tmux/iTerm2 ghost
+// content that the diff-based `Show()` considered up-to-date.
 //
-// Wired in two places (don't add a third without thinking hard):
+// Multiple forceRedraw calls within a single draw cycle collapse to ONE Sync
+// (the flag is idempotent). Replaced the prior `tapp.Sync()` async channel
+// enqueue, which had a timing window where the queued Sync could run between
+// events against a stale cell buffer.
+//
+// Contract: any widget that conditionally renders different content in the
+// same rect must surface a "branch changed" callback the App wires here.
+// Five structural hooks today:
 //   - `pages.SetChangedFunc` — fires on every AddPage/RemovePage/SwitchToPage,
 //     covering modal open/close, tab switch, and agent view enter/exit.
-//   - `tasklist.OnLayoutChange` — fires when row composition changes
-//     (auto-rename, status flips, archive toggles); tview can't observe these.
+//   - `tasklist.OnLayoutChange` — fires on row composition or filter-mode
+//     toggle (which reserves/releases the bottom row).
+//   - `filePanel.OnLayoutChange` — fires on directory expansion / row shifts.
+//   - `agentPane.OnBranchChange` — fires on SetSession/SetPending/diff-mode
+//     toggle/scroll-mode 0↔nonzero/async replay rebuild completion — every
+//     Draw branch swap.
+//   - `reviews.OnBranchChange` — fires on focus changes (rfList/rfDiff/
+//     rfComment/rfApproveConfirm) and selectedPR nil↔non-nil transitions.
 //
-// The only intentional direct callsite is Ctrl+L (user-initiated refresh
-// where no page mutation occurs).
+// Plus afterDraw detects screen-size changes (tview's EventResize handler does
+// Clear+draw without Sync) and forces a Sync on resize.
+//
+// The only intentional direct callsite is Ctrl+L (user-initiated refresh).
 func (a *App) forceRedraw(reason string) {
 	uxlog.Log("[tui] force redraw: %s", reason)
-	a.tapp.Sync()
+	a.pendingSync.Store(true)
 }
 
 // onTaskCursorChange updates the preview, git status, and detail panels when the task list cursor moves.

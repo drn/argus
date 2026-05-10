@@ -174,6 +174,23 @@ type TerminalPane struct {
 	// OnNeedRedraw is called from a background goroutine when an async
 	// replay rebuild completes. The app wires this to tapp.QueueUpdateDraw.
 	OnNeedRedraw func()
+
+	// OnBranchChange fires when Draw() will paint a different rendering
+	// branch than the previous frame: SetSession (live↔nil↔replay),
+	// SetTaskID (different task → potentially different replay log content,
+	// or replayData clear → "Session not running" placeholder), SetPending
+	// (banner↔normal), EnterDiffMode/ExitDiffMode/ToggleDiffSplit (PTY↔
+	// unified diff↔split diff), scroll-mode 0↔nonzero (live↔replay
+	// emulator), and async replay rebuild completion (fallback emulator →
+	// fresh 50K-line emulator with potentially different content at the
+	// same cell positions). Each branch paints different cells in the same
+	// rect; tcell's diff-based Show() can leave stale cells from the
+	// previous branch on screen. The app wires this to forceRedraw so
+	// afterDraw runs Sync. See gotchas/ui-threading.md.
+	//
+	// Safe to fire from any goroutine: the callback is set once in
+	// buildUI and never reassigned, and forceRedraw uses an atomic flag.
+	OnBranchChange func()
 }
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
@@ -186,14 +203,23 @@ func NewTerminalPane() *TerminalPane {
 	}
 }
 
+// notifyBranchChange fires OnBranchChange if set. Call AFTER releasing tp.mu
+// — the callback may invoke app-level code that takes other locks. Safe to
+// call when OnBranchChange is nil (no-op).
+func (tp *TerminalPane) notifyBranchChange() {
+	if tp.OnBranchChange != nil {
+		tp.OnBranchChange()
+	}
+}
+
 // SetSession attaches a live session. Resets emulator state only when the
 // session pointer actually changes — the tick calls this every second with
 // the same session, and resetting the emulator each time would destroy
 // incremental rendering state.
 func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.mu.Lock()
-	defer tp.mu.Unlock()
 	if tp.session == sess {
+		tp.mu.Unlock()
 		return // same session, skip reset
 	}
 	if sess != nil {
@@ -220,6 +246,10 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 			tp.ptyRows = max(h, 5)
 		}
 	}
+	tp.mu.Unlock()
+	// Branch change: nil↔live↔replay paint different cells in the same rect.
+	// Fire AFTER releasing the lock — the app-side handler may take other locks.
+	tp.notifyBranchChange()
 }
 
 // Session returns the current session (thread-safe).
@@ -230,11 +260,24 @@ func (tp *TerminalPane) Session() agentview.TerminalAdapter {
 }
 
 // SetTaskID sets the current task ID and loads session log if no live session.
+//
+// Branch change: clearing replayData and (potentially) loading a different
+// session log can flip Draw between "replay finished session" content and
+// "Session not running" text, or between two replay logs of different sizes.
+// Today this is always paired with SetSession (which fires its own notify),
+// but firing here too makes the contract explicit instead of relying on the
+// implicit pairing — defense against a future caller that uses SetTaskID
+// in isolation.
 func (tp *TerminalPane) SetTaskID(id string) {
+	prevID := tp.taskID
+	hadReplay := len(tp.replayData) > 0
 	tp.taskID = id
 	tp.replayData = nil
 	if id != "" && tp.Session() == nil {
 		tp.loadSessionLog(id)
+	}
+	if prevID != id || hadReplay {
+		tp.notifyBranchChange()
 	}
 }
 
@@ -253,8 +296,13 @@ func (tp *TerminalPane) loadSessionLog(taskID string) {
 // instead of "No active session". Cleared automatically by SetSession.
 func (tp *TerminalPane) SetPending(v bool) {
 	tp.mu.Lock()
+	changed := tp.pending != v
 	tp.pending = v
 	tp.mu.Unlock()
+	if changed {
+		// Branch change: pending banner ↔ "No active session" message.
+		tp.notifyBranchChange()
+	}
 }
 
 // SetPRURL sets the PR URL for the current task.
@@ -363,29 +411,47 @@ const scrollAccelWindow = 120 * time.Millisecond
 const scrollAccelMax = 12
 
 func (tp *TerminalPane) ScrollUp(n int) {
-	if tp.scrollOffset == 0 {
+	wasZero := tp.scrollOffset == 0
+	if wasZero {
 		tp.invalidateReplayCache()
 	}
 	tp.scrollOffset += n
 	tp.paintCacheValid = false
+	if wasZero {
+		// Branch change 0→nonzero: live (renderLive) → replay emulator path.
+		// The two paths fetch from different sources (ring buffer vs replay
+		// emu) and can paint subtly different content (e.g. [SCROLL] indicator
+		// only appears in replay).
+		tp.notifyBranchChange()
+	}
 }
 func (tp *TerminalPane) ScrollOffset() int { return tp.scrollOffset }
 func (tp *TerminalPane) ResetScroll() {
+	wasNonZero := tp.scrollOffset != 0
 	tp.scrollOffset = 0
 	tp.anchorTotalLines = 0
 	tp.scrollAccel = 0
 	tp.paintCacheValid = false
+	if wasNonZero {
+		// Branch change nonzero→0: replay → live.
+		tp.notifyBranchChange()
+	}
 }
 
 // AccelScrollUp performs an accelerated scroll up for keyboard key-repeat.
 // Returns the actual number of lines scrolled.
 func (tp *TerminalPane) AccelScrollUp() int {
 	n := tp.nextAccelStep()
-	if tp.scrollOffset == 0 {
+	wasZero := tp.scrollOffset == 0
+	if wasZero {
 		tp.invalidateReplayCache()
 	}
 	tp.scrollOffset += n
 	tp.paintCacheValid = false
+	if wasZero {
+		// Branch change: live → replay (see ScrollUp).
+		tp.notifyBranchChange()
+	}
 	return n
 }
 
@@ -407,11 +473,16 @@ func (tp *TerminalPane) invalidateReplayCache() {
 // AccelScrollDown performs an accelerated scroll down for keyboard key-repeat.
 func (tp *TerminalPane) AccelScrollDown() int {
 	n := tp.nextAccelStep()
+	wasNonZero := tp.scrollOffset != 0
 	tp.scrollOffset -= n
 	tp.paintCacheValid = false
-	if tp.scrollOffset < 0 {
+	if tp.scrollOffset <= 0 {
 		tp.scrollOffset = 0
 		tp.anchorTotalLines = 0
+		if wasNonZero {
+			// Branch change: replay → live.
+			tp.notifyBranchChange()
+		}
 	}
 	return n
 }
@@ -433,11 +504,16 @@ func (tp *TerminalPane) nextAccelStep() int {
 }
 
 func (tp *TerminalPane) ScrollDown(n int) {
+	wasNonZero := tp.scrollOffset != 0
 	tp.scrollOffset -= n
 	tp.paintCacheValid = false
-	if tp.scrollOffset < 0 {
+	if tp.scrollOffset <= 0 {
 		tp.scrollOffset = 0
 		tp.anchorTotalLines = 0
+		if wasNonZero {
+			// Branch change: replay → live.
+			tp.notifyBranchChange()
+		}
 	}
 }
 
@@ -533,6 +609,7 @@ func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p t
 
 // EnterDiffMode activates diff display in the center panel.
 func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
+	wasDiff := tp.diffMode
 	tp.diffMode = true
 	tp.diffScroll = 0
 	tp.diffFile = fileName
@@ -540,10 +617,18 @@ func (tp *TerminalPane) EnterDiffMode(diff, fileName string) {
 	tp.diffUnifiedLines = widget.BuildUnifiedDiffLines(tp.diffParsed, fileName)
 	tp.diffSplitLines = nil
 	tp.diffSplitWidth = 0
+	if !wasDiff {
+		// Branch change: PTY → diff (different rendering path, different
+		// cell set). Skip when already in diff mode — diff → diff (different
+		// file) keeps the same Draw branch and overwrites the same cell
+		// positions cleanly, so no Sync needed.
+		tp.notifyBranchChange()
+	}
 }
 
 // ExitDiffMode returns to terminal display.
 func (tp *TerminalPane) ExitDiffMode() {
+	wasDiff := tp.diffMode
 	tp.diffMode = false
 	tp.diffParsed = gitutil.ParsedDiff{}
 	tp.diffUnifiedLines = nil
@@ -552,6 +637,11 @@ func (tp *TerminalPane) ExitDiffMode() {
 	tp.diffScroll = 0
 	tp.diffFile = ""
 	tp.paintCacheValid = false
+	if wasDiff {
+		// Branch change: diff → PTY. Cells from the diff render must be wiped
+		// before the live emulator paints over them.
+		tp.notifyBranchChange()
+	}
 }
 
 // InDiffMode returns true if viewing a diff.
@@ -561,6 +651,9 @@ func (tp *TerminalPane) InDiffMode() bool { return tp.diffMode }
 func (tp *TerminalPane) ToggleDiffSplit() {
 	tp.diffSplit = !tp.diffSplit
 	tp.diffScroll = 0
+	// Branch change: unified diff ↔ split diff paint completely different
+	// columns/cells in the same rect.
+	tp.notifyBranchChange()
 }
 
 // DiffScrollUp scrolls the diff view up.
@@ -899,6 +992,15 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	tp.replayRebuildPending = true
 	tp.replayBuilding = false
 	tp.mu.Unlock()
+
+	// Branch change: the fallback emulator (or "Waiting for output..." text)
+	// painted on prior frames is being replaced by a fresh 50K-line replay
+	// emulator. Different content fills the same rect — fire OnBranchChange
+	// so afterDraw runs Sync, wiping any stale fallback cells. notify is
+	// safe to call from this background goroutine: the callback is set once
+	// in buildUI and never reassigned (no race), and forceRedraw uses an
+	// atomic flag (no cross-goroutine ordering concerns).
+	tp.notifyBranchChange()
 
 	// Trigger a redraw so the next Draw() picks up the new emulator.
 	if onDone != nil {
