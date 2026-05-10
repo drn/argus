@@ -278,6 +278,7 @@ func (a *App) buildUI() {
 	a.tasklist.OnNew = a.onNewTask
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 	a.tasklist.OnLayoutChange = func() { a.forceRedraw("tasklist rows changed") }
+	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
@@ -406,8 +407,18 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	a.lastScreenH = h
 	consumed := a.pendingSync.CompareAndSwap(true, false)
 	if sizeChanged || consumed {
-		if sizeChanged {
+		// Always log so a debugger can confirm Sync ran in response to the
+		// matching `[tui] force redraw: ...` entry above. Without this entry,
+		// the deferred Sync is invisible in ux.log — only the request side
+		// shows up — making it hard to verify the architecture worked when
+		// chasing a tearing regression.
+		switch {
+		case sizeChanged && consumed:
+			uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", w, h)
+		case sizeChanged:
 			uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", w, h)
+		default:
+			uxlog.Log("[tui] afterDraw sync: forceRedraw consumed")
 		}
 		screen.Sync()
 	}

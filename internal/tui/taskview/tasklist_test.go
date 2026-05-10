@@ -985,6 +985,50 @@ func TestTaskListView_OpenPRKey(t *testing.T) {
 	}
 }
 
+// TestTaskListView_OnFilterToggle covers the filter-mode toggle callback
+// that fires when `/` activates the filter input or Enter/Escape exits it.
+// Filter mode flips reserves the bottom row of the list panel for the
+// filter input — a layout shift that doesn't change rowsSignature, so it
+// goes through OnFilterToggle (not OnLayoutChange). Without the callback
+// the App can't Sync, and tcell's diff-based emit leaves ghost cells from
+// the prior bottom row.
+func TestTaskListView_OnFilterToggle(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetTasks(makeTasks())
+	var calls int
+	tl.OnFilterToggle = func() { calls++ }
+
+	handler := tl.InputHandler()
+
+	// `/` activates filter (false → true): fires.
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	if calls != 1 {
+		t.Errorf("expected 1 call after activating filter, got %d", calls)
+	}
+
+	// Enter exits input mode (true → false): fires.
+	handler(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), func(tview.Primitive) {})
+	if calls != 2 {
+		t.Errorf("expected 2 calls after Enter exits input mode, got %d", calls)
+	}
+
+	// Re-activate, then Escape clears (true → false again): fires.
+	handler(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	if calls != 3 {
+		t.Errorf("expected 3 calls after re-activation, got %d", calls)
+	}
+	handler(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), func(tview.Primitive) {})
+	if calls != 4 {
+		t.Errorf("expected 4 calls after Escape clears filter, got %d", calls)
+	}
+
+	// No-op setFiltering (already false): does NOT fire.
+	tl.setFiltering(false)
+	if calls != 4 {
+		t.Errorf("no-op setFiltering must not fire callback, got %d calls", calls)
+	}
+}
+
 func TestTaskListView_FilterActivatesOnSlash(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks(makeTasks())

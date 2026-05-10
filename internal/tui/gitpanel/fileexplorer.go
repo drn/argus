@@ -288,13 +288,18 @@ func (fp *FilePanel) buildRows() {
 }
 
 // rowsSignature returns a 64-bit FNV-1a hash of the rendered row composition.
-// Hashes path + indent per row; status field is included indirectly via path
-// (changed files have unique paths). Used to suppress OnLayoutChange when a
-// no-op rebuild produced identical rows.
+// Hashes path + indent + status per row. Status is included so an in-place
+// status change (e.g. modified→deleted at the same path) flips the signature
+// and fires OnLayoutChange — the status icon is a single cell, but a stricter
+// signature costs nothing and keeps the rule "any visible row change fires"
+// honest. Used to suppress OnLayoutChange when a no-op rebuild produced
+// identical rows.
 func (fp *FilePanel) rowsSignature() uint64 {
 	h := fnv.New64a()
 	for _, r := range fp.rows {
 		_, _ = io.WriteString(h, r.Path)
+		_, _ = h.Write([]byte{0})
+		_, _ = io.WriteString(h, r.Status)
 		// Indent is a small int (directory nesting depth, <10 in practice);
 		// mask to byte to satisfy gosec G115. Collisions at indent>=256 are
 		// fine — signature is a heuristic, only false negatives risk missed

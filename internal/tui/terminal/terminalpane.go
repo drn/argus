@@ -652,7 +652,8 @@ func (tp *TerminalPane) ToggleDiffSplit() {
 	tp.diffSplit = !tp.diffSplit
 	tp.diffScroll = 0
 	// Branch change: unified diff ↔ split diff paint completely different
-	// columns/cells in the same rect.
+	// columns/cells in the same rect. Toggle always changes state — no
+	// idempotency guard needed (unlike setFocus / setSelectedPR / etc.).
 	tp.notifyBranchChange()
 }
 

@@ -92,6 +92,11 @@ type TaskListView struct {
 	// Used by App to force a tcell Sync — rows shifting under tview's
 	// diff-based emit is a known source of bleed-through in tmux.
 	OnLayoutChange func()
+	// Callback fired when filter-input mode toggles. Distinct from
+	// OnLayoutChange so the App can log a different reason — filter toggle
+	// reserves/releases the bottom row without changing the row signature.
+	// See gotchas/ui-threading.md.
+	OnFilterToggle func()
 
 	// Signature of the last buildRows output. Used to suppress
 	// OnLayoutChange when the rebuild produced the same rows.
@@ -668,16 +673,18 @@ func (tl *TaskListView) Filter() string {
 // setFiltering toggles filter-input mode. When the flag flips, the panel's
 // bottom row swaps between a task row and the filter input — a layout shift
 // that doesn't change `rowsSignature` (rows are unchanged, only `listH` is
-// reduced by one). Without notifying OnLayoutChange the App can't Sync, and
+// reduced by one). Without notifying OnFilterToggle the App can't Sync, and
 // tcell's diff-based emit leaves stale cells from the previous bottom row.
-// See gotchas/ui-threading.md.
+// See gotchas/ui-threading.md. Fires OnFilterToggle (not OnLayoutChange) so
+// the ux.log entry distinguishes filter-toggle from row-composition changes
+// — a debugger reading the log can tell which class of event triggered Sync.
 func (tl *TaskListView) setFiltering(v bool) {
 	if tl.filtering == v {
 		return
 	}
 	tl.filtering = v
-	if tl.OnLayoutChange != nil {
-		tl.OnLayoutChange()
+	if tl.OnFilterToggle != nil {
+		tl.OnFilterToggle()
 	}
 }
 

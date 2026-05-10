@@ -11,6 +11,7 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/github"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/widget"
@@ -713,33 +714,36 @@ func TestSmoke_FilterToggleFiresRedraw(t *testing.T) {
 		b, _ := os.ReadFile(logPath)
 		return string(b)
 	}
-	const tasklistChanged = "force redraw: tasklist rows changed"
+	// Distinct log reason from "tasklist rows changed" — filter toggle
+	// reserves/releases the bottom row without shifting the row signature,
+	// so it goes through OnFilterToggle, not OnLayoutChange.
+	const filterToggled = "force redraw: tasklist filter toggled"
 
 	// Open filter with `/`.
-	prev := strings.Count(readLog(), tasklistChanged)
+	prev := strings.Count(readLog(), filterToggled)
 	sim.InjectKey(tcell.KeyRune, '/', 0)
 	syncUI(t, app.tapp)
-	if strings.Count(readLog(), tasklistChanged) <= prev {
-		t.Errorf("'/' did not fire tasklist redraw on filter open")
+	if strings.Count(readLog(), filterToggled) <= prev {
+		t.Errorf("'/' did not fire tasklist filter-toggle redraw")
 	}
 
 	// Confirm filter (Enter) — exits input mode, keeps filter text. Bottom-row
 	// reservation lifts here, so a Sync is required.
-	prev = strings.Count(readLog(), tasklistChanged)
+	prev = strings.Count(readLog(), filterToggled)
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
-	if strings.Count(readLog(), tasklistChanged) <= prev {
-		t.Errorf("Enter on active filter did not fire tasklist redraw")
+	if strings.Count(readLog(), filterToggled) <= prev {
+		t.Errorf("Enter on active filter did not fire tasklist filter-toggle redraw")
 	}
 
 	// Re-enter filter, then Escape clears it (filtering=false + filter="").
 	sim.InjectKey(tcell.KeyRune, '/', 0)
 	syncUI(t, app.tapp)
-	prev = strings.Count(readLog(), tasklistChanged)
+	prev = strings.Count(readLog(), filterToggled)
 	sim.InjectKey(tcell.KeyEscape, 0, 0)
 	syncUI(t, app.tapp)
-	if strings.Count(readLog(), tasklistChanged) <= prev {
-		t.Errorf("Escape on filter did not fire tasklist redraw")
+	if strings.Count(readLog(), filterToggled) <= prev {
+		t.Errorf("Escape on filter did not fire tasklist filter-toggle redraw")
 	}
 }
 
@@ -846,6 +850,140 @@ func TestSmoke_ReviewsBranchChangeFiresRedraw(t *testing.T) {
 	})
 	if strings.Count(readLog(), reviewsChanged) <= prev {
 		t.Errorf("SetFullDiff (parsedDiff nil → non-nil) did not fire reviewsview branch change")
+	}
+}
+
+// TestSmoke_FilePanelLayoutChangeFiresRedraw verifies the FilePanel's
+// OnLayoutChange callback fires forceRedraw when the row composition changes
+// (file list updates, directory expansion). The change-detection signature
+// hashes path + status + indent so an in-place status flip (e.g. modified→
+// deleted) is also caught.
+func TestSmoke_FilePanelLayoutChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const filePanelChanged = "force redraw: filepanel rows changed"
+
+	// Initial SetFiles populates rows from empty: row signature changes,
+	// OnLayoutChange fires.
+	prev := strings.Count(readLog(), filePanelChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.filePanel.SetFiles([]gitutil.ChangedFile{
+			{Path: "a.go", Status: "M"},
+			{Path: "b.go", Status: "A"},
+		})
+	})
+	if strings.Count(readLog(), filePanelChanged) <= prev {
+		t.Errorf("initial SetFiles did not fire filepanel layout change")
+	}
+
+	// Same file list, different status (in-place modified→deleted): signature
+	// includes Status, so this fires.
+	prev = strings.Count(readLog(), filePanelChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.filePanel.SetFiles([]gitutil.ChangedFile{
+			{Path: "a.go", Status: "D"}, // M → D at same path
+			{Path: "b.go", Status: "A"},
+		})
+	})
+	if strings.Count(readLog(), filePanelChanged) <= prev {
+		t.Errorf("status flip at same path did not fire filepanel layout change (signature must include Status)")
+	}
+
+	// Identical SetFiles call: signature unchanged, no fire.
+	prev = strings.Count(readLog(), filePanelChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.filePanel.SetFiles([]gitutil.ChangedFile{
+			{Path: "a.go", Status: "D"},
+			{Path: "b.go", Status: "A"},
+		})
+	})
+	if strings.Count(readLog(), filePanelChanged) != prev {
+		t.Errorf("identical SetFiles must not fire filepanel layout change")
+	}
+}
+
+// TestSmoke_AgentPaneBranchChangeFiresRedraw verifies the TerminalPane's
+// OnBranchChange callback fires forceRedraw on Draw-branch swaps that don't
+// go through Pages (SetPending toggles the pending banner ↔ "no session"
+// text; EnterDiffMode/ExitDiffMode swap PTY render path with diff render).
+// Each swap paints a different cell set in the same rect.
+func TestSmoke_AgentPaneBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const agentChanged = "force redraw: agentpane branch changed"
+
+	// SetPending false→true flips the pending-banner branch. (Initial state
+	// is pending=false, so this is a real transition.)
+	prev := strings.Count(readLog(), agentChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.agentPane.SetPending(true)
+	})
+	if strings.Count(readLog(), agentChanged) <= prev {
+		t.Errorf("SetPending(true) did not fire agentpane branch change")
+	}
+
+	// SetPending true→false: another transition.
+	prev = strings.Count(readLog(), agentChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.agentPane.SetPending(false)
+	})
+	if strings.Count(readLog(), agentChanged) <= prev {
+		t.Errorf("SetPending(false) did not fire agentpane branch change")
+	}
+
+	// No-op SetPending(false): already false, must not fire.
+	prev = strings.Count(readLog(), agentChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.agentPane.SetPending(false)
+	})
+	if strings.Count(readLog(), agentChanged) != prev {
+		t.Errorf("no-op SetPending must not fire agentpane branch change")
+	}
+
+	// EnterDiffMode swaps PTY render branch with the diff render branch.
+	prev = strings.Count(readLog(), agentChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.agentPane.EnterDiffMode("diff --git a/a.go b/a.go\nindex 0..1\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n", "a.go")
+	})
+	if strings.Count(readLog(), agentChanged) <= prev {
+		t.Errorf("EnterDiffMode did not fire agentpane branch change")
+	}
+
+	// ExitDiffMode swaps back. Must also fire (was-diff → not-diff).
+	prev = strings.Count(readLog(), agentChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.agentPane.ExitDiffMode()
+	})
+	if strings.Count(readLog(), agentChanged) <= prev {
+		t.Errorf("ExitDiffMode did not fire agentpane branch change")
 	}
 }
 
