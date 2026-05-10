@@ -42,7 +42,7 @@ Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** 
 - **GitHub-style stacked diff view** — every changed file in the worktree as a collapsible panel, expand-all, wrap toggle, optimistic for thumbs.
 - **Per-device API tokens** — your iPhone, your iPad, and your laptop each get their own labeled token. Revoke any of them from the dashboard. Master token mints; SHA-256 hashes are all that's stored.
 - **Offline-aware** — when the daemon is unreachable (laptop closed, Tailscale off) the PWA flips to a branded offline screen and reconnects automatically.
-- **Pure-local** — runs on `localhost`/Tailscale, binds `0.0.0.0` on port 7743, never reaches out to a vendor cloud.
+- **Pure-local** — runs on `localhost` and your Tailscale IP only, never `0.0.0.0`. Hotel/cafe LANs cannot reach the API even with the token.
 
 <p align="center">
   <img src="screenshots/file-diff.png" width="820" alt="Inline diff viewer with split and unified views">

@@ -85,7 +85,7 @@
 
 - **API server cannot import `daemon` package (circular import).** It uses `HeadlessCreateTask` from `daemon`, but `daemon` imports it. Fix: inject a `TaskCreator` function via closure at daemon wiring time, breaking the cycle.
 - **Headless task creation uses default 24x80 PTY dimensions.** Agents format initial output for the PTY size at launch. The TUI resizes the PTY when a user opens the agent view, so headless tasks auto-correct on attach.
-- **API server binds to `0.0.0.0` (not `127.0.0.1`) for Tailscale access.** MCP server uses `127.0.0.1` (local-only), but the API must be reachable over Tailscale's network interface. Auth is via bearer token from `~/.argus/api-token`.
+- **API server binds to `127.0.0.1` plus the Tailscale IP only — never `0.0.0.0`.** Tailscale IP is discovered via `tailscale ip -4` (preferred — talks to LocalAPI socket and disambiguates from other CGNAT VPNs like Cloudflare WARP) with a 100.64.0.0/10 interface scan as fallback. Localhost bind is required; Tailscale bind is best-effort so a transient Tailscale flap during startup never takes the API offline. MCP server uses `127.0.0.1` (local-only). Auth is via bearer token from `~/.argus/api-token`.
 - **`HeadlessCreateTask` must revert task to Pending on `runner.Start` failure.** Clear SessionID and zero StartedAt — same revert pattern as `startSession` in `app.go`.
 - **API server only starts during daemon `Serve()` init — toggling `api.enabled` in Settings requires a daemon restart.** `SetDaemonRestarting(false)` resets `apiBootRecorded` so the "(restart required)" hint re-anchors after any restart path (manual or auto).
 

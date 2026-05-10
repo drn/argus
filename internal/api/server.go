@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
@@ -67,6 +68,13 @@ func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreato
 // ListenAndServe starts the HTTP server on the given port.
 // Tries port, then port+1 through port+8 if the port is in use.
 // Returns the actual port used.
+//
+// Binds to 127.0.0.1 plus the Tailscale CGNAT address (when present) — never
+// to 0.0.0.0. This keeps the API reachable over Tailscale and via local tools
+// (including `tailscale serve` TLS termination forwarding to localhost) while
+// refusing connections from untrusted LANs like hotel/cafe WiFi. If Tailscale
+// is not running the API still comes up on localhost only; remote PWA access
+// is disabled until Tailscale is back.
 func (s *Server) ListenAndServe(port int) (int, error) {
 	mux := s.routes()
 
@@ -86,18 +94,32 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 	// Add CORS headers for mobile browser access over Tailscale.
 	handler = corsMiddleware(handler)
 
-	var ln net.Listener
-	var err error
-	actualPort := port
-	for i := 0; i < 9; i++ {
-		ln, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", actualPort))
-		if err == nil {
-			break
-		}
-		actualPort++
-	}
+	// Localhost is required: the daemon must be reachable at least over
+	// loopback for `tailscale serve` TLS termination and local tooling.
+	// If even loopback fails to bind across the retry window, surface the
+	// error — there is nothing useful we can do without a listener.
+	localLn, actualPort, err := bindWithRetry("127.0.0.1", port, 9)
 	if err != nil {
-		return 0, fmt.Errorf("api listen: %w", err)
+		return 0, err
+	}
+	listeners := []net.Listener{localLn}
+
+	// Tailscale binding is best-effort. If detection or bind fails (CLI
+	// missing, interface flapping, address briefly unavailable) the API
+	// still comes up on localhost; remote PWA access stays paused until
+	// the user restarts the daemon with Tailscale up. This avoids the
+	// "all-or-nothing" failure mode where a transient Tailscale flap
+	// during startup would take the entire API offline.
+	if ts := tailscaleIP(); ts != nil {
+		tsLn, err := net.Listen("tcp", net.JoinHostPort(ts.String(), strconv.Itoa(actualPort)))
+		if err != nil {
+			log.Printf("api: tailscale bind %s:%d failed (%v) — continuing on localhost only", ts, actualPort, err)
+		} else {
+			listeners = append(listeners, tsLn)
+			log.Printf("api: bound localhost and tailscale (%s:%d)", ts, actualPort)
+		}
+	} else {
+		log.Printf("api: tailscale not detected; bound localhost only — remote access disabled")
 	}
 
 	srv := &http.Server{
@@ -118,12 +140,31 @@ func (s *Server) ListenAndServe(port int) (int, error) {
 		// Non-streaming handlers all complete well within ReadHeaderTimeout.
 	}
 	s.httpSrv = srv
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("api http serve: %v", err)
-		}
-	}()
+	for _, ln := range listeners {
+		go func() {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Printf("api http serve (%s): %v", ln.Addr(), err)
+			}
+		}()
+	}
 	return actualPort, nil
+}
+
+// bindWithRetry opens a TCP listener on addr, retrying with port+1..port+attempts-1
+// when each preceding port is already in use. Returns the bound listener and the
+// port it actually used. Wraps the last syscall error with %w so callers can
+// `errors.Is(err, syscall.EADDRINUSE)` etc. for diagnostics.
+func bindWithRetry(addr string, port, attempts int) (net.Listener, int, error) {
+	var lastErr error
+	for i := range attempts {
+		actual := port + i
+		ln, err := net.Listen("tcp", net.JoinHostPort(addr, strconv.Itoa(actual)))
+		if err == nil {
+			return ln, actual, nil
+		}
+		lastErr = err
+	}
+	return nil, 0, fmt.Errorf("api listen: failed to bind %s on ports %d-%d: %w", addr, port, port+attempts-1, lastErr)
 }
 
 // Shutdown gracefully stops the HTTP server and signals background goroutines

@@ -2,6 +2,15 @@
 
 Non-obvious invariants for the SPA + REST API + push notifications stack.
 
+## Network binding
+
+- **API binds 127.0.0.1 (required) plus the Tailscale IP (best-effort), never 0.0.0.0.** Localhost is the floor: if it can't bind across the 9-port retry window, `ListenAndServe` returns an error. The Tailscale listener is appended only when discovery and bind both succeed; bind failure logs and continues so a transient Tailscale flap during startup never takes the entire API offline. Both listeners share one `http.Server` so `Shutdown` cleans them both up via `Server.trackListener`.
+- **Tailscale IP discovery prefers `tailscale ip -4` over interface scanning.** RFC 6598 (100.64.0.0/10) is shared with Cloudflare WARP, Twingate, and other CGNAT VPNs — pure address-range matching would silently bind to the wrong tunnel on machines running both. The CLI talks to the Tailscale LocalAPI socket and is authoritative; `internal/api/bind.go` falls back to a CGNAT scan only when the CLI is missing (e.g., macOS App Store install without `tailscale` on PATH). The fallback is documented as best-guess, not authoritative.
+- **Both discovery paths validate the result against the CGNAT range.** A real Tailscale binary always returns a 100.x address — but if a hostile shim earlier on `$PATH` printed `0.0.0.0`, an unguarded CLI path would bind all interfaces, the very threat the bind change exists to prevent. `tailscaleIPFromCLI` and `selectTailscaleIP` both gate on `tailscaleCGNAT.Contains` so the two paths cannot diverge.
+- **Discovery is one-shot at startup.** If Tailscale connects (or its IP changes after `logout`/`login`) after the daemon is already running, the Tailscale listener is absent until the daemon is restarted. Symptom: PWA shows the offline screen on every device while `curl http://127.0.0.1:7743/` works locally. Acceptable for a single-user tool — restarting the daemon takes seconds.
+- **`tailscale serve` keeps working** because it forwards to localhost; the localhost listener is always present regardless of Tailscale state.
+- **`bindWithRetry` wraps the underlying syscall error with `%w`.** `errors.Is(err, syscall.EADDRINUSE)` continues to work for callers; daemon log scrapers see the actual cause (`bind: address already in use`, `bind: can't assign requested address`) instead of just the formatted-port summary.
+
 ## Auth & EventSource
 
 - **`EventSource` cannot set custom headers** — `/api/tasks/{id}/stream` MUST accept `?token=<token>` query-param auth as a fallback. The auth middleware (`internal/api/auth.go`) checks the Bearer header first, then falls back to the query param. Removing the query-param path will break the SPA terminal silently (the EventSource will 401 forever, looking like "stream just doesn't connect").
