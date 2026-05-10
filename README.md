@@ -82,7 +82,7 @@ Pair this with the MCP task tools and an agent can read a meeting note, decide w
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.
 - **Scheduled tasks** — cron, descriptors, intervals, or one-shot runs. Each fire spawns a fresh task. Manage from TUI, PWA, or MCP.
 - **PR review dashboard** — open PRs across configured repos, syntax-highlighted diffs, approve / request changes / line-comment from the TUI.
-- **macOS sandbox-exec** — per-session SBPL profiles. `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud` blocked by default.
+- **macOS sandbox-exec** — per-session SBPL profiles. `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud` blocked by default.
 - **Self-update** — `git pull` + `go install` + daemon restart from a single Settings row. Active sessions reattach across the swap.
 - **Auto-start at login** — install the daemon as a launchd LaunchAgent so your agents survive reboots without launching the TUI.
 - **Full PTY emulation** — `charmbracelet/x/vt` painting cells directly to `tcell`. Colors, attributes, OSC 8 hyperlinks, infinite scrollback, bracket paste.
@@ -213,7 +213,7 @@ Global sandbox settings are managed in the **Settings tab** (`4` key):
 
 Per-project overrides are set in the **project form** (`e` on a project in Settings) — **Inherit**, **Enabled**, or **Disabled**. Per-project deny-read and extra-write paths are appended to the global lists.
 
-**Always denied read:** `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
+**Always denied read:** `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
 **Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, the main repo's `.git` dir.
 
 ### Spinner Styles
@@ -239,6 +239,7 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `kb_read`    | Read full document content by vault-relative path    |
 | `kb_list`    | List documents with optional path prefix filtering   |
 | `kb_ingest`  | Add or update a document in the knowledge base       |
+| `kb_delete`  | Remove a document by vault-relative path             |
 
 **Task Management** (lets agents orchestrate other agents):
 
