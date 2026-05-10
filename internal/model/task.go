@@ -22,6 +22,7 @@ type Task struct {
 	Sandboxed     bool      `json:"sandboxed,omitempty"`
 	Archived      bool      `json:"archived,omitempty"`
 	WaitingReview bool      `json:"waiting_review,omitempty"`
+	Pinned        bool      `json:"pinned,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	StartedAt     time.Time `json:"started_at,omitempty"`
 	EndedAt       time.Time `json:"ended_at,omitempty"`

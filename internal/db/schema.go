@@ -69,6 +69,9 @@ func (d *DB) createTables() error {
 	// Add waiting_review column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN waiting_review INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
+	// Add pinned column to existing tasks tables.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+
 	// Add sandboxed column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 

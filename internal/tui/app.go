@@ -294,6 +294,11 @@ func (a *App) buildUI() {
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
+	a.tasklist.OnPin = func(t *model.Task) {
+		uxlog.Log("[tui] pin toggle: task %s (%s) pinned=%v", t.ID, t.Name, t.Pinned)
+		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		a.refreshTasksAsync()
+	}
 	a.tasklist.OnOpenPR = func(t *model.Task) {
 		exec.Command("open", t.PRURL).Start() //nolint:errcheck
 	}

@@ -120,6 +120,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `s` / `S`       | Advance / revert status                                         |
 | `a`             | Toggle archive                                                  |
 | `w`             | Toggle "Waiting for Review" (own section above Archive)         |
+| `P`             | Toggle pin (★ section pinned to the top of the task list)       |
 | `p`             | Open PR in browser                                              |
 | `c`             | Copy task prompt to clipboard                                   |
 | `ctrl+d`        | Destroy task (kill agent + remove worktree + delete branch)     |
