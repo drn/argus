@@ -5203,16 +5203,23 @@ function sendCompose() {
 
   // iOS Safari's soft-keyboard Send (enterkeyhint=send) doesn't reliably
   // dispatch keydown(Enter) — predictive text/dictation surface keyCode 229
-  // or key 'Unidentified' instead — but it always fires `beforeinput` with
-  // some flavor of line-break inputType. The two listeners cooperate via a
-  // timestamp:
+  // or key 'Unidentified' instead — and the `beforeinput` it fires may carry
+  // an inputType the matcher hasn't catalogued yet. Three listeners cooperate
+  // via two timestamps:
   //   1. Hardware Enter (no shift, not composing) — keydown sends + stamps;
-  //      beforeinput defers to the stamp.
+  //      beforeinput defers to the stamp; no input event (preventDefault).
   //   2. Hardware Shift+Enter — keydown stamps without sending; beforeinput
   //      (`insertLineBreak` or `insertParagraph`, browser-dependent) defers
-  //      to the stamp and the browser inserts a newline.
-  //   3. iOS soft-Send (no keydown, OR keydown with isComposing) — keydown
-  //      bails without stamping; beforeinput sees no fresh stamp and sends.
+  //      to the stamp; browser inserts a newline; input fires; fallback
+  //      defers to `lastEnterAt`.
+  //   3. iOS soft-Send with a recognized inputType (no keydown, OR keydown
+  //      with isComposing) — keydown bails without stamping; beforeinput
+  //      sees no fresh stamp and sends.
+  //   4. iOS soft-Send with an UNRECOGNIZED inputType (future variant /
+  //      third-party keyboard / dictation tool) — keydown bails (or doesn't
+  //      fire); beforeinput matcher returns null and the handler bails;
+  //      browser default lands a trailing newline in the textarea; input
+  //      fallback observes the side effect, strips, and sends.
   //
   // The line-break inputType varies across iOS WebKit IME pipelines. We've
   // catalogued five known dispatches; each one shipped as a "final fix" before
@@ -5299,8 +5306,16 @@ function sendCompose() {
   }
   // Allowlist for the input fallback: any inputType that begins with `insert`
   // EXCEPT explicit user actions (paste / drop / yank) where auto-submitting
-  // would be unexpected. Format/delete/history/composition-update never match
-  // this prefix in the first place.
+  // would be unexpected. Format/delete/history don't start with `insert` and
+  // are excluded by the prefix check.
+  //
+  // `insertCompositionText` (mid-IME composition update) DOES pass this
+  // allowlist — by design. The final safety isn't this allowlist, it's the
+  // trailing-`\n` check on `ci.value` in the fallback handler below: a
+  // composition update that hasn't yet committed a line break never lands
+  // a trailing `\n` in the textarea, so the fallback bails. Keeping
+  // `insertCompositionText` allowlisted means an exotic dictation tool that
+  // commits a Send via composition still triggers the fallback.
   const PASTE_DROP_INPUT_TYPES = new Set([
     'insertFromPaste',
     'insertFromPasteAsQuotation',

@@ -380,13 +380,15 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
-  // Pathological data shape — the strict beforeinput regex rejects multi-line
-  // data so it falls through to the input fallback, which strips the trailing
-  // newlines. Without the fallback, the beforeinput's lazy regex would have
-  // spliced `'word\n'` (one newline absorbed into the prefix) into the
-  // textarea, leaving an embedded `\n` that Claude Code interprets as
-  // Shift+Enter — a multi-line POST the user didn't compose.
-  test('input fallback: pathological "word\\n\\n" data sends only the word', async ({ page }, testInfo) => {
+  // Multi-line bundled data — the strict beforeinput regex (`[^\r\n]*`)
+  // rejects data with embedded newlines, so it falls through to the input
+  // fallback, which strips the trailing newlines. A looser regex variant
+  // (e.g. `[\s\S]*?`) would have matched `'word\n\n'` with prefix `'word\n'`,
+  // splicing that prefix via setRangeText and leaving an embedded `\n` in
+  // the POST that Claude Code would treat as Shift+Enter — a multi-line
+  // submission the user didn't compose. The strict-regex + fallback split
+  // keeps embedded newlines out of the POST.
+  test('input fallback: multi-line "word\\n\\n" data strips trailing newlines and sends only the word', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
 
@@ -415,6 +417,48 @@ test.describe('compose bar', () => {
     // Trailing newlines stripped, no embedded `\n` smuggled into the POST.
     expect(req.postData()).toBe('hello world\r');
     await expect(page.locator('#compose-input')).toHaveValue('');
+  });
+
+  // No-double-fire guard: when the beforeinput handler successfully matches a
+  // bundled-prefix variant (`insertText 'word\n'`), it preventDefaults and
+  // calls sendCompose itself — but `setRangeText` fires a synchronous post-
+  // mutation `input` event per HTML spec. The fallback must NOT also call
+  // sendCompose on that event. The mechanism: `setRangeText` dispatches the
+  // input event with no inputType (or undefined), and `isInsertionForSubmit`
+  // bails on the `!inputType` guard. This test asserts exactly one POST fires.
+  test('beforeinput-matched bundled prefix does NOT double-fire via input fallback', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    await page.locator('#compose-input').fill('hello ');
+
+    let postCount = 0;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') postCount++;
+    });
+
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      // beforeinput matches → preventDefault + setRangeText('world', ...) +
+      // sendCompose. setRangeText fires its own synchronous input event; the
+      // fallback must skip it (no inputType on the synthetic input).
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: 'world\n',
+        cancelable: true,
+        bubbles: true,
+      }));
+    });
+    const req = await inputReq;
+    expect(req.postData()).toBe('hello world\r');
+    // Give a beat for any spurious second POST to land — none should.
+    await page.waitForTimeout(200);
+    expect(postCount).toBe(1);
   });
 
   // Regression: the variant-N+1 case — `keydown(Enter, isComposing=true)`
