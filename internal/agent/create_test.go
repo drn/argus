@@ -82,6 +82,7 @@ func (f *fakeRunner) Idle() []string                       { return nil }
 func (f *fakeRunner) RunningAndIdle() ([]string, []string) { return nil, nil }
 func (f *fakeRunner) HasSession(string) bool               { return false }
 func (f *fakeRunner) WorkDir(string) string                { return "" }
+func (f *fakeRunner) HasPendingRestart(string) bool        { return false }
 
 type fakeSession struct{ pid int }
 

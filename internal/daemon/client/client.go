@@ -298,6 +298,18 @@ func (c *Client) HasSession(taskID string) bool {
 	return info.Alive || info.PID != 0
 }
 
+// HasPendingRestart proxies Runner.HasPendingRestart over RPC. The TUI's
+// handleSessionExitUI consults this when an exit notification arrives so it
+// can skip the InProgress→InReview transition while the daemon is mid
+// kick-restart for this task.
+func (c *Client) HasPendingRestart(taskID string) bool {
+	var resp daemon.PendingRestartResp
+	if err := c.call("Daemon.HasPendingRestart", &daemon.TaskIDReq{TaskID: taskID}, &resp); err != nil {
+		return false
+	}
+	return resp.Pending
+}
+
 // WorkDir returns the working directory of a session.
 func (c *Client) WorkDir(taskID string) string {
 	var info daemon.SessionInfo

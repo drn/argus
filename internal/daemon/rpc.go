@@ -87,6 +87,14 @@ func (s *RPCService) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 	sess := s.daemon.runner.Get(req.TaskID)
 	if sess == nil {
 		resp.TaskID = req.TaskID
+		// During the brief gap between a kick-restart's old-session exit and
+		// the new session's slot being filled, report Alive=true so stream
+		// clients retry the connection instead of giving up and tearing down
+		// their local UI state. The actual liveness will be reported once
+		// the new session is in place.
+		if s.daemon.runner.HasPendingRestart(req.TaskID) {
+			resp.Alive = true
+		}
 		return nil
 	}
 	cols, rows := sess.PTYSize()
@@ -104,10 +112,15 @@ func (s *RPCService) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 	return nil
 }
 
-// ListSessions returns info about all running sessions.
+// ListSessions returns info about all running sessions, plus synthetic
+// Alive=true entries for tasks with a queued kick-restart but no current
+// session (the brief gap between exit and Start). Without these synthetic
+// entries, daemon-client reconcilers (TUI tick) see InProgress + not-running
+// → mark Complete after recentStartGrace, racing the imminent restart.
 func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
 	sessions := s.daemon.runner.Sessions()
-	resp.Sessions = make([]SessionInfo, 0, len(sessions))
+	pending := s.daemon.runner.PendingRestartIDs()
+	resp.Sessions = make([]SessionInfo, 0, len(sessions)+len(pending))
 	for id, sess := range sessions {
 		cols, rows := sess.PTYSize()
 		initCols, initRows := sess.InitialPTYSize()
@@ -124,6 +137,22 @@ func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
 			TotalWritten: sess.TotalWritten(),
 		})
 	}
+	// Synthetic entries for the kick-restart gap. Mirrors SessionStatus's
+	// Alive=true synthetic when a single-task lookup hits the same window.
+	for _, id := range pending {
+		resp.Sessions = append(resp.Sessions, SessionInfo{
+			TaskID: id,
+			Alive:  true,
+		})
+	}
+	return nil
+}
+
+// HasPendingRestart reports whether the runner has a kick-restart queued
+// for this task. The TUI consults this from handleSessionExitUI so it knows
+// to skip the InProgress→InReview transition while the daemon is mid-restart.
+func (s *RPCService) HasPendingRestart(req *TaskIDReq, resp *PendingRestartResp) error {
+	resp.Pending = s.daemon.runner.HasPendingRestart(req.TaskID)
 	return nil
 }
 

@@ -460,3 +460,85 @@ func TestDaemon_OnFinishFlipsStatus(t *testing.T) {
 	}
 	t.Fatalf("timed out waiting for status flip; row stuck at %s", model.StatusInProgress)
 }
+
+func TestDaemon_PendingRPC(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+
+	// Inject a pendingRestart entry directly so we don't depend on a live
+	// session for this RPC roundtrip test.
+	d.runner.SetPendingRestartForTest("rpc-pending", true)
+	defer d.runner.SetPendingRestartForTest("rpc-pending", false)
+
+	var resp PendingRestartResp
+	if err := client.Call("Daemon.HasPendingRestart", &TaskIDReq{TaskID: "rpc-pending"}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Pending {
+		t.Error("expected Pending=true for injected entry")
+	}
+
+	// Unknown task: false.
+	if err := client.Call("Daemon.HasPendingRestart", &TaskIDReq{TaskID: "ghost"}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Pending {
+		t.Error("expected Pending=false for unknown task")
+	}
+}
+
+func TestDaemon_ListPendGap(t *testing.T) {
+	// During the kick gap, ListSessions must surface the task as alive so the
+	// daemon-client TUI's tick reconciler doesn't false-Complete InProgress
+	// rows that are mid-restart.
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+
+	d.runner.SetPendingRestartForTest("gap-task", true)
+	defer d.runner.SetPendingRestartForTest("gap-task", false)
+
+	var resp ListResp
+	if err := client.Call("Daemon.ListSessions", &Empty{}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, info := range resp.Sessions {
+		if info.TaskID == "gap-task" {
+			found = true
+			if !info.Alive {
+				t.Errorf("expected synthetic Alive=true for pending-restart task, got %+v", info)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected ListSessions to include pending-restart task, got %v", resp.Sessions)
+	}
+}
+
+func TestDaemon_StatusAliveGap(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	client := dialRPC(t, sockPath)
+
+	d.runner.SetPendingRestartForTest("status-pending", true)
+	defer d.runner.SetPendingRestartForTest("status-pending", false)
+
+	var resp SessionInfo
+	if err := client.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "status-pending"}, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Alive {
+		t.Errorf("expected SessionStatus to report Alive=true during kick gap, got %+v", resp)
+	}
+}

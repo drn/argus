@@ -166,12 +166,12 @@ type App struct {
 	startGen            atomic.Uint64        // double-bumped by startSession (before+after Start RPC); tick captures before its RPC and skips reconciliation on mismatch
 	recentStarts        map[string]time.Time // task ID → time of last startSession; grace period prevents false reconciliation
 
-	// pendingNarrowRestart marks tasks whose live session was killed by the
+	// pendingRerenderRestart marks tasks whose live session was killed by the
 	// auto-rerender path (started with a too-narrow PTY due to the
 	// computePTYSize bug). When `handleSessionExitUI` sees an entry in this
 	// map, it immediately restarts the session via `--session-id` so Claude
 	// re-renders the conversation history at the current (wider) PTY.
-	pendingNarrowRestart map[string]bool
+	pendingRerenderRestart map[string]bool
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -219,17 +219,17 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
 
 	app := &App{
-		tapp:                 tview.NewApplication(),
-		db:                   database,
-		runner:               runner,
-		daemonConnected:      daemonConnected,
-		agentState:           agentview.New(),
-		tickDone:             make(chan struct{}),
-		recentStarts:         make(map[string]time.Time),
-		idleUnvisited:        make(map[string]bool),
-		viewedWhileAgent:     make(map[string]bool),
-		pendingNarrowRestart: make(map[string]bool),
-		wtRoot:               filepath.Join(db.DataDir(), "worktrees"),
+		tapp:                   tview.NewApplication(),
+		db:                     database,
+		runner:                 runner,
+		daemonConnected:        daemonConnected,
+		agentState:             agentview.New(),
+		tickDone:               make(chan struct{}),
+		recentStarts:           make(map[string]time.Time),
+		idleUnvisited:          make(map[string]bool),
+		viewedWhileAgent:       make(map[string]bool),
+		pendingRerenderRestart: make(map[string]bool),
+		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 	}
 
 	if dc, ok := runner.(*dclient.Client); ok {
@@ -911,8 +911,11 @@ func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutp
 	uxlog.Log("[tui] session exit (in-process): task=%s stopped=%v err=%v", taskID, stopped, err)
 	// Scan last output for PR URL in case agent finished before tick detected it.
 	a.scanAndStorePRURL(taskID, lastOutput)
+	// In-process mode reads HasPendingRestart synchronously off the local
+	// runner — no RPC, no main-thread stall.
+	pending := a.runner.HasPendingRestart(taskID)
 	a.tapp.QueueUpdateDraw(func() {
-		a.handleSessionExitUI(taskID, stopped)
+		a.handleSessionExitUI(taskID, stopped, pending)
 	})
 }
 
@@ -923,18 +926,23 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 		uxlog.Log("[tui] stream lost: task=%s — status unchanged, process may still be alive", taskID)
 		return
 	}
-	uxlog.Log("[tui] session exit (daemon): task=%s err=%s stopped=%v lastOutput=%d bytes",
-		taskID, info.Err, info.Stopped, len(info.LastOutput))
+	uxlog.Log("[tui] session exit (daemon): task=%s err=%s stopped=%v pending=%v lastOutput=%d bytes",
+		taskID, info.Err, info.Stopped, info.PendingRestart, len(info.LastOutput))
 	// Scan last output for PR URL in case agent finished before tick detected it.
 	a.scanAndStorePRURL(taskID, info.LastOutput)
 	a.tapp.QueueUpdateDraw(func() {
-		a.handleSessionExitUI(taskID, info.Stopped)
+		// PendingRestart was stamped by the daemon's onFinish under the same
+		// snapshot it used to decide whether to skip transitionTaskOnExit, so
+		// the TUI never has to RPC from the main goroutine.
+		a.handleSessionExitUI(taskID, info.Stopped, info.PendingRestart)
 	})
 }
 
 // handleSessionExitUI runs on the tview main goroutine (inside QueueUpdateDraw).
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
-func (a *App) handleSessionExitUI(taskID string, stopped bool) {
+// pendingRestart is captured by the caller from a non-RPC source (in-process:
+// direct method call; daemon: ExitInfo.PendingRestart stamped by daemon side).
+func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	// Two callers, two flip-site stories:
 	//   - Daemon mode (HandleSessionExit): the daemon's onFinish callback
 	//     already ran transitionTaskOnExit before closing the stream that
@@ -960,13 +968,25 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 		}
 	}
 	if t.Status == model.StatusInProgress {
-		if stopped {
-			t.SetStatus(model.StatusInReview)
+		// Skip the transition when the daemon has a kick-restart queued —
+		// otherwise the TUI's exit notification (which arrives independently
+		// of the API-initiated kick) would flip the row to InReview while the
+		// runner's exit goroutine is mid-restart, leaving the resumed session
+		// running with the wrong status. The daemon's onFinish guards on the
+		// same predicate; this mirrors it from the TUI side. Local-flag kicks
+		// (a.pendingRerenderRestart) are handled below where we revert to
+		// InProgress before resuming, so they tolerate the transient flip.
+		if !pendingRestart {
+			if stopped {
+				t.SetStatus(model.StatusInReview)
+			} else {
+				t.SetStatus(model.StatusComplete)
+			}
+			a.db.Update(t) //nolint:errcheck
+			uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 		} else {
-			t.SetStatus(model.StatusComplete)
+			uxlog.Log("[tui] task %s exit deferred: daemon kick-restart in flight", t.ID)
 		}
-		a.db.Update(t) //nolint:errcheck
-		uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 	}
 
 	// Capture Codex session ID in a background goroutine — CaptureCodexSessionID
@@ -988,7 +1008,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 		}(captureWorktree, captureTaskID)
 	}
 
-	// If maybeKickNarrowRerender flagged this task, immediately resume it
+	// If maybeKickRerender flagged this task, immediately resume it
 	// at the current (wider) PTY before the user-visible "exited" state has
 	// a chance to render. The new session inherits SessionID, so Claude
 	// re-loads the conversation and renders history at the wider size. Skip
@@ -998,16 +1018,16 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 	// Only restart if the user is still viewing this task. If they navigated
 	// away after the kick, fall through to the normal exit path so the task
 	// settles at InReview and the user can resume it manually later.
-	if stopped && a.pendingNarrowRestart[taskID] {
-		delete(a.pendingNarrowRestart, taskID)
+	if stopped && a.pendingRerenderRestart[taskID] {
+		delete(a.pendingRerenderRestart, taskID)
 		a.mu.Lock()
 		stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
 		a.mu.Unlock()
 		if !stillViewing {
-			uxlog.Log("[tui] narrow-rerender: user navigated away from task=%s, skipping auto-restart", taskID)
+			uxlog.Log("[tui] rerender: user navigated away from task=%s, skipping auto-restart", taskID)
 			a.statusbar.ClearInfo()
 		} else if t, err := a.db.Get(taskID); err == nil && t != nil {
-			uxlog.Log("[tui] narrow-rerender: restarting task=%s session=%s", t.ID, t.SessionID)
+			uxlog.Log("[tui] rerender: restarting task=%s session=%s", t.ID, t.SessionID)
 			// Force the resumed task back into InProgress; either the daemon's
 			// onFinish callback or this function's StatusInProgress branch
 			// above has just flipped it to InReview.
@@ -1018,7 +1038,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped bool) {
 			a.refreshTasksAsync()
 			return
 		} else {
-			uxlog.Log("[tui] narrow-rerender: task %s vanished from DB, falling through", taskID)
+			uxlog.Log("[tui] rerender: task %s vanished from DB, falling through", taskID)
 			a.statusbar.ClearInfo()
 		}
 	}
@@ -2148,16 +2168,18 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	// Start continuous redraw loop for existing running sessions.
 	if sess != nil && sess.Alive() {
 		a.startAgentRedrawLoop(task.ID, sess)
-		// Detect narrow-stuck sessions (initial PTY too narrow to ever recover
-		// via SIGWINCH). If the session is idle, kill it so the deferred
-		// restart in handleSessionExitUI brings it back at the current wider
-		// PTY and Claude re-renders the conversation history.
-		a.maybeKickNarrowRerender(task, sess)
+		// Detect width drift between the session's committed scrollback width
+		// and the current panel — covers both the narrow-stuck-at-startup case
+		// and the "another viewer (web app, resized terminal) committed at a
+		// different width" case. If the session is idle, kill it so the
+		// deferred restart in handleSessionExitUI brings it back at the
+		// current PTY and the agent re-renders the conversation history.
+		a.maybeKickRerender(task, sess)
 		return
 	}
 	// No live session — clear any leaked pending-restart marker so a future
 	// re-entry isn't silently blocked from kicking again.
-	a.reapStaleNarrowRestart(task.ID, sess)
+	a.reapStaleRerenderRestart(task.ID, sess)
 
 	// Auto-start sessions when entering agent view for a non-running task.
 	// Covers both fresh tasks (no SessionID) and interrupted sessions
@@ -2175,56 +2197,13 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	}
 }
 
-// narrowInitialPTYThreshold is the cutoff below which a session's initial
-// PTY size is considered "buggy small". The original `computePTYSize` bug
-// produced 20x8; a real laid-out agent pane on the smallest reasonable
-// terminal is wider. 60 leaves headroom while still excluding any plausible
-// real-world layout.
-const narrowInitialPTYThreshold = 60
-
-// narrowRerenderMargin is the minimum delta between current panel cols and
-// the session's initial cols required to bother restarting. Avoids ping-pong
-// when the session was started a hair too narrow.
-const narrowRerenderMargin = 30
-
-// narrowRerenderDecision is the outcome of shouldKickNarrowRerender — kept
-// separate so the gating logic is testable in isolation from the live RPCs.
-type narrowRerenderDecision int
-
-const (
-	narrowRerenderSkip      narrowRerenderDecision = iota
-	narrowRerenderDeferBusy                        // criteria match but session is busy; retry next entry
-	narrowRerenderKick                             // stop the session; handleSessionExitUI will restart it
-)
-
-// shouldKickNarrowRerender decides whether the live session should be
-// stopped+resumed to re-render its scrollback at a wider PTY. Pure function
-// for testability — see maybeKickNarrowRerender for the wired version.
-//
-// initCols=0 means "unknown" (e.g., daemon predates the field) and is
-// treated as already-sane to avoid surprise restarts.
-func shouldKickNarrowRerender(hasSessionID bool, initCols, panelCols int, idle, alreadyPending bool) narrowRerenderDecision {
-	if !hasSessionID || alreadyPending {
-		return narrowRerenderSkip
-	}
-	if initCols <= 0 || initCols >= narrowInitialPTYThreshold {
-		return narrowRerenderSkip
-	}
-	if panelCols-initCols < narrowRerenderMargin {
-		return narrowRerenderSkip
-	}
-	if !idle {
-		return narrowRerenderDeferBusy
-	}
-	return narrowRerenderKick
-}
-
-// maybeKickNarrowRerender detects sessions whose initial PTY was so narrow
-// that Claude rendered the entire conversation history at narrow column
-// positions, and triggers a kill+resume cycle so the resumed session
-// re-renders at the current (wider) panel size. Stops the session when the
-// criteria match — the deferred restart fires in handleSessionExitUI via
-// pendingNarrowRestart. No-op for backends that can't resume (no SessionID),
+// maybeKickRerender detects sessions whose committed scrollback width differs
+// meaningfully from the current panel — either because the session started
+// narrow (the original bug) or because a different viewer (web app, resized
+// terminal) committed at a different width earlier. Triggers a kill+resume
+// cycle so the resumed session re-emits the conversation history at the
+// current panel size. The deferred restart fires in handleSessionExitUI via
+// pendingRerenderRestart. No-op for backends that can't resume (no SessionID),
 // for already-restarted tasks, or when the session is busy (don't kill mid
 // tool-call).
 //
@@ -2233,14 +2212,17 @@ func shouldKickNarrowRerender(hasSessionID bool, initCols, panelCols int, idle, 
 // kick back via QueueUpdateDraw — never block the tview main goroutine on
 // network I/O. The panel size and the session pointer are captured up front
 // on the main goroutine where it's safe to read them.
-func (a *App) maybeKickNarrowRerender(task *model.Task, sess agent.SessionHandle) {
+//
+// Shared predicate with the API's resize handler — see
+// `agent.ShouldKickRerender` for the gating logic.
+func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
 	if task.SessionID == "" {
 		return // backend doesn't support --session-id resume; nothing to do
 	}
-	if a.pendingNarrowRestart[task.ID] {
+	if a.pendingRerenderRestart[task.ID] {
 		return // a kick is already in flight for this task
 	}
 	taskID := task.ID
@@ -2253,23 +2235,23 @@ func (a *App) maybeKickNarrowRerender(task *model.Task, sess agent.SessionHandle
 		a.tapp.QueueUpdateDraw(func() {
 			// Re-check liveness and the pending flag — anything could have
 			// changed during the RPC round-trip.
-			if !sess.Alive() || a.pendingNarrowRestart[taskID] {
+			if !sess.Alive() || a.pendingRerenderRestart[taskID] {
 				return
 			}
-			decision := shouldKickNarrowRerender(true, initCols, int(panelCols), idle, false)
+			decision := agent.ShouldKickRerender(true, initCols, int(panelCols), idle, false)
 			switch decision {
-			case narrowRerenderSkip:
+			case agent.RerenderSkip:
 				return
-			case narrowRerenderDeferBusy:
-				uxlog.Log("[tui] narrow-rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
+			case agent.RerenderDeferBusy:
+				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
-			case narrowRerenderKick:
-				uxlog.Log("[tui] narrow-rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
+			case agent.RerenderKick:
+				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
 				a.statusbar.SetInfo("Re-rendering at full width…")
-				a.pendingNarrowRestart[taskID] = true
+				a.pendingRerenderRestart[taskID] = true
 				if err := sess.Stop(); err != nil {
-					uxlog.Log("[tui] narrow-rerender: stop failed task=%s err=%v", taskID, err)
-					delete(a.pendingNarrowRestart, taskID)
+					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
+					delete(a.pendingRerenderRestart, taskID)
 					a.statusbar.ClearInfo()
 				}
 			}
@@ -2277,20 +2259,20 @@ func (a *App) maybeKickNarrowRerender(task *model.Task, sess agent.SessionHandle
 	}()
 }
 
-// reapStaleNarrowRestart clears a leaked pendingNarrowRestart entry when the
+// reapStaleRerenderRestart clears a leaked pendingRerenderRestart entry when the
 // session it referred to has died without firing handleSessionExitUI (daemon
 // crash mid-stop, lost stream notification, etc.). Called from onTaskSelect
-// before maybeKickNarrowRerender so a stuck flag can't permanently block
+// before maybeKickRerender so a stuck flag can't permanently block
 // recovery.
-func (a *App) reapStaleNarrowRestart(taskID string, sess agent.SessionHandle) {
-	if !a.pendingNarrowRestart[taskID] {
+func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) {
+	if !a.pendingRerenderRestart[taskID] {
 		return
 	}
 	if sess != nil && sess.Alive() {
 		return // exit notification still pending; let it run
 	}
-	uxlog.Log("[tui] narrow-rerender: reaping stale pending flag for task=%s", taskID)
-	delete(a.pendingNarrowRestart, taskID)
+	uxlog.Log("[tui] rerender: reaping stale pending flag for task=%s", taskID)
+	delete(a.pendingRerenderRestart, taskID)
 	a.statusbar.ClearInfo()
 }
 

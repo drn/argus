@@ -21,6 +21,13 @@ type SessionProvider interface {
 	RunningAndIdle() (running, idle []string)
 	HasSession(taskID string) bool
 	WorkDir(taskID string) string
+
+	// HasPendingRestart reports whether a kick-restart is queued for the task
+	// — i.e., the session was stopped by KickRerender and the runner is about
+	// to spawn a replacement at new dimensions. Callers consulting session
+	// liveness during the brief gap between exit and restart should treat
+	// pending tasks as alive to avoid tearing down UI state mid-rerender.
+	HasPendingRestart(taskID string) bool
 }
 
 // SessionHandle abstracts a single agent session.

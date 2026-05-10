@@ -4,7 +4,18 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net"
+	"time"
 )
+
+// streamPendingRestartWaitInterval is how often handleStream checks whether
+// a kick-restart's new session has appeared while waiting at the gap.
+const streamPendingRestartWaitInterval = 50 * time.Millisecond
+
+// streamPendingRestartMaxWait is the upper bound on how long handleStream
+// will block waiting for a kick-restart's new session to appear before giving
+// up. Tuned to comfortably cover sandboxed Claude/Codex cold starts (~1-3s)
+// without making truly-dead sessions linger.
+const streamPendingRestartMaxWait = 10 * time.Second
 
 // handleStream processes a stream connection. The client sends a JSON
 // StreamHeader, then the daemon registers the connection as a writer on
@@ -19,6 +30,32 @@ func (d *Daemon) handleStream(conn net.Conn) {
 	}
 
 	sess := d.runner.Get(header.TaskID)
+	// If a kick-restart is in flight (between the old session's exit and the
+	// new session's slot being filled), wait briefly for the new session to
+	// land instead of rejecting the client immediately. Without this, TUI
+	// clients reconnecting during a kick gap exhaust their retry budget
+	// (3×500ms = 1.5s) and tear down the local handle. The wait is bounded
+	// and short-circuits as soon as the new session appears or the kick is
+	// no longer in flight.
+	if sess == nil && d.runner.HasPendingRestart(header.TaskID) {
+		deadline := time.Now().Add(streamPendingRestartMaxWait)
+	wait:
+		for time.Now().Before(deadline) {
+			select {
+			case <-d.done:
+				return // daemon shutting down — abandon the wait
+			case <-time.After(streamPendingRestartWaitInterval):
+			}
+			sess = d.runner.Get(header.TaskID)
+			if sess != nil {
+				slog.Info("stream: attached to resumed session after kick gap", "task", header.TaskID)
+				break wait
+			}
+			if !d.runner.HasPendingRestart(header.TaskID) {
+				break wait // restart abandoned (failed Start) — no new session coming
+			}
+		}
+	}
 	if sess == nil {
 		slog.Warn("stream: session not found", "task", header.TaskID)
 		return

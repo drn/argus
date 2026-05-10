@@ -907,7 +907,66 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, sizeResponse{Cols: int(req.Cols), Rows: int(req.Rows)})
+
+	// After a successful SIGWINCH, decide whether to also trigger a
+	// kill+resume rerender. SIGWINCH alone re-flows live UI but leaves
+	// scrollback baked at the session's start width — viewers that opened
+	// at a different width than the agent committed at see jagged history.
+	// The kick stops the session; the runner's exit goroutine restarts it
+	// at the new dimensions via --session-id so the agent re-emits the
+	// entire conversation. Best-effort: never let this fail the resize.
+	rerendered := s.maybeKickRerender(id, req.Rows, req.Cols)
+
+	writeJSON(w, http.StatusOK, struct {
+		Cols       int  `json:"cols"`
+		Rows       int  `json:"rows"`
+		Rerendered bool `json:"rerendered"`
+	}{Cols: int(req.Cols), Rows: int(req.Rows), Rerendered: rerendered})
+}
+
+// maybeKickRerender evaluates the shared rerender predicate and, if it fires,
+// queues a daemon-side stop+restart. Returns true when a kick was queued.
+//
+// Phone rotations fan out many resize events — keep the cheap session reads
+// before the DB hit so the common no-op case skips the SQLite round-trip.
+//
+// Safe to call from any goroutine — KickRerender itself only touches runner
+// state and the session's PTY.
+func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
+	sess := s.runner.Get(taskID)
+	if sess == nil || !sess.Alive() {
+		return false
+	}
+	if s.runner.HasPendingRestart(taskID) {
+		return false
+	}
+	// Cheap margin-only gate before the DB read — eliminates a SQLite hit on
+	// every resize that doesn't cross the rerender threshold.
+	initCols, _ := sess.InitialPTYSize()
+	if !agent.MarginExceedsRerenderThreshold(initCols, int(cols)) {
+		return false
+	}
+	// Now the expensive lookups. Re-check IsIdle here so the idle gate
+	// reflects state at-the-moment-of-stop, not earlier.
+	if !sess.IsIdle() {
+		return false
+	}
+	task, err := s.db.Get(taskID)
+	if err != nil || task == nil {
+		return false
+	}
+	if task.SessionID == "" {
+		return false // backend doesn't support --session-id resume (e.g. Codex mid-conversation)
+	}
+	cfg := s.db.Config()
+	if err := s.runner.KickRerender(task, cfg, rows, cols); err != nil {
+		// Don't fail the resize on a kick failure — runner.KickRerender's
+		// own slog line records the task; just note the failure here.
+		log.Printf("api: KickRerender failed: %v", err)
+		return false
+	}
+	// runner.KickRerender already logs via slog with task=, cols=, rows=.
+	return true
 }
 
 // --- Stream Output (SSE) ---
@@ -985,6 +1044,13 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	// sess.Done() closes when the session's process exits. Without observing
+	// it explicitly, `event: exit` would never fire for the SPA — cw.ch is
+	// fed only by readLoop's Write calls, and is never closed when the session
+	// dies. The SPA's reconnect-on-rerender path keys off `event: exit`, so
+	// missing this signal makes the rerender recovery unobservable.
+	sessDone := sess.Done()
+
 	for {
 		select {
 		case data, ok := <-cw.ch:
@@ -1002,6 +1068,33 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 		case <-keepalive.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
+		case <-sessDone:
+			// Drain any queued bytes that arrived before exit so the client
+			// sees the agent's last words. Non-blocking — only takes what's
+			// already buffered in the channel.
+			for {
+				select {
+				case data := <-cw.ch:
+					encoded := base64.StdEncoding.EncodeToString(data)
+					fmt.Fprintf(w, "data: %s\n\n", encoded) //nolint:errcheck
+					flusher.Flush()
+				default:
+					goto drained
+				}
+			}
+		drained:
+			// Embed the rerender hint in the exit payload so the SPA can
+			// distinguish "session ended" from "kick-restart in flight"
+			// without depending on the /resize POST's .then() racing the
+			// SSE delivery. Daemon already evaluated HasPendingRestart
+			// for its own skip-transition decision; surface it here too.
+			exitPayload := `{"rerendering":false}`
+			if s.runner.HasPendingRestart(id) {
+				exitPayload = `{"rerendering":true}`
+			}
+			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", exitPayload) //nolint:errcheck
+			flusher.Flush()
+			return
 		case <-r.Context().Done():
 			return
 		}

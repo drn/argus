@@ -540,3 +540,325 @@ func TestRunner_Attach_NoSession(t *testing.T) {
 		t.Errorf("expected ErrSessionNotFound, got %v", err)
 	}
 }
+
+func TestRunner_KickRerender_NoSession(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := runnerTestConfig()
+	task := &model.Task{ID: "missing", Name: "test", Worktree: t.TempDir()}
+	if err := r.KickRerender(task, cfg, 24, 80); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestRunner_KickRerender_NilTask(t *testing.T) {
+	r := NewRunner(nil)
+	cfg := runnerTestConfig()
+	if err := r.KickRerender(nil, cfg, 24, 80); err == nil {
+		t.Error("expected error for nil task")
+	}
+}
+
+func TestRunner_KickRerender_DoublePending(t *testing.T) {
+	// A second KickRerender for the same task while one is in flight must
+	// fail rather than queue another stop on top. We use a `sh -c 'while ...'`
+	// loop instead of `sleep 60` so the appended `--resume sid-1` lands as
+	// positional args inside the inline script and the resumed session stays
+	// alive long enough for the assertions to land — same trick as the
+	// AutoRestartsAtNewDimensions test below.
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sh -c 'while :; do sleep 1; done'", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+	task := &model.Task{ID: "kick-double", Name: "test", SessionID: "sid-1", Worktree: t.TempDir()}
+	_, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First kick succeeds. The session is sleeping so it stays alive long
+	// enough for the second kick to race in.
+	if err := r.KickRerender(task, cfg, 24, 100); err != nil {
+		t.Fatalf("first kick: %v", err)
+	}
+	// Second kick must reject — pending entry is still set (consumed=false
+	// until the exit goroutine claims it) so KickRerender's "already pending"
+	// guard fires.
+	if err := r.KickRerender(task, cfg, 24, 120); err == nil {
+		t.Error("expected error for double-pending kick")
+	}
+
+	// Wait for the pending restart to complete (exit + restart loop).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !r.HasPendingRestart("kick-double") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.StopAll()
+}
+
+func TestRunner_KickRerender_AutoRestartsAtNewDimensions(t *testing.T) {
+	// End-to-end: KickRerender stops the live session and the runner's
+	// exit goroutine resurrects it with the supplied dimensions and
+	// resume=true. The test backend uses `sh -c 'while :; do sleep 1; done'`
+	// so the appended `--resume sid-1` flag lands in $0/$1 (positional
+	// args of the inline script) and doesn't break the loop — keeping the
+	// resumed session alive long enough to inspect its PTY size.
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sh -c 'while :; do sleep 1; done'", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "kick-restart", Name: "test", SessionID: "sid-1", Worktree: t.TempDir()}
+	sess1, err := r.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Kick at new dimensions (180 cols).
+	if err := r.KickRerender(task, cfg, 30, 180); err != nil {
+		t.Fatalf("KickRerender: %v", err)
+	}
+	if !r.HasPendingRestart("kick-restart") {
+		t.Error("expected HasPendingRestart=true immediately after kick")
+	}
+
+	// Wait for the old session to die and the restart to land.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.HasPendingRestart("kick-restart") {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		newSess := r.Get("kick-restart")
+		if newSess != nil && newSess != sess1 && newSess.Alive() {
+			cols, rows := newSess.PTYSize()
+			if cols != 180 || rows != 30 {
+				t.Errorf("restart at wrong dimensions: cols=%d rows=%d (want 180x30)", cols, rows)
+			}
+			r.StopAll()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for kick-restart to resurrect session")
+}
+
+func TestRunner_HasPendingRestart_NoEntry(t *testing.T) {
+	r := NewRunner(nil)
+	if r.HasPendingRestart("any") {
+		t.Error("expected false for unknown task")
+	}
+}
+
+func TestRunner_KickRerender_NoLoopOnImmediateCrash(t *testing.T) {
+	// Regression test for the central guarantee of the `consumed` flag: a
+	// resumed session that crashes immediately must NOT trigger another
+	// restart, even though pendingRestart's entry is still in the map until
+	// after r.Start returns. Without `consumed`, the new session's exit
+	// goroutine would read the entry and re-enter the kick path.
+	//
+	// Strategy: count Start invocations via onFinish. Use a backend that
+	// runs once cleanly the first time, but the resumed invocation exits
+	// immediately (because the appended `--resume sid-1` arg lands on
+	// `false`, which exits with status 1). We expect exactly TWO onFinish
+	// fires (one for the original kick, one for the failed resume) — never
+	// three.
+	starts := make(chan int, 8)
+	var fireCount int
+	r := NewRunner(func(taskID string, _ error, _ bool, _ []byte) {
+		fireCount++
+		starts <- fireCount
+	})
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			// `false` ignores any args and exits immediately with status 1.
+			// On resume the runner appends ` --resume sid-1`; false ignores
+			// it and dies fast, simulating a crashing resumed session.
+			"test": {Command: "false", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+
+	task := &model.Task{ID: "loop-guard", Name: "test", SessionID: "sid-1", Worktree: t.TempDir()}
+	if _, err := r.Start(task, cfg, 24, 80, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for the original to exit.
+	<-starts
+
+	// Inject a pendingRestart entry directly. The session is already gone, so
+	// we simulate "kick then immediate crash on resume" by setting consumed=
+	// false on a fresh entry and verifying that subsequent activity does not
+	// trigger more than one resume Start.
+	r.SetPendingRestartForTest(task.ID, true)
+
+	// Drive a second Start to simulate the resumed session, then let it die.
+	// The resumed session's exit goroutine should read consumed=true (set
+	// when this Start path ran) and skip the loop.
+	if _, err := r.Start(task, cfg, 24, 80, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now manually flip consumed=true on the pending entry to simulate the
+	// previous restart's claim.
+	r.mu.Lock()
+	if r.pendingRestart[task.ID] != nil {
+		r.pendingRestart[task.ID].consumed = true
+	}
+	r.mu.Unlock()
+
+	// Wait for the resumed session's onFinish.
+	<-starts
+
+	// No third Start should have fired. Give it 100ms to surface any leak.
+	select {
+	case extra := <-starts:
+		t.Errorf("expected at most 2 onFinish fires, got a 3rd at count=%d (loop guard failed)", extra)
+	case <-time.After(100 * time.Millisecond):
+		// No third fire — loop guard worked.
+	}
+
+	r.mu.Lock()
+	delete(r.pendingRestart, task.ID)
+	r.mu.Unlock()
+}
+
+func TestRunner_KickRerender_StartFailure_ReFiresOnFinish(t *testing.T) {
+	// When r.Start fails after the kick stops the original session, the
+	// runner re-fires onFinish so the daemon can transition the DB row
+	// (otherwise it stays InProgress with no live session — the
+	// "stuck-on-restart-failure" regression from earlier rounds).
+	fired := make(chan struct {
+		stopped bool
+		errStr  string
+	}, 4)
+	r := NewRunner(func(_ string, err error, stopped bool, _ []byte) {
+		es := ""
+		if err != nil {
+			es = err.Error()
+		}
+		fired <- struct {
+			stopped bool
+			errStr  string
+		}{stopped: stopped, errStr: es}
+	})
+	startCfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sh -c 'while :; do sleep 1; done'", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+	task := &model.Task{ID: "kick-failstart", Name: "test", SessionID: "sid-1", Worktree: t.TempDir()}
+	if _, err := r.Start(task, startCfg, 24, 80, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Kick at new dimensions, but inject a config whose backend cannot be
+	// resolved. The exit goroutine's r.Start will fail, triggering the
+	// re-fire path.
+	badCfg := config.Config{
+		Defaults: config.Defaults{Backend: "missing"},
+		Backends: map[string]config.Backend{},
+		Projects: make(map[string]config.Project),
+	}
+	if err := r.KickRerender(task, badCfg, 30, 180); err != nil {
+		t.Fatalf("KickRerender: %v", err)
+	}
+
+	// First fire: original session's clean exit (stopped=true via SIGTERM).
+	first := <-fired
+	if !first.stopped {
+		t.Errorf("first onFinish expected stopped=true, got stopped=%v err=%q", first.stopped, first.errStr)
+	}
+
+	// Second fire: re-fire on failed restart. Should carry the restart err.
+	select {
+	case second := <-fired:
+		if second.errStr == "" {
+			t.Errorf("second onFinish should carry restart err, got empty")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for re-fire of onFinish on Start failure")
+	}
+
+	// pendingRestart entry must be cleared.
+	if r.HasPendingRestart(task.ID) {
+		t.Error("pendingRestart should be cleared after Start failure recovery")
+	}
+}
+
+func TestRunner_RunningAndIdle_IncludesPendingRestart(t *testing.T) {
+	// During a kick-restart's gap, RunningAndIdle should report the task as
+	// running (so the API's idle-gating doesn't drop it) and never as idle.
+	// Drives the SPA's reattach gate after a rerender disconnect.
+	r := NewRunner(nil)
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sh -c 'while :; do sleep 1; done'", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+	task := &model.Task{ID: "pending-running", Name: "test", SessionID: "sid-1", Worktree: t.TempDir()}
+	if _, err := r.Start(task, cfg, 24, 80, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a pendingRestart entry by hand to simulate the brief gap state
+	// without depending on the kick-restart timing.
+	r.mu.Lock()
+	r.pendingRestart[task.ID] = &pendingRestart{task: task, cfg: cfg, rows: 30, cols: 180}
+	delete(r.sessions, task.ID) // simulate the post-exit, pre-Start state
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.pendingRestart, task.ID)
+		r.mu.Unlock()
+		r.StopAll()
+	}()
+
+	running, idle := r.RunningAndIdle()
+	foundRunning := false
+	for _, id := range running {
+		if id == task.ID {
+			foundRunning = true
+		}
+	}
+	if !foundRunning {
+		t.Errorf("RunningAndIdle.running should include pending-restart task, got %v", running)
+	}
+	for _, id := range idle {
+		if id == task.ID {
+			t.Errorf("RunningAndIdle.idle must NOT include pending-restart task, got %v", idle)
+		}
+	}
+
+	// Running() and Idle() must agree.
+	foundInRunning := false
+	for _, id := range r.Running() {
+		if id == task.ID {
+			foundInRunning = true
+		}
+	}
+	if !foundInRunning {
+		t.Errorf("Running() should include pending-restart task")
+	}
+	for _, id := range r.Idle() {
+		if id == task.ID {
+			t.Errorf("Idle() must NOT include pending-restart task")
+		}
+	}
+}

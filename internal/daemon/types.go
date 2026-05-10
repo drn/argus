@@ -85,6 +85,13 @@ type PongResp struct {
 	OK bool
 }
 
+// PendingRestartResp reports whether the runner has a kick-restart queued
+// for a task. Set during the brief gap between a stopped session's exit and
+// the runner's resume Start completing.
+type PendingRestartResp struct {
+	Pending bool
+}
+
 // Empty is a placeholder for RPC methods that take no arguments.
 type Empty struct{}
 

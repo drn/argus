@@ -29,6 +29,59 @@ func testDB(t *testing.T) *db.DB {
 	return d
 }
 
+func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {
+	// Regression test for the TUI-during-API-kick race: if a kick-restart is
+	// in flight, handleSessionExitUI must not flip the row to InReview —
+	// otherwise the resumed session runs with the wrong status. Replaces the
+	// previous fix that synchronously RPC'd HasPendingRestart from the tview
+	// main goroutine; pendingRestart now arrives as an arg captured by the
+	// caller from a non-RPC source.
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{Name: "kick-deferred", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task))
+
+	app.handleSessionExitUI(task.ID, true /* stopped */, true /* pendingRestart */)
+
+	fresh, _ := d.Get(task.ID)
+	if fresh == nil {
+		t.Fatal("task disappeared")
+	}
+	if fresh.Status != model.StatusInProgress {
+		t.Errorf("expected status InProgress when pendingRestart=true, got %s", fresh.Status)
+	}
+
+	// Same skip behavior when stopped=false (process exited naturally during
+	// a kick window — rare but valid).
+	task2 := &model.Task{Name: "kick-pending-natural", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task2))
+	app.handleSessionExitUI(task2.ID, false /* stopped */, true /* pendingRestart */)
+	fresh2, _ := d.Get(task2.ID)
+	if fresh2.Status != model.StatusInProgress {
+		t.Errorf("expected status InProgress when pendingRestart=true and stopped=false, got %s", fresh2.Status)
+	}
+
+	// Without pendingRestart, stopped=true → InReview.
+	task3 := &model.Task{Name: "kick-not-deferred-stop", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task3))
+	app.handleSessionExitUI(task3.ID, true /* stopped */, false /* pendingRestart */)
+	fresh3, _ := d.Get(task3.ID)
+	if fresh3.Status != model.StatusInReview {
+		t.Errorf("expected status InReview when pendingRestart=false, got %s", fresh3.Status)
+	}
+
+	// Without pendingRestart, stopped=false → Complete.
+	task4 := &model.Task{Name: "natural-complete", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	testutil.NoError(t, d.Add(task4))
+	app.handleSessionExitUI(task4.ID, false /* stopped */, false /* pendingRestart */)
+	fresh4, _ := d.Get(task4.ID)
+	if fresh4.Status != model.StatusComplete {
+		t.Errorf("expected status Complete when pendingRestart=false and stopped=false, got %s", fresh4.Status)
+	}
+}
+
 func TestNew(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -1330,78 +1383,3 @@ var errFakeNoTTY = &fakeErr{msg: "inappropriate ioctl for device"}
 type fakeErr struct{ msg string }
 
 func (e *fakeErr) Error() string { return e.msg }
-
-func TestShouldKickNarrowRerender(t *testing.T) {
-	cases := []struct {
-		name           string
-		hasSessionID   bool
-		initCols       int
-		panelCols      int
-		idle           bool
-		alreadyPending bool
-		want           narrowRerenderDecision
-	}{
-		{
-			// The literal repro: 20-col PTY, 190-col panel, idle Claude.
-			name:         "kick when narrow start, wide panel, idle",
-			hasSessionID: true, initCols: 20, panelCols: 190, idle: true,
-			want: narrowRerenderKick,
-		},
-		{
-			// Don't kill Claude mid-tool-call. Wait for it to go idle.
-			name:         "defer when busy",
-			hasSessionID: true, initCols: 20, panelCols: 190, idle: false,
-			want: narrowRerenderDeferBusy,
-		},
-		{
-			// Codex and other backends without --session-id resume can't
-			// re-flow on restart, so don't bother killing them.
-			name:         "skip when no SessionID",
-			hasSessionID: false, initCols: 20, panelCols: 190, idle: true,
-			want: narrowRerenderSkip,
-		},
-		{
-			// Once we've stopped a session, don't queue another stop on top.
-			name:         "skip when already pending",
-			hasSessionID: true, initCols: 20, panelCols: 190, idle: true, alreadyPending: true,
-			want: narrowRerenderSkip,
-		},
-		{
-			// Sane initial size — nothing to repair. Anything ≥60 means
-			// Claude saw a usable PTY when it first rendered.
-			name:         "skip at threshold",
-			hasSessionID: true, initCols: 60, panelCols: 190, idle: true,
-			want: narrowRerenderSkip,
-		},
-		{
-			name:         "kick just-below threshold + huge panel",
-			hasSessionID: true, initCols: 59, panelCols: 190, idle: true,
-			want: narrowRerenderKick,
-		},
-		{
-			// Old daemon without InitialPTYSize support reports 0 — treat
-			// as unknown rather than triggering surprise restarts.
-			name:         "skip when initCols unknown (0)",
-			hasSessionID: true, initCols: 0, panelCols: 190, idle: true,
-			want: narrowRerenderSkip,
-		},
-		{
-			// Margin guard: panel only barely wider than init. Disrupting
-			// Claude isn't worth a tiny gain.
-			name:         "skip when margin too thin",
-			hasSessionID: true, initCols: 50, panelCols: 70, idle: true,
-			want: narrowRerenderSkip,
-		},
-		{
-			name:         "kick at exact margin floor",
-			hasSessionID: true, initCols: 50, panelCols: 80, idle: true,
-			want: narrowRerenderKick,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := shouldKickNarrowRerender(tc.hasSessionID, tc.initCols, tc.panelCols, tc.idle, tc.alreadyPending)
-			testutil.Equal(t, got, tc.want)
-		})
-	}
-}

@@ -638,6 +638,35 @@ func TestHandleResize(t *testing.T) {
 	})
 }
 
+func TestMaybeKickRerender_Gates(t *testing.T) {
+	// maybeKickRerender's predicate gating without a live session — covers
+	// the early-return paths (no session, no task, no SessionID). The
+	// predicate logic itself is exercised by agent.TestShouldKickRerender;
+	// this test verifies the API plumbing rejects cases that would otherwise
+	// reach the predicate.
+	srv, d := testServer(t)
+
+	t.Run("returns false when no session", func(t *testing.T) {
+		got := srv.maybeKickRerender("missing", 24, 80)
+		testutil.Equal(t, got, false)
+	})
+
+	t.Run("returns false when task missing from DB", func(t *testing.T) {
+		// No session, no task in DB.
+		got := srv.maybeKickRerender("ghost-id", 24, 80)
+		testutil.Equal(t, got, false)
+	})
+
+	t.Run("returns false when task lacks SessionID", func(t *testing.T) {
+		task := &model.Task{Name: "no-sid", Status: model.StatusInProgress}
+		testutil.NoError(t, d.Add(task))
+		// No live session for this task either, so the no-session early
+		// return fires first — but the test still documents the contract.
+		got := srv.maybeKickRerender(task.ID, 24, 80)
+		testutil.Equal(t, got, false)
+	})
+}
+
 func TestHandleGitDiff_PathTraversal(t *testing.T) {
 	srv, d := testServer(t)
 	mux := srv.routes()

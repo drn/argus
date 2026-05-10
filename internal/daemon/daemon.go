@@ -43,10 +43,11 @@ func DefaultPIDPath() string {
 // ExitInfo holds the exit state of a finished session, cached briefly
 // so clients can query it after the stream closes.
 type ExitInfo struct {
-	Err        string
-	Stopped    bool
-	LastOutput []byte
-	StreamLost bool // true when stream disconnected but process exit not confirmed
+	Err            string
+	Stopped        bool
+	LastOutput     []byte
+	StreamLost     bool // true when stream disconnected but process exit not confirmed
+	PendingRestart bool // true when a kick-restart is queued (TUI must skip status flip)
 }
 
 // Daemon manages agent sessions and exposes them over a Unix socket.
@@ -110,11 +111,17 @@ func New(database *db.DB) *Daemon {
 			errStr = err.Error()
 		}
 
+		// Snapshot HasPendingRestart once and stamp it onto ExitInfo so the
+		// TUI can read it from the exit notification without an extra RPC
+		// from the tview main goroutine (the gotcha at daemon-rpc.md:9).
+		pending := d.runner.HasPendingRestart(taskID)
+
 		d.mu.Lock()
 		d.exitInfos[taskID] = ExitInfo{
-			Err:        errStr,
-			Stopped:    stopped,
-			LastOutput: lastOutput,
+			Err:            errStr,
+			Stopped:        stopped,
+			LastOutput:     lastOutput,
+			PendingRestart: pending,
 		}
 		conns := d.streams[taskID]
 		delete(d.streams, taskID)
@@ -127,7 +134,14 @@ func New(database *db.DB) *Daemon {
 		// The TUI's HandleSessionExit also runs this transition; both call
 		// sites are guarded by the StatusInProgress check, so whichever
 		// fires first wins and the other becomes a no-op.
-		d.transitionTaskOnExit(taskID, stopped)
+		//
+		// SKIP when a kick-restart is in flight (KickRerender stopped the
+		// session and queued a same-task Start that fires immediately from
+		// the runner's exit goroutine). Transitioning to InReview here would
+		// race the restart and leave the row in the wrong state mid-flip.
+		if !pending {
+			d.transitionTaskOnExit(taskID, stopped)
+		}
 
 		// Signal stream EOF to all connected clients by closing their connections.
 		slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))

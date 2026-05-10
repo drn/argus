@@ -2531,6 +2531,9 @@ function destroyTerm() {
     window.term = null;
     window.fitAddon = null;
   }
+  // Reset rerender expectation — the next attachTerminal starts fresh, no
+  // pending /resize response should carry over from the previous task.
+  setExpectingRerender(false);
   // Compose bar tracks term lifecycle — every teardown path (closeDetail,
   // switchTab, showOffline, mid-attachTerminal swap) must hide it. Centralising
   // here so callers can't forget. Re-shown by the next attachTerminal when the
@@ -2681,6 +2684,30 @@ document.getElementById('jump-bottom').addEventListener('click', () => {
   updateJumpButton();
 });
 
+// expectingRerender is true between a /resize POST that returned
+// rerendered:true and the subsequent SSE exit event firing. The exit handler
+// uses this to know that the disconnect is a daemon-initiated rerender (and
+// it should reattach) vs. a real session end (show "session ended"). A
+// watchdog timeout clears the flag if no exit fires within the window — keeps
+// a stuck flag from misclassifying a later real exit as a rerender.
+let expectingRerender = false;
+let expectingRerenderTimer = null;
+const EXPECT_RERENDER_TIMEOUT_MS = 20000;
+
+function setExpectingRerender(value) {
+  expectingRerender = value;
+  if (expectingRerenderTimer) {
+    clearTimeout(expectingRerenderTimer);
+    expectingRerenderTimer = null;
+  }
+  if (value) {
+    expectingRerenderTimer = setTimeout(() => {
+      expectingRerender = false;
+      expectingRerenderTimer = null;
+    }, EXPECT_RERENDER_TIMEOUT_MS);
+  }
+}
+
 function fit() {
   if (!fitAddon || !term) return;
   try { fitAddon.fit(); } catch(e) { return; }
@@ -2688,10 +2715,15 @@ function fit() {
   if (cols === lastTerm.cols && rows === lastTerm.rows) return;
   lastTerm = { cols, rows };
   if (currentTask && currentTask.status === 'in_progress') {
-    fetch(API + `/api/tasks/${currentTask.id}/resize`, {
+    const taskId = currentTask.id;
+    fetch(API + `/api/tasks/${taskId}/resize`, {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
       body: JSON.stringify({ cols, rows }),
+    }).then(r => r.ok ? r.json() : null).then(j => {
+      if (j && j.rerendered && currentTask && currentTask.id === taskId) {
+        setExpectingRerender(true);
+      }
     }).catch(() => {});
   }
 }
@@ -2720,9 +2752,30 @@ function openStream(id, since) {
       // Ignore malformed chunks.
     }
   };
-  es.addEventListener('exit', () => {
-    showTermStatus('session ended', 'error');
+  es.addEventListener('exit', (e) => {
     closeStream();
+    // Two signals indicate a rerender restart is in flight:
+    //   1. The exit event payload's `rerendering` field — the daemon
+    //      stamped HasPendingRestart at the moment SSE drained, so this
+    //      is authoritative when present.
+    //   2. expectingRerender — set client-side from the /resize POST
+    //      response. Covers the case where the daemon clears pendingRestart
+    //      before the SSE goroutine snapshots it (small race window).
+    // Either signal triggers the slow path. For normal exits (manual stop,
+    // natural end), neither is set and we show "session ended" immediately.
+    let rerendering = false;
+    try {
+      const payload = JSON.parse(e.data || '{}');
+      rerendering = !!payload.rerendering;
+    } catch (_) {
+      // Older daemon or malformed payload — fall back to client flag.
+    }
+    if (rerendering || expectingRerender) {
+      setExpectingRerender(false);
+      pollAndRecoverFromRerenderExit(id);
+    } else {
+      showTermStatus('session ended', 'error');
+    }
   });
   es.addEventListener('clipboard', (e) => {
     try {
@@ -2751,6 +2804,47 @@ function closeStream() {
     try { evtSource.close(); } catch(e) {}
     evtSource = null;
   }
+}
+
+// After an SSE `event: exit` triggered by a daemon-initiated rerender, poll
+// task status until either: the new session is up and reported in_progress
+// (reattach), or the deadline elapses (declare session ended). The daemon's
+// onFinish skips the InProgress→Review transition while a kick-restart is in
+// flight; once the runner finishes Start, the task appears as in_progress
+// with running=true. Polling tolerates variable Claude/Codex startup latency
+// (typical 1-3s, sometimes longer on cold sandbox) much better than a fixed
+// timeout. If the user navigated away in the meantime, no-op.
+async function pollAndRecoverFromRerenderExit(id) {
+  if (!currentTask || currentTask.id !== id) return;
+  showTermStatus('rerendering…', 'reconnecting');
+  const start = Date.now();
+  const deadline = start + 15000; // 15s upper bound — covers cold-start sandboxed Claude/Codex
+  while (Date.now() < deadline) {
+    if (!currentTask || currentTask.id !== id) return; // user moved on
+    try {
+      const res = await fetch(API + `/api/tasks/${id}`, {
+        headers: { 'Authorization': 'Bearer ' + TOKEN }
+      });
+      if (res.ok) {
+        const t = await res.json();
+        // Status-only check: idle is set true if the new session has been
+        // alive but quiet for >3s. attachTerminal handles both states fine
+        // (idle path replays static-output, active path opens SSE) — gating
+        // on !idle here would falsely declare "session ended" for a healthy
+        // resumed session that simply hasn't emitted output yet.
+        if (t.status === 'in_progress') {
+          currentTask = t;
+          window.currentTask = t;
+          attachTerminal(t);
+          return;
+        }
+      }
+    } catch (e) {
+      // Transient network error — fall through to retry.
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  showTermStatus('session ended', 'error');
 }
 
 // --- Agent-staged clipboard ---
