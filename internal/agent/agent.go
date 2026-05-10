@@ -223,8 +223,9 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 }
 
 // shellQuote wraps a string in single quotes with proper escaping.
-// Embedded single quotes are replaced with the sequence end-quote,
-// backslash-quote, start-quote.
+// Embedded single quotes are replaced with the four-character sequence
+// close-quote, backslash, single-quote, open-quote (see the literal
+// replacement string below).
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

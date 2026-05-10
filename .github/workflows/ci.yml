@@ -33,7 +33,7 @@ jobs:
 
       - name: Format Check
         run: |
-          go install golang.org/x/tools/cmd/goimports@latest
+          go install golang.org/x/tools/cmd/goimports@v0.31.0
           out=$(goimports -l .)
           if [ -n "$out" ]; then
             echo "::error::Files not formatted (run 'make fmt'):"
@@ -47,9 +47,15 @@ jobs:
           version: "v2.11.4"
           only-new-issues: true
 
+      # Advisory only: govulncheck flags both module CVEs and stdlib CVEs in
+      # the active Go toolchain. Stdlib findings can only be fixed by bumping
+      # Go itself, so blocking PRs on them would create unfixable red CI
+      # between Go patch releases. Review the output, bump tooling when
+      # warranted.
       - name: Vulnerability Scan
+        continue-on-error: true
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           govulncheck ./...
 
       - name: Test
