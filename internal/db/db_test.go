@@ -279,6 +279,82 @@ func TestDB_TaskPersistence(t *testing.T) {
 	}
 }
 
+// TestDB_RoundTripsAllTaskFields exercises every field on model.Task end-to-end:
+// Add → Tasks → Get. A misordered column in `taskColumns` / scan / INSERT /
+// UPDATE silently corrupts adjacent fields (e.g. parsing `created_at` as
+// `pinned`). This test asserts each non-zero value survives the round-trip
+// so any future column drift surfaces immediately.
+func TestDB_RoundTripsAllTaskFields(t *testing.T) {
+	d := testDB(t)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	original := &model.Task{
+		Name:          "round-trip",
+		Status:        model.StatusInReview,
+		Project:       "proj-x",
+		Branch:        "feature/x",
+		Prompt:        "do the thing",
+		Backend:       "claude",
+		Worktree:      "/tmp/worktree",
+		AgentPID:      4242,
+		SessionID:     "abcd-1234",
+		PRURL:         "https://github.com/org/repo/pull/9",
+		Sandboxed:     true,
+		Archived:      false,
+		WaitingReview: false,
+		Pinned:        true,
+		CreatedAt:     now.Add(-2 * time.Hour),
+		StartedAt:     now.Add(-time.Hour),
+		EndedAt:       now,
+	}
+	if err := d.Add(original); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.Get(original.ID)
+	testutil.NoError(t, err)
+
+	// Compare each field — a positional drift in scan order would corrupt
+	// a specific field, and the failing assertion names it.
+	testutil.Equal(t, got.ID, original.ID)
+	testutil.Equal(t, got.Name, original.Name)
+	testutil.Equal(t, got.Status, original.Status)
+	testutil.Equal(t, got.Project, original.Project)
+	testutil.Equal(t, got.Branch, original.Branch)
+	testutil.Equal(t, got.Prompt, original.Prompt)
+	testutil.Equal(t, got.Backend, original.Backend)
+	testutil.Equal(t, got.Worktree, original.Worktree)
+	testutil.Equal(t, got.AgentPID, original.AgentPID)
+	testutil.Equal(t, got.SessionID, original.SessionID)
+	testutil.Equal(t, got.PRURL, original.PRURL)
+	testutil.Equal(t, got.Sandboxed, original.Sandboxed)
+	testutil.Equal(t, got.Archived, original.Archived)
+	testutil.Equal(t, got.WaitingReview, original.WaitingReview)
+	testutil.Equal(t, got.Pinned, original.Pinned)
+	if !got.CreatedAt.Equal(original.CreatedAt) {
+		t.Errorf("CreatedAt: got %v, want %v", got.CreatedAt, original.CreatedAt)
+	}
+	if !got.StartedAt.Equal(original.StartedAt) {
+		t.Errorf("StartedAt: got %v, want %v", got.StartedAt, original.StartedAt)
+	}
+	if !got.EndedAt.Equal(original.EndedAt) {
+		t.Errorf("EndedAt: got %v, want %v", got.EndedAt, original.EndedAt)
+	}
+
+	// Update path round-trip: flip one Boolean and confirm the rest survive.
+	got.Pinned = false
+	got.WaitingReview = true
+	if err := d.Update(got); err != nil {
+		t.Fatal(err)
+	}
+	reread, err := d.Get(got.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, reread.Pinned, false)
+	testutil.Equal(t, reread.WaitingReview, true)
+	testutil.Equal(t, reread.AgentPID, original.AgentPID)
+	testutil.Equal(t, reread.PRURL, original.PRURL)
+}
+
 // --- Project tests ---
 
 func TestDB_Projects(t *testing.T) {

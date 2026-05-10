@@ -1121,11 +1121,7 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 		return toolResult(id, fmt.Sprintf("Task %s (%s) already %s.", task.ID, task.Name, state))
 	}
 
-	task.Archived = newArchived
-	// Mirror the TUI 'a' keybinding: archiving clears waiting-review.
-	if task.Archived {
-		task.WaitingReview = false
-	}
+	task.SetArchived(newArchived)
 	if err := s.taskDB.Update(task); err != nil {
 		log.Printf("[mcp] task_archive failed: id=%s err=%v", task.ID, err)
 		return toolError(id, fmt.Sprintf("Failed to archive task: %v", err))

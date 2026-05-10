@@ -498,7 +498,7 @@ func (s *Server) setArchive(w http.ResponseWriter, r *http.Request, archived boo
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
 	}
-	task.Archived = archived
+	task.SetArchived(archived)
 	if err := s.db.Update(task); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

@@ -29,16 +29,23 @@ const (
 	rowWaitingReviewHeader
 	rowPinnedHeader
 	rowSeparator
+	// rowPinnedTrailingSep marks the boundary between the Pinned section and
+	// the (header-less) Active section below it. `sectionAt` uses it as an
+	// explicit anchor — without a dedicated kind, classifying separators
+	// would devolve into a brittle "next-row-is-a-header" heuristic.
+	rowPinnedTrailingSep
 )
 
-// rowSection identifies which section a row belongs to.
+// rowSection identifies which section a row belongs to. The constant order
+// matches the visual top-to-bottom render order so any future code that
+// compares sections numerically gets sensible results.
 type rowSection int
 
 const (
-	sectionActive rowSection = iota
+	sectionPinned rowSection = iota
+	sectionActive
 	sectionWaitingReview
 	sectionArchive
-	sectionPinned
 )
 
 // taskRow is a flattened display row in the task list.
@@ -67,8 +74,10 @@ type TaskListView struct {
 	archiveProject        string // expanded project within archive
 	waitingReviewExpanded bool
 	waitingReviewProject  string // expanded project within waiting-for-review
-	pinnedExpanded        bool
-	pinnedProject         string // expanded project within pinned
+	// Pinned section is always fully expanded — pinning is an explicit
+	// "keep this visible" action, so auto-collapsing it on cursor leave
+	// would defeat the purpose. There are intentionally no
+	// `pinnedExpanded` / `pinnedProject` fields.
 
 	// Filter state: `/` activates filter input, typing narrows visible tasks.
 	filtering bool   // true while the filter input is focused
@@ -253,25 +262,22 @@ func (tl *TaskListView) buildRows() {
 
 	filterActive := tl.filter != ""
 
-	// Pinned section (above active). The Active section has no header, so we
-	// emit a trailing separator only when Active has content — otherwise the
-	// next section (WR/Archive) emits its own leading separator and we'd
-	// double up.
+	// Pinned section (above active). Always fully expanded — see note on
+	// the pinnedExpanded comment in the struct. Active has no header, so we
+	// emit an explicit `rowPinnedTrailingSep` to mark the Pinned/Active
+	// boundary. The trailing marker is only needed when Active has content;
+	// WR and Archive emit their own leading separator below.
 	if len(pinned) > 0 {
 		tl.rows = append(tl.rows, taskRow{kind: rowPinnedHeader})
-		if filterActive || tl.pinnedExpanded {
-			pinOrder, pinTasks := groupByProject(pinned)
-			for _, proj := range pinOrder {
-				tl.rows = append(tl.rows, taskRow{kind: rowProject, project: proj})
-				if filterActive || proj == tl.pinnedProject {
-					for _, t := range pinTasks[proj] {
-						tl.rows = append(tl.rows, taskRow{kind: rowTask, task: t, project: proj})
-					}
-				}
+		pinOrder, pinTasks := groupByProject(pinned)
+		for _, proj := range pinOrder {
+			tl.rows = append(tl.rows, taskRow{kind: rowProject, project: proj})
+			for _, t := range pinTasks[proj] {
+				tl.rows = append(tl.rows, taskRow{kind: rowTask, task: t, project: proj})
 			}
 		}
 		if len(active) > 0 {
-			tl.rows = append(tl.rows, taskRow{kind: rowSeparator})
+			tl.rows = append(tl.rows, taskRow{kind: rowPinnedTrailingSep})
 		}
 	}
 
@@ -468,8 +474,8 @@ func (tl *TaskListView) moveCursor(dir int) {
 		return
 	}
 
-	// On the separator — skip it in the current direction.
-	if tl.rows[c].kind == rowSeparator {
+	// On a separator (regular or Pinned-trailing) — skip it in the current direction.
+	if tl.rows[c].kind == rowSeparator || tl.rows[c].kind == rowPinnedTrailingSep {
 		if dir > 0 {
 			tl.cursor++
 		} else {
@@ -591,12 +597,10 @@ func (tl *TaskListView) autoExpand() {
 
 	wantArchiveExpanded := sec == sectionArchive
 	wantWaitingReviewExpanded := sec == sectionWaitingReview
-	wantPinnedExpanded := sec == sectionPinned
 
-	if tl.archiveExpanded != wantArchiveExpanded || tl.waitingReviewExpanded != wantWaitingReviewExpanded || tl.pinnedExpanded != wantPinnedExpanded {
+	if tl.archiveExpanded != wantArchiveExpanded || tl.waitingReviewExpanded != wantWaitingReviewExpanded {
 		tl.archiveExpanded = wantArchiveExpanded
 		tl.waitingReviewExpanded = wantWaitingReviewExpanded
-		tl.pinnedExpanded = wantPinnedExpanded
 		tl.buildRows()
 		tl.restoreCursor(r, sec)
 		c = tl.cursor
@@ -608,17 +612,15 @@ func (tl *TaskListView) autoExpand() {
 	}
 
 	// Section header or separator — don't change project expansion.
-	if r.kind == rowArchiveHeader || r.kind == rowWaitingReviewHeader || r.kind == rowPinnedHeader || r.kind == rowSeparator {
+	if r.kind == rowArchiveHeader || r.kind == rowWaitingReviewHeader || r.kind == rowPinnedHeader || r.kind == rowSeparator || r.kind == rowPinnedTrailingSep {
 		return
 	}
 
 	switch sec {
 	case sectionPinned:
-		if r.project != tl.pinnedProject {
-			tl.pinnedProject = r.project
-			tl.buildRows()
-			tl.restoreCursor(r, sec)
-		}
+		// Pinned is always fully expanded — no per-project collapse to
+		// auto-toggle. Cursor still tracks the active project for cosmetic
+		// chevron purposes if any future code reads it.
 	case sectionArchive:
 		if r.project != tl.archiveProject {
 			tl.archiveProject = r.project
@@ -656,12 +658,11 @@ func taskSection(t *model.Task) rowSection {
 }
 
 // sectionAt returns which section the row at idx belongs to. It scans upward
-// and returns the first section header encountered. Separators are usually
-// transparent — they lead INTO the WR/Archive headers below them, so we keep
-// scanning past them. The exception is the trailing separator after Pinned
-// (which has no header below it, since Active is header-less): hitting a
-// separator that is NOT followed by a section header marks the boundary
-// between Pinned and Active, so we stop and return sectionActive.
+// and returns the first section anchor encountered: a section header (Pinned /
+// WR / Archive) or `rowPinnedTrailingSep`. Plain `rowSeparator` rows lead INTO
+// a WR/Archive header below them, so they are transparent — keep scanning.
+// `rowPinnedTrailingSep` is the explicit Pinned-to-Active boundary: anything
+// at or below it (until the next header) belongs to Active.
 func (tl *TaskListView) sectionAt(idx int) rowSection {
 	for i := idx; i >= 0; i-- {
 		switch tl.rows[i].kind {
@@ -671,13 +672,7 @@ func (tl *TaskListView) sectionAt(idx int) rowSection {
 			return sectionArchive
 		case rowWaitingReviewHeader:
 			return sectionWaitingReview
-		case rowSeparator:
-			if i+1 < len(tl.rows) {
-				switch tl.rows[i+1].kind {
-				case rowArchiveHeader, rowWaitingReviewHeader, rowPinnedHeader:
-					continue
-				}
-			}
+		case rowPinnedTrailingSep:
 			return sectionActive
 		}
 	}
@@ -707,7 +702,7 @@ func (tl *TaskListView) restoreCursor(target taskRow, sec rowSection) {
 				tl.cursor = i
 				return
 			}
-		case rowArchiveHeader, rowWaitingReviewHeader, rowPinnedHeader, rowSeparator:
+		case rowArchiveHeader, rowWaitingReviewHeader, rowPinnedHeader, rowSeparator, rowPinnedTrailingSep:
 			// Headers and section separators are unique within a section —
 			// take the first match in the desired section.
 			tl.cursor = i
@@ -865,33 +860,21 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				}
 			case 'a':
 				if t := tl.SelectedTask(); t != nil {
-					t.Archived = !t.Archived
-					if t.Archived {
-						t.WaitingReview = false
-						t.Pinned = false
-					}
+					t.SetArchived(!t.Archived)
 					if tl.OnArchive != nil {
 						tl.OnArchive(t)
 					}
 				}
 			case 'w':
 				if t := tl.SelectedTask(); t != nil {
-					t.WaitingReview = !t.WaitingReview
-					if t.WaitingReview {
-						t.Archived = false
-						t.Pinned = false
-					}
+					t.SetWaitingReview(!t.WaitingReview)
 					if tl.OnWaitingReview != nil {
 						tl.OnWaitingReview(t)
 					}
 				}
 			case 'P':
 				if t := tl.SelectedTask(); t != nil {
-					t.Pinned = !t.Pinned
-					if t.Pinned {
-						t.Archived = false
-						t.WaitingReview = false
-					}
+					t.SetPinned(!t.Pinned)
 					if tl.OnPin != nil {
 						tl.OnPin(t)
 					}
@@ -995,7 +978,7 @@ func (tl *TaskListView) Draw(screen tcell.Screen) {
 		switch row.kind {
 		case rowProject:
 			tl.drawProjectRow(screen, inner.X, inner.Y+i, inner.W, row.project, tl.sectionAt(idx))
-		case rowSeparator:
+		case rowSeparator, rowPinnedTrailingSep:
 			tl.drawSeparator(screen, inner.X, inner.Y+i, inner.W)
 		case rowArchiveHeader:
 			tl.drawArchiveHeader(screen, inner.X, inner.Y+i, inner.W)
@@ -1111,9 +1094,8 @@ func (tl *TaskListView) drawProjectRow(screen tcell.Screen, x, y, w int, proj st
 			chevron = '▾'
 		}
 	case sectionPinned:
-		if proj == tl.pinnedProject {
-			chevron = '▾'
-		}
+		// Pinned is always fully expanded.
+		chevron = '▾'
 	}
 	screen.SetContent(col, y, chevron, nil, tcell.StyleDefault.Foreground(theme.ColorDimmed))
 	col += 2
@@ -1149,12 +1131,8 @@ func (tl *TaskListView) drawArchiveHeader(screen tcell.Screen, x, y, w int) {
 
 func (tl *TaskListView) drawPinnedHeader(screen tcell.Screen, x, y, w int) {
 	style := tcell.StyleDefault.Foreground(theme.ColorProject).Bold(true)
-	indicator := "▸"
-	if tl.pinnedExpanded {
-		indicator = "▾"
-	}
-	text := fmt.Sprintf("  %s ★ Pinned", indicator)
-	widget.DrawText(screen, x, y, w, text, style)
+	// No collapse indicator — Pinned is always expanded.
+	widget.DrawText(screen, x, y, w, "  ★ Pinned", style)
 }
 
 func (tl *TaskListView) drawWaitingReviewHeader(screen tcell.Screen, x, y, w int) {
@@ -1282,12 +1260,12 @@ func (tl *TaskListView) AdjacentTask(currentID string, direction int) *model.Tas
 // If the task is in a collapsed project, expands it first.
 func (tl *TaskListView) SelectByID(id string) {
 	// Find the task to get its project, then expand it so the row exists.
+	// Pinned tasks need no expansion bookkeeping — that section is always open.
 	for _, t := range tl.tasks {
 		if t.ID == id {
 			switch {
 			case t.Pinned:
-				tl.pinnedExpanded = true
-				tl.pinnedProject = t.Project
+				// no-op
 			case t.Archived:
 				tl.archiveExpanded = true
 				tl.archiveProject = t.Project
