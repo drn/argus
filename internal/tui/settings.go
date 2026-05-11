@@ -24,6 +24,12 @@ import (
 // settingsRowKind identifies what kind of row this is in the settings list.
 type settingsRowKind int
 
+// srNone is the sentinel returned by currentRowKind() when the active
+// category has no rows. It is intentionally negative so no positive iota
+// constant below can ever equal it — switch statements that don't match
+// fall through cleanly.
+const srNone settingsRowKind = -1
+
 const (
 	srWarning settingsRowKind = iota
 	srProject
@@ -102,6 +108,18 @@ const (
 
 // svMaxACVisible is the maximum number of vault path autocomplete rows shown.
 const svMaxACVisible = 8
+
+// Layout constants for the right pane in renderPane.
+//
+//   - svMaxItemsVisible caps the items-list height so the detail panel
+//     below it has room to breathe. Tuned to fit the longest category
+//     (Projects) without dominating the pane.
+//   - svDetailReserve is the row budget reserved below the items list:
+//     1 separator + 6 detail rows minimum.
+const (
+	svMaxItemsVisible = 8
+	svDetailReserve   = 7
+)
 
 // settingsRow is a single row in the settings section list.
 type settingsRow struct {
@@ -723,16 +741,7 @@ func (sv *SettingsView) HandleClick(mx, my int) {
 		return
 	}
 
-	railW := 20
-	if railW > width/3 {
-		railW = width / 3
-	}
-	if railW < 12 && width >= 12 {
-		railW = 12
-	}
-	if railW > width {
-		railW = width
-	}
+	railW := computeRailW(width)
 
 	if mx < x+railW {
 		// Click landed in the rail — pick the category at that row.
@@ -975,16 +984,20 @@ func (sv *SettingsView) handleSetDefault() bool {
 	return true
 }
 
-// currentRowKind returns the kind of the currently selected row, or -1 if
-// the active category has no rows. Callers must compare against the
-// sentinel-distinct row-kind values; -1 will never equal any defined kind.
+// currentRowKind returns the kind of the currently selected row, or srNone
+// when the active category has no rows.
 func (sv *SettingsView) currentRowKind() settingsRowKind {
 	if sv.cursor < 0 || sv.cursor >= len(sv.rows) {
-		return -1
+		return srNone
 	}
 	return sv.rows[sv.cursor].kind
 }
 
+// handleNew dispatches the "new" action — keyed off sv.category rather than
+// the selected row kind, because "new" doesn't have a row to inspect (and
+// empty list categories still need to fire). handleEdit and
+// handleDeleteOrDefault, by contrast, switch on currentRowKind() because
+// they operate on the selected row. Don't merge the two patterns.
 func (sv *SettingsView) handleNew() bool {
 	switch sv.category {
 	case catProjects:
@@ -1221,17 +1234,7 @@ func (sv *SettingsView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Left rail = ~20 chars (enough for "Knowledge Base"), capped at width/3.
-	railW := 20
-	if railW > width/3 {
-		railW = width / 3
-	}
-	if railW < 12 && width >= 12 {
-		railW = 12
-	}
-	if railW > width {
-		railW = width
-	}
+	railW := computeRailW(width)
 	paneW := width - railW
 
 	sv.renderRail(screen, x, y, railW, height)
@@ -1305,18 +1308,18 @@ func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
 	useItems := len(sv.rows) > 1
 
 	if useItems {
-		// Reserve up to itemsCap rows for the items list, leaving at least
-		// 6 lines for the detail when possible.
+		// Reserve up to itemsCap rows for the items list, leaving
+		// svDetailReserve rows below for the separator + detail.
 		available := ih - row0
 		if available <= 0 {
 			return
 		}
-		itemsCap := available - 7 // 1 separator + 6 detail
+		itemsCap := available - svDetailReserve
 		if itemsCap < 1 {
 			itemsCap = 1
 		}
-		if itemsCap > 8 {
-			itemsCap = 8
+		if itemsCap > svMaxItemsVisible {
+			itemsCap = svMaxItemsVisible
 		}
 		if itemsCap > len(sv.rows) {
 			itemsCap = len(sv.rows)
@@ -1557,10 +1560,7 @@ func (sv *SettingsView) renderScheduleDetail(screen tcell.Screen, x, y, w, h int
 				widget.DrawText(screen, x, y+r, w, "…", theme.StyleDimmed)
 				break
 			}
-			if len(line) > w {
-				line = line[:w]
-			}
-			widget.DrawText(screen, x, y+r, w, line, theme.StyleDimmed)
+			widget.DrawText(screen, x, y+r, w, truncRunes(line, w), theme.StyleDimmed)
 			r++
 		}
 	}
@@ -2020,10 +2020,7 @@ func (sv *SettingsView) renderLogsDetail(screen tcell.Screen, x, y, w, h int, ro
 		if lineIdx >= len(sv.logLines) {
 			break
 		}
-		line := sv.logLines[lineIdx]
-		if len(line) > w {
-			line = line[:w]
-		}
+		line := truncRunes(sv.logLines[lineIdx], w)
 		widget.DrawText(screen, x, y+4+i, w, line, tcell.StyleDefault)
 	}
 }
@@ -2043,6 +2040,28 @@ func readLogLines(path string) []string {
 
 // --- Helpers ---
 
+// computeRailW returns the left-rail width for the given total settings-view
+// width. Target is 20 cells (fits "Knowledge Base" + selection marker), but
+// capped at width/3 so the right pane never starves. The 12-cell floor only
+// kicks in when the total has room for it — narrower terminals get a
+// proportional rail rather than overflowing.
+//
+// Used by both Draw (to lay out the rail) and HandleClick (to hit-test rail
+// clicks); the two MUST agree, so keep the math in one place.
+func computeRailW(width int) int {
+	railW := 20
+	if railW > width/3 {
+		railW = width / 3
+	}
+	if railW < 12 && width >= 12 {
+		railW = 12
+	}
+	if railW > width {
+		railW = width
+	}
+	return railW
+}
+
 // truncRunes returns the longest prefix of s whose rune count is <= max.
 // Byte slicing on a multibyte rune boundary panics or produces invalid UTF-8;
 // callers that need to clip to a cell width must go through this helper. A
@@ -2059,15 +2078,4 @@ func truncRunes(s string, max int) string {
 		n++
 	}
 	return s
-}
-
-func drawMultiLine(screen tcell.Screen, x, y, w int, text string, style tcell.Style) int {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		if len(line) > w {
-			line = line[:w]
-		}
-		widget.DrawText(screen, x, y+i, w, line, style)
-	}
-	return len(lines)
 }

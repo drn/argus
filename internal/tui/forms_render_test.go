@@ -14,7 +14,6 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
-	"github.com/drn/argus/internal/tui/theme"
 )
 
 // --- DirAC Draw ---
@@ -34,20 +33,6 @@ func TestDirAC_Draw_Closed(t *testing.T) {
 	var ac dirAC
 	rows := ac.Draw(drawSim(t), 0, 0, 40, 8)
 	testutil.Equal(t, rows, 0)
-}
-
-// --- drawMultiLine ---
-
-func TestDrawMultiLine(t *testing.T) {
-	sim := drawSim(t)
-	rows := drawMultiLine(sim, 0, 0, 30, "first\nsecond\nthird", theme.StyleNormal)
-	testutil.Equal(t, rows, 3)
-}
-
-func TestDrawMultiLine_LongLine(t *testing.T) {
-	sim := drawSim(t)
-	rows := drawMultiLine(sim, 0, 0, 5, "long line that gets truncated", theme.StyleNormal)
-	testutil.Equal(t, rows, 1)
 }
 
 // --- handleFilePanelKey: 'o', 'e', 't' branches ---
