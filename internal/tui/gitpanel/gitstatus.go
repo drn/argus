@@ -17,6 +17,22 @@ type GitPanel struct {
 	branchLines []string
 	loaded      bool
 	focused     bool
+
+	// OnBranchChange fires when Draw() will paint a different rendering
+	// branch than the previous frame: the !loaded "Loading..." placeholder
+	// swap, the empty-state "Clean — no changes" swap, and any flip in the
+	// SET of non-empty sections (Files / Diff / Branch). Each branch paints
+	// different cells in the same rect; tcell's diff-based Show() can leave
+	// stale cells from the previous branch on screen under tmux/iTerm2.
+	// App wires this to forceRedraw so afterDraw runs Sync.
+	// See gotchas/ui-threading.md.
+	OnBranchChange func()
+
+	// lastShape is the rendered-shape signature emitted by branchShape.
+	// We fire OnBranchChange only when this changes — repeated SetStatus
+	// calls with the same shape (e.g. tick refresh that finds no git
+	// change) don't spam forceRedraw.
+	lastShape uint32
 }
 
 // NewGitPanel creates a git status panel.
@@ -37,6 +53,7 @@ func (gp *GitPanel) SetStatus(status, diff, branchDiff string) {
 	gp.statusLines = splitNonEmpty(status)
 	gp.diffLines = splitNonEmpty(diff)
 	gp.branchLines = splitNonEmpty(branchDiff)
+	gp.maybeNotifyBranchChange()
 }
 
 // Clear resets the panel content.
@@ -45,6 +62,41 @@ func (gp *GitPanel) Clear() {
 	gp.statusLines = nil
 	gp.diffLines = nil
 	gp.branchLines = nil
+	gp.maybeNotifyBranchChange()
+}
+
+// branchShape returns a signature of the rendered Draw branch: which of the
+// "Loading..." / sections / empty-state alternatives will paint. The four
+// boolean inputs collapse to a 4-bit value; lifting to uint32 leaves room
+// for future bits (e.g., focus state) without a type change.
+func (gp *GitPanel) branchShape() uint32 {
+	var s uint32
+	if gp.loaded {
+		s |= 1
+	}
+	if len(gp.statusLines) > 0 {
+		s |= 2
+	}
+	if len(gp.diffLines) > 0 {
+		s |= 4
+	}
+	if len(gp.branchLines) > 0 {
+		s |= 8
+	}
+	return s
+}
+
+// maybeNotifyBranchChange fires OnBranchChange when the rendered shape
+// signature flips. Mutators call this after updating state.
+func (gp *GitPanel) maybeNotifyBranchChange() {
+	shape := gp.branchShape()
+	if shape == gp.lastShape {
+		return
+	}
+	gp.lastShape = shape
+	if gp.OnBranchChange != nil {
+		gp.OnBranchChange()
+	}
 }
 
 // Draw renders the git status panel.

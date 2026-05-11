@@ -296,10 +296,14 @@ func (a *App) buildUI() {
 	}
 
 	a.taskGitPanel = gitpanel.NewGitPanel()
+	a.taskGitPanel.OnBranchChange = func() { a.forceRedraw("task git panel branch changed") }
 	a.taskPreview = NewTaskPreviewPanel()
+	a.taskPreview.OnBranchChange = func() { a.forceRedraw("task preview branch changed") }
 	a.taskDetail = taskview.NewTaskDetailPanel()
+	a.taskDetail.OnBranchChange = func() { a.forceRedraw("task detail branch changed") }
 
 	a.gitPanel = gitpanel.NewGitPanel()
+	a.gitPanel.OnBranchChange = func() { a.forceRedraw("agent git panel branch changed") }
 	a.filePanel = gitpanel.NewFilePanel()
 	a.agentPane = terminal.NewTerminalPane()
 	a.agentHeader = widget.NewAgentHeader()
@@ -1841,15 +1845,25 @@ func (a *App) switchTab(t widget.Tab) {
 //
 // Contract: any widget that conditionally renders different content in the
 // same rect must surface a "branch changed" callback the App wires here.
-// Four structural hooks today:
+// Structural hooks today (keep in sync with gotchas/ui-threading.md):
 //   - `pages.SetChangedFunc` — fires on every AddPage/RemovePage/SwitchToPage,
 //     covering modal open/close, tab switch, and agent view enter/exit.
-//   - `tasklist.OnLayoutChange` — fires on row composition or filter-mode
-//     toggle (which reserves/releases the bottom row).
+//   - `tasklist.OnLayoutChange` / `OnFilterToggle` — fires on row composition,
+//     and on filter-mode toggle (which reserves/releases the bottom row).
 //   - `filePanel.OnLayoutChange` — fires on directory expansion / row shifts.
 //   - `agentPane.OnBranchChange` — fires on SetSession/SetPending/diff-mode
 //     toggle/scroll-mode 0↔nonzero/async replay rebuild completion — every
 //     Draw branch swap.
+//   - `taskGitPanel.OnBranchChange` / `gitPanel.OnBranchChange` (same widget,
+//     two instances) — fires when GitPanel's rendered branch changes:
+//     !loaded → loaded, the empty-state "Clean — no changes" swap, and any
+//     flip in section-presence (statusLines / diffLines / branchLines).
+//   - `taskPreview.OnBranchChange` — fires on SetTaskID change (clears cells,
+//     swaps to centered placeholder), RefreshOutput cell-nil↔grid transitions
+//     and grid-dimension flips, and SetStatus placeholder-text changes.
+//   - `taskDetail.OnBranchChange` — fires when SetTask's shape signature
+//     changes: task ID, name, status, running, sandboxed, presence of
+//     Project/Branch/Backend/Worktree/CreatedAt/Prompt, and Prompt content.
 //
 // Plus afterDraw detects screen-size changes (tview's EventResize handler does
 // Clear+draw without Sync) and forces a Sync on resize.

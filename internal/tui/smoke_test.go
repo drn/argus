@@ -877,6 +877,277 @@ func TestSmoke_AgentPaneBranchChangeFiresRedraw(t *testing.T) {
 	}
 }
 
+// TestSmoke_TaskGitPanelBranchChangeFiresRedraw verifies GitPanel fires
+// forceRedraw when its rendered branch changes — Loading→loaded, empty-state
+// ↔ Files-present, and section presence flips (statusLines / diffLines /
+// branchLines empty ↔ non-empty). The taskGitPanel mutates on every cursor
+// move between tasks with different worktrees, so this is the most
+// frequently-fired hook on the task list page.
+func TestSmoke_TaskGitPanelBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const taskGitChanged = "force redraw: task git panel branch changed"
+
+	// !loaded → loaded with sections populated. Shape flips.
+	prev := strings.Count(readLog(), taskGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskGitPanel.SetStatus("M file.go", "+1 -0", "ahead 1")
+	})
+	if strings.Count(readLog(), taskGitChanged) <= prev {
+		t.Errorf("first SetStatus must fire task git panel branch change (Loading→loaded)")
+	}
+
+	// Same shape — re-publishing the same content doesn't flip any
+	// presence bit. Must not fire.
+	prev = strings.Count(readLog(), taskGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskGitPanel.SetStatus("M file.go", "+1 -0", "ahead 1")
+	})
+	if strings.Count(readLog(), taskGitChanged) != prev {
+		t.Errorf("identical SetStatus must not fire task git panel branch change")
+	}
+
+	// Drop the diff section. Shape flips (diffLines non-empty → empty).
+	prev = strings.Count(readLog(), taskGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskGitPanel.SetStatus("M file.go", "", "ahead 1")
+	})
+	if strings.Count(readLog(), taskGitChanged) <= prev {
+		t.Errorf("dropping the diff section must fire task git panel branch change")
+	}
+
+	// Clear back to !loaded. Shape flips.
+	prev = strings.Count(readLog(), taskGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskGitPanel.Clear()
+	})
+	if strings.Count(readLog(), taskGitChanged) <= prev {
+		t.Errorf("Clear must fire task git panel branch change (loaded→Loading)")
+	}
+}
+
+// TestSmoke_TaskPreviewBranchChangeFiresRedraw verifies TaskPreviewPanel
+// fires forceRedraw when its rendered branch changes — task ID change
+// (clears cells, swaps to centered "Loading..."), cells nil↔non-nil, and
+// status-message changes in the centered placeholder branch.
+func TestSmoke_TaskPreviewBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const previewChanged = "force redraw: task preview branch changed"
+
+	// SetTaskID change: "" → "tp-1". statusMsg width changes
+	// ("No task selected" → "Loading..."). Shape flips.
+	prev := strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.SetTaskID("tp-1")
+	})
+	if strings.Count(readLog(), previewChanged) <= prev {
+		t.Errorf("SetTaskID(\"tp-1\") must fire preview branch change")
+	}
+
+	// Same task ID — no-op, must not fire.
+	prev = strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.SetTaskID("tp-1")
+	})
+	if strings.Count(readLog(), previewChanged) != prev {
+		t.Errorf("repeated SetTaskID with same id must not fire preview branch change")
+	}
+
+	// SetStatus with a different placeholder message: cells already nil but
+	// statusMsg width changes. Shape flips.
+	prev = strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.SetStatus("No active agent")
+	})
+	if strings.Count(readLog(), previewChanged) <= prev {
+		t.Errorf("SetStatus with new message must fire preview branch change")
+	}
+
+	// RefreshOutput with empty raw: cells stay nil but statusMsg width
+	// changes ("No active agent" → "Waiting for output..."). Shape flips.
+	prev = strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.RefreshOutput(nil, 80, 24, 80, 24)
+	})
+	if strings.Count(readLog(), previewChanged) <= prev {
+		t.Errorf("RefreshOutput(empty) must fire preview branch change (statusMsg width changed)")
+	}
+
+	// RefreshOutput with content: cells transitions nil → grid. Shape flips.
+	prev = strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.RefreshOutput([]byte("hello world\n"), 80, 24, 80, 24)
+	})
+	if strings.Count(readLog(), previewChanged) <= prev {
+		t.Errorf("RefreshOutput(content) must fire preview branch change (cells nil→grid)")
+	}
+
+	// Repeat RefreshOutput with same dimensions and grid output: shape
+	// unchanged (cellsNil=false, cols/rows unchanged), must not fire.
+	prev = strings.Count(readLog(), previewChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskPreview.RefreshOutput([]byte("hello world 2\n"), 80, 24, 80, 24)
+	})
+	if strings.Count(readLog(), previewChanged) != prev {
+		t.Errorf("repeated RefreshOutput at same dims must not fire preview branch change")
+	}
+}
+
+// TestSmoke_AgentGitPanelBranchChangeFiresRedraw mirrors the taskGitPanel
+// test against the agent-view gitPanel instance (separate wiring at
+// app.go:306, separate uxlog reason). Without a dedicated test, future
+// refactors could silently drop the agent-view callback while leaving the
+// task-list callback intact and the existing test passing.
+func TestSmoke_AgentGitPanelBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const agentGitChanged = "force redraw: agent git panel branch changed"
+
+	// !loaded → loaded with sections: shape flips.
+	prev := strings.Count(readLog(), agentGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.gitPanel.SetStatus("M file.go", "+1 -0", "ahead 1")
+	})
+	if strings.Count(readLog(), agentGitChanged) <= prev {
+		t.Errorf("first SetStatus on agent gitPanel must fire branch change")
+	}
+
+	// loaded → !loaded: shape flips.
+	prev = strings.Count(readLog(), agentGitChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.gitPanel.Clear()
+	})
+	if strings.Count(readLog(), agentGitChanged) <= prev {
+		t.Errorf("Clear on agent gitPanel must fire branch change")
+	}
+}
+
+// TestSmoke_TaskDetailBranchChangeFiresRedraw verifies TaskDetailPanel
+// fires forceRedraw when its rendered shape changes — task transition
+// (different conditional rows render), running-flag flip (changes the
+// status row width), and status transitions. Cursor moves between tasks
+// on the task list page route through this widget every time.
+func TestSmoke_TaskDetailBranchChangeFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const detailChanged = "force redraw: task detail branch changed"
+
+	taskA := &model.Task{
+		ID: "td-a", Name: "alpha", Status: model.StatusPending,
+		Project: "p", Branch: "b", CreatedAt: time.Now(),
+	}
+	taskB := &model.Task{
+		ID: "td-b", Name: "beta", Status: model.StatusInProgress,
+		Project: "p", CreatedAt: time.Now(), Prompt: "do thing",
+	}
+
+	// nil → taskA: sentinel lastShape guarantees the first SetTask fires.
+	prev := strings.Count(readLog(), detailChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskDetail.SetTask(taskA, false)
+	})
+	if strings.Count(readLog(), detailChanged) <= prev {
+		t.Errorf("first SetTask(taskA) must fire detail branch change")
+	}
+
+	// Same task, same running flag: shape unchanged, must not fire.
+	prev = strings.Count(readLog(), detailChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskDetail.SetTask(taskA, false)
+	})
+	if strings.Count(readLog(), detailChanged) != prev {
+		t.Errorf("repeated SetTask with identical task/running must not fire detail branch change")
+	}
+
+	// Running flag flip on same task: status row changes width ("(idle)" ↔
+	// "(running)"). Shape flips. (Status is Pending here so the suffix
+	// branch in Draw isn't entered, but the running bit is still hashed
+	// — we test it later under InProgress.)
+	prev = strings.Count(readLog(), detailChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskDetail.SetTask(taskA, true)
+	})
+	if strings.Count(readLog(), detailChanged) <= prev {
+		t.Errorf("running flag flip must fire detail branch change")
+	}
+
+	// taskA → taskB: different task ID, different conditional rows render
+	// (B has no Branch, has Prompt). Shape flips.
+	prev = strings.Count(readLog(), detailChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskDetail.SetTask(taskB, false)
+	})
+	if strings.Count(readLog(), detailChanged) <= prev {
+		t.Errorf("task switch must fire detail branch change")
+	}
+
+	// taskB → nil: swap to the "No task selected" branch.
+	prev = strings.Count(readLog(), detailChanged)
+	app.tapp.QueueUpdateDraw(func() {
+		app.taskDetail.SetTask(nil, false)
+	})
+	if strings.Count(readLog(), detailChanged) <= prev {
+		t.Errorf("SetTask(nil) must fire detail branch change")
+	}
+}
+
 // TestSmoke_AfterDrawSyncsOnPendingFlag verifies the architectural change:
 // forceRedraw sets a flag, afterDraw consumes it. Drives one update cycle
 // that fires several forceRedraw calls and asserts the flag clears (idempotent

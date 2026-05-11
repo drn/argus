@@ -2,6 +2,8 @@ package taskview
 
 import (
 	"fmt"
+	"hash/fnv"
+	"io"
 	"strings"
 	"time"
 
@@ -18,19 +20,94 @@ type TaskDetailPanel struct {
 	*tview.Box
 	task    *model.Task
 	running bool
+
+	// OnBranchChange fires when Draw() will paint a different rendering
+	// branch than the previous frame: the task==nil "No task selected"
+	// swap, swapping to a different task (different conditional rows
+	// render: Project/Branch/Backend/Worktree/Created/Elapsed/Prompt are
+	// each gated on field presence), status string width change (e.g.
+	// "In Progress (running)" → "In Progress (idle)"), running flag flip,
+	// and prompt text changes (different number of wrapped lines).
+	// App wires this to forceRedraw so afterDraw runs Sync.
+	// See gotchas/ui-threading.md.
+	OnBranchChange func()
+
+	// lastShape captures the rendered-shape signature emitted by
+	// taskShape. The callback fires only when it changes — e.g. tick
+	// re-renders that update elapsed time but leave the field set
+	// unchanged don't spam forceRedraw.
+	lastShape uint64
 }
 
 // NewTaskDetailPanel creates a task detail panel.
 func NewTaskDetailPanel() *TaskDetailPanel {
 	return &TaskDetailPanel{
 		Box: tview.NewBox(),
+		// Sentinel — the first SetTask always fires, even if the
+		// computed signature happens to be 0.
+		lastShape: ^uint64(0),
 	}
 }
 
-// SetTask updates the displayed task.
+// SetTask updates the displayed task. Fires OnBranchChange when the rendered
+// shape changes (different task ID, different field-presence flags, running
+// flip, status flip, or prompt text change).
 func (td *TaskDetailPanel) SetTask(t *model.Task, running bool) {
 	td.task = t
 	td.running = running
+	shape := td.taskShape()
+	if shape == td.lastShape {
+		return
+	}
+	td.lastShape = shape
+	if td.OnBranchChange != nil {
+		td.OnBranchChange()
+	}
+}
+
+// taskShape returns a 64-bit FNV-1a hash of the inputs that determine which
+// rows Draw paints and at what widths. Fields that DON'T affect the cell SET
+// (e.g. elapsed time string that grows by one char per minute — the row is
+// always present, just wider) are intentionally omitted to avoid firing the
+// callback on every tick. Caller is responsible for invoking this only on
+// state transitions.
+func (td *TaskDetailPanel) taskShape() uint64 {
+	h := fnv.New64a()
+	if td.task == nil {
+		_, _ = h.Write([]byte{0}) // nil-task branch
+		return h.Sum64()
+	}
+	_, _ = h.Write([]byte{1})
+	_, _ = io.WriteString(h, td.task.ID)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, td.task.Name)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, td.task.Status.String())
+	_, _ = h.Write([]byte{0})
+	flag := byte(0)
+	if td.running {
+		flag |= 1
+	}
+	if td.task.Sandboxed {
+		flag |= 2
+	}
+	if !td.task.CreatedAt.IsZero() {
+		flag |= 4
+	}
+	_, _ = h.Write([]byte{flag, 0})
+	_, _ = io.WriteString(h, td.task.Project)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, td.task.Branch)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, td.task.Backend)
+	_, _ = h.Write([]byte{0})
+	_, _ = io.WriteString(h, td.task.Worktree)
+	_, _ = h.Write([]byte{0})
+	// Hashing the full Prompt is correct (different prompt text = different
+	// wrapped line count = different row count) but cheap — fnv-1a streams
+	// without allocation. The prompt is at most a few KB.
+	_, _ = io.WriteString(h, td.task.Prompt)
+	return h.Sum64()
 }
 
 // Draw renders the task detail panel.

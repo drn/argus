@@ -38,21 +38,41 @@ type TaskPreviewPanel struct {
 	// Cached inner dimensions from Draw() — safe for tick goroutine to read.
 	drawCols int
 	drawRows int
+
+	// OnBranchChange fires when Draw() will paint a different rendering
+	// branch than the previous frame: the cells==nil "centered status text"
+	// branch swap to/from the cellCols×cellRows paint, viewport-size shifts
+	// that change the painted rect, and statusMsg changes (different
+	// length text in the centered placeholder). App wires this to
+	// forceRedraw so afterDraw runs Sync. See gotchas/ui-threading.md.
+	OnBranchChange func()
+
+	// Snapshot of last-rendered shape, used to suppress callback when a
+	// mutator left the cell SET unchanged. cellsNil distinguishes
+	// "centered status" from "grid paint"; cols/rows track grid dimensions.
+	lastCellsNil  bool
+	lastCellCols  int
+	lastCellRows  int
+	lastStatusMsg string
 }
 
 // NewTaskPreviewPanel creates a task preview panel.
 func NewTaskPreviewPanel() *TaskPreviewPanel {
 	return &TaskPreviewPanel{
-		Box:       tview.NewBox(),
-		statusMsg: "No task selected",
+		Box:          tview.NewBox(),
+		statusMsg:    "No task selected",
+		lastCellsNil: true, // initial Draw is the centered "No task selected"
 	}
 }
 
-// SetTaskID sets which task to preview. Clears cached cells.
+// SetTaskID sets which task to preview. Clears cached cells. Fires
+// OnBranchChange when the rendered shape changes — switching to a different
+// task always clears `cells` (centered placeholder branch) and updates
+// statusMsg, both shape inputs.
 func (tp *TaskPreviewPanel) SetTaskID(id string) {
 	tp.mu.Lock()
-	defer tp.mu.Unlock()
 	if tp.taskID == id {
+		tp.mu.Unlock()
 		return
 	}
 	tp.taskID = id
@@ -63,6 +83,35 @@ func (tp *TaskPreviewPanel) SetTaskID(id string) {
 		tp.statusMsg = "No task selected"
 	} else {
 		tp.statusMsg = "Loading..."
+	}
+	changed := tp.snapshotShapeLocked()
+	tp.mu.Unlock()
+	if changed {
+		tp.notifyBranchChange()
+	}
+}
+
+// snapshotShapeLocked records the current rendered shape and returns true if
+// it differs from the prior snapshot. Caller must hold tp.mu.
+func (tp *TaskPreviewPanel) snapshotShapeLocked() bool {
+	cellsNil := tp.cells == nil
+	changed := cellsNil != tp.lastCellsNil ||
+		tp.cellCols != tp.lastCellCols ||
+		tp.cellRows != tp.lastCellRows ||
+		(cellsNil && tp.statusMsg != tp.lastStatusMsg)
+	tp.lastCellsNil = cellsNil
+	tp.lastCellCols = tp.cellCols
+	tp.lastCellRows = tp.cellRows
+	tp.lastStatusMsg = tp.statusMsg
+	return changed
+}
+
+// notifyBranchChange fires OnBranchChange if set. Call AFTER releasing tp.mu —
+// the callback may invoke app-level code that takes other locks (mirrors the
+// TerminalPane pattern in gotchas/ui-threading.md).
+func (tp *TaskPreviewPanel) notifyBranchChange() {
+	if tp.OnBranchChange != nil {
+		tp.OnBranchChange()
 	}
 }
 
@@ -103,7 +152,11 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		tp.mu.Lock()
 		tp.statusMsg = "Waiting for output..."
 		tp.cells = nil
+		changed := tp.snapshotShapeLocked()
 		tp.mu.Unlock()
+		if changed {
+			tp.notifyBranchChange()
+		}
 		return
 	}
 
@@ -114,7 +167,11 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		tp.mu.Lock()
 		tp.statusMsg = "Preview unavailable"
 		tp.cells = nil
+		changed := tp.snapshotShapeLocked()
 		tp.mu.Unlock()
+		if changed {
+			tp.notifyBranchChange()
+		}
 		return
 	}
 
@@ -138,7 +195,11 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		tp.cellCols = viewCols
 		tp.cellRows = viewRows
 		tp.statusMsg = ""
+		changed := tp.snapshotShapeLocked()
 		tp.mu.Unlock()
+		if changed {
+			tp.notifyBranchChange()
+		}
 		return
 	}
 
@@ -181,15 +242,25 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 	tp.cellCols = viewCols
 	tp.cellRows = viewRows
 	tp.statusMsg = ""
+	changed := tp.snapshotShapeLocked()
 	tp.mu.Unlock()
+	if changed {
+		tp.notifyBranchChange()
+	}
 }
 
-// SetStatus sets a status message (clears cached cells).
+// SetStatus sets a status message (clears cached cells). Fires
+// OnBranchChange when the rendered shape changes (cells transition to nil,
+// or the centered message text differs in width).
 func (tp *TaskPreviewPanel) SetStatus(msg string) {
 	tp.mu.Lock()
-	defer tp.mu.Unlock()
 	tp.statusMsg = msg
 	tp.cells = nil
+	changed := tp.snapshotShapeLocked()
+	tp.mu.Unlock()
+	if changed {
+		tp.notifyBranchChange()
+	}
 }
 
 // cellRune extracts the display rune from a uv.Cell.
