@@ -1328,3 +1328,51 @@ func TestSmoke_SettingsPageMouseClickKeepsFocus(t *testing.T) {
 		t.Errorf("click on rail stole focus from settingsPage (got %T)", focused)
 	}
 }
+
+// TestSmoke_SettingsPagePasteRouting verifies that bracket-paste events
+// posted to the screen reach the SettingsView paste handler when the
+// settings tab is focused. Without SettingsPage.PasteHandler forwarding
+// to sv.PasteHandler, tview's default Box paste handler swallows the
+// pasted text silently — only visible when the user is mid-edit on a
+// vault or source-path row.
+func TestSmoke_SettingsPagePasteRouting(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Switch to settings, enter Knowledge Base category, start editing
+	// the Metis vault path.
+	app.tapp.QueueUpdateDraw(func() {
+		app.switchTab(widget.TabSettings)
+		app.settings.setCategory(catKnowledgeBase)
+		// Park cursor on the vault row and trigger inline editing.
+		for i, r := range app.settings.rows {
+			if r.kind == srVaultPath && r.key == vaultKeyMetis {
+				app.settings.cursor = i
+				break
+			}
+		}
+		app.settings.editingVault = vaultKeyMetis
+		app.settings.editVaultBuf = ""
+	})
+	syncUI(t, app.tapp)
+
+	// Inject bracketed paste of a path fragment.
+	_ = sim.PostEvent(tcell.NewEventPaste(true))
+	sim.InjectKey(tcell.KeyRune, '/', 0)
+	sim.InjectKey(tcell.KeyRune, 'v', 0)
+	sim.InjectKey(tcell.KeyRune, 'a', 0)
+	sim.InjectKey(tcell.KeyRune, 'u', 0)
+	sim.InjectKey(tcell.KeyRune, 'l', 0)
+	sim.InjectKey(tcell.KeyRune, 't', 0)
+	_ = sim.PostEvent(tcell.NewEventPaste(false))
+	syncUI(t, app.tapp)
+
+	var got string
+	readUI(t, app.tapp, func() { got = app.settings.editVaultBuf })
+	if got != "/vault" {
+		t.Errorf("paste did not reach vault editor: editVaultBuf = %q, want %q", got, "/vault")
+	}
+}

@@ -55,6 +55,17 @@ func (sp *SettingsPage) Draw(screen tcell.Screen) {
 	sp.settings.Draw(screen)
 }
 
+// PasteHandler forwards bracket-paste events to the settings view.
+//
+// tview routes paste events to the focused widget's PasteHandler. Since
+// the app focuses sp (the page wrapper, not the inner SettingsView), the
+// default Box no-op would silently drop pastes during inline vault-path
+// or source-path editing. CLAUDE.md's "every widget that accepts text
+// input must implement PasteHandler" applies at the focus boundary.
+func (sp *SettingsPage) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
+	return sp.settings.PasteHandler()
+}
+
 // MouseHandler delegates mouse events to the settings view.
 //
 // On left click, we route the click to the settings view so it can shift
