@@ -49,8 +49,8 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath "/private/var/folders"))
 (allow file-write* (subpath "/var/folders"))
 (allow file-write* (literal "/dev/null"))
-; Prefix (not literal) so atomic-write siblings work: write-file-atomic and
-; similar Node.js libs persist ~/.claude.json by creating ~/.claude.json.<rand>
+; Prefix (not literal) so atomic-write siblings work: npm packages like
+; write-file-atomic persist ~/.claude.json by creating ~/.claude.json.<rand>
 ; and renaming. A literal rule blocks those temp writes, which silently breaks
 ; OAuth token persistence and causes repeated /login prompts.
 (allow file-write* (prefix (string-append (param "HOME") "/.claude.json")))
