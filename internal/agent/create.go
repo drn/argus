@@ -36,7 +36,7 @@ type CreateInput struct {
 	// is race-guarded: it only overwrites Name if the row's current Name
 	// still equals the regex-derived slug. Callers should set this only
 	// when Name was string-interpolated from Prompt (not user-typed and
-	// not a structured slug like "review-pr-123-…" worth preserving).
+	// not a structured slug like "<src>-fork" worth preserving).
 	AutoName bool
 
 	// Attachments are written to <worktree>/.context/<name> after worktree

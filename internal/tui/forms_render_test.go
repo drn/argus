@@ -184,14 +184,15 @@ func TestApp_HandleAgentKey_EnterRestart(t *testing.T) {
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 }
 
-func TestApp_HandleAgentKey_OOpenPR(t *testing.T) {
+func TestApp_HandleAgentKey_ODeadSession(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "n")
 
-	// 'o' on dead session calls OpenPR (no panic).
+	// 'o' on a dead session with terminal focus falls through to the PTY
+	// forward path without panicking.
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyRune, 'o', 0))
 }
 

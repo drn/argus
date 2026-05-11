@@ -256,7 +256,7 @@ func (tl *TaskListView) buildRows() {
 	// the pinnedExpanded comment in the struct. Active has no header, so we
 	// emit an explicit `rowPinnedTrailingSep` to mark the Pinned/Active
 	// boundary. The trailing marker is only needed when Active has content;
-	// WR and Archive emit their own leading separator below.
+	// Archive emits its own leading separator below.
 	if len(pinned) > 0 {
 		tl.rows = append(tl.rows, taskRow{kind: rowPinnedHeader})
 		pinOrder, pinTasks := groupByProject(pinned)
@@ -618,8 +618,8 @@ func taskSection(t *model.Task) rowSection {
 
 // sectionAt returns which section the row at idx belongs to. It scans upward
 // and returns the first section anchor encountered: a section header (Pinned /
-// WR / Archive) or `rowPinnedTrailingSep`. Plain `rowSeparator` rows lead INTO
-// a WR/Archive header below them, so they are transparent — keep scanning.
+// Archive) or `rowPinnedTrailingSep`. Plain `rowSeparator` rows lead INTO
+// the Archive header below them, so they are transparent — keep scanning.
 // `rowPinnedTrailingSep` is the explicit Pinned-to-Active boundary: anything
 // at or below it (until the next header) belongs to Active.
 func (tl *TaskListView) sectionAt(idx int) rowSection {

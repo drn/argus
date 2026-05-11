@@ -3414,14 +3414,14 @@ function clearInputHistory() {
 }
 
 // --- External URL opener ---
-// Shared by "View PR" and the link picker. iOS standalone PWAs can't open a
-// real browser tab via window.open('_blank') — they leave a stub about:blank
-// window the user has to dismiss with X. For domains that are backed by
-// universal links (GitHub, etc.), assigning location.href hands off to the
-// native app and the PWA stays alive in the background. For everything else
-// we accept the stub on iOS rather than blowing the user out of the PWA, so
-// the modal stays interactive after multiple opens. On non-PWA platforms the
-// regular new-tab behavior applies.
+// Used by the link picker. iOS standalone PWAs can't open a real browser
+// tab via window.open('_blank') — they leave a stub about:blank window the
+// user has to dismiss with X. For domains that are backed by universal
+// links (GitHub, etc.), assigning location.href hands off to the native app
+// and the PWA stays alive in the background. For everything else we accept
+// the stub on iOS rather than blowing the user out of the PWA, so the modal
+// stays interactive after multiple opens. On non-PWA platforms the regular
+// new-tab behavior applies.
 //
 // Extend universalLinkRe if other universal-link-backed providers are added.
 const universalLinkRe = /^https:\/\/(www\.)?(github\.com|gitlab\.com)\//i;
