@@ -919,15 +919,27 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	if captureTask != nil {
 		go func(snap model.Task) {
 			cfg := a.db.Config()
+			// Resolve the backend name once so log lines tag which dialect
+			// (codex / pi / claude) the capture targeted — keeps the previous
+			// per-kind logging searchability after the dispatcher refactor.
+			kind := "agent"
+			if b, berr := agent.ResolveBackend(&snap, cfg); berr == nil {
+				switch {
+				case agent.IsCodexBackend(b.Command):
+					kind = "codex"
+				case agent.IsPiBackend(b.Command):
+					kind = "pi"
+				}
+			}
 			sid, err := agent.CaptureSessionID(&snap, cfg)
 			if err != nil {
-				uxlog.Log("[tui] session ID capture failed for task %s: %v", snap.ID, err)
+				uxlog.Log("[tui] %s session ID capture failed for task %s: %v", kind, snap.ID, err)
 				return
 			}
 			if sid == "" {
 				return
 			}
-			uxlog.Log("[tui] captured session ID %s for task %s", sid, snap.ID)
+			uxlog.Log("[tui] captured %s session ID %s for task %s", kind, sid, snap.ID)
 			a.tapp.QueueUpdateDraw(func() {
 				if t, gerr := a.db.Get(snap.ID); gerr == nil && t != nil {
 					t.SessionID = sid

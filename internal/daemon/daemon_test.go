@@ -7,6 +7,7 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -591,3 +592,106 @@ func TestDaemonNew_NoExe(t *testing.T) {
 	testutil.NotNil(t, d.runner)
 	testutil.NotNil(t, d.clipboard)
 }
+
+// --- captureSessionIDPostExit (B4 fix from rereview iter 1) ---
+
+// TestDaemon_CaptureSessionIDPostExit_NoTask: lookup miss → silent no-op.
+func TestDaemon_CaptureSessionIDPostExit_NoTask(t *testing.T) {
+	d, _ := testDaemon(t)
+	// No panic, no DB writes — the method just returns.
+	d.captureSessionIDPostExit("does-not-exist")
+}
+
+// TestDaemon_CaptureSessionIDPostExit_AlreadyHasID: skip when SessionID is
+// already populated (TUI may have raced first; nothing to do).
+func TestDaemon_CaptureSessionIDPostExit_AlreadyHasID(t *testing.T) {
+	d, _ := testDaemon(t)
+	pre := "11111111-1111-7111-9111-111111111111"
+	tk := &model.Task{Name: "t", Project: "p", Worktree: t.TempDir(), SessionID: pre, Backend: "codex"}
+	testutil.NoError(t, d.db.Add(tk))
+
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, pre) // unchanged
+}
+
+// TestDaemon_CaptureSessionIDPostExit_NoWorktree: skip when Worktree is empty.
+func TestDaemon_CaptureSessionIDPostExit_NoWorktree(t *testing.T) {
+	d, _ := testDaemon(t)
+	tk := &model.Task{Name: "t", Project: "p", Backend: "codex"}
+	testutil.NoError(t, d.db.Add(tk))
+
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, "")
+}
+
+// TestDaemon_CaptureSessionIDPostExit_ClaudeNoOp: Claude-style backends mint
+// the UUID at start via --session-id; the dispatcher returns ("", nil) and
+// the daemon must NOT clobber the persisted SessionID with "".
+func TestDaemon_CaptureSessionIDPostExit_ClaudeNoOp(t *testing.T) {
+	d, _ := testDaemon(t)
+	tk := &model.Task{
+		Name:     "t",
+		Project:  "p",
+		Worktree: t.TempDir(),
+		Backend:  "claude",
+		// SessionID empty — Claude path is unusual here (Claude pre-mints
+		// before BuildCmd) but we're asserting the daemon doesn't overwrite.
+	}
+	testutil.NoError(t, d.db.Add(tk))
+
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, "")
+}
+
+// TestDaemon_CaptureSessionIDPostExit_PiSuccess pins the happy path: a pi
+// task exits with no SessionID, a session file lives in ~/.pi, and the
+// daemon writes the captured UUID back to the DB row. This is the regression
+// scenario for headless / PWA users that B4 was created to fix.
+func TestDaemon_CaptureSessionIDPostExit_PiSuccess(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	d, _ := testDaemon(t)
+	wt := filepath.Join(home, "pi-success-wt")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+
+	// Mirror piEncodeCwd inline (it's package-private to agent): strip one
+	// leading slash/backslash, then replace remaining /, \, : with -.
+	// agent_test.TestPiEncodeCwd pins the canonical behavior; this test only
+	// proves the daemon wiring, so a local copy of the rule is sufficient.
+	trimmed := wt
+	if len(trimmed) > 0 && (trimmed[0] == '/' || trimmed[0] == '\\') {
+		trimmed = trimmed[1:]
+	}
+	trimmed = strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(trimmed)
+	sessionDir := filepath.Join(home, ".pi", "agent", "sessions", "--"+trimmed+"--")
+	testutil.NoError(t, os.MkdirAll(sessionDir, 0o755))
+
+	captured := "abcdef99-1234-7abc-9def-fedcba987654"
+	testutil.NoError(t, os.WriteFile(
+		filepath.Join(sessionDir, "20260511T120000_"+captured+".jsonl"),
+		[]byte("{}\n"), 0o644,
+	))
+
+	tk := &model.Task{Name: "t", Project: "p", Worktree: wt, Backend: "pi"}
+	testutil.NoError(t, d.db.Add(tk))
+
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, captured)
+}
+
+// Use config and time imports so they stay valid if other tests are pruned.
+var _ = config.DefaultConfig
+var _ = time.Now

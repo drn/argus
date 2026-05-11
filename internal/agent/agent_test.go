@@ -1260,3 +1260,97 @@ func TestCapturePiSessionID_NoMatchingFiles(t *testing.T) {
 		t.Fatal("expected error when no session files match")
 	}
 }
+
+// TestCaptureSessionID_DispatchesByBackend covers the unified dispatcher
+// introduced for the daemon/TUI session-ID capture share. The dispatcher must:
+// (1) route codex backends to CaptureCodexSessionID (~/.codex SQLite),
+// (2) route pi backends to CapturePiSessionID (~/.pi readdir),
+// (3) return ("", nil) for Claude-style and unknown backends (which pre-mint
+//
+//	their session ID at start, so there's nothing to scan for),
+//
+// (4) propagate ResolveBackend errors.
+func TestCaptureSessionID_DispatchesByBackend(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	t.Run("codex backend uses codex SQLite scan", func(t *testing.T) {
+		// Seed a codex state DB so the dispatch reaches CaptureCodexSessionID
+		// and returns the seeded ID instead of a "no rows" error.
+		home := os.Getenv("HOME")
+		codexDir := filepath.Join(home, ".codex")
+		testutil.NoError(t, os.MkdirAll(codexDir, 0o700))
+		conn, err := sql.Open("sqlite", filepath.Join(codexDir, codexStateDB))
+		testutil.NoError(t, err)
+		t.Cleanup(func() { conn.Close() })
+		_, err = conn.Exec(`CREATE TABLE threads (id TEXT, cwd TEXT, updated_at INTEGER)`)
+		testutil.NoError(t, err)
+		wt := "/codex-dispatch-wt"
+		seeded := "01923456-789a-7bcd-9def-0123456789ab"
+		_, err = conn.Exec(`INSERT INTO threads (id, cwd, updated_at) VALUES (?, ?, ?)`, seeded, wt, 1)
+		testutil.NoError(t, err)
+		conn.Close()
+
+		cfg := testConfig()
+		task := &model.Task{Backend: "codex", Worktree: wt}
+		got, err := CaptureSessionID(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, seeded)
+	})
+
+	t.Run("pi backend uses pi readdir scan", func(t *testing.T) {
+		home := os.Getenv("HOME")
+		wt := filepath.Join(home, "pi-dispatch-wt")
+		testutil.NoError(t, os.MkdirAll(wt, 0o755))
+		sessionDir := filepath.Join(home, ".pi", "agent", "sessions", piEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(sessionDir, 0o755))
+		sid := "abcdef01-2345-7bcd-9def-0123456789ab"
+		testutil.NoError(t, os.WriteFile(
+			filepath.Join(sessionDir, "20260511T000000_"+sid+".jsonl"), []byte("{}\n"), 0o644,
+		))
+
+		cfg := testConfig()
+		task := &model.Task{Backend: "pi", Worktree: wt}
+		got, err := CaptureSessionID(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, sid)
+	})
+
+	t.Run("claude backend is a no-op", func(t *testing.T) {
+		cfg := testConfig()
+		task := &model.Task{Backend: "claude", Worktree: t.TempDir()}
+		got, err := CaptureSessionID(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "")
+	})
+
+	t.Run("unknown bare backend is a no-op", func(t *testing.T) {
+		cfg := testConfig()
+		task := &model.Task{Backend: "bare", Worktree: t.TempDir()}
+		got, err := CaptureSessionID(task, cfg)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "")
+	})
+
+	t.Run("ResolveBackend error propagates", func(t *testing.T) {
+		cfg := testConfig()
+		task := &model.Task{Backend: "no-such-backend", Worktree: t.TempDir()}
+		_, err := CaptureSessionID(task, cfg)
+		if err == nil {
+			t.Fatal("expected ResolveBackend error for unknown backend name")
+		}
+	})
+}
+
+// TestBuildCmd_ResumeNoSessionIDPi pins the pi branch's silent-fresh-start
+// contract for resume=true with an empty SessionID. Mirrors the analogous
+// TestBuildCmd_ResumeNoSessionIDClaude. Both callers (TUI / API) compute
+// resume := task.SessionID != "" so this combination shouldn't reach BuildCmd
+// in practice, but the guard exists so a future caller mistake produces a
+// fresh start rather than an obviously broken `pi --session ”`.
+func TestBuildCmd_ResumeNoSessionIDPi(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Backend: "pi", Worktree: t.TempDir() /* no SessionID */}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "pi")
+}
