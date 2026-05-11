@@ -4093,6 +4093,12 @@ function applyCreateDefaults() {
       // when we change the value programmatically.
       loadSkillsForProject(want);
     }
+  } else if (projSel) {
+    // Projects weren't loaded yet (initial connect race, or the boot-time
+    // loadProjects() failed silently — `if (!r.ok) return` + `catch(e) {}`
+    // both leave the dropdown blank with no retry). Trigger a fetch; it'll
+    // populate the dropdown async. Mirrors the backend recovery below.
+    loadProjects();
   }
   const beSel = document.getElementById('create-backend');
   if (beSel && !beSel.options.length) {
