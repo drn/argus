@@ -49,8 +49,25 @@ const sandboxProfileBase = `(version 1)
 (allow file-write* (subpath "/private/var/folders"))
 (allow file-write* (subpath "/var/folders"))
 (allow file-write* (literal "/dev/null"))
-(allow file-write* (literal (string-append (param "HOME") "/.claude.json")))
+; Prefix (not literal) so atomic-write siblings work: write-file-atomic and
+; similar Node.js libs persist ~/.claude.json by creating ~/.claude.json.<rand>
+; and renaming. A literal rule blocks those temp writes, which silently breaks
+; OAuth token persistence and causes repeated /login prompts.
+(allow file-write* (prefix (string-append (param "HOME") "/.claude.json")))
 (allow file-write* (subpath (string-append (param "HOME") "/.claude")))
+; Codex backend: auth token (auth.json), session DB (state_5.sqlite), history,
+; sessions/, models_cache.json. Same EPERM-loops-on-/login class of bug as
+; ~/.claude.json — the agent's BuildCmd treats codex as a first-class backend
+; and CaptureCodexSessionID reads state_5.sqlite, which codex must write first.
+(allow file-write* (subpath (string-append (param "HOME") "/.codex")))
+; ~/.ssh/known_hosts append for new git remotes. Without this, ssh prompts
+; interactively for host-key acceptance and the agent's PTY hangs silently.
+; Prefix covers OpenSSH's mkstemp-then-rename atomic update (known_hosts.XXXXXX).
+; Narrower than allowing all of ~/.ssh — private keys remain write-protected.
+(allow file-write* (prefix (string-append (param "HOME") "/.ssh/known_hosts")))
+; gh CLI token store. Without this, gh auth refresh silently fails. Narrower
+; than allowing all of ~/.config — the gcloud deny-read rule still applies.
+(allow file-write* (subpath (string-append (param "HOME") "/.config/gh")))
 ; Build tool caches
 (allow file-write* (subpath (string-append (param "HOME") "/Library/Caches")))
 (allow file-write* (subpath (string-append (param "HOME") "/go")))

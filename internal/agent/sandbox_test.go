@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -543,6 +544,303 @@ func TestSandbox_CredentialDirsBlocked(t *testing.T) {
 		out, err := sandboxRun(t, wtDir, cfg, "ls "+shellQuote(sshDir))
 		if err != nil {
 			t.Fatalf("reading ~/.ssh should be allowed for git over SSH: %v\n%s", err, out)
+		}
+	})
+}
+
+// TestSandbox_ClaudeJSONAtomicWriteSiblings verifies that the rule allowing
+// writes to ~/.claude.json also allows the atomic-write sibling files Node.js
+// libraries like write-file-atomic create (~/.claude.json.<rand>, .backup,
+// .lock). Using (literal) instead of (prefix) silently breaks OAuth token
+// persistence and causes repeated /login prompts inside sandboxed tasks.
+func TestSandbox_ClaudeJSONAtomicWriteSiblings(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	// Use a HOME-rooted dir that's NOT inside any other allowed write path
+	// (e.g., /private/tmp or /var/folders). Otherwise we'd be testing the
+	// wrong rule.
+	fakeHome, err := os.MkdirTemp(homeDir, ".argus-sandbox-claude-")
+	if err != nil {
+		t.Fatalf("create fakeHome: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(fakeHome) })
+
+	wtDir := t.TempDir()
+	cfg := config.SandboxConfig{}
+
+	// Override HOME in the generated profile params so .claude.json rules
+	// resolve to fakeHome rather than the real $HOME (which would let writes
+	// to a real ~/.claude.json clobber state).
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, cfg)
+	if err != nil {
+		t.Fatalf("GenerateSandboxConfig: %v", err)
+	}
+	defer cleanup()
+
+	resolved := evalSymlinksOrKeep(fakeHome)
+	for i, p := range params {
+		if strings.HasPrefix(p, "HOME=") {
+			params[i] = "HOME=" + resolved
+		}
+	}
+
+	// The base path plus four atomic-write siblings must be writable. Bug
+	// history: when ~/.claude.json used (literal), only the exact path worked
+	// — every atomic-write tempfile, backup, and lock-file write got
+	// "Operation not permitted".
+	siblings := []string{
+		".claude.json",
+		".claude.json.tmp.12345",
+		".claude.json.backup",
+		".claude.json.lock",
+		".claude.json.4815162342",
+	}
+	for _, name := range siblings {
+		t.Run(name, func(t *testing.T) {
+			target := resolved + "/" + name
+			args := []string{}
+			for _, p := range params {
+				args = append(args, "-D", p)
+			}
+			args = append(args, "-f", profilePath, "sh", "-c", "echo ok > "+shellQuote(target))
+			out, err := exec.Command(sandboxExecPath, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("write to %s should succeed for OAuth token persistence: %v\n%s", name, err, out)
+			}
+			if _, statErr := os.Stat(target); statErr != nil {
+				t.Errorf("file %s should exist after write: %v", target, statErr)
+			}
+		})
+	}
+
+	// Negative case: an unrelated HOME-rooted path must STILL be blocked. This
+	// pins the prefix rule's scope — guards against a future "fix" that
+	// over-broadens (e.g., (subpath HOME)) and would silently allow writes
+	// anywhere under HOME.
+	t.Run("denies unrelated HOME path", func(t *testing.T) {
+		target := resolved + "/.not-claude-related"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo nope > "+shellQuote(target))
+		if _, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err == nil {
+			t.Fatal("write to unrelated HOME-rooted path must remain blocked — the .claude.json rule must not be over-broad")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Errorf("unrelated file should not have been created: %v", statErr)
+		}
+	})
+}
+
+// TestSandbox_CodexBackendWritable pins the ~/.codex write rule. Codex is a
+// first-class backend (see internal/agent/agent.go IsCodexBackend); it writes
+// auth.json (token), state_5.sqlite (session DB), history.jsonl, sessions/,
+// models_cache.json. Without write access the backend can't persist auth and
+// loops on /login — identical symptom to the ~/.claude.json bug.
+func TestSandbox_CodexBackendWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	fakeHome, err := os.MkdirTemp(homeDir, ".argus-sandbox-codex-")
+	if err != nil {
+		t.Fatalf("create fakeHome: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(fakeHome) })
+	if err := os.Mkdir(fakeHome+"/.codex", 0o755); err != nil {
+		t.Fatalf("mkdir .codex: %v", err)
+	}
+
+	wtDir := t.TempDir()
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, config.SandboxConfig{})
+	if err != nil {
+		t.Fatalf("GenerateSandboxConfig: %v", err)
+	}
+	defer cleanup()
+
+	resolved := evalSymlinksOrKeep(fakeHome)
+	for i, p := range params {
+		if strings.HasPrefix(p, "HOME=") {
+			params[i] = "HOME=" + resolved
+		}
+	}
+
+	paths := []string{
+		".codex/auth.json",
+		".codex/auth.json.tmp.987",
+		".codex/state_5.sqlite",
+		".codex/history.jsonl",
+		".codex/models_cache.json",
+		".codex/sessions/2026/05/10/sess.jsonl",
+	}
+	for _, name := range paths {
+		t.Run(name, func(t *testing.T) {
+			target := resolved + "/" + name
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatalf("mkdir parent: %v", err)
+			}
+			args := []string{}
+			for _, p := range params {
+				args = append(args, "-D", p)
+			}
+			args = append(args, "-f", profilePath, "sh", "-c", "echo ok > "+shellQuote(target))
+			out, err := exec.Command(sandboxExecPath, args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("write to %s should succeed for Codex auth/state persistence: %v\n%s", name, err, out)
+			}
+			if _, statErr := os.Stat(target); statErr != nil {
+				t.Errorf("file %s should exist after write: %v", target, statErr)
+			}
+		})
+	}
+}
+
+// TestSandbox_KnownHostsAppend pins the ~/.ssh/known_hosts write rule. Without
+// it, ssh prompts interactively for host-key acceptance on a new remote and
+// the agent's PTY hangs silently. Prefix covers OpenSSH's mkstemp atomic
+// update (known_hosts.XXXXXX). Private keys remain write-protected.
+func TestSandbox_KnownHostsAppend(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	fakeHome, err := os.MkdirTemp(homeDir, ".argus-sandbox-ssh-")
+	if err != nil {
+		t.Fatalf("create fakeHome: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(fakeHome) })
+	if err := os.Mkdir(fakeHome+"/.ssh", 0o700); err != nil {
+		t.Fatalf("mkdir .ssh: %v", err)
+	}
+
+	wtDir := t.TempDir()
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, config.SandboxConfig{})
+	if err != nil {
+		t.Fatalf("GenerateSandboxConfig: %v", err)
+	}
+	defer cleanup()
+
+	resolved := evalSymlinksOrKeep(fakeHome)
+	for i, p := range params {
+		if strings.HasPrefix(p, "HOME=") {
+			params[i] = "HOME=" + resolved
+		}
+	}
+
+	t.Run("known_hosts append", func(t *testing.T) {
+		target := resolved + "/.ssh/known_hosts"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo 'example.com ssh-rsa AAA' >> "+shellQuote(target))
+		if out, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err != nil {
+			t.Fatalf("append to ~/.ssh/known_hosts should succeed: %v\n%s", err, out)
+		}
+	})
+
+	t.Run("known_hosts atomic tempfile", func(t *testing.T) {
+		target := resolved + "/.ssh/known_hosts.XXXXXX"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo tmp > "+shellQuote(target))
+		if out, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err != nil {
+			t.Fatalf("write to ~/.ssh/known_hosts.XXXXXX (OpenSSH atomic update) should succeed: %v\n%s", err, out)
+		}
+	})
+
+	t.Run("private key write still blocked", func(t *testing.T) {
+		target := resolved + "/.ssh/id_ed25519"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo key > "+shellQuote(target))
+		if _, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err == nil {
+			t.Fatal("write to ~/.ssh/id_ed25519 must remain blocked — known_hosts rule must not over-broaden to all of ~/.ssh")
+		}
+	})
+}
+
+// TestSandbox_GhConfigWritable pins the ~/.config/gh write rule for GitHub
+// CLI token persistence/refresh.
+func TestSandbox_GhConfigWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	fakeHome, err := os.MkdirTemp(homeDir, ".argus-sandbox-gh-")
+	if err != nil {
+		t.Fatalf("create fakeHome: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(fakeHome) })
+	if err := os.MkdirAll(fakeHome+"/.config/gh", 0o755); err != nil {
+		t.Fatalf("mkdir .config/gh: %v", err)
+	}
+
+	wtDir := t.TempDir()
+	profilePath, params, cleanup, err := GenerateSandboxConfig(wtDir, config.SandboxConfig{})
+	if err != nil {
+		t.Fatalf("GenerateSandboxConfig: %v", err)
+	}
+	defer cleanup()
+
+	resolved := evalSymlinksOrKeep(fakeHome)
+	for i, p := range params {
+		if strings.HasPrefix(p, "HOME=") {
+			params[i] = "HOME=" + resolved
+		}
+	}
+
+	t.Run("hosts.yml write", func(t *testing.T) {
+		target := resolved + "/.config/gh/hosts.yml"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo token > "+shellQuote(target))
+		if out, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err != nil {
+			t.Fatalf("write to ~/.config/gh/hosts.yml should succeed for gh CLI token persistence: %v\n%s", err, out)
+		}
+	})
+
+	t.Run("gcloud read deny still applies", func(t *testing.T) {
+		// Sanity: gh write rule does NOT accidentally undo the gcloud deny-read
+		gcloudPath := resolved + "/.config/gcloud"
+		if err := os.MkdirAll(gcloudPath, 0o755); err != nil {
+			t.Fatalf("mkdir gcloud: %v", err)
+		}
+		if err := os.WriteFile(gcloudPath+"/credentials.db", []byte("secret"), 0o600); err != nil {
+			t.Fatalf("write secret: %v", err)
+		}
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "cat "+shellQuote(gcloudPath+"/credentials.db"))
+		if _, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err == nil {
+			t.Fatal("reading ~/.config/gcloud must remain blocked — gh allow rule must not undo the gcloud deny-read")
 		}
 	})
 }
