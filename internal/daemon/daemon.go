@@ -174,9 +174,26 @@ func (d *Daemon) Runner() *agent.Runner {
 // captureSessionIDPostExit fires the backend-specific UUID capture for tasks
 // whose session ID wasn't pre-minted (codex, pi). Runs in its own goroutine
 // from onFinish so it never blocks the runner exit path. Guards on
-// SessionID=="" so concurrent TUI-side capture is harmless (last-writer-wins
-// produces the same value either way). No-op for Claude-style backends and
-// for tasks already deleted before the goroutine runs.
+// SessionID=="" so concurrent TUI-side capture is harmless: both paths run
+// CaptureSessionID, which is a pure read of the same backend state (codex
+// state_5.sqlite, pi sessions readdir), so last-writer-wins produces the
+// same value in the common case.
+//
+// Edge case: if the user starts a brand-new session for the same task in
+// the few-ms gap between onFinish and the TUI's QueueUpdateDraw, the two
+// captures could observe different "newest" rows. The resulting SessionID
+// still points at a valid session for the same task, so we intentionally
+// accept this benign drift rather than serialize the two paths.
+//
+// No-op for Claude-style backends (dispatcher returns ("", nil)) and for
+// tasks already deleted before the goroutine runs.
+//
+// NOTE on log lines: this logs without a backend-kind tag (e.g. "codex" /
+// "pi"). The daemon's slog output already carries the structured task=<id>
+// field, so a consumer can resolve the kind from the task row. The TUI's
+// analog DOES include the tag because uxlog is a flat text channel and
+// operators searching for "pi capture failed" need it inline. Keep this
+// asymmetry intentional — don't mirror the TUI tag dance here.
 func (d *Daemon) captureSessionIDPostExit(taskID string) {
 	t, err := d.db.Get(taskID)
 	if err != nil || t == nil || t.SessionID != "" || t.Worktree == "" {
