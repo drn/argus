@@ -1801,9 +1801,12 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 
 	widget.DrawText(screen, x, y+r, w, "Config", tcell.StyleDefault.Foreground(theme.ColorTitle))
 	r++
+	// Rune-aware truncation: w-12 can go negative at extreme widths.
 	cmd := be.Backend.Command
-	if len(cmd) > w-12 {
-		cmd = cmd[:w-12] + "…"
+	if budget := w - 12; budget > 0 && utf8.RuneCountInString(cmd) > budget {
+		cmd = truncRunes(cmd, budget) + "…"
+	} else if budget <= 0 {
+		cmd = ""
 	}
 	widget.DrawText(screen, x, y+r, w, "  Command: "+cmd, theme.StyleDimmed)
 	r++

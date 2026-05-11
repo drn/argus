@@ -95,8 +95,13 @@ func TestSettingsView_VimFocusAliases(t *testing.T) {
 
 func TestSettingsView_EmptyBackendsHasPlaceholder(t *testing.T) {
 	d := testDB(t)
-	// Strip seeded backends so the category goes empty.
-	for _, name := range []string{"claude", "codex"} {
+	// Iterate whatever the DB seeded — no hardcoded backend names, so this
+	// stays valid if defaults change.
+	backends, err := d.Backends()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range backends {
 		if err := d.DeleteBackend(name); err != nil {
 			t.Fatal(err)
 		}
