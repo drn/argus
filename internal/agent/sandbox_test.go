@@ -704,6 +704,25 @@ func TestSandbox_CodexBackendWritable(t *testing.T) {
 			}
 		})
 	}
+
+	// Negative case: pins the (subpath HOME/.codex) rule's narrowness. A
+	// regression to (subpath HOME) would silently pass all positive subtests
+	// above. Mirrors the same guard pattern in
+	// TestSandbox_ClaudeJSONAtomicWriteSiblings.
+	t.Run("denies unrelated HOME path", func(t *testing.T) {
+		target := resolved + "/.not-codex-related"
+		args := []string{}
+		for _, p := range params {
+			args = append(args, "-D", p)
+		}
+		args = append(args, "-f", profilePath, "sh", "-c", "echo nope > "+shellQuote(target))
+		if _, err := exec.Command(sandboxExecPath, args...).CombinedOutput(); err == nil {
+			t.Fatal("write to unrelated HOME-rooted path must remain blocked — the .codex rule must not over-broaden")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Errorf("unrelated file should not have been created: %v", statErr)
+		}
+	})
 }
 
 // TestSandbox_KnownHostsAppend pins the ~/.ssh/known_hosts write rule. Without
