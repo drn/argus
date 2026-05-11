@@ -10,6 +10,7 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Discovery is one-shot at startup.** If Tailscale connects (or its IP changes after `logout`/`login`) after the daemon is already running, the Tailscale listener is absent until the daemon is restarted. Symptom: PWA shows the offline screen on every device while `curl http://127.0.0.1:7743/` works locally. Acceptable for a single-user tool — restarting the daemon takes seconds.
 - **`tailscale serve` keeps working** because it forwards to localhost; the localhost listener is always present regardless of Tailscale state.
 - **`bindWithRetry` wraps the underlying syscall error with `%w`.** `errors.Is(err, syscall.EADDRINUSE)` continues to work for callers; daemon log scrapers see the actual cause (`bind: address already in use`, `bind: can't assign requested address`) instead of just the formatted-port summary.
+- **Port-fallback tests must occupy `127.0.0.1:N`, not `0.0.0.0:N`.** On macOS, `0.0.0.0:N` and `127.0.0.1:N` are distinct address-family bindings — occupying the former does NOT collide with the latter. Pre-cb983cb when the API bound `0.0.0.0` the wildcard listener self-collided either way; post-cb983cb (localhost only) a `0.0.0.0`-occupied port leaves `127.0.0.1:N` free, so `bindWithRetry` succeeds at the original port and the fallback assertion fails. Lesson: when changing a service's bind address, re-check existing port-collision tests against address-family rules — a passing test under the old bind may silently break.
 
 ## Auth & EventSource
 
