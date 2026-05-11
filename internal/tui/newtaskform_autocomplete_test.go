@@ -2,11 +2,13 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/skills"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -230,3 +232,98 @@ func TestApp_HandleAgentKey_CtrlPNoWorktree(t *testing.T) {
 }
 
 // --- handleGlobalKey paths ---
+
+func TestApp_HandleGlobalKey_CtrlPOpensPRFromTaskList(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	wt := t.TempDir()
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusInProgress,
+		Project:   "proj",
+		Worktree:  wt,
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	var gotDir string
+	orig := prOpener
+	prOpener = func(dir string) error {
+		gotDir = dir
+		return nil
+	}
+	t.Cleanup(func() { prOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0)); ev != nil {
+		t.Fatal("ctrl+p should be consumed in task list")
+	}
+	testutil.Equal(t, gotDir, wt)
+}
+
+func TestApp_HandleGlobalKey_CtrlPNoWorktree(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Task with no worktree yet (pending).
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusPending,
+		Project:   "proj",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	called := false
+	orig := prOpener
+	prOpener = func(string) error { called = true; return nil }
+	t.Cleanup(func() { prOpener = orig })
+
+	// Event is NOT consumed when the worktree guard fails — falls through
+	// to the next handler, matching the ctrl+f pattern.
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0)); ev == nil {
+		t.Fatal("ctrl+p should fall through when selected task has no worktree")
+	}
+	if called {
+		t.Fatal("prOpener should not run when selected task has no worktree")
+	}
+}
+
+// prOpener errors (stale worktree on disk, gh not installed, etc.) must be
+// swallowed and logged, not propagated. The event still gets consumed.
+func TestApp_HandleGlobalKey_CtrlPSwallowsPRError(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusInProgress,
+		Project:   "proj",
+		Worktree:  t.TempDir(),
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	orig := prOpener
+	prOpener = func(string) error { return errStubPRFailed }
+	t.Cleanup(func() { prOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0)); ev != nil {
+		t.Fatal("ctrl+p should be consumed even when prOpener errors")
+	}
+}
+
+var errStubPRFailed = stubError("pr open failed")
+
+type stubError string
+
+func (e stubError) Error() string { return string(e) }

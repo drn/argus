@@ -111,6 +111,8 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		}
 		// Capture last output before removing the session so callers
 		// can display error messages after the session is gone.
+		// sess.Done() blocks on readLoop draining, so the ring buffer
+		// is guaranteed to hold every byte the PTY produced.
 		lastOutput := sess.RecentOutput()
 		exitErr := sess.Err()
 

@@ -1282,6 +1282,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		}
+	case tcell.KeyCtrlP:
+		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
+				if err := prOpener(t.Worktree); err != nil {
+					uxlog.Log("[tui] open PR failed: %v", err)
+				}
+				return nil
+			}
+		}
 	case tcell.KeyCtrlR:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			a.pruneCompletedTasks()

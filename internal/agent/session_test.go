@@ -40,9 +40,6 @@ func TestStartSession_EchoCommand(t *testing.T) {
 		t.Errorf("unexpected error: %v", sess.Err())
 	}
 
-	// Give readLoop time to capture output
-	time.Sleep(50 * time.Millisecond)
-
 	output := string(sess.RecentOutput())
 	if !strings.Contains(output, "hello from pty") {
 		t.Errorf("expected output to contain 'hello from pty', got %q", output)
@@ -221,7 +218,6 @@ func TestSession_TotalWritten(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	if sess.TotalWritten() == 0 {
 		t.Error("expected TotalWritten > 0 after echo output")
@@ -283,23 +279,17 @@ func TestSession_RecentOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Done() now fires only after readLoop has fully drained the PTY into
+	// the ring buffer (see waitLoop), so RecentOutput is immediately ready.
 	select {
 	case <-sess.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	// readLoop drains the PTY into the ring buffer asynchronously; wait for
-	// it to land rather than relying on a fixed sleep (was flaky on CI).
-	deadline := time.Now().Add(2 * time.Second)
-	var output string
-	for time.Now().Before(deadline) {
-		output = string(sess.RecentOutput())
-		if strings.Contains(output, "recent output test") {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	output := string(sess.RecentOutput())
+	if !strings.Contains(output, "recent output test") {
+		t.Errorf("RecentOutput() = %q, want it to contain 'recent output test'", output)
 	}
-	t.Errorf("RecentOutput() = %q, want it to contain 'recent output test'", output)
 }
 
 func TestSession_RecentOutputTail(t *testing.T) {
@@ -313,14 +303,6 @@ func TestSession_RecentOutputTail(t *testing.T) {
 	case <-sess.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
-	}
-	// Wait for readLoop to drain rather than fixed sleep (CI-flake fix).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(string(sess.RecentOutput()), "tail output test") {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	full := sess.RecentOutput()
@@ -475,7 +457,6 @@ func TestSession_Attach_WithReplay(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout")
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	// Attach should replay buffered output
 	pr, pw := io.Pipe()

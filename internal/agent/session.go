@@ -33,6 +33,7 @@ type Session struct {
 	buf         *RingBuffer
 	writers     []io.Writer // readLoop tees output to all attached writers
 	done        chan struct{}
+	readDone    chan struct{} // closed when readLoop returns; waitLoop blocks on this before closing done so all PTY output lands in the ring buffer
 	err         error
 	attached    bool
 	detachCh    chan struct{}
@@ -87,6 +88,7 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		ptmx:        ptmx,
 		buf:         NewRingBuffer(defaultBufSize),
 		done:        make(chan struct{}),
+		readDone:    make(chan struct{}),
 		detachCh:    make(chan struct{}),
 		ptyCols:     cols,
 		ptyRows:     rows,
@@ -106,7 +108,12 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 
 // readLoop is the sole reader of the PTY. It always writes to the ring buffer,
 // tees output to all attached writers, and appends to the session log file.
+// Closes s.readDone on return so waitLoop can defer s.done's close until
+// every PTY byte has landed in the ring buffer — otherwise Done() can fire
+// while the kernel still has buffered output, and Attach/Recent-Output
+// readers see a half-drained session.
 func (s *Session) readLoop() {
+	defer close(s.readDone)
 	if s.logFile != nil {
 		defer s.logFile.Close()
 	}
@@ -159,13 +166,20 @@ func (s *Session) readLoop() {
 	}
 }
 
-// waitLoop waits for the process to exit and cleans up.
+// waitLoop waits for the process to exit and cleans up. Done() is signaled
+// only after readLoop has terminated, guaranteeing every PTY byte has been
+// written to the ring buffer before any Done() waiter wakes up.
+//
+// The `<-s.readDone` block depends on readLoop's `defer close(s.readDone)`
+// firing. The defer runs even on panic, so a crashing readLoop still
+// unblocks this goroutine; without that defer, Done() would deadlock.
 func (s *Session) waitLoop() {
 	s.err = s.Cmd.Wait()
 	s.mu.Lock()
 	s.ptmxClosed = true
 	s.ptmx.Close()
 	s.mu.Unlock()
+	<-s.readDone
 	close(s.done)
 }
 
