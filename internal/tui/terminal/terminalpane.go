@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -119,6 +120,13 @@ type TerminalPane struct {
 	replayEmuLogSize       int64 // log file size when replayEmu was built (for log-backed scroll)
 	replayEmuMaxScroll     int   // max scrollOffset the replay emulator was built for
 	replayEmuCursorVisible bool  // cached cursor visibility from replay emulator
+	// replayEmuFirstByte is the file offset of the first byte fed into
+	// the current replayEmu (0 means "from the start of the file"). Rebuilds
+	// triggered by scroll-past-maxScroll on an alive session must read from
+	// no later than this offset, otherwise the user-visible scrollback
+	// window jumps forward as new agent output pushes the 8MB read window
+	// past the bytes the previous build had cached (defect 5).
+	replayEmuFirstByte int64
 
 	// Paint cache: stores the last paintEmu output so keystroke-triggered
 	// redraws (no new bytes) can replay SetContent calls without touching
@@ -159,6 +167,13 @@ type TerminalPane struct {
 	// The goroutine builds the emulator and stores it, then calls OnNeedRedraw.
 	replayBuilding       bool // true while a background rebuild is in flight
 	replayRebuildPending bool // set by async rebuild to signal anchor/cache reset needed
+	// replayNoDataUntil throttles re-kicks after asyncReplayRebuild bailed
+	// out with empty inputs (no log, no ring, no replayData). Without this,
+	// every subsequent Draw immediately spawns another goroutine that
+	// immediately bails the same way, churning CPU at the tick rate while
+	// the screen shows "Waiting for output..." (defect 12). Cleared as
+	// soon as real input is detected on the next entry.
+	replayNoDataUntil time.Time
 
 	// pending is true when a task is being prepared (worktree creation) and
 	// the session hasn't started yet. Draw() shows a launch banner instead of
@@ -193,6 +208,18 @@ type TerminalPane struct {
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
 const mouseScrollStep = 3
+
+// scrollIndicatorCells is the rendered width of the "   [SCROLL]   " badge
+// painted at the top row in scroll mode. Pre-reserved in paintCacheCells so
+// the slice doesn't reallocate on every scroll frame (defect 2).
+const scrollIndicatorCells = 14
+
+// replayNoDataCooldown is how long the slow-path replay rebuild waits after
+// bailing out with no input bytes before it's willing to re-spawn another
+// goroutine. Defect 12 — without a cooldown, every Draw immediately kicks
+// off a new goroutine that immediately bails the same way, burning CPU at
+// the tick rate while the user sees the "Waiting for output..." placeholder.
+const replayNoDataCooldown = 250 * time.Millisecond
 
 // NewTerminalPane creates a native terminal rendering pane.
 func NewTerminalPane() *TerminalPane {
@@ -279,14 +306,19 @@ func (tp *TerminalPane) SetTaskID(id string) {
 	}
 }
 
-// loadSessionLog reads the session log file for finished-session replay.
+// loadSessionLog reads up to 8MB from the tail of the session log file for
+// finished-session replay. Bounded to liveRebuildHistorySize so a huge log
+// (50MB+ for long-lived sessions) does not pin that much memory in tp.replayData
+// for the lifetime of the agent view (defect 8). asyncReplayRebuild reads the
+// full 8MB tail itself when it builds the replay emulator, so the cached
+// tp.replayData only needs to back HasContent() and the rare path where the
+// async rebuild can't reach the log (e.g., file was deleted underneath us).
 func (tp *TerminalPane) loadSessionLog(taskID string) {
-	logPath := agent.SessionLogPath(taskID)
-	data, err := os.ReadFile(logPath)
-	if err != nil || len(data) == 0 {
+	data, fileSize := readLogTailForTask(taskID, liveRebuildHistorySize)
+	if len(data) == 0 {
 		return
 	}
-	uxlog.Log("[tui] loaded session log for %s (%d bytes)", taskID, len(data))
+	uxlog.Log("[tui] loaded session log tail for %s (%d / %d bytes)", taskID, len(data), fileSize)
 	tp.replayData = data
 }
 
@@ -340,27 +372,30 @@ func (tp *TerminalPane) SetFocused(f bool) {
 // without waiting for Draw(). Called on session exit to pre-populate the
 // replay emulator so the first Draw() hits the cache instead of showing a
 // brief "Waiting for output..." flash.
+//
+// Skips when ptyCols/ptyRows are still zero (no Draw has happened yet) —
+// substituting 80x24 defaults produces a cache that Draw() immediately
+// invalidates as soon as the real panel dimensions arrive, wasting the
+// pre-build (defect 13).
 func (tp *TerminalPane) EagerReplayBuild() {
 	tp.mu.Lock()
 	if tp.replayBuilding || tp.taskID == "" {
 		tp.mu.Unlock()
 		return
 	}
-	tp.replayBuilding = true
-	taskID := tp.taskID
-	// Use reasonable defaults for dimensions — Draw() will rebuild if they differ.
 	cols := tp.ptyCols
 	rows := tp.ptyRows
-	if cols < 20 {
-		cols = 80
+	if cols < 20 || rows < 5 {
+		// Dimensions unknown — defer until Draw() resolves the panel size.
+		tp.mu.Unlock()
+		return
 	}
-	if rows < 5 {
-		rows = 24
-	}
+	tp.replayBuilding = true
+	taskID := tp.taskID
 	onDone := tp.OnNeedRedraw
 	tp.mu.Unlock()
 
-	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, onDone)
+	go tp.asyncReplayRebuild(taskID, 0, rows, cols, rows, nil, nil, 0, onDone)
 }
 
 // ResetVT clears all terminal state (on resize or task switch).
@@ -374,8 +409,10 @@ func (tp *TerminalPane) ResetVT() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
+	tp.replayEmuFirstByte = 0
 	tp.replayBuilding = false
 	tp.replayRebuildPending = false
+	tp.replayNoDataUntil = time.Time{}
 	tp.replayData = nil
 	tp.paintCacheValid = false
 	tp.mu.Unlock()
@@ -458,8 +495,13 @@ func (tp *TerminalPane) invalidateReplayCache() {
 	tp.replayEmuBytes = 0
 	tp.replayEmuLogSize = 0
 	tp.replayEmuMaxScroll = 0
+	tp.replayEmuFirstByte = 0
 	tp.anchorTotalLines = 0
 	tp.replayBuilding = false // allow new async rebuild after invalidation
+	// Clear the no-data cooldown too — the cooldown was scoped to the
+	// previous state's empty inputs; after invalidation we want the next
+	// Draw to kick a fresh rebuild without waiting for the old timestamp.
+	tp.replayNoDataUntil = time.Time{}
 	tp.mu.Unlock()
 }
 
@@ -524,6 +566,11 @@ func (tp *TerminalPane) statLogSize() int64 {
 
 // readLogTailForTask reads the last `size` bytes from a session log file.
 // Safe to call from any goroutine — uses only the passed taskID, no shared state.
+//
+// Returns (bytes, fileSize) where fileSize is the on-disk size when the read
+// was issued. The returned slice may start at an arbitrary byte position in
+// the stream and is NOT escape-sequence aligned — pass through
+// alignToEscBoundary before feeding into a fresh terminal emulator.
 func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 	logPath := agent.SessionLogPath(taskID)
 	f, err := os.Open(logPath)
@@ -550,6 +597,125 @@ func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 		return nil, 0
 	}
 	return buf[:n], fileSize
+}
+
+// replayRebuildReadSize computes how many bytes asyncReplayRebuild should
+// pull from the session log. Base size = (scrollOffset+viewport) * cols * 3,
+// floored at 8MB to populate the 50K-line replay scrollback buffer. When
+// `prevFirstByte > 0`, the size grows so the new firstByteOffset is ≤
+// prevFirstByte — keeps the user's deep-scroll content from jumping out
+// from under the cursor as the log grows (defect 5). Capped at
+// replayRebuildMaxBytes (64MB) to bound a single synchronous read.
+func replayRebuildReadSize(taskID string, scrollOffset, viewportHeight, ptyCols int, prevFirstByte int64) int64 {
+	needed := int64(scrollOffset+viewportHeight) * int64(ptyCols) * 3
+	if needed < 8*1024*1024 {
+		needed = 8 * 1024 * 1024
+	}
+	if prevFirstByte > 0 {
+		// readLogTailForTask returns bytes [fileSize - readSize, fileSize),
+		// so readSize >= fileSize - prevFirstByte forces the start back to
+		// the previous build's first byte.
+		if fi, err := os.Stat(agent.SessionLogPath(taskID)); err == nil {
+			if fi.Size() > prevFirstByte {
+				needForMono := fi.Size() - prevFirstByte
+				if needForMono > needed {
+					needed = needForMono
+				}
+			}
+		}
+	}
+	if needed > replayRebuildMaxBytes {
+		needed = replayRebuildMaxBytes
+	}
+	return needed
+}
+
+// alignToEscBoundary returns a slice of `raw` starting at the first ESC
+// (0x1B) byte. Tails of session logs and ring buffers can begin in the
+// middle of a CSI parameter list (e.g. "5;3H" with the leading "ESC ["
+// missing) — x/vt parses those orphan bytes as garbage text and renders
+// them as a smudge of digits/punctuation at the top of the emulator.
+// Skipping to the first ESC guarantees the parser sees a complete
+// sequence from byte 0. If `raw` has no ESC at all, return it unchanged
+// (likely plain text — safe to feed).
+func alignToEscBoundary(raw []byte) []byte {
+	if i := bytes.IndexByte(raw, 0x1B); i > 0 {
+		return raw[i:]
+	}
+	return raw
+}
+
+// liveRebuildHistorySize bounds the on-disk session log read when the
+// live emulator is rebuilt (dimension change). 8MB is wide enough to
+// populate the emulator's 10K-line default scrollback for any realistic
+// session while keeping the synchronous read cost on the main goroutine
+// well under a frame budget (~20ms on a warm OS cache).
+const liveRebuildHistorySize = 8 * 1024 * 1024
+
+// readLiveRebuildHistory assembles bytes for rebuilding the live emulator
+// after a dimension change. Reads up to 8MB from the on-disk session log
+// (which holds the full history), then atomically pairs it with the ring
+// buffer tail to cover any bytes written between the log read and our
+// snapshot. Returns the merged bytes plus the monotonic `total` the caller
+// should record as emuFedTotal after feeding (modulo the rare ring-lag
+// gap noted below).
+//
+// Merge boundary: log covers [logSize-8MB, logSize); ring tail covers
+// [ringTotal-256KB, ringTotal). Bytes [logSize, ringTotal) — the bytes
+// readLoop wrote to the ring but hadn't yet flushed to the log — come
+// from the ring tail's overflow region. If the log lags the ring by more
+// than 256KB (rare; readLoop flushes synchronously per chunk), the gap
+// is unrecoverable from local state; caller accepts and continues, the
+// next incremental feed picks up from ringTotal.
+//
+// The returned bytes are NOT ESC-boundary aligned. Callers should pass
+// through alignToEscBoundary before feeding x/vt.
+func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw []byte, total uint64) {
+	if sess == nil {
+		return nil, 0
+	}
+	var logRaw []byte
+	var logSize int64
+	if taskID != "" {
+		logRaw, logSize = readLogTailForTask(taskID, liveRebuildHistorySize)
+	}
+	if len(logRaw) == 0 {
+		// No log — fall back to ring buffer only. RecentOutputTailWithTotal
+		// snapshots (bytes, total) atomically; using RecentOutput() + a
+		// separate TotalWritten() call leaves a window where readLoop
+		// advances total past the bytes we sampled.
+		ring, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
+		return ring, ringTotal
+	}
+	ringTail, ringTotal := sess.RecentOutputTailWithTotal(256 * 1024)
+	// ringTotal is monotonic and bounded by realistic session sizes (an
+	// agent producing 8EiB of output before we attach is not a real case);
+	// gosec G115 flags the conversion but the cast is safe and we want
+	// signed arithmetic for the overflow subtraction below.
+	overflow := int64(ringTotal) - logSize //nolint:gosec // see comment
+	if overflow <= 0 {
+		// Log already covers up to ringTotal (or further — readLoop wrote
+		// to the log between our two reads). Either way, the log slice
+		// alone gives the emulator a consistent view of bytes [start,
+		// ringTotal]; record emuFedTotal = ringTotal so the next
+		// incremental feed picks up new bytes only.
+		return logRaw, ringTotal
+	}
+	overflowInt := int(overflow)
+	if overflowInt > len(ringTail) {
+		// Log lags ring by more than the ring's capacity — should not
+		// happen under normal operation (readLoop flushes log writes
+		// chunk-by-chunk). Best effort: concat both. The bytes
+		// [logSize, ringTotal-len(ringTail)) are unrecoverable; emulator
+		// will be missing those, but the next incremental feed brings
+		// it back to live.
+		overflowInt = len(ringTail)
+	}
+	extra := ringTail[len(ringTail)-overflowInt:]
+	out := make([]byte, 0, len(logRaw)+len(extra))
+	out = append(out, logRaw...)
+	out = append(out, extra...)
+	return out, ringTotal
 }
 
 // MouseHandler handles mouse clicks (focus switching) and scroll wheel.
@@ -825,10 +991,18 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 
 		// Slow path: cache miss — kick off async rebuild to avoid blocking
 		// the main goroutine with file I/O (up to 8MB read) and VT emulation.
-		if !tp.replayBuilding {
+		// Skip the kick when we recently bailed out empty (defect 12) so we
+		// don't churn goroutines while the placeholder is on screen.
+		if !tp.replayBuilding && time.Now().After(tp.replayNoDataUntil) {
 			tp.replayBuilding = true
 			taskID := tp.taskID
 			scrollOffset := tp.scrollOffset
+			// Pass the previous build's first-byte offset so the next read
+			// won't start LATER in the file when the agent has appended
+			// new output between builds. Without this monotonic clamp, a
+			// growing log forces the 8MB read window forward and the user's
+			// deepest-cached scrollback jumps out from under their cursor.
+			prevFirstByte := tp.replayEmuFirstByte
 			var replayDataCopy []byte
 			if len(tp.replayData) > 0 {
 				replayDataCopy = tp.replayData
@@ -842,7 +1016,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				ringBuf = sess.RecentOutput()
 			}
 			onDone := tp.OnNeedRedraw
-			go tp.asyncReplayRebuild(taskID, scrollOffset, height, ptyCols, ptyRows, ringBuf, replayDataCopy, onDone)
+			go tp.asyncReplayRebuild(taskID, scrollOffset, height, ptyCols, ptyRows, ringBuf, replayDataCopy, prevFirstByte, onDone)
 
 			tp.mu.Lock()
 		}
@@ -887,11 +1061,24 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	}
 }
 
+// replayRebuildMaxBytes caps the on-disk read for a single replay rebuild.
+// Defect 5 monotonic-firstByteOffset clamp can keep growing the read window
+// as the agent writes more output; without an upper bound, an agent that
+// runs for hours would force a multi-hundred-MB synchronous read on each
+// scroll-past-maxScroll. 64MB covers roughly 200K lines of dense output at
+// typical widths — far beyond what a user scrolls through interactively.
+const replayRebuildMaxBytes = 64 * 1024 * 1024
+
 // asyncReplayRebuild performs the heavy replay emulator build (file I/O + VT emulation)
 // on a background goroutine. When done, it stores the result and triggers a redraw.
 // This prevents the main goroutine from blocking on multi-MB file reads and VT processing,
 // which was the primary cause of UI freezes with large session logs (20MB+).
-func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, onDone func()) {
+//
+// `prevFirstByte` is the file offset of the previous build's first byte (0
+// if no prior build). When non-zero, the read window grows to start at or
+// before that offset so the user-visible scrollback doesn't slide forward
+// as the agent appends new bytes to the log between builds (defect 5).
+func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewportHeight, ptyCols, ptyRows int, ringBuf, replayDataCopy []byte, prevFirstByte int64, onDone func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			uxlog.Log("[terminalpane] PANIC in asyncReplayRebuild: %v\n%s", r, debug.Stack())
@@ -902,12 +1089,7 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	var logSize int64
 
 	if taskID != "" {
-		// Estimate bytes needed: (scrollOffset + viewport) * cols * 3 for ANSI overhead.
-		// Minimum 8MB to populate the 50K-line replay scrollback buffer.
-		needed := int64(scrollOffset+viewportHeight) * int64(ptyCols) * 3
-		if needed < 8*1024*1024 {
-			needed = 8 * 1024 * 1024
-		}
+		needed := replayRebuildReadSize(taskID, scrollOffset, viewportHeight, ptyCols, prevFirstByte)
 		// Use taskID parameter (not tp.taskID) to avoid data race with SetTaskID.
 		raw, logSize = readLogTailForTask(taskID, needed)
 	}
@@ -921,15 +1103,16 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	}
 
 	if len(raw) == 0 {
-		// Nothing to build — clear the building flag and trigger one redraw
-		// so Draw can fall through to the placeholder message instead of
-		// spinning up a new goroutine on every Draw call.
+		// Nothing to build. Set a short cooldown so the next Draw doesn't
+		// immediately re-kick another goroutine (defect 12) — the slow path
+		// gates on (now > replayNoDataUntil). Cooldown is brief so a session
+		// that's about to start producing output isn't blocked for long.
+		// Skip onDone: there's nothing new to repaint, and calling it would
+		// schedule another Draw that just re-enters this no-op path.
 		tp.mu.Lock()
 		tp.replayBuilding = false
+		tp.replayNoDataUntil = time.Now().Add(replayNoDataCooldown)
 		tp.mu.Unlock()
-		if onDone != nil {
-			onDone()
-		}
 		return
 	}
 
@@ -938,7 +1121,10 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
 		cursorVisible = visible
 	})
-	_, _ = SafeEmuWrite(emu, raw)
+	// Tail slices begin at arbitrary byte positions — see alignToEscBoundary
+	// (defect 4). Without this, partial CSI prefixes show up as orphan
+	// digits/punctuation at the top of the scrollback emulator.
+	_, _ = SafeEmuWrite(emu, alignToEscBoundary(raw))
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
@@ -974,6 +1160,16 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	tp.replayEmuBytes = uint64(len(raw))
 	tp.replayEmuCursorVisible = cursorVisible
 	tp.replayEmuMaxScroll = maxScroll
+	// firstByteOffset = logSize - bytes-fed. When we fed from the log,
+	// that's the position of the first byte in `raw`; when we fell back
+	// to the ring buffer (logSize=0), no monotonic clamp is possible and
+	// we leave the field at 0 (any prior log-backed build is invalidated
+	// by the dimension or session changes that drove this path).
+	if logSize > 0 {
+		tp.replayEmuFirstByte = logSize - int64(len(raw))
+	} else {
+		tp.replayEmuFirstByte = 0
+	}
 	tp.replayRebuildPending = true
 	tp.replayBuilding = false
 	tp.mu.Unlock()
@@ -1012,34 +1208,63 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
 		tp.emuRows = ptyRows
+		// Branch change: dropping the old emulator means tcell's per-cell
+		// diff cannot vouch for cells the new emu hasn't drawn over yet.
+		// Invalidate the paint cache so the next paintEmu rebuilds from
+		// scratch instead of replaying stale SetContent calls.
+		tp.paintCacheValid = false
 	}
 
 	newBytes := totalWritten - tp.emuFedTotal
 
 	if newBytes > 0 || needRebuild {
-		// Only copy the ring buffer when there are new bytes or a rebuild.
 		var raw []byte
 		if sess != nil {
 			raw = sess.RecentOutput()
 		}
-		if len(raw) == 0 {
-			if tp.emuFedTotal == 0 {
-				msg := "Waiting for output..."
-				widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
-				return
-			}
-			// Emulator already has content — just repaint below.
-			// Don't advance emuFedTotal: no bytes were actually fed.
-		} else if newBytes > uint64(len(raw)) || needRebuild {
-			// Ring buffer wrapped or dimensions changed — full replay.
+		// "Full replay" is required when the emulator was just rebuilt
+		// (dimension change) OR the ring wrapped past our last cursor —
+		// in either case the incremental tail in `raw` no longer aligns
+		// with what the emulator already parsed. Use the on-disk session
+		// log (up to 8MB) to give the new emu meaningful history instead
+		// of the ring's last 256KB sliver; without this, earlier status
+		// bars and framing the old emu had absorbed get re-emitted by
+		// the agent, producing stacked-status-bar artifacts at the
+		// bottom of the pane (defect 3).
+		fullReplay := needRebuild || newBytes > uint64(len(raw))
+		if fullReplay {
 			if !needRebuild {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+				tp.paintCacheValid = false
 			}
-			_, _ = SafeEmuWrite(tp.emu, raw)
-			tp.emuFedTotal = totalWritten
-		} else {
+			history, finalTotal := readLiveRebuildHistory(sess, tp.taskID)
+			if len(history) == 0 {
+				if tp.emuFedTotal == 0 {
+					msg := "Waiting for output..."
+					widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
+					return
+				}
+				// Emulator already has content — repaint below without
+				// advancing emuFedTotal (no bytes were fed).
+			} else {
+				// alignToEscBoundary skips any partial CSI/OSC prefix
+				// the log/ring tail may have started mid-sequence at,
+				// which x/vt would otherwise render as a smudge of
+				// orphan parameter bytes at the top of the screen
+				// (defect 4).
+				_, _ = SafeEmuWrite(tp.emu, alignToEscBoundary(history))
+				tp.emuFedTotal = finalTotal
+			}
+		} else if len(raw) > 0 {
+			// Incremental feed: the delta is contiguous with what the
+			// emulator has already parsed, so no ESC realignment is
+			// needed (parser state is already at the right boundary).
 			_, _ = SafeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
 			tp.emuFedTotal = totalWritten
+		} else if tp.emuFedTotal == 0 {
+			msg := "Waiting for output..."
+			widget.DrawText(screen, x+(w-len(msg))/2, y+h/2, w, msg, theme.StyleDimmed)
+			return
 		}
 	} else if tp.emuFedTotal == 0 {
 		// No data has ever arrived.
@@ -1104,7 +1329,11 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 	renderCols := min(emuCols, w)
 
 	// Pre-allocate cache for this paint. Reuse backing array when possible.
-	cacheSize := h * renderCols
+	// `+ scrollIndicatorCells` reserves room for the [SCROLL] indicator the
+	// scroll-mode branch appends after the row loop (defect 2 — otherwise
+	// every scroll-mode frame triggers a heap realloc past the h*renderCols
+	// preallocation).
+	cacheSize := h*renderCols + scrollIndicatorCells
 	if cap(tp.paintCacheCells) >= cacheSize {
 		tp.paintCacheCells = tp.paintCacheCells[:0]
 	} else {
@@ -1119,11 +1348,13 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 		startLine = 0
 	}
 
+	contentRows := 0
 	for screenRow := 0; screenRow < h; screenRow++ {
 		lineIdx := startLine + screenRow
 		if lineIdx > endLine {
 			break
 		}
+		contentRows = screenRow + 1
 
 		for col := 0; col < renderCols; col++ {
 			var cell *uv.Cell
@@ -1164,6 +1395,21 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 			sx, sy := x+col, y+screenRow
 			screen.SetContent(sx, sy, ch, nil, style)
 			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: ch, style: style})
+		}
+	}
+
+	// Blank any viewport rows below the last content row. paintEmu may be
+	// re-entered on a frame whose content is shorter than the previous
+	// frame's (e.g., agent cleared rows, scrollback shrank, dimension
+	// change reduced content height); without an explicit blank, tcell's
+	// per-cell diff retains the stale cells from the prior paint and the
+	// paint cache replay path serves them on the next keystroke redraw —
+	// the user sees ghost lines at the bottom of the pane (defect 6).
+	for screenRow := contentRows; screenRow < h; screenRow++ {
+		for col := 0; col < renderCols; col++ {
+			sx, sy := x+col, y+screenRow
+			screen.SetContent(sx, sy, ' ', nil, tcell.StyleDefault)
+			tp.paintCacheCells = append(tp.paintCacheCells, cachedCell{x: sx, y: sy, ch: ' ', style: tcell.StyleDefault})
 		}
 	}
 

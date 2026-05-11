@@ -950,6 +950,129 @@ func TestSession_ReadLoop_ManyWriters(t *testing.T) {
 	}
 }
 
+// TestSession_AddWriterFromTolerant_PartialReplay verifies the gap-tolerant
+// offset-aware writer attaches with replay of [offset..currentTotal) only.
+// Mirrors AddWriterFrom_PartialReplay but exercises the no-lock-held variant
+// used by the daemon stream for net.Conn writers.
+func TestSession_AddWriterFromTolerant_PartialReplay(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf 'aaaaaaaa'; sleep 0.5; printf 'bbbbbbbb'")
+	sess, err := StartSession("awft-partial", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 8, 3*time.Second)
+
+	currentTotal := sess.TotalWritten()
+	var buf syncBuffer
+	sess.AddWriterFromTolerant(&buf, currentTotal-4)
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 12 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "aaaa") {
+		t.Errorf("missing 4-byte replay tail of first burst: %q", got)
+	}
+	if strings.Count(got, "a") > 4 {
+		t.Errorf("too many 'a' chars; replay should be exactly 4: %q", got)
+	}
+	if !strings.Contains(got, "bbbbbbbb") {
+		t.Errorf("missing live bytes from second burst: %q", got)
+	}
+}
+
+// TestSession_AddWriterFromTolerant_NoReplayWhenCaughtUp verifies the
+// caught-up case skips replay entirely.
+func TestSession_AddWriterFromTolerant_NoReplayWhenCaughtUp(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf 'aaaaaaaa'; sleep 0.5; printf 'bbbbbbbb'")
+	sess, err := StartSession("awft-caught-up", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 8, 3*time.Second)
+
+	var buf syncBuffer
+	sess.AddWriterFromTolerant(&buf, sess.TotalWritten())
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 8 {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "aaaa") {
+		t.Errorf("got 'aaaa' replay despite caught-up offset: %q", got)
+	}
+	if !strings.Contains(got, "bbbbbbbb") {
+		t.Errorf("missing live bytes from second burst: %q", got)
+	}
+}
+
+// TestSession_AddWriterFromTolerant_FullReplayAtZero verifies offset=0 replays
+// the full ring (legacy AddWriter behaviour).
+func TestSession_AddWriterFromTolerant_FullReplayAtZero(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf 'helloworld'; sleep 0.3")
+	sess, err := StartSession("awft-zero", cmd, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Stop() //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 10, 3*time.Second)
+
+	var buf syncBuffer
+	sess.AddWriterFromTolerant(&buf, 0)
+
+	select {
+	case <-sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for sh to exit")
+	}
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) && buf.Len() < 10 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(buf.String(), "helloworld") {
+		t.Errorf("offset=0 should replay full ring: got %q", buf.String())
+	}
+}
+
+// TestSession_AddWriterFromTolerant_WriteError verifies the writer is NOT
+// registered when the replay Write fails.
+func TestSession_AddWriterFromTolerant_WriteError(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf 'hello world'; sleep 0.3")
+	sess, err := StartSession("awft-err", cmd, 24, 80)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { sess.Stop() }) //nolint:errcheck
+
+	waitForTotalAtLeast(t, sess, 11, 3*time.Second)
+
+	sess.AddWriterFromTolerant(errorWriter{}, 0)
+
+	sess.mu.Lock()
+	writerCount := len(sess.writers)
+	sess.mu.Unlock()
+	if writerCount != 0 {
+		t.Errorf("AddWriterFromTolerant should not register writer that failed replay; got %d", writerCount)
+	}
+}
+
 // TestSession_AddWriterFrom_WriteError exercises the early-return on writer
 // Write error during replay.
 func TestSession_AddWriterFrom_WriteError(t *testing.T) {

@@ -94,19 +94,20 @@ func (s *fakeSession) RecentOutputTail(int) []byte    { return nil }
 func (s *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }
-func (s *fakeSession) TotalWritten() uint64            { return 0 }
-func (s *fakeSession) IsIdle() bool                    { return false }
-func (s *fakeSession) LastInput() time.Time            { return time.Time{} }
-func (s *fakeSession) Alive() bool                     { return true }
-func (s *fakeSession) PTYSize() (int, int)             { return 80, 24 }
-func (s *fakeSession) InitialPTYSize() (int, int)      { return 80, 24 }
-func (s *fakeSession) Done() <-chan struct{}           { ch := make(chan struct{}); return ch }
-func (s *fakeSession) Err() error                      { return nil }
-func (s *fakeSession) WorkDir() string                 { return "" }
-func (s *fakeSession) Stop() error                     { return nil }
-func (s *fakeSession) AddWriter(io.Writer)             {}
-func (s *fakeSession) AddWriterFrom(io.Writer, uint64) {}
-func (s *fakeSession) RemoveWriter(io.Writer)          {}
+func (s *fakeSession) TotalWritten() uint64                    { return 0 }
+func (s *fakeSession) IsIdle() bool                            { return false }
+func (s *fakeSession) LastInput() time.Time                    { return time.Time{} }
+func (s *fakeSession) Alive() bool                             { return true }
+func (s *fakeSession) PTYSize() (int, int)                     { return 80, 24 }
+func (s *fakeSession) InitialPTYSize() (int, int)              { return 80, 24 }
+func (s *fakeSession) Done() <-chan struct{}                   { ch := make(chan struct{}); return ch }
+func (s *fakeSession) Err() error                              { return nil }
+func (s *fakeSession) WorkDir() string                         { return "" }
+func (s *fakeSession) Stop() error                             { return nil }
+func (s *fakeSession) AddWriter(io.Writer)                     {}
+func (s *fakeSession) AddWriterFrom(io.Writer, uint64)         {}
+func (s *fakeSession) AddWriterFromTolerant(io.Writer, uint64) {}
+func (s *fakeSession) RemoveWriter(io.Writer)                  {}
 
 // hookLog records the order of pre/post/unwind hook invocations so tests can
 // assert sequencing.

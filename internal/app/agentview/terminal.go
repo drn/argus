@@ -20,6 +20,14 @@ type TerminalAdapter interface {
 	// RecentOutputTail returns the last n bytes from the ring buffer.
 	RecentOutputTail(n int) []byte
 
+	// RecentOutputTailWithTotal returns the last n bytes AND the high-water
+	// mark TotalWritten() in a single locked snapshot. Used by the live
+	// emulator rebuild path to merge in-memory ring tail bytes with on-disk
+	// session log content without race-induced duplication or gaps —
+	// reading tail and total separately lets readLoop advance total past
+	// the bytes in tail, leaving an inconsistent pair.
+	RecentOutputTailWithTotal(n int) (tail []byte, total uint64)
+
 	// TotalWritten returns the monotonic byte count written to the ring buffer.
 	// Used to detect new output without copying the buffer.
 	TotalWritten() uint64

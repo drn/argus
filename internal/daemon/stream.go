@@ -61,12 +61,16 @@ func (d *Daemon) handleStream(conn net.Conn) {
 		return
 	}
 
-	slog.Info("stream connected", "task", header.TaskID)
+	slog.Info("stream connected", "task", header.TaskID, "since", header.Since)
 	d.registerStream(header.TaskID, conn)
 	defer d.unregisterStream(header.TaskID, conn)
 
-	// AddWriter replays the ring buffer and registers for live output.
-	sess.AddWriter(conn)
+	// AddWriterFromTolerant replays only [Since, currentTotal) before attaching
+	// live — reconnects whose client ring already contains bytes ≤ Since don't
+	// see the daemon ring replayed on top. Tolerant variant: conn.Write may
+	// block on kernel socket flow control, so the replay runs outside the
+	// session mutex (accepting a tiny gap rather than stalling readLoop).
+	sess.AddWriterFromTolerant(conn, header.Since)
 	defer sess.RemoveWriter(conn)
 
 	// Block until the session exits or the client disconnects.

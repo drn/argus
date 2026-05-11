@@ -13,7 +13,14 @@ package agent
 
 // RerenderMargin is the minimum |panelCols - initCols| required to trigger a
 // kick. Smaller deltas aren't worth the visual hiccup of a kill+resume.
-const RerenderMargin = 30
+//
+// Tightened from 30→15 with defect 3 (live emulator rebuild reads up to 8MB
+// from the on-disk log instead of the 256KB ring): a sub-margin width change
+// no longer corrupts scrollback through history loss, but the live agent's
+// own rewrap of its conversation summary still benefits from a kick at
+// moderate deltas — 15 cols is the smallest delta that meaningfully shifts
+// claude-code's status-bar layout.
+const RerenderMargin = 15
 
 // RerenderDecision is the outcome of ShouldKickRerender.
 type RerenderDecision int

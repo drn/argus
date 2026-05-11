@@ -233,6 +233,11 @@ func (rs *RemoteSession) AddWriter(_ io.Writer) {}
 // stall, and `w` is never invoked. Exists only to satisfy SessionHandle.
 func (rs *RemoteSession) AddWriterFrom(_ io.Writer, _ uint64) {}
 
+// AddWriterFromTolerant is a no-op on RemoteSession — same reasoning as
+// AddWriterFrom. Daemon-side streaming is the only path that actually
+// fans bytes; this exists only to satisfy SessionHandle.
+func (rs *RemoteSession) AddWriterFromTolerant(_ io.Writer, _ uint64) {}
+
 // RemoveWriter is a no-op on RemoteSession.
 func (rs *RemoteSession) RemoveWriter(_ io.Writer) {}
 

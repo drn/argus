@@ -115,9 +115,15 @@ func (rs *RemoteSession) streamOnce(sockPath string) (processExited, daemonDown 
 	}
 
 	// Send stream header to subscribe to this session's output.
+	// Pass TotalWritten() so the daemon replays only the missed delta on
+	// reconnects — on the first attach this is 0 (full replay). On retries
+	// (network blip, daemon kick-restart gap, retry budget) it skips bytes
+	// already written to rs.buf, preventing duplicate content from being
+	// re-emulated by x/vt (e.g., a stale status bar bake-in).
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(daemon.StreamHeader{
 		TaskID: rs.taskID,
+		Since:  rs.buf.TotalWritten(),
 	}); err != nil {
 		uxlog.Log("stream: ENCODE HEADER FAILED task=%s err=%v", rs.taskID, err)
 		alive, reachable := rs.isSessionAlive()

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"net"
 	"net/rpc"
 	"os"
@@ -384,6 +385,67 @@ func TestDaemon_HandleStream(t *testing.T) {
 	regOK := len(d.streams) <= 1 // either still registered or already cleaned up
 	d.mu.Unlock()
 	testutil.True(t, regOK)
+}
+
+// TestD_StreamSince verifies defect 1: a reconnect with Since ==
+// currentTotal must NOT receive a duplicate replay of bytes the client
+// already has in its local ring. Before the fix, every stream attach
+// replayed the full daemon ring on top. (Short name — macOS 104-byte
+// socket path limit.)
+func TestD_StreamSince(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	// Print a known prefix, then sleep so the test can observe the gap.
+	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "bash -c 'echo first-burst; sleep 2; echo second-burst'"}))
+	testutil.NoError(t, d.db.SetConfigValue("default.backend", "test"))
+
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	c := dialRPC(t, sockPath)
+	wt := t.TempDir()
+	var startResp StartResp
+	testutil.NoError(t, c.Call("Daemon.StartSession", &StartReq{
+		TaskID:   "t-since",
+		Backend:  "test",
+		Worktree: wt,
+		Rows:     24, Cols: 80,
+	}, &startResp))
+	testutil.Equal(t, startResp.Error, "")
+
+	// First attach: capture the first burst and the daemon's current total.
+	conn1 := dialStreamSince(t, sockPath, "t-since", 0)
+	_ = conn1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4096)
+	n, _ := conn1.Read(buf)
+	testutil.Contains(t, string(buf[:n]), "first-burst")
+	// Snapshot total seen by the client at attach time.
+	var status SessionInfo
+	testutil.NoError(t, c.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "t-since"}, &status))
+	firstAttachTotal := status.TotalWritten
+	_ = conn1.Close()
+
+	// Reconnect with Since = firstAttachTotal. Replay should be EMPTY
+	// for any byte ≤ firstAttachTotal; only bytes that arrived after the
+	// snapshot (the second burst) should appear.
+	conn2 := dialStreamSince(t, sockPath, "t-since", firstAttachTotal)
+	_ = conn2.SetReadDeadline(time.Now().Add(4 * time.Second))
+	var collected []byte
+	for {
+		n2, err := conn2.Read(buf)
+		if n2 > 0 {
+			collected = append(collected, buf[:n2]...)
+		}
+		if err != nil {
+			break
+		}
+		if len(collected) > 256 {
+			break
+		}
+	}
+	if bytes.Contains(collected, []byte("first-burst")) {
+		t.Errorf("reconnect with Since=%d replayed first-burst; should skip bytes already received: got %q", firstAttachTotal, collected)
+	}
 }
 
 // TestDaemon_HandleStream_NoSession exercises the "session not found" branch

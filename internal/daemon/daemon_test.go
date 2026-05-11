@@ -47,6 +47,13 @@ func dialRPC(t *testing.T, sockPath string) *rpc.Client {
 
 func dialStream(t *testing.T, sockPath string, taskID string) net.Conn {
 	t.Helper()
+	return dialStreamSince(t, sockPath, taskID, 0)
+}
+
+// dialStreamSince attaches with a Since offset so the daemon replays only
+// [Since, currentTotal). Mirrors the TUI client's reconnect path (defect 1).
+func dialStreamSince(t *testing.T, sockPath string, taskID string, since uint64) net.Conn {
+	t.Helper()
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		t.Fatalf("dial stream: %v", err)
@@ -55,7 +62,7 @@ func dialStream(t *testing.T, sockPath string, taskID string) net.Conn {
 	conn.Write([]byte("S"))
 	// Send stream header.
 	enc := json.NewEncoder(conn)
-	if err := enc.Encode(StreamHeader{TaskID: taskID}); err != nil {
+	if err := enc.Encode(StreamHeader{TaskID: taskID, Since: since}); err != nil {
 		conn.Close()
 		t.Fatalf("encode header: %v", err)
 	}

@@ -299,6 +299,56 @@ func (s *Session) AddWriterFrom(w io.Writer, offset uint64) {
 	s.writers = append(s.writers, w)
 }
 
+// AddWriterFromTolerant is the offset-aware analog of AddWriter — it replays
+// [offset..currentTotal) outside the session mutex, then re-acquires the
+// mutex to append w to the writer set. Like AddWriter, the snapshot-then-
+// attach window may drop a small number of bytes readLoop writes during
+// the replay (gap rather than duplicate). Unlike AddWriterFrom, w.Write
+// MAY block — the replay runs without s.mu, so a slow writer cannot stall
+// readLoop or any caller that takes s.mu.
+//
+// Use this for net.Conn-backed writers (e.g., the daemon's stream socket)
+// whose Write may block on kernel socket flow control. Use AddWriterFrom
+// for non-blocking writers that require gap-free delivery (e.g., the API's
+// channelWriter with drop-on-full).
+//
+// `offset` is the monotonic byte position the caller has already received.
+// Zero replays the full ring (matches AddWriter). Values older than the
+// ring's retention window replay the full ring and accept a gap (caller
+// already had the missing bytes, since `offset` predates the oldest byte
+// the daemon still holds — a torn cursor is preferable to a stall).
+// Values ≥ currentTotal skip replay and just attach for live output.
+func (s *Session) AddWriterFromTolerant(w io.Writer, offset uint64) {
+	s.mu.Lock()
+	currentTotal := s.buf.TotalWritten()
+	var replay []byte
+	if offset < currentTotal {
+		gap := currentTotal - offset
+		// Len() returns int but is always >= 0; the conversion is safe.
+		if gap > uint64(s.buf.Len()) { //nolint:gosec // Len() is non-negative
+			// Caller's offset predates the ring's earliest retained byte.
+			// Best effort: replay the full ring (some bytes will be missing
+			// between the caller's prior end and ours — readers tolerate it).
+			replay = s.buf.Bytes()
+		} else {
+			replay = s.buf.Tail(int(gap)) //nolint:gosec // gap <= Len() per branch guard
+		}
+	}
+	s.mu.Unlock()
+
+	// Replay outside the lock so a slow w.Write does not stall readLoop's
+	// snapshot/append cycle. Mirrors AddWriter's tolerance pattern.
+	if len(replay) > 0 {
+		if _, err := w.Write(replay); err != nil {
+			return
+		}
+	}
+
+	s.mu.Lock()
+	s.writers = append(s.writers, w)
+	s.mu.Unlock()
+}
+
 // RemoveWriter unregisters a writer. Safe to call concurrently.
 func (s *Session) RemoveWriter(w io.Writer) {
 	s.mu.Lock()

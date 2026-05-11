@@ -66,25 +66,26 @@ func TestShouldKickRerender(t *testing.T) {
 		},
 		{
 			// Margin guard: panel only barely wider than init. Disrupting
-			// the agent isn't worth a tiny gain.
+			// the agent isn't worth a tiny gain. With RerenderMargin=15,
+			// delta=10 is under the floor.
 			name:         "skip when delta too thin (widening)",
-			hasSessionID: true, initCols: 50, panelCols: 70, idle: true,
+			hasSessionID: true, initCols: 50, panelCols: 60, idle: true,
 			want: RerenderSkip,
 		},
 		{
 			// Same margin guard in the narrowing direction.
 			name:         "skip when delta too thin (narrowing)",
-			hasSessionID: true, initCols: 100, panelCols: 80, idle: true,
+			hasSessionID: true, initCols: 100, panelCols: 90, idle: true,
 			want: RerenderSkip,
 		},
 		{
 			name:         "kick at exact margin floor (widening)",
-			hasSessionID: true, initCols: 50, panelCols: 80, idle: true,
+			hasSessionID: true, initCols: 50, panelCols: 65, idle: true,
 			want: RerenderKick,
 		},
 		{
 			name:         "kick at exact margin floor (narrowing)",
-			hasSessionID: true, initCols: 110, panelCols: 80, idle: true,
+			hasSessionID: true, initCols: 95, panelCols: 80, idle: true,
 			want: RerenderKick,
 		},
 		{
@@ -114,10 +115,10 @@ func TestMarginExceedsRerenderThreshold(t *testing.T) {
 		{"unknown init treated as sane", 0, 200, false},
 		{"negative init treated as sane", -1, 200, false},
 		{"identical widths", 120, 120, false},
-		{"sub-margin widening", 100, 120, false},
-		{"sub-margin narrowing", 120, 100, false},
-		{"exact margin widening", 50, 80, true},
-		{"exact margin narrowing", 110, 80, true},
+		{"sub-margin widening", 100, 110, false},
+		{"sub-margin narrowing", 110, 100, false},
+		{"exact margin widening", 50, 65, true},
+		{"exact margin narrowing", 95, 80, true},
 		{"large widening", 20, 200, true},
 		{"large narrowing", 200, 60, true},
 	}

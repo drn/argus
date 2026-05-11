@@ -70,9 +70,15 @@ type ResizeReq struct {
 }
 
 // StreamHeader is sent by the client on a stream connection to subscribe
-// to a session's output.
+// to a session's output. Since is the monotonic byte offset the client has
+// already received; the daemon replays only [Since, currentTotal) from the
+// session ring buffer before attaching live. Zero replays the full ring
+// (legacy AddWriter behaviour) and matches the first attach. Set on every
+// reconnect to TotalWritten() at attach time so retries don't duplicate
+// bytes already in the client's local ring.
 type StreamHeader struct {
 	TaskID string `json:"task_id"`
+	Since  uint64 `json:"since,omitempty"`
 }
 
 // ListResp is the RPC response for listing all sessions.

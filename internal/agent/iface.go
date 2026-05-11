@@ -95,6 +95,12 @@ type SessionHandle interface {
 	// overlap. w.Write MUST be non-blocking (e.g., buffered channel send
 	// with select-default) — see Session.AddWriterFrom for the rationale.
 	AddWriterFrom(w io.Writer, offset uint64)
+	// AddWriterFromTolerant is the offset-aware analog of AddWriter — replays
+	// [offset..currentTotal) without holding the session mutex, accepting a
+	// small gap (rather than a duplicate) if readLoop writes concurrently
+	// during the replay window. w.Write MAY block — used by the daemon's
+	// stream socket where conn.Write blocks on kernel flow control.
+	AddWriterFromTolerant(w io.Writer, offset uint64)
 	RemoveWriter(w io.Writer)
 }
 

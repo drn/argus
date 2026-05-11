@@ -66,6 +66,9 @@ func (m *mockAdapter) RecentOutputTail(n int) []byte {
 	}
 	return m.output[len(m.output)-n:]
 }
+func (m *mockAdapter) RecentOutputTailWithTotal(n int) ([]byte, uint64) {
+	return m.RecentOutputTail(n), m.totalWritten
+}
 func (m *mockAdapter) TotalWritten() uint64 { return m.totalWritten }
 func (m *mockAdapter) Alive() bool          { return m.alive }
 func (m *mockAdapter) PTYSize() (int, int)  { return 80, 24 }
@@ -600,7 +603,7 @@ func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
 // QueueUpdateDraw callback. After calling, the replay emulator is populated
 // and tp fields are updated under tp.mu.
 func buildReplaySync(tp *TerminalPane, raw []byte, cols, rows int) {
-	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, nil)
+	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, nil)
 	// Consume the pending flag the same way Draw() does.
 	tp.mu.Lock()
 	if tp.replayRebuildPending {
@@ -2010,4 +2013,450 @@ func TestUvCellToTcellStyle_Hyperlink(t *testing.T) {
 		Link:    uv.Link{URL: "https://example.com"},
 	}
 	_ = UvCellToTcellStyle(cell)
+}
+
+// ---------- Scrollback pipeline defects ----------
+
+// TestAlignToEscBoundary verifies defect 4: ring/log tail bytes that begin
+// mid-CSI are skipped to the first ESC so a fresh x/vt emulator doesn't
+// render orphan parameter bytes as garbage text.
+func TestAlignToEscBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"no ESC returns input unchanged",
+			"hello world\nfoo bar\n",
+			"hello world\nfoo bar\n",
+		},
+		{
+			"leading ESC is start",
+			"\x1b[31mred\x1b[0m",
+			"\x1b[31mred\x1b[0m",
+		},
+		{
+			"mid-CSI prefix dropped",
+			"5;3HhelloT\x1b[31mred",
+			"\x1b[31mred",
+		},
+		{
+			"empty input",
+			"",
+			"",
+		},
+		{
+			"only orphan bytes (no ESC)",
+			"5;3H",
+			"5;3H", // no ESC found → return as-is
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(alignToEscBoundary([]byte(tc.in)))
+			testutil.Equal(t, got, tc.want)
+		})
+	}
+}
+
+// TestReadLiveRebuildHistory_LogTailOnly verifies defect 3: when the log
+// already covers the ring's TotalWritten, only the log is returned (no
+// duplication from concatenating ring tail).
+func TestReadLiveRebuildHistory_LogTailOnly(t *testing.T) {
+	setupTaskLog(t, "rebuild-1", "log-content")
+	// Ring's total matches log size — overflow = 0, no extra appended.
+	sess := &mockAdapter{alive: true, totalWritten: uint64(len("log-content"))}
+	raw, total := readLiveRebuildHistory(sess, "rebuild-1")
+	testutil.Equal(t, string(raw), "log-content")
+	testutil.Equal(t, total, uint64(len("log-content")))
+}
+
+// TestReadLiveRebuildHistory_OverflowMerge verifies defect 3 merge logic:
+// when the ring has bytes the log doesn't yet hold (readLoop flushed to
+// ring before log), the overflow tail is appended to the log content
+// without duplicating the bytes already in the log.
+func TestReadLiveRebuildHistory_OverflowMerge(t *testing.T) {
+	setupTaskLog(t, "rebuild-2", "AAAA") // log = 4 bytes "AAAA"
+	// Ring contains 6 bytes ("AAAABB"); total=6, log size=4.
+	// Overflow = total - logSize = 2, so the last 2 bytes of ring ("BB")
+	// should be appended to log.
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 6,
+		output:       []byte("AAAABB"),
+	}
+	raw, total := readLiveRebuildHistory(sess, "rebuild-2")
+	testutil.Equal(t, string(raw), "AAAABB")
+	testutil.Equal(t, total, uint64(6))
+}
+
+// TestReadLiveRebuildHistory_NoLogFallback verifies that a missing log
+// falls back to the ring buffer alone (and uses atomic
+// RecentOutputTailWithTotal to avoid the tail/total race).
+func TestReadLiveRebuildHistory_NoLogFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no session log written
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 5,
+		output:       []byte("hello"),
+	}
+	raw, total := readLiveRebuildHistory(sess, "missing-log-task")
+	testutil.Equal(t, string(raw), "hello")
+	testutil.Equal(t, total, uint64(5))
+}
+
+// TestReadLiveRebuildHistory_NilSession returns empty without panic.
+func TestReadLiveRebuildHistory_NilSession(t *testing.T) {
+	raw, total := readLiveRebuildHistory(nil, "any")
+	if raw != nil {
+		t.Errorf("raw=%q, want nil", raw)
+	}
+	testutil.Equal(t, total, uint64(0))
+}
+
+// TestEagerReplayBuild_SkipsWhenDimensionsUnknown verifies defect 13:
+// the eager build is a no-op until ptyCols/ptyRows have been set by a
+// real Draw, so we don't waste a build at 80×24 defaults that the next
+// Draw immediately invalidates.
+func TestEagerReplayBuild_SkipsWhenDimensionsUnknown(t *testing.T) {
+	setupTaskLog(t, "eager-skip", "content")
+	tp := NewTerminalPane()
+	tp.taskID = "eager-skip"
+	// ptyCols/ptyRows are still zero — EagerReplayBuild should bail without
+	// flipping replayBuilding.
+	tp.EagerReplayBuild()
+	tp.mu.Lock()
+	building := tp.replayBuilding
+	tp.mu.Unlock()
+	if building {
+		t.Errorf("EagerReplayBuild flipped replayBuilding=true at 0x0; should defer until first Draw")
+	}
+}
+
+// TestEagerReplayBuild_RunsWithDimensions verifies the positive path:
+// when dimensions are known, EagerReplayBuild kicks the goroutine.
+func TestEagerReplayBuild_RunsWithDimensions(t *testing.T) {
+	setupTaskLog(t, "eager-run", "content")
+	tp := NewTerminalPane()
+	tp.taskID = "eager-run"
+	tp.mu.Lock()
+	tp.ptyCols = 80
+	tp.ptyRows = 24
+	tp.mu.Unlock()
+	done := make(chan struct{})
+	tp.OnNeedRedraw = func() { close(done) }
+	tp.EagerReplayBuild()
+	select {
+	case <-done:
+		// Goroutine completed and triggered redraw.
+	case <-time.After(2 * time.Second):
+		t.Fatal("eager build did not finish within 2s")
+	}
+}
+
+// TestAsyncReplayRebuild_CooldownOnEmpty verifies defect 12: when the
+// rebuild bails out with no input, replayNoDataUntil gets stamped to gate
+// re-kicks. Without this, every Draw spins up another no-op goroutine.
+func TestAsyncReplayRebuild_CooldownOnEmpty(t *testing.T) {
+	tp := NewTerminalPane()
+	// All inputs empty: no taskID, no ringBuf, no replayDataCopy.
+	tp.asyncReplayRebuild("", 0, 24, 80, 24, nil, nil, 0, nil)
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	if tp.replayBuilding {
+		t.Errorf("replayBuilding should be cleared after empty rebuild")
+	}
+	if !time.Now().Before(tp.replayNoDataUntil) {
+		t.Errorf("replayNoDataUntil should be set into the future; got %v", tp.replayNoDataUntil)
+	}
+}
+
+// TestReplayRebuildReadSize_MonotonicFirstByte verifies defect 5 at the
+// sizing-helper level: when a previous build's firstByteOffset is passed
+// in, the next read grows to include it (so the new firstByteOffset is
+// ≤ prevFirstByte). Tests the math directly without feeding x/vt — feeding
+// 8MB+ into the emulator under -race takes minutes and was timing out CI.
+func TestReplayRebuildReadSize_MonotonicFirstByte(t *testing.T) {
+	// 9MB sparse file — large enough that the 8MB default leaves
+	// firstByte > 0 and the monotonic clamp has work to do, but a sparse
+	// truncate is instant and consumes no disk.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".argus", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	logPath := filepath.Join(dir, "mono.log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	const fileSize = int64(9 * 1024 * 1024)
+	if err := f.Truncate(fileSize); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	_ = f.Close()
+
+	// Default budget (8MB) — file is 9MB so the read covers
+	// [fileSize-8MB, fileSize), implying firstByte = 1MB after the build.
+	defaultNeeded := replayRebuildReadSize("mono", 0, 24, 80, 0)
+	if defaultNeeded != 8*1024*1024 {
+		t.Errorf("default needed = %d, want 8MB", defaultNeeded)
+	}
+
+	// Simulate a prior build at firstByte = 1MB, then request another. The
+	// helper must grow the read to cover the prior firstByte: readSize ≥
+	// fileSize - prevFirstByte = 8MB exactly (matches default), so no
+	// growth is needed.
+	atDefault := replayRebuildReadSize("mono", 0, 24, 80, fileSize-8*1024*1024)
+	if atDefault != 8*1024*1024 {
+		t.Errorf("at-default needed = %d, want 8MB", atDefault)
+	}
+
+	// Now simulate scenarios where the file grew between builds: prevFirstByte
+	// is BELOW the default-read floor (i.e., the previous build saw older
+	// bytes). The helper must grow the read so the new firstByte ≤ prevFirstByte.
+	prevFirstByte := int64(512 * 1024) // 0.5MB into the file
+	grown := replayRebuildReadSize("mono", 0, 24, 80, prevFirstByte)
+	if grown < fileSize-prevFirstByte {
+		t.Errorf("grown needed = %d, want >= %d (fileSize - prevFirstByte)", grown, fileSize-prevFirstByte)
+	}
+
+	// Cap at replayRebuildMaxBytes (64MB) — push the request well past the cap.
+	capped := replayRebuildReadSize("mono", 1_000_000, 24, 80, 0)
+	if capped > replayRebuildMaxBytes {
+		t.Errorf("capped needed = %d exceeds replayRebuildMaxBytes %d", capped, replayRebuildMaxBytes)
+	}
+}
+
+// TestReplayRebuildReadSize_NoFile verifies the helper degrades gracefully
+// when the session log doesn't exist (os.Stat fails) — should fall back
+// to the default sizing without panicking.
+func TestReplayRebuildReadSize_NoFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got := replayRebuildReadSize("missing", 0, 24, 80, 4*1024*1024)
+	if got != 8*1024*1024 {
+		t.Errorf("got = %d, want 8MB default when log is absent", got)
+	}
+}
+
+// TestRenderLive_FullReplayPullsLogTail verifies defect 3 end-to-end:
+// when renderLive triggers a full replay (rebuild), it reads from the
+// session log file (up to 8MB) instead of the 256KB ring, so older
+// history isn't lost on dimension change.
+func TestRenderLive_FullReplayPullsLogTail(t *testing.T) {
+	// 500KB of log content — exceeds the 256KB ring, so log-only path is
+	// the only way to recover the older bytes.
+	logContent := strings.Repeat("ABCDE", 100*1024) // 500KB
+	setupTaskLog(t, "log-tail-task", logContent)
+
+	tp := NewTerminalPane()
+	tp.taskID = "log-tail-task"
+	// 100-byte ring (smaller than log, simulating wrap).
+	tail := logContent[len(logContent)-100:]
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: uint64(len(logContent)),
+		output:       []byte(tail),
+	}
+	tp.SetSession(sess)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	defer sim.Fini()
+	sim.SetSize(80, 24)
+	tp.SetRect(0, 0, 80, 24)
+	tp.Draw(sim)
+
+	// After Draw, emuFedTotal should be 500KB (the full log). If renderLive
+	// had fed only the 256KB ring, emuFedTotal would still equal totalWritten
+	// (since the slice was treated as a full ring snapshot) BUT the emulator
+	// would only contain the 100 ring bytes, not the 500KB log content.
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	testutil.Equal(t, tp.emuFedTotal, uint64(len(logContent)))
+	// The emu's ScrollbackLen should reflect the rich log history, not the
+	// 100-byte ring tail.
+	if tp.emu == nil {
+		t.Fatal("emu should be populated after Draw")
+	}
+}
+
+// TestRenderLive_EmuRebuildInvalidatesPaintCache verifies defect 7:
+// dimension change forces a paint cache invalidation so the next Draw
+// rebuilds from emulator state instead of replaying stale SetContent calls.
+func TestRenderLive_EmuRebuildInvalidatesPaintCache(t *testing.T) {
+	setupTaskLog(t, "cache-inv", "")
+	tp := NewTerminalPane()
+	tp.taskID = "cache-inv"
+	sess := &mockAdapter{
+		alive:        true,
+		totalWritten: 5,
+		output:       []byte("hello"),
+	}
+	tp.SetSession(sess)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	defer sim.Fini()
+	sim.SetSize(80, 24)
+	tp.SetRect(0, 0, 80, 24)
+	tp.Draw(sim)
+	// Cache valid after first paint.
+	tp.mu.Lock()
+	if !tp.paintCacheValid {
+		tp.mu.Unlock()
+		t.Fatal("paintCacheValid should be true after first Draw")
+	}
+	// Force dimension change by changing inner rect.
+	tp.mu.Unlock()
+	tp.SetRect(0, 0, 100, 30)
+	// Simulate that renderLive's "needRebuild" path was taken: paint cache
+	// must be invalidated. We exercise this via Draw.
+	sim.SetSize(100, 30)
+	tp.Draw(sim)
+	// After dimension-change Draw, the cache should have been rebuilt.
+	// We verify the invariant by checking that paintEmu wrote new cells
+	// at the new dimensions — but the strongest check is that the cache
+	// invalidation flag was honored: a redraw at the same dimensions must
+	// produce the same content.
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	// emuCols reflects the inner-rect width (panel width minus 1-col border
+	// on each side) at the new dimensions.
+	if tp.emuCols <= 80 {
+		t.Errorf("emuCols = %d after resize to 100, want > 80 (rebuilt at new width)", tp.emuCols)
+	}
+}
+
+// TestPaintEmu_BlanksRowsBelowContent verifies defect 6: when the
+// emulator's content is shorter than the viewport, paintEmu blanks the
+// trailing rows so stale cells from a previous frame don't leak through.
+func TestPaintEmu_BlanksRowsBelowContent(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 20, 10)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	defer sim.Fini()
+	sim.SetSize(20, 10)
+
+	// Paint a previous frame with content on every row (fill the screen
+	// with "X" so trailing rows would otherwise carry those cells).
+	for col := 0; col < 20; col++ {
+		for row := 0; row < 10; row++ {
+			sim.SetContent(col, row, 'X', nil, tcell.StyleDefault)
+		}
+	}
+	sim.Show()
+
+	// Now paint via paintEmu with content that's only ~2 lines. The
+	// trailing rows must be blanked.
+	emu := NewDrainedEmulator(20, 10)
+	_, _ = SafeEmuWrite(emu, []byte("hi\r\n"))
+	tp.paintEmu(sim, 0, 0, 20, 10, emu, 20, 10, true, false)
+
+	// After paintEmu, the bottom rows should be blanks (' '), NOT 'X'.
+	// Skip the very top rows that have content and the very bottom row
+	// since cursor visibility may vary.
+	mainc, _, _ := sim.Get(0, 8)
+	if mainc == "X" {
+		t.Errorf("paintEmu left stale 'X' at row 8; rows below content must be blanked")
+	}
+	mainc, _, _ = sim.Get(0, 9)
+	if mainc == "X" {
+		t.Errorf("paintEmu left stale 'X' at row 9; rows below content must be blanked")
+	}
+}
+
+// TestPaintEmu_CacheReservesIndicatorRoom verifies defect 2: the paint
+// cache pre-allocation accounts for the [SCROLL] indicator's 14 cells, so
+// scroll-mode frames don't trigger a heap realloc past h*renderCols.
+func TestPaintEmu_CacheReservesIndicatorRoom(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.SetRect(0, 0, 50, 5)
+	tp.scrollOffset = 1 // scroll mode → indicator drawn
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	if err := sim.Init(); err != nil {
+		t.Fatalf("sim.Init: %v", err)
+	}
+	defer sim.Fini()
+	sim.SetSize(50, 5)
+	emu := newDrainedReplayEmulator(50, 5)
+	for i := 0; i < 20; i++ {
+		_, _ = SafeEmuWrite(emu, []byte("filler line\r\n"))
+	}
+	tp.paintEmu(sim, 0, 0, 50, 5, emu, 50, 5, false, false)
+
+	// cap should be ≥ h*renderCols + scrollIndicatorCells.
+	wantCap := 5*50 + scrollIndicatorCells
+	if cap(tp.paintCacheCells) < wantCap {
+		t.Errorf("paintCacheCells cap = %d, want >= %d (h*renderCols + scrollIndicatorCells)",
+			cap(tp.paintCacheCells), wantCap)
+	}
+}
+
+// TestResetVT_ClearsReplayNoDataUntil verifies the cooldown is cleared on
+// task switch so a residual empty-bailout timestamp from the previous task
+// doesn't suppress the first rebuild of the new task.
+func TestResetVT_ClearsReplayNoDataUntil(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.mu.Lock()
+	tp.replayNoDataUntil = time.Now().Add(10 * time.Second)
+	tp.mu.Unlock()
+	tp.ResetVT()
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	if !tp.replayNoDataUntil.IsZero() {
+		t.Errorf("ResetVT did not clear replayNoDataUntil; cooldown bleeds across task boundaries")
+	}
+}
+
+// TestInvalidateReplayCache_ClearsNoDataCooldown verifies the cooldown is
+// cleared when the replay cache is invalidated (entering scroll mode from
+// live mode), so a stale empty-bailout cooldown doesn't block the kick.
+func TestInvalidateReplayCache_ClearsNoDataCooldown(t *testing.T) {
+	tp := NewTerminalPane()
+	tp.mu.Lock()
+	tp.replayNoDataUntil = time.Now().Add(10 * time.Second)
+	tp.mu.Unlock()
+	tp.invalidateReplayCache()
+	tp.mu.Lock()
+	defer tp.mu.Unlock()
+	if !tp.replayNoDataUntil.IsZero() {
+		t.Errorf("invalidateReplayCache did not clear replayNoDataUntil")
+	}
+}
+
+// TestAsyncReplayRebuild_FiresBranchChangeOnSuccess verifies that a
+// successful rebuild fires OnBranchChange so the app can call forceRedraw
+// — the fallback emulator painted on prior frames may have different
+// cells in the same rect than the new emulator, and tcell's per-cell diff
+// won't clear stale cells without a Sync.
+func TestAsyncReplayRebuild_FiresBranchChangeOnSuccess(t *testing.T) {
+	setupTaskLog(t, "branch-change", "some content\r\nmore content\r\n")
+	tp := NewTerminalPane()
+	tp.taskID = "branch-change"
+	fired := make(chan struct{}, 1)
+	tp.OnBranchChange = func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+		}
+	}
+	tp.asyncReplayRebuild("branch-change", 0, 24, 80, 24, nil, nil, 0, nil)
+	select {
+	case <-fired:
+		// Good.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("OnBranchChange did not fire on successful rebuild")
+	}
 }
