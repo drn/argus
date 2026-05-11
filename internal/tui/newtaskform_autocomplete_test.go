@@ -221,7 +221,9 @@ func TestApp_HandleAgentKey_CtrlPNoWorktree(t *testing.T) {
 	prOpener = func(string) error { called = true; return nil }
 	t.Cleanup(func() { prOpener = orig })
 
-	app.handleAgentKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0))
+	if ev := app.handleAgentKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0)); ev != nil {
+		t.Fatal("ctrl+p should be consumed even with empty worktreeDir")
+	}
 	if called {
 		t.Fatal("prOpener should not run when worktreeDir is empty")
 	}

@@ -1673,14 +1673,18 @@ func (a *App) openInEditor() {
 	if f == nil || a.worktreeDir == "" {
 		return
 	}
-	_ = editorOpener(a.worktreeDir, f.Path)
+	if err := editorOpener(a.worktreeDir, f.Path); err != nil {
+		uxlog.Log("[tui] open in editor failed: %v", err)
+	}
 }
 
 func (a *App) openTerminal() {
 	if a.worktreeDir == "" {
 		return
 	}
-	_ = terminalOpener(a.worktreeDir)
+	if err := terminalOpener(a.worktreeDir); err != nil {
+		uxlog.Log("[tui] open terminal failed: %v", err)
+	}
 }
 
 func (a *App) openPR() {
