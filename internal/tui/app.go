@@ -244,6 +244,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.settings.OnEditSchedule = func(s *model.ScheduledTask) { app.openScheduleForm(s) }
 	app.settings.OnDeleteSchedule = func(id string) { app.deleteSchedule(id) }
 	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
+	app.settings.OnBranchChange = func() { app.forceRedraw("settings branch changed") }
 	app.settingsPage = NewSettingsPage(app.settings)
 
 	cfg := database.Config()

@@ -25,8 +25,7 @@ import (
 type settingsRowKind int
 
 const (
-	srSection settingsRowKind = iota
-	srWarning
+	srWarning settingsRowKind = iota
 	srProject
 	srBackend
 	srSandbox
@@ -40,6 +39,60 @@ const (
 	srSourcePath
 	srSchedule
 	srAutoStart
+)
+
+// settingsCategory groups related settings rows into a left-rail entry.
+type settingsCategory int
+
+const (
+	catSystem settingsCategory = iota
+	catSandbox
+	catProjects
+	catBackends
+	catSchedules
+	catKnowledgeBase
+	catRemoteAPI
+	catAppearance
+	catLogs
+)
+
+// Label returns the human-readable name shown in the left rail.
+func (c settingsCategory) Label() string {
+	switch c {
+	case catSystem:
+		return "System"
+	case catSandbox:
+		return "Sandbox"
+	case catProjects:
+		return "Projects"
+	case catBackends:
+		return "Backends"
+	case catSchedules:
+		return "Schedules"
+	case catKnowledgeBase:
+		return "Knowledge Base"
+	case catRemoteAPI:
+		return "Remote API"
+	case catAppearance:
+		return "Appearance"
+	case catLogs:
+		return "Logs"
+	}
+	return "?"
+}
+
+// allCategories is the fixed left-rail order.
+var allCategories = []settingsCategory{
+	catSystem, catSandbox, catProjects, catBackends, catSchedules,
+	catKnowledgeBase, catRemoteAPI, catAppearance, catLogs,
+}
+
+// settingsFocus is which sub-panel currently owns input within the settings view.
+type settingsFocus int
+
+const (
+	focusRail settingsFocus = iota
+	focusPane
 )
 
 // Vault key constants used in settingsRow.key for vault path rows.
@@ -57,11 +110,16 @@ type settingsRow struct {
 	key   string // project/backend name for lookup
 }
 
-// SettingsView is the tcell settings tab with two panels.
+// SettingsView is the tcell settings tab with two panels: a left rail of
+// category names and a right pane that renders the active category's rows
+// and the detail of the selected row.
 type SettingsView struct {
 	*tview.Box
 
-	rows      []settingsRow
+	category settingsCategory // active category in the left rail
+	focus    settingsFocus    // which sub-panel owns input
+
+	rows      []settingsRow // rows for the active category only (no section headers)
 	cursor    int
 	scrollOff int
 
@@ -138,6 +196,14 @@ type SettingsView struct {
 	OnDeleteSchedule  func(id string)
 	OnRunSchedule     func(id string)
 
+	// OnBranchChange fires whenever the active category changes or focus
+	// moves between the left rail and the right pane — i.e. whenever the
+	// set of cells the Draw will write differs from the previous frame.
+	// The app wires this to forceRedraw so tcell's per-cell diff doesn't
+	// leave ghost cells from the previous category's content. See
+	// gotchas/ui-threading.md.
+	OnBranchChange func()
+
 	// DB reference for toggling values.
 	database *db.DB
 }
@@ -159,12 +225,16 @@ type statusCounts struct {
 	complete   int
 }
 
-// NewSettingsView creates a new settings panel.
+// NewSettingsView creates a new settings panel. Defaults to focusing the
+// right pane and the System category so the first interactive row is
+// immediately usable — pressing Left moves to the category rail.
 func NewSettingsView(database *db.DB) *SettingsView {
 	return &SettingsView{
 		Box:        tview.NewBox(),
 		taskCounts: make(map[string]statusCounts),
 		database:   database,
+		category:   catSystem,
+		focus:      focusPane,
 	}
 }
 
@@ -295,166 +365,137 @@ func (sv *SettingsView) setTasks(tasks []*model.Task) {
 	}
 }
 
+// rebuildRows rebuilds sv.rows for the active category only. The left rail
+// is fixed and not part of sv.rows.
 func (sv *SettingsView) rebuildRows() {
 	sv.rows = nil
 
-	// Status section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Status"})
-	if len(sv.warnings) == 0 {
-		sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  System status", key: "_ok"})
-	} else {
-		for i, w := range sv.warnings {
-			sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "  ⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
-		}
-	}
-	if sv.daemonConnected {
-		label := "  Restart Daemon"
-		if sv.daemonRestarting {
-			label = "  Restarting..."
-		}
-		sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
-
-		sourceLabel := "  Source path: " + sv.argusSourcePath
-		if sv.editingSource {
-			sourceLabel = "  Source path: " + sv.editSourceBuf + "▎"
-		} else if sv.argusSourcePath == "" {
-			sourceLabel = "  Source path: (not configured)"
-		}
-		sv.rows = append(sv.rows, settingsRow{kind: srSourcePath, label: sourceLabel, key: "_argus_source"})
-
-		updateLabel := "  Update Argus (go install + restart)"
-		if sv.updating {
-			updateLabel = "  Updating..."
-		}
-		sv.rows = append(sv.rows, settingsRow{kind: srUpdateArgus, label: updateLabel, key: "_argus_update"})
-	}
-
-	// Auto-start at login (LaunchAgent on macOS only).
-	// Intentionally NOT gated on daemonConnected: the LaunchAgent operates on
-	// launchd config and is meaningful even when the daemon is offline (in fact,
-	// "no daemon running" is exactly when a user wants to enable auto-start).
-	if launchagent.Available() {
-		autoLabel := "  Auto-start at login: disabled"
-		if sv.autoStartStatus.Installed {
-			if sv.autoStartStatus.Loaded {
-				autoLabel = "  Auto-start at login: enabled"
-			} else {
-				autoLabel = "  Auto-start at login: installed (not loaded)"
+	switch sv.category {
+	case catSystem:
+		if len(sv.warnings) == 0 {
+			sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "System status", key: "_ok"})
+		} else {
+			for i, w := range sv.warnings {
+				sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 			}
 		}
-		if sv.autoStartBusy {
-			autoLabel = "  Auto-start at login: working..."
-		}
-		sv.rows = append(sv.rows, settingsRow{kind: srAutoStart, label: autoLabel, key: "_autostart"})
-	}
-
-	// Sandbox section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Sandbox"})
-	label := "  Disabled"
-	if sv.sandboxEnabled {
-		label = "  Enabled"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
-
-	// Projects section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Projects"})
-	if len(sv.projects) == 0 {
-		sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  (no projects)"})
-	} else {
-		for _, p := range sv.projects {
-			sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "  " + p.Name, key: p.Name})
-		}
-	}
-
-	// Backends section.
-	bLabel := "Backends"
-	if sv.defaultBackend != "" {
-		bLabel = fmt.Sprintf("Backends (default: %s)", sv.defaultBackend)
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: bLabel})
-	for _, b := range sv.backends {
-		sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "  " + b.Name, key: b.Name})
-	}
-
-	// Scheduled tasks section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Scheduled Tasks"})
-	if len(sv.schedules) == 0 {
-		sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: "  (no schedules — press n to add)"})
-	} else {
-		for _, s := range sv.schedules {
-			marker := "  "
-			if !s.Enabled {
-				marker = "  ⊘ "
+		if sv.daemonConnected {
+			label := "Restart Daemon"
+			if sv.daemonRestarting {
+				label = "Restarting..."
 			}
-			sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: marker + s.Name, key: s.ID})
+			sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
+
+			sourceLabel := "Source path: " + sv.argusSourcePath
+			if sv.editingSource {
+				sourceLabel = "Source path: " + sv.editSourceBuf + "▎"
+			} else if sv.argusSourcePath == "" {
+				sourceLabel = "Source path: (not configured)"
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srSourcePath, label: sourceLabel, key: "_argus_source"})
+
+			updateLabel := "Update Argus (go install + restart)"
+			if sv.updating {
+				updateLabel = "Updating..."
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srUpdateArgus, label: updateLabel, key: "_argus_update"})
 		}
-	}
+		if launchagent.Available() {
+			autoLabel := "Auto-start at login: disabled"
+			if sv.autoStartStatus.Installed {
+				if sv.autoStartStatus.Loaded {
+					autoLabel = "Auto-start at login: enabled"
+				} else {
+					autoLabel = "Auto-start at login: installed (not loaded)"
+				}
+			}
+			if sv.autoStartBusy {
+				autoLabel = "Auto-start at login: working..."
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srAutoStart, label: autoLabel, key: "_autostart"})
+		}
 
-	// Knowledge Base section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Knowledge Base"})
-	kbLabel := "  Disabled"
-	if sv.kbEnabled {
-		kbLabel = "  Enabled"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+	case catSandbox:
+		label := "Disabled"
+		if sv.sandboxEnabled {
+			label = "Enabled"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srSandbox, label: label, key: "_sandbox"})
 
-	// Vault path rows.
-	metisLabel := "  Metis: " + sv.metisVaultPath
-	if sv.editingVault == vaultKeyMetis {
-		metisLabel = "  Metis: " + sv.editVaultBuf + "▎"
-	} else if sv.metisVaultPath == "" {
-		metisLabel = "  Metis: (not configured)"
-	}
-	if sv.vaultBootRecorded && sv.metisVaultPath != sv.metisVaultAtBoot {
-		metisLabel += " (restart required)"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
+	case catProjects:
+		if len(sv.projects) == 0 {
+			sv.rows = append(sv.rows, settingsRow{kind: srProject, label: "(no projects — press n to add)"})
+		} else {
+			for _, p := range sv.projects {
+				sv.rows = append(sv.rows, settingsRow{kind: srProject, label: p.Name, key: p.Name})
+			}
+		}
 
-	// API section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Remote API"})
-	apiLabel := "  Disabled"
-	if sv.apiEnabled {
-		apiLabel = fmt.Sprintf("  Enabled (port %d)", sv.apiPort)
-	}
-	if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
-		apiLabel += " (restart required)"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
+	case catBackends:
+		for _, b := range sv.backends {
+			label := b.Name
+			if b.Name == sv.defaultBackend {
+				label = "★ " + b.Name
+			}
+			sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: label, key: b.Name})
+		}
 
-	// Spinner style.
-	spinLabel := fmt.Sprintf("  Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
-	sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
+	case catSchedules:
+		if len(sv.schedules) == 0 {
+			sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: "(no schedules — press n to add)"})
+		} else {
+			for _, s := range sv.schedules {
+				marker := ""
+				if !s.Enabled {
+					marker = "⊘ "
+				}
+				sv.rows = append(sv.rows, settingsRow{kind: srSchedule, label: marker + s.Name, key: s.ID})
+			}
+		}
 
-	// Logs section.
-	sv.rows = append(sv.rows, settingsRow{kind: srSection, label: "Logs"})
-	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  UX Log", key: "ux"})
-	sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "  Daemon Log", key: "daemon"})
+	case catKnowledgeBase:
+		kbLabel := "KB: Disabled"
+		if sv.kbEnabled {
+			kbLabel = "KB: Enabled"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srKB, label: kbLabel, key: "_kb"})
+
+		metisLabel := "Metis: " + sv.metisVaultPath
+		if sv.editingVault == vaultKeyMetis {
+			metisLabel = "Metis: " + sv.editVaultBuf + "▎"
+		} else if sv.metisVaultPath == "" {
+			metisLabel = "Metis: (not configured)"
+		}
+		if sv.vaultBootRecorded && sv.metisVaultPath != sv.metisVaultAtBoot {
+			metisLabel += " (restart required)"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srVaultPath, label: metisLabel, key: vaultKeyMetis})
+
+	case catRemoteAPI:
+		apiLabel := "Disabled"
+		if sv.apiEnabled {
+			apiLabel = fmt.Sprintf("Enabled (port %d)", sv.apiPort)
+		}
+		if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
+			apiLabel += " (restart required)"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
+
+	case catAppearance:
+		spinLabel := fmt.Sprintf("Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
+		sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
+
+	case catLogs:
+		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "UX Log", key: "ux"})
+		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "Daemon Log", key: "daemon"})
+	}
 
 	// Clamp cursor.
+	if sv.cursor < 0 {
+		sv.cursor = 0
+	}
 	if sv.cursor >= len(sv.rows) {
 		sv.cursor = max(0, len(sv.rows)-1)
-	}
-	sv.skipToSelectable(1)
-}
-
-// skipToSelectable moves the cursor to the next/prev selectable row.
-func (sv *SettingsView) skipToSelectable(dir int) {
-	for sv.cursor >= 0 && sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
-		sv.cursor += dir
-	}
-	if sv.cursor < 0 || (sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection) {
-		// Went past the top — search forward for the first selectable row.
-		sv.cursor = 0
-		for sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
-			sv.cursor++
-		}
-	}
-	if sv.cursor >= len(sv.rows) {
-		// Went past the bottom — search backward for the last selectable row.
-		sv.cursor = len(sv.rows) - 1
-		for sv.cursor >= 0 && sv.rows[sv.cursor].kind == srSection {
-			sv.cursor--
-		}
 	}
 }
 
@@ -527,13 +568,22 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	switch ev.Key() {
 	case tcell.KeyUp:
+		if sv.focus == focusRail {
+			return sv.moveCategory(-1)
+		}
 		sv.moveCursor(-1)
 		return true
 	case tcell.KeyDown:
+		if sv.focus == focusRail {
+			return sv.moveCategory(1)
+		}
 		sv.moveCursor(1)
 		return true
 	case tcell.KeyLeft:
-		switch sv.currentSection() {
+		if sv.focus == focusRail {
+			return false
+		}
+		switch sv.currentRowKind() {
 		case srSpinner:
 			sv.cycleSpinner(-1)
 			return true
@@ -541,9 +591,14 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 			sv.cycleVaultPath(-1)
 			return true
 		}
-		return false
+		sv.setFocus(focusRail)
+		return true
 	case tcell.KeyRight:
-		switch sv.currentSection() {
+		if sv.focus == focusRail {
+			sv.setFocus(focusPane)
+			return true
+		}
+		switch sv.currentRowKind() {
 		case srSpinner:
 			sv.cycleSpinner(1)
 			return true
@@ -553,26 +608,66 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		}
 		return false
 	case tcell.KeyEnter:
+		if sv.focus == focusRail {
+			sv.setFocus(focusPane)
+			return true
+		}
 		return sv.handleEnter()
 	case tcell.KeyRune:
 		switch ev.Rune() {
 		case 'k':
+			if sv.focus == focusRail {
+				return sv.moveCategory(-1)
+			}
 			sv.moveCursor(-1)
 			return true
 		case 'j':
+			if sv.focus == focusRail {
+				return sv.moveCategory(1)
+			}
 			sv.moveCursor(1)
 			return true
+		case 'h':
+			if sv.focus == focusPane {
+				sv.setFocus(focusRail)
+				return true
+			}
+			return false
+		case 'l':
+			if sv.focus == focusRail {
+				sv.setFocus(focusPane)
+				return true
+			}
+			return false
 		case 'd':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleDeleteOrDefault()
 		case 'n':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleNew()
 		case 'e':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleEdit()
 		case 'i':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleQuickAdd()
 		case 't':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleToggleSchedule()
 		case 'r':
+			if sv.focus == focusRail {
+				return false
+			}
 			return sv.handleRunSchedule()
 		}
 	}
@@ -580,7 +675,7 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 }
 
 func (sv *SettingsView) handleQuickAdd() bool {
-	if sv.currentSection() != srProject {
+	if sv.category != catProjects {
 		return false
 	}
 	if sv.OnQuickAdd != nil {
@@ -609,7 +704,56 @@ func (sv *SettingsView) HandleMouse(action tview.MouseAction) bool {
 	return false
 }
 
+// HandleClick routes a left-click to the rail (when the click falls inside
+// the rail rect) or to the pane. A click on a rail item switches both the
+// active category and focus; a click anywhere in the pane switches focus
+// to the pane. The actual click-to-select-row behavior in the pane is
+// intentionally not wired — keyboard already covers it and adding row hit
+// testing here would couple this method to the Draw layout math.
+func (sv *SettingsView) HandleClick(mx, my int) {
+	x, y, width, height := sv.GetInnerRect()
+	if width <= 0 || height <= 0 {
+		return
+	}
+	if mx < x || mx >= x+width || my < y || my >= y+height {
+		return
+	}
+
+	railW := 20
+	if railW > width/3 {
+		railW = width / 3
+	}
+	if railW < 12 && width >= 12 {
+		railW = 12
+	}
+	if railW > width {
+		railW = width
+	}
+
+	if mx < x+railW {
+		// Click landed in the rail — pick the category at that row.
+		ix, iy := x+1, y+1
+		ih := height - 2
+		row := my - iy
+		if row < 0 || row >= ih || mx < ix {
+			return
+		}
+		if row < len(allCategories) {
+			sv.setCategory(allCategories[row])
+		}
+		sv.setFocus(focusRail)
+		return
+	}
+
+	// Pane click — move focus into the pane.
+	sv.setFocus(focusPane)
+}
+
 func (sv *SettingsView) moveCursor(dir int) {
+	if len(sv.rows) == 0 {
+		sv.cursor = 0
+		return
+	}
 	sv.cursor += dir
 	if sv.cursor < 0 {
 		sv.cursor = 0
@@ -617,12 +761,65 @@ func (sv *SettingsView) moveCursor(dir int) {
 	if sv.cursor >= len(sv.rows) {
 		sv.cursor = len(sv.rows) - 1
 	}
-	sv.skipToSelectable(dir)
 	// Reset log scroll when leaving a log row or switching logs.
 	if row := sv.SelectedRow(); row == nil || row.kind != srLogs || row.key != sv.logKey {
 		sv.logScrollOff = 0
 		sv.logLines = nil
 		sv.logKey = ""
+	}
+}
+
+// moveCategory shifts the active category. Returns true if the category
+// actually changed (so the caller can fire OnBranchChange).
+func (sv *SettingsView) moveCategory(dir int) bool {
+	idx := -1
+	for i, c := range allCategories {
+		if c == sv.category {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	next := idx + dir
+	if next < 0 || next >= len(allCategories) {
+		return false
+	}
+	sv.setCategory(allCategories[next])
+	return true
+}
+
+// setCategory switches the active category, resets cursor, and rebuilds rows.
+// Fires OnBranchChange when the category actually changes.
+func (sv *SettingsView) setCategory(c settingsCategory) {
+	if sv.category == c {
+		return
+	}
+	sv.category = c
+	sv.cursor = 0
+	sv.scrollOff = 0
+	sv.logScrollOff = 0
+	sv.logLines = nil
+	sv.logKey = ""
+	sv.rebuildRows()
+	sv.notifyBranchChange()
+}
+
+// setFocus moves input focus between the rail and the pane. Fires
+// OnBranchChange only on an actual change so border styling and pending
+// redraws are minimized.
+func (sv *SettingsView) setFocus(f settingsFocus) {
+	if sv.focus == f {
+		return
+	}
+	sv.focus = f
+	sv.notifyBranchChange()
+}
+
+func (sv *SettingsView) notifyBranchChange() {
+	if sv.OnBranchChange != nil {
+		sv.OnBranchChange()
 	}
 }
 
@@ -730,7 +927,7 @@ func (sv *SettingsView) SetAutoStartResult(message string, status launchagent.St
 }
 
 func (sv *SettingsView) handleDeleteOrDefault() bool {
-	switch sv.currentSection() {
+	switch sv.currentRowKind() {
 	case srProject:
 		return sv.handleDeleteProject()
 	case srBackend:
@@ -774,22 +971,24 @@ func (sv *SettingsView) handleSetDefault() bool {
 	return true
 }
 
-// currentSection returns the section kind for the currently selected row.
-func (sv *SettingsView) currentSection() settingsRowKind {
+// currentRowKind returns the kind of the currently selected row, or -1 if
+// the active category has no rows. Callers must compare against the
+// sentinel-distinct row-kind values; -1 will never equal any defined kind.
+func (sv *SettingsView) currentRowKind() settingsRowKind {
 	if sv.cursor < 0 || sv.cursor >= len(sv.rows) {
-		return srSection
+		return -1
 	}
 	return sv.rows[sv.cursor].kind
 }
 
 func (sv *SettingsView) handleNew() bool {
-	switch sv.currentSection() {
-	case srProject:
+	switch sv.category {
+	case catProjects:
 		if sv.OnNewProject != nil {
 			sv.OnNewProject()
 			return true
 		}
-	case srSchedule:
+	case catSchedules:
 		if sv.OnNewSchedule != nil {
 			sv.OnNewSchedule()
 			return true
@@ -799,7 +998,7 @@ func (sv *SettingsView) handleNew() bool {
 }
 
 func (sv *SettingsView) handleEdit() bool {
-	switch sv.currentSection() {
+	switch sv.currentRowKind() {
 	case srProject:
 		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
 			sv.OnEditProject(pe.Name, pe.Project)
@@ -1018,129 +1217,237 @@ func (sv *SettingsView) Draw(screen tcell.Screen) {
 		return
 	}
 
-	// Two-panel layout: 40% list | 60% detail.
-	leftW := width * 40 / 100
-	if leftW < 25 {
-		leftW = min(25, width)
+	// Left rail = ~20 chars (enough for "Knowledge Base"), capped at width/3.
+	railW := 20
+	if railW > width/3 {
+		railW = width / 3
 	}
-	rightW := width - leftW
+	if railW < 12 && width >= 12 {
+		railW = 12
+	}
+	if railW > width {
+		railW = width
+	}
+	paneW := width - railW
 
-	sv.renderList(screen, x, y, leftW, height)
-	if rightW > 0 {
-		sv.renderDetail(screen, x+leftW, y, rightW, height)
+	sv.renderRail(screen, x, y, railW, height)
+	if paneW > 0 {
+		sv.renderPane(screen, x+railW, y, paneW, height)
 	}
 }
 
-func (sv *SettingsView) renderList(screen tcell.Screen, x, y, w, h int) {
-	widget.DrawBorder(screen, x, y, w, h, theme.StyleFocusedBorder)
-
-	innerX := x + 1
-	innerY := y + 1
-	innerW := w - 2
-	innerH := h - 2
-	if innerW <= 0 || innerH <= 0 {
+// renderRail draws the left category list. The border is highlighted when the
+// rail owns focus.
+func (sv *SettingsView) renderRail(screen tcell.Screen, x, y, w, h int) {
+	border := theme.StyleBorder
+	if sv.focus == focusRail {
+		border = theme.StyleFocusedBorder
+	}
+	widget.DrawBorder(screen, x, y, w, h, border)
+	ix, iy, iw, ih := x+1, y+1, w-2, h-2
+	if iw <= 0 || ih <= 0 {
 		return
 	}
+	widget.FillArea(screen, ix, iy, iw, ih, ' ', tcell.StyleDefault)
 
-	// Fill the interior — the row loop below paints with `break` when rows
-	// run out, leaving any unwritten rows. Defense-in-depth against future
-	// Clear-bypass optimizations (see gotchas/ui-threading.md). Mirrors
-	// renderDetail's FillArea — both panels use DrawBorder (not
-	// DrawBorderedPanel) and must fill the interior themselves.
-	widget.FillArea(screen, innerX, innerY, innerW, innerH, ' ', tcell.StyleDefault)
-
-	// Adjust scroll offset.
-	if sv.cursor < sv.scrollOff {
-		sv.scrollOff = sv.cursor
-	}
-	if sv.cursor >= sv.scrollOff+innerH {
-		sv.scrollOff = sv.cursor - innerH + 1
-	}
-	// Clamp so we don't strand scroll past the end (e.g. after window resize).
-	if maxOff := max(0, len(sv.rows)-innerH); sv.scrollOff > maxOff {
-		sv.scrollOff = maxOff
-	}
-
-	for i := range innerH {
-		rowIdx := sv.scrollOff + i
-		if rowIdx >= len(sv.rows) {
+	for i, c := range allCategories {
+		if i >= ih {
 			break
 		}
-		row := sv.rows[rowIdx]
-		style := tcell.StyleDefault
-
-		switch row.kind {
-		case srSection:
-			style = tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
-		case srWarning:
-			style = tcell.StyleDefault.Foreground(theme.ColorInProgress)
+		label := c.Label()
+		style := theme.StyleDimmed
+		if c == sv.category {
+			style = tcell.StyleDefault.Foreground(theme.ColorSelected).Bold(true)
 		}
-		if row.kind != srSection && rowIdx == sv.cursor {
-			style = style.Foreground(theme.ColorSelected).Bold(true)
+		prefix := "  "
+		if c == sv.category && sv.focus == focusRail {
+			prefix = "▸ "
 		}
-
-		label := row.label
-		if len(label) > innerW {
-			label = label[:innerW]
+		text := prefix + label
+		if len(text) > iw {
+			text = text[:iw]
 		}
-		widget.DrawText(screen, innerX, innerY+i, innerW, label, style)
+		widget.DrawText(screen, ix, iy+i, iw, text, style)
 	}
 }
 
-func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
-	widget.DrawBorder(screen, x, y, w, h, theme.StyleBorder)
-
-	innerX := x + 1
-	innerY := y + 1
-	innerW := w - 2
-	innerH := h - 2
-	if innerW <= 0 || innerH <= 0 {
+// renderPane draws the right pane for the active category. Layout:
+//
+//	┌──────────────────────────────┐
+//	│ <category title>             │
+//	│                              │  ← items list (only when len(rows) > 1)
+//	│ ▸ row 0                      │
+//	│   row 1                      │
+//	│ ── <selected> ──             │  ← separator
+//	│ <detail of selected row>     │
+//	└──────────────────────────────┘
+//
+// For single-row categories (Sandbox, RemoteAPI), the items list and
+// separator are skipped — the detail renderer gets the full pane below the
+// title.
+func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
+	border := theme.StyleBorder
+	if sv.focus == focusPane {
+		border = theme.StyleFocusedBorder
+	}
+	widget.DrawBorder(screen, x, y, w, h, border)
+	ix, iy, iw, ih := x+1, y+1, w-2, h-2
+	if iw <= 0 || ih <= 0 {
 		return
 	}
+	widget.FillArea(screen, ix, iy, iw, ih, ' ', tcell.StyleDefault)
 
-	// Fill the interior before dispatching — sub-renderers use DrawText which
-	// only paints cells containing characters, leaving any rows/cells from
-	// the prior detail render intact. Without this, navigating the cursor
-	// between settings rows leaves ghost cells from the longer prior detail
-	// (e.g. switching from the Schedule detail to a one-line warning leaves
-	// the Schedule rows visible underneath). DrawBorderedPanel does this
-	// automatically; we explicitly mirror it here since DrawBorder does not.
-	// See gotchas/ui-threading.md "Every widget that does NOT go through
-	// DrawBorderedPanel fills its full bounding box yourself."
-	widget.FillArea(screen, innerX, innerY, innerW, innerH, ' ', tcell.StyleDefault)
+	// Title row.
+	widget.DrawText(screen, ix, iy, iw, sv.category.Label(), theme.StyleTitle)
+	row0 := 2 // title + blank line
 
 	row := sv.SelectedRow()
-	if row == nil {
-		return
+	useItems := len(sv.rows) > 1
+
+	if useItems {
+		// Reserve up to itemsCap rows for the items list, leaving at least
+		// 6 lines for the detail when possible.
+		available := ih - row0
+		if available <= 0 {
+			return
+		}
+		itemsCap := available - 7 // 1 separator + 6 detail
+		if itemsCap < 1 {
+			itemsCap = 1
+		}
+		if itemsCap > 8 {
+			itemsCap = 8
+		}
+		if itemsCap > len(sv.rows) {
+			itemsCap = len(sv.rows)
+		}
+
+		// Scroll math — keep cursor in view.
+		if sv.cursor < sv.scrollOff {
+			sv.scrollOff = sv.cursor
+		}
+		if sv.cursor >= sv.scrollOff+itemsCap {
+			sv.scrollOff = sv.cursor - itemsCap + 1
+		}
+		if maxOff := max(0, len(sv.rows)-itemsCap); sv.scrollOff > maxOff {
+			sv.scrollOff = maxOff
+		}
+
+		for i := 0; i < itemsCap; i++ {
+			idx := sv.scrollOff + i
+			if idx >= len(sv.rows) {
+				break
+			}
+			r := sv.rows[idx]
+			style := tcell.StyleDefault
+			if r.kind == srWarning {
+				style = style.Foreground(theme.ColorInProgress)
+			}
+			prefix := "  "
+			if idx == sv.cursor {
+				prefix = "▸ "
+				if sv.focus == focusPane {
+					style = style.Foreground(theme.ColorSelected).Bold(true)
+				}
+			}
+			label := prefix + r.label
+			if len(label) > iw {
+				label = label[:iw]
+			}
+			widget.DrawText(screen, ix, iy+row0+i, iw, label, style)
+		}
+		row0 += itemsCap
+
+		// Separator with selected row's name. Use a single dimmed line.
+		if row0 < ih {
+			sep := strings.Repeat("─", iw)
+			if row != nil && row.key != "" {
+				name := row.label
+				if len(name) > iw-4 {
+					name = name[:iw-4]
+				}
+				banner := "── " + name + " "
+				if len(banner) < iw {
+					sep = banner + strings.Repeat("─", iw-len(banner))
+				} else {
+					sep = banner[:iw]
+				}
+			}
+			widget.DrawText(screen, ix, iy+row0, iw, sep, theme.StyleDimmed)
+			row0++
+		}
 	}
 
+	// Detail of selected row.
+	detailH := ih - row0
+	if detailH <= 0 || row == nil {
+		return
+	}
+	sv.renderRowDetail(screen, ix, iy+row0, iw, detailH, row)
+}
+
+// renderRowDetail dispatches to the per-row detail renderer.
+func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	switch row.kind {
 	case srWarning:
-		sv.renderWarningDetail(screen, innerX, innerY, innerW, innerH, row)
+		sv.renderWarningDetail(screen, x, y, w, h, row)
 	case srSandbox:
-		sv.renderSandboxDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderSandboxDetail(screen, x, y, w, h)
 	case srProject:
-		sv.renderProjectDetail(screen, innerX, innerY, innerW, innerH, row)
+		sv.renderProjectDetail(screen, x, y, w, h, row)
 	case srBackend:
-		sv.renderBackendDetail(screen, innerX, innerY, innerW, innerH, row)
+		sv.renderBackendDetail(screen, x, y, w, h, row)
 	case srKB:
-		sv.renderKBDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderKBDetail(screen, x, y, w, h)
+	case srAPI:
+		sv.renderAPIDetail(screen, x, y, w, h)
 	case srVaultPath:
-		sv.renderVaultPathDetail(screen, innerX, innerY, innerW, innerH, row)
+		sv.renderVaultPathDetail(screen, x, y, w, h, row)
 	case srSpinner:
-		sv.renderSpinnerDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderSpinnerDetail(screen, x, y, w, h)
 	case srLogs:
-		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
+		sv.renderLogsDetail(screen, x, y, w, h, row)
 	case srDaemon:
-		sv.renderDaemonDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderDaemonDetail(screen, x, y, w, h)
 	case srSourcePath:
-		sv.renderSourcePathDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderSourcePathDetail(screen, x, y, w, h)
 	case srUpdateArgus:
-		sv.renderUpdateArgusDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderUpdateArgusDetail(screen, x, y, w, h)
 	case srSchedule:
-		sv.renderScheduleDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderScheduleDetail(screen, x, y, w, h)
 	case srAutoStart:
-		sv.renderAutoStartDetail(screen, innerX, innerY, innerW, innerH)
+		sv.renderAutoStartDetail(screen, x, y, w, h)
+	}
+}
+
+// renderAPIDetail draws the Remote API status block in the right pane.
+func (sv *SettingsView) renderAPIDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Remote API", theme.StyleTitle)
+	r := 2
+
+	status := "Disabled"
+	statusColor := theme.ColorError
+	if sv.apiEnabled {
+		status = fmt.Sprintf("Enabled (port %d)", sv.apiPort)
+		statusColor = theme.ColorComplete
+	}
+	widget.DrawText(screen, x, y+r, w, "Status: "+status, tcell.StyleDefault.Foreground(statusColor))
+	r += 2
+
+	if sv.apiBootRecorded && sv.apiEnabled != sv.apiEnabledAtBoot {
+		widget.DrawText(screen, x, y+r, w, "(restart required)", tcell.StyleDefault.Foreground(theme.ColorInProgress))
+		r += 2
+	}
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Localhost + Tailscale-bound HTTP", theme.StyleDimmed)
+		r++
+		if r < h {
+			widget.DrawText(screen, x, y+r, w, "API + mobile PWA.", theme.StyleDimmed)
+		}
+	}
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
 	}
 }
 

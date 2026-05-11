@@ -34,56 +34,111 @@ func TestSettingsView_Empty(t *testing.T) {
 	}
 }
 
-func TestSettingsView_Sections(t *testing.T) {
+func TestSettingsView_RailNavigation(t *testing.T) {
 	sv := testSettingsView(t)
-	sections := 0
-	for _, row := range sv.rows {
-		if row.kind == srSection {
-			sections++
+	sv.setFocus(focusRail)
+	sv.setCategory(catSystem)
+
+	// Down arrow moves to next category.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.category, catSandbox)
+
+	// Up arrow moves back.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.category, catSystem)
+
+	// Up at top is a no-op (returns false to allow tab nav).
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, 0))
+	testutil.Equal(t, got, false)
+	testutil.Equal(t, sv.category, catSystem)
+
+	// Right arrow moves focus into the pane.
+	testutil.Equal(t, sv.focus, focusRail)
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusPane)
+}
+
+func TestSettingsView_HandleClickRail(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetRect(0, 0, 100, 30)
+	sv.setCategory(catSystem)
+	sv.setFocus(focusPane)
+
+	// Click on the third row of the rail — that's the Projects category
+	// (index 2: System(0), Sandbox(1), Projects(2)). The rail's first
+	// interior row is at y=1.
+	sv.HandleClick(2, 3) // x=2 is inside rail (width 100 → rail 20)
+	testutil.Equal(t, sv.category, catProjects)
+	testutil.Equal(t, sv.focus, focusRail)
+}
+
+func TestSettingsView_HandleClickPane(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetRect(0, 0, 100, 30)
+	sv.setFocus(focusRail)
+
+	// Click well inside the right pane area.
+	sv.HandleClick(50, 15)
+	testutil.Equal(t, sv.focus, focusPane)
+}
+
+func TestSettingsView_HandleClickOutside(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetRect(10, 10, 50, 20)
+	sv.setFocus(focusPane)
+	// Click well outside the rect.
+	sv.HandleClick(0, 0)
+	testutil.Equal(t, sv.focus, focusPane) // unchanged
+}
+
+func TestSettingsView_Categories(t *testing.T) {
+	// All 9 categories must be addressable. Visiting each must populate
+	// at least one row (auto-start row is platform-gated, but every other
+	// category seeds at least one row).
+	sv := testSettingsView(t)
+	for _, c := range allCategories {
+		sv.setCategory(c)
+		// Sandbox / KB / API toggles always have ≥1 row. Projects/Schedules
+		// fall back to a placeholder row when empty. Backends has seeded
+		// defaults from the DB. System always has the OK/warning row.
+		if len(sv.rows) == 0 {
+			t.Errorf("category %s produced no rows", c.Label())
 		}
-	}
-	// Status, Sandbox, Projects, Backends, Knowledge Base
-	if sections < 4 {
-		t.Errorf("expected at least 4 sections, got %d", sections)
 	}
 }
 
-func TestSettingsView_CursorSkipsHeaders(t *testing.T) {
+func TestSettingsView_CursorClampsToRows(t *testing.T) {
 	sv := testSettingsView(t)
-	// First row should be Status (section header), cursor should skip it.
-	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
-		t.Error("cursor should skip section headers")
+	if len(sv.rows) > 0 && (sv.cursor < 0 || sv.cursor >= len(sv.rows)) {
+		t.Errorf("cursor %d out of range for %d rows", sv.cursor, len(sv.rows))
 	}
 }
 
 func TestSettingsView_Navigation(t *testing.T) {
 	sv := testSettingsView(t)
-	initial := sv.cursor
+	// Switch to a category that always has multiple rows.
+	sv.setCategory(catLogs)
+	sv.cursor = 0
 	sv.moveCursor(1)
-	if sv.cursor == initial && len(sv.rows) > 2 {
-		t.Error("cursor should move down")
+	if sv.cursor != 1 {
+		t.Errorf("cursor should advance to 1, got %d", sv.cursor)
 	}
 	sv.moveCursor(-1)
-	// Should either return to initial or land on a non-header.
-	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srSection {
-		t.Error("cursor should not be on a section header after navigation")
+	if sv.cursor != 0 {
+		t.Errorf("cursor should return to 0, got %d", sv.cursor)
 	}
 }
 
 func TestSettingsView_CursorStaysOnFirstItem(t *testing.T) {
 	sv := testSettingsView(t)
-	// Move to the first selectable row.
+	sv.setCategory(catLogs)
 	sv.cursor = 0
-	sv.skipToSelectable(1)
-	first := sv.cursor
-
-	// Pressing up from the first selectable row should not move the cursor.
 	sv.moveCursor(-1)
-	if sv.cursor != first {
-		t.Errorf("cursor moved from first selectable row %d to %d", first, sv.cursor)
-	}
-	if sv.rows[sv.cursor].kind == srSection {
-		t.Error("cursor landed on a section header")
+	if sv.cursor != 0 {
+		t.Errorf("cursor should clamp at 0, got %d", sv.cursor)
 	}
 }
 
@@ -109,6 +164,7 @@ func TestSettingsView_SelectedProject(t *testing.T) {
 	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catProjects)
 
 	// Find a project row.
 	found := false
@@ -134,7 +190,7 @@ func TestSettingsView_SelectedProject(t *testing.T) {
 
 func TestSettingsView_SelectedBackend(t *testing.T) {
 	sv := testSettingsView(t)
-	// Find a backend row (default backends should exist).
+	sv.setCategory(catBackends)
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
 			sv.cursor = i
@@ -145,14 +201,13 @@ func TestSettingsView_SelectedBackend(t *testing.T) {
 			return
 		}
 	}
-	// It's OK if no backends exist in the test DB.
 }
 
 func TestSettingsView_SandboxToggle(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catSandbox)
 	initialEnabled := sv.sandboxEnabled
 
-	// Find sandbox row and toggle.
 	for i, row := range sv.rows {
 		if row.kind == srSandbox {
 			sv.cursor = i
@@ -168,6 +223,7 @@ func TestSettingsView_SandboxToggle(t *testing.T) {
 
 func TestSettingsView_KBToggle(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catKnowledgeBase)
 	initialKB := sv.kbEnabled
 
 	for i, row := range sv.rows {
@@ -185,6 +241,7 @@ func TestSettingsView_KBToggle(t *testing.T) {
 
 func TestSettingsView_LogsSection(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catLogs)
 	var logsRows []settingsRow
 	for _, row := range sv.rows {
 		if row.kind == srLogs {
@@ -233,8 +290,8 @@ func TestReadLogLines(t *testing.T) {
 
 func TestSettingsView_LogScroll(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catLogs)
 
-	// Find a log row.
 	for i, row := range sv.rows {
 		if row.kind == srLogs {
 			sv.cursor = i
@@ -272,6 +329,7 @@ func TestSettingsView_LogScroll(t *testing.T) {
 
 func TestSettingsView_DaemonRestart(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catSystem)
 
 	// Not connected — no daemon row.
 	sv.SetDaemonConnected(false)
@@ -287,8 +345,8 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 	for _, row := range sv.rows {
 		if row.kind == srDaemon {
 			found = true
-			if row.label != "  Restart Daemon" {
-				t.Errorf("daemon row label = %q, want '  Restart Daemon'", row.label)
+			if row.label != "Restart Daemon" {
+				t.Errorf("daemon row label = %q, want 'Restart Daemon'", row.label)
 			}
 		}
 	}
@@ -320,8 +378,8 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 		t.Error("OnRestartDaemon should not fire while restarting")
 	}
 	for _, row := range sv.rows {
-		if row.kind == srDaemon && row.label != "  Restarting..." {
-			t.Errorf("daemon row label during restart = %q, want '  Restarting...'", row.label)
+		if row.kind == srDaemon && row.label != "Restarting..." {
+			t.Errorf("daemon row label during restart = %q, want 'Restarting...'", row.label)
 		}
 	}
 
@@ -335,6 +393,7 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 func TestSettingsView_UpdateArgusRow(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.SetDaemonConnected(true)
+	sv.setCategory(catSystem)
 
 	hasUpdate, hasSource := false, false
 	for _, row := range sv.rows {
@@ -361,6 +420,7 @@ func TestSettingsView_UpdateArgusRow(t *testing.T) {
 func TestSettingsView_UpdateArgusEnter(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.SetDaemonConnected(true)
+	sv.setCategory(catSystem)
 	called := false
 	sv.OnUpdateArgus = func() { called = true }
 
@@ -398,6 +458,7 @@ func TestSettingsView_UpdateArgusEnter(t *testing.T) {
 func TestSettingsView_SourcePathEdit(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.SetDaemonConnected(true)
+	sv.setCategory(catSystem)
 
 	for i, row := range sv.rows {
 		if row.kind == srSourcePath {
@@ -427,12 +488,14 @@ func TestSettingsView_SourcePathEdit(t *testing.T) {
 
 func TestSettingsView_APIRestartHint(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catRemoteAPI)
 
 	// After first Refresh, boot state is recorded.
 	testutil.Equal(t, sv.apiBootRecorded, true)
 	testutil.Equal(t, sv.apiEnabledAtBoot, false) // default is disabled
 
 	apiLabel := func() string {
+		sv.setCategory(catRemoteAPI)
 		for _, row := range sv.rows {
 			if row.kind == srAPI {
 				return row.label
@@ -442,7 +505,7 @@ func TestSettingsView_APIRestartHint(t *testing.T) {
 	}
 
 	t.Run("no hint when state matches boot", func(t *testing.T) {
-		testutil.Equal(t, apiLabel(), "  Disabled")
+		testutil.Equal(t, apiLabel(), "Disabled")
 	})
 
 	t.Run("hint appears after toggle", func(t *testing.T) {
@@ -499,8 +562,8 @@ func TestSettingsView_APIRestartHint(t *testing.T) {
 
 func TestSettingsView_LogScrollResetOnCursorMove(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catLogs)
 
-	// Find a log row and set scroll state.
 	for i, row := range sv.rows {
 		if row.kind == srLogs {
 			sv.cursor = i
@@ -526,8 +589,8 @@ func TestSettingsView_NewProjectCallback(t *testing.T) {
 	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catProjects)
 
-	// Move cursor to a project row.
 	for i, row := range sv.rows {
 		if row.kind == srProject {
 			sv.cursor = i
@@ -553,8 +616,8 @@ func TestSettingsView_EditProjectCallback(t *testing.T) {
 	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catProjects)
 
-	// Move cursor to a project row.
 	for i, row := range sv.rows {
 		if row.kind == srProject && row.key == "test-proj" {
 			sv.cursor = i
@@ -579,6 +642,7 @@ func TestSettingsView_NewBackendIsHardcoded(t *testing.T) {
 	// Backends are hardcoded — 'n' on a backend row must NOT trigger any
 	// callback (there is no add path).
 	sv := testSettingsView(t)
+	sv.setCategory(catBackends)
 
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
@@ -597,6 +661,7 @@ func TestSettingsView_EditBackendIsHardcoded(t *testing.T) {
 	// Backends are hardcoded — 'e' on a backend row must NOT trigger any
 	// callback.
 	sv := testSettingsView(t)
+	sv.setCategory(catBackends)
 
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
@@ -611,16 +676,15 @@ func TestSettingsView_EditBackendIsHardcoded(t *testing.T) {
 	}
 }
 
-func TestSettingsView_NKeyOnNonProjectRow(t *testing.T) {
+func TestSettingsView_NKeyOnNonListCategory(t *testing.T) {
 	sv := testSettingsView(t)
-
-	// Cursor should be on a non-project row (e.g., warning/status).
-	sv.OnNewProject = func() { t.Error("OnNewProject should not fire on non-project row") }
+	sv.setCategory(catSystem)
+	sv.OnNewProject = func() { t.Error("OnNewProject should not fire outside Projects") }
 
 	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
 	handled := sv.HandleKey(ev)
 	if handled {
-		t.Error("'n' should not be handled on non-project/backend row")
+		t.Error("'n' should not be handled outside list categories")
 	}
 }
 
@@ -694,6 +758,7 @@ func TestSettingsView_VaultPathEdit(t *testing.T) {
 	}
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catKnowledgeBase)
 
 	// Verify default path is populated from DB seed.
 	if sv.metisVaultPath == "" {
@@ -781,8 +846,10 @@ func TestSettingsView_VaultPathRestartHint(t *testing.T) {
 	database, _ := db.OpenInMemory()
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catKnowledgeBase)
 
 	vaultLabel := func(key string) string {
+		sv.setCategory(catKnowledgeBase)
 		for _, row := range sv.rows {
 			if row.kind == srVaultPath && row.key == key {
 				return row.label
@@ -829,11 +896,10 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 	}
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catKnowledgeBase)
 
-	// Inject discovered vaults (simulating iCloud discovery).
 	sv.discoveredVaults = []string{"/vaults/Alpha", "/vaults/Beta", "/vaults/Metis"}
 
-	// Find vault row.
 	metisIdx := -1
 	for i, row := range sv.rows {
 		if row.kind == srVaultPath && row.key == vaultKeyMetis {
@@ -883,11 +949,11 @@ func TestSettingsView_VaultPathCycleNoVaults(t *testing.T) {
 	}
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catKnowledgeBase)
 
 	origMetis := sv.metisVaultPath
 	sv.discoveredVaults = nil
 
-	// Find metis row.
 	for i, row := range sv.rows {
 		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			sv.cursor = i
@@ -912,8 +978,8 @@ func TestSettingsView_VaultPathAutocomplete(t *testing.T) {
 	}
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catKnowledgeBase)
 
-	// Find metis vault row and start editing.
 	for i, row := range sv.rows {
 		if row.kind == srVaultPath && row.key == vaultKeyMetis {
 			sv.cursor = i
@@ -1019,8 +1085,8 @@ func TestSettingsView_DeleteProjectCallback(t *testing.T) {
 	database.SetProject("test-proj", config.Project{Path: "/tmp/test", Branch: "main"})
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catProjects)
 
-	// Move cursor to a project row.
 	for i, row := range sv.rows {
 		if row.kind == srProject && row.key == "test-proj" {
 			sv.cursor = i
@@ -1043,15 +1109,14 @@ func TestSettingsView_DeleteProjectRoundTrip(t *testing.T) {
 	database.SetProject("proj-b", config.Project{Path: "/tmp/b", Branch: "main"})
 	sv := NewSettingsView(database)
 	sv.Refresh()
+	sv.setCategory(catProjects)
 	testutil.Equal(t, len(sv.projects), 2)
 
-	// Simulate the full delete flow: callback deletes from DB and refreshes.
 	sv.OnDeleteProject = func(name string) {
 		database.DeleteProject(name)
 		sv.Refresh()
 	}
 
-	// Move cursor to proj-a.
 	for i, row := range sv.rows {
 		if row.kind == srProject && row.key == "proj-a" {
 			sv.cursor = i
@@ -1069,8 +1134,8 @@ func TestSettingsView_DeleteProjectRoundTrip(t *testing.T) {
 
 func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
 	sv := testSettingsView(t)
+	sv.setCategory(catBackends)
 
-	// Move cursor to a non-default backend row.
 	for i, row := range sv.rows {
 		if row.kind == srBackend && row.key != sv.defaultBackend {
 			sv.cursor = i
@@ -1091,10 +1156,9 @@ func TestSettingsView_DKeyOnBackendSetsDefault(t *testing.T) {
 	}
 }
 
-func TestSettingsView_DKeyOnOtherSectionIgnored(t *testing.T) {
+func TestSettingsView_DKeyOnNonListCategory(t *testing.T) {
 	sv := testSettingsView(t)
-
-	// Cursor on section header (not project or backend).
+	sv.setCategory(catSandbox) // Sandbox row doesn't accept 'd'.
 	sv.cursor = 0
 	ev := tcell.NewEventKey(tcell.KeyRune, 'd', 0)
 	handled := sv.HandleKey(ev)
@@ -1102,27 +1166,36 @@ func TestSettingsView_DKeyOnOtherSectionIgnored(t *testing.T) {
 }
 
 func TestSettingsView_ScrollClampOnResize(t *testing.T) {
-	sv := testSettingsView(t)
-
-	// Simulate a small viewport where scrolling is needed: move cursor to last row.
+	// Build a Projects category with enough projects to force pane scroll.
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		if err := database.SetProject(fmt.Sprintf("p%02d", i), config.Project{Path: "/tmp/p", Branch: "main"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catProjects)
 	sv.cursor = len(sv.rows) - 1
-	sv.skipToSelectable(-1)
 
-	// Draw in a small viewport so scrollOff advances.
 	screen := tcell.NewSimulationScreen("")
 	_ = screen.Init()
-	screen.SetSize(60, 10) // only 10 rows total, border eats 2 → 8 inner rows
-	sv.SetRect(0, 0, 60, 10)
+	// Small viewport: forces scroll within the right pane items list.
+	screen.SetSize(80, 14)
+	sv.SetRect(0, 0, 80, 14)
 	sv.Draw(screen)
-	testutil.Equal(t, sv.scrollOff > 0, true) // should have scrolled
+	testutil.Equal(t, sv.scrollOff > 0, true)
 
-	// Now "maximize": grow the viewport so all rows fit.
-	bigH := len(sv.rows) + 4 // inner = bigH-2, plenty for all rows
-	screen.SetSize(60, bigH)
-	sv.SetRect(0, 0, 60, bigH)
+	// Grow the viewport — though the items list cap is 8, scrollOff still
+	// needs to clamp when there's plenty of room. Reset cursor to 0 so the
+	// scroll math has no reason to keep the offset elevated.
+	sv.cursor = 0
+	screen.SetSize(80, 40)
+	sv.SetRect(0, 0, 80, 40)
 	sv.Draw(screen)
-
-	// scrollOff must clamp to 0 since all rows fit.
 	testutil.Equal(t, sv.scrollOff, 0)
 }
 
@@ -1138,6 +1211,7 @@ func TestSettingsView_AutoStartRow(t *testing.T) {
 		t.Run(fmt.Sprintf("connected=%v", daemonConnected), func(t *testing.T) {
 			sv := testSettingsView(t)
 			sv.SetDaemonConnected(daemonConnected)
+			sv.setCategory(catSystem)
 
 			found := false
 			for _, row := range sv.rows {
@@ -1149,7 +1223,7 @@ func TestSettingsView_AutoStartRow(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Fatal("expected auto-start row in Status section on darwin")
+				t.Fatal("expected auto-start row in System category on darwin")
 			}
 		})
 	}
@@ -1163,6 +1237,7 @@ func TestSettingsView_AutoStartToggleDispatchesCallback(t *testing.T) {
 		t.Skip("LaunchAgent only available on darwin")
 	}
 	sv := testSettingsView(t)
+	sv.setCategory(catSystem)
 	var got struct {
 		called    bool
 		installed bool
@@ -1205,6 +1280,7 @@ func TestSettings_HandleEdit_Schedule(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
+	sv.setCategory(catSchedules)
 	for i, row := range sv.rows {
 		if row.kind == srSchedule && row.key == "id" {
 			sv.cursor = i

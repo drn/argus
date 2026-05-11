@@ -394,8 +394,8 @@ func TestSettings_QuickAddCallback(t *testing.T) {
 	// Add a project so we have a project row to select.
 	sv.database.SetProject("test", config.Project{Path: "/tmp/test"})
 	sv.Refresh()
+	sv.setCategory(catProjects)
 
-	// Move cursor to a project row.
 	for i, row := range sv.rows {
 		if row.kind == srProject {
 			sv.cursor = i
@@ -413,15 +413,10 @@ func TestSettings_QuickAddCallback(t *testing.T) {
 	testutil.Equal(t, called, true)
 }
 
-func TestSettings_QuickAddNotOnOtherSections(t *testing.T) {
+func TestSettings_QuickAddNotOnOtherCategories(t *testing.T) {
 	sv := testSettingsView(t)
-	sv.OnQuickAdd = func() { t.Error("OnQuickAdd should not fire on non-project row") }
-
-	// Verify precondition: cursor starts on a non-project row.
-	if sv.cursor < len(sv.rows) && sv.rows[sv.cursor].kind == srProject {
-		t.Fatal("precondition failed: cursor should not start on a project row")
-	}
-
+	sv.setCategory(catSandbox)
+	sv.OnQuickAdd = func() { t.Error("OnQuickAdd should not fire outside Projects") }
 	ev := tcell.NewEventKey(tcell.KeyRune, 'i', 0)
 	sv.HandleKey(ev)
 }

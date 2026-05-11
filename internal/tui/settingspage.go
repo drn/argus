@@ -56,8 +56,22 @@ func (sp *SettingsPage) Draw(screen tcell.Screen) {
 }
 
 // MouseHandler delegates mouse events to the settings view.
+//
+// On left click, we route the click to the settings view so it can shift
+// focus and (for clicks in the left rail) jump to the clicked category.
+// We always redirect focus back to the settings page — never to the
+// non-interactive SettingsPage Box default — because tview's default
+// Box.MouseHandler steals focus on click and a non-interactive parent
+// would silently drop all keyboard input. See gotchas/tasklist-ui.md and
+// the page-wrapper MouseHandler rule in CLAUDE.md.
 func (sp *SettingsPage) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return sp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+		if action == tview.MouseLeftClick && event != nil {
+			mx, my := event.Position()
+			sp.settings.HandleClick(mx, my)
+			setFocus(sp)
+			return true, nil
+		}
 		if sp.settings.HandleMouse(action) {
 			return true, nil
 		}

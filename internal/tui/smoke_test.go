@@ -1229,3 +1229,99 @@ func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {
 		t.Error("clicking detail panel stole focus from tasklist")
 	}
 }
+
+// TestSmoke_SettingsCategorySwapFiresRedraw guards the per-category branch
+// switch on the settings page. The right pane renders entirely different
+// content per category — without a forceRedraw, tcell's per-cell diff
+// leaves the prior category's text under the new one (e.g. project rows
+// bleeding through into the Sandbox detail).
+func TestSmoke_SettingsCategorySwapFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+	const settingsBranch = "force redraw: settings branch changed"
+
+	// Category swap — moving from catSystem to catSandbox is a real change
+	// and must fire the callback.
+	prev := strings.Count(readLog(), settingsBranch)
+	app.tapp.QueueUpdateDraw(func() {
+		app.settings.setCategory(catSandbox)
+	})
+	if strings.Count(readLog(), settingsBranch) <= prev {
+		t.Errorf("setCategory(catSandbox) did not fire settings branch change")
+	}
+
+	// Focus swap — from focusPane (default) to focusRail must also fire,
+	// because the border highlight is different cells in the same rect.
+	prev = strings.Count(readLog(), settingsBranch)
+	app.tapp.QueueUpdateDraw(func() {
+		app.settings.setFocus(focusRail)
+	})
+	if strings.Count(readLog(), settingsBranch) <= prev {
+		t.Errorf("setFocus(focusRail) did not fire settings branch change")
+	}
+
+	// Same-value setFocus must NOT fire — guards against churn redraws.
+	prev = strings.Count(readLog(), settingsBranch)
+	app.tapp.QueueUpdateDraw(func() {
+		app.settings.setFocus(focusRail)
+	})
+	if strings.Count(readLog(), settingsBranch) > prev {
+		t.Errorf("setFocus to same value should not fire branch change")
+	}
+}
+
+// TestSmoke_SettingsPageMouseClickKeepsFocus verifies clicks inside the
+// settings page never strand keyboard input on a non-interactive child.
+// The SettingsPage MouseHandler always redirects focus back to sp itself
+// (which delegates input to SettingsView), so tview's default focus-steal
+// on click never wins.
+func TestSmoke_SettingsPageMouseClickKeepsFocus(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Switch to the settings tab.
+	app.tapp.QueueUpdateDraw(func() { app.switchTab(widget.TabSettings) })
+	syncUI(t, app.tapp)
+
+	var focused tview.Primitive
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.settingsPage {
+		t.Fatalf("expected initial focus on settingsPage, got %T", focused)
+	}
+
+	// Click in the middle of the settings rect — outside the rail.
+	sim.InjectMouse(60, 10, tcell.Button1, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.settingsPage {
+		t.Errorf("click on settings pane stole focus from settingsPage (got %T)", focused)
+	}
+
+	// Click on the rail — focus must still stay on settingsPage so HandleKey
+	// continues to route through the settings view.
+	sim.InjectMouse(2, 4, tcell.Button1, 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
+	if focused != app.settingsPage {
+		t.Errorf("click on rail stole focus from settingsPage (got %T)", focused)
+	}
+}

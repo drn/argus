@@ -24,14 +24,24 @@ func makeSettings(t *testing.T) *SettingsView {
 	return sv
 }
 
-func TestSettings_RenderSandboxDetail(t *testing.T) {
-	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srSandbox {
+// selectRowInCategory switches to the category and parks the cursor on the
+// first row matching kind (and key, if non-empty). Fails the test when no
+// matching row is found — useful for catching test/data drift.
+func selectRowInCategory(t *testing.T, sv *SettingsView, c settingsCategory, kind settingsRowKind, key string) {
+	t.Helper()
+	sv.setCategory(c)
+	for i, r := range sv.rows {
+		if r.kind == kind && (key == "" || r.key == key) {
 			sv.cursor = i
-			break
+			return
 		}
 	}
+	t.Fatalf("row kind=%d key=%q not found in category %s", kind, key, c.Label())
+}
+
+func TestSettings_RenderSandboxDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catSandbox, srSandbox, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -50,36 +60,21 @@ func TestSettings_RenderProjectDetail(t *testing.T) {
 	})
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srProject && row.key == "p" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catProjects, srProject, "p")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
 
 func TestSettings_RenderBackendDetail(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srBackend {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catBackends, srBackend, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
 
 func TestSettings_RenderKBDetail(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srKB {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catKnowledgeBase, srKB, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -89,12 +84,7 @@ func TestSettings_RenderVaultPathDetail(t *testing.T) {
 	sv.metisVaultPath = "/some/vault"
 	sv.discoveredVaults = []string{"/some/vault", "/other/vault"}
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srVaultPath && row.key == vaultKeyMetis {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catKnowledgeBase, srVaultPath, vaultKeyMetis)
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -104,24 +94,14 @@ func TestSettings_RenderVaultPathDetail_Editing(t *testing.T) {
 	sv.editingVault = vaultKeyMetis
 	sv.editVaultBuf = "/edit"
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srVaultPath && row.key == vaultKeyMetis {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catKnowledgeBase, srVaultPath, vaultKeyMetis)
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
 
 func TestSettings_RenderSpinnerDetail(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srSpinner {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catAppearance, srSpinner, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -129,12 +109,7 @@ func TestSettings_RenderSpinnerDetail(t *testing.T) {
 func TestSettings_RenderDaemonDetail(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true)
-	for i, row := range sv.rows {
-		if row.kind == srDaemon {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srDaemon, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -143,12 +118,7 @@ func TestSettings_RenderDaemonDetail_Restarting(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true)
 	sv.SetDaemonRestarting(true)
-	for i, row := range sv.rows {
-		if row.kind == srDaemon {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srDaemon, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -156,12 +126,7 @@ func TestSettings_RenderDaemonDetail_Restarting(t *testing.T) {
 func TestSettings_RenderSourcePathDetail(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true)
-	for i, row := range sv.rows {
-		if row.kind == srSourcePath {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srSourcePath, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -173,12 +138,7 @@ func TestSettings_RenderUpdateArgusDetail(t *testing.T) {
 	sv.updateOutput = "go install output\nline 2"
 	sv.updateStatus = "Failed: oops"
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srUpdateArgus {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srUpdateArgus, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -188,12 +148,7 @@ func TestSettings_RenderUpdateArgusDetail_NoSource(t *testing.T) {
 	sv.SetDaemonConnected(true)
 	sv.argusSourcePath = ""
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srUpdateArgus {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srUpdateArgus, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -204,24 +159,14 @@ func TestSettings_RenderUpdateArgusDetail_Updating(t *testing.T) {
 	sv.argusSourcePath = "/tmp"
 	sv.updating = true
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srUpdateArgus {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srUpdateArgus, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
 
 func TestSettings_RenderScheduleDetail_Empty(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srSchedule {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -245,12 +190,7 @@ func TestSettings_RenderScheduleDetail_Selected(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "id" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "id")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -260,12 +200,7 @@ func TestSettings_RenderAutoStartDetail(t *testing.T) {
 	if !launchagent.Available() {
 		t.Skip("launchagent not available")
 	}
-	for i, row := range sv.rows {
-		if row.kind == srAutoStart {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srAutoStart, "")
 	sv.autoStartMessage = "test message"
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
@@ -278,12 +213,7 @@ func TestSettings_RenderAutoStartDetail_Busy(t *testing.T) {
 	}
 	sv.autoStartBusy = true
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srAutoStart {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srAutoStart, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -299,24 +229,15 @@ func TestSettings_RenderAutoStartDetail_InstalledNotLoaded(t *testing.T) {
 		PlistPath: "/some/path",
 	}
 	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srAutoStart {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srAutoStart, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
 
 func TestSettings_RenderWarningDetail(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srWarning {
-			sv.cursor = i
-			break
-		}
-	}
+	sv.SetDaemonConnected(false) // forces a warning row
+	selectRowInCategory(t, sv, catSystem, srWarning, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -324,12 +245,7 @@ func TestSettings_RenderWarningDetail(t *testing.T) {
 func TestSettings_RenderWarningDetail_OK(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true) // clears warnings → "_ok" row
-	for i, row := range sv.rows {
-		if row.kind == srWarning {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSystem, srWarning, "_ok")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
@@ -358,18 +274,51 @@ func TestSettings_CycleSpinner(t *testing.T) {
 	sv.cycleSpinner(-1)
 }
 
+func TestSettings_RenderSandboxDetail_WithDenyAndExtraWrite(t *testing.T) {
+	d := testDB(t)
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.sandboxEnabled = true
+	sv.sandboxDenyRead = []string{"/secrets", "/etc/passwd"}
+	sv.sandboxExtraWrite = []string{"/tmp/build", "/var/cache"}
+	selectRowInCategory(t, sv, catSandbox, srSandbox, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+}
+
+func TestSettings_RenderAPIDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catRemoteAPI, srAPI, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+
+	// Also cover the "enabled + restart required" branch.
+	sv.apiEnabled = true
+	sv.apiPort = 7743
+	sv.apiBootRecorded = true
+	sv.apiEnabledAtBoot = false
+	sv.rebuildRows()
+	selectRowInCategory(t, sv, catRemoteAPI, srAPI, "")
+	sv.Draw(drawSim(t))
+}
+
+func TestSettings_RenderLogsDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catLogs, srLogs, "ux")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+
+	selectRowInCategory(t, sv, catLogs, srLogs, "daemon")
+	sv.Draw(drawSim(t))
+}
+
 func TestSettings_HandleDeleteSchedule(t *testing.T) {
 	d := testDB(t)
 	s := &model.ScheduledTask{ID: "id", Name: "x", Project: "p", Prompt: "x", Schedule: "@daily"}
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "id" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "id")
 	called := ""
 	sv.OnDeleteSchedule = func(id string) { called = id }
 	got := sv.handleDeleteSchedule()
@@ -389,12 +338,7 @@ func TestSettings_HandleToggleSchedule(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "id" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "id")
 	got := sv.handleToggleSchedule()
 	testutil.Equal(t, got, true)
 	updated, _ := d.GetSchedule("id")
@@ -413,12 +357,7 @@ func TestSettings_HandleRunSchedule(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "rid" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "rid")
 	called := ""
 	sv.OnRunSchedule = func(id string) { called = id }
 	got := sv.handleRunSchedule()
@@ -453,12 +392,7 @@ func TestSettings_HandleKey_T(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "id" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "id")
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 't', 0))
 	testutil.Equal(t, got, true)
 }
@@ -469,12 +403,7 @@ func TestSettings_HandleKey_R(t *testing.T) {
 	d.AddSchedule(s)
 	sv := NewSettingsView(d)
 	sv.Refresh()
-	for i, row := range sv.rows {
-		if row.kind == srSchedule && row.key == "id" {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catSchedules, srSchedule, "id")
 	called := false
 	sv.OnRunSchedule = func(id string) { called = true }
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'r', 0))
@@ -484,12 +413,7 @@ func TestSettings_HandleKey_R(t *testing.T) {
 
 func TestSettings_HandleKey_LeftRightOnSpinner(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srSpinner {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catAppearance, srSpinner, "")
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
@@ -499,28 +423,21 @@ func TestSettings_HandleKey_LeftRightOnSpinner(t *testing.T) {
 func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {
 	sv := makeSettings(t)
 	sv.discoveredVaults = []string{"/a", "/b"}
-	for i, row := range sv.rows {
-		if row.kind == srVaultPath {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catKnowledgeBase, srVaultPath, vaultKeyMetis)
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
 }
 
-func TestSettings_HandleKey_LeftRightFallthrough(t *testing.T) {
+func TestSettings_HandleKey_LeftFromPaneSwitchesFocus(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srBackend {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catBackends, srBackend, "")
+	// Focus starts on the pane (default). Left should move it to the rail.
+	testutil.Equal(t, sv.focus, focusPane)
 	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
-	testutil.Equal(t, got, false)
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
 }
 
 func TestSettings_PasteHandler_NoOpWhenNotEditing(t *testing.T) {
@@ -568,12 +485,7 @@ func TestSettingsPage_DrawZeroRect(t *testing.T) {
 
 func TestSettingsPage_MouseHandler(t *testing.T) {
 	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srLogs {
-			sv.cursor = i
-			break
-		}
-	}
+	selectRowInCategory(t, sv, catLogs, srLogs, "")
 	sv.logLines = []string{"a", "b", "c"}
 	sv.logScrollOff = 1
 	sv.logKey = sv.SelectedRow().key
@@ -582,6 +494,8 @@ func TestSettingsPage_MouseHandler(t *testing.T) {
 	sp.SetRect(0, 0, 100, 30)
 	handler := sp.MouseHandler()
 
+	// Scroll wheel events: settings forwards them to HandleMouse, which
+	// honors them only when the active row is a log row.
 	ev := tcell.NewEventMouse(0, 0, tcell.WheelUp, 0)
 	consumed, _ := handler(tview.MouseScrollUp, ev, func(p tview.Primitive) {})
 	testutil.Equal(t, consumed, true)
