@@ -4,6 +4,7 @@
 - **`ctrl+q` in diff mode must exit diff AND refocus terminal.** Otherwise user needs a second keypress.
 - **`ctrl+d` exits agent view when session is dead.** Without this, Ctrl+D after agent exit is silently dropped.
 - **`ctrl+l` opens fuzzy link picker (works while agent runs).** Uses `tcell.KeyCtrlL` — reliable across all terminals (unlike `ctrl+/` which has inconsistent encodings). Overrides the typical "clear screen" behavior; the agent PTY never sees it. Reads session log in a background goroutine; the `QueueUpdateDraw` callback must guard `a.mode == modeAgent` because the user may leave agent view during I/O.
+- **`ctrl+p` shells out to `gh pr view --web` in the current worktree.** No PR URL is tracked locally — gh discovers the PR from the branch + remote. Intercepted before PTY pass-through; the agent never sees `0x10`. No-op when `worktreeDir` is empty. `prOpener` is a package-level seam so tests stub the exec.
 - **Escape in agent view:** Refocuses terminal from diff/files but does NOT exit agent view. Always returns `nil` to consume the event.
 - **Mouse clicks must update `agentFocus`, not just tview focus.** Custom `MouseHandler` overrides needed.
 - **In diff mode: Up/Down switch files, j/k scroll diff.**

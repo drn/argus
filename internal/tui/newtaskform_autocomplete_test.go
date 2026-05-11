@@ -192,7 +192,39 @@ func TestApp_HandleAgentKey_CtrlPOpensPR(t *testing.T) {
 	app := New(d, runner, false)
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "n")
+	app.worktreeDir = t.TempDir()
+
+	var gotDir string
+	orig := prOpener
+	prOpener = func(dir string) error {
+		gotDir = dir
+		return nil
+	}
+	t.Cleanup(func() { prOpener = orig })
+
+	if ev := app.handleAgentKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0)); ev != nil {
+		t.Fatal("ctrl+p should be consumed")
+	}
+	testutil.Equal(t, gotDir, app.worktreeDir)
+}
+
+func TestApp_HandleAgentKey_CtrlPNoWorktree(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.mode = modeAgent
+	app.agentState.Reset("t1", "n")
+	// worktreeDir intentionally empty.
+
+	called := false
+	orig := prOpener
+	prOpener = func(string) error { called = true; return nil }
+	t.Cleanup(func() { prOpener = orig })
+
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyCtrlP, 0, 0))
+	if called {
+		t.Fatal("prOpener should not run when worktreeDir is empty")
+	}
 }
 
 // --- handleGlobalKey paths ---

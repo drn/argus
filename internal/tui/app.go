@@ -1375,6 +1375,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
 		return nil
+	case tcell.KeyCtrlP: // Open PR for the worktree's branch via gh
+		a.openPR()
+		return nil
 	case tcell.KeyCtrlY:
 		// Conditional intercept: only steal ctrl+y from the PTY when an
 		// agent has staged a clipboard payload. Without a payload, fall
@@ -1655,6 +1658,16 @@ var terminalOpener = func(worktreeDir string) error {
 	return exec.Command("tmux", "new-window", "-c", worktreeDir).Start()
 }
 
+// prOpener is the package-level seam for "open the PR for this worktree's
+// branch in a browser via gh". Tests stub this out so they don't actually
+// shell out. gh discovers the PR from the current branch + remote, so no
+// PR URL needs to be tracked locally.
+var prOpener = func(worktreeDir string) error {
+	cmd := exec.Command("gh", "pr", "view", "--web")
+	cmd.Dir = worktreeDir
+	return cmd.Start()
+}
+
 func (a *App) openInEditor() {
 	f := a.filePanel.SelectedFile()
 	if f == nil || a.worktreeDir == "" {
@@ -1668,6 +1681,15 @@ func (a *App) openTerminal() {
 		return
 	}
 	_ = terminalOpener(a.worktreeDir)
+}
+
+func (a *App) openPR() {
+	if a.worktreeDir == "" {
+		return
+	}
+	if err := prOpener(a.worktreeDir); err != nil {
+		uxlog.Log("[tui] open PR failed: %v", err)
+	}
 }
 
 // tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY input.
