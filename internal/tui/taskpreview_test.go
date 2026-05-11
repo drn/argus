@@ -220,6 +220,39 @@ func TestTaskPreviewPanel_LargerEmuThanViewport(t *testing.T) {
 	}
 }
 
+// TestTaskPreviewPanel_AlignsRawToEscBoundary guards the preview path against
+// the smudge defect: ring buffer / log tails routinely begin mid-CSI, and
+// without ESC-boundary alignment x/vt renders the orphan parameter bytes as
+// garbage text (e.g. "5;3H" at the top of the emulator). The preview must
+// strip the partial prefix before feeding the emulator. Mirrors the
+// TerminalPane behavior in `renderLive`'s full-replay path and
+// `asyncReplayRebuild`'s scrollback feed.
+func TestTaskPreviewPanel_AlignsRawToEscBoundary(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 8)
+	tp.SetTaskID("test-task")
+
+	// Raw bytes start mid-CSI ("5;3H..."): if fed verbatim the emulator
+	// renders "5;3H" as orphan literal text. Alignment skips to the
+	// first ESC so only the well-formed sequence is parsed.
+	raw := []byte("5;3HpartialCSI\x1b[2J\x1b[1;1HCLEAN\r\n")
+	tp.RefreshOutput(raw, 36, 6, 36, 6)
+	tp.Draw(screen)
+
+	if previewScreenContains(screen, "5;3HpartialCSI") {
+		t.Fatal("expected mid-CSI orphan bytes to be skipped, but they rendered as literal text")
+	}
+	if !previewScreenContains(screen, "CLEAN") {
+		t.Fatal("expected post-alignment content to render")
+	}
+}
+
 func TestTaskPreviewPanel_SmallerEmuThanViewport(t *testing.T) {
 	// When PTY is shorter than the preview panel, content should still render
 	// correctly at the top of the viewport (no blank-top regression).

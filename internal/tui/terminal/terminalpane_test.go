@@ -2054,7 +2054,7 @@ func TestAlignToEscBoundary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := string(alignToEscBoundary([]byte(tc.in)))
+			got := string(AlignToEscBoundary([]byte(tc.in)))
 			testutil.Equal(t, got, tc.want)
 		})
 	}

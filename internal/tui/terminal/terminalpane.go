@@ -570,7 +570,7 @@ func (tp *TerminalPane) statLogSize() int64 {
 // Returns (bytes, fileSize) where fileSize is the on-disk size when the read
 // was issued. The returned slice may start at an arbitrary byte position in
 // the stream and is NOT escape-sequence aligned — pass through
-// alignToEscBoundary before feeding into a fresh terminal emulator.
+// AlignToEscBoundary before feeding into a fresh terminal emulator.
 func readLogTailForTask(taskID string, size int64) ([]byte, int64) {
 	logPath := agent.SessionLogPath(taskID)
 	f, err := os.Open(logPath)
@@ -630,15 +630,16 @@ func replayRebuildReadSize(taskID string, scrollOffset, viewportHeight, ptyCols 
 	return needed
 }
 
-// alignToEscBoundary returns a slice of `raw` starting at the first ESC
+// AlignToEscBoundary returns a slice of `raw` starting at the first ESC
 // (0x1B) byte. Tails of session logs and ring buffers can begin in the
 // middle of a CSI parameter list (e.g. "5;3H" with the leading "ESC ["
 // missing) — x/vt parses those orphan bytes as garbage text and renders
 // them as a smudge of digits/punctuation at the top of the emulator.
 // Skipping to the first ESC guarantees the parser sees a complete
-// sequence from byte 0. If `raw` has no ESC at all, return it unchanged
-// (likely plain text — safe to feed).
-func alignToEscBoundary(raw []byte) []byte {
+// sequence from byte 0. Two no-skip cases return the slice unchanged:
+// (1) the first byte is already ESC (already aligned); (2) `raw` has no
+// ESC at all (likely plain text — safe to feed).
+func AlignToEscBoundary(raw []byte) []byte {
 	if i := bytes.IndexByte(raw, 0x1B); i > 0 {
 		return raw[i:]
 	}
@@ -669,7 +670,7 @@ const liveRebuildHistorySize = 8 * 1024 * 1024
 // next incremental feed picks up from ringTotal.
 //
 // The returned bytes are NOT ESC-boundary aligned. Callers should pass
-// through alignToEscBoundary before feeding x/vt.
+// through AlignToEscBoundary before feeding x/vt.
 func readLiveRebuildHistory(sess agentview.TerminalAdapter, taskID string) (raw []byte, total uint64) {
 	if sess == nil {
 		return nil, 0
@@ -1121,10 +1122,10 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	emu := tp.newTrackedReplayEmulatorWithCallback(ptyCols, ptyRows, func(visible bool) {
 		cursorVisible = visible
 	})
-	// Tail slices begin at arbitrary byte positions — see alignToEscBoundary
+	// Tail slices begin at arbitrary byte positions — see AlignToEscBoundary
 	// (defect 4). Without this, partial CSI prefixes show up as orphan
 	// digits/punctuation at the top of the scrollback emulator.
-	_, _ = SafeEmuWrite(emu, alignToEscBoundary(raw))
+	_, _ = SafeEmuWrite(emu, AlignToEscBoundary(raw))
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
@@ -1247,12 +1248,12 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				// Emulator already has content — repaint below without
 				// advancing emuFedTotal (no bytes were fed).
 			} else {
-				// alignToEscBoundary skips any partial CSI/OSC prefix
+				// AlignToEscBoundary skips any partial CSI/OSC prefix
 				// the log/ring tail may have started mid-sequence at,
 				// which x/vt would otherwise render as a smudge of
 				// orphan parameter bytes at the top of the screen
 				// (defect 4).
-				_, _ = SafeEmuWrite(tp.emu, alignToEscBoundary(history))
+				_, _ = SafeEmuWrite(tp.emu, AlignToEscBoundary(history))
 				tp.emuFedTotal = finalTotal
 			}
 		} else if len(raw) > 0 {

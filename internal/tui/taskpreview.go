@@ -162,8 +162,12 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 
 	// Run VT emulation off the UI thread.
 	// Use drained emulator to prevent hangs on terminal query sequences.
+	// Tail slices (ring buffer / 64KB log tail) routinely begin mid-CSI;
+	// AlignToEscBoundary skips any partial CSI/OSC prefix that would
+	// otherwise render as a smudge of orphan digits/punctuation at the
+	// top of the emulator.
 	emu := terminal.NewDrainedEmulator(emuCols, emuRows)
-	if _, err := terminal.SafeEmuWrite(emu, raw); err != nil {
+	if _, err := terminal.SafeEmuWrite(emu, terminal.AlignToEscBoundary(raw)); err != nil {
 		tp.mu.Lock()
 		tp.statusMsg = "Preview unavailable"
 		tp.cells = nil
