@@ -82,7 +82,6 @@ Pair this with the MCP task tools and an agent can read a meeting note, decide w
 - **Agent forking** — duplicate a running task with full context (source info, recent output, git diff) injected into the new worktree.
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.
 - **Scheduled tasks** — cron, descriptors, intervals, or one-shot runs. Each fire spawns a fresh task. Manage from TUI, PWA, or MCP.
-- **PR review dashboard** — open PRs across configured repos, syntax-highlighted diffs, approve / request changes / line-comment from the TUI.
 - **macOS sandbox-exec** — per-session SBPL profiles. `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud` blocked by default.
 - **Self-update** — `git pull` + `go install` + daemon restart from a single Settings row. Active sessions reattach across the swap.
 - **Auto-start at login** — install the daemon as a launchd LaunchAgent so your agents survive reboots without launching the TUI.
@@ -113,21 +112,21 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 #### Task List
 
-| Key         | Action                                                          |
-| ----------- | --------------------------------------------------------------- |
-| `n`         | New task (with skill autocomplete in prompt field)              |
-| `Enter`     | Open agent view                                                 |
-| `ctrl+f`    | Fork task (duplicate with context)                              |
-| `s` / `S`   | Advance / revert status                                         |
-| `a`         | Toggle archive                                                  |
-| `P`         | Toggle pin (★ section pinned to the top of the task list)       |
-| `c`         | Copy task prompt to clipboard                                   |
-| `ctrl+d`    | Destroy task (kill agent + remove worktree + delete branch)     |
-| `ctrl+r`    | Prune completed tasks                                           |
-| `j` / `k`   | Navigate up/down                                                |
-| `1` / `2`   | Switch tabs (Tasks / Settings)                                  |
-| `ctrl+l`    | Refresh screen (wipe ghost cells; works in every non-agent tab) |
-| `q`         | Quit                                                            |
+| Key       | Action                                                          |
+| --------- | --------------------------------------------------------------- |
+| `n`       | New task (with skill autocomplete in prompt field)              |
+| `Enter`   | Open agent view                                                 |
+| `ctrl+f`  | Fork task (duplicate with context)                              |
+| `s` / `S` | Advance / revert status                                         |
+| `a`       | Toggle archive                                                  |
+| `P`       | Toggle pin (★ section pinned to the top of the task list)       |
+| `c`       | Copy task prompt to clipboard                                   |
+| `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
+| `ctrl+r`  | Prune completed tasks                                           |
+| `j` / `k` | Navigate up/down                                                |
+| `1` / `2` | Switch tabs (Tasks / Settings)                                  |
+| `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
+| `q`       | Quit                                                            |
 
 #### Agent View
 
@@ -221,42 +220,42 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 
 **Knowledge Base:**
 
-| Tool         | Description                                          |
-| ------------ | ---------------------------------------------------- |
-| `kb_search`  | Full-text search with ranked results and snippets    |
-| `kb_read`    | Read full document content by vault-relative path    |
-| `kb_list`    | List documents with optional path prefix filtering   |
-| `kb_ingest`  | Add or update a document in the knowledge base       |
-| `kb_delete`  | Remove a document by vault-relative path             |
+| Tool        | Description                                        |
+| ----------- | -------------------------------------------------- |
+| `kb_search` | Full-text search with ranked results and snippets  |
+| `kb_read`   | Read full document content by vault-relative path  |
+| `kb_list`   | List documents with optional path prefix filtering |
+| `kb_ingest` | Add or update a document in the knowledge base     |
+| `kb_delete` | Remove a document by vault-relative path           |
 
 **Task Management** (lets agents orchestrate other agents):
 
-| Tool            | Description                                                                                                                                     |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `task_create`   | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`                                                             |
-| `task_list`     | List tasks, filtered by `status` and/or `project`                                                                                               |
-| `task_get`      | Get task details by `id`                                                                                                                        |
-| `task_stop`     | Stop a running agent (moves task to "in review")                                                                                                |
-| `task_archive`  | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                    |
-| `task_rename`   | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.      |
-| `task_complete` | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.  |
+| Tool            | Description                                                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task_create`   | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`                                                            |
+| `task_list`     | List tasks, filtered by `status` and/or `project`                                                                                              |
+| `task_get`      | Get task details by `id`                                                                                                                       |
+| `task_stop`     | Stop a running agent (moves task to "in review")                                                                                               |
+| `task_archive`  | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                   |
+| `task_rename`   | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.     |
+| `task_complete` | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed. |
 
 Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-complete/SKILL.md` let an agent finalize its own task at the end of a session via `cwd` resolution. Completing and archiving are independent axes.
 
 **Schedule Management:**
 
-| Tool                | Description                                                                                                                                                                                           |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schedule_list`     | List all schedules with name, project, cron expression, enabled state, next/last fire timestamps                                                                                                      |
-| `schedule_create`   | Create. Params: `name`, `project`, `prompt`, plus exactly one of `schedule` (cron or `@every <duration>`) or `run_once_at` (RFC3339 UTC); optional `backend`, `enabled`                               |
-| `schedule_update`   | Partial update — pass `id` plus any fields to change. Toggling `enabled`, rotating prompts, or converting between cron and one-shot (set the new field; the other clears automatically).             |
-| `schedule_delete`   | Remove a schedule by `id`. Tasks already created by previous fires are unaffected.                                                                                                                    |
-| `schedule_run_now`  | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. One-shot rows auto-disable. Does NOT send a push notification — only cron-tick fires do. |
+| Tool               | Description                                                                                                                                                                                               |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule_list`    | List all schedules with name, project, cron expression, enabled state, next/last fire timestamps                                                                                                          |
+| `schedule_create`  | Create. Params: `name`, `project`, `prompt`, plus exactly one of `schedule` (cron or `@every <duration>`) or `run_once_at` (RFC3339 UTC); optional `backend`, `enabled`                                   |
+| `schedule_update`  | Partial update — pass `id` plus any fields to change. Toggling `enabled`, rotating prompts, or converting between cron and one-shot (set the new field; the other clears automatically).                  |
+| `schedule_delete`  | Remove a schedule by `id`. Tasks already created by previous fires are unaffected.                                                                                                                        |
+| `schedule_run_now` | Fire a schedule immediately, out of cycle. Bookkeeping is updated so the next regular tick will not double-fire. One-shot rows auto-disable. Does NOT send a push notification — only cron-tick fires do. |
 
 **Agent-Staged Clipboard:**
 
-| Tool                  | Description                                                                                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Tool                  | Description                                                                                                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `argus_clipboard_set` | Stage text for the user to copy with one tap (PWA Copy button) or one keypress (TUI `ctrl+y`). Params: `text` (required), `id` or `cwd`. Last-write-wins, 5-min TTL, 1 MiB max. |
 
 ### Remote Control: REST API
@@ -265,33 +264,33 @@ All endpoints require auth — `Authorization: Bearer <token>` header or `?token
 
 #### Tasks
 
-| Method   | Endpoint                    | Description                                                                                                                                                                                                                                                                                                                                                                               |
-| -------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/status`               | Running/idle session counts, task counts by status                                                                                                                                                                                                                                                                                                                                        |
-| `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input.                                                                                                                                                                                                              |
-| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap.                                                                                                          |
-| `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                                                                                                                           |
-| `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                                                                                                                               |
-| `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent                                                                                                                                                                                                                                                                                                                                                                    |
-| `DELETE` | `/api/tasks/{id}`           | Delete a task                                                                                                                                                                                                                                                                                                                                                                             |
-| `POST`   | `/api/tasks/{id}/archive`   | Archive (hidden from default list)                                                                                                                                                                                                                                                                                                                                                        |
-| `POST`   | `/api/tasks/{id}/unarchive` | Restore from archive                                                                                                                                                                                                                                                                                                                                                                      |
-| `POST`   | `/api/tasks/{id}/rename`    | `{"name":"..."}`                                                                                                                                                                                                                                                                                                                                                                          |
-| `POST`   | `/api/tasks/{id}/fork`      | Clone to a new task. Body: `{"name?", "prompt?", "project?"}`                                                                                                                                                                                                                                                                                                                             |
-| `POST`   | `/api/tasks/{id}/status`    | Set status. Body: `{"status":"in_review"\|"complete"\|"pending"\|"in_progress"}`                                                                                                                                                                                                                                                                                                          |
+| Method   | Endpoint                    | Description                                                                                                                                                                                                                                                                      |
+| -------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/status`               | Running/idle session counts, task counts by status                                                                                                                                                                                                                               |
+| `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input.                                                                                                      |
+| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
+| `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                  |
+| `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                      |
+| `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent                                                                                                                                                                                                                                                           |
+| `DELETE` | `/api/tasks/{id}`           | Delete a task                                                                                                                                                                                                                                                                    |
+| `POST`   | `/api/tasks/{id}/archive`   | Archive (hidden from default list)                                                                                                                                                                                                                                               |
+| `POST`   | `/api/tasks/{id}/unarchive` | Restore from archive                                                                                                                                                                                                                                                             |
+| `POST`   | `/api/tasks/{id}/rename`    | `{"name":"..."}`                                                                                                                                                                                                                                                                 |
+| `POST`   | `/api/tasks/{id}/fork`      | Clone to a new task. Body: `{"name?", "prompt?", "project?"}`                                                                                                                                                                                                                    |
+| `POST`   | `/api/tasks/{id}/status`    | Set status. Body: `{"status":"in_review"\|"complete"\|"pending"\|"in_progress"}`                                                                                                                                                                                                 |
 
 #### Sessions / terminal
 
-| Method | Endpoint                 | Description                                                                                                                                                                                             |
-| ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1`                                                                                                                                                    |
-| `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                       |
-| `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                             |
-| `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create. |
-| `GET`  | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks)                                                                                                                                                       |
-| `GET`  | `/api/tasks/{id}/size`   | Current PTY dimensions: `{cols, rows}`                                                                                                                                                                  |
+| Method | Endpoint                 | Description                                                                                                                                                                                                                                                                                                                 |
+| ------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/tasks/{id}/output` | Recent output (text). Optional `?bytes=`, `?clean=1`                                                                                                                                                                                                                                                                        |
+| `GET`  | `/api/tasks/{id}/links`  | Extract http/https URLs from terminal output. Returns `{"links":[{"label","url"}]}`. Powers the PWA's "Open link" overflow item.                                                                                                                                                                                            |
+| `POST` | `/api/tasks/{id}/input`  | Send raw bytes to PTY stdin                                                                                                                                                                                                                                                                                                 |
+| `POST` | `/api/tasks/{id}/upload` | Upload files mid-session. `multipart/form-data` with `files` parts; saved to `<worktree>/.context/<name>` (auto-suffixed on collision) and returns `{paths:[]}`. Same 10MB/50MB/20-file caps as create.                                                                                                                     |
+| `GET`  | `/api/tasks/{id}/stream` | SSE stream of live output (base64-encoded chunks)                                                                                                                                                                                                                                                                           |
+| `GET`  | `/api/tasks/{id}/size`   | Current PTY dimensions: `{cols, rows}`                                                                                                                                                                                                                                                                                      |
 | `POST` | `/api/tasks/{id}/resize` | Resize PTY: `{"cols":N,"rows":M}`. Returns `{cols,rows,rerendered}` — `rerendered:true` means the resize crossed the rerender margin (≥30 col delta from session-start width) and the daemon queued a kill+resume so the agent re-emits scrollback at the new width. The SPA's exit-event handler reattaches automatically. |
-| `POST` | `/api/sessions/stop-all` | Stop every running session                                                                                                                                                                              |
+| `POST` | `/api/sessions/stop-all` | Stop every running session                                                                                                                                                                                                                                                                                                  |
 
 #### Git status / diff / files
 
@@ -303,18 +302,18 @@ All endpoints require auth — `Authorization: Bearer <token>` header or `?token
 
 #### Projects & backends (full CRUD)
 
-| Method   | Endpoint               | Description                                                                                              |
-| -------- | ---------------------- | -------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/projects`        | List project names                                                                                       |
-| `GET`    | `/api/projects/full`   | List with path, branch, default_backend                                                                  |
+| Method   | Endpoint               | Description                                                                                                                                                                         |
+| -------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/projects`        | List project names                                                                                                                                                                  |
+| `GET`    | `/api/projects/full`   | List with path, branch, default_backend                                                                                                                                             |
 | `POST`   | `/api/projects`        | Create. Body: `{"name", "path", "branch?", "backend?", "sandbox?"}` where `sandbox` is `{"enabled": true\|false\|null, "deny_read":[], "extra_write":[]}` (`null` = inherit global) |
-| `PUT`    | `/api/projects/{name}` | Update                                                                                                   |
-| `DELETE` | `/api/projects/{name}` | Delete                                                                                                   |
-| `GET`    | `/api/backends`        | List with command + prompt_flag                                                                          |
-| `POST`   | `/api/backends`        | Create                                                                                                   |
-| `PUT`    | `/api/backends/{name}` | Update                                                                                                   |
-| `DELETE` | `/api/backends/{name}` | Delete                                                                                                   |
-| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                         |
+| `PUT`    | `/api/projects/{name}` | Update                                                                                                                                                                              |
+| `DELETE` | `/api/projects/{name}` | Delete                                                                                                                                                                              |
+| `GET`    | `/api/backends`        | List with command + prompt_flag                                                                                                                                                     |
+| `POST`   | `/api/backends`        | Create                                                                                                                                                                              |
+| `PUT`    | `/api/backends/{name}` | Update                                                                                                                                                                              |
+| `DELETE` | `/api/backends/{name}` | Delete                                                                                                                                                                              |
+| `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                                                                                                    |
 
 #### Push notifications (Web Push, VAPID)
 
