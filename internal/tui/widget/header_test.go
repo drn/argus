@@ -14,11 +14,6 @@ func TestHeader_SetTab(t *testing.T) {
 		t.Errorf("initial tab = %v, want TabTasks", h.ActiveTab())
 	}
 
-	h.SetTab(TabReviews)
-	if h.ActiveTab() != TabReviews {
-		t.Errorf("tab = %v, want TabReviews", h.ActiveTab())
-	}
-
 	h.SetTab(TabSettings)
 	if h.ActiveTab() != TabSettings {
 		t.Errorf("tab = %v, want TabSettings", h.ActiveTab())
@@ -26,11 +21,11 @@ func TestHeader_SetTab(t *testing.T) {
 }
 
 func TestTabLabels(t *testing.T) {
-	if len(TabLabels) != 3 {
-		t.Errorf("TabLabels count = %d, want 3", len(TabLabels))
+	if len(TabLabels) != 2 {
+		t.Errorf("TabLabels count = %d, want 2", len(TabLabels))
 	}
-	if len(tabKeys) != 3 {
-		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
+	if len(tabKeys) != 2 {
+		t.Errorf("tabKeys count = %d, want 2", len(tabKeys))
 	}
 }
 

@@ -586,7 +586,7 @@ func TestTaskListView_OnLayoutChange_CursorCrossesSection(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
 		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
-		{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusComplete, Archived: true},
 	})
 
 	// Wire callback after initial SetTasks so we count only cursor-driven fires.
@@ -594,16 +594,16 @@ func TestTaskListView_OnLayoutChange_CursorCrossesSection(t *testing.T) {
 	tl.OnLayoutChange = func() { calls++ }
 
 	// Cursor starts on task 1 in the active section. Drive it down until
-	// it lands on task 2 in waiting-for-review — autoExpand toggles the
-	// WR section open, which calls buildRows and shifts rows.
+	// it lands on task 2 in archive — autoExpand toggles the archive
+	// section open, which calls buildRows and shifts rows.
 	for i := 0; i < 10; i++ {
 		tl.CursorDown()
 	}
 	if sel := tl.SelectedTask(); sel == nil || sel.ID != "2" {
-		t.Fatalf("expected to land on waiting task id=2, got %+v", sel)
+		t.Fatalf("expected to land on archived task id=2, got %+v", sel)
 	}
-	if !tl.waitingReviewExpanded {
-		t.Fatal("waiting-for-review should be auto-expanded after cursor crossing")
+	if !tl.archiveExpanded {
+		t.Fatal("archive should be auto-expanded after cursor crossing")
 	}
 	if calls == 0 {
 		t.Error("expected OnLayoutChange to fire on section crossing, got 0 calls")
@@ -944,45 +944,6 @@ func TestTaskListView_SeparatorBeforeArchive(t *testing.T) {
 		if tl.cursor >= 0 && tl.cursor < len(tl.rows) && tl.rows[tl.cursor].kind == rowSeparator {
 			t.Errorf("cursor rested on separator at index %d after CursorUp %d", tl.cursor, i+1)
 		}
-	}
-}
-
-func TestTaskListView_OpenPRKey(t *testing.T) {
-	tl := NewTaskListView()
-	var opened *model.Task
-	tl.OnOpenPR = func(task *model.Task) {
-		opened = task
-	}
-
-	// Single task with a PR URL.
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "has-pr", Project: "p", PRURL: "https://github.com/acme/repo/pull/42"},
-	})
-	tl.expanded = "p"
-	tl.buildRows()
-	tl.CursorDown()
-
-	handler := tl.InputHandler()
-	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
-	if opened == nil {
-		t.Fatal("OnOpenPR should have been called for task with PR URL")
-	}
-	if opened.ID != "1" {
-		t.Errorf("OnOpenPR called with task %s, want 1", opened.ID)
-	}
-
-	// Task without PR URL — callback should NOT fire.
-	opened = nil
-	tl.SetTasks([]*model.Task{
-		{ID: "2", Name: "no-pr", Project: "p", PRURL: ""},
-	})
-	tl.expanded = "p"
-	tl.buildRows()
-	tl.CursorDown()
-
-	handler(tcell.NewEventKey(tcell.KeyRune, 'p', tcell.ModNone), func(tview.Primitive) {})
-	if opened != nil {
-		t.Error("OnOpenPR should NOT fire for task without PR URL")
 	}
 }
 
@@ -1651,167 +1612,6 @@ func TestDrawTaskRow_NoBranch(t *testing.T) {
 	testutil.Contains(t, line, "fix-bug")
 }
 
-func TestTaskListView_WaitingReviewSection(t *testing.T) {
-	t.Run("WR tasks appear in their own section above archive", func(t *testing.T) {
-		tl := NewTaskListView()
-		tl.SetTasks([]*model.Task{
-			{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
-			{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
-			{ID: "3", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
-		})
-
-		// Find the section header rows and confirm the order.
-		wrIdx, archIdx := -1, -1
-		for i, r := range tl.rows {
-			switch r.kind {
-			case rowWaitingReviewHeader:
-				wrIdx = i
-			case rowArchiveHeader:
-				archIdx = i
-			}
-		}
-		if wrIdx < 0 {
-			t.Fatal("expected a waiting-for-review header row")
-		}
-		if archIdx < 0 {
-			t.Fatal("expected an archive header row")
-		}
-		if wrIdx >= archIdx {
-			t.Errorf("waiting-for-review header should sit above archive header (wrIdx=%d, archIdx=%d)", wrIdx, archIdx)
-		}
-	})
-
-	t.Run("WR-flagged tasks do not appear in the active section", func(t *testing.T) {
-		tl := NewTaskListView()
-		tl.SetTasks([]*model.Task{
-			{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
-			{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
-		})
-		// Active section: expanded "proj" should show exactly one task (ID=1).
-		activeTasks := 0
-		for _, r := range tl.rows {
-			if r.kind != rowTask {
-				continue
-			}
-			if tl.sectionAt(rowIndex(tl, r)) == sectionActive {
-				activeTasks++
-				if r.task.ID != "1" {
-					t.Errorf("active section task should be id=1, got id=%s", r.task.ID)
-				}
-			}
-		}
-		if activeTasks != 1 {
-			t.Errorf("active task rows = %d, want 1", activeTasks)
-		}
-	})
-}
-
-// rowIndex returns the index of a row. Only supports task and project rows;
-// separator and header rows are not uniquely identifiable by this helper
-// because multiple may share kind+empty-project within one row list.
-func rowIndex(tl *TaskListView, target taskRow) int {
-	if target.kind != rowTask && target.kind != rowProject {
-		return -1
-	}
-	for i, r := range tl.rows {
-		if r.kind != target.kind || r.project != target.project {
-			continue
-		}
-		if r.kind == rowTask {
-			if r.task != nil && target.task != nil && r.task.ID != target.task.ID {
-				continue
-			}
-		}
-		return i
-	}
-	return -1
-}
-
-func TestTaskListView_WaitingReviewToggle(t *testing.T) {
-	tl := NewTaskListView()
-	var captured *model.Task
-	tl.OnWaitingReview = func(task *model.Task) {
-		captured = task
-	}
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "task1", Status: model.StatusInReview, Project: "p"},
-	})
-	tl.expanded = "p"
-	tl.buildRows()
-	tl.clampCursor()
-
-	handler := tl.InputHandler()
-	// Press 'w' — task should be flagged as waiting for review.
-	handler(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone), func(tview.Primitive) {})
-	if captured == nil {
-		t.Fatal("OnWaitingReview should have been called")
-	}
-	if !captured.WaitingReview {
-		t.Error("task should be flagged WaitingReview after pressing 'w'")
-	}
-
-	// Press 'w' again — toggle off.
-	captured = nil
-	handler(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone), func(tview.Primitive) {})
-	if captured == nil {
-		t.Fatal("OnWaitingReview should have fired again")
-	}
-	if captured.WaitingReview {
-		t.Error("task should no longer be flagged after second 'w'")
-	}
-}
-
-func TestTaskListView_WaitingReviewAndArchiveMutuallyExclusive(t *testing.T) {
-	tl := NewTaskListView()
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "task1", Status: model.StatusPending, Project: "p", Archived: true},
-	})
-	tl.expanded = "p"
-	tl.archiveExpanded = true
-	tl.archiveProject = "p"
-	tl.buildRows()
-	// Move cursor onto the archived task.
-	for i, r := range tl.rows {
-		if r.kind == rowTask && r.task.ID == "1" {
-			tl.cursor = i
-			break
-		}
-	}
-
-	tl.OnWaitingReview = func(*model.Task) {}
-	handler := tl.InputHandler()
-	handler(tcell.NewEventKey(tcell.KeyRune, 'w', tcell.ModNone), func(tview.Primitive) {})
-
-	// Assert via the task pointer we captured before any row rebuilds, not
-	// SelectedTask() — buildRows() moves the task into the WR section and the
-	// cursor may end up on a different row after restoration.
-	task := tl.tasks[0]
-	if !task.WaitingReview {
-		t.Error("task should be flagged WaitingReview after 'w'")
-	}
-	if task.Archived {
-		t.Error("pressing 'w' on an archived task should clear Archived")
-	}
-
-	// Now press 'a' — should clear WaitingReview and set Archived. Point the
-	// cursor back at the (now WR-section) task so the 'a' handler has a
-	// SelectedTask to act on.
-	for i, r := range tl.rows {
-		if r.kind == rowTask && r.task == task {
-			tl.cursor = i
-			break
-		}
-	}
-	tl.OnArchive = func(*model.Task) {}
-	handler(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone), func(tview.Primitive) {})
-	if task.WaitingReview {
-		t.Error("pressing 'a' on a waiting-for-review task should clear WaitingReview")
-	}
-	if !task.Archived {
-		t.Error("task should be Archived after 'a'")
-	}
-}
-
 func TestTaskListView_PinToggle(t *testing.T) {
 	tl := NewTaskListView()
 	var captured *model.Task
@@ -2003,14 +1803,13 @@ func TestTaskListView_PinnedRemainsExpandedWhenCursorLeaves(t *testing.T) {
 	t.Error("pinned task row was hidden after cursor moved into Active section")
 }
 
-func TestTaskListView_NavigateThroughAllThreeSections(t *testing.T) {
-	// Downward navigation active → WR → archive should visit a task in each
-	// section exactly once, regardless of which section is currently expanded.
+func TestTaskListView_NavigateThroughAllSections(t *testing.T) {
+	// Downward navigation active → archive should visit a task in each section
+	// exactly once, regardless of which section is currently expanded.
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
 		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
-		{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
-		{ID: "3", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
+		{ID: "2", Name: "archived", Project: "proj", Status: model.StatusPending, Archived: true},
 	})
 
 	visited := []string{}
@@ -2023,47 +1822,11 @@ func TestTaskListView_NavigateThroughAllThreeSections(t *testing.T) {
 		tl.CursorDown()
 	}
 
-	// The sequence must include all three IDs in order 1 → 2 → 3.
-	want := []string{"1", "2", "3"}
+	want := []string{"1", "2"}
 	for i, id := range want {
 		if i >= len(visited) || visited[i] != id {
 			t.Fatalf("downward visit order = %v, want %v", visited, want)
 		}
-	}
-}
-
-func TestTaskListView_WaitingReviewAutoExpand(t *testing.T) {
-	tl := NewTaskListView()
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "active", Project: "proj", Status: model.StatusPending},
-		{ID: "2", Name: "waiting", Project: "proj", Status: model.StatusInReview, WaitingReview: true},
-	})
-
-	if tl.waitingReviewExpanded {
-		t.Error("waiting-for-review section should start collapsed")
-	}
-
-	// Navigate down past the active task — should enter the WR section.
-	for i := 0; i < 10; i++ {
-		tl.CursorDown()
-	}
-
-	task := tl.SelectedTask()
-	if task == nil || task.ID != "2" {
-		t.Fatalf("expected to land on waiting task id=2, got %+v", task)
-	}
-	if !tl.waitingReviewExpanded {
-		t.Error("WR section should be expanded after cursor enters it")
-	}
-
-	// Back up out of the WR section — should auto-collapse.
-	tl.CursorUp()
-	task = tl.SelectedTask()
-	if task == nil || task.ID != "1" {
-		t.Fatalf("expected to return to active task id=1, got %+v", task)
-	}
-	if tl.waitingReviewExpanded {
-		t.Error("WR section should collapse after cursor leaves it")
 	}
 }
 
@@ -2124,23 +1887,6 @@ func TestTaskListView_DrawArchiveHeader(t *testing.T) {
 	tl.drawArchiveHeader(sim, 0, 1, 30)
 	row = readRow(sim, 1, 30)
 	testutil.Contains(t, row, "Archive")
-	testutil.Contains(t, row, "▾")
-}
-
-func TestTaskListView_DrawWaitingReviewHeader(t *testing.T) {
-	sim := newSim(t, 50, 3)
-	tl := NewTaskListView()
-
-	tl.waitingReviewExpanded = false
-	tl.drawWaitingReviewHeader(sim, 0, 0, 50)
-	row := readRow(sim, 0, 50)
-	testutil.Contains(t, row, "Waiting for Review")
-	testutil.Contains(t, row, "▸")
-
-	tl.waitingReviewExpanded = true
-	tl.drawWaitingReviewHeader(sim, 0, 1, 50)
-	row = readRow(sim, 1, 50)
-	testutil.Contains(t, row, "Waiting for Review")
 	testutil.Contains(t, row, "▾")
 }
 
@@ -2233,20 +1979,18 @@ func TestTaskListView_Draw_TooSmall(t *testing.T) {
 }
 
 func TestTaskListView_Draw_AllSections(t *testing.T) {
-	// Render with active, waiting-review, and archive sections all present.
+	// Render with active and archive sections both present.
 	sim := newSim(t, 60, 30)
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
 		{ID: "1", Name: "active", Project: "p", Status: model.StatusPending},
-		{ID: "2", Name: "wait", Project: "p", Status: model.StatusInReview, WaitingReview: true},
-		{ID: "3", Name: "arch", Project: "p", Status: model.StatusComplete, Archived: true},
+		{ID: "2", Name: "arch", Project: "p", Status: model.StatusComplete, Archived: true},
 	})
 	tl.SetRect(0, 0, 60, 30)
 	tl.Draw(sim)
 
 	out := dumpScreen(sim)
 	testutil.Contains(t, out, "active")
-	testutil.Contains(t, out, "Waiting for Review")
 	testutil.Contains(t, out, "Archive")
 }
 
@@ -2414,19 +2158,6 @@ func TestTaskListView_DrawProjectRow_NoProject(t *testing.T) {
 	testutil.Contains(t, dumpScreen(sim), "(no project)")
 }
 
-func TestTaskListView_DrawProjectRow_ExpandedInWaitingReview(t *testing.T) {
-	sim := newSim(t, 60, 20)
-	tl := NewTaskListView()
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "wr1", Project: "p", Status: model.StatusInReview, WaitingReview: true},
-		{ID: "2", Name: "wr2", Project: "p", Status: model.StatusInReview, WaitingReview: true},
-	})
-	tl.waitingReviewExpanded = true
-	tl.waitingReviewProject = "p"
-	tl.SetRect(0, 0, 60, 20)
-	tl.Draw(sim)
-}
-
 func TestTaskListView_DrawProjectRow_ExpandedInArchive(t *testing.T) {
 	sim := newSim(t, 60, 20)
 	tl := NewTaskListView()
@@ -2574,20 +2305,6 @@ func TestTaskDetailPanel_Draw_IdleInProgress(t *testing.T) {
 	td.SetTask(task, false) // not running
 	td.Draw(sim)
 	testutil.Contains(t, dumpScreen(sim), "(idle)")
-}
-
-func TestTaskDetailPanel_Draw_LongPRURL(t *testing.T) {
-	sim := newSim(t, 30, 20)
-	td := NewTaskDetailPanel()
-	td.SetRect(0, 0, 30, 20)
-	td.SetTask(&model.Task{
-		ID:     "1",
-		Name:   "x",
-		Status: model.StatusPending,
-		PRURL:  strings.Repeat("https://github.com/very-long/url/path/", 5),
-	}, false)
-	td.Draw(sim)
-	testutil.Contains(t, dumpScreen(sim), "...")
 }
 
 func TestTaskDetailPanel_Draw_LongWorktree(t *testing.T) {
@@ -2893,19 +2610,6 @@ func TestTaskListView_SelectByID_Archived(t *testing.T) {
 	testutil.Equal(t, tl.archiveProject, "p")
 }
 
-func TestTaskListView_SelectByID_WaitingReview(t *testing.T) {
-	tl := NewTaskListView()
-	tl.SetTasks([]*model.Task{
-		{ID: "1", Name: "a", Project: "p", Status: model.StatusPending},
-		{ID: "2", Name: "b", Project: "p", Status: model.StatusInReview, WaitingReview: true},
-	})
-	tl.SelectByID("2")
-	if !tl.waitingReviewExpanded {
-		t.Error("SelectByID on waiting-review task should expand WR section")
-	}
-	testutil.Equal(t, tl.waitingReviewProject, "p")
-}
-
 func TestTaskListView_SelectByID_NotFound(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetTasks([]*model.Task{
@@ -2964,9 +2668,8 @@ func TestTaskSection(t *testing.T) {
 		want rowSection
 	}{
 		{"active", &model.Task{Status: model.StatusPending}, sectionActive},
-		{"waiting", &model.Task{WaitingReview: true}, sectionWaitingReview},
 		{"archived", &model.Task{Archived: true}, sectionArchive},
-		{"both archived and waiting → archive wins", &model.Task{Archived: true, WaitingReview: true}, sectionArchive},
+		{"pinned wins over archived", &model.Task{Pinned: true, Archived: true}, sectionPinned},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			testutil.Equal(t, taskSection(tc.t), tc.want)

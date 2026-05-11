@@ -46,8 +46,7 @@ func DefaultMetisVaultPath() string {
 }
 
 type Defaults struct {
-	Backend      string `toml:"backend"`
-	ReviewPrompt string `toml:"review_prompt"` // prompt sent to agent for PR review tasks
+	Backend string `toml:"backend"`
 }
 
 type Backend struct {
@@ -109,7 +108,7 @@ func (u UIConfig) ShouldCleanupWorktrees() bool {
 // DefaultConfig returns a config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Defaults: Defaults{Backend: "claude", ReviewPrompt: "/review"},
+		Defaults: Defaults{Backend: "claude"},
 		Backends: map[string]Backend{
 			"claude": {
 				Command:    "claude --dangerously-skip-permissions --permission-mode plan",

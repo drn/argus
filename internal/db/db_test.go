@@ -293,23 +293,21 @@ func TestDB_RoundTripsAllTaskFields(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	original := &model.Task{
-		Name:          "round-trip",
-		Status:        model.StatusInReview,
-		Project:       "proj-x",
-		Branch:        "feature/x",
-		Prompt:        "do the thing",
-		Backend:       "claude",
-		Worktree:      "/tmp/worktree",
-		AgentPID:      4242,
-		SessionID:     "abcd-1234",
-		PRURL:         "https://github.com/org/repo/pull/9",
-		Sandboxed:     true,
-		Archived:      false,
-		WaitingReview: false,
-		Pinned:        true,
-		CreatedAt:     now.Add(-2 * time.Hour),
-		StartedAt:     now.Add(-time.Hour),
-		EndedAt:       now,
+		Name:      "round-trip",
+		Status:    model.StatusInReview,
+		Project:   "proj-x",
+		Branch:    "feature/x",
+		Prompt:    "do the thing",
+		Backend:   "claude",
+		Worktree:  "/tmp/worktree",
+		AgentPID:  4242,
+		SessionID: "abcd-1234",
+		Sandboxed: true,
+		Archived:  false,
+		Pinned:    true,
+		CreatedAt: now.Add(-2 * time.Hour),
+		StartedAt: now.Add(-time.Hour),
+		EndedAt:   now,
 	}
 	if err := d.Add(original); err != nil {
 		t.Fatal(err)
@@ -330,10 +328,8 @@ func TestDB_RoundTripsAllTaskFields(t *testing.T) {
 	testutil.Equal(t, got.Worktree, original.Worktree)
 	testutil.Equal(t, got.AgentPID, original.AgentPID)
 	testutil.Equal(t, got.SessionID, original.SessionID)
-	testutil.Equal(t, got.PRURL, original.PRURL)
 	testutil.Equal(t, got.Sandboxed, original.Sandboxed)
 	testutil.Equal(t, got.Archived, original.Archived)
-	testutil.Equal(t, got.WaitingReview, original.WaitingReview)
 	testutil.Equal(t, got.Pinned, original.Pinned)
 	if !got.CreatedAt.Equal(original.CreatedAt) {
 		t.Errorf("CreatedAt: got %v, want %v", got.CreatedAt, original.CreatedAt)
@@ -347,16 +343,13 @@ func TestDB_RoundTripsAllTaskFields(t *testing.T) {
 
 	// Update path round-trip: flip one Boolean and confirm the rest survive.
 	got.Pinned = false
-	got.WaitingReview = true
 	if err := d.Update(got); err != nil {
 		t.Fatal(err)
 	}
 	reread, err := d.Get(got.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, reread.Pinned, false)
-	testutil.Equal(t, reread.WaitingReview, true)
 	testutil.Equal(t, reread.AgentPID, original.AgentPID)
-	testutil.Equal(t, reread.PRURL, original.PRURL)
 }
 
 // --- Project tests ---
@@ -1437,9 +1430,6 @@ func TestDB_UpdateAllFields(t *testing.T) {
 	if got.EndedAt.IsZero() {
 		t.Error("EndedAt should not be zero")
 	}
-	if got.PRURL != "" {
-		t.Errorf("PRURL should be empty, got %q", got.PRURL)
-	}
 }
 
 func TestDB_SandboxedRoundTrip(t *testing.T) {
@@ -1475,28 +1465,6 @@ func TestDB_SandboxedRoundTrip(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, got.Sandboxed, true)
 	})
-}
-
-func TestDB_PRURL(t *testing.T) {
-	d := testDB(t)
-
-	task := &model.Task{Name: "pr task"}
-	_ = d.Add(task)
-
-	// Initially empty.
-	got, _ := d.Get(task.ID)
-	if got.PRURL != "" {
-		t.Errorf("expected empty PRURL, got %q", got.PRURL)
-	}
-
-	// Set and persist.
-	task.PRURL = "https://github.com/owner/repo/pull/42"
-	_ = d.Update(task)
-
-	got, _ = d.Get(task.ID)
-	if got.PRURL != "https://github.com/owner/repo/pull/42" {
-		t.Errorf("PRURL = %q", got.PRURL)
-	}
 }
 
 func TestDB_BackendCommandRoundtrip(t *testing.T) {
@@ -1662,78 +1630,6 @@ func TestDB_SandboxConfig_Paths(t *testing.T) {
 	}
 }
 
-func TestDB_TaskByPRURL(t *testing.T) {
-	d := testDB(t)
-
-	t.Run("returns nil when no match", func(t *testing.T) {
-		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/999")
-		testutil.NoError(t, err)
-		if got != nil {
-			t.Error("expected nil for non-existent PR URL")
-		}
-	})
-
-	t.Run("finds task by PR URL", func(t *testing.T) {
-		task := &model.Task{Name: "review-pr", PRURL: "https://github.com/org/repo/pull/42"}
-		if err := d.Add(task); err != nil {
-			t.Fatal(err)
-		}
-		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/42")
-		testutil.NoError(t, err)
-		if got == nil {
-			t.Fatal("expected non-nil task")
-		}
-		if got.Name != "review-pr" {
-			t.Errorf("Name = %q, want %q", got.Name, "review-pr")
-		}
-	})
-
-	t.Run("excludes archived tasks", func(t *testing.T) {
-		task := &model.Task{Name: "archived-review", PRURL: "https://github.com/org/repo/pull/99", Archived: true}
-		if err := d.Add(task); err != nil {
-			t.Fatal(err)
-		}
-		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/99")
-		testutil.NoError(t, err)
-		if got != nil {
-			t.Error("should not return archived tasks")
-		}
-	})
-
-	t.Run("excludes waiting-for-review tasks", func(t *testing.T) {
-		task := &model.Task{Name: "wr-review", PRURL: "https://github.com/org/repo/pull/100", WaitingReview: true}
-		if err := d.Add(task); err != nil {
-			t.Fatal(err)
-		}
-		got, err := d.TaskByPRURL("https://github.com/org/repo/pull/100")
-		testutil.NoError(t, err)
-		if got != nil {
-			t.Error("should not return waiting-for-review tasks")
-		}
-	})
-
-	t.Run("returns most recent task", func(t *testing.T) {
-		url := "https://github.com/org/repo/pull/77"
-		old := &model.Task{Name: "old", PRURL: url, CreatedAt: time.Now().Add(-time.Hour)}
-		if err := d.Add(old); err != nil {
-			t.Fatal(err)
-		}
-		newer := &model.Task{Name: "newer", PRURL: url, CreatedAt: time.Now()}
-		if err := d.Add(newer); err != nil {
-			t.Fatal(err)
-		}
-		got, err := d.TaskByPRURL(url)
-		testutil.NoError(t, err)
-		if got == nil || got.Name != "newer" {
-			name := ""
-			if got != nil {
-				name = got.Name
-			}
-			t.Errorf("expected 'newer', got %q", name)
-		}
-	})
-}
-
 // TestDB_DeleteScheduleMissing covers the not-found path in DeleteSchedule.
 func TestDB_DeleteScheduleMissing(t *testing.T) {
 	d := testDB(t)
@@ -1850,12 +1746,6 @@ func TestDB_ErrorPaths(t *testing.T) {
 	t.Run("WorktreePaths query error", func(t *testing.T) {
 		d := closedDB(t)
 		_, err := d.WorktreePaths()
-		testutil.Error(t, err)
-	})
-
-	t.Run("TaskByPRURL query error", func(t *testing.T) {
-		d := closedDB(t)
-		_, err := d.TaskByPRURL("https://example/pr")
 		testutil.Error(t, err)
 	})
 

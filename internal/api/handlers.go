@@ -93,7 +93,6 @@ type taskJSON struct {
 	Project      string `json:"project"`
 	Branch       string `json:"branch,omitempty"`
 	Backend      string `json:"backend,omitempty"`
-	PRURL        string `json:"pr_url,omitempty"`
 	Elapsed      string `json:"elapsed,omitempty"`
 	CreatedAt    string `json:"created_at"`
 	Archived     bool   `json:"archived,omitempty"`
@@ -117,7 +116,6 @@ func taskToJSON(t *model.Task, rt taskRuntimeState) taskJSON {
 		Project:      t.Project,
 		Branch:       t.Branch,
 		Backend:      t.Backend,
-		PRURL:        t.PRURL,
 		Elapsed:      t.ElapsedString(),
 		CreatedAt:    t.CreatedAt.Format(time.RFC3339),
 		Archived:     t.Archived,

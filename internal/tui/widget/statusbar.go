@@ -122,12 +122,6 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	type hint struct{ key, label string }
 	var hints []hint
 	switch sb.activeTab {
-	case TabReviews:
-		hints = []hint{
-			{"↑↓", "navigate"}, {"RET", "select"}, {"^R", "review task"},
-			{"c", "comment"}, {"a", "approve"}, {"r", "req changes"},
-			{"R", "refresh"}, {"1", "tasks"}, {"3", "settings"}, {"q", "quit"},
-		}
 	case TabSettings:
 		hints = []hint{
 			{"n", "new project"}, {"d", "del"},
@@ -136,7 +130,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	default:
 		hints = []hint{
 			{"n", "new"}, {"RET", "attach"}, {"s", "status"}, {"r", "rename"},
-			{"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"2", "reviews"}, {"3", "settings"},
+			{"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"2", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}
 	}

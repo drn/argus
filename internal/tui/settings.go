@@ -32,7 +32,6 @@ const (
 	srSandbox
 	srLogs
 	srKB
-	srReviewPrompt
 	srAPI
 	srDaemon
 	srSpinner
@@ -97,11 +96,6 @@ type SettingsView struct {
 
 	// Project name list (used by other UI features).
 	projectNames []string
-
-	// Review prompt.
-	reviewPrompt  string // current review prompt template
-	editingPrompt bool   // true when inline-editing the review prompt
-	editPromptBuf string // buffer for in-progress edit
 
 	// Vault path editing.
 	editingVault     string   // vaultKeyMetis when editing, "" otherwise
@@ -249,9 +243,6 @@ func (sv *SettingsView) Refresh() {
 	}
 
 	sv.projectNames = projNames
-
-	// Review prompt.
-	sv.reviewPrompt = cfg.Defaults.ReviewPrompt
 
 	// Argus self-update source path.
 	sv.argusSourcePath = cfg.Argus.SourcePath
@@ -432,13 +423,6 @@ func (sv *SettingsView) rebuildRows() {
 	}
 	sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
 
-	// Review prompt.
-	rpLabel := "  Review Prompt: " + sv.reviewPrompt
-	if sv.editingPrompt {
-		rpLabel = "  Review Prompt: " + sv.editPromptBuf + "▎"
-	}
-	sv.rows = append(sv.rows, settingsRow{kind: srReviewPrompt, label: rpLabel, key: "_review_prompt"})
-
 	// Spinner style.
 	spinLabel := fmt.Sprintf("  Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
 	sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
@@ -490,10 +474,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		if pastedText == "" {
 			return
 		}
-		if sv.editingPrompt {
-			sv.editPromptBuf += pastedText
-			sv.rebuildRows()
-		} else if sv.editingVault != "" {
+		if sv.editingVault != "" {
 			sv.editVaultBuf += pastedText
 			sv.vaultAC.Update(sv.editVaultBuf)
 			sv.rebuildRows()
@@ -506,7 +487,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
-	return sv.editingPrompt || sv.editingVault != "" || sv.editingSource
+	return sv.editingVault != "" || sv.editingSource
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -540,9 +521,6 @@ func (sv *SettingsView) SelectedBackend() *backendEntry {
 // --- Key handling ---
 
 func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
-	if sv.editingPrompt {
-		return sv.handleEditPromptKey(ev)
-	}
 	if sv.editingVault != "" {
 		return sv.handleEditVaultKey(ev)
 	}
@@ -699,11 +677,6 @@ func (sv *SettingsView) handleEnter() bool {
 		if row.key == vaultKeyMetis {
 			sv.editVaultBuf = sv.metisVaultPath
 		}
-		sv.rebuildRows()
-		return true
-	case srReviewPrompt:
-		sv.editingPrompt = true
-		sv.editPromptBuf = sv.reviewPrompt
 		sv.rebuildRows()
 		return true
 	case srDaemon:
@@ -930,37 +903,6 @@ func (sv *SettingsView) SetUpdateResult(output, status string) {
 	sv.updateOutput = output
 	sv.updateStatus = status
 	sv.rebuildRows()
-}
-
-// handleEditPromptKey handles keystrokes while inline-editing the review prompt.
-func (sv *SettingsView) handleEditPromptKey(ev *tcell.EventKey) bool {
-	switch ev.Key() {
-	case tcell.KeyEnter:
-		sv.reviewPrompt = sv.editPromptBuf
-		sv.editingPrompt = false
-		if err := sv.database.SetConfigValue("defaults.review_prompt", sv.reviewPrompt); err != nil {
-			uxlog.Log("[settings] failed to persist review prompt: %v", err)
-		}
-		uxlog.Log("[settings] review prompt set to %q", sv.reviewPrompt)
-		sv.rebuildRows()
-		return true
-	case tcell.KeyEscape:
-		sv.editingPrompt = false
-		sv.rebuildRows()
-		return true
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if len(sv.editPromptBuf) > 0 {
-			_, size := utf8.DecodeLastRuneInString(sv.editPromptBuf)
-			sv.editPromptBuf = sv.editPromptBuf[:len(sv.editPromptBuf)-size]
-			sv.rebuildRows()
-		}
-		return true
-	case tcell.KeyRune:
-		sv.editPromptBuf += string(ev.Rune())
-		sv.rebuildRows()
-		return true
-	}
-	return false
 }
 
 // handleEditVaultKey handles keystrokes while inline-editing a vault path.
@@ -1199,8 +1141,6 @@ func (sv *SettingsView) renderDetail(screen tcell.Screen, x, y, w, h int) {
 		sv.renderVaultPathDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srSpinner:
 		sv.renderSpinnerDetail(screen, innerX, innerY, innerW, innerH)
-	case srReviewPrompt:
-		sv.renderReviewPromptDetail(screen, innerX, innerY, innerW, innerH)
 	case srLogs:
 		sv.renderLogsDetail(screen, innerX, innerY, innerW, innerH, row)
 	case srDaemon:
@@ -1710,33 +1650,6 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 
 	if r+1 < h {
 		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
-	}
-}
-
-func (sv *SettingsView) renderReviewPromptDetail(screen tcell.Screen, x, y, w, h int) {
-	widget.DrawText(screen, x, y, w, "Review Prompt", theme.StyleTitle)
-	r := 2
-
-	prompt := sv.reviewPrompt
-	if sv.editingPrompt {
-		prompt = sv.editPromptBuf + "▎"
-	}
-	widget.DrawText(screen, x, y+r, w, prompt, tcell.StyleDefault.Foreground(theme.ColorComplete))
-	r += 2
-
-	widget.DrawText(screen, x, y+r, w, "The prompt sent to the agent when starting", theme.StyleDimmed)
-	r++
-	widget.DrawText(screen, x, y+r, w, "a PR review task (Ctrl+R in Reviews tab).", theme.StyleDimmed)
-	r++
-	widget.DrawText(screen, x, y+r, w, "The PR URL is appended automatically.", theme.StyleDimmed)
-	r += 2
-
-	if r < h {
-		if sv.editingPrompt {
-			widget.DrawText(screen, x, y+r, w, "[enter] save  [esc] cancel", theme.StyleDimmed)
-		} else {
-			widget.DrawText(screen, x, y+r, w, "[enter] edit", theme.StyleDimmed)
-		}
 	}
 }
 

@@ -1007,29 +1007,6 @@ func TestTaskArchive(t *testing.T) {
 		testutil.Equal(t, sibling.Archived, true)
 	})
 
-	t.Run("archiving clears waiting_review", func(t *testing.T) {
-		s, taskDB, _ := testServerWithTasks()
-		// Set WaitingReview via Update so the test does not depend on
-		// mockTaskDB.Get returning the slice's pointer.
-		seed, _ := taskDB.Get("abc123")
-		seed.WaitingReview = true
-		if err := taskDB.Update(seed); err != nil {
-			t.Fatalf("seed Update: %v", err)
-		}
-		resp := doRequest(t, s, "tools/call", ToolCallParams{
-			Name:      "task_archive",
-			Arguments: json.RawMessage(`{"id": "abc123", "archived": true}`),
-		})
-		testutil.NoError(t, respErr(resp))
-		cr := callResult(t, resp)
-		if cr.IsError {
-			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
-		}
-		got, _ := taskDB.Get("abc123")
-		testutil.Equal(t, got.Archived, true)
-		testutil.Equal(t, got.WaitingReview, false)
-	})
-
 	t.Run("no-op when already in desired state", func(t *testing.T) {
 		s, taskDB, _ := testServerWithTasks()
 		resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -1138,27 +1115,6 @@ func TestTaskComplete(t *testing.T) {
 		testutil.Contains(t, cr.Content[0].Text, "already complete")
 		got, _ := taskDB.Get("def456")
 		testutil.Equal(t, got.EndedAt.Year(), 2020)
-	})
-
-	t.Run("completing clears waiting_review", func(t *testing.T) {
-		s, taskDB, _ := testServerWithTasks()
-		seed, _ := taskDB.Get("abc123")
-		seed.WaitingReview = true
-		if err := taskDB.Update(seed); err != nil {
-			t.Fatalf("seed Update: %v", err)
-		}
-		resp := doRequest(t, s, "tools/call", ToolCallParams{
-			Name:      "task_complete",
-			Arguments: json.RawMessage(`{"id": "abc123"}`),
-		})
-		testutil.NoError(t, respErr(resp))
-		cr := callResult(t, resp)
-		if cr.IsError {
-			t.Fatalf("unexpected error: %s", cr.Content[0].Text)
-		}
-		got, _ := taskDB.Get("abc123")
-		testutil.Equal(t, got.Status, model.StatusComplete)
-		testutil.Equal(t, got.WaitingReview, false)
 	})
 
 	t.Run("missing id and cwd", func(t *testing.T) {

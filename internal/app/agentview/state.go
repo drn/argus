@@ -28,7 +28,6 @@ type DiffState struct {
 type State struct {
 	TaskID   string
 	TaskName string
-	PRURL    string
 	Focus    Panel
 
 	// Terminal scrollback
@@ -63,7 +62,6 @@ func New() State {
 func (s *State) Reset(taskID, taskName string) {
 	s.TaskID = taskID
 	s.TaskName = taskName
-	s.PRURL = ""
 	s.Focus = PanelTerminal
 	s.ScrollOffset = 0
 	s.LastOutput = nil

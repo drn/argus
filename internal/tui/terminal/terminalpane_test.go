@@ -33,10 +33,6 @@ func TestTerminalPane_SetSession(t *testing.T) {
 	if !tp.focused {
 		t.Error("should be focused")
 	}
-	tp.SetPRURL("https://github.com/foo/bar/pull/1")
-	if tp.taskPR != "https://github.com/foo/bar/pull/1" {
-		t.Errorf("taskPR = %q", tp.taskPR)
-	}
 }
 
 func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
@@ -1532,38 +1528,6 @@ func TestTerminalPane_ToggleDiffSplit(t *testing.T) {
 	if tp.diffSplit {
 		t.Error("ToggleDiffSplit should flip off")
 	}
-}
-
-func TestTerminalPane_OpenPR_EmptyURL(t *testing.T) {
-	tp := NewTerminalPane()
-	called := false
-	old := openPRFn
-	t.Cleanup(func() { openPRFn = old })
-	openPRFn = func(url string) error {
-		called = true
-		return nil
-	}
-
-	tp.OpenPR() // no taskPR — early return, fn not called
-	if called {
-		t.Error("OpenPR should not call openPRFn when taskPR is empty")
-	}
-}
-
-func TestTerminalPane_OpenPR_WithURL(t *testing.T) {
-	tp := NewTerminalPane()
-	tp.SetPRURL("https://example.com/pr/1")
-
-	var got string
-	old := openPRFn
-	t.Cleanup(func() { openPRFn = old })
-	openPRFn = func(url string) error {
-		got = url
-		return nil
-	}
-
-	tp.OpenPR()
-	testutil.Equal(t, got, "https://example.com/pr/1")
 }
 
 func TestTerminalPane_PasteHandler_NoLiveSession(t *testing.T) {

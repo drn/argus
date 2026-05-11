@@ -96,16 +96,6 @@ func (td *TaskDetailPanel) Draw(screen tcell.Screen) {
 		row = td.drawField(screen, inner.X, row, inner.W, "Sandbox", "No", theme.StyleDimmed)
 	}
 
-	// PR URL
-	if t.PRURL != "" {
-		pr := t.PRURL
-		maxLen := inner.W - 5
-		if maxLen > 3 && len(pr) > maxLen {
-			pr = "..." + pr[len(pr)-maxLen+3:]
-		}
-		row = td.drawField(screen, inner.X, row, inner.W, "PR", pr, theme.StyleNormal)
-	}
-
 	// Worktree
 	if t.Worktree != "" {
 		wt := t.Worktree

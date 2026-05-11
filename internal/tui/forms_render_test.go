@@ -12,7 +12,6 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
-	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -350,29 +349,6 @@ func TestApp_IsTaskRunning(t *testing.T) {
 	app.runningIDs = []string{"a", "b"}
 	testutil.Equal(t, app.isTaskRunning("a"), true)
 	testutil.Equal(t, app.isTaskRunning("c"), false)
-}
-
-// --- Reviews submitComment / submitApprove with onFetch callback ---
-
-func TestReviewsView_SubmitComment_NoOnFetch(t *testing.T) {
-	rv := NewReviewsView()
-	pr := github.PR{Number: 1}
-	rv.selectedPR = &pr
-	rv.draftBody = "x"
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	rv.submitComment(app)
-}
-
-func TestReviewsView_SubmitApprove_NoOnFetch(t *testing.T) {
-	rv := NewReviewsView()
-	pr := github.PR{Number: 1}
-	rv.selectedPR = &pr
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	rv.submitApprove(app)
 }
 
 // --- More renametask tests for completeness ---

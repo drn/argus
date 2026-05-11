@@ -49,7 +49,6 @@ func (d *DB) Config() config.Config {
 		dest *string
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
-		{"defaults.review_prompt", &cfg.Defaults.ReviewPrompt},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
 		{"keybindings.status", &cfg.Keybindings.Status},

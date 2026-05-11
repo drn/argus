@@ -10,7 +10,6 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-
 // TestReconcileStaleSessions_FlipsInProgressToInReview verifies the function
 // flips InProgress rows to InReview (the post-restart drift recovery).
 func TestReconcileStaleSessions_FlipsInProgressToInReview(t *testing.T) {

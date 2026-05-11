@@ -226,4 +226,3 @@ func readIgnore(path string) ([]string, error) {
 	}
 	return out, sc.Err()
 }
-

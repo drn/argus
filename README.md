@@ -113,23 +113,21 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 #### Task List
 
-| Key             | Action                                                          |
-| --------------- | --------------------------------------------------------------- |
-| `n`             | New task (with skill autocomplete in prompt field)              |
-| `Enter`         | Open agent view                                                 |
-| `ctrl+f`        | Fork task (duplicate with context)                              |
-| `s` / `S`       | Advance / revert status                                         |
-| `a`             | Toggle archive                                                  |
-| `w`             | Toggle "Waiting for Review" (own section above Archive)         |
-| `P`             | Toggle pin (★ section pinned to the top of the task list)       |
-| `p`             | Open PR in browser                                              |
-| `c`             | Copy task prompt to clipboard                                   |
-| `ctrl+d`        | Destroy task (kill agent + remove worktree + delete branch)     |
-| `ctrl+r`        | Prune completed tasks                                           |
-| `j` / `k`       | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Reviews / Settings)                        |
-| `ctrl+l`        | Refresh screen (wipe ghost cells; works in every non-agent tab) |
-| `q`             | Quit                                                            |
+| Key         | Action                                                          |
+| ----------- | --------------------------------------------------------------- |
+| `n`         | New task (with skill autocomplete in prompt field)              |
+| `Enter`     | Open agent view                                                 |
+| `ctrl+f`    | Fork task (duplicate with context)                              |
+| `s` / `S`   | Advance / revert status                                         |
+| `a`         | Toggle archive                                                  |
+| `P`         | Toggle pin (★ section pinned to the top of the task list)       |
+| `c`         | Copy task prompt to clipboard                                   |
+| `ctrl+d`    | Destroy task (kill agent + remove worktree + delete branch)     |
+| `ctrl+r`    | Prune completed tasks                                           |
+| `j` / `k`   | Navigate up/down                                                |
+| `1` / `2`   | Switch tabs (Tasks / Settings)                                  |
+| `ctrl+l`    | Refresh screen (wipe ghost cells; works in every non-agent tab) |
+| `q`         | Quit                                                            |
 
 #### Agent View
 
@@ -138,10 +136,8 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
 | `Cmd+←` / `Cmd+→`     | Switch panels                                                             |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
-| `ctrl+p`              | Open PR in browser                                                        |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
-| `o`                   | Open PR in browser (when session is finished)                             |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
 
 #### File Panel
@@ -161,16 +157,6 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `Esc` / `ctrl+q`    | Close / cancel   |
 | `Enter`             | Confirm / submit |
 | `Tab` / `Shift+Tab` | Navigate fields  |
-
-#### Reviews
-
-| Key       | Action          |
-| --------- | --------------- |
-| `j` / `k` | Navigate PRs    |
-| `R`       | Refresh PR list |
-| `a`       | Approve PR      |
-| `r`       | Request changes |
-| `c`       | Line comment    |
 
 #### Settings
 

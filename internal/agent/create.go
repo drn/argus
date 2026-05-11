@@ -29,7 +29,6 @@ type CreateInput struct {
 	Prompt     string
 	Project    string
 	Backend    string // optional; empty = cfg.Defaults.Backend
-	PRURL      string // optional; set for review tasks
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
@@ -179,7 +178,6 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Backend:  backend,
 		Worktree: wtPath,
 		Branch:   branchName,
-		PRURL:    input.PRURL,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

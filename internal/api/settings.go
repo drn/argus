@@ -44,8 +44,7 @@ type apiSettings struct {
 }
 
 type defaultsJSON struct {
-	Backend      string `json:"backend"`
-	ReviewPrompt string `json:"review_prompt"`
+	Backend string `json:"backend"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -66,8 +65,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			HTTPPort: cfg.API.HTTPPort,
 		},
 		Defaults: defaultsJSON{
-			Backend:      cfg.Defaults.Backend,
-			ReviewPrompt: cfg.Defaults.ReviewPrompt,
+			Backend: cfg.Defaults.Backend,
 		},
 	})
 }
@@ -101,8 +99,7 @@ type apiUpdate struct {
 }
 
 type defaultsUpdate struct {
-	Backend      *string `json:"backend,omitempty"`
-	ReviewPrompt *string `json:"review_prompt,omitempty"`
+	Backend *string `json:"backend,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -158,9 +155,6 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 	if d := req.Defaults; d != nil {
 		if d.Backend != nil {
 			out["defaults.backend"] = *d.Backend
-		}
-		if d.ReviewPrompt != nil {
-			out["defaults.review_prompt"] = *d.ReviewPrompt
 		}
 	}
 	return out

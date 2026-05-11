@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"runtime/debug"
 	"sync"
 	"time"
@@ -89,7 +88,6 @@ type TerminalPane struct {
 	mu      sync.Mutex
 	session agentview.TerminalAdapter
 	taskID  string
-	taskPR  string
 	focused bool
 
 	// Persistent x/vt emulator for live incremental rendering.
@@ -303,11 +301,6 @@ func (tp *TerminalPane) SetPending(v bool) {
 		// Branch change: pending banner ↔ "No active session" message.
 		tp.notifyBranchChange()
 	}
-}
-
-// SetPRURL sets the PR URL for the current task.
-func (tp *TerminalPane) SetPRURL(url string) {
-	tp.taskPR = url
 }
 
 // ForceResyncPTY schedules a one-shot unconditional resize on the next Draw().
@@ -668,21 +661,6 @@ func (tp *TerminalPane) DiffScrollUp(n int) {
 // DiffScrollDown scrolls the diff view down.
 func (tp *TerminalPane) DiffScrollDown(n int) {
 	tp.diffScroll += n
-}
-
-// --- PR ---
-
-// openPRFn is the function used to open a PR URL. Overridable in tests so
-// `OpenPR` can be exercised without launching a real `open` subprocess.
-var openPRFn = func(url string) error {
-	return exec.Command("open", url).Start()
-}
-
-func (tp *TerminalPane) OpenPR() {
-	if tp.taskPR == "" {
-		return
-	}
-	openPRFn(tp.taskPR) //nolint:errcheck
 }
 
 // --- Draw ---

@@ -12,10 +12,10 @@ import (
 
 func TestParseCounts(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		line             string
-		wantN, wantC     int
-		wantOK           bool
+		name         string
+		line         string
+		wantN, wantC int
+		wantOK       bool
 	}{
 		{"valid", "x.go:1.2,3.4 5 7\n", 5, 7, true},
 		{"zero exec", "x.go:1.2,3.4 4 0\n", 4, 0, true},
@@ -85,8 +85,8 @@ func TestFilter(t *testing.T) {
 	var out bytes.Buffer
 	s, err := filter(in, &out, []string{"x/drop/"})
 	testutil.NoError(t, err)
-	testutil.Equal(t, s.total, 7)     // 4 + 3
-	testutil.Equal(t, s.covered, 4)   // first line covered, second not
+	testutil.Equal(t, s.total, 7)   // 4 + 3
+	testutil.Equal(t, s.covered, 4) // first line covered, second not
 	testutil.Equal(t, s.filteredFiles, 1)
 
 	got := out.String()

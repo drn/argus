@@ -47,13 +47,6 @@
 - **`toolDefs` slice must be copied before append in `handleToolsList`.** The package-level `var` could be corrupted if `append` reuses its backing array when adding task tools.
 - **`Set*` wiring on `mcp.Server` must complete before `ListenAndServe`.** Fields like `s.taskDB`, `s.schedDB`, `s.schedRunner` are read at request time without a mutex — happens-before is guaranteed only by the daemon init order. When adding a new conditional tool family (e.g. `schedule_*`), the dependency it wraps must be constructed before the MCP block in `internal/daemon/daemon.go` so `SetXxxManager` can be called pre-listen. Reordering a later block (scheduler/pushMgr) up to before the MCP block is the standard fix.
 
-## PR & Reviews
-
-- **PR URL detection: scan on tick + on agent exit.** Last regex match wins. Use `RecentOutputTail(32KB)`, not full buffer.
-- **`gh search prs --json` doesn't support `reviewDecision`.** Use `gh pr list --json` per-repo.
-- **`SetPRs` must sort review requests before "my PRs"** — visual order must match slice order.
-- **PR list has 10min cooldown.** `SetPRs` preserves cursor/selection on background refresh.
-
 ## File Explorer
 
 - **`autoExpand` must only treat `indent == 0` dirs as expandable.** Synthetic sub-dir rows (indent > 0, IsDir) are display-only groupings from `buildChildTree`. Without the `row.indent == 0` guard, navigating onto a sub-dir row collapses the top-level parent, causing all children to disappear.
@@ -79,7 +72,7 @@
 - **MCP `task_create` is rate-limited to 5 concurrent calls.** `maxConcurrentCreates` prevents unbounded process spawning from a misbehaving MCP client. Each HeadlessCreateTask creates a worktree + PTY process.
 - **MCP `task_stop` must NOT pre-check DB status before calling `Stop()`.** TOCTOU race: the process can exit between the status read and the Stop() call, causing confusing errors. Let the stopper determine whether the session is alive.
 - **MCP `task_archive` cwd resolution must compare against `worktree + separator`, not raw prefix.** Otherwise a task with worktree `…/add-tests` would match a cwd inside `…/add-tests-extra`. `resolveTask` uses `strings.HasPrefix(cwd, wt+string(filepath.Separator))` plus an exact-equals check. Longest-match wins across siblings.
-- **MCP `task_archive` mirrors the TUI 'a' keybinding — archiving clears `WaitingReview`, status is untouched.** The archive flag is independent of `Status`; `/archive` does not set `StatusComplete`.
+- **MCP `task_archive` mirrors the TUI 'a' keybinding — archiving is independent of `Status`.** `/archive` does not set `StatusComplete`.
 
 ## Remote API
 
@@ -119,7 +112,7 @@
 - **`cmd.Dir = os.TempDir()` is required even with `--setting-sources ""`.** The `claude` CLI walks up from cwd to auto-discover `CLAUDE.md`; running from a worktree pulls the project's `CLAUDE.md` into context. Belt-and-suspenders with the settings flag.
 - **Race guard is a single SQL CAS via `db.RenameIfName`, not check-then-set.** `runAutoRename` MUST use `RenameIfName(id, originalName, newName)` — a `Get`-then-`Rename` pair has a TOCTOU window where a concurrent manual rename gets clobbered. The CAS resolves the race in one `UPDATE … WHERE name=?`. If user types a name equal to the regex slug or the rename modal sets it back, auto-rename will still fire — cost of false-positive rename is low; adding a "was auto-named" boolean to the schema isn't worth it.
 - **Goroutine inherits its parent process lifecycle.** TUI-initiated tasks fire `runAutoRename` inside the TUI process; if the user quits before Haiku returns, the rename is lost. Headless paths (HTTP API / MCP) run inside the daemon, so renames survive TUI restarts.
-- **`AutoName` opt-in lives on each call site, not centrally.** Only set `AutoName: true` when the name was string-interpolated from `Prompt` — NOT for review-pr (`review-pr-N-…`), fork (`<src>-fork`), or multipart with attachment-derived name (the filename is already meaningful).
+- **`AutoName` opt-in lives on each call site, not centrally.** Only set `AutoName: true` when the name was string-interpolated from `Prompt` — NOT for fork (`<src>-fork`) or multipart with attachment-derived name (the filename is already meaningful).
 - **`llm.DefaultTimeout` must comfortably exceed claude CLI startup + Haiku latency.** Observed end-to-end is 6-8s (CLI startup 1-2s + model 3-6s) with occasional spikes; setting the timeout near that range produces frequent `signal: killed` failures and silent fallback to the regex slug. 30s gives ample headroom and costs nothing because the goroutine is fire-and-forget. If you ever shrink it, watch `[autoname] failed … signal: killed` in `~/.argus/daemon.log`.
 
 ## Link Extraction

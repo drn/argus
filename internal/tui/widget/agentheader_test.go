@@ -339,19 +339,13 @@ func TestStatusBar_SetTab_ChangesHints(t *testing.T) {
 			name:      "tasks",
 			tab:       TabTasks,
 			needs:     []string{"new", "attach"},
-			notExpect: []string{"approve"},
-		},
-		{
-			name:      "reviews",
-			tab:       TabReviews,
-			needs:     []string{"approve", "comment"},
 			notExpect: []string{"new project"},
 		},
 		{
 			name:      "settings",
 			tab:       TabSettings,
 			needs:     []string{"new project"},
-			notExpect: []string{"approve"},
+			notExpect: []string{"attach"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

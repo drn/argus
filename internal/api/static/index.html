@@ -1034,11 +1034,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <select class="settings-input" id="default-backend" style="width: 160px"
                 onchange="saveDefault('backend', this.value)"></select>
       </div>
-      <div class="settings-row" style="flex-direction: column; align-items: stretch">
-        <label class="label">Review prompt</label>
-        <input class="settings-input" id="default-review-prompt" onblur="saveDefault('review_prompt', this.value)">
-        <div class="meta">Sent to the agent when starting a PR review (PR URL appended).</div>
-      </div>
     </div>
 
     <div class="settings-section">
@@ -1878,12 +1873,10 @@ async function refresh() {
     tasks = data.tasks || [];
     // Sync the open detail view with the fresh server snapshot. Without this,
     // currentTask is captured once in openDetail() and stays stale for the
-    // duration of the agent view — fields that change while the user is
-    // inside (notably pr_url, which only appears after the agent opens a
-    // PR, and archived/status flips) only take effect when the user exits
-    // and re-enters. The four fields below are the exact inputs to
-    // renderOverflowMenu()/the subtitle; gating the rerender on them
-    // avoids rebuilding the menu DOM under the user's finger every 5s.
+    // duration of the agent view — archived/status flips only take effect
+    // when the user exits and re-enters. The fields below are the exact
+    // inputs to renderOverflowMenu()/the subtitle; gating the rerender on
+    // them avoids rebuilding the menu DOM under the user's finger every 5s.
     if (currentTask) {
       const fresh = tasks.find(t => t.id === currentTask.id);
       if (fresh) {
@@ -1892,7 +1885,6 @@ async function refresh() {
         // value to detect the transition.
         const wasIdle = effectiveStatus(currentTask) === 'idle';
         const menuChanged =
-          fresh.pr_url !== currentTask.pr_url ||
           fresh.status !== currentTask.status ||
           fresh.idle !== currentTask.idle ||
           fresh.archived !== currentTask.archived;
@@ -3068,9 +3060,6 @@ function renderOverflowMenu() {
       ? { id: 'btn-archive', label: 'Unarchive', fn: () => setArchive(false) }
       : { id: 'btn-archive', label: 'Archive', fn: () => setArchive(true) },
   );
-  if (currentTask.pr_url) {
-    items.push({ id: 'btn-pr', label: 'View PR', fn: () => openExternalURL(currentTask.pr_url) });
-  }
   items.push({ id: 'btn-delete', label: 'Delete', fn: deleteTask, danger: true });
 
   menu.innerHTML = '';
@@ -4293,7 +4282,6 @@ function renderSettings() {
   setRestartFlag('kb-metis-meta', settingsBootstrap?.kb.metis_vault_path, s.kb.metis_vault_path);
   // Defaults
   fillSelectOptions('default-backend', backendsCache.map(b => b.name), s.defaults.backend, true);
-  document.getElementById('default-review-prompt').value = s.defaults.review_prompt || '';
   // API
   document.getElementById('api-enabled').checked = !!s.api.enabled;
   const apiFlag = document.getElementById('api-restart-flag');

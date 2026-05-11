@@ -10,7 +10,7 @@ import (
 )
 
 // taskColumns is the canonical column list for task queries.
-const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, sandboxed, archived, waiting_review, pinned, created_at, started_at, ended_at`
+const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, created_at, started_at, ended_at`
 
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -21,14 +21,13 @@ type scanner interface {
 func scanTask(row scanner) (*model.Task, error) {
 	t := &model.Task{}
 	var status, createdAt, startedAt, endedAt string
-	var sandboxed, archived, waitingReview, pinned int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &t.PRURL, &sandboxed, &archived, &waitingReview, &pinned, &createdAt, &startedAt, &endedAt); err != nil {
+	var sandboxed, archived, pinned int
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &createdAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
 	t.Sandboxed = sandboxed != 0
 	t.Archived = archived != 0
-	t.WaitingReview = waitingReview != 0
 	t.Pinned = pinned != 0
 	t.CreatedAt = parseTime(createdAt)
 	t.StartedAt = parseTime(startedAt)
@@ -74,16 +73,12 @@ func (d *DB) Add(t *model.Task) error {
 	if t.Archived {
 		archivedInt = 1
 	}
-	waitingReviewInt := 0
-	if t.WaitingReview {
-		waitingReviewInt = 1
-	}
 	pinnedInt := 0
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, pr_url, sandboxed, archived, waiting_review, pinned, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, sandboxedInt, archivedInt, waitingReviewInt, pinnedInt,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -100,16 +95,12 @@ func (d *DB) Update(t *model.Task) error {
 	if t.Archived {
 		archivedInt = 1
 	}
-	waitingReviewInt := 0
-	if t.WaitingReview {
-		waitingReviewInt = 1
-	}
 	pinnedInt := 0
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, pr_url=?, sandboxed=?, archived=?, waiting_review=?, pinned=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
-		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, t.PRURL, sandboxedInt, archivedInt, waitingReviewInt, pinnedInt,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return err
@@ -247,24 +238,4 @@ func (d *DB) WorktreePaths() (map[string]bool, error) {
 		}
 	}
 	return paths, nil
-}
-
-// TaskByPRURL returns the most recent active (non-archived, not waiting-for-review)
-// task linked to the given PR URL, or nil if none exists. Used to detect duplicate
-// review tasks. Tasks that have been flagged as waiting-for-review are treated as
-// parked like archived tasks — they should not suppress creation of a fresh review
-// task for the same PR.
-func (d *DB) TaskByPRURL(url string) (*model.Task, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE pr_url=? AND archived=0 AND waiting_review=0 ORDER BY created_at DESC LIMIT 1`, url)
-	t, err := scanTask(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query task by pr url: %w", err)
-	}
-	return t, nil
 }

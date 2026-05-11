@@ -1048,9 +1048,6 @@ func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
 	if task.Backend != "" {
 		fmt.Fprintf(&sb, "- **Backend**: %s\n", task.Backend)
 	}
-	if task.PRURL != "" {
-		fmt.Fprintf(&sb, "- **PR**: %s\n", task.PRURL)
-	}
 	if elapsed := task.ElapsedString(); elapsed != "" {
 		fmt.Fprintf(&sb, "- **Elapsed**: %s\n", elapsed)
 	}
@@ -1203,9 +1200,6 @@ func (s *Server) toolTaskComplete(id interface{}, args json.RawMessage) *Respons
 	// daemon.
 	prev := task.Status
 	task.SetStatus(model.StatusComplete)
-	// Mirror the TUI 'a' archive keybinding: completing a task means review
-	// is no longer pending, so clear the badge.
-	task.WaitingReview = false
 	if err := s.taskDB.Update(task); err != nil {
 		log.Printf("[mcp] task_complete failed: id=%s err=%v", task.ID, err)
 		return toolError(id, fmt.Sprintf("Failed to mark task complete: %v", err))

@@ -14,35 +14,6 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
-// --- Reviews lookups & SetFullDiff ---
-
-func TestReviewsView_SetFullDiff(t *testing.T) {
-	rv := NewReviewsView()
-	rv.files = []string{"a.go"}
-	rv.diffFetching = true
-	rv.SetFullDiff(`diff --git a/a.go b/a.go
-@@ -1 +1 @@
--old
-+new`)
-	testutil.Equal(t, rv.diffFetching, false)
-	if rv.fullDiff == "" {
-		t.Error("fullDiff not set")
-	}
-}
-
-func TestReviewsView_SelectedPR(t *testing.T) {
-	rv := NewReviewsView()
-	testutil.Nil(t, rv.SelectedPR())
-}
-
-func TestReviewsView_FetchingFlags(t *testing.T) {
-	rv := NewReviewsView()
-	rv.diffFetching = true
-	testutil.Equal(t, rv.DiffFetching(), true)
-	rv.commentsFetching = true
-	testutil.Equal(t, rv.CommentsFetching(), true)
-}
-
 // --- Settings detail render functions ---
 
 func makeSettings(t *testing.T) *SettingsView {
@@ -147,33 +118,6 @@ func TestSettings_RenderSpinnerDetail(t *testing.T) {
 	sv := makeSettings(t)
 	for i, row := range sv.rows {
 		if row.kind == srSpinner {
-			sv.cursor = i
-			break
-		}
-	}
-	sv.SetRect(0, 0, 100, 30)
-	sv.Draw(drawSim(t))
-}
-
-func TestSettings_RenderReviewPromptDetail(t *testing.T) {
-	sv := makeSettings(t)
-	for i, row := range sv.rows {
-		if row.kind == srReviewPrompt {
-			sv.cursor = i
-			break
-		}
-	}
-	sv.SetRect(0, 0, 100, 30)
-	sv.Draw(drawSim(t))
-}
-
-func TestSettings_RenderReviewPromptDetail_Editing(t *testing.T) {
-	sv := makeSettings(t)
-	sv.editingPrompt = true
-	sv.editPromptBuf = "/x"
-	sv.rebuildRows()
-	for i, row := range sv.rows {
-		if row.kind == srReviewPrompt {
 			sv.cursor = i
 			break
 		}
@@ -367,7 +311,6 @@ func TestSettings_RenderAutoStartDetail_InstalledNotLoaded(t *testing.T) {
 
 func TestSettings_RenderWarningDetail(t *testing.T) {
 	sv := makeSettings(t)
-	// Cursor on warning row.
 	for i, row := range sv.rows {
 		if row.kind == srWarning {
 			sv.cursor = i
@@ -436,7 +379,7 @@ func TestSettings_HandleDeleteSchedule(t *testing.T) {
 
 func TestSettings_HandleDeleteSchedule_NoCallback(t *testing.T) {
 	sv := makeSettings(t)
-	got := sv.handleDeleteSchedule() // no schedule selected
+	got := sv.handleDeleteSchedule()
 	testutil.Equal(t, got, false)
 }
 
@@ -570,7 +513,6 @@ func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {
 
 func TestSettings_HandleKey_LeftRightFallthrough(t *testing.T) {
 	sv := makeSettings(t)
-	// Cursor on backend row → left/right fall through.
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
 			sv.cursor = i
@@ -585,26 +527,16 @@ func TestSettings_PasteHandler_NoOpWhenNotEditing(t *testing.T) {
 	sv := makeSettings(t)
 	paste := sv.PasteHandler()
 	paste("garbage", func(p tview.Primitive) {})
-	// No editing state changed.
 	testutil.Equal(t, sv.IsEditing(), false)
-}
-
-func TestSettings_PasteHandler_AppendsToPromptEdit(t *testing.T) {
-	sv := makeSettings(t)
-	sv.editingPrompt = true
-	sv.editPromptBuf = "/r"
-	paste := sv.PasteHandler()
-	paste("eview", func(p tview.Primitive) {})
-	testutil.Equal(t, sv.editPromptBuf, "/review")
 }
 
 func TestSettings_PasteHandler_EmptyTextNoOp(t *testing.T) {
 	sv := makeSettings(t)
-	sv.editingPrompt = true
-	sv.editPromptBuf = "x"
+	sv.editingVault = vaultKeyMetis
+	sv.editVaultBuf = "x"
 	paste := sv.PasteHandler()
 	paste("", func(p tview.Primitive) {})
-	testutil.Equal(t, sv.editPromptBuf, "x")
+	testutil.Equal(t, sv.editVaultBuf, "x")
 }
 
 func TestSettings_PasteHandler_AppendsToVaultEdit(t *testing.T) {
@@ -636,7 +568,6 @@ func TestSettingsPage_DrawZeroRect(t *testing.T) {
 
 func TestSettingsPage_MouseHandler(t *testing.T) {
 	sv := makeSettings(t)
-	// Get a logs row so HandleMouse delegates.
 	for i, row := range sv.rows {
 		if row.kind == srLogs {
 			sv.cursor = i
@@ -662,7 +593,6 @@ func TestApp_OpenInFinder_NoFile(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	// No selected file or worktree → no-op.
 	app.openInFinder()
 }
 
@@ -700,6 +630,5 @@ func TestApp_HandleNewTaskKey_PassesThrough(t *testing.T) {
 	d.SetProject("p", config.Project{Path: t.TempDir()})
 
 	app.onNewTask()
-	// Just verify the handler runs without panic.
 	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyRune, 'a', 0))
 }

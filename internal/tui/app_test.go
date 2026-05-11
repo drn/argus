@@ -11,7 +11,6 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -113,11 +112,6 @@ func TestSwitchTab(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-
-	app.switchTab(widget.TabReviews)
-	if app.header.ActiveTab() != widget.TabReviews {
-		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
-	}
 
 	app.switchTab(widget.TabSettings)
 	if app.header.ActiveTab() != widget.TabSettings {
@@ -355,18 +349,12 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Fatalf("initial tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
-	// Right arrow → Reviews
+	// Right arrow → Settings
 	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
 	result := app.handleGlobalKey(ev)
 	if result != nil {
 		t.Error("right arrow should be consumed (return nil)")
 	}
-	if app.header.ActiveTab() != widget.TabReviews {
-		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
-	}
-
-	// Right arrow → Settings
-	result = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings", app.header.ActiveTab())
 	}
@@ -377,18 +365,12 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Errorf("tab = %v, want widget.TabSettings (no wrap)", app.header.ActiveTab())
 	}
 
-	// Left arrow → Reviews
+	// Left arrow → Tasks
 	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
 	result = app.handleGlobalKey(ev)
 	if result != nil {
 		t.Error("left arrow should be consumed")
 	}
-	if app.header.ActiveTab() != widget.TabReviews {
-		t.Errorf("tab = %v, want widget.TabReviews", app.header.ActiveTab())
-	}
-
-	// Left arrow → Tasks
-	result = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != widget.TabTasks {
 		t.Errorf("tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
@@ -1255,70 +1237,6 @@ func TestWorktreeSubdir(t *testing.T) {
 	}
 }
 
-func TestPRURLRegex(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"https://github.com/acme/widgets/pull/42", "https://github.com/acme/widgets/pull/42"},
-		{"Created PR https://github.com/acme/widgets/pull/42\n", "https://github.com/acme/widgets/pull/42"},
-		{"no url here", ""},
-		// OSC 8 hyperlink: URL appears twice — take last match
-		{"\x1b]8;;https://github.com/a/b/pull/1\x1b\\https://github.com/a/b/pull/1\x1b]8;;\x1b\\", "https://github.com/a/b/pull/1"},
-		// Multiple PRs: take last
-		{"https://github.com/a/b/pull/1 then https://github.com/a/b/pull/2", "https://github.com/a/b/pull/2"},
-	}
-	for _, tt := range tests {
-		matches := prURLRe.FindAllString(tt.input, -1)
-		got := ""
-		if len(matches) > 0 {
-			got = matches[len(matches)-1]
-		}
-		if got != tt.want {
-			t.Errorf("prURLRe(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestScanAndStorePRURL(t *testing.T) {
-	d := testDB(t)
-
-	task := &model.Task{
-		ID:      "pr-scan-1",
-		Name:    "test",
-		Project: "proj",
-		Status:  model.StatusInProgress,
-	}
-	d.Add(task) //nolint:errcheck
-
-	// Simulate what scanAndStorePRURL does (without needing a running tview app).
-	output := []byte("Created https://github.com/acme/repo/pull/99\nDone.")
-	matches := prURLRe.FindAll(output, -1)
-	if len(matches) == 0 {
-		t.Fatal("prURLRe should match PR URL in output")
-	}
-	url := string(matches[len(matches)-1])
-	if url != "https://github.com/acme/repo/pull/99" {
-		t.Errorf("matched URL = %q, want https://github.com/acme/repo/pull/99", url)
-	}
-
-	// Persist to DB (same as scanAndStorePRURL does).
-	got, _ := d.Get("pr-scan-1")
-	got.PRURL = url
-	d.Update(got) //nolint:errcheck
-
-	got2, _ := d.Get("pr-scan-1")
-	if got2.PRURL != "https://github.com/acme/repo/pull/99" {
-		t.Errorf("DB PRURL = %q, want https://github.com/acme/repo/pull/99", got2.PRURL)
-	}
-
-	// No match case.
-	noURLOutput := []byte("no github link here")
-	if matches := prURLRe.FindAll(noURLOutput, -1); len(matches) != 0 {
-		t.Errorf("should not match in %q", noURLOutput)
-	}
-}
-
 func TestPTYSizeFromHostTerm(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -1961,7 +1879,7 @@ func TestApp_NotifySessionExit(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		app.NotifySessionExit("t1", nil, false, []byte("Created PR https://github.com/foo/bar/pull/1"))
+		app.NotifySessionExit("t1", nil, false, []byte("done"))
 		close(done)
 	}()
 	select {
@@ -1970,9 +1888,6 @@ func TestApp_NotifySessionExit(t *testing.T) {
 		t.Fatal("NotifySessionExit blocked")
 	}
 	syncUI(t, app.tapp)
-
-	got, _ := d.Get("t1")
-	testutil.Equal(t, got.PRURL, "https://github.com/foo/bar/pull/1")
 }
 
 func TestApp_HandleSessionExit_StreamLost(t *testing.T) {
@@ -2036,40 +1951,6 @@ func TestApp_HandleSessionExitUI_FlipToInReview(t *testing.T) {
 	app.handleSessionExitUI("t1", true, false)
 	got, _ := d.Get("t1")
 	testutil.Equal(t, got.Status, model.StatusInReview)
-}
-
-func TestApp_ScanAndStorePRURL(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress}
-	d.Add(task)
-
-	_, stop := wireApp(t, app)
-	t.Cleanup(stop)
-
-	app.scanAndStorePRURL("t1", []byte("Created PR https://github.com/owner/repo/pull/42"))
-	got, _ := d.Get("t1")
-	testutil.Equal(t, got.PRURL, "https://github.com/owner/repo/pull/42")
-}
-
-func TestApp_ScanAndStorePRURL_NoMatch(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress}
-	d.Add(task)
-
-	app.scanAndStorePRURL("t1", []byte("no pr here"))
-	got, _ := d.Get("t1")
-	testutil.Equal(t, got.PRURL, "")
-}
-
-func TestApp_ScanAndStorePRURL_Empty(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	app.scanAndStorePRURL("t1", nil)
 }
 
 func TestApp_OnTaskCursorChange_Nil(t *testing.T) {
@@ -2157,49 +2038,6 @@ func TestApp_RefreshPreview_ZeroSize(t *testing.T) {
 	app := New(d, runner, false)
 
 	app.refreshPreview("anything")
-}
-
-func TestApp_StartReviewTask_NoMatchingProject(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-
-	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "unknown"}
-	app.startReviewTask(pr)
-
-	tasks, _ := d.Tasks()
-	testutil.Equal(t, len(tasks), 0)
-}
-
-func TestApp_StartReviewTask_ExistingTask(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-
-	prURL := "https://github.com/acme/widget/pull/42"
-	existing := &model.Task{ID: "tex", Project: "widget", Name: "reviewed", PRURL: prURL, Status: model.StatusPending}
-	d.Add(existing)
-	app.refreshTasks()
-
-	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "widget"}
-	app.startReviewTask(pr)
-
-	testutil.Equal(t, app.agentState.TaskID, "tex")
-}
-
-func TestApp_StartReviewTask_NoProjectPath(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	d.SetProject("widget", config.Project{})
-
-	pr := &github.PR{Number: 42, RepoOwner: "acme", Repo: "widget", Title: "test"}
-	app.startReviewTask(pr)
-
-	tasks, _ := d.Tasks()
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task, got %d", len(tasks))
-	}
 }
 
 func TestApp_HandleSessionExitUI_NoStatusFlipForNonInProgress(t *testing.T) {

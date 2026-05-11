@@ -34,12 +34,10 @@ func TestBuildSettingsUpdates(t *testing.T) {
 
 	t.Run("defaults flow through", func(t *testing.T) {
 		backend := "claude"
-		prompt := "/review"
 		got := buildSettingsUpdates(updateSettingsReq{
-			Defaults: &defaultsUpdate{Backend: &backend, ReviewPrompt: &prompt},
+			Defaults: &defaultsUpdate{Backend: &backend},
 		})
 		testutil.Equal(t, got["defaults.backend"], "claude")
-		testutil.Equal(t, got["defaults.review_prompt"], "/review")
 	})
 }
 
@@ -50,7 +48,6 @@ func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
 	testutil.NoError(t, d.SetConfigValue("sandbox.enabled", "true"))
 	testutil.NoError(t, d.SetConfigValue("sandbox.deny_read", "/secrets,~/.aws"))
 	testutil.NoError(t, d.SetConfigValue("kb.enabled", "true"))
-	testutil.NoError(t, d.SetConfigValue("defaults.review_prompt", "/review-strict"))
 
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, authedReq("GET", "/api/settings", ""))
@@ -61,7 +58,6 @@ func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
 	testutil.Equal(t, resp.Sandbox.Enabled, true)
 	testutil.DeepEqual(t, resp.Sandbox.DenyRead, []string{"/secrets", "~/.aws"})
 	testutil.Equal(t, resp.KB.Enabled, true)
-	testutil.Equal(t, resp.Defaults.ReviewPrompt, "/review-strict")
 }
 
 func TestHandleSettings_PutPersists(t *testing.T) {
@@ -69,8 +65,7 @@ func TestHandleSettings_PutPersists(t *testing.T) {
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
 	body := `{"sandbox": {"enabled": true, "deny_read": ["/etc"]},
-	          "kb": {"enabled": true, "metis_vault_path": "/tmp/m"},
-	          "defaults": {"review_prompt": "/review"}}`
+	          "kb": {"enabled": true, "metis_vault_path": "/tmp/m"}}`
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", body))
 	testutil.Equal(t, w.Code, http.StatusOK)
@@ -80,7 +75,6 @@ func TestHandleSettings_PutPersists(t *testing.T) {
 	testutil.DeepEqual(t, cfg.Sandbox.DenyRead, []string{"/etc"})
 	testutil.Equal(t, cfg.KB.Enabled, true)
 	testutil.Equal(t, cfg.KB.MetisVaultPath, "/tmp/m")
-	testutil.Equal(t, cfg.Defaults.ReviewPrompt, "/review")
 }
 
 func TestHandleSettings_PutRequiresMaster(t *testing.T) {

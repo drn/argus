@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -22,7 +21,6 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/github"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
@@ -34,10 +32,6 @@ import (
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 )
-
-var prURLRe = regexp.MustCompile(`https://github\.com/[a-zA-Z0-9_.\-]+/[a-zA-Z0-9_.\-]+/pull/\d+`)
-
-const prScanTailSize = 32 * 1024 // bytes of session output to scan for PR URLs
 
 // recentStartGrace is the time window after startSession during which a task
 // is immune from reconciliation. Protects against false completion when
@@ -92,7 +86,6 @@ type App struct {
 	filePanel    *gitpanel.FilePanel
 
 	// Tabs
-	reviews      *ReviewsView
 	settings     *SettingsView
 	settingsPage *SettingsPage
 
@@ -144,11 +137,9 @@ type App struct {
 	worktreeDir        string // resolved worktree dir for current agent view task
 	lastGitRefresh     time.Time
 	lastTaskGitRefresh time.Time
-	lastPreviewTW      uint64            // TotalWritten when preview was last refreshed
-	lastPreviewTaskID  string            // task ID for the cached TotalWritten
-	lastPreviewLogSize int64             // log file size when dead-session preview was last refreshed
-	prScanTW           map[string]uint64 // per-session TotalWritten for PR URL scan throttling
-
+	lastPreviewTW      uint64 // TotalWritten when preview was last refreshed
+	lastPreviewTaskID  string // task ID for the cached TotalWritten
+	lastPreviewLogSize int64  // log file size when dead-session preview was last refreshed
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
 	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
@@ -289,18 +280,10 @@ func (a *App) buildUI() {
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
-	a.tasklist.OnWaitingReview = func(t *model.Task) {
-		uxlog.Log("[tui] waiting-for-review toggle: task %s (%s) waiting_review=%v", t.ID, t.Name, t.WaitingReview)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
-		a.refreshTasksAsync()
-	}
 	a.tasklist.OnPin = func(t *model.Task) {
 		uxlog.Log("[tui] pin toggle: task %s (%s) pinned=%v", t.ID, t.Name, t.Pinned)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
-	}
-	a.tasklist.OnOpenPR = func(t *model.Task) {
-		exec.Command("open", t.PRURL).Start() //nolint:errcheck
 	}
 	a.tasklist.OnRename = func(t *model.Task) {
 		a.openRenameModal(t)
@@ -335,11 +318,6 @@ func (a *App) buildUI() {
 	a.agentPane.OnNeedRedraw = func() {
 		a.tapp.QueueUpdateDraw(func() {})
 	}
-	a.reviews = NewReviewsView()
-	a.reviews.SetOnFetch(func(fn func()) {
-		go fn()
-	})
-	a.reviews.OnBranchChange = func() { a.forceRedraw("reviewsview branch changed") }
 
 	// Task list page — three-panel layout: tasks | (git status + preview) | details
 	// Center column is a vertical split: git status (30%, clamped 3-15 rows) on top,
@@ -365,7 +343,6 @@ func (a *App) buildUI() {
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
-		AddPage("reviews", a.reviews, true, false).
 		AddPage("settings", a.settingsPage, true, false)
 	// Every Pages mutation (AddPage / RemovePage / SwitchToPage / Show / Hide)
 	// is a layout change that needs a tcell Sync to wipe ghost cells under
@@ -598,36 +575,6 @@ func (a *App) onTick() {
 	a.mu.Unlock()
 	runningIDs, idleIDs := runner.RunningAndIdle()
 
-	// Scan running sessions for GitHub PR URLs (last 32KB of output).
-	// Skip sessions whose output hasn't changed since last scan.
-	if a.prScanTW == nil {
-		a.prScanTW = make(map[string]uint64)
-	}
-	for _, rid := range runningIDs {
-		if sess := runner.Get(rid); sess != nil {
-			tw := sess.TotalWritten()
-			if prev, ok := a.prScanTW[rid]; ok && prev == tw {
-				continue // no new output since last scan
-			}
-			a.prScanTW[rid] = tw
-			tail := sess.RecentOutputTail(prScanTailSize)
-			if matches := prURLRe.FindAll(tail, -1); len(matches) > 0 {
-				url := string(matches[len(matches)-1])
-				if t, err := a.db.Get(rid); err == nil && t.PRURL != url {
-					t.PRURL = url
-					a.db.Update(t) //nolint:errcheck
-					uxlog.Log("[tui] PR detected for task %s: %s", rid, url)
-					taskID := rid
-					a.tapp.QueueUpdateDraw(func() {
-						if a.agentState.TaskID == taskID {
-							a.agentPane.SetPRURL(url)
-						}
-					})
-				}
-			}
-		}
-	}
-
 	// Read daemon state for health check BEFORE QueueUpdateDraw — daemon
 	// fields are protected by a.mu and don't touch tview widgets.
 	a.mu.Lock()
@@ -635,9 +582,9 @@ func (a *App) onTick() {
 	a.mu.Unlock()
 
 	// All UI state modifications must run on the tview main goroutine.
-	// TaskListView (rows, cursor, expanded), preview panels, agent pane,
-	// and reviews have no internal mutex — concurrent access from the tick
-	// goroutine races with Draw() and InputHandler() on the tview goroutine.
+	// TaskListView (rows, cursor, expanded), preview panels, and agent pane
+	// have no internal mutex — concurrent access from the tick goroutine
+	// races with Draw() and InputHandler() on the tview goroutine.
 	// This single QueueUpdateDraw replaces the previous pattern of separate
 	// QueueUpdateDraw calls per UI mode (agent pane, empty no-op, etc.).
 	//
@@ -714,26 +661,6 @@ func (a *App) onTick() {
 			}
 		}
 
-		// Reviews tab: check diff/comment staleness.
-		if a.header.ActiveTab() == widget.TabReviews && a.reviews.SelectedPR() != nil {
-			if a.reviews.IsDiffStale() && !a.reviews.DiffFetching() {
-				a.reviews.fetchDiffAndComments(a)
-			} else if a.reviews.AreCommentsStale() && !a.reviews.CommentsFetching() {
-				pr := a.reviews.SelectedPR()
-				a.reviews.commentsFetching = true
-				go func() {
-					comments, err := github.FetchPRComments(pr.RepoOwner, pr.Repo, pr.Number)
-					a.tapp.QueueUpdateDraw(func() {
-						if err != nil {
-							uxlog.Log("[reviews] tick comment refresh error: %v", err)
-							a.reviews.commentsFetching = false
-							return
-						}
-						a.reviews.SetComments(comments)
-					})
-				}()
-			}
-		}
 	})
 
 healthCheck:
@@ -909,8 +836,7 @@ func (a *App) RestartedClient() *dclient.Client {
 // It triggers a UI refresh so session exits are detected immediately (not on next tick).
 func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutput []byte) {
 	uxlog.Log("[tui] session exit (in-process): task=%s stopped=%v err=%v", taskID, stopped, err)
-	// Scan last output for PR URL in case agent finished before tick detected it.
-	a.scanAndStorePRURL(taskID, lastOutput)
+	_ = lastOutput
 	// In-process mode reads HasPendingRestart synchronously off the local
 	// runner — no RPC, no main-thread stall.
 	pending := a.runner.HasPendingRestart(taskID)
@@ -928,8 +854,6 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	}
 	uxlog.Log("[tui] session exit (daemon): task=%s err=%s stopped=%v pending=%v lastOutput=%d bytes",
 		taskID, info.Err, info.Stopped, info.PendingRestart, len(info.LastOutput))
-	// Scan last output for PR URL in case agent finished before tick detected it.
-	a.scanAndStorePRURL(taskID, info.LastOutput)
 	a.tapp.QueueUpdateDraw(func() {
 		// PendingRestart was stamped by the daemon's onFinish under the same
 		// snapshot it used to decide whether to skip transitionTaskOnExit, so
@@ -1065,31 +989,6 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	// Refresh task list — fetch running/idle IDs in a goroutine to avoid
 	// blocking the tview main goroutine with an RPC call.
 	a.refreshTasksAsync()
-}
-
-// scanAndStorePRURL scans output for a GitHub PR URL and persists it on the task.
-// Safe to call from any goroutine.
-func (a *App) scanAndStorePRURL(taskID string, output []byte) {
-	if len(output) == 0 {
-		return
-	}
-	matches := prURLRe.FindAll(output, -1)
-	if len(matches) == 0 {
-		return
-	}
-	url := string(matches[len(matches)-1])
-	t, err := a.db.Get(taskID)
-	if err != nil || t.PRURL == url {
-		return
-	}
-	t.PRURL = url
-	a.db.Update(t) //nolint:errcheck
-	uxlog.Log("[tui] PR detected on exit for task %s: %s", taskID, url)
-	a.tapp.QueueUpdateDraw(func() {
-		if a.agentState.TaskID == taskID {
-			a.agentPane.SetPRURL(url)
-		}
-	})
 }
 
 // syncIdleUnvisited pushes the current idleUnvisited set to the task list.
@@ -1372,13 +1271,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		}
-	case tcell.KeyCtrlP:
-		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			if t := a.tasklist.SelectedTask(); t != nil && t.PRURL != "" && a.tasklist.OnOpenPR != nil {
-				a.tasklist.OnOpenPR(t)
-				return nil
-			}
-		}
 	case tcell.KeyCtrlF:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
@@ -1429,11 +1321,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 		case '2':
 			if a.mode != modeAgent {
-				a.switchTab(widget.TabReviews)
-				return nil
-			}
-		case '3':
-			if a.mode != modeAgent {
 				a.switchTab(widget.TabSettings)
 				return nil
 			}
@@ -1443,13 +1330,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	switch a.mode {
 	case modeAgent:
 		return a.handleAgentKey(event)
-	}
-
-	// Reviews tab key routing.
-	if a.header.ActiveTab() == widget.TabReviews {
-		if a.reviews.HandleKey(event, a) {
-			return nil
-		}
 	}
 
 	// Settings tab key routing.
@@ -1491,9 +1371,6 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			a.agentPane.ResetScroll()
 		}
-		return nil
-	case tcell.KeyCtrlP:
-		a.agentPane.OpenPR()
 		return nil
 	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
@@ -1582,12 +1459,6 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		} else {
 			uxlog.Log("[tui] enter-to-restart: db.Get(%s) failed: %v", taskID, err)
 		}
-		return nil
-	}
-
-	// 'o' to open PR when finished
-	if event.Key() == tcell.KeyRune && event.Rune() == 'o' && (sess == nil || !sess.Alive()) {
-		a.agentPane.OpenPR()
 		return nil
 	}
 
@@ -1923,14 +1794,6 @@ func (a *App) switchTab(t widget.Tab) {
 		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
-	case widget.TabReviews:
-		a.mode = modeTaskList // reuse task list mode for non-agent tabs
-		a.pages.SwitchToPage("reviews")
-		a.tapp.SetFocus(a.reviews)
-		if a.reviews.CanFetchPRList() {
-			a.reviews.StartLoading()
-			a.reviews.fetchPRList(a)
-		}
 	case widget.TabSettings:
 		a.mode = modeTaskList
 		a.settings.Refresh()
@@ -1952,7 +1815,7 @@ func (a *App) switchTab(t widget.Tab) {
 //
 // Contract: any widget that conditionally renders different content in the
 // same rect must surface a "branch changed" callback the App wires here.
-// Five structural hooks today:
+// Four structural hooks today:
 //   - `pages.SetChangedFunc` — fires on every AddPage/RemovePage/SwitchToPage,
 //     covering modal open/close, tab switch, and agent view enter/exit.
 //   - `tasklist.OnLayoutChange` — fires on row composition or filter-mode
@@ -1961,8 +1824,6 @@ func (a *App) switchTab(t widget.Tab) {
 //   - `agentPane.OnBranchChange` — fires on SetSession/SetPending/diff-mode
 //     toggle/scroll-mode 0↔nonzero/async replay rebuild completion — every
 //     Draw branch swap.
-//   - `reviews.OnBranchChange` — fires on focus changes (rfList/rfDiff/
-//     rfComment/rfApproveConfirm) and selectedPR nil↔non-nil transitions.
 //
 // Plus afterDraw detects screen-size changes (tview's EventResize handler does
 // Clear+draw without Sync) and forces a Sync on resize.
@@ -2109,7 +1970,6 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentHeader.SetTaskName(task.Name)
 	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
-	a.agentPane.SetPRURL("")
 	a.agentPane.ResetVT()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetPending(true)
@@ -2141,7 +2001,6 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.mu.Unlock()
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
-	a.agentPane.SetPRURL(task.PRURL)
 	a.agentPane.ResetVT()
 	// Refresh the clipboard hint synchronously on entry so re-opening a
 	// task with a pending payload doesn't flash a hint-less header for up
@@ -2197,10 +2056,10 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	// Auto-start sessions when entering agent view for a non-running task.
 	// Covers both fresh tasks (no SessionID) and interrupted sessions
 	// (e.g., daemon restart with a preserved SessionID). Excludes completed,
-	// archived, and waiting-for-review tasks — those are view-only until the
-	// user explicitly presses Enter to restart.
+	// archived tasks — those are view-only until the user explicitly presses
+	// Enter to restart.
 	// After the sess.Alive() early-return above, any session here is dead.
-	if autoStart && task.Status != model.StatusComplete && !task.Archived && !task.WaitingReview {
+	if autoStart && task.Status != model.StatusComplete && !task.Archived {
 		sid := task.SessionID
 		if sid == "" {
 			sid = "(none)"
@@ -2600,134 +2459,6 @@ func (a *App) closeNewTaskForm() {
 	a.pages.RemovePage("newtask")
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
-}
-
-// resolveProjectForRepo finds the Argus project whose name or directory basename
-// matches the given GitHub repo name (case-insensitive). Name matches take
-// priority over basename matches for deterministic results. Returns ("", zero)
-// if no match is found.
-func resolveProjectForRepo(projects map[string]config.Project, repo string) (string, config.Project) {
-	repo = strings.ToLower(repo)
-	// First pass: exact name match (highest priority).
-	for name, proj := range projects {
-		if strings.ToLower(name) == repo {
-			return name, proj
-		}
-	}
-	// Second pass: directory basename match.
-	for name, proj := range projects {
-		if proj.Path != "" && strings.ToLower(filepath.Base(proj.Path)) == repo {
-			return name, proj
-		}
-	}
-	return "", config.Project{}
-}
-
-// truncateRunes truncates s to at most maxRunes runes.
-func truncateRunes(s string, maxRunes int) string {
-	r := []rune(s)
-	if len(r) <= maxRunes {
-		return s
-	}
-	return string(r[:maxRunes])
-}
-
-// startReviewTask creates a task to review the given PR, or navigates to
-// the existing task if one is already linked. Called from Ctrl+R in reviews tab.
-func (a *App) startReviewTask(pr *github.PR) {
-	prURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d", pr.RepoOwner, pr.Repo, pr.Number)
-
-	// Check for existing task linked to this PR.
-	existing, err := a.db.TaskByPRURL(prURL)
-	if err != nil {
-		uxlog.Log("[reviews] failed to look up task by PR URL: %v", err)
-	}
-	if existing != nil {
-		uxlog.Log("[reviews] found existing review task %s for %s", existing.ID, prURL)
-		a.switchTab(widget.TabTasks)
-		a.refreshTasksLocal()
-		a.tasklist.SelectByID(existing.ID)
-		a.onTaskSelect(existing, true)
-		return
-	}
-
-	cfg := a.db.Config()
-	projName, projCfg := resolveProjectForRepo(cfg.Projects, pr.Repo)
-	if projName == "" {
-		a.statusbar.SetError("No project matches repo " + pr.Repo)
-		return
-	}
-
-	reviewPrompt := cfg.Defaults.ReviewPrompt
-	if reviewPrompt == "" {
-		reviewPrompt = "/review"
-	}
-	prompt := fmt.Sprintf("%s %s", reviewPrompt, prURL)
-	taskName := truncateRunes(
-		fmt.Sprintf("review-pr-%d-%s", pr.Number, model.GenerateNameFromPrompt(pr.Title)),
-		50,
-	)
-	backend := cfg.Defaults.Backend
-
-	if projCfg.Path == "" {
-		// No worktree needed — create task directly on the UI thread.
-		task := &model.Task{
-			Name:    taskName,
-			Status:  model.StatusPending,
-			Project: projName,
-			Prompt:  prompt,
-			Backend: backend,
-			PRURL:   prURL,
-		}
-		task.Sandboxed = a.resolveSandboxed(task)
-		if err := a.db.Add(task); err != nil {
-			uxlog.Log("[reviews] failed to persist review task: %v", err)
-			a.statusbar.SetError("Failed to create task: " + err.Error())
-			return
-		}
-		uxlog.Log("[reviews] created review task %s (%s) for %s", task.ID, task.Name, prURL)
-		a.switchTab(widget.TabTasks)
-		a.refreshTasksLocal()
-		a.tasklist.SelectByID(task.ID)
-		a.onTaskSelect(task, true)
-		return
-	}
-
-	// CreateAndStart runs in a background goroutine to avoid blocking the
-	// tview event loop — same pattern as executeFork.
-	uxlog.Log("[reviews] starting review task creation for %s", prURL)
-	rows, cols := a.computePTYSize()
-	input := agent.CreateInput{
-		Name:        taskName,
-		Prompt:      prompt,
-		Project:     projName,
-		Backend:     backend,
-		PRURL:       prURL,
-		Rows:        rows,
-		Cols:        cols,
-		BeforeStart: func() { a.startGen.Add(1) },
-		AfterStart:  func() { a.startGen.Add(1) },
-	}
-
-	go func() {
-		created, _, err := agent.CreateAndStart(a.db, a.runner, input)
-		if err != nil {
-			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Review task failed: " + err.Error())
-			})
-			uxlog.Log("[reviews] create-and-start failed: %v", err)
-			return
-		}
-
-		a.tapp.QueueUpdateDraw(func() {
-			a.recentStarts[created.ID] = time.Now()
-			uxlog.Log("[reviews] created review task %s (%s) for %s", created.ID, created.Name, prURL)
-			a.switchTab(widget.TabTasks)
-			a.refreshTasksLocal()
-			a.tasklist.SelectByID(created.ID)
-			a.onTaskSelect(created, true)
-		})
-	}()
 }
 
 // openLinkPickerModal shows the link picker dialog.

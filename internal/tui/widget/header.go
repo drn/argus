@@ -15,12 +15,11 @@ type Tab int
 
 const (
 	TabTasks Tab = iota
-	TabReviews
 	TabSettings
 )
 
-var TabLabels = [...]string{"Tasks", "Reviews", "Settings"}
-var tabKeys = [...]string{"1", "2", "3"}
+var TabLabels = [...]string{"Tasks", "Settings"}
+var tabKeys = [...]string{"1", "2"}
 
 // Powerline separator (right-facing filled chevron).
 const powerlineSep = '\ue0b0'

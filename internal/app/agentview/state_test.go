@@ -21,7 +21,6 @@ func TestNew(t *testing.T) {
 func TestReset(t *testing.T) {
 	s := New()
 	s.TaskID = "old"
-	s.PRURL = "https://example.com"
 	s.ScrollOffset = 10
 	s.LastOutput = []byte("data")
 	s.WorktreeDir = "/tmp/wt"
@@ -35,9 +34,6 @@ func TestReset(t *testing.T) {
 	}
 	if s.TaskName != "my task" {
 		t.Errorf("TaskName = %q, want %q", s.TaskName, "my task")
-	}
-	if s.PRURL != "" {
-		t.Errorf("PRURL = %q, want empty", s.PRURL)
 	}
 	if s.Focus != PanelTerminal {
 		t.Errorf("Focus = %d, want PanelTerminal", s.Focus)
