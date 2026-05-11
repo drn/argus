@@ -1822,10 +1822,11 @@ func pickFreePort(t *testing.T) int {
 }
 
 func TestListenAndServe_PortFallback(t *testing.T) {
-	// Occupy a port on 0.0.0.0 (same address ListenAndServe binds to) to
-	// force the retry-with-port+1 path. Binding 127.0.0.1:N would not
-	// collide with 0.0.0.0:N on macOS due to address-family separation.
-	occupied, err := net.Listen("tcp", "0.0.0.0:0")
+	// Occupy a port on 127.0.0.1 — the same address ListenAndServe binds
+	// to (cb983cb dropped 0.0.0.0 binding). Occupying 0.0.0.0:N here would
+	// not collide with 127.0.0.1:N on macOS due to address-family
+	// separation, so the bindWithRetry path would never trigger.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = occupied.Close() })
 	port := occupied.Addr().(*net.TCPAddr).Port
