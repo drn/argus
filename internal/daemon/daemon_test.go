@@ -695,3 +695,23 @@ func TestDaemon_CaptureSessionIDPostExit_PiSuccess(t *testing.T) {
 // Use config and time imports so they stay valid if other tests are pruned.
 var _ = config.DefaultConfig
 var _ = time.Now
+
+// TestDaemon_CaptureSessionIDPostExit_CaptureError exercises the error path
+// where the backend-specific capture function fails (codex backend with no
+// state DB present). The daemon must log and return without panicking and
+// without corrupting the task row. Covers the `err != nil` branch on
+// daemon.go:186.
+func TestDaemon_CaptureSessionIDPostExit_CaptureError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no ~/.codex/state_5.sqlite → CaptureCodexSessionID errors
+
+	d, _ := testDaemon(t)
+	tk := &model.Task{Name: "t", Project: "p", Worktree: t.TempDir(), Backend: "codex"}
+	testutil.NoError(t, d.db.Add(tk))
+
+	// Should NOT panic. Should NOT update the task. Should log a warning.
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, "") // unchanged after capture error
+}
