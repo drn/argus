@@ -61,6 +61,55 @@ func TestSettingsView_RailNavigation(t *testing.T) {
 	testutil.Equal(t, sv.focus, focusPane)
 }
 
+func TestSettingsView_RailNavigationBottomBound(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setFocus(focusRail)
+	// Park on the last category.
+	sv.setCategory(allCategories[len(allCategories)-1])
+
+	// Down at the bottom must return false (allows tab nav to propagate).
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0))
+	testutil.Equal(t, got, false)
+	testutil.Equal(t, sv.category, allCategories[len(allCategories)-1])
+}
+
+func TestSettingsView_VimFocusAliases(t *testing.T) {
+	sv := testSettingsView(t)
+	// Pane → rail via 'h'.
+	sv.setFocus(focusPane)
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	// 'h' in rail is a no-op (returns false, lets it bubble).
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', 0))
+	testutil.Equal(t, got, false)
+
+	// Rail → pane via 'l'.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'l', 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusPane)
+	// 'l' in pane is a no-op.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'l', 0))
+	testutil.Equal(t, got, false)
+}
+
+func TestSettingsView_EmptyBackendsHasPlaceholder(t *testing.T) {
+	d := testDB(t)
+	// Strip seeded backends so the category goes empty.
+	for _, name := range []string{"claude", "codex"} {
+		if err := d.DeleteBackend(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	sv.setCategory(catBackends)
+	if len(sv.rows) != 1 {
+		t.Fatalf("empty backends should yield 1 placeholder row, got %d", len(sv.rows))
+	}
+	testutil.Contains(t, sv.rows[0].label, "no backends")
+}
+
 func TestSettingsView_HandleClickRail(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.SetRect(0, 0, 100, 30)

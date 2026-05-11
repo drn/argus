@@ -1260,6 +1260,7 @@ func TestSmoke_SettingsCategorySwapFiresRedraw(t *testing.T) {
 	app.tapp.QueueUpdateDraw(func() {
 		app.settings.setCategory(catSandbox)
 	})
+	syncUI(t, app.tapp)
 	if strings.Count(readLog(), settingsBranch) <= prev {
 		t.Errorf("setCategory(catSandbox) did not fire settings branch change")
 	}
@@ -1270,6 +1271,7 @@ func TestSmoke_SettingsCategorySwapFiresRedraw(t *testing.T) {
 	app.tapp.QueueUpdateDraw(func() {
 		app.settings.setFocus(focusRail)
 	})
+	syncUI(t, app.tapp)
 	if strings.Count(readLog(), settingsBranch) <= prev {
 		t.Errorf("setFocus(focusRail) did not fire settings branch change")
 	}
@@ -1279,6 +1281,7 @@ func TestSmoke_SettingsCategorySwapFiresRedraw(t *testing.T) {
 	app.tapp.QueueUpdateDraw(func() {
 		app.settings.setFocus(focusRail)
 	})
+	syncUI(t, app.tapp)
 	if strings.Count(readLog(), settingsBranch) > prev {
 		t.Errorf("setFocus to same value should not fire branch change")
 	}

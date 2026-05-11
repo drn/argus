@@ -432,12 +432,16 @@ func (sv *SettingsView) rebuildRows() {
 		}
 
 	case catBackends:
-		for _, b := range sv.backends {
-			label := b.Name
-			if b.Name == sv.defaultBackend {
-				label = "★ " + b.Name
+		if len(sv.backends) == 0 {
+			sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: "(no backends — press n to add)"})
+		} else {
+			for _, b := range sv.backends {
+				label := b.Name
+				if b.Name == sv.defaultBackend {
+					label = "★ " + b.Name
+				}
+				sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: label, key: b.Name})
 			}
-			sv.rows = append(sv.rows, settingsRow{kind: srBackend, label: label, key: b.Name})
 		}
 
 	case catSchedules:
@@ -1263,11 +1267,7 @@ func (sv *SettingsView) renderRail(screen tcell.Screen, x, y, w, h int) {
 		if c == sv.category && sv.focus == focusRail {
 			prefix = "▸ "
 		}
-		text := prefix + label
-		if len(text) > iw {
-			text = text[:iw]
-		}
-		widget.DrawText(screen, ix, iy+i, iw, text, style)
+		widget.DrawText(screen, ix, iy+i, iw, truncRunes(prefix+label, iw), style)
 	}
 }
 
@@ -1350,27 +1350,23 @@ func (sv *SettingsView) renderPane(screen tcell.Screen, x, y, w, h int) {
 					style = style.Foreground(theme.ColorSelected).Bold(true)
 				}
 			}
-			label := prefix + r.label
-			if len(label) > iw {
-				label = label[:iw]
-			}
-			widget.DrawText(screen, ix, iy+row0+i, iw, label, style)
+			widget.DrawText(screen, ix, iy+row0+i, iw, truncRunes(prefix+r.label, iw), style)
 		}
 		row0 += itemsCap
 
 		// Separator with selected row's name. Use a single dimmed line.
-		if row0 < ih {
+		// At narrow widths (iw < 5), skip the named banner and draw a plain
+		// rule — otherwise reserving 4 cells for "── … " would underflow.
+		if row0 < ih && iw > 0 {
 			sep := strings.Repeat("─", iw)
-			if row != nil && row.key != "" {
-				name := row.label
-				if len(name) > iw-4 {
-					name = name[:iw-4]
-				}
+			if row != nil && row.key != "" && iw >= 5 {
+				name := truncRunes(row.label, iw-4)
 				banner := "── " + name + " "
-				if len(banner) < iw {
-					sep = banner + strings.Repeat("─", iw-len(banner))
+				bannerW := utf8.RuneCountInString(banner)
+				if bannerW < iw {
+					sep = banner + strings.Repeat("─", iw-bannerW)
 				} else {
-					sep = banner[:iw]
+					sep = banner
 				}
 			}
 			widget.DrawText(screen, ix, iy+row0, iw, sep, theme.StyleDimmed)
@@ -2043,6 +2039,24 @@ func readLogLines(path string) []string {
 }
 
 // --- Helpers ---
+
+// truncRunes returns the longest prefix of s whose rune count is <= max.
+// Byte slicing on a multibyte rune boundary panics or produces invalid UTF-8;
+// callers that need to clip to a cell width must go through this helper. A
+// non-positive max returns "".
+func truncRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
 
 func drawMultiLine(screen tcell.Screen, x, y, w int, text string, style tcell.Style) int {
 	lines := strings.Split(text, "\n")

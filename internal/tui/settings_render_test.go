@@ -274,6 +274,26 @@ func TestSettings_CycleSpinner(t *testing.T) {
 	sv.cycleSpinner(-1)
 }
 
+// TestSettings_RenderNarrowPane drives the right-pane separator banner at
+// inner widths that exposed a `name[:iw-4]` slice panic before the iw>=5
+// guard landed. Regression test: must NOT panic.
+func TestSettings_RenderNarrowPane(t *testing.T) {
+	d := testDB(t)
+	if err := d.SetProject("p1", config.Project{Path: "/tmp/p1", Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(d)
+	sv.Refresh()
+	selectRowInCategory(t, sv, catProjects, srProject, "p1")
+
+	// Walk a range of widths including the previously-panicking ones
+	// (iw computed as paneW-2 from rail/pane math in Draw).
+	for _, w := range []int{4, 5, 6, 8, 10, 15, 20, 30} {
+		sv.SetRect(0, 0, w, 12)
+		sv.Draw(drawSim(t)) // must not panic
+	}
+}
+
 func TestSettings_RenderSandboxDetail_WithDenyAndExtraWrite(t *testing.T) {
 	d := testDB(t)
 	sv := NewSettingsView(d)
