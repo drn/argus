@@ -575,10 +575,11 @@ func TestSettingsView_EditProjectCallback(t *testing.T) {
 	}
 }
 
-func TestSettingsView_NewBackendCallback(t *testing.T) {
+func TestSettingsView_NewBackendIsHardcoded(t *testing.T) {
+	// Backends are hardcoded — 'n' on a backend row must NOT trigger any
+	// callback (there is no add path).
 	sv := testSettingsView(t)
 
-	// Move cursor to a backend row.
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
 			sv.cursor = i
@@ -586,23 +587,17 @@ func TestSettingsView_NewBackendCallback(t *testing.T) {
 		}
 	}
 
-	called := false
-	sv.OnNewBackend = func() { called = true }
-
 	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
-	handled := sv.HandleKey(ev)
-	if !handled {
-		t.Error("'n' key should be handled on backend row")
-	}
-	if !called {
-		t.Error("OnNewBackend callback not fired")
+	if handled := sv.HandleKey(ev); handled {
+		t.Error("'n' key on backend row should be a no-op (backends are hardcoded)")
 	}
 }
 
-func TestSettingsView_EditBackendCallback(t *testing.T) {
+func TestSettingsView_EditBackendIsHardcoded(t *testing.T) {
+	// Backends are hardcoded — 'e' on a backend row must NOT trigger any
+	// callback.
 	sv := testSettingsView(t)
 
-	// Move cursor to a backend row.
 	for i, row := range sv.rows {
 		if row.kind == srBackend {
 			sv.cursor = i
@@ -610,16 +605,9 @@ func TestSettingsView_EditBackendCallback(t *testing.T) {
 		}
 	}
 
-	var gotName string
-	sv.OnEditBackend = func(name string, b config.Backend) { gotName = name }
-
 	ev := tcell.NewEventKey(tcell.KeyRune, 'e', 0)
-	handled := sv.HandleKey(ev)
-	if !handled {
-		t.Error("'e' key should be handled on backend row")
-	}
-	if gotName == "" {
-		t.Error("OnEditBackend callback not fired or got empty name")
+	if handled := sv.HandleKey(ev); handled {
+		t.Error("'e' key on backend row should be a no-op (backends are hardcoded)")
 	}
 }
 
@@ -628,7 +616,6 @@ func TestSettingsView_NKeyOnNonProjectRow(t *testing.T) {
 
 	// Cursor should be on a non-project row (e.g., warning/status).
 	sv.OnNewProject = func() { t.Error("OnNewProject should not fire on non-project row") }
-	sv.OnNewBackend = func() { t.Error("OnNewBackend should not fire on non-backend row") }
 
 	ev := tcell.NewEventKey(tcell.KeyRune, 'n', 0)
 	handled := sv.HandleKey(ev)

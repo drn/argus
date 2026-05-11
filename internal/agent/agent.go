@@ -26,6 +26,10 @@ const codexResumeCmd = "codex resume --dangerously-bypass-approvals-and-sandbox"
 // codexSessionIDRe validates that a captured session ID looks like a UUID v7.
 var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// piSessionFileRe matches pi's session filenames: <timestamp>_<uuid>.jsonl.
+// Pi writes sessions to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl.
+var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+
 // ResolveSandboxConfig returns the effective sandbox config for a task.
 // Per-project settings are merged on top of the global config:
 //   - project Enabled (non-nil) overrides the global Enabled flag
@@ -101,6 +105,64 @@ func IsCodexBackend(command string) bool {
 	return len(fields) > 0 && filepath.Base(fields[0]) == "codex"
 }
 
+// IsPiBackend reports whether a backend command is pi-based (pi.dev coding agent).
+// Detection uses the basename of the first word to handle both bare names ("pi")
+// and absolute paths.
+func IsPiBackend(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "pi"
+}
+
+// piEncodeCwd mirrors pi's getDefaultSessionDir(): strip leading slash, replace
+// remaining /, \, : with -, wrap in --…--.
+func piEncodeCwd(cwd string) string {
+	trimmed := strings.TrimLeft(cwd, "/\\")
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-")
+	return "--" + replacer.Replace(trimmed) + "--"
+}
+
+// CapturePiSessionID finds the most recent pi session file for the given
+// worktree path under ~/.pi/agent/sessions/--<encoded-cwd>--/ and extracts the
+// UUID from its filename. Returns the session UUID or an error if none is found.
+func CapturePiSessionID(worktreePath string) (string, error) {
+	if worktreePath == "" {
+		return "", fmt.Errorf("CapturePiSessionID: worktree path is empty")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("CapturePiSessionID: home dir: %w", err)
+	}
+	dir := filepath.Join(home, ".pi", "agent", "sessions", piEncodeCwd(worktreePath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("CapturePiSessionID: read dir %s: %w", dir, err)
+	}
+
+	var newestID string
+	var newestMod int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := piSessionFileRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if mod := info.ModTime().UnixNano(); mod > newestMod {
+			newestMod = mod
+			newestID = m[1]
+		}
+	}
+	if newestID == "" {
+		return "", fmt.Errorf("CapturePiSessionID: no session files in %s", dir)
+	}
+	return newestID, nil
+}
+
 // CaptureCodexSessionID looks up the most recent codex session for the given
 // worktree path in codex's local state database (~/.codex/state_5.sqlite).
 // Returns the session UUID or an error if none is found.
@@ -147,24 +209,38 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	cmdStr := backend.Command
 
+	isCodex := IsCodexBackend(backend.Command)
+	isPi := IsPiBackend(backend.Command)
+
 	if resume {
-		if IsCodexBackend(backend.Command) {
+		switch {
+		case isCodex:
 			// Codex-style: replace base command with dedicated resume command + session ID.
 			cmdStr = codexResumeCmd + " " + shellQuote(task.SessionID)
-		} else if task.SessionID != "" {
+		case isPi && task.SessionID != "":
+			// Pi-style: append --session <UUID> to base command (pi accepts partial UUIDs).
+			cmdStr += " --session " + shellQuote(task.SessionID)
+		case task.SessionID != "":
 			// Claude-style: append --resume flag to base command.
 			cmdStr += " --resume " + shellQuote(task.SessionID)
 		}
 	} else {
 		// New session — only pin session ID for Claude-style backends.
-		// Codex does not support --session-id; the ID is captured post-exit.
-		if !IsCodexBackend(backend.Command) && task.SessionID != "" {
+		// Codex and pi don't support --session-id; their IDs are captured post-exit.
+		if !isCodex && !isPi && task.SessionID != "" {
 			cmdStr += " --session-id " + shellQuote(task.SessionID)
 		}
 		if task.Prompt != "" {
-			if backend.PromptFlag != "" {
+			switch {
+			case backend.PromptFlag != "":
 				cmdStr += " " + backend.PromptFlag + " " + shellQuote(task.Prompt)
-			} else {
+			case isPi:
+				// Pi's argv parser does not honor "--" as end-of-flags; pass the
+				// prompt as a positional argument. Prompts beginning with "-" or
+				// "@" trigger pi's flag/file-include parsing (the @ behavior is
+				// pi's documented file-inclusion feature, not a bug).
+				cmdStr += " " + shellQuote(task.Prompt)
+			default:
 				// Use -- to separate options from the prompt argument.
 				// Without this, prompts starting with "-" are parsed as CLI flags.
 				cmdStr += " -- " + shellQuote(task.Prompt)

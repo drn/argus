@@ -22,6 +22,7 @@ func testConfig() config.Config {
 		Backends: map[string]config.Backend{
 			"claude": {Command: "claude --dangerously-skip-permissions --permission-mode plan", PromptFlag: ""},
 			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox", PromptFlag: ""},
+			"pi":     {Command: "pi", PromptFlag: ""},
 			"bare":   {Command: "my-agent", PromptFlag: ""},
 		},
 		Projects: map[string]config.Project{
@@ -1101,5 +1102,148 @@ func TestCaptureCodexSessionID_NoMatch(t *testing.T) {
 	_, err = CaptureCodexSessionID("/never-matches")
 	if err == nil {
 		t.Fatal("expected error when no rows match cwd")
+	}
+}
+
+// --- Pi backend ---
+
+func TestIsPiBackend(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"bare pi", "pi", true},
+		{"pi with flags", "pi --model claude", true},
+		{"absolute path", "/usr/local/bin/pi", true},
+		{"empty", "", false},
+		{"prefix only", "pi-helper", false},
+		{"claude", "claude --dangerously-skip-permissions", false},
+		{"codex", "codex --dangerously-bypass-approvals-and-sandbox", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, IsPiBackend(tc.cmd), tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_PiNewSession(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Backend:  "pi",
+		Prompt:   "fix the bug",
+		Worktree: t.TempDir(),
+	}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	// Pi: positional prompt, no --session-id (captured post-exit), no -- separator.
+	expected := "pi 'fix the bug'"
+	testutil.Equal(t, cmd.Args[2], expected)
+}
+
+func TestBuildCmd_PiNewSession_IgnoresSessionID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Backend:   "pi",
+		Prompt:    "fix the bug",
+		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+		Worktree:  t.TempDir(),
+	}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+
+	// Pi doesn't support --session-id at new-session time; the ID is ignored
+	// on the new-session path. Resume path uses --session.
+	if strings.Contains(cmd.Args[2], "--session-id") {
+		t.Errorf("pi new-session must not emit --session-id, got %q", cmd.Args[2])
+	}
+}
+
+func TestBuildCmd_PiResume(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Backend:   "pi",
+		Prompt:    "fix the bug",
+		SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee",
+		Worktree:  t.TempDir(),
+	}
+
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+
+	// Resume: --session <uuid>, prompt is dropped (pi reloads conversation).
+	expected := "pi --session 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'"
+	testutil.Equal(t, cmd.Args[2], expected)
+}
+
+func TestPiEncodeCwd(t *testing.T) {
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		{"/Users/me/proj", "--Users-me-proj--"},
+		{"/", "----"},
+		{"relative/path", "--relative-path--"},
+		// Adjacent ":" + "\" each map to "-", so two consecutive dashes is correct.
+		{"C:\\Windows\\stuff", "--C--Windows-stuff--"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cwd, func(t *testing.T) {
+			testutil.Equal(t, piEncodeCwd(tc.cwd), tc.want)
+		})
+	}
+}
+
+func TestCapturePiSessionID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wt := filepath.Join(os.Getenv("HOME"), ".argus", "worktrees", "p", "t")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", piEncodeCwd(wt))
+	testutil.NoError(t, os.MkdirAll(sessionDir, 0o755))
+
+	// Two session files; the newer mtime wins.
+	older := filepath.Join(sessionDir, "20260101T000000_aaaaaaaa-bbbb-4ccc-9ddd-111111111111.jsonl")
+	newer := filepath.Join(sessionDir, "20260102T000000_cccccccc-bbbb-4ccc-9ddd-222222222222.jsonl")
+	testutil.NoError(t, os.WriteFile(older, []byte("{}\n"), 0o644))
+	testutil.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+	past := time.Now().Add(-1 * time.Hour)
+	testutil.NoError(t, os.Chtimes(older, past, past))
+
+	sid, err := CapturePiSessionID(wt)
+	testutil.NoError(t, err)
+	testutil.Equal(t, sid, "cccccccc-bbbb-4ccc-9ddd-222222222222")
+}
+
+func TestCapturePiSessionID_EmptyWorktree(t *testing.T) {
+	_, err := CapturePiSessionID("")
+	if err == nil {
+		t.Fatal("expected error for empty worktree path")
+	}
+}
+
+func TestCapturePiSessionID_NoSessionsDir(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_, err := CapturePiSessionID("/nonexistent/cwd")
+	if err == nil {
+		t.Fatal("expected error when sessions dir doesn't exist")
+	}
+}
+
+func TestCapturePiSessionID_NoMatchingFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	wt := t.TempDir()
+	sessionDir := filepath.Join(os.Getenv("HOME"), ".pi", "agent", "sessions", piEncodeCwd(wt))
+	testutil.NoError(t, os.MkdirAll(sessionDir, 0o755))
+	// Wrong extension — won't match the regex.
+	testutil.NoError(t, os.WriteFile(filepath.Join(sessionDir, "garbage.txt"), []byte("x"), 0o644))
+
+	_, err := CapturePiSessionID(wt)
+	if err == nil {
+		t.Fatal("expected error when no session files match")
 	}
 }

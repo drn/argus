@@ -785,9 +785,6 @@ func TestProjectsBackends_MasterOnly(t *testing.T) {
 		{"projects create", "POST", "/api/projects", `{"name":"x","path":"/tmp/x"}`},
 		{"projects update", "PUT", "/api/projects/x", `{"path":"/tmp/y"}`},
 		{"projects delete", "DELETE", "/api/projects/x", ""},
-		{"backends create", "POST", "/api/backends", `{"name":"x","command":"echo"}`},
-		{"backends update", "PUT", "/api/backends/x", `{"command":"echo y"}`},
-		{"backends delete", "DELETE", "/api/backends/x", ""},
 		{"tokens list", "GET", "/api/tokens", ""},
 	}
 	for _, c := range cases {
@@ -1982,67 +1979,25 @@ func TestHandleDeleteProject(t *testing.T) {
 	}
 }
 
-func TestHandleCreateBackend(t *testing.T) {
+// Backends are hardcoded: POST/PUT/DELETE on /api/backends must be unreachable.
+func TestBackendsAreReadOnly(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
-	t.Run("rejects bad JSON", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("POST", "/api/backends", `nope`))
-		testutil.Equal(t, w.Code, http.StatusBadRequest)
-	})
-
-	t.Run("rejects missing fields", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("POST", "/api/backends", `{"name":""}`))
-		testutil.Equal(t, w.Code, http.StatusBadRequest)
-	})
-
-	t.Run("creates backend", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("POST", "/api/backends", `{"name":"newb","command":"echo x","prompt_flag":"-p"}`))
-		testutil.Equal(t, w.Code, http.StatusCreated)
-		b, _ := d.Backends()
-		got, ok := b["newb"]
-		testutil.True(t, ok)
-		testutil.Equal(t, got.Command, "echo x")
-	})
-}
-
-func TestHandleUpdateBackend(t *testing.T) {
-	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, nil, srv.routes())
-	testutil.NoError(t, d.SetBackend("upd", config.Backend{Command: "echo old"}))
-
-	t.Run("rejects bad JSON", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("PUT", "/api/backends/upd", `nope`))
-		testutil.Equal(t, w.Code, http.StatusBadRequest)
-	})
-
-	t.Run("rejects empty command", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("PUT", "/api/backends/upd", `{"command":""}`))
-		testutil.Equal(t, w.Code, http.StatusBadRequest)
-	})
-
-	t.Run("updates", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, authedReq("PUT", "/api/backends/upd", `{"command":"echo new"}`))
-		testutil.Equal(t, w.Code, http.StatusOK)
-		b, _ := d.Backends()
-		testutil.Equal(t, b["upd"].Command, "echo new")
-	})
-}
-
-func TestHandleDeleteBackend(t *testing.T) {
-	srv, d := testServer(t)
-	handler := authMiddleware(srv.token, d, nil, srv.routes())
-	testutil.NoError(t, d.SetBackend("dlt", config.Backend{Command: "echo"}))
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, authedReq("DELETE", "/api/backends/dlt", ""))
-	testutil.Equal(t, w.Code, http.StatusOK)
+	cases := []struct {
+		name, method, path, body string
+	}{
+		{"POST is rejected", "POST", "/api/backends", `{"name":"x","command":"echo"}`},
+		{"PUT is rejected", "PUT", "/api/backends/claude", `{"command":"echo"}`},
+		{"DELETE is rejected", "DELETE", "/api/backends/claude", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, authedReq(c.method, c.path, c.body))
+			testutil.Equal(t, w.Code, http.StatusMethodNotAllowed)
+		})
+	}
 }
 
 // --- handleListTokens ---
@@ -3209,9 +3164,6 @@ func TestHandlersOnClosedDB_Mutations(t *testing.T) {
 		{"set project", "POST", "/api/projects", `{"name":"x","path":"/tmp/x"}`, http.StatusInternalServerError},
 		{"update project", "PUT", "/api/projects/x", `{"path":"/tmp/y"}`, http.StatusInternalServerError},
 		{"delete project", "DELETE", "/api/projects/x", "", http.StatusInternalServerError},
-		{"create backend", "POST", "/api/backends", `{"name":"x","command":"echo"}`, http.StatusInternalServerError},
-		{"update backend", "PUT", "/api/backends/x", `{"command":"echo y"}`, http.StatusInternalServerError},
-		{"delete backend", "DELETE", "/api/backends/x", "", http.StatusInternalServerError},
 		{"set source path", "PUT", "/api/source-path", `{"path":"/tmp"}`, http.StatusInternalServerError},
 		// Update settings sets multiple keys in a loop; first SetConfigValue
 		// will error out and short-circuit with 500.
@@ -3745,16 +3697,6 @@ func TestHandleUploadFiles_Success(t *testing.T) {
 
 // --- handleDeleteSchedule DB error path (non-NotFound) ---
 // db.DeleteSchedule on closed DB — already covered.
-
-// --- handleCreateBackend / handleCreateProject db error after validation ---
-
-func TestHandleCreateBackend_DBClosed(t *testing.T) {
-	srv := closedDBServer(t)
-	handler := authMiddleware(srv.token, srv.db, nil, srv.routes())
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, authedReq("POST", "/api/backends", `{"name":"x","command":"echo"}`))
-	testutil.Equal(t, w.Code, http.StatusInternalServerError)
-}
 
 // --- handleSetStatus DB.Update error ---
 

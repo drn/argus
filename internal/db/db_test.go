@@ -1150,9 +1150,12 @@ func TestDB_Config_MultipleProjectsAndBackends(t *testing.T) {
 		t.Errorf("app2 backend = %q", cfg.Projects["app2"].Backend)
 	}
 
-	// Verify backends (claude default + codex + custom = 3)
-	if len(cfg.Backends) != 3 {
-		t.Fatalf("expected 3 backends, got %d", len(cfg.Backends))
+	// Verify backends (claude default + codex + pi default + custom = 4).
+	if len(cfg.Backends) != 4 {
+		t.Fatalf("expected 4 backends, got %d", len(cfg.Backends))
+	}
+	if _, ok := cfg.Backends["pi"]; !ok {
+		t.Error("expected hardcoded pi backend to be present")
 	}
 	if cfg.Backends["codex"].Command != "codex" {
 		t.Errorf("codex command = %q", cfg.Backends["codex"].Command)

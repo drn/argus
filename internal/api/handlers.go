@@ -1290,68 +1290,6 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backends": out})
 }
 
-func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
-	var req backendJSON
-	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Command) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and command are required"})
-		return
-	}
-	if err := s.db.SetBackend(req.Name, config.Backend{
-		Command:    req.Command,
-		PromptFlag: req.PromptFlag,
-	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, req)
-}
-
-func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
-	name := r.PathValue("name")
-	var req backendJSON
-	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
-		return
-	}
-	if strings.TrimSpace(req.Command) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
-		return
-	}
-	if err := s.db.SetBackend(name, config.Backend{
-		Command:    req.Command,
-		PromptFlag: req.PromptFlag,
-	}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	req.Name = name
-	writeJSON(w, http.StatusOK, req)
-}
-
-func (s *Server) handleDeleteBackend(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
-	name := r.PathValue("name")
-	if err := s.db.DeleteBackend(name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
-}
-
 // --- Git status / diff / files ---
 
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {

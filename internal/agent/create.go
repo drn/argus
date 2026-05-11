@@ -195,8 +195,9 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		}
 	})
 
-	// Step 4: generate session ID for Claude-style backends (Codex captures post-exit).
-	if resolved, berr := ResolveBackend(task, cfg); berr == nil && !IsCodexBackend(resolved.Command) {
+	// Step 4: generate session ID for Claude-style backends.
+	// Codex and pi don't support --session-id; their IDs are captured post-exit.
+	if resolved, berr := ResolveBackend(task, cfg); berr == nil && !IsCodexBackend(resolved.Command) && !IsPiBackend(resolved.Command) {
 		task.SessionID = model.GenerateSessionID()
 		if uErr := database.Update(task); uErr != nil {
 			slog.Warn("CreateAndStart: persist session ID failed (continuing)", "id", taskID, "err", uErr)

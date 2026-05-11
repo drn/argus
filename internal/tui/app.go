@@ -47,7 +47,6 @@ const (
 	modeNewTask
 	modeConfirmDelete
 	modeProjectForm
-	modeBackendForm
 	modeScheduleForm
 	modeForkTask
 	modeRenameTask
@@ -116,7 +115,6 @@ type App struct {
 
 	// Settings forms (created on demand)
 	projectForm  *ProjectForm
-	backendForm  *BackendForm
 	scheduleForm *ScheduleForm
 	quickAddForm *QuickAddForm
 
@@ -241,8 +239,6 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
 	app.settings.OnDeleteProject = func(name string) { app.deleteProject(name) }
-	app.settings.OnNewBackend = func() { app.openBackendForm(false, "", config.Backend{}) }
-	app.settings.OnEditBackend = func(name string, b config.Backend) { app.openBackendForm(true, name, b) }
 	app.settings.OnQuickAdd = func() { app.openQuickAddForm() }
 	app.settings.OnNewSchedule = func() { app.openScheduleForm(nil) }
 	app.settings.OnEditSchedule = func(s *model.ScheduledTask) { app.openScheduleForm(s) }
@@ -882,7 +878,7 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	// Codex session-ID capture is hoisted out of the StatusInProgress check
 	// because in daemon mode the check fails after the daemon's flip and
 	// would otherwise silently drop the capture.
-	var captureWorktree, captureTaskID string
+	var captureWorktree, captureTaskID, captureKind string
 	t, err := a.db.Get(taskID)
 	if err != nil || t == nil {
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
@@ -890,9 +886,13 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	}
 	if t.SessionID == "" && t.Worktree != "" {
 		cfg := a.db.Config()
-		if backend, berr := agent.ResolveBackend(t, cfg); berr == nil && agent.IsCodexBackend(backend.Command) {
-			captureWorktree = t.Worktree
-			captureTaskID = t.ID
+		if backend, berr := agent.ResolveBackend(t, cfg); berr == nil {
+			switch {
+			case agent.IsCodexBackend(backend.Command):
+				captureWorktree, captureTaskID, captureKind = t.Worktree, t.ID, "codex"
+			case agent.IsPiBackend(backend.Command):
+				captureWorktree, captureTaskID, captureKind = t.Worktree, t.ID, "pi"
+			}
 		}
 	}
 	if t.Status == model.StatusInProgress {
@@ -917,23 +917,30 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		}
 	}
 
-	// Capture Codex session ID in a background goroutine — CaptureCodexSessionID
-	// opens a SQLite connection which must not block the tview main goroutine.
+	// Capture session ID in a background goroutine — both codex and pi capture
+	// paths touch the filesystem and must not block the tview main goroutine.
 	if captureWorktree != "" {
-		go func(wtPath, tID string) {
-			sid, err := agent.CaptureCodexSessionID(wtPath)
+		go func(wtPath, tID, kind string) {
+			var sid string
+			var err error
+			switch kind {
+			case "codex":
+				sid, err = agent.CaptureCodexSessionID(wtPath)
+			case "pi":
+				sid, err = agent.CapturePiSessionID(wtPath)
+			}
 			if err != nil {
-				uxlog.Log("[tui] codex session ID capture failed for task %s: %v", tID, err)
+				uxlog.Log("[tui] %s session ID capture failed for task %s: %v", kind, tID, err)
 				return
 			}
-			uxlog.Log("[tui] captured codex session ID %s for task %s", sid, tID)
+			uxlog.Log("[tui] captured %s session ID %s for task %s", kind, sid, tID)
 			a.tapp.QueueUpdateDraw(func() {
 				if t, gerr := a.db.Get(tID); gerr == nil && t != nil {
 					t.SessionID = sid
 					a.db.Update(t) //nolint:errcheck
 				}
 			})
-		}(captureWorktree, captureTaskID)
+		}(captureWorktree, captureTaskID, captureKind)
 	}
 
 	// If maybeKickRerender flagged this task, immediately resume it
@@ -1184,12 +1191,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Project form mode — delegate everything to the form
 	if a.mode == modeProjectForm && a.projectForm != nil {
 		a.handleProjectFormKey(event)
-		return nil
-	}
-
-	// Backend form mode — delegate everything to the form
-	if a.mode == modeBackendForm && a.backendForm != nil {
-		a.handleBackendFormKey(event)
 		return nil
 	}
 
@@ -2408,11 +2409,11 @@ func (a *App) startSession(task *model.Task) {
 	resume := task.SessionID != ""
 
 	// For Claude-style backends, generate a session ID on first run so we can
-	// resume the conversation later. Codex captures its ID post-exit
-	// (in handleSessionExitUI → CaptureCodexSessionID).
+	// resume the conversation later. Codex and pi capture their IDs post-exit
+	// (in handleSessionExitUI → CaptureCodexSessionID / CapturePiSessionID).
 	if !resume {
 		backend, berr := agent.ResolveBackend(task, cfg)
-		if berr == nil && !agent.IsCodexBackend(backend.Command) {
+		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) {
 			task.SessionID = model.GenerateSessionID()
 			a.db.Update(task) //nolint:errcheck
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
@@ -2899,58 +2900,6 @@ func (a *App) closeProjectForm() {
 	a.mode = modeTaskList
 	a.projectForm = nil
 	a.pages.RemovePage("projectform")
-	a.settings.Refresh()
-	a.pages.SwitchToPage("settings")
-	a.tapp.SetFocus(a.settingsPage)
-}
-
-// --- Backend form ---
-
-func (a *App) openBackendForm(edit bool, name string, b config.Backend) {
-	a.backendForm = NewBackendForm()
-	if edit {
-		a.backendForm.LoadBackend(name, b)
-	}
-	a.mode = modeBackendForm
-	a.pages.AddPage("backendform", a.backendForm, true, true)
-	a.pages.SwitchToPage("backendform")
-	a.tapp.SetFocus(a.backendForm)
-}
-
-func (a *App) handleBackendFormKey(event *tcell.EventKey) {
-	a.backendForm.HandleKey(event)
-
-	if a.backendForm.Canceled() {
-		a.closeBackendForm()
-		return
-	}
-
-	if a.backendForm.Done() {
-		name, backend := a.backendForm.Result()
-		if name == "" {
-			a.backendForm.SetError("Name cannot be empty")
-			a.backendForm.done = false
-			return
-		}
-		if backend.Command == "" {
-			a.backendForm.SetError("Command cannot be empty")
-			a.backendForm.done = false
-			return
-		}
-		if err := a.db.SetBackend(name, backend); err != nil {
-			a.backendForm.SetError("Save error: " + err.Error())
-			a.backendForm.done = false
-			return
-		}
-		uxlog.Log("[settings] saved backend %s (cmd=%s)", name, backend.Command)
-		a.closeBackendForm()
-	}
-}
-
-func (a *App) closeBackendForm() {
-	a.mode = modeTaskList
-	a.backendForm = nil
-	a.pages.RemovePage("backendform")
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)

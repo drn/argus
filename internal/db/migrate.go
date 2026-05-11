@@ -97,7 +97,9 @@ func (d *DB) seedDefaults() error {
 // fixupBackends runs on every Open and corrects known-outdated backend
 // configurations. This is separate from seedDefaults (which only runs during
 // migration) so that improvements to the default command propagate to
-// existing databases on the next startup.
+// existing databases on the next startup. It also inserts missing default
+// backends so users of pre-existing databases pick up newly-shipped backends
+// (e.g. when "pi" was added) without needing a schema bump.
 func (d *DB) fixupBackends() error {
 	cfg := config.DefaultConfig()
 
@@ -106,8 +108,17 @@ func (d *DB) fixupBackends() error {
 		err := d.conn.QueryRow(
 			`SELECT command, prompt_flag FROM backends WHERE name=?`, name,
 		).Scan(&command, &promptFlag)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, ierr := d.conn.Exec(
+				`INSERT INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
+				name, want.Command, want.PromptFlag,
+			); ierr != nil {
+				return ierr
+			}
+			continue
+		}
 		if err != nil {
-			continue // backend doesn't exist — seedDefaults handles insertion
+			continue
 		}
 
 		needsUpdate := false

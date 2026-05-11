@@ -118,6 +118,10 @@ func DefaultConfig() Config {
 				Command:    "codex --dangerously-bypass-approvals-and-sandbox",
 				PromptFlag: "",
 			},
+			"pi": {
+				Command:    "pi",
+				PromptFlag: "",
+			},
 		},
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),

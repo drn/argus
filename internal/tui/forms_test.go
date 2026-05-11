@@ -239,58 +239,6 @@ func TestProjectForm_BranchSelector(t *testing.T) {
 	})
 }
 
-// --- BackendForm tests ---
-
-func TestBackendForm_New(t *testing.T) {
-	bf := NewBackendForm()
-	if bf.editMode || bf.Done() || bf.Canceled() {
-		t.Error("bad initial state")
-	}
-}
-
-func TestBackendForm_CtrlQ(t *testing.T) {
-	bf := NewBackendForm()
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone))
-	if !bf.Canceled() {
-		t.Error("should be canceled")
-	}
-}
-
-func TestBackendForm_LoadBackend(t *testing.T) {
-	bf := NewBackendForm()
-	bf.LoadBackend("claude", config.Backend{Command: "claude --dangerously-skip-permissions", PromptFlag: "--"})
-	if !bf.editMode {
-		t.Error("should be in edit mode")
-	}
-	if string(bf.fields[bfFieldCommand]) != "claude --dangerously-skip-permissions" {
-		t.Error("command not loaded")
-	}
-}
-
-func TestBackendForm_TypeAndSubmit(t *testing.T) {
-	bf := NewBackendForm()
-	for _, r := range "test-be" {
-		bf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
-	}
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	for _, r := range "echo hello" {
-		bf.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
-	}
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → prompt flag
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // → done
-
-	if !bf.Done() {
-		t.Error("should be done")
-	}
-	name, be := bf.Result()
-	if name != "test-be" {
-		t.Errorf("name = %q", name)
-	}
-	if be.Command != "echo hello" {
-		t.Errorf("command = %q", be.Command)
-	}
-}
-
 // --- Paste handler tests ---
 
 func TestProjectForm_PasteHandler(t *testing.T) {
@@ -314,16 +262,6 @@ func TestProjectForm_PasteHandler(t *testing.T) {
 			t.Errorf("name changed to %q, should stay locked", got)
 		}
 	})
-}
-
-func TestBackendForm_PasteHandler(t *testing.T) {
-	bf := NewBackendForm()
-	bf.focused = bfFieldCommand
-	paste := bf.PasteHandler()
-	paste("claude --model opus", func(p tview.Primitive) {})
-	if got := string(bf.fields[bfFieldCommand]); got != "claude --model opus" {
-		t.Errorf("field = %q, want 'claude --model opus'", got)
-	}
 }
 
 func TestRenameTaskForm_PasteHandler(t *testing.T) {

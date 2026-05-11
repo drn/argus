@@ -132,8 +132,6 @@ type SettingsView struct {
 	OnNewProject      func()
 	OnEditProject     func(name string, p config.Project)
 	OnDeleteProject   func(name string)
-	OnNewBackend      func()
-	OnEditBackend     func(name string, b config.Backend)
 	OnQuickAdd        func()
 	OnNewSchedule     func()
 	OnEditSchedule    func(s *model.ScheduledTask)
@@ -791,11 +789,6 @@ func (sv *SettingsView) handleNew() bool {
 			sv.OnNewProject()
 			return true
 		}
-	case srBackend:
-		if sv.OnNewBackend != nil {
-			sv.OnNewBackend()
-			return true
-		}
 	case srSchedule:
 		if sv.OnNewSchedule != nil {
 			sv.OnNewSchedule()
@@ -810,11 +803,6 @@ func (sv *SettingsView) handleEdit() bool {
 	case srProject:
 		if pe := sv.SelectedProject(); pe != nil && sv.OnEditProject != nil {
 			sv.OnEditProject(pe.Name, pe.Project)
-			return true
-		}
-	case srBackend:
-		if be := sv.SelectedBackend(); be != nil && sv.OnEditBackend != nil {
-			sv.OnEditBackend(be.Name, be.Backend)
 			return true
 		}
 	case srSchedule:

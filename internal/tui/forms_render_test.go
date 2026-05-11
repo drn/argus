@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
@@ -370,60 +369,6 @@ func TestRenameTaskForm_LeftRightAtBoundaries(t *testing.T) {
 	rf.cursor = 2
 	rf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, rf.cursor, 2)
-}
-
-// --- BackendForm: tab/backtab in edit mode skip name field ---
-
-func TestBackendForm_EditModeSkipsName(t *testing.T) {
-	bf := NewBackendForm()
-	bf.LoadBackend("claude", config.Backend{Command: "x"})
-	// Tab from command (focused 1) should skip name (0) and go to prompt flag (2).
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0))
-	testutil.Equal(t, bf.focused, bfFieldPromptFlag)
-	// Tab again → wraps past name (0) to command (1).
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0))
-	testutil.Equal(t, bf.focused, bfFieldCommand)
-	// Backtab from command goes back through prompt-flag (skipping name).
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyBacktab, 0, 0))
-	testutil.Equal(t, bf.focused, bfFieldPromptFlag)
-}
-
-func TestBackendForm_EditModeNameReadOnly(t *testing.T) {
-	bf := NewBackendForm()
-	bf.LoadBackend("locked", config.Backend{Command: "x"})
-	// Force focus to name (illegal but for test).
-	bf.focused = bfFieldName
-	// Backspace, Rune, paste must not modify name.
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0))
-	testutil.Equal(t, string(bf.fields[bfFieldName]), "locked")
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'X', 0))
-	testutil.Equal(t, string(bf.fields[bfFieldName]), "locked")
-
-	paste := bf.PasteHandler()
-	paste("Y", func(p tview.Primitive) {})
-	testutil.Equal(t, string(bf.fields[bfFieldName]), "locked")
-}
-
-func TestBackendForm_LeftRight(t *testing.T) {
-	bf := NewBackendForm()
-	bf.fields[bfFieldName] = []rune("x")
-	bf.cursors[bfFieldName] = 1
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
-	testutil.Equal(t, bf.cursors[bfFieldName], 0)
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
-	testutil.Equal(t, bf.cursors[bfFieldName], 1)
-	// Left at 0, Right at end clamp.
-	bf.cursors[bfFieldName] = 0
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
-	testutil.Equal(t, bf.cursors[bfFieldName], 0)
-}
-
-func TestBackendForm_EditModeEnterAdvance(t *testing.T) {
-	bf := NewBackendForm()
-	bf.LoadBackend("locked", config.Backend{Command: "x"})
-	// Focused on command (bfFieldCommand=1). Enter goes to bfFieldPromptFlag=2.
-	bf.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	testutil.Equal(t, bf.focused, bfFieldPromptFlag)
 }
 
 // --- forkmodal selectedProject case-insensitive ---

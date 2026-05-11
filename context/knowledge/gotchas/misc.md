@@ -28,6 +28,14 @@
 - **`fixupBackends()` migrates old codex flags** (`--yolo`, `--full-auto`) to `--dangerously-bypass-approvals-and-sandbox`.
 - **`ensureTopLevel` must insert before the first `[section]` header, not append.** Appending a top-level TOML key to the end of a file places it inside the last section (e.g. `[notice.model_migrations]`), causing type errors. `ensureTopLevel` also migrates previously misplaced keys.
 
+## Pi Integration
+
+- **Pi's argv parser has no `--` end-of-flags separator.** `pi -- "<prompt>"` consumes `--` as an unknown flag and pairs it with the next arg. `BuildCmd` passes the prompt as a bare positional argument for pi only; other backends still use `--`.
+- **Pi treats `@<token>` as a file include and unknown `-<token>` as an error.** This is pi's documented behavior, not a bug — prompts starting with `@` will include that file. Prompts starting with `-` will fail in pi.
+- **Pi has no `--session-id` flag for new sessions.** Like codex, pi mints its own UUID and Argus captures it post-exit via `CapturePiSessionID`. Resume uses `pi --session <UUID>` (partial UUIDs accepted).
+- **Pi session UUID lives in the filename, not stdout.** Files are at `~/.pi/agent/sessions/--<encoded-cwd>--/<timestamp>_<uuid>.jsonl`. `piEncodeCwd` must mirror pi's `getDefaultSessionDir`: strip leading `/`, replace `/`, `\`, `:` with `-`, wrap in `--…--`. Adjacent special chars produce adjacent dashes (e.g. `C:\` → `C--`).
+- **Backends are hardcoded.** No UI add/edit/delete path. POST/PUT/DELETE on `/api/backends` return 405. `fixupBackends` inserts any defaults missing from existing DBs on every Open so new backends propagate without a schema bump.
+
 ## Knowledge Base & MCP
 
 - **FTS5 doesn't support UPDATE.** Upsert = DELETE+INSERT in transaction.
