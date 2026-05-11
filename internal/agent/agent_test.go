@@ -1181,6 +1181,11 @@ func TestBuildCmd_PiResume(t *testing.T) {
 }
 
 func TestPiEncodeCwd(t *testing.T) {
+	// Must match pi's getDefaultSessionDir exactly:
+	//   `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`
+	// — a SINGLE-character leading strip, NOT a TrimLeft of all leading
+	// separators. Divergence would point CapturePiSessionID at the wrong
+	// directory and silently break resume.
 	tests := []struct {
 		cwd  string
 		want string
@@ -1188,6 +1193,14 @@ func TestPiEncodeCwd(t *testing.T) {
 		{"/Users/me/proj", "--Users-me-proj--"},
 		{"/", "----"},
 		{"relative/path", "--relative-path--"},
+		// Single-char strip: `//double/leading` → `/double/leading` after
+		// stripping ONE leading slash → `-double-leading` after replacing
+		// the remaining slashes. A TrimLeft would have stripped both and
+		// produced `--double-leading--`. The triple-dash is the point —
+		// it pins parity with pi's regex semantics.
+		{"//double/leading", "---double-leading--"},
+		// Empty input: no leading char to strip, no replacements, just wrappers.
+		{"", "----"},
 		// Adjacent ":" + "\" each map to "-", so two consecutive dashes is correct.
 		{"C:\\Windows\\stuff", "--C--Windows-stuff--"},
 	}

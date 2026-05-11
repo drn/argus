@@ -713,6 +713,53 @@ func TestSandbox_CodexBackendWritable(t *testing.T) {
 	})
 }
 
+// TestSandbox_PiBackendWritable pins the ~/.pi write rule. Pi is a first-class
+// backend (see internal/agent/agent.go IsPiBackend); it writes session files
+// to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl, and Argus reads
+// those filenames post-exit via CapturePiSessionID to recover the session UUID
+// for resume. Without write access the session vanishes and resume silently
+// starts fresh — identical symptom class to the codex state_5.sqlite case.
+func TestSandbox_PiBackendWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	resolved, profilePath, params, cleanup := sandboxFakeHome(t, "pi", ".pi")
+	defer cleanup()
+
+	paths := []string{
+		".pi/auth.json",
+		".pi/agent/sessions/--Users-me-proj--/20260511T000000_aaaaaaaa-bbbb-7ccc-9ddd-eeeeeeeeeeee.jsonl",
+		".pi/agent/sessions/--Users-me-proj--/20260511T000001_cccccccc-bbbb-7ccc-9ddd-ffffffffffff.jsonl",
+		".pi/config.toml",
+	}
+	for _, name := range paths {
+		t.Run(name, func(t *testing.T) {
+			target := resolved + "/" + name
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatalf("mkdir parent: %v", err)
+			}
+			if out, err := sandboxRunWith(profilePath, params, "echo ok > "+shellQuote(target)); err != nil {
+				t.Fatalf("write to %s should succeed for Pi session persistence: %v\n%s", name, err, out)
+			}
+			if _, statErr := os.Stat(target); statErr != nil {
+				t.Errorf("file %s should exist after write: %v", target, statErr)
+			}
+		})
+	}
+
+	// Negative case: same narrowness guard as TestSandbox_CodexBackendWritable.
+	t.Run("denies unrelated HOME path", func(t *testing.T) {
+		target := resolved + "/.not-pi-related"
+		if _, err := sandboxRunWith(profilePath, params, "echo nope > "+shellQuote(target)); err == nil {
+			t.Fatal("write to unrelated HOME-rooted path must remain blocked — the .pi rule must not over-broaden")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Errorf("unrelated file should not have been created: %v", statErr)
+		}
+	})
+}
+
 // TestSandbox_KnownHostsAppend pins the ~/.ssh/known_hosts write rule. Without
 // it, ssh prompts interactively for host-key acceptance on a new remote and
 // the agent's PTY hangs silently. Prefix covers OpenSSH's mkstemp atomic

@@ -143,6 +143,14 @@ func New(database *db.DB) *Daemon {
 			d.transitionTaskOnExit(taskID, stopped)
 		}
 
+		// Capture session ID for backends that mint it themselves post-exit
+		// (codex via state_5.sqlite, pi via session-file scan). The TUI's
+		// handleSessionExitUI also fires this for foreground sessions; both
+		// paths are idempotent (guard on SessionID == "" before scheduling).
+		// Without this branch, headless / PWA-only users can never resume
+		// codex or pi tasks because nothing ever writes back the UUID.
+		go d.captureSessionIDPostExit(taskID)
+
 		// Signal stream EOF to all connected clients by closing their connections.
 		slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))
 		for _, conn := range conns {
@@ -161,6 +169,37 @@ func New(database *db.DB) *Daemon {
 // Runner returns the underlying runner for direct access (e.g., AddWriter).
 func (d *Daemon) Runner() *agent.Runner {
 	return d.runner
+}
+
+// captureSessionIDPostExit fires the backend-specific UUID capture for tasks
+// whose session ID wasn't pre-minted (codex, pi). Runs in its own goroutine
+// from onFinish so it never blocks the runner exit path. Guards on
+// SessionID=="" so concurrent TUI-side capture is harmless (last-writer-wins
+// produces the same value either way). No-op for Claude-style backends and
+// for tasks already deleted before the goroutine runs.
+func (d *Daemon) captureSessionIDPostExit(taskID string) {
+	t, err := d.db.Get(taskID)
+	if err != nil || t == nil || t.SessionID != "" || t.Worktree == "" {
+		return
+	}
+	sid, err := agent.CaptureSessionID(t, d.db.Config())
+	if err != nil {
+		slog.Warn("daemon: session ID capture failed", "task", taskID, "err", err)
+		return
+	}
+	if sid == "" {
+		return // Claude-style backend or unrecognized; nothing to persist.
+	}
+	t2, err := d.db.Get(taskID)
+	if err != nil || t2 == nil {
+		return
+	}
+	t2.SessionID = sid
+	if uerr := d.db.Update(t2); uerr != nil {
+		slog.Warn("daemon: session ID persist failed", "task", taskID, "err", uerr)
+		return
+	}
+	slog.Info("daemon: session ID captured", "task", taskID, "sid", sid)
 }
 
 // transitionTaskOnExit flips an InProgress task to its terminal status when

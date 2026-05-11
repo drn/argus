@@ -113,10 +113,16 @@ func IsPiBackend(command string) bool {
 	return len(fields) > 0 && filepath.Base(fields[0]) == "pi"
 }
 
-// piEncodeCwd mirrors pi's getDefaultSessionDir(): strip leading slash, replace
-// remaining /, \, : with -, wrap in --…--.
+// piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
+// slash or backslash (matching pi's `cwd.replace(/^[/\\]/, "")` — NOT a
+// TrimLeft), then replace remaining /, \, : with -, then wrap in --…--.
+// Diverging from pi's exact semantics here would point Argus at the wrong
+// session directory and break post-exit UUID capture.
 func piEncodeCwd(cwd string) string {
-	trimmed := strings.TrimLeft(cwd, "/\\")
+	trimmed := cwd
+	if len(trimmed) > 0 && (trimmed[0] == '/' || trimmed[0] == '\\') {
+		trimmed = trimmed[1:]
+	}
 	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-")
 	return "--" + replacer.Replace(trimmed) + "--"
 }
@@ -196,6 +202,27 @@ func CaptureCodexSessionID(worktreePath string) (string, error) {
 	return id, nil
 }
 
+// CaptureSessionID dispatches to the backend-specific post-exit capture
+// function based on the resolved backend command. Returns ("", nil) for
+// backends that mint their session ID at start (Claude-style) — there's
+// nothing to capture for those, the ID was set on task.SessionID before
+// the agent ran. Used by both the TUI (handleSessionExitUI) and the daemon
+// (onFinish) so headless / PWA-only users still get resume support.
+func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
+	backend, err := ResolveBackend(task, cfg)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case IsCodexBackend(backend.Command):
+		return CaptureCodexSessionID(task.Worktree)
+	case IsPiBackend(backend.Command):
+		return CapturePiSessionID(task.Worktree)
+	default:
+		return "", nil
+	}
+}
+
 // BuildCmd constructs the exec.Cmd for running an agent on a task.
 // If the task has a SessionID, the command uses --resume to reconnect.
 // If resume is false and SessionID is set, it uses --session-id for a new session with a known ID.
@@ -213,15 +240,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	isPi := IsPiBackend(backend.Command)
 
 	if resume {
+		// Codex resumes by replacing the base command unconditionally — that's
+		// codex's contract and TestBuildCmd_Resume pins it. Claude and pi only
+		// append their resume flag when SessionID is non-empty, mirroring the
+		// original behavior pinned by TestBuildCmd_ResumeNoSessionIDClaude:
+		// resume=true with an empty SessionID silently starts fresh rather
+		// than emitting an obviously-broken `--resume ''` flag.
 		switch {
 		case isCodex:
-			// Codex-style: replace base command with dedicated resume command + session ID.
 			cmdStr = codexResumeCmd + " " + shellQuote(task.SessionID)
 		case isPi && task.SessionID != "":
-			// Pi-style: append --session <UUID> to base command (pi accepts partial UUIDs).
+			// Pi-style: append --session <UUID> (pi accepts partial UUIDs).
 			cmdStr += " --session " + shellQuote(task.SessionID)
-		case task.SessionID != "":
-			// Claude-style: append --resume flag to base command.
+		case !isPi && task.SessionID != "":
+			// Claude-style: append --resume flag.
 			cmdStr += " --resume " + shellQuote(task.SessionID)
 		}
 	} else {

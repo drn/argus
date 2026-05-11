@@ -878,22 +878,16 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	// Codex session-ID capture is hoisted out of the StatusInProgress check
 	// because in daemon mode the check fails after the daemon's flip and
 	// would otherwise silently drop the capture.
-	var captureWorktree, captureTaskID, captureKind string
+	var captureTask *model.Task
 	t, err := a.db.Get(taskID)
 	if err != nil || t == nil {
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
 	}
 	if t.SessionID == "" && t.Worktree != "" {
-		cfg := a.db.Config()
-		if backend, berr := agent.ResolveBackend(t, cfg); berr == nil {
-			switch {
-			case agent.IsCodexBackend(backend.Command):
-				captureWorktree, captureTaskID, captureKind = t.Worktree, t.ID, "codex"
-			case agent.IsPiBackend(backend.Command):
-				captureWorktree, captureTaskID, captureKind = t.Worktree, t.ID, "pi"
-			}
-		}
+		// Snapshot the task for the capture goroutine — agent.CaptureSessionID
+		// will resolve the backend and dispatch (codex / pi / no-op).
+		captureTask = t
 	}
 	if t.Status == model.StatusInProgress {
 		// Skip the transition when the daemon has a kick-restart queued —
@@ -917,30 +911,30 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		}
 	}
 
-	// Capture session ID in a background goroutine — both codex and pi capture
-	// paths touch the filesystem and must not block the tview main goroutine.
-	if captureWorktree != "" {
-		go func(wtPath, tID, kind string) {
-			var sid string
-			var err error
-			switch kind {
-			case "codex":
-				sid, err = agent.CaptureCodexSessionID(wtPath)
-			case "pi":
-				sid, err = agent.CapturePiSessionID(wtPath)
-			}
+	// Capture session ID in a background goroutine — agent.CaptureSessionID
+	// dispatches to the backend-specific scan (codex SQLite, pi readdir) and
+	// returns ("", nil) for Claude-style backends that pre-mint. Filesystem /
+	// SQLite work must not block the tview main goroutine. The daemon mirrors
+	// this in its onFinish callback so headless / PWA users get the same.
+	if captureTask != nil {
+		go func(snap model.Task) {
+			cfg := a.db.Config()
+			sid, err := agent.CaptureSessionID(&snap, cfg)
 			if err != nil {
-				uxlog.Log("[tui] %s session ID capture failed for task %s: %v", kind, tID, err)
+				uxlog.Log("[tui] session ID capture failed for task %s: %v", snap.ID, err)
 				return
 			}
-			uxlog.Log("[tui] captured %s session ID %s for task %s", kind, sid, tID)
+			if sid == "" {
+				return
+			}
+			uxlog.Log("[tui] captured session ID %s for task %s", sid, snap.ID)
 			a.tapp.QueueUpdateDraw(func() {
-				if t, gerr := a.db.Get(tID); gerr == nil && t != nil {
+				if t, gerr := a.db.Get(snap.ID); gerr == nil && t != nil {
 					t.SessionID = sid
 					a.db.Update(t) //nolint:errcheck
 				}
 			})
-		}(captureWorktree, captureTaskID, captureKind)
+		}(*captureTask)
 	}
 
 	// If maybeKickRerender flagged this task, immediately resume it

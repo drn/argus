@@ -817,6 +817,45 @@ func TestFixupBackends_RunsOnOpen(t *testing.T) {
 	}
 }
 
+// TestFixupBackends_InsertsMissingDefault pins the new ErrNoRows-then-INSERT
+// path. Simulates a pre-existing DB that predates a new default backend (e.g.
+// users upgrading to a build that ships pi): the row should be inserted on
+// the next Open without requiring a schema bump.
+func TestFixupBackends_InsertsMissingDefault(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.sql")
+
+	// First open — seedDefaults populates claude, codex, pi.
+	d1, err := Open(dbPath)
+	testutil.NoError(t, err)
+	// Delete pi to simulate an upgrade from a pre-pi build.
+	testutil.NoError(t, d1.DeleteBackend("pi"))
+	backends1, err := d1.Backends()
+	testutil.NoError(t, err)
+	if _, ok := backends1["pi"]; ok {
+		t.Fatal("setup: pi should be deleted before reopen")
+	}
+	d1.Close()
+
+	// Second open — fixupBackends should re-insert pi.
+	d2, err := Open(dbPath)
+	testutil.NoError(t, err)
+	defer d2.Close()
+
+	backends2, err := d2.Backends()
+	testutil.NoError(t, err)
+	pi, ok := backends2["pi"]
+	if !ok {
+		t.Fatal("expected pi to be re-inserted by fixupBackends after Open")
+	}
+	defaultCfg := config.DefaultConfig()
+	if pi.Command != defaultCfg.Backends["pi"].Command {
+		t.Errorf("pi command after reinsert = %q, want %q", pi.Command, defaultCfg.Backends["pi"].Command)
+	}
+	if pi.PromptFlag != defaultCfg.Backends["pi"].PromptFlag {
+		t.Errorf("pi prompt_flag after reinsert = %q, want %q", pi.PromptFlag, defaultCfg.Backends["pi"].PromptFlag)
+	}
+}
+
 // --- Config edge case tests ---
 
 func TestDB_Config_CleanupWorktrees(t *testing.T) {

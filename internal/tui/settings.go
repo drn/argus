@@ -1507,9 +1507,9 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	widget.DrawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, theme.StyleDimmed)
 	r += 2
 
-	hints := "[d] set as default  [n] new  [e] edit"
+	hints := "[d] set as default  (read-only: backends are hardcoded)"
 	if be.Name == sv.defaultBackend {
-		hints = "(already default)  [n] new  [e] edit"
+		hints = "(already default; backends are hardcoded)"
 	}
 	if r < h {
 		widget.DrawText(screen, x, y+r, w, hints, theme.StyleDimmed)

@@ -1046,10 +1046,8 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
     <div class="settings-section">
       <h3>Backends</h3>
+      <div class="meta" style="padding: 0 0 8px">Backends are hardcoded. Edit your CLI tool's config to customize behavior.</div>
       <div id="backends-list"></div>
-      <div class="settings-row">
-        <button class="primary" onclick="openBackendEditor()">+ New backend</button>
-      </div>
     </div>
 
     <div class="settings-section">
@@ -1255,30 +1253,6 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
         <button id="sm-run" onclick="runScheduleFromModal()" style="margin-right:auto; display:none">Run now</button>
         <button onclick="closeScheduleEditor()">Cancel</button>
         <button class="primary" onclick="saveScheduleFromModal()">Save</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Backend editor modal -->
-  <div class="modal-overlay" id="backend-modal">
-    <div class="modal">
-      <h3 id="backend-modal-title">New backend</h3>
-      <div class="form-group">
-        <label>Name</label>
-        <input id="bm-name">
-      </div>
-      <div class="form-group">
-        <label>Command</label>
-        <textarea id="bm-command" class="mono" placeholder="claude --dangerously-skip-permissions"></textarea>
-      </div>
-      <div class="form-group">
-        <label>Prompt flag (optional)</label>
-        <input id="bm-prompt-flag" placeholder="--prompt or blank for stdin">
-      </div>
-      <div class="modal-actions">
-        <button class="danger" id="bm-delete" onclick="deleteBackendFromModal()" style="margin-right:auto">Delete</button>
-        <button onclick="closeBackendEditor()">Cancel</button>
-        <button class="primary" onclick="saveBackendFromModal()">Save</button>
       </div>
     </div>
   </div>
@@ -4134,7 +4108,6 @@ let settingsBootstrap = null; // sandbox/api enabled state at first load — tra
 let projectsCache = [];
 let backendsCache = [];
 let editingProject = null; // null = creating; otherwise the project being edited
-let editingBackend = null;
 
 async function loadSettings() {
   await Promise.all([
@@ -4521,72 +4494,15 @@ function renderBackendsBlock() {
     return;
   }
   const def = settingsCache && settingsCache.defaults && settingsCache.defaults.backend;
-  el.innerHTML = backendsCache.map((b, i) => {
+  el.innerHTML = backendsCache.map((b) => {
     const star = b.name === def ? ' ★' : '';
     return `<div class="settings-row">
       <div class="grow">
         <div class="label">${esc(b.name)}${star}</div>
         <div class="meta">${esc(b.command)}</div>
       </div>
-      <button data-act="edit-backend" data-idx="${i}">Edit</button>
     </div>`;
   }).join('');
-  el.querySelectorAll('[data-act="edit-backend"]').forEach(btn => {
-    btn.addEventListener('click', () => openBackendEditor(backendsCache[parseInt(btn.dataset.idx, 10)]));
-  });
-}
-
-function openBackendEditor(b) {
-  editingBackend = b || null;
-  document.getElementById('backend-modal-title').textContent = b ? `Edit ${b.name}` : 'New backend';
-  document.getElementById('bm-name').value = b ? b.name : '';
-  document.getElementById('bm-name').disabled = !!b;
-  document.getElementById('bm-command').value = b ? b.command : '';
-  document.getElementById('bm-prompt-flag').value = b ? (b.prompt_flag || '') : '';
-  document.getElementById('bm-delete').style.display = b ? 'inline-block' : 'none';
-  document.getElementById('backend-modal').classList.add('open');
-}
-
-function closeBackendEditor() {
-  document.getElementById('backend-modal').classList.remove('open');
-  editingBackend = null;
-}
-
-async function saveBackendFromModal() {
-  const name = document.getElementById('bm-name').value.trim();
-  const command = document.getElementById('bm-command').value.trim();
-  if (!name || !command) { showToast('Name and command are required'); return; }
-  const body = { name, command, prompt_flag: document.getElementById('bm-prompt-flag').value.trim() };
-  try {
-    const url = editingBackend ? `/api/backends/${encodeURIComponent(editingBackend.name)}` : '/api/backends';
-    const method = editingBackend ? 'PUT' : 'POST';
-    const r = await api(url, { method, body: JSON.stringify(body) });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.error || 'save failed');
-    }
-    closeBackendEditor();
-    loadBackendsBlock();
-    // Settings can change backend list while New Task form is mounted; refresh
-    // its dropdown so a freshly added/renamed backend is selectable on the
-    // next "+ New" without a full reload.
-    loadBackends();
-  } catch(e) { showToast('Save failed: ' + e.message); }
-}
-
-async function deleteBackendFromModal() {
-  if (!editingBackend) return;
-  if (!confirm(`Delete backend "${editingBackend.name}"?`)) return;
-  try {
-    const r = await api(`/api/backends/${encodeURIComponent(editingBackend.name)}`, { method: 'DELETE' });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.error || 'delete failed');
-    }
-    closeBackendEditor();
-    loadBackendsBlock();
-    loadBackends();
-  } catch(e) { showToast('Delete failed: ' + e.message); }
 }
 
 // --- Schedules ---

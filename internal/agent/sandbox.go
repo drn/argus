@@ -60,6 +60,12 @@ const sandboxProfileBase = `(version 1)
 ; ~/.claude.json — the agent's BuildCmd treats codex as a first-class backend
 ; and CaptureCodexSessionID reads state_5.sqlite, which codex must write first.
 (allow file-write* (subpath (string-append (param "HOME") "/.codex")))
+; Pi backend (pi.dev coding agent): session files at
+; ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl plus auth/config.
+; CapturePiSessionID reads these to recover the session UUID post-exit, so the
+; agent MUST be able to write them. Without this rule pi sessions vanish under
+; sandbox and resume is silently broken.
+(allow file-write* (subpath (string-append (param "HOME") "/.pi")))
 ; ~/.ssh/known_hosts append for new git remotes. Without this, ssh prompts
 ; interactively for host-key acceptance and the agent's PTY hangs silently.
 ; Prefix covers OpenSSH's mkstemp-then-rename atomic update (known_hosts.XXXXXX).
