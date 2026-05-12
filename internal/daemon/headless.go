@@ -19,6 +19,7 @@ type HeadlessInput struct {
 	AutoName   bool
 	BaseBranch string
 	DependsOn  []string
+	PlanSlug   string // optional orchestrator grouping label; opaque to daemon
 }
 
 // HeadlessCreateTask creates a task, its worktree, and starts an agent session
@@ -48,6 +49,7 @@ func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, in Headle
 		AutoName:   in.AutoName,
 		BaseBranch: in.BaseBranch,
 		DependsOn:  in.DependsOn,
+		PlanSlug:   in.PlanSlug,
 	})
 	return task, err
 }

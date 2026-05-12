@@ -40,6 +40,11 @@ type CreateInput struct {
 	// Empty / nil restores the legacy single-task behaviour: start immediately.
 	DependsOn []string
 
+	// PlanSlug is the orchestrator-supplied grouping label. Opaque to the
+	// daemon — same contract as Result — used by the DAG view to scope a
+	// graph to a single stack. Empty string = unaffiliated.
+	PlanSlug string
+
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
 	// background goroutine after the task is fully created. The DB write
 	// is race-guarded: it only overwrites Name if the row's current Name
@@ -189,6 +194,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Branch:     branchName,
 		BaseBranch: baseBranch,
 		DependsOn:  input.DependsOn,
+		PlanSlug:   input.PlanSlug,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.

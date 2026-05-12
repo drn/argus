@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/taskview"
@@ -87,6 +88,10 @@ type App struct {
 	// Tabs
 	settings     *SettingsView
 	settingsPage *SettingsPage
+
+	// DAG tab (created at construction; populated from tick loop snapshot).
+	dagWidget *dagview.Widget
+	dagPage   *DAGPage
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -358,9 +363,20 @@ func (a *App) buildUI() {
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(agentPanels, 0, 1, true)
 
+	// DAG view — owned by the App so the tick loop can refresh node snapshots
+	// and key handlers can dispatch link/unlink/halt back into the daemon.
+	a.dagWidget = dagview.New()
+	a.dagWidget.OnBranchChange = func() { a.forceRedraw("dag branch changed") }
+	a.dagWidget.OnEnter = func(id string) { a.openAgentForTask(id) }
+	a.dagWidget.OnLink = func(child string) { a.openLinkPickerForTask(child) }
+	a.dagWidget.OnUnlink = func(child string) { a.openUnlinkPickerForTask(child) }
+	a.dagWidget.OnHalt = func(id string) { a.confirmHaltDownstream(id) }
+	a.dagPage = NewDAGPage(a.dagWidget)
+
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
+		AddPage("dag", a.dagPage, true, false).
 		AddPage("settings", a.settingsPage, true, false)
 	// Every Pages mutation (AddPage / RemovePage / SwitchToPage / Show / Hide)
 	// is a layout change that needs a tcell Sync to wipe ghost cells under
@@ -1870,6 +1886,11 @@ func (a *App) switchTab(t widget.Tab) {
 		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
+	case widget.TabDAG:
+		a.mode = modeTaskList
+		a.refreshDAG()
+		a.pages.SwitchToPage("dag")
+		a.tapp.SetFocus(a.dagPage)
 	case widget.TabSettings:
 		a.mode = modeTaskList
 		a.settings.Refresh()

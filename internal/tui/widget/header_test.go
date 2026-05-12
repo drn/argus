@@ -21,11 +21,14 @@ func TestHeader_SetTab(t *testing.T) {
 }
 
 func TestTabLabels(t *testing.T) {
-	if len(TabLabels) != 2 {
-		t.Errorf("TabLabels count = %d, want 2", len(TabLabels))
+	if len(TabLabels) != 3 {
+		t.Errorf("TabLabels count = %d, want 3", len(TabLabels))
 	}
-	if len(tabKeys) != 2 {
-		t.Errorf("tabKeys count = %d, want 2", len(tabKeys))
+	if len(tabKeys) != 3 {
+		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
+	}
+	if TabLabels[TabDAG] != "DAG" {
+		t.Errorf("TabLabels[TabDAG] = %q, want DAG", TabLabels[TabDAG])
 	}
 }
 

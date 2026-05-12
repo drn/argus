@@ -1376,3 +1376,60 @@ func TestSmoke_SettingsPagePasteRouting(t *testing.T) {
 		t.Errorf("paste did not reach vault editor: editVaultBuf = %q, want %q", got, "/vault")
 	}
 }
+
+// TestSmoke_DAGTabRendersAndFiresRedraw exercises the new DAG tab end-to-end:
+// switching to the tab populates the widget, the OnBranchChange callback
+// fires forceRedraw on the snapshot install, and the cursor can be moved by
+// the inner widget's input handler.
+func TestSmoke_DAGTabRendersAndFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	// Two linked tasks so the DAG has edges to render.
+	_ = d.Add(&model.Task{ID: "p1", Name: "parent", Status: model.StatusComplete, CreatedAt: time.Now()})
+	_ = d.Add(&model.Task{ID: "c1", Name: "child", Status: model.StatusInProgress, DependsOn: []string{"p1"}, CreatedAt: time.Now()})
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readLog := func() string {
+		b, _ := os.ReadFile(logPath)
+		return string(b)
+	}
+
+	// Switch to the DAG tab via the global Right arrow.
+	prior := strings.Count(readLog(), "force redraw: dag branch changed")
+	sim.InjectKey(tcell.KeyRight, 0, 0)
+	syncUI(t, app.tapp)
+
+	// DAG tab active + page switched.
+	readUI(t, app.tapp, func() {
+		if app.header.ActiveTab() != widget.TabDAG {
+			t.Errorf("expected TabDAG active, got %v", app.header.ActiveTab())
+		}
+		page, _ := app.pages.GetFrontPage()
+		if page != "dag" {
+			t.Errorf("expected dag page, got %q", page)
+		}
+	})
+
+	// branch-change must have fired (snapshot installed → forceRedraw).
+	if strings.Count(readLog(), "force redraw: dag branch changed") <= prior {
+		t.Errorf("expected dag branch-change forceRedraw after tab switch; log so far:\n%s", readLog())
+	}
+
+	// Cursor lives on a real node.
+	readUI(t, app.tapp, func() {
+		cur := app.dagWidget.CurrentTask()
+		if cur != "p1" && cur != "c1" {
+			t.Errorf("dag cursor = %q, want p1 or c1", cur)
+		}
+	})
+}

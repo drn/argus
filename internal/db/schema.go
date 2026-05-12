@@ -24,6 +24,7 @@ func (d *DB) createTables() error {
 			base_branch TEXT NOT NULL DEFAULT '',
 			depends_on  TEXT NOT NULL DEFAULT '',
 			result      TEXT NOT NULL DEFAULT '',
+			plan_slug   TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -82,6 +83,13 @@ func (d *DB) createTables() error {
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN depends_on  TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN result      TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// plan_slug groups tasks belonging to the same orchestrator stack. Like
+	// result, it's opaque to the daemon: the orchestrator sets it on every
+	// sub-task it creates, and the DAG view uses it as a filter so multiple
+	// stacks within a project render as separate graphs rather than one big
+	// disconnected blob.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN plan_slug TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a

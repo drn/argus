@@ -1,0 +1,306 @@
+package dagview
+
+import (
+	"encoding/json"
+
+	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+)
+
+// Widget renders the DAG in a bordered panel. Owns the placed layout, the
+// cursor, and the per-node failed-result cache; recomputes layout only when
+// SetNodes is called (cheap at Argus scale).
+type Widget struct {
+	*tview.Box
+	layout   Layout
+	cursor   string
+	focused  bool
+	failed   map[string]bool
+	OnClick  func() // optional; fires when the widget gains focus via click
+	OnEnter  func(id string)
+	OnLink   func(child string)
+	OnUnlink func(child string)
+	OnHalt   func(id string)
+	OnFocus  func() // setFocus hook the page uses on mouse click
+
+	// OnBranchChange fires when Draw will paint a structurally different
+	// frame than the previous one (node count, layer count, edge count, or
+	// node-status set). App wires this to forceRedraw so tcell's per-cell
+	// diff doesn't leave ghost glyphs behind. See gotchas/ui-threading.md
+	// and gotchas/dag-rendering.md.
+	OnBranchChange func()
+	lastShape      uint64
+}
+
+// New constructs an empty DAG widget. SetNodes must be called before the
+// widget is meaningful.
+func New() *Widget {
+	return &Widget{
+		Box:    tview.NewBox(),
+		failed: map[string]bool{},
+	}
+}
+
+// SetNodes installs a new snapshot. Recomputes layout, repopulates the
+// failed-result cache, and clamps the cursor to the new node set.
+func (w *Widget) SetNodes(nodes []Node) {
+	w.layout = Compute(nodes)
+	w.failed = make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		w.failed[n.ID] = parseFailed(n.Result)
+	}
+	// Cursor clamp — if the highlighted ID is no longer present, jump to
+	// the first node (or empty if the graph is empty).
+	if _, ok := w.findNode(w.cursor); !ok {
+		if len(w.layout.Nodes) > 0 {
+			w.cursor = w.layout.Nodes[0].ID
+		} else {
+			w.cursor = ""
+		}
+	}
+	w.maybeNotifyBranchChange()
+}
+
+// SetFocused toggles the focus state. Bubble up to Draw, which renders the
+// cursor more prominently when the widget owns focus.
+func (w *Widget) SetFocused(f bool) {
+	if w.focused == f {
+		return
+	}
+	w.focused = f
+	w.maybeNotifyBranchChange()
+}
+
+// CurrentTask returns the highlighted task ID, or "" when the DAG is empty.
+func (w *Widget) CurrentTask() string {
+	return w.cursor
+}
+
+// MoveCursor relocates the cursor by grid deltas: dx moves within a layer,
+// dy moves between layers. Movement is clamped — going off the right edge
+// of a layer or below the last layer is a no-op rather than wrapping.
+//
+// Archived nodes participate in movement so users can still inspect them;
+// activation (Enter / h) is the place to skip archived rows, not here.
+func (w *Widget) MoveCursor(dx, dy int) {
+	cur, ok := w.findNode(w.cursor)
+	if !ok {
+		if len(w.layout.Nodes) > 0 {
+			w.cursor = w.layout.Nodes[0].ID
+		}
+		return
+	}
+	targetLayer := cur.Layer + dy
+	targetCol := cur.Col + dx
+	if targetLayer < 0 || targetLayer >= w.layout.Layers {
+		return
+	}
+	// Find the closest node in the target layer at or near targetCol.
+	var best Placed
+	bestDist := 1 << 30
+	found := false
+	for _, p := range w.layout.Nodes {
+		if p.Layer != targetLayer {
+			continue
+		}
+		d := p.Col - targetCol
+		if d < 0 {
+			d = -d
+		}
+		if d < bestDist {
+			bestDist = d
+			best = p
+			found = true
+		}
+	}
+	if !found {
+		return
+	}
+	w.cursor = best.ID
+}
+
+// Draw paints the layout, plus a header banner and a key-hints footer.
+func (w *Widget) Draw(screen tcell.Screen) {
+	w.Box.DrawForSubclass(screen, w)
+	x, y, wpx, hpx := w.GetInnerRect()
+	if wpx <= 0 || hpx <= 0 {
+		return
+	}
+	borderStyle := theme.StyleBorder
+	if w.focused {
+		borderStyle = theme.StyleFocusedBorder
+	}
+	inner := widget.DrawBorderedPanel(screen, x, y, wpx, hpx, " DAG ", borderStyle)
+	if inner.W <= 0 || inner.H <= 0 {
+		return
+	}
+
+	if len(w.layout.Nodes) == 0 {
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No tasks in DAG. Link tasks with `l` from the task list.", theme.StyleDimmed)
+		return
+	}
+
+	failedFn := func(id string) bool { return w.failed[id] }
+	Draw(screen, inner.X, inner.Y, w.layout, w.cursor, w.focused, failedFn)
+}
+
+// InputHandler routes hjkl / arrow keys to MoveCursor and dispatches Enter
+// / l / L / h to the corresponding callbacks. Unknown keys are passed
+// through to the default tview.Box handler, which is a no-op.
+func (w *Widget) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+	return w.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		switch event.Key() {
+		case tcell.KeyUp:
+			w.MoveCursor(0, -1)
+		case tcell.KeyDown:
+			w.MoveCursor(0, 1)
+		case tcell.KeyLeft:
+			w.MoveCursor(-1, 0)
+		case tcell.KeyRight:
+			w.MoveCursor(1, 0)
+		case tcell.KeyEnter:
+			if w.OnEnter != nil && w.cursor != "" {
+				w.OnEnter(w.cursor)
+			}
+		case tcell.KeyRune:
+			switch event.Rune() {
+			case 'h':
+				if w.OnHalt != nil && w.cursor != "" {
+					w.OnHalt(w.cursor)
+				}
+			case 'j':
+				w.MoveCursor(0, 1)
+			case 'k':
+				w.MoveCursor(0, -1)
+			case 'l':
+				if w.OnLink != nil && w.cursor != "" {
+					w.OnLink(w.cursor)
+				}
+			case 'L':
+				if w.OnUnlink != nil && w.cursor != "" {
+					w.OnUnlink(w.cursor)
+				}
+			}
+		}
+	})
+}
+
+// MouseHandler positions the cursor on the clicked node and yields focus to
+// the widget. Scroll wheel moves the cursor by one row.
+func (w *Widget) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+	return w.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (consumed bool, capture tview.Primitive) {
+		if !w.InRect(event.Position()) {
+			return false, nil
+		}
+		if action == tview.MouseLeftDown || action == tview.MouseLeftClick {
+			setFocus(w)
+			consumed = true
+			if w.OnClick != nil {
+				w.OnClick()
+			}
+			// Map screen click to grid cell.
+			ix, iy, _, _ := w.GetInnerRect()
+			ex, ey := event.Position()
+			// Adjust for the bordered panel inset (1 cell).
+			relX := ex - ix - 1
+			relY := ey - iy - 1
+			if relX < 0 || relY < 0 {
+				return
+			}
+			col := relX / cellCol
+			layer := relY / cellRow
+			for _, p := range w.layout.Nodes {
+				if p.Col == col && p.Layer == layer {
+					w.cursor = p.ID
+					break
+				}
+			}
+		}
+		if action == tview.MouseScrollUp {
+			w.MoveCursor(0, -1)
+			consumed = true
+		}
+		if action == tview.MouseScrollDown {
+			w.MoveCursor(0, 1)
+			consumed = true
+		}
+		return
+	})
+}
+
+// PasteHandler is a no-op for the DAG widget — pasted text has nothing
+// sensible to do here. Implementing the interface keeps tview's bracket
+// paste from leaking to a parent widget that might consume it badly.
+func (w *Widget) PasteHandler() func(text string, setFocus func(p tview.Primitive)) {
+	return w.WrapPasteHandler(func(_ string, _ func(p tview.Primitive)) {})
+}
+
+// findNode resolves an ID to its placed entry. Returns the empty Placed and
+// false if the ID is unknown (e.g. after archive removed it).
+func (w *Widget) findNode(id string) (Placed, bool) {
+	for _, p := range w.layout.Nodes {
+		if p.ID == id {
+			return p, true
+		}
+	}
+	return Placed{}, false
+}
+
+// parseFailed reads the agent-supplied result blob and reports whether the
+// agent set `failed: true`. The widget calls this once per snapshot rather
+// than every Draw — the JSON is opaque to the daemon but cheap to parse on
+// the UI side.
+func parseFailed(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var r struct {
+		Failed bool `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		return false
+	}
+	return r.Failed
+}
+
+// branchShape captures the parts of state that, when changed, mean Draw
+// would paint a structurally different cell set. The widget compares this
+// signature across SetNodes / SetFocused / MoveCursor to decide whether to
+// fire OnBranchChange. See the contract in CLAUDE.md ("UX-tearing prevention
+// — the branch-change callback contract").
+func (w *Widget) branchShape() uint64 {
+	// node count : 24, layer count : 8, edge count : 12, focus : 1, failed count : 12,
+	// cursor present : 1, in-progress count : 6
+	var nProg int
+	for _, p := range w.layout.Nodes {
+		if p.Status == "in_progress" {
+			nProg++
+		}
+	}
+	var shape uint64
+	shape |= uint64(len(w.layout.Nodes)) & 0xFFFFFF
+	shape |= (uint64(w.layout.Layers) & 0xFF) << 24
+	shape |= (uint64(len(w.layout.Edges)) & 0xFFF) << 32
+	if w.focused {
+		shape |= 1 << 44
+	}
+	shape |= (uint64(len(w.failed)) & 0xFFF) << 45
+	if w.cursor != "" {
+		shape |= 1 << 57
+	}
+	shape |= (uint64(nProg) & 0x3F) << 58
+	return shape
+}
+
+func (w *Widget) maybeNotifyBranchChange() {
+	shape := w.branchShape()
+	if shape == w.lastShape {
+		return
+	}
+	w.lastShape = shape
+	if w.OnBranchChange != nil {
+		w.OnBranchChange()
+	}
+}

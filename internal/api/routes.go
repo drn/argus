@@ -54,6 +54,16 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks/{id}/rename", s.handleRenameTask)
 	mux.HandleFunc("POST /api/tasks/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/fork", s.handleForkTask)
+
+	// Task linking / DAG endpoints. {id}/deps mirrors the task_link MCP tool;
+	// {id}/halt-downstream cascades stop/archive through transitive children;
+	// /api/dag returns the snapshot for the DAG view.
+	mux.HandleFunc("GET /api/tasks/{id}/deps", s.handleGetDeps)
+	mux.HandleFunc("POST /api/tasks/{id}/deps", s.handleLinkTask)
+	mux.HandleFunc("DELETE /api/tasks/{id}/deps/{parent_id}", s.handleUnlinkTask)
+	mux.HandleFunc("POST /api/tasks/{id}/halt-downstream", s.handleHaltDownstream)
+	mux.HandleFunc("POST /api/tasks/{id}/plan-slug", s.handleSetPlanSlug)
+	mux.HandleFunc("GET /api/dag", s.handleDAG)
 	mux.HandleFunc("POST /api/sessions/stop-all", s.handleStopAll)
 	mux.HandleFunc("GET /api/projects/full", s.handleListProjectsFull)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)

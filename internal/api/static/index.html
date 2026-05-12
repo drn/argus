@@ -595,6 +595,40 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* Pull to refresh indicator */
 .refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
 
+/* DAG View — layered top-down dependency graph. The .dag-svg-wrap is the
+   scrollable canvas; the SVG inside sizes itself to the rendered layout so
+   horizontal scrolling kicks in for wide fan-out stacks. */
+#dag-view { display: none; padding: 12px; padding-bottom: 80px; }
+.dag-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.dag-toolbar select, .dag-toolbar input[type=text] {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font-size: 13px; min-width: 0;
+}
+.dag-toolbar input[type=text] { flex: 1; min-width: 100px; }
+.dag-toolbar .dag-toggle { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-dim); }
+.dag-toolbar .primary { background: var(--accent); color: var(--bg); border: none; border-radius: 6px; padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.dag-status { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; min-height: 16px; }
+.dag-status.error { color: var(--red); }
+.dag-svg-wrap { overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-height: 200px; }
+.dag-svg-wrap svg { display: block; }
+.dag-node-bg { fill: var(--surface); stroke: var(--border); stroke-width: 1.5; }
+.dag-node-bg.status-pending { stroke: var(--text-dim); }
+.dag-node-bg.status-in_progress { stroke: var(--accent); }
+.dag-node-bg.status-in_review { stroke: var(--yellow); }
+.dag-node-bg.status-complete { stroke: var(--green); }
+.dag-node-bg.failed { stroke: var(--red); stroke-width: 2.5; }
+.dag-node-bg.archived { stroke: var(--text-dim); opacity: 0.45; }
+.dag-node-text { fill: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; pointer-events: none; }
+.dag-node-text.archived { opacity: 0.55; }
+.dag-node-glyph { fill: var(--text); font-family: ui-monospace, monospace; font-size: 14px; pointer-events: none; }
+.dag-node-glyph.status-in_progress { fill: var(--accent); }
+.dag-node-glyph.status-in_review { fill: var(--yellow); }
+.dag-node-glyph.status-complete { fill: var(--green); }
+.dag-node-glyph.failed { fill: var(--red); }
+.dag-edge { stroke: var(--text-dim); stroke-width: 1.5; fill: none; }
+.dag-node-link { cursor: pointer; }
+.dag-node-link:hover .dag-node-bg { stroke-width: 2.5; }
+
 /* Settings */
 #settings-view { display: none; padding: 12px; padding-bottom: 80px; }
 .settings-section {
@@ -881,6 +915,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
   <div class="tabs">
     <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Tasks</div>
+    <div class="tab" data-tab="dag" onclick="switchTab('dag')">DAG</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">+ New</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
@@ -969,6 +1004,24 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     <div class="files-stack" id="files-stack">
       <div class="files-empty">Loading…</div>
     </div>
+  </div>
+
+  <!-- DAG View — renders the task dependency graph as an SVG. Toolbar lets the
+       user pick a project/plan filter and toggle archived rows. The layout
+       algorithm runs in JS (Kahn topological sort + barycentric within-layer
+       ordering) so we don't ship a vendored library; the box-drawing visual
+       mirrors the TUI's dagview widget. -->
+  <div id="dag-view" style="display:none">
+    <div class="dag-toolbar">
+      <select id="dag-project-filter" onchange="loadDAG()">
+        <option value="">All projects</option>
+      </select>
+      <input id="dag-plan-filter" type="text" placeholder="plan slug…" oninput="onDAGPlanInput(event)">
+      <label class="dag-toggle"><input id="dag-include-archived" type="checkbox" onchange="loadDAG()"> archived</label>
+      <button type="button" class="primary" onclick="loadDAG()">↻</button>
+    </div>
+    <div id="dag-status" class="dag-status"></div>
+    <div id="dag-svg-wrap" class="dag-svg-wrap"></div>
   </div>
 
   <!-- Settings View -->
@@ -4056,10 +4109,243 @@ async function createTask() {
   }
 }
 
+// --- DAG view ---
+//
+// Pure-JS implementation of the same Sugiyama-lite layout the TUI uses:
+// Kahn topological sort assigns each node a layer (depth from sources), a
+// single barycentric sweep reorders within each layer to reduce edge
+// crossings, then nodes are placed on a grid and edges rendered as SVG
+// paths (straight verticals + right-angle corners for layer jumps).
+//
+// Status colours / glyphs mirror the TUI widget so users learn one
+// vocabulary across both surfaces. Archived rows are dimmed but kept in
+// the layout — see context/knowledge/gotchas/dag-rendering.md.
+const DAG_BOX_W = 160;
+const DAG_BOX_H = 44;
+const DAG_COL_GAP = 32;
+const DAG_ROW_GAP = 32;
+let dagPlanInputDebounce = 0;
+
+function onDAGPlanInput(ev) {
+  clearTimeout(dagPlanInputDebounce);
+  dagPlanInputDebounce = setTimeout(loadDAG, 300);
+}
+
+async function loadDAG() {
+  const statusEl = document.getElementById('dag-status');
+  statusEl.classList.remove('error');
+  statusEl.textContent = 'Loading…';
+
+  // Re-seed the project filter dropdown from /api/projects so newly added
+  // projects show up without a page reload.
+  await refreshDAGProjects();
+
+  const project = document.getElementById('dag-project-filter').value;
+  const plan = document.getElementById('dag-plan-filter').value.trim();
+  const includeArchived = document.getElementById('dag-include-archived').checked;
+  const params = new URLSearchParams();
+  if (project) params.set('project', project);
+  if (plan) params.set('plan', plan);
+  if (includeArchived) params.set('archived', '1');
+
+  let resp;
+  try {
+    resp = await api('/api/dag?' + params.toString());
+  } catch (e) {
+    statusEl.classList.add('error');
+    statusEl.textContent = 'Failed to load DAG: ' + e.message;
+    return;
+  }
+  const nodes = (resp && resp.nodes) || [];
+  if (nodes.length === 0) {
+    statusEl.textContent = 'No tasks match.';
+    document.getElementById('dag-svg-wrap').innerHTML = '';
+    return;
+  }
+  statusEl.textContent = nodes.length + ' nodes · ' + countDAGEdges(nodes) + ' edges';
+  const layout = layoutDAG(nodes);
+  renderDAG(layout);
+}
+
+async function refreshDAGProjects() {
+  try {
+    const r = await api('/api/projects');
+    const sel = document.getElementById('dag-project-filter');
+    const current = sel.value;
+    const projects = (r && r.projects) || [];
+    sel.innerHTML = '<option value="">All projects</option>' +
+      projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+    if (current && projects.includes(current)) sel.value = current;
+  } catch (e) {
+    // Non-fatal — leave the dropdown alone.
+  }
+}
+
+function countDAGEdges(nodes) {
+  return nodes.reduce((acc, n) => acc + ((n.depends_on || []).length), 0);
+}
+
+// layoutDAG mirrors internal/tui/dagview/layout.go. Kept side-by-side rather
+// than fetched from the server because the algorithm is small (~60 lines)
+// and the result is render-time data, not domain data — keeping it
+// client-side avoids a second round-trip per render.
+function layoutDAG(rawNodes) {
+  const index = new Map(rawNodes.map(n => [n.id, n]));
+  // Prune unknown dep IDs upfront so subsequent passes don't have to guard.
+  const parents = new Map();
+  for (const n of rawNodes) {
+    parents.set(n.id, (n.depends_on || []).filter(d => index.has(d)));
+  }
+  // Layer = max(parent.layer)+1 via memoised DFS.
+  const layer = new Map();
+  const visiting = new Set();
+  function visit(id) {
+    if (layer.has(id)) return layer.get(id);
+    if (visiting.has(id)) return 0; // cycle protection
+    visiting.add(id);
+    let max = -1;
+    for (const p of parents.get(id) || []) {
+      const pl = visit(p);
+      if (pl > max) max = pl;
+    }
+    visiting.delete(id);
+    const l = max + 1;
+    layer.set(id, l);
+    return l;
+  }
+  for (const n of rawNodes) visit(n.id);
+
+  // Group by layer, deterministic initial order by ID.
+  let totalLayers = 0;
+  for (const l of layer.values()) {
+    if (l + 1 > totalLayers) totalLayers = l + 1;
+  }
+  const byLayer = Array.from({length: totalLayers}, () => []);
+  for (const [id, l] of layer.entries()) byLayer[l].push(id);
+  for (const arr of byLayer) arr.sort();
+  const col = new Map();
+  for (let l = 0; l < totalLayers; l++) byLayer[l].forEach((id, i) => col.set(id, i));
+
+  // Two barycentric sweeps.
+  for (let sweep = 0; sweep < 2; sweep++) {
+    for (let l = 1; l < totalLayers; l++) {
+      const scored = byLayer[l].map(id => {
+        const ps = parents.get(id) || [];
+        const have = ps.map(p => col.get(p)).filter(c => c !== undefined);
+        const score = have.length ? have.reduce((a, b) => a + b, 0) / have.length : Infinity;
+        return {id, score, hasP: have.length > 0};
+      });
+      scored.sort((a, b) => {
+        if (a.hasP !== b.hasP) return a.hasP ? -1 : 1;
+        if (a.hasP && a.score !== b.score) return a.score - b.score;
+        return a.id < b.id ? -1 : 1;
+      });
+      byLayer[l] = scored.map(s => s.id);
+      byLayer[l].forEach((id, i) => col.set(id, i));
+    }
+  }
+
+  const placed = [];
+  let width = 0;
+  for (let l = 0; l < totalLayers; l++) {
+    if (byLayer[l].length > width) width = byLayer[l].length;
+    byLayer[l].forEach((id, i) => {
+      placed.push({...index.get(id), layer: l, col: i});
+    });
+  }
+  const edges = [];
+  for (const n of placed) {
+    for (const p of parents.get(n.id) || []) {
+      edges.push({from: p, to: n.id});
+    }
+  }
+  return {nodes: placed, edges, layers: totalLayers, width};
+}
+
+function renderDAG(layout) {
+  const wrap = document.getElementById('dag-svg-wrap');
+  if (!layout.nodes.length) { wrap.innerHTML = ''; return; }
+  const w = layout.width * (DAG_BOX_W + DAG_COL_GAP);
+  const h = layout.layers * (DAG_BOX_H + DAG_ROW_GAP);
+  const nodeAt = id => layout.nodes.find(n => n.id === id);
+
+  let svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg">`;
+  // Edges first so node boxes paint over edge endpoints.
+  for (const e of layout.edges) {
+    const p = nodeAt(e.from); const c = nodeAt(e.to);
+    if (!p || !c) continue;
+    const px = p.col * (DAG_BOX_W + DAG_COL_GAP) + DAG_BOX_W / 2;
+    const py = p.layer * (DAG_BOX_H + DAG_ROW_GAP) + DAG_BOX_H;
+    const cx = c.col * (DAG_BOX_W + DAG_COL_GAP) + DAG_BOX_W / 2;
+    const cy = c.layer * (DAG_BOX_H + DAG_ROW_GAP);
+    if (px === cx) {
+      svg += `<path class="dag-edge" d="M${px},${py} L${cx},${cy}"/>`;
+    } else {
+      const midY = py + DAG_ROW_GAP / 2;
+      svg += `<path class="dag-edge" d="M${px},${py} L${px},${midY} L${cx},${midY} L${cx},${cy}"/>`;
+    }
+  }
+  for (const n of layout.nodes) {
+    const x = n.col * (DAG_BOX_W + DAG_COL_GAP);
+    const y = n.layer * (DAG_BOX_H + DAG_ROW_GAP);
+    const failed = isDAGNodeFailed(n);
+    const cls = ['dag-node-bg', `status-${n.status}`];
+    if (n.archived) cls.push('archived');
+    if (failed) cls.push('failed');
+    const textCls = ['dag-node-text']; if (n.archived) textCls.push('archived');
+    const glyph = dagGlyph(n.status, n.archived, failed);
+    const glyphCls = ['dag-node-glyph', `status-${n.status}`];
+    if (failed) glyphCls.push('failed');
+    const label = truncateDAGLabel(n.name, 18);
+    svg += `<g class="dag-node-link" onclick="onDAGNodeClick('${n.id}')">`;
+    svg += `<rect class="${cls.join(' ')}" x="${x}" y="${y}" width="${DAG_BOX_W}" height="${DAG_BOX_H}" rx="6"/>`;
+    svg += `<text class="${glyphCls.join(' ')}" x="${x + 14}" y="${y + DAG_BOX_H/2 + 5}">${glyph}</text>`;
+    svg += `<text class="${textCls.join(' ')}" x="${x + 32}" y="${y + DAG_BOX_H/2 + 5}">${esc(label)}</text>`;
+    svg += `</g>`;
+  }
+  svg += `</svg>`;
+  wrap.innerHTML = svg;
+}
+
+function dagGlyph(status, archived, failed) {
+  if (archived) return '·';
+  if (failed) return '✕';
+  switch (status) {
+    case 'complete': return '✓';
+    case 'in_review': return '⊙';
+    case 'in_progress': return '▶';
+    default: return '○';
+  }
+}
+
+function isDAGNodeFailed(n) {
+  if (!n.result) return false;
+  try {
+    const r = JSON.parse(n.result);
+    return r && r.failed === true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function truncateDAGLabel(name, max) {
+  if (!name) return '';
+  if (name.length <= max) return name;
+  return name.slice(0, max - 1) + '…';
+}
+
+function onDAGNodeClick(id) {
+  // Switch back to tasks tab and open the detail view for this task. Mirrors
+  // the TUI's `enter` keybinding semantics.
+  switchTab('tasks');
+  setTimeout(() => { if (typeof openDetail === 'function') openDetail(id); }, 50);
+}
+
 // --- Tab switching ---
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
+  document.getElementById('dag-view').style.display = tab === 'dag' ? 'block' : 'none';
   document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
   document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
   const dv = document.getElementById('detail-view');
@@ -4076,6 +4362,7 @@ function switchTab(tab) {
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
+  if (tab === 'dag') loadDAG();
   if (tab === 'create') applyCreateDefaults();
   if (tab === 'settings') loadSettings();
 }

@@ -233,13 +233,18 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 
 | Tool            | Description                                                                                                                                    |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `task_create`   | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`                                                            |
-| `task_list`     | List tasks, filtered by `status` and/or `project`                                                                                              |
-| `task_get`      | Get task details by `id`                                                                                                                       |
-| `task_stop`     | Stop a running agent (moves task to "in review")                                                                                               |
-| `task_archive`  | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                   |
-| `task_rename`   | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.     |
-| `task_complete` | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed. |
+| `task_create`         | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`. Orchestration: `base_branch`, `depends_on`, `plan_slug`, `upsert`.            |
+| `task_list`           | List tasks, filtered by `status` and/or `project`. Returned task objects include `plan_slug` for DAG-view filtering.                                               |
+| `task_get`            | Get task details by `id`                                                                                                                                           |
+| `task_stop`           | Stop a running agent (moves task to "in review")                                                                                                                   |
+| `task_archive`        | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                                       |
+| `task_rename`         | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.                         |
+| `task_complete`       | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
+| `task_link`           | Add a dependency edge. Params: `child_id`, `parent_id`. Cycle attempts return the offending path so the UI can render `"A → B → A"`.                              |
+| `task_unlink`         | Remove a dependency edge. Params: `child_id`, `parent_id`. No-op when the edge does not exist.                                                                     |
+| `task_deps`           | Return one-hop upstream + downstream neighbours of a task. Used by the DAG view's task detail panel.                                                               |
+| `task_halt_downstream`| Cascade stop/archive through every transitive descendant of a task. Used after a milestone fails so the rest of the stack doesn't waste effort. Seed is untouched. |
+| `task_set_plan_slug`  | Stamp the orchestrator grouping label. Opaque to the daemon; tasks sharing the same slug render as one stack in the DAG view.                                      |
 
 Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-complete/SKILL.md` let an agent finalize its own task at the end of a session via `cwd` resolution. Completing and archiving are independent axes.
 

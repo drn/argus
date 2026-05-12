@@ -48,6 +48,11 @@ type TaskCreateInput struct {
 	// before this task's agent session is auto-started. Empty / nil starts
 	// the session immediately (legacy behaviour).
 	DependsOn []string
+
+	// PlanSlug is the orchestrator-supplied grouping label so the DAG view
+	// can scope a stack without traversing depends_on reachability. Opaque
+	// to the daemon — same contract as Result.
+	PlanSlug string
 }
 
 // TaskCreator creates a task with worktree and starts an agent session.
@@ -530,6 +535,7 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
 				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
 				"depends_on":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional. Upstream task IDs whose status must reach 'complete' before this task's agent starts. The worktree is still created immediately."},
+				"plan_slug":   map[string]interface{}{"type": "string", "description": "Optional. Orchestrator grouping label for the DAG view; opaque to the daemon. Tasks sharing the same plan_slug render as one stack."},
 				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
 			},
 			"required": []string{"prompt", "project"},
@@ -752,6 +758,7 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	copy(tools, toolDefs)
 	if s.taskMgmtEnabled() {
 		tools = append(tools, taskToolDefs...)
+		tools = append(tools, linkingToolDefs...)
 	}
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
@@ -799,6 +806,16 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskComplete(req.ID, params.Arguments)
 	case "task_set_result":
 		return s.toolTaskSetResult(req.ID, params.Arguments)
+	case "task_link":
+		return s.toolTaskLink(req.ID, params.Arguments)
+	case "task_unlink":
+		return s.toolTaskUnlink(req.ID, params.Arguments)
+	case "task_deps":
+		return s.toolTaskDeps(req.ID, params.Arguments)
+	case "task_halt_downstream":
+		return s.toolTaskHaltDownstream(req.ID, params.Arguments)
+	case "task_set_plan_slug":
+		return s.toolTaskSetPlanSlug(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
 	case "schedule_list":
@@ -1017,6 +1034,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		Project    string   `json:"project"`
 		BaseBranch string   `json:"base_branch"`
 		DependsOn  []string `json:"depends_on"`
+		PlanSlug   string   `json:"plan_slug"`
 		Upsert     bool     `json:"upsert"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
@@ -1136,6 +1154,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		AutoName:   autoName,
 		BaseBranch: strings.TrimSpace(p.BaseBranch),
 		DependsOn:  p.DependsOn,
+		PlanSlug:   strings.TrimSpace(p.PlanSlug),
 	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)

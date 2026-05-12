@@ -369,6 +369,7 @@ func (d *Daemon) Serve(sockPath string) error {
 					AutoName:   input.AutoName,
 					BaseBranch: input.BaseBranch,
 					DependsOn:  input.DependsOn,
+					PlanSlug:   input.PlanSlug,
 				})
 			},
 			d.db,

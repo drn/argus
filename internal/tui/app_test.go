@@ -351,9 +351,18 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Fatalf("initial tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
-	// Right arrow → Settings (from Tasks tab)
+	// Right arrow → DAG (newly inserted between Tasks and Settings).
 	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
 	result := app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("right arrow should be consumed (return nil)")
+	}
+	if app.header.ActiveTab() != widget.TabDAG {
+		t.Errorf("tab = %v, want widget.TabDAG", app.header.ActiveTab())
+	}
+
+	// Right arrow → Settings (rail focus initially).
+	result = app.handleGlobalKey(ev)
 	if result != nil {
 		t.Error("right arrow should be consumed (return nil)")
 	}
@@ -367,11 +376,11 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Error("right arrow on settings rail should be consumed")
 	}
 	if app.header.ActiveTab() != widget.TabSettings {
-		t.Errorf("tab = %v, want widget.TabSettings (right consumed by settings)", app.header.ActiveTab())
+		t.Errorf("tab = %v, want widget.TabSettings (right consumed by settings rail)", app.header.ActiveTab())
 	}
 
 	// Right arrow on Settings pane — stays on Settings (rightmost tab, no wrap).
-	result = app.handleGlobalKey(ev)
+	_ = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings (no wrap)", app.header.ActiveTab())
 	}
@@ -386,17 +395,24 @@ func TestArrowTabNavigation(t *testing.T) {
 		t.Errorf("tab = %v, want widget.TabSettings (left consumed by settings pane)", app.header.ActiveTab())
 	}
 
-	// Left arrow on Settings rail → switches to Tasks tab.
+	// Left arrow on Settings rail → switches to DAG (the previous tab now
+	// that DAG sits between Tasks and Settings).
 	result = app.handleGlobalKey(ev)
 	if result != nil {
 		t.Error("left arrow on rail should be consumed")
 	}
+	if app.header.ActiveTab() != widget.TabDAG {
+		t.Errorf("tab = %v, want widget.TabDAG", app.header.ActiveTab())
+	}
+
+	// Left arrow → Tasks.
+	_ = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != widget.TabTasks {
 		t.Errorf("tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
-	// Left arrow at Tasks — stays on Tasks (no wrap)
-	result = app.handleGlobalKey(ev)
+	// Left arrow at Tasks — stays on Tasks (no wrap).
+	_ = app.handleGlobalKey(ev)
 	if app.header.ActiveTab() != widget.TabTasks {
 		t.Errorf("tab = %v, want widget.TabTasks (no wrap)", app.header.ActiveTab())
 	}

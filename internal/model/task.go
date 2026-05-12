@@ -8,15 +8,18 @@ import (
 
 // Task represents a unit of work to be completed by an LLM agent.
 //
-// BaseBranch, DependsOn, and Result are the stacked-PR / DAG orchestration
-// fields. BaseBranch records the start point passed to git worktree add (empty
-// means the project default). DependsOn is the list of task IDs that must
-// reach status=complete before this task's session is auto-started (empty
-// means start immediately, the legacy single-task behaviour). Result is an
-// opaque JSON string the agent writes via the task_set_result MCP tool; the
-// daemon never inspects it. By convention, agents that fail should write
-// {"failed": true, "reason": "..."} so the orchestrator can keep the
-// dependent stack blocked instead of cascading further work.
+// BaseBranch, DependsOn, Result, and PlanSlug are the stacked-PR / DAG
+// orchestration fields. BaseBranch records the start point passed to git
+// worktree add (empty means the project default). DependsOn is the list of
+// task IDs that must reach status=complete before this task's session is
+// auto-started (empty means start immediately, the legacy single-task
+// behaviour). Result is an opaque JSON string the agent writes via the
+// task_set_result MCP tool; the daemon never inspects it. By convention,
+// agents that fail should write {"failed": true, "reason": "..."} so the
+// orchestrator can keep the dependent stack blocked instead of cascading
+// further work. PlanSlug is an opaque text label set by the orchestrator
+// (matches the result contract) so the DAG view can group tasks belonging
+// to the same stack without traversing depends_on reachability.
 type Task struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
@@ -34,6 +37,7 @@ type Task struct {
 	BaseBranch string    `json:"base_branch,omitempty"`
 	DependsOn  []string  `json:"depends_on,omitempty"`
 	Result     string    `json:"result,omitempty"`
+	PlanSlug   string    `json:"plan_slug,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	EndedAt    time.Time `json:"ended_at,omitempty"`

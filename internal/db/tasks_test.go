@@ -44,6 +44,7 @@ func TestDB_OrchestrationFields(t *testing.T) {
 		BaseBranch: "argus/m1",
 		DependsOn:  []string{"id-a", "id-b"},
 		Result:     `{"pr_url":"https://x/pull/1"}`,
+		PlanSlug:   "thanxai-marketplace-mcp-v1",
 	}
 	testutil.NoError(t, d.Add(task))
 
@@ -52,17 +53,20 @@ func TestDB_OrchestrationFields(t *testing.T) {
 	testutil.Equal(t, got.BaseBranch, "argus/m1")
 	testutil.DeepEqual(t, got.DependsOn, []string{"id-a", "id-b"})
 	testutil.Equal(t, got.Result, `{"pr_url":"https://x/pull/1"}`)
+	testutil.Equal(t, got.PlanSlug, "thanxai-marketplace-mcp-v1")
 
-	// Updating clears DependsOn (orchestrator transferred control) and
-	// rewrites Result.
+	// Updating clears DependsOn (orchestrator transferred control), rewrites
+	// Result, and re-stamps PlanSlug.
 	got.DependsOn = nil
 	got.Result = `{"pr_url":"https://x/pull/2"}`
+	got.PlanSlug = "retry-1"
 	testutil.NoError(t, d.Update(got))
 
 	got2, err := d.Get(task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(got2.DependsOn), 0)
 	testutil.Equal(t, got2.Result, `{"pr_url":"https://x/pull/2"}`)
+	testutil.Equal(t, got2.PlanSlug, "retry-1")
 }
 
 // TestDB_SetResult exercises the partial-update path used by task_set_result.

@@ -35,4 +35,14 @@ Stacked-PR / depends_on flow — invariants that caused bugs when violated.
 
 ## Schema migration
 
-- **base_branch / depends_on / result are idempotent ALTER ADDs.** The CREATE TABLE has them; the migration block adds them. Both paths must coexist so fresh DBs and migrated DBs end up identical. If you reorder taskColumns without updating the INSERT/UPDATE/scan strings in lockstep, the scan will mis-bind columns silently (status into worktree, etc.).
+- **base_branch / depends_on / result / plan_slug are idempotent ALTER ADDs.** The CREATE TABLE has them; the migration block adds them. Both paths must coexist so fresh DBs and migrated DBs end up identical. If you reorder taskColumns without updating the INSERT/UPDATE/scan strings in lockstep, the scan will mis-bind columns silently (status into worktree, etc.).
+
+## Linking + DAG
+
+- **orch.Link stages the hypothetical edge on a child *copy*, not the snapshot's pointer.** A `Store` implementation that shares pointers between `Get()` and `Tasks()` (e.g. the MCP test mock) would otherwise see the parent appended twice — once via the snapshot mutation, once via the post-cycle-check `Update`. Production `*db.DB` returns fresh scanned objects so this never bites in real code, but the defensive copy keeps tests using a sharing mock from emitting duplicate edges.
+- **orch.FindCycle returns the cycle path, not a bool.** A "cycle detected" error without the offending sequence is unactionable in the linking UI. Callers (web modal, TUI banner, MCP error) render `"A → B → C → A"` directly from the returned slice.
+- **HaltDownstream re-queries each row's status inside the loop.** The depswatcher can flip a `pending` row to `in_progress` between the snapshot and the per-row decision; the re-query catches that and falls back from archive→stop. Without it, a racy halt would archive a row whose agent had just started, leaving an orphan PTY.
+- **HaltDownstream does NOT halt the seed task.** The seed is the user-supplied "this milestone failed" anchor; halting it would clobber the result.failed payload the orchestrator just wrote. Only the seed's transitive descendants are stopped/archived.
+- **plan_slug is opaque to the daemon — same contract as result.** The daemon never inspects it, never auto-derives it, never enforces uniqueness. The orchestrator stamps every sub-task in a stack with the same slug; the DAG view uses it as a filter key. Empty string = unaffiliated.
+- **Per-task linking endpoints are device-token-friendly; halt-downstream is master-only.** Matches the existing archive/rename tier. Halt-downstream affects multiple rows in one call and joins the `handleStopAll` tier — destructive cross-task ops require master.
+- **DAG layout assumes acyclic input.** `dagview.Compute`'s Kahn topological sort uses a small cycle guard (the in-progress visit map) to avoid infinite recursion if a stale snapshot leaks a cycle past the daemon's gate. The result is a degraded but bounded layout, not a crash — but the real fix lives upstream in the cycle DFS.
