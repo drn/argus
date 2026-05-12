@@ -195,6 +195,15 @@ type App struct {
 	// tmux/iTerm2 ghosts after a resize.
 	lastScreenW int
 	lastScreenH int
+
+	// forceSync, when true, makes afterDraw call screen.Sync() on every draw
+	// cycle instead of relying on the branch-change callbacks. Set at startup
+	// by detectMultiplexer(): tmux/screen maintain their own pane backing
+	// store that drifts from tcell's belief about the terminal, so the per-
+	// cell diff in tcell.Show() produces visible tearing across layout shifts.
+	// Syncing every frame trades the diff optimization (~free over a local
+	// PTY) for correctness. See gotchas/ui-threading.md "forceSync".
+	forceSync bool
 }
 
 // New creates the tui application shell.
@@ -219,6 +228,10 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
+		forceSync:              detectMultiplexer(),
+	}
+	if app.forceSync {
+		uxlog.Log("[tui] forceSync enabled — multiplexer detected, syncing every frame")
 	}
 
 	if dc, ok := runner.(*dclient.Client); ok {
@@ -389,22 +402,22 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	a.lastScreenW = w
 	a.lastScreenH = h
 	consumed := a.pendingSync.CompareAndSwap(true, false)
-	if sizeChanged || consumed {
-		// Always log so a debugger can confirm Sync ran in response to the
-		// matching `[tui] force redraw: ...` entry above. Without this entry,
-		// the deferred Sync is invisible in ux.log — only the request side
-		// shows up — making it hard to verify the architecture worked when
-		// chasing a tearing regression.
-		switch {
-		case sizeChanged && consumed:
-			uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", w, h)
-		case sizeChanged:
-			uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", w, h)
-		default:
-			uxlog.Log("[tui] afterDraw sync: forceRedraw consumed")
-		}
-		screen.Sync()
+	if !sizeChanged && !consumed && !a.forceSync {
+		return
 	}
+	// Log every non-routine Sync so a debugger can confirm one ran in response
+	// to the matching `[tui] force redraw: ...` entry above. Suppress logging
+	// when only forceSync triggered (no resize, no forceRedraw): the per-frame
+	// log would drown ux.log and the Sync is by-construction expected.
+	switch {
+	case sizeChanged && consumed:
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", w, h)
+	case sizeChanged:
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", w, h)
+	case consumed:
+		uxlog.Log("[tui] afterDraw sync: forceRedraw consumed")
+	}
+	screen.Sync()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
