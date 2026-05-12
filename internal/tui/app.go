@@ -399,7 +399,11 @@ func (a *App) buildUI() {
 // Calling `screen.Sync()` here is safe — tcell's Sync() invalidates all cells
 // and immediately emits a full clear+redraw. Show() then runs but finds no
 // dirty cells, so nothing is double-emitted. Net cost: one full-screen redraw
-// per draw cycle where forceRedraw was requested or the screen was resized.
+// per draw cycle where ANY of three triggers fired: forceRedraw was requested
+// (pendingSync), the screen was resized, or forceSync is set (multiplexer
+// mode — Sync every frame because tcell's per-cell diff isn't trustworthy
+// inside tmux/screen). The forceSync path is intentionally NOT logged per
+// frame; see the switch below.
 func (a *App) afterDraw(screen tcell.Screen) {
 	w, h := screen.Size()
 	sizeChanged := w != a.lastScreenW || h != a.lastScreenH
