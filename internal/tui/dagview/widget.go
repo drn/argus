@@ -135,7 +135,7 @@ func (w *Widget) MoveCursor(dx, dy int) {
 
 // Draw paints the layout, plus a header banner and a key-hints footer.
 func (w *Widget) Draw(screen tcell.Screen) {
-	w.Box.DrawForSubclass(screen, w)
+	w.DrawForSubclass(screen, w)
 	x, y, wpx, hpx := w.GetInnerRect()
 	if wpx <= 0 || hpx <= 0 {
 		return
@@ -310,15 +310,20 @@ func (w *Widget) branchShape() uint64 {
 			nFailed++
 		}
 	}
+	// Mask THEN cast — int & literal yields a small positive int that fits
+	// in uint64 without the gosec G115 overflow warning. These fields are
+	// slice lengths or longest-path layer counts, always ≥ 0 in practice;
+	// the mask both clamps to the bit field width and makes the unsigned
+	// semantics explicit.
 	var shape uint64
-	shape |= uint64(len(w.layout.Nodes)) & 0xFFFFFF
-	shape |= (uint64(w.layout.Layers) & 0xFF) << 24
-	shape |= (uint64(len(w.layout.Edges)) & 0xFFF) << 32
+	shape |= uint64(len(w.layout.Nodes) & 0xFFFFFF)
+	shape |= uint64(w.layout.Layers&0xFF) << 24
+	shape |= uint64(len(w.layout.Edges)&0xFFF) << 32
 	if w.focused {
 		shape |= 1 << 44
 	}
-	shape |= (uint64(nFailed) & 0xFFF) << 45
-	shape |= (uint64(nProg) & 0x3F) << 58
+	shape |= uint64(nFailed&0xFFF) << 45
+	shape |= uint64(nProg&0x3F) << 58
 	// Fold a cheap FNV-1a hash of the cursor string into the shape — this
 	// is what distinguishes "cursor on A" from "cursor on B". Cursor empty
 	// vs non-empty also differs (empty → hash of "" = FNV offset basis).

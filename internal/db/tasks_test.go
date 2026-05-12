@@ -176,12 +176,17 @@ func TestDB_SetArchived(t *testing.T) {
 	testutil.Equal(t, got.Pinned, false) // mutual exclusivity preserved
 	testutil.Equal(t, got.Status, model.StatusInProgress)
 
-	// Unarchive leaves pinned alone — pinning state survives a round trip
-	// (matters when a user unarchives a row they had pinned before halt).
+	// Unarchive leaves pinned alone — pinning state survives a round trip.
+	// To prove the "leaves pinned alone" claim load-bearingly, re-pin the
+	// row directly in the DB (without going through SetArchived), then
+	// unarchive and verify the pin survived. If SetArchived ever started
+	// clearing pinned on the false branch too, this assertion would fail.
+	_, err := d.conn.Exec(`UPDATE tasks SET pinned=1 WHERE id=?`, pinned.ID)
+	testutil.NoError(t, err)
 	testutil.NoError(t, d.SetArchived(pinned.ID, false))
 	got2, _ := d.Get(pinned.ID)
 	testutil.Equal(t, got2.Archived, false)
-	testutil.Equal(t, got2.Pinned, false) // already cleared above; stays false
+	testutil.Equal(t, got2.Pinned, true)
 
 	if err := d.SetArchived("ghost", true); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("expected ErrTaskNotFound, got %v", err)

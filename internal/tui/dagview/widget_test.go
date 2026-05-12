@@ -57,38 +57,48 @@ func TestWidget_BranchChangeFiresOnSetNodes(t *testing.T) {
 // TestWidget_BranchChangeFiresOnMouseClick guards the round-3 regression
 // where MouseHandler set the cursor on click without firing
 // maybeNotifyBranchChange — the same class of ghost-cell bug as the
-// keyboard path. We can't easily inject a real tview MouseEvent in a unit
-// test, but we can exercise the same write path by simulating what the
-// handler does on a hit.
+// keyboard path. The test invokes the real MouseHandler through a
+// constructed tcell.EventMouse so a regression that removes
+// maybeNotifyBranchChange from the production handler causes this test to
+// fail. (An earlier draft replicated the handler logic in the test body
+// and could not catch such a regression.)
 func TestWidget_BranchChangeFiresOnMouseClick(t *testing.T) {
 	w := New()
 	w.SetNodes([]Node{
 		{ID: "A"},
 		{ID: "B", DependsOn: []string{"A"}},
 	})
+	// Place the widget at the origin so click coordinates translate
+	// directly through MouseHandler's screen-to-grid math:
+	//   relX = ex - innerX - 1, relY = ey - innerY - 1
+	//   col = relX / cellCol, layer = relY / cellRow
+	// Make the inner rect large enough to contain both layers.
+	w.SetRect(0, 0, cellCol*2, cellRow*3)
 	w.cursor = "A"
 	w.maybeNotifyBranchChange()
 	calls := 0
 	w.OnBranchChange = func() { calls++ }
 
-	// Drive the same code path the mouse handler uses: walk the nodes,
-	// pick a matching grid cell, write cursor, fire callback. Mirrors
-	// widget.go's MouseHandler logic so a regression that drops
-	// maybeNotifyBranchChange there would also need to drop it from this
-	// test path — the duplication is intentional.
+	// Locate node "B" and click on its grid cell. Add 1 to skip the
+	// page-wrapper inset; pick a position safely inside the box.
+	var bPos Placed
 	for _, p := range w.layout.Nodes {
 		if p.ID == "B" {
-			prev := w.cursor
-			w.cursor = p.ID
-			if w.cursor != prev {
-				w.maybeNotifyBranchChange()
-			}
-			break
+			bPos = p
 		}
 	}
+	innerX, innerY, _, _ := w.GetInnerRect()
+	clickX := innerX + 1 + bPos.Col*cellCol + 2
+	clickY := innerY + 1 + bPos.Layer*cellRow + 1
+	ev := tcell.NewEventMouse(clickX, clickY, tcell.Button1, tcell.ModNone)
+
+	handler := w.MouseHandler()
+	handler(tview.MouseLeftClick, ev, noFocus)
+
 	if calls == 0 {
-		t.Fatal("expected OnBranchChange to fire after mouse-click cursor update")
+		t.Fatalf("expected OnBranchChange to fire after MouseHandler click on B; cursor=%q calls=%d", w.CurrentTask(), calls)
 	}
+	testutil.Equal(t, w.CurrentTask(), "B")
 }
 
 // TestWidget_BranchChangeFiresOnCursorMove guards the round-2 regression

@@ -35,7 +35,7 @@ func (p *DAGPage) DAG() *dagview.Widget {
 }
 
 func (p *DAGPage) Draw(screen tcell.Screen) {
-	p.Box.DrawForSubclass(screen, p)
+	p.DrawForSubclass(screen, p)
 	x, y, width, height := p.GetInnerRect()
 	if width <= 0 || height <= 0 {
 		return

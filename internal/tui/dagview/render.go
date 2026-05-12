@@ -256,7 +256,10 @@ func RenderToString(l Layout, cursor string, parseFailed func(id string) bool) s
 			setCell(col+i, row, '─')
 		}
 		setCell(col+boxWidth-1, row, '╮')
-		// Middle row.
+		// Middle row. Cursor prefix is added BEFORE the rune-count clamp so
+		// the `*` does not push the truncation boundary past the right
+		// border. Without the unified clamp, the cursor marker on a
+		// max-width label could write 1 cell past the box edge.
 		setCell(col, row+1, '│')
 		label := makeLabel(p, failed)
 		if p.ID == cursor {
