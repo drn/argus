@@ -511,7 +511,9 @@ func (tp *TerminalPane) invalidateReplayCache() {
 //
 // The helper exists so Draw and the buildReplaySync test helper share one
 // source of truth — if the consume sequence ever grows another field, both
-// call sites pick up the change.
+// call sites pick up the change. The clamp invariant is documented in
+// context/knowledge/gotchas/pty-terminal.md under "Draw's replayRebuildPending
+// consume block must clamp scrollOffset to the fresh replayEmuMaxScroll."
 func (tp *TerminalPane) consumeReplayRebuildPendingLocked() {
 	if !tp.replayRebuildPending {
 		return
@@ -520,14 +522,14 @@ func (tp *TerminalPane) consumeReplayRebuildPendingLocked() {
 	tp.anchorTotalLines = 0
 	tp.paintCacheValid = false
 	// Clamp scrollOffset to the fresh emu's real ceiling. ScrollUp /
-	// AccelScrollUp can't clamp (no emu yet → no maxScroll), so the
-	// user can scroll past the available scrollback. Without snapping
-	// here, the cache-validity check (scrollOffset <= replayEmuMaxScroll)
-	// fails on every frame, each Draw kicks another async rebuild, and
-	// the rebuild completion fires notifyBranchChange → screen.Sync() —
-	// the visible flicker at the top of the scrollback.
+	// AccelScrollUp can't clamp (no emu yet, no maxScroll), so the user
+	// can scroll past the available scrollback. Without snapping here,
+	// the cache-validity check (scrollOffset <= replayEmuMaxScroll) fails
+	// on every frame, each Draw kicks another async rebuild, and the
+	// rebuild completion fires notifyBranchChange -> screen.Sync() — the
+	// visible flicker at the top of the scrollback.
 	if tp.scrollOffset > tp.replayEmuMaxScroll {
-		uxlog.Log("[terminalpane] clamp scrollOffset %d → replayEmuMaxScroll %d after rebuild",
+		uxlog.Log("[terminalpane] clamp scrollOffset old=%d new=%d after rebuild",
 			tp.scrollOffset, tp.replayEmuMaxScroll)
 		tp.scrollOffset = tp.replayEmuMaxScroll
 	}

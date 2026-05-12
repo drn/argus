@@ -1096,6 +1096,10 @@ func TestTerminalPane_RebuildClampsScrollPastTop(t *testing.T) {
 	// flicker at the top of an agent view. After a rebuild, Draw's
 	// consume-pending block must clamp scrollOffset to the fresh emu's
 	// maxScroll so the next frame cache-hits.
+	//
+	// The OnBranchChange wiring this clamp depends on is exercised by
+	// TestAsyncReplayRebuild_FiresBranchChangeOnSuccess; this test focuses
+	// on the loop-break invariant alone.
 	tp := NewTerminalPane()
 
 	var data []byte
@@ -1127,7 +1131,10 @@ func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.
 	// Each case sets sentinel pre-call values for anchorTotalLines and
 	// paintCacheValid so the table directly verifies all three field resets
 	// (pending → false, anchor → 0, paintCacheValid → false) instead of
-	// relying on transitive coverage through buildReplaySync.
+	// relying on transitive coverage through buildReplaySync. The literal
+	// 777 below is an arbitrary nonzero marker — distinguishable from any
+	// production value (helper only ever writes 0) so a regression that
+	// forwarded the input instead of zeroing it would still fail the test.
 	tests := []struct {
 		name                 string
 		startScrollOffset    int
