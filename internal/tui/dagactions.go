@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"errors"
 	"strconv"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/orch"
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/uxlog"
@@ -73,11 +75,19 @@ func (a *App) openUnlinkPickerForTask(child string) {
 // orch.HaltDownstream directly — destructive but reversible (archived rows
 // can be unarchived, stopped tasks can be resumed via task list resume).
 // A full confirm modal showing the affected set is a follow-up.
+//
+// Runs synchronously on the tview event loop; the call sequence is
+// db.Tasks + per-row db.Get + db.SetArchived (mutex-locked) + runner.Stop
+// (SIGTERM, non-blocking). On a large stack of in_progress descendants
+// this could briefly stutter the UI. Tracked under "TUI follow-ups" in
+// gotchas/dag-rendering.md.
 func (a *App) confirmHaltDownstream(id string) {
 	if id == "" {
 		return
 	}
-	report, err := orch.HaltDownstream(a.db, a.runner, id)
+	report, err := orch.HaltDownstream(a.db, a.runner, id, func(err error) bool {
+		return errors.Is(err, agent.ErrSessionNotFound)
+	})
 	if err != nil {
 		uxlog.Log("[tui] halt-downstream failed for %s: %v", id, err)
 		a.header.SetNotice("halt failed: " + err.Error())

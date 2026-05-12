@@ -35,10 +35,21 @@ type Store interface {
 }
 
 // Stopper aborts a running session. The HTTP and RPC paths both pass a
-// *agent.Runner here; tests pass a stub that records calls.
+// *agent.Runner here; tests pass a stub that records calls. The Stop call
+// is best-effort — a session that exited between our snapshot and the
+// invocation will return an agent.ErrSessionNotFound, which the caller
+// should not treat as a halt failure (see HaltDownstream).
 type Stopper interface {
 	Stop(taskID string) error
 }
+
+// SessionNotFoundError reports whether an error from Stopper.Stop is the
+// "session already gone" case. orch declares the predicate here so it
+// doesn't have to import the agent package for the sentinel — the api,
+// daemon, and tests inject their own stoppers and pass the matching
+// predicate at call time. nil predicate = treat all errors as real
+// failures (used by tests that want strict counting).
+type SessionNotFoundError func(err error) bool
 
 // DAGNode is the minimal projection of a task used for DAG rendering.
 // Status/Archived/Result are everything the renderer needs.
@@ -297,7 +308,14 @@ func ListDAG(database Store, filter DAGFilter) ([]DAGNode, error) {
 // Re-queries each row's status inside the loop because the depswatcher can
 // flip a pending row to in_progress between the snapshot and the per-row
 // decision; in that case the row is stopped rather than archived.
-func HaltDownstream(database Store, stopper Stopper, taskID string) (HaltReport, error) {
+//
+// Stop errors that match `notFound` (typically agent.ErrSessionNotFound)
+// mean the session exited between our snapshot and the stop call. Those
+// rows are NOT added to report.Stopped — counting them would inflate the
+// "halted N tasks" summary with sessions where nothing actually stopped.
+// Passing notFound=nil counts every Stop call as stopped (legacy
+// behaviour, kept for tests).
+func HaltDownstream(database Store, stopper Stopper, taskID string, notFound SessionNotFoundError) (HaltReport, error) {
 	var report HaltReport
 	if taskID == "" {
 		return report, ErrEmptyID
@@ -358,7 +376,22 @@ func HaltDownstream(database Store, stopper Stopper, taskID string) (HaltReport,
 			}
 			report.Archived = append(report.Archived, id)
 		case model.StatusInProgress:
-			_ = stopper.Stop(id)
+			err := stopper.Stop(id)
+			if err == nil {
+				report.Stopped = append(report.Stopped, id)
+				continue
+			}
+			if notFound != nil && notFound(err) {
+				// Session already exited between snapshot and stop. Not a
+				// halt failure — and not actually a "stop" either; the
+				// agent left on its own. Don't pollute report.Stopped.
+				continue
+			}
+			// Unexpected Stop error — log and still record the attempt so
+			// the caller knows we tried (the row may be in a wedged state
+			// the user has to investigate).
+			slog.Warn("orch.HaltDownstream: stop returned unexpected error",
+				"id", id, "err", err)
 			report.Stopped = append(report.Stopped, id)
 		default:
 			// Forward-compatibility: a new status enum value (added without

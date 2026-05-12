@@ -4174,7 +4174,7 @@ async function refreshDAGProjects() {
     const current = sel.value;
     const projects = (r && r.projects) || [];
     sel.innerHTML = '<option value="">All projects</option>' +
-      projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+      projects.map(p => `<option value="${escAttr(p)}">${esc(p)}</option>`).join('');
     if (current && projects.includes(current)) sel.value = current;
   } catch (e) {
     // Non-fatal — leave the dropdown alone.
@@ -4285,22 +4285,30 @@ function renderDAG(layout) {
       svg += `<path class="dag-edge" d="M${px},${py} L${px},${midY} L${cx},${midY} L${cx},${cy}"/>`;
     }
   }
+  // Status is a Go-controlled enum, but the SVG attribute boundary is the
+  // line of defense — validate against the known set rather than embedding
+  // an opaque string. Unknown values render with no status class so a
+  // future enum addition can't break the SVG markup mid-frame.
+  const dagStatusClasses = new Set(['pending', 'in_progress', 'in_review', 'complete']);
   for (const n of layout.nodes) {
     const x = n.col * (DAG_BOX_W + DAG_COL_GAP);
     const y = n.layer * (DAG_BOX_H + DAG_ROW_GAP);
     const failed = isDAGNodeFailed(n);
-    const cls = ['dag-node-bg', `status-${n.status}`];
+    const statusCls = dagStatusClasses.has(n.status) ? `status-${n.status}` : '';
+    const cls = ['dag-node-bg'];
+    if (statusCls) cls.push(statusCls);
     if (n.archived) cls.push('archived');
     if (failed) cls.push('failed');
     const textCls = ['dag-node-text']; if (n.archived) textCls.push('archived');
     const glyph = dagGlyph(n.status, n.archived, failed);
-    const glyphCls = ['dag-node-glyph', `status-${n.status}`];
+    const glyphCls = ['dag-node-glyph'];
+    if (statusCls) glyphCls.push(statusCls);
     if (failed) glyphCls.push('failed');
     const label = truncateDAGLabel(n.name, 18);
     svg += `<g class="dag-node-link" onclick="onDAGNodeClick('${escAttr(n.id)}')">`;
-    svg += `<rect class="${cls.join(' ')}" x="${x}" y="${y}" width="${DAG_BOX_W}" height="${DAG_BOX_H}" rx="6"/>`;
-    svg += `<text class="${glyphCls.join(' ')}" x="${x + 14}" y="${y + DAG_BOX_H/2 + 5}">${glyph}</text>`;
-    svg += `<text class="${textCls.join(' ')}" x="${x + 32}" y="${y + DAG_BOX_H/2 + 5}">${esc(label)}</text>`;
+    svg += `<rect class="${escAttr(cls.join(' '))}" x="${x}" y="${y}" width="${DAG_BOX_W}" height="${DAG_BOX_H}" rx="6"/>`;
+    svg += `<text class="${escAttr(glyphCls.join(' '))}" x="${x + 14}" y="${y + DAG_BOX_H/2 + 5}">${glyph}</text>`;
+    svg += `<text class="${escAttr(textCls.join(' '))}" x="${x + 32}" y="${y + DAG_BOX_H/2 + 5}">${esc(label)}</text>`;
     svg += `</g>`;
   }
   svg += `</svg>`;
@@ -4340,7 +4348,12 @@ function truncateDAGLabel(name, max) {
 
 function onDAGNodeClick(id) {
   // Switch back to tasks tab and open the detail view for this task. Mirrors
-  // the TUI's `enter` keybinding semantics.
+  // the TUI's `enter` keybinding semantics. The 50ms setTimeout exists
+  // because switchTab() triggers an async refresh() that populates the
+  // task list; openDetail's lookup will silently no-op until that snapshot
+  // lands. Documented as a known fragility in gotchas/dag-rendering.md —
+  // a future fix could thread the target id into switchTab so openDetail
+  // fires after refresh() resolves, eliminating the magic delay.
   switchTab('tasks');
   setTimeout(() => { if (typeof openDetail === 'function') openDetail(id); }, 50);
 }

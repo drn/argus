@@ -25,6 +25,18 @@ func CellAt(p Placed) (col, row int) {
 	return p.Col * cellCol, p.Layer * cellRow
 }
 
+// buildNodeIndex builds a lookup table from task ID to Placed so the edge
+// renderer can resolve endpoints in O(1) instead of O(N) per edge — saves
+// O(N²) per draw at Argus scale (≤ 30 nodes ≈ ~900 ops, not catastrophic,
+// but the index keeps the cost flat as stacks grow).
+func buildNodeIndex(nodes []Placed) map[string]Placed {
+	idx := make(map[string]Placed, len(nodes))
+	for _, n := range nodes {
+		idx[n.ID] = n
+	}
+	return idx
+}
+
 // boxMid returns the column halfway across a node's box — the anchor for
 // vertical edges entering or leaving the node.
 func boxMid(p Placed) int {
@@ -102,8 +114,9 @@ func Draw(screen tcell.Screen, x0, y0 int, l Layout, cursor string, focused bool
 		failed := parseFailed != nil && parseFailed(p.ID)
 		drawNode(screen, x0, y0, p, p.ID == cursor && focused, failed)
 	}
+	index := buildNodeIndex(l.Nodes)
 	for _, e := range l.Edges {
-		drawEdge(screen, x0, y0, l, e)
+		drawEdge(screen, x0, y0, index, e)
 	}
 	w = l.Width*cellCol - colGap
 	h = l.Layers*cellRow - rowGap
@@ -181,17 +194,10 @@ func makeLabel(p Placed, failed bool) string {
 // of the child at the entering column remain `─`, which is a documented
 // cosmetic limitation (the corner glyphs do not visually attach to the
 // horizontal). See gotchas/dag-rendering.md.
-func drawEdge(screen tcell.Screen, x0, y0 int, l Layout, e Edge) {
-	var parent, child Placed
-	for _, n := range l.Nodes {
-		if n.ID == e.From {
-			parent = n
-		}
-		if n.ID == e.To {
-			child = n
-		}
-	}
-	if parent.ID == "" || child.ID == "" {
+func drawEdge(screen tcell.Screen, x0, y0 int, index map[string]Placed, e Edge) {
+	parent, okP := index[e.From]
+	child, okC := index[e.To]
+	if !okP || !okC {
 		return
 	}
 	parentMid := boxMid(parent)
@@ -281,18 +287,13 @@ func RenderToString(l Layout, cursor string, parseFailed func(id string) bool) s
 		}
 		setCell(col+boxWidth-1, row+2, '╯')
 	}
-	// Overlay edges.
+	// Overlay edges. Build the lookup once per render so this scales
+	// linearly in edge count, not quadratically.
+	index := buildNodeIndex(l.Nodes)
 	for _, e := range l.Edges {
-		var parent, child Placed
-		for _, n := range l.Nodes {
-			if n.ID == e.From {
-				parent = n
-			}
-			if n.ID == e.To {
-				child = n
-			}
-		}
-		if parent.ID == "" || child.ID == "" {
+		parent, okP := index[e.From]
+		child, okC := index[e.To]
+		if !okP || !okC {
 			continue
 		}
 		pm, cm := boxMid(parent), boxMid(child)

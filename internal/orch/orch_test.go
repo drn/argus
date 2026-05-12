@@ -303,7 +303,7 @@ func TestHaltDownstream_InReviewArchivedNotStopped(t *testing.T) {
 	s := newStore(a, b)
 	stopper := &recordingStopper{}
 
-	report, err := HaltDownstream(s, stopper, "a")
+	report, err := HaltDownstream(s, stopper, "a", nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(report.Stopped), 0)
 	testutil.DeepEqual(t, report.Archived, []string{"b"})
@@ -325,7 +325,7 @@ func TestHaltDownstream_MixedStatuses(t *testing.T) {
 	s := newStore(root, p, r, c)
 	stopper := &recordingStopper{}
 
-	report, err := HaltDownstream(s, stopper, "root")
+	report, err := HaltDownstream(s, stopper, "root", nil)
 	testutil.NoError(t, err)
 	// Seed is NOT halted.
 	gotRoot, _ := s.Get("root")
@@ -340,6 +340,32 @@ func TestHaltDownstream_MixedStatuses(t *testing.T) {
 	testutil.Contains(t, joinIDs(report.Stopped), "r")
 	testutil.Contains(t, joinIDs(report.Archived), "p")
 }
+
+// TestHaltDownstream_SessionAlreadyExited covers the race where a session
+// exits between the snapshot and Stop — Stopper.Stop returns the predicate-
+// matched error, and the row MUST NOT be added to report.Stopped (it would
+// inflate the "halted N tasks" summary with sessions that exited on their
+// own). Mirrors the depswatcher race documented in orchestration.md.
+func TestHaltDownstream_SessionAlreadyExited(t *testing.T) {
+	notFound := errors.New("session not found")
+	stopper := &fakeStopperWithErr{err: notFound}
+	a := &model.Task{ID: "a", Status: model.StatusInProgress}
+	b := &model.Task{ID: "b", Status: model.StatusInProgress, DependsOn: []string{"a"}}
+	s := newStore(a, b)
+
+	report, err := HaltDownstream(s, stopper, "a", func(e error) bool {
+		return errors.Is(e, notFound)
+	})
+	testutil.NoError(t, err)
+	// Stop was called, but matched the notFound predicate → b is NOT in
+	// report.Stopped. The actual halt outcome is "session was already gone."
+	testutil.Equal(t, len(report.Stopped), 0)
+}
+
+// fakeStopperWithErr returns the configured error from every Stop call.
+type fakeStopperWithErr struct{ err error }
+
+func (s *fakeStopperWithErr) Stop(_ string) error { return s.err }
 
 func TestSetPlanSlug_WriteAndClear(t *testing.T) {
 	t1 := &model.Task{ID: "t1"}

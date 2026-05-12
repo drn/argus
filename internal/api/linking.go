@@ -6,9 +6,17 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/orch"
 )
+
+// haltSessionNotFound is the predicate passed to orch.HaltDownstream so it
+// knows which Stopper errors mean "session already exited" (a benign race
+// with the depswatcher) vs a real halt failure. Centralised here so both
+// the HTTP handler and any future caller in this package use the same
+// definition.
+func haltSessionNotFound(err error) bool { return errors.Is(err, agent.ErrSessionNotFound) }
 
 // handleGetDeps returns the one-hop upstream + downstream of a task. Open
 // to device tokens (read-only) because the DAG view runs on mobile.
@@ -82,7 +90,7 @@ func (s *Server) handleHaltDownstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	report, err := orch.HaltDownstream(s.db, s.runner, id)
+	report, err := orch.HaltDownstream(s.db, s.runner, id, haltSessionNotFound)
 	if err != nil {
 		s.writeOrchError(w, err)
 		return

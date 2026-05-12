@@ -2,6 +2,7 @@ package dagview
 
 import (
 	"encoding/json"
+	"math"
 
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -106,8 +107,9 @@ func (w *Widget) MoveCursor(dx, dy int) {
 		return
 	}
 	// Find the closest node in the target layer at or near targetCol.
+	// Seed with MaxInt32 so the first candidate's distance is always smaller.
 	var best Placed
-	bestDist := 1 << 30
+	bestDist := math.MaxInt32
 	found := false
 	for _, p := range w.layout.Nodes {
 		if p.Layer != targetLayer {

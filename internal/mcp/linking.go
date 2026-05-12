@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/orch"
 )
 
@@ -136,7 +137,9 @@ func (s *Server) toolTaskHaltDownstream(id interface{}, args json.RawMessage) *R
 		ID string `json:"id"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
-	report, err := orch.HaltDownstream(s.taskDB, s.taskStopper, p.ID)
+	report, err := orch.HaltDownstream(s.taskDB, s.taskStopper, p.ID, func(err error) bool {
+		return errors.Is(err, agent.ErrSessionNotFound)
+	})
 	if err != nil {
 		return toolError(id, err.Error())
 	}

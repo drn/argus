@@ -1,6 +1,10 @@
 package daemon
 
-import "time"
+import (
+	"time"
+
+	"github.com/drn/argus/internal/orch"
+)
 
 // BootInfoResp describes the daemon's boot-time identity. Used by the TUI to
 // detect when the daemon binary is older than the TUI binary (e.g. after a
@@ -222,9 +226,11 @@ type DepsReq struct {
 
 // DepsResp reports a task's neighbours in the DAG. Upstream are the parents
 // the task depends on (one hop). Downstream are the children that list the
-// task in their depends_on (one hop). The daemon walks the full task list
-// once per call; for the Argus scale (≤ low thousands of rows) that's
-// cheaper than maintaining a reverse index.
+// task in their depends_on (one hop). Both fields are task IDs only — not
+// full Task objects — so the caller does a follow-up task_get if it needs
+// names or status. The daemon walks the full task list once per call; for
+// the Argus scale (≤ low thousands of rows) that's cheaper than
+// maintaining a reverse index.
 type DepsResp struct {
 	Upstream   []string // task IDs this task depends on
 	Downstream []string // task IDs that depend on this task
@@ -245,6 +251,12 @@ type DAGReq struct {
 // DAGNode is a minimal task projection for DAG rendering. Status, archived,
 // and result are everything the renderer needs; full Task is overkill and
 // noisy on the wire.
+//
+// Field order MUST match orch.DAGNode exactly — RPCService.ListDAG converts
+// orch results via the Go struct cast `DAGNode(n)`, which only compiles
+// when both definitions have identical fields in the same order. The
+// compile-time assertion below catches drift the moment either side adds
+// or removes a field.
 type DAGNode struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
@@ -254,6 +266,10 @@ type DAGNode struct {
 	Result    string   `json:"result,omitempty"`
 	DependsOn []string `json:"depends_on,omitempty"`
 }
+
+// Compile-time guard: if orch.DAGNode and daemon.DAGNode drift in field
+// order, type, or count, this conversion fails the build.
+var _ = func(n orch.DAGNode) DAGNode { return DAGNode(n) }
 
 // DAGResp returns the nodes for a DAG view. Edges are implicit in the
 // DependsOn arrays — the client materializes them. Returning nodes (not a

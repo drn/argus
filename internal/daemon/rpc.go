@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/orch"
@@ -403,7 +404,9 @@ func (s *RPCService) ListDAG(req *DAGReq, resp *DAGResp) error {
 // depswatcher-race contract.
 func (s *RPCService) HaltDownstream(req *HaltDownstreamReq, resp *HaltDownstreamResp) error {
 	slog.Info("rpc.HaltDownstream", "task", req.TaskID)
-	report, err := orch.HaltDownstream(s.daemon.db, s.daemon.runner, req.TaskID)
+	report, err := orch.HaltDownstream(s.daemon.db, s.daemon.runner, req.TaskID, func(err error) bool {
+		return errors.Is(err, agent.ErrSessionNotFound)
+	})
 	if err != nil {
 		resp.Error = err.Error()
 		return nil

@@ -550,12 +550,13 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 	},
 	{
 		Name:        "task_list",
-		Description: "List Argus tasks, optionally filtered by status and/or project.",
+		Description: "List Argus tasks, optionally filtered by status, project, and/or plan_slug. Returned rows include the plan_slug column for DAG-view scoping.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"status":  map[string]interface{}{"type": "string", "description": "Filter by status: pending, in_progress, in_review, complete"},
-				"project": map[string]interface{}{"type": "string", "description": "Filter by project name"},
+				"status":    map[string]interface{}{"type": "string", "description": "Filter by status: pending, in_progress, in_review, complete"},
+				"project":   map[string]interface{}{"type": "string", "description": "Filter by project name"},
+				"plan_slug": map[string]interface{}{"type": "string", "description": "Filter by orchestrator stack label (set on each sub-task via task_create / task_set_plan_slug)"},
 			},
 		},
 	},
@@ -1301,8 +1302,9 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 	}
 
 	var p struct {
-		Status  string `json:"status"`
-		Project string `json:"project"`
+		Status   string `json:"status"`
+		Project  string `json:"project"`
+		PlanSlug string `json:"plan_slug"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1322,10 +1324,16 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 		if p.Project != "" && t.Project != p.Project {
 			continue
 		}
+		if p.PlanSlug != "" && t.PlanSlug != p.PlanSlug {
+			continue
+		}
 		count++
 		fmt.Fprintf(&sb, "- **%s** `%s` [%s] (%s)", t.Name, t.ID, t.Status.String(), t.Project)
 		if t.Branch != "" {
 			fmt.Fprintf(&sb, " branch:%s", t.Branch)
+		}
+		if t.PlanSlug != "" {
+			fmt.Fprintf(&sb, " plan:%s", t.PlanSlug)
 		}
 		if elapsed := t.ElapsedString(); elapsed != "" {
 			fmt.Fprintf(&sb, " %s", elapsed)
