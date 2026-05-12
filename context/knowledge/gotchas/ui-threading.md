@@ -42,10 +42,11 @@ For tcell v2.13.x:
 
 ### What argus does now
 
-- **`afterDraw` was deleted.** `tview.draw()`'s `Clear() + root.Draw() + Show()` cycle (via tcell's auto-BSU/ESU) handles all in-app rendering correctly.
+- **`afterDraw` is minimal — resize-Sync only.** It compares the screen size against `lastScreenW/H`; on change, it Syncs once. No `pendingSync`/`forceRedraw`/`OnContentChange` consumption — those scaffolds are all gone. The reason resize needs Sync: tcell's diff compares the new cell buffer against the prior emit, not against the terminal's actual state. Resize is the one event where those diverge — the terminal physically changed size, prior-frame cells at the old positions can survive into the next frame as stale content (visible as stacked status bars).
 - **`forceRedraw` is log-only.** It does NOT trigger Sync. It's preserved so a debug trail of "what transitions fired this frame" survives in `~/.argus/ux.log` — useful for chasing future drift reports.
 - **`pendingSync`, `pendingContentSync`, `multiplexerMode`, `forceContentSync`, `detectMultiplexer`, `multiplexer.go`, `ARGUS_FORCE_SYNC` — all deleted.**
-- **Two callsites still call `screen.Sync()` directly, by design:**
+- **Three callsites call `screen.Sync()` directly, by design — all "repair screen damage" cases per gdamore's intent:**
+  - **`afterDraw` on resize** (lastScreenW/H mismatch). One Sync per resize event.
   - **`onFocusGained`** (lazyScreen.PollEvent → focus regain). tmux/iTerm2 may have repainted our pane from a stale backing while we were unfocused. One Sync on focus return clears any drift. Rare event.
   - **Ctrl+L** (user-initiated refresh). One Sync, expected to flash, that's the contract.
 - **OnBranchChange / OnLayoutChange callbacks still exist** on widgets and the app still wires them to `forceRedraw`. They're now harmless log-only signals. Don't add new ones expecting a Sync — the helper doesn't do that anymore.

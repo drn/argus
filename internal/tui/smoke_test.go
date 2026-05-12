@@ -159,10 +159,10 @@ func wireApp(t *testing.T, app *App) (tcell.SimulationScreen, func()) {
 	app.tapp = tApp
 	app.screen = ls // match production wiring (Run sets app.screen)
 	app.tapp.SetInputCapture(app.handleGlobalKey)
-	// Note: afterDraw was deleted (it called screen.Sync() which emits CSI 2J
-	// and was the root cause of tmux flashing). No replacement needed —
-	// tview.draw()'s tview.Clear() + root.Draw() + screen.Show() correctly
-	// handles all in-app rendering. See gotchas/ui-threading.md.
+	// afterDraw handles ONE thing: terminal resize → screen.Sync(). The
+	// full pendingSync/forceRedraw scaffolding from the deleted era is
+	// NOT here. wireApp swaps app.tapp so we re-register afterDraw.
+	app.tapp.SetAfterDrawFunc(app.afterDraw)
 	app.tapp.SetRoot(app.root, true)
 	stop := runApp(t, tApp)
 	return sim, stop

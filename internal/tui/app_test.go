@@ -2310,3 +2310,50 @@ func TestApp_ForceRedrawDoesNotSync(t *testing.T) {
 	rec := app.screen.Screen.(*recordingScreen)
 	testutil.Equal(t, rec.syncCount, 0)
 }
+
+// TestApp_AfterDrawSyncsOnResizeOnly pins the post-cleanup contract for
+// afterDraw: it Syncs exactly once per resize event and never otherwise.
+// The full pendingSync/forceRedraw/OnContentChange scaffolding is deleted
+// — afterDraw only re-emits the screen when the terminal physically
+// changed size (the one "repair screen damage" case tview's Clear+Show
+// diff cycle can't handle on its own). Without this, a window resize
+// leaves stacked status bars and stale layout artifacts visible.
+func TestApp_AfterDrawSyncsOnResizeOnly(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.lastScreenW = 80
+	app.lastScreenH = 24
+
+	rec := &recordingScreen{w: 80, h: 24}
+
+	// Same size as last recorded → no Sync.
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 0)
+
+	// Width change → one Sync.
+	rec.w = 100
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 1)
+
+	// Same size again → no Sync.
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 1)
+
+	// Height change → one more Sync.
+	rec.h = 30
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 2)
+
+	// Both width and height change → one Sync.
+	rec.w = 120
+	rec.h = 40
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 3)
+
+	// Same size again → no Sync.
+	for range 50 {
+		app.afterDraw(rec)
+	}
+	testutil.Equal(t, rec.syncCount, 3)
+}

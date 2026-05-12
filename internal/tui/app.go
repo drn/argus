@@ -182,6 +182,17 @@ type App struct {
 	// history); the named type is retained so smoke tests can inject a
 	// SimulationScreen through the same indirection production uses.
 	screen *lazyScreen
+
+	// lastScreenW/H track the most recently observed terminal size so
+	// `afterDraw` can detect a resize and call `screen.Sync()` once.
+	// tview's draw cycle (Clear+root.Draw+Show) repaints into the new
+	// dimensions but doesn't fully overwrite stale cells the terminal
+	// still holds from the prior size — visible as stacked status bars
+	// at multiple y-positions after a window resize. Sync emits CSI 2J +
+	// every cell, clearing the stale state. Resize is rare and user-
+	// driven, so the one CSI 2J flash per resize is the right tradeoff.
+	lastScreenW int
+	lastScreenH int
 }
 
 // New creates the tui application shell.
@@ -354,16 +365,45 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// No SetAfterDrawFunc — afterDraw was deleted along with the entire
-	// Sync-based tearing scaffolding (pendingSync, multiplexerMode,
-	// forceContentSync, etc.). tview's draw cycle is Clear() + root.Draw()
-	// + Show(), wrapped atomically by tcell v2.13+'s auto-emitted DECSET
-	// 2026 (BSU/ESU) when XTermLike — that handles all in-app rendering
-	// correctly. The two genuine Sync cases (Ctrl+L, focus regain) call
-	// screen.Sync() directly at their callsites. See gotchas/ui-threading.md
-	// for the full post-mortem.
+	// SetAfterDrawFunc is registered only to detect terminal resize and
+	// emit one Sync per resize event — see afterDraw doc. The full
+	// pendingSync/forceRedraw/OnContentChange scaffolding from before
+	// the May 2026 cleanup is NOT here; only the resize-Sync case
+	// remains because it's the one "repair screen damage" case tview's
+	// Clear+Show diff cycle can't handle on its own (the prior size's
+	// cells in the terminal aren't fully overwritten by the new size's
+	// content). See gotchas/ui-threading.md for the post-mortem.
+	a.tapp.SetAfterDrawFunc(a.afterDraw)
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
+}
+
+// afterDraw detects terminal resize and Syncs once. It does NOT handle
+// the deleted pendingSync/forceRedraw/OnContentChange triggers — those
+// scaffolds are gone (see post-mortem in gotchas/ui-threading.md).
+//
+// Why resize needs Sync: tview's draw cycle (screen.Clear() + root.Draw()
+// + screen.Show()) repaints into the new dimensions, but the terminal's
+// pre-resize cell content isn't overwritten by the new frame's emit
+// because tcell's diff compares against the prior emit, not against the
+// terminal's actual state. Resize is the one event where those diverge
+// (the terminal physically changed size; cells at positions beyond the
+// new bounds, or stale content at edges, can survive into the next
+// frame). One CSI 2J flash on resize is the right tradeoff — resize is
+// rare and user-driven.
+//
+// First frame after startup: lastScreenW/H are zero, so the size
+// comparison fires once and Syncs the initial frame. That's harmless —
+// startup is already a high-noise rendering moment.
+func (a *App) afterDraw(screen tcell.Screen) {
+	w, h := screen.Size()
+	if w == a.lastScreenW && h == a.lastScreenH {
+		return
+	}
+	a.lastScreenW = w
+	a.lastScreenH = h
+	uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
+	screen.Sync()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
