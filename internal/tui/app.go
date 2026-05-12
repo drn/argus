@@ -438,10 +438,10 @@ func (a *App) buildUI() {
 // would have propagated to the terminal as a visible flash. The forceSync
 // path is intentionally NOT logged per frame; see the switch below.
 func (a *App) afterDraw(screen tcell.Screen) {
-	w, h := screen.Size()
-	sizeChanged := w != a.lastScreenW || h != a.lastScreenH
-	a.lastScreenW = w
-	a.lastScreenH = h
+	width, height := screen.Size()
+	sizeChanged := width != a.lastScreenW || height != a.lastScreenH
+	a.lastScreenW = width
+	a.lastScreenH = height
 	consumed := a.pendingSync.CompareAndSwap(true, false)
 	forced := a.forceSync.Load()
 	if !sizeChanged && !consumed && !forced {
@@ -453,16 +453,15 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	// "heavy redraws" symptom users see in tmux. Layout-shift triggers
 	// (pendingSync, resize) still Sync unconditionally — those are the
 	// cases where tmux drift can leave stale cells and Show()'s diff isn't
-	// trustworthy. The hash refresh on a forced Sync ensures the next idle
-	// frame can short-circuit against the just-Synced state.
-	if forced && !sizeChanged && !consumed {
-		h64 := hashCellBuffer(screen, w, h)
-		if h64 == a.lastSyncedHash {
+	// trustworthy. On a forced Sync, refresh lastSyncedHash so the next
+	// idle frame can short-circuit against the just-Synced state. Outside
+	// forceSync mode lastSyncedHash is never read, so we skip computing it.
+	if forced {
+		hash := hashCellBuffer(screen, width, height)
+		if !sizeChanged && !consumed && hash == a.lastSyncedHash {
 			return
 		}
-		a.lastSyncedHash = h64
-	} else {
-		a.lastSyncedHash = hashCellBuffer(screen, w, h)
+		a.lastSyncedHash = hash
 	}
 	// Log every non-routine Sync so a debugger can confirm one ran in response
 	// to the matching `[tui] force redraw: ...` entry above. Suppress logging
@@ -470,9 +469,9 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	// log would drown ux.log and the Sync is by-construction expected.
 	switch {
 	case sizeChanged && consumed:
-		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", w, h)
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", width, height)
 	case sizeChanged:
-		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", w, h)
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", width, height)
 	case consumed:
 		uxlog.Log("[tui] afterDraw sync: forceRedraw consumed")
 	}
@@ -480,22 +479,33 @@ func (a *App) afterDraw(screen tcell.Screen) {
 }
 
 // hashCellBuffer computes a 64-bit FNV-1a hash of every visible cell in the
-// screen. Each cell contributes its content string (main + combining runes)
-// and its style's fg/bg/attr from Decompose(). Used by afterDraw to detect
-// "no visible change since last Sync" frames in forceSync mode, where we'd
-// otherwise emit a clear-screen escape that flashes the terminal. O(W*H)
-// per call; at 200x60 that's 12k cells, ~µs-scale on modern hardware —
-// negligible next to the Sync it lets us skip.
-func hashCellBuffer(screen tcell.Screen, w, h int) uint64 {
+// screen. Each cell contributes its content string (main + combining runes),
+// fg/bg/attr from Decompose(), and the underline style + color (which
+// Decompose excludes despite being independently rendered). Used by
+// afterDraw to detect "no visible change since last Sync" frames in
+// forceSync mode, where we'd otherwise emit a clear-screen escape that
+// flashes the terminal. O(W*H) per call plus one CellBuffer-mutex
+// acquisition per cell inside tcell — sub-millisecond at 200x60 (12k cells)
+// on modern hardware; negligible next to the Sync it lets us skip.
+//
+// One known gap: tcell.Style stores OSC-8 URL + ID in unexported fields and
+// exposes no public getter, so a frame that changes ONLY a hyperlink URL
+// will hash identical and skip the Sync. Show()'s diff still emits the URL
+// change, so the live terminal sees it; only a subsequent tmux drift could
+// leave the old URL behind. The branch-change callbacks (pendingSync) cover
+// every documented argus path that mutates URL state.
+func hashCellBuffer(screen tcell.Screen, width, height int) uint64 {
 	hasher := fnv.New64a()
-	var buf [12]byte
-	for y := range h {
-		for x := range w {
+	var buf [18]byte
+	for y := range height {
+		for x := range width {
 			content, style, _ := screen.Get(x, y)
 			fg, bg, attr := style.Decompose()
 			binary.LittleEndian.PutUint32(buf[0:4], uint32(fg))
 			binary.LittleEndian.PutUint32(buf[4:8], uint32(bg))
 			binary.LittleEndian.PutUint32(buf[8:12], uint32(attr))
+			binary.LittleEndian.PutUint16(buf[12:14], uint16(style.GetUnderlineStyle()))
+			binary.LittleEndian.PutUint32(buf[14:18], uint32(style.GetUnderlineColor()))
 			hasher.Write(buf[:])
 			hasher.Write([]byte(content))
 		}
@@ -574,6 +584,15 @@ func (a *App) Run() error {
 	// these before SetScreen stores the flag but never applies it.
 	a.tapp.EnableMouse(true)
 	a.tapp.EnablePaste(true)
+	// Focus reporting (DECSET 1004): tmux/iTerm2 forward focus events to
+	// the foreground process. We use them to recover from one specific
+	// drift scenario that the forceSync hash gate cannot catch: if tmux
+	// repaints our pane from a stale backing store while we were unfocused,
+	// no cell content changes on our side and the hash gate would skip the
+	// Sync indefinitely. Wiring forceRedraw on focus regain ensures the
+	// next draw cycle Syncs and clears any drift.
+	a.screen.EnableFocus()
+	a.screen.onFocusGained = func() { a.forceRedraw("focus regained") }
 
 	go a.tickLoop()
 	go a.spinnerLoop()
