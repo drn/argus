@@ -401,9 +401,12 @@ func (a *App) buildUI() {
 // Show() — the terminal sees only the changed cells, no clear-screen
 // escape, no flash. Earlier revisions Sync'd every frame inside tmux to
 // fix tearing; that caused visible per-frame flashing because tcell.Sync
-// emits CSI 2J. The branch-change contract (eight wired hooks plus the
-// EventFocus recovery in lazyScreen) covers the documented tmux drift
-// sources directly, so the brute-force per-frame Sync is unnecessary.
+// emits CSI 2J. The branch-change contract plus the EventFocus recovery
+// in lazyScreen covers the documented tmux drift sources directly, so
+// the brute-force per-frame Sync is unnecessary. See
+// gotchas/ui-threading.md for the full callback inventory (pages,
+// tasklist, settings, taskGitPanel, taskPreview, taskDetail, gitPanel,
+// filePanel, agentPane, dagWidget) and the focus-event recovery path.
 func (a *App) afterDraw(screen tcell.Screen) {
 	width, height := screen.Size()
 	sizeChanged := width != a.lastScreenW || height != a.lastScreenH
@@ -499,11 +502,11 @@ func (a *App) Run() error {
 	a.tapp.EnablePaste(true)
 	// Focus reporting (DECSET 1004): tmux/iTerm2 forward focus events to
 	// the foreground process. We use them to recover from one specific
-	// drift scenario that the forceSync hash gate cannot catch: if tmux
+	// drift scenario the OnBranchChange callback set cannot cover: if tmux
 	// repaints our pane from a stale backing store while we were unfocused,
-	// no cell content changes on our side and the hash gate would skip the
-	// Sync indefinitely. Wiring forceRedraw on focus regain ensures the
-	// next draw cycle Syncs and clears any drift.
+	// no layout shift happened on our side and no branch-change callback
+	// fires. Wiring forceRedraw on focus regain ensures the next draw
+	// cycle Syncs and clears any drift.
 	a.screen.EnableFocus()
 	a.screen.onFocusGained = func() { a.forceRedraw("focus regained") }
 

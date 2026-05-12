@@ -34,11 +34,12 @@ type pollEventScreen struct {
 
 func (p *pollEventScreen) PollEvent() tcell.Event { return p.ev }
 
-// TestLazyScreen_FocusGainedFiresCallback pins the W2 mitigation: when tcell
-// emits a *EventFocus with Focused=true (sent by tmux/iTerm2 via DECSET 1004
-// on pane/window regain), lazyScreen.PollEvent must invoke onFocusGained.
-// The App wires that to forceRedraw, recovering from any multiplexer drift
-// the hash gate would otherwise skip indefinitely on an idle screen.
+// TestLazyScreen_FocusGainedFiresCallback pins the focus-regain recovery
+// path: when tcell emits a *EventFocus with Focused=true (sent by tmux /
+// iTerm2 via DECSET 1004 on pane/window regain), lazyScreen.PollEvent must
+// invoke onFocusGained. The App wires that to forceRedraw, recovering from
+// multiplexer drift accumulated while unfocused that the OnBranchChange
+// callback set cannot cover (no layout shift happened on our side).
 func TestLazyScreen_FocusGainedFiresCallback(t *testing.T) {
 	ls := &lazyScreen{Screen: &pollEventScreen{ev: tcell.NewEventFocus(true)}}
 	called := 0

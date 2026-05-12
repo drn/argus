@@ -16,15 +16,16 @@ import "github.com/gdamore/tcell/v2"
 // by widgets restoring the same content emits nothing to the terminal —
 // the optimization was saving in-process cell writes, not terminal I/O.
 //
-// The PollEvent override exists to recover the one drift scenario the
-// forceSync hash gate cannot catch on its own: a tmux pane regaining focus
+// The PollEvent override exists to recover one drift scenario the
+// OnBranchChange callback set cannot cover: a tmux pane regaining focus
 // after the user switched away. tmux may have repainted the pane from a
-// stale backing store while we were unfocused, but no cell content changes
-// on our side — so the hash matches and Sync is skipped indefinitely.
-// Intercepting tcell's *EventFocus and calling onFocusGained lets the App
-// set pendingSync, so the next draw (≤1s via the tick loop) Syncs and
-// clears the drift. The event itself is still returned for tview to handle
-// (tview ignores focus events but is given the chance to evolve).
+// stale backing store while we were unfocused, but no layout shift
+// happened on our side — so no branch-change callback fires and afterDraw
+// has no reason to Sync. Intercepting tcell's *EventFocus and calling
+// onFocusGained lets the App set pendingSync, so the next draw (≤1s via
+// the tick loop) Syncs and clears the drift. The event itself is still
+// returned for tview to handle (tview ignores focus events but is given
+// the chance to evolve).
 type lazyScreen struct {
 	tcell.Screen
 	// onFocusGained, if set, is called whenever a *tcell.EventFocus with

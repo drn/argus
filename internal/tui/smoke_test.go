@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1532,5 +1533,83 @@ func TestSmoke_ClickDAGPageDoesNotStealFocus(t *testing.T) {
 	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
 	if focused != app.dagPage {
 		t.Errorf("click inside dag node area stole focus from dagPage (got %T)", focused)
+	}
+}
+
+// TestSmoke_FocusRegainFiresRedraw completes the focus-event chain
+// end-to-end: a *tcell.EventFocus(true) posted to the SimulationScreen
+// must reach lazyScreen.PollEvent, fire onFocusGained, and produce a
+// "force redraw: focus regained" uxlog entry. wireApp doesn't itself
+// wire onFocusGained (production Run() does that step), so the test
+// installs the same wiring before posting the event.
+func TestSmoke_FocusRegainFiresRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	// Production wires this inside Run(); wireApp bypasses Run() so we
+	// install the callback explicitly to exercise the same production code
+	// path through lazyScreen.PollEvent → onFocusGained → forceRedraw.
+	app.screen.onFocusGained = func() { app.forceRedraw("focus regained") }
+
+	sim.PostEvent(tcell.NewEventFocus(true))
+	syncUI(t, app.tapp)
+
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	testutil.Contains(t, string(b), "force redraw: focus regained")
+}
+
+// TestSmoke_FocusLossDoesNotFireRedraw guards the negative edge: a focus
+// loss event must NOT fire forceRedraw. The lazyScreen filter is the only
+// place that decides; if it ever started firing on loss too, idle panes
+// would burn a Sync every time the user clicked away from the window.
+func TestSmoke_FocusLossDoesNotFireRedraw(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	app.screen.onFocusGained = func() { app.forceRedraw("focus regained") }
+
+	// Snapshot the log AFTER any wireApp-induced redraws so the assertion
+	// only inspects what posting the focus-loss event added.
+	preSize := int64(0)
+	if fi, err := os.Stat(logPath); err == nil {
+		preSize = fi.Size()
+	}
+
+	sim.PostEvent(tcell.NewEventFocus(false))
+	syncUI(t, app.tapp)
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Seek(preSize, 0); err != nil {
+		t.Fatalf("seek log: %v", err)
+	}
+	tail, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read log tail: %v", err)
+	}
+	if strings.Contains(string(tail), "force redraw: focus regained") {
+		t.Fatalf("focus loss must not fire focus-regained redraw; tail:\n%s", string(tail))
 	}
 }
