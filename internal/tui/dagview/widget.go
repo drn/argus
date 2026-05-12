@@ -291,8 +291,8 @@ func parseFailed(raw string) bool {
 // branchShape captures the parts of state that, when changed, mean Draw
 // would paint a structurally different cell set. The widget compares this
 // signature across SetNodes / SetFocused / MoveCursor to decide whether to
-// fire OnBranchChange. See the contract in CLAUDE.md ("UX-tearing prevention
-// — the branch-change callback contract").
+// fire OnBranchChange — purely as a debug-trail signal; forceRedraw is
+// log-only post-May-2026. See gotchas/ui-threading.md.
 //
 // The cursor field is folded into the signature via FNV-1a over the cursor
 // task ID so a move between two non-empty cursors (same node count, same

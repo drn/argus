@@ -1200,10 +1200,11 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	// Branch change: the fallback emulator (or "Waiting for output..." text)
 	// painted on prior frames is being replaced by a fresh 50K-line replay
 	// emulator. Different content fills the same rect — fire OnBranchChange
-	// so afterDraw runs Sync, wiping any stale fallback cells. notify is
-	// safe to call from this background goroutine: the callback is set once
-	// in buildUI and never reassigned (no race), and forceRedraw uses an
-	// atomic flag (no cross-goroutine ordering concerns).
+	// for the debug-trail log entry. forceRedraw is log-only (does NOT
+	// trigger Sync); the actual stale-cell prevention is DrawBorderedPanel's
+	// FillArea covering the inner rect every frame. notify is safe from
+	// this background goroutine: the callback is set once in buildUI and
+	// never reassigned (no race), and forceRedraw is just a uxlog call.
 	tp.notifyBranchChange()
 
 	// Trigger a redraw so the next Draw() picks up the new emulator.
