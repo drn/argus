@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -2268,18 +2269,29 @@ func TestTcellKeyToBytes_MoreCases(t *testing.T) {
 	}
 }
 
-// recordingScreen is a tcell.Screen test double that counts Sync() calls.
-// Only Size and Sync are exercised by afterDraw; the embedded nil-interface
+// recordingScreen is a tcell.Screen test double that counts Sync() calls
+// and exposes a configurable cell-content function for hashCellBuffer.
+// Size, Sync, and Get are exercised by afterDraw; the embedded nil-interface
 // Screen is unused and will panic if any other method is invoked, which is
 // the intended invariant for this test.
 type recordingScreen struct {
 	tcell.Screen
 	w, h      int
 	syncCount int
+	// content returns the cell content at (x, y). Used by hashCellBuffer to
+	// detect whether the cell buffer changed between frames. Default (nil)
+	// yields a constant blank screen so all frames hash equal.
+	content func(x, y int) (string, tcell.Style, int)
 }
 
 func (r *recordingScreen) Size() (int, int) { return r.w, r.h }
 func (r *recordingScreen) Sync()            { r.syncCount++ }
+func (r *recordingScreen) Get(x, y int) (string, tcell.Style, int) {
+	if r.content != nil {
+		return r.content(x, y)
+	}
+	return " ", tcell.StyleDefault, 1
+}
 
 // TestApp_AfterDrawForceSync pins the architectural commitment from the
 // "A) sync every frame inside multiplexers" decision: when forceSync is set
@@ -2325,14 +2337,16 @@ func TestApp_AfterDrawForceSync(t *testing.T) {
 	}
 }
 
-// TestApp_AfterDrawForceSyncDoesNotSpamLog locks in the deliberate decision
-// NOT to uxlog every per-frame forceSync — the log would drown ux.log at
-// terminal-rate input. afterDraw still Syncs, just silently. We assert two
-// invariants over 100 silent frames: (a) Sync was called every frame
-// (forceSync's whole job), and (b) NO "[tui] afterDraw sync" lines were
-// written to uxlog (the suppression contract). Both must hold simultaneously
-// — counting syncs alone would let a future stray uxlog.Log slip through.
-func TestApp_AfterDrawForceSyncDoesNotSpamLog(t *testing.T) {
+// TestApp_AfterDrawForceSyncSkipsIdenticalFrames pins two invariants of the
+// forceSync hash gate: (a) over N identical-content frames in forceSync
+// mode, only the FIRST frame Syncs — the rest are short-circuited by the
+// cell-buffer hash matching lastSyncedHash, so tmux doesn't see a CSI 2J
+// every frame; (b) NO "[tui] afterDraw sync" lines are written to uxlog
+// over the run (forceSync Syncs are silent — those log lines are reserved
+// for resize and explicit forceRedraw). Replaces the prior contract that
+// Sync ran every frame regardless of content (commit 9d0a56c) — which
+// produced visible flashing inside tmux even when nothing visually changed.
+func TestApp_AfterDrawForceSyncSkipsIdenticalFrames(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ux.log")
 	if err := uxlog.Init(logPath); err != nil {
 		t.Fatalf("uxlog.Init: %v", err)
@@ -2360,7 +2374,9 @@ func TestApp_AfterDrawForceSyncDoesNotSpamLog(t *testing.T) {
 	for range 100 {
 		app.afterDraw(rec)
 	}
-	testutil.Equal(t, rec.syncCount, 100)
+	// Only the first frame Syncs — subsequent frames hash identically and
+	// short-circuit. Without the hash gate this would be 100.
+	testutil.Equal(t, rec.syncCount, 1)
 
 	f, err := os.Open(logPath)
 	if err != nil {
@@ -2380,4 +2396,49 @@ func TestApp_AfterDrawForceSyncDoesNotSpamLog(t *testing.T) {
 	if strings.Contains(string(tail), "[tui] afterDraw sync") {
 		t.Fatalf("forceSync must not log per-frame; got post-setup tail:\n%s", string(tail))
 	}
+}
+
+// TestApp_AfterDrawForceSyncReactsToContentChange is the positive counterpart
+// to TestApp_AfterDrawForceSyncSkipsIdenticalFrames: when cell content
+// actually changes between frames in forceSync mode, the hash must differ
+// and afterDraw MUST Sync — otherwise the multiplexer-drift fix that
+// motivated forceSync would be neutered. Asserts: identical frame → no
+// Sync; content change → Sync; identical again → no Sync.
+func TestApp_AfterDrawForceSyncReactsToContentChange(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.forceSync.Store(true)
+	app.pendingSync.Store(false)
+	app.lastScreenW = 80
+	app.lastScreenH = 24
+	// Drive the cell content from a counter so the test can toggle the
+	// visible state and observe the resulting Sync decision.
+	frame := 0
+	rec := &recordingScreen{
+		w: 80, h: 24,
+		content: func(x, y int) (string, tcell.Style, int) {
+			if x == 0 && y == 0 {
+				return fmt.Sprintf("%d", frame%10), tcell.StyleDefault, 1
+			}
+			return " ", tcell.StyleDefault, 1
+		},
+	}
+	// First call: hash differs from initial (zero) → Sync, remember hash.
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 1)
+	// Same frame: hash matches → no Sync.
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 1)
+	// Mutate content: hash differs → Sync.
+	frame = 1
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 2)
+	// Hold: hash matches → no Sync.
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 2)
+	// Mutate again: hash differs → Sync.
+	frame = 2
+	app.afterDraw(rec)
+	testutil.Equal(t, rec.syncCount, 3)
 }
