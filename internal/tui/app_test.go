@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -2290,7 +2292,7 @@ func TestApp_AfterDrawForceSync(t *testing.T) {
 			app := New(d, runner, false)
 			// Force-set state independently of detection so the test exercises
 			// the field, not the detection that already has its own coverage.
-			app.forceSync = tt.forceSync
+			app.forceSync.Store(tt.forceSync)
 			app.pendingSync.Store(tt.pending)
 			app.lastScreenW = 80
 			app.lastScreenH = 24
@@ -2309,22 +2311,57 @@ func TestApp_AfterDrawForceSync(t *testing.T) {
 
 // TestApp_AfterDrawForceSyncDoesNotSpamLog locks in the deliberate decision
 // NOT to uxlog every per-frame forceSync — the log would drown ux.log at
-// terminal-rate input. afterDraw still Syncs, just silently. We assert via
-// the log-line presence proxy: a forceSync-only path produces NO log line,
-// while a resize-only path produces one.
+// terminal-rate input. afterDraw still Syncs, just silently. We assert two
+// invariants over 100 silent frames: (a) Sync was called every frame
+// (forceSync's whole job), and (b) NO "[tui] afterDraw sync" lines were
+// written to uxlog (the suppression contract). Both must hold simultaneously
+// — counting syncs alone would let a future stray uxlog.Log slip through.
 func TestApp_AfterDrawForceSyncDoesNotSpamLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.forceSync = true
+	app.forceSync.Store(true)
 	app.lastScreenW = 80
 	app.lastScreenH = 24
+	// refreshTasks() fires legitimate OnLayoutChange / OnBranchChange callbacks
+	// during New() which leave pendingSync=true. Drain it before the test loop
+	// so the first iteration's CAS doesn't fire a legitimate "forceRedraw
+	// consumed" log line that pollutes the per-frame-suppression assertion.
+	app.pendingSync.Store(false)
+	// Snapshot the log size AFTER any New()-induced "afterDraw sync" line so
+	// the assertion only inspects what the 100-frame loop itself produced.
+	preLoopSize := int64(0)
+	if fi, err := os.Stat(logPath); err == nil {
+		preLoopSize = fi.Size()
+	}
 	rec := &recordingScreen{w: 80, h: 24}
-	// 100 silent frames — would be 100 log lines if we logged.
 	for range 100 {
 		app.afterDraw(rec)
 	}
-	if rec.syncCount != 100 {
-		t.Fatalf("forceSync must Sync every frame: got %d syncs across 100 frames", rec.syncCount)
+	testutil.Equal(t, rec.syncCount, 100)
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open uxlog: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Seek(preLoopSize, 0); err != nil {
+		t.Fatalf("seek uxlog: %v", err)
+	}
+	tail, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read uxlog tail: %v", err)
+	}
+	// The "[tui] afterDraw sync" prefix covers all three log variants
+	// (resize, resize+forceRedraw, forceRedraw consumed). None should fire
+	// in the 100-frame loop when only forceSync triggers.
+	if strings.Contains(string(tail), "[tui] afterDraw sync") {
+		t.Fatalf("forceSync must not log per-frame; got post-setup tail:\n%s", string(tail))
 	}
 }

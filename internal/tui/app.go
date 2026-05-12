@@ -203,7 +203,11 @@ type App struct {
 	// cell diff in tcell.Show() produces visible tearing across layout shifts.
 	// Syncing every frame trades the diff optimization (~free over a local
 	// PTY) for correctness. See gotchas/ui-threading.md "forceSync".
-	forceSync bool
+	//
+	// atomic.Bool (not plain bool) for symmetry with pendingSync and to keep
+	// it safe under any future test that flips it after wireApp starts the
+	// tview event loop — the field is read on the tview draw goroutine.
+	forceSync atomic.Bool
 }
 
 // New creates the tui application shell.
@@ -228,9 +232,9 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
-		forceSync:              detectMultiplexer(),
 	}
-	if app.forceSync {
+	app.forceSync.Store(detectMultiplexer())
+	if app.forceSync.Load() {
 		uxlog.Log("[tui] forceSync enabled — multiplexer detected, syncing every frame")
 	}
 
@@ -402,7 +406,7 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	a.lastScreenW = w
 	a.lastScreenH = h
 	consumed := a.pendingSync.CompareAndSwap(true, false)
-	if !sizeChanged && !consumed && !a.forceSync {
+	if !sizeChanged && !consumed && !a.forceSync.Load() {
 		return
 	}
 	// Log every non-routine Sync so a debugger can confirm one ran in response
