@@ -1879,6 +1879,9 @@ func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
 
+	// The DAG widget's focused-state border lights up only when the DAG tab
+	// is the active surface. Anywhere else, the unfocused palette renders.
+	a.dagWidget.SetFocused(t == widget.TabDAG)
 	switch t {
 	case widget.TabTasks:
 		if a.mode == modeAgent {

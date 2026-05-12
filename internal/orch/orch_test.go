@@ -75,6 +75,13 @@ func (f *fakeStore) SetArchived(id string, archived bool) error {
 	for _, t := range f.rows {
 		if t.ID == id {
 			t.Archived = archived
+			// Mirror *db.DB.SetArchived: archiving clears pinned to
+			// uphold the model's mutual-exclusivity invariant. A test
+			// that drifts from this would be reasoning about state the
+			// DB cannot produce.
+			if archived {
+				t.Pinned = false
+			}
 			return nil
 		}
 	}

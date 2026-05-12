@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/orch"
 )
 
@@ -136,14 +137,16 @@ func (s *Server) handleDAG(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
-// writeOrchError maps orch sentinel errors to appropriate HTTP statuses.
+// writeOrchError maps orch / db sentinel errors to appropriate HTTP statuses.
 // Anything not recognised falls through to 500 so unexpected DB failures
-// surface in logs rather than masquerading as 4xx.
+// surface in logs rather than masquerading as 4xx. Uses errors.Is against
+// the db.ErrTaskNotFound sentinel — string-matching the error message would
+// silently break on any future rename of the wrapped format.
 func (s *Server) writeOrchError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, orch.ErrEmptyID):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case strings.Contains(err.Error(), "task not found"):
+	case errors.Is(err, db.ErrTaskNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

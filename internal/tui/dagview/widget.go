@@ -223,11 +223,19 @@ func (w *Widget) MouseHandler() func(action tview.MouseAction, event *tcell.Even
 			}
 			col := relX / cellCol
 			layer := relY / cellRow
+			prevCursor := w.cursor
 			for _, p := range w.layout.Nodes {
 				if p.Col == col && p.Layer == layer {
 					w.cursor = p.ID
 					break
 				}
+			}
+			// Mouse path mirrors MoveCursor's branch-change contract:
+			// shifting the highlighted cell set without notifying would
+			// leave the previous reverse+bold box on screen as a ghost
+			// (same class of bug as the keyboard path before iter-2).
+			if w.cursor != prevCursor {
+				w.maybeNotifyBranchChange()
 			}
 		}
 		if action == tview.MouseScrollUp {

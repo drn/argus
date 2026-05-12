@@ -632,6 +632,10 @@ func (m *mockTaskDB) SetArchived(id string, archived bool) error {
 	for _, t := range m.tasks {
 		if t.ID == id {
 			t.Archived = archived
+			// Mirror *db.DB.SetArchived: archiving clears pinned.
+			if archived {
+				t.Pinned = false
+			}
 			return nil
 		}
 	}

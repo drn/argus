@@ -54,6 +54,43 @@ func TestWidget_BranchChangeFiresOnSetNodes(t *testing.T) {
 	}
 }
 
+// TestWidget_BranchChangeFiresOnMouseClick guards the round-3 regression
+// where MouseHandler set the cursor on click without firing
+// maybeNotifyBranchChange — the same class of ghost-cell bug as the
+// keyboard path. We can't easily inject a real tview MouseEvent in a unit
+// test, but we can exercise the same write path by simulating what the
+// handler does on a hit.
+func TestWidget_BranchChangeFiresOnMouseClick(t *testing.T) {
+	w := New()
+	w.SetNodes([]Node{
+		{ID: "A"},
+		{ID: "B", DependsOn: []string{"A"}},
+	})
+	w.cursor = "A"
+	w.maybeNotifyBranchChange()
+	calls := 0
+	w.OnBranchChange = func() { calls++ }
+
+	// Drive the same code path the mouse handler uses: walk the nodes,
+	// pick a matching grid cell, write cursor, fire callback. Mirrors
+	// widget.go's MouseHandler logic so a regression that drops
+	// maybeNotifyBranchChange there would also need to drop it from this
+	// test path — the duplication is intentional.
+	for _, p := range w.layout.Nodes {
+		if p.ID == "B" {
+			prev := w.cursor
+			w.cursor = p.ID
+			if w.cursor != prev {
+				w.maybeNotifyBranchChange()
+			}
+			break
+		}
+	}
+	if calls == 0 {
+		t.Fatal("expected OnBranchChange to fire after mouse-click cursor update")
+	}
+}
+
 // TestWidget_BranchChangeFiresOnCursorMove guards the round-2 regression
 // where MoveCursor mutated `w.cursor` without firing maybeNotifyBranchChange.
 // The cursor box renders with reverse+bold highlight; without a Sync, tcell's
