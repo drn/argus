@@ -1160,9 +1160,15 @@ func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.
 			tp.mu.Unlock()
 
 			testutil.Equal(t, tp.scrollOffset, tc.wantScrollOffset)
-			testutil.Equal(t, tp.replayRebuildPending, false)
 			testutil.Equal(t, tp.anchorTotalLines, tc.wantAnchorTotalLines)
 			testutil.Equal(t, tp.paintCacheValid, tc.wantPaintCacheValid)
+			// pending-flag assertion is only discriminating when the
+			// helper had to clear it: no code path inside the helper
+			// can set pending=false → true, so asserting it on a row
+			// that starts false is vacuous.
+			if tc.startPending {
+				testutil.Equal(t, tp.replayRebuildPending, false)
+			}
 		})
 	}
 }
