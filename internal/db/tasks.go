@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -9,8 +10,9 @@ import (
 	"github.com/drn/argus/internal/model"
 )
 
-// taskColumns is the canonical column list for task queries.
-const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, created_at, started_at, ended_at`
+// taskColumns is the canonical column list for task queries. Order MUST
+// match scanTask's Scan call and the INSERT/UPDATE statements below.
+const taskColumns = `id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, depends_on, result, created_at, started_at, ended_at`
 
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -20,19 +22,40 @@ type scanner interface {
 // scanTask reads a task from a row using the canonical column order.
 func scanTask(row scanner) (*model.Task, error) {
 	t := &model.Task{}
-	var status, createdAt, startedAt, endedAt string
+	var status, createdAt, startedAt, endedAt, dependsOn string
 	var sandboxed, archived, pinned int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &createdAt, &startedAt, &endedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &dependsOn, &t.Result, &createdAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
 	t.Sandboxed = sandboxed != 0
 	t.Archived = archived != 0
 	t.Pinned = pinned != 0
+	// depends_on is stored as a JSON array string; empty means no deps.
+	// A malformed value would prevent the task from loading, so on parse
+	// error we leave DependsOn empty rather than failing the scan — the
+	// worst case is a once-blocked task starts immediately on next tick.
+	if dependsOn != "" {
+		_ = json.Unmarshal([]byte(dependsOn), &t.DependsOn) //nolint:errcheck
+	}
 	t.CreatedAt = parseTime(createdAt)
 	t.StartedAt = parseTime(startedAt)
 	t.EndedAt = parseTime(endedAt)
 	return t, nil
+}
+
+// encodeDependsOn returns the JSON-array representation stored in the
+// depends_on column. Empty / nil slice maps to empty string so the column
+// default lines up with the in-memory zero value.
+func encodeDependsOn(deps []string) string {
+	if len(deps) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(deps)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func (d *DB) Tasks() ([]*model.Task, error) {
@@ -77,8 +100,9 @@ func (d *DB) Add(t *model.Task) error {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, depends_on, result, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
+		t.BaseBranch, encodeDependsOn(t.DependsOn), t.Result,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -99,8 +123,9 @@ func (d *DB) Update(t *model.Task) error {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, base_branch=?, depends_on=?, result=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
 		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
+		t.BaseBranch, encodeDependsOn(t.DependsOn), t.Result,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return err
@@ -157,6 +182,44 @@ func (d *DB) RenameIfName(id, expected, newName string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+// SetResult writes the opaque JSON result blob for a task. The daemon does
+// not parse the contents — it's the agent/orchestrator contract. Returns an
+// error if the row is missing. Idempotent: last write wins.
+func (d *DB) SetResult(id, result string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET result=? WHERE id=?`, result, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
+// FindByNameProject returns the first non-archived task matching (name,
+// project), or (nil, nil) if no match. Used by task_create idempotency to
+// detect duplicate orchestration sub-tasks before spawning a second worktree.
+// Archived tasks are excluded so a stale stack does not block reuse of the
+// same slug.
+func (d *DB) FindByNameProject(name, project string) (*model.Task, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	row := d.conn.QueryRow(`SELECT `+taskColumns+` FROM tasks WHERE name=? AND project=? AND archived=0 LIMIT 1`, name, project)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func (d *DB) Delete(id string) error {

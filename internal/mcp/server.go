@@ -28,11 +28,32 @@ type KBQuerier interface {
 	KBDocumentCount() int
 }
 
+// TaskCreateInput is the payload the MCP server hands to the daemon-injected
+// task creator. Adding orchestration fields (BaseBranch, DependsOn, …) here
+// extends what the MCP `task_create` tool can pass through without churning
+// any function signatures.
+type TaskCreateInput struct {
+	Name     string
+	Prompt   string
+	Project  string
+	AutoName bool
+
+	// BaseBranch overrides the project default start point for the worktree.
+	// Empty string falls back to projCfg.Branch (today: master/main). Used
+	// for stacked-PR workflows where each sub-task branches off the previous
+	// task's branch.
+	BaseBranch string
+
+	// DependsOn is the list of task IDs whose status must reach `complete`
+	// before this task's agent session is auto-started. Empty / nil starts
+	// the session immediately (legacy behaviour).
+	DependsOn []string
+}
+
 // TaskCreator creates a task with worktree and starts an agent session.
-// Same signature as daemon.HeadlessCreateTask (injected to avoid import cycle).
-// autoName signals the underlying creator to fire async Haiku name-gen
-// when name was string-interpolated from prompt rather than user-typed.
-type TaskCreator func(name, prompt, project string, autoName bool) (*model.Task, error)
+// Same call shape used by daemon.HeadlessCreateTask (the daemon wraps it to
+// avoid an import cycle on the mcp package).
+type TaskCreator func(input TaskCreateInput) (*model.Task, error)
 
 // TaskStore provides read and write access to tasks.
 type TaskStore interface {
@@ -42,6 +63,16 @@ type TaskStore interface {
 	// Rename updates only the name column — used by task_rename to avoid
 	// racing with concurrent status changes from the agent process.
 	Rename(id, name string) error
+	// SetResult updates only the result column. Used by task_set_result so
+	// a concurrent agent status flip (StatusComplete on exit) can't be
+	// clobbered by an Update-based read-then-write round trip.
+	SetResult(id, result string) error
+	// FindByNameProject returns the first non-archived task matching the
+	// (name, project) pair, or (nil, nil) when no such task exists. Used by
+	// the task_create idempotency check inside the createMu critical
+	// section so a duplicate detection doesn't need to scan every task in
+	// memory each call. Backed by an indexed SQL query in db.DB.
+	FindByNameProject(name, project string) (*model.Task, error)
 }
 
 // TaskStopper can stop a running agent session.
@@ -80,6 +111,19 @@ const maxConcurrentCreates = 5
 // 200 runes comfortably covers any human-typeable name across every UI.
 const maxTaskNameRunes = 200
 
+// maxDependsOnEntries caps how many upstream task IDs a single task_create
+// may declare. A misbehaving orchestrator submitting tens of thousands of
+// IDs would force one DB Get per entry at validation time and again on
+// every task_get for the duplicated unresolvedDeps loop. 100 is two orders
+// of magnitude above any reasonable stacked-PR plan.
+const maxDependsOnEntries = 100
+
+// maxDepGraphTraversal bounds the DFS used to detect cycles in the deps
+// graph at task_create time. A real DAG visits each task at most once;
+// the cap exists to bound a misbehaving DB (impossible cycles in already-
+// persisted rows) so the validation can't hang the create path.
+const maxDepGraphTraversal = 10000
+
 // Server is the MCP HTTP server.
 type Server struct {
 	db          KBQuerier
@@ -94,6 +138,10 @@ type Server struct {
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
+	// creatingKeys tracks (project, name) pairs currently being created so
+	// two concurrent task_create calls with the same key can't both pass
+	// the duplicate-row check and race to insert. Guarded by createMu.
+	creatingKeys map[string]bool
 
 	// shutdownCtx is canceled by Shutdown so long-lived GET/SSE handlers
 	// can return promptly instead of blocking httpSrv.Shutdown forever.
@@ -113,6 +161,7 @@ func New(db KBQuerier, port int, vaultPath string) *Server {
 		vaultPath:      vaultPath,
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
+		creatingKeys:   make(map[string]bool),
 	}
 }
 
@@ -467,14 +516,21 @@ CONTENT RULES: One topic per document. Lead with the key insight. Use ## H2 for 
 // taskToolDefs are exposed only when SetTaskManager has been called.
 var taskToolDefs = []Tool{
 	{
-		Name:        "task_create",
-		Description: "Create a new Argus task with a git worktree and start an agent session. Returns task ID, name, and status.",
+		Name: "task_create",
+		Description: `Create a new Argus task with a git worktree and start an agent session. Returns task ID, name, and status.
+
+Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (stacked-PR workflows), and ` + "`depends_on`" + ` to declare a list of upstream task IDs that must reach status=complete before this task's agent session is auto-started. While blocked, the task stays in ` + "`pending`" + ` with its worktree already prepared; the depswatcher inside the daemon starts the session within one tick of every dep completing.
+
+Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) and a non-archived task with the same (name, project) already exists, the call errors unless ` + "`upsert: true`" + ` is set — in which case the existing task is returned unchanged. This keeps an orchestrator that restarts mid-loop from double-firing sub-tasks.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"name":    map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted."},
-				"prompt":  map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
-				"project": map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
+				"name":        map[string]interface{}{"type": "string", "description": "Task name (used for branch/worktree naming). Auto-generated from prompt if omitted; idempotency check is skipped for auto-generated names."},
+				"prompt":      map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
+				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
+				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
+				"depends_on":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional. Upstream task IDs whose status must reach 'complete' before this task's agent starts. The worktree is still created immediately."},
+				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
 			},
 			"required": []string{"prompt", "project"},
 		},
@@ -554,7 +610,33 @@ The agent process does not know its own task ID, so the task is resolved from th
 			},
 		},
 	},
+	{
+		Name: "task_set_result",
+		Description: `Persist a structured JSON result blob for this task so the orchestrator can read what the agent produced (PR URL, branch SHA, milestone label, success/failure). The daemon does NOT inspect the payload — schema is the orchestrator's contract with sub-tasks.
+
+The agent process must identify itself by passing either ` + "`id`" + ` (sub-tasks should use the ` + "`ARGUS_TASK_ID`" + ` env var exported into every worktree) or ` + "`cwd`" + ` (Argus resolves to the task whose worktree the cwd lives under, longest-prefix wins). At least one is required. Last write wins. Payload capped at 64 KiB.
+
+Conventional shape for stacked-PR flows:
+` + "```json\n{\n  \"pr_url\": \"https://github.com/org/repo/pull/123\",\n  \"pr_number\": 123,\n  \"branch_sha\": \"abc1234\",\n  \"milestone\": \"M3\"\n}\n```" + `
+
+Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` before calling ` + "`task_complete`" + ` so the orchestrator can intervene. depswatcher does NOT auto-cascade failures — it only starts dependents whose deps are all status=complete, so a failed-but-complete dep WILL unblock its children on the next watcher tick (up to ~1 minute later). The orchestrator interprets ` + "`failed`" + ` and stops the rest of the stack: use ` + "`task_stop`" + ` for any downstream task that has already started (depswatcher beat the orchestrator to it) and ` + "`task_archive`" + ` for any downstream task still in ` + "`pending`" + ` (no live session yet — ` + "`task_stop`" + ` would error with session-not-found).`,
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"id":     map[string]interface{}{"type": "string", "description": "Task ID. If omitted, cwd is used to resolve the task."},
+				"cwd":    map[string]interface{}{"type": "string", "description": "Working directory inside the task's worktree. Used when id is omitted."},
+				"result": map[string]interface{}{"type": "object", "description": "Structured result. JSON object, opaque to the daemon. Up to 64 KiB serialized."},
+			},
+			"required": []string{"result"},
+		},
+	},
 }
+
+// maxTaskResultBytes caps the serialized result payload. 64 KiB is plenty
+// for a structured stacked-PR record (PR URL, SHA, milestone, optional
+// failure reason) while keeping a misbehaving agent from filling the
+// tasks table with multi-megabyte blobs. SQLite TEXT itself is unbounded.
+const maxTaskResultBytes = 64 * 1024
 
 // clipboardToolDefs are exposed only when SetClipboard has been called AND
 // task management is enabled (the tool needs cwd-resolution to find the
@@ -715,6 +797,8 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskRename(req.ID, params.Arguments)
 	case "task_complete":
 		return s.toolTaskComplete(req.ID, params.Arguments)
+	case "task_set_result":
+		return s.toolTaskSetResult(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
 	case "schedule_list":
@@ -928,9 +1012,12 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 
 	var p struct {
-		Name    string `json:"name"`
-		Prompt  string `json:"prompt"`
-		Project string `json:"project"`
+		Name       string   `json:"name"`
+		Prompt     string   `json:"prompt"`
+		Project    string   `json:"project"`
+		BaseBranch string   `json:"base_branch"`
+		DependsOn  []string `json:"depends_on"`
+		Upsert     bool     `json:"upsert"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -941,20 +1028,46 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		return toolError(id, "prompt is required")
 	}
 
-	// Rate-limit concurrent task creation to prevent unbounded process spawning.
-	s.createMu.Lock()
-	if s.creating >= maxConcurrentCreates {
-		s.createMu.Unlock()
-		log.Printf("[mcp] task_create rejected: %d concurrent creates in flight", s.creating)
-		return toolError(id, fmt.Sprintf("too many concurrent task creations (max %d)", maxConcurrentCreates))
+	// Cap depends_on at create time. The 4 MiB request body limit would
+	// otherwise let an array of tens of thousands of IDs through, and the
+	// per-tick unresolvedDeps loop in task_get would then linear-scan that
+	// list on every read. 100 is well above any realistic stacked-PR plan.
+	if len(p.DependsOn) > maxDependsOnEntries {
+		return toolError(id, fmt.Sprintf("depends_on exceeds %d entries (got %d)", maxDependsOnEntries, len(p.DependsOn)))
 	}
-	s.creating++
-	s.createMu.Unlock()
-	defer func() {
-		s.createMu.Lock()
-		s.creating--
-		s.createMu.Unlock()
-	}()
+
+	// Validate depends_on entries reference real, non-archived tasks before
+	// we spawn a worktree. An archived dep that never reached complete
+	// would block the dependent permanently; rejecting at create time gives
+	// the orchestrator a clear error instead of a mystery hang.
+	for _, depID := range p.DependsOn {
+		if strings.TrimSpace(depID) == "" {
+			return toolError(id, "depends_on contains an empty task ID")
+		}
+		dep, err := s.taskDB.Get(depID)
+		if err != nil || dep == nil {
+			return toolError(id, fmt.Sprintf("depends_on references unknown task: %s", depID))
+		}
+		if dep.Archived {
+			return toolError(id, fmt.Sprintf("depends_on references archived task: %s (%s)", depID, dep.Name))
+		}
+	}
+
+	// Cycle check: DFS the transitive dep graph from each direct dep. The
+	// new task has no ID yet, so only a cycle in the persisted rows can be
+	// reachable. Defensive: cycles shouldn't exist if every prior create
+	// passed this check, but a direct DB write or future task-update path
+	// could introduce one. We refuse the create on EITHER a found cycle
+	// OR an unverifiable graph (more nodes than maxDepGraphTraversal can
+	// walk), so a pathological graph cannot bypass validation by being
+	// large enough to exhaust the visit budget.
+	cyclePath, cycleErr := s.detectCycle(p.DependsOn)
+	if cycleErr != nil {
+		return toolError(id, fmt.Sprintf("depends_on validation: %v", cycleErr))
+	}
+	if cyclePath != nil {
+		return toolError(id, fmt.Sprintf("depends_on would form a cycle: %s", strings.Join(cyclePath, " -> ")))
+	}
 
 	autoName := p.Name == ""
 	name := p.Name
@@ -962,16 +1075,198 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		name = truncatePromptToName(p.Prompt)
 	}
 
-	log.Printf("[mcp] task_create name=%q project=%q auto=%v", name, p.Project, autoName)
-	task, err := s.createTask(name, p.Prompt, p.Project, autoName)
+	// Atomic rate-limit + idempotency check. Both happen inside one
+	// critical section so two concurrent task_create calls with the same
+	// (name, project) cannot both pass. The (project, name) key is held
+	// in creatingKeys for the duration of the slow create path; a duplicate
+	// concurrent call sees the in-flight key and errors instead of racing.
+	// Length-prefix the two components so a project/name containing the
+	// separator byte cannot collide with a different (project, name) pair.
+	// SQLite TEXT rejects NUL bytes so the practical collision space is
+	// already zero, but the length-prefix encoding removes the assumption
+	// from the call site.
+	idempotencyKey := fmt.Sprintf("%d:%s|%d:%s", len(p.Project), p.Project, len(name), name)
+	s.createMu.Lock()
+	if s.creating >= maxConcurrentCreates {
+		s.createMu.Unlock()
+		log.Printf("[mcp] task_create rejected: %d concurrent creates in flight", s.creating)
+		return toolError(id, fmt.Sprintf("too many concurrent task creations (max %d)", maxConcurrentCreates))
+	}
+	// Idempotency by (name, project): an orchestrator that restarts mid-loop
+	// must not double-fire sub-tasks. Only user-typed names are gated —
+	// auto-generated names from prompts already disambiguate via content.
+	// Upsert=true short-circuits the duplicate check by returning the
+	// existing row; otherwise we fail loud so the caller can decide.
+	if !autoName {
+		if s.creatingKeys[idempotencyKey] {
+			s.createMu.Unlock()
+			return toolError(id, fmt.Sprintf("task with name=%q project=%q is already being created (concurrent task_create)", name, p.Project))
+		}
+		existing, lookupErr := s.lookupExistingTaskLocked(name, p.Project)
+		if lookupErr != nil {
+			s.createMu.Unlock()
+			return toolError(id, fmt.Sprintf("lookup existing task: %v", lookupErr))
+		}
+		if existing != nil {
+			s.createMu.Unlock()
+			if p.Upsert {
+				log.Printf("[mcp] task_create upsert hit: id=%s name=%q project=%q", existing.ID, name, p.Project)
+				return toolResult(id, formatTaskCreatedSummary(existing, "Task already exists (upsert)"))
+			}
+			return toolError(id, fmt.Sprintf("task already exists with name=%q project=%q id=%s (pass upsert:true to reuse)", name, p.Project, existing.ID))
+		}
+		s.creatingKeys[idempotencyKey] = true
+	}
+	s.creating++
+	s.createMu.Unlock()
+	defer func() {
+		s.createMu.Lock()
+		s.creating--
+		if !autoName {
+			delete(s.creatingKeys, idempotencyKey)
+		}
+		s.createMu.Unlock()
+	}()
+
+	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q deps=%v", name, p.Project, autoName, p.BaseBranch, p.DependsOn)
+	task, err := s.createTask(TaskCreateInput{
+		Name:       name,
+		Prompt:     p.Prompt,
+		Project:    p.Project,
+		AutoName:   autoName,
+		BaseBranch: strings.TrimSpace(p.BaseBranch),
+		DependsOn:  p.DependsOn,
+	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
 		return toolError(id, fmt.Sprintf("Failed to create task: %v", err))
 	}
 
-	log.Printf("[mcp] task_create ok: id=%s name=%s", task.ID, task.Name)
-	return toolResult(id, fmt.Sprintf("Task created.\n\n- **ID**: %s\n- **Name**: %s\n- **Status**: %s\n- **Project**: %s\n- **Branch**: %s",
-		task.ID, task.Name, task.Status.String(), task.Project, task.Branch))
+	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s deps=%v", task.ID, task.Name, task.Status, task.DependsOn)
+	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
+}
+
+// lookupExistingTaskLocked returns the first non-archived task with the
+// given (name, project), or (nil, nil) when no such task exists. MUST be
+// called with s.createMu held — the lock guarantees no concurrent
+// task_create can insert a colliding row between this read and the
+// caller's slot reservation in creatingKeys. Delegates to the store's
+// FindByNameProject (indexed SQL query in db.DB) rather than scanning
+// every row in memory.
+func (s *Server) lookupExistingTaskLocked(name, project string) (*model.Task, error) {
+	return s.taskDB.FindByNameProject(name, project)
+}
+
+// detectCycle DFS-walks the transitive dep graph starting from depIDs.
+// Returns:
+//   - (path, nil) when a cycle is found — path is "A -> B -> ... -> A" style.
+//   - (nil, nil)  when the reachable graph is acyclic and small enough to
+//     fully validate.
+//   - (nil, err)  when validation could not complete because the visit
+//     budget (maxDepGraphTraversal) was exhausted before exploring every
+//     reachable node. The caller MUST refuse the create on err — silently
+//     allowing it would let a pathological graph bypass the cycle gate.
+//
+// The new task is not yet persisted, so the only cycles detectable are
+// ones already in the stored graph. Defensive against direct DB tampering
+// or a future task-update path that doesn't re-validate.
+//
+// Algorithm: standard DFS with a per-node visited set + a recursion-stack
+// set. The order of checks inside dfs is intentional:
+//  1. inStack first — a true cycle is detected immediately, never
+//     suppressed by the visit cap.
+//  2. visited second — already-explored subgraphs short-circuit (diamond
+//     DAGs visit shared descendants once).
+//  3. visit-budget last — applies only to genuinely new nodes; bounds
+//     worst-case work without preempting cycle detection.
+//
+// The returned cycle path is a defensive copy so sibling descents on a
+// non-fully-explored graph cannot corrupt it via shared slice backing.
+func (s *Server) detectCycle(depIDs []string) ([]string, error) {
+	visited := make(map[string]bool)
+	inStack := make(map[string]bool)
+	var visits int
+	var capExceeded bool
+
+	var dfs func(id string, path []string) []string
+	dfs = func(id string, path []string) []string {
+		if inStack[id] {
+			// Cycle: clone the path + duplicate id so the returned slice
+			// cannot alias the recursion's shared backing array.
+			cycle := make([]string, len(path)+1)
+			copy(cycle, path)
+			cycle[len(path)] = id
+			return cycle
+		}
+		if visited[id] {
+			return nil
+		}
+		visits++
+		if visits > maxDepGraphTraversal {
+			capExceeded = true
+			return nil
+		}
+		inStack[id] = true
+		visited[id] = true
+		task, err := s.taskDB.Get(id)
+		if err == nil && task != nil {
+			for _, next := range task.DependsOn {
+				if cycle := dfs(next, append(path, id)); cycle != nil {
+					return cycle
+				}
+			}
+		}
+		inStack[id] = false
+		return nil
+	}
+
+	for _, depID := range depIDs {
+		if cycle := dfs(depID, nil); cycle != nil {
+			return cycle, nil
+		}
+		// Once the visit budget is exhausted, every later dfs call would
+		// either short-circuit on `visited` (for nodes touched by the
+		// exhausted subtree) or trip `visits > maxDepGraphTraversal` on
+		// its very first new node. Either way no useful work is possible
+		// and we will return the cap-exceeded error below — break out so
+		// the refusal path is reached without burning bookkeeping. This
+		// is a semantic narrowing: a cycle reachable ONLY from a later
+		// dep is no longer detected, but the create is still refused
+		// (capExceeded triggers the error), so the safety invariant
+		// "never approve an unverified graph" holds.
+		if capExceeded {
+			break
+		}
+	}
+	if capExceeded {
+		return nil, fmt.Errorf("dependency graph exceeds %d-node validation cap; refusing to create without verifying acyclicity", maxDepGraphTraversal)
+	}
+	return nil, nil
+}
+
+// formatTaskCreatedSummary renders the task_create response in a stable
+// markdown shape so both the create path and the upsert path produce
+// matching output. Surfaces orchestration fields (base_branch, depends_on,
+// status) so the orchestrator can verify what landed without a follow-up
+// task_get.
+func formatTaskCreatedSummary(task *model.Task, heading string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s.\n\n", heading)
+	fmt.Fprintf(&b, "- **ID**: %s\n", task.ID)
+	fmt.Fprintf(&b, "- **Name**: %s\n", task.Name)
+	fmt.Fprintf(&b, "- **Status**: %s\n", task.Status.String())
+	fmt.Fprintf(&b, "- **Project**: %s\n", task.Project)
+	if task.Branch != "" {
+		fmt.Fprintf(&b, "- **Branch**: %s\n", task.Branch)
+	}
+	if task.BaseBranch != "" {
+		fmt.Fprintf(&b, "- **Base branch**: %s\n", task.BaseBranch)
+	}
+	if len(task.DependsOn) > 0 {
+		fmt.Fprintf(&b, "- **Depends on**: %s\n", strings.Join(task.DependsOn, ", "))
+		fmt.Fprintf(&b, "- **Note**: blocked until every dep reaches status=complete; depswatcher will auto-start the agent.\n")
+	}
+	return b.String()
 }
 
 func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
@@ -1045,16 +1340,54 @@ func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
 	if task.Branch != "" {
 		fmt.Fprintf(&sb, "- **Branch**: %s\n", task.Branch)
 	}
+	if task.BaseBranch != "" {
+		fmt.Fprintf(&sb, "- **Base branch**: %s\n", task.BaseBranch)
+	}
 	if task.Backend != "" {
 		fmt.Fprintf(&sb, "- **Backend**: %s\n", task.Backend)
 	}
 	if elapsed := task.ElapsedString(); elapsed != "" {
 		fmt.Fprintf(&sb, "- **Elapsed**: %s\n", elapsed)
 	}
+	// Surface dependency state so the orchestrator can poll one task and
+	// see whether it's stuck waiting on upstream sub-tasks. blocked_by is
+	// the live subset of depends_on that has not yet reached complete;
+	// when empty (or DependsOn was empty to begin with), nothing renders.
+	if len(task.DependsOn) > 0 {
+		fmt.Fprintf(&sb, "- **Depends on**: %s\n", strings.Join(task.DependsOn, ", "))
+		blocked := s.unresolvedDeps(task.DependsOn)
+		if len(blocked) > 0 {
+			fmt.Fprintf(&sb, "- **Blocked by**: %s\n", strings.Join(blocked, ", "))
+		}
+	}
+	if task.Result != "" {
+		fmt.Fprintf(&sb, "\n**Result**:\n```json\n%s\n```\n", task.Result)
+	}
 	if task.Prompt != "" {
 		fmt.Fprintf(&sb, "\n**Prompt**: %s\n", task.Prompt)
 	}
 	return toolResult(id, sb.String())
+}
+
+// unresolvedDeps returns the subset of depIDs whose tasks have not reached
+// status=complete. Missing tasks (deleted while a dependent waited) are
+// also considered unresolved so the orchestrator sees the broken link
+// instead of silently treating the dep as satisfied. Errors enumerating
+// individual tasks are swallowed — the dep stays listed as blocking so
+// the caller errs on the safe side.
+func (s *Server) unresolvedDeps(depIDs []string) []string {
+	var blocked []string
+	for _, depID := range depIDs {
+		dep, err := s.taskDB.Get(depID)
+		if err != nil || dep == nil {
+			blocked = append(blocked, depID+" (missing)")
+			continue
+		}
+		if dep.Status != model.StatusComplete {
+			blocked = append(blocked, depID)
+		}
+	}
+	return blocked
 }
 
 func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {
@@ -1207,6 +1540,56 @@ func (s *Server) toolTaskComplete(id interface{}, args json.RawMessage) *Respons
 
 	log.Printf("[mcp] task_complete ok: id=%s prev=%s", task.ID, prev)
 	return toolResult(id, fmt.Sprintf("Marked task %s (%s) as complete.", task.ID, task.Name))
+}
+
+// toolTaskSetResult persists the agent-supplied JSON result blob on a task.
+// The daemon never inspects the shape — that is the orchestrator's contract.
+// We re-encode the user-supplied object via json.Marshal so trailing
+// whitespace, ordering, or odd integer formatting from the wire payload
+// don't survive into the DB row (deterministic storage). Last write wins;
+// the 64 KiB cap is enforced on the serialized form.
+func (s *Server) toolTaskSetResult(id interface{}, args json.RawMessage) *Response {
+	if !s.taskMgmtEnabled() {
+		return toolError(id, "task management not configured")
+	}
+
+	var p struct {
+		ID     string          `json:"id"`
+		Cwd    string          `json:"cwd"`
+		Result json.RawMessage `json:"result"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if len(p.Result) == 0 {
+		return toolError(id, "result is required")
+	}
+	// Accept only JSON objects — arrays, scalars, and bare strings would
+	// make the orchestrator contract ambiguous (which field is the PR
+	// URL?). Strict object check keeps the contract obvious.
+	var obj map[string]interface{}
+	if err := json.Unmarshal(p.Result, &obj); err != nil {
+		return toolError(id, fmt.Sprintf("result must be a JSON object: %v", err))
+	}
+	canonical, err := json.Marshal(obj)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("re-encode result: %v", err))
+	}
+	if len(canonical) > maxTaskResultBytes {
+		return toolError(id, fmt.Sprintf("result exceeds %d bytes (got %d)", maxTaskResultBytes, len(canonical)))
+	}
+
+	task, err := s.resolveTask(p.ID, p.Cwd)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	if err := s.taskDB.SetResult(task.ID, string(canonical)); err != nil {
+		log.Printf("[mcp] task_set_result failed: id=%s err=%v", task.ID, err)
+		return toolError(id, fmt.Sprintf("Failed to set result: %v", err))
+	}
+
+	log.Printf("[mcp] task_set_result ok: id=%s bytes=%d", task.ID, len(canonical))
+	return toolResult(id, fmt.Sprintf("Result stored for task %s (%s). %d bytes.", task.ID, task.Name, len(canonical)))
 }
 
 // toolClipboardSet stages text for the user to copy. Resolves the task via

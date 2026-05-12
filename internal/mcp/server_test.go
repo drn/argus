@@ -598,6 +598,28 @@ func (m *mockTaskDB) Rename(id, name string) error {
 	return fmt.Errorf("not found")
 }
 
+func (m *mockTaskDB) SetResult(id, result string) error {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			t.Result = result
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
+func (m *mockTaskDB) FindByNameProject(name, project string) (*model.Task, error) {
+	for _, t := range m.tasks {
+		if t.Archived {
+			continue
+		}
+		if t.Name == name && t.Project == project {
+			return t, nil
+		}
+	}
+	return nil, nil
+}
+
 type mockStopper struct {
 	stopped []string
 }
@@ -641,15 +663,23 @@ func testServerWithTasks() (*Server, *mockTaskDB, *mockStopper) {
 	stopper := &mockStopper{}
 
 	var createCount int
-	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+	creator := func(input TaskCreateInput) (*model.Task, error) {
 		createCount++
 		task := &model.Task{
-			ID:      fmt.Sprintf("new-%d", createCount),
-			Name:    name,
-			Status:  model.StatusInProgress,
-			Project: project,
-			Branch:  "argus/" + name,
-			Prompt:  prompt,
+			ID:         fmt.Sprintf("new-%d", createCount),
+			Name:       input.Name,
+			Status:     model.StatusInProgress,
+			Project:    input.Project,
+			Branch:     "argus/" + input.Name,
+			Prompt:     input.Prompt,
+			BaseBranch: input.BaseBranch,
+			DependsOn:  input.DependsOn,
+		}
+		// When deps are non-empty the real CreateAndStart short-circuits
+		// before runner.Start, leaving the task in pending. Mirror that
+		// here so the watcher path can be exercised end-to-end in tests.
+		if len(input.DependsOn) > 0 {
+			task.Status = model.StatusPending
 		}
 		taskDB.tasks = append(taskDB.tasks, task)
 		return task, nil
@@ -670,14 +700,14 @@ func TestToolsList_WithTasks(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 7 task tools = 12
-	testutil.Equal(t, len(list.Tools), 12)
+	// 5 KB tools + 8 task tools (orchestration adds task_set_result) = 13
+	testutil.Equal(t, len(list.Tools), 13)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_rename", "task_complete"} {
+	for _, want := range []string{"task_create", "task_list", "task_get", "task_stop", "task_archive", "task_rename", "task_complete", "task_set_result"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -871,9 +901,9 @@ func TestTaskCreate_RateLimit(t *testing.T) {
 
 	// Creator that blocks until released.
 	gate := make(chan struct{})
-	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+	creator := func(input TaskCreateInput) (*model.Task, error) {
 		<-gate
-		return &model.Task{ID: "x", Name: name, Status: model.StatusInProgress, Project: project}, nil
+		return &model.Task{ID: "x", Name: input.Name, Status: model.StatusInProgress, Project: input.Project}, nil
 	}
 	s.SetTaskManager(creator, taskDB, stopper)
 
@@ -1294,8 +1324,8 @@ func TestToolsList_WithClipboard(t *testing.T) {
 	var list ToolsListResult
 	json.Unmarshal(result, &list) //nolint:errcheck
 
-	// 5 KB tools + 7 task tools + 1 clipboard tool = 13
-	testutil.Equal(t, len(list.Tools), 13)
+	// 5 KB tools + 8 task tools (incl task_set_result) + 1 clipboard tool = 14
+	testutil.Equal(t, len(list.Tools), 14)
 
 	names := make(map[string]bool)
 	for _, tool := range list.Tools {
@@ -2449,7 +2479,7 @@ func TestTaskCreate_CreatorError(t *testing.T) {
 	s := testServer()
 	taskDB := &mockTaskDB{}
 	stopper := &mockStopper{}
-	creator := func(name, prompt, project string, _ bool) (*model.Task, error) {
+	creator := func(_ TaskCreateInput) (*model.Task, error) {
 		return nil, errors.New("can't create")
 	}
 	s.SetTaskManager(creator, taskDB, stopper)
@@ -2468,7 +2498,7 @@ func TestTaskList_DBError(t *testing.T) {
 	s := testServer()
 	taskDB := &errTaskDBWrapper{tasksErr: errors.New("boom")}
 	stopper := &mockStopper{}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2485,7 +2515,7 @@ func TestTaskStop_StopperError(t *testing.T) {
 	s := testServer()
 	taskDB := &mockTaskDB{tasks: []*model.Task{{ID: "t1"}}}
 	stopper := &errStopper{stopErr: errors.New("boom")}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2505,7 +2535,7 @@ func TestTaskArchive_UpdateError(t *testing.T) {
 		updateErr:  errors.New("boom"),
 	}
 	stopper := &mockStopper{}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2525,7 +2555,7 @@ func TestTaskComplete_UpdateError(t *testing.T) {
 		updateErr:  errors.New("boom"),
 	}
 	stopper := &mockStopper{}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2545,7 +2575,7 @@ func TestTaskRename_DBError(t *testing.T) {
 		renameErr:  errors.New("boom"),
 	}
 	stopper := &mockStopper{}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2563,7 +2593,7 @@ func TestResolveTask_TasksError(t *testing.T) {
 	s := testServer()
 	taskDB := &errTaskDBWrapper{tasksErr: errors.New("boom")}
 	stopper := &mockStopper{}
-	creator := func(_, _, _ string, _ bool) (*model.Task, error) { return nil, nil }
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
 	s.SetTaskManager(creator, taskDB, stopper)
 
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
@@ -2609,9 +2639,25 @@ func TestFormatScheduleTime_Zero(t *testing.T) {
 
 type errTaskDBWrapper struct {
 	mockTaskDB
-	tasksErr  error
-	updateErr error
-	renameErr error
+	tasksErr             error
+	updateErr            error
+	renameErr            error
+	setResultErr         error
+	findByNameProjectErr error
+}
+
+func (e *errTaskDBWrapper) SetResult(id, result string) error {
+	if e.setResultErr != nil {
+		return e.setResultErr
+	}
+	return e.mockTaskDB.SetResult(id, result)
+}
+
+func (e *errTaskDBWrapper) FindByNameProject(name, project string) (*model.Task, error) {
+	if e.findByNameProjectErr != nil {
+		return nil, e.findByNameProjectErr
+	}
+	return e.mockTaskDB.FindByNameProject(name, project)
 }
 
 func (e *errTaskDBWrapper) Tasks() ([]*model.Task, error) {
@@ -2710,3 +2756,681 @@ func (e *errDB) KBDelete(_ string) error {
 	return db.ErrKBNotFound
 }
 func (e *errDB) KBDocumentCount() int { return 0 }
+
+// --- Orchestration tool tests ---
+
+// TestTaskCreate_BaseBranchAndDependsOn covers the additive arguments the
+// stacked-PR flow needs: base_branch threads through to the creator, and
+// depends_on after validating each referenced ID exists. The creator stub
+// (in testServerWithTasks) leaves depends_on tasks in StatusPending, which
+// the formatted output should advertise.
+func TestTaskCreate_BaseBranchAndDependsOn(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"m2",
+			"prompt":"do m2",
+			"project":"myapp",
+			"base_branch":"argus/m1",
+			"depends_on":["abc123"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	body := cr.Content[0].Text
+	testutil.Contains(t, body, "**Status**: pending")
+	testutil.Contains(t, body, "**Base branch**: argus/m1")
+	testutil.Contains(t, body, "**Depends on**: abc123")
+	testutil.Contains(t, body, "depswatcher will auto-start")
+}
+
+// TestTaskCreate_DependsOnUnknownIDRejected guards the validation step. An
+// orphaned blocked-pending row would otherwise pile up in the DB forever.
+func TestTaskCreate_DependsOnUnknownIDRejected(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"m2",
+			"prompt":"x",
+			"project":"myapp",
+			"depends_on":["does-not-exist"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "unknown task")
+}
+
+// TestTaskCreate_DependsOnEmptyStringRejected covers the trim guard. JSON
+// passing ["   "] would otherwise spawn an orphaned blocked task.
+func TestTaskCreate_DependsOnEmptyStringRejected(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"m2","prompt":"x","project":"myapp",
+			"depends_on":["   "]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "empty task ID")
+}
+
+// TestTaskCreate_IdempotencyError covers the default (name, project)
+// collision behaviour: an existing non-archived task with the same slug
+// causes an error instead of a duplicate. The orchestrator gets the
+// existing task's ID in the error message.
+func TestTaskCreate_IdempotencyError(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"fix-login",
+			"prompt":"reuse?",
+			"project":"myapp"
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "already exists")
+	testutil.Contains(t, cr.Content[0].Text, "abc123")
+}
+
+// TestTaskCreate_UpsertReturnsExisting covers the explicit upsert path. The
+// orchestrator that restarts mid-loop sets upsert:true to gracefully reuse
+// a task it created on the previous run.
+func TestTaskCreate_UpsertReturnsExisting(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"fix-login",
+			"prompt":"reuse",
+			"project":"myapp",
+			"upsert":true
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	testutil.Contains(t, cr.Content[0].Text, "Task already exists (upsert)")
+	testutil.Contains(t, cr.Content[0].Text, "abc123")
+}
+
+// TestTaskCreate_AutoNameSkipsIdempotency confirms the auto-name path
+// (no `name` arg) does NOT trigger the duplicate check — prompts are
+// long enough that collisions are coincidental, not orchestrator restarts.
+func TestTaskCreate_AutoNameSkipsIdempotency(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"prompt":"fix-login",
+			"project":"myapp"
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	testutil.Contains(t, cr.Content[0].Text, "**ID**: new-")
+}
+
+// TestTaskSetResult_RoundTrip covers the happy path: write an object, read
+// it back via task_get with the result block surfaced.
+func TestTaskSetResult_RoundTrip(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	// Write a result.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_set_result",
+		Arguments: json.RawMessage(`{
+			"id":"abc123",
+			"result":{"pr_url":"https://x/pull/1","milestone":"M1"}
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	testutil.Contains(t, cr.Content[0].Text, "Result stored")
+
+	// task_get should now surface the result block.
+	getResp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_get",
+		Arguments: json.RawMessage(`{"id":"abc123"}`),
+	})
+	body := callResult(t, getResp).Content[0].Text
+	testutil.Contains(t, body, "**Result**")
+	testutil.Contains(t, body, `"pr_url":"https://x/pull/1"`)
+}
+
+// TestTaskSetResult_RejectsNonObject covers the type guard: arrays,
+// scalars, and bare strings make the orchestrator contract ambiguous.
+func TestTaskSetResult_RejectsNonObject(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_set_result",
+		Arguments: json.RawMessage(`{
+			"id":"abc123",
+			"result":[1,2,3]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "must be a JSON object")
+}
+
+// TestTaskSetResult_MissingResult covers the required-field guard.
+func TestTaskSetResult_MissingResult(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_set_result",
+		Arguments: json.RawMessage(`{"id":"abc123"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "result is required")
+}
+
+// TestTaskSetResult_TooLarge enforces the 64 KiB cap.
+func TestTaskSetResult_TooLarge(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	// Build a 100 KiB payload by stuffing a single field with padding.
+	pad := strings.Repeat("a", maxTaskResultBytes+8)
+	args := fmt.Sprintf(`{"id":"abc123","result":{"x":%q}}`, pad)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_set_result",
+		Arguments: json.RawMessage(args),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "exceeds")
+}
+
+// TestTaskSetResult_DBError covers the SetResult error branch.
+func TestTaskSetResult_DBError(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{
+		mockTaskDB:   mockTaskDB{tasks: []*model.Task{{ID: "t1", Name: "x"}}},
+		setResultErr: errors.New("boom"),
+	}
+	creator := func(_ TaskCreateInput) (*model.Task, error) { return nil, nil }
+	s.SetTaskManager(creator, taskDB, &mockStopper{})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_set_result",
+		Arguments: json.RawMessage(`{"id":"t1","result":{"x":1}}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "Failed to set result")
+}
+
+// TestTaskGet_BlockedByRendering covers the unresolvedDeps display. A
+// pending task whose dep is in_progress should render Blocked by: <dep>.
+func TestTaskGet_BlockedByRendering(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	// Add a child blocked on the in-progress task abc123.
+	taskDB.tasks = append(taskDB.tasks, &model.Task{
+		ID:        "child",
+		Name:      "child",
+		Status:    model.StatusPending,
+		Project:   "myapp",
+		DependsOn: []string{"abc123"},
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_get",
+		Arguments: json.RawMessage(`{"id":"child"}`),
+	})
+	body := callResult(t, resp).Content[0].Text
+	testutil.Contains(t, body, "**Depends on**: abc123")
+	testutil.Contains(t, body, "**Blocked by**: abc123")
+}
+
+// TestTaskGet_MissingDepRendering covers the gone-dep label. The
+// orchestrator must see "(missing)" so it can intervene.
+func TestTaskGet_MissingDepRendering(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	taskDB.tasks = append(taskDB.tasks, &model.Task{
+		ID:        "lonely",
+		Name:      "lonely",
+		Status:    model.StatusPending,
+		DependsOn: []string{"deleted"},
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_get",
+		Arguments: json.RawMessage(`{"id":"lonely"}`),
+	})
+	body := callResult(t, resp).Content[0].Text
+	testutil.Contains(t, body, "deleted (missing)")
+}
+
+// TestTaskCreate_RejectsArchivedDep covers the validation fix: an archived
+// dep is rejected at create time so the dependent isn't permanently blocked
+// on a row that will never complete.
+func TestTaskCreate_RejectsArchivedDep(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	// Archive abc123 so any dep on it is rejected.
+	for _, t := range taskDB.tasks {
+		if t.ID == "abc123" {
+			t.Archived = true
+		}
+	}
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"m2","prompt":"x","project":"myapp",
+			"depends_on":["abc123"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "archived task")
+}
+
+// TestTaskCreate_DependsOnCapEnforced covers the maxDependsOnEntries guard.
+// A misbehaving orchestrator submitting tens of thousands of IDs would
+// otherwise force one DB Get per entry at create time and a linear scan
+// on every task_get afterwards.
+func TestTaskCreate_DependsOnCapEnforced(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	// Build an over-cap depends_on array.
+	deps := make([]string, maxDependsOnEntries+1)
+	for i := range deps {
+		deps[i] = fmt.Sprintf("d%d", i)
+	}
+	depsJSON, _ := json.Marshal(deps)
+	args := fmt.Sprintf(`{"name":"m","prompt":"x","project":"myapp","depends_on":%s}`, string(depsJSON))
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(args),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "exceeds")
+}
+
+// TestTaskCreate_DetectsCycle ensures a pre-existing cycle reachable from
+// the new task's deps is rejected. The cycle here is A -> B -> A in the
+// stored graph; creating a new task that depends on A would inherit the
+// deadlock. Real DBs shouldn't contain cycles, but this guards against
+// direct DB tampering or future task-update paths.
+func TestTaskCreate_DetectsCycle(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	// Install A -> B -> A in the mock store.
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "cycleA", Name: "ca", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"cycleB"}},
+		&model.Task{ID: "cycleB", Name: "cb", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"cycleA"}},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"myapp",
+			"depends_on":["cycleA"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "cycle")
+}
+
+// TestTaskCreate_NoCycleNoFalsePositive confirms a healthy linear DAG
+// (A <- B <- C) passes the cycle check. Creating a new task that depends
+// on C inherits the chain without forming a cycle.
+func TestTaskCreate_NoCycleNoFalsePositive(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "linA", Name: "la", Status: model.StatusComplete, Project: "myapp"},
+		&model.Task{ID: "linB", Name: "lb", Status: model.StatusComplete, Project: "myapp", DependsOn: []string{"linA"}},
+		&model.Task{ID: "linC", Name: "lc", Status: model.StatusComplete, Project: "myapp", DependsOn: []string{"linB"}},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"linD","prompt":"x","project":"myapp",
+			"depends_on":["linC"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected cycle false-positive: %s", cr.Content[0].Text)
+	}
+}
+
+// TestTaskCreate_IdempotencyClosesTOCTOURace exercises the in-flight
+// duplicate-key guard. The mock creator blocks until released; the test
+// fires two concurrent calls with the same (name, project) and expects
+// the second to fail because the first has reserved the key in
+// creatingKeys before its slow create completes.
+func TestTaskCreate_IdempotencyClosesTOCTOURace(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	stopper := &mockStopper{}
+	gate := make(chan struct{})
+	creator := func(input TaskCreateInput) (*model.Task, error) {
+		<-gate
+		task := &model.Task{ID: "winner", Name: input.Name, Status: model.StatusInProgress, Project: input.Project}
+		taskDB.tasks = append(taskDB.tasks, task)
+		return task, nil
+	}
+	s.SetTaskManager(creator, taskDB, stopper)
+
+	first := make(chan *Response, 1)
+	go func() {
+		first <- doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "task_create",
+			Arguments: json.RawMessage(`{"name":"dup","prompt":"x","project":"p"}`),
+		})
+	}()
+
+	// Spin briefly to give the first request time to reserve the key,
+	// then fire the second with the same key. The second must error out.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		// Peek under the lock without blocking the creator goroutine.
+		s.createMu.Lock()
+		held := s.creatingKeys["1:p|3:dup"]
+		s.createMu.Unlock()
+		if held {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	second := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name":"dup","prompt":"x","project":"p"}`),
+	})
+	cr := callResult(t, second)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "already being created")
+
+	close(gate)
+	<-first
+}
+
+// TestTaskCreate_DetectsSelfLoop covers a one-node cycle (a persisted task
+// whose DependsOn includes its own ID). The new task depends on that
+// self-referencing task; detectCycle must return the cycle.
+func TestTaskCreate_DetectsSelfLoop(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "selfX", Name: "x", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"selfX"}},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"myapp",
+			"depends_on":["selfX"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "cycle")
+	testutil.Contains(t, cr.Content[0].Text, "selfX -> selfX")
+}
+
+// TestTaskCreate_DetectsThreeNodeCycle exercises the multi-hop case
+// (A -> B -> C -> A) so the path-rendering walks more than one frame.
+func TestTaskCreate_DetectsThreeNodeCycle(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "n3A", Name: "a", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"n3B"}},
+		&model.Task{ID: "n3B", Name: "b", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"n3C"}},
+		&model.Task{ID: "n3C", Name: "c", Status: model.StatusInProgress, Project: "myapp", DependsOn: []string{"n3A"}},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"myapp",
+			"depends_on":["n3A"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "n3A -> n3B -> n3C -> n3A")
+}
+
+// TestTaskCreate_DiamondDAGNoFalsePositive ensures a diamond shape
+// (A -> {B, C}, B -> D, C -> D) doesn't mistake the shared descendant D
+// for a cycle. The `visited` short-circuit prevents D from being walked
+// twice.
+func TestTaskCreate_DiamondDAGNoFalsePositive(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "dmA", Name: "a", Status: model.StatusComplete, Project: "myapp", DependsOn: []string{"dmB", "dmC"}},
+		&model.Task{ID: "dmB", Name: "b", Status: model.StatusComplete, Project: "myapp", DependsOn: []string{"dmD"}},
+		&model.Task{ID: "dmC", Name: "c", Status: model.StatusComplete, Project: "myapp", DependsOn: []string{"dmD"}},
+		&model.Task{ID: "dmD", Name: "d", Status: model.StatusComplete, Project: "myapp"},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"myapp",
+			"depends_on":["dmA"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("diamond DAG falsely flagged as cycle: %s", cr.Content[0].Text)
+	}
+}
+
+// TestDetectCycle_CapExceededRejects exercises the visit-budget guard.
+// Build a graph just over maxDepGraphTraversal nodes deep so a single
+// dfs from one direct dep exhausts the cap. The caller MUST refuse the
+// create — silently allowing it would let a pathological graph bypass
+// the cycle gate.
+func TestDetectCycle_CapExceededRejects(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	creator := func(input TaskCreateInput) (*model.Task, error) {
+		return &model.Task{ID: "child", Name: input.Name, Status: model.StatusInProgress}, nil
+	}
+	s.SetTaskManager(creator, taskDB, &mockStopper{})
+
+	// A linear chain of (cap + 10) nodes — each task depends on the next.
+	// Direct dep is "n0"; n_k depends on n_{k+1}.
+	chainLen := maxDepGraphTraversal + 10
+	for i := 0; i < chainLen; i++ {
+		t := &model.Task{
+			ID:     fmt.Sprintf("n%d", i),
+			Name:   fmt.Sprintf("n%d", i),
+			Status: model.StatusComplete,
+		}
+		if i < chainLen-1 {
+			t.DependsOn = []string{fmt.Sprintf("n%d", i+1)}
+		}
+		taskDB.tasks = append(taskDB.tasks, t)
+	}
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"p",
+			"depends_on":["n0"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "validation cap")
+}
+
+// TestDetectCycle_VisitBudgetDoesNotPreemptCycle constructs a graph where
+// a true cycle exists EXACTLY at the visit budget boundary, then verifies
+// the cycle is still detected. This guards against a regression where
+// `visits++` runs before the inStack check and a cycle on the cap-th call
+// is suppressed by the budget exhaustion path.
+func TestDetectCycle_VisitBudgetDoesNotPreemptCycle(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	creator := func(input TaskCreateInput) (*model.Task, error) {
+		return &model.Task{ID: "child", Name: input.Name, Status: model.StatusInProgress}, nil
+	}
+	s.SetTaskManager(creator, taskDB, &mockStopper{})
+
+	// Long chain that closes into a cycle. With ~maxDepGraphTraversal-1
+	// distinct nodes plus a back-edge to the head, the cycle is reached
+	// just before the budget is exhausted.
+	chainLen := maxDepGraphTraversal - 1
+	for i := 0; i < chainLen; i++ {
+		next := fmt.Sprintf("c%d", (i+1)%chainLen) // c_{chainLen-1} loops to c0
+		taskDB.tasks = append(taskDB.tasks, &model.Task{
+			ID:        fmt.Sprintf("c%d", i),
+			Name:      fmt.Sprintf("c%d", i),
+			Status:    model.StatusComplete,
+			DependsOn: []string{next},
+		})
+	}
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"victim","prompt":"x","project":"p",
+			"depends_on":["c0"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	// The error should be a cycle, not "validation cap" — the cycle is
+	// reachable before the budget runs out.
+	testutil.Contains(t, cr.Content[0].Text, "cycle")
+}
+
+// TestTaskCreate_CreatingKeysCleanedUpAfterSuccess confirms the defer
+// fires the delete on the happy path, so a same-key request issued AFTER
+// the first completes is gated only by the DB existing-row check (which
+// returns the row), not by a leaked in-flight reservation.
+func TestTaskCreate_CreatingKeysCleanedUpAfterSuccess(t *testing.T) {
+	s, _, _ := testServerWithTasks()
+
+	// First create succeeds; testServerWithTasks's creator returns a real
+	// task and appends to taskDB. The test data has no "freshSlug" name,
+	// so the create proceeds without the idempotency path.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name":"freshSlug","prompt":"x","project":"myapp"}`),
+	})
+	if cr := callResult(t, resp); cr.IsError {
+		t.Fatalf("first create failed: %s", cr.Content[0].Text)
+	}
+
+	// creatingKeys must have released the slot.
+	s.createMu.Lock()
+	held := s.creatingKeys["5:myapp|9:freshSlug"]
+	s.createMu.Unlock()
+	if held {
+		t.Fatalf("creatingKeys leaked the slot after successful create")
+	}
+
+	// Second call with the same key now hits the DB duplicate check
+	// (returns "already exists"), not the in-flight reservation error.
+	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name":"freshSlug","prompt":"x","project":"myapp"}`),
+	})
+	cr2 := callResult(t, resp2)
+	testutil.Equal(t, cr2.IsError, true)
+	testutil.Contains(t, cr2.Content[0].Text, "already exists")
+}
+
+// TestDetectCycle_CapExhaustionStillRefusesEvenWithSecondDep documents
+// the safety property reviewers Alpha and Bravo were concerned about:
+// when the first dep's subtree exhausts the visit budget AND a second dep
+// in the same call references a graph whose cycle would be reachable via
+// nodes the budget couldn't fully explore, the function MUST still refuse
+// the create. We don't care whether the refusal cites "cycle" or
+// "validation cap" — only that we don't silently allow a graph that
+// hasn't been verified acyclic.
+func TestDetectCycle_CapExhaustionStillRefusesEvenWithSecondDep(t *testing.T) {
+	s := testServer()
+	taskDB := &mockTaskDB{}
+	creator := func(input TaskCreateInput) (*model.Task, error) {
+		return &model.Task{ID: "child", Name: input.Name, Status: model.StatusInProgress}, nil
+	}
+	s.SetTaskManager(creator, taskDB, &mockStopper{})
+
+	// First dep "huge0" anchors a chain longer than the cap.
+	chainLen := maxDepGraphTraversal + 10
+	for i := 0; i < chainLen; i++ {
+		task := &model.Task{
+			ID:     fmt.Sprintf("huge%d", i),
+			Name:   fmt.Sprintf("huge%d", i),
+			Status: model.StatusComplete,
+		}
+		if i < chainLen-1 {
+			task.DependsOn = []string{fmt.Sprintf("huge%d", i+1)}
+		}
+		taskDB.tasks = append(taskDB.tasks, task)
+	}
+	// Second dep "smallCycleA" anchors a small two-node cycle.
+	taskDB.tasks = append(taskDB.tasks,
+		&model.Task{ID: "smallCycleA", Name: "sa", Status: model.StatusComplete, DependsOn: []string{"smallCycleB"}},
+		&model.Task{ID: "smallCycleB", Name: "sb", Status: model.StatusComplete, DependsOn: []string{"smallCycleA"}},
+	)
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "task_create",
+		Arguments: json.RawMessage(`{
+			"name":"v","prompt":"x","project":"p",
+			"depends_on":["huge0","smallCycleA"]
+		}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	// Accept either refusal mode — the safety property is that the create
+	// is refused, not which specific error string fires.
+	body := cr.Content[0].Text
+	if !strings.Contains(body, "validation cap") && !strings.Contains(body, "cycle") {
+		t.Fatalf("expected refusal mentioning validation cap or cycle; got: %s", body)
+	}
+}
+
+// TestTaskCreate_LookupErrorPropagates covers the lookupExistingTaskLocked
+// error branch: when FindByNameProject returns a DB error (e.g., SQLite
+// I/O failure mid-write), the create must error out cleanly rather than
+// silently bypassing the idempotency gate.
+func TestTaskCreate_LookupErrorPropagates(t *testing.T) {
+	s := testServer()
+	taskDB := &errTaskDBWrapper{findByNameProjectErr: errors.New("disk on fire")}
+	creator := func(_ TaskCreateInput) (*model.Task, error) {
+		t.Fatalf("creator must NOT be invoked when lookup fails")
+		return nil, nil
+	}
+	s.SetTaskManager(creator, taskDB, &mockStopper{})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name":"x","prompt":"p","project":"p"}`),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "lookup existing task")
+	testutil.Contains(t, cr.Content[0].Text, "disk on fire")
+}

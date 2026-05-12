@@ -8,20 +8,25 @@ func (d *DB) createTables() error {
 			version INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS tasks (
-			id         TEXT PRIMARY KEY,
-			name       TEXT NOT NULL,
-			status     TEXT NOT NULL DEFAULT 'pending',
-			project    TEXT NOT NULL DEFAULT '',
-			branch     TEXT NOT NULL DEFAULT '',
-			prompt     TEXT NOT NULL DEFAULT '',
-			backend    TEXT NOT NULL DEFAULT '',
-			worktree   TEXT NOT NULL DEFAULT '',
-			agent_pid  INTEGER NOT NULL DEFAULT 0,
-			session_id TEXT NOT NULL DEFAULT '',
-			sandboxed  INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL,
-			started_at TEXT NOT NULL DEFAULT '',
-			ended_at   TEXT NOT NULL DEFAULT ''
+			id          TEXT PRIMARY KEY,
+			name        TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'pending',
+			project     TEXT NOT NULL DEFAULT '',
+			branch      TEXT NOT NULL DEFAULT '',
+			prompt      TEXT NOT NULL DEFAULT '',
+			backend     TEXT NOT NULL DEFAULT '',
+			worktree    TEXT NOT NULL DEFAULT '',
+			agent_pid   INTEGER NOT NULL DEFAULT 0,
+			session_id  TEXT NOT NULL DEFAULT '',
+			sandboxed   INTEGER NOT NULL DEFAULT 0,
+			archived    INTEGER NOT NULL DEFAULT 0,
+			pinned      INTEGER NOT NULL DEFAULT 0,
+			base_branch TEXT NOT NULL DEFAULT '',
+			depends_on  TEXT NOT NULL DEFAULT '',
+			result      TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL,
+			started_at  TEXT NOT NULL DEFAULT '',
+			ended_at    TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS projects (
 			name                TEXT PRIMARY KEY,
@@ -67,6 +72,24 @@ func (d *DB) createTables() error {
 
 	// Add sandboxed column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
+
+	// Orchestration columns for stacked-PR / DAG workflows: base_branch
+	// records the start point so the worktree's history can be inspected
+	// without re-deriving it; depends_on holds a JSON array of task IDs that
+	// must reach status=complete before this task's session is started; result
+	// holds an opaque JSON blob the agent writes via task_set_result for the
+	// orchestrator to read. All three are idempotent ADDs.
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN depends_on  TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN result      TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Index for FindByNameProject (task_create idempotency check inside
+	// createMu). The query filters by all three columns; SQLite uses a
+	// partial-prefix on (name, project) and tests archived in-memory if
+	// the prefix is selective enough. At Argus's scale a full scan would
+	// be fine, but the comment in mcp.TaskStore.FindByNameProject claims
+	// "indexed SQL query" — this is what makes that claim true.
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_name_project ON tasks(name, project, archived)`) //nolint:errcheck
 
 	// Drop legacy columns and config from removed features. SQLite supports
 	// DROP COLUMN since 3.35; the statements are idempotent and safe on fresh

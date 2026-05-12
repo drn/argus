@@ -325,6 +325,16 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = task.Worktree
+	// Surface the task ID to the agent process so MCP sub-tasks (task_complete,
+	// task_set_result, argus_clipboard_set, …) can target it explicitly
+	// instead of resolving by cwd. Inherit the parent's env so PATH, HOME,
+	// and friends survive; appending wins over earlier duplicates per
+	// exec.Cmd.Env semantics. Empty task.ID can only happen pre-Add (which
+	// CreateAndStart guards against), but we skip the export defensively
+	// rather than emit a literal "ARGUS_TASK_ID=" with no value.
+	if task.ID != "" {
+		cmd.Env = append(os.Environ(), "ARGUS_TASK_ID="+task.ID)
+	}
 
 	committed = true
 	return cmd, sandboxCleanup, nil

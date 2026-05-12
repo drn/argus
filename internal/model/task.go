@@ -7,23 +7,36 @@ import (
 )
 
 // Task represents a unit of work to be completed by an LLM agent.
+//
+// BaseBranch, DependsOn, and Result are the stacked-PR / DAG orchestration
+// fields. BaseBranch records the start point passed to git worktree add (empty
+// means the project default). DependsOn is the list of task IDs that must
+// reach status=complete before this task's session is auto-started (empty
+// means start immediately, the legacy single-task behaviour). Result is an
+// opaque JSON string the agent writes via the task_set_result MCP tool; the
+// daemon never inspects it. By convention, agents that fail should write
+// {"failed": true, "reason": "..."} so the orchestrator can keep the
+// dependent stack blocked instead of cascading further work.
 type Task struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    Status    `json:"status"`
-	Project   string    `json:"project"`
-	Branch    string    `json:"branch"`
-	Prompt    string    `json:"prompt"`
-	Backend   string    `json:"backend,omitempty"`
-	Worktree  string    `json:"worktree,omitempty"`
-	AgentPID  int       `json:"agent_pid,omitempty"`
-	SessionID string    `json:"session_id,omitempty"`
-	Sandboxed bool      `json:"sandboxed,omitempty"`
-	Archived  bool      `json:"archived,omitempty"`
-	Pinned    bool      `json:"pinned,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	EndedAt   time.Time `json:"ended_at,omitempty"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Status     Status    `json:"status"`
+	Project    string    `json:"project"`
+	Branch     string    `json:"branch"`
+	Prompt     string    `json:"prompt"`
+	Backend    string    `json:"backend,omitempty"`
+	Worktree   string    `json:"worktree,omitempty"`
+	AgentPID   int       `json:"agent_pid,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
+	Sandboxed  bool      `json:"sandboxed,omitempty"`
+	Archived   bool      `json:"archived,omitempty"`
+	Pinned     bool      `json:"pinned,omitempty"`
+	BaseBranch string    `json:"base_branch,omitempty"`
+	DependsOn  []string  `json:"depends_on,omitempty"`
+	Result     string    `json:"result,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	EndedAt    time.Time `json:"ended_at,omitempty"`
 }
 
 // Elapsed returns the duration since the task was started.

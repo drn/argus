@@ -21,6 +21,7 @@ import (
 	"github.com/drn/argus/internal/api"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/depswatcher"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -67,6 +68,7 @@ type Daemon struct {
 	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
+	deps      *depswatcher.Watcher // depends_on auto-resolver; always started
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
@@ -306,7 +308,12 @@ func (d *Daemon) Serve(sockPath string) error {
 		// already meaningful; no auto-rename. backend is the per-schedule
 		// override (sched.Backend); empty string falls back to the configured
 		// default inside agent.CreateAndStart.
-		return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, false)
+		return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+			Name:    name,
+			Prompt:  prompt,
+			Project: project,
+			Backend: backend,
+		})
 	})
 	if pushMgr != nil {
 		// Push when a scheduled task fires from the cron tick. RunNow
@@ -333,12 +340,36 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}()
 
+	// Start the depends_on watcher. Always-on — empty pending pool is a
+	// no-op tick. Push fires the same channel as the scheduler so the
+	// orchestrator user sees "stacked task started" notifications without
+	// needing to keep the PWA open.
+	dw := depswatcher.New(d.db, d.runner)
+	if pushMgr != nil {
+		dw.SetOnStart(func(task *model.Task) {
+			name := task.Name
+			if name == "" {
+				name = task.ID
+			}
+			pushMgr.Notify("", name, "Blocked task started (deps resolved)", task.ID)
+		})
+	}
+	d.deps = dw
+	go dw.Start()
+
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
 		mcpSrv.SetTaskManager(
-			func(name, prompt, project string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, "", autoName)
+			func(input mcp.TaskCreateInput) (*model.Task, error) {
+				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+					Name:       input.Name,
+					Prompt:     input.Prompt,
+					Project:    input.Project,
+					AutoName:   input.AutoName,
+					BaseBranch: input.BaseBranch,
+					DependsOn:  input.DependsOn,
+				})
 			},
 			d.db,
 			d.runner,
@@ -393,7 +424,13 @@ func (d *Daemon) Serve(sockPath string) error {
 			slog.Error("api token error", "err", err)
 		} else {
 			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend string, autoName bool) (*model.Task, error) {
-				return HeadlessCreateTask(d.db, d.runner, name, prompt, project, backend, autoName)
+				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+					Name:     name,
+					Prompt:   prompt,
+					Project:  project,
+					Backend:  backend,
+					AutoName: autoName,
+				})
 			}, pushMgr)
 			apiSrv.SetScheduler(sch)
 			apiSrv.SetClipboard(d.clipboard)
@@ -527,6 +564,11 @@ func (d *Daemon) cleanup() {
 	// Stop the scheduler if running.
 	if d.scheduler != nil {
 		d.scheduler.Stop()
+	}
+
+	// Stop the depends_on watcher if running.
+	if d.deps != nil {
+		d.deps.Stop()
 	}
 
 	// Stop the KB indexer if running.

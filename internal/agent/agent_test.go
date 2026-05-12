@@ -182,6 +182,48 @@ func TestBuildCmd(t *testing.T) {
 	}
 }
 
+// TestBuildCmd_ExportsTaskID confirms ARGUS_TASK_ID lands in the spawned
+// shell's environment. Orchestration sub-tasks rely on this to call
+// task_set_result(id: ENV) without scraping cwd.
+func TestBuildCmd_ExportsTaskID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{ID: "task-id-42", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, kv := range cmd.Env {
+		if kv == "ARGUS_TASK_ID=task-id-42" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ARGUS_TASK_ID=task-id-42 in cmd.Env; got %v", cmd.Env)
+	}
+}
+
+// TestBuildCmd_NoEnvOverrideWhenIDEmpty defends the defensive skip: a task
+// row pre-Add has no ID, and emitting a literal "ARGUS_TASK_ID=" would be
+// worse than not exporting at all. CreateAndStart guards against this in
+// practice but the contract holds either way.
+func TestBuildCmd_NoEnvOverrideWhenIDEmpty(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range cmd.Env {
+		if kv == "ARGUS_TASK_ID=" || kv == "ARGUS_TASK_ID" {
+			t.Fatalf("did not expect empty ARGUS_TASK_ID export; got %v", cmd.Env)
+		}
+	}
+}
+
 func TestBuildCmd_WithProject(t *testing.T) {
 	cfg := testConfig()
 	wt := t.TempDir()

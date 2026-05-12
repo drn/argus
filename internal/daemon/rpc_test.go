@@ -12,6 +12,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/depswatcher"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -519,7 +520,12 @@ func TestHeadlessCreateTask(t *testing.T) {
 	testutil.NoError(t, d.db.SetConfigValue("defaults.backend", "test"))
 	testutil.NoError(t, d.db.SetProject("proj", config.Project{Path: repo, Branch: "HEAD"}))
 
-	task, err := HeadlessCreateTask(d.db, d.runner, "my-task", "my prompt", "proj", "test", false)
+	task, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name:    "my-task",
+		Prompt:  "my prompt",
+		Project: "proj",
+		Backend: "test",
+	})
 	testutil.NoError(t, err)
 	testutil.NotNil(t, task)
 	testutil.Equal(t, task.Project, "proj")
@@ -536,6 +542,149 @@ func TestHeadlessCreateTask(t *testing.T) {
 	}
 }
 
+// TestHeadlessCreateTask_StackedDependsOn covers the full orchestrator flow:
+// create A on a base branch, create B with depends_on=[A.ID] and B branched
+// off A's branch. Until A is marked complete, B stays pending and no agent
+// session starts. The depswatcher (not exercised here — that's covered in
+// internal/depswatcher) is the piece that brings B live.
+func TestHeadlessCreateTask_StackedDependsOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repo := t.TempDir()
+	mustGit(t, repo, "init", "-q")
+	mustGit(t, repo, "config", "user.email", "t@t")
+	mustGit(t, repo, "config", "user.name", "T")
+	testutil.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi"), 0o644))
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-q", "-m", "init")
+
+	d, _ := testDaemon(t)
+	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "echo hello"}))
+	testutil.NoError(t, d.db.SetConfigValue("defaults.backend", "test"))
+	testutil.NoError(t, d.db.SetProject("proj", config.Project{Path: repo, Branch: "HEAD"}))
+
+	// Task A: created on HEAD, runs immediately.
+	taskA, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name:    "m1",
+		Prompt:  "first milestone",
+		Project: "proj",
+		Backend: "test",
+	})
+	testutil.NoError(t, err)
+	testutil.NotNil(t, taskA)
+	testutil.Equal(t, taskA.Status, model.StatusInProgress)
+	testutil.Equal(t, taskA.BaseBranch, "HEAD")
+
+	// Task B: blocked on A, branched off A's own branch (stacked PR shape).
+	taskB, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name:       "m2",
+		Prompt:     "second milestone",
+		Project:    "proj",
+		Backend:    "test",
+		BaseBranch: taskA.Branch,
+		DependsOn:  []string{taskA.ID},
+	})
+	testutil.NoError(t, err)
+	testutil.NotNil(t, taskB)
+	// Critical contract: B must NOT have started even though the dep is
+	// already running. The watcher only starts on dep=complete.
+	testutil.Equal(t, taskB.Status, model.StatusPending)
+	testutil.Equal(t, taskB.BaseBranch, taskA.Branch)
+	testutil.DeepEqual(t, taskB.DependsOn, []string{taskA.ID})
+	if taskB.AgentPID != 0 {
+		t.Fatalf("expected no agent PID for blocked task; got %d", taskB.AgentPID)
+	}
+
+	// Both worktrees should exist on disk — DependsOn doesn't defer the
+	// worktree, only the agent process.
+	for _, task := range []*model.Task{taskA, taskB} {
+		if _, statErr := os.Stat(task.Worktree); statErr != nil {
+			t.Fatalf("expected worktree %s to exist: %v", task.Worktree, statErr)
+		}
+	}
+
+	// Wait for task A's echo session to exit; status flips back to pending
+	// because the runner's exit callback in the test daemon doesn't
+	// auto-advance to complete. Manually flip both to assert the watcher
+	// is the only path that brings B live — done in a separate test in
+	// internal/depswatcher which exercises the tick logic directly.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fresh, _ := d.db.Get(taskA.ID)
+		if fresh != nil && fresh.Status != model.StatusInProgress {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestHeadlessCreateTask_StackUnblocksViaWatcher is the full happy-path
+// integration test: create A on HEAD, create B with depends_on=[A] and a
+// base_branch derived from A, flip A to Complete, run one depswatcher
+// tick against the REAL runner, and confirm B transitions from Pending
+// to InProgress with a live PID. depswatcher unit tests use a stub
+// provider; this test catches plumbing bugs in BuildCmd / runner.Start
+// that the stub bypasses (e.g., ARGUS_TASK_ID export, worktree dir
+// resolution, sandbox wrap).
+func TestHeadlessCreateTask_StackUnblocksViaWatcher(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	repo := t.TempDir()
+	mustGit(t, repo, "init", "-q")
+	mustGit(t, repo, "config", "user.email", "t@t")
+	mustGit(t, repo, "config", "user.name", "T")
+	testutil.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("hi"), 0o644))
+	mustGit(t, repo, "add", ".")
+	mustGit(t, repo, "commit", "-q", "-m", "init")
+
+	d, _ := testDaemon(t)
+	testutil.NoError(t, d.db.SetBackend("test", config.Backend{Command: "sleep 30"}))
+	testutil.NoError(t, d.db.SetConfigValue("defaults.backend", "test"))
+	testutil.NoError(t, d.db.SetProject("proj", config.Project{Path: repo, Branch: "HEAD"}))
+
+	taskA, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name: "m1", Prompt: "p", Project: "proj", Backend: "test",
+	})
+	testutil.NoError(t, err)
+	taskB, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name: "m2", Prompt: "p", Project: "proj", Backend: "test",
+		BaseBranch: taskA.Branch, DependsOn: []string{taskA.ID},
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, taskB.Status, model.StatusPending)
+
+	// Flip A to Complete so the watcher considers B unblocked. Done by
+	// direct DB write to skip needing the agent to call task_complete.
+	taskA.SetStatus(model.StatusComplete)
+	testutil.NoError(t, d.db.Update(taskA))
+
+	w := depswatcher.New(d.db, d.runner)
+	w.SetInterval(20 * time.Millisecond)
+	go w.Start()
+	t.Cleanup(w.Stop)
+
+	// The watcher starts B's session; depending on how the test backend
+	// command exits, B may already have flipped to complete by the time
+	// we poll. So gate on StartedAt + AgentPID — the durable evidence the
+	// watcher actually ran StartPendingBlocked through a real Runner.
+	deadline := time.Now().Add(5 * time.Second)
+	var freshB *model.Task
+	for time.Now().Before(deadline) {
+		freshB, _ = d.db.Get(taskB.ID)
+		if freshB != nil && !freshB.StartedAt.IsZero() && freshB.AgentPID != 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if freshB == nil || freshB.StartedAt.IsZero() || freshB.AgentPID == 0 {
+		t.Fatalf("expected watcher to start B (StartedAt set + AgentPID set); got %+v", freshB)
+	}
+
+	// Stop any sessions still alive so the test cleanup doesn't leak.
+	_ = d.runner.Stop(taskA.ID)
+	_ = d.runner.Stop(taskB.ID)
+}
+
 // TestHeadlessCreateTask_MissingProject covers the error path where project
 // is not configured — exercises HeadlessCreateTask but the failure propagates
 // from CreateAndStart.
@@ -543,7 +692,11 @@ func TestHeadlessCreateTask_MissingProject(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	d, _ := testDaemon(t)
-	task, err := HeadlessCreateTask(d.db, d.runner, "x", "p", "no-such-project", "", false)
+	task, err := HeadlessCreateTask(d.db, d.runner, HeadlessInput{
+		Name:    "x",
+		Prompt:  "p",
+		Project: "no-such-project",
+	})
 	testutil.Error(t, err)
 	testutil.Nil(t, task)
 }

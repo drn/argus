@@ -31,6 +31,15 @@ type CreateInput struct {
 	Backend    string // optional; empty = cfg.Defaults.Backend
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
+	// DependsOn is the list of task IDs that must reach status=complete
+	// before this task's agent session is started. When non-empty,
+	// CreateAndStart persists the row in Pending state and skips Step 5
+	// entirely — the worktree exists and the row is in the DB, but no
+	// process runs yet. The dependency watcher (internal/depswatcher) then
+	// auto-starts the session once every listed task reports complete.
+	// Empty / nil restores the legacy single-task behaviour: start immediately.
+	DependsOn []string
+
 	// AutoName, when true, fires a fire-and-forget Haiku rename in a
 	// background goroutine after the task is fully created. The DB write
 	// is race-guarded: it only overwrites Name if the row's current Name
@@ -171,13 +180,15 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		backend = cfg.Defaults.Backend
 	}
 	task := &model.Task{
-		Name:     finalName,
-		Status:   model.StatusPending,
-		Project:  input.Project,
-		Prompt:   prompt,
-		Backend:  backend,
-		Worktree: wtPath,
-		Branch:   branchName,
+		Name:       finalName,
+		Status:     model.StatusPending,
+		Project:    input.Project,
+		Prompt:     prompt,
+		Backend:    backend,
+		Worktree:   wtPath,
+		Branch:     branchName,
+		BaseBranch: baseBranch,
+		DependsOn:  input.DependsOn,
 	}
 	// Persist sandbox state at creation time so the display reflects the
 	// setting active when the task was launched, not the current setting.
@@ -202,6 +213,21 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		if uErr := database.Update(task); uErr != nil {
 			slog.Warn("CreateAndStart: persist session ID failed (continuing)", "id", taskID, "err", uErr)
 		}
+	}
+
+	// Step 4b: short-circuit when the task is gated on upstream deps. The
+	// worktree exists, the row is persisted, the session ID is reserved —
+	// but we don't spawn the agent until depswatcher observes every listed
+	// dep at status=complete. CreateAndStart returns (task, nil, nil) so
+	// callers (HeadlessCreateTask, MCP) get the row back without a live
+	// SessionHandle. AutoName still runs — Haiku rename does not need the
+	// agent to be alive.
+	if len(input.DependsOn) > 0 {
+		slog.Info("task created blocked on deps", "id", taskID, "name", task.Name, "deps", input.DependsOn)
+		if input.AutoName {
+			go runAutoRename(database, taskID, task.Name, input.Prompt)
+		}
+		return task, nil, nil
 	}
 
 	// Step 5: start session.
@@ -247,6 +273,67 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 	}
 
 	return task, sess, nil
+}
+
+// StartPendingBlocked launches an agent session for a task that was created
+// blocked on deps (DependsOn was non-empty at CreateAndStart time). The
+// caller — typically internal/depswatcher — confirms every dep is complete
+// before invoking this. Mirrors Steps 5 + 6 from CreateAndStart: start the
+// session, transition to InProgress, stamp StartedAt + AgentPID. On runner
+// failure the task stays in Pending so the watcher can retry on the next
+// tick. On db.Update failure (extremely rare — SQLite write error mid-call)
+// the session is live but the row still says Pending; the watcher's next
+// tick will re-enter this function, see the existing session via the
+// HasSession guard below, and only re-attempt the DB write rather than
+// spawning a duplicate process.
+//
+// Returns (sess, nil) on success or (nil, err) on failure. No worktree
+// cleanup happens on failure — the row and worktree already exist and
+// belong to the caller. nil runner is treated as a programmer error.
+func StartPendingBlocked(database *db.DB, runner SessionProvider, task *model.Task) (SessionHandle, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("StartPendingBlocked: nil runner")
+	}
+	if task == nil {
+		return nil, fmt.Errorf("StartPendingBlocked: nil task")
+	}
+	if task.Status != model.StatusPending {
+		return nil, fmt.Errorf("StartPendingBlocked: task %s already in status %s", task.ID, task.Status.String())
+	}
+
+	// Idempotency: if a previous call already spawned the session but the
+	// DB write below failed, the runner still has the session in its map.
+	// runner.Start would overwrite that slot and orphan the live process,
+	// so short-circuit to the DB-sync path instead. Cheap; HasSession is a
+	// lock-protected map lookup.
+	if runner.HasSession(task.ID) {
+		if existing := runner.Get(task.ID); existing != nil {
+			slog.Info("StartPendingBlocked: existing session found, syncing DB", "id", task.ID, "pid", existing.PID())
+			task.SetStatus(model.StatusInProgress)
+			task.AgentPID = existing.PID()
+			if uErr := database.Update(task); uErr != nil {
+				slog.Warn("StartPendingBlocked: re-sync DB failed (session still running)", "id", task.ID, "err", uErr)
+			}
+			return existing, nil
+		}
+	}
+
+	cfg := database.Config()
+
+	sess, err := runner.Start(task, cfg, 24, 80, false)
+	if err != nil {
+		return nil, fmt.Errorf("start session: %w", err)
+	}
+
+	// SetStatus(InProgress) stamps StartedAt when previously zero, which is
+	// always the case for a blocked task that has never had a session.
+	task.SetStatus(model.StatusInProgress)
+	task.AgentPID = sess.PID()
+	if uErr := database.Update(task); uErr != nil {
+		slog.Warn("StartPendingBlocked: persist InProgress failed (session is running, watcher will re-sync on next tick)", "id", task.ID, "err", uErr)
+	}
+	slog.Info("blocked task unblocked and started", "id", task.ID, "name", task.Name, "pid", sess.PID())
+	return sess, nil
 }
 
 // AttachmentsDir is the worktree-relative directory where uploaded attachments
