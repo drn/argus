@@ -21,10 +21,10 @@ type GitPanel struct {
 	// OnBranchChange fires when Draw() will paint a different rendering
 	// branch than the previous frame: the !loaded "Loading..." placeholder
 	// swap, the empty-state "Clean — no changes" swap, and any flip in the
-	// SET of non-empty sections (Files / Diff / Branch). Each branch paints
-	// different cells in the same rect; tcell's diff-based Show() can leave
-	// stale cells from the previous branch on screen under tmux/iTerm2.
-	// App wires this to forceRedraw so afterDraw runs Sync.
+	// SET of non-empty sections (Files / Diff / Branch). App wires this to
+	// forceRedraw, which is now log-only (does NOT trigger Sync) —
+	// DrawBorderedPanel's FillArea covers the inner rect every frame and
+	// tcell.Show()'s diff handles the content transition correctly.
 	// See gotchas/ui-threading.md.
 	OnBranchChange func()
 

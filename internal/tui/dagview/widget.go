@@ -28,9 +28,10 @@ type Widget struct {
 
 	// OnBranchChange fires when Draw will paint a structurally different
 	// frame than the previous one (node count, layer count, edge count, or
-	// node-status set). App wires this to forceRedraw so tcell's per-cell
-	// diff doesn't leave ghost glyphs behind. See gotchas/ui-threading.md
-	// and gotchas/dag-rendering.md.
+	// node-status set). App wires this to forceRedraw, which is now a
+	// log-only debug signal (does NOT trigger Sync) — tcell.Show()'s
+	// per-cell diff plus tview.Clear() handle the rendering. See
+	// gotchas/ui-threading.md and gotchas/dag-rendering.md.
 	OnBranchChange func()
 	lastShape      uint64
 }

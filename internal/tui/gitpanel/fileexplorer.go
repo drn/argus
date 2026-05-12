@@ -36,10 +36,11 @@ type FilePanel struct {
 	OnClick func()
 
 	// OnLayoutChange fires after buildRows when the row composition changes
-	// (directory expansion / collapse, file list update). The app wires this
-	// to forceRedraw so tcell Sync wipes ghost cells from a row shift —
-	// tview's diff-based emit leaves stale tail characters when a longer row
-	// is replaced by a shorter one. See gotchas/ui-threading.md.
+	// (directory expansion / collapse, file list update). The app wires
+	// this to forceRedraw, which is now log-only (does NOT trigger Sync).
+	// Stale tail characters from longer-row→shorter-row transitions are
+	// handled by tview.Clear() running every frame plus DrawBorderedPanel's
+	// FillArea coverage. See gotchas/ui-threading.md.
 	OnLayoutChange func()
 
 	// Last row signature; OnLayoutChange fires only when this changes.

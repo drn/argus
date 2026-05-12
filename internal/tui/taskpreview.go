@@ -44,7 +44,10 @@ type TaskPreviewPanel struct {
 	// branch swap to/from the cellCols×cellRows paint, viewport-size shifts
 	// that change the painted rect, and statusMsg changes (different
 	// length text in the centered placeholder). App wires this to
-	// forceRedraw so afterDraw runs Sync. See gotchas/ui-threading.md.
+	// forceRedraw, which is now log-only (does NOT trigger Sync) —
+	// DrawBorderedPanel's FillArea covers the inner rect every frame and
+	// tcell.Show()'s diff handles the branch transition correctly.
+	// See gotchas/ui-threading.md.
 	OnBranchChange func()
 
 	// Snapshot of last-rendered shape, used to suppress callback when a

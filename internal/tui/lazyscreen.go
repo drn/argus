@@ -7,31 +7,26 @@ import "github.com/gdamore/tcell/v2"
 // so that smoke tests can inject a SimulationScreen through the same
 // indirection production uses).
 //
-// A prior incarnation of this wrapper skipped tview's screen-wide Clear()
-// for PTY-forwarded keystrokes, shaving ~10K cell writes per keystroke.
-// That optimization was removed because it leaked stale cells whenever the
-// layout shifted between frames (resize, page swap, agent-header toggle),
-// producing ghost status bars and persistent render tearing. tcell's Show()
-// diffs cells against their last-emitted state, so a full Clear followed
-// by widgets restoring the same content emits nothing to the terminal —
-// the optimization was saving in-process cell writes, not terminal I/O.
+// A prior incarnation of this wrapper had a `skipClear` field that
+// bypassed tview's screen-wide Clear() for PTY-forwarded keystrokes —
+// removed in commit `e516ad33`. **Do NOT re-introduce skipClear or any
+// equivalent.** It silently set off a 12-commit tearing-fix cycle
+// (Mar 22 – May 12, 2026) the codebase only just dug itself out of —
+// see `context/knowledge/gotchas/ui-threading.md` for the post-mortem.
 //
-// The PollEvent override exists to recover one drift scenario the
-// OnBranchChange callback set cannot cover: a tmux pane regaining focus
-// after the user switched away. tmux may have repainted the pane from a
-// stale backing store while we were unfocused, but no layout shift
-// happened on our side — so no branch-change callback fires and afterDraw
-// has no reason to Sync. Intercepting tcell's *EventFocus and calling
-// onFocusGained lets the App set pendingSync, so the next draw (≤1s via
-// the tick loop) Syncs and clears the drift. The event itself is still
-// returned for tview to handle (tview ignores focus events but is given
-// the chance to evolve).
+// The PollEvent override exists for one specific case: tmux pane focus
+// regain after a window switch. The multiplexer may have repainted our
+// pane from a stale backing store while we were unfocused. When the
+// EventFocus(true) event arrives, we invoke onFocusGained (which the App
+// wires to a direct screen.Sync()) to repair any drift. One CSI 2J flash
+// on a rare event is the right tradeoff for guaranteed correctness. The
+// event is still returned for tview to handle (tview ignores it today).
 type lazyScreen struct {
 	tcell.Screen
 	// onFocusGained, if set, is called whenever a *tcell.EventFocus with
-	// Focused=true is observed in PollEvent. The App wires this to
-	// forceRedraw so multiplexer drift accumulated while unfocused gets
-	// cleared on the next draw cycle.
+	// Focused=true is observed in PollEvent. The App wires this to call
+	// screen.Sync() directly — repair-screen-damage per tcell's intended
+	// use of Sync (see gdamore/tcell issue #647).
 	onFocusGained func()
 }
 

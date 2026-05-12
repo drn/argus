@@ -2265,3 +2265,48 @@ func TestTcellKeyToBytes_MoreCases(t *testing.T) {
 		})
 	}
 }
+
+// recordingScreen is a tcell.Screen test double that counts Sync() calls.
+// Only Size and Sync are exercised by the tests below; the embedded
+// nil-interface Screen is unused and will panic if any other method is
+// invoked, which is the intended invariant for these tests.
+type recordingScreen struct {
+	tcell.Screen
+	w, h      int
+	syncCount int
+}
+
+func (r *recordingScreen) Size() (int, int) { return r.w, r.h }
+func (r *recordingScreen) Sync()            { r.syncCount++ }
+
+// TestApp_ForceRedrawDoesNotSync pins the post-cleanup contract: forceRedraw
+// is a log-only debug helper. It must NOT call screen.Sync() — Sync is
+// reserved for the two intentional callsites (Ctrl+L, focus regain) that
+// invoke a.screen.Sync() directly.
+//
+// This test exists specifically to catch the regression where a future
+// maintainer accidentally restores `pendingSync.Store(true)` or wires
+// forceRedraw back into a Sync-triggering path. The entire premise of the
+// May 2026 cleanup (commit c5b537b) is that forceRedraw is observational
+// only — if that premise breaks, every cursor move starts flashing again.
+//
+// See gotchas/ui-threading.md for the post-mortem.
+func TestApp_ForceRedrawDoesNotSync(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.screen = &lazyScreen{Screen: &recordingScreen{w: 80, h: 24}}
+
+	// Call forceRedraw many times with various reasons. None should reach
+	// screen.Sync() — only the two intentional direct callsites do.
+	for range 50 {
+		app.forceRedraw("test reason")
+	}
+	app.forceRedraw("another reason")
+	app.forceRedraw("yet another")
+
+	// The embedded screen is a recordingScreen wrapped by lazyScreen.
+	// Reach through to verify zero Sync calls.
+	rec := app.screen.Screen.(*recordingScreen)
+	testutil.Equal(t, rec.syncCount, 0)
+}

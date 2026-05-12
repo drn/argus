@@ -196,13 +196,13 @@ type TerminalPane struct {
 	// unified diff↔split diff), scroll-mode 0↔nonzero (live↔replay
 	// emulator), and async replay rebuild completion (fallback emulator →
 	// fresh 50K-line emulator with potentially different content at the
-	// same cell positions). Each branch paints different cells in the same
-	// rect; tcell's diff-based Show() can leave stale cells from the
-	// previous branch on screen. The app wires this to forceRedraw so
-	// afterDraw runs Sync. See gotchas/ui-threading.md.
+	// same cell positions). The app wires this to forceRedraw, which is
+	// now log-only (does NOT trigger Sync) — DrawBorderedPanel's FillArea
+	// covers the inner rect every frame and tcell.Show()'s diff handles
+	// branch transitions correctly. See gotchas/ui-threading.md.
 	//
 	// Safe to fire from any goroutine: the callback is set once in
-	// buildUI and never reassigned, and forceRedraw uses an atomic flag.
+	// buildUI and never reassigned, and forceRedraw just logs.
 	OnBranchChange func()
 }
 
@@ -525,9 +525,8 @@ func (tp *TerminalPane) consumeReplayRebuildPendingLocked() {
 	// AccelScrollUp can't clamp (no emu yet, no maxScroll), so the user
 	// can scroll past the available scrollback. Without snapping here,
 	// the cache-validity check (scrollOffset <= replayEmuMaxScroll) fails
-	// on every frame, each Draw kicks another async rebuild, and the
-	// rebuild completion fires notifyBranchChange -> screen.Sync() — the
-	// visible flicker at the top of the scrollback.
+	// on every frame and each Draw kicks another async rebuild — visible
+	// flicker at the top of the scrollback.
 	if tp.scrollOffset > tp.replayEmuMaxScroll {
 		uxlog.Log("[terminalpane] clamp scrollOffset old=%d new=%d after rebuild",
 			tp.scrollOffset, tp.replayEmuMaxScroll)

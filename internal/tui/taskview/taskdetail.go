@@ -28,8 +28,10 @@ type TaskDetailPanel struct {
 	// each gated on field presence), status string width change (e.g.
 	// "In Progress (running)" → "In Progress (idle)"), running flag flip,
 	// and prompt text changes (different number of wrapped lines).
-	// App wires this to forceRedraw so afterDraw runs Sync.
-	// See gotchas/ui-threading.md.
+	// App wires this to forceRedraw, which is now log-only (does NOT
+	// trigger Sync) — DrawBorderedPanel's FillArea covers the inner rect
+	// every frame and tcell.Show()'s diff handles row-shape transitions
+	// correctly. See gotchas/ui-threading.md.
 	OnBranchChange func()
 
 	// lastShape captures the rendered-shape signature emitted by

@@ -354,18 +354,14 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// SetAfterDrawFunc fires after root.Draw() paints the new state into the
-	// cell buffer but BEFORE screen.Show() emits diffs. Two responsibilities:
-	//  1. Consume `pendingSync` (set by forceRedraw) and call screen.Sync() —
-	//     emits a clear-screen escape + every cell, wiping any tmux/iTerm2
-	//     ghost cells from a layout shift. After Sync, screen.Show() is a no-op
-	//     (cells are clean, so per-cell diff emits nothing).
-	//  2. Detect terminal resize (compare current size to last). tview's
-	//     EventResize handler does Clear+draw without Sync; without this the
-	//     tcell-vs-terminal cell buffer can drift across resizes.
-	// This is strictly better than the prior `tapp.Sync()` async channel: a
-	// flag set in this same draw cycle's InputHandler is consumed in this same
-	// draw cycle's afterDraw, with no timing window.
+	// No SetAfterDrawFunc — afterDraw was deleted along with the entire
+	// Sync-based tearing scaffolding (pendingSync, multiplexerMode,
+	// forceContentSync, etc.). tview's draw cycle is Clear() + root.Draw()
+	// + Show(), wrapped atomically by tcell v2.13+'s auto-emitted DECSET
+	// 2026 (BSU/ESU) when XTermLike — that handles all in-app rendering
+	// correctly. The two genuine Sync cases (Ctrl+L, focus regain) call
+	// screen.Sync() directly at their callsites. See gotchas/ui-threading.md
+	// for the full post-mortem.
 	a.tapp.SetInputCapture(a.handleGlobalKey)
 	a.tapp.SetRoot(a.root, true)
 }
@@ -442,21 +438,26 @@ func (a *App) Run() error {
 	a.tapp.EnableMouse(true)
 	a.tapp.EnablePaste(true)
 	// Focus reporting (DECSET 1004): tmux/iTerm2 forward focus events to
-	// the foreground process. We use them to recover from one specific
-	// drift scenario the OnBranchChange callback set cannot cover: if tmux
-	// repaints our pane from a stale backing store while we were unfocused,
-	// no layout shift happened on our side and no branch-change callback
-	// fires. Wiring forceRedraw on focus regain ensures the next draw
-	// cycle Syncs and clears any drift.
+	// the foreground process. On focus regain we call screen.Sync()
+	// directly to repair any drift that accumulated while we were
+	// unfocused (the multiplexer may have repainted our pane from a stale
+	// backing store). One CSI 2J flash on a rare event is the right
+	// tradeoff for guaranteed correctness — and atomic inside tmux when
+	// the user has `set -as terminal-features ',xterm*:sync'` in their
+	// tmux.conf (see README "Running inside tmux").
+	//
+	// Concurrency: Sync() is called from tcell's PollEvent goroutine
+	// inside lazyScreen.PollEvent before the event is returned to tview.
+	// tcell.Screen.Sync() acquires the screen's internal mutex (same lock
+	// used by Show() inside tview's draw goroutine), so the call is
+	// thread-safe but can interleave with an in-progress root.Draw() at
+	// the cell-buffer mutex boundary. This is a subtle change from the
+	// deleted flag-deferred-to-afterDraw pattern (which was guaranteed
+	// single-threaded by virtue of running inside tview's draw cycle),
+	// but the rare-event guarantee holds — focus events arrive at human
+	// speed and the lock contention window is microseconds.
 	a.screen.EnableFocus()
 	a.screen.onFocusGained = func() {
-		// Focus regain after a tmux/iTerm2 window switch: the multiplexer
-		// may have repainted our pane from a stale backing store while we
-		// were unfocused. Call Sync() directly — one CSI 2J flash on a
-		// rare event is the right tradeoff for guaranteed correctness.
-		// (Inside tmux, atomic via tcell's auto-emitted DECSET 2026 when
-		// the user has `set -as terminal-features ',xterm*:sync'` in
-		// their tmux.conf; see README's "Running inside tmux".)
 		uxlog.Log("[tui] focus regained — Sync")
 		a.screen.Sync()
 	}
@@ -474,10 +475,8 @@ func (a *App) Run() error {
 	// because no Draw goroutine exists yet — Pages.AddPage / SwitchToPage
 	// don't take their own locks (only SetFocus does), so the safety comes
 	// from the absence of a concurrent reader, not internal synchronization.
-	// Note: pages.SetChangedFunc fires forceRedraw which now sets a flag
-	// consumed by afterDraw — no channel send, no blocking. The flag is set
-	// pre-Run() and consumed on the very first draw inside tapp.Run() (line
-	// `a.draw()` at the top of Run() before the event loop starts).
+	// Note: pages.SetChangedFunc fires forceRedraw which is now log-only
+	// (no Sync, no channel send, no blocking). Safe to call pre-Run().
 	if a.daemonStale {
 		a.openRestartDaemonPrompt()
 	}
