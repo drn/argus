@@ -109,6 +109,36 @@ func TestMCP_TaskHaltDownstream(t *testing.T) {
 	_ = stopper // pending-only graph; no stops expected
 }
 
+// TestMCP_TaskHaltDownstream_InProgressStops covers the stop-path that
+// TestMCP_TaskHaltDownstream did not exercise: an in_progress descendant
+// must route through the runner's Stop instead of being archived. The
+// orch-layer test exists, but this verifies the MCP plumbing all the way
+// through.
+func TestMCP_TaskHaltDownstream_InProgressStops(t *testing.T) {
+	s, dbm, stopper := testServerWithTasks()
+	dbm.tasks = append(dbm.tasks,
+		&model.Task{ID: "seed", Name: "seed", Status: model.StatusInProgress},
+		&model.Task{ID: "running", Name: "running", DependsOn: []string{"seed"}, Status: model.StatusInProgress},
+		&model.Task{ID: "waiting", Name: "waiting", DependsOn: []string{"seed"}, Status: model.StatusPending},
+	)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_halt_downstream",
+		Arguments: json.RawMessage(`{"id": "seed"}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("halt errored: %s", cr.Content[0].Text)
+	}
+	// in_progress descendant routed through stopper; pending archived.
+	testutil.DeepEqual(t, stopper.stopped, []string{"running"})
+	gotWaiting, _ := dbm.Get("waiting")
+	testutil.True(t, gotWaiting.Archived)
+	// Seed is NEVER halted.
+	gotSeed, _ := dbm.Get("seed")
+	testutil.False(t, gotSeed.Archived)
+	testutil.Equal(t, gotSeed.Status, model.StatusInProgress)
+}
+
 func TestMCP_TaskSetPlanSlug(t *testing.T) {
 	s, dbm, _ := testServerWithTasks()
 	dbm.tasks = append(dbm.tasks, &model.Task{ID: "t1", Name: "T"})

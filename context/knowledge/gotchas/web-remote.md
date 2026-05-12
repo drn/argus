@@ -2,6 +2,12 @@
 
 Non-obvious invariants for the SPA + REST API + push notifications stack.
 
+## Linking + DAG endpoints
+
+- **`/api/tasks/{id}/links` (existing) extracts URLs from terminal output; `/api/tasks/{id}/deps` (new) manages task-to-task dependencies.** Same path prefix, completely different semantics. A future endpoint added under `/api/tasks/{id}/` must avoid both names. Renaming `/links` → `/urls` would clean this up but is a follow-up — both endpoints coexist deliberately.
+- **Per-task linking endpoints (`/deps` GET/POST/DELETE, `/plan-slug` POST) are device-token-accessible**, matching the archive/rename tier. `/halt-downstream` is master-only because a single call mutates multiple rows (matches the `/sessions/stop-all` tier).
+- **Cycle attempts return HTTP 409 with `{error, cycle: [...]}` body.** The UI renders the path inline (`A → B → A`). A 4xx without the path would be unactionable.
+
 ## Network binding
 
 - **API binds 127.0.0.1 (required) plus the Tailscale IP (best-effort), never 0.0.0.0.** Localhost is the floor: if it can't bind across the 9-port retry window, `ListenAndServe` returns an error. The Tailscale listener is appended only when discovery and bind both succeed; bind failure logs and continues so a transient Tailscale flap during startup never takes the entire API offline. Both listeners share one `http.Server` so `Shutdown` cleans them both up via `Server.trackListener`.

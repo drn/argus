@@ -71,6 +71,16 @@ func (f *fakeStore) SetPlanSlug(id, slug string) error {
 	return errors.New("task not found: " + id)
 }
 
+func (f *fakeStore) SetArchived(id string, archived bool) error {
+	for _, t := range f.rows {
+		if t.ID == id {
+			t.Archived = archived
+			return nil
+		}
+	}
+	return errors.New("task not found: " + id)
+}
+
 func newStore(tasks ...*model.Task) *fakeStore {
 	return &fakeStore{rows: append([]*model.Task(nil), tasks...)}
 }

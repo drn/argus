@@ -240,6 +240,33 @@ func (d *DB) SetDependsOn(id string, deps []string) error {
 	return nil
 }
 
+// SetArchived writes only the archived column. Used by orch.HaltDownstream so
+// archiving a pending or in-review descendant cannot clobber a concurrent
+// status flip from the depswatcher (e.g. pending → in_progress between the
+// halt loop's Get and Update). The pinned column is intentionally NOT
+// touched here — the legacy mutual-exclusivity setter (`Task.SetArchived`)
+// clears Pinned on archive, but a halt cascade is for downstream cleanup,
+// not for repinning user intent. Callers that need the legacy semantic
+// should still use SetArchived(true) + Update.
+func (d *DB) SetArchived(id string, archived bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	v := 0
+	if archived {
+		v = 1
+	}
+	res, err := d.conn.Exec(`UPDATE tasks SET archived=? WHERE id=?`, v, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
 // FindByNameProject returns the first non-archived task matching (name,
 // project), or (nil, nil) if no match. Used by task_create idempotency to
 // detect duplicate orchestration sub-tasks before spawning a second worktree.

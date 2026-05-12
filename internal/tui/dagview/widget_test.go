@@ -54,6 +54,36 @@ func TestWidget_BranchChangeFiresOnSetNodes(t *testing.T) {
 	}
 }
 
+// TestWidget_BranchChangeFiresOnCursorMove guards the round-2 regression
+// where MoveCursor mutated `w.cursor` without firing maybeNotifyBranchChange.
+// The cursor box renders with reverse+bold highlight; without a Sync, tcell's
+// per-cell diff leaves the previous highlight at the prior position as a
+// ghost. branchShape now folds an FNV hash of the cursor string into the
+// signature, so a move between two non-empty cursors produces a new shape.
+func TestWidget_BranchChangeFiresOnCursorMove(t *testing.T) {
+	w := New()
+	w.SetNodes([]Node{
+		{ID: "A"},
+		{ID: "B", DependsOn: []string{"A"}},
+	})
+	w.cursor = "A"
+	// Reset shape baseline after the explicit cursor write — branchShape
+	// has not been observed for this cursor value yet.
+	w.maybeNotifyBranchChange()
+	calls := 0
+	w.OnBranchChange = func() { calls++ }
+	w.MoveCursor(0, 1) // A → B
+	if calls == 0 {
+		t.Fatal("expected OnBranchChange to fire on cursor move")
+	}
+	testutil.Equal(t, w.CurrentTask(), "B")
+	prev := calls
+	w.MoveCursor(0, 1) // already at last layer — clamped, no move
+	if calls != prev {
+		t.Errorf("expected no fire on clamped move, got %d new fires", calls-prev)
+	}
+}
+
 // TestWidget_BranchChangeFiresOnFailedFlip guards the branchShape failed-bit
 // regression: previously the bit packed `len(w.failed)` (the map size, which
 // equals node count regardless of failure state) instead of the count of

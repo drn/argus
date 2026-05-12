@@ -84,11 +84,19 @@ func (w *Widget) CurrentTask() string {
 //
 // Archived nodes participate in movement so users can still inspect them;
 // activation (Enter / h) is the place to skip archived rows, not here.
+//
+// Fires maybeNotifyBranchChange when the cursor actually changes. The
+// branch-change contract is mandatory for this widget: the cursor box
+// renders with reverse+bold highlight, so a move shifts which cell set
+// gets the highlighted style. Without the callback, tcell's per-cell diff
+// would leave the previous highlight on screen as a ghost — visible under
+// tmux/iTerm2 on cursor navigation.
 func (w *Widget) MoveCursor(dx, dy int) {
 	cur, ok := w.findNode(w.cursor)
 	if !ok {
 		if len(w.layout.Nodes) > 0 {
 			w.cursor = w.layout.Nodes[0].ID
+			w.maybeNotifyBranchChange()
 		}
 		return
 	}
@@ -118,7 +126,11 @@ func (w *Widget) MoveCursor(dx, dy int) {
 	if !found {
 		return
 	}
+	if best.ID == w.cursor {
+		return
+	}
 	w.cursor = best.ID
+	w.maybeNotifyBranchChange()
 }
 
 // Draw paints the layout, plus a header banner and a key-hints footer.
@@ -271,14 +283,16 @@ func parseFailed(raw string) bool {
 // fire OnBranchChange. See the contract in CLAUDE.md ("UX-tearing prevention
 // — the branch-change callback contract").
 //
-// The failed-count bit field tracks the number of nodes whose result blob
-// reports `failed: true`, NOT the size of the failed map. The map has one
-// entry per node regardless of failure state; counting `true` values is
-// what catches a node flipping not-failed → failed (the red border + ✕
-// glyph swap) without any other change to the snapshot.
+// The cursor field is folded into the signature via FNV-1a over the cursor
+// task ID so a move between two non-empty cursors (same node count, same
+// status, same focus) still produces a different shape and fires the
+// callback. The failed-count bit field counts `true` entries in the failed
+// map, NOT the map size — that catches a node flipping not-failed → failed
+// (the red border + ✕ glyph swap) without any other change.
 func (w *Widget) branchShape() uint64 {
 	// node count : 24, layer count : 8, edge count : 12, focus : 1,
-	// failed-true count : 12, cursor present : 1, in-progress count : 6
+	// failed-true count : 12, in-progress count : 6,
+	// cursor hash : low 32 bits XOR-folded into the result
 	var nProg, nFailed int
 	for _, p := range w.layout.Nodes {
 		if p.Status == "in_progress" {
@@ -296,11 +310,29 @@ func (w *Widget) branchShape() uint64 {
 		shape |= 1 << 44
 	}
 	shape |= (uint64(nFailed) & 0xFFF) << 45
-	if w.cursor != "" {
-		shape |= 1 << 57
-	}
 	shape |= (uint64(nProg) & 0x3F) << 58
+	// Fold a cheap FNV-1a hash of the cursor string into the shape — this
+	// is what distinguishes "cursor on A" from "cursor on B". Cursor empty
+	// vs non-empty also differs (empty → hash of "" = FNV offset basis).
+	shape ^= fnv1aHash(w.cursor)
 	return shape
+}
+
+// fnv1aHash is a tiny FNV-1a (32-bit) implementation. Used to fold the
+// cursor task ID into branchShape without pulling in `hash/fnv`. The hash
+// quality is well above the noise floor for this purpose (distinguishing
+// different cursor IDs); we are not hashing untrusted input.
+func fnv1aHash(s string) uint64 {
+	const (
+		offset uint32 = 2166136261
+		prime  uint32 = 16777619
+	)
+	h := offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= prime
+	}
+	return uint64(h)
 }
 
 func (w *Widget) maybeNotifyBranchChange() {

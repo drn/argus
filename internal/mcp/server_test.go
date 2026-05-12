@@ -628,6 +628,16 @@ func (m *mockTaskDB) SetPlanSlug(id, slug string) error {
 	return fmt.Errorf("not found")
 }
 
+func (m *mockTaskDB) SetArchived(id string, archived bool) error {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			t.Archived = archived
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 func (m *mockTaskDB) FindByNameProject(name, project string) (*model.Task, error) {
 	for _, t := range m.tasks {
 		if t.Archived {

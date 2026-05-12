@@ -78,12 +78,13 @@ type TaskStore interface {
 	// section so a duplicate detection doesn't need to scan every task in
 	// memory each call. Backed by an indexed SQL query in db.DB.
 	FindByNameProject(name, project string) (*model.Task, error)
-	// SetDependsOn and SetPlanSlug are partial-column writes used by
-	// orch.Link / Unlink / SetPlanSlug to avoid clobbering a concurrent
-	// status flip via a stale full-row Update. Same pattern as SetResult /
-	// Rename. *db.DB satisfies both.
+	// SetDependsOn, SetPlanSlug, and SetArchived are partial-column writes
+	// used by orch.Link / Unlink / SetPlanSlug / HaltDownstream to avoid
+	// clobbering a concurrent status flip via a stale full-row Update.
+	// Same pattern as SetResult / Rename. *db.DB satisfies all three.
 	SetDependsOn(id string, deps []string) error
 	SetPlanSlug(id, slug string) error
+	SetArchived(id string, archived bool) error
 }
 
 // TaskStopper can stop a running agent session.

@@ -11,6 +11,7 @@ package orch
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/drn/argus/internal/model"
@@ -30,6 +31,7 @@ type Store interface {
 	Update(t *model.Task) error
 	SetDependsOn(id string, deps []string) error
 	SetPlanSlug(id, slug string) error
+	SetArchived(id string, archived bool) error
 }
 
 // Stopper aborts a running session. The HTTP and RPC paths both pass a
@@ -342,8 +344,16 @@ func HaltDownstream(database Store, stopper Stopper, taskID string) (HaltReport,
 			// the daemon can perform. Calling stopper.Stop here would return
 			// session-not-found and pollute report.Stopped with rows where
 			// no actual stop occurred.
-			current.SetArchived(true)
-			if err := database.Update(current); err != nil {
+			//
+			// Use the narrow SetArchived column write rather than the
+			// full-row Update path: between the Get above and the write,
+			// the depswatcher can flip a pending row to in_progress (it
+			// holds the same db.mu, but only one of us wins). Update would
+			// then overwrite the new in_progress status with our stale
+			// snapshot's pending; SetArchived touches only the archived
+			// column, so the watcher's status write survives even if it
+			// landed mid-iteration.
+			if err := database.SetArchived(id, true); err != nil {
 				continue
 			}
 			report.Archived = append(report.Archived, id)
@@ -353,7 +363,10 @@ func HaltDownstream(database Store, stopper Stopper, taskID string) (HaltReport,
 		default:
 			// Forward-compatibility: a new status enum value (added without
 			// updating this switch) is treated as "do nothing rather than
-			// guess wrong." Logs would surface the unknown status.
+			// guess wrong." Surface via slog so a developer adding a new
+			// status notices the gap quickly in daemon logs.
+			slog.Warn("orch.HaltDownstream: unknown status, skipping",
+				"id", id, "status", current.Status)
 			continue
 		}
 	}
