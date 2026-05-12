@@ -505,6 +505,34 @@ func (tp *TerminalPane) invalidateReplayCache() {
 	tp.mu.Unlock()
 }
 
+// consumeReplayRebuildPendingLocked applies the post-rebuild state reset that
+// the background asyncReplayRebuild goroutine deferred to the main goroutine.
+// Caller must hold tp.mu.
+//
+// The helper exists so Draw and the buildReplaySync test helper share one
+// source of truth — if the consume sequence ever grows another field, both
+// call sites pick up the change.
+func (tp *TerminalPane) consumeReplayRebuildPendingLocked() {
+	if !tp.replayRebuildPending {
+		return
+	}
+	tp.replayRebuildPending = false
+	tp.anchorTotalLines = 0
+	tp.paintCacheValid = false
+	// Clamp scrollOffset to the fresh emu's real ceiling. ScrollUp /
+	// AccelScrollUp can't clamp (no emu yet → no maxScroll), so the
+	// user can scroll past the available scrollback. Without snapping
+	// here, the cache-validity check (scrollOffset <= replayEmuMaxScroll)
+	// fails on every frame, each Draw kicks another async rebuild, and
+	// the rebuild completion fires notifyBranchChange → screen.Sync() —
+	// the visible flicker at the top of the scrollback.
+	if tp.scrollOffset > tp.replayEmuMaxScroll {
+		uxlog.Log("[terminalpane] clamp scrollOffset %d → replayEmuMaxScroll %d after rebuild",
+			tp.scrollOffset, tp.replayEmuMaxScroll)
+		tp.scrollOffset = tp.replayEmuMaxScroll
+	}
+}
+
 // AccelScrollDown performs an accelerated scroll down for keyboard key-repeat.
 func (tp *TerminalPane) AccelScrollDown() int {
 	n := tp.nextAccelStep()
@@ -940,14 +968,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 		// asyncReplayRebuild (background goroutine), so access under tp.mu.
 		tp.mu.Lock()
 
-		// Consume pending reset from async rebuild — these fields are owned
-		// by the main goroutine (written by paintEmu without lock), so only
-		// the main goroutine may write them.
-		if tp.replayRebuildPending {
-			tp.replayRebuildPending = false
-			tp.anchorTotalLines = 0
-			tp.paintCacheValid = false
-		}
+		tp.consumeReplayRebuildPendingLocked()
 
 		// Fast path: if we have a cached replay emulator with matching
 		// dimensions and the log file hasn't grown, skip file I/O entirely

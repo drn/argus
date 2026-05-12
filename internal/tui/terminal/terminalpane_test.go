@@ -604,13 +604,10 @@ func TestTerminalPane_AnchorLockResetsOnScrollToBottom(t *testing.T) {
 // and tp fields are updated under tp.mu.
 func buildReplaySync(tp *TerminalPane, raw []byte, cols, rows int) {
 	tp.asyncReplayRebuild("", 0, rows, cols, rows, raw, nil, 0, nil)
-	// Consume the pending flag the same way Draw() does.
+	// Consume the pending flag the same way Draw() does, via the shared
+	// helper so test and production stay in lockstep.
 	tp.mu.Lock()
-	if tp.replayRebuildPending {
-		tp.replayRebuildPending = false
-		tp.anchorTotalLines = 0
-		tp.paintCacheValid = false
-	}
+	tp.consumeReplayRebuildPendingLocked()
 	tp.mu.Unlock()
 }
 
@@ -1089,6 +1086,71 @@ func TestTerminalPane_MouseScrollUpResetsReplayState(t *testing.T) {
 	testutil.Equal(t, tp.anchorTotalLines, 0)
 	testutil.Nil(t, tp.replayEmu)
 	testutil.Equal(t, tp.scrollOffset, 3)
+}
+
+func TestTerminalPane_RebuildClampsScrollPastTop(t *testing.T) {
+	// Regression: when the user scrolls past the available scrollback,
+	// the cache-validity check (scrollOffset <= replayEmuMaxScroll) fails
+	// forever, every Draw kicks another async rebuild, and each rebuild
+	// fires notifyBranchChange → screen.Sync — visible as continuous
+	// flicker at the top of an agent view. After a rebuild, Draw's
+	// consume-pending block must clamp scrollOffset to the fresh emu's
+	// maxScroll so the next frame cache-hits.
+	tp := NewTerminalPane()
+
+	var data []byte
+	for i := 0; i < 30; i++ {
+		data = append(data, []byte("line\n")...)
+	}
+
+	// Simulate the user scrolling well past the available scrollback.
+	tp.scrollOffset = 10_000
+	buildReplaySync(tp, data, 20, 10)
+
+	// The clamp must land scrollOffset exactly on replayEmuMaxScroll — not
+	// merely below it. == is the loop-break invariant: it puts the next
+	// Draw's cache-validity check (scrollOffset <= replayEmuMaxScroll) into
+	// the passing region with no slack to drift back across.
+	testutil.Equal(t, tp.scrollOffset, tp.replayEmuMaxScroll)
+}
+
+func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.T) {
+	// Direct unit test for consumeReplayRebuildPendingLocked. Covers:
+	//  - clamp fires when pending=true AND scrollOffset > maxScroll
+	//  - no-op when scrollOffset == maxScroll (boundary)
+	//  - no-op when scrollOffset < maxScroll
+	//  - no-op when pending=false (proves the loop-break: once the first
+	//    consume lands, subsequent Draws don't re-clamp; combined with the
+	//    cache-hit predicate now passing, no second async rebuild fires)
+	tests := []struct {
+		name              string
+		startScrollOffset int
+		startPending      bool
+		maxScroll         int
+		wantScrollOffset  int
+	}{
+		{"clamp past top", 10_000, true, 50, 50},
+		{"boundary equal", 50, true, 50, 50},
+		{"already below max", 20, true, 50, 20},
+		{"pending false ignores stale overflow", 10_000, false, 50, 10_000},
+		{"zero max clamps to zero", 999, true, 0, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tp := NewTerminalPane()
+			tp.scrollOffset = tc.startScrollOffset
+			tp.replayEmuMaxScroll = tc.maxScroll
+			tp.replayRebuildPending = tc.startPending
+
+			tp.mu.Lock()
+			tp.consumeReplayRebuildPendingLocked()
+			tp.mu.Unlock()
+
+			testutil.Equal(t, tp.scrollOffset, tc.wantScrollOffset)
+			testutil.Equal(t, tp.replayRebuildPending, false)
+		})
+	}
 }
 
 func TestTerminalPane_ReplayEmuMaxScrollUsesActualCapacity(t *testing.T) {
