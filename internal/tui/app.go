@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,30 +200,6 @@ type App struct {
 	// tmux/iTerm2 ghosts after a resize.
 	lastScreenW int
 	lastScreenH int
-
-	// forceSync, when true, makes afterDraw call screen.Sync() on every draw
-	// cycle instead of relying on the branch-change callbacks. Set at startup
-	// by detectMultiplexer(): tmux/screen maintain their own pane backing
-	// store that drifts from tcell's belief about the terminal, so the per-
-	// cell diff in tcell.Show() produces visible tearing across layout shifts.
-	// Syncing every frame trades the diff optimization (~free over a local
-	// PTY) for correctness. See gotchas/ui-threading.md "forceSync".
-	//
-	// atomic.Bool (not plain bool) for symmetry with pendingSync and to keep
-	// it safe under any future test that flips it after wireApp starts the
-	// tview event loop — the field is read on the tview draw goroutine.
-	forceSync atomic.Bool
-
-	// lastSyncedHash gates the per-frame Sync in forceSync mode. tcell.Sync()
-	// sets `t.clear = true` and emits a CSI 2J clear-screen escape that tmux
-	// propagates to the underlying terminal — visible as a flash on every
-	// frame. When forceSync is the ONLY trigger (no pendingSync, no resize),
-	// afterDraw hashes the cell buffer and skips the Sync if the hash matches
-	// the last frame we actually Synced. Layout-shift triggers (pendingSync,
-	// resize) still Sync unconditionally — those are the cases tmux can drift
-	// on, where Show()'s diff isn't trustworthy. Read/written only on the
-	// tview draw goroutine inside afterDraw; no mutex needed.
-	lastSyncedHash uint64
 }
 
 // New creates the tui application shell.
@@ -251,11 +225,6 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		pendingRerenderRestart: make(map[string]bool),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 	}
-	app.forceSync.Store(detectMultiplexer())
-	if app.forceSync.Load() {
-		uxlog.Log("[tui] forceSync enabled — multiplexer detected, syncing every frame")
-	}
-
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
 	}
@@ -425,48 +394,27 @@ func (a *App) buildUI() {
 // inside `a.draw()` after `root.Draw(screen)` has populated the cell buffer
 // with new content but before `screen.Show()` emits diffs.
 //
-// Calling `screen.Sync()` here is safe — tcell's Sync() invalidates all cells
-// and immediately emits a full clear+redraw. Show() then runs but finds no
-// dirty cells, so nothing is double-emitted. Net cost: one full-screen redraw
-// per draw cycle where ANY of three triggers fired: forceRedraw was requested
-// (pendingSync), the screen was resized, or forceSync is set (multiplexer
-// mode — Sync every frame because tcell's per-cell diff isn't trustworthy
-// inside tmux/screen) AND the cell buffer hash has changed since the last
-// Sync. The hash gate suppresses redundant Syncs when forceSync would
-// otherwise fire on identical-content frames (idle ticks, no-op
-// QueueUpdateDraw pings) — each suppressed Sync is one CSI 2J that tmux
-// would have propagated to the terminal as a visible flash. The forceSync
-// path is intentionally NOT logged per frame; see the switch below.
+// Calls `screen.Sync()` only when a layout-shift trigger fired: an explicit
+// `forceRedraw` (pendingSync) from one of the OnBranchChange / OnLayoutChange
+// callbacks, or a screen resize. Normal content updates (typing, cursor
+// nav, PTY output, spinner ticks) flow through tcell's per-cell diff via
+// Show() — the terminal sees only the changed cells, no clear-screen
+// escape, no flash. Earlier revisions Sync'd every frame inside tmux to
+// fix tearing; that caused visible per-frame flashing because tcell.Sync
+// emits CSI 2J. The branch-change contract (eight wired hooks plus the
+// EventFocus recovery in lazyScreen) covers the documented tmux drift
+// sources directly, so the brute-force per-frame Sync is unnecessary.
 func (a *App) afterDraw(screen tcell.Screen) {
 	width, height := screen.Size()
 	sizeChanged := width != a.lastScreenW || height != a.lastScreenH
 	a.lastScreenW = width
 	a.lastScreenH = height
 	consumed := a.pendingSync.CompareAndSwap(true, false)
-	forced := a.forceSync.Load()
-	if !sizeChanged && !consumed && !forced {
+	if !sizeChanged && !consumed {
 		return
 	}
-	// In forceSync mode (multiplexer), gate the per-frame Sync on actual
-	// cell-buffer change. Sync() emits a clear-screen escape that flashes
-	// the terminal; emitting it every frame on identical content is the
-	// "heavy redraws" symptom users see in tmux. Layout-shift triggers
-	// (pendingSync, resize) still Sync unconditionally — those are the
-	// cases where tmux drift can leave stale cells and Show()'s diff isn't
-	// trustworthy. On a forced Sync, refresh lastSyncedHash so the next
-	// idle frame can short-circuit against the just-Synced state. Outside
-	// forceSync mode lastSyncedHash is never read, so we skip computing it.
-	if forced {
-		hash := hashCellBuffer(screen, width, height)
-		if !sizeChanged && !consumed && hash == a.lastSyncedHash {
-			return
-		}
-		a.lastSyncedHash = hash
-	}
-	// Log every non-routine Sync so a debugger can confirm one ran in response
-	// to the matching `[tui] force redraw: ...` entry above. Suppress logging
-	// when only forceSync triggered (no resize, no forceRedraw): the per-frame
-	// log would drown ux.log and the Sync is by-construction expected.
+	// Log every Sync with its trigger so a debugger can correlate against
+	// the matching `[tui] force redraw: ...` entry from forceRedraw.
 	switch {
 	case sizeChanged && consumed:
 		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", width, height)
@@ -476,41 +424,6 @@ func (a *App) afterDraw(screen tcell.Screen) {
 		uxlog.Log("[tui] afterDraw sync: forceRedraw consumed")
 	}
 	screen.Sync()
-}
-
-// hashCellBuffer computes a 64-bit FNV-1a hash of every visible cell in the
-// screen. Each cell contributes its content string (main + combining runes),
-// fg/bg/attr from Decompose(), and the underline style + color (which
-// Decompose excludes despite being independently rendered). Used by
-// afterDraw to detect "no visible change since last Sync" frames in
-// forceSync mode, where we'd otherwise emit a clear-screen escape that
-// flashes the terminal. O(W*H) per call plus one CellBuffer-mutex
-// acquisition per cell inside tcell — sub-millisecond at 200x60 (12k cells)
-// on modern hardware; negligible next to the Sync it lets us skip.
-//
-// One known gap: tcell.Style stores OSC-8 URL + ID in unexported fields and
-// exposes no public getter, so a frame that changes ONLY a hyperlink URL
-// will hash identical and skip the Sync. Show()'s diff still emits the URL
-// change, so the live terminal sees it; only a subsequent tmux drift could
-// leave the old URL behind. The branch-change callbacks (pendingSync) cover
-// every documented argus path that mutates URL state.
-func hashCellBuffer(screen tcell.Screen, width, height int) uint64 {
-	hasher := fnv.New64a()
-	var buf [18]byte
-	for y := range height {
-		for x := range width {
-			content, style, _ := screen.Get(x, y)
-			fg, bg, attr := style.Decompose()
-			binary.LittleEndian.PutUint32(buf[0:4], uint32(fg))
-			binary.LittleEndian.PutUint32(buf[4:8], uint32(bg))
-			binary.LittleEndian.PutUint32(buf[8:12], uint32(attr))
-			binary.LittleEndian.PutUint16(buf[12:14], uint16(style.GetUnderlineStyle()))
-			binary.LittleEndian.PutUint32(buf[14:18], uint32(style.GetUnderlineColor()))
-			hasher.Write(buf[:])
-			hasher.Write([]byte(content))
-		}
-	}
-	return hasher.Sum64()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
