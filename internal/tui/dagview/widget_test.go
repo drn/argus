@@ -54,6 +54,23 @@ func TestWidget_BranchChangeFiresOnSetNodes(t *testing.T) {
 	}
 }
 
+// TestWidget_BranchChangeFiresOnFailedFlip guards the branchShape failed-bit
+// regression: previously the bit packed `len(w.failed)` (the map size, which
+// equals node count regardless of failure state) instead of the count of
+// `true` values. As a result, flipping a node from healthy to failed did NOT
+// fire OnBranchChange, leaving stale glyph cells under tmux/iTerm2.
+func TestWidget_BranchChangeFiresOnFailedFlip(t *testing.T) {
+	w := New()
+	w.SetNodes([]Node{{ID: "A", Name: "alpha", Status: "in_progress"}})
+	calls := 0
+	w.OnBranchChange = func() { calls++ }
+	// Same node count, but result now reports failure.
+	w.SetNodes([]Node{{ID: "A", Name: "alpha", Status: "in_progress", Result: `{"failed":true}`}})
+	if calls == 0 {
+		t.Fatal("expected OnBranchChange to fire when a node transitions to failed")
+	}
+}
+
 func TestWidget_BranchChangeFiresOnFocusFlip(t *testing.T) {
 	w := New()
 	w.SetNodes([]Node{{ID: "A"}})

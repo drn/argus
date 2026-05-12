@@ -1387,6 +1387,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 		case '2':
 			if a.mode != modeAgent {
+				a.switchTab(widget.TabDAG)
+				return nil
+			}
+		case '3':
+			if a.mode != modeAgent {
 				a.switchTab(widget.TabSettings)
 				return nil
 			}

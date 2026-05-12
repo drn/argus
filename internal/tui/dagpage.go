@@ -9,11 +9,12 @@ import (
 // DAGPage wraps the dagview.Widget with a tview-compatible container that
 // can be added as a Page in the app's Pages.
 //
-// The widget is non-interactive in the sense that the page itself does not
-// forward focus on the wrapper Box's default MouseHandler (which would
-// silently steal focus from the inner widget). The MouseHandler below
-// always routes clicks to the inner widget so keyboard input goes to a
-// primitive that actually handles it. See gotchas/tasklist-ui.md and
+// Focus contract: the page wrapper holds keyboard focus; its InputHandler /
+// PasteHandler delegate to the inner widget. MouseHandler forwards clicks
+// to the inner widget for cursor hit-testing but always re-anchors focus on
+// the page on left click, so a click outside any node (border, blank area)
+// does not let tview's default Box.MouseHandler park focus on an inert
+// primitive and drop subsequent keystrokes. See gotchas/tasklist-ui.md and
 // CLAUDE.md's "page wrapper MouseHandler rule".
 type DAGPage struct {
 	*tview.Box
@@ -56,16 +57,20 @@ func (p *DAGPage) PasteHandler() func(pastedText string, setFocus func(p tview.P
 	return p.dag.PasteHandler()
 }
 
-// MouseHandler redirects all clicks to the inner widget. Without this, the
-// default Box.MouseHandler would steal focus to the non-interactive page
-// wrapper and drop subsequent keyboard input. Pattern matches SettingsPage
-// and TaskPage.
+// MouseHandler forwards clicks to the inner widget for cursor hit-testing,
+// then anchors focus back on the page wrapper. The wrapper's InputHandler /
+// PasteHandler delegate to the inner widget, so keyboard input flows
+// correctly even though tview's focus tracker sees the wrapper. Pattern
+// matches SettingsPage and TaskPage — required by CLAUDE.md's page-wrapper
+// MouseHandler rule (without unconditional setFocus, a click on a
+// non-interactive area would let the default Box.MouseHandler leave focus
+// on whichever primitive had it before, silently dropping keystrokes).
 func (p *DAGPage) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 	return p.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 		handler := p.dag.MouseHandler()
 		consumed, _ := handler(action, event, setFocus)
-		if action == tview.MouseLeftClick && consumed {
-			setFocus(p.dag)
+		if action == tview.MouseLeftClick || action == tview.MouseLeftDown {
+			setFocus(p)
 		}
 		return consumed, nil
 	})

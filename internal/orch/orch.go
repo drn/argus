@@ -17,12 +17,19 @@ import (
 )
 
 // Store is the narrow DB surface this package uses. *db.DB satisfies it, as
-// does the MCP server's TaskStore — both call sites share orch.* without
-// importing db directly.
+// does the MCP server's TaskStore (extended) — both call sites share orch.*
+// without importing db directly.
+//
+// SetDependsOn and SetPlanSlug are partial-column writes (mirroring the
+// existing SetResult / Rename pattern in *db.DB). Using them avoids the
+// read-modify-write race where a concurrent status flip is clobbered by an
+// orch caller's stale full-row Update.
 type Store interface {
 	Tasks() ([]*model.Task, error)
 	Get(id string) (*model.Task, error)
 	Update(t *model.Task) error
+	SetDependsOn(id string, deps []string) error
+	SetPlanSlug(id, slug string) error
 }
 
 // Stopper aborts a running session. The HTTP and RPC paths both pass a
@@ -197,8 +204,8 @@ func Link(database Store, childID, parentID string) error {
 		return &CycleError{Path: cycle}
 	}
 
-	child.DependsOn = append(child.DependsOn, parentID)
-	return database.Update(child)
+	newDeps := append(append([]string(nil), child.DependsOn...), parentID)
+	return database.SetDependsOn(childID, newDeps)
 }
 
 // Unlink removes parentID from childID's depends_on. No-op if the edge does
@@ -220,8 +227,7 @@ func Unlink(database Store, childID, parentID string) error {
 	if len(filtered) == len(child.DependsOn) {
 		return nil
 	}
-	child.DependsOn = filtered
-	return database.Update(child)
+	return database.SetDependsOn(childID, filtered)
 }
 
 // Deps returns the one-hop neighbours of taskID. Linear scan; the dataset
@@ -329,30 +335,37 @@ func HaltDownstream(database Store, stopper Stopper, taskID string) (HaltReport,
 		switch current.Status {
 		case model.StatusComplete:
 			continue
-		case model.StatusPending:
+		case model.StatusPending, model.StatusInReview:
+			// Pending: never started a session. In-review: session already
+			// exited (the row is just awaiting human review). Both buckets
+			// have no live process to stop — archiving is the only cleanup
+			// the daemon can perform. Calling stopper.Stop here would return
+			// session-not-found and pollute report.Stopped with rows where
+			// no actual stop occurred.
 			current.SetArchived(true)
 			if err := database.Update(current); err != nil {
 				continue
 			}
 			report.Archived = append(report.Archived, id)
-		default:
+		case model.StatusInProgress:
 			_ = stopper.Stop(id)
 			report.Stopped = append(report.Stopped, id)
+		default:
+			// Forward-compatibility: a new status enum value (added without
+			// updating this switch) is treated as "do nothing rather than
+			// guess wrong." Logs would surface the unknown status.
+			continue
 		}
 	}
 	return report, nil
 }
 
 // SetPlanSlug writes the orchestrator grouping label. Daemon does not
-// interpret the value — same opacity contract as result.
+// interpret the value — same opacity contract as result. Uses the narrow
+// column setter so a concurrent agent status flip is not clobbered.
 func SetPlanSlug(database Store, taskID, slug string) error {
 	if taskID == "" {
 		return ErrEmptyID
 	}
-	t, err := database.Get(taskID)
-	if err != nil {
-		return err
-	}
-	t.PlanSlug = slug
-	return database.Update(t)
+	return database.SetPlanSlug(taskID, slug)
 }

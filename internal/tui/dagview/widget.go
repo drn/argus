@@ -270,13 +270,22 @@ func parseFailed(raw string) bool {
 // signature across SetNodes / SetFocused / MoveCursor to decide whether to
 // fire OnBranchChange. See the contract in CLAUDE.md ("UX-tearing prevention
 // — the branch-change callback contract").
+//
+// The failed-count bit field tracks the number of nodes whose result blob
+// reports `failed: true`, NOT the size of the failed map. The map has one
+// entry per node regardless of failure state; counting `true` values is
+// what catches a node flipping not-failed → failed (the red border + ✕
+// glyph swap) without any other change to the snapshot.
 func (w *Widget) branchShape() uint64 {
-	// node count : 24, layer count : 8, edge count : 12, focus : 1, failed count : 12,
-	// cursor present : 1, in-progress count : 6
-	var nProg int
+	// node count : 24, layer count : 8, edge count : 12, focus : 1,
+	// failed-true count : 12, cursor present : 1, in-progress count : 6
+	var nProg, nFailed int
 	for _, p := range w.layout.Nodes {
 		if p.Status == "in_progress" {
 			nProg++
+		}
+		if w.failed[p.ID] {
+			nFailed++
 		}
 	}
 	var shape uint64
@@ -286,7 +295,7 @@ func (w *Widget) branchShape() uint64 {
 	if w.focused {
 		shape |= 1 << 44
 	}
-	shape |= (uint64(len(w.failed)) & 0xFFF) << 45
+	shape |= (uint64(nFailed) & 0xFFF) << 45
 	if w.cursor != "" {
 		shape |= 1 << 57
 	}

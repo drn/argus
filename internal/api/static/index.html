@@ -4297,7 +4297,7 @@ function renderDAG(layout) {
     const glyphCls = ['dag-node-glyph', `status-${n.status}`];
     if (failed) glyphCls.push('failed');
     const label = truncateDAGLabel(n.name, 18);
-    svg += `<g class="dag-node-link" onclick="onDAGNodeClick('${n.id}')">`;
+    svg += `<g class="dag-node-link" onclick="onDAGNodeClick('${escAttr(n.id)}')">`;
     svg += `<rect class="${cls.join(' ')}" x="${x}" y="${y}" width="${DAG_BOX_W}" height="${DAG_BOX_H}" rx="6"/>`;
     svg += `<text class="${glyphCls.join(' ')}" x="${x + 14}" y="${y + DAG_BOX_H/2 + 5}">${glyph}</text>`;
     svg += `<text class="${textCls.join(' ')}" x="${x + 32}" y="${y + DAG_BOX_H/2 + 5}">${esc(label)}</text>`;
@@ -4330,8 +4330,12 @@ function isDAGNodeFailed(n) {
 
 function truncateDAGLabel(name, max) {
   if (!name) return '';
-  if (name.length <= max) return name;
-  return name.slice(0, max - 1) + '…';
+  // Iterate over code points so a trailing surrogate-pair (emoji, supplementary
+  // Unicode) is not split — matches the Go `[]rune` truncation in
+  // `internal/tui/dagview/render.go` `makeLabel`.
+  const runes = Array.from(name);
+  if (runes.length <= max) return name;
+  return runes.slice(0, max - 1).join('') + '…';
 }
 
 function onDAGNodeClick(id) {

@@ -202,6 +202,44 @@ func (d *DB) SetResult(id, result string) error {
 	return nil
 }
 
+// SetPlanSlug writes only the orchestrator grouping label. Same partial-update
+// pattern as SetResult — bypasses the full-row Update so a concurrent agent
+// status flip (in_progress → in_review on session exit) is not clobbered by
+// a stale read-then-write round trip. Empty string clears the slug.
+func (d *DB) SetPlanSlug(id, slug string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET plan_slug=? WHERE id=?`, slug, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
+// SetDependsOn writes only the depends_on column. Used by orch.Link / Unlink
+// so the read-modify-write cycle does not need to take the full-row Update
+// path. The encoded JSON empty array is stored as the empty string by
+// encodeDependsOn so the migrated/fresh-DB defaults line up.
+func (d *DB) SetDependsOn(id string, deps []string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.conn.Exec(`UPDATE tasks SET depends_on=? WHERE id=?`, encodeDependsOn(deps), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("task not found: %s", id)
+	}
+	return nil
+}
+
 // FindByNameProject returns the first non-archived task matching (name,
 // project), or (nil, nil) if no match. Used by task_create idempotency to
 // detect duplicate orchestration sub-tasks before spawning a second worktree.

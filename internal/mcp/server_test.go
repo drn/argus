@@ -608,6 +608,26 @@ func (m *mockTaskDB) SetResult(id, result string) error {
 	return fmt.Errorf("not found")
 }
 
+func (m *mockTaskDB) SetDependsOn(id string, deps []string) error {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			t.DependsOn = append([]string(nil), deps...)
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
+func (m *mockTaskDB) SetPlanSlug(id, slug string) error {
+	for _, t := range m.tasks {
+		if t.ID == id {
+			t.PlanSlug = slug
+			return nil
+		}
+	}
+	return fmt.Errorf("not found")
+}
+
 func (m *mockTaskDB) FindByNameProject(name, project string) (*model.Task, error) {
 	for _, t := range m.tasks {
 		if t.Archived {
