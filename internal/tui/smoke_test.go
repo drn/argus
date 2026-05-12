@@ -1641,9 +1641,12 @@ func TestSmoke_TaskPreviewContentSyncInMultiplexer(t *testing.T) {
 
 	// Prime the grid: first RefreshOutput establishes cellsNil=false and
 	// the dimensions (fires OnBranchChange because shape changed nil→grid).
+	// syncUI barriers: QueueUpdateDraw is asynchronous; without an explicit
+	// barrier, the count read below could race the queued closure.
 	app.tapp.QueueUpdateDraw(func() {
 		app.taskPreview.RefreshOutput([]byte("first content\n"), 80, 24, 80, 24)
 	})
+	syncUI(t, app.tapp)
 
 	// Same-shape content update: cellsNil unchanged, cols/rows unchanged,
 	// only cell content differs. OnContentChange must fire.
@@ -1651,6 +1654,7 @@ func TestSmoke_TaskPreviewContentSyncInMultiplexer(t *testing.T) {
 	app.tapp.QueueUpdateDraw(func() {
 		app.taskPreview.RefreshOutput([]byte("second content\n"), 80, 24, 80, 24)
 	})
+	syncUI(t, app.tapp)
 	postCount := strings.Count(readLog(), "force content sync: task preview content updated")
 	if postCount <= preCount {
 		t.Errorf("same-shape preview content update must fire forceContentSync; got count %d → %d\nlog tail:\n%s",
@@ -1679,9 +1683,11 @@ func TestSmoke_TaskPreviewContentSyncIsNoopOutsideMultiplexer(t *testing.T) {
 	app.tapp.QueueUpdateDraw(func() {
 		app.taskPreview.RefreshOutput([]byte("first content\n"), 80, 24, 80, 24)
 	})
+	syncUI(t, app.tapp)
 	app.tapp.QueueUpdateDraw(func() {
 		app.taskPreview.RefreshOutput([]byte("second content\n"), 80, 24, 80, 24)
 	})
+	syncUI(t, app.tapp)
 
 	b, err := os.ReadFile(logPath)
 	if err != nil {
@@ -1690,4 +1696,74 @@ func TestSmoke_TaskPreviewContentSyncIsNoopOutsideMultiplexer(t *testing.T) {
 	if strings.Contains(string(b), "force content sync: task preview content updated") {
 		t.Errorf("bare-terminal mode must not fire content sync; log:\n%s", string(b))
 	}
+}
+
+// TestSmoke_AgentPaneContentSyncWiring exercises the TerminalPane.OnContentChange
+// wiring end-to-end: invoking the callback (which `renderLive` calls after
+// consuming new PTY bytes) must route through `forceContentSync` and reach
+// `pendingContentSync`, with a matching uxlog entry in multiplexer mode and
+// no-op in bare-terminal mode. Driving a real PTY stream through the
+// emulator would couple this test to terminal.SessionAdapter; the wiring
+// itself is what the audit flagged as untested, so we invoke the callback
+// directly via its public field — the same path `renderLive` uses via
+// `notifyContentChange()`.
+func TestSmoke_AgentPaneContentSyncWiring(t *testing.T) {
+	t.Run("multiplexer fires sync", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "ux.log")
+		if err := uxlog.Init(logPath); err != nil {
+			t.Fatalf("uxlog.Init: %v", err)
+		}
+		defer uxlog.Close()
+
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false)
+		app.multiplexerMode.Store(true)
+		_, stop := wireApp(t, app)
+		defer stop()
+
+		app.tapp.QueueUpdateDraw(func() {
+			app.agentPane.OnContentChange()
+		})
+		syncUI(t, app.tapp)
+
+		b, _ := os.ReadFile(logPath)
+		if !strings.Contains(string(b), "force content sync: agentpane content updated") {
+			t.Errorf("agent pane OnContentChange must fire forceContentSync in multiplexer mode; log:\n%s", string(b))
+		}
+		if !app.pendingContentSync.Load() {
+			// afterDraw should have consumed it via a Sync. But wireApp's
+			// SimulationScreen may or may not have fired afterDraw between
+			// syncUI calls — the log entry is the more reliable assertion.
+			t.Logf("pendingContentSync was already consumed by afterDraw (expected if afterDraw ran)")
+		}
+	})
+
+	t.Run("bare terminal no-op", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "ux.log")
+		if err := uxlog.Init(logPath); err != nil {
+			t.Fatalf("uxlog.Init: %v", err)
+		}
+		defer uxlog.Close()
+
+		d := testDB(t)
+		runner := agent.NewRunner(nil)
+		app := New(d, runner, false)
+		app.multiplexerMode.Store(false)
+		_, stop := wireApp(t, app)
+		defer stop()
+
+		app.tapp.QueueUpdateDraw(func() {
+			app.agentPane.OnContentChange()
+		})
+		syncUI(t, app.tapp)
+
+		b, _ := os.ReadFile(logPath)
+		if strings.Contains(string(b), "force content sync: agentpane content updated") {
+			t.Errorf("bare-terminal mode must not fire content sync; log:\n%s", string(b))
+		}
+		if app.pendingContentSync.Load() {
+			t.Errorf("bare-terminal mode must leave pendingContentSync false; got true")
+		}
+	})
 }

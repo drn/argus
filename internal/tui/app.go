@@ -216,8 +216,14 @@ type App struct {
 	// without changing widget shape. Distinct from `pendingSync` —
 	// `pendingSync` covers layout-shift triggers (OnBranchChange,
 	// resize), `pendingContentSync` covers content updates that bypass
-	// those callbacks by design. Only consumed when `multiplexerMode` is
-	// true; outside tmux the flag is set anyway but ignored.
+	// those callbacks by design.
+	//
+	// The flag is ONLY set when `multiplexerMode` is true: forceContentSync
+	// early-returns when bare-terminal. So in production the flag should
+	// never be true while multiplexerMode is false. afterDraw still
+	// conjuncts `multiplexerMode.Load()` when consuming the flag — this
+	// is belt-and-suspenders defense (e.g. tests may flip multiplexerMode
+	// after setting the flag), not a contract requirement.
 	pendingContentSync atomic.Bool
 }
 
@@ -445,10 +451,18 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	// Log every Sync with its trigger so a debugger can correlate against
 	// the matching `[tui] force redraw: ...` / `[tui] force content sync:
 	// ...` entry. Multiple flags can trigger together (a resize that also
-	// fires pendingSync is common); the switch picks the most specific.
+	// fires pendingSync is common); the switch picks the most specific
+	// combination so the log lists every reason a Sync would have fired
+	// even if only one was needed.
 	switch {
+	case sizeChanged && consumed && contentConsumed:
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw + content)", width, height)
 	case sizeChanged && consumed:
 		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + forceRedraw)", width, height)
+	case sizeChanged && contentConsumed:
+		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize + content)", width, height)
+	case consumed && contentConsumed:
+		uxlog.Log("[tui] afterDraw sync: forceRedraw + content consumed")
 	case sizeChanged:
 		uxlog.Log("[tui] afterDraw sync: size %dx%d (resize)", width, height)
 	case consumed:
@@ -1975,12 +1989,12 @@ func (a *App) forceRedraw(reason string) {
 
 // forceContentSync requests a tcell Sync for a content-only cell update
 // (preview RefreshOutput, terminal pane PTY streaming). Only effective
-// when running inside a multiplexer; on a bare terminal, tcell.Show()'s
-// per-cell diff is trustworthy and no Sync is needed. Sets a flag that
-// `afterDraw` consumes — multiple calls within a draw cycle collapse to
-// ONE Sync. The flag is set unconditionally (cheap) but afterDraw only
-// fires the Sync when `multiplexerMode` is true, so the bare-terminal
-// fast path stays free.
+// when running inside a multiplexer; on a bare terminal it early-returns
+// without setting any flag, keeping the no-Sync fast path free of even
+// atomic-flag overhead. Inside a multiplexer it CAS-sets pendingContentSync
+// — multiple calls within a draw cycle collapse to ONE Sync because the
+// CAS only succeeds when the flag was previously false. afterDraw consumes
+// the flag and emits one screen.Sync().
 //
 // Wired by widgets whose Draw streams cells within an unchanged shape:
 // TaskPreviewPanel.RefreshOutput fires after rebuilding the grid;
