@@ -361,6 +361,9 @@ func TestArrowTabNavigation(t *testing.T) {
 
 	// Right arrow on Settings rail → moves focus to right pane, stays on Settings.
 	result = app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("right arrow on settings rail should be consumed")
+	}
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings (right consumed by settings)", app.header.ActiveTab())
 	}
@@ -374,6 +377,9 @@ func TestArrowTabNavigation(t *testing.T) {
 	// Left arrow on Settings pane → moves focus back to rail, stays on Settings.
 	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
 	result = app.handleGlobalKey(ev)
+	if result != nil {
+		t.Error("left arrow on settings pane should be consumed")
+	}
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings (left consumed by settings pane)", app.header.ActiveTab())
 	}

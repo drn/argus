@@ -1084,7 +1084,7 @@ func (sv *SettingsView) handleEditSourceKey(ev *tcell.EventKey) bool {
 		sv.editingSource = false
 		sv.rebuildRows()
 		return true
-	case tcell.KeyDown, tcell.KeyUp:
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
 		return true
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(sv.editSourceBuf) > 0 {
@@ -1143,8 +1143,8 @@ func (sv *SettingsView) handleEditVaultKey(ev *tcell.EventKey) bool {
 		sv.vaultAC.Close()
 		sv.rebuildRows()
 		return true
-	case tcell.KeyDown, tcell.KeyUp:
-		return true // consume to avoid cursor movement while editing
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true // consume to avoid cursor movement / tab switch while editing
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if len(sv.editVaultBuf) > 0 {
 			_, size := utf8.DecodeLastRuneInString(sv.editVaultBuf)

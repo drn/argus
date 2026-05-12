@@ -1306,6 +1306,8 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyLeft:
 		if a.mode != modeAgent {
+			// Settings consumes left/right to navigate its rail↔pane; only
+			// fall through to tab switching when the rail (left-most pane) is focused.
 			if a.header.ActiveTab() == widget.TabSettings && a.settings.HandleKey(event) {
 				return nil
 			}
