@@ -2282,23 +2282,32 @@ func (r *recordingScreen) Size() (int, int) { return r.w, r.h }
 func (r *recordingScreen) Sync()            { r.syncCount++ }
 
 // TestApp_AfterDrawSyncTriggers pins the contract that screen.Sync() fires
-// only on layout-shift triggers: a pendingSync set by forceRedraw (from one
-// of the OnBranchChange / OnLayoutChange callbacks), or a screen resize.
-// Normal content updates (typing, cursor nav, PTY output, spinner ticks)
-// must NOT Sync — they flow through tcell's per-cell diff via Show().
-// This replaces the prior "Sync every frame inside multiplexers" contract,
-// which traded tearing-correctness for visible per-frame flashing in tmux.
+// on four triggers: pendingSync (forceRedraw via OnBranchChange / OnLayoutChange),
+// a screen resize, or — gated by multiplexerMode — pendingContentSync
+// (forceContentSync from a widget that streams cells within an unchanged
+// shape). Normal content updates outside a multiplexer must NOT Sync —
+// they flow through tcell's per-cell diff via Show(). Multiplexer-mode
+// content updates DO Sync to defeat tmux pane-backing drift.
 func TestApp_AfterDrawSyncTriggers(t *testing.T) {
 	tests := []struct {
-		name     string
-		pending  bool
-		resize   bool
-		wantSync bool
+		name        string
+		pending     bool
+		resize      bool
+		contentSync bool
+		multiplexer bool
+		wantSync    bool
 	}{
-		{name: "no triggers", pending: false, resize: false, wantSync: false},
-		{name: "pendingSync only", pending: true, resize: false, wantSync: true},
-		{name: "resize only", pending: false, resize: true, wantSync: true},
+		{name: "no triggers", wantSync: false},
+		{name: "pendingSync only", pending: true, wantSync: true},
+		{name: "resize only", resize: true, wantSync: true},
 		{name: "pending + resize", pending: true, resize: true, wantSync: true},
+		// Content-sync trigger is gated by multiplexerMode. Without it,
+		// the flag is cleared but no Sync fires — bare-terminal fast path.
+		{name: "contentSync without multiplexer", contentSync: true, wantSync: false},
+		// Inside a multiplexer, contentSync alone triggers Sync.
+		{name: "contentSync with multiplexer", contentSync: true, multiplexer: true, wantSync: true},
+		// All triggers together still produces exactly one Sync.
+		{name: "all triggers + multiplexer", pending: true, resize: true, contentSync: true, multiplexer: true, wantSync: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2306,6 +2315,8 @@ func TestApp_AfterDrawSyncTriggers(t *testing.T) {
 			runner := agent.NewRunner(nil)
 			app := New(d, runner, false)
 			app.pendingSync.Store(tt.pending)
+			app.pendingContentSync.Store(tt.contentSync)
+			app.multiplexerMode.Store(tt.multiplexer)
 			app.lastScreenW = 80
 			app.lastScreenH = 24
 			rec := &recordingScreen{w: 80, h: 24}
@@ -2315,8 +2326,9 @@ func TestApp_AfterDrawSyncTriggers(t *testing.T) {
 			app.afterDraw(rec)
 			gotSync := rec.syncCount > 0
 			testutil.Equal(t, gotSync, tt.wantSync)
-			// pendingSync must be consumed iff it was set, regardless of other triggers.
+			// Flags must be cleared (consumed) when their condition was set.
 			testutil.Equal(t, app.pendingSync.Load(), false)
+			testutil.Equal(t, app.pendingContentSync.Load(), false)
 		})
 	}
 }
@@ -2367,5 +2379,76 @@ func TestApp_AfterDrawSkipsRedrawsWithoutTriggers(t *testing.T) {
 	}
 	if strings.Contains(string(tail), "[tui] afterDraw sync") {
 		t.Fatalf("no Sync expected without triggers; got post-setup tail:\n%s", string(tail))
+	}
+}
+
+// TestApp_ForceContentSyncIsMultiplexerGated pins the gating contract:
+// forceContentSync only sets pendingContentSync (and logs) when
+// multiplexerMode is true. On bare terminals the helper is a no-op,
+// keeping the content-update fast path (preview RefreshOutput, terminal
+// pane PTY streaming) free of unnecessary Sync flags.
+func TestApp_ForceContentSyncIsMultiplexerGated(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Bare-terminal mode: forceContentSync is a no-op, no flag set, no log.
+	app.multiplexerMode.Store(false)
+	app.pendingContentSync.Store(false)
+	preSize := int64(0)
+	if fi, err := os.Stat(logPath); err == nil {
+		preSize = fi.Size()
+	}
+	app.forceContentSync("bare-terminal call must not flag")
+	testutil.Equal(t, app.pendingContentSync.Load(), false)
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	if _, err := f.Seek(preSize, 0); err != nil {
+		f.Close()
+		t.Fatalf("seek: %v", err)
+	}
+	tail, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		t.Fatalf("read tail: %v", err)
+	}
+	if strings.Contains(string(tail), "force content sync") {
+		t.Fatalf("bare-terminal mode must not log; got tail:\n%s", string(tail))
+	}
+
+	// Multiplexer mode: forceContentSync sets the flag and logs once.
+	app.multiplexerMode.Store(true)
+	app.forceContentSync("multiplexer call must flag")
+	testutil.Equal(t, app.pendingContentSync.Load(), true)
+
+	// Second call while flag is still set must NOT log again (CAS skips
+	// the duplicate set; multiple bursts collapse to one Sync).
+	preSize2 := int64(0)
+	if fi, err := os.Stat(logPath); err == nil {
+		preSize2 = fi.Size()
+	}
+	app.forceContentSync("duplicate call must not relog")
+	f2, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open log 2: %v", err)
+	}
+	defer f2.Close()
+	if _, err := f2.Seek(preSize2, 0); err != nil {
+		t.Fatalf("seek 2: %v", err)
+	}
+	tail2, err := io.ReadAll(f2)
+	if err != nil {
+		t.Fatalf("read tail 2: %v", err)
+	}
+	if strings.Contains(string(tail2), "duplicate call must not relog") {
+		t.Fatalf("duplicate forceContentSync must not relog; got tail:\n%s", string(tail2))
 	}
 }

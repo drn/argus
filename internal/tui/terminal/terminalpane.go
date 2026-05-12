@@ -204,6 +204,18 @@ type TerminalPane struct {
 	// Safe to fire from any goroutine: the callback is set once in
 	// buildUI and never reassigned, and forceRedraw uses an atomic flag.
 	OnBranchChange func()
+
+	// OnContentChange fires when new PTY bytes have been consumed by the
+	// emulator and emitted to the cell buffer — i.e., terminal content
+	// updated within an unchanged Draw branch. App wires this to
+	// forceContentSync (no-op outside a multiplexer). The branch-change
+	// contract doesn't cover same-shape PTY streaming: tcell.Show()'s
+	// per-cell diff handles content updates correctly on bare terminals,
+	// but inside tmux the SGR/cursor optimization can desync from the
+	// pane backing after tmux's own redraws (status-bar tick, copy-mode
+	// exit, pane refresh on return). A Sync rewrites with absolute
+	// positioning and clears the drift. See gotchas/ui-threading.md.
+	OnContentChange func()
 }
 
 // mouseScrollStep is the number of lines scrolled per mouse wheel tick.
@@ -234,6 +246,15 @@ func NewTerminalPane() *TerminalPane {
 func (tp *TerminalPane) notifyBranchChange() {
 	if tp.OnBranchChange != nil {
 		tp.OnBranchChange()
+	}
+}
+
+// notifyContentChange fires OnContentChange if set. Same locking contract
+// as notifyBranchChange: call AFTER releasing tp.mu. No-op when the
+// callback isn't wired (bare-terminal mode).
+func (tp *TerminalPane) notifyContentChange() {
+	if tp.OnContentChange != nil {
+		tp.OnContentChange()
 	}
 }
 
@@ -1306,6 +1327,15 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	// Cache miss or stale — fall through to full paintEmu.
 
 	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
+
+	// Content updated (new PTY bytes consumed, or full rebuild paint) —
+	// notify the App so multiplexerMode can Sync on the next afterDraw.
+	// Bypasses the OnBranchChange contract by design: the cells changed
+	// inside the same Draw branch (PTY streaming, not a layout shift).
+	// Outside a multiplexer this is a cheap no-op.
+	if newBytes > 0 || needRebuild {
+		tp.notifyContentChange()
+	}
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
