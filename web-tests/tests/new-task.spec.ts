@@ -2,10 +2,11 @@ import { test, expect } from '@playwright/test';
 import { resetServer } from './_helpers';
 
 // New Task form — project dropdown recovery. The boot-time loadProjects()
-// silently swallows failures (`if (!r.ok) return` + `catch(e) {}`), so a
-// transient hiccup during initial connect leaves the dropdown permanently
-// blank. applyCreateDefaults() re-fetches when the cached dropdown is empty
-// — mirrors the existing recovery path for the backend select.
+// fail-quiets: `if (!r.ok) return` skips non-2xx, `catch(e) {}` swallows
+// network errors. Without recovery the dropdown stays blank until the user
+// reloads or saves Settings. applyCreateDefaults() re-fetches when
+// `projectsLoaded` is still false — the flag prevents looping refetches
+// on every tab switch for a user with zero projects configured.
 
 test.beforeEach(async () => { await resetServer(); });
 
@@ -24,26 +25,55 @@ test.describe('New Task — project dropdown', () => {
     expect(names).toContain('test-proj');
   });
 
-  test('re-fetches when applyCreateDefaults sees an empty dropdown', async ({ page }) => {
+  test('re-fetches on tab switch after a failed boot-time load', async ({ page }) => {
+    // Fail the first /api/projects so the boot-time loadProjects() returns
+    // empty and `projectsLoaded` stays false — exactly the production silent-
+    // failure path. Subsequent calls succeed.
+    let projectsCalls = 0;
+    await page.route('**/api/projects', (route) => {
+      projectsCalls++;
+      if (projectsCalls === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"unavailable"}' });
+      }
+      return route.continue();
+    });
+
     await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
     await page.goto('/');
     await expect(page.locator('#main-app')).toBeVisible();
-    // Wait for the initial population so we know the network is working.
-    await expect.poll(async () =>
-      page.evaluate(() => (document.getElementById('create-project') as HTMLSelectElement).options.length),
-    ).toBeGreaterThan(0);
 
-    // Simulate the silent-failure aftermath: empty options. (This mirrors what
-    // the user actually saw when their boot-time fetch failed transiently.)
-    await page.evaluate(() => {
-      const sel = document.getElementById('create-project') as HTMLSelectElement;
-      sel.replaceChildren();
-    });
+    // After connect the dropdown is empty because the boot fetch 503'd.
+    await expect.poll(async () => projectsCalls).toBeGreaterThanOrEqual(1);
+    const initialCount = await page.evaluate(() =>
+      (document.getElementById('create-project') as HTMLSelectElement).options.length,
+    );
+    expect(initialCount).toBe(0);
 
-    // Switching to the create tab must trigger a re-fetch.
+    // Switching to the create tab must trigger a successful recovery fetch.
     await page.evaluate(() => (window as any).switchTab('create'));
     await expect.poll(async () =>
       page.evaluate(() => (document.getElementById('create-project') as HTMLSelectElement).options.length),
     ).toBeGreaterThan(0);
+  });
+
+  test('does not refetch when projectsLoaded is true', async ({ page }) => {
+    // After a successful boot-time fetch, opening + New should NOT issue
+    // another /api/projects request — even if the user happens to have zero
+    // projects configured, the flag prevents the refetch loop.
+    await page.addInitScript(() => localStorage.setItem('argus-token', 'test-token'));
+    await page.goto('/');
+    await expect(page.locator('#main-app')).toBeVisible();
+    // Wait for the boot-time fetch to complete.
+    await expect.poll(async () =>
+      page.evaluate(() => (document.getElementById('create-project') as HTMLSelectElement).options.length),
+    ).toBeGreaterThan(0);
+
+    // Now count further /api/projects requests during a tab switch.
+    let calls = 0;
+    await page.route('**/api/projects', (route) => { calls++; return route.continue(); });
+    await page.evaluate(() => (window as any).switchTab('create'));
+    // Give applyCreateDefaults a tick to (mis)fire.
+    await page.waitForTimeout(150);
+    expect(calls).toBe(0);
   });
 });

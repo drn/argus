@@ -3828,6 +3828,13 @@ if (window.visualViewport) {
 }
 
 // --- Create Task ---
+// Set on the first completed loadProjects()/loadBackends() — regardless of
+// whether the server returned zero rows — so applyCreateDefaults' recovery
+// path doesn't loop a fetch on every tab switch when the user genuinely has
+// no projects/backends configured. Reset to false on settings save (which
+// invalidates the cache) so the next open re-fetches.
+let projectsLoaded = false;
+let backendsLoaded = false;
 async function loadProjects() {
   try {
     const r = await api('/api/projects');
@@ -3846,6 +3853,7 @@ async function loadProjects() {
       sel.appendChild(opt);
     }
     if (sel.value) loadSkillsForProject(sel.value);
+    projectsLoaded = true;
   } catch(e) {}
 }
 
@@ -3888,6 +3896,7 @@ async function loadBackends() {
       || (createBackendsCache[0] && createBackendsCache[0].name)
       || '';
     if (preferred) sel.value = preferred;
+    backendsLoaded = true;
   } catch(e) {}
 }
 
@@ -4093,17 +4102,20 @@ function applyCreateDefaults() {
       // when we change the value programmatically.
       loadSkillsForProject(want);
     }
-  } else if (projSel) {
-    // Projects weren't loaded yet (initial connect race, or the boot-time
-    // loadProjects() failed silently — `if (!r.ok) return` + `catch(e) {}`
-    // both leave the dropdown blank with no retry). Trigger a fetch; it'll
-    // populate the dropdown async. Mirrors the backend recovery below.
+  } else if (projSel && !projectsLoaded) {
+    // No completed fetch yet — initial connect race, or the boot-time
+    // loadProjects() bailed before populating: `if (!r.ok) return` skips
+    // non-2xx responses without a retry, and `catch(e) {}` swallows network
+    // errors. Either way the dropdown is blank. Trigger a fetch; it'll
+    // populate async. Gate on `projectsLoaded` (not `options.length`) so a
+    // legitimately empty project list doesn't refetch on every tab switch.
     loadProjects();
   }
   const beSel = document.getElementById('create-backend');
-  if (beSel && !beSel.options.length) {
-    // Backends weren't loaded yet (e.g. user opened the tab during a slow
-    // reconnect). Trigger a fetch; it'll populate the dropdown async.
+  if (beSel && !backendsLoaded) {
+    // Same recovery as projects above — guard on `backendsLoaded`, not
+    // `options.length`, so an empty backends config doesn't refetch every
+    // time the user opens the New Task tab.
     loadBackends();
   }
 }
