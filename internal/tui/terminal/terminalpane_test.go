@@ -1122,18 +1122,28 @@ func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.
 	//  - no-op when pending=false (proves the loop-break: once the first
 	//    consume lands, subsequent Draws don't re-clamp; combined with the
 	//    cache-hit predicate now passing, no second async rebuild fires)
+	//  - zero max clamps scrollOffset to zero
+	//
+	// Each case sets sentinel pre-call values for anchorTotalLines and
+	// paintCacheValid so the table directly verifies all three field resets
+	// (pending → false, anchor → 0, paintCacheValid → false) instead of
+	// relying on transitive coverage through buildReplaySync.
 	tests := []struct {
-		name              string
-		startScrollOffset int
-		startPending      bool
-		maxScroll         int
-		wantScrollOffset  int
+		name                 string
+		startScrollOffset    int
+		startPending         bool
+		maxScroll            int
+		wantScrollOffset     int
+		wantAnchorTotalLines int
+		wantPaintCacheValid  bool
 	}{
-		{"clamp past top", 10_000, true, 50, 50},
-		{"boundary equal", 50, true, 50, 50},
-		{"already below max", 20, true, 50, 20},
-		{"pending false ignores stale overflow", 10_000, false, 50, 10_000},
-		{"zero max clamps to zero", 999, true, 0, 0},
+		{"clamp past top", 10_000, true, 50, 50, 0, false},
+		{"boundary equal", 50, true, 50, 50, 0, false},
+		{"already below max", 20, true, 50, 20, 0, false},
+		// pending=false: helper early-returns; sentinel pre-call values must
+		// survive untouched.
+		{"pending false ignores stale overflow", 10_000, false, 50, 10_000, 777, true},
+		{"zero max clamps to zero", 999, true, 0, 0, 0, false},
 	}
 
 	for _, tc := range tests {
@@ -1142,6 +1152,8 @@ func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.
 			tp.scrollOffset = tc.startScrollOffset
 			tp.replayEmuMaxScroll = tc.maxScroll
 			tp.replayRebuildPending = tc.startPending
+			tp.anchorTotalLines = 777
+			tp.paintCacheValid = true
 
 			tp.mu.Lock()
 			tp.consumeReplayRebuildPendingLocked()
@@ -1149,6 +1161,8 @@ func TestTerminalPane_ConsumeReplayRebuildPendingClampAndIdempotency(t *testing.
 
 			testutil.Equal(t, tp.scrollOffset, tc.wantScrollOffset)
 			testutil.Equal(t, tp.replayRebuildPending, false)
+			testutil.Equal(t, tp.anchorTotalLines, tc.wantAnchorTotalLines)
+			testutil.Equal(t, tp.paintCacheValid, tc.wantPaintCacheValid)
 		})
 	}
 }
