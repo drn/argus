@@ -159,10 +159,10 @@ func wireApp(t *testing.T, app *App) (tcell.SimulationScreen, func()) {
 	app.tapp = tApp
 	app.screen = ls // match production wiring (Run sets app.screen)
 	app.tapp.SetInputCapture(app.handleGlobalKey)
-	// afterDraw is the production hook that consumes the pendingSync flag and
-	// runs screen.Sync(). buildUI wires it on the original tview.Application;
-	// re-wire it here since wireApp swapped app.tapp.
-	app.tapp.SetAfterDrawFunc(app.afterDraw)
+	// Note: afterDraw was deleted (it called screen.Sync() which emits CSI 2J
+	// and was the root cause of tmux flashing). No replacement needed —
+	// tview.draw()'s tview.Clear() + root.Draw() + screen.Show() correctly
+	// handles all in-app rendering. See gotchas/ui-threading.md.
 	app.tapp.SetRoot(app.root, true)
 	stop := runApp(t, tApp)
 	return sim, stop
@@ -617,10 +617,11 @@ func TestSmoke_ForceRedrawOnTransitions(t *testing.T) {
 		t.Errorf("tab switch did not fire pages-changed redraw")
 	}
 
-	// Ctrl+L always logs explicitly (user-initiated refresh).
+	// Ctrl+L triggers a Sync (one of only two places we Sync — user-
+	// initiated refresh; one CSI 2J flash is the expected cost).
 	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
 	syncUI(t, app.tapp)
-	testutil.Contains(t, readLog(), "force redraw: ctrl+l")
+	testutil.Contains(t, readLog(), "ctrl+l — Sync")
 
 	// Back to Tasks so Enter can open the agent view.
 	sim.InjectKey(tcell.KeyRune, '1', 0)
@@ -1152,41 +1153,6 @@ func TestSmoke_TaskDetailBranchChangeFiresRedraw(t *testing.T) {
 	}
 }
 
-// TestSmoke_AfterDrawSyncsOnPendingFlag verifies the architectural change:
-// forceRedraw sets a flag, afterDraw consumes it. Drives one update cycle
-// that fires several forceRedraw calls and asserts the flag clears (idempotent
-// — multiple sets collapse to one consumed flag). QueueUpdateDraw blocks
-// until BOTH f() and a.draw() complete; afterDraw runs inside a.draw(), so
-// when the call returns we're guaranteed afterDraw has run.
-func TestSmoke_AfterDrawSyncsOnPendingFlag(t *testing.T) {
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	d.Add(&model.Task{ID: "ad-1", Name: "afterdraw", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}) //nolint:errcheck // test setup; failure surfaces in subsequent assertion
-	app.refreshTasks()
-
-	_, stop := wireApp(t, app)
-	defer stop()
-
-	// Set the flag inside QueueUpdateDraw — afterDraw fires before this returns.
-	app.tapp.QueueUpdateDraw(func() {
-		app.forceRedraw("test single")
-	})
-	if app.pendingSync.Load() {
-		t.Errorf("pendingSync should have been consumed by afterDraw")
-	}
-
-	// Multiple forceRedraw calls in one update collapse to one consumed flag.
-	app.tapp.QueueUpdateDraw(func() {
-		app.forceRedraw("test a")
-		app.forceRedraw("test b")
-		app.forceRedraw("test c")
-	})
-	if app.pendingSync.Load() {
-		t.Errorf("multiple forceRedraw calls in one event must collapse to one consumed flag, got pendingSync still set")
-	}
-}
-
 func TestSmoke_ClickNonInteractivePanelKeepsFocus(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -1536,13 +1502,14 @@ func TestSmoke_ClickDAGPageDoesNotStealFocus(t *testing.T) {
 	}
 }
 
-// TestSmoke_FocusRegainFiresRedraw completes the focus-event chain
-// end-to-end: a *tcell.EventFocus(true) posted to the SimulationScreen
-// must reach lazyScreen.PollEvent, fire onFocusGained, and produce a
-// "force redraw: focus regained" uxlog entry. wireApp doesn't itself
-// wire onFocusGained (production Run() does that step), so the test
-// installs the same wiring before posting the event.
-func TestSmoke_FocusRegainFiresRedraw(t *testing.T) {
+// TestSmoke_FocusRegainTriggersSync exercises the focus-regain → Sync chain:
+// a *tcell.EventFocus(true) posted to the SimulationScreen must reach
+// lazyScreen.PollEvent, fire onFocusGained, and produce a "focus regained
+// — Sync" uxlog entry. This is one of only two places we Sync — repair-
+// screen-damage cases per gdamore's intent (tmux pane may have been
+// repainted from a stale backing while we were unfocused). One CSI 2J
+// flash on a rare event is the right tradeoff for guaranteed correctness.
+func TestSmoke_FocusRegainTriggersSync(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ux.log")
 	if err := uxlog.Init(logPath); err != nil {
 		t.Fatalf("uxlog.Init: %v", err)
@@ -1555,9 +1522,11 @@ func TestSmoke_FocusRegainFiresRedraw(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 	// Production wires this inside Run(); wireApp bypasses Run() so we
-	// install the callback explicitly to exercise the same production code
-	// path through lazyScreen.PollEvent → onFocusGained → forceRedraw.
-	app.screen.onFocusGained = func() { app.forceRedraw("focus regained") }
+	// install the same callback (log + Sync) explicitly.
+	app.screen.onFocusGained = func() {
+		uxlog.Log("[tui] focus regained — Sync")
+		app.screen.Sync()
+	}
 
 	sim.PostEvent(tcell.NewEventFocus(true))
 	syncUI(t, app.tapp)
@@ -1566,14 +1535,14 @@ func TestSmoke_FocusRegainFiresRedraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log: %v", err)
 	}
-	testutil.Contains(t, string(b), "force redraw: focus regained")
+	testutil.Contains(t, string(b), "focus regained — Sync")
 }
 
-// TestSmoke_FocusLossDoesNotFireRedraw guards the negative edge: a focus
-// loss event must NOT fire forceRedraw. The lazyScreen filter is the only
-// place that decides; if it ever started firing on loss too, idle panes
-// would burn a Sync every time the user clicked away from the window.
-func TestSmoke_FocusLossDoesNotFireRedraw(t *testing.T) {
+// TestSmoke_FocusLossDoesNotTriggerSync guards the negative edge: a focus
+// loss event must NOT trigger Sync. lazyScreen.PollEvent filters on
+// EventFocus.Focused == true; firing on loss too would burn a Sync every
+// time the user clicked away from the window.
+func TestSmoke_FocusLossDoesNotTriggerSync(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ux.log")
 	if err := uxlog.Init(logPath); err != nil {
 		t.Fatalf("uxlog.Init: %v", err)
@@ -1585,7 +1554,10 @@ func TestSmoke_FocusLossDoesNotFireRedraw(t *testing.T) {
 	app := New(d, runner, false)
 	sim, stop := wireApp(t, app)
 	defer stop()
-	app.screen.onFocusGained = func() { app.forceRedraw("focus regained") }
+	app.screen.onFocusGained = func() {
+		uxlog.Log("[tui] focus regained — Sync")
+		app.screen.Sync()
+	}
 
 	// Snapshot the log AFTER any wireApp-induced redraws so the assertion
 	// only inspects what posting the focus-loss event added.
@@ -1609,161 +1581,7 @@ func TestSmoke_FocusLossDoesNotFireRedraw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log tail: %v", err)
 	}
-	if strings.Contains(string(tail), "force redraw: focus regained") {
-		t.Fatalf("focus loss must not fire focus-regained redraw; tail:\n%s", string(tail))
+	if strings.Contains(string(tail), "focus regained — Sync") {
+		t.Fatalf("focus loss must not fire focus-regained Sync; tail:\n%s", string(tail))
 	}
-}
-
-// TestSmoke_TaskPreviewContentSyncInMultiplexer drives the end-to-end
-// content-sync chain: TaskPreviewPanel.RefreshOutput with same-shape
-// content change → OnContentChange → forceContentSync → pendingContentSync
-// flag → afterDraw Syncs. Asserts the uxlog entry appears. Inside
-// multiplexerMode this is what recovers from tmux pane drift on
-// same-shape preview tick updates.
-func TestSmoke_TaskPreviewContentSyncInMultiplexer(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "ux.log")
-	if err := uxlog.Init(logPath); err != nil {
-		t.Fatalf("uxlog.Init: %v", err)
-	}
-	defer uxlog.Close()
-
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	app.multiplexerMode.Store(true)
-	_, stop := wireApp(t, app)
-	defer stop()
-
-	readLog := func() string {
-		b, _ := os.ReadFile(logPath)
-		return string(b)
-	}
-
-	// Prime the grid: first RefreshOutput establishes cellsNil=false and
-	// the dimensions (fires OnBranchChange because shape changed nil→grid).
-	// syncUI barriers: QueueUpdateDraw is asynchronous; without an explicit
-	// barrier, the count read below could race the queued closure.
-	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("first content\n"), 80, 24, 80, 24)
-	})
-	syncUI(t, app.tapp)
-
-	// Same-shape content update: cellsNil unchanged, cols/rows unchanged,
-	// only cell content differs. OnContentChange must fire.
-	preCount := strings.Count(readLog(), "force content sync: task preview content updated")
-	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("second content\n"), 80, 24, 80, 24)
-	})
-	syncUI(t, app.tapp)
-	postCount := strings.Count(readLog(), "force content sync: task preview content updated")
-	if postCount <= preCount {
-		t.Errorf("same-shape preview content update must fire forceContentSync; got count %d → %d\nlog tail:\n%s",
-			preCount, postCount, readLog())
-	}
-}
-
-// TestSmoke_TaskPreviewContentSyncIsNoopOutsideMultiplexer mirrors the
-// above for bare-terminal mode: the same content update must NOT fire
-// the content-sync uxlog entry because forceContentSync early-returns
-// when multiplexerMode is false.
-func TestSmoke_TaskPreviewContentSyncIsNoopOutsideMultiplexer(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "ux.log")
-	if err := uxlog.Init(logPath); err != nil {
-		t.Fatalf("uxlog.Init: %v", err)
-	}
-	defer uxlog.Close()
-
-	d := testDB(t)
-	runner := agent.NewRunner(nil)
-	app := New(d, runner, false)
-	app.multiplexerMode.Store(false)
-	_, stop := wireApp(t, app)
-	defer stop()
-
-	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("first content\n"), 80, 24, 80, 24)
-	})
-	syncUI(t, app.tapp)
-	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("second content\n"), 80, 24, 80, 24)
-	})
-	syncUI(t, app.tapp)
-
-	b, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
-	if strings.Contains(string(b), "force content sync: task preview content updated") {
-		t.Errorf("bare-terminal mode must not fire content sync; log:\n%s", string(b))
-	}
-}
-
-// TestSmoke_AgentPaneContentSyncWiring exercises the TerminalPane.OnContentChange
-// wiring end-to-end: invoking the callback (which `renderLive` calls after
-// consuming new PTY bytes) must route through `forceContentSync` and reach
-// `pendingContentSync`, with a matching uxlog entry in multiplexer mode and
-// no-op in bare-terminal mode. Driving a real PTY stream through the
-// emulator would couple this test to terminal.SessionAdapter; the wiring
-// itself is what the audit flagged as untested, so we invoke the callback
-// directly via its public field — the same path `renderLive` uses via
-// `notifyContentChange()`.
-func TestSmoke_AgentPaneContentSyncWiring(t *testing.T) {
-	t.Run("multiplexer fires sync", func(t *testing.T) {
-		logPath := filepath.Join(t.TempDir(), "ux.log")
-		if err := uxlog.Init(logPath); err != nil {
-			t.Fatalf("uxlog.Init: %v", err)
-		}
-		defer uxlog.Close()
-
-		d := testDB(t)
-		runner := agent.NewRunner(nil)
-		app := New(d, runner, false)
-		app.multiplexerMode.Store(true)
-		_, stop := wireApp(t, app)
-		defer stop()
-
-		app.tapp.QueueUpdateDraw(func() {
-			app.agentPane.OnContentChange()
-		})
-		syncUI(t, app.tapp)
-
-		b, _ := os.ReadFile(logPath)
-		if !strings.Contains(string(b), "force content sync: agentpane content updated") {
-			t.Errorf("agent pane OnContentChange must fire forceContentSync in multiplexer mode; log:\n%s", string(b))
-		}
-		if !app.pendingContentSync.Load() {
-			// afterDraw should have consumed it via a Sync. But wireApp's
-			// SimulationScreen may or may not have fired afterDraw between
-			// syncUI calls — the log entry is the more reliable assertion.
-			t.Logf("pendingContentSync was already consumed by afterDraw (expected if afterDraw ran)")
-		}
-	})
-
-	t.Run("bare terminal no-op", func(t *testing.T) {
-		logPath := filepath.Join(t.TempDir(), "ux.log")
-		if err := uxlog.Init(logPath); err != nil {
-			t.Fatalf("uxlog.Init: %v", err)
-		}
-		defer uxlog.Close()
-
-		d := testDB(t)
-		runner := agent.NewRunner(nil)
-		app := New(d, runner, false)
-		app.multiplexerMode.Store(false)
-		_, stop := wireApp(t, app)
-		defer stop()
-
-		app.tapp.QueueUpdateDraw(func() {
-			app.agentPane.OnContentChange()
-		})
-		syncUI(t, app.tapp)
-
-		b, _ := os.ReadFile(logPath)
-		if strings.Contains(string(b), "force content sync: agentpane content updated") {
-			t.Errorf("bare-terminal mode must not fire content sync; log:\n%s", string(b))
-		}
-		if app.pendingContentSync.Load() {
-			t.Errorf("bare-terminal mode must leave pendingContentSync false; got true")
-		}
-	})
 }

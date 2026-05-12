@@ -47,17 +47,6 @@ type TaskPreviewPanel struct {
 	// forceRedraw so afterDraw runs Sync. See gotchas/ui-threading.md.
 	OnBranchChange func()
 
-	// OnContentChange fires when RefreshOutput rebuilt the cell grid with
-	// the SAME shape (cols × rows unchanged) but different content. App
-	// wires this to forceContentSync, which Syncs only when running inside
-	// a multiplexer (tmux/screen). The branch-change contract intentionally
-	// doesn't cover same-shape content updates — tcell.Show()'s per-cell
-	// diff handles them correctly on bare terminals. Inside tmux, however,
-	// tcell's SGR/cursor optimization can desync from the pane backing
-	// after tmux-internal redraws, so a periodic Sync on content updates
-	// is required to recover. See gotchas/ui-threading.md.
-	OnContentChange func()
-
 	// Snapshot of last-rendered shape, used to suppress callback when a
 	// mutator left the cell SET unchanged. cellsNil distinguishes
 	// "centered status" from "grid paint"; cols/rows track grid dimensions.
@@ -123,14 +112,6 @@ func (tp *TaskPreviewPanel) snapshotShapeLocked() bool {
 func (tp *TaskPreviewPanel) notifyBranchChange() {
 	if tp.OnBranchChange != nil {
 		tp.OnBranchChange()
-	}
-}
-
-// notifyContentChange fires OnContentChange if set. Same locking contract
-// as notifyBranchChange: call AFTER releasing tp.mu.
-func (tp *TaskPreviewPanel) notifyContentChange() {
-	if tp.OnContentChange != nil {
-		tp.OnContentChange()
 	}
 }
 
@@ -269,13 +250,11 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 	tp.mu.Unlock()
 	if changed {
 		tp.notifyBranchChange()
-	} else {
-		// Same shape, different cells — bypasses the branch-change
-		// contract by design. Inside a multiplexer this still needs a
-		// Sync (see OnContentChange doc). On bare terminals the callback
-		// is wired to a no-op.
-		tp.notifyContentChange()
 	}
+	// Same-shape content updates (cells differ, cols/rows unchanged) flow
+	// through tcell.Show()'s per-cell diff. No explicit notification needed
+	// — tcell handles content changes correctly on both bare terminals and
+	// inside tmux (DECSET 2026 wraps each draw atomically when XTermLike).
 }
 
 // SetStatus sets a status message (clears cached cells). Fires
