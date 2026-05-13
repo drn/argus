@@ -66,6 +66,28 @@ func TestDAGNodesFromTasks_FiltersOrphansAndArchived(t *testing.T) {
 			want: want{ids: []string{"a", "b"}},
 		},
 		{
+			// A live parent satisfies hasParent on the first hit; the
+			// trailing stale id is ignored. Both nodes are kept.
+			name: "live parent + stale parent id mixed",
+			tasks: []*model.Task{
+				{ID: "live", Name: "live", Status: model.StatusPending},
+				{ID: "child", Name: "child", Status: model.StatusPending, DependsOn: []string{"live", "ghost"}},
+			},
+			want: want{ids: []string{"child", "live"}},
+		},
+		{
+			// Only an archived child points to the parent. Archived rows
+			// are stripped from `live` before the `referenced` map is
+			// built, so the parent is not referenced by anyone alive and
+			// drops out as a pure orphan.
+			name: "parent referenced only by archived child is dropped",
+			tasks: []*model.Task{
+				{ID: "parent", Name: "parent", Status: model.StatusPending},
+				{ID: "ac", Name: "ac", Status: model.StatusComplete, Archived: true, DependsOn: []string{"parent"}},
+			},
+			want: want{ids: nil},
+		},
+		{
 			name:  "empty input",
 			tasks: nil,
 			want:  want{ids: nil},
