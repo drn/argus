@@ -97,7 +97,8 @@ type App struct {
 	settings     *SettingsView
 	settingsPage *SettingsPage
 
-	// DAG tab (created at construction; populated from tick loop snapshot).
+	// DAG tab (created at construction; populated by refreshDAG on tab
+	// entry and after a halt cascade — the tick loop does NOT refresh it).
 	dagWidget *dagview.Widget
 	dagPage   *DAGPage
 

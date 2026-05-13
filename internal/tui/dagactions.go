@@ -36,9 +36,13 @@ func (a *App) refreshDAG() {
 //
 //  1. Archived tasks are dropped. The web UI exposes a toggle to include
 //     them; the TUI does not yet — when it does, this is the seam to wire it.
-//  2. Pure orphans (no DependsOn and not referenced as a parent by any
-//     surviving task) are dropped. They contribute no edges and pile up at
-//     layer 0, drowning the connected graph in unrelated boxes.
+//  2. Pure orphans (no *live* parents AND not referenced as a parent by any
+//     surviving task) are dropped. "Live parent" means a DependsOn id that
+//     resolves to a non-archived task in the current snapshot — a task with
+//     `DependsOn: ["archived-or-deleted-id"]` counts as having no live
+//     parents and is dropped if nobody references it either. Pure orphans
+//     contribute no edges and pile up at layer 0, drowning the connected
+//     graph in unrelated boxes.
 //
 // A task whose only parents are stale (archived or deleted) is dropped
 // if it also has no live children — i.e. it would render as an isolated
