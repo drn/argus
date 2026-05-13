@@ -1531,6 +1531,15 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	if sess != nil && sess.Alive() {
 		b := tcellKeyToBytes(event)
 		if len(b) > 0 {
+			// Diagnose multi-file drag-drop tearing: log any key forwarded
+			// during the 200ms paste-settling window so we can see whether
+			// the outer terminal injects a stray Enter/space between two
+			// bracket-paste sequences (which would split a multi-file drop).
+			if lp := a.agentPane.LastPasteTime(); !lp.IsZero() {
+				if elapsed := time.Since(lp); elapsed < 200*time.Millisecond {
+					uxlog.Log("[paste] key forwarded %dms after paste: %q (key=%v)", elapsed.Milliseconds(), string(b), event.Key())
+				}
+			}
 			if _, err := sess.WriteInput(b); err != nil {
 				uxlog.Log("[tui] write to PTY failed: %v", err)
 			}
