@@ -12,8 +12,9 @@ import (
 )
 
 // refreshDAG rebuilds the DAG widget's node set from the current DB
-// snapshot. Called when the DAG tab is opened and whenever the tick loop
-// notices a task mutation (status change, new task, archive flip).
+// snapshot. Called when the DAG tab is opened and after a halt cascade
+// completes (see confirmHaltDownstream). Not currently driven by the
+// tick loop — task-list mutations refresh on tab entry instead.
 //
 // Filter rules — see dagNodesFromTasks: archived rows are dropped, and
 // pure orphans (no parents AND not referenced as a parent) are dropped.
@@ -37,10 +38,16 @@ func (a *App) refreshDAG() {
 //     surviving task) are dropped. They contribute no edges and pile up at
 //     layer 0, drowning the connected graph in unrelated boxes.
 //
-// A task with a stale DependsOn ID (parent archived or deleted) is still
-// kept if any other surviving task references *it* as a parent; otherwise
-// the Compute pass silently prunes its dangling edges and it would appear
-// orphaned — better to keep it than to vanish a row mid-stack.
+// A task whose only parents are stale (archived or deleted) is dropped
+// if it also has no live children — i.e. it would render as an isolated
+// box at layer 0. If it still has at least one live child, it's kept and
+// renders as a source node, since dropping it would vanish a real link
+// from the middle of someone's stack.
+//
+// The filter is intentionally cycle-agnostic: orch.Link / orch.FindCycle
+// prevent cycles at link time, so by the time Tasks() returns the DAG is
+// already acyclic. A defective input with a self-loop or a mutual cycle
+// passes through here unchanged and the layout's cycle guard handles it.
 func dagNodesFromTasks(tasks []*model.Task) []dagview.Node {
 	live := make(map[string]*model.Task, len(tasks))
 	for _, t := range tasks {
@@ -72,11 +79,15 @@ func dagNodesFromTasks(tasks []*model.Task) []dagview.Node {
 		if !hasParent && !referenced[t.ID] {
 			continue
 		}
+		// Archived is always false here — archived rows were filtered
+		// above. The field stays in the projection so the widget's
+		// status palette can still render grey-dim if a future toggle
+		// opens up archived inclusion.
 		out = append(out, dagview.Node{
 			ID:        t.ID,
 			Name:      t.Name,
 			Status:    t.Status.String(),
-			Archived:  t.Archived,
+			Archived:  false,
 			Result:    t.Result,
 			DependsOn: append([]string(nil), t.DependsOn...),
 		})

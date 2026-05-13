@@ -6,7 +6,17 @@ import (
 
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/dagview"
 )
+
+func findNodeByID(nodes []dagview.Node, id string) (dagview.Node, bool) {
+	for _, n := range nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return dagview.Node{}, false
+}
 
 // TestDAGNodesFromTasks_FiltersOrphansAndArchived covers the filter
 // contract of dagNodesFromTasks: drop archived, drop pure orphans (no
@@ -69,6 +79,26 @@ func TestDAGNodesFromTasks_FiltersOrphansAndArchived(t *testing.T) {
 			},
 			want: want{ids: []string{"a", "b", "c"}},
 		},
+		{
+			// Filter is intentionally cycle-agnostic — orch.Link
+			// prevents cycles at link time, so by the time the filter
+			// runs the graph is already acyclic. A defective self-loop
+			// input passes through; the layout's cycle guard handles
+			// the rendering side.
+			name: "self-loop passes through (cycle-agnostic filter)",
+			tasks: []*model.Task{
+				{ID: "a", Name: "a", Status: model.StatusPending, DependsOn: []string{"a"}},
+			},
+			want: want{ids: []string{"a"}},
+		},
+		{
+			name: "mutual dependency passes through (cycle-agnostic filter)",
+			tasks: []*model.Task{
+				{ID: "a", Name: "a", Status: model.StatusPending, DependsOn: []string{"b"}},
+				{ID: "b", Name: "b", Status: model.StatusPending, DependsOn: []string{"a"}},
+			},
+			want: want{ids: []string{"a", "b"}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -100,10 +130,8 @@ func TestDAGNodesFromTasks_PassthroughFields(t *testing.T) {
 	got := dagNodesFromTasks(tasks)
 	testutil.Equal(t, len(got), 2)
 
-	var child = got[0]
-	if got[1].ID == "c" {
-		child = got[1]
-	}
+	child, ok := findNodeByID(got, "c")
+	testutil.Equal(t, ok, true)
 	testutil.Equal(t, child.Name, "child")
 	testutil.Equal(t, child.Status, model.StatusInReview.String())
 	testutil.Equal(t, child.Archived, false)
