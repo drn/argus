@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/orch"
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/uxlog"
@@ -14,18 +15,64 @@ import (
 // snapshot. Called when the DAG tab is opened and whenever the tick loop
 // notices a task mutation (status change, new task, archive flip).
 //
-// Project filter intentionally not applied here — the widget shows every
-// task with at least one link plus orphans. A future iteration can scope
-// to a single project via a dropdown without touching this entry point.
+// Filter rules — see dagNodesFromTasks: archived rows are dropped, and
+// pure orphans (no parents AND not referenced as a parent) are dropped.
+// The DAG tab is for inspecting linked stacks; including every standalone
+// task pushes the connected graph off-screen.
 func (a *App) refreshDAG() {
 	tasks, err := a.db.Tasks()
 	if err != nil {
 		uxlog.Log("[tui] refreshDAG: %v", err)
 		return
 	}
-	nodes := make([]dagview.Node, 0, len(tasks))
+	a.dagWidget.SetNodes(dagNodesFromTasks(tasks))
+}
+
+// dagNodesFromTasks projects the task list into the DAG widget's input set,
+// applying the TUI's filter contract:
+//
+//  1. Archived tasks are dropped. The web UI exposes a toggle to include
+//     them; the TUI does not yet — when it does, this is the seam to wire it.
+//  2. Pure orphans (no DependsOn and not referenced as a parent by any
+//     surviving task) are dropped. They contribute no edges and pile up at
+//     layer 0, drowning the connected graph in unrelated boxes.
+//
+// A task with a stale DependsOn ID (parent archived or deleted) is still
+// kept if any other surviving task references *it* as a parent; otherwise
+// the Compute pass silently prunes its dangling edges and it would appear
+// orphaned — better to keep it than to vanish a row mid-stack.
+func dagNodesFromTasks(tasks []*model.Task) []dagview.Node {
+	live := make(map[string]*model.Task, len(tasks))
 	for _, t := range tasks {
-		nodes = append(nodes, dagview.Node{
+		if t.Archived {
+			continue
+		}
+		live[t.ID] = t
+	}
+	referenced := make(map[string]bool, len(live))
+	for _, t := range live {
+		for _, d := range t.DependsOn {
+			if _, ok := live[d]; ok {
+				referenced[d] = true
+			}
+		}
+	}
+	out := make([]dagview.Node, 0, len(live))
+	for _, t := range tasks {
+		if t.Archived {
+			continue
+		}
+		hasParent := false
+		for _, d := range t.DependsOn {
+			if _, ok := live[d]; ok {
+				hasParent = true
+				break
+			}
+		}
+		if !hasParent && !referenced[t.ID] {
+			continue
+		}
+		out = append(out, dagview.Node{
 			ID:        t.ID,
 			Name:      t.Name,
 			Status:    t.Status.String(),
@@ -34,7 +81,7 @@ func (a *App) refreshDAG() {
 			DependsOn: append([]string(nil), t.DependsOn...),
 		})
 	}
-	a.dagWidget.SetNodes(nodes)
+	return out
 }
 
 // openAgentForTask is the DAG-side "jump to this task's agent view" hook.
