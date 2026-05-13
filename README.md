@@ -260,8 +260,20 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `task_deps`           | Return one-hop upstream + downstream neighbours of a task. Used by the DAG view's task detail panel.                                                               |
 | `task_halt_downstream`| Cascade stop/archive through every transitive descendant of a task. Used after a milestone fails so the rest of the stack doesn't waste effort. Seed is untouched. |
 | `task_set_plan_slug`  | Stamp the orchestrator grouping label. Opaque to the daemon; tasks sharing the same slug render as one stack in the DAG view.                                      |
+| `task_set_result`     | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 
 Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-complete/SKILL.md` let an agent finalize its own task at the end of a session via `cwd` resolution. Completing and archiving are independent axes.
+
+**Inter-Task Messaging** (peer-to-peer between live or paused tasks):
+
+| Tool                | Description                                                                                                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `task_message_send` | Send a peer-to-peer message. Params: `to`, `body`, optional `kind` (`note` / `question` / `answer`), optional `in_reply_to`. Caller resolved via `cwd` or `id`. Body ≤ 64 KiB. Recipient inbox capped at 500 unread; sender rate-limited to 50/min.    |
+| `task_inbox`        | Read messages addressed to the caller, oldest-first. Filters: `unread_only` (default true), `sender`, `since` (RFC3339), `limit` (default 50, max 500). Does NOT auto-mark read.                                                                          |
+| `task_message_ack`  | Mark messages read. Pass `message_ids` (up to 500). IDs not addressed to the caller are silently ignored.                                                                                                                                                |
+| `task_ask`          | Convenience: send a question and optionally block until a reply lands. Params: `to`, `body`, optional `timeout_seconds` (default 0 = return immediately; max 120). When blocking, polls the answer at 500 ms cadence; callers wanting longer waits poll. |
+
+If the recipient has a live agent session the daemon also writes a single notification line into their PTY (best-effort). Same surface available over REST: `GET /api/tasks/{id}/inbox`, `POST /api/tasks/{id}/inbox/ack`, `POST /api/tasks/{id}/messages` (master-only).
 
 **Schedule Management:**
 

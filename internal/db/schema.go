@@ -210,5 +210,27 @@ func (d *DB) createTables() error {
 	// Add run_once_at column to existing scheduled_tasks tables. Idempotent.
 	d.conn.Exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_once_at TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
+	// Inter-task messaging. One row per peer-to-peer message; read state is
+	// per-recipient via read_at. kind is documentation for receiving agents
+	// and the task_ask polling loop — the daemon does not enforce
+	// conversation semantics. See internal/db/messages.go.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS task_messages (
+			id            TEXT PRIMARY KEY,
+			from_task_id  TEXT NOT NULL,
+			to_task_id    TEXT NOT NULL,
+			kind          TEXT NOT NULL DEFAULT 'note',
+			body          TEXT NOT NULL,
+			in_reply_to   TEXT NOT NULL DEFAULT '',
+			created_at    TEXT NOT NULL,
+			read_at       TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("creating task_messages table: %w", err)
+	}
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_to_unread   ON task_messages(to_task_id, read_at)`)       //nolint:errcheck
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_in_reply_to ON task_messages(in_reply_to)`)               //nolint:errcheck
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_from_created ON task_messages(from_task_id, created_at)`) //nolint:errcheck
+
 	return nil
 }

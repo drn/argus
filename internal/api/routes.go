@@ -96,6 +96,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
 	mux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
 
+	// Inter-task messaging. Inbox read + ack are per-task scope (device
+	// tokens OK); sending is requireMaster.
+	mux.HandleFunc("GET /api/tasks/{id}/inbox", s.handleListInbox)
+	mux.HandleFunc("POST /api/tasks/{id}/inbox/ack", s.handleAckInbox)
+	mux.HandleFunc("POST /api/tasks/{id}/messages", s.handleSendMessage)
+
 	return mux
 }
 

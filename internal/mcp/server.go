@@ -148,6 +148,8 @@ type Server struct {
 	clipboard   ClipboardSetter // optional; set via SetClipboard
 	schedDB     ScheduleStore   // optional; set via SetScheduleManager
 	schedRunner ScheduleRunner  // optional; set via SetScheduleManager
+	messages    MessageStore    // optional; set via SetMessageManager
+	nudger      MessageNudger   // optional; set via SetMessageManager (best-effort)
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so
@@ -774,6 +776,9 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.scheduleMgmtEnabled() {
 		tools = append(tools, scheduleToolDefs...)
 	}
+	if s.messagingEnabled() {
+		tools = append(tools, messagingToolDefs...)
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -836,6 +841,14 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolScheduleDelete(req.ID, params.Arguments)
 	case "schedule_run_now":
 		return s.toolScheduleRunNow(req.ID, params.Arguments)
+	case "task_message_send":
+		return s.toolTaskMessageSend(req.ID, params.Arguments)
+	case "task_inbox":
+		return s.toolTaskInbox(req.ID, params.Arguments)
+	case "task_message_ack":
+		return s.toolTaskMessageAck(req.ID, params.Arguments)
+	case "task_ask":
+		return s.toolTaskAsk(req.ID, params.Arguments)
 	default:
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
@@ -1489,6 +1502,17 @@ func (s *Server) toolTaskArchive(id interface{}, args json.RawMessage) *Response
 	if err := s.taskDB.Update(task); err != nil {
 		log.Printf("[mcp] task_archive failed: id=%s err=%v", task.ID, err)
 		return toolError(id, fmt.Sprintf("Failed to archive task: %v", err))
+	}
+
+	// Drop queued messages on archive so a stale recipient doesn't sit on
+	// 500 unread rows blocking other senders. Best-effort — a delete error
+	// is logged but does not roll the archive back.
+	if newArchived && s.messages != nil {
+		if n, derr := s.messages.DeleteMessagesForTask(task.ID); derr != nil {
+			log.Printf("[mcp] task_archive message cleanup failed: id=%s err=%v", task.ID, derr)
+		} else if n > 0 {
+			log.Printf("[mcp] task_archive cleared %d message(s) for id=%s", n, task.ID)
+		}
 	}
 
 	action := "Archived"
