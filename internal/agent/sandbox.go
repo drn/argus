@@ -66,6 +66,11 @@ const sandboxProfileBase = `(version 1)
 ; agent MUST be able to write them. Without this rule pi sessions vanish under
 ; sandbox and resume is silently broken.
 (allow file-write* (subpath (string-append (param "HOME") "/.pi")))
+; Plannotator (browser-based code review UI) writes its session registry,
+; drafts, and config.json under ~/.plannotator/. Without write access,
+; plannotator annotate EPERMs trying to open ~/.plannotator/sessions/*.json
+; and the review UI can't launch from inside a sandboxed task.
+(allow file-write* (subpath (string-append (param "HOME") "/.plannotator")))
 ; ~/.ssh/known_hosts append for new git remotes. Without this, ssh prompts
 ; interactively for host-key acceptance and the agent's PTY hangs silently.
 ; Prefix covers OpenSSH's mkstemp-then-rename atomic update (known_hosts.XXXXXX).

@@ -760,6 +760,60 @@ func TestSandbox_PiBackendWritable(t *testing.T) {
 	})
 }
 
+// TestSandbox_PlannotatorWritable pins the ~/.plannotator write rule.
+// Plannotator (browser-based code review UI) writes its session registry
+// (~/.plannotator/sessions/<pid>.json), drafts (~/.plannotator/drafts/), and
+// config.json. Without write access, `plannotator annotate` EPERMs trying to
+// open ~/.plannotator/sessions/*.json and the review UI fails to launch from
+// inside any sandboxed worktree task.
+func TestSandbox_PlannotatorWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	// Base profile must contain an allow file-write* rule for ~/.plannotator
+	// (string-match check independent of sandbox-exec being functional).
+	if !strings.Contains(sandboxProfileBase, `(allow file-write* (subpath (string-append (param "HOME") "/.plannotator")))`) {
+		t.Errorf("base profile missing allow file-write* for ~/.plannotator")
+	}
+
+	resolved, profilePath, params, cleanup := sandboxFakeHome(t, "plannotator", ".plannotator")
+	defer cleanup()
+
+	paths := []string{
+		".plannotator/config.json",
+		".plannotator/sessions/85593.json",
+		".plannotator/sessions/85593.json.tmp.123",
+		".plannotator/drafts/some-draft.md",
+	}
+	for _, name := range paths {
+		t.Run(name, func(t *testing.T) {
+			target := resolved + "/" + name
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				t.Fatalf("mkdir parent: %v", err)
+			}
+			if out, err := sandboxRunWith(profilePath, params, "echo ok > "+shellQuote(target)); err != nil {
+				t.Fatalf("write to %s should succeed for plannotator session/draft persistence: %v\n%s", name, err, out)
+			}
+			if _, statErr := os.Stat(target); statErr != nil {
+				t.Errorf("file %s should exist after write: %v", target, statErr)
+			}
+		})
+	}
+
+	// Negative case: pins the (subpath HOME/.plannotator) rule's narrowness. A
+	// regression to (subpath HOME) would silently pass all positive subtests.
+	t.Run("denies unrelated HOME path", func(t *testing.T) {
+		target := resolved + "/.not-plannotator-related"
+		if _, err := sandboxRunWith(profilePath, params, "echo nope > "+shellQuote(target)); err == nil {
+			t.Fatal("write to unrelated HOME-rooted path must remain blocked — the .plannotator rule must not over-broaden")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Errorf("unrelated file should not have been created: %v", statErr)
+		}
+	})
+}
+
 // TestSandbox_KnownHostsAppend pins the ~/.ssh/known_hosts write rule. Without
 // it, ssh prompts interactively for host-key acceptance on a new remote and
 // the agent's PTY hangs silently. Prefix covers OpenSSH's mkstemp atomic
