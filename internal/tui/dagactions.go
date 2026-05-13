@@ -26,7 +26,9 @@ func (a *App) refreshDAG() {
 		uxlog.Log("[tui] refreshDAG: %v", err)
 		return
 	}
-	a.dagWidget.SetNodes(dagNodesFromTasks(tasks))
+	nodes := dagNodesFromTasks(tasks)
+	uxlog.Log("[tui] refreshDAG: %d tasks → %d nodes (%d filtered)", len(tasks), len(nodes), len(tasks)-len(nodes))
+	a.dagWidget.SetNodes(nodes)
 }
 
 // dagNodesFromTasks projects the task list into the DAG widget's input set,
