@@ -507,6 +507,108 @@ func TestToolAsk_TimesOut(t *testing.T) {
 	testutil.Contains(t, textOf(cr), "No reply within")
 }
 
+func TestToolAsk_ValidationFailures(t *testing.T) {
+	s, _, _, _ := testServerWithMessaging()
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{"missing to", `{"id":"abc123","body":"x"}`, "to is required"},
+		{"missing body", `{"id":"abc123","to":"def456"}`, "body is required"},
+		{"negative timeout", `{"id":"abc123","to":"def456","body":"x","timeout_seconds":-1}`, "must be >= 0"},
+		{"unknown recipient", `{"id":"abc123","to":"missing","body":"x"}`, "recipient task not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRequest(t, s, "tools/call", ToolCallParams{
+				Name:      "task_ask",
+				Arguments: json.RawMessage(tc.args),
+			})
+			cr := callResult(t, resp)
+			if !cr.IsError {
+				t.Fatal("expected error")
+			}
+			testutil.Contains(t, textOf(cr), tc.want)
+		})
+	}
+}
+
+func TestToolAsk_StoreErrorTranslated(t *testing.T) {
+	s, _, store, _ := testServerWithMessaging()
+	store.failNext = db.ErrMessageInboxFull
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_ask",
+		Arguments: json.RawMessage(`{"id":"abc123","to":"def456","body":"x","timeout_seconds":0}`),
+	})
+	cr := callResult(t, resp)
+	if !cr.IsError {
+		t.Fatal("expected tool error")
+	}
+	testutil.Contains(t, textOf(cr), "inbox is full")
+}
+
+func TestToolAsk_NotConfigured(t *testing.T) {
+	s, _, _ := testServerWithTasks() // no SetMessageManager
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_ask",
+		Arguments: json.RawMessage(`{"id":"abc123","to":"def456","body":"x"}`),
+	})
+	cr := callResult(t, resp)
+	if !cr.IsError {
+		t.Fatal("expected error when messaging not configured")
+	}
+	testutil.Contains(t, textOf(cr), "not configured")
+}
+
+func TestToolInbox_NotConfigured(t *testing.T) {
+	s, _, _ := testServerWithTasks() // no SetMessageManager
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_inbox",
+		Arguments: json.RawMessage(`{"id":"abc123"}`),
+	})
+	cr := callResult(t, resp)
+	if !cr.IsError {
+		t.Fatal("expected error when messaging not configured")
+	}
+	testutil.Contains(t, textOf(cr), "not configured")
+}
+
+func TestToolMessageAck_NotConfigured(t *testing.T) {
+	s, _, _ := testServerWithTasks() // no SetMessageManager
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_message_ack",
+		Arguments: json.RawMessage(`{"id":"abc123","message_ids":["m1"]}`),
+	})
+	cr := callResult(t, resp)
+	if !cr.IsError {
+		t.Fatal("expected error when messaging not configured")
+	}
+	testutil.Contains(t, textOf(cr), "not configured")
+}
+
+func TestToolInbox_AllFiltersApplied(t *testing.T) {
+	s, _, store, _ := testServerWithMessaging()
+	// Seed two messages so the limit + filters branches each run.
+	store.messages = append(store.messages,
+		&model.TaskMessage{ID: "m1", From: "def456", To: "abc123", Kind: model.KindNote, Body: "x", CreatedAt: time.Now().Add(-time.Hour)},
+		&model.TaskMessage{ID: "m2", From: "def456", To: "abc123", Kind: model.KindNote, Body: "y", CreatedAt: time.Now()},
+	)
+	// Provide every filter so each parse branch fires.
+	since := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	args := fmt.Sprintf(`{"id":"abc123","unread_only":false,"sender":"def456","since":"%s","limit":10}`, since)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_inbox",
+		Arguments: json.RawMessage(args),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %v", cr.Content)
+	}
+	testutil.Contains(t, textOf(cr), "m1")
+	testutil.Contains(t, textOf(cr), "m2")
+}
+
 func TestToolAsk_RejectsOversizeTimeout(t *testing.T) {
 	s, _, _, _ := testServerWithMessaging()
 	resp := doRequest(t, s, "tools/call", ToolCallParams{

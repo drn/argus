@@ -185,6 +185,47 @@ func TestAPI_ListInbox_BadSince(t *testing.T) {
 	}
 }
 
+func TestAPI_ListInbox_FullFilters(t *testing.T) {
+	srv, d := testServer(t)
+	from := &model.Task{Name: "from"}
+	to := &model.Task{Name: "to"}
+	testutil.NoError(t, d.Add(from))
+	testutil.NoError(t, d.Add(to))
+
+	_, err := d.InsertMessage(&model.TaskMessage{
+		From: from.ID, To: to.ID, Kind: model.KindNote, Body: "hello",
+	})
+	testutil.NoError(t, err)
+
+	mux := srv.routes()
+	// Cover the unread_only=false branch + the limit query path + sender filter.
+	u := "/api/tasks/" + to.ID + "/inbox?unread_only=false&sender=" + from.ID + "&limit=5"
+	req := authedReq("GET", u, "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	var resp struct {
+		Messages []model.TaskMessage `json:"messages"`
+	}
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	testutil.Equal(t, len(resp.Messages), 1)
+}
+
+func TestAPI_ListInbox_BadLimit(t *testing.T) {
+	srv, d := testServer(t)
+	to := &model.Task{Name: "to"}
+	testutil.NoError(t, d.Add(to))
+	mux := srv.routes()
+	req := authedReq("GET", "/api/tasks/"+to.ID+"/inbox?limit=not-a-number", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+	if !strings.Contains(w.Body.String(), "invalid limit") {
+		t.Errorf("expected invalid-limit error, got: %s", w.Body.String())
+	}
+}
+
 func TestAPI_ListInbox_TaskNotFound(t *testing.T) {
 	srv, _ := testServer(t)
 	mux := srv.routes()
@@ -252,3 +293,51 @@ func TestAPI_DeleteCascadesMessages(t *testing.T) {
 // test above. The import path forces the db package reference, used here to
 // keep the cascade test self-contained.
 func InboxFilterUnused() db.InboxFilter { return db.InboxFilter{UnreadOnly: false} }
+
+// TestAPI_SendMessage_FromTaskNotFound covers the 404 branch when the path
+// task ID doesn't resolve. The pre-existing happy-path test only covered
+// the case where both tasks exist.
+func TestAPI_SendMessage_FromTaskNotFound(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+	req := masterReq("POST", "/api/tasks/missing/messages", `{"to":"any","body":"x"}`)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusNotFound)
+}
+
+// TestAPI_SendMessage_CapErrors confirms each DB cap rejection maps to
+// HTTP 400 with the error message preserved. The cap-rejection branches
+// in handleSendMessage previously had no coverage.
+func TestAPI_SendMessage_CapErrors(t *testing.T) {
+	srv, d := testServer(t)
+	from := &model.Task{Name: "from"}
+	to := &model.Task{Name: "to"}
+	testutil.NoError(t, d.Add(from))
+	testutil.NoError(t, d.Add(to))
+
+	mux := srv.routes()
+
+	t.Run("self send", func(t *testing.T) {
+		body := fmt.Sprintf(`{"to":"%s","body":"x"}`, from.ID)
+		req := masterReq("POST", "/api/tasks/"+from.ID+"/messages", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+		if !strings.Contains(w.Body.String(), "self") {
+			t.Errorf("expected self-send error, got: %s", w.Body.String())
+		}
+	})
+
+	t.Run("body too large", func(t *testing.T) {
+		body := fmt.Sprintf(`{"to":"%s","body":"%s"}`, to.ID, strings.Repeat("x", model.MaxMessageBodyBytes+1))
+		req := masterReq("POST", "/api/tasks/"+from.ID+"/messages", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		// http.MaxBytesReader returns its own 400; otherwise the DB cap fires.
+		// Either way, this is a 4xx, not a 5xx — confirm.
+		if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected 4xx, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
