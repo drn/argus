@@ -60,7 +60,7 @@ table and the four MCP tools that ride on top of it.
   reports `delivered: queued` instead of `delivered: nudged`. The
   `task_messages` row is committed before the nudge is attempted.
 - **Nudge writes a single literal line to the PTY** (`[argus] new message
-  from <id> (kind=<k>) — call task_inbox`). The receiving agent sees this
+from <id> (kind=<k>) — call task_inbox`). The receiving agent sees this
   as if a user typed it. If a specific backend mis-handles operator-style
   injected lines, switch to a sidecar-file delivery without breaking the
   message contract.
@@ -78,7 +78,7 @@ table and the four MCP tools that ride on top of it.
   `POST /archive`, TUI 'a' keybinding, orch.HaltDownstream via
   `db.SetArchived`) and two can destroy (REST `DELETE /api/tasks/{id}`,
   TUI delete). The DB layer guarantees cleanup for `db.SetArchived(_,
-  true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
+true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
   with `archived=true` (REST archive, TUI archive, MCP archive) call
   `DeleteMessagesForTask` explicitly. **If you add a fifth archive
   surface, do the same — otherwise a stale recipient sits on the
