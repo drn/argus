@@ -196,6 +196,7 @@ func (d *DB) AckMessages(toID string, ids []string) (int, error) {
 		args = append(args, id)
 	}
 
+	//nolint:gosec // G202: placeholders are a fixed list of `?` literals built from len(ids); IDs themselves are passed as bound parameters, not concatenated.
 	q := `UPDATE task_messages SET read_at=? WHERE to_task_id=? AND read_at='' AND id IN (` + strings.Join(placeholders, ",") + `)`
 	res, err := d.conn.Exec(q, args...)
 	if err != nil {

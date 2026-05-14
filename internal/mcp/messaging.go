@@ -401,7 +401,7 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 
 	if s.nudger != nil {
 		line := fmt.Sprintf(nudgeLineFormat, caller.ID, model.KindQuestion)
-		_ = s.nudger.Nudge(recipient.ID, line) //nolint:errcheck — best-effort
+		_ = s.nudger.Nudge(recipient.ID, line) //nolint:errcheck // best-effort; nudge failure does not invalidate the durable message
 	}
 
 	if p.TimeoutSeconds == 0 {

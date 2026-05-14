@@ -506,8 +506,10 @@ func (s *Server) setArchive(w http.ResponseWriter, r *http.Request, archived boo
 	// but does not roll the archive back.
 	if archived {
 		if n, derr := s.db.DeleteMessagesForTask(id); derr != nil {
+			//nolint:gosec // G706: id is the path param already validated against db.Get above; not user-injectable log content.
 			log.Printf("api: archive message cleanup failed: id=%s err=%v", id, derr)
 		} else if n > 0 {
+			//nolint:gosec // G706: id is the path param already validated against db.Get above; not user-injectable log content.
 			log.Printf("api: archive cleared %d message(s) for id=%s", n, id)
 		}
 	}
