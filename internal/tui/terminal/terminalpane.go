@@ -792,6 +792,10 @@ func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p t
 		sess := tp.session
 		tp.lastPasteTime = time.Now()
 		tp.mu.Unlock()
+		// TODO(diagnostic): remove with the rest of the `[paste]`
+		// instrumentation once multi-attachment drag-drop is fixed.
+		// `[paste]` is intentionally a cross-file prefix (also fired from
+		// app.go) so `grep '\[paste\]' ux.log` collects the whole trace.
 		uxlog.Log("[paste] received %d bytes: %s", len(pastedText), quotePreview(pastedText, 256))
 		if sess != nil && sess.Alive() {
 			// Write the entire paste as a single PTY write, wrapped in
@@ -815,7 +819,8 @@ func (tp *TerminalPane) LastPasteTime() time.Time {
 
 // quotePreview returns a Go-quoted, length-bounded preview of s suitable for
 // logging arbitrary terminal byte sequences (escapes, control chars) without
-// corrupting the log.
+// corrupting the log. Byte-boundary truncation is intentional: fmt %q escapes
+// an orphaned UTF-8 lead byte as `\xNN` (no panic, slightly ugly log).
 func quotePreview(s string, max int) string {
 	if len(s) <= max {
 		return fmt.Sprintf("%q", s)

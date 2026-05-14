@@ -1648,8 +1648,14 @@ func TestTerminalPane_PasteHandler_LiveSession(t *testing.T) {
 	rec := &pasteRecorder{mockAdapter: mockAdapter{alive: true}}
 	tp.SetSession(rec)
 
+	if !tp.LastPasteTime().IsZero() {
+		t.Fatalf("LastPasteTime should be zero before any paste, got %v", tp.LastPasteTime())
+	}
+
 	handler := tp.PasteHandler()
+	before := time.Now()
 	handler("hello world", func(p tview.Primitive) {})
+	after := time.Now()
 
 	got := string(rec.written)
 	if !strings.Contains(got, "\x1b[200~") {
@@ -1660,6 +1666,62 @@ func TestTerminalPane_PasteHandler_LiveSession(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[201~") {
 		t.Errorf("paste should be wrapped in end sequence: %q", got)
+	}
+
+	lp := tp.LastPasteTime()
+	if lp.Before(before) || lp.After(after) {
+		t.Errorf("LastPasteTime %v not in [%v, %v]", lp, before, after)
+	}
+}
+
+func TestQuotePreview(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{
+			name: "short ascii returns full quote",
+			in:   "hello",
+			max:  256,
+			want: `"hello"`,
+		},
+		{
+			name: "exactly max length returns full quote",
+			in:   "abcd",
+			max:  4,
+			want: `"abcd"`,
+		},
+		{
+			name: "control chars escape into quote",
+			in:   "\x1b[200~",
+			max:  256,
+			want: `"\x1b[200~"`,
+		},
+		{
+			name: "over max truncates with byte counter",
+			in:   "abcdefghij",
+			max:  4,
+			want: `"abcd"…(+6 bytes)`,
+		},
+		{
+			name: "utf8 split mid-rune escapes orphan byte",
+			// "é" = 0xC3 0xA9. max=1 splits between them; %q renders the
+			// lone 0xC3 as \xc3 (no panic, no garbage).
+			in:   "é",
+			max:  1,
+			want: `"\xc3"…(+1 bytes)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := quotePreview(tt.in, tt.max)
+			if got != tt.want {
+				t.Errorf("quotePreview(%q, %d) = %s, want %s", tt.in, tt.max, got, tt.want)
+			}
+		})
 	}
 }
 
