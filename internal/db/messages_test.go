@@ -299,6 +299,80 @@ func TestDB_WaitForReply(t *testing.T) {
 			t.Fatalf("expected nil on timeout, got %+v", got)
 		}
 	})
+
+	// Reply arrives during the polling loop — exercises the ticker.C
+	// branch (not just the fast-path). Without this the WaitForReply
+	// success-after-tick code path is uncovered.
+	t.Run("returns reply that lands during ticker", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("polling timeout test")
+		}
+		d := testDB(t)
+		q, err := d.InsertMessage(newMessage("A", "B", model.KindQuestion, "q?"))
+		testutil.NoError(t, err)
+
+		// Insert the reply ~250ms in — well after WaitForReply's fast-path
+		// check ran, so the ticker.C branch fires when it lands.
+		go func() {
+			time.Sleep(250 * time.Millisecond)
+			_, _ = d.InsertMessage(&model.TaskMessage{
+				From: "B", To: "A", Kind: model.KindAnswer, Body: "yes", InReplyTo: q.ID,
+			})
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		got, err := d.WaitForReply(ctx, q.ID, "B")
+		testutil.NoError(t, err)
+		if got == nil {
+			t.Fatal("expected reply, got nil")
+		}
+		testutil.Equal(t, got.Body, "yes")
+	})
+}
+
+// TestDB_Messages_ErrorBranchesAfterClose pokes the database-closed
+// error paths on every messaging method. Without this the "SQL failure"
+// branches in InsertMessage, Inbox, AckMessages, UnreadCount, FindReply,
+// and DeleteMessagesForTask all stay at zero coverage.
+func TestDB_Messages_ErrorBranchesAfterClose(t *testing.T) {
+	d := testDB(t)
+	// Seed a message so DeleteMessagesForTask has something to hit before
+	// the close; ensures we cover the row-found path before the failure mode.
+	_, err := d.InsertMessage(newMessage("A", "B", model.KindNote, "x"))
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Close())
+
+	t.Run("InsertMessage", func(t *testing.T) {
+		_, err := d.InsertMessage(newMessage("X", "Y", model.KindNote, "x"))
+		if err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
+	t.Run("Inbox", func(t *testing.T) {
+		_, err := d.Inbox("B", InboxFilter{})
+		if err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
+	t.Run("AckMessages", func(t *testing.T) {
+		_, err := d.AckMessages("B", []string{"m1"})
+		if err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
+	t.Run("UnreadCount", func(t *testing.T) {
+		_, err := d.UnreadCount("B")
+		if err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
+	t.Run("DeleteMessagesForTask", func(t *testing.T) {
+		_, err := d.DeleteMessagesForTask("B")
+		if err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
 }
 
 func TestDB_DeleteMessagesForTask(t *testing.T) {

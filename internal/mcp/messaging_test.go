@@ -400,6 +400,33 @@ func TestToolMessageAck_HappyPath(t *testing.T) {
 	testutil.Contains(t, textOf(cr), "Acked 2")
 }
 
+func TestToolMessageAck_NoCallerResolve(t *testing.T) {
+	s, _, _, _ := testServerWithMessaging()
+	// No id or cwd → resolveTask errors → tool surfaces it.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_message_ack",
+		Arguments: json.RawMessage(`{"message_ids":["m1"]}`),
+	})
+	cr := callResult(t, resp)
+	if !cr.IsError {
+		t.Fatal("expected error for missing caller")
+	}
+}
+
+func TestToolInbox_SinceSecondPrecision(t *testing.T) {
+	// Cover the RFC3339 fallback parser branch by passing a second-precision
+	// timestamp (no nanos). Without this the secondary parser isn't exercised.
+	s, _, _, _ := testServerWithMessaging()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_inbox",
+		Arguments: json.RawMessage(`{"id":"abc123","since":"2026-01-01T00:00:00Z"}`),
+	})
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %v", cr.Content)
+	}
+}
+
 func TestToolMessageAck_RejectsEmptyAndOversize(t *testing.T) {
 	s, _, _, _ := testServerWithMessaging()
 

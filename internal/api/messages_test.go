@@ -185,6 +185,23 @@ func TestAPI_ListInbox_BadSince(t *testing.T) {
 	}
 }
 
+func TestAPI_ListInbox_UnreadOnlyParseVariants(t *testing.T) {
+	// Each case must produce a 200 — the `0` / `no` / `false` synonyms all
+	// flip unread_only off. Without this only the `false` variant is tested.
+	srv, d := testServer(t)
+	to := &model.Task{Name: "to"}
+	testutil.NoError(t, d.Add(to))
+	mux := srv.routes()
+	for _, v := range []string{"false", "0", "no"} {
+		t.Run(v, func(t *testing.T) {
+			req := authedReq("GET", "/api/tasks/"+to.ID+"/inbox?unread_only="+v, "")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			testutil.Equal(t, w.Code, http.StatusOK)
+		})
+	}
+}
+
 func TestAPI_ListInbox_FullFilters(t *testing.T) {
 	srv, d := testServer(t)
 	from := &model.Task{Name: "from"}
