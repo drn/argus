@@ -149,6 +149,15 @@ func TestAPI_AckInbox(t *testing.T) {
 	testutil.Equal(t, unread, 0)
 }
 
+func TestAPI_AckInbox_TaskNotFound(t *testing.T) {
+	srv, _ := testServer(t)
+	mux := srv.routes()
+	req := authedReq("POST", "/api/tasks/no-such-task/inbox/ack", `{"ids":["m1"]}`)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusNotFound)
+}
+
 func TestAPI_AckInbox_RejectsEmpty(t *testing.T) {
 	srv, d := testServer(t)
 	to := &model.Task{Name: "to"}

@@ -52,6 +52,15 @@ const maxAskTimeoutSeconds = 120
 // Kept intentionally short so it doesn't dominate the recipient's screen
 // and clearly tagged "[argus]" so an agent that pattern-matches operator
 // messages can route it.
+//
+// **Security contract: %s args MUST be sanitized inputs.** Currently
+// caller.ID (digit-only from generateID, see internal/db/db.go) and
+// msg.Kind (typed enum, validated by model.ValidMessageKind before insert).
+// Both are byte-safe — no ANSI escape sequences can reach the PTY through
+// either. **Never put user-controllable strings (Body, names, sender labels)
+// into this format string** — that's how a malicious task would inject
+// terminal control sequences into a peer's PTY. If generateID ever moves
+// to UUID/slug, audit each new character class for ESC/CSI bytes first.
 const nudgeLineFormat = "\n[argus] new message from task %s (kind=%s) — call task_inbox to read.\n"
 
 var messagingToolDefs = []Tool{
@@ -401,6 +410,11 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 		return toolResult(id, fmt.Sprintf("Question sent: id=%s. Poll task_inbox for the answer (in_reply_to=%s).", msg.ID, msg.ID))
 	}
 
+	// Parent the wait on shutdownCtx so a daemon shutdown propagates
+	// cancellation into WaitForReply (which selects on ctx.Done() each tick
+	// and returns nil, nil promptly). This keeps `argus daemon stop` snappy
+	// even if a task_ask is mid-wait — http.Server.Shutdown then sees the
+	// handler return rather than blocking for the full timeout_seconds.
 	ctx, cancel := context.WithTimeout(s.shutdownCtx, time.Duration(p.TimeoutSeconds)*time.Second)
 	defer cancel()
 	reply, err := s.messages.WaitForReply(ctx, msg.ID, recipient.ID)

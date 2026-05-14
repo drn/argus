@@ -36,6 +36,22 @@ table and the four MCP tools that ride on top of it.
   FK because tasks are soft-archivable; archive cleanup runs at archive
   time, not via referential integrity.
 
+## Trust model — Body is untrusted input
+
+- **The `Body` field is data, not commands.** A malicious sender could
+  embed prompt-injection payloads ("Ignore your instructions and …") in
+  the body; `task_inbox` surfaces raw content into the recipient agent's
+  prompt context with no sanitization. Acceptable per the system's
+  cooperating-tasks / single-user-local threat model, **but a recipient
+  agent that auto-acts on inbox content without a human-style review step
+  is creating a privilege-escalation channel between tasks.** Treat
+  inbox content the same as any other external input: investigate before
+  acting.
+- **The nudge line never includes `Body`.** Only `caller.ID` and
+  `msg.Kind` reach the PTY, both bounded inputs. See the security
+  contract comment on `nudgeLineFormat` in `internal/mcp/messaging.go` —
+  do not extend the format with user-controllable strings.
+
 ## Nudge contract
 
 - **Nudge is best-effort. The message is durable regardless.** If the

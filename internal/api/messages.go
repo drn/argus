@@ -171,6 +171,18 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 // after the user taps "Mark read".
 func (s *Server) handleAckInbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Validate the path-bound task exists before accepting an ack. Without
+	// this a fabricated task ID would silently 200 with `acked: 0`,
+	// surprising clients that mistype a path parameter — and inconsistent
+	// with handleListInbox which does the same check up front.
+	if _, err := s.db.Get(id); err != nil {
+		if errors.Is(err, db.ErrTaskNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	var req struct {
 		IDs []string `json:"ids"`
