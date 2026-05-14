@@ -318,3 +318,73 @@ func TestDB_DeleteMessagesForTask(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, unread, 0)
 }
+
+// TestDB_Delete_CascadesMessages confirms destroying a task wipes every
+// message it sent or received — otherwise the orphan rows still count
+// against the recipient's unread cap and have no live caller to ack them.
+func TestDB_Delete_CascadesMessages(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "doomed"}
+	testutil.NoError(t, d.Add(task))
+	other := &model.Task{Name: "other"}
+	testutil.NoError(t, d.Add(other))
+
+	_, err := d.InsertMessage(newMessage(task.ID, other.ID, model.KindNote, "x"))
+	testutil.NoError(t, err)
+	_, err = d.InsertMessage(newMessage(other.ID, task.ID, model.KindNote, "y"))
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.Delete(task.ID))
+
+	// Rows referencing the deleted task are gone on both sides.
+	got, err := d.Inbox(task.ID, InboxFilter{UnreadOnly: false})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 0)
+	got, err = d.Inbox(other.ID, InboxFilter{UnreadOnly: false, Sender: task.ID})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 0)
+}
+
+// TestDB_SetArchived_CascadesMessages confirms the partial-update archive
+// path (used by orch.HaltDownstream) also wipes queued messages. The
+// archive entry-points that go through db.Update call
+// DeleteMessagesForTask explicitly — this test covers the third path.
+func TestDB_SetArchived_CascadesMessages(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "to-archive"}
+	testutil.NoError(t, d.Add(task))
+	other := &model.Task{Name: "other"}
+	testutil.NoError(t, d.Add(other))
+
+	_, err := d.InsertMessage(newMessage(other.ID, task.ID, model.KindNote, "x"))
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.SetArchived(task.ID, true))
+
+	unread, err := d.UnreadCount(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, unread, 0)
+}
+
+// TestDB_SetArchived_UnarchiveLeavesMessagesAlone confirms the cleanup
+// only fires on archive=true. There would be nothing to clean on unarchive
+// (messages were wiped at archive), but the asymmetric SQL clause matters
+// for future-readers: don't blindly cascade on both legs.
+func TestDB_SetArchived_UnarchiveLeavesMessagesAlone(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "t", Archived: true}
+	testutil.NoError(t, d.Add(task))
+	other := &model.Task{Name: "other"}
+	testutil.NoError(t, d.Add(other))
+
+	// Seed a message AFTER archive so we have something to delete. Then
+	// unarchive — message must survive.
+	_, err := d.InsertMessage(newMessage(other.ID, task.ID, model.KindNote, "x"))
+	testutil.NoError(t, err)
+
+	testutil.NoError(t, d.SetArchived(task.ID, false))
+
+	unread, err := d.UnreadCount(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, unread, 1)
+}

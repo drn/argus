@@ -501,6 +501,16 @@ func (s *Server) setArchive(w http.ResponseWriter, r *http.Request, archived boo
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Mirror the MCP task_archive cleanup so the archive surface stays
+	// symmetric across entrypoints. Best-effort; a delete error is logged
+	// but does not roll the archive back.
+	if archived {
+		if n, derr := s.db.DeleteMessagesForTask(id); derr != nil {
+			log.Printf("api: archive message cleanup failed: id=%s err=%v", id, derr)
+		} else if n > 0 {
+			log.Printf("api: archive cleared %d message(s) for id=%s", n, id)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"archived": archived})
 }
 

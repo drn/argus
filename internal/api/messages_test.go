@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -183,3 +184,62 @@ func TestAPI_ListInbox_TaskNotFound(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	testutil.Equal(t, w.Code, http.StatusNotFound)
 }
+
+// TestAPI_ArchiveCleansUpMessages confirms the REST archive entrypoint
+// mirrors the MCP task_archive cleanup behaviour. Without this every
+// archive via the PWA would leave the recipient on the unread cap.
+func TestAPI_ArchiveCleansUpMessages(t *testing.T) {
+	srv, d := testServer(t)
+	from := &model.Task{Name: "sender"}
+	to := &model.Task{Name: "doomed"}
+	testutil.NoError(t, d.Add(from))
+	testutil.NoError(t, d.Add(to))
+
+	_, err := d.InsertMessage(&model.TaskMessage{
+		From: from.ID, To: to.ID, Kind: model.KindNote, Body: "x",
+	})
+	testutil.NoError(t, err)
+
+	mux := srv.routes()
+	req := authedReq("POST", "/api/tasks/"+to.ID+"/archive", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	unread, err := d.UnreadCount(to.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, unread, 0)
+}
+
+// TestAPI_DeleteCascadesMessages confirms the destroy path cascades via
+// db.Delete's app-level FK substitute — no orphan rows pointing at a dead
+// task ID survive.
+func TestAPI_DeleteCascadesMessages(t *testing.T) {
+	srv, d := testServer(t)
+	from := &model.Task{Name: "sender"}
+	doomed := &model.Task{Name: "doomed", Worktree: ""}
+	testutil.NoError(t, d.Add(from))
+	testutil.NoError(t, d.Add(doomed))
+
+	_, err := d.InsertMessage(&model.TaskMessage{
+		From: from.ID, To: doomed.ID, Kind: model.KindNote, Body: "x",
+	})
+	testutil.NoError(t, err)
+
+	mux := srv.routes()
+	req := authedReq("DELETE", "/api/tasks/"+doomed.ID, "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	// from's outbox row referencing doomed must also be gone — DeleteMessagesForTask
+	// wipes both legs.
+	got, err := d.Inbox(from.ID, InboxFilterUnused())
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 0)
+}
+
+// InboxFilterUnused returns a zero filter; named for grep-friendliness in the
+// test above. The import path forces the db package reference, used here to
+// keep the cascade test self-contained.
+func InboxFilterUnused() db.InboxFilter { return db.InboxFilter{UnreadOnly: false} }

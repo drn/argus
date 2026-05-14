@@ -55,15 +55,20 @@ table and the four MCP tools that ride on top of it.
   need to be nudged (otherwise a daemon restart loses queued nudges, which
   is fine, but track it explicitly).
 
-## Archive cleanup
+## Archive and delete cleanup
 
-- **`task_archive` deletes the task's queued messages** (both sent and
-  received). Without this, a stale recipient sits on the
-  `MaxUnreadPerRecipient` cap indefinitely. Cleanup is best-effort — a
-  delete error is logged but does NOT roll back the archive.
-- **Cleanup runs only when `s.messages != nil`.** Servers with task
-  management wired but messaging disabled skip the cleanup path silently
-  (the message table is empty anyway).
+- **Every archive/destroy path must drop the task's queued messages.**
+  Today four entrypoints can archive a task (MCP `task_archive`, REST
+  `POST /archive`, TUI 'a' keybinding, orch.HaltDownstream via
+  `db.SetArchived`) and two can destroy (REST `DELETE /api/tasks/{id}`,
+  TUI delete). The DB layer guarantees cleanup for `db.SetArchived(_,
+  true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
+  with `archived=true` (REST archive, TUI archive, MCP archive) call
+  `DeleteMessagesForTask` explicitly. **If you add a fifth archive
+  surface, do the same — otherwise a stale recipient sits on the
+  `MaxUnreadPerRecipient` cap indefinitely.**
+- **Cleanup is best-effort.** A delete error is logged but does NOT roll
+  the archive/destroy back.
 
 ## Polling and `task_ask`
 

@@ -280,6 +280,11 @@ func (a *App) buildUI() {
 	a.tasklist.OnArchive = func(t *model.Task) {
 		uxlog.Log("[tui] archive toggle: task %s (%s) archived=%v", t.ID, t.Name, t.Archived)
 		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		// Drop the task's queued messages so a stale recipient doesn't sit
+		// on the unread cap. Mirrors the MCP/REST archive flows.
+		if t.Archived {
+			a.db.DeleteMessagesForTask(t.ID) //nolint:errcheck // best-effort cleanup
+		}
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnPin = func(t *model.Task) {

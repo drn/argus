@@ -281,6 +281,12 @@ func (d *DB) SetArchived(id string, archived bool) error {
 	if n == 0 {
 		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
 	}
+	// On archive, drop queued messages so a stale recipient doesn't sit on
+	// the unread cap blocking other senders. Unarchive leaves messages
+	// alone (there are none — the cleanup ran when the task was archived).
+	if archived {
+		d.conn.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id) //nolint:errcheck
+	}
 	return nil
 }
 
@@ -316,6 +322,14 @@ func (d *DB) Delete(id string) error {
 	if n == 0 {
 		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
 	}
+	// Cascade-delete every task_messages row referencing this task on either
+	// side. Without this, destroy leaves rows pointing at a dead from/to ID
+	// that can never be acked and still count against the recipient's unread
+	// cap. SQLite doesn't enforce a foreign key here because tasks are
+	// soft-archivable; this is the app-level equivalent. Inline `_` ignore
+	// keeps Delete's contract intact — a messages-cleanup error doesn't
+	// resurrect the task row.
+	d.conn.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id) //nolint:errcheck
 	return nil
 }
 
