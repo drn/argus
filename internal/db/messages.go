@@ -76,7 +76,14 @@ func (d *DB) InsertMessage(m *model.TaskMessage) (*model.TaskMessage, error) {
 		return nil, ErrMessageInboxFull
 	}
 
-	// Rate-limit check (per-sender, rolling 1-minute window).
+	// Rate-limit check (per-sender, rolling 1-minute window). Note: the
+	// count comes from extant rows, so DeleteMessagesForTask (fired when a
+	// recipient is archived/destroyed) effectively resets the window for any
+	// sender whose recent traffic targeted that recipient. Acceptable under
+	// the cooperative single-user threat model — a misbehaving sender would
+	// have to coordinate with an archive cascade to exploit this. If we ever
+	// need a strict per-sender rate floor, track sends in a separate
+	// archive-immune table.
 	since := now.Add(-rateLimitWindow)
 	var recent int
 	if err := d.conn.QueryRow(`SELECT COUNT(*) FROM task_messages WHERE from_task_id=? AND created_at>=?`, m.From, formatTime(since)).Scan(&recent); err != nil {

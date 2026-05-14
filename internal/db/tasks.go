@@ -262,32 +262,36 @@ func (d *DB) SetDependsOn(id string, deps []string) error {
 // Unarchiving (archived=false) leaves pinned alone — pinning state survives
 // a round trip through the archive section.
 func (d *DB) SetArchived(id string, archived bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	var (
-		res sql.Result
-		err error
-	)
-	if archived {
-		res, err = d.conn.Exec(`UPDATE tasks SET archived=1, pinned=0 WHERE id=?`, id)
-	} else {
-		res, err = d.conn.Exec(`UPDATE tasks SET archived=0 WHERE id=?`, id)
-	}
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
-	}
-	// On archive, drop queued messages so a stale recipient doesn't sit on
-	// the unread cap blocking other senders. Unarchive leaves messages
-	// alone (there are none — the cleanup ran when the task was archived).
-	if archived {
-		d.conn.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id) //nolint:errcheck
-	}
-	return nil
+	// Both statements (tasks UPDATE + on-archive task_messages DELETE) run in
+	// one SQLite transaction so a crash between them can't leave an archived
+	// row with a queued inbox forever counting against the unread cap.
+	return d.WithTx(func(tx *sql.Tx) error {
+		var (
+			res sql.Result
+			err error
+		)
+		if archived {
+			res, err = tx.Exec(`UPDATE tasks SET archived=1, pinned=0 WHERE id=?`, id)
+		} else {
+			res, err = tx.Exec(`UPDATE tasks SET archived=0 WHERE id=?`, id)
+		}
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+		}
+		// On archive, drop queued messages so a stale recipient doesn't sit on
+		// the unread cap blocking other senders. Unarchive leaves messages
+		// alone (there are none — the cleanup ran when the task was archived).
+		if archived {
+			if _, err := tx.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // FindByNameProject returns the first non-archived task matching (name,
@@ -311,26 +315,27 @@ func (d *DB) FindByNameProject(name, project string) (*model.Task, error) {
 }
 
 func (d *DB) Delete(id string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	res, err := d.conn.Exec(`DELETE FROM tasks WHERE id=?`, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
-	}
-	// Cascade-delete every task_messages row referencing this task on either
-	// side. Without this, destroy leaves rows pointing at a dead from/to ID
-	// that can never be acked and still count against the recipient's unread
-	// cap. SQLite doesn't enforce a foreign key here because tasks are
-	// soft-archivable; this is the app-level equivalent. Inline `_` ignore
-	// keeps Delete's contract intact — a messages-cleanup error doesn't
-	// resurrect the task row.
-	d.conn.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id) //nolint:errcheck
-	return nil
+	// Run both DELETEs in one transaction so a crash between them can't
+	// leave orphan task_messages rows pointing at a deleted from/to ID
+	// (such rows could never be acked, and would still count against the
+	// surviving peer's unread cap).
+	return d.WithTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM tasks WHERE id=?`, id)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+		}
+		// SQLite doesn't enforce an FK here because tasks are soft-archivable
+		// (we'd need a delete trigger that the archived rows wouldn't fire);
+		// this is the app-level equivalent.
+		if _, err := tx.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (d *DB) Get(id string) (*model.Task, error) {

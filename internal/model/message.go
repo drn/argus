@@ -53,7 +53,10 @@ type TaskMessage struct {
 	Body      string      `json:"body"`
 	InReplyTo string      `json:"in_reply_to,omitempty"`
 	CreatedAt time.Time   `json:"created_at"`
-	ReadAt    time.Time   `json:"read_at,omitzero"`
+	// `omitzero` requires Go 1.24+'s encoding/json (matches the module's
+	// declared go 1.26 floor). Don't downgrade to `omitempty` — that's a
+	// no-op on a non-pointer time.Time.
+	ReadAt time.Time `json:"read_at,omitzero"`
 }
 
 // Validate returns nil if the message has the minimum fields needed to be

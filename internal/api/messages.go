@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -96,6 +97,11 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 // requireMaster — sending a message from one task to another mutates shared
 // state across tasks. The mobile inbox UI is read-only; outbound sends are
 // admin-tier (or come in via MCP from the agent itself).
+//
+// Unlike the MCP `task_message_send` tool, this handler does NOT nudge the
+// recipient's PTY. The API server doesn't carry a runner-backed nudger
+// (the daemon owns that adapter for the MCP path). Messages are still
+// durable; the recipient sees them on the next `task_inbox` call.
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
@@ -133,6 +139,12 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	kind := model.MessageKind(req.Kind)
 	if kind == "" {
 		kind = model.KindNote
+	}
+	// Validate at the handler so an unknown kind returns 400, not the 500
+	// the default branch would produce from a generic Validate() error.
+	if !model.ValidMessageKind(kind) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid kind %q (want note|question|answer)", req.Kind)})
+		return
 	}
 
 	msg, err := s.db.InsertMessage(&model.TaskMessage{
@@ -186,17 +198,31 @@ func (s *Server) handleAckInbox(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	var req struct {
 		IDs []string `json:"ids"`
+		// MessageIDs is the field name the MCP `task_message_ack` tool uses.
+		// Accept either for client convenience; IDs wins when both are set.
+		MessageIDs []string `json:"message_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
 		return
 	}
-	if len(req.IDs) == 0 {
+	ids := req.IDs
+	if len(ids) == 0 {
+		ids = req.MessageIDs
+	}
+	if len(ids) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ids is required"})
 		return
 	}
+	// Cap mirrors the MCP `task_message_ack` surface (maxAckIDsPerCall).
+	// Above 500 we'd start brushing against SQLite's 999-variable cap on
+	// the IN-clause `AckMessages` builds, surfacing as a 500.
+	if len(ids) > db.MaxInboxLimit {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("too many ids (max %d per call)", db.MaxInboxLimit)})
+		return
+	}
 
-	n, err := s.db.AckMessages(id, req.IDs)
+	n, err := s.db.AckMessages(id, ids)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

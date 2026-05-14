@@ -428,7 +428,10 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 	return toolResult(id, fmt.Sprintf("Reply to %s from %s (id=%s):\n\n%s", msg.ID, recipient.ID, reply.ID, reply.Body))
 }
 
-// plural is a one-line helper for "1 message" vs "N messages" in tool output.
+// plural returns "" when n == 1 and "s" otherwise. Used inline by inbox/ack
+// tool output ("Acked 3 message IDs" vs "Acked 1 message ID") so the
+// agent-facing strings stay grammatical without the caller branching at
+// every fmt site.
 func plural(n int) string {
 	if n == 1 {
 		return ""
