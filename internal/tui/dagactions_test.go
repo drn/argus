@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/orch"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/dagview"
 )
@@ -164,4 +165,40 @@ func TestDAGNodesFromTasks_PassthroughFields(t *testing.T) {
 	// projection must not leak into the widget's snapshot.
 	tasks[1].DependsOn[0] = "mutated"
 	testutil.DeepEqual(t, child.DependsOn, []string{"p"})
+}
+
+// TestSummarizeHalt covers the notice-string assembly used by the `h`
+// keybinding handler. The function is a pure projection of HaltReport, so
+// every branch is exercised by tiny in-memory inputs.
+func TestSummarizeHalt(t *testing.T) {
+	cases := []struct {
+		name string
+		in   orch.HaltReport
+		want string
+	}{
+		{"empty report", orch.HaltReport{}, "no downstream tasks"},
+		{"only stopped, singular", orch.HaltReport{Stopped: []string{"a"}}, "1 stopped"},
+		{"only stopped, plural", orch.HaltReport{Stopped: []string{"a", "b"}}, "2 stoppeds"},
+		{"only archived, singular", orch.HaltReport{Archived: []string{"x"}}, "1 archived"},
+		{"only archived, plural", orch.HaltReport{Archived: []string{"x", "y", "z"}}, "3 archiveds"},
+		{
+			"both populated",
+			orch.HaltReport{Stopped: []string{"a"}, Archived: []string{"x", "y"}},
+			"1 stopped, 2 archiveds",
+		},
+		{
+			// NotFound entries are tracked but intentionally excluded from
+			// the user-visible summary — they're sessions that exited
+			// between the snapshot and the stop call, and counting them
+			// would inflate the notice.
+			"not_found is ignored in the summary",
+			orch.HaltReport{NotFound: []string{"ghost"}},
+			"no downstream tasks",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, summarizeHalt(tc.in), tc.want)
+		})
+	}
 }
