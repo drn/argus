@@ -2385,6 +2385,20 @@ func (a *App) computePTYSize() (rows, cols uint16) {
 	return 24, 80
 }
 
+// agentViewRowOverhead is the total fixed-row height consumed by chrome
+// outside the agent pane's inner content area, when the user is in agent view
+// (tab header hidden via ResizeItem(0,0)):
+//
+//	agentHeader (1) + statusbar (1) + pane top+bottom border (2) = 4
+//
+// Used by ptySizeFromHostTerm to derive the pane's inner height from the host
+// terminal size. If the agent view layout ever grows or shrinks a fixed row
+// (e.g., a second status bar), this constant must change with it — otherwise
+// computePTYSize will silently drift from the actual pane inner rect and
+// every agent-view entry will fire a forceResync correction whose SIGWINCH
+// can cause Claude to repaint visibly.
+const agentViewRowOverhead = 4
+
 // ptySizeFromHostTerm derives the agent PTY size from the host terminal,
 // applying the agent page's 1:3:1 column flex and the header/footer/border
 // row deductions. Returns 0,0 when the input is unusable.
@@ -2395,8 +2409,6 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	// Agent page column flex: 1 (gitPanel) + 3 (agentPane) + 1 (filePanel)
 	// → center gets 3/5 of width. Deduct 2 for the agent pane's border.
 	centerW := max(tw*3/5-2, 20)
-	// Row layout in agent view (tab header hidden via ResizeItem(0,0)):
-	// agent header(1) + statusbar(1) + pane border(2) ⇒ 4 row deduction.
 	// Every entry path that calls computePTYSize hides the tab header BEFORE
 	// this function runs — enterPendingAgentView (new task) and onTaskSelect
 	// (auto-start) both run ResizeItem first. Fork is the one exception (its
@@ -2405,7 +2417,7 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	// window. That's fine: the pane isn't on screen yet, and by the time the
 	// user reaches the agent view the header is hidden and sizes match — so
 	// no SIGWINCH-triggered repaint is needed when the agent becomes visible.
-	centerH := max(th-4, 5)
+	centerH := max(th-agentViewRowOverhead, 5)
 	return uint16(centerH), uint16(centerW)
 }
 

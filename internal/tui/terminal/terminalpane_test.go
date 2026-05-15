@@ -36,9 +36,12 @@ func TestTerminalPane_SetSession(t *testing.T) {
 }
 
 func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
-	// SetSession must NOT hardcode 80x24 — it should use GetInnerRect
-	// dimensions (or leave at 0 if unavailable). The old code had an
-	// explicit fallback to 80x24 which caused emulator/PTY mismatch.
+	// SetSession must NOT hardcode 80x24. A prior revision used 80x24 as a
+	// fallback when GetInnerRect returned zero, causing the emulator to wrap
+	// at 80 cols even though the PTY started at the real (wider) panel size.
+	// On a fresh TerminalPane (no SetRect call), the guard rejects the tview
+	// default 15x10 rect entirely, leaving ptyCols/ptyRows at 0 so Draw seeds
+	// them from the actual panel dimensions on the first frame.
 	tp := NewTerminalPane()
 	sess := &mockAdapter{alive: true, totalWritten: 100, output: make([]byte, 100)}
 	tp.SetSession(sess)
@@ -59,16 +62,83 @@ func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
 	// on the first Draw, triggering a force-resync correction and a SIGWINCH
 	// that causes the agent to repaint visibly — see gotchas/pty-terminal.md
 	// for the "PTY size mismatch on agent-view entry" tearing case.
+	cases := []struct {
+		name        string
+		outerW      int
+		outerH      int
+		wantCols    int
+		wantRows    int
+		wantSkipped bool // when the guard rejects the rect, ptyCols/Rows stay at 0
+	}{
+		{"typical laid-out pane", 192, 84, 190, 82, false},
+		{"narrow split pane", 80, 30, 78, 28, false},
+		// tview's NewBox default 15x10 is rejected to avoid a misleading seed
+		// before Flex lays the pane out; Draw will set the real values once
+		// the rect lands.
+		{"tview default rejected", 15, 10, 0, 0, true},
+		{"30x10 (just at threshold) rejected", 30, 10, 0, 0, true},
+		// Just past the threshold seeds, with the floor applied to the small
+		// resulting cols.
+		{"31x11 (just past threshold)", 31, 11, 29, 9, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tp := NewTerminalPane()
+			tp.Box.SetRect(0, 0, tc.outerW, tc.outerH)
+			sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
+			tp.SetSession(sess)
+			tp.mu.Lock()
+			gotCols, gotRows := tp.ptyCols, tp.ptyRows
+			tp.mu.Unlock()
+			if tc.wantSkipped {
+				testutil.Equal(t, gotCols, 0)
+				testutil.Equal(t, gotRows, 0)
+				return
+			}
+			testutil.Equal(t, gotCols, tc.wantCols)
+			testutil.Equal(t, gotRows, tc.wantRows)
+		})
+	}
+}
+
+func TestTerminalPane_FirstDrawAfterSetSessionPostsNoSizeDelta(t *testing.T) {
+	// The actual behavioral guarantee of the SetSession inner-rect seed:
+	// on the first Draw of a freshly-attached session at the pane's
+	// fully-laid-out size, sizeChanged must be FALSE — so no pendingResize is
+	// queued and no Resize RPC fires. Before the fix this asserted the
+	// opposite (a 192x84 -> 190x82 correction every entry), which dispatched
+	// a same-size Resize → kernel SIGWINCH suppression masked the visual
+	// glitch on macOS, but the trip through the daemon was both wasteful
+	// and platform-dependent. This test pins the seed/inner alignment so a
+	// future change to the seed math (or the DrawBorderedPanel border width)
+	// is caught here directly.
+	//
+	// NB: This test does NOT call ForceResyncPTY — that flag is intentionally
+	// unconditional per TestTerminalPane_ForceResyncPTY and will still post a
+	// same-size pendingResize on entry. The "no spurious resize" we care
+	// about here is the seed-vs-inner sizeChanged path that fired on every
+	// agent-view entry prior to the fix.
 	tp := NewTerminalPane()
-	tp.Box.SetRect(0, 0, 192, 84) // typical laid-out pane outer
+	tp.Box.SetRect(0, 0, 192, 84)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(192, 84)
+
 	sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
 	tp.SetSession(sess)
+	tp.Draw(screen)
+
 	tp.mu.Lock()
-	cols, rows := tp.ptyCols, tp.ptyRows
-	tp.mu.Unlock()
-	// Inner = outer - 2 in each dimension.
-	testutil.Equal(t, cols, 190)
-	testutil.Equal(t, rows, 82)
+	defer tp.mu.Unlock()
+	// First Draw saw no sizeChanged and forceResync was not armed, so no
+	// pending resize was queued.
+	testutil.Equal(t, tp.pendingResizeCols, uint16(0))
+	testutil.Equal(t, tp.pendingResizeRows, uint16(0))
+	// And the tracked dimensions match the inner rect that Draw computed.
+	testutil.Equal(t, tp.ptyCols, 190)
+	testutil.Equal(t, tp.ptyRows, 82)
 }
 
 type mockAdapter struct {
