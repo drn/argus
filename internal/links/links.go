@@ -127,7 +127,7 @@ func hasValidHost(raw string) bool {
 	}
 	for i := 1; i < len(tld); i++ {
 		c := tld[i]
-		if !isASCIILetter(c) && !(c >= '0' && c <= '9') && c != '-' {
+		if !isASCIILetter(c) && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}

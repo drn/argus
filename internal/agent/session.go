@@ -170,16 +170,24 @@ func (s *Session) readLoop() {
 // only after readLoop has terminated, guaranteeing every PTY byte has been
 // written to the ring buffer before any Done() waiter wakes up.
 //
+// Order matters: we wait for readDone BEFORE closing ptmx. Closing the
+// master mid-Read interrupts the syscall with "file already closed" and
+// discards any kernel-buffered bytes that hadn't been read yet — exactly
+// the bytes a short-lived child like `echo` produces just before exiting.
+// After Cmd.Wait() returns, the child's slave fd is fully closed (creack/pty
+// closes the parent's slave handle at start), so the master naturally EOFs
+// once readLoop drains the pending bytes — no force-close needed.
+//
 // The `<-s.readDone` block depends on readLoop's `defer close(s.readDone)`
 // firing. The defer runs even on panic, so a crashing readLoop still
 // unblocks this goroutine; without that defer, Done() would deadlock.
 func (s *Session) waitLoop() {
 	s.err = s.Cmd.Wait()
+	<-s.readDone
 	s.mu.Lock()
 	s.ptmxClosed = true
 	s.ptmx.Close()
 	s.mu.Unlock()
-	<-s.readDone
 	close(s.done)
 }
 
