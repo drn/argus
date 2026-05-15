@@ -67,24 +67,26 @@ func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
 	// on the first Draw, triggering a force-resync correction and a SIGWINCH
 	// that causes the agent to repaint visibly — see gotchas/pty-terminal.md
 	// for the "PTY size mismatch on agent-view entry" tearing case.
+	// Rows where the threshold guard rejects the outer rect are encoded as
+	// wantCols=0, wantRows=0 (the post-rejection state of ptyCols/ptyRows).
 	cases := []struct {
-		name        string
-		outerW      int
-		outerH      int
-		wantCols    int
-		wantRows    int
-		wantSkipped bool // when the guard rejects the rect, ptyCols/Rows stay at 0
+		name     string
+		outerW   int
+		outerH   int
+		wantCols int
+		wantRows int
 	}{
-		{"typical laid-out pane", 192, 84, 190, 82, false},
-		{"narrow split pane", 80, 30, 78, 28, false},
+		{"typical laid-out pane", 192, 84, 190, 82},
+		{"narrow split pane", 80, 30, 78, 28},
 		// tview's NewBox default 15x10 is rejected to avoid a misleading seed
 		// before Flex lays the pane out; Draw will set the real values once
 		// the rect lands.
-		{"tview default rejected", 15, 10, 0, 0, true},
-		{"30x10 (just at threshold) rejected", 30, 10, 0, 0, true},
-		// Just past the threshold seeds, with the floor applied to the small
-		// resulting cols.
-		{"31x11 (just past threshold)", 31, 11, 29, 9, false},
+		{"tview default rejected", 15, 10, 0, 0},
+		{"30x10 (just at threshold) rejected", 30, 10, 0, 0},
+		// Just past the threshold: 31-2=29 cols (above the 20 floor), 11-2=9
+		// rows (above the 5 floor) — neither floor activates, the inner-rect
+		// math drives the seed directly.
+		{"31x11 (just past threshold)", 31, 11, 29, 9},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,11 +97,6 @@ func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
 			tp.mu.Lock()
 			gotCols, gotRows := tp.ptyCols, tp.ptyRows
 			tp.mu.Unlock()
-			if tc.wantSkipped {
-				testutil.Equal(t, gotCols, 0)
-				testutil.Equal(t, gotRows, 0)
-				return
-			}
 			testutil.Equal(t, gotCols, tc.wantCols)
 			testutil.Equal(t, gotRows, tc.wantRows)
 		})

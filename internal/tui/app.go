@@ -2399,6 +2399,19 @@ func (a *App) computePTYSize() (rows, cols uint16) {
 // can cause Claude to repaint visibly.
 const agentViewRowOverhead = 4
 
+// agentViewColOverhead is the total fixed-column width consumed by the agent
+// pane's left+right custom border (1 cell each via widget.DrawBorderedPanel,
+// since TerminalPane is a bare tview.Box without a native border):
+//
+//	pane left+right border (1 + 1) = 2
+//
+// Used by ptySizeFromHostTerm and ptySizeFromPaneRect to derive the pane's
+// inner width. The same `2` appears in SetSession's inner-rect seed in
+// internal/tui/terminal/terminalpane.go — if DrawBorderedPanel's border
+// width ever changes, all three sites must update together. Keeping the
+// constant here ties the architectural invariant to a single name.
+const agentViewColOverhead = 2
+
 // ptySizeFromHostTerm derives the agent PTY size from the host terminal,
 // applying the agent page's 1:3:1 column flex and the header/footer/border
 // row deductions. Returns 0,0 when the input is unusable.
@@ -2407,8 +2420,9 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 		return 0, 0
 	}
 	// Agent page column flex: 1 (gitPanel) + 3 (agentPane) + 1 (filePanel)
-	// → center gets 3/5 of width. Deduct 2 for the agent pane's border.
-	centerW := max(tw*3/5-2, 20)
+	// → center gets 3/5 of width, minus the pane's custom border on both
+	// sides (agentViewColOverhead).
+	centerW := max(tw*3/5-agentViewColOverhead, 20)
 	// Every entry path that calls computePTYSize hides the tab header BEFORE
 	// this function runs — enterPendingAgentView (new task) and onTaskSelect
 	// (auto-start) both run ResizeItem first. Fork is the one exception (its
@@ -2425,7 +2439,9 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 // box rect (as returned by GetInnerRect — the agent pane has no native tview
 // border, so its inner rect equals its outer rect). The pane draws its own
 // 1-cell border via widget.DrawBorderedPanel, so the visible content area is
-// pw-2 by ph-2.
+// pw-agentViewColOverhead by ph-agentViewColOverhead. See also
+// `agentViewRowOverhead` for the related row-deduction constant used by
+// ptySizeFromHostTerm.
 //
 // Rejects the tview Box default of 15x10 — that rect surfaces before Flex
 // has laid the pane out and would produce a 20x8 PTY (Claude renders narrow
@@ -2442,7 +2458,10 @@ func ptySizeFromPaneRect(pw, ph int) (rows, cols uint16) {
 	if pw <= 30 || ph <= 10 {
 		return 0, 0
 	}
-	return uint16(max(ph-2, 5)), uint16(max(pw-2, 20))
+	// ph and pw are realistic terminal cell counts (low thousands at most),
+	// so the int → uint16 conversion cannot overflow; the max() floors also
+	// guarantee positive values. Silence gosec G115 for both fields.
+	return uint16(max(ph-agentViewColOverhead, 5)), uint16(max(pw-agentViewColOverhead, 20)) //nolint:gosec // see comment
 }
 
 // startSession starts a session for an *existing* task (Enter-to-restart or
