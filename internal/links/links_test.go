@@ -224,6 +224,11 @@ func TestExtract(t *testing.T) {
 			content: "[Try](https://gi) and [Real](https://example.com)",
 			want:    []Link{{Label: "Real", URL: "https://example.com"}},
 		},
+		{
+			name:    "leading-dot host excluded",
+			content: "see https://.example.com/path for details",
+			want:    nil,
+		},
 	}
 
 	for _, tt := range tests {

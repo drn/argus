@@ -104,8 +104,16 @@ func hasValidHost(raw string) bool {
 	if host == "localhost" {
 		return true
 	}
+	// Reject hostnames with a leading or trailing dot (`.example.com`,
+	// `example.com.`). The trailing-dot FQDN form is technically legal but
+	// `cleanURL` already strips it, so seeing one here means the input was
+	// malformed. Leading dots aren't valid DNS names at all.
+	if host[0] == '.' || host[len(host)-1] == '.' {
+		return false
+	}
 	idx := strings.LastIndexByte(host, '.')
-	if idx <= 0 || idx == len(host)-1 {
+	// No dot at all → no TLD (e.g. `https://gi`).
+	if idx < 0 {
 		return false
 	}
 	tld := host[idx+1:]
