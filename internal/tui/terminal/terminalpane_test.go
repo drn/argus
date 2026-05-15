@@ -89,7 +89,7 @@ func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tp := NewTerminalPane()
-			tp.Box.SetRect(0, 0, tc.outerW, tc.outerH)
+			tp.SetRect(0, 0, tc.outerW, tc.outerH)
 			sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
 			tp.SetSession(sess)
 			tp.mu.Lock()
@@ -124,7 +124,7 @@ func TestTerminalPane_FirstDrawAfterSetSessionPostsNoSizeDelta(t *testing.T) {
 	// about here is the seed-vs-inner sizeChanged path that fired on every
 	// agent-view entry prior to the fix.
 	tp := NewTerminalPane()
-	tp.Box.SetRect(0, 0, 192, 84)
+	tp.SetRect(0, 0, 192, 84)
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
