@@ -179,6 +179,51 @@ func TestExtract(t *testing.T) {
 			content: "https://github.com/org/repo/compare/v1.0...v1.1",
 			want:    []Link{{Label: "https://github.com/org/repo/compare/v1.0...v1.1", URL: "https://github.com/org/repo/compare/v1.0...v1.1"}},
 		},
+		{
+			name:    "incomplete URL with no dot in host excluded",
+			content: "agent typing https://gi and https://github.com/drn/argus done",
+			want:    []Link{{Label: "https://github.com/drn/argus", URL: "https://github.com/drn/argus"}},
+		},
+		{
+			name:    "URL with one-letter TLD excluded",
+			content: "see https://example.c for details",
+			want:    nil,
+		},
+		{
+			name:    "URL with numeric-only TLD excluded",
+			content: "see https://example.123 for details",
+			want:    nil,
+		},
+		{
+			name:    "URL with no host excluded",
+			content: "raw https:// prefix should not match",
+			want:    nil,
+		},
+		{
+			name:    "localhost URL accepted",
+			content: "dev server at http://localhost:8080/admin",
+			want:    []Link{{Label: "http://localhost:8080/admin", URL: "http://localhost:8080/admin"}},
+		},
+		{
+			name:    "IPv4 literal accepted",
+			content: "router at http://192.168.1.1/setup",
+			want:    []Link{{Label: "http://192.168.1.1/setup", URL: "http://192.168.1.1/setup"}},
+		},
+		{
+			name:    "two-letter ccTLD accepted",
+			content: "see https://example.co.uk/path",
+			want:    []Link{{Label: "https://example.co.uk/path", URL: "https://example.co.uk/path"}},
+		},
+		{
+			name:    "IDN punycode TLD accepted",
+			content: "see https://example.xn--p1ai for details",
+			want:    []Link{{Label: "https://example.xn--p1ai", URL: "https://example.xn--p1ai"}},
+		},
+		{
+			name:    "markdown link with incomplete URL excluded",
+			content: "[Try](https://gi) and [Real](https://example.com)",
+			want:    []Link{{Label: "Real", URL: "https://example.com"}},
+		},
 	}
 
 	for _, tt := range tests {

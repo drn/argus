@@ -6,6 +6,8 @@
 package links
 
 import (
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -82,6 +84,52 @@ func isTruncatedURL(raw string) bool {
 	return strings.Contains(raw, "…") || strings.HasSuffix(raw, "...")
 }
 
+// hasValidHost returns true if the URL has a host that looks complete:
+// an IP literal, the literal "localhost", or a DNS name whose final label
+// (TLD) is at least 2 characters starting with a letter. This filters out
+// in-progress matches like `https://gi` that the agent is still streaming
+// — they have no TLD yet and would 404 if opened.
+func hasValidHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if host == "localhost" {
+		return true
+	}
+	idx := strings.LastIndexByte(host, '.')
+	if idx <= 0 || idx == len(host)-1 {
+		return false
+	}
+	tld := host[idx+1:]
+	if len(tld) < 2 {
+		return false
+	}
+	// TLDs must start with a letter; remaining chars may be letters, digits,
+	// or hyphens (covers IDN punycode like `xn--p1ai`).
+	if !isASCIILetter(tld[0]) {
+		return false
+	}
+	for i := 1; i < len(tld); i++ {
+		c := tld[i]
+		if !isASCIILetter(c) && !(c >= '0' && c <= '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 // Extract returns unique http/https URLs from content that may contain ANSI
 // escape sequences (e.g. raw PTY session logs). Markdown-style links
 // [text](url) are preferred; bare URLs not already captured by a markdown
@@ -99,12 +147,12 @@ func Extract(content string) []Link {
 		if isTruncatedURL(raw) {
 			continue
 		}
-		url := cleanURL(raw)
-		if url == "" || seen[url] {
+		u := cleanURL(raw)
+		if u == "" || seen[u] || !hasValidHost(u) {
 			continue
 		}
-		seen[url] = true
-		out = append(out, Link{Label: m[1], URL: url})
+		seen[u] = true
+		out = append(out, Link{Label: m[1], URL: u})
 	}
 
 	// Second pass: bare URLs not already captured
@@ -112,12 +160,12 @@ func Extract(content string) []Link {
 		if isTruncatedURL(raw) {
 			continue
 		}
-		url := cleanURL(raw)
-		if url == "" || seen[url] {
+		u := cleanURL(raw)
+		if u == "" || seen[u] || !hasValidHost(u) {
 			continue
 		}
-		seen[url] = true
-		out = append(out, Link{Label: url, URL: url})
+		seen[u] = true
+		out = append(out, Link{Label: u, URL: u})
 	}
 
 	return out
