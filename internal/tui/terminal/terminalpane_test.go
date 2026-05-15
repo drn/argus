@@ -36,12 +36,17 @@ func TestTerminalPane_SetSession(t *testing.T) {
 }
 
 func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
-	// SetSession must NOT hardcode 80x24. A prior revision used 80x24 as a
-	// fallback when GetInnerRect returned zero, causing the emulator to wrap
-	// at 80 cols even though the PTY started at the real (wider) panel size.
-	// On a fresh TerminalPane (no SetRect call), the guard rejects the tview
-	// default 15x10 rect entirely, leaving ptyCols/ptyRows at 0 so Draw seeds
-	// them from the actual panel dimensions on the first frame.
+	// Regression guard: a prior revision used 80x24 as a hard fallback when
+	// GetInnerRect returned zero, causing the emulator to wrap at 80 cols
+	// even though the PTY started at the real (wider) panel size. The fix
+	// removed that fallback; this test pins the no-80x24 contract.
+	//
+	// Note: on a fresh TerminalPane (no SetRect call), the threshold guard
+	// `w > 30 && h > 10` rejects the tview NewBox 15x10 default, so the
+	// observed (cols, rows) here will be (0, 0). The "tview default rejected"
+	// case in TestTerminalPane_SetSessionSeedsInnerRect is the positive
+	// assertion of that behavior; this test remains the negative assertion
+	// against the specific 80x24 regression.
 	tp := NewTerminalPane()
 	sess := &mockAdapter{alive: true, totalWritten: 100, output: make([]byte, 100)}
 	tp.SetSession(sess)

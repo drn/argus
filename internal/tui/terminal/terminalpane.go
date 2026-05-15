@@ -275,9 +275,11 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	//
 	// Goroutine safety: GetInnerRect reads the box's rect fields, which tview
 	// mutates via SetRect on the main goroutine. All current callers of
-	// SetSession run on the tview main goroutine (onTaskSelect, startSession's
-	// QueueUpdateDraw callback). A future off-main caller would race with
-	// Draw; if you add one, snapshot the rect on the main goroutine first.
+	// SetSession run on the tview main goroutine (onTaskSelect via
+	// InputCapture; startSession directly on the main goroutine via
+	// InputCapture; the new-task CreateAndStart completion via
+	// QueueUpdateDraw). A future off-main caller would race with Draw; if
+	// you add one, snapshot the rect on the main goroutine first.
 	if sess != nil {
 		_, _, w, h := tp.GetInnerRect()
 		if w > 30 && h > 10 {
