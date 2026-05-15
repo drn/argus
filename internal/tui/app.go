@@ -1319,6 +1319,23 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 				return nil
 			}
 		}
+	case tcell.KeyCtrlO:
+		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
+			if t := a.tasklist.SelectedTask(); t != nil {
+				dir := ""
+				if p, ok := a.db.Config().Projects[t.Project]; ok && p.Path != "" {
+					dir = p.Path
+				} else if t.Worktree != "" {
+					dir = t.Worktree
+				}
+				if dir != "" {
+					if err := repoOpener(dir); err != nil {
+						uxlog.Log("[tui] open repo failed: %v", err)
+					}
+					return nil
+				}
+			}
+		}
 	case tcell.KeyCtrlP:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
 			if t := a.tasklist.SelectedTask(); t != nil && t.Worktree != "" {
@@ -1728,6 +1745,15 @@ var terminalOpener = func(worktreeDir string) error {
 var prOpener = func(worktreeDir string) error {
 	cmd := exec.Command("gh", "pr", "view", "--web")
 	cmd.Dir = worktreeDir
+	return cmd.Start()
+}
+
+// repoOpener is the package-level seam for "open the GitHub repo page for
+// this project in a browser via gh". gh resolves the URL from the local
+// remote, so any directory inside the repo (project root or worktree) works.
+var repoOpener = func(dir string) error {
+	cmd := exec.Command("gh", "repo", "view", "--web")
+	cmd.Dir = dir
 	return cmd.Start()
 }
 

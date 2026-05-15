@@ -327,3 +327,126 @@ var errStubPRFailed = stubError("pr open failed")
 type stubError string
 
 func (e stubError) Error() string { return string(e) }
+
+func TestApp_HandleGlobalKey_CtrlOOpensRepoFromProjectPath(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	projPath := t.TempDir()
+	testutil.NoError(t, d.SetProject("proj", config.Project{Path: projPath}))
+
+	wt := t.TempDir()
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusInProgress,
+		Project:   "proj",
+		Worktree:  wt,
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	var gotDir string
+	orig := repoOpener
+	repoOpener = func(dir string) error {
+		gotDir = dir
+		return nil
+	}
+	t.Cleanup(func() { repoOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlO, 0, 0)); ev != nil {
+		t.Fatal("ctrl+o should be consumed in task list")
+	}
+	// Project path is preferred over worktree.
+	testutil.Equal(t, gotDir, projPath)
+}
+
+func TestApp_HandleGlobalKey_CtrlOFallsBackToWorktree(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Task references a project name that's not in the config.
+	wt := t.TempDir()
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusInProgress,
+		Project:   "ghost",
+		Worktree:  wt,
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	var gotDir string
+	orig := repoOpener
+	repoOpener = func(dir string) error {
+		gotDir = dir
+		return nil
+	}
+	t.Cleanup(func() { repoOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlO, 0, 0)); ev != nil {
+		t.Fatal("ctrl+o should be consumed in task list")
+	}
+	testutil.Equal(t, gotDir, wt)
+}
+
+func TestApp_HandleGlobalKey_CtrlONoDir(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// No project entry, no worktree.
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusPending,
+		Project:   "ghost",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	called := false
+	orig := repoOpener
+	repoOpener = func(string) error { called = true; return nil }
+	t.Cleanup(func() { repoOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlO, 0, 0)); ev == nil {
+		t.Fatal("ctrl+o should fall through when no directory is available")
+	}
+	if called {
+		t.Fatal("repoOpener should not run when no directory is available")
+	}
+}
+
+// repoOpener errors (gh not installed, no remote, etc.) must be swallowed
+// and logged, not propagated. The event still gets consumed.
+func TestApp_HandleGlobalKey_CtrlOSwallowsRepoError(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "t1",
+		Name:      "task one",
+		Status:    model.StatusInProgress,
+		Project:   "proj",
+		Worktree:  t.TempDir(),
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	orig := repoOpener
+	repoOpener = func(string) error { return stubError("repo open failed") }
+	t.Cleanup(func() { repoOpener = orig })
+
+	if ev := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlO, 0, 0)); ev != nil {
+		t.Fatal("ctrl+o should be consumed even when repoOpener errors")
+	}
+}

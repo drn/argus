@@ -122,6 +122,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Copy task prompt to clipboard                                   |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
+| `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
 | `1` / `2` | Switch tabs (Tasks / Settings)                                  |
