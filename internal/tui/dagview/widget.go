@@ -86,9 +86,8 @@ func (w *Widget) CurrentTask() string {
 //
 // Movement treats every node in `layout.Nodes` uniformly — filtering
 // (archived, orphan, etc.) is the caller's responsibility. The TUI's
-// `dagNodesFromTasks` drops archived rows before `SetNodes`, so in practice
-// archived nodes never reach this code path from the TUI surface; other
-// callers (tests, future toggles) can still pass them through.
+// `dagNodesFromTasks` drops archived rows before `SetNodes`, so in
+// practice archived nodes never reach this code path from the TUI.
 //
 // Fires maybeNotifyBranchChange when the cursor actually changes. The
 // branch-change contract is mandatory for this widget: the cursor box

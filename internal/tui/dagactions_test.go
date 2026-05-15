@@ -178,20 +178,20 @@ func TestSummarizeHalt(t *testing.T) {
 	}{
 		{"empty report", orch.HaltReport{}, "no downstream tasks"},
 		{"only stopped, singular", orch.HaltReport{Stopped: []string{"a"}}, "1 stopped"},
-		{"only stopped, plural", orch.HaltReport{Stopped: []string{"a", "b"}}, "2 stoppeds"},
+		{"only stopped, plural", orch.HaltReport{Stopped: []string{"a", "b"}}, "2 stopped"},
 		{"only archived, singular", orch.HaltReport{Archived: []string{"x"}}, "1 archived"},
-		{"only archived, plural", orch.HaltReport{Archived: []string{"x", "y", "z"}}, "3 archiveds"},
+		{"only archived, plural", orch.HaltReport{Archived: []string{"x", "y", "z"}}, "3 archived"},
 		{
 			"both populated",
 			orch.HaltReport{Stopped: []string{"a"}, Archived: []string{"x", "y"}},
-			"1 stopped, 2 archiveds",
+			"1 stopped, 2 archived",
 		},
 		{
 			// NotFound entries are tracked but intentionally excluded from
 			// the user-visible summary — they're sessions that exited
 			// between the snapshot and the stop call, and counting them
 			// would inflate the notice.
-			"not_found is ignored in the summary",
+			"NotFound is ignored in the summary",
 			orch.HaltReport{NotFound: []string{"ghost"}},
 			"no downstream tasks",
 		},
