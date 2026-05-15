@@ -258,7 +258,15 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	tp.emuFedTotal = 0
 	tp.scrollOffset = 0
 	tp.paintCacheValid = false
-	// Seed PTY size from panel dimensions — Draw() will refine on first render.
+	// Seed PTY size from the visible inner rect — Draw() will refine on first
+	// render. GetInnerRect returns the pane's OUTER rect because TerminalPane
+	// is a bare tview.Box with no native border; DrawBorderedPanel paints a
+	// 1-cell custom border inside it, so the actual content area is 2 cells
+	// smaller in each dimension. Subtracting 2 keeps the seed aligned with
+	// what Draw() will compute, eliminating a spurious size-delta correction
+	// (and its resulting SIGWINCH-induced agent repaint) on the first frame
+	// after the agent attaches.
+	//
 	// Do NOT fall back to 80x24 when GetInnerRect returns zero (before first
 	// Draw); leave ptyCols/ptyRows at 0 so Draw() sets them to match the
 	// actual panel width. Falling back to 80 creates a mismatch with the PTY
@@ -266,9 +274,9 @@ func (tp *TerminalPane) SetSession(sess agentview.TerminalAdapter) {
 	// text at 80 cols even though the agent output is formatted wider.
 	if sess != nil {
 		_, _, w, h := tp.GetInnerRect()
-		if w > 0 && h > 0 {
-			tp.ptyCols = max(w, 20)
-			tp.ptyRows = max(h, 5)
+		if w > 2 && h > 2 {
+			tp.ptyCols = max(w-2, 20)
+			tp.ptyRows = max(h-2, 5)
 		}
 	}
 	tp.mu.Unlock()

@@ -51,6 +51,26 @@ func TestTerminalPane_SetSessionNoFallback(t *testing.T) {
 	}
 }
 
+func TestTerminalPane_SetSessionSeedsInnerRect(t *testing.T) {
+	// SetSession must seed ptyCols/ptyRows from the visible inner rect, not
+	// the outer rect of the bare tview.Box. DrawBorderedPanel paints a
+	// 1-cell custom border inside the box, so the content area is 2 smaller
+	// in each dimension. Seeding with the outer rect produces a 2x2 mismatch
+	// on the first Draw, triggering a force-resync correction and a SIGWINCH
+	// that causes the agent to repaint visibly — see gotchas/pty-terminal.md
+	// for the "PTY size mismatch on agent-view entry" tearing case.
+	tp := NewTerminalPane()
+	tp.Box.SetRect(0, 0, 192, 84) // typical laid-out pane outer
+	sess := &mockAdapter{alive: true, totalWritten: 0, output: nil}
+	tp.SetSession(sess)
+	tp.mu.Lock()
+	cols, rows := tp.ptyCols, tp.ptyRows
+	tp.mu.Unlock()
+	// Inner = outer - 2 in each dimension.
+	testutil.Equal(t, cols, 190)
+	testutil.Equal(t, rows, 82)
+}
+
 type mockAdapter struct {
 	alive        bool
 	totalWritten uint64

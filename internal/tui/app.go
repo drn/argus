@@ -2395,11 +2395,17 @@ func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	// Agent page column flex: 1 (gitPanel) + 3 (agentPane) + 1 (filePanel)
 	// → center gets 3/5 of width. Deduct 2 for the agent pane's border.
 	centerW := max(tw*3/5-2, 20)
-	// Row layout: tab header(1) is hidden in agent view, agent header(1),
-	// statusbar(1), and pane border(2) ⇒ 5 row deduction. The tab header is
-	// hidden by the time the session starts, but accounting for it would
-	// over-shoot when this runs from the new-task flow before the resize.
-	centerH := max(th-5, 5)
+	// Row layout in agent view (tab header hidden via ResizeItem(0,0)):
+	// agent header(1) + statusbar(1) + pane border(2) ⇒ 4 row deduction.
+	// Every entry path that calls computePTYSize hides the tab header BEFORE
+	// this function runs — enterPendingAgentView (new task) and onTaskSelect
+	// (auto-start) both run ResizeItem first. Fork is the one exception (its
+	// computePTYSize fires before onTaskSelect), so the agent's PTY is 1 row
+	// taller than the still-header-visible pane during the brief CreateAndStart
+	// window. That's fine: the pane isn't on screen yet, and by the time the
+	// user reaches the agent view the header is hidden and sizes match — so
+	// no SIGWINCH-triggered repaint is needed when the agent becomes visible.
+	centerH := max(th-4, 5)
 	return uint16(centerH), uint16(centerW)
 }
 
