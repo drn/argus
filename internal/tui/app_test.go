@@ -68,22 +68,25 @@ func TestSkipRerenderForUnchangedAttach(t *testing.T) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
-	// Non-retryable-state retry paths: when maybeKickRerender invalidates
-	// the cache (either RerenderDeferBusy resolving on a busy session, or
-	// a kick attempt failing because sess.Stop() errored), the next reopen
-	// at the same cols must re-evaluate. Both branches funnel through
-	// `delete(a.lastAttachCols, taskID)` — simulate each and verify the
-	// gate now proceeds, then re-caches on the subsequent proceed.
-	for _, scenario := range []string{"DeferBusy invalidation", "Stop-failure invalidation"} {
-		t.Run(scenario, func(t *testing.T) {
-			delete(app.lastAttachCols, taskID)
-			if app.skipRerenderForUnchangedAttach(taskID, 140) {
-				t.Fatalf("after %s, reopen at 140 should proceed (not skip)", scenario)
-			}
-			if !app.skipRerenderForUnchangedAttach(taskID, 140) {
-				t.Fatalf("after %s + re-cache, reopen at 140 should skip again", scenario)
-			}
-		})
+	// Invalidation API contract: every non-Skip "could have kicked but
+	// didn't" outcome in maybeKickRerender's goroutine (RerenderDeferBusy,
+	// sess.Stop() error) calls `invalidateAttachCache(taskID)` so the next
+	// reopen at the same cols re-evaluates instead of permanently short-
+	// circuiting. Drive the helper directly to pin the invariant — if any
+	// production branch stops invoking invalidateAttachCache, the cache
+	// will stay populated and the gate will incorrectly skip subsequent
+	// retries.
+	app.invalidateAttachCache(taskID)
+	if app.skipRerenderForUnchangedAttach(taskID, 140) {
+		t.Fatal("after invalidateAttachCache, reopen at 140 should proceed (not skip)")
+	}
+	if !app.skipRerenderForUnchangedAttach(taskID, 140) {
+		t.Fatal("after invalidate + re-cache, reopen at 140 should skip again")
+	}
+	// invalidateAttachCache is idempotent on a missing key.
+	app.invalidateAttachCache("never-cached")
+	if app.skipRerenderForUnchangedAttach("never-cached", 200) {
+		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
 	}
 }
 

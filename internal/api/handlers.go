@@ -950,6 +950,17 @@ func (s *Server) skipRerenderForUnchangedCols(taskID string, cols uint16) bool {
 	return seen && prev == cols
 }
 
+// invalidateColsCache clears the cached cols for taskID so the next
+// maybeKickRerender call at any cols re-evaluates the predicate. Called
+// from every non-Skip "could have kicked but didn't" outcome (busy
+// session, kick attempt error, transient DB error) so subsequent /resize
+// calls at the same cols retry instead of permanently short-circuiting.
+func (s *Server) invalidateColsCache(taskID string) {
+	s.lastResizeMu.Lock()
+	delete(s.lastResizeCols, taskID)
+	s.lastResizeMu.Unlock()
+}
+
 // maybeKickRerender evaluates the shared rerender predicate and, if it fires,
 // queues a daemon-side stop+restart. Returns true when a kick was queued.
 //
@@ -983,35 +994,34 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 	// Now the expensive lookups. Re-check IsIdle here so the idle gate
 	// reflects state at-the-moment-of-stop, not earlier.
 	if !sess.IsIdle() {
-		// Agent is mid-tool-call. Invalidate the unchanged-cols cache so
-		// the next /resize at the same cols retries (the agent may have
-		// become idle by then). Without this, the gate at the top of
-		// maybeKickRerender would short-circuit forever and jagged
-		// scrollback would persist until the user resized the viewport.
-		s.lastResizeMu.Lock()
-		delete(s.lastResizeCols, taskID)
-		s.lastResizeMu.Unlock()
+		// Agent is mid-tool-call — invalidate so the next same-cols
+		// /resize re-evaluates when the agent goes idle.
+		s.invalidateColsCache(taskID)
 		return false
 	}
 	task, err := s.db.Get(taskID)
 	if err != nil || task == nil {
+		// Transient DB error — invalidate so the next same-cols /resize
+		// retries instead of permanently short-circuiting on a stale
+		// cached value.
+		s.invalidateColsCache(taskID)
 		return false
 	}
 	if task.SessionID == "" {
-		return false // backend doesn't support --session-id resume (e.g. Codex mid-conversation)
+		// Codex and other backends without --session-id can never be
+		// kicked — leave the cache populated so same-cols /resize
+		// permanently short-circuits (correct; no retry semantic).
+		return false
 	}
 	cfg := s.db.Config()
 	if err := s.runner.KickRerender(task, cfg, rows, cols); err != nil {
 		// Don't fail the resize on a kick failure — runner.KickRerender's
 		// own slog line records the task; just note the failure here.
 		log.Printf("api: KickRerender failed: %v", err)
-		// Kick failed — invalidate the unchanged-cols cache so the next
-		// /resize at the same cols retries (mirrors the !IsIdle path).
-		// Without this, a transient daemon error leaves the user in a
-		// non-retryable state until they resize the viewport.
-		s.lastResizeMu.Lock()
-		delete(s.lastResizeCols, taskID)
-		s.lastResizeMu.Unlock()
+		// Kick attempt failed — invalidate so the next same-cols /resize
+		// retries (a transient daemon error shouldn't permanently break
+		// the gate).
+		s.invalidateColsCache(taskID)
 		return false
 	}
 	// runner.KickRerender already logs via slog with task=, cols=, rows=.

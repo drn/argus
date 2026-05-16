@@ -2284,13 +2284,9 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 			case agent.RerenderSkip:
 				return
 			case agent.RerenderDeferBusy:
-				// Agent is mid-tool-call. Invalidate the unchanged-attach
-				// cache so the next reopen at the same panel cols retries
-				// the predicate (the agent may have become idle by then).
-				// Without this, the gate at the top of maybeKickRerender
-				// would short-circuit forever and the user would have to
-				// resize the terminal to repair jagged scrollback.
-				delete(a.lastAttachCols, taskID)
+				// Agent is mid-tool-call — invalidate so the next
+				// same-cols reopen re-evaluates when the agent goes idle.
+				a.invalidateAttachCache(taskID)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
 			case agent.RerenderKick:
@@ -2300,12 +2296,9 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 				if err := sess.Stop(); err != nil {
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
 					delete(a.pendingRerenderRestart, taskID)
-					// Stop failed — the kick didn't happen. Invalidate the
-					// unchanged-attach cache so the next reopen at the same
-					// cols retries (mirrors the RerenderDeferBusy path).
-					// Without this, transient daemon errors leave the user
-					// in a non-retryable state until they resize.
-					delete(a.lastAttachCols, taskID)
+					// Stop attempt failed — invalidate so the next
+					// same-cols reopen retries (mirrors DeferBusy).
+					a.invalidateAttachCache(taskID)
 					a.statusbar.ClearInfo()
 				}
 			}
@@ -2327,6 +2320,16 @@ func (a *App) skipRerenderForUnchangedAttach(taskID string, panelCols int) bool 
 	}
 	a.lastAttachCols[taskID] = panelCols
 	return false
+}
+
+// invalidateAttachCache clears the cached cols for taskID so the next
+// maybeKickRerender call at any panel size re-evaluates the predicate.
+// Called from every non-Skip "could have kicked but didn't" outcome (busy
+// session, kick attempt error) so subsequent reopens at the same cols retry
+// instead of permanently short-circuiting. Main-goroutine-only (lastAttachCols
+// has no mutex because every access path runs on the tview main goroutine).
+func (a *App) invalidateAttachCache(taskID string) {
+	delete(a.lastAttachCols, taskID)
 }
 
 // reapStaleRerenderRestart clears a leaked pendingRerenderRestart entry when the

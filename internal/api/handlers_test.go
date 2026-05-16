@@ -676,24 +676,24 @@ func TestSkipRerenderForUnchangedCols(t *testing.T) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
-	// Non-retryable-state retry paths: when maybeKickRerender invalidates
-	// the cache (either !IsIdle() on a busy session, or KickRerender
-	// returning an error), the next /resize at the same cols must
-	// re-evaluate. Both branches funnel through `delete(s.lastResizeCols,
-	// taskID)` under the mutex — simulate each and verify the gate now
-	// proceeds, then re-caches on the subsequent proceed.
-	for _, scenario := range []string{"busy-session invalidation", "KickRerender-error invalidation"} {
-		t.Run(scenario, func(t *testing.T) {
-			srv.lastResizeMu.Lock()
-			delete(srv.lastResizeCols, taskID)
-			srv.lastResizeMu.Unlock()
-			if srv.skipRerenderForUnchangedCols(taskID, 140) {
-				t.Fatalf("after %s, resize at 140 should proceed (not skip)", scenario)
-			}
-			if !srv.skipRerenderForUnchangedCols(taskID, 140) {
-				t.Fatalf("after %s + re-cache, resize at 140 should skip again", scenario)
-			}
-		})
+	// Invalidation API contract: every non-Skip "could have kicked but
+	// didn't" outcome in maybeKickRerender (!IsIdle, db.Get error,
+	// runner.KickRerender error) calls `invalidateColsCache(taskID)` so
+	// the next /resize at the same cols re-evaluates. Drive the helper
+	// directly to pin the invariant — if any production branch stops
+	// invoking invalidateColsCache, the cache will stay populated and
+	// the gate will incorrectly skip subsequent retries.
+	srv.invalidateColsCache(taskID)
+	if srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("after invalidateColsCache, resize at 140 should proceed (not skip)")
+	}
+	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("after invalidate + re-cache, resize at 140 should skip again")
+	}
+	// invalidateColsCache is idempotent on a missing key.
+	srv.invalidateColsCache("never-cached")
+	if srv.skipRerenderForUnchangedCols("never-cached", 200) {
+		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
 	}
 }
 
