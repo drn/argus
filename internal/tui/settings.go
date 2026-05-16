@@ -1688,10 +1688,16 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 			widget.DrawText(screen, x, y+row, w, "  "+p, theme.StyleDimmed)
 			row++
 		}
-		row++
 	}
 
 	if len(sv.sandboxAllowAppleEvents) > 0 {
+		// Separator above this section only when something rendered before it.
+		// ExtraWrite intentionally omits its own trailing row++ to preserve the
+		// pre-existing spacing footprint when AllowAppleEvents is empty (the
+		// "[enter] toggle" footer's row+2 < h guard relies on row being tight).
+		if len(sv.sandboxDenyRead) > 0 || len(sv.sandboxExtraWrite) > 0 {
+			row++
+		}
 		widget.DrawText(screen, x, y+row, w, "Allow AppleEvents:", tcell.StyleDefault.Foreground(theme.ColorTitle))
 		row++
 		for _, b := range sv.sandboxAllowAppleEvents {
