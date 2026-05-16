@@ -73,6 +73,13 @@ var nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cm
 // prompt is empty/whitespace; other errors mean the call ran but produced
 // unusable output. Callers should fall back to their existing slug on any
 // error.
+//
+// prompt is passed to Haiku as user content. The system prompt and the
+// "Task description:" wrapper provide social framing only, not sanitization
+// — sanitizeAndValidate on the output is the last-resort guard against
+// prompt-injection escape. Callers passing untrusted external strings
+// (scraped tickets, clipboard, etc.) should pre-screen if they care about
+// the side effect of the rename succeeding.
 func GenerateName(ctx context.Context, prompt string) (string, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return "", ErrEmptyPrompt

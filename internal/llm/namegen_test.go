@@ -64,18 +64,18 @@ func TestGenerateName_NoClaude(t *testing.T) {
 	testutil.ErrorIs(t, err, ErrUnavailable)
 }
 
-func TestGenerateName_ValidStubbedOutput(t *testing.T) {
-	// Stub the exec factory to return a command that prints a kebab-case
-	// name without actually running claude. `echo` is portable enough across
-	// dev shells that this test runs without skipping on macOS/Linux.
+// setupFakeClaude wires a fake `claude` binary onto PATH and swaps
+// nameGenCmd to run it. captureArgs, if non-nil, is populated with the
+// args nameGenCmd received on each call. Returns early via t.Skip on
+// Windows (the shell stub isn't portable there).
+func setupFakeClaude(t *testing.T, stdout string, captureArgs *[]string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("echo path differs on Windows")
+		t.Skip("shell script not portable on Windows")
 	}
-	// Ensure exec.LookPath("claude") succeeds — point PATH at a temp dir
-	// containing a fake `claude` script so we exercise the success path.
 	tmp := t.TempDir()
 	fake := tmp + "/claude"
-	if err := writeExec(fake, "#!/bin/sh\nprintf 'fix-auth-token\\n'\n"); err != nil {
+	if err := writeExec(fake, "#!/bin/sh\nprintf '"+stdout+"'\n"); err != nil {
 		t.Fatalf("writeExec: %v", err)
 	}
 	t.Setenv("PATH", tmp)
@@ -83,8 +83,15 @@ func TestGenerateName_ValidStubbedOutput(t *testing.T) {
 	prev := nameGenCmd
 	t.Cleanup(func() { nameGenCmd = prev })
 	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if captureArgs != nil {
+			*captureArgs = args
+		}
 		return exec.CommandContext(ctx, fake)
 	}
+}
+
+func TestGenerateName_ValidStubbedOutput(t *testing.T) {
+	setupFakeClaude(t, `fix-auth-token\n`, nil)
 
 	got, err := GenerateName(context.Background(), "Refactor the auth token refresh flow")
 	testutil.NoError(t, err)
@@ -94,26 +101,10 @@ func TestGenerateName_ValidStubbedOutput(t *testing.T) {
 // TestGenerateName_PromptFraming asserts the user prompt is passed as a
 // "Task description:" framed argument and the system prompt instructs the
 // model not to answer it. Without both pieces, Haiku reads question-shaped
-// prompts as questions and replies in prose (see ux.log entries from
-// 2026-05-15 17:08-17:09).
+// prompts as questions for itself and replies in prose.
 func TestGenerateName_PromptFraming(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script not portable on Windows")
-	}
-	tmp := t.TempDir()
-	fake := tmp + "/claude"
-	if err := writeExec(fake, "#!/bin/sh\nprintf 'ok-name\\n'\n"); err != nil {
-		t.Fatalf("writeExec: %v", err)
-	}
-	t.Setenv("PATH", tmp)
-
 	var capturedArgs []string
-	prev := nameGenCmd
-	t.Cleanup(func() { nameGenCmd = prev })
-	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		capturedArgs = args
-		return exec.CommandContext(ctx, fake)
-	}
+	setupFakeClaude(t, `ok-name\n`, &capturedArgs)
 
 	_, err := GenerateName(context.Background(), "looks like X isn't working?")
 	testutil.NoError(t, err)
@@ -139,21 +130,7 @@ func TestGenerateName_PromptFraming(t *testing.T) {
 }
 
 func TestGenerateName_InvalidModelOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("echo path differs on Windows")
-	}
-	tmp := t.TempDir()
-	fake := tmp + "/claude"
-	if err := writeExec(fake, "#!/bin/sh\nprintf 'Sorry, I cannot help with that.'\n"); err != nil {
-		t.Fatalf("writeExec: %v", err)
-	}
-	t.Setenv("PATH", tmp)
-
-	prev := nameGenCmd
-	t.Cleanup(func() { nameGenCmd = prev })
-	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, fake)
-	}
+	setupFakeClaude(t, "Sorry, I cannot help with that.", nil)
 
 	_, err := GenerateName(context.Background(), "build a feature")
 	if err == nil || errors.Is(err, ErrUnavailable) {
