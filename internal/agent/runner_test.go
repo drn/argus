@@ -705,26 +705,24 @@ func TestRunner_KickRerender_NoLoopOnImmediateCrash(t *testing.T) {
 	// Wait for the original to exit.
 	<-starts
 
-	// Inject a pendingRestart entry directly. The session is already gone, so
-	// we simulate "kick then immediate crash on resume" by setting consumed=
-	// false on a fresh entry and verifying that subsequent activity does not
-	// trigger more than one resume Start.
-	r.SetPendingRestartForTest(task.ID, true)
+	// Inject a pendingRestart entry directly with consumed=true to simulate
+	// the state "the previous restart goroutine already claimed this entry
+	// and is now running the resumed session". The resumed session is the
+	// second Start below; its exit goroutine must read consumed=true and
+	// skip another restart. Flipping consumed AFTER Start would race with
+	// the exit goroutine — on slow runners the goroutine reads consumed=
+	// false first, calls r.Start(pending.task=nil, ...), and panics with a
+	// nil deref. Setting it up-front removes the race.
+	r.mu.Lock()
+	r.pendingRestart[task.ID] = &pendingRestart{consumed: true}
+	r.mu.Unlock()
 
 	// Drive a second Start to simulate the resumed session, then let it die.
-	// The resumed session's exit goroutine should read consumed=true (set
-	// when this Start path ran) and skip the loop.
+	// The resumed session's exit goroutine should read consumed=true and
+	// skip the loop.
 	if _, err := r.Start(task, cfg, 24, 80, true); err != nil {
 		t.Fatal(err)
 	}
-
-	// Now manually flip consumed=true on the pending entry to simulate the
-	// previous restart's claim.
-	r.mu.Lock()
-	if r.pendingRestart[task.ID] != nil {
-		r.pendingRestart[task.ID].consumed = true
-	}
-	r.mu.Unlock()
 
 	// Wait for the resumed session's onFinish.
 	<-starts
