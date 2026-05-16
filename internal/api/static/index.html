@@ -5567,13 +5567,19 @@ function sendCompose() {
   //                                     replacement commit instead of a fresh
   //                                     insert.
   //
-  // Defense-in-depth: we run TWO handlers cooperatively. The `beforeinput`
+  // Defense-in-depth: we run THREE layers cooperatively. The `beforeinput`
   // matcher catches the known shapes early so the user never sees a newline
   // flicker. The `input` matcher (post-mutation) catches anything the
   // beforeinput matcher missed — observe-the-side-effect semantics, so any
   // future iOS variant or third-party keyboard / dictation tool that lands a
   // trailing newline in the textarea via an unrecognized inputType still
-  // submits. The two layers gate on stamps so neither double-fires the other.
+  // submits. `sendCompose` itself strips trailing newlines from `ci.value`
+  // before the `+ '\r'` append (see top of function), which is the belt for
+  // dictation tools that mutate `.value` directly and fire no event at all —
+  // neither beforeinput nor input ever runs in that path, so layers 1 and 2
+  // can't see it. The first two layers gate on stamps so neither double-fires
+  // the other; layer 3 is unconditional (idempotent — the strip on
+  // already-clean content is a no-op).
   //
   // `lineBreakInputOf()` returns null for non-line-break events, or
   // `{ prefix }` when the event commits a line break (with `prefix` holding
@@ -5651,6 +5657,7 @@ function sendCompose() {
     'insertFromPaste',
     'insertFromPasteAsQuotation',
     'insertFromDrop',
+    'insertFromTransfer',
     'insertFromYank',
   ]);
   function isInsertionForSubmit(inputType) {
@@ -5713,8 +5720,10 @@ function sendCompose() {
   //   - Third-party keyboards / Wispr Flow / Voice Control dispatches that
   //     don't match any of our beforeinput shapes.
   //   - Pathological multi-line data the strict beforeinput matcher rejected.
-  // Gated on `lastEnterAt` and the inputType allowlist so it doesn't fire on
-  // hardware Shift+Enter (intentional newline) or paste/drop (user action).
+  // Gated on `lastEnterAt` and the inputType denylist (see
+  // `isInsertionForSubmit` above) so it doesn't fire on hardware Shift+Enter
+  // (intentional newline) or paste/drop/yank/delete/history/format (user
+  // action or non-Send edit).
   ci.addEventListener('input', e => {
     // Hardware Enter / Shift+Enter just ran. Whatever decision the keydown +
     // beforeinput handlers made stands; don't second-guess them here.

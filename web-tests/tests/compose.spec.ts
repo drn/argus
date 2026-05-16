@@ -544,9 +544,35 @@ test.describe('compose bar', () => {
     await expect(ci).toHaveValue('one\n');
   });
 
+  // Guard rail: drag-and-drop from another source must not auto-submit
+  // (WHATWG `insertFromTransfer`). Distinct from `insertFromDrop` (drop
+  // from the same document) — both are in the denylist.
+  test('input fallback does NOT fire on insertFromTransfer with trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'hello\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromTransfer',
+        data: 'hello\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('hello\n');
+  });
+
   // Guard rail: paste of multi-line text must not auto-submit even though
-  // the textarea now ends in `\n`. The fallback's allowlist explicitly
-  // excludes `insertFromPaste`.
+  // the textarea now ends in `\n`. The fallback's denylist explicitly
+  // includes `insertFromPaste` (alongside other paste/drop/yank types).
   test('input fallback does NOT fire on paste with trailing newline', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
