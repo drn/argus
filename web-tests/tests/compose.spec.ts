@@ -544,32 +544,6 @@ test.describe('compose bar', () => {
     await expect(ci).toHaveValue('one\n');
   });
 
-  // Guard rail: drag-and-drop from another source must not auto-submit
-  // (WHATWG `insertFromTransfer`). Distinct from `insertFromDrop` (drop
-  // from the same document) — both are in the denylist.
-  test('input fallback does NOT fire on insertFromTransfer with trailing newline', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
-    await login(page);
-
-    let posted = false;
-    page.on('request', req => {
-      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
-    });
-    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
-      el.focus();
-      el.value = 'hello\n';
-      el.dispatchEvent(new InputEvent('input', {
-        inputType: 'insertFromTransfer',
-        data: 'hello\n',
-        cancelable: false,
-        bubbles: true,
-      }));
-    });
-    await page.waitForTimeout(200);
-    expect(posted).toBe(false);
-    await expect(page.locator('#compose-input')).toHaveValue('hello\n');
-  });
-
   // Guard rail: paste of multi-line text must not auto-submit even though
   // the textarea now ends in `\n`. The fallback's denylist explicitly
   // includes `insertFromPaste` (alongside other paste/drop/yank types).
@@ -762,6 +736,45 @@ test.describe('compose bar', () => {
     await page.waitForTimeout(200);
     expect(posted).toBe(false);
     await expect(page.locator('#compose-input')).toHaveValue('hello\n');
+  });
+
+  // Regression: when layer 2 (input fallback) correctly bails on a
+  // denylisted event but leaves a trailing `\n` in the textarea, the user
+  // may then tap Send manually — layer 3 (sendCompose strip) must catch
+  // that `\n` before it reaches the POST. Without layer 3, the POST is
+  // `"text\n\r"` and Claude Code drafts the prompt with an embedded newline
+  // instead of submitting. Pairs with the dictation `.value`-injection test
+  // (which exercises layer 3 via a no-event path) to lock in layer-3 as
+  // both the dictation belt AND the post-deny safety net.
+  test('layer 3 sendCompose strip catches trailing \\n after denylisted input event + tap send', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    // Step 1: simulate a denylisted input event (paste) that leaves a
+    // trailing newline. Layer 2's input fallback bails (paste is denied),
+    // so the `\n` stays in the textarea.
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'pasted text\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromPaste',
+        data: 'pasted text\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await expect(page.locator('#compose-input')).toHaveValue('pasted text\n');
+
+    // Step 2: user taps send. Layer 3 in sendCompose must strip the trailing
+    // `\n` so the POST is `"pasted text\r"` not `"pasted text\n\r"`.
+    const inputReq = page.waitForRequest(req =>
+      req.url().includes('/input') && req.method() === 'POST',
+      { timeout: 3000 }
+    );
+    await page.locator('#compose-send').tap();
+    const req = await inputReq;
+    expect(req.postData()).toBe('pasted text\r');
+    await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
   test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {

@@ -5642,11 +5642,17 @@ function sendCompose() {
   // Denylist for the input fallback: ANY input event that left a trailing
   // newline in the textarea triggers a Send, EXCEPT events we know are NOT
   // a Send signal — explicit user-content actions (paste / paste-as-quotation
-  // / drop / cross-app transfer / yank — see PASTE_DROP_INPUT_TYPES below for
-  // the exact set), edits (delete*), history (undo/redo), and format
+  // / drop / yank — the four `insertFrom*` types defined by WHATWG Input
+  // Events Level 2), edits (delete*), history (undo/redo), and format
   // (bold/etc.). Empty / unknown / future inputTypes pass the gate; the
-  // trailing-`\n` check on `ci.value` below is the actual safety, exactly as
-  // the composition-update case relies on.
+  // trailing-`\n` check on `ci.value` below is the actual safety.
+  //
+  // `insertCompositionText` (mid-IME composition update) intentionally passes
+  // — it didn't match the old allowlist's exception list either, and a
+  // composition update that hasn't yet committed a line break never lands a
+  // trailing `\n` in the textarea, so the trailing-newline check bails. An
+  // exotic dictation tool that commits a Send via composition would still
+  // produce a trailing newline and correctly route through here.
   //
   // Previous design was an allowlist (`startsWith('insert')` minus paste/
   // drop) — but iOS WebKit and third-party keyboards (Wispr Flow, dictation,
@@ -5658,7 +5664,6 @@ function sendCompose() {
     'insertFromPaste',
     'insertFromPasteAsQuotation',
     'insertFromDrop',
-    'insertFromTransfer',
     'insertFromYank',
   ]);
   function isInsertionForSubmit(inputType) {
