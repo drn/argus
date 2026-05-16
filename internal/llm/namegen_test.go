@@ -91,6 +91,53 @@ func TestGenerateName_ValidStubbedOutput(t *testing.T) {
 	testutil.Equal(t, got, "fix-auth-token")
 }
 
+// TestGenerateName_PromptFraming asserts the user prompt is passed as a
+// "Task description:" framed argument and the system prompt instructs the
+// model not to answer it. Without both pieces, Haiku reads question-shaped
+// prompts as questions and replies in prose (see ux.log entries from
+// 2026-05-15 17:08-17:09).
+func TestGenerateName_PromptFraming(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script not portable on Windows")
+	}
+	tmp := t.TempDir()
+	fake := tmp + "/claude"
+	if err := writeExec(fake, "#!/bin/sh\nprintf 'ok-name\\n'\n"); err != nil {
+		t.Fatalf("writeExec: %v", err)
+	}
+	t.Setenv("PATH", tmp)
+
+	var capturedArgs []string
+	prev := nameGenCmd
+	t.Cleanup(func() { nameGenCmd = prev })
+	nameGenCmd = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		capturedArgs = args
+		return exec.CommandContext(ctx, fake)
+	}
+
+	_, err := GenerateName(context.Background(), "looks like X isn't working?")
+	testutil.NoError(t, err)
+
+	var sysPrompt, promptArg string
+	for i, a := range capturedArgs {
+		if a == "--system-prompt" && i+1 < len(capturedArgs) {
+			sysPrompt = capturedArgs[i+1]
+		}
+		if a == "--" && i+1 < len(capturedArgs) {
+			promptArg = capturedArgs[i+1]
+		}
+	}
+	if !strings.Contains(sysPrompt, "TASK DESCRIPTION") {
+		t.Errorf("system prompt missing TASK DESCRIPTION framing: %q", sysPrompt)
+	}
+	if !strings.Contains(sysPrompt, "do not answer") {
+		t.Errorf("system prompt missing do-not-answer directive: %q", sysPrompt)
+	}
+	if !strings.HasPrefix(promptArg, "Task description: ") {
+		t.Errorf("prompt arg missing framing prefix: %q", promptArg)
+	}
+}
+
 func TestGenerateName_InvalidModelOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("echo path differs on Windows")
