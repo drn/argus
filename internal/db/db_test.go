@@ -424,6 +424,9 @@ func TestDB_Project_SandboxInherit(t *testing.T) {
 	if len(p.Sandbox.ExtraWrite) != 0 {
 		t.Errorf("expected empty ExtraWrite, got %v", p.Sandbox.ExtraWrite)
 	}
+	if len(p.Sandbox.AllowAppleEvents) != 0 {
+		t.Errorf("expected empty AllowAppleEvents, got %v", p.Sandbox.AllowAppleEvents)
+	}
 }
 
 func TestDB_Project_SandboxEnabledTrue(t *testing.T) {
@@ -547,6 +550,40 @@ func TestDB_Project_SandboxRoundtrip(t *testing.T) {
 	}
 	if len(p.Sandbox.ExtraWrite) != 0 {
 		t.Errorf("expected empty ExtraWrite after update, got %v", p.Sandbox.ExtraWrite)
+	}
+}
+
+func TestDB_Project_SandboxAllowAppleEvents(t *testing.T) {
+	d := testDB(t)
+
+	proj := config.Project{
+		Path: "/home/user/myapp",
+		Sandbox: config.ProjectSandboxConfig{
+			AllowAppleEvents: []string{"com.apple.iChat", "com.apple.finder"},
+		},
+	}
+	if err := d.SetProject("myapp", proj); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
+	p := projects["myapp"]
+	if len(p.Sandbox.AllowAppleEvents) != 2 {
+		t.Fatalf("expected 2 AllowAppleEvents entries, got %d: %v", len(p.Sandbox.AllowAppleEvents), p.Sandbox.AllowAppleEvents)
+	}
+	if p.Sandbox.AllowAppleEvents[0] != "com.apple.iChat" || p.Sandbox.AllowAppleEvents[1] != "com.apple.finder" {
+		t.Errorf("AllowAppleEvents = %v", p.Sandbox.AllowAppleEvents)
+	}
+
+	// Update clears the list — defends against the empty-string-is-not-nil
+	// trap in the splitCSV roundtrip.
+	if err := d.SetProject("myapp", config.Project{Path: "/home/user/myapp"}); err != nil {
+		t.Fatal(err)
+	}
+	projects, err = d.Projects()
+	testutil.NoError(t, err)
+	if got := projects["myapp"].Sandbox.AllowAppleEvents; len(got) != 0 {
+		t.Errorf("expected empty AllowAppleEvents after clear-update, got %v", got)
 	}
 }
 

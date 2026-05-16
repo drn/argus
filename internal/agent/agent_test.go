@@ -453,14 +453,16 @@ func TestResolveSandboxConfig_ProjectDisablesGlobalEnabled(t *testing.T) {
 func TestResolveSandboxConfig_ProjectAppendsPaths(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sandbox = config.SandboxConfig{
-		DenyRead:   []string{"/global-deny"},
-		ExtraWrite: []string{"/global-write"},
+		DenyRead:         []string{"/global-deny"},
+		ExtraWrite:       []string{"/global-write"},
+		AllowAppleEvents: []string{"com.apple.finder"},
 	}
 	cfg.Projects["myapp"] = config.Project{
 		Path: "/home/user/myapp",
 		Sandbox: config.ProjectSandboxConfig{
-			DenyRead:   []string{"/proj-deny"},
-			ExtraWrite: []string{"/proj-write"},
+			DenyRead:         []string{"/proj-deny"},
+			ExtraWrite:       []string{"/proj-write"},
+			AllowAppleEvents: []string{"com.apple.iChat"},
 		},
 	}
 	task := &model.Task{Project: "myapp"}
@@ -478,6 +480,29 @@ func TestResolveSandboxConfig_ProjectAppendsPaths(t *testing.T) {
 	}
 	if result.ExtraWrite[0] != "/global-write" || result.ExtraWrite[1] != "/proj-write" {
 		t.Errorf("unexpected extra_write order: %v", result.ExtraWrite)
+	}
+	if len(result.AllowAppleEvents) != 2 {
+		t.Fatalf("expected 2 allow_apple_events entries, got %d: %v", len(result.AllowAppleEvents), result.AllowAppleEvents)
+	}
+	if result.AllowAppleEvents[0] != "com.apple.finder" || result.AllowAppleEvents[1] != "com.apple.iChat" {
+		t.Errorf("unexpected allow_apple_events order: %v", result.AllowAppleEvents)
+	}
+}
+
+func TestResolveSandboxConfig_DoesNotMutateGlobalAllowAppleEvents(t *testing.T) {
+	cfg := testConfig()
+	cfg.Sandbox = config.SandboxConfig{AllowAppleEvents: []string{"com.apple.finder"}}
+	cfg.Projects["myapp"] = config.Project{
+		Sandbox: config.ProjectSandboxConfig{AllowAppleEvents: []string{"com.apple.iChat"}},
+	}
+	task := &model.Task{Project: "myapp"}
+
+	_ = ResolveSandboxConfig(task, cfg)
+
+	// Global slice must not be mutated by the merge (defends against an
+	// accidental in-place append on the shared backing array).
+	if len(cfg.Sandbox.AllowAppleEvents) != 1 || cfg.Sandbox.AllowAppleEvents[0] != "com.apple.finder" {
+		t.Errorf("global AllowAppleEvents was mutated: %v", cfg.Sandbox.AllowAppleEvents)
 	}
 }
 

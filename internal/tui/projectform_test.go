@@ -197,21 +197,25 @@ func TestProjectForm_RoundTrip(t *testing.T) {
 }
 
 func TestProjectForm_RoundTrip_PreservesPathLists(t *testing.T) {
-	// Verify DenyRead/ExtraWrite survive the load→result round-trip.
+	// Verify DenyRead/ExtraWrite/AllowAppleEvents survive the load→result
+	// round-trip. The form does not surface these as editable fields — they
+	// belong to the Settings TUI — but the form must not drop them on edit.
 	pf := NewProjectForm()
 	v := true
 	pf.LoadProject("proj", config.Project{
 		Path: t.TempDir(),
 		Sandbox: config.ProjectSandboxConfig{
-			Enabled:    &v,
-			DenyRead:   []string{"/secret", "/credentials"},
-			ExtraWrite: []string{"/tmp/build"},
+			Enabled:          &v,
+			DenyRead:         []string{"/secret", "/credentials"},
+			ExtraWrite:       []string{"/tmp/build"},
+			AllowAppleEvents: []string{"com.apple.iChat"},
 		},
 	})
 
 	_, proj := pf.Result()
 	testutil.DeepEqual(t, proj.Sandbox.DenyRead, []string{"/secret", "/credentials"})
 	testutil.DeepEqual(t, proj.Sandbox.ExtraWrite, []string{"/tmp/build"})
+	testutil.DeepEqual(t, proj.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
 // --- Path autocomplete tests ---

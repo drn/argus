@@ -11,7 +11,7 @@ func (d *DB) Projects() (map[string]config.Project, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write FROM projects ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("query projects: %w", err)
 	}
@@ -21,8 +21,8 @@ func (d *DB) Projects() (map[string]config.Project, error) {
 	for rows.Next() {
 		var name string
 		var p config.Project
-		var sandboxEnabled, sandboxDenyRead, sandboxExtraWrite string
-		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend, &sandboxEnabled, &sandboxDenyRead, &sandboxExtraWrite); err != nil {
+		var sandboxEnabled, sandboxDenyRead, sandboxExtraWrite, sandboxAllowAppleEvents string
+		if err := rows.Scan(&name, &p.Path, &p.Branch, &p.Backend, &sandboxEnabled, &sandboxDenyRead, &sandboxExtraWrite, &sandboxAllowAppleEvents); err != nil {
 			continue
 		}
 		switch sandboxEnabled {
@@ -38,6 +38,9 @@ func (d *DB) Projects() (map[string]config.Project, error) {
 		}
 		if sandboxExtraWrite != "" {
 			p.Sandbox.ExtraWrite = splitCSV(sandboxExtraWrite)
+		}
+		if sandboxAllowAppleEvents != "" {
+			p.Sandbox.AllowAppleEvents = splitCSV(sandboxAllowAppleEvents)
 		}
 		projects[name] = p
 	}
@@ -58,9 +61,10 @@ func (d *DB) SetProject(name string, p config.Project) error {
 	}
 	sandboxDenyRead := strings.Join(p.Sandbox.DenyRead, ",")
 	sandboxExtraWrite := strings.Join(p.Sandbox.ExtraWrite, ",")
+	sandboxAllowAppleEvents := strings.Join(p.Sandbox.AllowAppleEvents, ",")
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		name, p.Path, p.Branch, p.Backend, sandboxEnabled, sandboxDenyRead, sandboxExtraWrite)
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO projects (name, path, branch, backend, sandbox_enabled, sandbox_deny_read, sandbox_extra_write, sandbox_allow_apple_events) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		name, p.Path, p.Branch, p.Backend, sandboxEnabled, sandboxDenyRead, sandboxExtraWrite, sandboxAllowAppleEvents)
 	return err
 }
 

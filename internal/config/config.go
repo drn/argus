@@ -60,6 +60,13 @@ type ProjectSandboxConfig struct {
 	Enabled    *bool    // nil = inherit global; true/false = override
 	DenyRead   []string // additional paths appended to the global deny_read list
 	ExtraWrite []string // additional paths appended to the global extra_write list
+	// AllowAppleEvents are CFBundleIdentifiers (e.g. "com.apple.iChat") allowed
+	// as appleevent-send destinations from sandboxed agents for this project.
+	// Appended to the global allow_apple_events list. The macOS Seatbelt
+	// (deny default) profile blocks all AppleEvent dispatch by default, so
+	// scripting Messages/Finder/etc. from inside a sandboxed agent requires
+	// an explicit destination allow rule — TCC alone is not sufficient.
+	AllowAppleEvents []string
 }
 
 type Project struct {
@@ -94,6 +101,13 @@ type SandboxConfig struct {
 	Enabled    bool     `toml:"enabled"`
 	DenyRead   []string `toml:"deny_read"`
 	ExtraWrite []string `toml:"extra_write"`
+	// AllowAppleEvents lists CFBundleIdentifiers permitted as
+	// appleevent-send destinations from sandboxed agents. Each entry is
+	// emitted as (allow appleevent-send (appleevent-destination "<id>"))
+	// in the generated SBPL profile. Required to script Messages.app,
+	// Finder, etc. — the (deny default) base profile blocks AppleEvents
+	// regardless of TCC grants.
+	AllowAppleEvents []string `toml:"allow_apple_events"`
 }
 
 // ShouldCleanupWorktrees returns whether worktrees should be auto-removed on task delete.

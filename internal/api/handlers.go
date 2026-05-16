@@ -1164,18 +1164,20 @@ type projectJSON struct {
 // `enabled` is a *bool because nil means "inherit global"; the JSON encoder
 // emits `null` for that, which the SPA renders as an "Inherit" radio.
 type projectSandboxOverride struct {
-	Enabled    *bool    `json:"enabled"`
-	DenyRead   []string `json:"deny_read"`
-	ExtraWrite []string `json:"extra_write"`
+	Enabled          *bool    `json:"enabled"`
+	DenyRead         []string `json:"deny_read"`
+	ExtraWrite       []string `json:"extra_write"`
+	AllowAppleEvents []string `json:"allow_apple_events"`
 }
 
 func projectToJSON(name string, p config.Project) projectJSON {
 	out := projectJSON{Name: name, Path: p.Path, Branch: p.Branch, Backend: p.Backend}
-	if p.Sandbox.Enabled != nil || len(p.Sandbox.DenyRead) > 0 || len(p.Sandbox.ExtraWrite) > 0 {
+	if p.Sandbox.Enabled != nil || len(p.Sandbox.DenyRead) > 0 || len(p.Sandbox.ExtraWrite) > 0 || len(p.Sandbox.AllowAppleEvents) > 0 {
 		out.Sandbox = &projectSandboxOverride{
-			Enabled:    p.Sandbox.Enabled,
-			DenyRead:   stringsOrEmpty(p.Sandbox.DenyRead),
-			ExtraWrite: stringsOrEmpty(p.Sandbox.ExtraWrite),
+			Enabled:          p.Sandbox.Enabled,
+			DenyRead:         stringsOrEmpty(p.Sandbox.DenyRead),
+			ExtraWrite:       stringsOrEmpty(p.Sandbox.ExtraWrite),
+			AllowAppleEvents: stringsOrEmpty(p.Sandbox.AllowAppleEvents),
 		}
 	}
 	return out
@@ -1191,6 +1193,18 @@ func projectFromJSON(req projectJSON) config.Project {
 		out.Sandbox.Enabled = req.Sandbox.Enabled
 		out.Sandbox.DenyRead = req.Sandbox.DenyRead
 		out.Sandbox.ExtraWrite = req.Sandbox.ExtraWrite
+		// Filter bundle IDs through the same validator the SBPL emitter
+		// uses. Garbage entries would persist as-is otherwise and silently
+		// no-op when the profile is generated; rejecting at the API
+		// boundary keeps the stored config truthful about what's active.
+		cleaned := make([]string, 0, len(req.Sandbox.AllowAppleEvents))
+		for _, b := range req.Sandbox.AllowAppleEvents {
+			b = strings.TrimSpace(b)
+			if agent.IsValidBundleID(b) {
+				cleaned = append(cleaned, b)
+			}
+		}
+		out.Sandbox.AllowAppleEvents = cleaned
 	}
 	return out
 }

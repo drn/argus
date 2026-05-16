@@ -150,10 +150,11 @@ type SettingsView struct {
 	taskCounts     map[string]statusCounts
 
 	// Sandbox.
-	sandboxEnabled    bool
-	sandboxAvailable  bool
-	sandboxDenyRead   []string
-	sandboxExtraWrite []string
+	sandboxEnabled          bool
+	sandboxAvailable        bool
+	sandboxDenyRead         []string
+	sandboxExtraWrite       []string
+	sandboxAllowAppleEvents []string
 
 	// KB.
 	kbEnabled         bool
@@ -269,6 +270,7 @@ func (sv *SettingsView) Refresh() {
 	sv.sandboxAvailable = agent.IsSandboxAvailable()
 	sv.sandboxDenyRead = cfg.Sandbox.DenyRead
 	sv.sandboxExtraWrite = cfg.Sandbox.ExtraWrite
+	sv.sandboxAllowAppleEvents = cfg.Sandbox.AllowAppleEvents
 
 	// Backends.
 	sv.defaultBackend = cfg.Defaults.Backend
@@ -1686,6 +1688,19 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 			widget.DrawText(screen, x, y+row, w, "  "+p, theme.StyleDimmed)
 			row++
 		}
+		row++
+	}
+
+	if len(sv.sandboxAllowAppleEvents) > 0 {
+		widget.DrawText(screen, x, y+row, w, "Allow AppleEvents:", tcell.StyleDefault.Foreground(theme.ColorTitle))
+		row++
+		for _, b := range sv.sandboxAllowAppleEvents {
+			if row >= h {
+				break
+			}
+			widget.DrawText(screen, x, y+row, w, "  "+b, theme.StyleDimmed)
+			row++
+		}
 	}
 
 	if row+2 < h {
@@ -1760,7 +1775,18 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 			r++
 		}
 	}
-	if len(pe.Project.Sandbox.DenyRead) > 0 || len(pe.Project.Sandbox.ExtraWrite) > 0 {
+	if len(pe.Project.Sandbox.AllowAppleEvents) > 0 && r < h {
+		widget.DrawText(screen, x, y+r, w, "  Allow AppleEvents:", theme.StyleDimmed)
+		r++
+		for _, b := range pe.Project.Sandbox.AllowAppleEvents {
+			if r >= h {
+				break
+			}
+			widget.DrawText(screen, x, y+r, w, "    "+b, theme.StyleDimmed)
+			r++
+		}
+	}
+	if len(pe.Project.Sandbox.DenyRead) > 0 || len(pe.Project.Sandbox.ExtraWrite) > 0 || len(pe.Project.Sandbox.AllowAppleEvents) > 0 {
 		r++
 	}
 

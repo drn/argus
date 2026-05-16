@@ -27,10 +27,11 @@ type settingsResponse struct {
 }
 
 type sandboxJSON struct {
-	Enabled    bool     `json:"enabled"`
-	Available  bool     `json:"available"`
-	DenyRead   []string `json:"deny_read"`
-	ExtraWrite []string `json:"extra_write"`
+	Enabled          bool     `json:"enabled"`
+	Available        bool     `json:"available"`
+	DenyRead         []string `json:"deny_read"`
+	ExtraWrite       []string `json:"extra_write"`
+	AllowAppleEvents []string `json:"allow_apple_events"`
 }
 
 type kbJSON struct {
@@ -51,10 +52,11 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	cfg := s.db.Config()
 	writeJSON(w, http.StatusOK, settingsResponse{
 		Sandbox: sandboxJSON{
-			Enabled:    cfg.Sandbox.Enabled,
-			Available:  isSandboxAvailable(),
-			DenyRead:   stringsOrEmpty(cfg.Sandbox.DenyRead),
-			ExtraWrite: stringsOrEmpty(cfg.Sandbox.ExtraWrite),
+			Enabled:          cfg.Sandbox.Enabled,
+			Available:        isSandboxAvailable(),
+			DenyRead:         stringsOrEmpty(cfg.Sandbox.DenyRead),
+			ExtraWrite:       stringsOrEmpty(cfg.Sandbox.ExtraWrite),
+			AllowAppleEvents: stringsOrEmpty(cfg.Sandbox.AllowAppleEvents),
 		},
 		KB: kbJSON{
 			Enabled:        cfg.KB.Enabled,
@@ -84,9 +86,10 @@ type updateSettingsReq struct {
 // fields so absent keys mean "don't change". Slice fields use a sentinel:
 // nil = leave alone, empty slice ([]) = clear.
 type sandboxUpdate struct {
-	Enabled    *bool     `json:"enabled,omitempty"`
-	DenyRead   *[]string `json:"deny_read,omitempty"`
-	ExtraWrite *[]string `json:"extra_write,omitempty"`
+	Enabled          *bool     `json:"enabled,omitempty"`
+	DenyRead         *[]string `json:"deny_read,omitempty"`
+	ExtraWrite       *[]string `json:"extra_write,omitempty"`
+	AllowAppleEvents *[]string `json:"allow_apple_events,omitempty"`
 }
 
 type kbUpdate struct {
@@ -137,6 +140,21 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 		}
 		if s.ExtraWrite != nil {
 			out["sandbox.extra_write"] = strings.Join(*s.ExtraWrite, ",")
+		}
+		if s.AllowAppleEvents != nil {
+			// Drop bundle IDs that fail syntactic validation. The SBPL
+			// profile generator also skips invalid entries, but rejecting
+			// at the API boundary gives clearer feedback (the SPA can
+			// inspect the GET response and see that an entry didn't
+			// survive) and keeps the persisted CSV free of garbage.
+			cleaned := make([]string, 0, len(*s.AllowAppleEvents))
+			for _, b := range *s.AllowAppleEvents {
+				b = strings.TrimSpace(b)
+				if agent.IsValidBundleID(b) {
+					cleaned = append(cleaned, b)
+				}
+			}
+			out["sandbox.allow_apple_events"] = strings.Join(cleaned, ",")
 		}
 	}
 	if k := req.KB; k != nil {

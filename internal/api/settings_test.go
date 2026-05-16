@@ -32,6 +32,23 @@ func TestBuildSettingsUpdates(t *testing.T) {
 		testutil.Equal(t, got["sandbox.extra_write"], "")
 	})
 
+	t.Run("sandbox allow_apple_events validates and joins", func(t *testing.T) {
+		allow := []string{"com.apple.iChat", " com.apple.finder ", "bad)(rule", ""}
+		got := buildSettingsUpdates(updateSettingsReq{
+			Sandbox: &sandboxUpdate{AllowAppleEvents: &allow},
+		})
+		// Invalid entries dropped; whitespace trimmed; valid entries joined.
+		testutil.Equal(t, got["sandbox.allow_apple_events"], "com.apple.iChat,com.apple.finder")
+	})
+
+	t.Run("sandbox allow_apple_events empty clears", func(t *testing.T) {
+		empty := []string{}
+		got := buildSettingsUpdates(updateSettingsReq{
+			Sandbox: &sandboxUpdate{AllowAppleEvents: &empty},
+		})
+		testutil.Equal(t, got["sandbox.allow_apple_events"], "")
+	})
+
 	t.Run("defaults flow through", func(t *testing.T) {
 		backend := "claude"
 		got := buildSettingsUpdates(updateSettingsReq{
@@ -163,7 +180,12 @@ func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 	  "name": "alpha",
 	  "path": "/tmp/alpha",
 	  "branch": "main",
-	  "sandbox": {"enabled": false, "deny_read": ["/secrets"], "extra_write": ["~/.npm"]}
+	  "sandbox": {
+	    "enabled": false,
+	    "deny_read": ["/secrets"],
+	    "extra_write": ["~/.npm"],
+	    "allow_apple_events": ["com.apple.iChat", "bad)injection"]
+	  }
 	}`
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, authedReq("POST", "/api/projects", body))
@@ -190,6 +212,9 @@ func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 	}
 	testutil.DeepEqual(t, p.Sandbox.DenyRead, []string{"/secrets"})
 	testutil.DeepEqual(t, p.Sandbox.ExtraWrite, []string{"~/.npm"})
+	// Invalid bundle ID dropped at the API boundary so the persisted CSV
+	// doesn't lie about what's active in the generated SBPL profile.
+	testutil.DeepEqual(t, p.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 
 	// And the DB stored it via the existing config.Project shape.
 	projects, err := d.Projects()
@@ -200,6 +225,7 @@ func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 		t.Fatalf("expected stored Sandbox.Enabled false, got %#v", stored.Sandbox.Enabled)
 	}
 	testutil.DeepEqual(t, stored.Sandbox.DenyRead, []string{"/secrets"})
+	testutil.DeepEqual(t, stored.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
 func TestProjectFromJSON_NilSandboxStaysInherit(t *testing.T) {

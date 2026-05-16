@@ -52,9 +52,11 @@ type ProjectForm struct {
 
 	// Sandbox selector state (0=Inherit, 1=Enabled, 2=Disabled).
 	sandboxIdx int
-	// Preserved per-project sandbox paths (not editable in form, survives round-trip).
-	sandboxDenyRead   []string
-	sandboxExtraWrite []string
+	// Preserved per-project sandbox config (not editable in form, survives
+	// round-trip — the Settings TUI is where these lists are edited).
+	sandboxDenyRead         []string
+	sandboxExtraWrite       []string
+	sandboxAllowAppleEvents []string
 
 	// Path autocomplete.
 	pathAC dirAC
@@ -88,6 +90,7 @@ func (pf *ProjectForm) LoadProject(name string, p config.Project) {
 	}
 	pf.sandboxDenyRead = p.Sandbox.DenyRead
 	pf.sandboxExtraWrite = p.Sandbox.ExtraWrite
+	pf.sandboxAllowAppleEvents = p.Sandbox.AllowAppleEvents
 	pf.editMode = true
 	pf.focused = pfFieldPath // skip name in edit mode
 }
@@ -141,6 +144,7 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 	} // sandboxInherit → nil (default)
 	proj.Sandbox.DenyRead = pf.sandboxDenyRead
 	proj.Sandbox.ExtraWrite = pf.sandboxExtraWrite
+	proj.Sandbox.AllowAppleEvents = pf.sandboxAllowAppleEvents
 	return string(pf.fields[pfFieldName]), proj
 }
 

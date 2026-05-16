@@ -5,11 +5,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/drn/argus/internal/config"
 )
+
+// bundleIDRe matches CFBundleIdentifier values — letters, digits, dot, hyphen.
+// Validation is syntactic only; we do not check whether the bundle is actually
+// installed (apps come and go, and SBPL rules referencing non-existent bundles
+// are harmless no-ops). The narrow charset blocks SBPL string-literal escape
+// attempts via the user-supplied config field.
+var bundleIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+
+// IsValidBundleID reports whether s is a syntactically valid CFBundleIdentifier
+// suitable for embedding in an SBPL appleevent-destination rule. Exported so
+// the Settings TUI and HTTP API can validate user input before persisting.
+func IsValidBundleID(s string) bool {
+	return bundleIDRe.MatchString(s)
+}
 
 // sandboxExecPath is the canonical path to macOS sandbox-exec.
 const sandboxExecPath = "/usr/bin/sandbox-exec"
@@ -156,6 +171,21 @@ func GenerateSandboxConfig(worktreePath string, sandboxCfg config.SandboxConfig)
 		if p != "" {
 			profile.WriteString(fmt.Sprintf("(allow file-write* (subpath %s))\n", sbplQuote(p)))
 		}
+	}
+
+	// Append per-destination AppleEvent allow rules. The base profile's
+	// (deny default) blocks all appleevent-send dispatch — even with TCC
+	// Automation grants — so scripting Messages/Finder/etc. from inside a
+	// sandboxed agent requires an explicit destination rule. Entries that
+	// fail bundle-ID validation are silently skipped: emitting an invalid
+	// rule would make sandbox-exec reject the whole profile and leak the
+	// failure into the task as a cryptic startup error.
+	for _, b := range sandboxCfg.AllowAppleEvents {
+		b = strings.TrimSpace(b)
+		if !IsValidBundleID(b) {
+			continue
+		}
+		fmt.Fprintf(&profile, "(allow appleevent-send (appleevent-destination %s))\n", sbplQuote(b))
 	}
 
 	f, err := os.CreateTemp("", "argus-sandbox-*.sb")

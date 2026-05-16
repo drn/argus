@@ -792,9 +792,10 @@ func TestSettingsView_ProjectDetail_SandboxRoundTrip(t *testing.T) {
 	database.SetProject("proj", config.Project{
 		Path: "/tmp/proj",
 		Sandbox: config.ProjectSandboxConfig{
-			Enabled:    &v,
-			DenyRead:   []string{"/secret"},
-			ExtraWrite: []string{"/tmp/build"},
+			Enabled:          &v,
+			DenyRead:         []string{"/secret"},
+			ExtraWrite:       []string{"/tmp/build"},
+			AllowAppleEvents: []string{"com.apple.iChat"},
 		},
 	})
 	sv := NewSettingsView(database)
@@ -803,6 +804,17 @@ func TestSettingsView_ProjectDetail_SandboxRoundTrip(t *testing.T) {
 	pe := findProjectEntry(t, sv, "proj")
 	testutil.DeepEqual(t, pe.Project.Sandbox.DenyRead, []string{"/secret"})
 	testutil.DeepEqual(t, pe.Project.Sandbox.ExtraWrite, []string{"/tmp/build"})
+	testutil.DeepEqual(t, pe.Project.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
+}
+
+func TestSettingsView_GlobalSandboxAllowAppleEvents(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	// SettingsView reads cfg.Sandbox via db.Config(); push the value through
+	// the config key map so Refresh picks it up.
+	testutil.NoError(t, database.SetConfigValue("sandbox.allow_apple_events", "com.apple.iChat,com.apple.finder"))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	testutil.DeepEqual(t, sv.sandboxAllowAppleEvents, []string{"com.apple.iChat", "com.apple.finder"})
 }
 
 func TestSettingsView_VaultPathEdit(t *testing.T) {

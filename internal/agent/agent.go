@@ -35,6 +35,7 @@ var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 //   - project Enabled (non-nil) overrides the global Enabled flag
 //   - project DenyRead paths are appended to the global list
 //   - project ExtraWrite paths are appended to the global list
+//   - project AllowAppleEvents bundle IDs are appended to the global list
 func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxConfig {
 	result := cfg.Sandbox
 	if task.Project != "" {
@@ -44,6 +45,7 @@ func ResolveSandboxConfig(task *model.Task, cfg config.Config) config.SandboxCon
 			}
 			result.DenyRead = append(append([]string{}, result.DenyRead...), proj.Sandbox.DenyRead...)
 			result.ExtraWrite = append(append([]string{}, result.ExtraWrite...), proj.Sandbox.ExtraWrite...)
+			result.AllowAppleEvents = append(append([]string{}, result.AllowAppleEvents...), proj.Sandbox.AllowAppleEvents...)
 		}
 	}
 	return result

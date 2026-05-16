@@ -30,13 +30,14 @@ func (d *DB) createTables() error {
 			ended_at    TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS projects (
-			name                TEXT PRIMARY KEY,
-			path                TEXT NOT NULL,
-			branch              TEXT NOT NULL DEFAULT '',
-			backend             TEXT NOT NULL DEFAULT '',
-			sandbox_enabled     TEXT NOT NULL DEFAULT '',
-			sandbox_deny_read   TEXT NOT NULL DEFAULT '',
-			sandbox_extra_write TEXT NOT NULL DEFAULT ''
+			name                        TEXT PRIMARY KEY,
+			path                        TEXT NOT NULL,
+			branch                      TEXT NOT NULL DEFAULT '',
+			backend                     TEXT NOT NULL DEFAULT '',
+			sandbox_enabled             TEXT NOT NULL DEFAULT '',
+			sandbox_deny_read           TEXT NOT NULL DEFAULT '',
+			sandbox_extra_write         TEXT NOT NULL DEFAULT '',
+			sandbox_allow_apple_events  TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS backends (
 			name           TEXT PRIMARY KEY,
@@ -58,9 +59,10 @@ func (d *DB) createTables() error {
 	// ordering within this block does not matter — new columns can be appended
 	// anywhere. Add per-project sandbox columns to existing databases.
 	for _, def := range []string{
-		"sandbox_enabled     TEXT NOT NULL DEFAULT ''",
-		"sandbox_deny_read   TEXT NOT NULL DEFAULT ''",
-		"sandbox_extra_write TEXT NOT NULL DEFAULT ''",
+		"sandbox_enabled            TEXT NOT NULL DEFAULT ''",
+		"sandbox_deny_read          TEXT NOT NULL DEFAULT ''",
+		"sandbox_extra_write        TEXT NOT NULL DEFAULT ''",
+		"sandbox_allow_apple_events TEXT NOT NULL DEFAULT ''",
 	} {
 		d.conn.Exec(`ALTER TABLE projects ADD COLUMN ` + def) //nolint:errcheck
 	}

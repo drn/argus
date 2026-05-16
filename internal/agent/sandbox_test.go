@@ -927,6 +927,134 @@ func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	}
 }
 
+func TestIsValidBundleID(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"messages", "com.apple.iChat", true},
+		{"finder", "com.apple.finder", true},
+		{"hyphens-allowed", "com.example.my-app", true},
+		{"single-word", "Finder", true},
+		{"digits-anywhere", "co.app42.tool", true},
+		{"empty", "", false},
+		{"leading-dot", ".com.apple.iChat", false},
+		{"space", "com.apple iChat", false},
+		{"quote-injection", `com.apple"iChat`, false},
+		{"paren-injection", "com.apple)iChat", false},
+		{"semicolon", "com.apple;iChat", false},
+		{"slash", "com/apple/iChat", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, IsValidBundleID(tc.in), tc.want)
+		})
+	}
+}
+
+func TestGenerateSandboxConfig_AllowAppleEvents(t *testing.T) {
+	t.Run("valid bundle IDs emit rules", func(t *testing.T) {
+		cfg := config.SandboxConfig{
+			AllowAppleEvents: []string{"com.apple.iChat", "com.apple.finder"},
+		}
+		path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+		testutil.NoError(t, err)
+		defer cleanup()
+		data, err := os.ReadFile(path)
+		testutil.NoError(t, err)
+		profile := string(data)
+		for _, want := range []string{
+			`(allow appleevent-send (appleevent-destination "com.apple.iChat"))`,
+			`(allow appleevent-send (appleevent-destination "com.apple.finder"))`,
+		} {
+			if !strings.Contains(profile, want) {
+				t.Errorf("profile missing rule %q:\n%s", want, profile)
+			}
+		}
+	})
+
+	t.Run("empty and invalid entries are skipped", func(t *testing.T) {
+		cfg := config.SandboxConfig{
+			// Mix valid, blank, whitespace, and injection-attempt entries.
+			// The whole profile must still parse — sandbox-exec rejects the
+			// whole file on any malformed rule, so a single bad entry
+			// would otherwise break unrelated tasks.
+			AllowAppleEvents: []string{"com.apple.iChat", "", "   ", `com.apple")(allow default)("`},
+		}
+		path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+		testutil.NoError(t, err)
+		defer cleanup()
+		data, err := os.ReadFile(path)
+		testutil.NoError(t, err)
+		profile := string(data)
+		if !strings.Contains(profile, `(appleevent-destination "com.apple.iChat")`) {
+			t.Errorf("profile missing valid rule:\n%s", profile)
+		}
+		if strings.Contains(profile, "(allow default)") {
+			t.Errorf("injection attempt leaked into profile:\n%s", profile)
+		}
+		// Exactly one appleevent-send rule should be present (only the valid
+		// entry survived).
+		if got := strings.Count(profile, "(allow appleevent-send"); got != 1 {
+			t.Errorf("expected exactly 1 appleevent-send rule, got %d:\n%s", got, profile)
+		}
+	})
+
+	t.Run("entries are whitespace-trimmed", func(t *testing.T) {
+		cfg := config.SandboxConfig{
+			AllowAppleEvents: []string{"  com.apple.iChat  "},
+		}
+		path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+		testutil.NoError(t, err)
+		defer cleanup()
+		data, err := os.ReadFile(path)
+		testutil.NoError(t, err)
+		if !strings.Contains(string(data), `(appleevent-destination "com.apple.iChat")`) {
+			t.Errorf("trimmed entry not emitted:\n%s", string(data))
+		}
+	})
+
+	t.Run("empty list emits no appleevent-send rule", func(t *testing.T) {
+		cfg := config.SandboxConfig{}
+		path, _, cleanup, err := GenerateSandboxConfig("/tmp/wt", cfg)
+		testutil.NoError(t, err)
+		defer cleanup()
+		data, err := os.ReadFile(path)
+		testutil.NoError(t, err)
+		if strings.Contains(string(data), "appleevent-send") {
+			t.Errorf("empty AllowAppleEvents should not emit appleevent-send rule:\n%s", string(data))
+		}
+	})
+}
+
+func TestGenerateSandboxConfig_AllowAppleEventsProfileValid(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	// Live SBPL parser check: a malformed appleevent-send rule would make
+	// sandbox-exec exit non-zero before invoking the command. This guards
+	// against syntax regressions (e.g. wrong rule name, missing destination).
+	cfg := config.SandboxConfig{
+		AllowAppleEvents: []string{"com.apple.iChat", "com.apple.finder"},
+	}
+	profilePath, params, cleanup, err := GenerateSandboxConfig(t.TempDir(), cfg)
+	testutil.NoError(t, err)
+	defer cleanup()
+
+	args := []string{}
+	for _, p := range params {
+		args = append(args, "-D", p)
+	}
+	args = append(args, "-f", profilePath, "/usr/bin/true")
+	cmd := exec.Command(sandboxExecPath, args...) //nolint:gosec // G204: sandboxExecPath is a package constant
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandbox-exec rejected profile with appleevent-send rules: %v\n%s", err, out)
+	}
+}
+
 // TestResetSandboxCache flips sandboxExists and confirms ResetSandboxCache
 // re-runs the sync.Once probe. Sequential: it mutates the package-level
 // sandboxOnce/sandboxExists; never call t.Parallel here.

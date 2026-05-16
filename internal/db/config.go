@@ -97,6 +97,9 @@ func (d *DB) Config() config.Config {
 	if v, ok := kv["sandbox.extra_write"]; ok && v != "" {
 		cfg.Sandbox.ExtraWrite = splitCSV(v)
 	}
+	if v, ok := kv["sandbox.allow_apple_events"]; ok && v != "" {
+		cfg.Sandbox.AllowAppleEvents = splitCSV(v)
+	}
 
 	// KB config
 	if v, ok := kv["kb.enabled"]; ok {
