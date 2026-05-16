@@ -33,7 +33,7 @@ func autoStartFork(sockPath string) (*Client, error) {
 		}
 	}
 
-	cmd := exec.Command(daemonExe, "daemon", "start")
+	cmd := exec.Command(daemonExe, "daemon", "start") //nolint:gosec // daemonExe is os.Executable() / argusd symlink
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	// Detach from parent process group so the daemon survives TUI exit.
@@ -42,7 +42,7 @@ func autoStartFork(sockPath string) (*Client, error) {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}
 	// Release the child process so it isn't reaped when we exit.
-	cmd.Process.Release()
+	cmd.Process.Release() //nolint:errcheck // detach-only; non-fatal if it fails
 
 	// Poll for the socket to become available.
 	const (
