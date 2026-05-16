@@ -934,6 +934,22 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	}{Cols: int(req.Cols), Rows: int(req.Rows), Rerendered: rerendered})
 }
 
+// skipRerenderForUnchangedCols caches the latest cols for taskID and reports
+// whether the previous call already saw the same value. xterm.js fires
+// /resize on every terminal mount even when the viewport didn't change, so
+// without this gate a reopen of the web agent view would re-evaluate the
+// kick predicate and kill any in-flight Claude UI (e.g. AskUserQuestion
+// overlays) that the --session-id restart can't rehydrate. Always updates
+// the cache so genuine viewport resizes (cols different from the cached
+// value) fall through to the predicate.
+func (s *Server) skipRerenderForUnchangedCols(taskID string, cols uint16) bool {
+	s.lastResizeMu.Lock()
+	defer s.lastResizeMu.Unlock()
+	prev, seen := s.lastResizeCols[taskID]
+	s.lastResizeCols[taskID] = cols
+	return seen && prev == cols
+}
+
 // maybeKickRerender evaluates the shared rerender predicate and, if it fires,
 // queues a daemon-side stop+restart. Returns true when a kick was queued.
 //
@@ -948,6 +964,14 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		return false
 	}
 	if s.runner.HasPendingRestart(taskID) {
+		return false
+	}
+	// Skip when cols matches the most recent resize for this task. xterm.js
+	// fires /resize on every terminal mount — without this gate, reopening
+	// the web agent view kills any in-flight Claude UI (e.g. AskUserQuestion
+	// overlays) that doesn't survive the --session-id restart. Genuine
+	// resizes fall through because cols differs from the cached value.
+	if s.skipRerenderForUnchangedCols(taskID, cols) {
 		return false
 	}
 	// Cheap margin-only gate before the DB read — eliminates a SQLite hit on

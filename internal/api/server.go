@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
@@ -41,6 +42,15 @@ type Server struct {
 	// watcher, push fan-out housekeeping) to terminate. Range over <-stopCh
 	// in select-loops to honour shutdown.
 	stopCh chan struct{}
+
+	// lastResizeCols tracks the most recent cols seen on /resize per task.
+	// xterm.js fires /resize on every mount (even when the viewport is the
+	// same size), so this debounces redundant kicks that would otherwise
+	// destroy any in-flight interactive UI Claude is rendering on reopen.
+	// Genuine viewport resizes fall through because cols differs from the
+	// cached value.
+	lastResizeMu   sync.Mutex
+	lastResizeCols map[string]uint16
 }
 
 // New creates a new API server. pushMgr is optional; pass nil to disable
@@ -49,12 +59,13 @@ type Server struct {
 // be wired into the scheduler for kick-off pushes — see daemon/daemon.go.
 func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreator, pushMgr *push.Manager) *Server {
 	srv := &Server{
-		db:         database,
-		runner:     runner,
-		token:      token,
-		createTask: creator,
-		push:       pushMgr,
-		stopCh:     make(chan struct{}),
+		db:             database,
+		runner:         runner,
+		token:          token,
+		createTask:     creator,
+		push:           pushMgr,
+		stopCh:         make(chan struct{}),
+		lastResizeCols: make(map[string]uint16),
 	}
 	if pushMgr != nil {
 		// Start idle watcher in the background.

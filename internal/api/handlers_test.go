@@ -647,6 +647,36 @@ func TestHandleResize(t *testing.T) {
 	})
 }
 
+func TestSkipRerenderForUnchangedCols(t *testing.T) {
+	// Regression: xterm.js fires /resize on every terminal mount even when
+	// the viewport hasn't changed. Without this gate, reopening the web
+	// agent view re-evaluates the rerender predicate and kills any
+	// in-flight Claude UI (e.g. AskUserQuestion) that the --session-id
+	// restart can't rehydrate. Genuine resizes must still fall through.
+	srv, _ := testServer(t)
+
+	const taskID = "resize-gate"
+
+	if srv.skipRerenderForUnchangedCols(taskID, 120) {
+		t.Fatal("first resize should not skip — no cached cols yet")
+	}
+	if !srv.skipRerenderForUnchangedCols(taskID, 120) {
+		t.Fatal("second resize at same cols should skip — gate failed")
+	}
+	if !srv.skipRerenderForUnchangedCols(taskID, 120) {
+		t.Fatal("third resize at same cols should still skip")
+	}
+	if srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("resize to different cols should not skip")
+	}
+	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("subsequent resize at 140 should skip after cache updated")
+	}
+	if srv.skipRerenderForUnchangedCols("other-task", 140) {
+		t.Fatal("different task should not skip — separate cache entry")
+	}
+}
+
 func TestMaybeKickRerender_Gates(t *testing.T) {
 	// maybeKickRerender's predicate gating without a live session — covers
 	// the early-return paths (no session, no task, no SessionID). The

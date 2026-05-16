@@ -185,6 +185,18 @@ type App struct {
 	// re-renders the conversation history at the current (wider) PTY.
 	pendingRerenderRestart map[string]bool
 
+	// lastAttachCols caches the panel cols at which we most recently evaluated
+	// the rerender predicate for each task. The gate is "panel size unchanged
+	// since the last attach" — if the user closes the agent view and reopens
+	// it without resizing the terminal, the predicate would otherwise re-fire
+	// and (when the panel is meaningfully wider/narrower than the session's
+	// initialCols) kill an idle session. That destroys any in-flight
+	// interactive UI Claude is rendering (notably AskUserQuestion overlays)
+	// because the restart via --session-id rehydrates the conversation but
+	// not the ephemeral modal. Storing the cols per task lets reopen-at-same
+	// -size short-circuit, while genuine resizes still fall through.
+	lastAttachCols map[string]int
+
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
 	wtRoot string
@@ -246,6 +258,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		idleUnvisited:          make(map[string]bool),
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
+		lastAttachCols:         make(map[string]int),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 	}
@@ -2251,6 +2264,11 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	taskID := task.ID
 	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
 
+	if a.skipRerenderForUnchangedAttach(taskID, int(panelCols)) {
+		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
+		return
+	}
+
 	go func() {
 		// RPC calls — must NOT happen on the tview main goroutine.
 		initCols, _ := sess.InitialPTYSize()
@@ -2280,6 +2298,22 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 			}
 		})
 	}()
+}
+
+// skipRerenderForUnchangedAttach returns true when the panel cols match the
+// most recent attach for this task — i.e., the user reopened the agent view
+// without resizing. The rerender kick would otherwise destroy any in-flight
+// Claude UI (e.g. AskUserQuestion overlays) because the --session-id restart
+// rehydrates the conversation but not ephemeral modals. When proceeding,
+// caches the current cols so a subsequent reopen at the same size short
+// -circuits. Genuine resizes fall through because panelCols differs from
+// the cached value, so the kick predicate still runs.
+func (a *App) skipRerenderForUnchangedAttach(taskID string, panelCols int) bool {
+	if prev, ok := a.lastAttachCols[taskID]; ok && prev == panelCols {
+		return true
+	}
+	a.lastAttachCols[taskID] = panelCols
+	return false
 }
 
 // reapStaleRerenderRestart clears a leaked pendingRerenderRestart entry when the
