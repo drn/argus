@@ -1691,11 +1691,14 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if len(sv.sandboxAllowAppleEvents) > 0 {
-		// Separator above this section only when something rendered before it.
-		// ExtraWrite intentionally omits its own trailing row++ to preserve the
-		// pre-existing spacing footprint when AllowAppleEvents is empty (the
-		// "[enter] toggle" footer's row+2 < h guard relies on row being tight).
-		if len(sv.sandboxDenyRead) > 0 || len(sv.sandboxExtraWrite) > 0 {
+		// Separator above this section only when ExtraWrite rendered. DenyRead
+		// already emits its own trailing row++ (so adding one here would
+		// double-space when DenyRead is shown but ExtraWrite is empty), and
+		// ExtraWrite intentionally omits its trailing row++ to preserve the
+		// pre-existing spacing footprint when AllowAppleEvents is empty
+		// (the "[enter] toggle" footer's row+2 < h guard relies on row being
+		// tight).
+		if len(sv.sandboxExtraWrite) > 0 {
 			row++
 		}
 		widget.DrawText(screen, x, y+row, w, "Allow AppleEvents:", tcell.StyleDefault.Foreground(theme.ColorTitle))
