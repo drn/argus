@@ -12,6 +12,7 @@ import (
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/modal"
@@ -1371,6 +1372,107 @@ func TestApp_OpenAndCloseProjectForm_Edit(t *testing.T) {
 		t.Fatal("projectForm should be non-nil")
 	}
 	testutil.Equal(t, app.projectForm.editMode, true)
+}
+
+func TestApp_OpenAndCloseAppleEventsPicker(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	// Pre-populate the macapps cache so openAppleEventsPicker doesn't kick
+	// off a background filesystem scan inside the test (the bg goroutine
+	// would race the closeAppleEventsPicker call below and corrupt state
+	// timing across runs).
+	app.macAppsCache = []macapps.App{
+		{Name: "Messages", BundleID: "com.apple.MobileSMS", Scriptable: true},
+	}
+
+	app.openAppleEventsPicker("forge", config.Project{
+		Path: "/tmp/forge",
+		Sandbox: config.ProjectSandboxConfig{
+			AllowAppleEvents: []string{"com.apple.iChat"},
+		},
+	})
+	testutil.Equal(t, app.mode, modeAppleEventsPicker)
+	if app.appleEventsPicker == nil {
+		t.Fatal("appleEventsPicker should be non-nil")
+	}
+	testutil.Equal(t, app.appleEventsPickerProject, "forge")
+	// Preselected value must flow through.
+	if _, ok := app.appleEventsPicker.selected["com.apple.iChat"]; !ok {
+		t.Error("expected com.apple.iChat preselected from project config")
+	}
+
+	app.closeAppleEventsPicker()
+	testutil.Equal(t, app.mode, modeTaskList)
+	if app.appleEventsPicker != nil {
+		t.Error("appleEventsPicker should be cleared after close")
+	}
+	testutil.Equal(t, app.appleEventsPickerProject, "")
+}
+
+func TestApp_HandleAppleEventsPickerKey_EscapeCancels(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.macAppsCache = []macapps.App{
+		{Name: "Messages", BundleID: "com.apple.MobileSMS", Scriptable: true},
+	}
+
+	app.openAppleEventsPicker("forge", config.Project{Path: "/tmp/forge"})
+	app.handleAppleEventsPickerKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	// Esc cancels — mode back to task list, no DB write.
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_HandleAppleEventsPickerKey_EnterSavesToDB(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	// Seed an existing project so SetProject's UPDATE path is exercised.
+	testutil.NoError(t, d.SetProject("forge", config.Project{Path: "/tmp/forge"}))
+	// Production macAppsCache comes from macapps.Scan, which sorts by
+	// lowercase name — set the same order here so the picker's row layout
+	// matches production. Cursor starts at row 0 (Finder).
+	app.macAppsCache = []macapps.App{
+		{Name: "Finder", BundleID: "com.apple.finder", Scriptable: true},
+		{Name: "Messages", BundleID: "com.apple.MobileSMS", Scriptable: true},
+	}
+
+	app.openAppleEventsPicker("forge", config.Project{Path: "/tmp/forge"})
+	// Space toggles the cursor row (Finder, at row 0).
+	app.handleAppleEventsPickerKey(tcell.NewEventKey(tcell.KeyRune, ' ', 0))
+	// Enter saves + closes.
+	app.handleAppleEventsPickerKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Verify persistence.
+	projects, err := d.Projects()
+	testutil.NoError(t, err)
+	got := projects["forge"].Sandbox.AllowAppleEvents
+	if len(got) != 1 || got[0] != "com.apple.finder" {
+		t.Errorf("expected [com.apple.finder] saved, got %v", got)
+	}
+}
+
+func TestApp_OpenAppleEventsPicker_FromSettingsCallback(t *testing.T) {
+	// Pin that the SettingsView callback wired in New() lands at
+	// openAppleEventsPicker with the right project name. Defends against
+	// a future refactor that mis-routes the callback or breaks the modal
+	// open path.
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.macAppsCache = []macapps.App{{Name: "X", BundleID: "com.x", Scriptable: true}}
+
+	if app.settings.OnEditProjectAppleEvents == nil {
+		t.Fatal("OnEditProjectAppleEvents not wired by App.New")
+	}
+	app.settings.OnEditProjectAppleEvents("forge", config.Project{Path: "/tmp/forge"})
+	testutil.Equal(t, app.mode, modeAppleEventsPicker)
+	testutil.Equal(t, app.appleEventsPickerProject, "forge")
+	app.closeAppleEventsPicker()
 }
 
 func TestApp_HandleProjectFormKey_Cancel(t *testing.T) {
