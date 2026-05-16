@@ -601,6 +601,32 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('dropped\n');
   });
 
+  // Guard rail: paste-as-quotation must not auto-submit. Same denylist
+  // entry class as paste/drop/yank. Closes the per-entry coverage gap so
+  // every member of PASTE_DROP_INPUT_TYPES has its own regression test.
+  test('input fallback does NOT fire on insertFromPasteAsQuotation with trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'quoted\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromPasteAsQuotation',
+        data: 'quoted\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('quoted\n');
+  });
+
   // Guard rail: Emacs-style yank (kill-buffer paste) must not auto-submit.
   // Same denylist entry as paste/drop.
   test('input fallback does NOT fire on insertFromYank with trailing newline', async ({ page }, testInfo) => {
@@ -640,7 +666,7 @@ test.describe('compose bar', () => {
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       // Simulate Wispr-style injection: programmatic .value set fires no
       // input/beforeinput events at all.
-      el.value = 'im comfortable applying whitelist\n';
+      el.value = 'send this prompt to the agent\n';
     });
 
     const inputReq = page.waitForRequest(req =>
@@ -651,7 +677,7 @@ test.describe('compose bar', () => {
     const req = await inputReq;
     // Trailing \n must be stripped before \r is appended. Otherwise the
     // POST is "text\n\r" and Claude Code drafts-without-submitting.
-    expect(req.postData()).toBe('im comfortable applying whitelist\r');
+    expect(req.postData()).toBe('send this prompt to the agent\r');
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
