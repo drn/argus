@@ -983,6 +983,14 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 	// Now the expensive lookups. Re-check IsIdle here so the idle gate
 	// reflects state at-the-moment-of-stop, not earlier.
 	if !sess.IsIdle() {
+		// Agent is mid-tool-call. Invalidate the unchanged-cols cache so
+		// the next /resize at the same cols retries (the agent may have
+		// become idle by then). Without this, the gate at the top of
+		// maybeKickRerender would short-circuit forever and jagged
+		// scrollback would persist until the user resized the viewport.
+		s.lastResizeMu.Lock()
+		delete(s.lastResizeCols, taskID)
+		s.lastResizeMu.Unlock()
 		return false
 	}
 	task, err := s.db.Get(taskID)

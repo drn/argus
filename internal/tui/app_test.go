@@ -67,6 +67,20 @@ func TestSkipRerenderForUnchangedAttach(t *testing.T) {
 	if app.skipRerenderForUnchangedAttach("other-task", 140) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
+
+	// DeferBusy retry path: when maybeKickRerender's goroutine resolves to
+	// RerenderDeferBusy (agent mid-tool-call), it invalidates the cache so
+	// the next reopen at the same cols re-evaluates. Simulate the
+	// invalidation directly and verify the gate now proceeds.
+	delete(app.lastAttachCols, taskID)
+	if app.skipRerenderForUnchangedAttach(taskID, 140) {
+		t.Fatal("after DeferBusy invalidation, reopen at 140 should proceed (not skip)")
+	}
+	// And after the next attempt has re-cached the value, the subsequent
+	// reopen at the same cols once again skips — the steady state.
+	if !app.skipRerenderForUnchangedAttach(taskID, 140) {
+		t.Fatal("after re-cache, reopen at 140 should skip again")
+	}
 }
 
 func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {

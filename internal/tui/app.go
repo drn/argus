@@ -2284,6 +2284,13 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 			case agent.RerenderSkip:
 				return
 			case agent.RerenderDeferBusy:
+				// Agent is mid-tool-call. Invalidate the unchanged-attach
+				// cache so the next reopen at the same panel cols retries
+				// the predicate (the agent may have become idle by then).
+				// Without this, the gate at the top of maybeKickRerender
+				// would short-circuit forever and the user would have to
+				// resize the terminal to repair jagged scrollback.
+				delete(a.lastAttachCols, taskID)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
 			case agent.RerenderKick:

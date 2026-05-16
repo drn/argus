@@ -675,6 +675,20 @@ func TestSkipRerenderForUnchangedCols(t *testing.T) {
 	if srv.skipRerenderForUnchangedCols("other-task", 140) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
+
+	// DeferBusy retry path: when maybeKickRerender's IsIdle check returns
+	// false (agent mid-tool-call), it invalidates the cache so the next
+	// /resize at the same cols re-evaluates. Simulate the invalidation
+	// directly and verify the gate now proceeds.
+	srv.lastResizeMu.Lock()
+	delete(srv.lastResizeCols, taskID)
+	srv.lastResizeMu.Unlock()
+	if srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("after busy-session invalidation, resize at 140 should proceed (not skip)")
+	}
+	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+		t.Fatal("after re-cache, resize at 140 should skip again")
+	}
 }
 
 func TestMaybeKickRerender_Gates(t *testing.T) {
