@@ -807,6 +807,84 @@ func TestSettingsView_ProjectDetail_SandboxRoundTrip(t *testing.T) {
 	testutil.DeepEqual(t, pe.Project.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
+// TestSettingsView_AppleEventsKeyFiresCallback pins that 'a' on a project
+// row in the Projects category invokes OnEditProjectAppleEvents with the
+// selected project's name + Project struct (preloaded with current
+// AllowAppleEvents). Pre-existing 'n'/'e'/'d'/'i' bindings remain
+// unchanged. Without this test, a future shortcut-reshuffle could
+// silently break the only TUI editor path for AllowAppleEvents.
+func TestSettingsView_AppleEventsKeyFiresCallback(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	v := true
+	testutil.NoError(t, database.SetProject("forge", config.Project{
+		Path: "/tmp/forge",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:          &v,
+			AllowAppleEvents: []string{"com.apple.iChat"},
+		},
+	}))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catProjects)
+	// Position cursor on the forge row.
+	for i, row := range sv.rows {
+		if row.key == "forge" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	var calledName string
+	var calledProject config.Project
+	sv.OnEditProjectAppleEvents = func(name string, p config.Project) {
+		calledName = name
+		calledProject = p
+	}
+
+	consumed := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	testutil.Equal(t, consumed, true)
+	testutil.Equal(t, calledName, "forge")
+	testutil.DeepEqual(t, calledProject.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
+}
+
+// TestSettingsView_AppleEventsKeyOnRailDoesNothing — when focus is on the
+// category rail rather than the pane, 'a' must NOT fire the callback (the
+// keypress should fall through to whatever global handler owns it). Pins
+// the focus-gate so a focus-routing regression doesn't quietly mis-trigger
+// the picker.
+func TestSettingsView_AppleEventsKeyOnRailDoesNothing(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	testutil.NoError(t, database.SetProject("forge", config.Project{Path: "/tmp/forge"}))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catProjects)
+	sv.setFocus(focusRail)
+
+	called := false
+	sv.OnEditProjectAppleEvents = func(_ string, _ config.Project) { called = true }
+
+	consumed := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	testutil.Equal(t, consumed, false)
+	testutil.Equal(t, called, false)
+}
+
+// TestSettingsView_AppleEventsKeyOutsideProjectsDoesNothing — on a
+// non-Projects category, 'a' must fall through. Defensive: the callback
+// is project-only, so triggering it from (say) catSandbox would be a bug.
+func TestSettingsView_AppleEventsKeyOutsideProjectsDoesNothing(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catSandbox)
+
+	called := false
+	sv.OnEditProjectAppleEvents = func(_ string, _ config.Project) { called = true }
+
+	consumed := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'a', tcell.ModNone))
+	testutil.Equal(t, consumed, false)
+	testutil.Equal(t, called, false)
+}
+
 func TestSettingsView_GlobalSandboxAllowAppleEvents(t *testing.T) {
 	database, _ := db.OpenInMemory()
 	// SettingsView reads cfg.Sandbox via db.Config(); push the value through

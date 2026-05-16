@@ -23,6 +23,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/launchagent"
+	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/dagview"
@@ -56,6 +57,7 @@ const (
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeRestartDaemonPrompt
+	modeAppleEventsPicker
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -120,9 +122,18 @@ type App struct {
 	renameTask  *model.Task
 
 	// Settings forms (created on demand)
-	projectForm  *ProjectForm
-	scheduleForm *ScheduleForm
-	quickAddForm *QuickAddForm
+	projectForm       *ProjectForm
+	scheduleForm      *ScheduleForm
+	quickAddForm      *QuickAddForm
+	appleEventsPicker *AppleEventsPickerModal
+	// appleEventsPickerProject is the project name the picker is currently
+	// editing — set on open, read on save so we know which DB row to update.
+	appleEventsPickerProject string
+	appleEventsPickerOrig    config.Project // unedited snapshot for save
+	// macAppsCache is the cached scriptable-app list. Populated on first
+	// picker open and reused for subsequent opens to keep the scan
+	// (~400ms for /Applications + /System/Applications) off the UI thread.
+	macAppsCache []macapps.App
 
 	// Layout containers
 	root      *tview.Flex
@@ -256,6 +267,9 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
 	app.settings.OnEditProject = func(name string, p config.Project) { app.openProjectForm(true, name, p) }
+	app.settings.OnEditProjectAppleEvents = func(name string, p config.Project) {
+		app.openAppleEventsPicker(name, p)
+	}
 	app.settings.OnDeleteProject = func(name string) { app.deleteProject(name) }
 	app.settings.OnQuickAdd = func() { app.openQuickAddForm() }
 	app.settings.OnNewSchedule = func() { app.openScheduleForm(nil) }
@@ -1248,6 +1262,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Project form mode — delegate everything to the form
 	if a.mode == modeProjectForm && a.projectForm != nil {
 		a.handleProjectFormKey(event)
+		return nil
+	}
+
+	// AppleEvents picker modal — delegate everything to the modal
+	if a.mode == modeAppleEventsPicker && a.appleEventsPicker != nil {
+		a.handleAppleEventsPickerKey(event)
 		return nil
 	}
 
@@ -3018,6 +3038,76 @@ func (a *App) closeProjectForm() {
 	a.mode = modeTaskList
 	a.projectForm = nil
 	a.pages.RemovePage("projectform")
+	a.settings.Refresh()
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settingsPage)
+}
+
+// --- AppleEvents allowlist picker ---
+
+// openAppleEventsPicker scans the system for scriptable apps (cached after
+// the first call) and opens the multi-select modal preloaded with the
+// project's current AllowAppleEvents. Scan runs on a background goroutine
+// so the UI doesn't block on /Applications I/O; the modal opens immediately
+// with an empty list and SetApps fills it in via QueueUpdateDraw when the
+// scan completes (typical: ~400ms for ~300 apps).
+func (a *App) openAppleEventsPicker(name string, p config.Project) {
+	a.appleEventsPickerProject = name
+	a.appleEventsPickerOrig = p
+	a.appleEventsPicker = NewAppleEventsPickerModal(name, a.macAppsCache, p.Sandbox.AllowAppleEvents)
+	a.mode = modeAppleEventsPicker
+	a.pages.AddPage("apple-events-picker", a.appleEventsPicker, true, true)
+	a.pages.SwitchToPage("apple-events-picker")
+	a.tapp.SetFocus(a.appleEventsPicker)
+
+	// Background scan if the cache is empty. macapps.ScanScriptable does
+	// pure filesystem I/O; safe to run off the UI thread.
+	if len(a.macAppsCache) == 0 {
+		go func() {
+			apps := macapps.ScanScriptable(nil)
+			a.tapp.QueueUpdateDraw(func() {
+				a.macAppsCache = apps
+				// Modal may have been closed while we were scanning.
+				if a.appleEventsPicker != nil {
+					a.appleEventsPicker.SetApps(apps)
+				}
+			})
+			uxlog.Log("[settings] macapps scan: %d scriptable apps cached", len(apps))
+		}()
+	}
+}
+
+// handleAppleEventsPickerKey routes key events to the picker and handles
+// the post-input state transitions (save on Done, dismiss on Canceled).
+func (a *App) handleAppleEventsPickerKey(event *tcell.EventKey) {
+	// tview.Application.SetFocus returns *tview.Application; the modal's
+	// InputHandler wants a plain func(tview.Primitive) — wrap it.
+	setFocus := func(p tview.Primitive) { a.tapp.SetFocus(p) }
+	a.appleEventsPicker.InputHandler()(event, setFocus)
+
+	if a.appleEventsPicker.Canceled() {
+		a.closeAppleEventsPicker()
+		return
+	}
+	if a.appleEventsPicker.Done() {
+		result := a.appleEventsPicker.Result()
+		p := a.appleEventsPickerOrig
+		p.Sandbox.AllowAppleEvents = result
+		if err := a.db.SetProject(a.appleEventsPickerProject, p); err != nil {
+			uxlog.Log("[settings] save AllowAppleEvents failed for %s: %v", a.appleEventsPickerProject, err)
+		} else {
+			uxlog.Log("[settings] saved AllowAppleEvents for %s: %v", a.appleEventsPickerProject, result)
+		}
+		a.closeAppleEventsPicker()
+	}
+}
+
+func (a *App) closeAppleEventsPicker() {
+	a.mode = modeTaskList
+	a.appleEventsPicker = nil
+	a.appleEventsPickerProject = ""
+	a.appleEventsPickerOrig = config.Project{}
+	a.pages.RemovePage("apple-events-picker")
 	a.settings.Refresh()
 	a.pages.SwitchToPage("settings")
 	a.tapp.SetFocus(a.settingsPage)

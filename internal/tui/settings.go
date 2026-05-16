@@ -203,17 +203,18 @@ type SettingsView struct {
 	updateOutput    string // last go-install output (for detail panel)
 
 	// Callbacks.
-	OnRestartDaemon   func()
-	OnUpdateArgus     func()                        // triggered by the "Update Argus" row
-	OnToggleAutoStart func(currentlyInstalled bool) // dispatched off the UI thread by app.go
-	OnNewProject      func()
-	OnEditProject     func(name string, p config.Project)
-	OnDeleteProject   func(name string)
-	OnQuickAdd        func()
-	OnNewSchedule     func()
-	OnEditSchedule    func(s *model.ScheduledTask)
-	OnDeleteSchedule  func(id string)
-	OnRunSchedule     func(id string)
+	OnRestartDaemon          func()
+	OnUpdateArgus            func()                        // triggered by the "Update Argus" row
+	OnToggleAutoStart        func(currentlyInstalled bool) // dispatched off the UI thread by app.go
+	OnNewProject             func()
+	OnEditProject            func(name string, p config.Project)
+	OnEditProjectAppleEvents func(name string, p config.Project)
+	OnDeleteProject          func(name string)
+	OnQuickAdd               func()
+	OnNewSchedule            func()
+	OnEditSchedule           func(s *model.ScheduledTask)
+	OnDeleteSchedule         func(id string)
+	OnRunSchedule            func(id string)
 
 	// OnBranchChange fires whenever the active category changes or focus
 	// moves between the left rail and the right pane — i.e. whenever the
@@ -683,6 +684,11 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 				return false
 			}
 			return sv.handleQuickAdd()
+		case 'a':
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.handleAppleEvents()
 		case 't':
 			if sv.focus == focusRail {
 				return false
@@ -707,6 +713,22 @@ func (sv *SettingsView) handleQuickAdd() bool {
 		return true
 	}
 	return false
+}
+
+// handleAppleEvents fires the OnEditProjectAppleEvents callback for the
+// currently-selected project row, which opens the AppleEvents allowlist
+// picker modal. Returns false (key not consumed) when no project row is
+// selected so the keypress falls through to the global handler.
+func (sv *SettingsView) handleAppleEvents() bool {
+	if sv.category != catProjects {
+		return false
+	}
+	pe := sv.SelectedProject()
+	if pe == nil || sv.OnEditProjectAppleEvents == nil {
+		return false
+	}
+	sv.OnEditProjectAppleEvents(pe.Name, pe.Project)
+	return true
 }
 
 // HandleMouse handles mouse events (scroll wheel on logs detail).
@@ -1815,7 +1837,7 @@ func (sv *SettingsView) renderProjectDetail(screen tcell.Screen, x, y, w, h int,
 	}
 
 	if h > 2 {
-		widget.DrawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[n] new  [e] edit  [d] delete  [i] quick add  [a] apple events", theme.StyleDimmed)
 	}
 }
 
