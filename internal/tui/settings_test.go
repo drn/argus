@@ -857,6 +857,33 @@ func TestSettingsView_SandboxDetail_RendersAllowAppleEvents(t *testing.T) {
 	testutil.Contains(t, out, "com.apple.finder")
 }
 
+// TestSettingsView_SandboxDetail_RendersAllThreeListsTogether pins the
+// three-way spacing interaction in renderSandboxDetail when DenyRead,
+// ExtraWrite, AND AllowAppleEvents are all non-empty. DenyRead's trailing
+// row++ provides one separator; ExtraWrite intentionally omits its trailing
+// row++; AllowAppleEvents's conditional separator adds the second. The
+// combined case is the one the spacing comment's logic applies to —
+// individual-list tests don't exercise it.
+func TestSettingsView_SandboxDetail_RendersAllThreeListsTogether(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	testutil.NoError(t, database.SetConfigValue("sandbox.deny_read", "/secrets"))
+	testutil.NoError(t, database.SetConfigValue("sandbox.extra_write", "/tmp/build"))
+	testutil.NoError(t, database.SetConfigValue("sandbox.allow_apple_events", "com.apple.iChat"))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catSandbox)
+
+	out := readSettingsScreen(t, sv, 120, 40)
+	// All three section headers must render.
+	testutil.Contains(t, out, "Deny Read:")
+	testutil.Contains(t, out, "Extra Write:")
+	testutil.Contains(t, out, "Allow AppleEvents:")
+	// And each section's value.
+	testutil.Contains(t, out, "/secrets")
+	testutil.Contains(t, out, "/tmp/build")
+	testutil.Contains(t, out, "com.apple.iChat")
+}
+
 // TestSettingsView_ProjectDetail_RendersAllowAppleEvents pins the Draw-path
 // rendering of the per-project AllowAppleEvents list in the project detail
 // pane. Same coverage rationale as the global sandbox detail test.

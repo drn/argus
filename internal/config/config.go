@@ -56,6 +56,10 @@ type Backend struct {
 
 // ProjectSandboxConfig holds per-project sandbox overrides.
 // A nil Enabled means "inherit from global"; non-nil overrides the global setting.
+// Per-project overrides live in the projects DB table (not TOML), so fields
+// here intentionally lack `toml:` struct tags — the parallel global fields
+// in SandboxConfig do carry TOML tags. Don't add tags here without also
+// reconfirming the DB-as-source-of-truth invariant.
 type ProjectSandboxConfig struct {
 	Enabled    *bool    // nil = inherit global; true/false = override
 	DenyRead   []string // additional paths appended to the global deny_read list

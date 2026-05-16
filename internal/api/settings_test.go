@@ -64,6 +64,7 @@ func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
 
 	testutil.NoError(t, d.SetConfigValue("sandbox.enabled", "true"))
 	testutil.NoError(t, d.SetConfigValue("sandbox.deny_read", "/secrets,~/.aws"))
+	testutil.NoError(t, d.SetConfigValue("sandbox.allow_apple_events", "com.apple.iChat"))
 	testutil.NoError(t, d.SetConfigValue("kb.enabled", "true"))
 
 	w := httptest.NewRecorder()
@@ -74,6 +75,7 @@ func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
 	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	testutil.Equal(t, resp.Sandbox.Enabled, true)
 	testutil.DeepEqual(t, resp.Sandbox.DenyRead, []string{"/secrets", "~/.aws"})
+	testutil.DeepEqual(t, resp.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 	testutil.Equal(t, resp.KB.Enabled, true)
 }
 
