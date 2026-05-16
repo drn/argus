@@ -5533,8 +5533,12 @@ function sendCompose() {
   // iOS Safari's soft-keyboard Send (enterkeyhint=send) doesn't reliably
   // dispatch keydown(Enter) — predictive text/dictation surface keyCode 229
   // or key 'Unidentified' instead — and the `beforeinput` it fires may carry
-  // an inputType the matcher hasn't catalogued yet. Three listeners cooperate
-  // via two timestamps:
+  // an inputType the matcher hasn't catalogued yet. Three event listeners
+  // (keydown / beforeinput / input) cooperate via two timestamps to route
+  // the dispatch sequences below — this is the listener-level breakdown,
+  // distinct from the layered defense described further down (where the
+  // three layers are: beforeinput fast-path, input fallback, sendCompose
+  // strip).
   //   1. Hardware Enter (no shift, not composing) — keydown sends + stamps;
   //      beforeinput defers to the stamp; no input event (preventDefault).
   //   2. Hardware Shift+Enter — keydown stamps without sending; beforeinput
@@ -5642,8 +5646,11 @@ function sendCompose() {
   // Denylist for the input fallback: ANY input event that left a trailing
   // newline in the textarea triggers a Send, EXCEPT events we know are NOT
   // a Send signal — explicit user-content actions (paste / paste-as-quotation
-  // / drop / yank — the four `insertFrom*` types defined by W3C Input
-  // Events Level 2), edits (delete*), history (undo/redo), and format
+  // / drop / yank — four of the five `insertFrom*` types defined by W3C
+  // Input Events Level 2; the fifth, `insertFromComposition`, is intentionally
+  // not denied because composition updates that haven't committed a line
+  // break never end in `\n` and so are gated by the trailing-newline check
+  // below), edits (delete*), history (undo/redo), and format
   // (bold/etc.). Empty / unknown / future inputTypes pass the gate; the
   // trailing-`\n` check on `ci.value` below is the actual safety.
   //

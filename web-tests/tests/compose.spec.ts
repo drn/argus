@@ -448,7 +448,9 @@ test.describe('compose bar', () => {
       el.setSelectionRange(el.value.length, el.value.length);
       // beforeinput matches → preventDefault + setRangeText('world', ...) +
       // sendCompose. setRangeText fires its own synchronous input event; the
-      // fallback must skip it (no inputType on the synthetic input).
+      // fallback must skip it because `setRangeText` splices only the prefix
+      // (no trailing newline), so the `/[\r\n]$/.test(v)` check bails. Empty
+      // inputType is no longer the gate (denylist passes it).
       el.dispatchEvent(new InputEvent('beforeinput', {
         inputType: 'insertText',
         data: 'world\n',
