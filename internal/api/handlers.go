@@ -986,10 +986,9 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		return false
 	}
 	// Margin gate before the DB read — eliminates a SQLite hit on every
-	// resize that doesn't cross the rerender threshold. (The unchanged-cols
-	// gate above is cheaper still — it short-circuits before this even
-	// reads InitialPTYSize. Both gates write/read the cache under the same
-	// mutex, but each call is a single map op.)
+	// resize that doesn't cross the rerender threshold. The unchanged-cols
+	// gate above is cheaper still (mutex-protected map op) and short-
+	// circuits before this gate even reads InitialPTYSize.
 	initCols, _ := sess.InitialPTYSize()
 	if !agent.MarginExceedsRerenderThreshold(initCols, int(cols)) {
 		return false
