@@ -713,6 +713,57 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('hello\n');
   });
 
+  // Guard rail: undo/redo (history*) that lands a trailing `\n` (e.g. undoing
+  // back to a draft state that previously ended in a newline) must NOT
+  // auto-submit. The denylist's `startsWith('history')` branch.
+  test('input fallback does NOT fire on historyUndo leaving trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'hello\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'historyUndo',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('hello\n');
+  });
+
+  // Guard rail: format edits (bold/italic/etc.) that happen to leave a
+  // trailing `\n` must NOT auto-submit. The denylist's `startsWith('format')`
+  // branch. Real-world likelihood near-zero for a plain textarea, but the
+  // branch should be locked in by a test.
+  test('input fallback does NOT fire on formatBold leaving trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'hello\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'formatBold',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('hello\n');
+  });
+
   test('Send while scrolled in history snaps viewport back to bottom', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);

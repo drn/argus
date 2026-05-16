@@ -5641,11 +5641,12 @@ function sendCompose() {
   }
   // Denylist for the input fallback: ANY input event that left a trailing
   // newline in the textarea triggers a Send, EXCEPT events we know are NOT
-  // a Send signal — explicit user-content actions (paste/drop/yank), edits
-  // (delete*), history (undo/redo), and format (bold/etc.). Empty / unknown
-  // / future inputTypes pass the gate; the trailing-`\n` check on
-  // `ci.value` below is the actual safety, exactly as the
-  // composition-update case relies on.
+  // a Send signal — explicit user-content actions (paste / paste-as-quotation
+  // / drop / cross-app transfer / yank — see PASTE_DROP_INPUT_TYPES below for
+  // the exact set), edits (delete*), history (undo/redo), and format
+  // (bold/etc.). Empty / unknown / future inputTypes pass the gate; the
+  // trailing-`\n` check on `ci.value` below is the actual safety, exactly as
+  // the composition-update case relies on.
   //
   // Previous design was an allowlist (`startsWith('insert')` minus paste/
   // drop) — but iOS WebKit and third-party keyboards (Wispr Flow, dictation,
