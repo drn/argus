@@ -938,8 +938,16 @@ func TestIsValidBundleID(t *testing.T) {
 		{"hyphens-allowed", "com.example.my-app", true},
 		{"single-word", "Finder", true},
 		{"digits-anywhere", "co.app42.tool", true},
+		// Trailing dot/hyphen are technically invalid CFBundleIdentifiers per
+		// Apple's spec, but they pass our regex and produce harmless no-op
+		// SBPL rules at the kernel level (no installed bundle has such an ID).
+		// Intentional per gotchas/sandbox.md; pinned here so a future regex
+		// tightening surfaces as a deliberate behavior change, not silently.
+		{"trailing-dot", "com.apple.", true},
+		{"trailing-hyphen", "com.apple-", true},
 		{"empty", "", false},
 		{"leading-dot", ".com.apple.iChat", false},
+		{"leading-hyphen", "-com.apple.iChat", false},
 		{"space", "com.apple iChat", false},
 		{"quote-injection", `com.apple"iChat`, false},
 		{"paren-injection", "com.apple)iChat", false},
