@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/uxlog"
@@ -17,17 +15,17 @@ type clipboardAccessor interface {
 	ClipboardClear(taskID string) error
 }
 
-// copyToClipboard pipes text into `pbcopy` on a goroutine and flashes a
-// notice in the global header. Caller passes an optional onSuccess callback
-// (e.g. for uxlog logging that depends on caller-side IDs).
-//
-// macOS-only: pbcopy is the same fence the existing TUI clipboard precedent
-// (OnCopyPrompt) lives behind; cross-platform support is a follow-up.
+// copyToClipboard hands text to `a.clipboardWriter` on a goroutine and flashes
+// a notice in the global header. Caller passes an optional onSuccess callback
+// (e.g. for uxlog logging that depends on caller-side IDs). Tests that exercise
+// this code path MUST overwrite `a.clipboardWriter` with a no-op writer
+// immediately after `New()` — otherwise the production `pbcopyWriter` runs and
+// clobbers the developer's real clipboard. See the field comment on
+// `App.clipboardWriter` for the full contract.
 func (a *App) copyToClipboard(text, notice string, onSuccess func()) {
+	writer := a.clipboardWriter
 	go func() {
-		cmd := exec.Command("pbcopy")
-		cmd.Stdin = strings.NewReader(text)
-		if err := cmd.Run(); err != nil {
+		if err := writer(text); err != nil {
 			uxlog.Log("[tui] clipboard copy failed: %v", err)
 			return
 		}

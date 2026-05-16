@@ -2173,6 +2173,7 @@ func TestApp_CopyToClipboard(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
+	app.clipboardWriter = func(string) error { return nil }
 
 	_, stop := wireApp(t, app)
 	t.Cleanup(stop)

@@ -105,6 +105,7 @@ func TestCopyStagedClipboard_ClearsLocalStateAndFiresClearRPC(t *testing.T) {
 	d := testDB(t)
 	fp := newFakeProvider()
 	app := New(d, fp, false)
+	app.clipboardWriter = func(string) error { return nil }
 
 	app.clipboardPending = "snippet"
 	app.clipboardPendingTask = "abc123"
@@ -138,6 +139,7 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 	fp := newFakeProvider()
 	fp.clearErr = errors.New("rpc broken")
 	app := New(d, fp, false)
+	app.clipboardWriter = func(string) error { return nil }
 
 	app.clipboardPending = "x"
 	app.clipboardPendingTask = "abc"
@@ -146,4 +148,30 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 	if !app.copyStagedClipboard() {
 		t.Fatal("expected true")
 	}
+}
+
+// TestCopyToClipboard_WriterError covers the early-return branch in
+// copyToClipboard when the writer fails: onSuccess MUST NOT fire and no
+// header notice is set.
+func TestCopyToClipboard_WriterError(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	app.clipboardWriter = func(string) error { return errors.New("pbcopy failed") }
+
+	successFired := make(chan struct{}, 1)
+	app.copyToClipboard("payload", "Notice", func() {
+		select {
+		case successFired <- struct{}{}:
+		default:
+		}
+	})
+
+	select {
+	case <-successFired:
+		t.Fatal("onSuccess should not fire when writer returns an error")
+	case <-time.After(100 * time.Millisecond):
+		// expected: writer error, no callback
+	}
+	testutil.Equal(t, app.header.Notice(), "")
 }

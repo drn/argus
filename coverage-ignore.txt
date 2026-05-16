@@ -22,3 +22,8 @@ cmd/argus-test-server/main.go
 # Raw terminal mode + ioctl glue. CLAUDE.md exempts "real terminal functions
 # (raw mode, ioctl)".
 internal/agent/attach.go
+
+# pbcopy shell-out. Privileged/external resource — exercising it from tests
+# would defeat the entire purpose of the writer-injection seam (it would write
+# to the developer's real macOS clipboard).
+internal/tui/clipboard_pbcopy.go
