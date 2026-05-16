@@ -68,18 +68,22 @@ func TestSkipRerenderForUnchangedAttach(t *testing.T) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
-	// DeferBusy retry path: when maybeKickRerender's goroutine resolves to
-	// RerenderDeferBusy (agent mid-tool-call), it invalidates the cache so
-	// the next reopen at the same cols re-evaluates. Simulate the
-	// invalidation directly and verify the gate now proceeds.
-	delete(app.lastAttachCols, taskID)
-	if app.skipRerenderForUnchangedAttach(taskID, 140) {
-		t.Fatal("after DeferBusy invalidation, reopen at 140 should proceed (not skip)")
-	}
-	// And after the next attempt has re-cached the value, the subsequent
-	// reopen at the same cols once again skips — the steady state.
-	if !app.skipRerenderForUnchangedAttach(taskID, 140) {
-		t.Fatal("after re-cache, reopen at 140 should skip again")
+	// Non-retryable-state retry paths: when maybeKickRerender invalidates
+	// the cache (either RerenderDeferBusy resolving on a busy session, or
+	// a kick attempt failing because sess.Stop() errored), the next reopen
+	// at the same cols must re-evaluate. Both branches funnel through
+	// `delete(a.lastAttachCols, taskID)` — simulate each and verify the
+	// gate now proceeds, then re-caches on the subsequent proceed.
+	for _, scenario := range []string{"DeferBusy invalidation", "Stop-failure invalidation"} {
+		t.Run(scenario, func(t *testing.T) {
+			delete(app.lastAttachCols, taskID)
+			if app.skipRerenderForUnchangedAttach(taskID, 140) {
+				t.Fatalf("after %s, reopen at 140 should proceed (not skip)", scenario)
+			}
+			if !app.skipRerenderForUnchangedAttach(taskID, 140) {
+				t.Fatalf("after %s + re-cache, reopen at 140 should skip again", scenario)
+			}
+		})
 	}
 }
 

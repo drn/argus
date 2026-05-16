@@ -676,18 +676,24 @@ func TestSkipRerenderForUnchangedCols(t *testing.T) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
-	// DeferBusy retry path: when maybeKickRerender's IsIdle check returns
-	// false (agent mid-tool-call), it invalidates the cache so the next
-	// /resize at the same cols re-evaluates. Simulate the invalidation
-	// directly and verify the gate now proceeds.
-	srv.lastResizeMu.Lock()
-	delete(srv.lastResizeCols, taskID)
-	srv.lastResizeMu.Unlock()
-	if srv.skipRerenderForUnchangedCols(taskID, 140) {
-		t.Fatal("after busy-session invalidation, resize at 140 should proceed (not skip)")
-	}
-	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
-		t.Fatal("after re-cache, resize at 140 should skip again")
+	// Non-retryable-state retry paths: when maybeKickRerender invalidates
+	// the cache (either !IsIdle() on a busy session, or KickRerender
+	// returning an error), the next /resize at the same cols must
+	// re-evaluate. Both branches funnel through `delete(s.lastResizeCols,
+	// taskID)` under the mutex — simulate each and verify the gate now
+	// proceeds, then re-caches on the subsequent proceed.
+	for _, scenario := range []string{"busy-session invalidation", "KickRerender-error invalidation"} {
+		t.Run(scenario, func(t *testing.T) {
+			srv.lastResizeMu.Lock()
+			delete(srv.lastResizeCols, taskID)
+			srv.lastResizeMu.Unlock()
+			if srv.skipRerenderForUnchangedCols(taskID, 140) {
+				t.Fatalf("after %s, resize at 140 should proceed (not skip)", scenario)
+			}
+			if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+				t.Fatalf("after %s + re-cache, resize at 140 should skip again", scenario)
+			}
+		})
 	}
 }
 

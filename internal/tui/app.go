@@ -2300,6 +2300,12 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 				if err := sess.Stop(); err != nil {
 					uxlog.Log("[tui] rerender: stop failed task=%s err=%v", taskID, err)
 					delete(a.pendingRerenderRestart, taskID)
+					// Stop failed — the kick didn't happen. Invalidate the
+					// unchanged-attach cache so the next reopen at the same
+					// cols retries (mirrors the RerenderDeferBusy path).
+					// Without this, transient daemon errors leave the user
+					// in a non-retryable state until they resize.
+					delete(a.lastAttachCols, taskID)
 					a.statusbar.ClearInfo()
 				}
 			}

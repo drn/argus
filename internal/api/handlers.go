@@ -1005,6 +1005,13 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		// Don't fail the resize on a kick failure — runner.KickRerender's
 		// own slog line records the task; just note the failure here.
 		log.Printf("api: KickRerender failed: %v", err)
+		// Kick failed — invalidate the unchanged-cols cache so the next
+		// /resize at the same cols retries (mirrors the !IsIdle path).
+		// Without this, a transient daemon error leaves the user in a
+		// non-retryable state until they resize the viewport.
+		s.lastResizeMu.Lock()
+		delete(s.lastResizeCols, taskID)
+		s.lastResizeMu.Unlock()
 		return false
 	}
 	// runner.KickRerender already logs via slog with task=, cols=, rows=.
