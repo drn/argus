@@ -17,6 +17,12 @@ const defaultBufSize = 256 * 1024 // 256KB ring buffer; session log file handles
 // idleThreshold is how long without output before a session is considered idle.
 const idleThreshold = 3 * time.Second
 
+// ptmxDrainTimeout caps how long waitLoop waits for readLoop to drain the PTY
+// master naturally before force-closing ptmx. The natural-drain path is
+// sub-millisecond for well-behaved children; this only kicks in when a
+// grandchild inherited the slave fd and is keeping the master open.
+const ptmxDrainTimeout = 5 * time.Second
+
 // DefaultTermRows and DefaultTermCols are fallback PTY dimensions.
 const (
 	DefaultTermRows uint16 = 24
@@ -170,24 +176,37 @@ func (s *Session) readLoop() {
 // only after readLoop has terminated, guaranteeing every PTY byte has been
 // written to the ring buffer before any Done() waiter wakes up.
 //
-// Order matters: we wait for readDone BEFORE closing ptmx. Closing the
-// master mid-Read interrupts the syscall with "file already closed" and
-// discards any kernel-buffered bytes that hadn't been read yet — exactly
-// the bytes a short-lived child like `echo` produces just before exiting.
-// After Cmd.Wait() returns, the child's slave fd is fully closed (creack/pty
-// closes the parent's slave handle at start), so the master naturally EOFs
-// once readLoop drains the pending bytes — no force-close needed.
+// Order matters: we wait for readDone BEFORE closing ptmx in the fast path.
+// Closing the master mid-Read interrupts the syscall with "file already
+// closed" and discards any kernel-buffered bytes that hadn't been read yet —
+// exactly the bytes a short-lived child like `echo` produces just before
+// exiting. After Cmd.Wait() returns, the caller-process copy of the slave
+// fd is already closed (creack/pty closes it immediately after cmd.Start),
+// so for a well-behaved child the master EOFs naturally once readLoop drains
+// the pending bytes and readDone fires within milliseconds.
+//
+// Escape hatch: if the child spawned a grandchild that inherited the slave
+// fd (e.g., a Node subprocess without `stdio: 'ignore'`), the master never
+// EOFs and the natural drain would hang waitLoop — and with it, every
+// Done() waiter — forever. After ptmxDrainTimeout we force-close the master
+// to interrupt readLoop's pending Read. This trades a small data-loss risk
+// in the stuck-grandchild path for liveness, which is the right call: a
+// hung waitLoop also leaks the task from runner.sessions permanently.
 //
 // The `<-s.readDone` block depends on readLoop's `defer close(s.readDone)`
 // firing. The defer runs even on panic, so a crashing readLoop still
 // unblocks this goroutine; without that defer, Done() would deadlock.
 func (s *Session) waitLoop() {
 	s.err = s.Cmd.Wait()
-	<-s.readDone
+	select {
+	case <-s.readDone:
+	case <-time.After(ptmxDrainTimeout):
+	}
 	s.mu.Lock()
 	s.ptmxClosed = true
 	s.ptmx.Close()
 	s.mu.Unlock()
+	<-s.readDone // ptmx.Close unblocks readLoop's Read; guaranteed to fire now
 	close(s.done)
 }
 
