@@ -573,6 +573,59 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('hello\n');
   });
 
+  // Guard rail: drop of multi-line text must not auto-submit. The fallback's
+  // denylist explicitly includes `insertFromDrop`. Pairs with the paste test
+  // — both share the `PASTE_DROP_INPUT_TYPES.has()` branch but are exercised
+  // individually so a future edit that removes `insertFromDrop` from the Set
+  // is caught.
+  test('input fallback does NOT fire on insertFromDrop with trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'dropped\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromDrop',
+        data: 'dropped\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('dropped\n');
+  });
+
+  // Guard rail: Emacs-style yank (kill-buffer paste) must not auto-submit.
+  // Same denylist entry as paste/drop.
+  test('input fallback does NOT fire on insertFromYank with trailing newline', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
+    await login(page);
+
+    let posted = false;
+    page.on('request', req => {
+      if (req.url().includes('/input') && req.method() === 'POST') posted = true;
+    });
+    await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
+      el.focus();
+      el.value = 'yanked\n';
+      el.dispatchEvent(new InputEvent('input', {
+        inputType: 'insertFromYank',
+        data: 'yanked\n',
+        cancelable: false,
+        bubbles: true,
+      }));
+    });
+    await page.waitForTimeout(200);
+    expect(posted).toBe(false);
+    await expect(page.locator('#compose-input')).toHaveValue('yanked\n');
+  });
+
   // Regression: dictation tools (Wispr Flow, Voice Control, third-party
   // keyboards) often inject text by mutating `.value` directly — no
   // `beforeinput` and no `input` event fires for the trailing `\n`. Neither

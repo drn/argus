@@ -5642,7 +5642,7 @@ function sendCompose() {
   // Denylist for the input fallback: ANY input event that left a trailing
   // newline in the textarea triggers a Send, EXCEPT events we know are NOT
   // a Send signal — explicit user-content actions (paste / paste-as-quotation
-  // / drop / yank — the four `insertFrom*` types defined by WHATWG Input
+  // / drop / yank — the four `insertFrom*` types defined by W3C Input
   // Events Level 2), edits (delete*), history (undo/redo), and format
   // (bold/etc.). Empty / unknown / future inputTypes pass the gate; the
   // trailing-`\n` check on `ci.value` below is the actual safety.
