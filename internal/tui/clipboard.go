@@ -69,9 +69,10 @@ func (a *App) refreshClipboardCache(taskID string) {
 }
 
 // copyStagedClipboard is the ctrl+y handler. Copies the cached pending
-// payload via pbcopy, clears the daemon-side state, and flashes "Copied".
-// Returns true if a payload was copied, false if nothing was staged (caller
-// should fall through to PTY pass-through).
+// payload via `a.clipboardWriter` (the configured OS-clipboard writer),
+// clears the daemon-side state, and flashes "Copied". Returns true if a
+// payload was copied, false if nothing was staged (caller should fall
+// through to PTY pass-through).
 func (a *App) copyStagedClipboard() bool {
 	if a.clipboardPending == "" {
 		return false

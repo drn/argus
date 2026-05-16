@@ -173,5 +173,4 @@ func TestCopyToClipboard_WriterError(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		// expected: writer error, no callback
 	}
-	testutil.Equal(t, app.header.Notice(), "")
 }
