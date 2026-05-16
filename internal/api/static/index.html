@@ -5472,7 +5472,16 @@ const COMPOSE_MAX_BYTES = 64 * 1024;
 function sendCompose() {
   const ci = document.getElementById('compose-input');
   if (!ci) return;
-  const v = ci.value;
+  // Strip trailing newlines BEFORE byte-len check + POST. Belt for every
+  // dispatch path: covers dictation tools (Wispr Flow, Voice Control,
+  // third-party keyboards) that inject text by mutating `.value` directly
+  // and fire no `beforeinput` / `input` event for the trailing `\n` — so
+  // neither the beforeinput matcher nor the input fallback ever runs. Also
+  // covers the cs-button click path where a stale `\n` left behind by a
+  // matcher miss would otherwise reach the POST. Without this strip, the
+  // POST is `"text\n\r"` and Claude Code treats it as Shift+Enter then
+  // Enter — prompt drafted with a trailing newline, NOT submitted.
+  const v = ci.value.replace(/[\r\n]+$/, '');
   if (!v) return;
   // TextEncoder gives the actual UTF-8 byte length — `.length` would
   // undercount multi-byte chars and let an over-cap value through.
@@ -5624,18 +5633,20 @@ function sendCompose() {
     }
     return null;
   }
-  // Allowlist for the input fallback: any inputType that begins with `insert`
-  // EXCEPT explicit user actions (paste / drop / yank) where auto-submitting
-  // would be unexpected. Format/delete/history don't start with `insert` and
-  // are excluded by the prefix check.
+  // Denylist for the input fallback: ANY input event that left a trailing
+  // newline in the textarea triggers a Send, EXCEPT events we know are NOT
+  // a Send signal — explicit user-content actions (paste/drop/yank), edits
+  // (delete*), history (undo/redo), and format (bold/etc.). Empty / unknown
+  // / future inputTypes pass the gate; the trailing-`\n` check on
+  // `ci.value` below is the actual safety, exactly as the
+  // composition-update case relies on.
   //
-  // `insertCompositionText` (mid-IME composition update) DOES pass this
-  // allowlist — by design. The final safety isn't this allowlist, it's the
-  // trailing-`\n` check on `ci.value` in the fallback handler below: a
-  // composition update that hasn't yet committed a line break never lands
-  // a trailing `\n` in the textarea, so the fallback bails. Keeping
-  // `insertCompositionText` allowlisted means an exotic dictation tool that
-  // commits a Send via composition still triggers the fallback.
+  // Previous design was an allowlist (`startsWith('insert')` minus paste/
+  // drop) — but iOS WebKit and third-party keyboards (Wispr Flow, dictation,
+  // Voice Control) routinely dispatch the line-break-bearing input event
+  // with `inputType: ''` or a non-`insert*` string. Those slipped through
+  // and reproduced the original "newline lands, no submit" symptom. The
+  // denylist closes that hole without re-opening paste/edit auto-submit.
   const PASTE_DROP_INPUT_TYPES = new Set([
     'insertFromPaste',
     'insertFromPasteAsQuotation',
@@ -5643,8 +5654,13 @@ function sendCompose() {
     'insertFromYank',
   ]);
   function isInsertionForSubmit(inputType) {
-    if (!inputType || !inputType.startsWith('insert')) return false;
-    return !PASTE_DROP_INPUT_TYPES.has(inputType);
+    if (PASTE_DROP_INPUT_TYPES.has(inputType)) return false;
+    if (inputType && (
+      inputType.startsWith('delete') ||
+      inputType.startsWith('history') ||
+      inputType.startsWith('format')
+    )) return false;
+    return true;
   }
   ci.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
