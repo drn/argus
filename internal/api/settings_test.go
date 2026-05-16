@@ -228,6 +228,55 @@ func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 	testutil.DeepEqual(t, stored.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
+// TestHandleProjectsFull_AuthSymmetry pins the read/write auth split for the
+// projects CRUD group: master-only mutations (POST/PUT/DELETE), device-token
+// readable list (GET /api/projects/full). Matches the symmetry of
+// GET/PUT /api/settings — read is broad, write is master. Catches a future
+// regression that accidentally tightens or loosens either side.
+func TestHandleProjectsFull_AuthSymmetry(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
+	plain, _, err := MintToken(d, "phone")
+	testutil.NoError(t, err)
+
+	// Seed one project so the GET response is non-trivial.
+	v := true
+	testutil.NoError(t, d.SetProject("alpha", config.Project{
+		Path: "/tmp/alpha",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:          &v,
+			AllowAppleEvents: []string{"com.apple.iChat"},
+		},
+	}))
+
+	t.Run("device token can read", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/projects/full", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		testutil.Contains(t, w.Body.String(), "com.apple.iChat")
+	})
+
+	t.Run("device token cannot create", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/api/projects",
+			strings.NewReader(`{"name":"beta","path":"/tmp/beta"}`))
+		req.Header.Set("Authorization", "Bearer "+plain)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+	})
+
+	t.Run("device token cannot delete", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/projects/alpha", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+	})
+}
+
 func TestProjectFromJSON_NilSandboxStaysInherit(t *testing.T) {
 	got := projectFromJSON(projectJSON{Name: "x", Path: "/tmp/x"})
 	if got.Sandbox.Enabled != nil {

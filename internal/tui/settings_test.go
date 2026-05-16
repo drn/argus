@@ -817,6 +817,75 @@ func TestSettingsView_GlobalSandboxAllowAppleEvents(t *testing.T) {
 	testutil.DeepEqual(t, sv.sandboxAllowAppleEvents, []string{"com.apple.iChat", "com.apple.finder"})
 }
 
+// readSettingsScreen renders the simulation screen to a single string for
+// substring assertions. The full contents are joined with newlines so tests
+// can match label lines without depending on exact pane height.
+func readSettingsScreen(t *testing.T, sv *SettingsView, w, h int) string {
+	t.Helper()
+	screen := tcell.NewSimulationScreen("")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(w, h)
+	sv.SetRect(0, 0, w, h)
+	sv.Draw(screen)
+	lines := make([]string, 0, h)
+	for row := range h {
+		var b strings.Builder
+		for col := range w {
+			s, _, _ := screen.Get(col, row)
+			b.WriteString(s)
+		}
+		lines = append(lines, b.String())
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TestSettingsView_SandboxDetail_RendersAllowAppleEvents pins the Draw-path
+// rendering of the global sandbox AllowAppleEvents list, including the
+// section header and bullet-id rows. Without this, the conditional
+// `if len(sv.sandboxAllowAppleEvents) > 0` branch in renderSandboxDetail
+// would be untested at the screen-content level.
+func TestSettingsView_SandboxDetail_RendersAllowAppleEvents(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	testutil.NoError(t, database.SetConfigValue("sandbox.allow_apple_events", "com.apple.iChat,com.apple.finder"))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catSandbox)
+
+	out := readSettingsScreen(t, sv, 120, 40)
+	testutil.Contains(t, out, "Allow AppleEvents:")
+	testutil.Contains(t, out, "com.apple.iChat")
+	testutil.Contains(t, out, "com.apple.finder")
+}
+
+// TestSettingsView_ProjectDetail_RendersAllowAppleEvents pins the Draw-path
+// rendering of the per-project AllowAppleEvents list in the project detail
+// pane. Same coverage rationale as the global sandbox detail test.
+func TestSettingsView_ProjectDetail_RendersAllowAppleEvents(t *testing.T) {
+	database, _ := db.OpenInMemory()
+	v := true
+	testutil.NoError(t, database.SetProject("proj", config.Project{
+		Path: "/tmp/proj",
+		Sandbox: config.ProjectSandboxConfig{
+			Enabled:          &v,
+			AllowAppleEvents: []string{"com.apple.iChat"},
+		},
+	}))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catProjects)
+	// Position cursor on the project row so renderProjectDetail picks it up.
+	for i, row := range sv.rows {
+		if row.key == "proj" {
+			sv.cursor = i
+			break
+		}
+	}
+
+	out := readSettingsScreen(t, sv, 120, 40)
+	testutil.Contains(t, out, "Allow AppleEvents:")
+	testutil.Contains(t, out, "com.apple.iChat")
+}
+
 func TestSettingsView_VaultPathEdit(t *testing.T) {
 	database, err := db.OpenInMemory()
 	if err != nil {
