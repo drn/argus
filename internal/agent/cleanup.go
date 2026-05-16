@@ -181,6 +181,9 @@ func DirExists(path string) bool { return dirExists(path) }
 
 // isTestBinary returns true when the current process is a Go test binary.
 // Go test compiles a binary named *.test (e.g., "tui.test") before running.
+// Keep in sync with the identical copies in internal/daemon/client/client.go
+// and internal/api/selfupdate.go — same detection, different packages so
+// each can refuse without importing across boundaries.
 func isTestBinary() bool {
 	return strings.HasSuffix(os.Args[0], ".test") ||
 		strings.Contains(os.Args[0], "/_test/")

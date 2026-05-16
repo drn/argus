@@ -106,6 +106,7 @@ var errSpawnFromTestBinary = errors.New("spawnSuccessorDaemon refused: running u
 
 // isTestBinary mirrors the same check in internal/daemon/client. Go's test
 // framework compiles binaries with a .test suffix or under a _test/ path.
+// Keep in sync with internal/agent/cleanup.go and internal/daemon/client/client.go.
 func isTestBinary() bool {
 	return strings.HasSuffix(os.Args[0], ".test") ||
 		strings.Contains(os.Args[0], "/_test/")

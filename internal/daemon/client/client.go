@@ -37,6 +37,7 @@ var ErrTestBinary = errors.New("AutoStart refused: running under a Go test binar
 
 // isTestBinary mirrors agent.isTestBinary (unexported there). Go's test
 // framework compiles binaries with a .test suffix or under a _test/ path.
+// Keep in sync with internal/agent/cleanup.go and internal/api/selfupdate.go.
 func isTestBinary() bool {
 	return strings.HasSuffix(os.Args[0], ".test") ||
 		strings.Contains(os.Args[0], "/_test/")

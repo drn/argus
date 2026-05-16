@@ -777,6 +777,9 @@ func (a *App) updateArgus() {
 		a.mu.Unlock()
 		a.settings.SetDaemonRestarting(true)
 	})
+	// Synchronous — updateArgus is already running in a goroutine (spawned
+	// from settings.OnUpdateArgus). The other three restartDaemonFn call
+	// sites use `go` because they fire from the tview main goroutine.
 	a.restartDaemonFn()
 }
 
