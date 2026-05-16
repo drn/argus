@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -115,23 +114,15 @@ func isTestBinary() bool {
 // spawnSuccessorDaemon starts a fresh `argus daemon` process detached from
 // this one. The new daemon's startup kills the existing daemon via the PID
 // file and rebinds the Unix socket.
+//
+// The body is delegated to spawnSuccessorDaemonFork (in spawn_fork.go) so
+// the test-binary backstop is the only branch exercised under `go test`.
+// spawnSuccessorDaemonFork is excluded from the coverage gate because
+// exercising it would re-create the exact fork bomb errSpawnFromTestBinary
+// exists to prevent.
 func spawnSuccessorDaemon() error {
 	if isTestBinary() {
 		return errSpawnFromTestBinary
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	// exe comes from os.Executable() — i.e. the path the daemon itself was
-	// started with, not user-supplied input.
-	cmd := exec.Command(exe, "daemon", "start") //nolint:gosec // exe is os.Executable()
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = daemonSysProcAttr()
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	// Detach the child so we don't wait/reap it.
-	return cmd.Process.Release()
+	return spawnSuccessorDaemonFork()
 }

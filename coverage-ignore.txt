@@ -27,3 +27,10 @@ internal/agent/attach.go
 # would defeat the entire purpose of the writer-injection seam (it would write
 # to the developer's real macOS clipboard).
 internal/tui/clipboard_pbcopy.go
+
+# Fork-exec helpers that respawn the running binary as `argus daemon start`.
+# Both are gated behind a `*.test` backstop (ErrTestBinary /
+# errSpawnFromTestBinary), so the body is never reached under `go test`.
+# Exercising it would recreate the very fork bomb the backstop prevents.
+internal/daemon/client/autostart_fork.go
+internal/api/spawn_fork.go
