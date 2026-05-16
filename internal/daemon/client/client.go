@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,22 @@ const rpcTimeout = 2 * time.Second
 
 // ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
+
+// ErrTestBinary is returned by AutoStart when invoked from a Go test binary.
+// AutoStart fork/execs os.Executable() with "daemon start" — under `go test`
+// that re-runs the entire test package as an orphaned child process, which
+// is both a fork bomb (each child re-hits the same test path) and trashes
+// the user's real ~/.argus/argusd symlink. The backstop is intentionally at
+// the AutoStart layer so any caller that accidentally reaches it from a test
+// is refused, not just the one we know about.
+var ErrTestBinary = errors.New("AutoStart refused: running under a Go test binary")
+
+// isTestBinary mirrors agent.isTestBinary (unexported there). Go's test
+// framework compiles binaries with a .test suffix or under a _test/ path.
+func isTestBinary() bool {
+	return strings.HasSuffix(os.Args[0], ".test") ||
+		strings.Contains(os.Args[0], "/_test/")
+}
 
 // Compile-time assertion.
 var _ agent.SessionProvider = (*Client)(nil)
@@ -375,6 +392,9 @@ func (c *Client) getOrCreateSession(taskID string) *RemoteSession {
 // AutoStart launches the daemon as a background process and waits for it to
 // be ready. Returns a connected client or an error.
 func AutoStart(sockPath string) (*Client, error) {
+	if isTestBinary() {
+		return nil, ErrTestBinary
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve executable: %w", err)

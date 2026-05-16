@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -98,10 +99,26 @@ func (s *Server) handleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// errSpawnFromTestBinary is returned when spawnSuccessorDaemon is invoked
+// from a *.test binary. The fork target would be the test binary itself,
+// and Go's test framework treats "daemon start" as positional args and
+// re-runs every test in the package — a fork bomb.
+var errSpawnFromTestBinary = errors.New("spawnSuccessorDaemon refused: running under a Go test binary")
+
+// isTestBinary mirrors the same check in internal/daemon/client. Go's test
+// framework compiles binaries with a .test suffix or under a _test/ path.
+func isTestBinary() bool {
+	return strings.HasSuffix(os.Args[0], ".test") ||
+		strings.Contains(os.Args[0], "/_test/")
+}
+
 // spawnSuccessorDaemon starts a fresh `argus daemon` process detached from
 // this one. The new daemon's startup kills the existing daemon via the PID
 // file and rebinds the Unix socket.
 func spawnSuccessorDaemon() error {
+	if isTestBinary() {
+		return errSpawnFromTestBinary
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err

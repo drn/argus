@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,9 +319,26 @@ func TestQuickAddForm_HandleDirInputKey_EnterScanning(t *testing.T) {
 // --- handleRestartDaemonKey: Restart path (Y) ---
 
 func TestApp_HandleRestartDaemonKey_RestartChosen(t *testing.T) {
+	// HOME redirect keeps any path that slips past the restartDaemonFn
+	// override away from the real ~/.argus/argusd symlink and the live
+	// daemon socket — defense in depth.
+	t.Setenv("HOME", t.TempDir())
+
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
+	// Override restartDaemonFn so the goroutine does not fork the test
+	// binary as a fake daemon. Counting invocations also proves the
+	// callback fires on the Restart branch.
+	var calls atomic.Int32
+	done := make(chan struct{}, 1)
+	app.restartDaemonFn = func() {
+		calls.Add(1)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
 
 	app.openRestartDaemonPrompt()
 	// Press 'y' to confirm restart. The modal interprets Enter as the default
@@ -332,6 +350,15 @@ func TestApp_HandleRestartDaemonKey_RestartChosen(t *testing.T) {
 	app.mu.Unlock()
 	if !restarting {
 		t.Error("daemonRestarting should be true after choosing restart")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("restartDaemonFn was not invoked after choosing Restart")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("restartDaemonFn invocations = %d, want 1", got)
 	}
 }
 

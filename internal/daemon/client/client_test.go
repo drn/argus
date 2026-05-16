@@ -506,21 +506,19 @@ func TestC_ResizeRPCErr(t *testing.T) {
 	testutil.Error(t, err)
 }
 
-// TestC_AutoStart_Failure covers AutoStart's error path. We can't actually
-// spawn a daemon (would require a real binary), but we can verify that
-// AutoStart fails fast when the executable resolution succeeds but the
-// child cannot be reached. We use a dummy executable that exits immediately.
+// TestC_AutoStart covers AutoStart's behavior under `go test`. The function
+// has a backstop (ErrTestBinary) that refuses to fork os.Executable() when
+// running from a *.test binary — without it, every AutoStart call from a
+// test would orphan a copy of the test binary running the whole package as
+// "daemon start", which is both a fork bomb and a real-~/.argus/ stomper.
 func TestC_AutoStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	// Provide a non-daemon executable: /usr/bin/true exits instantly.
-	// AutoStart will execve it, the child does nothing, the socket never
-	// appears, and AutoStart times out.
 	bad := filepath.Join(t.TempDir(), "no.sock")
-	// Use a short timeout via the public maxWait — we can't override it,
-	// so this test takes ~3s. Acceptable as a single-shot.
 	_, err := AutoStart(bad)
-	testutil.Error(t, err)
+	if !errors.Is(err, ErrTestBinary) {
+		t.Fatalf("AutoStart err = %v, want ErrTestBinary", err)
+	}
 }
 
 // TestC_StreamRetry exercises connectStream when the dial succeeds but the

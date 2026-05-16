@@ -155,6 +155,12 @@ type App struct {
 	daemonClient      *dclient.Client
 	restartedClient   *dclient.Client // set after daemon restart
 
+	// restartDaemonFn is the function invoked by every code path that wants
+	// to restart the daemon. Defaults to a.restartDaemon. Tests override it
+	// to avoid forking the test binary as a fake daemon (see ErrTestBinary
+	// in internal/daemon/client/client.go for the failure mode).
+	restartDaemonFn func()
+
 	// Tick control
 	tickDone            chan struct{}
 	tickCallbackPending atomic.Bool          // debounce: skip enqueue if prior callback hasn't run
@@ -235,6 +241,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
 	}
+	app.restartDaemonFn = app.restartDaemon
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
@@ -243,7 +250,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		app.daemonRestarting = true
 		app.lastDaemonRestart = time.Now()
 		app.mu.Unlock()
-		go app.restartDaemon()
+		go app.restartDaemonFn()
 	}
 	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
 	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
@@ -473,7 +480,7 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 		a.lastDaemonRestart = time.Now()
 		a.mu.Unlock()
 		a.settings.SetDaemonRestarting(true)
-		go a.restartDaemon()
+		go a.restartDaemonFn()
 	} else {
 		uxlog.Log("[tui] user skipped daemon restart")
 	}
@@ -723,7 +730,7 @@ healthCheck:
 					a.daemonRestarting = true
 					a.lastDaemonRestart = time.Now()
 					a.mu.Unlock()
-					go a.restartDaemon()
+					go a.restartDaemonFn()
 				} else if failures >= 3 && !cooldownOK {
 					uxlog.Log("[tui] daemon unreachable but restart cooldown active, skipping")
 				}
@@ -770,7 +777,7 @@ func (a *App) updateArgus() {
 		a.mu.Unlock()
 		a.settings.SetDaemonRestarting(true)
 	})
-	a.restartDaemon()
+	a.restartDaemonFn()
 }
 
 // toggleAutoStart installs or uninstalls the LaunchAgent. Must run in a

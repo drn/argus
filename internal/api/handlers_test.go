@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -3419,8 +3420,8 @@ func TestHandleUpdateSelf_Success(t *testing.T) {
 	}
 
 	// Allow the goroutine that calls spawnSuccessorDaemon to fire. The
-	// spawn itself will fail (test binary doesn't honour `daemon start`),
-	// but the slog.Error path is exercised. Sleep just past spawnDelay.
+	// spawn is refused by the *.test backstop (errSpawnFromTestBinary),
+	// so the slog.Error path is exercised. Sleep just past spawnDelay.
 	time.Sleep(spawnDelay + 200*time.Millisecond)
 }
 
@@ -3709,17 +3710,16 @@ func TestHandleUploadFiles_Success(t *testing.T) {
 
 // --- spawnSuccessorDaemon ---
 
-// TestSpawnSuccessorDaemon runs the real spawn helper. os.Executable() inside
-// the test returns the test binary path; invoking it with `daemon start`
-// makes the test binary print "FAIL: unknown flag: daemon" via the testing
-// framework and exit non-zero. The spawn itself is detached via Setsid +
-// Process.Release, so the test process doesn't wait or reap it; the orphaned
-// child exits in millis. This exercises every line of spawnSuccessorDaemon.
+// TestSpawnSuccessorDaemon verifies the backstop that refuses to fork
+// os.Executable() from a *.test binary. Without it, exec'ing the test
+// binary with "daemon start" runs the entire test package again — Go's
+// test framework treats unknown flags as positional args and proceeds
+// to m.Run(). That recursive run hits this same test and forks another
+// orphan, which is both a fork bomb and stomps on the user's real
+// ~/.argus/argusd symlink.
 func TestSpawnSuccessorDaemon(t *testing.T) {
-	// Belt-and-suspenders: the test does not block on the child, but if the
-	// detach machinery ever regresses we don't want the child to hang the
-	// CI runner. Set a stop signal that the child will pick up if it tries
-	// to interpret args; the child's exit doesn't affect our test result.
 	err := spawnSuccessorDaemon()
-	testutil.NoError(t, err)
+	if !errors.Is(err, errSpawnFromTestBinary) {
+		t.Fatalf("spawnSuccessorDaemon err = %v, want errSpawnFromTestBinary", err)
+	}
 }
