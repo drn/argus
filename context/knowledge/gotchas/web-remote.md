@@ -54,6 +54,10 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Resize POST is debounced (100ms) on `window.resize`** — but use `setTimeout(200)` for `orientationchange` because iOS Safari fires `orientationchange` before the viewport actually settles.
 - **Empty `[]taskJSON` encodes as `null`, not `[]`** — Go's `encoding/json` will emit `null` for a nil slice. Use `make([]taskJSON, 0)` for any handler whose response slice goes through the wire (`handleListTasks` does this; if you add another, do the same). The SPA does `tasks.find(...)` and crashes on null otherwise.
 
+## SPA JS reference resolution
+
+- **`TestSPAJSReferencesResolve` (in `internal/api/static_spa_refs_test.go`) is the closest thing we have to a JS-side test.** It tokenizes the inline `<script>` block in `index.html`, builds the set of every defined function/binding/parameter, and asserts every `IDENT(` call resolves to either a definition or a known browser/JS global. A live bug — `pruneCompleted()` body calling `refreshTasks()` instead of `refresh()` — shipped because the Go suite never executes the SPA's JS. The test catches `ReferenceError` typos at unit-test speed. **If you add a new browser global (e.g., `OffscreenCanvas`) and the test fails, add it to `jsGlobalsAllowlist`. If it flags a name like `refreshTasks`, that's a real typo — fix the call site.**
+
 ## HTML escaping in `index.html`
 
 - **`esc()` only escapes `<`, `>`, `&` — NOT `"` or `'`.** It builds via `textContent` → `innerHTML`, which is safe in element-content position but injectable in attribute position when the attribute value is double-quoted. Patterns like `data-foo="${esc(name)}"` or `<option value="${esc(p)}">` are vulnerable to attribute escape via a `"` in `name`. For untrusted strings going into attributes, use `escAttr()` (which extends `esc()` by also escaping `"` and `'`), or prefer index-based lookup against a render-time array (see `renderedProjects` in `renderTaskList`). Project names, task IDs, etc. all flow from user-controlled DB rows.

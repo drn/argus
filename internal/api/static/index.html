@@ -4576,7 +4576,7 @@ async function pruneCompleted() {
     if (j.worktrees) parts.push(`${j.worktrees} worktree${j.worktrees === 1 ? '' : 's'}`);
     if (j.orphans) parts.push(`${j.orphans} orphan${j.orphans === 1 ? '' : 's'}`);
     showToast(parts.join(', '));
-    refreshTasks();
+    refresh();
   } catch(e) {
     showToast('Cleanup failed: ' + e.message);
   } finally {
