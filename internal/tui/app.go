@@ -195,7 +195,7 @@ type App struct {
 	// because the restart via --session-id rehydrates the conversation but
 	// not the ephemeral modal. Storing the cols per task lets reopen-at-same
 	// -size short-circuit, while genuine resizes still fall through.
-	lastAttachCols map[string]int
+	lastAttachCols map[string]uint16
 
 	// Worktree root for orphan sweep (default: ~/.argus/worktrees/).
 	// Overridden in tests to avoid scanning real worktrees.
@@ -258,7 +258,7 @@ func New(database *db.DB, runner agent.SessionProvider, daemonConnected bool) *A
 		idleUnvisited:          make(map[string]bool),
 		viewedWhileAgent:       make(map[string]bool),
 		pendingRerenderRestart: make(map[string]bool),
-		lastAttachCols:         make(map[string]int),
+		lastAttachCols:         make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 	}
@@ -2265,7 +2265,7 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	// have SessionID=="" and can never be kicked) still benefit from the
 	// short-circuit — matches the web side's ordering and avoids spawning
 	// an RPC goroutine on every Codex agent-view reopen.
-	if a.isRedundantAttach(taskID, int(panelCols)) {
+	if a.isRedundantAttach(taskID, panelCols) {
 		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
 		return
 	}
@@ -2318,7 +2318,7 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 // caches the current cols so a subsequent reopen at the same size short
 // -circuits. Genuine resizes fall through because panelCols differs from
 // the cached value, so the kick predicate still runs.
-func (a *App) isRedundantAttach(taskID string, panelCols int) bool {
+func (a *App) isRedundantAttach(taskID string, panelCols uint16) bool {
 	if prev, ok := a.lastAttachCols[taskID]; ok && prev == panelCols {
 		return true
 	}
