@@ -82,6 +82,14 @@ func extractInlineScript(html string) string {
 // stripJSStringsAndComments returns the JS source with strings, template-literal
 // bodies (not their ${...} interpolations), line comments, and block comments
 // replaced with spaces. Newlines are preserved so positions remain stable.
+//
+// Known limitation: regex literals are NOT stripped. A pattern containing `\/`
+// near its closing delimiter (e.g. `/https:\/\//i`) leaves consecutive `/`
+// characters that this pass would interpret as a `//` line comment, blanking
+// from there to end-of-line. The SPA's existing regex literals are alone on
+// their lines so this currently produces no false negatives. If a future
+// regex+call appears on one line, refactor the line OR add explicit
+// regex-literal detection here.
 func stripJSStringsAndComments(js string) string {
 	b := []byte(js)
 	out := append([]byte(nil), b...)
@@ -300,13 +308,19 @@ func collectJSCalls(code string) map[string]bool {
 	return calls
 }
 
-// extractInlineHandlerCalls returns every function name appearing as
-// `onclick="NAME(...)"`, `onchange="NAME(...)"`, etc. on HTML attributes.
+// extractInlineHandlerCalls returns every function name appearing as a bareword
+// call inside an `on*="..."` HTML attribute (e.g. `onclick="a(); b()"` returns
+// both `a` and `b`). Only double-quoted attribute values are recognized — the
+// SPA exclusively uses double quotes, and supporting single quotes would
+// require attribute-aware HTML parsing rather than a regex pass.
 func extractInlineHandlerCalls(html string) []string {
-	re := regexp.MustCompile(`on[a-z]+="\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
+	attrRE := regexp.MustCompile(`on[a-z]+="([^"]*)"`)
+	callRE := regexp.MustCompile(`(?:^|[^A-Za-z0-9_$.])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
 	out := make([]string, 0)
-	for _, m := range re.FindAllStringSubmatch(html, -1) {
-		out = append(out, m[1])
+	for _, attr := range attrRE.FindAllStringSubmatch(html, -1) {
+		for _, m := range callRE.FindAllStringSubmatch(attr[1], -1) {
+			out = append(out, m[1])
+		}
 	}
 	return out
 }
@@ -381,6 +395,27 @@ fetch("/api/x");
 			html:    "<script>function ok(){} const s = `hello ${ok()}`; const bad = `boom ${ohNo()}`;</script>",
 			wantBad: []string{"ohNo"},
 		},
+		{
+			name: "multi-line destructuring registers all bindings",
+			html: `<script>
+const {
+  alpha,
+  bravo,
+} = obj;
+const [
+  one,
+  two,
+] = arr;
+alpha(); bravo(); one(); two();
+</script>`,
+			wantGood: []string{"alpha", "bravo", "one", "two"},
+		},
+		{
+			name: "multi-call onclick handler flags every undefined name",
+			html: `<button onclick="known(); typoFn()">go</button>
+<script>function known() {}</script>`,
+			wantBad: []string{"typoFn"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -439,11 +474,12 @@ func TestExtractInlineScript(t *testing.T) {
 	}
 }
 
-// TestStripJSStringsAndComments_BlanksBracesInsideStrings pins the invariant
-// that the class-body brace walker depends on: braces inside strings, template
-// bodies, and comments must be blanked to spaces so they don't unbalance the
-// `{`/`}` depth count in collectJSDefinitions's class-body scanner.
-func TestStripJSStringsAndComments_BlanksBracesInsideStrings(t *testing.T) {
+// TestStripJSStringsAndComments_BlanksBracesInsideStrippedContexts pins the
+// invariant that the class-body brace walker depends on: braces inside strings,
+// template literal bodies, and comments must be blanked to spaces so they don't
+// unbalance the `{`/`}` depth count in collectJSDefinitions's class-body
+// scanner.
+func TestStripJSStringsAndComments_BlanksBracesInsideStrippedContexts(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
