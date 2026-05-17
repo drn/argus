@@ -16,6 +16,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/links"
 	"github.com/drn/argus/internal/model"
@@ -617,6 +618,48 @@ func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"stopped": stopped})
+}
+
+// --- Prune Completed ---
+
+// handlePruneCompleted removes every task with status=complete, stops their
+// sessions, deletes session logs, and cleans up their worktrees + branches.
+// Also sweeps orphaned worktree directories under ~/.argus/worktrees that no
+// longer correspond to any DB row. Mirrors the TUI's Ctrl+R action.
+//
+// Destructive and cross-task; master-only.
+func (s *Server) handlePruneCompleted(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+
+	cfg := s.db.Config()
+	projects := make(map[string]string, len(cfg.Projects))
+	for name, p := range cfg.Projects {
+		projects[name] = p.Path
+	}
+
+	plan, err := agent.PruneCompleted(s.db, agent.PruneOptions{
+		WtRoot:   filepath.Join(db.DataDir(), "worktrees"),
+		Projects: projects,
+		ResolveRepoDir: func(t *model.Task) string {
+			return agent.ResolveDir(t, cfg)
+		},
+		Runner: s.runner,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	uxlog.Log("[api] prune-completed: pruned=%d worktrees=%d orphans=%d",
+		len(plan.Pruned), plan.WorktreeCount, plan.OrphanCount)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pruned":    len(plan.Pruned),
+		"worktrees": plan.WorktreeCount,
+		"orphans":   plan.OrphanCount,
+	})
 }
 
 // --- Fork ---

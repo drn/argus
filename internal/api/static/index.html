@@ -1215,6 +1215,16 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <pre id="update-output" style="display:none; white-space:pre-wrap; font-size:12px; background: var(--bg); border: 1px solid var(--border); padding: 8px; border-radius: 6px; max-height: 240px; overflow:auto"></pre>
     </div>
     <div class="settings-section">
+      <h3>Maintenance</h3>
+      <div class="settings-row">
+        <div class="grow">
+          <div class="label">Clean up completed tasks</div>
+          <div class="meta">Deletes all tasks with status=complete, removes their worktrees + branches, and sweeps orphaned worktree directories. Mirrors Ctrl+R in the TUI.</div>
+        </div>
+        <button class="danger" id="prune-completed-btn" onclick="pruneCompleted()">Clean up</button>
+      </div>
+    </div>
+    <div class="settings-section">
       <h3>This device</h3>
       <div class="settings-row">
         <div class="label">Sign out</div>
@@ -4545,6 +4555,33 @@ async function runUpdate() {
     btn.textContent = 'Update';
     btn.disabled = false;
     out.textContent += '\n\nRequest failed: ' + e.message;
+  }
+}
+
+async function pruneCompleted() {
+  if (!confirm('Delete every completed task and clean up their worktrees? This cannot be undone.')) return;
+  const btn = document.getElementById('prune-completed-btn');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Cleaning…';
+  try {
+    const r = await api('/api/maintenance/prune-completed', { method: 'POST' });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      showToast('Cleanup failed: ' + (j.error || r.status));
+      return;
+    }
+    const j = await r.json();
+    const parts = [`${j.pruned} task${j.pruned === 1 ? '' : 's'} pruned`];
+    if (j.worktrees) parts.push(`${j.worktrees} worktree${j.worktrees === 1 ? '' : 's'}`);
+    if (j.orphans) parts.push(`${j.orphans} orphan${j.orphans === 1 ? '' : 's'}`);
+    showToast(parts.join(', '));
+    refreshTasks();
+  } catch(e) {
+    showToast('Cleanup failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
   }
 }
 

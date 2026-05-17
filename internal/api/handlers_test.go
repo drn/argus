@@ -3773,3 +3773,60 @@ func TestSpawnSuccessorDaemon(t *testing.T) {
 		t.Fatalf("spawnSuccessorDaemon err = %v, want errSpawnFromTestBinary", err)
 	}
 }
+
+// TestHandlePruneCompleted exercises the maintenance endpoint that mirrors
+// the TUI's Ctrl+R: pruning complete tasks, cleaning their worktrees, and
+// gating master-only.
+func TestHandlePruneCompleted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate db.DataDir() from real ~/.argus
+
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "active", Status: model.StatusInProgress}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "t2", Name: "done-1", Status: model.StatusComplete}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "t3", Name: "done-2", Status: model.StatusComplete}))
+
+	t.Run("rejects device token", func(t *testing.T) {
+		plain, _, err := MintToken(d, "phone")
+		testutil.NoError(t, err)
+		req := httptest.NewRequest("POST", "/api/maintenance/prune-completed", nil)
+		req.Header.Set("Authorization", "Bearer "+plain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusForbidden)
+
+		// All tasks still present.
+		tasks, err := d.Tasks()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(tasks), 3)
+	})
+
+	t.Run("master prunes complete tasks", func(t *testing.T) {
+		req := authedReq("POST", "/api/maintenance/prune-completed", "")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["pruned"].(float64), float64(2))
+
+		// Only the in-progress task should remain.
+		tasks, err := d.Tasks()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(tasks), 1)
+		testutil.Equal(t, tasks[0].Name, "active")
+	})
+
+	t.Run("idempotent — second call prunes zero", func(t *testing.T) {
+		req := authedReq("POST", "/api/maintenance/prune-completed", "")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["pruned"].(float64), float64(0))
+	})
+}

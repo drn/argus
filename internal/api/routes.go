@@ -65,6 +65,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks/{id}/plan-slug", s.handleSetPlanSlug)
 	mux.HandleFunc("GET /api/dag", s.handleDAG)
 	mux.HandleFunc("POST /api/sessions/stop-all", s.handleStopAll)
+	mux.HandleFunc("POST /api/maintenance/prune-completed", s.handlePruneCompleted)
 	mux.HandleFunc("GET /api/projects/full", s.handleListProjectsFull)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("PUT /api/projects/{name}", s.handleUpdateProject)

@@ -3469,115 +3469,54 @@ func (a *App) pruneCompletedTasks() {
 	if a.header.Notice() != "" {
 		return
 	}
-	pruned, err := a.db.PruneCompleted()
+
+	cfg := a.db.Config()
+	projects := make(map[string]string, len(cfg.Projects))
+	for name, p := range cfg.Projects {
+		projects[name] = p.Path
+	}
+
+	// Phase 1 — DB delete + session stop + log removal. Run synchronously so
+	// the task list refresh below shows the pruned rows already gone.
+	preview, err := agent.PrunePrepare(a.db, agent.PruneOptions{
+		WtRoot:   a.wtRoot,
+		Projects: projects,
+		ResolveRepoDir: func(t *model.Task) string {
+			return agent.ResolveDir(t, cfg)
+		},
+		Runner: a.runner,
+	})
 	if err != nil {
 		uxlog.Log("[tui] prune error: %v", err)
 		return
 	}
-	if len(pruned) == 0 {
+	if len(preview.Pruned) == 0 {
 		return
 	}
 
-	uxlog.Log("[tui] pruning %d completed tasks", len(pruned))
-
-	// Stop sessions synchronously (fast, in-process).
-	for _, t := range pruned {
-		if a.runner.HasSession(t.ID) {
-			_ = a.runner.Stop(t.ID)
-		}
+	totalClean := preview.WorktreeCount
+	if preview.OrphanCount > 0 {
+		totalClean++
 	}
 
-	// Remove session logs for all pruned tasks.
-	for _, t := range pruned {
-		os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
-	}
-
-	cfg := a.db.Config()
-
-	var toClean []*model.Task
-	for _, t := range pruned {
-		if t.Worktree != "" {
-			toClean = append(toClean, t)
-		}
-	}
-
-	// Count orphaned worktrees not tracked in the DB.
-	// Skip orphan sweep if WorktreePaths fails — an empty map would
-	// misidentify all worktrees as orphans.
-	knownPaths, err := a.db.WorktreePaths()
-	orphanCount := 0
-	if err != nil {
-		uxlog.Log("[tui] WorktreePaths failed, skipping orphan sweep: %v", err)
-	} else {
-		// PruneCompleted already deleted these from the DB, so their
-		// worktree dirs would be misidentified as orphans. Mark them
-		// known so they aren't double-counted.
-		for _, t := range toClean {
-			knownPaths[t.Worktree] = true
-		}
-		orphanCount = countOrphanedWorktrees(a.wtRoot, knownPaths)
-	}
-
-	// Each task worktree is one unit; orphan sweep is one batch unit.
-	orphanUnits := 0
-	if orphanCount > 0 {
-		orphanUnits = 1
-	}
-	totalClean := len(toClean) + orphanUnits
+	// Refresh task list immediately so pruned rows disappear.
+	a.refreshTasksLocal()
 
 	if totalClean == 0 {
-		a.refreshTasksLocal()
 		return
 	}
 
 	// Show progress as a header notice (non-blocking).
 	a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (0/%d)", totalClean))
 
-	// Build project name → path map for orphan sweep.
-	projects := make(map[string]string)
-	for name, p := range cfg.Projects {
-		projects[name] = p.Path
-	}
-
-	// Refresh task list immediately so pruned tasks disappear.
-	a.refreshTasksLocal()
-
-	// Parallel cleanup in background goroutines.
+	// Phase 2 — worktree + orphan cleanup runs in the background and reports
+	// progress through the header notice.
 	go func() {
-		var wg sync.WaitGroup
-		var cleaned atomic.Int32
-
-		// Clean up each pruned task's worktree in parallel.
-		for _, t := range toClean {
-			wg.Add(1)
-			go func(t *model.Task) {
-				defer wg.Done()
-				repoDir := agent.ResolveDir(t, cfg)
-				uxlog.Log("[tui] prune cleanup: task=%s name=%q worktree=%q branch=%q repoDir=%q project=%q",
-					t.ID, t.Name, t.Worktree, t.Branch, repoDir, t.Project)
-				agent.RemoveWorktreeAndBranch(t.Worktree, t.Branch, repoDir)
-				n := cleaned.Add(1)
-				a.tapp.QueueUpdateDraw(func() {
-					a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", n, totalClean))
-				})
-			}(t)
-		}
-
-		// Sweep orphaned worktrees in parallel with task cleanup.
-		if orphanCount > 0 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				swept := sweepOrphanedWorktrees(a.wtRoot, knownPaths, projects)
-				uxlog.Log("[tui] orphan sweep cleaned %d directories", swept)
-				n := cleaned.Add(1)
-				a.tapp.QueueUpdateDraw(func() {
-					a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", n, totalClean))
-				})
-			}()
-		}
-
-		wg.Wait()
+		preview.Run(func(done, total int) {
+			a.tapp.QueueUpdateDraw(func() {
+				a.header.SetNotice(fmt.Sprintf("Cleaning worktrees (%d/%d)", done, total))
+			})
+		})
 
 		// Fetch session state off UI thread, then clear notice + refresh.
 		startGen := a.startGen.Load()
