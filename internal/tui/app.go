@@ -2255,18 +2255,22 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	if task == nil || sess == nil || !sess.Alive() {
 		return
 	}
-	if task.SessionID == "" {
-		return // backend doesn't support --session-id resume; nothing to do
-	}
 	if a.pendingRerenderRestart[task.ID] {
 		return // a kick is already in flight for this task
 	}
 	taskID := task.ID
 	_, panelCols := a.computePTYSize() // safe: GetInnerRect on the main goroutine
 
+	// Cache gate runs before the SessionID check so Codex tasks (which
+	// have SessionID=="" and can never be kicked) still benefit from the
+	// short-circuit — matches the web side's ordering and avoids spawning
+	// an RPC goroutine on every Codex agent-view reopen.
 	if a.skipRerenderForUnchangedAttach(taskID, int(panelCols)) {
 		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
 		return
+	}
+	if task.SessionID == "" {
+		return // backend doesn't support --session-id resume; nothing to do
 	}
 
 	go func() {
