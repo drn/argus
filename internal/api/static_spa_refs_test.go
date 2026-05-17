@@ -439,6 +439,32 @@ func TestExtractInlineScript(t *testing.T) {
 	}
 }
 
+// TestStripJSStringsAndComments_BlanksBracesInsideStrings pins the invariant
+// that the class-body brace walker depends on: braces inside strings, template
+// bodies, and comments must be blanked to spaces so they don't unbalance the
+// `{`/`}` depth count in collectJSDefinitions's class-body scanner.
+func TestStripJSStringsAndComments_BlanksBracesInsideStrings(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"double-quoted string with braces", `var s = "a{b}c{d}e";`},
+		{"single-quoted string with braces", `var s = 'a{b}c{d}e';`},
+		{"template body with braces", "var t = `lit{erals}{stay}`;"},
+		{"line comment with braces", "// {open} {close}\n"},
+		{"block comment with braces", "/* a{b}c{d}e */"},
+		{"escaped quote inside string with brace", `var s = "a\"{b}\"c";`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := stripJSStringsAndComments(tc.in)
+			if strings.ContainsAny(out, "{}") {
+				t.Errorf("braces leaked through stripper:\n  in:  %q\n  out: %q", tc.in, out)
+			}
+		})
+	}
+}
+
 // TestStripJSStringsAndComments_PreservesNewlinesAndPositions covers the
 // invariants the analyzer relies on: replacement is character-positional and
 // newlines stay intact so source lines remain stable.
