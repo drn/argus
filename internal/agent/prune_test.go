@@ -232,3 +232,37 @@ func TestPlanRun_NoOpForEmpty(t *testing.T) {
 		t.Error("OnProgress should not fire for empty plan")
 	}
 }
+
+// TestPlanRun_CallOnceGuard verifies that a second Run is a no-op so the
+// progress counter cannot overrun and the orphan goroutine cannot race on
+// the shared knownPaths map.
+func TestPlanRun_CallOnceGuard(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	wtRoot := filepath.Join(t.TempDir(), ".argus", "worktrees")
+	completedWT := filepath.Join(wtRoot, "proj", "done")
+	testutil.NoError(t, os.MkdirAll(completedWT, 0o755))
+	testutil.NoError(t, d.Add(&model.Task{
+		ID: "done-1", Name: "done", Status: model.StatusComplete,
+		Project: "proj", Worktree: completedWT,
+	}))
+
+	plan, err := PrunePrepare(d, PruneOptions{
+		WtRoot:   wtRoot,
+		Projects: map[string]string{"proj": ""},
+	})
+	testutil.NoError(t, err)
+
+	var firstCount, secondCount int
+	plan.Run(func(_, _ int) { firstCount++ })
+	plan.Run(func(_, _ int) { secondCount++ })
+
+	if firstCount == 0 {
+		t.Error("first Run should fire onProgress at least once")
+	}
+	if secondCount != 0 {
+		t.Errorf("second Run should be a no-op, got %d progress callbacks", secondCount)
+	}
+}

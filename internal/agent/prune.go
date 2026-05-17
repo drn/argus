@@ -140,6 +140,7 @@ type PrunePlan struct {
 	projects       map[string]string
 	knownPaths     map[string]bool
 	resolveRepoDir func(*model.Task) string
+	ran            sync.Once
 }
 
 // PrunePrepare runs the synchronous portion of a prune sweep: it removes all
@@ -213,10 +214,22 @@ func PrunePrepare(database *db.DB, opts PruneOptions) (*PrunePlan, error) {
 
 // Run executes the slow phase of a prune sweep: removes per-task worktrees +
 // branches in parallel, then runs the orphan sweep. Blocks until all goroutines
-// complete. If onProgress is non-nil it is called from worker goroutines as
-// each unit (one worktree clean or the entire orphan sweep batch) completes;
-// implementations must be safe to call concurrently.
+// complete.
+//
+// MUST be called exactly once per plan. Subsequent calls are no-ops (guarded
+// by sync.Once) — the plan's `knownPaths` map is consumed by the orphan sweep
+// goroutine, and the `cleaned` progress counter would overrun on a re-run.
+//
+// onProgress, if non-nil, fires from worker goroutines as each unit (one
+// worktree clean or the entire orphan sweep batch) completes. Implementations
+// MUST be safe to call concurrently — multiple goroutines invoke it in parallel.
 func (p *PrunePlan) Run(onProgress func(done, total int)) {
+	p.ran.Do(func() {
+		p.runOnce(onProgress)
+	})
+}
+
+func (p *PrunePlan) runOnce(onProgress func(done, total int)) {
 	orphanUnits := 0
 	if p.OrphanCount > 0 {
 		orphanUnits = 1
