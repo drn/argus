@@ -314,11 +314,14 @@ func collectJSCalls(code string) map[string]bool {
 // SPA exclusively uses double quotes, and supporting single quotes would
 // require attribute-aware HTML parsing rather than a regex pass.
 func extractInlineHandlerCalls(html string) []string {
-	attrRE := regexp.MustCompile(`on[a-z]+="([^"]*)"`)
+	// Require whitespace before `on` so substrings of unrelated attribute names
+	// (e.g. `content="..."` would match `ontent`, `aria-controls="x"` would
+	// match `ontrols`) don't false-match into the handler set.
+	attrRE := regexp.MustCompile(`(?:^|\s)(on[a-z]+)="([^"]*)"`)
 	callRE := regexp.MustCompile(`(?:^|[^A-Za-z0-9_$.])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
 	out := make([]string, 0)
 	for _, attr := range attrRE.FindAllStringSubmatch(html, -1) {
-		for _, m := range callRE.FindAllStringSubmatch(attr[1], -1) {
+		for _, m := range callRE.FindAllStringSubmatch(attr[2], -1) {
 			out = append(out, m[1])
 		}
 	}
@@ -416,6 +419,13 @@ alpha(); bravo(); one(); two();
 <script>function known() {}</script>`,
 			wantBad: []string{"typoFn"},
 		},
+		{
+			name: "non-handler attributes whose names contain 'on' do not false-match",
+			html: `<meta name="content" content="width=device-width">
+<button aria-controls="ios-share-help">?</button>
+<script>function only() {} only();</script>`,
+			wantGood: []string{"only"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -445,6 +455,19 @@ alpha(); bravo(); one(); two();
 				}
 				if missing[want] {
 					t.Errorf("expected %q to NOT be flagged as undefined; missing=%v", want, missing)
+				}
+			}
+			// Tightness: nothing should land in `missing` other than the
+			// names explicitly listed in wantBad. Without this, a leak
+			// (e.g. a string-literal call slipping past the stripper)
+			// would silently pass the test.
+			expectedBad := map[string]bool{}
+			for _, n := range tc.wantBad {
+				expectedBad[n] = true
+			}
+			for got := range missing {
+				if !expectedBad[got] {
+					t.Errorf("unexpected name %q leaked into missing set; full set=%v", got, missing)
 				}
 			}
 		})
