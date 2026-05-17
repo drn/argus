@@ -3441,6 +3441,11 @@ func (a *App) deleteTask(t *model.Task) {
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui] failed to delete task %s: %v", t.ID, err)
 	}
+	// Drop any per-task cache entries so deleted tasks don't accumulate
+	// in long-lived TUI sessions. Matches the cleanup pattern for
+	// pendingRerenderRestart (in handleSessionExitUI).
+	a.invalidateAttachCache(t.ID)
+	delete(a.pendingRerenderRestart, t.ID)
 	a.refreshTasksLocal()
 
 	// Clean up worktree and branch in background — git operations can take seconds.

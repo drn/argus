@@ -459,6 +459,9 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	// Drop any per-task cache entry so deleted tasks don't accumulate in
+	// the long-lived daemon process.
+	s.invalidateColsCache(id)
 
 	// Clean up worktree and branch in background — git operations can take seconds.
 	// Mirrors tui.App.deleteTask so worktrees don't linger as orphans until the next
