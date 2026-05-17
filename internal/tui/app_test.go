@@ -31,7 +31,7 @@ func testDB(t *testing.T) *db.DB {
 	return d
 }
 
-func TestSkipRerenderForUnchangedAttach(t *testing.T) {
+func TestIsRedundantAttach(t *testing.T) {
 	// Regression: reopening the agent view at the same panel cols must not
 	// re-trigger the rerender kick — otherwise Claude's in-flight
 	// AskUserQuestion UI is destroyed by the --session-id restart. Genuine
@@ -44,27 +44,27 @@ func TestSkipRerenderForUnchangedAttach(t *testing.T) {
 	const taskID = "rerender-gate"
 
 	// First attach at 120 cols: no cached value, must NOT skip.
-	if app.skipRerenderForUnchangedAttach(taskID, 120) {
+	if app.isRedundantAttach(taskID, 120) {
 		t.Fatal("first attach should not skip — no cached cols yet")
 	}
 	// Reopen at the same size: must skip.
-	if !app.skipRerenderForUnchangedAttach(taskID, 120) {
+	if !app.isRedundantAttach(taskID, 120) {
 		t.Fatal("reopen at same cols (120) should skip — gate failed")
 	}
 	// Reopen again at the same size: still skip (gate is idempotent).
-	if !app.skipRerenderForUnchangedAttach(taskID, 120) {
+	if !app.isRedundantAttach(taskID, 120) {
 		t.Fatal("reopen at same cols (120) should still skip on third call")
 	}
 	// Genuine resize to 140: must NOT skip; cache must update.
-	if app.skipRerenderForUnchangedAttach(taskID, 140) {
+	if app.isRedundantAttach(taskID, 140) {
 		t.Fatal("resize to 140 should not skip — cols changed")
 	}
 	// Reopen at 140: must skip now that 140 is cached.
-	if !app.skipRerenderForUnchangedAttach(taskID, 140) {
+	if !app.isRedundantAttach(taskID, 140) {
 		t.Fatal("reopen at same cols (140) should skip after resize")
 	}
 	// Per-task isolation: a different task's cache is empty.
-	if app.skipRerenderForUnchangedAttach("other-task", 140) {
+	if app.isRedundantAttach("other-task", 140) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
@@ -77,15 +77,15 @@ func TestSkipRerenderForUnchangedAttach(t *testing.T) {
 	// will stay populated and the gate will incorrectly skip subsequent
 	// retries.
 	app.invalidateAttachCache(taskID)
-	if app.skipRerenderForUnchangedAttach(taskID, 140) {
+	if app.isRedundantAttach(taskID, 140) {
 		t.Fatal("after invalidateAttachCache, reopen at 140 should proceed (not skip)")
 	}
-	if !app.skipRerenderForUnchangedAttach(taskID, 140) {
+	if !app.isRedundantAttach(taskID, 140) {
 		t.Fatal("after invalidate + re-cache, reopen at 140 should skip again")
 	}
 	// invalidateAttachCache is idempotent on a missing key.
 	app.invalidateAttachCache("never-cached")
-	if app.skipRerenderForUnchangedAttach("never-cached", 200) {
+	if app.isRedundantAttach("never-cached", 200) {
 		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
 	}
 }

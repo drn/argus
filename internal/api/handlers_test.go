@@ -647,7 +647,7 @@ func TestHandleResize(t *testing.T) {
 	})
 }
 
-func TestSkipRerenderForUnchangedCols(t *testing.T) {
+func TestIsRedundantResize(t *testing.T) {
 	// Regression: xterm.js fires /resize on every terminal mount even when
 	// the viewport hasn't changed. Without this gate, reopening the web
 	// agent view re-evaluates the rerender predicate and kills any
@@ -657,22 +657,22 @@ func TestSkipRerenderForUnchangedCols(t *testing.T) {
 
 	const taskID = "resize-gate"
 
-	if srv.skipRerenderForUnchangedCols(taskID, 120) {
+	if srv.isRedundantResize(taskID, 120) {
 		t.Fatal("first resize should not skip — no cached cols yet")
 	}
-	if !srv.skipRerenderForUnchangedCols(taskID, 120) {
+	if !srv.isRedundantResize(taskID, 120) {
 		t.Fatal("second resize at same cols should skip — gate failed")
 	}
-	if !srv.skipRerenderForUnchangedCols(taskID, 120) {
+	if !srv.isRedundantResize(taskID, 120) {
 		t.Fatal("third resize at same cols should still skip")
 	}
-	if srv.skipRerenderForUnchangedCols(taskID, 140) {
+	if srv.isRedundantResize(taskID, 140) {
 		t.Fatal("resize to different cols should not skip")
 	}
-	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+	if !srv.isRedundantResize(taskID, 140) {
 		t.Fatal("subsequent resize at 140 should skip after cache updated")
 	}
-	if srv.skipRerenderForUnchangedCols("other-task", 140) {
+	if srv.isRedundantResize("other-task", 140) {
 		t.Fatal("different task should not skip — separate cache entry")
 	}
 
@@ -684,15 +684,15 @@ func TestSkipRerenderForUnchangedCols(t *testing.T) {
 	// invoking invalidateColsCache, the cache will stay populated and
 	// the gate will incorrectly skip subsequent retries.
 	srv.invalidateColsCache(taskID)
-	if srv.skipRerenderForUnchangedCols(taskID, 140) {
+	if srv.isRedundantResize(taskID, 140) {
 		t.Fatal("after invalidateColsCache, resize at 140 should proceed (not skip)")
 	}
-	if !srv.skipRerenderForUnchangedCols(taskID, 140) {
+	if !srv.isRedundantResize(taskID, 140) {
 		t.Fatal("after invalidate + re-cache, resize at 140 should skip again")
 	}
 	// invalidateColsCache is idempotent on a missing key.
 	srv.invalidateColsCache("never-cached")
-	if srv.skipRerenderForUnchangedCols("never-cached", 200) {
+	if srv.isRedundantResize("never-cached", 200) {
 		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
 	}
 }

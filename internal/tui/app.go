@@ -2265,7 +2265,7 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	// have SessionID=="" and can never be kicked) still benefit from the
 	// short-circuit — matches the web side's ordering and avoids spawning
 	// an RPC goroutine on every Codex agent-view reopen.
-	if a.skipRerenderForUnchangedAttach(taskID, int(panelCols)) {
+	if a.isRedundantAttach(taskID, int(panelCols)) {
 		uxlog.Log("[tui] rerender: skipping kick task=%s — panel cols unchanged since last attach (%d)", taskID, panelCols)
 		return
 	}
@@ -2310,7 +2310,7 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 	}()
 }
 
-// skipRerenderForUnchangedAttach returns true when the panel cols match the
+// isRedundantAttach returns true when the panel cols match the
 // most recent attach for this task — i.e., the user reopened the agent view
 // without resizing. The rerender kick would otherwise destroy any in-flight
 // Claude UI (e.g. AskUserQuestion overlays) because the --session-id restart
@@ -2318,7 +2318,7 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 // caches the current cols so a subsequent reopen at the same size short
 // -circuits. Genuine resizes fall through because panelCols differs from
 // the cached value, so the kick predicate still runs.
-func (a *App) skipRerenderForUnchangedAttach(taskID string, panelCols int) bool {
+func (a *App) isRedundantAttach(taskID string, panelCols int) bool {
 	if prev, ok := a.lastAttachCols[taskID]; ok && prev == panelCols {
 		return true
 	}
