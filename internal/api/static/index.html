@@ -718,6 +718,17 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 .modal .radio-row { display: flex; gap: 12px; font-size: 13px; }
 .modal .radio-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 
+/* Keyboard shortcuts help modal — two-column rows: <kbd> chip + label. */
+.hotkeys-list { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.hotkeys-row { display: flex; align-items: center; gap: 12px; }
+.hotkeys-row kbd {
+  display: inline-block; min-width: 28px; text-align: center;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text);
+  font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+}
+.hotkeys-row span { color: var(--text-dim); }
+
 /* Prompt viewer modal — read-only, scrollable, monospace. The body is a
    <pre> so newlines render verbatim; word-break keeps very long URLs from
    overflowing horizontally on narrow phone screens. min-height keeps the
@@ -1362,6 +1373,26 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="links-list" id="links-modal-body"></div>
       <div class="modal-actions">
         <button class="primary" onclick="closeLinksModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard shortcuts help. Opened with `?` on any tab; Esc closes. -->
+  <div class="modal-overlay" id="hotkeys-modal">
+    <div class="modal">
+      <h3>Keyboard shortcuts</h3>
+      <div class="hotkeys-list">
+        <div class="hotkeys-row"><kbd>n</kbd><span>New task</span></div>
+        <div class="hotkeys-row"><kbd>t</kbd><span>Tasks tab</span></div>
+        <div class="hotkeys-row"><kbd>g</kbd><span>DAG tab</span></div>
+        <div class="hotkeys-row"><kbd>,</kbd><span>Settings tab</span></div>
+        <div class="hotkeys-row"><kbd>/</kbd><span>Focus search (Tasks tab)</span></div>
+        <div class="hotkeys-row"><kbd>a</kbd><span>Toggle Active / Archived (Tasks tab)</span></div>
+        <div class="hotkeys-row"><kbd>?</kbd><span>Show this help</span></div>
+        <div class="hotkeys-row"><kbd>Esc</kbd><span>Close this help</span></div>
+      </div>
+      <div class="modal-actions">
+        <button class="primary" onclick="closeHotkeysModal()">Close</button>
       </div>
     </div>
   </div>
@@ -3165,6 +3196,102 @@ document.addEventListener('click', e => {
   const m = document.getElementById('overflow-menu');
   if (!m || !m.classList.contains('open')) return;
   if (!e.target.closest('.detail-header')) closeOverflowMenu();
+});
+
+// --- Global hotkeys (Tasks-list scope) ---
+// Single-keystroke shortcuts wired at document level. Hotkeys are suppressed
+// when focus is in an editable element (otherwise they'd hijack typing in the
+// search box, compose textarea, settings forms, etc.), when the detail view
+// is open (terminal owns the keyboard), or when any modal overlay is open.
+// Modifier keys (ctrl/meta/alt) always pass through so browser shortcuts
+// like Cmd+L / Ctrl+R are never intercepted.
+function isHotkeyTargetEditable(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (el.isContentEditable) return true;
+  return false;
+}
+
+function isAnyModalOpen() {
+  if (document.querySelector('.modal-overlay.open')) return true;
+  const filesView = document.getElementById('files-view');
+  if (filesView && filesView.classList.contains('open')) return true;
+  const hotkeys = document.getElementById('hotkeys-modal');
+  if (hotkeys && hotkeys.classList.contains('open')) return true;
+  return false;
+}
+
+function isDetailViewOpen() {
+  const dv = document.getElementById('detail-view');
+  return !!(dv && dv.classList.contains('open'));
+}
+
+function openHotkeysModal() {
+  document.getElementById('hotkeys-modal').classList.add('open');
+}
+
+function closeHotkeysModal() {
+  document.getElementById('hotkeys-modal').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => {
+  // Esc closes the hotkeys modal (its own scope — handled before the
+  // editable-target / modal-open bail-outs so it works even though the
+  // overlay is "open").
+  if (e.key === 'Escape') {
+    const hk = document.getElementById('hotkeys-modal');
+    if (hk && hk.classList.contains('open')) {
+      e.preventDefault();
+      closeHotkeysModal();
+      return;
+    }
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (isHotkeyTargetEditable(e.target)) return;
+  if (isDetailViewOpen()) return;
+  if (isAnyModalOpen()) return;
+  // Bail unless the main app is actually visible (auth screen, offline
+  // screen, etc. share the document but shouldn't react to tab hotkeys).
+  const main = document.getElementById('main-app');
+  if (!main || main.style.display === 'none') return;
+
+  const activeTab = document.querySelector('.tab.active')?.dataset.tab;
+
+  switch (e.key) {
+    case 'n':
+      e.preventDefault();
+      switchTab('create');
+      return;
+    case 't':
+      e.preventDefault();
+      switchTab('tasks');
+      return;
+    case 'g':
+      e.preventDefault();
+      switchTab('dag');
+      return;
+    case ',':
+      e.preventDefault();
+      switchTab('settings');
+      return;
+    case '/':
+      if (activeTab === 'tasks') {
+        e.preventDefault();
+        document.getElementById('task-search-input')?.focus();
+      }
+      return;
+    case 'a':
+      if (activeTab === 'tasks') {
+        e.preventDefault();
+        setListFilter(listFilter === FILTER_ARCHIVED ? FILTER_ACTIVE : FILTER_ARCHIVED);
+      }
+      return;
+    case '?':
+      e.preventDefault();
+      openHotkeysModal();
+      return;
+  }
 });
 
 function setActionButtons(disabled) {
