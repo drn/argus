@@ -95,6 +95,27 @@ func TestRenderPlist(t *testing.T) {
 	}
 }
 
+// TestRenderPlist_PATHIncludesUserLocalBin pins the EnvironmentVariables/PATH
+// contract. launchd starts processes with a bare `/usr/bin:/bin:/usr/sbin:/sbin`
+// and does not expand `$HOME`, so the plist must bake in the user-specific
+// install locations literally. The native `claude` binary installs to
+// `~/.local/bin/` — if that drops off PATH, `--resume` fails with exit 127
+// "command not found" the next time launchd auto-starts the daemon.
+func TestRenderPlist_PATHIncludesUserLocalBin(t *testing.T) {
+	out := renderPlist("/Users/me/.argus/argusd", "/Users/me/.argus/launchd.log", "/Users/me")
+	testutil.Contains(t, out, "<key>EnvironmentVariables</key>")
+	testutil.Contains(t, out, "<key>PATH</key>")
+	for _, dir := range []string{
+		"/Users/me/.local/bin",
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+	} {
+		testutil.Contains(t, out, dir)
+	}
+}
+
 func TestRenderPlist_EscapesXMLSpecialChars(t *testing.T) {
 	// Paths can contain & < > " on macOS; raw concat would produce malformed XML.
 	out := renderPlist(
