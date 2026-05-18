@@ -3207,6 +3207,7 @@ document.addEventListener('click', e => {
 // like Cmd+L / Ctrl+R are never intercepted.
 function isHotkeyTargetEditable(el) {
   if (!el) return false;
+  // tagName is uppercase in HTML documents per spec; no normalization needed.
   const tag = el.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   if (el.isContentEditable) return true;
@@ -3214,11 +3215,16 @@ function isHotkeyTargetEditable(el) {
 }
 
 function isAnyModalOpen() {
+  // `.modal-overlay.open` covers project, schedule, prompt, inputs, links, AND
+  // hotkeys (all use that class). `#files-view` is the one sibling overlay
+  // that uses its own class, so it's checked separately. The overflow menu
+  // (`#overflow-menu`) and skill autocomplete (`#ac-dropdown`) intentionally
+  // are NOT checked here — they're transient and `switchTab` already closes
+  // the overflow menu, while ac-dropdown only opens while compose-input has
+  // focus (which is itself an editable target that bails earlier).
   if (document.querySelector('.modal-overlay.open')) return true;
   const filesView = document.getElementById('files-view');
   if (filesView && filesView.classList.contains('open')) return true;
-  const hotkeys = document.getElementById('hotkeys-modal');
-  if (hotkeys && hotkeys.classList.contains('open')) return true;
   return false;
 }
 
@@ -3228,11 +3234,11 @@ function isDetailViewOpen() {
 }
 
 function openHotkeysModal() {
-  document.getElementById('hotkeys-modal').classList.add('open');
+  document.getElementById('hotkeys-modal')?.classList.add('open');
 }
 
 function closeHotkeysModal() {
-  document.getElementById('hotkeys-modal').classList.remove('open');
+  document.getElementById('hotkeys-modal')?.classList.remove('open');
 }
 
 document.addEventListener('keydown', e => {
@@ -3276,12 +3282,15 @@ document.addEventListener('keydown', e => {
       switchTab('settings');
       return;
     case '/':
+      // No-op on non-Tasks tabs; fall through silently rather than focusing a
+      // hidden search input or flashing a placeholder.
       if (activeTab === 'tasks') {
         e.preventDefault();
         document.getElementById('task-search-input')?.focus();
       }
       return;
     case 'a':
+      // Same no-op-off-Tasks contract as `/` above.
       if (activeTab === 'tasks') {
         e.preventDefault();
         setListFilter(listFilter === FILTER_ARCHIVED ? FILTER_ACTIVE : FILTER_ARCHIVED);
@@ -4513,6 +4522,7 @@ function switchTab(tab) {
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
+  closeHotkeysModal();
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
