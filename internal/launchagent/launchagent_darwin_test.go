@@ -83,6 +83,8 @@ func TestRenderPlist(t *testing.T) {
 		"<string>/usr/local/bin/argusd</string>",
 		"<string>daemon</string>",
 		"<string>start</string>",
+		"<key>EnvironmentVariables</key>",
+		"<key>PATH</key>",
 		"<key>RunAtLoad</key>",
 		"<true/>",
 		"<key>KeepAlive</key>",
@@ -101,19 +103,16 @@ func TestRenderPlist(t *testing.T) {
 // install locations literally. The native `claude` binary installs to
 // `~/.local/bin/` — if that drops off PATH, `--resume` fails with exit 127
 // "command not found" the next time launchd auto-starts the daemon.
+//
+// PATH is first-match-wins, so this test asserts the EXACT escaped string
+// (not just substring presence) — that pins the segment order too, so an
+// accidental alphabetize or reorder fails the test.
 func TestRenderPlist_PATHIncludesUserLocalBin(t *testing.T) {
 	out := renderPlist("/Users/me/.argus/argusd", "/Users/me/.argus/launchd.log", "/Users/me")
 	testutil.Contains(t, out, "<key>EnvironmentVariables</key>")
 	testutil.Contains(t, out, "<key>PATH</key>")
-	for _, dir := range []string{
-		"/Users/me/.local/bin",
-		"/opt/homebrew/bin",
-		"/usr/local/bin",
-		"/usr/bin",
-		"/bin",
-	} {
-		testutil.Contains(t, out, dir)
-	}
+	wantPATH := "/Users/me/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	testutil.Contains(t, out, "<string>"+wantPATH+"</string>")
 }
 
 func TestRenderPlist_EscapesXMLSpecialChars(t *testing.T) {

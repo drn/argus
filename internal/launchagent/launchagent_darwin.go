@@ -180,7 +180,14 @@ func renderPlist(daemonExe, logPath, home string) string {
 	// `~/.local/bin/`, homebrew uses `/opt/homebrew/bin` (Apple Silicon) or
 	// `/usr/local/bin` (Intel), and codex/pi/etc. are wherever the user put
 	// them. Cover all the usual locations so `--resume` works after a boot.
-	pathEnv := home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	//
+	// Order matters: PATH is first-match-wins, so user-installed locations
+	// must precede the system dirs. `filepath.Join` normalizes a trailing
+	// slash in `home` (which `os.UserHomeDir()` shouldn't return on macOS
+	// but is cheap insurance); PATH segments themselves are `:`-separated,
+	// not platform separator, so we concat by hand after that.
+	pathEnv := filepath.Join(home, ".local", "bin") +
+		":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 	// KeepAlive { SuccessfulExit = false } means: restart the daemon if it
 	// exits non-zero (a crash), but honor a clean `argus daemon stop`.
@@ -189,7 +196,7 @@ func renderPlist(daemonExe, logPath, home string) string {
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>` + Label + `</string>
+	<string>` + xmlEscape(Label) + `</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>` + xmlEscape(daemonExe) + `</string>
