@@ -206,3 +206,168 @@ func (s *Store) DeleteMessagesForTask(taskID string) (int, error) {
 	_ = taskID
 	return 0, errors.New("apistore: DeleteMessagesForTask not exposed over REST; archive the task instead")
 }
+
+// Schedules fetches the schedule list, parses RFC3339 timestamps, and
+// returns the model shape. The wire format carries empty strings for
+// zero times — best-effort parses, leaving the field zero on failure.
+func (s *Store) Schedules() ([]*model.ScheduledTask, error) {
+	wire, err := s.c.ListSchedules(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*model.ScheduledTask, 0, len(wire))
+	for _, w := range wire {
+		sched := &model.ScheduledTask{
+			ID:         w.ID,
+			Name:       w.Name,
+			Project:    w.Project,
+			Prompt:     w.Prompt,
+			Backend:    w.Backend,
+			Schedule:   w.Schedule,
+			Enabled:    w.Enabled,
+			LastTaskID: w.LastTaskID,
+			LastError:  w.LastError,
+		}
+		if w.CreatedAt != "" {
+			if t, perr := timeParse(w.CreatedAt); perr == nil {
+				sched.CreatedAt = t
+			}
+		}
+		if w.LastRunAt != "" {
+			if t, perr := timeParse(w.LastRunAt); perr == nil {
+				sched.LastRunAt = t
+			}
+		}
+		if w.NextRunAt != "" {
+			if t, perr := timeParse(w.NextRunAt); perr == nil {
+				sched.NextRunAt = t
+			}
+		}
+		if w.RunOnceAt != "" {
+			if t, perr := timeParse(w.RunOnceAt); perr == nil {
+				sched.RunOnceAt = t
+			}
+		}
+		out = append(out, sched)
+	}
+	return out, nil
+}
+
+// SetConfigValue maps the raw key to /api/settings's typed update body.
+// Only the keys the SPA settings tab touches are supported here; the TUI
+// settings tab uses the same set. Anything else returns an error so a
+// silent drop never papers over a missing endpoint.
+func (s *Store) SetConfigValue(key, value string) error {
+	upd := apiclient.SettingsUpdate{}
+	switch key {
+	case "sandbox.enabled":
+		b := value == "true"
+		upd.Sandbox = &apiclient.SandboxUpdate{Enabled: &b}
+	case "sandbox.deny_read":
+		list := splitCSV(value)
+		upd.Sandbox = &apiclient.SandboxUpdate{DenyRead: &list}
+	case "sandbox.extra_write":
+		list := splitCSV(value)
+		upd.Sandbox = &apiclient.SandboxUpdate{ExtraWrite: &list}
+	case "sandbox.allow_apple_events":
+		list := splitCSV(value)
+		upd.Sandbox = &apiclient.SandboxUpdate{AllowAppleEvents: &list}
+	case "kb.enabled":
+		b := value == "true"
+		upd.KB = &apiclient.KBUpdate{Enabled: &b}
+	case "kb.metis_vault_path":
+		upd.KB = &apiclient.KBUpdate{MetisVaultPath: &value}
+	case "api.enabled":
+		b := value == "true"
+		upd.API = &apiclient.APIUpdate{Enabled: &b}
+	case "default_backend", "defaults.backend":
+		upd.Defaults = &apiclient.DefaultsUpdate{Backend: &value}
+	default:
+		return errors.New("apistore: SetConfigValue: no remote handler for key " + key)
+	}
+	_, err := s.c.UpdateSettings(context.Background(), upd)
+	return err
+}
+
+// Backends fetches the configured backend list and converts the wire shape
+// back to config.Backend.
+func (s *Store) Backends() (map[string]config.Backend, error) {
+	wire, err := s.c.ListBackends(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]config.Backend, len(wire))
+	for _, b := range wire {
+		out[b.Name] = config.Backend{Command: b.Command, PromptFlag: b.PromptFlag}
+	}
+	return out, nil
+}
+
+// SetBackend POSTs or PUTs depending on whether the backend already exists.
+// Mirrors the local upsert semantics of *db.DB.SetBackend.
+func (s *Store) SetBackend(name string, b config.Backend) error {
+	body := apiclient.BackendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag}
+	err := s.c.CreateBackend(context.Background(), body)
+	if err == nil {
+		return nil
+	}
+	return s.c.UpdateBackend(context.Background(), name, body)
+}
+
+// DeleteBackend removes the backend by name.
+func (s *Store) DeleteBackend(name string) error {
+	return s.c.DeleteBackend(context.Background(), name)
+}
+
+// SetDependsOn writes the depends_on column via orchestrator linking endpoints.
+// No single REST endpoint covers "replace the whole list" — we read the
+// current deps and apply diff (Link new, Unlink removed). Best-effort.
+func (s *Store) SetDependsOn(id string, deps []string) error {
+	ctx := context.Background()
+	cur, err := s.c.GetDeps(ctx, id)
+	if err != nil {
+		return err
+	}
+	curSet := make(map[string]bool)
+	if parents, ok := cur["parents"].([]any); ok {
+		for _, p := range parents {
+			if m, ok := p.(map[string]any); ok {
+				if pid, ok := m["id"].(string); ok {
+					curSet[pid] = true
+				}
+			}
+		}
+	}
+	want := make(map[string]bool, len(deps))
+	for _, d := range deps {
+		want[d] = true
+	}
+	for d := range want {
+		if !curSet[d] {
+			if err := s.c.LinkTask(ctx, id, d); err != nil {
+				return err
+			}
+		}
+	}
+	for d := range curSet {
+		if !want[d] {
+			if err := s.c.UnlinkTask(ctx, id, d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// SetPlanSlug calls /api/tasks/{id}/plan-slug.
+func (s *Store) SetPlanSlug(id, slug string) error {
+	return s.c.SetPlanSlug(context.Background(), id, slug)
+}
+
+// SetArchived calls archive/unarchive.
+func (s *Store) SetArchived(id string, archived bool) error {
+	if archived {
+		return s.c.ArchiveTask(context.Background(), id)
+	}
+	return s.c.UnarchiveTask(context.Background(), id)
+}

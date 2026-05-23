@@ -62,6 +62,36 @@ type Store interface {
 	// DeleteMessagesForTask removes every message addressed to / from the
 	// given task ID. Returns the deletion count.
 	DeleteMessagesForTask(taskID string) (int, error)
+
+	// Schedules returns every persisted schedule. Used by the Settings tab.
+	Schedules() ([]*model.ScheduledTask, error)
+
+	// SetConfigValue writes a single config (key, value) pair. Used by the
+	// Settings tab for sandbox/api/kb/defaults toggles.
+	SetConfigValue(key, value string) error
+
+	// Backends returns the configured agent backends keyed by name. Used by
+	// the Settings tab and the task-creation form.
+	Backends() (map[string]config.Backend, error)
+
+	// SetBackend upserts a backend definition.
+	SetBackend(name string, b config.Backend) error
+
+	// DeleteBackend removes a backend from config.
+	DeleteBackend(name string) error
+
+	// orch.Store methods — required so dagactions can pass the store
+	// through to orch.HaltDownstream / orch.Link / orch.Unlink without a
+	// separate adapter.
+
+	// SetDependsOn writes the depends_on column.
+	SetDependsOn(id string, deps []string) error
+
+	// SetPlanSlug writes the plan_slug column.
+	SetPlanSlug(id, slug string) error
+
+	// SetArchived flips the archived column.
+	SetArchived(id string, archived bool) error
 }
 
 // Compile-time assertion: *db.DB satisfies Store. Imported as a side-effect

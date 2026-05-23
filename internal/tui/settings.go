@@ -16,6 +16,7 @@ import (
 	"github.com/drn/argus/internal/launchagent"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/spinner"
+	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
@@ -224,8 +225,9 @@ type SettingsView struct {
 	// gotchas/ui-threading.md.
 	OnBranchChange func()
 
-	// DB reference for toggling values.
-	database *db.DB
+	// Persistence handle for toggling values. Both local *db.DB and remote
+	// *apistore.Store satisfy this interface.
+	database store.Store
 }
 
 type projectEntry struct {
@@ -248,7 +250,7 @@ type statusCounts struct {
 // NewSettingsView creates a new settings panel. Defaults to focusing the
 // right pane and the System category so the first interactive row is
 // immediately usable — pressing Left moves to the category rail.
-func NewSettingsView(database *db.DB) *SettingsView {
+func NewSettingsView(database store.Store) *SettingsView {
 	return &SettingsView{
 		Box:        tview.NewBox(),
 		taskCounts: make(map[string]statusCounts),

@@ -54,7 +54,41 @@ func main() {
 		}
 	}
 
+	// --remote URL [--token TOKEN] points the TUI at a remote argus host
+	// instead of the local daemon. Token is also picked up from ARGUS_TOKEN.
+	remoteURL, token := parseRemoteFlags(os.Args[1:])
+	if remoteURL != "" {
+		runRemoteTUI(remoteURL, token)
+		return
+	}
+
 	runTUI()
+}
+
+// parseRemoteFlags scans args for --remote URL and --token TOKEN. Returns
+// the two values (token defaults to $ARGUS_TOKEN when unset). Anything else
+// is ignored — this is the only flag pair the TUI recognises today, so a
+// custom mini-parser avoids pulling in the `flag` package and the noisy
+// "unknown flag" exits it would emit for daemon subcommands above.
+func parseRemoteFlags(args []string) (remoteURL, token string) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--remote", "-remote":
+			if i+1 < len(args) {
+				remoteURL = args[i+1]
+				i++
+			}
+		case "--token", "-token":
+			if i+1 < len(args) {
+				token = args[i+1]
+				i++
+			}
+		}
+	}
+	if token == "" {
+		token = os.Getenv("ARGUS_TOKEN")
+	}
+	return remoteURL, token
 }
 
 func runTUI() {

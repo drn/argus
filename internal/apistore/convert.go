@@ -1,12 +1,31 @@
 package apistore
 
 import (
+	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/apiclient"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 )
+
+// splitCSV splits a comma-separated string, trimming whitespace and dropping
+// empty entries. Mirrors how the server's SettingsUpdate handler joins the
+// inverse — keeps round trips lossless.
+func splitCSV(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // projectFromAPI converts a wire apiclient.ProjectJSON back to a
 // config.Project. The Sandbox section travels as a generic map so the
