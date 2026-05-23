@@ -274,9 +274,19 @@ func (c *Client) UpdateTaskRaw(ctx context.Context, t *model.Task) error {
 // AddTaskRaw inserts a model.Task row directly. Master-only. Used by the TUI
 // store adapter to mirror db.DB.Add() for paths that don't go through the
 // agent.CreateAndStart lifecycle (e.g., orchestrator stack creation).
-// Added in phase 3.
+//
+// Mutates t in place with any server-assigned fields (ID, CreatedAt) so
+// callers can keep using the local struct after the call — *db.DB.Add()
+// has the same contract.
 func (c *Client) AddTaskRaw(ctx context.Context, t *model.Task) error {
-	return c.doJSON(ctx, "POST", "/api/tasks-raw", t, nil)
+	var resp model.Task
+	if err := c.doJSON(ctx, "POST", "/api/tasks-raw", t, &resp); err != nil {
+		return err
+	}
+	if resp.ID != "" {
+		*t = resp
+	}
+	return nil
 }
 
 // GetScheduleRaw returns a schedule as a full model.ScheduledTask. Master-only.

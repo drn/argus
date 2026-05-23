@@ -28,15 +28,18 @@ func (d *DB) Backends() (map[string]config.Backend, error) {
 	return backends, nil
 }
 
-// SetBackend writes a backend row. Backends are HARDCODED at the user-facing
-// surface — there is no UI add/edit and no HTTP POST/PUT route. This method
-// remains because (1) the Playwright test harness in cmd/argus-test-server
-// seeds a bash-backed backend for integration testing, and (2) the test suite
-// extensively injects ad-hoc backends. Production code must NOT call this:
-// `seedDefaults` and `fixupBackends` in migrate.go use the raw SQL path
-// directly so a future change here doesn't accidentally unlock user-facing
-// writes. If you need to add a new shipping backend, edit
-// config.DefaultConfig().Backends.
+// SetBackend writes a backend row. Called by:
+//   - `handleCreateBackend` / `handleUpdateBackend` in internal/api (master-
+//     only REST surface, added when backends became user-mutable from the
+//     Settings tab and the remote TUI).
+//   - The Playwright test harness in cmd/argus-test-server seeds a bash
+//     backend for integration testing.
+//   - The test suite injects ad-hoc backends per case.
+//
+// `seedDefaults` and `fixupBackends` in migrate.go intentionally still use
+// the raw SQL path so default-seeding doesn't go through whatever the
+// public API path mutates over time. If you need to add a new shipping
+// backend at default-install time, edit config.DefaultConfig().Backends.
 func (d *DB) SetBackend(name string, b config.Backend) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -46,13 +49,14 @@ func (d *DB) SetBackend(name string, b config.Backend) error {
 	return err
 }
 
-// DeleteBackend removes a backend row. Test-only — backends are hardcoded
-// post-lockdown and no production code path deletes them. Test fixtures
-// (e.g. TestFixupBackends_InsertsMissingDefault) call this to simulate a
-// pre-existing DB that predates a shipping backend so the fixup-on-Open
-// reinsertion path can be exercised. If you find yourself reaching for this
-// from production code, the right answer is to edit config.DefaultConfig()
-// instead.
+// DeleteBackend removes a backend row. Called by `handleDeleteBackend` in
+// internal/api (master-only) and by test fixtures (e.g.
+// TestFixupBackends_InsertsMissingDefault) that simulate a pre-existing DB
+// predating a shipping backend so the fixup-on-Open reinsertion path can
+// be exercised.
+//
+// If you need to drop a shipping backend at default-install time, edit
+// config.DefaultConfig() — the migrate.go path doesn't go through here.
 func (d *DB) DeleteBackend(name string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

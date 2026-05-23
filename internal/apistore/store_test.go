@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/apiclient"
@@ -16,17 +15,10 @@ import (
 // fakeAPI is the smallest possible REST stub Store_test needs. Each test
 // registers handlers via the mux before exercising the Store methods.
 type fakeAPI struct {
-	mu  sync.Mutex
 	srv *httptest.Server
 	mux *http.ServeMux
 
-	// canned responses keyed by "METHOD path"
 	cannedTasks    []*model.Task
-	cannedTask     map[string]*model.Task
-	updateCalls    []*model.Task
-	addCalls       []*model.Task
-	deleteCalls    []string
-	renameCalls    []struct{ ID, Name string }
 	configResponse map[string]any
 }
 
@@ -36,9 +28,8 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return &fakeAPI{
-		srv:        srv,
-		mux:        mux,
-		cannedTask: make(map[string]*model.Task),
+		srv: srv,
+		mux: mux,
 		configResponse: map[string]any{
 			"Defaults": map[string]any{"Backend": "claude"},
 		},

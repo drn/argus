@@ -53,7 +53,7 @@ func TestClient_Status(t *testing.T) {
 	f := newFixture(t)
 	f.mux.HandleFunc("/api/status", requireAuth(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true,"sessions":{"running":2,"idle":1},"tasks":{"pending":3,"in_progress":2,"in_review":1,"complete":4}}`))
+		_, _ = w.Write([]byte(`{"ok":true,"sessions":{"running":2,"idle":1},"tasks":{"pending":3,"in_progress":2,"in_review":1,"complete":4}}`))
 	}))
 
 	got, err := f.c.Status(context.Background())
@@ -70,7 +70,7 @@ func TestClient_ListTasks_WithFilters(t *testing.T) {
 	f.mux.HandleFunc("/api/tasks", requireAuth(t, func(w http.ResponseWriter, r *http.Request) {
 		lastURL = r.URL.String()
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"tasks":[{"id":"t1","name":"alpha","status":"in_progress","project":"proj1","created_at":"2026-05-22T00:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"tasks":[{"id":"t1","name":"alpha","status":"in_progress","project":"proj1","created_at":"2026-05-22T00:00:00Z"}]}`))
 	}))
 
 	tasks, err := f.c.ListTasks(context.Background(), ListTasksFilter{Status: "in_progress", Project: "proj1"})
@@ -132,7 +132,7 @@ func TestClient_CreateTask_RoundTrip(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(CreateTaskResp{ID: "new", Name: req.Name, Status: "in_progress"})
+		_ = json.NewEncoder(w).Encode(CreateTaskResp{ID: "new", Name: req.Name, Status: "in_progress"})
 	}))
 
 	resp, err := f.c.CreateTask(context.Background(), CreateTaskReq{Name: "foo", Prompt: "bar", Project: "p"})
@@ -148,7 +148,7 @@ func TestClient_WriteInput(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		got = body
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","bytes":"3"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","bytes":"3"}`))
 	}))
 
 	err := f.c.WriteInput(context.Background(), "t1", []byte("hey"))
@@ -162,7 +162,7 @@ func TestClient_GetOutput_ParsesHeaders(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("X-Output-Total", "12345")
 		w.Header().Set("X-Source", "log")
-		w.Write([]byte("hello"))
+		_, _ = w.Write([]byte("hello"))
 	}))
 
 	res, err := f.c.GetOutput(context.Background(), "t1", 0, false)
@@ -182,7 +182,7 @@ func TestClient_StreamOutput(t *testing.T) {
 			http.Error(w, "no flush", http.StatusInternalServerError)
 			return
 		}
-		w.Write([]byte("data: aGVsbG8=\n\n"))
+		_, _ = w.Write([]byte("data: aGVsbG8=\n\n"))
 		flusher.Flush()
 	}))
 
@@ -201,7 +201,7 @@ func TestClient_ListProjects(t *testing.T) {
 	f := newFixture(t)
 	f.mux.HandleFunc("/api/projects", requireAuth(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"projects":["alpha","beta"]}`))
+		_, _ = w.Write([]byte(`{"projects":["alpha","beta"]}`))
 	}))
 
 	names, err := f.c.ListProjects(context.Background())
@@ -216,7 +216,7 @@ func TestClient_RenameTask(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		seenBody = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"name":"new-name"}`))
+		_, _ = w.Write([]byte(`{"name":"new-name"}`))
 	}))
 
 	err := f.c.RenameTask(context.Background(), "t1", "new-name")
@@ -242,7 +242,11 @@ func TestQueryHelper(t *testing.T) {
 				t.Fatal("expected panic on odd args")
 			}
 		}()
-		_ = query("a")
+		// Build via variadic slice so staticcheck SA5012 doesn't flag the
+		// literal odd-count call as a programming error — the panic IS
+		// the contract under test.
+		odd := []string{"a"}
+		_ = query(odd...) //nolint:staticcheck // SA5012: the odd-count panic IS the contract under test
 	})
 }
 

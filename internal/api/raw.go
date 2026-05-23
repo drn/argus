@@ -12,7 +12,15 @@ import (
 // handleListTasksRaw returns every task as a full model.Task (vs the lossy
 // taskJSON shape /api/tasks emits for the SPA). The remote-TUI store adapter
 // in internal/apistore uses this to mirror *db.DB.Tasks() faithfully.
+//
+// Master-only — exposes SessionID, AgentPID, Sandboxed, Result blob,
+// BaseBranch, DependsOn, PlanSlug that the lossy /api/tasks deliberately
+// strips. Device tokens (PWA) keep using /api/tasks; the TUI store adapter
+// always operates under the master token, so this gate doesn't break it.
 func (s *Server) handleListTasksRaw(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	tasks, err := s.db.Tasks()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -24,8 +32,13 @@ func (s *Server) handleListTasksRaw(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 }
 
-// handleGetTaskRaw returns a single task as a full model.Task.
+// handleGetTaskRaw returns a single task as a full model.Task. Master-only
+// for the same reason as handleListTasksRaw — SessionID and Result blob
+// are intentionally not exposed to device tokens.
 func (s *Server) handleGetTaskRaw(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {

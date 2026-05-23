@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 
 	"github.com/drn/argus/internal/apiclient"
 	"github.com/drn/argus/internal/config"
@@ -26,6 +27,9 @@ import (
 	"github.com/drn/argus/internal/tui/store"
 )
 
+// errorsAs wraps errors.As so the file doesn't need errors imported twice.
+func errorsAs(err error, target any) bool { return errors.As(err, target) }
+
 // Compile-time assertion: Store implements tui/store.Store.
 var _ store.Store = (*Store)(nil)
 
@@ -33,12 +37,16 @@ var _ store.Store = (*Store)(nil)
 // apiclient.Client and caches the most recent config snapshot — Config() is
 // called on every UI tick and synchronously refreshing it would burn one
 // HTTP request per tick.
+//
+// configMu guards cachedConfig: RefreshConfig writes from a background
+// ticker goroutine in cmd/argus/remote.go while Config() reads from the
+// tview tick goroutine and async refresh workers. config.Config contains
+// maps (Projects, Backends); concurrent read+write of map headers without
+// a mutex is a data race that go test -race catches.
 type Store struct {
 	c *apiclient.Client
 
-	// cachedConfig stores the most recently fetched config.Config snapshot
-	// so Config() can return it without round-tripping. Refreshed by
-	// RefreshConfig (callers may invoke this on a timer).
+	configMu     sync.RWMutex
 	cachedConfig config.Config
 }
 
@@ -52,29 +60,46 @@ func New(c *apiclient.Client) *Store {
 // RefreshConfig fetches /api/config and caches the result for subsequent
 // Config() calls. The TUI store-adapter calls this on a background tick.
 // Returns the new snapshot for callers that want to observe immediately.
+//
+// HTTP I/O and JSON parsing happen outside the lock; only the cache write
+// is serialized. RLock readers in Config() never block on the network round
+// trip.
 func (s *Store) RefreshConfig(ctx context.Context) (config.Config, error) {
 	raw, err := s.c.GetConfig(ctx)
 	if err != nil {
-		return s.cachedConfig, err
+		s.configMu.RLock()
+		cur := s.cachedConfig
+		s.configMu.RUnlock()
+		return cur, err
 	}
-	// Round-trip through json.Marshal/Unmarshal so the typed config.Config
-	// (with its nested maps, pointers, and sandbox enabled-tristate) is
-	// populated from the wire's untyped map.
 	buf, err := json.Marshal(raw)
 	if err != nil {
-		return s.cachedConfig, err
+		s.configMu.RLock()
+		cur := s.cachedConfig
+		s.configMu.RUnlock()
+		return cur, err
 	}
 	var cfg config.Config
 	if err := json.Unmarshal(buf, &cfg); err != nil {
-		return s.cachedConfig, err
+		s.configMu.RLock()
+		cur := s.cachedConfig
+		s.configMu.RUnlock()
+		return cur, err
 	}
+	s.configMu.Lock()
 	s.cachedConfig = cfg
+	s.configMu.Unlock()
 	return cfg, nil
 }
 
 // Config returns the cached snapshot. Callers depending on a fresh value
-// must call RefreshConfig first.
-func (s *Store) Config() config.Config { return s.cachedConfig }
+// must call RefreshConfig first. RLock guarantees the returned value is a
+// fully-written snapshot — never a half-mutated struct mid-RefreshConfig.
+func (s *Store) Config() config.Config {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return s.cachedConfig
+}
 
 // Tasks returns every task as a full model.Task via /api/tasks-raw.
 func (s *Store) Tasks() ([]*model.Task, error) {
@@ -129,18 +154,20 @@ func (s *Store) Projects() (map[string]config.Project, error) {
 	return out, nil
 }
 
-// SetProject upserts a project via POST or PUT depending on whether the
-// project already exists in cache. Best-effort: tries POST first; on 409
-// (already exists) falls back to PUT.
+// SetProject upserts a project. POST creates; if that returns a 409
+// conflict (project already exists) or a 5xx, we fall back to PUT. 4xx
+// other than 409 surface as the POST error so a real validation failure
+// (e.g. empty path) isn't masked by a second 4xx from PUT with the same
+// body.
 func (s *Store) SetProject(name string, p config.Project) error {
 	body := projectToAPI(name, p)
 	err := s.c.CreateProject(context.Background(), body)
 	if err == nil {
 		return nil
 	}
-	// On any error (typically 409 conflict for an existing project), fall
-	// back to PUT — the daemon-side endpoint upserts so both create and
-	// update land at the same place anyway.
+	if !shouldFallbackUpsert(err) {
+		return err
+	}
 	return s.c.UpdateProject(context.Background(), name, body)
 }
 
@@ -305,13 +332,36 @@ func (s *Store) Backends() (map[string]config.Backend, error) {
 
 // SetBackend POSTs or PUTs depending on whether the backend already exists.
 // Mirrors the local upsert semantics of *db.DB.SetBackend.
+//
+// POST first; on 409 conflict or 5xx, fall back to PUT. Other 4xx surface
+// so an invalid payload (empty command) isn't masked by a second 4xx.
 func (s *Store) SetBackend(name string, b config.Backend) error {
 	body := apiclient.BackendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag}
 	err := s.c.CreateBackend(context.Background(), body)
 	if err == nil {
 		return nil
 	}
+	if !shouldFallbackUpsert(err) {
+		return err
+	}
 	return s.c.UpdateBackend(context.Background(), name, body)
+}
+
+// shouldFallbackUpsert decides whether a failed POST justifies retrying as
+// PUT. 409 (conflict — row already exists, the intended fallback case) and
+// any 5xx (server-side transient — PUT may still work). 4xx other than
+// 409 indicates a request the server rejected; retrying with the same
+// body via PUT only masks the validation failure.
+func shouldFallbackUpsert(err error) bool {
+	var apiErr *apiclient.Error
+	if !errorsAs(err, &apiErr) {
+		// Network/transport error — try PUT once before giving up.
+		return true
+	}
+	if apiErr.Status == 409 {
+		return true
+	}
+	return apiErr.Status >= 500
 }
 
 // DeleteBackend removes the backend by name.

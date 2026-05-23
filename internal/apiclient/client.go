@@ -200,11 +200,14 @@ func query(kv ...string) string {
 		panic("apiclient.query: odd number of arguments")
 	}
 	q := url.Values{}
-	for i := 0; i < len(kv); i += 2 {
-		if kv[i+1] == "" {
+	// Pair iteration: index by pair so gosec G602 doesn't flag kv[i+1]
+	// against the bare loop bound — len(kv) is even by the check above.
+	for i := 0; i+1 < len(kv); i += 2 {
+		k, v := kv[i], kv[i+1]
+		if v == "" {
 			continue
 		}
-		q.Set(kv[i], kv[i+1])
+		q.Set(k, v)
 	}
 	if len(q) == 0 {
 		return ""
