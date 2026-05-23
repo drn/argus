@@ -235,3 +235,48 @@ func (c *Client) CreateToken(ctx context.Context, label string) (*CreateTokenRes
 func (c *Client) RevokeToken(ctx context.Context, id string) error {
 	return c.doJSON(ctx, "DELETE", "/api/tokens/"+id, nil, nil)
 }
+
+// ConfigJSON is a raw decoded copy of config.Config returned by /api/config.
+// Kept as a map so the TUI store adapter can hand it back to config.Config
+// via a single round-trip through json.Marshal/Unmarshal, avoiding a parallel
+// type definition that would drift on every config schema change.
+type ConfigJSON = map[string]any
+
+// GetConfig returns the daemon's full config.Config snapshot. Master-only.
+// Added in phase 2 (gap fill) so a remote TUI doesn't need a dozen
+// specialised endpoints for projects/backends/keybindings/sandbox/etc.
+func (c *Client) GetConfig(ctx context.Context) (ConfigJSON, error) {
+	out := make(ConfigJSON)
+	if err := c.doJSON(ctx, "GET", "/api/config", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SessionState mirrors {"running":[…], "idle":[…]} from /api/sessions/state.
+type SessionState struct {
+	Running []string `json:"running"`
+	Idle    []string `json:"idle"`
+}
+
+// GetSessionState returns the runner's live in-memory state. Used by the
+// TUI's session-aware status polling. Added in phase 2 (gap fill).
+func (c *Client) GetSessionState(ctx context.Context) (*SessionState, error) {
+	var resp SessionState
+	if err := c.doJSON(ctx, "GET", "/api/sessions/state", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// HasPendingRestart reports whether the runner has a kick-restart queued
+// for the task. Added in phase 2 (gap fill).
+func (c *Client) HasPendingRestart(ctx context.Context, id string) (bool, error) {
+	var resp struct {
+		Pending bool `json:"pending"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/sessions/"+id+"/pending-restart", nil, &resp); err != nil {
+		return false, err
+	}
+	return resp.Pending, nil
+}

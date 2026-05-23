@@ -2030,10 +2030,29 @@ func TestHandleDeleteProject(t *testing.T) {
 	}
 }
 
-// Backends are hardcoded: POST/PUT/DELETE on /api/backends must be unreachable.
-func TestBackendsAreReadOnly(t *testing.T) {
+// Backend write endpoints are master-only. Device tokens (PWA) can list but
+// not modify; a missing master auth header from a token-stripped curl call
+// must return 403, not silently succeed. The full CRUD shape is covered by
+// TestHandleCreate/Update/DeleteBackend in backends_crud_test.go; this test
+// pins only the master-auth gate.
+func TestBackendsMutationsRequireMaster(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
+
+	// Mint a device token so authedReq's path tags as device, not master.
+	plain, _, err := MintToken(d, "device")
+	testutil.NoError(t, err)
+	deviceReq := func(method, url, body string) *http.Request {
+		var r *http.Request
+		if body != "" {
+			r = httptest.NewRequest(method, url, strings.NewReader(body))
+			r.Header.Set("Content-Type", "application/json")
+		} else {
+			r = httptest.NewRequest(method, url, nil)
+		}
+		r.Header.Set("Authorization", "Bearer "+plain)
+		return r
+	}
 
 	cases := []struct {
 		name, method, path, body string
@@ -2045,8 +2064,8 @@ func TestBackendsAreReadOnly(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, authedReq(c.method, c.path, c.body))
-			testutil.Equal(t, w.Code, http.StatusMethodNotAllowed)
+			handler.ServeHTTP(w, deviceReq(c.method, c.path, c.body))
+			testutil.Equal(t, w.Code, http.StatusForbidden)
 		})
 	}
 }

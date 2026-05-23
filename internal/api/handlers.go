@@ -1413,6 +1413,103 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backends": out})
 }
 
+// handleCreateBackend persists a new backend definition. Same surface as
+// handleCreateProject — master-only since it mutates shared config that
+// every running task could spawn against.
+func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	var req backendJSON
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Command) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and command are required"})
+		return
+	}
+	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, req)
+}
+
+// handleUpdateBackend overwrites the backend keyed by path-param name.
+// Master-only.
+func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	var req backendJSON
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Command) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
+		return
+	}
+	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	req.Name = name
+	writeJSON(w, http.StatusOK, req)
+}
+
+// handleDeleteBackend removes a backend from config. Master-only.
+func (s *Server) handleDeleteBackend(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.db.DeleteBackend(name); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
+}
+
+// handleGetConfig returns the full config.Config snapshot — superset of
+// what's exposed by /api/settings. The TUI calls db.Config() in many
+// places (project lookup, default backend, sandbox state, UI prefs); this
+// endpoint lets a remote TUI build the same value over HTTP without
+// adding a dozen specialised endpoints. Master-only — keybindings and
+// other UI prefs are master-tier configuration.
+func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.db.Config())
+}
+
+// handleSessionState exposes the runner's live in-memory state for the TUI's
+// session-aware status polling. Without this, the TUI store adapter would
+// have to derive idle/running from /api/tasks alone — which reflects DB
+// state, not session liveness. Open to device tokens (read-only).
+func (s *Server) handleSessionState(w http.ResponseWriter, r *http.Request) {
+	running, idle := s.runner.RunningAndIdle()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"running": running,
+		"idle":    idle,
+	})
+}
+
+// handleHasPendingRestart exposes the runner's per-task pending-restart
+// flag — true when a kick-rerender has stopped the session and the runner
+// is about to spawn a replacement. The TUI uses this to avoid tearing
+// down UI state mid-rerender (mirrors SessionProvider.HasPendingRestart).
+// Open to device tokens (read-only).
+func (s *Server) handleHasPendingRestart(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]bool{"pending": s.runner.HasPendingRestart(id)})
+}
+
 // --- Git status / diff / files ---
 
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
