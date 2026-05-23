@@ -172,6 +172,16 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `i`                   | Quick add projects                                       |
 | `Enter` / `◀` / `▶` | Toggle / cycle settings                                  |
 
+### Remote TUI
+
+```bash
+argus --remote https://mbp-2026.tail1efd7.ts.net --token "$ARGUS_TOKEN"
+```
+
+Launches the TUI pointed at a remote argus daemon instead of the local one. No local SQLite is opened, no daemon socket is contacted — every persistence call goes through the REST API the daemon already serves on port 7743 (the same surface the PWA uses). `--token` falls back to `ARGUS_TOKEN`.
+
+A few local-only operations gracefully degrade in remote mode: spawning a fresh task via the new-task form, forking, schedule fires, and prune-completed all require local worktree access. The status bar surfaces the equivalent REST endpoint when these are attempted remotely. Everything else — task list, attach, input, resize, archive/rename/status flips, settings, DAG, links — works identically against the remote.
+
 ### Self-Update
 
 From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart. The same controls are exposed in the web UI under **Settings → Argus update** (master token only).
