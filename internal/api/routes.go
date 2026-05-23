@@ -77,6 +77,17 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("GET /api/sessions/state", s.handleSessionState)
 	mux.HandleFunc("GET /api/sessions/{id}/pending-restart", s.handleHasPendingRestart)
+
+	// Raw endpoints — return full model.Task / model.ScheduledTask shapes
+	// (vs the lossy taskJSON / scheduleJSON used by the SPA). Added in
+	// phase 2/3 of the remote-TUI work so apistore can faithfully
+	// implement the tui store.Store interface without dropping fields like
+	// DependsOn, BaseBranch, Result, PlanSlug, AgentPID, SessionID, etc.
+	mux.HandleFunc("GET /api/tasks-raw", s.handleListTasksRaw)
+	mux.HandleFunc("GET /api/tasks/{id}/raw", s.handleGetTaskRaw)
+	mux.HandleFunc("PUT /api/tasks/{id}/raw", s.handleUpdateTaskRaw)
+	mux.HandleFunc("POST /api/tasks-raw", s.handleAddTaskRaw)
+	mux.HandleFunc("GET /api/schedules/{id}/raw", s.handleGetScheduleRaw)
 	mux.HandleFunc("GET /api/tasks/{id}/clipboard", s.handleClipboardGet)
 	mux.HandleFunc("POST /api/tasks/{id}/clipboard", s.handleClipboardSet)
 	mux.HandleFunc("DELETE /api/tasks/{id}/clipboard", s.handleClipboardClear)

@@ -1,0 +1,106 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
+)
+
+// handleListTasksRaw returns every task as a full model.Task (vs the lossy
+// taskJSON shape /api/tasks emits for the SPA). The remote-TUI store adapter
+// in internal/apistore uses this to mirror *db.DB.Tasks() faithfully.
+func (s *Server) handleListTasksRaw(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.db.Tasks()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if tasks == nil {
+		tasks = []*model.Task{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+// handleGetTaskRaw returns a single task as a full model.Task.
+func (s *Server) handleGetTaskRaw(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, err := s.db.Get(id)
+	if err != nil || task == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, task)
+}
+
+// handleUpdateTaskRaw applies a full model.Task overwrite. Master-only — the
+// remote TUI uses this to mirror *db.DB.Update for status flips, archive
+// toggles, etc. The path ID and the body's ID must match.
+func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	var task model.Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if task.ID != id {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body id does not match path id"})
+		return
+	}
+	if err := s.db.Update(&task); err != nil {
+		if errors.Is(err, db.ErrTaskNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, &task)
+}
+
+// handleAddTaskRaw inserts a model.Task row directly — for the rare TUI path
+// (fork, schedule fire) that creates a task without going through the agent
+// session lifecycle. Most fresh-task creation runs through POST /api/tasks
+// which spawns a session; this raw path is for db.Add equivalents.
+// Master-only.
+func (s *Server) handleAddTaskRaw(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	var task model.Task
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if err := s.db.Add(&task); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, &task)
+}
+
+// handleGetScheduleRaw returns the schedule as a full model.ScheduledTask
+// for the remote TUI store adapter.
+func (s *Server) handleGetScheduleRaw(w http.ResponseWriter, r *http.Request) {
+	if requireMaster(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	sched, err := s.db.GetSchedule(id)
+	if err != nil {
+		if errors.Is(err, db.ErrScheduleNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sched)
+}

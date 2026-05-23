@@ -3,6 +3,8 @@ package apiclient
 import (
 	"context"
 	"fmt"
+
+	"github.com/drn/argus/internal/model"
 )
 
 // TaskJSON mirrors api.taskJSON — the wire shape returned by /api/tasks*.
@@ -238,4 +240,51 @@ func (c *Client) PruneCompleted(ctx context.Context) (*PruneReport, error) {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// ListTasksRaw returns every task as a full model.Task. Use this in the TUI
+// store adapter where lossy TaskJSON would drop fields like SessionID,
+// DependsOn, Result, AgentPID, Pinned, etc. Master-only on the server.
+// Added in phase 3 (gap fill for tui store interface).
+func (c *Client) ListTasksRaw(ctx context.Context) ([]*model.Task, error) {
+	var resp struct {
+		Tasks []*model.Task `json:"tasks"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/tasks-raw", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Tasks, nil
+}
+
+// GetTaskRaw returns one task as a full model.Task. Added in phase 3.
+func (c *Client) GetTaskRaw(ctx context.Context, id string) (*model.Task, error) {
+	var t model.Task
+	if err := c.doJSON(ctx, "GET", "/api/tasks/"+id+"/raw", nil, &t); err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// UpdateTaskRaw applies a full model.Task overwrite. Master-only. Added in
+// phase 3 — the TUI's store adapter uses this to mirror db.DB.Update().
+func (c *Client) UpdateTaskRaw(ctx context.Context, t *model.Task) error {
+	return c.doJSON(ctx, "PUT", "/api/tasks/"+t.ID+"/raw", t, nil)
+}
+
+// AddTaskRaw inserts a model.Task row directly. Master-only. Used by the TUI
+// store adapter to mirror db.DB.Add() for paths that don't go through the
+// agent.CreateAndStart lifecycle (e.g., orchestrator stack creation).
+// Added in phase 3.
+func (c *Client) AddTaskRaw(ctx context.Context, t *model.Task) error {
+	return c.doJSON(ctx, "POST", "/api/tasks-raw", t, nil)
+}
+
+// GetScheduleRaw returns a schedule as a full model.ScheduledTask. Master-only.
+// Added in phase 3.
+func (c *Client) GetScheduleRaw(ctx context.Context, id string) (*model.ScheduledTask, error) {
+	var s model.ScheduledTask
+	if err := c.doJSON(ctx, "GET", "/api/schedules/"+id+"/raw", nil, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
