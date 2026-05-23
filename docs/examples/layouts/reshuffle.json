@@ -1,0 +1,20 @@
+{
+  "name": "reshuffle",
+  "title": "Terminal centered with file + git rails",
+  "root": {
+    "type": "split",
+    "direction": "horizontal",
+    "sizes": [1, 3, 1],
+    "children": [
+      { "type": "file" },
+      { "type": "terminal", "bind": "task:current", "cycle": false },
+      { "type": "git" }
+    ]
+  },
+  "hotkeys": {
+    "tab": "cycle right",
+    "ctrl-1": "focus left rail",
+    "ctrl-2": "focus terminal",
+    "ctrl-3": "focus right rail"
+  }
+}

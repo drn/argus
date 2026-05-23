@@ -1,0 +1,16 @@
+{
+  "name": "logs",
+  "title": "Terminal + ux.log tail",
+  "root": {
+    "type": "split",
+    "direction": "horizontal",
+    "sizes": [2, 1],
+    "children": [
+      { "type": "terminal", "bind": "task:current", "cycle": false },
+      { "type": "streampane", "source": "file:~/.argus/ux.log" }
+    ]
+  },
+  "hotkeys": {
+    "tab": "cycle right"
+  }
+}

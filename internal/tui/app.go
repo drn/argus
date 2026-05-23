@@ -28,6 +28,7 @@ import (
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/gitpanel"
+	"github.com/drn/argus/internal/tui/layout"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/taskview"
@@ -141,6 +142,11 @@ type App struct {
 	taskPage  *taskview.TaskPage
 	agentPage *tview.Flex
 	pages     *tview.Pages
+
+	// layouts holds named layout descriptors. The built-in `tasks-default`
+	// is registered at boot; user layouts loaded from ~/.argus/layouts/
+	// are held but not yet rendered (PR 7 wires them through Settings).
+	layouts *layout.Registry
 
 	// State
 	mode               viewMode
@@ -262,6 +268,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		lastAttachCols:         make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
+		layouts:                layout.WithDefaults(layout.NewRegistry()),
 	}
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
@@ -470,6 +477,27 @@ func (a *App) afterDraw(screen tcell.Screen) {
 // TUI's. Must be called before Run() — the flag is consumed there.
 func (a *App) SetDaemonStale(stale bool) {
 	a.daemonStale = stale
+}
+
+// Layouts exposes the layout registry for callers that need to inspect or
+// register layouts (PR 7 wires this into Settings).
+func (a *App) Layouts() *layout.Registry {
+	return a.layouts
+}
+
+// LoadLayoutsDir scans dir for *.json layout files and registers each valid
+// one. Missing dirs are no-ops. Parse / register errors are logged via
+// uxlog and ignored so a single malformed user layout cannot prevent boot.
+//
+// Wired by cmd/argus/main.go at startup against ~/.argus/layouts/.
+func (a *App) LoadLayoutsDir(dir string) {
+	res := a.layouts.LoadDir(dir)
+	if res.Loaded > 0 {
+		uxlog.Log("[tui] loaded %d layout(s) from %s", res.Loaded, dir)
+	}
+	for _, err := range res.Errors {
+		uxlog.Log("[tui] layout load error: %v", err)
+	}
 }
 
 // openRestartDaemonPrompt shows the modal asking whether to restart the
@@ -2600,6 +2628,29 @@ func ptySizeFromPaneRect(pw, ph int) (rows, cols uint16) {
 	// so the int → uint16 conversion cannot overflow; the max() floors also
 	// guarantee positive values. Silence gosec G115 for both fields.
 	return uint16(max(ph-agentViewColOverhead, 5)), uint16(max(pw-agentViewColOverhead, 20)) //nolint:gosec // see comment
+}
+
+// Rect is the agent-pane outer rectangle on screen, taken at face value.
+// Multi-pane layouts (PR 7 and later) pass per-pane rects here rather than
+// going through computePTYSize's host-term/box-default reasoning.
+type Rect struct {
+	X, Y, W, H int
+}
+
+// PTYSizeForRect returns the PTY (rows, cols) for an agent terminal whose
+// outer rect on screen is r. The 1-cell border on each side
+// (agentViewColOverhead) is subtracted; rows and cols are clamped to the
+// minimum useful floor (5 rows / 20 cols).
+//
+// Unlike [App.computePTYSize], the input rect is trusted: there is no
+// host-term fallback and no Box-default rejection. Callers driving the new
+// layout registry already know the authoritative pane rect.
+func PTYSizeForRect(r Rect) (rows, cols uint16) {
+	if r.W <= 0 || r.H <= 0 {
+		return 0, 0
+	}
+	// Realistic cell counts cap well under uint16; max() guarantees positive.
+	return uint16(max(r.H-agentViewColOverhead, 5)), uint16(max(r.W-agentViewColOverhead, 20)) //nolint:gosec // bounded by terminal cell count
 }
 
 // startSession starts a session for an *existing* task (Enter-to-restart or

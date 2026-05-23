@@ -43,6 +43,7 @@ Thumbs.db
 
 # Test coverage
 coverage.out
+coverage.filtered.out
 
 # Playwright web-tests artifacts
 web-tests/node_modules/

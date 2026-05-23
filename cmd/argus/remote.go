@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"syscall"
@@ -109,6 +110,7 @@ func runRemoteTUI(baseURL, token string) {
 	})
 
 	app := tui.New(store, provider, true)
+	app.LoadLayoutsDir(filepath.Join(db.DataDir(), "layouts"))
 	appRef = app
 
 	// Periodic config refresh — the remote daemon may change settings (e.g.

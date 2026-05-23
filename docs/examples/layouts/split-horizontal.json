@@ -1,0 +1,18 @@
+{
+  "name": "split-horizontal",
+  "title": "Two terminals (left | right)",
+  "root": {
+    "type": "split",
+    "direction": "horizontal",
+    "sizes": [1, 1],
+    "children": [
+      { "type": "terminal", "bind": "task:current", "cycle": false },
+      { "type": "terminal", "cycle": true }
+    ]
+  },
+  "hotkeys": {
+    "tab": "cycle right",
+    "ctrl-1": "focus first",
+    "ctrl-2": "focus second"
+  }
+}

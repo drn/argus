@@ -1,3 +1,11 @@
+## Layout Registry & Streampane (PR 6)
+
+- **The default layout's descriptor is data-only — the rendered three-panel tree is still the hardcoded `tview.NewFlex` chain in `app.buildUI`.** `layout.WithDefaults` registers a `tasks-default` Layout (panels: `task-list`, `git`, `task-preview`, `task-detail`) so PR 7's Settings UI can list it next to user layouts. Touching the registry today does NOT change what renders — the JSON is held for future use.
+- **User layouts at `~/.argus/layouts/*.json` are parsed at boot but inert in PR 6.** Bad files are logged via uxlog (`[tui] layout load error: ...`) and skipped; one malformed layout cannot block boot. The first thing that actually surfaces them is PR 7's Layouts settings section. Subdirectories under `~/.argus/layouts/` are ignored — only top-level `.json` files load.
+- **`PTYSizeForRect(Rect)` trusts its input.** No host-term fallback, no Box-default rejection. Use it for per-pane PTY sizing in multi-pane layouts where the caller already has an authoritative rect. The legacy `computePTYSize()` (host-term → pane rect → 24x80 default) stays the right entry point for the agent page until multi-pane rendering lands.
+- **StreamPane drops keystrokes when the input-back channel is full.** The widget's `send()` does a non-blocking `select` — matching the PTY writer backpressure pattern elsewhere in argus. Tests that pre-fill `back` and assert no drop will hang; assert "no panic / no second send" instead.
+- **StreamPane `Touched()` increments only on non-empty chunks.** Empty chunks are a no-op so callers can poll the counter for damage without spurious redraws when the source feeds heartbeat-style zero-byte signals.
+
 ## Database Patterns
 
 - **New columns use `ALTER TABLE ... ADD COLUMN ... DEFAULT ''` after `CREATE TABLE IF NOT EXISTS`.** Error for duplicate column silently ignored.

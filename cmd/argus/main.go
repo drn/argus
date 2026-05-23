@@ -218,6 +218,7 @@ func runTUI() {
 
 	app := tui.New(database, runner, daemonConnected)
 	app.SetDaemonStale(daemonStale)
+	app.LoadLayoutsDir(filepath.Join(db.DataDir(), "layouts"))
 	appRef = app
 	appRef2 = app
 
