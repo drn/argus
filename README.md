@@ -8,7 +8,7 @@
   <a href="https://github.com/drn/argus/actions/workflows/ci.yml"><img src="https://github.com/drn/argus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
-Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of Claude Code and Codex sessions side by side, each in its own git worktree, all under a single keyboard-driven UI — and reach the same swarm from your phone, from another agent, or from your own notes.
+Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of Claude Code and Codex sessions side by side, each in its own git worktree, all under a single keyboard-driven UI — and reach the same swarm from your phone, from another laptop, from another agent, or from your own notes.
 
 <p align="center">
   <img src="screenshots/task-list.png" width="820" alt="Task list with project folders, live agent preview, and inline git status">
@@ -75,6 +75,7 @@ Pair this with the MCP task tools and an agent can read a meeting note, decide w
 
 ## Also In The Box
 
+- **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
 - **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags and plan-mode defaults.
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
 - **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex. Your conversation survives a daemon restart.
