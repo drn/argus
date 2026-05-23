@@ -40,6 +40,12 @@ func runRemoteTUI(baseURL, token string) {
 		fmt.Fprintln(os.Stderr, "error: --remote requires --token TOKEN or ARGUS_TOKEN env var")
 		os.Exit(2)
 	}
+	// --token TOKEN puts the secret in `ps aux` / /proc/$PID/cmdline.
+	// Detect the cli-flag path and warn the user once before the tcell
+	// alt-screen takes over. ARGUS_TOKEN env doesn't leak this way.
+	if os.Getenv("ARGUS_TOKEN") == "" {
+		fmt.Fprintln(os.Stderr, "warning: --token is visible in `ps`; prefer the ARGUS_TOKEN env var")
+	}
 
 	// Initialize UX debug log — same path as the local TUI so a developer
 	// who alternates between local and remote sees one unified log file.

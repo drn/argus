@@ -97,19 +97,16 @@ func (p *Provider) Close() {
 // a row whose session has exited.
 func (p *Provider) Start(task *model.Task, _ config.Config, rows, cols uint16, resume bool) (agent.SessionHandle, error) {
 	ctx := context.Background()
-	if resume || task.SessionID != "" {
-		if _, err := p.c.ResumeTask(ctx, task.ID); err != nil {
-			return nil, fmt.Errorf("apiclient.Start: resume task=%s: %w", task.ID, err)
-		}
-	} else {
-		// The TUI's CreateAndStart path goes through the REST API's
-		// POST /api/tasks for fresh tasks, which spawns the session
-		// inside the server. By the time Start is called for a fresh
-		// task here, the row is already in_progress and a session
-		// exists; resume re-attaches if needed.
-		if _, err := p.c.ResumeTask(ctx, task.ID); err != nil {
-			return nil, fmt.Errorf("apiclient.Start: attach task=%s: %w", task.ID, err)
-		}
+	// The TUI's CreateAndStart path goes through POST /api/tasks for fresh
+	// tasks, which spawns the session inside the server. By the time Start
+	// is called here, the row is already in_progress and a server-side
+	// session exists; ResumeTask re-attaches (or restarts) regardless of
+	// whether the caller asked for resume semantics — the `resume`
+	// parameter is meaningful to the local in-process Runner but a no-op
+	// at this HTTP boundary.
+	_ = resume
+	if _, err := p.c.ResumeTask(ctx, task.ID); err != nil {
+		return nil, fmt.Errorf("apiclient.Start: resume task=%s: %w", task.ID, err)
 	}
 
 	s := p.getOrCreateSession(task.ID)

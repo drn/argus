@@ -27,8 +27,6 @@ import (
 	"github.com/drn/argus/internal/tui/store"
 )
 
-// errorsAs wraps errors.As so the file doesn't need errors imported twice.
-func errorsAs(err error, target any) bool { return errors.As(err, target) }
 
 // Compile-time assertion: Store implements tui/store.Store.
 var _ store.Store = (*Store)(nil)
@@ -348,20 +346,24 @@ func (s *Store) SetBackend(name string, b config.Backend) error {
 }
 
 // shouldFallbackUpsert decides whether a failed POST justifies retrying as
-// PUT. 409 (conflict — row already exists, the intended fallback case) and
-// any 5xx (server-side transient — PUT may still work). 4xx other than
-// 409 indicates a request the server rejected; retrying with the same
-// body via PUT only masks the validation failure.
+// PUT. Only 409 (conflict — row already exists) triggers the fallback:
+//
+//   - 4xx other than 409: validation rejected the body. A second attempt
+//     with the same body will fail the same way; retrying masks the real
+//     error from the caller.
+//   - 5xx: server is in trouble. Retry with PUT can succeed only if the
+//     5xx was transient AND the row already existed; the latter is what
+//     409 already covers. Surface the 5xx directly.
+//   - transport error: server state is unknown. Retrying with PUT could
+//     create a duplicate or overwrite a row the caller did not intend to
+//     touch. Surface the transport error so the caller can retry the POST
+//     intentionally.
 func shouldFallbackUpsert(err error) bool {
 	var apiErr *apiclient.Error
-	if !errorsAs(err, &apiErr) {
-		// Network/transport error — try PUT once before giving up.
-		return true
+	if !errors.As(err, &apiErr) {
+		return false
 	}
-	if apiErr.Status == 409 {
-		return true
-	}
-	return apiErr.Status >= 500
+	return apiErr.Status == 409
 }
 
 // DeleteBackend removes the backend by name.

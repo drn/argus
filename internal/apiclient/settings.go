@@ -1,6 +1,9 @@
 package apiclient
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 // SandboxJSON mirrors api.sandboxJSON.
 type SandboxJSON struct {
@@ -172,7 +175,7 @@ func (c *Client) UpdateSelf(ctx context.Context) (*UpdateSelfResp, error) {
 func (c *Client) GetLog(ctx context.Context, name string, bytes int) ([]byte, error) {
 	q := ""
 	if bytes > 0 {
-		q = "?bytes=" + itoa(bytes)
+		q = "?bytes=" + strconv.Itoa(bytes)
 	}
 	resp, err := c.do(ctx, "GET", "/api/logs/"+name+q, nil, "")
 	if err != nil {

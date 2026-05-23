@@ -41,7 +41,9 @@ type Option func(*Client)
 
 // WithHTTPClient overrides the underlying *http.Client. Useful for tests
 // (httptest.NewServer.Client()) and for callers who want a custom Transport
-// (e.g. to skip TLS verification — see WithInsecureTLS for the common case).
+// — e.g. a TLS-skip transport for self-signed dev endpoints. There is no
+// dedicated InsecureTLS option because Tailscale MagicDNS issues valid
+// certs; if you need to bypass verification, plug a custom Transport here.
 func WithHTTPClient(hc *http.Client) Option { return func(c *Client) { c.hc = hc } }
 
 // WithTimeout sets a per-request timeout on the underlying http.Client. SSE

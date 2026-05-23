@@ -72,6 +72,12 @@ func projectToAPI(name string, p config.Project) apiclient.ProjectJSON {
 
 // scheduleReqFromModel marshals every field of a model.ScheduledTask into
 // the partial-update ScheduleReq the API expects.
+//
+// RunOnceAt is only set when the source has a non-zero value, because the
+// server treats `RunOnceAt != nil && raw == ""` as "clear the field". A
+// recurring schedule (RunOnceAt zero) round-tripping through Update would
+// otherwise be no-op-cleared every call; a one-shot schedule edited with
+// any other field touched would lose its RunOnceAt entirely.
 func scheduleReqFromModel(s *model.ScheduledTask) apiclient.ScheduleReq {
 	name := s.Name
 	project := s.Project
@@ -79,19 +85,19 @@ func scheduleReqFromModel(s *model.ScheduledTask) apiclient.ScheduleReq {
 	backend := s.Backend
 	schedule := s.Schedule
 	enabled := s.Enabled
-	runOnceAt := ""
+	req := apiclient.ScheduleReq{
+		Name:     &name,
+		Project:  &project,
+		Prompt:   &prompt,
+		Backend:  &backend,
+		Schedule: &schedule,
+		Enabled:  &enabled,
+	}
 	if !s.RunOnceAt.IsZero() {
-		runOnceAt = s.RunOnceAt.Format(time.RFC3339)
+		runOnceAt := s.RunOnceAt.Format(time.RFC3339)
+		req.RunOnceAt = &runOnceAt
 	}
-	return apiclient.ScheduleReq{
-		Name:      &name,
-		Project:   &project,
-		Prompt:    &prompt,
-		Backend:   &backend,
-		Schedule:  &schedule,
-		RunOnceAt: &runOnceAt,
-		Enabled:   &enabled,
-	}
+	return req
 }
 
 func stringsOrEmpty(s []string) []string {

@@ -320,12 +320,18 @@ func (a *App) buildUI() {
 	}
 	a.tasklist.OnArchive = func(t *model.Task) {
 		uxlog.Log("[tui] archive toggle: task %s (%s) archived=%v", t.ID, t.Name, t.Archived)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
-		// Drop the task's queued messages so a stale recipient doesn't sit
-		// on the unread cap. Mirrors the MCP/REST archive flows.
-		if t.Archived {
-			a.db.DeleteMessagesForTask(t.ID) //nolint:errcheck // best-effort cleanup
-		}
+		// Route through SetArchived (partial column update) so:
+		//  - local mode: *db.DB.SetArchived also runs DeleteMessagesForTask
+		//    in the same transaction.
+		//  - remote mode: apistore.SetArchived hits /api/tasks/{id}/archive
+		//    on the server, which triggers handleArchiveTask's setArchive →
+		//    DeleteMessagesForTask cleanup.
+		// Either path keeps the archived-rows / messages invariant honored.
+		// Going through Update + DeleteMessagesForTask here would silently
+		// orphan messages in remote mode because apistore can't expose the
+		// DeleteMessagesForTask endpoint and PUT /api/tasks/{id}/raw doesn't
+		// trigger server-side cleanup.
+		a.db.SetArchived(t.ID, t.Archived) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnPin = func(t *model.Task) {

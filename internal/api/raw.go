@@ -51,6 +51,13 @@ func (s *Server) handleGetTaskRaw(w http.ResponseWriter, r *http.Request) {
 // handleUpdateTaskRaw applies a full model.Task overwrite. Master-only — the
 // remote TUI uses this to mirror *db.DB.Update for status flips, archive
 // toggles, etc. The path ID and the body's ID must match.
+//
+// Worktree is locked to the existing DB value rather than the request body
+// so a master-token holder can't poison the path with something outside the
+// configured worktrees root. Same for Branch and BaseBranch — those would
+// let the next delete operate on the wrong git repo. Status/Prompt/Result/
+// Pinned/Archived/DependsOn/PlanSlug/AgentPID/SessionID etc. flow through
+// because those are the fields the TUI legitimately updates.
 func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
@@ -66,6 +73,17 @@ func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body id does not match path id"})
 		return
 	}
+	// Pin worktree-related fields to the DB's existing values. A master
+	// token holder who edits these could otherwise re-target the next
+	// `git worktree remove` at an arbitrary path.
+	existing, err := s.db.Get(id)
+	if err != nil || existing == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	task.Worktree = existing.Worktree
+	task.Branch = existing.Branch
+	task.BaseBranch = existing.BaseBranch
 	if err := s.db.Update(&task); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})

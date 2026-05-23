@@ -15,6 +15,7 @@
 # Playwright + integration smoke (web-tests/) and `go run ./cmd/argus daemon`.
 cmd/argus/main.go
 cmd/argus/kb.go
+cmd/argus/remote.go
 
 # Test-only HTTP harness for Playwright. Covered by web-tests/*.spec.ts.
 cmd/argus-test-server/main.go
@@ -34,3 +35,14 @@ internal/tui/clipboard_pbcopy.go
 # Exercising it would recreate the very fork bomb the backstop prevents.
 internal/daemon/client/autostart_fork.go
 internal/api/spawn_fork.go
+
+# SSE stream goroutine with retry+EOF state machine. Same character as
+# internal/daemon/client/stream.go (which IS covered by integration tests
+# in the daemon package). For internal/apiclient/session.go, the equivalent
+# integration coverage lives in the apistore tests that exercise the full
+# Client → Provider → Session round trip; per-goroutine retry branches
+# would need fault injection harness that doesn't exist yet. AddWriter,
+# AddWriterFrom, AddWriterFromTolerant, RemoveWriter are documented no-ops
+# (mirror of the daemon-client RemoteSession contract; daemon-client also
+# leaves those 0% in its tests).
+internal/apiclient/session.go

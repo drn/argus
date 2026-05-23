@@ -1,6 +1,9 @@
 package apiclient
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 // MessageJSON mirrors model.TaskMessage with JSON-friendly types. The TUI
 // store adapter converts to model.TaskMessage for the existing message UI.
@@ -33,7 +36,7 @@ type InboxResp struct {
 func (c *Client) ListInbox(ctx context.Context, id string, f InboxFilter) (*InboxResp, error) {
 	limit := ""
 	if f.Limit > 0 {
-		limit = itoa(f.Limit)
+		limit = strconv.Itoa(f.Limit)
 	}
 	unread := "true"
 	if !f.UnreadOnly {
@@ -81,26 +84,3 @@ func (c *Client) AckInbox(ctx context.Context, id string, ids []string) (int, er
 	return resp.Acked, nil
 }
 
-// itoa is a thin strconv.Itoa to avoid importing strconv across every file.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	negative := false
-	if n < 0 {
-		negative = true
-		n = -n
-	}
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}

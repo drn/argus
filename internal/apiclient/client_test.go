@@ -250,8 +250,3 @@ func TestQueryHelper(t *testing.T) {
 	})
 }
 
-func TestItoa(t *testing.T) {
-	t.Run("zero", func(t *testing.T) { testutil.Equal(t, itoa(0), "0") })
-	t.Run("positive", func(t *testing.T) { testutil.Equal(t, itoa(42), "42") })
-	t.Run("negative", func(t *testing.T) { testutil.Equal(t, itoa(-7), "-7") })
-}
