@@ -27,7 +27,6 @@ import (
 	"github.com/drn/argus/internal/tui/store"
 )
 
-
 // Compile-time assertion: Store implements tui/store.Store.
 var _ store.Store = (*Store)(nil)
 

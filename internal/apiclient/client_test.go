@@ -249,4 +249,3 @@ func TestQueryHelper(t *testing.T) {
 		_ = query(odd...) //nolint:staticcheck // SA5012: the odd-count panic IS the contract under test
 	})
 }
-

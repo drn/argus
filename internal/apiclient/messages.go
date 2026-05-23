@@ -83,4 +83,3 @@ func (c *Client) AckInbox(ctx context.Context, id string, ids []string) (int, er
 	}
 	return resp.Acked, nil
 }
-
