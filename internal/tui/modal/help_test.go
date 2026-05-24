@@ -1,9 +1,11 @@
 package modal
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -78,6 +80,136 @@ func TestHelpModal_DrawClampsToAvailableHeight(t *testing.T) {
 	testutil.Contains(t, body, "Keybindings")
 	// Hint must still render on the last inner row.
 	testutil.Contains(t, body, "close")
+}
+
+func TestHelpModal_ScrollKeys(t *testing.T) {
+	// Draw at a height that forces scrolling: total content is len(helpRows())
+	// rows, give the modal much less.
+	render := func(m *HelpModal) {
+		sim := drawAt(t, 80, 12)
+		m.SetRect(0, 0, 80, 12)
+		m.Draw(sim)
+	}
+
+	for _, tc := range []struct {
+		name string
+		fire func(m *HelpModal)
+		// after firing + redraw, scroll must satisfy this predicate.
+		check func(t *testing.T, m *HelpModal)
+	}{
+		{
+			"down arrow scrolls one row",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, 1) },
+		},
+		{
+			"j scrolls one row",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, 1) },
+		},
+		{
+			"k at top clamps to 0",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, 0) },
+		},
+		{
+			"PgDn scrolls one page",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.True(t, m.scroll == m.pageStep) },
+		},
+		{
+			"G jumps to bottom",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'G', tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, m.maxScroll) },
+		},
+		{
+			"End jumps to bottom",
+			func(m *HelpModal) {
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, m.maxScroll) },
+		},
+		{
+			"g returns to top after scrolling",
+			func(m *HelpModal) {
+				m.scroll = 5
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyRune, 'g', tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, 0) },
+		},
+		{
+			"Home returns to top after scrolling",
+			func(m *HelpModal) {
+				m.scroll = 5
+				m.InputHandler()(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone), nil)
+			},
+			func(t *testing.T, m *HelpModal) { testutil.Equal(t, m.scroll, 0) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewHelpModal()
+			render(m) // populate maxScroll/pageStep
+			tc.fire(m)
+			render(m) // re-clamp scroll
+			tc.check(t, m)
+			testutil.False(t, m.Closed())
+		})
+	}
+}
+
+func TestHelpModal_MouseWheelScrolls(t *testing.T) {
+	m := NewHelpModal()
+	m.SetRect(0, 0, 80, 12)
+	sim := drawAt(t, 80, 12)
+	m.Draw(sim) // initialize maxScroll/pageStep
+
+	handler := m.MouseHandler()
+	// Wheel down 3 lines.
+	consumed, _ := handler(tview.MouseScrollDown, tcell.NewEventMouse(0, 0, tcell.ButtonNone, tcell.ModNone), nil)
+	testutil.True(t, consumed)
+	m.Draw(sim)
+	testutil.Equal(t, m.scroll, 3)
+
+	// Wheel up 3 lines — back to top.
+	consumed, _ = handler(tview.MouseScrollUp, tcell.NewEventMouse(0, 0, tcell.ButtonNone, tcell.ModNone), nil)
+	testutil.True(t, consumed)
+	m.Draw(sim)
+	testutil.Equal(t, m.scroll, 0)
+}
+
+func TestHelpModal_DrawShowsScrollPositionWhenOverflow(t *testing.T) {
+	sim := drawAt(t, 80, 12) // forces clamp/overflow
+	m := NewHelpModal()
+	m.SetRect(0, 0, 80, 12)
+	m.Draw(sim)
+	sim.Sync()
+	body := screenString(sim)
+	// The hint marker is unique to the scroll-position footer.
+	testutil.Contains(t, body, "[↑↓ / jk]")
+}
+
+func TestHelpModal_DrawHidesScrollHintWhenFits(t *testing.T) {
+	// Give the modal enough room that every row fits.
+	sim := drawAt(t, 100, 80)
+	m := NewHelpModal()
+	m.SetRect(0, 0, 100, 80)
+	m.Draw(sim)
+	sim.Sync()
+	body := screenString(sim)
+	testutil.Contains(t, body, "[esc / ?] close")
+	if strings.Contains(body, "[↑↓ / jk]") {
+		t.Errorf("scroll position indicator should not render when all rows fit")
+	}
 }
 
 func TestHelpSections_NonEmpty(t *testing.T) {
