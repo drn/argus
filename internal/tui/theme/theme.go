@@ -5,30 +5,32 @@ import "github.com/gdamore/tcell/v2"
 
 // Color constants for the 256-color palette theme.
 var (
-	ColorTitle      = tcell.Color87  // cyan — titles, focused borders
-	ColorStatusBG   = tcell.Color235 // dark gray — status bar background
-	ColorStatusFG   = tcell.Color245 // medium gray — status bar text
-	ColorSelected   = tcell.Color212 // pink — selected/cursor row
-	ColorNormal     = tcell.Color252 // light gray — default text
-	ColorDimmed     = tcell.Color240 // dim gray — secondary text
-	ColorPending    = tcell.Color245 // gray — pending status
-	ColorInProgress = tcell.Color214 // orange — in-progress status
-	ColorInReview   = tcell.Color81  // blue — in-review status
-	ColorComplete   = tcell.Color78  // green — complete status
-	ColorProject    = tcell.Color87  // cyan — project names
-	ColorElapsed    = tcell.Color243 // gray — elapsed times
-	ColorBorder     = tcell.Color238 // dark gray — unfocused borders
-	ColorError      = tcell.Color203 // red — errors
-	ColorKeyHint    = tcell.Color87  // cyan — keybinding hints
-	ColorKeyLabel   = tcell.Color240 // dim — keybinding labels
-	ColorHighlight  = tcell.Color236 // slightly lighter dark gray — cursor/selection highlight
-	ColorFilter     = tcell.Color201 // magenta — active filter query
+	ColorTitle      = tcell.Color87                    // cyan — titles, focused borders
+	ColorStatusBG   = tcell.Color235                   // dark gray — status bar background
+	ColorStatusFG   = tcell.Color245                   // medium gray — status bar text
+	ColorSelected   = tcell.Color212                   // pink — selected/cursor row
+	ColorNormal     = tcell.Color252                   // light gray — default text
+	ColorDimmed     = tcell.Color240                   // dim gray — secondary text
+	ColorPending    = tcell.Color245                   // gray — pending status
+	ColorInProgress = tcell.Color214                   // orange — in-progress status
+	ColorInReview   = tcell.Color81                    // blue — in-review status
+	ColorComplete   = tcell.Color78                    // green — complete status
+	ColorProject    = tcell.Color87                    // cyan — project names
+	ColorElapsed    = tcell.Color243                   // gray — elapsed times
+	ColorBorder     = tcell.Color238                   // dark gray — unfocused borders
+	ColorError      = tcell.Color203                   // red — errors
+	ColorKeyHint    = tcell.Color87                    // cyan — keybinding hints
+	ColorKeyLabel   = tcell.Color240                   // dim — keybinding labels
+	ColorHighlight  = tcell.Color236                   // slightly lighter dark gray — cursor/selection highlight
+	ColorFilter     = tcell.Color201                   // magenta — active filter query
+	ColorNeedsInput = tcell.NewRGBColor(250, 163, 120) // #faa378 light orange — agent blocked on user prompt
 )
 
 // Icon constants for status indicators (Nerd Font codepoints).
 const (
 	IconMoonStars   = rune(0x0F0594) // 󰖔 nf-md-weather_night — unvisited / needs attention
 	IconMoonOutline = rune(0xF186)   //  nf-fa-moon_o — visited / idle
+	IconNeedsInput  = rune(0xF059)   //  nf-fa-question_circle — idle AND blocked on a user prompt
 )
 
 // Styles for common UI elements.
@@ -48,4 +50,5 @@ var (
 	StyleFocusedBorder = tcell.StyleDefault.Foreground(ColorTitle)
 	StyleError         = tcell.StyleDefault.Foreground(ColorError)
 	StyleFilter        = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
+	StyleNeedsInput    = tcell.StyleDefault.Foreground(ColorNeedsInput).Bold(true)
 )

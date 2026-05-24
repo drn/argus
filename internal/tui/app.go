@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1104,6 +1105,71 @@ func (a *App) syncIdleUnvisited() {
 	a.tasklist.SetIdleUnvisited(ids)
 }
 
+// detectNeedsInput returns the subset of idleIDs whose recent PTY output
+// contains a known "agent is blocked on a user prompt" signature. Scanning is
+// gated on idleness — an agent that's still streaming bytes is not blocked
+// even if the marker text passes through the buffer transiently. Reads use
+// the on-disk session log so detection works for tasks the user has not yet
+// visited (see readSessionLogTailBytes).
+func (a *App) detectNeedsInput(idleIDs []string) []string {
+	if len(idleIDs) == 0 {
+		return nil
+	}
+	var out []string
+	for _, id := range idleIDs {
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 {
+			continue
+		}
+		if agent.DetectNeedsInput(tail) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// detectNeedsInputTailBytes is how many bytes to read from the end of each
+// idle task's session log per tick. Large enough to contain Claude's full
+// selection-UI overlay after the colorized repaint inflates line widths.
+const detectNeedsInputTailBytes = 16 * 1024
+
+// readSessionLogTailBytes returns the last n raw bytes of a task's session
+// log, or nil on any error. Unlike readSessionLogTail (which strips ANSI for
+// human display), this preserves the raw stream so the caller can do its own
+// ANSI handling.
+//
+// detectNeedsInput reads here instead of through SessionHandle.RecentOutputTail
+// because in daemon-client mode the local ring buffer only fills after the
+// TUI opens a stream connection for that session, i.e. after the user has
+// visited it. The disk log captures every byte the daemon ever wrote, so the
+// detector can flag a blocked agent the user has never opened.
+func readSessionLogTailBytes(taskID string, n int) []byte {
+	f, err := os.Open(agent.SessionLogPath(taskID))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	size := info.Size()
+	offset := int64(0)
+	if size > int64(n) {
+		offset = size - int64(n)
+	}
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return nil
+		}
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
 // refreshTasks fetches running/idle session IDs (RPC) and updates the task
 // list. IMPORTANT: This blocks on RPC calls — NEVER call from the tview main
 // goroutine. Use refreshTasksAsync instead for any UI-thread call site.
@@ -1237,6 +1303,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
 	a.syncIdleUnvisited()
+	a.tasklist.SetNeedsInput(a.detectNeedsInput(idleIDs))
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
 

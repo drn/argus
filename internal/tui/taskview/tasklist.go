@@ -63,6 +63,7 @@ type TaskListView struct {
 	running       map[string]bool
 	idle          map[string]bool
 	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
+	needsInput    map[string]bool // task IDs whose agent appears blocked on a user prompt
 	animFrame     int             // current spinner frame (time-based, updated in Draw)
 
 	cursor          int
@@ -119,6 +120,7 @@ func NewTaskListView() *TaskListView {
 		running:       make(map[string]bool),
 		idle:          make(map[string]bool),
 		idleUnvisited: make(map[string]bool),
+		needsInput:    make(map[string]bool),
 		lastRowsSig:   ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
@@ -175,6 +177,16 @@ func (tl *TaskListView) SetIdleUnvisited(ids []string) {
 	tl.idleUnvisited = make(map[string]bool, len(ids))
 	for _, id := range ids {
 		tl.idleUnvisited[id] = true
+	}
+}
+
+// SetNeedsInput updates the set of task IDs whose agent appears blocked on a
+// user prompt (Claude permission dialog, AskUserQuestion, etc.). Detection
+// runs on the app tick from a tail-of-PTY scan; see agent.DetectNeedsInput.
+func (tl *TaskListView) SetNeedsInput(ids []string) {
+	tl.needsInput = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		tl.needsInput[id] = true
 	}
 }
 
@@ -950,14 +962,17 @@ func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 }
 
 // projectStatusIcon returns the aggregated status icon and style for a project's tasks.
-// Priority: any actively running > any in_review > idle in_progress > all complete > mixed > all pending.
+// Priority: any needs-input > any actively running > any in_review > idle in_progress > all complete > mixed > all pending.
+// Needs-input outranks "actively running" so a single blocked task in a busy project still surfaces to the user.
 func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
-	var hasActivelyRunning, hasIdleInProgress, hasInReview, hasPending, hasComplete bool
+	var hasNeedsInput, hasActivelyRunning, hasIdleInProgress, hasInReview, hasPending, hasComplete bool
 
 	for _, t := range tasks {
 		switch t.Status {
 		case model.StatusInProgress:
-			if tl.idleUnvisited[t.ID] {
+			if tl.needsInput[t.ID] {
+				hasNeedsInput = true
+			} else if tl.idleUnvisited[t.ID] {
 				// Idle+unvisited InProgress tasks count as InReview at project level.
 				hasInReview = true
 			} else {
@@ -976,6 +991,8 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	}
 
 	switch {
+	case hasNeedsInput:
+		return theme.IconNeedsInput, theme.StyleNeedsInput
 	case hasActivelyRunning:
 		return widget.SpinnerFrame(tl.animFrame), theme.StyleInProgress
 	case hasInReview:
@@ -1084,15 +1101,21 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 		statusChar = '○'
 		statusStyle = theme.StylePending
 	case model.StatusInProgress:
-		if tl.idleUnvisited[task.ID] {
+		switch {
+		case tl.needsInput[task.ID]:
+			// Agent rendered a blocking prompt — call attention regardless of
+			// whether the user has visited since going idle.
+			statusChar = theme.IconNeedsInput
+			statusStyle = theme.StyleNeedsInput
+		case tl.idleUnvisited[task.ID]:
 			// Idle and not yet viewed since going idle — moon with stars.
 			statusChar = theme.IconMoonStars
 			statusStyle = theme.StyleInReview
-		} else if !tl.running[task.ID] || tl.idle[task.ID] {
+		case !tl.running[task.ID] || tl.idle[task.ID]:
 			// Session absent or idle (waiting for input) — moon icon.
 			statusChar = theme.IconMoonOutline
 			statusStyle = theme.StyleInReview
-		} else {
+		default:
 			// Actively running — animated spinner (nerd font progress spinner).
 			statusChar = widget.SpinnerFrame(tl.animFrame)
 			statusStyle = theme.StyleInProgress

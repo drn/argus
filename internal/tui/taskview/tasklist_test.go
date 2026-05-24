@@ -413,6 +413,82 @@ func TestTaskListView_IdleUnvisitedPromotion(t *testing.T) {
 	}
 }
 
+func TestTaskListView_SetNeedsInput(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetNeedsInput([]string{"1", "3"})
+	if !tl.needsInput["1"] {
+		t.Error("task 1 should be marked needs-input")
+	}
+	if tl.needsInput["2"] {
+		t.Error("task 2 should not be marked needs-input")
+	}
+	if !tl.needsInput["3"] {
+		t.Error("task 3 should be marked needs-input")
+	}
+	// Replacing with a smaller set should drop stale entries.
+	tl.SetNeedsInput([]string{"1"})
+	if tl.needsInput["3"] {
+		t.Error("task 3 should no longer be marked after SetNeedsInput([1])")
+	}
+}
+
+func TestTaskListView_NeedsInputBeatsActivelyRunning(t *testing.T) {
+	tl := NewTaskListView()
+	// Two InProgress tasks in the same project: one actively running, one
+	// blocked on a prompt. The blocked task must win — a busy project with
+	// one stuck agent should still surface the question icon.
+	tasks := []*model.Task{
+		{ID: "busy", Status: model.StatusInProgress, Project: "p"},
+		{ID: "blocked", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.running = map[string]bool{"busy": true, "blocked": true}
+	tl.idle = map[string]bool{"blocked": true}
+	tl.needsInput = map[string]bool{"blocked": true}
+	tl.animFrame = 0
+
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != theme.IconNeedsInput {
+		t.Errorf("projectStatusIcon = %c, want IconNeedsInput", icon)
+	}
+}
+
+func TestTaskListView_NeedsInputBeatsIdleUnvisited(t *testing.T) {
+	tl := NewTaskListView()
+	tasks := []*model.Task{
+		{ID: "1", Status: model.StatusInProgress, Project: "p"},
+	}
+	tl.idleUnvisited = map[string]bool{"1": true}
+	tl.needsInput = map[string]bool{"1": true}
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{"1": true}
+	tl.animFrame = 0
+
+	icon, _ := tl.projectStatusIcon(tasks)
+	if icon != theme.IconNeedsInput {
+		t.Errorf("projectStatusIcon = %c, want IconNeedsInput (needs-input beats idle-unvisited)", icon)
+	}
+}
+
+func TestTaskListView_DrawTaskRow_NeedsInput(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "blocked-task", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.running = map[string]bool{"1": true}
+	tl.idle = map[string]bool{"1": true}
+	tl.idleUnvisited = map[string]bool{"1": true} // would normally render moon-stars
+	tl.needsInput = map[string]bool{"1": true}    // should override
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+	out := dumpScreen(sim)
+	if !strings.ContainsRune(out, theme.IconNeedsInput) {
+		t.Errorf("rendered row missing IconNeedsInput; got: %q", out)
+	}
+	if strings.ContainsRune(out, theme.IconMoonStars) {
+		t.Errorf("rendered row should not show IconMoonStars when needs-input is set; got: %q", out)
+	}
+}
+
 func TestTaskListView_StatusCycleKeys(t *testing.T) {
 	tl := NewTaskListView()
 	var changed *model.Task
