@@ -88,6 +88,8 @@ type App struct {
 	agentHeader  *widget.AgentHeader
 	gitPanel     *gitpanel.GitPanel // git status for agent view (left panel)
 	filePanel    *gitpanel.FilePanel
+	attentionBar *widget.AttentionBar // sits above gitPanel in agent view
+	agentLeftCol *tview.Flex          // vertical flex that owns attentionBar + gitPanel
 
 	// Tabs
 	settings     *SettingsView
@@ -160,6 +162,7 @@ type App struct {
 	// Idle-unvisited tracking (for visual InReview promotion)
 	idleUnvisited    map[string]bool // task IDs idle since user last opened their agent view
 	viewedWhileAgent map[string]bool // tasks viewed in agent view; suppresses idleUnvisited re-add
+	needsInputIDs    []string        // task IDs detected as blocked on a user prompt this tick
 
 	// Daemon health
 	daemonFailures    int
@@ -390,9 +393,20 @@ func (a *App) buildUI() {
 		AddItem(a.taskDetail, 0, 1, false)
 	a.taskPage = taskview.NewTaskPage(taskFlex, a.tasklist)
 
-	// Agent page — header + three-panel layout
+	// Agent page — header + three-panel layout. The left column stacks
+	// the attention bar (visible only when other tasks need user attention)
+	// above the git status panel; it starts at zero height and grows as
+	// updateAttentionBar resizes it.
+	a.attentionBar = widget.NewAttentionBar()
+	a.agentLeftCol = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.attentionBar, 0, 0, false).
+		AddItem(a.gitPanel, 0, 1, false)
+	a.attentionBar.OnHeightChange = func() {
+		a.agentLeftCol.ResizeItem(a.attentionBar, a.attentionBar.DesiredHeight(), 0)
+		a.forceRedraw("attention bar height changed")
+	}
 	agentPanels := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(a.gitPanel, 0, 1, false).
+		AddItem(a.agentLeftCol, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -1105,6 +1119,38 @@ func (a *App) syncIdleUnvisited() {
 	a.tasklist.SetIdleUnvisited(ids)
 }
 
+// updateAttentionBar feeds the agent view's attention bar with the names of
+// tasks currently blocked on a user prompt (the `needsInputIDs` set computed
+// by refreshTasksWithIDs). The currently-viewed task is excluded so the bar
+// only surfaces OTHER tasks waiting on input — opening one yourself already
+// makes it obvious. Names are sorted for stable rendering.
+func (a *App) updateAttentionBar() {
+	if a.attentionBar == nil {
+		return
+	}
+	currentID := ""
+	if a.mode == modeAgent {
+		currentID = a.agentState.TaskID
+	}
+	byID := make(map[string]*model.Task, len(a.tasks))
+	for _, t := range a.tasks {
+		byID[t.ID] = t
+	}
+	entries := make([]widget.AttentionEntry, 0, len(a.needsInputIDs))
+	for _, id := range a.needsInputIDs {
+		if id == currentID {
+			continue
+		}
+		t, ok := byID[id]
+		if !ok {
+			continue
+		}
+		entries = append(entries, widget.AttentionEntry{TaskName: t.Name})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].TaskName < entries[j].TaskName })
+	a.attentionBar.SetEntries(entries)
+}
+
 // detectNeedsInput returns the subset of idleIDs whose recent PTY output
 // contains a known "agent is blocked on a user prompt" signature. Scanning is
 // gated on idleness — an agent that's still streaming bytes is not blocked
@@ -1303,7 +1349,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
 	a.syncIdleUnvisited()
-	a.tasklist.SetNeedsInput(a.detectNeedsInput(idleIDs))
+	a.needsInputIDs = a.detectNeedsInput(idleIDs)
+	a.tasklist.SetNeedsInput(a.needsInputIDs)
+	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
 
@@ -2240,6 +2288,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.ResetVT()
+	// Re-filter the attention bar now that currentID is set — otherwise the
+	// just-opened task could linger in the bar until the next tick.
+	a.updateAttentionBar()
 	// Refresh the clipboard hint synchronously on entry so re-opening a
 	// task with a pending payload doesn't flash a hint-less header for up
 	// to one tick. The tick loop continues to keep this in sync.

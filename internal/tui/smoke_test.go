@@ -1585,3 +1585,58 @@ func TestSmoke_FocusLossDoesNotTriggerSync(t *testing.T) {
 		t.Fatalf("focus loss must not fire focus-regained Sync; tail:\n%s", string(tail))
 	}
 }
+
+// TestSmoke_AttentionBarShowsOtherNeedsInputTasks verifies the agent view's
+// attention bar populates from needsInputIDs, excludes the currently-viewed
+// task, and collapses back to zero height once no other tasks are blocked.
+func TestSmoke_AttentionBarShowsOtherNeedsInputTasks(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	viewed := &model.Task{ID: "view-1", Name: "viewed", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}
+	other := &model.Task{ID: "other-1", Name: "needs-help", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}
+	d.Add(viewed)
+	d.Add(other)
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Pretend both tasks were blocked on a prompt, then enter the viewed task.
+	readUI(t, app.tapp, func() {
+		app.needsInputIDs = []string{viewed.ID, other.ID}
+		app.updateAttentionBar()
+		app.onTaskSelect(viewed, false)
+	})
+
+	var entries []widget.AttentionEntry
+	var height int
+	readUI(t, app.tapp, func() {
+		entries = app.attentionBar.Entries()
+		height = app.attentionBar.DesiredHeight()
+	})
+	if len(entries) != 1 || entries[0].TaskName != "needs-help" {
+		t.Fatalf("attention bar should contain the OTHER task only; got %#v", entries)
+	}
+	if height != 3 { // 1 entry + 2 border rows
+		t.Fatalf("desired height = %d, want 3 for one entry", height)
+	}
+
+	// Clear the other task from needsInputIDs and refresh — bar should collapse.
+	readUI(t, app.tapp, func() {
+		app.needsInputIDs = nil
+		app.updateAttentionBar()
+	})
+
+	readUI(t, app.tapp, func() {
+		entries = app.attentionBar.Entries()
+		height = app.attentionBar.DesiredHeight()
+	})
+	if len(entries) != 0 {
+		t.Fatalf("attention bar should be empty after clearing other; got %#v", entries)
+	}
+	if height != 0 {
+		t.Fatalf("desired height after clearing = %d, want 0", height)
+	}
+}

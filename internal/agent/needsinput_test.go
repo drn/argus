@@ -73,6 +73,41 @@ func TestDetectNeedsInput(t *testing.T) {
 			"\x1b[38;2;177;185;249m❯\x1b[3G\x1b[38;2;153;153;153m1.\x1b[39m \x1b[38;2;177;185;249mYes\x1b[39m",
 			true,
 		},
+		{
+			"plain text question above prompt box fires",
+			"⏺ Want me to ship it?\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n",
+			true,
+		},
+		{
+			"plain text statement above prompt box does not fire",
+			"⏺ Shipped it.\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n",
+			false,
+		},
+		{
+			"full-width question mark above prompt box fires",
+			"⏺ 准备好了？\n\n╭───╮\n│ > │\n╰───╯\n",
+			true,
+		},
+		{
+			"hint line below prompt box must not dominate the search",
+			"⏺ All done.\n\n╭───╮\n│ > │\n╰───╯\n  ? for shortcuts\n",
+			false,
+		},
+		{
+			"trailing whitespace after question mark still fires",
+			"⏺ Ready?   \n\n╭───╮\n│ > │\n╰───╯\n",
+			true,
+		},
+		{
+			"no prompt box present — question-mark heuristic skipped",
+			"⏺ Want me to ship it?\n",
+			false,
+		},
+		{
+			"multiple blank lines between transcript and prompt box are skipped",
+			"⏺ Want me to ship it?\n\n\n\n╭───╮\n│ > │\n╰───╯\n",
+			true,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
