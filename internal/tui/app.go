@@ -1174,6 +1174,50 @@ func (a *App) detectNeedsInput(idleIDs []string) []string {
 	return out
 }
 
+// detectNeedsInputSticky wraps detectNeedsInput with a "carry-forward" pass:
+// any task that was previously detected as needing input gets re-checked
+// against its log tail this tick, even if it has fallen out of idleIDs.
+//
+// Why: Claude's prompt UI emits periodic animation bytes (cursor blink,
+// spinner) while waiting for the user. Each emission bumps the session's
+// lastOutput, which kicks the task out of the daemon's idle list for a tick
+// or two at a time. Without this pass the attention bar would oscillate —
+// visible only during the ~3 s windows when the task crosses back through
+// the idle threshold — which the user perceives as "the bar shows briefly
+// then disappears."
+//
+// The sticky entry self-clears when the on-disk marker is gone (the agent
+// has produced enough new bytes to push it out of the tail window — i.e.
+// the question has been answered) or when the task is no longer running.
+func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []string) []string {
+	fresh := a.detectNeedsInput(idleIDs)
+	if len(prevNeedsInput) == 0 {
+		return fresh
+	}
+	freshSet := make(map[string]bool, len(fresh))
+	for _, id := range fresh {
+		freshSet[id] = true
+	}
+	runningSet := make(map[string]bool, len(runningIDs))
+	for _, id := range runningIDs {
+		runningSet[id] = true
+	}
+	for _, id := range prevNeedsInput {
+		if freshSet[id] || !runningSet[id] {
+			continue
+		}
+		tail := readSessionLogTailBytes(id, detectNeedsInputTailBytes)
+		if len(tail) == 0 {
+			continue
+		}
+		if agent.DetectNeedsInput(tail) {
+			fresh = append(fresh, id)
+			freshSet[id] = true
+		}
+	}
+	return fresh
+}
+
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
 // idle task's session log per tick. Large enough to contain Claude's full
 // selection-UI overlay after the colorized repaint inflates line widths.
@@ -1274,6 +1318,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		return
 	}
 	a.tasks = tasks
+	// Snapshot the previous needs-input set before we overwrite it. The
+	// sticky pass below uses this to carry forward detections that have
+	// fallen out of idleIDs — Claude's prompt UI emits periodic animation
+	// bytes (cursor blink, spinner) that bump lastOutput without
+	// representing real progress, kicking a genuinely-blocked task out of
+	// the daemon's idle list for a tick or two at a time.
+	prevNeedsInput := a.needsInputIDs
 	a.runningIDs = runningIDs
 	a.idleIDs = idleIDs
 
@@ -1349,7 +1400,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasklist.SetRunning(a.runningIDs)
 	a.tasklist.SetIdle(idleIDs)
 	a.syncIdleUnvisited()
-	a.needsInputIDs = a.detectNeedsInput(idleIDs)
+	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
