@@ -194,6 +194,7 @@ func TestProvider_Stop(t *testing.T) {
 func TestProvider_ErrorPaths(t *testing.T) {
 	// Every route 500s, so each accessor must fall back to its zero value via
 	// the (previously uncovered) error branch rather than panicking.
+	// newFixture is defined in client_test.go — both files are package apiclient.
 	f := newFixture(t)
 	f.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)

@@ -93,22 +93,28 @@ func TestStyle_AllBranches(t *testing.T) {
 		status                  string
 		archived, failed, focus bool
 		wantFG                  tcell.Color
+		wantBold                bool
 	}{
-		{"archived wins", "in_progress", true, true, true, tcell.ColorGray},
-		{"failed", "complete", false, true, false, tcell.ColorRed},
-		{"pending", "pending", false, false, false, tcell.ColorGray},
-		{"in_progress focused", "in_progress", false, false, true, tcell.ColorAqua},
-		{"in_progress unfocused", "in_progress", false, false, false, tcell.ColorAqua},
-		{"in_review", "in_review", false, false, false, tcell.ColorYellow},
-		{"complete", "complete", false, false, false, tcell.ColorGreen},
-		{"unknown status", "weird", false, false, false, tcell.ColorDefault},
+		{"archived wins", "in_progress", true, true, true, tcell.ColorGray, false},
+		{"failed", "complete", false, true, false, tcell.ColorRed, true},
+		{"pending", "pending", false, false, false, tcell.ColorGray, false},
+		{"in_progress focused", "in_progress", false, false, true, tcell.ColorAqua, true},
+		{"in_progress unfocused", "in_progress", false, false, false, tcell.ColorAqua, false},
+		{"in_review", "in_review", false, false, false, tcell.ColorYellow, false},
+		{"complete", "complete", false, false, false, tcell.ColorGreen, false},
+		{"unknown status", "weird", false, false, false, tcell.ColorDefault, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fg, _, _ := Style(tc.status, tc.archived, tc.failed, tc.focus).Decompose()
+			fg, _, attrs := Style(tc.status, tc.archived, tc.failed, tc.focus).Decompose()
 			if fg != tc.wantFG {
 				t.Errorf("Style(%q, arch=%v, fail=%v, focus=%v) fg = %v, want %v",
 					tc.status, tc.archived, tc.failed, tc.focus, fg, tc.wantFG)
+			}
+			gotBold := attrs&tcell.AttrBold != 0
+			if gotBold != tc.wantBold {
+				t.Errorf("Style(%q, arch=%v, fail=%v, focus=%v) bold = %v, want %v",
+					tc.status, tc.archived, tc.failed, tc.focus, gotBold, tc.wantBold)
 			}
 		})
 	}

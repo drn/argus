@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/testutil"
 )
 
 // initGitRepo creates a git repo with one commit in a fresh temp dir and
@@ -520,15 +521,11 @@ func TestStartPendingBlocked_GuardClauses(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			sess, err := StartPendingBlocked(nil, tc.runner, tc.task)
-			if sess != nil {
-				t.Errorf("expected nil session, got %v", sess)
-			}
+			testutil.Nil(t, sess)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("error %q should contain %q", err, tc.want)
-			}
+			testutil.Contains(t, err.Error(), tc.want)
 		})
 	}
 }

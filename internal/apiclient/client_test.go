@@ -228,7 +228,7 @@ func TestClient_ErrorPaths(t *testing.T) {
 	// A server that 500s every route exercises the error-return arm of each
 	// Client method uniformly — the happy paths are covered by the dedicated
 	// tests above, but the `if err != nil { return ..., err }` branches were
-	// not, leaving these methods at 75%.
+	// previously uncovered.
 	f := newFixture(t)
 	f.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
