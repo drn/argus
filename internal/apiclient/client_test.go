@@ -224,6 +224,46 @@ func TestClient_RenameTask(t *testing.T) {
 	testutil.Contains(t, seenBody, `"name":"new-name"`)
 }
 
+func TestClient_ErrorPaths(t *testing.T) {
+	// A server that 500s every route exercises the error-return arm of each
+	// Client method uniformly — the happy paths are covered by the dedicated
+	// tests above, but the `if err != nil { return ..., err }` branches were
+	// not, leaving these methods at 75%.
+	f := newFixture(t)
+	f.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
+	})
+	ctx := context.Background()
+	c := f.c
+
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{"GitStatus", func() error { _, e := c.GitStatus(ctx, "t1"); return e }},
+		{"GitDiff", func() error { _, e := c.GitDiff(ctx, "t1", "f"); return e }},
+		{"FileTree", func() error { _, e := c.FileTree(ctx, "t1", ""); return e }},
+		{"GetClipboard", func() error { _, e := c.GetClipboard(ctx, "t1"); return e }},
+		{"GetLinks", func() error { _, e := c.GetLinks(ctx, "t1"); return e }},
+		{"ListProjects", func() error { _, e := c.ListProjects(ctx); return e }},
+		{"ListProjectsFull", func() error { _, e := c.ListProjectsFull(ctx); return e }},
+		{"ListBackends", func() error { _, e := c.ListBackends(ctx); return e }},
+		{"ListInbox", func() error { _, e := c.ListInbox(ctx, "t1", InboxFilter{}); return e }},
+		{"SendMessage", func() error { _, e := c.SendMessage(ctx, "t1", SendMessageReq{To: "x", Body: "y"}); return e }},
+		{"AckInbox", func() error { _, e := c.AckInbox(ctx, "t1", []string{"m1"}); return e }},
+		{"ListSchedules", func() error { _, e := c.ListSchedules(ctx); return e }},
+		{"CreateSchedule", func() error { _, e := c.CreateSchedule(ctx, ScheduleReq{}); return e }},
+		{"RunSchedule", func() error { _, e := c.RunSchedule(ctx, "s1"); return e }},
+	}
+	for _, tc := range checks {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
 func TestQueryHelper(t *testing.T) {
 	t.Run("returns empty when all values empty", func(t *testing.T) {
 		testutil.Equal(t, query("a", "", "b", ""), "")
@@ -249,4 +289,3 @@ func TestQueryHelper(t *testing.T) {
 		_ = query(odd...) //nolint:staticcheck // SA5012: the odd-count panic IS the contract under test
 	})
 }
-

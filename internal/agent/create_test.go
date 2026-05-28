@@ -487,3 +487,48 @@ func TestCreateAndStart_StartedAtSetOnSuccess(t *testing.T) {
 	}
 	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
 }
+
+// TestStartPendingBlocked_GuardClauses pins the three argument guards that
+// reject the call before any worktree/DB/session side effect runs. The db is
+// never touched on these paths, so a nil database is safe.
+func TestStartPendingBlocked_GuardClauses(t *testing.T) {
+	tests := []struct {
+		name   string
+		runner SessionProvider
+		task   *model.Task
+		want   string
+	}{
+		{
+			name:   "nil runner",
+			runner: nil,
+			task:   &model.Task{ID: "x", Status: model.StatusPending},
+			want:   "nil runner",
+		},
+		{
+			name:   "nil task",
+			runner: &fakeRunner{},
+			task:   nil,
+			want:   "nil task",
+		},
+		{
+			name:   "non-pending status",
+			runner: &fakeRunner{},
+			task:   &model.Task{ID: "x", Status: model.StatusInReview},
+			want:   "already in status",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sess, err := StartPendingBlocked(nil, tc.runner, tc.task)
+			if sess != nil {
+				t.Errorf("expected nil session, got %v", sess)
+			}
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q should contain %q", err, tc.want)
+			}
+		})
+	}
+}

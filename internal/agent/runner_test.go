@@ -445,6 +445,49 @@ func TestRunner_HasSession_MoreCases(t *testing.T) {
 	}
 }
 
+func TestRunner_PendingRestartIDs(t *testing.T) {
+	r := NewRunner(nil)
+
+	// Empty runner: no pending restarts.
+	testutil.Equal(t, len(r.PendingRestartIDs()), 0)
+	testutil.Equal(t, r.HasPendingRestart("a"), false)
+
+	// Inject two pending entries via the test helper.
+	r.SetPendingRestartForTest("a", true)
+	r.SetPendingRestartForTest("b", true)
+	testutil.Equal(t, r.HasPendingRestart("a"), true)
+
+	ids := r.PendingRestartIDs()
+	testutil.Equal(t, len(ids), 2)
+
+	// Removing one entry drops it from the set.
+	r.SetPendingRestartForTest("a", false)
+	testutil.Equal(t, r.HasPendingRestart("a"), false)
+	testutil.DeepEqual(t, r.PendingRestartIDs(), []string{"b"})
+
+	// A pending entry whose task also has a live session is filtered out —
+	// PendingRestartIDs only surfaces the kick gap (pending but no session).
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "test"},
+		Backends: map[string]config.Backend{
+			"test": {Command: "sleep 60", PromptFlag: ""},
+		},
+		Projects: make(map[string]config.Project),
+	}
+	task := &model.Task{ID: "b", Name: "test", Worktree: t.TempDir()}
+	if _, err := r.Start(task, cfg, 24, 80, false); err != nil {
+		t.Fatal(err)
+	}
+	// "b" now has both a pending entry and a live session → filtered out.
+	testutil.Equal(t, len(r.PendingRestartIDs()), 0)
+
+	// Clear the pending entry before stopping. SetPendingRestartForTest
+	// injects entries with no task and consumed=false, so leaving it in place
+	// would send the exit goroutine down the kick-restart path with a nil task.
+	r.SetPendingRestartForTest("b", false)
+	_ = r.Stop("b")
+}
+
 func TestRunner_StopAll(t *testing.T) {
 	r := NewRunner(nil)
 	cfg := config.Config{
@@ -704,6 +747,22 @@ func TestRunner_KickRerender_NoLoopOnImmediateCrash(t *testing.T) {
 
 	// Wait for the original to exit.
 	<-starts
+
+	// onFinish fires while the session is STILL in the map (pinned by
+	// TestRunner_OnFinishFiresBeforeRemoval); the original exit goroutine only
+	// removes it from the map — and reads pendingRestart — AFTER the callback
+	// returns. So we must wait for that removal before (a) injecting the
+	// pendingRestart entry (otherwise the original goroutine could claim it and
+	// fire a third restart) and (b) the second Start (otherwise it fails with
+	// "session already exists"). Poll rather than sleep a fixed interval — the
+	// gap between onFinish and removal is unbounded on slow/contended CI runners.
+	deadline := time.Now().Add(5 * time.Second)
+	for r.HasSession(task.ID) {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for original session removal")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	// Inject a pendingRestart entry directly with consumed=true to simulate
 	// the state "the previous restart goroutine already claimed this entry

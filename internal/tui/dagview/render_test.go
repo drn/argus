@@ -3,6 +3,8 @@ package dagview
 import (
 	"strings"
 	"testing"
+
+	"github.com/gdamore/tcell/v2"
 )
 
 // TestRender_LinearChain — three nodes stacked on top of each other with
@@ -79,6 +81,80 @@ func TestRender_StatusGlyphs(t *testing.T) {
 			t.Errorf("glyph(%q, archived=%v, failed=%v): got %q want %q",
 				tc.status, tc.archived, tc.failed, got, tc.want)
 		}
+	}
+}
+
+// TestStyle_AllBranches pins the foreground each status/flag combination
+// maps to. Style feeds both the string renderer and the screen painter, so a
+// regression here silently miscolors the whole DAG view.
+func TestStyle_AllBranches(t *testing.T) {
+	cases := []struct {
+		name                    string
+		status                  string
+		archived, failed, focus bool
+		wantFG                  tcell.Color
+	}{
+		{"archived wins", "in_progress", true, true, true, tcell.ColorGray},
+		{"failed", "complete", false, true, false, tcell.ColorRed},
+		{"pending", "pending", false, false, false, tcell.ColorGray},
+		{"in_progress focused", "in_progress", false, false, true, tcell.ColorAqua},
+		{"in_progress unfocused", "in_progress", false, false, false, tcell.ColorAqua},
+		{"in_review", "in_review", false, false, false, tcell.ColorYellow},
+		{"complete", "complete", false, false, false, tcell.ColorGreen},
+		{"unknown status", "weird", false, false, false, tcell.ColorDefault},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fg, _, _ := Style(tc.status, tc.archived, tc.failed, tc.focus).Decompose()
+			if fg != tc.wantFG {
+				t.Errorf("Style(%q, arch=%v, fail=%v, focus=%v) fg = %v, want %v",
+					tc.status, tc.archived, tc.failed, tc.focus, fg, tc.wantFG)
+			}
+		})
+	}
+}
+
+// TestDraw_PaintsToScreen exercises the screen-painting path (Draw → drawNode
+// → drawEdge), which is distinct from RenderToString's string buffer. A
+// fan-out layout forces the bent-corner edge glyphs; a failed + cursor node
+// covers the highlight/reverse and failed-style branches.
+func TestDraw_PaintsToScreen(t *testing.T) {
+	l := Compute([]Node{
+		{ID: "A", Name: "root", Status: "complete"},
+		{ID: "B", Name: "left", Status: "in_progress", DependsOn: []string{"A"}},
+		{ID: "C", Name: "right", Status: "pending", DependsOn: []string{"A"}},
+	})
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(120, 40)
+
+	parseFailed := func(id string) bool { return id == "B" }
+	w, h := Draw(screen, 0, 0, l, "A", true, parseFailed)
+	if w <= 0 || h <= 0 {
+		t.Fatalf("expected positive bounding box, got w=%d h=%d", w, h)
+	}
+	screen.Show() // flush SetContent writes into the front buffer GetContents reads
+
+	// Draw should have painted box-corner glyphs somewhere on the screen.
+	cells, _, _ := screen.GetContents()
+	var sawCorner bool
+	for _, c := range cells {
+		if len(c.Runes) > 0 && c.Runes[0] == '╭' {
+			sawCorner = true
+			break
+		}
+	}
+	if !sawCorner {
+		t.Error("expected at least one box corner glyph painted")
+	}
+
+	// Empty layout is a no-op returning a zero box.
+	if ew, eh := Draw(screen, 0, 0, Layout{}, "", false, nil); ew != 0 || eh != 0 {
+		t.Errorf("empty layout: got w=%d h=%d, want 0,0", ew, eh)
 	}
 }
 

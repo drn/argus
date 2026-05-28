@@ -191,6 +191,25 @@ func TestProvider_Stop(t *testing.T) {
 	testutil.NoError(t, p.Stop("t1"))
 }
 
+func TestProvider_ErrorPaths(t *testing.T) {
+	// Every route 500s, so each accessor must fall back to its zero value via
+	// the (previously uncovered) error branch rather than panicking.
+	f := newFixture(t)
+	f.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"boom"}`, http.StatusInternalServerError)
+	})
+	p := NewProvider(f.c)
+
+	testutil.Equal(t, len(p.Running()), 0)
+	testutil.Equal(t, len(p.Idle()), 0)
+	running, idle := p.RunningAndIdle()
+	testutil.Equal(t, len(running), 0)
+	testutil.Equal(t, len(idle), 0)
+	testutil.False(t, p.HasSession("x"))
+	testutil.Equal(t, p.WorkDir("x"), "")
+	testutil.False(t, p.HasPendingRestart("x"))
+}
+
 func TestSession_WriteInput_UpdatesLastInput(t *testing.T) {
 	fs := newFakeServer(t)
 	p := NewProvider(fs.client())

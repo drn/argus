@@ -14,13 +14,25 @@ make vet                    # go vet ./...
 make test                   # go test -race -count=1 ./...
 make test-pkg PKG=./internal/db/  # single package, verbose
 make test-cover             # coverage profile + summary
+make test-cover-gate        # race suite + coverage floor (-min 88; matches CI gate)
 make test-watch             # gotestsum --watch (install: go install gotest.tools/gotestsum@latest)
 make fmt                    # goimports -w . (format the tree)
 make fmt-check              # fail if any file is not goimports-clean (matches CI)
 make vuln                   # govulncheck ./... (install: go install golang.org/x/vuln/cmd/govulncheck@latest)
 make lint-pr                # golangci-lint --new-from-rev=origin/master (matches CI; run before pushing)
+make pre-pr                 # full CI mirror: build+vet+fmt-check+lint-pr+vuln+test-cover-gate
 go build -o argus ./cmd/argus/    # build binary
 ```
+
+## Before Opening a PR
+
+**Run `make pre-pr` and get a clean pass before opening OR updating any PR.** It mirrors `.github/workflows/ci.yml` step-for-step (build → vet → fmt-check → lint-pr → vuln → test-cover-gate), so a green `make pre-pr` means CI will be green. This is non-negotiable: do not `git push` a PR branch until it passes.
+
+- **`make fmt-check` failing?** Run `make fmt` first — goimports rewrites the tree (the most common CI miss is an unformatted file).
+- **`make test-cover-gate` failing?** Filtered coverage dropped below the 88% floor. Add tests for the code you touched (or for under-covered platform-agnostic code) until it clears — the floor ratchets up and never down. Do NOT lower `-min`.
+- **`make lint-pr` failing?** `lint-pr` uses `--new-from-rev=origin/master`, so it only flags issues your diff introduced (including `staticcheck` deprecations like `SA1019` on new lines). Fix them; do not add blanket `//nolint`.
+
+Why this matters: the gate steps run in sequence and the first failure short-circuits the rest. A formatting miss alone will hide test/lint/coverage failures from CI until it's fixed, so running the **full** `make pre-pr` locally is the only way to surface every problem in one pass.
 
 ## Test-Driven Development
 
