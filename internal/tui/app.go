@@ -1675,27 +1675,40 @@ func (a *App) updateFocusIndicators() {
 	a.filePanel.SetFocused(a.agentFocus == focusFiles)
 }
 
+// clearAgentZen turns single-pane (zoom) mode off and restores the 1:3:1 agent
+// layout. Idempotent — safe to call when zen is already off (the ResizeItem
+// calls just re-assert the proportional sizing). Shared by toggleAgentZen's
+// un-zoom branch, exitAgentView, and the agent-view entry points (defensive, so
+// a session torn down without exitAgentView can't leave the next entry zoomed).
+// Main goroutine only.
+func (a *App) clearAgentZen() {
+	a.agentZen = false
+	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
+	a.agentPanels.ResizeItem(a.filePanel, 0, 1)
+}
+
 // toggleAgentZen flips single-pane (zoom) mode in the agent view. When on, the
 // left column (attention bar + git) and the file panel collapse to zero width
 // so the agent terminal fills the whole pane row; when off, the 1:3:1 layout is
 // restored. The terminal pane's Draw() recomputes the PTY size from its own
 // inner rect every frame, so the resize RPC (and the agent's full-width
 // repaint) fires automatically — no computePTYSize change or manual Resize.
-//
-// Zen mode forces focus back to the terminal: the file panel is hidden, so
-// leaving focus there would silently swallow keys with no visible target.
 func (a *App) toggleAgentZen() {
-	a.agentZen = !a.agentZen
 	if a.agentZen {
+		// Un-zoom keeps terminal focus: there is no prior-focus tracking, and
+		// the user is typically still working in the terminal after a zoom.
+		a.clearAgentZen()
+	} else {
+		a.agentZen = true
 		a.agentPanels.ResizeItem(a.agentLeftCol, 0, 0)
 		a.agentPanels.ResizeItem(a.filePanel, 0, 0)
+		// Force focus back to the terminal: the file panel is hidden at zero
+		// width, so leaving focus there would silently swallow keys with no
+		// visible target.
 		if a.agentFocus != focusTerminal {
 			a.agentFocus = focusTerminal
 			a.updateFocusIndicators()
 		}
-	} else {
-		a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
-		a.agentPanels.ResizeItem(a.filePanel, 0, 1)
 	}
 	uxlog.Log("[tui] agent zen mode toggled: %v", a.agentZen)
 }
@@ -2360,6 +2373,9 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 
+	// Defensive: ensure we open un-zoomed even if a prior session was torn
+	// down without exitAgentView restoring the layout.
+	a.clearAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
@@ -2392,6 +2408,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
+	// Defensive: ensure we open un-zoomed even if a prior session was torn
+	// down without exitAgentView restoring the layout.
+	a.clearAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.ResetVT()
@@ -3865,11 +3884,7 @@ func (a *App) exitAgentView() {
 	a.mu.Unlock()
 	// Restore the 1:3:1 layout if we left while zoomed, so the next agent
 	// view opens with the side panels visible.
-	if a.agentZen {
-		a.agentZen = false
-		a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
-		a.agentPanels.ResizeItem(a.filePanel, 0, 1)
-	}
+	a.clearAgentZen()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()
