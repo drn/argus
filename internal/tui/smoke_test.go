@@ -456,6 +456,132 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	testutil.Equal(t, mode, modeTaskList)
 }
 
+// TestSmoke_AgentZenToggle verifies Ctrl+Z collapses the side panels to zero
+// width (single-pane zoom) and toggles back to the 1:3:1 layout, and that
+// exiting the agent view while zoomed restores the panels.
+func TestSmoke_AgentZenToggle(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "zen-1",
+		Name:      "zen test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Enter agent view.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	var zen bool
+	var leftW, fileW, paneW int
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+		_, _, paneW, _ = app.agentPane.GetRect()
+	})
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+	normalPaneW := paneW
+
+	// Ctrl+Z → zoom: side panels collapse to zero width, pane widens.
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+		_, _, paneW, _ = app.agentPane.GetRect()
+	})
+	testutil.Equal(t, zen, true)
+	testutil.Equal(t, leftW, 0)
+	testutil.Equal(t, fileW, 0)
+	testutil.True(t, paneW > normalPaneW)
+
+	// Ctrl+Z again → restore 1:3:1.
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+	})
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+
+	// Zoom again, then exit — exitAgentView must reset the zen flag so the
+	// next agent view opens with panels visible.
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0) // exit (no live session)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, false)
+
+	// Re-enter: the restored 1:3:1 proportions lay out with visible panels.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+	})
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+}
+
+// TestSmoke_AgentZenForcesTerminalFocus verifies that zooming while the file
+// panel is focused snaps focus back to the terminal — the file panel is hidden
+// in zen mode, so leaving focus there would swallow keys with no visible target.
+func TestSmoke_AgentZenForcesTerminalFocus(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "zen-focus-1",
+		Name:      "zen focus test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() {
+		app.onTaskSelect(task, true)
+		app.agentFocus = focusFiles
+		app.updateFocusIndicators()
+	})
+
+	var focus agentFocus
+	readUI(t, app.tapp, func() { focus = app.agentFocus })
+	testutil.Equal(t, focus, focusFiles)
+
+	readUI(t, app.tapp, func() { app.toggleAgentZen() })
+
+	var zen bool
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		focus = app.agentFocus
+	})
+	testutil.Equal(t, zen, true)
+	testutil.Equal(t, focus, focusTerminal)
+}
+
 // TestSmoke_ExitAgentViewResetsTab verifies that exiting agent view resets the
 // header tab to widget.TabTasks. Without the reset, the global key handler
 // routes up/down keys to the wrong tab's handler, breaking task list navigation.

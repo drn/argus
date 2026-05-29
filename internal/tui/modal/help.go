@@ -65,6 +65,7 @@ var HelpSections = []HelpSection{
 			{"Cmd+← / Cmd+→", "switch panels"},
 			{"Cmd+↑ / Cmd+↓", "navigate tasks"},
 			{"Shift+↑ / Shift+↓", "scroll terminal"},
+			{"ctrl+z", "toggle single-pane (zoom)"},
 			{"ctrl+l", "link picker"},
 			{"ctrl+p", "open PR"},
 			{"ctrl+y", "copy staged text"},

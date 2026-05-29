@@ -137,6 +137,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
 | `Cmd+←` / `Cmd+→`     | Switch panels                                                             |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
+| `ctrl+z`              | Toggle single-pane (zoom) — collapse git + file panes, full-width agent   |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
