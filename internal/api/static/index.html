@@ -1560,7 +1560,7 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-function applyPendingShare() {
+async function applyPendingShare() {
   const raw = sessionStorage.getItem('argus-pending-share');
   if (!raw) return;
   sessionStorage.removeItem('argus-pending-share');
@@ -1577,11 +1577,12 @@ function applyPendingShare() {
   // create tab when a share fired.
   if (promptEl && promptEl.value.trim()) return;
   switchTab('create');
-  // If a default share project is configured, snap the project dropdown to it
-  // — overrides the "last expanded folder" default that applyCreateDefaults()
-  // installed during switchTab. Skipped when blank or when the option is
-  // missing from the cached list (e.g. project was deleted since save).
-  applyShareProjectDefault();
+  // Snap the project dropdown to the configured share default — overrides
+  // the "last expanded folder" default that applyCreateDefaults() installed
+  // during switchTab. Awaited so a cold-boot settings fetch lands BEFORE the
+  // prompt is focused; otherwise the user could submit to the wrong project
+  // during the RTT.
+  await applyShareProjectDefault();
   if (promptEl) {
     promptEl.value = parts.join('\n\n');
     // Fire `input` so the slash-skill autocomplete listener stays in sync with
@@ -1610,6 +1611,10 @@ async function applyShareProjectDefault() {
   const sel = document.getElementById('create-project');
   if (!sel) return;
   if (![...sel.options].some(o => o.value === want)) return;
+  // Skip the loadSkillsForProject re-fire when the select already lands on
+  // the wanted value — matches applyCreateDefaults' guard. Avoids a
+  // duplicate /api/skills fetch on cold boot when both helpers race.
+  if (sel.value === want) return;
   sel.value = want;
   loadSkillsForProject(want);
 }
