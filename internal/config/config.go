@@ -47,6 +47,10 @@ func DefaultMetisVaultPath() string {
 
 type Defaults struct {
 	Backend string `toml:"backend"`
+	// ShareProject is the project name preselected in the New Task form when
+	// the PWA share target lands a payload (iOS/Android share sheet → /share).
+	// Empty falls back to the currently expanded project folder.
+	ShareProject string `toml:"share_project"`
 }
 
 type Backend struct {

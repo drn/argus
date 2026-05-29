@@ -56,6 +56,25 @@ func TestBuildSettingsUpdates(t *testing.T) {
 		})
 		testutil.Equal(t, got["defaults.backend"], "claude")
 	})
+
+	t.Run("defaults share_project flow through", func(t *testing.T) {
+		proj := "argus"
+		got := buildSettingsUpdates(updateSettingsReq{
+			Defaults: &defaultsUpdate{ShareProject: &proj},
+		})
+		testutil.Equal(t, got["defaults.share_project"], "argus")
+	})
+
+	t.Run("defaults share_project empty clears", func(t *testing.T) {
+		empty := ""
+		got := buildSettingsUpdates(updateSettingsReq{
+			Defaults: &defaultsUpdate{ShareProject: &empty},
+		})
+		// Sentinel for "saved but blank" — the SPA select offers (none).
+		val, ok := got["defaults.share_project"]
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, val, "")
+	})
 }
 
 func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
@@ -94,6 +113,35 @@ func TestHandleSettings_PutPersists(t *testing.T) {
 	testutil.DeepEqual(t, cfg.Sandbox.DenyRead, []string{"/etc"})
 	testutil.Equal(t, cfg.KB.Enabled, true)
 	testutil.Equal(t, cfg.KB.MetisVaultPath, "/tmp/m")
+}
+
+func TestHandleSettings_ShareProjectRoundtrip(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+	handler := authMiddleware(srv.token, d, nil, mux)
+
+	// PUT defaults.share_project = "argus"
+	body := `{"defaults": {"share_project": "argus"}}`
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", body))
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	// db round-trip
+	testutil.Equal(t, d.Config().Defaults.ShareProject, "argus")
+
+	// GET surfaces the new value
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/settings", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp settingsResponse
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	testutil.Equal(t, resp.Defaults.ShareProject, "argus")
+
+	// Blank clears it.
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"share_project": ""}}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.ShareProject, "")
 }
 
 func TestHandleSettings_PutRequiresMaster(t *testing.T) {

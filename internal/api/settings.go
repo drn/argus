@@ -45,7 +45,8 @@ type apiSettings struct {
 }
 
 type defaultsJSON struct {
-	Backend string `json:"backend"`
+	Backend      string `json:"backend"`
+	ShareProject string `json:"share_project"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +68,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			HTTPPort: cfg.API.HTTPPort,
 		},
 		Defaults: defaultsJSON{
-			Backend: cfg.Defaults.Backend,
+			Backend:      cfg.Defaults.Backend,
+			ShareProject: cfg.Defaults.ShareProject,
 		},
 	})
 }
@@ -102,7 +104,8 @@ type apiUpdate struct {
 }
 
 type defaultsUpdate struct {
-	Backend *string `json:"backend,omitempty"`
+	Backend      *string `json:"backend,omitempty"`
+	ShareProject *string `json:"share_project,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +176,9 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 	if d := req.Defaults; d != nil {
 		if d.Backend != nil {
 			out["defaults.backend"] = *d.Backend
+		}
+		if d.ShareProject != nil {
+			out["defaults.share_project"] = *d.ShareProject
 		}
 	}
 	return out

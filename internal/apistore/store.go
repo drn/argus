@@ -306,6 +306,8 @@ func (s *Store) SetConfigValue(key, value string) error {
 		upd.API = &apiclient.APIUpdate{Enabled: &b}
 	case "default_backend", "defaults.backend":
 		upd.Defaults = &apiclient.DefaultsUpdate{Backend: &value}
+	case "defaults.share_project":
+		upd.Defaults = &apiclient.DefaultsUpdate{ShareProject: &value}
 	default:
 		return errors.New("apistore: SetConfigValue: no remote handler for key " + key)
 	}
