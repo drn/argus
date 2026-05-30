@@ -65,6 +65,12 @@ func TestGenerateSandboxConfig_BasicPaths(t *testing.T) {
 		t.Errorf("profile missing allow file-write* for ~/Library/Keychains:\n%s", profile)
 	}
 
+	// Profile must allow writes to Chrome's support dir for Playwright/Chrome
+	// crashpad (settings.dat) — without it Chrome SIGSEGVs on launch.
+	if !strings.Contains(profile, "/Library/Application Support/Google/Chrome") {
+		t.Errorf("profile missing allow file-write* for Chrome support dir:\n%s", profile)
+	}
+
 	// Profile must allow writes to /var/folders for macOS temp/cache dirs
 	if !strings.Contains(profile, "/var/folders") {
 		t.Errorf("profile missing allow file-write* for /var/folders:\n%s", profile)
@@ -876,6 +882,48 @@ func TestSandbox_GhConfigWritable(t *testing.T) {
 		target := resolved + "/.config/notgh/data"
 		if _, err := sandboxRunWith(profilePath, params, "echo nope > "+shellQuote(target)); err == nil {
 			t.Fatal("write to ~/.config/notgh must remain blocked — the gh rule must not over-broaden to all of ~/.config")
+		}
+	})
+}
+
+// TestSandbox_ChromeSupportDirWritable pins the Chrome support-dir write rule.
+// Playwright/Chrome (channel: chrome) launches Chrome, whose crashpad handler
+// writes settings.dat to ~/Library/Application Support/Google/Chrome/Crashpad
+// regardless of --user-data-dir. Without write access there, Chrome SIGSEGVs on
+// the denied write before any page loads — the exact failure that blocked all
+// browser automation from inside Argus worktrees.
+func TestSandbox_ChromeSupportDirWritable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+
+	resolved, profilePath, params, cleanup := sandboxFakeHome(t, "chrome", "Library/Application Support/Google/Chrome/Crashpad")
+	defer cleanup()
+
+	t.Run("crashpad settings.dat write", func(t *testing.T) {
+		target := resolved + "/Library/Application Support/Google/Chrome/Crashpad/settings.dat"
+		if out, err := sandboxRunWith(profilePath, params, "echo ok > "+shellQuote(target)); err != nil {
+			t.Fatalf("write to Chrome Crashpad/settings.dat should succeed for browser launch: %v\n%s", err, out)
+		}
+		if _, statErr := os.Stat(target); statErr != nil {
+			t.Errorf("settings.dat should exist after write: %v", statErr)
+		}
+	})
+
+	t.Run("denies unrelated Application Support sibling", func(t *testing.T) {
+		// Pins the rule's narrowness: the allow is scoped to Google/Chrome, so a
+		// sibling like Application Support/OtherApp must stay blocked. A
+		// regression to (subpath .../Application Support) would silently pass.
+		sibling := resolved + "/Library/Application Support/OtherApp"
+		if err := os.MkdirAll(sibling, 0o755); err != nil {
+			t.Fatalf("mkdir sibling: %v", err)
+		}
+		target := sibling + "/data"
+		if _, err := sandboxRunWith(profilePath, params, "echo nope > "+shellQuote(target)); err == nil {
+			t.Fatal("write to Application Support/OtherApp must remain blocked — the Chrome rule must not over-broaden to all of Application Support")
+		}
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Errorf("unrelated file should not have been created: %v", statErr)
 		}
 	})
 }

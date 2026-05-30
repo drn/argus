@@ -101,6 +101,15 @@ const sandboxProfileBase = `(version 1)
 ; macOS Keychain -- needed for Claude Code to store API keys via security(1).
 ; Mach IPC alone is insufficient; security(1) requires direct file-write access.
 (allow file-write* (subpath (string-append (param "HOME") "/Library/Keychains")))
+; Google Chrome support dir -- needed for Playwright/Chrome (channel: chrome) to
+; launch. Chrome's crashpad handler writes settings.dat to this fixed path
+; regardless of --user-data-dir, so without this rule Chrome SIGSEGVs on the
+; denied write before any page loads ("settings.dat: Operation not permitted").
+; Scoped to Google/Chrome (not the whole Application Support tree, which holds
+; many other apps' data) — bundled-Chromium runs are unaffected because their
+; crashpad lives under the --user-data-dir Playwright points at /tmp. Other
+; browser channels (msedge, chrome-beta) can be added via Sandbox.ExtraWrite.
+(allow file-write* (subpath (string-append (param "HOME") "/Library/Application Support/Google/Chrome")))
 ; Dotfiles — full write required for merge skill (git reset --hard origin/master).
 ; Expands from ~/.dots/sys/skill-usage; acceptable since sole-user threat model.
 (allow file-write* (subpath (string-append (param "HOME") "/.dots")))

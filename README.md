@@ -215,7 +215,7 @@ Global sandbox settings are managed in the **Settings tab** (`4` key):
 Per-project overrides are set in the **project form** (`e` on a project in Settings) — **Inherit**, **Enabled**, or **Disabled**. Per-project deny-read and extra-write paths are appended to the global lists.
 
 **Always denied read:** `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
-**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, the main repo's `.git` dir.
+**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (so Playwright/Chrome can launch — its crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
 
 ### Running inside tmux
 
