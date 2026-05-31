@@ -3758,6 +3758,17 @@ func (a *App) deleteTask(t *model.Task) {
 	// Remove session log file.
 	os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 
+	// Remove registered artifacts (manifest rows + on-disk bytes). Best-effort
+	// and parity with the REST delete path. In remote mode the apistore stub
+	// errors (the daemon already cleaned up on the server side) — log and move
+	// on. The dir removal is local-only and harmless either way.
+	if n, derr := a.db.DeleteArtifactsForTask(t.ID); derr != nil {
+		uxlog.Log("[tui] delete: artifact row cleanup skipped/failed for %s: %v", t.ID, derr)
+	} else if n > 0 {
+		uxlog.Log("[tui] delete: cleared %d artifact row(s) for %s", n, t.ID)
+	}
+	os.RemoveAll(agent.ArtifactsDir(t.ID)) //nolint:errcheck
+
 	// Delete from database first so the UI updates immediately.
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui] failed to delete task %s: %v", t.ID, err)

@@ -448,6 +448,41 @@ button:disabled { opacity: 0.5; cursor: default; }
   z-index: 60;
   overflow: hidden;
 }
+/* Artifacts view — opened from the detail-view overflow menu. Same fixed,
+   fills-the-viewport pattern as #files-view. The body holds either the list of
+   registered artifacts or a single-artifact viewer (sandboxed iframe / img /
+   pre). When viewing an embedded frame, .viewing turns the body into a flex
+   column so the frame fills the remaining height. */
+#artifacts-view { display: none; }
+#artifacts-view.open {
+  display: flex; flex-direction: column;
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 100vh; height: 100dvh; height: var(--app-height, 100dvh);
+  background: var(--bg); z-index: 60; overflow: hidden;
+}
+.artifacts-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
+.artifacts-body.viewing { display: flex; flex-direction: column; overflow: hidden; }
+.artifact-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.artifact-item:active { background: var(--surface); }
+.artifact-icon { font-size: 20px; flex: 0 0 auto; width: 24px; text-align: center; }
+.artifact-meta { flex: 1 1 auto; min-width: 0; }
+.artifact-name { font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+.artifact-chevron { color: var(--text-dim); flex: 0 0 auto; font-size: 18px; }
+.artifact-vtoolbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); min-height: 40px;
+}
+.artifact-vtoolbar a, .artifact-vtoolbar .link { color: var(--accent); font-size: 13px; cursor: pointer; text-decoration: none; -webkit-tap-highlight-color: transparent; }
+.artifact-vtoolbar .spacer { flex: 1 1 auto; }
+.artifact-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; min-height: 0; }
+.artifact-img-wrap { flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch; text-align: center; background: var(--bg); }
+.artifact-img { max-width: 100%; height: auto; }
+.artifact-pre { flex: 1 1 auto; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); background: var(--bg); }
 /* Slim toolbar above the stack — currently holds the wrap toggle and the
    expand/collapse-all button. Buttons stop propagation in JS so taps don't
    bubble into anything below. */
@@ -1013,6 +1048,21 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <button class="toolbar-btn on" id="files-wrap-toggle" onclick="toggleDiffWrap(event)">Wrap: on</button>
     </div>
     <div class="files-stack" id="files-stack">
+      <div class="files-empty">Loading…</div>
+    </div>
+  </div>
+
+  <!-- Artifacts View — opened from the detail-view overflow menu. Lists
+       registered session artifacts and renders the selected one: HTML in a
+       sandboxed iframe (no same-origin, so its scripts can't read our token),
+       PDF embedded, images inline, markdown/text rendered. -->
+  <div id="artifacts-view">
+    <div class="detail-header">
+      <div class="detail-back" onclick="closeArtifactsView()">&larr; Back</div>
+      <div class="detail-title" id="artifacts-title">Artifacts</div>
+      <div class="detail-subtitle" id="artifacts-subtitle"></div>
+    </div>
+    <div class="artifacts-body" id="artifacts-body">
       <div class="files-empty">Loading…</div>
     </div>
   </div>
@@ -2073,6 +2123,7 @@ function showOffline() {
   closeInputsModal();
   closeLinksModal();
   closeFilesView();
+  closeArtifactsView();
   const dv = document.getElementById('detail-view');
   if (dv) { dv.classList.remove('open'); dv.style.transform = ''; }
   currentTask = null;
@@ -2268,6 +2319,7 @@ async function openDetail(id) {
   // link, etc.) doesn't leave the previous task's files-view or prompt modal
   // stacked on top.
   closeFilesView();
+  closeArtifactsView();
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
@@ -3172,6 +3224,7 @@ function renderOverflowMenu() {
   }
   items.push(
     { id: 'btn-files', label: 'Files & diff', fn: openFilesView },
+    { id: 'btn-artifacts', label: 'Artifacts', fn: openArtifactsView },
     { id: 'btn-prompt', label: 'View prompt', fn: openPromptModal },
     { id: 'btn-inputs', label: 'Input history', fn: openInputsModal },
     { id: 'btn-links', label: 'Open link', fn: openLinksModal },
@@ -3507,6 +3560,7 @@ function closeDetail() {
   destroyTerm();
   closeOverflowMenu();
   closeFilesView();
+  closeArtifactsView();
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
@@ -3819,6 +3873,224 @@ async function openFilesView() {
 function closeFilesView() {
   document.getElementById('files-view').classList.remove('open');
   filesViewTask = null;
+}
+
+// --- Artifacts view -------------------------------------------------------
+// Lists registered session artifacts and renders the selected one. Bytes are
+// fetched with the auth header (never with a ?token= in a frame src) and shown
+// from a blob: URL, so the token is never exposed to an artifact's own scripts.
+// HTML frames are sandboxed allow-scripts WITHOUT allow-same-origin → opaque
+// origin → no access to the parent window or its token in localStorage.
+let artifactsViewTask = null;
+let artifactObjectURLs = [];
+
+function revokeArtifactURLs() {
+  for (const u of artifactObjectURLs) { try { URL.revokeObjectURL(u); } catch (e) { /* already revoked */ } }
+  artifactObjectURLs = [];
+}
+
+async function openArtifactsView() {
+  if (!currentTask) return;
+  artifactsViewTask = currentTask;
+  document.getElementById('artifacts-title').textContent = 'Artifacts';
+  document.getElementById('artifacts-subtitle').textContent =
+    `${artifactsViewTask.project} · ${artifactsViewTask.name}`;
+  const body = document.getElementById('artifacts-body');
+  body.className = 'artifacts-body';
+  body.innerHTML = '<div class="files-empty">Loading…</div>';
+  document.getElementById('artifacts-view').classList.add('open');
+  await loadArtifactsList(artifactsViewTask.id);
+}
+
+function closeArtifactsView() {
+  document.getElementById('artifacts-view').classList.remove('open');
+  revokeArtifactURLs();
+  artifactsViewTask = null;
+}
+
+async function loadArtifactsList(taskId) {
+  revokeArtifactURLs();
+  const body = document.getElementById('artifacts-body');
+  body.className = 'artifacts-body';
+  body.innerHTML = '<div class="files-empty">Loading…</div>';
+  try {
+    const r = await api(`/api/tasks/${taskId}/artifacts`);
+    if (!r.ok) throw new Error('artifacts ' + r.status);
+    const data = await r.json();
+    if (artifactsViewTask?.id !== taskId) return; // user switched away
+    renderArtifactsList(data.artifacts || [], taskId);
+  } catch (e) {
+    if (artifactsViewTask?.id !== taskId) return;
+    body.innerHTML = `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+function artifactIcon(type) {
+  switch (type) {
+    case 'html': return '🌐';
+    case 'pdf': return '📄';
+    case 'image': return '🖼️';
+    case 'markdown': return '📝';
+    default: return '📃';
+  }
+}
+
+function fmtBytes(n) {
+  n = n || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function renderArtifactsList(arts, taskId) {
+  const body = document.getElementById('artifacts-body');
+  body.className = 'artifacts-body';
+  if (!arts.length) {
+    body.innerHTML = '<div class="files-empty">No artifacts registered for this task yet.</div>';
+    return;
+  }
+  body.innerHTML = arts.map((a, i) => `
+    <div class="artifact-item" data-idx="${i}">
+      <div class="artifact-icon">${artifactIcon(a.type)}</div>
+      <div class="artifact-meta">
+        <div class="artifact-name">${esc(a.name || a.filename)}</div>
+        <div class="artifact-sub">${esc(a.type)} · ${fmtBytes(a.size)}</div>
+      </div>
+      <div class="artifact-chevron">›</div>
+    </div>`).join('');
+  // Wire taps in JS (not inline) so we can hand the full artifact object to
+  // the viewer without round-tripping it through an attribute.
+  body.querySelectorAll('.artifact-item').forEach(el => {
+    const a = arts[parseInt(el.dataset.idx, 10)];
+    el.onclick = () => openArtifactViewer(taskId, a);
+  });
+}
+
+function artifactBackToolbar(taskId, extraRight) {
+  const back = `<span class="link" onclick="loadArtifactsList('${escAttr(taskId)}')">&larr; All artifacts</span>`;
+  return `<div class="artifact-vtoolbar">${back}<span class="spacer"></span>${extraRight || ''}</div>`;
+}
+
+async function openArtifactViewer(taskId, art) {
+  revokeArtifactURLs();
+  const body = document.getElementById('artifacts-body');
+  body.className = 'artifacts-body viewing';
+  body.innerHTML = artifactBackToolbar(taskId, '') + '<div class="files-empty">Loading…</div>';
+  try {
+    const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
+    if (!r.ok) throw new Error('fetch ' + r.status);
+    if (artifactsViewTask?.id !== taskId) return;
+    if (art.type === 'markdown' || art.type === 'text') {
+      const txt = await r.text();
+      if (artifactsViewTask?.id !== taskId) return;
+      renderTextArtifact(taskId, art, txt);
+    } else {
+      const blob = await r.blob();
+      if (artifactsViewTask?.id !== taskId) return;
+      const url = URL.createObjectURL(blob);
+      artifactObjectURLs.push(url);
+      renderBlobArtifact(taskId, art, url);
+    }
+  } catch (e) {
+    if (artifactsViewTask?.id !== taskId) return;
+    body.innerHTML = artifactBackToolbar(taskId, '') + `<div class="files-empty">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderBlobArtifact(taskId, art, url) {
+  const body = document.getElementById('artifacts-body');
+  const dl = `<a href="${url}" download="${escAttr(art.filename)}">Open / Download</a>`;
+  if (art.type === 'html') {
+    // sandbox="allow-scripts" (no allow-same-origin) → opaque origin: report
+    // scripts run but can't reach the parent or its token.
+    body.innerHTML = artifactBackToolbar(taskId, dl) +
+      `<iframe class="artifact-frame" sandbox="allow-scripts allow-popups" src="${url}"></iframe>`;
+  } else if (art.type === 'pdf') {
+    // PDFs render via the browser's native viewer; some mobile browsers
+    // (notably iOS Safari) won't inline a blob PDF, hence the download link.
+    body.innerHTML = artifactBackToolbar(taskId, dl) +
+      `<iframe class="artifact-frame" src="${url}"></iframe>`;
+  } else if (art.type === 'image') {
+    body.innerHTML = artifactBackToolbar(taskId, dl) +
+      `<div class="artifact-img-wrap"><img class="artifact-img" src="${url}" alt="${escAttr(art.name || art.filename)}"></div>`;
+  } else {
+    body.innerHTML = artifactBackToolbar(taskId, dl) +
+      `<div class="files-empty">Preview not supported — use the download link above.</div>`;
+  }
+}
+
+function renderTextArtifact(taskId, art, txt) {
+  const body = document.getElementById('artifacts-body');
+  if (art.type === 'markdown') {
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${MD_CSS}</style></head><body>${renderMarkdownToHTML(txt)}</body></html>`;
+    body.innerHTML = artifactBackToolbar(taskId, '');
+    const frame = document.createElement('iframe');
+    frame.className = 'artifact-frame';
+    // allow-popups lets external links open; no allow-scripts, so the rendered
+    // markdown can't execute anything even if it embedded a <script>.
+    frame.setAttribute('sandbox', 'allow-popups');
+    frame.srcdoc = doc;
+    body.appendChild(frame);
+  } else {
+    body.innerHTML = artifactBackToolbar(taskId, '') + `<pre class="artifact-pre">${esc(txt)}</pre>`;
+  }
+}
+
+// MD_CSS styles the rendered-markdown iframe. Self-contained dark theme so the
+// srcdoc document needs no external stylesheet.
+const MD_CSS = `
+  body { font-family: -apple-system, system-ui, sans-serif; line-height: 1.6; color: #e6e6e6; background: #1a1a1a; padding: 16px; margin: 0; }
+  h1,h2,h3,h4,h5,h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
+  h1 { font-size: 1.6em; border-bottom: 1px solid #333; padding-bottom: .3em; }
+  h2 { font-size: 1.35em; border-bottom: 1px solid #333; padding-bottom: .2em; }
+  h3 { font-size: 1.15em; }
+  code { background: #2a2a2a; padding: .15em .35em; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: .9em; }
+  pre { background: #111; padding: 12px; border-radius: 6px; overflow: auto; }
+  pre code { background: none; padding: 0; }
+  a { color: #4ea1ff; }
+  blockquote { border-left: 3px solid #444; margin: 0 0 1em; padding: .2em 1em; color: #aaa; }
+  ul,ol { padding-left: 1.4em; }
+  table { border-collapse: collapse; } th,td { border: 1px solid #333; padding: 6px 10px; }
+  img { max-width: 100%; }
+  hr { border: 0; border-top: 1px solid #333; margin: 1.5em 0; }
+`;
+
+// renderMarkdownToHTML is a small, dependency-free markdown converter. It
+// escapes HTML first (so raw HTML in the source is shown, not executed — and
+// the output frame has no allow-scripts anyway), then applies a handful of
+// block + inline transforms. Links are restricted to http(s) so a
+// javascript: URL can't sneak through.
+function renderMarkdownToHTML(src) {
+  const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = s => escHtml(s)
+    .replace(new RegExp('\\x60([^\\x60]+)\\x60', 'g'), '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const lines = src.replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let inCode = false, codeBuf = [], listType = null, para = [];
+  const flushPara = () => { if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; } };
+  const closeList = () => { if (listType) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = null; } };
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (inCode) { out.push('<pre><code>' + escHtml(codeBuf.join('\n')) + '</code></pre>'); codeBuf = []; inCode = false; }
+      else { flushPara(); closeList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+    if (/^\s*$/.test(line)) { flushPara(); closeList(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); closeList(); const lvl = m[1].length; out.push(`<h${lvl}>${inline(m[2])}</h${lvl}>`); continue; }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(line)) { flushPara(); closeList(); out.push('<hr>'); continue; }
+    if ((m = line.match(/^\s*>\s?(.*)$/))) { flushPara(); closeList(); out.push('<blockquote>' + inline(m[1]) + '</blockquote>'); continue; }
+    if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) { flushPara(); if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; } out.push('<li>' + inline(m[1]) + '</li>'); continue; }
+    if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) { flushPara(); if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; } out.push('<li>' + inline(m[1]) + '</li>'); continue; }
+    para.push(line.trim());
+  }
+  if (inCode && codeBuf.length) out.push('<pre><code>' + escHtml(codeBuf.join('\n')) + '</code></pre>');
+  flushPara(); closeList();
+  return out.join('\n');
 }
 
 // Toggle soft-wrap across every .file-panel-body in the stack. Default is
@@ -4573,6 +4845,7 @@ function switchTab(tab) {
   dv.querySelector('.detail-header')?.classList.remove('compact');
   closeOverflowMenu();
   closeFilesView();
+  closeArtifactsView();
   closePromptModal();
   closeInputsModal();
   closeLinksModal();
