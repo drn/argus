@@ -414,10 +414,20 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 		sim.InjectKey(tcell.KeyRune, r, 0)
 	}
 	sim.PostEvent(tcell.NewEventPaste(false))
-	syncUI(t, app.tapp)
 
+	// Poll for the prompt to populate. syncUI's 50 ms eventSettle is enough
+	// on a quiet machine but not reliably enough under -race on CI, where
+	// draining 20 queued events through the tcell→tview boundary can take
+	// longer than the fixed wait.
 	var prompt string
-	readUI(t, app.tapp, func() { prompt = string(form.prompt) })
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		readUI(t, app.tapp, func() { prompt = string(form.prompt) })
+		if prompt == "pasted prompt text" {
+			break
+		}
+	}
 	testutil.Equal(t, prompt, "pasted prompt text")
 }
 
