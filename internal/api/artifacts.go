@@ -37,9 +37,10 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 // handleGetArtifact serves the raw bytes of a single registered artifact with
 // the correct Content-Type. Security model:
 //
-//   - The {name} path segment selects a manifest ROW, it never builds a path
-//     directly. No row for (task, name) → 404, regardless of what is on disk.
-//     This is the scoping allowlist.
+//   - The {filename} path segment selects a manifest ROW (by the on-disk
+//     basename, NOT the display name), it never builds a path directly. No row
+//     for (task, filename) → 404, regardless of what is on disk. This is the
+//     scoping allowlist.
 //   - Defense in depth: the resolved file path is re-checked to be inside the
 //     task's artifact dir (Clean + symlink-resolved prefix check) so a stored
 //     filename can never escape even if the sanitizer were bypassed.
@@ -49,17 +50,17 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 //     the parent's token.
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	name := r.PathValue("name")
+	filename := r.PathValue("filename")
 
-	art, err := s.db.GetArtifact(id, name)
+	art, err := s.db.GetArtifact(id, filename)
 	if err != nil {
-		uxlog.Log("[api] artifact lookup failed: id=%s name=%q err=%v", id, name, err)
+		uxlog.Log("[api] artifact lookup failed: id=%s file=%q err=%v", id, filename, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	if art == nil {
-		// Unregistered name (or path-traversal attempt) — no row, no serve.
-		uxlog.Log("[api] artifact 404 (no manifest row): id=%s name=%q", id, name)
+		// Unregistered filename (or path-traversal attempt) — no row, no serve.
+		uxlog.Log("[api] artifact 404 (no manifest row): id=%s file=%q", id, filename)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact not found"})
 		return
 	}
@@ -103,9 +104,12 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 
 // resolveArtifactPath joins the task's artifact dir with a stored filename and
 // verifies the result stays inside that dir, following symlinks. Returns
-// (path, true) when safe. filename comes from a manifest row (already
-// basename-sanitized at registration), but this re-validates so a future
-// change to the write path can't silently open a traversal hole.
+// (path, true) when safe — and on a successful symlink resolution returns the
+// REAL (resolved) path so the caller opens exactly what was verified, closing
+// the TOCTOU window between this check and os.Open. filename comes from a
+// manifest row (already basename-sanitized at registration), but this
+// re-validates so a future change to the write path can't silently open a
+// traversal hole.
 func resolveArtifactPath(taskID, filename string) (string, bool) {
 	dir := agent.ArtifactsDir(taskID)
 	full := filepath.Join(dir, filename)
@@ -121,16 +125,20 @@ func resolveArtifactPath(taskID, filename string) (string, bool) {
 
 	// Symlink check: resolve the real path and confirm it is still inside the
 	// real artifact dir. EvalSymlinks errors if the file doesn't exist yet —
-	// that's fine, the caller's os.Open will 404. Only treat a successful
-	// resolution that escapes the dir as a hard refusal.
-	if realPath, err := filepath.EvalSymlinks(full); err == nil {
-		realDir, derr := filepath.EvalSymlinks(cleanDir)
-		if derr != nil {
-			return "", false
-		}
-		if realPath != realDir && !strings.HasPrefix(realPath, realDir+string(filepath.Separator)) {
-			return "", false
-		}
+	// that's fine, the caller's os.Open will 404 (the lexical check above is
+	// sufficient when there's no on-disk target to follow).
+	realPath, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		return full, true
 	}
-	return full, true
+	realDir, derr := filepath.EvalSymlinks(cleanDir)
+	if derr != nil {
+		return "", false
+	}
+	if realPath != realDir && !strings.HasPrefix(realPath, realDir+string(filepath.Separator)) {
+		return "", false
+	}
+	// Open the verified real path, not `full`, so a symlink swapped in after
+	// this check can't redirect the open elsewhere.
+	return realPath, true
 }

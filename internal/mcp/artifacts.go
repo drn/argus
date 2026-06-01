@@ -183,12 +183,12 @@ func (s *Server) copyArtifact(taskID, srcPath, filename string) (int64, error) {
 	}
 
 	dest := filepath.Join(dir, filename)
+	// os.CreateTemp already created the temp file 0600 and Rename preserves the
+	// mode, so no explicit Chmod is needed (a post-rename Chmod would also be a
+	// minor TOCTOU on the destination name).
 	if err := os.Rename(tmpName, dest); err != nil {
 		os.Remove(tmpName) //nolint:errcheck
 		return 0, fmt.Errorf("rename into place: %w", err)
-	}
-	if err := os.Chmod(dest, 0o600); err != nil {
-		return 0, fmt.Errorf("chmod: %w", err)
 	}
 	return n, nil
 }

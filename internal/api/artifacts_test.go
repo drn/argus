@@ -110,6 +110,7 @@ func TestHandleGetArtifact_ContentTypeAndHeaders(t *testing.T) {
 			// X-Frame-Options must be relaxed to SAMEORIGIN (corsMiddleware's
 			// global DENY would otherwise block the SPA iframe).
 			testutil.Equal(t, w.Header().Get("X-Frame-Options"), "SAMEORIGIN")
+			testutil.Equal(t, w.Header().Get("Content-Security-Policy"), "frame-ancestors 'self'")
 			testutil.Equal(t, w.Header().Get("Cache-Control"), "no-store")
 			testutil.Equal(t, w.Body.String(), tc.body)
 		})
@@ -197,7 +198,15 @@ func TestResolveArtifactPath_RejectsTraversalAndSymlinks(t *testing.T) {
 	t.Run("legit basename resolves", func(t *testing.T) {
 		got, ok := resolveArtifactPath("task1", "ok.html")
 		testutil.True(t, ok)
-		testutil.Equal(t, got, filepath.Join(dir, "ok.html"))
+		// resolveArtifactPath returns the symlink-resolved real path; compare
+		// against the resolved expectation (e.g. macOS /var → /private/var)
+		// rather than the raw join.
+		want, err := filepath.EvalSymlinks(filepath.Join(dir, "ok.html"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, want)
+		body, err := os.ReadFile(got)
+		testutil.NoError(t, err)
+		testutil.Equal(t, string(body), "x")
 	})
 
 	t.Run("traversal rejected", func(t *testing.T) {

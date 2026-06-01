@@ -103,7 +103,10 @@ var ErrInvalidArtifactName = errors.New("invalid artifact filename")
 // ".." segment — defense the serving path still re-checks.
 func SanitizeArtifactFilename(path string) (string, error) {
 	base := filepath.Base(strings.TrimSpace(path))
-	if base == "" || base == "." || base == ".." || strings.ContainsAny(base, `/\`) {
+	// Reject degenerate names and any with a path separator or NUL. A NUL byte
+	// would make os.Open fail (EINVAL) at serve time, leaving a permanently
+	// unservable manifest row — reject at registration instead.
+	if base == "" || base == "." || base == ".." || strings.ContainsAny(base, "/\\\x00") {
 		return "", ErrInvalidArtifactName
 	}
 	return base, nil

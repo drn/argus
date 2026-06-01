@@ -4008,6 +4008,12 @@ function renderBlobArtifact(taskId, art, url) {
   } else if (art.type === 'pdf') {
     // PDFs render via the browser's native viewer; some mobile browsers
     // (notably iOS Safari) won't inline a blob PDF, hence the download link.
+    // Intentionally NOT sandboxed: the bytes are served `application/pdf` +
+    // `nosniff`, so the browser invokes its PDF handler and never runs them as
+    // a scriptable document with parent-DOM access. A `sandbox` attribute
+    // would break Firefox's pdf.js (it needs scripts), and adding
+    // `allow-same-origin` would re-attach OUR origin to the blob and expose
+    // the token — strictly worse. See gotchas/web-remote.md.
     body.innerHTML = artifactBackToolbar(taskId, dl) +
       `<iframe class="artifact-frame" src="${url}"></iframe>`;
   } else if (art.type === 'image') {

@@ -98,7 +98,7 @@ func (s *Server) routes() *http.ServeMux {
 	// registered manifest set; see internal/api/artifacts.go). Authenticated
 	// like the rest of /api/*.
 	mux.HandleFunc("GET /api/tasks/{id}/artifacts", s.handleListArtifacts)
-	mux.HandleFunc("GET /api/tasks/{id}/artifacts/{name}", s.handleGetArtifact)
+	mux.HandleFunc("GET /api/tasks/{id}/artifacts/{filename}", s.handleGetArtifact)
 	mux.HandleFunc("GET /api/push/vapid-public-key", s.handleVapidPublicKey)
 	mux.HandleFunc("POST /api/push/subscribe", s.handlePushSubscribe)
 	mux.HandleFunc("DELETE /api/push/subscribe/{id}", s.handlePushUnsubscribe)

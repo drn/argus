@@ -84,9 +84,10 @@ func (d *DB) Artifacts(taskID string) ([]*model.Artifact, error) {
 	return out, nil
 }
 
-// GetArtifact returns the manifest row for (taskID, filename), or (nil, nil)
-// when no such artifact is registered. The serving path uses this as the
-// allowlist: no row → 404, regardless of what is physically on disk.
+// GetArtifact returns the manifest row for (taskID, filename) — where filename
+// is the on-disk basename, NOT the display Name — or (nil, nil) when no such
+// artifact is registered. The serving path uses this as the allowlist: no row
+// → 404, regardless of what is physically on disk.
 func (d *DB) GetArtifact(taskID, filename string) (*model.Artifact, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
