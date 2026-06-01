@@ -255,6 +255,41 @@ func TestQuickAddForm_DirAutocompleteSkipsHidden(t *testing.T) {
 	testutil.Equal(t, f.ac.matches[0], filepath.Join(dir, "visible"))
 }
 
+func TestDirCompletions_RelativeInputAbsolutized(t *testing.T) {
+	// A bare relative segment must yield an absolute completion, never the
+	// relative "Development" that broke daemon-side worktree chdir.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Development"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	matches := dirCompletions("Dev")
+	testutil.Equal(t, len(matches), 1)
+	testutil.Equal(t, filepath.IsAbs(matches[0]), true)
+	testutil.Equal(t, matches[0], filepath.Join(root, "Development"))
+}
+
+func TestDirCompletions_RelativeTrailingSlashListsChildren(t *testing.T) {
+	// A trailing slash on a relative input must still list children after
+	// absolutization (filepath.Abs strips the slash via Clean; we restore it).
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Personal", "hera"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	matches := dirCompletions("Personal/")
+	testutil.Equal(t, len(matches), 1)
+	testutil.Equal(t, matches[0], filepath.Join(root, "Personal", "hera"))
+}
+
 func TestQuickAddForm_AcceptAutocomplete(t *testing.T) {
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "Development"), 0o755)
