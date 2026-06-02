@@ -317,6 +317,23 @@ func runDaemon() {
 	// for the detached daemon — so push send failures are invisible.
 	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
 
+	// Pin the daemon's working directory to $HOME so relative project paths
+	// resolve consistently regardless of how the daemon was launched. The
+	// launchd plist sets WorkingDirectory=$HOME, but the TUI's auto-start
+	// fallback (internal/daemon/client/autostart_fork.go) execs us without
+	// cmd.Dir and we inherit wherever argus was launched (e.g. a repo dir when
+	// running a local build). agent.CreateWorktree chdirs the project path for
+	// `git worktree add`; a relative project path that resolves from $HOME then
+	// fails with "chdir ...: no such file or directory" from any other cwd.
+	// Non-fatal: a daemon with an unexpected cwd still works for absolute paths.
+	if home, herr := os.UserHomeDir(); herr != nil {
+		log.Printf("cannot resolve home dir; leaving working directory unchanged: %v", herr)
+	} else if cerr := os.Chdir(home); cerr != nil {
+		log.Printf("cannot chdir to home %q; leaving working directory unchanged: %v", home, cerr)
+	} else {
+		log.Printf("daemon working directory pinned to %s", home)
+	}
+
 	database, err := db.Open(db.DefaultPath())
 	if err != nil {
 		log.Fatalf("error opening database: %v", err)
