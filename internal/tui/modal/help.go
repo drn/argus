@@ -19,6 +19,13 @@ type HelpModal struct {
 	scroll    int
 	maxScroll int
 	pageStep  int
+
+	// title is the bordered-panel heading. Defaults to "Keybindings".
+	title string
+	// sections is the inventory rendered by this modal. nil means use the
+	// package-level HelpSections (argus's own bindings); a non-nil slice (e.g.
+	// a plugin's hotkey dictionary) renders only those entries.
+	sections []HelpSection
 }
 
 // HelpBinding is a single key/action pair.
@@ -112,11 +119,11 @@ type helpRow struct {
 	spacer  bool
 }
 
-// helpRows flattens HelpSections into a list of rendered rows. Spacers go
+// helpRows flattens the given sections into a list of rendered rows. Spacers go
 // between sections (not after the last one).
-func helpRows() []helpRow {
+func helpRows(sections []HelpSection) []helpRow {
 	var rows []helpRow
-	for i, sec := range HelpSections {
+	for i, sec := range sections {
 		if i > 0 {
 			rows = append(rows, helpRow{spacer: true})
 		}
@@ -128,9 +135,34 @@ func helpRows() []helpRow {
 	return rows
 }
 
-// NewHelpModal creates a help overlay.
+// sectionsFor returns the inventory this modal renders: its own sections when
+// set, otherwise argus's package-level HelpSections.
+func (m *HelpModal) sectionsFor() []HelpSection {
+	if m.sections != nil {
+		return m.sections
+	}
+	return HelpSections
+}
+
+// titleFor returns the bordered-panel heading, defaulting to "Keybindings".
+func (m *HelpModal) titleFor() string {
+	if m.title != "" {
+		return m.title
+	}
+	return "Keybindings"
+}
+
+// NewHelpModal creates a help overlay for argus's own bindings.
 func NewHelpModal() *HelpModal {
 	return &HelpModal{Box: tview.NewBox()}
+}
+
+// NewHelpModalWith creates a help overlay with a custom title and a custom set
+// of sections — used to render a plugin's pushed hotkey dictionary (showing
+// only the plugin's hotkeys, not argus's bindings). Scrolling, dismissal, and
+// drawing behavior are identical to the default modal.
+func NewHelpModalWith(title string, sections []HelpSection) *HelpModal {
+	return &HelpModal{Box: tview.NewBox(), title: title, sections: sections}
 }
 
 // Closed reports whether the user dismissed the modal.
@@ -203,13 +235,13 @@ func (m *HelpModal) MouseHandler() func(action tview.MouseAction, event *tcell.E
 // helpModalSize returns the modal's width and total drawn height for the
 // available rect. Height is the natural full-content height clamped to the
 // available space; scrolling handles the overflow.
-func helpModalSize(width, height int) (w, h int) {
+func helpModalSize(width, height, rowCount int) (w, h int) {
 	w = min(72, width-4)
 	if w < 24 {
 		w = width
 	}
 	// border (2) + content + hint (1)
-	h = 3 + len(helpRows())
+	h = 3 + rowCount
 	if h > height {
 		h = height
 	}
@@ -224,7 +256,8 @@ func (m *HelpModal) Draw(screen tcell.Screen) {
 		return
 	}
 
-	formW, formH := helpModalSize(width, height)
+	rows := helpRows(m.sectionsFor())
+	formW, formH := helpModalSize(width, height, len(rows))
 	if formW < 8 || formH < 4 {
 		return
 	}
@@ -235,7 +268,7 @@ func (m *HelpModal) Draw(screen tcell.Screen) {
 	}
 
 	widget.FillArea(screen, formX, formY, formW, formH, ' ', tcell.StyleDefault)
-	inner := widget.DrawBorderedPanel(screen, formX, formY, formW, formH, "Keybindings", theme.StyleFocusedBorder)
+	inner := widget.DrawBorderedPanel(screen, formX, formY, formW, formH, m.titleFor(), theme.StyleFocusedBorder)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
@@ -245,7 +278,6 @@ func (m *HelpModal) Draw(screen tcell.Screen) {
 		keyCol = inner.W / 2
 	}
 
-	rows := helpRows()
 	visible := inner.H - 1 // reserve last row for hint
 	if visible < 1 {
 		visible = 1

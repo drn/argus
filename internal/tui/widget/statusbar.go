@@ -9,6 +9,15 @@ import (
 	"github.com/rivo/tview"
 )
 
+// PluginHint is one bottom-bar hint a plugin contributes while it holds the
+// keyboard. It is a widget-local mirror of the app's HotkeyItem (bar:true
+// subset only) — defined here so widget never imports the tui package (that
+// would be an import cycle). The app converts mount.hotkeys into these.
+type PluginHint struct {
+	Key   string
+	Label string
+}
+
 // StatusBar renders the bottom status bar with task counts and keybinding hints.
 type StatusBar struct {
 	*tview.Box
@@ -17,7 +26,27 @@ type StatusBar struct {
 	errMsg    string
 	infoMsg   string
 	activeTab Tab
+
+	// Plugin-view state. When pluginActive is true, Draw renders the plugin's
+	// bar hints plus a reserved, non-displaceable exit hint instead of the
+	// tab-hints branch.
+	pluginActive bool
+	pluginTitle  string
+	pluginHints  []PluginHint
 }
+
+// maxPluginBarHints caps how many plugin hints the bar will attempt to render
+// so a misbehaving plugin can't flood the bar. The reserved exit hint is
+// always rendered regardless of this cap.
+const maxPluginBarHints = 8
+
+// pluginExitHintKey / pluginExitHintLabel are the reserved "return to argus"
+// affordance. Esc is surrendered to the plugin, so the only advertised exit is
+// the double-Ctrl+Q failsafe.
+const (
+	pluginExitHintKey   = "^Q^Q"
+	pluginExitHintLabel = "argus"
+)
 
 // NewStatusBar creates a status bar.
 func NewStatusBar() *StatusBar {
@@ -44,6 +73,24 @@ func (sb *StatusBar) SetRunning(ids []string) {
 // SetTab updates which tab is active (changes hint display).
 func (sb *StatusBar) SetTab(t Tab) {
 	sb.activeTab = t
+}
+
+// SetPluginMode toggles the plugin-view bottom bar. When active, Draw renders
+// the plugin's bar hints (already filtered to bar:true by the app) plus a
+// reserved exit hint. When inactive, the normal tab-hints branch renders.
+// The app calls this with active=false (and empty title/nil hints) on
+// deactivate so nothing bleeds into the next plugin.
+func (sb *StatusBar) SetPluginMode(active bool, pluginTitle string, hints []PluginHint) {
+	sb.pluginActive = active
+	sb.pluginTitle = pluginTitle
+	sb.pluginHints = hints
+}
+
+// PluginMode reports the current plugin-view bar state. Used by the app's
+// smoke tests to assert activate/re-push/deactivate wiring without scraping
+// the rendered screen.
+func (sb *StatusBar) PluginMode() (active bool, title string, hints []PluginHint) {
+	return sb.pluginActive, sb.pluginTitle, sb.pluginHints
 }
 
 // SetError sets an error message to display.
@@ -77,6 +124,14 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	// Fill background
 	for col := x; col < x+width; col++ {
 		screen.SetContent(col, y, ' ', nil, theme.StyleStatusBar)
+	}
+
+	// Plugin-view mode renders an entirely different layout: an optional
+	// "<plugin> has the keyboard" affordance on the left and the plugin's bar
+	// hints + reserved exit hint on the right.
+	if sb.pluginActive {
+		sb.drawPluginMode(screen, x, y, width)
+		return
 	}
 
 	// Left side: error, info, or task counts
@@ -141,10 +196,6 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	}
 
 	// Build right text and measure width
-	type styledRun struct {
-		text  string
-		style tcell.Style
-	}
 	var runs []styledRun
 	keyStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyHint)
 	labelStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyLabel)
@@ -177,4 +228,102 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 			rc++
 		}
 	}
+}
+
+// drawPluginMode renders the bottom bar while a plugin holds the keyboard.
+//
+// The reserved "return to argus" exit hint is rendered LAST / right-most and
+// its width is reserved before any plugin hints are laid out, so plugin items
+// can never occupy or push it off-screen. Plugin hints fill the space to the
+// left of the reserved exit region and are truncated when they don't fit. The
+// exit hint is never dropped or truncated.
+func (sb *StatusBar) drawPluginMode(screen tcell.Screen, x, y, width int) {
+	keyStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyHint)
+	labelStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorKeyLabel)
+
+	// Reserved exit hint runs (rendered right-most). Always present.
+	exitRuns := []styledRun{
+		{pluginExitHintKey, keyStyle},
+		{" " + pluginExitHintLabel + " ", labelStyle},
+	}
+	exitWidth := runsWidth(exitRuns)
+
+	if len(sb.pluginHints) == 0 {
+		// Fallback affordance: "▶ <plugin> has the keyboard".
+		left := " ▶ " + sb.pluginTitle + " has the keyboard"
+		leftStyle := tcell.StyleDefault.Background(theme.ColorStatusBG).Foreground(theme.ColorDimmed)
+		col := x
+		for _, r := range left {
+			if col >= x+width-exitWidth {
+				break
+			}
+			screen.SetContent(col, y, r, nil, leftStyle)
+			col++
+		}
+	} else {
+		// Build plugin hint runs, capped at maxPluginBarHints.
+		hints := sb.pluginHints
+		if len(hints) > maxPluginBarHints {
+			hints = hints[:maxPluginBarHints]
+		}
+		var runs []styledRun
+		for i, h := range hints {
+			if i > 0 {
+				runs = append(runs, styledRun{"  ", theme.StyleStatusBar})
+			}
+			runs = append(runs, styledRun{h.Key, keyStyle})
+			runs = append(runs, styledRun{" " + h.Label, labelStyle})
+		}
+		runs = append(runs, styledRun{" ", theme.StyleStatusBar})
+
+		// Plugin hints render left-aligned but must not intrude into the
+		// reserved exit region: cap the drawable column at x+width-exitWidth.
+		limit := x + width - exitWidth
+		if limit < x {
+			limit = x
+		}
+		col := x + 1 // small left margin
+		for _, run := range runs {
+			for _, r := range run.text {
+				if col >= limit {
+					break
+				}
+				screen.SetContent(col, y, r, nil, run.style)
+				col++
+			}
+			if col >= limit {
+				break
+			}
+		}
+	}
+
+	// Render the reserved exit hint flush to the right edge, unconditionally.
+	rc := x + width - exitWidth
+	if rc < x {
+		rc = x
+	}
+	for _, run := range exitRuns {
+		for _, r := range run.text {
+			if rc >= x+width {
+				break
+			}
+			screen.SetContent(rc, y, r, nil, run.style)
+			rc++
+		}
+	}
+}
+
+// styledRun is a contiguous run of text sharing a single style.
+type styledRun struct {
+	text  string
+	style tcell.Style
+}
+
+// runsWidth returns the total rune width of a slice of styled runs.
+func runsWidth(runs []styledRun) int {
+	w := 0
+	for _, r := range runs {
+		w += len([]rune(r.text))
+	}
+	return w
 }

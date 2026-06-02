@@ -212,6 +212,41 @@ func TestHelpModal_DrawHidesScrollHintWhenFits(t *testing.T) {
 	}
 }
 
+func TestNewHelpModalWith_CustomTitleAndSections(t *testing.T) {
+	sim := drawAt(t, 100, 40)
+	sections := []HelpSection{
+		{Title: "Ludwig", Bindings: []HelpBinding{
+			{"^F", "next pane"},
+			{"r", "refresh"},
+		}},
+	}
+	m := NewHelpModalWith("Ludwig keys", sections)
+	m.SetRect(0, 0, 100, 40)
+	m.Draw(sim)
+	sim.Sync()
+
+	body := screenString(sim)
+	// Custom title is used instead of "Keybindings".
+	testutil.Contains(t, body, "Ludwig keys")
+	// All plugin entries render (bar flag is irrelevant at this layer).
+	testutil.Contains(t, body, "next pane")
+	testutil.Contains(t, body, "refresh")
+	// Argus's own bindings must NOT appear.
+	if strings.Contains(body, "fork task") {
+		t.Errorf("plugin help overlay must not show argus bindings")
+	}
+	if strings.Contains(body, "Keybindings") {
+		t.Errorf("custom-title modal must not render the default Keybindings title")
+	}
+}
+
+func TestNewHelpModalWith_DismissOnKey(t *testing.T) {
+	m := NewHelpModalWith("X", []HelpSection{{Title: "X", Bindings: []HelpBinding{{"a", "b"}}}})
+	ev := tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone)
+	m.InputHandler()(ev, nil)
+	testutil.True(t, m.Closed())
+}
+
 func TestHelpSections_NonEmpty(t *testing.T) {
 	testutil.True(t, len(HelpSections) > 0)
 	for _, sec := range HelpSections {

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -218,7 +219,14 @@ func Link(database Store, childID, parentID string) error {
 	}
 
 	newDeps := append(append([]string(nil), child.DependsOn...), parentID)
-	return database.SetDependsOn(childID, newDeps)
+	if err := database.SetDependsOn(childID, newDeps); err != nil {
+		return err
+	}
+	events.Emit(model.EventTypeLinkCreated, childID, map[string]string{
+		"child":  childID,
+		"parent": parentID,
+	})
+	return nil
 }
 
 // Unlink removes parentID from childID's depends_on. No-op if the edge does
@@ -240,7 +248,14 @@ func Unlink(database Store, childID, parentID string) error {
 	if len(filtered) == len(child.DependsOn) {
 		return nil
 	}
-	return database.SetDependsOn(childID, filtered)
+	if err := database.SetDependsOn(childID, filtered); err != nil {
+		return err
+	}
+	events.Emit(model.EventTypeLinkRemoved, childID, map[string]string{
+		"child":  childID,
+		"parent": parentID,
+	})
+	return nil
 }
 
 // Deps returns the one-hop neighbours of taskID. Linear scan; the dataset

@@ -28,6 +28,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect

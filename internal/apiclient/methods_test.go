@@ -240,6 +240,16 @@ func TestClient_HasPendingRestart(t *testing.T) {
 	testutil.True(t, got)
 }
 
+func TestClient_ListPluginSections(t *testing.T) {
+	c := allOK(t, `{"sections":[{"scope":"a","title":"Hello","type":"form","callback_url":"http://x","fields":[{"key":"k","label":"L","type":"bool"}]}]}`)
+	got, err := c.ListPluginSections(t.Context())
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+	testutil.Equal(t, got[0].Scope, "a")
+	testutil.Equal(t, got[0].Title, "Hello")
+	testutil.Equal(t, len(got[0].Fields), 1)
+}
+
 // --- provider.go: zero-coverage methods ---
 
 func TestSession_LocalAccessors(t *testing.T) {

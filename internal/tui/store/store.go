@@ -14,6 +14,7 @@ package store
 import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/settings"
 )
 
 // Store is the persistence interface the TUI process consumes. Every method
@@ -97,6 +98,13 @@ type Store interface {
 
 	// SetArchived flips the archived column.
 	SetArchived(id string, archived bool) error
+
+	// PluginSections returns every plugin-registered settings section in
+	// (title, scope) order. Corrupt rows (unparseable spec JSON) are
+	// silently dropped — see db.DB.PluginSections for the reasoning. The
+	// TUI calls this on every Settings refresh; remote-mode hits the
+	// `GET /api/plugins/settings/sections` endpoint.
+	PluginSections() ([]settings.Section, error)
 }
 
 // Compile-time assertion: *db.DB satisfies Store. Imported as a side-effect

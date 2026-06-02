@@ -285,3 +285,40 @@ func (c *Client) HasPendingRestart(ctx context.Context, id string) (bool, error)
 	}
 	return resp.Pending, nil
 }
+
+// PluginFormFieldJSON mirrors the wire shape api.pluginSectionJSON's Fields
+// entries carry. Kept as a parallel type rather than reusing
+// settings.FormField directly so apiclient avoids importing internal/tui/*
+// (the package boundary keeps the HTTP transport layer free of TUI deps).
+type PluginFormFieldJSON struct {
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Type    string   `json:"type"`
+	Default any      `json:"default,omitempty"`
+	Min     *int     `json:"min,omitempty"`
+	Max     *int     `json:"max,omitempty"`
+	Options []string `json:"options,omitempty"`
+}
+
+// PluginSectionJSON mirrors api.pluginSectionJSON. The TUI's apistore.Store
+// reconstructs settings.Section values from this shape on each fetch.
+type PluginSectionJSON struct {
+	Scope       string                `json:"scope"`
+	Title       string                `json:"title"`
+	Type        string                `json:"type"`
+	CallbackURL string                `json:"callback_url"`
+	Fields      []PluginFormFieldJSON `json:"fields"`
+}
+
+// ListPluginSections fetches every registered plugin settings section.
+// Used by the remote-mode TUI to render the "Plugins" rail header. Any
+// authenticated token works.
+func (c *Client) ListPluginSections(ctx context.Context) ([]PluginSectionJSON, error) {
+	var resp struct {
+		Sections []PluginSectionJSON `json:"sections"`
+	}
+	if err := c.doJSON(ctx, "GET", "/api/plugins/settings/sections", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Sections, nil
+}

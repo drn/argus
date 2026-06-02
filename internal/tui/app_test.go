@@ -1530,6 +1530,27 @@ func TestPTYSizeFromPaneRect(t *testing.T) {
 	}
 }
 
+func TestPTYSizeForRect(t *testing.T) {
+	cases := []struct {
+		name               string
+		rect               Rect
+		wantRows, wantCols uint16
+	}{
+		{"typical center pane", Rect{X: 0, Y: 0, W: 192, H: 84}, 82, 190},
+		{"tiny rect clamped to floors", Rect{X: 0, Y: 0, W: 10, H: 4}, 5, 20},
+		{"zero width rejected", Rect{W: 0, H: 24}, 0, 0},
+		{"zero height rejected", Rect{W: 80, H: 0}, 0, 0},
+		{"negative rejected", Rect{W: -5, H: -2}, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, cols := PTYSizeForRect(tc.rect)
+			testutil.Equal(t, rows, tc.wantRows)
+			testutil.Equal(t, cols, tc.wantCols)
+		})
+	}
+}
+
 // errFakeNoTTY stands in for term.GetSize's "inappropriate ioctl for device"
 // error when stdout isn't a TTY.
 var errFakeNoTTY = &fakeErr{msg: "inappropriate ioctl for device"}

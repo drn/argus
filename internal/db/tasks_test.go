@@ -2,11 +2,56 @@ package db
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
+	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
+
+// recordingSink captures events emitted via the global events bus so tests
+// can assert on which event types fired. Local helper — the events package
+// has its own internal recordingSink, but it isn't exported. Goroutine-safe
+// because db.Update emits AFTER unlocking d.mu, on whatever goroutine ran
+// the call.
+type recordingSink struct {
+	mu     sync.Mutex
+	events []model.Event
+}
+
+func (r *recordingSink) Emit(ev model.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, ev)
+}
+
+func (r *recordingSink) types() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.events))
+	for _, ev := range r.events {
+		out = append(out, ev.Type)
+	}
+	return out
+}
+
+func installRecordingSink(t *testing.T) *recordingSink {
+	t.Helper()
+	sink := &recordingSink{}
+	prev := events.SetSink(sink)
+	t.Cleanup(func() { events.SetSink(prev) })
+	return sink
+}
+
+func sliceContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
 
 // TestUpdate_AllBoolFields exercises the Sandboxed / Archived boolean branches
 // in Update.
@@ -152,6 +197,83 @@ func TestDB_SetPlanSlug(t *testing.T) {
 
 	if err := d.SetPlanSlug("ghost", "x"); !errors.Is(err, ErrTaskNotFound) {
 		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+// TestDB_Update_EmitsArchivedOnTransition pins the regression: when Update
+// flips archived from false to true, task.archived MUST fire. Before the fix
+// only SetArchived's partial-column path emitted, so HTTP /api/tasks PUT and
+// MCP task_archive (both flow through Update) silently archived rows and
+// downstream views of "live bindings" went stale. See the matching emission
+// in db.Update next to the status-change branch.
+func TestDB_Update_EmitsArchivedOnTransition(t *testing.T) {
+	t.Run("false_to_true_emits", func(t *testing.T) {
+		sink := installRecordingSink(t)
+		d := testDB(t)
+		task := &model.Task{Name: "archive-me"}
+		testutil.NoError(t, d.Add(task))
+		testutil.Equal(t, task.Archived, false)
+
+		task.Archived = true
+		testutil.NoError(t, d.Update(task))
+
+		if !sliceContains(sink.types(), model.EventTypeTaskArchived) {
+			t.Fatalf("expected %q event, got %v", model.EventTypeTaskArchived, sink.types())
+		}
+	})
+
+	t.Run("already_archived_does_not_reemit", func(t *testing.T) {
+		sink := installRecordingSink(t)
+		d := testDB(t)
+		task := &model.Task{Name: "already"}
+		task.Archived = true
+		testutil.NoError(t, d.Add(task))
+
+		// Update without flipping archived. Must not fire task.archived again —
+		// hera would otherwise see duplicate archive events on every PUT.
+		task.Name = "renamed-via-update"
+		testutil.NoError(t, d.Update(task))
+
+		for _, ty := range sink.types() {
+			if ty == model.EventTypeTaskArchived {
+				t.Fatalf("did not expect %q on a no-op archive write, got %v",
+					model.EventTypeTaskArchived, sink.types())
+			}
+		}
+	})
+
+	t.Run("unarchive_does_not_emit", func(t *testing.T) {
+		sink := installRecordingSink(t)
+		d := testDB(t)
+		task := &model.Task{Name: "unarchive"}
+		task.Archived = true
+		testutil.NoError(t, d.Add(task))
+
+		task.Archived = false
+		testutil.NoError(t, d.Update(task))
+
+		for _, ty := range sink.types() {
+			if ty == model.EventTypeTaskArchived {
+				t.Fatalf("unarchive must not emit %q, got %v",
+					model.EventTypeTaskArchived, sink.types())
+			}
+		}
+	})
+}
+
+// TestDB_SetArchived_StillEmits is a belt-and-braces check that the existing
+// SetArchived emission did not regress when Update gained its own emit.
+func TestDB_SetArchived_StillEmits(t *testing.T) {
+	sink := installRecordingSink(t)
+	d := testDB(t)
+	task := &model.Task{Name: "x"}
+	testutil.NoError(t, d.Add(task))
+
+	testutil.NoError(t, d.SetArchived(task.ID, true))
+
+	if !sliceContains(sink.types(), model.EventTypeTaskArchived) {
+		t.Fatalf("SetArchived must still emit %q, got %v",
+			model.EventTypeTaskArchived, sink.types())
 	}
 }
 

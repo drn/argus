@@ -87,6 +87,15 @@ func requireMaster(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// authOrigin returns the originating principal of an authenticated request:
+// "master", "device", or "scope:<plugin>". Empty string when no header was set
+// — defensive; routes mounted behind authMiddleware always have it populated.
+// Audit log sites use the return value to stamp a `from` tag on mutating
+// events so input bytes (and other plugin-callable writes) are attributable.
+func authOrigin(r *http.Request) string {
+	return r.Header.Get("X-Argus-Auth")
+}
+
 // hashToken returns the SHA-256 hex digest of a plaintext token, used for
 // constant-time lookup against the api_tokens table.
 func hashToken(plain string) string {
@@ -94,9 +103,18 @@ func hashToken(plain string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// MintToken generates a new device token, persists its hash, and returns the
-// plaintext (only available at this moment).
+// MintToken generates a new device token (empty scope), persists its hash,
+// and returns the plaintext (only available at this moment).
 func MintToken(d *db.DB, label string) (string, int64, error) {
+	return MintTokenWithScope(d, label, "")
+}
+
+// MintTokenWithScope generates a new token bound to a scope, persists its
+// hash, and returns the plaintext (only available at this moment). An empty
+// scope mints a device token, equivalent to MintToken; any non-empty scope
+// marks the token as a plugin token, surfaced to the auth middleware as
+// `X-Argus-Auth: scope:<name>`.
+func MintTokenWithScope(d *db.DB, label, scope string) (string, int64, error) {
 	plain, err := GenerateToken()
 	if err != nil {
 		return "", 0, err
@@ -106,7 +124,7 @@ func MintToken(d *db.DB, label string) (string, int64, error) {
 	if len(plain) >= 4 {
 		last4 = plain[len(plain)-4:]
 	}
-	id, err := d.AddAPIToken(label, hash, last4)
+	id, err := d.AddAPITokenWithScope(label, scope, hash, last4)
 	if err != nil {
 		return "", 0, err
 	}
@@ -162,10 +180,18 @@ func authMiddleware(token string, database *db.DB, pm *push.Manager, next http.H
 			next.ServeHTTP(w, r)
 			return
 		}
-		// Try device tokens.
+		// Try device + plugin-scoped tokens.
 		if database != nil {
 			if t, _ := database.FindAPITokenByHash(hashToken(provided)); t != nil {
-				r.Header.Set("X-Argus-Auth", "device")
+				// Tokens with a non-empty scope are plugin tokens; tag the
+				// request with `scope:<name>` so downstream handlers can gate
+				// on the plugin's identity. Empty scope keeps today's
+				// `device` tag for the existing per-device flow.
+				if t.Scope != "" {
+					r.Header.Set("X-Argus-Auth", "scope:"+t.Scope)
+				} else {
+					r.Header.Set("X-Argus-Auth", "device")
+				}
 				r.Header.Set("X-Argus-Token-Id", strconv.FormatInt(t.ID, 10))
 				recordVAPIDOrigin(pm, r)
 				next.ServeHTTP(w, r)

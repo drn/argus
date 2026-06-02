@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke
 
 build:
 	go build ./...
@@ -61,3 +61,10 @@ test-cover-gate:
 test-pkg:
 	@test -n "$(PKG)" || { echo "Usage: make test-pkg PKG=./internal/db/"; exit 1; }
 	go test -race -count=1 -v $(PKG)
+
+# Black-box smoke test the plugin substrate against the locally running
+# daemon. Mints nothing — see cmd/argus-plugin-smoke for the one-time setup
+# (`argus token mint --scope smoke` → ~/.argus/smoke-token). Cleans up
+# transient backends/tasks/views/sections/MCP tools on exit.
+plugin-smoke:
+	go run ./cmd/argus-plugin-smoke -verbose

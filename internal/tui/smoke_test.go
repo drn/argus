@@ -1871,7 +1871,8 @@ func TestRefreshTasks_NeedsInputSticky(t *testing.T) {
 
 	// Write a log file for the other task containing the needs-input marker.
 	// Path A ('❯ 1.' with literal space) is what survives ANSI strip in the
-	// AskUserQuestion overlay.
+	// AskUserQuestion overlay. Pad with a prompt-box opener so endsInQuestion
+	// doesn't also trip.
 	logPath := agent.SessionLogPath(other.ID)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)

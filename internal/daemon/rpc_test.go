@@ -347,6 +347,45 @@ func TestRPC_RPCShutdown(t *testing.T) {
 	}
 }
 
+// TestRPC_Ports verifies Daemon.Ports returns the daemon's currently-bound
+// MCP and API HTTP ports. Plugins discover these to call into argus without
+// hardcoding (bindWithRetry means neither is stable across restarts).
+func TestRPC_Ports(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	// Stage the port fields directly — KB and API are disabled in tests, so
+	// the live servers never bind. We're verifying the field copy, not the
+	// HTTP listeners themselves.
+	d.mu.Lock()
+	d.mcpPort = 7743
+	d.apiPort = 7745
+	d.mu.Unlock()
+
+	c := dialRPC(t, sockPath)
+	var resp PortsResp
+	testutil.NoError(t, c.Call("Daemon.Ports", &Empty{}, &resp))
+	testutil.Equal(t, resp.MCPPort, 7743)
+	testutil.Equal(t, resp.APIPort, 7745)
+}
+
+// TestRPC_Ports_Zero verifies the response carries zero values when neither
+// server is bound (the default in tests — KB and API both disabled).
+func TestRPC_Ports_Zero(t *testing.T) {
+	d, sockPath := testDaemon(t)
+	go d.Serve(sockPath) //nolint:errcheck
+	t.Cleanup(func() { d.Shutdown() })
+	waitForSocket(t, sockPath)
+
+	c := dialRPC(t, sockPath)
+	var resp PortsResp
+	testutil.NoError(t, c.Call("Daemon.Ports", &Empty{}, &resp))
+	testutil.Equal(t, resp.MCPPort, 0)
+	testutil.Equal(t, resp.APIPort, 0)
+}
+
 // TestDaemon_HandleStream verifies the full stream path: a client subscribes
 // to a session's output, receives the bytes the session produces, and gets
 // EOF when the session exits. Also exercises registerStream/unregisterStream

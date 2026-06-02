@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -52,6 +53,20 @@ const rateLimitWindow = time.Minute
 //
 // Returns the inserted message (ID, CreatedAt filled in) on success.
 func (d *DB) InsertMessage(m *model.TaskMessage) (*model.TaskMessage, error) {
+	out, err := d.insertMessageLocked(m)
+	if err != nil {
+		return nil, err
+	}
+	events.Emit(model.EventTypeMessageSent, out.To, map[string]any{
+		"id":   out.ID,
+		"from": out.From,
+		"to":   out.To,
+		"kind": string(out.Kind),
+	})
+	return out, nil
+}
+
+func (d *DB) insertMessageLocked(m *model.TaskMessage) (*model.TaskMessage, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
@@ -184,6 +199,19 @@ func (d *DB) Inbox(toID string, f InboxFilter) ([]*model.TaskMessage, error) {
 //
 // Returns the number of rows actually flipped from unread to read.
 func (d *DB) AckMessages(toID string, ids []string) (int, error) {
+	n, err := d.ackMessagesLocked(toID, ids)
+	if err != nil {
+		return n, err
+	}
+	if n > 0 {
+		events.Emit(model.EventTypeMessageAcked, toID, map[string]any{
+			"count": n,
+		})
+	}
+	return n, nil
+}
+
+func (d *DB) ackMessagesLocked(toID string, ids []string) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}

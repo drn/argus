@@ -162,6 +162,10 @@ type Server struct {
 	// can return promptly instead of blocking httpSrv.Shutdown forever.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+
+	// registry holds runtime-registered plugin tools (PR 4). Nil when no
+	// registry is wired — the server then behaves exactly as today.
+	registry *Registry
 }
 
 // New creates a new MCP server.
@@ -194,6 +198,14 @@ func (s *Server) SetTaskManager(creator TaskCreator, taskDB TaskStore, stopper T
 // argus_clipboard_set tool.
 func (s *Server) SetClipboard(setter ClipboardSetter) {
 	s.clipboard = setter
+}
+
+// SetPluginRegistry wires the runtime plugin-tool registry (PR 4 of the
+// plugin substrate). When set, the server unions plugin-registered tools
+// into tools/list and proxies tools/call dispatches for unknown built-in
+// names to the registered callback_url. Must be called before ListenAndServe.
+func (s *Server) SetPluginRegistry(r *Registry) {
+	s.registry = r
 }
 
 // SetScheduleManager wires schedule CRUD + run-now capabilities. When set, the
@@ -783,6 +795,22 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.artifactsEnabled() {
 		tools = append(tools, artifactToolDefs...)
 	}
+	if s.registry != nil {
+		// Failures here are logged and swallowed: surfacing a registry error
+		// here would break the entire tools/list response for built-in tools
+		// the user did NOT register. Plugin tools are best-effort additive.
+		if plugins, err := s.registry.List(); err == nil {
+			for _, p := range plugins {
+				tools = append(tools, Tool{
+					Name:        p.Name,
+					Description: p.Description,
+					InputSchema: p.InputSchema,
+				})
+			}
+		} else {
+			log.Printf("[mcp] tools/list plugin registry error: %v", err)
+		}
+	}
 	return &Response{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -856,6 +884,14 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 	case "artifact_register":
 		return s.toolArtifactRegister(req.ID, params.Arguments)
 	default:
+		// Plugin-registered tool? PR 4 — dispatch into the registry which
+		// HTTP-POSTs to the plugin's callback_url and returns the response
+		// in the MCP-native ToolCallResult shape.
+		if s.registry != nil {
+			if pt, _ := s.registry.Get(params.Name); pt != nil {
+				return s.callPluginTool(req.ID, params.Name, params.Arguments)
+			}
+		}
 		return errorResp(req.ID, -32601, "unknown tool: "+params.Name)
 	}
 }
@@ -1995,6 +2031,30 @@ func truncatePromptToName(prompt string) string {
 		}
 	}
 	return string(runes)
+}
+
+// callPluginTool proxies a tools/call dispatch through the plugin registry.
+// The Registry handles the HTTP POST + response decode; this wrapper picks
+// up the per-call timeout off the server's shutdownCtx so a Shutdown() in
+// flight short-circuits the proxy instead of blocking until DefaultInvokeTimeout.
+//
+// CallerContext is empty in production today: the MCP protocol does not
+// surface caller identity per-call, and the agent processes that connect
+// to argus's MCP server share the same listener. Leaving the field empty
+// keeps the wire shape stable for future work that threads (task_id,
+// session_id) through the protocol.
+func (s *Server) callPluginTool(id interface{}, name string, args json.RawMessage) *Response {
+	ctx, cancel := context.WithTimeout(s.shutdownCtx, DefaultInvokeTimeout)
+	defer cancel()
+	result, err := s.registry.Invoke(ctx, name, args, CallerContext{})
+	if err != nil {
+		return toolError(id, fmt.Sprintf("plugin %s: %v", name, err))
+	}
+	return &Response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  *result,
+	}
 }
 
 // --- helpers ---

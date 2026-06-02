@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/drn/argus/internal/uxlog"
 )
 
 type tokenView struct {
@@ -88,9 +90,24 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return
 	}
+	// Snapshot the scope before revoke so the plugin-MCP cascade can target
+	// the right rows. FindAPITokenByHash hides revoked tokens, so doing this
+	// after the revoke would lose the scope. Best-effort: if the lookup
+	// fails (DB transient), the revoke still proceeds and the registry sweep
+	// is skipped — the idle sweeper will catch the orphaned tools within
+	// DefaultIdleWindow.
+	tok, _ := s.db.FindAPITokenByID(id)
 	if err := s.db.RevokeAPIToken(id); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
+	}
+	if tok != nil && tok.Scope != "" && s.mcpRegistry != nil {
+		n, err := s.mcpRegistry.UnregisterScope(tok.Scope)
+		if err != nil {
+			uxlog.Log("[plugin] revoke cascade failed: scope=%s err=%v", tok.Scope, err)
+		} else if n > 0 {
+			uxlog.Log("[plugin] revoke cascade: scope=%s removed=%d", tok.Scope, n)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"revoked": id})
 }

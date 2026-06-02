@@ -126,6 +126,35 @@ func TestStore_Rename(t *testing.T) {
 	testutil.Contains(t, captured, `"name":"renamed"`)
 }
 
+func TestStore_PluginSections(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/plugins/settings/sections", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sections":[{"scope":"a","title":"Hello","type":"form","callback_url":"http://x","fields":[{"key":"k","label":"L","type":"bool","default":true}]}]}`))
+	})
+	secs, err := f.store().PluginSections()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(secs), 1)
+	testutil.Equal(t, secs[0].Scope, "a")
+	testutil.Equal(t, secs[0].Title, "Hello")
+	testutil.Equal(t, secs[0].CallbackURL, "http://x")
+	if secs[0].Spec == nil || len(secs[0].Spec.Fields) != 1 {
+		t.Fatalf("expected one parsed field, got %+v", secs[0].Spec)
+	}
+	testutil.Equal(t, secs[0].Spec.Fields[0].Key, "k")
+}
+
+func TestStore_PluginSections_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/plugins/settings/sections", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	_, err := f.store().PluginSections()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func readBody(r *http.Request) string {
 	buf := make([]byte, 4096)
 	n, _ := r.Body.Read(buf)

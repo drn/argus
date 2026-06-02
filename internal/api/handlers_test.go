@@ -26,6 +26,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 func testServer(t *testing.T) (*Server, *db.DB) {
@@ -206,7 +207,7 @@ func TestComputeRuntimeState(t *testing.T) {
 			if tc.idle {
 				idle["t1"] = true
 			}
-			testutil.Equal(t, computeRuntimeState(task, running, idle).Idle, tc.wantIdle)
+			testutil.Equal(t, computeRuntimeState(task, running, idle, map[string]bool{}).Idle, tc.wantIdle)
 		})
 	}
 }
@@ -1190,6 +1191,148 @@ func TestHandleWriteInput(t *testing.T) {
 		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/input", "hello"))
 		testutil.Equal(t, w.Code, http.StatusOK)
 	})
+
+	// PR 5 pins /input as a stable plugin-callable surface. The three subtests
+	// below validate two contracts:
+	//
+	//   1. The audit log stamps `origin=<X-Argus-Auth tag>` on every successful
+	//      write so input bytes from plugins are attributable post-hoc. The
+	//      origin string mirrors the auth middleware's tagging exactly:
+	//      "master", "device", or "scope:<plugin>".
+	//   2. The endpoint accepts plugin-scoped tokens — no requireMaster gate,
+	//      no device-only narrowing. Tested end-to-end through authMiddleware
+	//      so the actual production wiring (not the raw mux) is exercised.
+	t.Run("audit log records origin for plugin scope token", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		logPath := filepath.Join(t.TempDir(), "ux.log")
+		testutil.NoError(t, uxlog.Init(logPath))
+		t.Cleanup(uxlog.Close)
+
+		srv, d := testServer(t)
+		mux := srv.routes()
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "audit-scope",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/input", "hello")
+		// authedReq doesn't stamp X-Argus-Auth. Set it directly because
+		// srv.routes() returns the raw mux without authMiddleware; the
+		// audit log reads the header that middleware would populate.
+		req.Header.Set("X-Argus-Auth", "scope:ludwig")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		uxlog.Close() // flush before reading the file
+		raw, err := os.ReadFile(logPath)
+		testutil.NoError(t, err)
+		got := string(raw)
+		testutil.Contains(t, got, "[api] input")
+		testutil.Contains(t, got, "task="+task.ID)
+		testutil.Contains(t, got, "origin=scope:ludwig")
+		testutil.Contains(t, got, "bytes=5")
+	})
+
+	t.Run("audit log records origin for master and device", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		logPath := filepath.Join(t.TempDir(), "ux.log")
+		testutil.NoError(t, uxlog.Init(logPath))
+		t.Cleanup(uxlog.Close)
+
+		srv, d := testServer(t)
+		mux := srv.routes()
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "audit-mixed",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+
+		for _, tag := range []string{"master", "device"} {
+			req := authedReq("POST", "/api/tasks/"+task.ID+"/input", "hi")
+			req.Header.Set("X-Argus-Auth", tag)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			testutil.Equal(t, w.Code, http.StatusOK)
+		}
+
+		uxlog.Close()
+		raw, err := os.ReadFile(logPath)
+		testutil.NoError(t, err)
+		got := string(raw)
+		testutil.Contains(t, got, "origin=master")
+		testutil.Contains(t, got, "origin=device")
+	})
+
+	t.Run("no audit entry when session missing", func(t *testing.T) {
+		// The handler short-circuits with 404 before any WriteInput call.
+		// The audit log should fire only on a successful write — otherwise
+		// the log accumulates noise from arbitrary missing-task probes.
+		logPath := filepath.Join(t.TempDir(), "ux.log")
+		testutil.NoError(t, uxlog.Init(logPath))
+		t.Cleanup(uxlog.Close)
+
+		srv, _ := testServer(t)
+		mux := srv.routes()
+		req := authedReq("POST", "/api/tasks/missing/input", "hi")
+		req.Header.Set("X-Argus-Auth", "scope:ludwig")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusNotFound)
+
+		uxlog.Close()
+		raw, err := os.ReadFile(logPath)
+		testutil.NoError(t, err)
+		// File may be empty or contain unrelated lines; assert the audit
+		// prefix never appears.
+		if strings.Contains(string(raw), "[api] input") {
+			t.Errorf("audit entry emitted for failed write: %q", string(raw))
+		}
+	})
+
+	t.Run("plugin-scoped token accepted through authMiddleware", func(t *testing.T) {
+		// End-to-end through the real authMiddleware (not the raw mux) so
+		// "no requireMaster gate on /input" is pinned production-shape.
+		// Returns 404 because no session exists for the bogus task ID;
+		// 401/403 here would mean the auth middleware rejected the plugin
+		// token, which is the regression this test guards.
+		srv, d := testServer(t)
+		pluginPlain, _, err := MintTokenWithScope(d, "ludwig", "ludwig")
+		testutil.NoError(t, err)
+
+		handler := authMiddleware("test-token", d, nil, srv.routes())
+
+		req := httptest.NewRequest("POST", "/api/tasks/missing/input", strings.NewReader("hi"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+pluginPlain)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		testutil.Equal(t, w.Code, http.StatusNotFound)
+	})
 }
 
 // --- handleStreamOutput SSE ---
@@ -1620,8 +1763,11 @@ func TestIdleWatcher_StartAndStopGracefully(t *testing.T) {
 	testutil.NoError(t, srv.Shutdown(ctx))
 }
 
-// TestIdleWatcher_NilPushReturnsImmediately exercises the early-return path.
-func TestIdleWatcher_NilPushReturnsImmediately(t *testing.T) {
+// TestIdleWatcher_NilPushStillRuns is the regression test for the PR 2
+// (plugin substrate) change: idleWatcher must run regardless of whether
+// push is configured because it also drives session.idle event emission.
+// The goroutine should NOT return on its own — it terminates via stopCh.
+func TestIdleWatcher_NilPushStillRuns(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.push = nil
 	done := make(chan struct{})
@@ -1629,10 +1775,19 @@ func TestIdleWatcher_NilPushReturnsImmediately(t *testing.T) {
 		srv.idleWatcher()
 		close(done)
 	}()
+	// 200ms is generous — if the watcher had the old "return on nil push"
+	// behaviour it would close `done` within microseconds. We then close
+	// stopCh to confirm the watcher honours the shutdown signal.
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("idleWatcher with nil push should return immediately")
+		t.Fatal("idleWatcher with nil push exited early; should run until stopCh closes")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(srv.stopCh)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("idleWatcher did not exit after stopCh close")
 	}
 }
 

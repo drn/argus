@@ -15,6 +15,17 @@ type BootInfoResp struct {
 	BootedAt    time.Time // wall-clock time the daemon started
 }
 
+// PortsResp returns the live HTTP ports the daemon is bound to. Both servers
+// pick their port via bindWithRetry on startup, so neither value is stable
+// across daemon restarts. Plugins that need to call the REST API or MCP
+// server use Daemon.Ports to discover the current ports instead of hardcoding
+// or scanning. A zero value means that server is not running (e.g. KB
+// disabled → MCPPort=0; API disabled → APIPort=0).
+type PortsResp struct {
+	MCPPort int
+	APIPort int
+}
+
 // StartReq is the RPC request to start a new agent session.
 type StartReq struct {
 	TaskID    string

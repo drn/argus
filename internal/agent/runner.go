@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/drn/argus/internal/config"
+	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -33,6 +34,12 @@ type Runner struct {
 	pendingRestart map[string]*pendingRestart
 	onFinish       func(taskID string, err error, stopped bool, lastOutput []byte)
 
+	// needsInput is the set of task IDs the daemon's idle/needs-input watcher
+	// last flagged as blocked waiting on user input (the red ? in the TUI).
+	// The watcher (internal/api/push.go) owns the detection; the API reads it
+	// back to publish per-task needs_input over /api/tasks. Guarded by mu.
+	needsInput map[string]bool
+
 	// shutdownCtx is cancelled by StopAll so any long-running pre-launch
 	// work (e.g. ollama prelaunch on cold qwen3:32b load — up to 5 min)
 	// unblocks promptly when the daemon receives SIGTERM. Without this,
@@ -50,6 +57,7 @@ func NewRunner(onFinish func(taskID string, err error, stopped bool, lastOutput 
 		sessions:       make(map[string]*Session),
 		stopped:        make(map[string]bool),
 		pendingRestart: make(map[string]*pendingRestart),
+		needsInput:     make(map[string]bool),
 		onFinish:       onFinish,
 		shutdownCtx:    ctx,
 		shutdownCancel: cancel,
@@ -120,6 +128,11 @@ func (r *Runner) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 	r.mu.Lock()
 	r.sessions[task.ID] = sess
 	r.mu.Unlock()
+
+	events.Emit(model.EventTypeSessionStarted, task.ID, map[string]any{
+		"pid":    sess.PID(),
+		"resume": resume,
+	})
 
 	// Watch for process exit. The onFinish callback is fired while the
 	// session is still in the map so consumers (e.g., daemon exit info
@@ -459,6 +472,41 @@ func (r *Runner) RunningAndIdle() (running, idle []string) {
 		}
 	}
 	return running, idle
+}
+
+// SetNeedsInputIDs replaces the runner's needs-input set with ids. Called by
+// the daemon's idle/needs-input watcher each tick; the set is the
+// daemon-authoritative source for /api/tasks' per-task needs_input flag, so
+// the signal is correct with no TUI attached. Passing an empty/nil slice
+// clears the set.
+func (r *Runner) SetNeedsInputIDs(ids []string) {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	r.mu.Lock()
+	r.needsInput = set
+	r.mu.Unlock()
+}
+
+// NeedsInput reports whether the watcher last flagged taskID as blocked
+// waiting on user input.
+func (r *Runner) NeedsInput(taskID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.needsInput[taskID]
+}
+
+// NeedsInputIDs returns a snapshot of the task IDs currently flagged as
+// blocked waiting on user input.
+func (r *Runner) NeedsInputIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.needsInput))
+	for id := range r.needsInput {
+		out = append(out, id)
+	}
+	return out
 }
 
 // HasSession returns true if a session exists for the task.

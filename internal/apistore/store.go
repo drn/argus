@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
 )
 
@@ -434,4 +435,39 @@ func (s *Store) SetArchived(id string, archived bool) error {
 		return s.c.ArchiveTask(context.Background(), id)
 	}
 	return s.c.UnarchiveTask(context.Background(), id)
+}
+
+// PluginSections fetches the registered plugin settings sections via GET
+// /api/plugins/settings/sections and reconstructs settings.Section values
+// (the wire shape elides the `spec` envelope for compactness, so we
+// re-wrap fields into a FormSpec on the read side). Corrupt fields are
+// dropped so a misbehaving plugin can't take the "Plugins" header offline.
+func (s *Store) PluginSections() ([]settings.Section, error) {
+	wire, err := s.c.ListPluginSections(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]settings.Section, 0, len(wire))
+	for _, w := range wire {
+		fields := make([]settings.FormField, 0, len(w.Fields))
+		for _, f := range w.Fields {
+			fields = append(fields, settings.FormField{
+				Key:     f.Key,
+				Label:   f.Label,
+				Type:    settings.FieldType(f.Type),
+				Default: f.Default,
+				Min:     f.Min,
+				Max:     f.Max,
+				Options: f.Options,
+			})
+		}
+		out = append(out, settings.Section{
+			Scope:       w.Scope,
+			Title:       w.Title,
+			Type:        settings.SectionType(w.Type),
+			CallbackURL: w.CallbackURL,
+			Spec:        &settings.FormSpec{Fields: fields},
+		})
+	}
+	return out, nil
 }

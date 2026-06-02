@@ -37,6 +37,21 @@ func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	return nil
 }
 
+// Ports returns the live MCP and REST API HTTP ports the daemon is bound to.
+// Plugins (e.g. hera) call this over the Unix socket to discover the current
+// ports instead of hardcoding — bindWithRetry means neither port is stable
+// across restarts. Zero means that server is not enabled or failed to bind.
+//
+// The port fields are written once in Serve under d.mu and read here under
+// the same lock; mirrors KBStatus's treatment of mcpPort.
+func (s *RPCService) Ports(_ *Empty, resp *PortsResp) error {
+	s.daemon.mu.Lock()
+	resp.MCPPort = s.daemon.mcpPort
+	resp.APIPort = s.daemon.apiPort
+	s.daemon.mu.Unlock()
+	return nil
+}
+
 // StartSession starts a new agent session.
 func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 	slog.Info("rpc.StartSession", "task", req.TaskID, "session", req.SessionID, "project", req.Project, "resume", req.Resume, "cols", req.Cols, "rows", req.Rows, "worktree", req.Worktree)

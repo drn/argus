@@ -16,8 +16,10 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/push"
+	"github.com/drn/argus/internal/tui/settings"
 )
 
 // TaskCreator creates a task from name, prompt, project, and optional backend.
@@ -29,14 +31,20 @@ type TaskCreator func(name, prompt, project, backend string, autoName bool) (*mo
 
 // Server is the HTTP REST API server.
 type Server struct {
-	db         *db.DB
-	runner     *agent.Runner
-	token      string
-	createTask TaskCreator
-	httpSrv    *http.Server
-	push       *push.Manager
-	scheduler  ScheduleRunner   // optional; set by SetScheduler before ListenAndServe
-	clipboard  *clipboard.Store // optional; set by SetClipboard before ListenAndServe
+	db          *db.DB
+	runner      *agent.Runner
+	token       string
+	createTask  TaskCreator
+	httpSrv     *http.Server
+	push        *push.Manager
+	scheduler   ScheduleRunner   // optional; set by SetScheduler before ListenAndServe
+	clipboard   *clipboard.Store // optional; set by SetClipboard before ListenAndServe
+	mcpRegistry *mcp.Registry    // optional; set by SetMCPRegistry before ListenAndServe
+
+	// eventBus broadcasts model.Events to attached SSE subscribers. Server
+	// implements events.Sink (see Emit) so the daemon can wire the global
+	// events.SetSink to the same broker that serves /api/events/stream.
+	eventBus *eventBus
 
 	// stopCh is closed by Shutdown to signal background goroutines (idle
 	// watcher, push fan-out housekeeping) to terminate. Range over <-stopCh
@@ -51,6 +59,20 @@ type Server struct {
 	// cached value.
 	lastResizeMu   sync.Mutex
 	lastResizeCols map[string]uint16
+
+	// pluginSections is the in-memory mirror of the `plugin_settings` table
+	// (PR 7 of the plugin substrate). The DB is the source of truth; this
+	// shadow lets the daemon answer "is this plugin still registered?"
+	// without round-tripping SQLite on every call. May be nil during early
+	// boot before [Server.RehydratePluginSections] runs — handlers check
+	// before dereferencing.
+	pluginSections *settings.Registry
+
+	// pluginSubmitFn is the test seam for handleSubmitPluginSectionValues.
+	// Production sets this to defaultPluginSubmit (a real HTTP POST to the
+	// plugin's callback_url); tests override it to assert on what would
+	// have been forwarded without spinning up a fake plugin server.
+	pluginSubmitFn func(ctx context.Context, callbackURL, authHeader string, body []byte) (int, []byte, error)
 }
 
 // New creates a new API server. pushMgr is optional; pass nil to disable
@@ -64,13 +86,19 @@ func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreato
 		token:          token,
 		createTask:     creator,
 		push:           pushMgr,
+		eventBus:       newEventBus(),
 		stopCh:         make(chan struct{}),
 		lastResizeCols: make(map[string]uint16),
+		pluginSections: settings.NewRegistry(),
 	}
-	if pushMgr != nil {
-		// Start idle watcher in the background.
-		go srv.idleWatcher()
-	} else {
+	srv.rehydratePluginSections()
+	// Start the idle watcher unconditionally. It fires session.idle events
+	// for the plugin substrate (PR 2) every tick, and ALSO triggers Web
+	// Push notifications when pushMgr is non-nil. Splitting the two
+	// responsibilities keeps plugins observing idle transitions even on
+	// daemons that opted out of push.
+	go srv.idleWatcher()
+	if pushMgr == nil {
 		log.Printf("api: push disabled (no push manager provided)")
 	}
 	return srv
@@ -176,6 +204,35 @@ func bindWithRetry(addr string, port, attempts int) (net.Listener, int, error) {
 		lastErr = err
 	}
 	return nil, 0, fmt.Errorf("api listen: failed to bind %s on ports %d-%d: %w", addr, port, port+attempts-1, lastErr)
+}
+
+// rehydratePluginSections loads every persisted section into the in-memory
+// registry. Called at boot; daemon restarts inherit the prior set
+// transparently. Single corrupt rows are logged and skipped so one bad row
+// can't take the registry offline — see settings.Registry.Replace for the
+// same defensive policy.
+func (s *Server) rehydratePluginSections() {
+	if s.pluginSections == nil || s.db == nil {
+		return
+	}
+	rows, err := s.db.ListPluginSections()
+	if err != nil {
+		log.Printf("api: rehydrate plugin sections: %v", err)
+		return
+	}
+	out := make([]settings.Section, 0, len(rows))
+	for _, row := range rows {
+		sec, perr := row.ToSection()
+		if perr != nil {
+			log.Printf("api: skip corrupt plugin section scope=%q title=%q: %v", row.Scope, row.Title, perr)
+			continue
+		}
+		out = append(out, sec)
+	}
+	n := s.pluginSections.Replace(out)
+	if n > 0 {
+		log.Printf("api: rehydrated %d plugin section(s)", n)
+	}
 }
 
 // Shutdown gracefully stops the HTTP server and signals background goroutines

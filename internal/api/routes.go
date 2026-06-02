@@ -107,6 +107,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/tokens", s.handleListTokens)
 	mux.HandleFunc("POST /api/tokens", s.handleCreateToken)
 	mux.HandleFunc("DELETE /api/tokens/{id}", s.handleRevokeToken)
+	// Plugin substrate: runtime MCP tool registration (PR 4). Plugins
+	// (scope-tagged tokens) register and unregister their own tools; master
+	// can drop any tool for operator cleanup.
+	mux.HandleFunc("POST /api/mcp/tools", s.handleRegisterMCPTool)
+	mux.HandleFunc("DELETE /api/mcp/tools/{name}", s.handleUnregisterMCPTool)
 	mux.HandleFunc("GET /api/source-path", s.handleGetSourcePath)
 	mux.HandleFunc("PUT /api/source-path", s.handleSetSourcePath)
 	mux.HandleFunc("POST /api/update", s.handleUpdateSelf)
@@ -119,11 +124,43 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/schedules/{id}", s.handleDeleteSchedule)
 	mux.HandleFunc("POST /api/schedules/{id}/run", s.handleRunSchedule)
 
+	// Plugin substrate (PR 2): event stream. Server-Sent Events with cursor
+	// replay + resync on overflow. Accepts any authenticated token (master
+	// or device); plugin-scoped tokens land here once PR 1 ships.
+	mux.HandleFunc("GET /api/events/stream", s.handleEventsStream)
+
 	// Inter-task messaging. Inbox read + ack are per-task scope (device
 	// tokens OK); sending is requireMaster.
 	mux.HandleFunc("GET /api/tasks/{id}/inbox", s.handleListInbox)
 	mux.HandleFunc("POST /api/tasks/{id}/inbox/ack", s.handleAckInbox)
 	mux.HandleFunc("POST /api/tasks/{id}/messages", s.handleSendMessage)
+
+	// Per-task sidecar metadata. PR 3 of the plugin substrate plan: a generic
+	// k/v store keyed by (task_id, namespace, key) so plugins can annotate
+	// tasks without piling new columns onto the tasks schema. Reads are
+	// open to device tokens; writes are master-only until PR 1 (scope tokens)
+	// lands and allows plugin-scoped writes into the plugin's own namespace.
+	mux.HandleFunc("GET /api/tasks/{id}/meta", s.handleGetMeta)
+	mux.HandleFunc("PUT /api/tasks/{id}/meta", s.handlePutMeta)
+
+	// Plugin-registered settings sections (PR 7). POST takes a scope-tagged
+	// token (the scope becomes the section's namespace); GET is open to any
+	// authenticated request so the TUI can list registered sections. DELETE
+	// requires either the owning scope or the master token. The submit
+	// sub-route is the form-save proxy: the TUI POSTs the user-entered
+	// values here, and the daemon forwards them to the plugin's
+	// callback_url so cross-network egress is centralized.
+	mux.HandleFunc("GET /api/plugins/settings/sections", s.handleListPluginSections)
+	mux.HandleFunc("POST /api/plugins/settings/sections", s.handleRegisterPluginSection)
+	mux.HandleFunc("DELETE /api/plugins/settings/sections/{scope}/{title}", s.handleUnregisterPluginSection)
+	mux.HandleFunc("POST /api/plugins/settings/sections/{scope}/{title}/submit", s.handleSubmitPluginSectionValues)
+
+	// Plugin-registered top-level views (PR 9). POST/GET/DELETE are master-only
+	// today; see internal/api/plugin_views.go for the post-PR-1 swap TODO
+	// that broadens auth to "master OR scope" once scope-tokens land.
+	mux.HandleFunc("POST /api/plugins/views", s.handleCreatePluginView)
+	mux.HandleFunc("GET /api/plugins/views", s.handleListPluginViews)
+	mux.HandleFunc("DELETE /api/plugins/views/{id}", s.handleDeletePluginView)
 
 	return mux
 }

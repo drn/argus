@@ -20,6 +20,13 @@ cmd/argus/remote.go
 # Test-only HTTP harness for Playwright. Covered by web-tests/*.spec.ts.
 cmd/argus-test-server/main.go
 
+# Test-only black-box substrate verifier. Each phase function blocks on
+# real HTTP/WS/SSE to a live argus daemon, so they can't be exercised
+# under `go test`. The supporting fakeplugin.go and events.go ARE unit
+# tested (admin_test.go / events_test.go / fakeplugin_test.go); only the
+# orchestrator main.go is excluded. Covered end-to-end by `make plugin-smoke`.
+cmd/argus-plugin-smoke/main.go
+
 # Raw terminal mode + ioctl glue. CLAUDE.md exempts "real terminal functions
 # (raw mode, ioctl)".
 internal/agent/attach.go

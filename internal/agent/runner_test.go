@@ -1392,3 +1392,38 @@ func TestRunner_Attach_LiveSession(t *testing.T) {
 		t.Fatal("Attach did not return after Detach")
 	}
 }
+
+// TestRunner_NeedsInputSet exercises the daemon-authoritative needs-input set:
+// SetNeedsInputIDs replaces the set wholesale, NeedsInput is a membership
+// check, and NeedsInputIDs returns a snapshot. These back /api/tasks'
+// needs_input flag.
+func TestRunner_NeedsInputSet(t *testing.T) {
+	r := NewRunner(nil)
+
+	// Fresh runner: nothing flagged.
+	testutil.Equal(t, r.NeedsInput("t1"), false)
+	testutil.Equal(t, len(r.NeedsInputIDs()), 0)
+
+	r.SetNeedsInputIDs([]string{"t1", "t2"})
+	testutil.Equal(t, r.NeedsInput("t1"), true)
+	testutil.Equal(t, r.NeedsInput("t2"), true)
+	testutil.Equal(t, r.NeedsInput("t3"), false)
+
+	got := r.NeedsInputIDs()
+	set := map[string]bool{}
+	for _, id := range got {
+		set[id] = true
+	}
+	testutil.DeepEqual(t, set, map[string]bool{"t1": true, "t2": true})
+
+	// Replace wholesale: t1 clears, t3 enters.
+	r.SetNeedsInputIDs([]string{"t3"})
+	testutil.Equal(t, r.NeedsInput("t1"), false)
+	testutil.Equal(t, r.NeedsInput("t3"), true)
+	testutil.Equal(t, len(r.NeedsInputIDs()), 1)
+
+	// Empty/nil clears the set entirely.
+	r.SetNeedsInputIDs(nil)
+	testutil.Equal(t, r.NeedsInput("t3"), false)
+	testutil.Equal(t, len(r.NeedsInputIDs()), 0)
+}

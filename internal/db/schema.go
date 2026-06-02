@@ -158,12 +158,17 @@ func (d *DB) createTables() error {
 
 	// Per-device API tokens (Phase 6). Master token in ~/.argus/api-token still
 	// works as admin and is the only credential that can mint new tokens.
+	// scope: empty for device tokens (the original use case); non-empty for
+	// plugin-scoped tokens. The auth middleware tags scoped tokens as
+	// `scope:<name>` instead of `device`, and downstream plugin endpoints gate
+	// on that tag.
 	if _, err := d.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS api_tokens (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			label       TEXT NOT NULL DEFAULT '',
 			hash        TEXT NOT NULL UNIQUE,
 			last4       TEXT NOT NULL DEFAULT '',
+			scope       TEXT NOT NULL DEFAULT '',
 			created_at  INTEGER NOT NULL,
 			last_used   INTEGER NOT NULL DEFAULT 0,
 			revoked_at  INTEGER NOT NULL DEFAULT 0
@@ -171,6 +176,9 @@ func (d *DB) createTables() error {
 	`); err != nil {
 		return fmt.Errorf("creating api_tokens table: %w", err)
 	}
+
+	// Idempotent ALTER for databases created before the scope column was added.
+	d.conn.Exec(`ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// KB pending tasks table for vault task imports awaiting approval.
 	if _, err := d.conn.Exec(`
@@ -256,6 +264,119 @@ func (d *DB) createTables() error {
 		return fmt.Errorf("creating artifacts table: %w", err)
 	}
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id, created_at)`) //nolint:errcheck
+
+	// Per-task sidecar metadata. Composite PK (task_id, namespace, key) keeps
+	// each plugin's keys isolated under its own namespace prefix; ON
+	// CONFLICT(...) DO UPDATE in SetMeta upserts so a write never has to
+	// branch on existence. Cascades wired through Delete / SetArchived rather
+	// than via FK so the soft-archive flow can scope cleanup without forcing
+	// an ON DELETE CASCADE that wouldn't fire on the soft path.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS task_meta (
+			task_id     TEXT NOT NULL,
+			namespace   TEXT NOT NULL,
+			key         TEXT NOT NULL,
+			value       TEXT NOT NULL DEFAULT '',
+			updated_at  TEXT NOT NULL,
+			PRIMARY KEY (task_id, namespace, key)
+		)
+	`); err != nil {
+		return fmt.Errorf("creating task_meta table: %w", err)
+	}
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_task_meta_namespace ON task_meta(task_id, namespace)`) //nolint:errcheck
+
+	// Events ring (PR 2 of the plugin substrate). Bounded — InsertEvent
+	// evicts the oldest rows once the row count exceeds MaxEventsRetained.
+	// id is INTEGER PRIMARY KEY AUTOINCREMENT so the cursor is monotonic
+	// even when rows are evicted (otherwise SQLite would recycle rowids and
+	// a since=<old> client could miss events whose ids landed below their
+	// cursor). type/at/task_id are indexed-eligible if downstream consumers
+	// need filtered replay, but the ring is small enough today that linear
+	// scans are fine.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS events (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			type         TEXT NOT NULL,
+			at           TEXT NOT NULL,
+			task_id      TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		return fmt.Errorf("creating events table: %w", err)
+	}
+
+	// Runtime-registered MCP tools (PR 4 of the plugin substrate). Each row is
+	// a single proxied tool registered by a plugin via POST /api/mcp/tools.
+	// The MCP server consults this table alongside the built-in tool list at
+	// tools/list and dispatches tools/call invocations by HTTP-POSTing to
+	// callback_url. Persistence here is what makes registrations survive a
+	// daemon restart per the contract — without it, every restart would
+	// silently drop every plugin tool until the plugin re-registered.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_mcp_tools (
+			name          TEXT PRIMARY KEY,
+			scope         TEXT NOT NULL,
+			description   TEXT NOT NULL DEFAULT '',
+			input_schema  TEXT NOT NULL DEFAULT '{}',
+			callback_url  TEXT NOT NULL,
+			auth_header   TEXT NOT NULL DEFAULT '',
+			registered_at INTEGER NOT NULL,
+			last_seen_at  INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		return fmt.Errorf("creating plugin_mcp_tools table: %w", err)
+	}
+	// Scope index for cascade-on-revoke and the per-scope sweep operations;
+	// last_seen_at index for the idle sweeper's range scan.
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_mcp_tools_scope     ON plugin_mcp_tools(scope)`)        //nolint:errcheck
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_plugin_mcp_tools_last_seen ON plugin_mcp_tools(last_seen_at)`) //nolint:errcheck
+
+	// Plugin-registered settings sections (PR 7 of the plugin substrate).
+	// Composite UNIQUE(scope, title) lets a plugin upsert by re-registering
+	// the same key — the substrate plan caps a plugin at one section, and
+	// the (scope, title) uniqueness leaves room for future plans that allow
+	// many. spec_json holds the encoded [settings.FormSpec]; we deserialize
+	// on read rather than splitting fields across rows so the JSON shape
+	// stays the single source of truth.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_settings (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			scope         TEXT NOT NULL,
+			title         TEXT NOT NULL,
+			type          TEXT NOT NULL DEFAULT 'form',
+			spec_json     TEXT NOT NULL DEFAULT '',
+			callback_url  TEXT NOT NULL,
+			auth_header   TEXT NOT NULL DEFAULT '',
+			created_at    TEXT NOT NULL,
+			UNIQUE(scope, title)
+		)
+	`); err != nil {
+		return fmt.Errorf("creating plugin_settings table: %w", err)
+	}
+	// Idempotent add for databases created before auth_header existed. The
+	// callback proxy forwards this as the Authorization header on form-submit
+	// POSTs so plugins can require auth on their callback endpoint.
+	d.conn.Exec(`ALTER TABLE plugin_settings ADD COLUMN auth_header TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Plugin-registered top-level views (PR 9 of the plugin substrate). Each
+	// row is one full-screen UI surface owned by a plugin: the TUI opens a
+	// WebSocket to callback_url when the hotkey fires, streams ANSI bytes
+	// from the plugin into a streampane, and forwards keystrokes back. scope
+	// is reserved for the post-PR-1 scope-token gating swap; today every row
+	// is registered under the master token.
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS plugin_views (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			scope        TEXT NOT NULL DEFAULT '',
+			title        TEXT NOT NULL,
+			hotkey       TEXT NOT NULL DEFAULT '',
+			callback_url TEXT NOT NULL,
+			created_at   TEXT NOT NULL,
+			UNIQUE(scope, title)
+		)
+	`); err != nil {
+		return fmt.Errorf("creating plugin_views table: %w", err)
+	}
 
 	return nil
 }

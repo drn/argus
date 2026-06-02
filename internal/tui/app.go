@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +33,7 @@ import (
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/gitpanel"
+	"github.com/drn/argus/internal/tui/keyenc"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
 	"github.com/drn/argus/internal/tui/taskview"
@@ -62,6 +67,7 @@ const (
 	modeAppleEventsPicker
 	modeHelp
 	modeErrorModal
+	modePluginView
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -251,6 +257,51 @@ type App struct {
 	// driven, so the one CSI 2J flash per resize is the right tradeoff.
 	lastScreenW int
 	lastScreenH int
+
+	// Plugin-registered top-level views. See plugin_views.go for the
+	// mount/activate/deactivate lifecycle. pluginConnFactory is overridable
+	// so smoke tests can replace the real WebSocket dialer with an in-
+	// process stub.
+	pluginMounts      []*pluginViewMount
+	pluginHotkeys     map[tcell.Key]*pluginViewMount
+	activePlugin      *pluginViewMount
+	pluginConnFactory pluginConnectorFactory
+	// pluginHelpRequested is set when the active plugin sends a help control
+	// frame. Retained as an observable seam (smoke tests assert it flips);
+	// requestPluginHelp also pops the overlay. Touched only on the tview
+	// goroutine.
+	pluginHelpRequested bool
+	// pluginHelpVisible is true while the plugin-triggered help overlay is on
+	// screen. While visible, the modePluginView branch of handleGlobalKey
+	// consumes exactly the NEXT key to dismiss the overlay (the overlay does
+	// not capture the keyboard beyond dismissal); otherwise argus fully
+	// surrenders. Cleared on dismiss and on deactivate. Touched only on the
+	// tview goroutine.
+	pluginHelpVisible bool
+
+	// lastCtrlQ timestamps the most recent Ctrl+Q seen while a plugin has the
+	// ball. A second Ctrl+Q within pluginFailsafeWindow force-returns to argus
+	// (the failsafe). Reset to zero in activatePluginView so a stale timestamp
+	// never carries between views. Touched only on the tview main goroutine via
+	// SetInputCapture → handleGlobalKey, so it needs no mutex.
+	lastCtrlQ time.Time
+	// nowFn is the clock used by the failsafe window check. Defaults to
+	// time.Now; tests override it to make the timing deterministic.
+	nowFn func() time.Time
+
+	// Stream-section connectors. Keyed by (scope, title). Created on
+	// SettingsView.OnStreamFocus, closed on OnStreamBlur. Reuses the same
+	// connector factory as plugin views so smoke tests can stub.
+	streamConns   map[pluginStreamKey]pluginConnector
+	streamConnsMu sync.Mutex
+}
+
+// pluginStreamKey identifies an open stream-section connector. Matches the
+// SettingsView's pluginKey shape but lives in package tui so it doesn't
+// re-export internal/tui's pluginKey.
+type pluginStreamKey struct {
+	scope string
+	title string
 }
 
 // New creates the tui application shell.
@@ -277,6 +328,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		lastAttachCols:         make(map[string]uint16),
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
+		nowFn:                  time.Now,
 	}
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
@@ -306,6 +358,9 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.settings.OnDeleteSchedule = func(id string) { app.deleteSchedule(id) }
 	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
 	app.settings.OnBranchChange = func() { app.forceRedraw("settings branch changed") }
+	app.settings.OnStreamFocus = app.openStreamSection
+	app.settings.OnStreamBlur = app.closeStreamSection
+	app.settings.SetPluginSubmit(app.submitPluginSection)
 	app.settingsPage = NewSettingsPage(app.settings)
 
 	cfg := database.Config()
@@ -446,6 +501,7 @@ func (a *App) buildUI() {
 		AddPage("agent", a.agentPage, true, false).
 		AddPage("dag", a.dagPage, true, false).
 		AddPage("settings", a.settingsPage, true, false)
+	a.loadPluginViews()
 	// Every Pages mutation (AddPage / RemovePage / SwitchToPage / Show / Hide)
 	// is a layout change that needs a tcell Sync to wipe ghost cells under
 	// tmux/iTerm2. Wiring it once here covers every modal open/close, every
@@ -497,12 +553,64 @@ func (a *App) afterDraw(screen tcell.Screen) {
 	a.lastScreenH = h
 	uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
 	screen.Sync()
+	// Forward the resize to the active plugin view (if any). Best-effort —
+	// errors land in uxlog rather than the user's terminal.
+	a.resizePluginViewIfActive()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
 // TUI's. Must be called before Run() — the flag is consumed there.
 func (a *App) SetDaemonStale(stale bool) {
 	a.daemonStale = stale
+}
+
+// submitPluginSection is the production submit hook wired into the
+// SettingsView at App construction. It looks up the section's callback URL
+// from the live PluginSections list and POSTs the user-entered values map
+// there.
+//
+// Two-process limitation: in --remote mode the TUI is on a host that may
+// not reach the plugin's callback URL (the plugin server is typically on
+// the same LAN as the daemon, not the user's phone). The proper fix is to
+// proxy through the daemon's /submit endpoint, which a follow-up will
+// wire once the apiclient gains a SubmitPluginSection method. Local mode
+// — the common case — works today because both the TUI and the plugin
+// share localhost.
+func (a *App) submitPluginSection(scope, title string, values map[string]any) error {
+	sections, err := a.db.PluginSections()
+	if err != nil {
+		return err
+	}
+	var callbackURL string
+	for _, sec := range sections {
+		if sec.Scope == scope && sec.Title == title {
+			callbackURL = sec.CallbackURL
+			break
+		}
+	}
+	if callbackURL == "" {
+		return fmt.Errorf("plugin section %s/%s not found", scope, title)
+	}
+	body, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("plugin returned %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // openRestartDaemonPrompt shows the modal asking whether to restart the
@@ -1437,8 +1545,57 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	}
 }
 
+// pluginFailsafeWindow is the maximum gap between two Ctrl+Q presses for the
+// second to fire the failsafe (force-return to argus). A first Ctrl+Q is always
+// forwarded to the plugin; only a second within this window is intercepted.
+const pluginFailsafeWindow = 400 * time.Millisecond
+
 // handleGlobalKey processes key events at the application level.
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
+	// Plugin-view mode — full surrender. While a plugin has the ball, argus
+	// reserves NO key for its own navigation: Esc, Ctrl+C, `?`, tab-switch
+	// numbers, focus-rail arrows — all forward to the plugin via the focused
+	// pane's InputHandler. The ONE exception is the double-Ctrl+Q failsafe
+	// (Decision 3) so a hung plugin can't trap the keyboard. See
+	// plugin_views.go.
+	if a.mode == modePluginView {
+		// Plugin-triggered help overlay: while it is visible, argus consumes
+		// exactly the NEXT key to dismiss it and hand control back to the
+		// plugin. This is the ONLY key (besides the double-Ctrl+Q failsafe)
+		// argus intercepts in plugin mode — the overlay does not capture the
+		// keyboard beyond this single dismissal.
+		if a.pluginHelpVisible {
+			a.dismissPluginHelp()
+			return nil
+		}
+		if event.Key() == tcell.KeyCtrlQ {
+			now := a.nowFn()
+			if !a.lastCtrlQ.IsZero() && now.Sub(a.lastCtrlQ) <= pluginFailsafeWindow {
+				// Second fast Ctrl+Q — intercept, do NOT forward, force-return.
+				uxlog.Log("[plugin-view] failsafe fired: double Ctrl+Q force-return")
+				a.lastCtrlQ = time.Time{}
+				a.deactivatePluginView()
+				return nil
+			}
+			// First Ctrl+Q (or one outside the window) — record and forward so
+			// the plugin receives it.
+			a.lastCtrlQ = now
+			return event
+		}
+		return event
+	}
+
+	// Plugin-view hotkey activation — checked before form handlers so the
+	// hotkey works from any non-modal context. tview.Pages already routes
+	// the form modes via earlier branches below, so they get to absorb the
+	// keystroke first when active.
+	if event.Key() != tcell.KeyRune {
+		if m, ok := a.pluginHotkeys[event.Key()]; ok && a.mode == modeTaskList {
+			a.activatePluginView(m)
+			return nil
+		}
+	}
+
 	// New task form mode — delegate everything to the form
 	if a.mode == modeNewTask && a.newTaskForm != nil {
 		a.handleNewTaskKey(event)
@@ -2105,118 +2262,13 @@ func (a *App) openPR() {
 	}
 }
 
-// tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY input.
+// tcellKeyToBytes converts a tcell key event to raw terminal bytes for PTY
+// input. It delegates to the shared keyenc.Encode so the agent PTY, the
+// plugin terminal pane, and the plugin stream pane all encode keys
+// identically. keyenc additionally emits the modified-arrow xterm forms
+// (Ctrl/Shift/Alt+arrow) that the prior pane encoders dropped.
 func tcellKeyToBytes(ev *tcell.EventKey) []byte {
-	if ev.Key() == tcell.KeyRune {
-		r := ev.Rune()
-		if ev.Modifiers()&tcell.ModAlt != 0 {
-			return append([]byte{0x1b}, []byte(string(r))...)
-		}
-		return []byte(string(r))
-	}
-
-	alt := ev.Modifiers()&tcell.ModAlt != 0
-
-	if alt {
-		switch ev.Key() {
-		case tcell.KeyUp:
-			return []byte("\x1b[1;3A")
-		case tcell.KeyDown:
-			return []byte("\x1b[1;3B")
-		case tcell.KeyRight:
-			return []byte("\x1b[1;3C")
-		case tcell.KeyLeft:
-			return []byte("\x1b[1;3D")
-		case tcell.KeyDelete:
-			return []byte{0x1b, 0x7f}
-		}
-	}
-
-	switch ev.Key() {
-	case tcell.KeyEnter:
-		// Shift+Enter / Alt+Enter → newline-insert (ESC + CR). TUIs
-		// running in the PTY (ink-based Claude Code, blessed, textual)
-		// treat CR as submit and ESC+CR as "insert newline" — the same
-		// sequence iTerm2 / Kitty emit for Shift+Enter when configured.
-		if ev.Modifiers()&(tcell.ModShift|tcell.ModAlt) != 0 {
-			return []byte{0x1b, '\r'}
-		}
-		return []byte{'\r'}
-	case tcell.KeyTab:
-		return []byte{'\t'}
-	case tcell.KeyBacktab:
-		return []byte("\x1b[Z")
-	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		if alt {
-			return []byte{0x1b, 0x7f}
-		}
-		return []byte{0x7f}
-	case tcell.KeyDelete:
-		return []byte("\x1b[3~")
-	case tcell.KeyUp:
-		return []byte("\x1b[A")
-	case tcell.KeyDown:
-		return []byte("\x1b[B")
-	case tcell.KeyRight:
-		return []byte("\x1b[C")
-	case tcell.KeyLeft:
-		return []byte("\x1b[D")
-	case tcell.KeyHome:
-		return []byte("\x1b[H")
-	case tcell.KeyEnd:
-		return []byte("\x1b[F")
-	case tcell.KeyPgUp:
-		return []byte("\x1b[5~")
-	case tcell.KeyPgDn:
-		return []byte("\x1b[6~")
-	case tcell.KeyCtrlA:
-		return []byte{0x01}
-	case tcell.KeyCtrlB:
-		return []byte{0x02}
-	case tcell.KeyCtrlC:
-		return []byte{0x03}
-	case tcell.KeyCtrlD:
-		return []byte{0x04}
-	case tcell.KeyCtrlE:
-		return []byte{0x05}
-	case tcell.KeyCtrlF:
-		return []byte{0x06}
-	case tcell.KeyCtrlG:
-		return []byte{0x07}
-	case tcell.KeyCtrlH:
-		return []byte{0x08}
-	case tcell.KeyCtrlK:
-		return []byte{0x0b}
-	case tcell.KeyCtrlL:
-		return []byte{0x0c}
-	case tcell.KeyCtrlN:
-		return []byte{0x0e}
-	case tcell.KeyCtrlO:
-		return []byte{0x0f}
-	case tcell.KeyCtrlP:
-		return []byte{0x10}
-	case tcell.KeyCtrlR:
-		return []byte{0x12}
-	case tcell.KeyCtrlS:
-		return []byte{0x13}
-	case tcell.KeyCtrlT:
-		return []byte{0x14}
-	case tcell.KeyCtrlU:
-		return []byte{0x15}
-	case tcell.KeyCtrlV:
-		return []byte{0x16}
-	case tcell.KeyCtrlW:
-		return []byte{0x17}
-	case tcell.KeyCtrlX:
-		return []byte{0x18}
-	case tcell.KeyCtrlY:
-		return []byte{0x19}
-	case tcell.KeyCtrlZ:
-		return []byte{0x1a}
-	case tcell.KeyEscape:
-		return []byte{0x1b}
-	}
-	return nil
+	return keyenc.Encode(ev)
 }
 
 // switchTab changes the active top-level tab.
@@ -2881,6 +2933,29 @@ func ptySizeFromPaneRect(pw, ph int) (rows, cols uint16) {
 	// so the int → uint16 conversion cannot overflow; the max() floors also
 	// guarantee positive values. Silence gosec G115 for both fields.
 	return uint16(max(ph-agentViewColOverhead, 5)), uint16(max(pw-agentViewColOverhead, 20)) //nolint:gosec // see comment
+}
+
+// Rect is the agent-pane outer rectangle on screen, taken at face value.
+// Multi-pane layouts (PR 7 and later) pass per-pane rects here rather than
+// going through computePTYSize's host-term/box-default reasoning.
+type Rect struct {
+	X, Y, W, H int
+}
+
+// PTYSizeForRect returns the PTY (rows, cols) for an agent terminal whose
+// outer rect on screen is r. The 1-cell border on each side
+// (agentViewColOverhead) is subtracted; rows and cols are clamped to the
+// minimum useful floor (5 rows / 20 cols).
+//
+// Unlike [App.computePTYSize], the input rect is trusted: there is no
+// host-term fallback and no Box-default rejection. Callers driving the new
+// layout registry already know the authoritative pane rect.
+func PTYSizeForRect(r Rect) (rows, cols uint16) {
+	if r.W <= 0 || r.H <= 0 {
+		return 0, 0
+	}
+	// Realistic cell counts cap well under uint16; max() guarantees positive.
+	return uint16(max(r.H-agentViewColOverhead, 5)), uint16(max(r.W-agentViewColOverhead, 20)) //nolint:gosec // bounded by terminal cell count
 }
 
 // startSession starts a session for an *existing* task (Enter-to-restart or

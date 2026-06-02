@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -85,6 +86,20 @@ func (d *DB) Tasks() ([]*model.Task, error) {
 }
 
 func (d *DB) Add(t *model.Task) error {
+	if err := d.addLocked(t); err != nil {
+		return err
+	}
+	// Emit AFTER releasing the mutex so the sink's downstream InsertEvent
+	// (which re-acquires d.mu) cannot deadlock with our own write.
+	events.Emit(model.EventTypeTaskCreated, t.ID, map[string]any{
+		"name":    t.Name,
+		"project": t.Project,
+		"status":  t.Status.String(),
+	})
+	return nil
+}
+
+func (d *DB) addLocked(t *model.Task) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -115,8 +130,53 @@ func (d *DB) Add(t *model.Task) error {
 }
 
 func (d *DB) Update(t *model.Task) error {
+	oldStatus, oldArchived, hadOld, err := d.updateLocked(t)
+	if err != nil {
+		return err
+	}
+	// Status-change events fire AFTER the lock is released to avoid deadlock
+	// with the events sink (which re-acquires d.mu via InsertEvent). Compare
+	// against the snapshot we captured inside updateLocked.
+	if hadOld && oldStatus != t.Status {
+		events.Emit(model.EventTypeTaskStatusChanged, t.ID, map[string]string{
+			"from": oldStatus.String(),
+			"to":   t.Status.String(),
+		})
+		if t.Status == model.StatusComplete {
+			events.Emit(model.EventTypeTaskCompleted, t.ID, nil)
+		}
+	}
+	// Archive transition: parity with SetArchived so hera and other consumers
+	// of `task.archived` see the event regardless of which write path archived
+	// the row. HTTP /api/tasks PUT and MCP task_archive both flow through
+	// Update; without this they would silently flip the bit and leave any
+	// downstream view of "live bindings" stale.
+	if hadOld && !oldArchived && t.Archived {
+		events.Emit(model.EventTypeTaskArchived, t.ID, nil)
+	}
+	return nil
+}
+
+func (d *DB) updateLocked(t *model.Task) (model.Status, bool, bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// Capture old status + archived state BEFORE the write so the post-unlock
+	// emission sees the transition. A row that doesn't exist yet (hadOld=false)
+	// is the "row missing" case that returns ErrTaskNotFound below; we
+	// suppress the event for that.
+	var (
+		oldStatus    model.Status
+		oldArchived  bool
+		hadOld       bool
+		oldStatusStr string
+		oldArchInt   int
+	)
+	if err := d.conn.QueryRow(`SELECT status, archived FROM tasks WHERE id=?`, t.ID).Scan(&oldStatusStr, &oldArchInt); err == nil {
+		oldStatus, _ = model.ParseStatus(oldStatusStr)
+		oldArchived = oldArchInt != 0
+		hadOld = true
+	}
 
 	sandboxedInt := 0
 	if t.Sandboxed {
@@ -135,31 +195,46 @@ func (d *DB) Update(t *model.Task) error {
 		t.BaseBranch, encodeDependsOn(t.DependsOn), t.Result, t.PlanSlug,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
-		return err
+		return oldStatus, oldArchived, hadOld, err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, t.ID)
+		return oldStatus, oldArchived, hadOld, fmt.Errorf("%w: %s", ErrTaskNotFound, t.ID)
 	}
-	return nil
+	return oldStatus, oldArchived, hadOld, nil
 }
 
 // Rename updates only the name column for a task.
 // Unlike Update, this does not overwrite other fields, avoiding races with
 // concurrent status changes (e.g., agent exit while rename modal is open).
 func (d *DB) Rename(id, name string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	res, err := d.conn.Exec(`UPDATE tasks SET name=? WHERE id=?`, name, id)
+	oldName, err := d.renameLocked(id, name)
 	if err != nil {
 		return err
 	}
+	events.Emit(model.EventTypeTaskRenamed, id, map[string]string{
+		"from": oldName,
+		"to":   name,
+	})
+	return nil
+}
+
+func (d *DB) renameLocked(id, name string) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var oldName string
+	_ = d.conn.QueryRow(`SELECT name FROM tasks WHERE id=?`, id).Scan(&oldName)
+
+	res, err := d.conn.Exec(`UPDATE tasks SET name=? WHERE id=?`, name, id)
+	if err != nil {
+		return "", err
+	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+		return "", fmt.Errorf("%w: %s", ErrTaskNotFound, id)
 	}
-	return nil
+	return oldName, nil
 }
 
 // RenameIfName updates name only if the row's current name still equals
@@ -169,6 +244,20 @@ func (d *DB) Rename(id, name string) error {
 // if the row is gone. Used by the post-creation Haiku rename so a manual
 // rename racing the LLM call is preserved.
 func (d *DB) RenameIfName(id, expected, newName string) (bool, error) {
+	ok, err := d.renameIfNameLocked(id, expected, newName)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		events.Emit(model.EventTypeTaskRenamed, id, map[string]string{
+			"from": expected,
+			"to":   newName,
+		})
+	}
+	return ok, nil
+}
+
+func (d *DB) renameIfNameLocked(id, expected, newName string) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -265,7 +354,7 @@ func (d *DB) SetArchived(id string, archived bool) error {
 	// Both statements (tasks UPDATE + on-archive task_messages DELETE) run in
 	// one SQLite transaction so a crash between them can't leave an archived
 	// row with a queued inbox forever counting against the unread cap.
-	return d.WithTx(func(tx *sql.Tx) error {
+	err := d.WithTx(func(tx *sql.Tx) error {
 		var (
 			res sql.Result
 			err error
@@ -289,9 +378,16 @@ func (d *DB) SetArchived(id string, archived bool) error {
 			if _, err := tx.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id); err != nil {
 				return err
 			}
+			if _, err := tx.Exec(`DELETE FROM task_meta WHERE task_id=?`, id); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
+	if err == nil && archived {
+		events.Emit(model.EventTypeTaskArchived, id, nil)
+	}
+	return err
 }
 
 // FindByNameProject returns the first non-archived task matching (name,
@@ -332,6 +428,9 @@ func (d *DB) Delete(id string) error {
 		// (we'd need a delete trigger that the archived rows wouldn't fire);
 		// this is the app-level equivalent.
 		if _, err := tx.Exec(`DELETE FROM task_messages WHERE from_task_id=? OR to_task_id=?`, id, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM task_meta WHERE task_id=?`, id); err != nil {
 			return err
 		}
 		return nil
