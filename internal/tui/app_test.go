@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -119,6 +121,88 @@ func TestSessionBlockedOnPrompt(t *testing.T) {
 	t.Run("idle with no log file is not blocked", func(t *testing.T) {
 		testutil.Equal(t, sessionBlockedOnPrompt("missing-task", true), false)
 	})
+}
+
+// fakeKickSession is a minimal agent.SessionHandle for driving
+// App.maybeKickRerender without a real PTY. Only the fields the rerender
+// predicate reads are meaningful; everything else returns zero values.
+type fakeKickSession struct {
+	idle       bool
+	alive      bool
+	initCols   int
+	stopCalled atomic.Bool
+}
+
+func (f *fakeKickSession) PID() int                                       { return 0 }
+func (f *fakeKickSession) WriteInput([]byte) (int, error)                 { return 0, nil }
+func (f *fakeKickSession) Resize(uint16, uint16) error                    { return nil }
+func (f *fakeKickSession) RecentOutput() []byte                           { return nil }
+func (f *fakeKickSession) RecentOutputTail(int) []byte                    { return nil }
+func (f *fakeKickSession) RecentOutputTailWithTotal(int) ([]byte, uint64) { return nil, 0 }
+func (f *fakeKickSession) TotalWritten() uint64                           { return 0 }
+func (f *fakeKickSession) IsIdle() bool                                   { return f.idle }
+func (f *fakeKickSession) LastInput() time.Time                           { return time.Time{} }
+func (f *fakeKickSession) Alive() bool                                    { return f.alive }
+func (f *fakeKickSession) PTYSize() (int, int)                            { return 0, 0 }
+func (f *fakeKickSession) InitialPTYSize() (int, int)                     { return f.initCols, 24 }
+func (f *fakeKickSession) Done() <-chan struct{}                          { return make(chan struct{}) }
+func (f *fakeKickSession) Err() error                                     { return nil }
+func (f *fakeKickSession) WorkDir() string                                { return "" }
+func (f *fakeKickSession) Stop() error                                    { f.stopCalled.Store(true); return nil }
+func (f *fakeKickSession) AddWriter(io.Writer)                            {}
+func (f *fakeKickSession) AddWriterFrom(io.Writer, uint64)                {}
+func (f *fakeKickSession) AddWriterFromTolerant(io.Writer, uint64)        {}
+func (f *fakeKickSession) RemoveWriter(io.Writer)                         {}
+
+func TestMaybeKickRerender_TUIDefersWhenBlockedOnPrompt(t *testing.T) {
+	// End-to-end for the TUI's RerenderDeferPrompt switch branch: a genuine
+	// resize (initCols 20 ≪ panel) on an idle session that's blocked on a
+	// prompt must NOT kick — it must invalidate the attach cache and leave
+	// no pending restart, so the question survives. Drives the real
+	// maybeKickRerender goroutine + QueueUpdateDraw dispatch with a fake
+	// session (no PTY, no idle-wait — IsIdle is forced true).
+	t.Setenv("HOME", t.TempDir())
+	const taskID = "tui-blocked"
+	logPath := agent.SessionLogPath(taskID)
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o755))
+	testutil.NoError(t, os.WriteFile(logPath, []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n"), 0o644))
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	task := &model.Task{ID: taskID, Name: "blocked", Status: model.StatusInProgress, SessionID: "sid-resume", Worktree: t.TempDir()}
+	sess := &fakeKickSession{idle: true, alive: true, initCols: 20}
+
+	// maybeKickRerender reads the panel rect on the tview goroutine, then
+	// spawns its own goroutine that dispatches the decision via
+	// QueueUpdateDraw — so invoke it on the tview goroutine.
+	readUI(t, app.tapp, func() { app.maybeKickRerender(task, sess) })
+
+	// Poll until the DeferPrompt side effects settle: attach cache cleared
+	// (invalidateAttachCache) and no pending restart queued.
+	deadline := time.Now().Add(uiTimeout)
+	settled := false
+	for time.Now().Before(deadline) {
+		var cacheCleared, noPending bool
+		readUI(t, app.tapp, func() {
+			_, cached := app.lastAttachCols[taskID]
+			cacheCleared = !cached
+			noPending = !app.pendingRerenderRestart[taskID]
+		})
+		if cacheCleared && noPending {
+			settled = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !settled {
+		t.Fatal("RerenderDeferPrompt side effects never settled (cache not invalidated or restart queued)")
+	}
+	// The blocked session must never be stopped — that's the dismissed-question bug.
+	testutil.Equal(t, sess.stopCalled.Load(), false)
 }
 
 func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {

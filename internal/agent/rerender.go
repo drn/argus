@@ -1,8 +1,12 @@
 package agent
 
-// Rerender decisions are the outcome of ShouldKickRerender. Both the TUI's
-// agent-view-entry path and the API's resize handler share this predicate so
-// the gate is identical no matter who initiates a kick.
+// Rerender decisions are the outcome of ShouldKickRerender, the shared gating
+// logic for the kick. The TUI's agent-view-entry path calls ShouldKickRerender
+// directly; the API's resize handler (Server.maybeKickRerender) inlines the
+// equivalent gates in the same order (margin → idle → BlockedOnPrompt) rather
+// than calling this function, so it can interleave DB lookups and cache
+// invalidation between them. Keep the two in sync: a new gate added here must
+// be mirrored in the API handler (and vice versa).
 //
 // The kick mechanism — stop the live session, restart it with --session-id so
 // the agent re-emits the entire conversation at the new PTY size — is the only
