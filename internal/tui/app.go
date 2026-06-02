@@ -416,6 +416,13 @@ func (a *App) buildUI() {
 		AddItem(a.agentLeftCol, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
+	// Zoom is the default agent-view layout. Collapse the side panels at setup
+	// so the resting agentZen flag + panel proportions match the documented
+	// default before the first agent-view entry re-asserts them — otherwise the
+	// struct's zero-value state (agentZen=false, 1:3:1 flex) would be a layout
+	// that's never actually drawn. (agentFocus is already focusTerminal here —
+	// its zero value — so setAgentZen's focus guard is a no-op at setup.)
+	a.setAgentZen()
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
@@ -1688,11 +1695,16 @@ func (a *App) clearAgentZen() {
 
 // setAgentZen turns single-pane (zoom) mode on: the left column (attention bar
 // + git) and the file panel collapse to zero width so the agent terminal fills
-// the whole pane row. Idempotent. Forces focus back to the terminal because the
-// side panels are hidden at zero width — leaving focus there would silently
-// swallow keys with no visible target. Zoom is the default agent-view layout,
-// so this is called by toggleAgentZen's zoom branch, exitAgentView, and the
-// agent-view entry points. Main goroutine only.
+// the whole pane row. Idempotent. Zoom is the default agent-view layout, so this
+// is called from App setup, both agent-view entry points (enterPendingAgentView,
+// onTaskSelect), exitAgentView, and toggleAgentZen's zoom branch.
+//
+// The focus guard snaps focus back to the terminal because the file panel is
+// hidden at zero width — leaving focus there would silently swallow keys with no
+// visible target. In practice the guard only does work when called from
+// toggleAgentZen (the user may be on the file panel when they press Ctrl+Z);
+// every other caller has already set agentFocus=focusTerminal, so it's a no-op
+// there. Main goroutine only.
 func (a *App) setAgentZen() {
 	a.agentZen = true
 	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 0)
