@@ -44,10 +44,6 @@ const sandboxProfileBase = `(version 1)
 (allow ipc*)
 (allow sysctl*)
 (allow system*)
-(allow job-creation)
-(allow network*)
-; Allow Launch Services open (needed for OAuth browser login flow)
-(allow lsopen)
 ; IOKit user-client opens — required for headful Chrome (Playwright/Puppeteer).
 ; At startup Chrome calls IORegisterForSystemPower, which does IOServiceOpen on
 ; IOPMrootDomain (and the GPU process opens IOAccelerator/IOSurface clients).
@@ -60,6 +56,10 @@ const sandboxProfileBase = `(version 1)
 ; that IOServiceOpen maps to. This grants no extra filesystem access.
 (allow iokit-open)
 (allow iokit-open-user-client)
+(allow job-creation)
+(allow network*)
+; Allow Launch Services open (needed for OAuth browser login flow)
+(allow lsopen)
 (allow file-read*)
 ; SSH keys are allowed — needed for git push/fetch over SSH.
 ; Blocking reads provides minimal security since (allow network*) is granted.
