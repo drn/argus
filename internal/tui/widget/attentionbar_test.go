@@ -108,8 +108,18 @@ func TestAttentionBar_DrawShowsTaskNames(t *testing.T) {
 		t.Errorf("expected border top-left corner in output, got:\n%s", got)
 	}
 	// Icon rune should be present.
-	if !strings.ContainsRune(got, theme.IconMoonStars) {
-		t.Errorf("expected IconMoonStars in output, got:\n%s", got)
+	if !strings.ContainsRune(got, theme.IconNeedsInput) {
+		t.Errorf("expected IconNeedsInput in output, got:\n%s", got)
+	}
+	// The icon cell at the first inner column of the first entry row
+	// must render in the needs-input (orange) style so it matches the
+	// task-list badge. Inner col 1 / row 1 accounts for the border.
+	r, _, style, _ := screen.GetContent(1, 1)
+	if r != theme.IconNeedsInput {
+		t.Errorf("icon cell rune = %q, want IconNeedsInput", r)
+	}
+	if style != theme.StyleNeedsInput {
+		t.Errorf("icon cell style = %v, want StyleNeedsInput", style)
 	}
 }
 

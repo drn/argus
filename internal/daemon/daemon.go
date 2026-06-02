@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,6 +64,7 @@ type Daemon struct {
 	ready     chan struct{}        // closed when Serve has set listener (or failed)
 	sockPath  string               // set by Serve, used by cleanup
 	pidPath   string               // set by Serve, used by cleanup
+	lockFile  *os.File             // singleton flock held for the daemon's lifetime
 	mcpPort   int                  // actual MCP HTTP port in use (set after listen)
 	mcpServer *mcp.Server          // set when KB is enabled, shut down in cleanup
 	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
@@ -261,6 +263,25 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Kill any existing daemon process before taking over the socket.
 	killExistingDaemon(pidPath)
 
+	// Singleton guard: exactly one daemon may own the socket. killExistingDaemon
+	// is pid-file based and racy — a startup race (e.g. a launchd job and the
+	// TUI autostart firing together at login) lets multiple daemons each pass
+	// that check, unlink+rebind the socket, and coexist. The result is a
+	// split-brain: the agent session lives in one daemon's runner while the
+	// TUI's input/stream RPCs land on another, so keyboard input vanishes and
+	// StartSession reports "session already exists". The flock makes the loser
+	// of any such race exit cleanly. See gotchas/daemon-rpc.md.
+	lockFile, lerr := acquireSingletonLock(daemonLockPath(sockPath), daemonLockTimeout)
+	if lerr != nil {
+		close(d.ready) // unblock Shutdown waiters even on early return
+		if errors.Is(lerr, ErrDaemonAlreadyRunning) {
+			slog.Info("another daemon already holds the singleton lock; exiting", "sock", sockPath)
+			return ErrDaemonAlreadyRunning
+		}
+		return fmt.Errorf("acquire daemon lock: %w", lerr)
+	}
+	d.lockFile = lockFile
+
 	// Remove stale socket file.
 	os.Remove(sockPath)
 
@@ -378,6 +399,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{runner: d.runner})
+		mcpSrv.SetArtifactManager(d.db)
 		d.mcpServer = mcpSrv
 		actualPort, err := mcpSrv.ListenAndServe()
 		if err != nil {
@@ -600,6 +622,16 @@ func (d *Daemon) cleanup() {
 	// A newer daemon may have already replaced these files — removing them
 	// would break the newer daemon's stream connections.
 	removeIfOwnedByPID(d.sockPath, d.pidPath, os.Getpid())
+
+	// Release the singleton lock last, so a daemon waiting to take over only
+	// proceeds once our socket/pid cleanup is done. Closing the fd releases
+	// the flock; the lock file itself is intentionally left in place (flock
+	// contenders must open the same inode). Process exit would release it
+	// anyway, but explicit close keeps takeover fast and deterministic.
+	if d.lockFile != nil {
+		d.lockFile.Close() //nolint:errcheck // releasing the lock; close errors are non-actionable
+		d.lockFile = nil
+	}
 }
 
 // writePIDFile atomically writes the current process PID to a file.

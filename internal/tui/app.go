@@ -61,6 +61,7 @@ const (
 	modeRestartDaemonPrompt
 	modeAppleEventsPicker
 	modeHelp
+	modeErrorModal
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -112,6 +113,9 @@ type App struct {
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
 	helpPrevPage string
+
+	// Error modal (created on demand to surface failed actions prominently)
+	errorModal *modal.ErrorModal
 
 	// Restart-daemon prompt (created on demand when binary mtime mismatch
 	// is detected at startup). daemonStale is set by main before Run() and
@@ -416,6 +420,13 @@ func (a *App) buildUI() {
 		AddItem(a.agentLeftCol, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
+	// Zoom is the default agent-view layout. Collapse the side panels at setup
+	// so the resting agentZen flag + panel proportions match the documented
+	// default before the first agent-view entry re-asserts them — otherwise the
+	// struct's zero-value state (agentZen=false, 1:3:1 flex) would be a layout
+	// that's never actually drawn. (agentFocus is already focusTerminal here —
+	// its zero value — so setAgentZen's focus guard is a no-op at setup.)
+	a.setAgentZen()
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
@@ -1446,6 +1457,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Error modal — any key dismisses it.
+	if a.mode == modeErrorModal && a.errorModal != nil {
+		a.handleErrorModalKey(event)
+		return nil
+	}
+
 	// Confirm delete project modal
 	if a.mode == modeConfirmDeleteProject && a.confirmDeleteProjectModal != nil {
 		a.handleConfirmDeleteProjectKey(event)
@@ -1678,13 +1695,34 @@ func (a *App) updateFocusIndicators() {
 // clearAgentZen turns single-pane (zoom) mode off and restores the 1:3:1 agent
 // layout. Idempotent — safe to call when zen is already off (the ResizeItem
 // calls just re-assert the proportional sizing). Shared by toggleAgentZen's
-// un-zoom branch, exitAgentView, and the agent-view entry points (defensive, so
-// a session torn down without exitAgentView can't leave the next entry zoomed).
+// un-zoom branch.
 // Main goroutine only.
 func (a *App) clearAgentZen() {
 	a.agentZen = false
 	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
 	a.agentPanels.ResizeItem(a.filePanel, 0, 1)
+}
+
+// setAgentZen turns single-pane (zoom) mode on: the left column (attention bar
+// + git) and the file panel collapse to zero width so the agent terminal fills
+// the whole pane row. Idempotent. Zoom is the default agent-view layout, so this
+// is called from App setup, both agent-view entry points (enterPendingAgentView,
+// onTaskSelect), exitAgentView, and toggleAgentZen's zoom branch.
+//
+// The focus guard snaps focus back to the terminal because the file panel is
+// hidden at zero width — leaving focus there would silently swallow keys with no
+// visible target. In practice the guard only does work when called from
+// toggleAgentZen (the user may be on the file panel when they press Ctrl+Z);
+// every other caller has already set agentFocus=focusTerminal, so it's a no-op
+// there. Main goroutine only.
+func (a *App) setAgentZen() {
+	a.agentZen = true
+	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 0)
+	a.agentPanels.ResizeItem(a.filePanel, 0, 0)
+	if a.agentFocus != focusTerminal {
+		a.agentFocus = focusTerminal
+		a.updateFocusIndicators()
+	}
 }
 
 // toggleAgentZen flips single-pane (zoom) mode in the agent view. When on, the
@@ -1699,16 +1737,7 @@ func (a *App) toggleAgentZen() {
 		// the user is typically still working in the terminal after a zoom.
 		a.clearAgentZen()
 	} else {
-		a.agentZen = true
-		a.agentPanels.ResizeItem(a.agentLeftCol, 0, 0)
-		a.agentPanels.ResizeItem(a.filePanel, 0, 0)
-		// Force focus back to the terminal: the file panel is hidden at zero
-		// width, so leaving focus there would silently swallow keys with no
-		// visible target.
-		if a.agentFocus != focusTerminal {
-			a.agentFocus = focusTerminal
-			a.updateFocusIndicators()
-		}
+		a.setAgentZen()
 	}
 	uxlog.Log("[tui] agent zen mode toggled: %v", a.agentZen)
 }
@@ -2373,9 +2402,9 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 
-	// Defensive: ensure we open un-zoomed even if a prior session was torn
-	// down without exitAgentView restoring the layout.
-	a.clearAgentZen()
+	// Zoom is the default agent-view layout: open single-pane with the side
+	// panels collapsed. Ctrl+Z toggles them back on.
+	a.setAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
@@ -2408,9 +2437,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
-	// Defensive: ensure we open un-zoomed even if a prior session was torn
-	// down without exitAgentView restoring the layout.
-	a.clearAgentZen()
+	// Zoom is the default agent-view layout: open single-pane with the side
+	// panels collapsed. Ctrl+Z toggles them back on.
+	a.setAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.ResetVT()
@@ -2698,7 +2727,12 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			if !ok {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
-					a.statusbar.SetError("Create failed: agent.CreateAndStart requires local mode (use POST /api/tasks remotely)")
+					msg := "agent.CreateAndStart requires local mode (use POST /api/tasks remotely)"
+					a.statusbar.SetError("Create failed: " + msg)
+					if a.mode == modeAgent && a.agentState.TaskID == "" {
+						a.exitAgentView()
+					}
+					a.showError("Create failed", msg)
 				})
 				return
 			}
@@ -2712,6 +2746,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 					if a.mode == modeAgent && a.agentState.TaskID == "" {
 						a.exitAgentView()
 					}
+					a.showError("Create failed", err.Error())
 				})
 				uxlog.Log("[tui] create-and-start failed: %v", err)
 				return
@@ -2742,9 +2777,9 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent
-// terminal pane. Prefers the host terminal size with the 1:3:1 agent-page
-// layout ratio (always accurate when stdout is a TTY); falls back to the
-// pane's actual inner rect; finally defaults to 24x80.
+// terminal pane. Prefers the host terminal size with the default zoomed
+// (single-pane) agent-page layout (always accurate when stdout is a TTY);
+// falls back to the pane's actual inner rect; finally defaults to 24x80.
 //
 // Host terminal is preferred over the pane rect because tview's Box returns
 // its default 15x10 rect before Flex has laid it out — and computePTYSize
@@ -2795,16 +2830,18 @@ const agentViewRowOverhead = 4
 const agentViewColOverhead = 2
 
 // ptySizeFromHostTerm derives the agent PTY size from the host terminal,
-// applying the agent page's 1:3:1 column flex and the header/footer/border
-// row deductions. Returns 0,0 when the input is unusable.
+// applying the agent page's default zoomed (single-pane) column layout and the
+// header/footer/border row deductions. Returns 0,0 when the input is unusable.
 func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	if err != nil || tw <= 0 || th <= 0 {
 		return 0, 0
 	}
-	// Agent page column flex: 1 (gitPanel) + 3 (agentPane) + 1 (filePanel)
-	// → center gets 3/5 of width, minus the pane's custom border on both
-	// sides (agentViewColOverhead).
-	centerW := max(tw*3/5-agentViewColOverhead, 20)
+	// Agent view opens zoomed by default (setAgentZen collapses the left col +
+	// file panel to zero width), so the terminal pane spans the full host width
+	// minus its own custom border on both sides (agentViewColOverhead). Seeding
+	// from the full width keeps the initial PTY size aligned with the laid-out
+	// pane, so no SIGWINCH-triggered repaint fires on agent-view entry.
+	centerW := max(tw-agentViewColOverhead, 20)
 	// Every entry path that calls computePTYSize hides the tab header BEFORE
 	// this function runs — enterPendingAgentView (new task) and onTaskSelect
 	// (auto-start) both run ResizeItem first. Fork is the one exception (its
@@ -2862,10 +2899,16 @@ func (a *App) startSession(task *model.Task) {
 	// For Claude-style backends, generate a session ID on first run so we can
 	// resume the conversation later. Codex and pi capture their IDs post-exit
 	// (in handleSessionExitUI → CaptureCodexSessionID / CapturePiSessionID).
+	// generatedSessionID tracks whether THIS call minted the ID, so the error
+	// branch below only clears IDs it created — preserving any pre-existing
+	// ID across restart failures (daemon restart cascade, transient RPC error)
+	// so the next retry can still --resume the conversation.
+	generatedSessionID := false
 	if !resume {
 		backend, berr := agent.ResolveBackend(task, cfg)
 		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) {
 			task.SessionID = model.GenerateSessionID()
+			generatedSessionID = true
 			a.db.Update(task) //nolint:errcheck
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
 		}
@@ -2890,7 +2933,14 @@ func (a *App) startSession(task *model.Task) {
 		a.statusbar.SetError("Start failed: " + err.Error())
 		// Revert to pending so the task isn't left in a ghost state.
 		task.SetStatus(model.StatusPending)
-		task.SessionID = ""
+		// Only clear the SessionID if WE just generated it — a pre-existing
+		// ID (from a prior successful run) must survive transient Start
+		// failures so the user's next retry can --resume the conversation.
+		// Wiping it here was the cause of the "fresh session with original
+		// prompt re-injected after daemon+TUI reboot" bug.
+		if generatedSessionID {
+			task.SessionID = ""
+		}
 		task.StartedAt = time.Time{}
 		a.db.Update(task) //nolint:errcheck
 		return
@@ -3151,6 +3201,55 @@ func (a *App) closeHelp() {
 	}
 }
 
+// --- Error modal ---
+
+// showError surfaces a failed action in a prominent dismiss-only modal. This is
+// the correct surface for hard failures of explicit user actions (e.g. agent
+// creation): the status bar truncates and is easily missed, so a silent failure
+// there leaves the user staring at a closed form with no visible reason. Must
+// run on the tview main goroutine.
+func (a *App) showError(title, body string) {
+	// Replace any existing error modal's contents rather than stacking pages.
+	if a.errorModal != nil {
+		a.pages.RemovePage("error")
+	}
+	a.errorModal = modal.NewErrorModal(title, body)
+	a.mode = modeErrorModal
+	a.pages.AddPage("error", a.errorModal, true, true)
+	a.pages.SwitchToPage("error")
+	a.tapp.SetFocus(a.errorModal)
+	uxlog.Log("[tui] error modal shown: %s — %s", title, body)
+}
+
+// handleErrorModalKey dismisses the error modal on any key.
+func (a *App) handleErrorModalKey(event *tcell.EventKey) {
+	handler := a.errorModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+	if a.errorModal.Closed() {
+		a.closeErrorModal()
+	}
+}
+
+// closeErrorModal dismisses the error modal and returns to the active tab's
+// page. Create/fork failures have already exited any pending agent view, so
+// landing on the task list (or whichever tab is active) is the safe outcome.
+func (a *App) closeErrorModal() {
+	a.mode = modeTaskList
+	a.errorModal = nil
+	a.pages.RemovePage("error")
+	switch a.header.ActiveTab() {
+	case widget.TabSettings:
+		a.pages.SwitchToPage("settings")
+		a.tapp.SetFocus(a.settings)
+	case widget.TabDAG:
+		a.pages.SwitchToPage("dag")
+		a.tapp.SetFocus(a.dagWidget)
+	default:
+		a.pages.SwitchToPage("tasks")
+		a.tapp.SetFocus(a.tasklist)
+	}
+}
+
 // --- Fork task ---
 
 // openForkModal shows the fork confirmation modal for the given task.
@@ -3316,7 +3415,9 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 		d, ok := a.db.(*db.DB)
 		if !ok {
 			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Fork failed: requires local mode (use POST /api/tasks/{id}/fork remotely)")
+				msg := "requires local mode (use POST /api/tasks/{id}/fork remotely)"
+				a.statusbar.SetError("Fork failed: " + msg)
+				a.showError("Fork failed", msg)
 			})
 			uxlog.Log("[fork] not available in remote mode")
 			return
@@ -3325,6 +3426,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
 				a.statusbar.SetError("Fork failed: " + err.Error())
+				a.showError("Fork failed", err.Error())
 			})
 			uxlog.Log("[fork] create-and-start failed: %v", err)
 			return
@@ -3758,6 +3860,17 @@ func (a *App) deleteTask(t *model.Task) {
 	// Remove session log file.
 	os.Remove(agent.SessionLogPath(t.ID)) //nolint:errcheck
 
+	// Remove registered artifacts (manifest rows + on-disk bytes). Best-effort
+	// and parity with the REST delete path. In remote mode the apistore stub
+	// errors (the daemon already cleaned up on the server side) — log and move
+	// on. The dir removal is local-only and harmless either way.
+	if n, derr := a.db.DeleteArtifactsForTask(t.ID); derr != nil {
+		uxlog.Log("[tui] delete: artifact row cleanup skipped/failed for %s: %v", t.ID, derr)
+	} else if n > 0 {
+		uxlog.Log("[tui] delete: cleared %d artifact row(s) for %s", n, t.ID)
+	}
+	os.RemoveAll(agent.ArtifactsDir(t.ID)) //nolint:errcheck
+
 	// Delete from database first so the UI updates immediately.
 	if err := a.db.Delete(t.ID); err != nil {
 		uxlog.Log("[tui] failed to delete task %s: %v", t.ID, err)
@@ -3882,9 +3995,10 @@ func (a *App) exitAgentView() {
 	a.mode = modeTaskList
 	a.agentFocus = focusTerminal
 	a.mu.Unlock()
-	// Restore the 1:3:1 layout if we left while zoomed, so the next agent
-	// view opens with the side panels visible.
-	a.clearAgentZen()
+	// Reset to the default zoomed (single-pane) layout so the agentZen flag and
+	// panel proportions stay consistent while in the task list; the next agent
+	// view re-asserts this on entry anyway.
+	a.setAgentZen()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()

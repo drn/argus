@@ -542,9 +542,16 @@ func TestSession_MultiWriter(t *testing.T) {
 	// syncBuffer (not bytes.Buffer) — the readLoop goroutine may still be
 	// flushing into AddWriter consumers when the test reads, so the buffer
 	// itself must be thread-safe to satisfy `go test -race`.
+	//
+	// Use AddWriterFrom(w, 0) rather than AddWriter so the snapshot+attach
+	// is atomic. AddWriter accepts a small "gap" window between snapshot
+	// and live-attach as an explicit tradeoff (see its docstring); on fast
+	// CI runners that window is wide enough that "multi-writer-test" can
+	// land in the ring buffer between snapshot and attach, leaving the new
+	// writer with only the trailing "\r\n".
 	var buf1, buf2 syncBuffer
-	sess.AddWriter(&buf1)
-	sess.AddWriter(&buf2)
+	sess.AddWriterFrom(&buf1, 0)
+	sess.AddWriterFrom(&buf2, 0)
 
 	// Wait for process to exit and output to propagate
 	select {

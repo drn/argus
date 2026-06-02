@@ -50,3 +50,6 @@ web-tests/test-results/
 web-tests/playwright-report/
 web-tests/screenshots/
 web-tests/.cache/
+
+# Per-developer iris overrides (machine-specific)
+.iris.local.toml

@@ -387,6 +387,40 @@ func TestSmoke_HelpModalOpensOnQuestionKey(t *testing.T) {
 	}
 }
 
+func TestSmoke_ErrorModalOpensAndDismisses(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Surface an error the way the create-and-start failure callback does.
+	readUI(t, app.tapp, func() {
+		app.showError("Create failed", "worktree: chdir nope: no such file or directory")
+	})
+	syncUI(t, app.tapp)
+
+	var open bool
+	readUI(t, app.tapp, func() {
+		open = app.errorModal != nil && app.mode == modeErrorModal && app.pages.HasPage("error")
+	})
+	if !open {
+		t.Fatal("showError should open the error modal")
+	}
+
+	// Any key dismisses it and returns to the task list.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	var closed bool
+	readUI(t, app.tapp, func() {
+		closed = app.errorModal == nil && app.mode == modeTaskList && !app.pages.HasPage("error")
+	})
+	if !closed {
+		t.Fatal("a key press should dismiss the error modal")
+	}
+}
+
 func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -414,10 +448,20 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 		sim.InjectKey(tcell.KeyRune, r, 0)
 	}
 	sim.PostEvent(tcell.NewEventPaste(false))
-	syncUI(t, app.tapp)
 
+	// Poll for the prompt to populate. syncUI's 50 ms eventSettle is enough
+	// on a quiet machine but not reliably enough under -race on CI, where
+	// draining 20 queued events through the tcell→tview boundary can take
+	// longer than the fixed wait.
 	var prompt string
-	readUI(t, app.tapp, func() { prompt = string(form.prompt) })
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		syncUI(t, app.tapp)
+		readUI(t, app.tapp, func() { prompt = string(form.prompt) })
+		if prompt == "pasted prompt text" {
+			break
+		}
+	}
 	testutil.Equal(t, prompt, "pasted prompt text")
 }
 
@@ -456,9 +500,10 @@ func TestSmoke_AgentViewEnterExit(t *testing.T) {
 	testutil.Equal(t, mode, modeTaskList)
 }
 
-// TestSmoke_AgentZenToggle verifies Ctrl+Z collapses the side panels to zero
-// width (single-pane zoom) and toggles back to the 1:3:1 layout, and that
-// exiting the agent view while zoomed restores the panels.
+// TestSmoke_AgentZenToggle verifies the agent view opens zoomed (single pane,
+// side panels collapsed to zero width) by default, that Ctrl+Z toggles the
+// 1:3:1 layout on and back off, and that exiting the agent view resets to the
+// zoomed default for the next entry.
 func TestSmoke_AgentZenToggle(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -477,7 +522,7 @@ func TestSmoke_AgentZenToggle(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
-	// Enter agent view.
+	// Enter agent view — defaults to zoomed: side panels at zero width.
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
 
@@ -489,12 +534,12 @@ func TestSmoke_AgentZenToggle(t *testing.T) {
 		_, _, fileW, _ = app.filePanel.GetRect()
 		_, _, paneW, _ = app.agentPane.GetRect()
 	})
-	testutil.Equal(t, zen, false)
-	testutil.True(t, leftW > 0)
-	testutil.True(t, fileW > 0)
-	normalPaneW := paneW
+	testutil.Equal(t, zen, true)
+	testutil.Equal(t, leftW, 0)
+	testutil.Equal(t, fileW, 0)
+	zoomedPaneW := paneW
 
-	// Ctrl+Z → zoom: side panels collapse to zero width, pane widens.
+	// Ctrl+Z → un-zoom: side panels reappear, pane narrows.
 	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
@@ -503,12 +548,12 @@ func TestSmoke_AgentZenToggle(t *testing.T) {
 		_, _, fileW, _ = app.filePanel.GetRect()
 		_, _, paneW, _ = app.agentPane.GetRect()
 	})
-	testutil.Equal(t, zen, true)
-	testutil.Equal(t, leftW, 0)
-	testutil.Equal(t, fileW, 0)
-	testutil.True(t, paneW > normalPaneW)
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+	testutil.True(t, paneW < zoomedPaneW)
 
-	// Ctrl+Z again → restore 1:3:1.
+	// Ctrl+Z again → back to zoomed single pane.
 	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
@@ -516,28 +561,30 @@ func TestSmoke_AgentZenToggle(t *testing.T) {
 		_, _, leftW, _ = app.agentLeftCol.GetRect()
 		_, _, fileW, _ = app.filePanel.GetRect()
 	})
-	testutil.Equal(t, zen, false)
-	testutil.True(t, leftW > 0)
-	testutil.True(t, fileW > 0)
+	testutil.Equal(t, zen, true)
+	testutil.Equal(t, leftW, 0)
+	testutil.Equal(t, fileW, 0)
 
-	// Zoom again, then exit — exitAgentView must reset the zen flag so the
-	// next agent view opens with panels visible.
+	// Un-zoom, then exit — exitAgentView must reset the zen flag back to the
+	// zoomed default so the next agent view opens single-pane.
 	sim.InjectKey(tcell.KeyCtrlZ, 0, 0)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0) // exit (no live session)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { zen = app.agentZen })
-	testutil.Equal(t, zen, false)
+	testutil.Equal(t, zen, true)
 
-	// Re-enter: the restored 1:3:1 proportions lay out with visible panels.
+	// Re-enter: opens zoomed again with panels collapsed.
 	sim.InjectKey(tcell.KeyEnter, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
+		zen = app.agentZen
 		_, _, leftW, _ = app.agentLeftCol.GetRect()
 		_, _, fileW, _ = app.filePanel.GetRect()
 	})
-	testutil.True(t, leftW > 0)
-	testutil.True(t, fileW > 0)
+	testutil.Equal(t, zen, true)
+	testutil.Equal(t, leftW, 0)
+	testutil.Equal(t, fileW, 0)
 }
 
 // TestSmoke_AgentZenForcesTerminalFocus verifies that zooming while the file
@@ -563,6 +610,9 @@ func TestSmoke_AgentZenForcesTerminalFocus(t *testing.T) {
 
 	readUI(t, app.tapp, func() {
 		app.onTaskSelect(task, true)
+		// onTaskSelect opens zoomed by default; un-zoom so the file panel is
+		// visible and can take focus, then move focus there.
+		app.clearAgentZen()
 		app.agentFocus = focusFiles
 		app.updateFocusIndicators()
 	})

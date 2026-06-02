@@ -137,7 +137,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
 | `Cmd+←` / `Cmd+→`     | Switch panels                                                             |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
-| `ctrl+z`              | Toggle single-pane (zoom) — collapse git + file panes, full-width agent   |
+| `ctrl+z`              | Toggle the git + file side panes (agent view opens single-pane by default) |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
@@ -215,7 +215,7 @@ Global sandbox settings are managed in the **Settings tab** (`4` key):
 Per-project overrides are set in the **project form** (`e` on a project in Settings) — **Inherit**, **Enabled**, or **Disabled**. Per-project deny-read and extra-write paths are appended to the global lists.
 
 **Always denied read:** `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
-**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, the main repo's `.git` dir.
+**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (so Playwright/Chrome can launch — its crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
 
 ### Running inside tmux
 
