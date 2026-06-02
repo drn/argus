@@ -514,10 +514,11 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// SetAfterDrawFunc is registered only to detect terminal resize and
-	// emit one Sync per resize event — see afterDraw doc. The full
-	// pendingSync/forceRedraw/OnContentChange scaffolding from before
-	// the May 2026 cleanup is NOT here; only the resize-Sync case
+	// SetAfterDrawFunc is registered for two things: detect terminal resize
+	// and emit one Sync per resize event (see afterDraw doc), and reconcile
+	// the active plugin view's resize envelope after every draw (no Sync
+	// involved). The full pendingSync/forceRedraw/OnContentChange scaffolding
+	// from before the May 2026 cleanup is NOT here; only the resize-Sync case
 	// remains because it's the one "repair screen damage" case tview's
 	// Clear+Show diff cycle can't handle on its own (the prior size's
 	// cells in the terminal aren't fully overwritten by the new size's
@@ -527,8 +528,10 @@ func (a *App) buildUI() {
 	a.tapp.SetRoot(a.root, true)
 }
 
-// afterDraw detects terminal resize and Syncs once. It does NOT handle
-// the deleted pendingSync/forceRedraw/OnContentChange triggers — those
+// afterDraw detects terminal resize and Syncs once, then reconciles the
+// active plugin view's resize envelope (no Sync — a plain WebSocket send,
+// deduped against the last envelope delivered). It does NOT handle the
+// deleted pendingSync/forceRedraw/OnContentChange triggers — those
 // scaffolds are gone (see post-mortem in gotchas/ui-threading.md).
 //
 // Why resize needs Sync: tview's draw cycle (screen.Clear() + root.Draw()
@@ -546,16 +549,24 @@ func (a *App) buildUI() {
 // startup is already a high-noise rendering moment.
 func (a *App) afterDraw(screen tcell.Screen) {
 	w, h := screen.Size()
-	if w == a.lastScreenW && h == a.lastScreenH {
-		return
+	if w != a.lastScreenW || h != a.lastScreenH {
+		a.lastScreenW = w
+		a.lastScreenH = h
+		uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
+		screen.Sync()
 	}
-	a.lastScreenW = w
-	a.lastScreenH = h
-	uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
-	screen.Sync()
-	// Forward the resize to the active plugin view (if any). Best-effort —
-	// errors land in uxlog rather than the user's terminal.
-	a.resizePluginViewIfActive()
+	// Plugin resize-envelope reconciliation runs after EVERY draw, not just
+	// terminal resize: the pane's first real layout pass changes the computed
+	// viewport without the screen size changing, and a lost/raced initial
+	// envelope is corrected the same way. The draw that just completed is also
+	// the signal that the pane's rect is real — mark it laid out when its page
+	// was the one on screen (the help overlay may be in front instead).
+	if m := a.activePlugin; m != nil && !m.laidOut {
+		if front, _ := a.pages.GetFrontPage(); front == m.pageName {
+			m.laidOut = true
+		}
+	}
+	a.reconcilePluginViewSize()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
