@@ -443,6 +443,43 @@ func TestSettings_HandleKey_LeftRightOnSpinner(t *testing.T) {
 	testutil.Equal(t, got, true)
 }
 
+func TestSettings_AgentZoomToggle(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+
+	// Default is zoomed (true).
+	testutil.Equal(t, sv.defaultAgentZoom, true)
+
+	// Enter toggles to split and persists.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.defaultAgentZoom, false)
+	testutil.Equal(t, sv.database.Config().UI.DefaultAgentZoom, false)
+
+	// Left/Right also toggle it back.
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.defaultAgentZoom, true)
+
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.defaultAgentZoom, false)
+	testutil.Equal(t, sv.database.Config().UI.DefaultAgentZoom, false)
+}
+
+func TestSettings_RenderAgentZoomDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+
+	// Also exercise the split-mode detail branch.
+	sv.defaultAgentZoom = false
+	sv.Draw(drawSim(t))
+}
+
 func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {
 	sv := makeSettings(t)
 	sv.discoveredVaults = []string{"/a", "/b"}

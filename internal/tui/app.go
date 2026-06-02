@@ -475,13 +475,13 @@ func (a *App) buildUI() {
 		AddItem(a.agentLeftCol, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
-	// Zoom is the default agent-view layout. Collapse the side panels at setup
-	// so the resting agentZen flag + panel proportions match the documented
-	// default before the first agent-view entry re-asserts them — otherwise the
-	// struct's zero-value state (agentZen=false, 1:3:1 flex) would be a layout
-	// that's never actually drawn. (agentFocus is already focusTerminal here —
-	// its zero value — so setAgentZen's focus guard is a no-op at setup.)
-	a.setAgentZen()
+	// Apply the configured default agent-view layout at setup so the resting
+	// agentZen flag + panel proportions match the configured default before the
+	// first agent-view entry re-asserts them — otherwise the struct's zero-value
+	// state (agentZen=false, 1:3:1 flex) would be a layout that's never actually
+	// drawn when the user has zoom enabled. (agentFocus is already focusTerminal
+	// here — its zero value — so setAgentZen's focus guard is a no-op at setup.)
+	a.applyDefaultAgentZen()
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
@@ -1904,6 +1904,21 @@ func (a *App) setAgentZen() {
 	}
 }
 
+// applyDefaultAgentZen sets the resting agent-view layout to the user's
+// configured default: zoomed (single-pane) when ui.default_agent_zoom is true
+// (the default), or the 1:3:1 three-pane layout otherwise. Shared by App setup,
+// both agent-view entry points (enterPendingAgentView, onTaskSelect), and
+// exitAgentView so the agentZen flag and panel proportions always match the
+// configured default before/after each agent-view session. Ctrl+Z still toggles
+// at runtime regardless of the default. Main goroutine only.
+func (a *App) applyDefaultAgentZen() {
+	if a.db.Config().UI.DefaultAgentZoom {
+		a.setAgentZen()
+	} else {
+		a.clearAgentZen()
+	}
+}
+
 // toggleAgentZen flips single-pane (zoom) mode in the agent view. When on, the
 // left column (attention bar + git) and the file panel collapse to zero width
 // so the agent terminal fills the whole pane row; when off, the 1:3:1 layout is
@@ -1966,7 +1981,10 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
-			if a.agentFocus > focusTerminal {
+			// Zoomed view is single-pane — the side panels are collapsed to zero
+			// width, so a pane switch would move focus to an invisible panel and
+			// silently swallow keys. Consume the key without changing panes.
+			if !a.agentZen && a.agentFocus > focusTerminal {
 				a.agentFocus--
 				a.updateFocusIndicators()
 			}
@@ -1974,7 +1992,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyRight:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
-			if a.agentFocus < focusFiles {
+			if !a.agentZen && a.agentFocus < focusFiles {
 				a.agentFocus++
 				a.updateFocusIndicators()
 			}
@@ -2511,9 +2529,9 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 
-	// Zoom is the default agent-view layout: open single-pane with the side
-	// panels collapsed. Ctrl+Z toggles them back on.
-	a.setAgentZen()
+	// Open with the configured default layout (zoomed single-pane by default).
+	// Ctrl+Z toggles the side panels at runtime regardless.
+	a.applyDefaultAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
@@ -2546,9 +2564,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
-	// Zoom is the default agent-view layout: open single-pane with the side
-	// panels collapsed. Ctrl+Z toggles them back on.
-	a.setAgentZen()
+	// Open with the configured default layout (zoomed single-pane by default).
+	// Ctrl+Z toggles the side panels at runtime regardless.
+	a.applyDefaultAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.ResetVT()
@@ -4135,10 +4153,10 @@ func (a *App) exitAgentView() {
 	a.mode = modeTaskList
 	a.agentFocus = focusTerminal
 	a.mu.Unlock()
-	// Reset to the default zoomed (single-pane) layout so the agentZen flag and
-	// panel proportions stay consistent while in the task list; the next agent
-	// view re-asserts this on entry anyway.
-	a.setAgentZen()
+	// Reset to the configured default layout so the agentZen flag and panel
+	// proportions stay consistent while in the task list; the next agent view
+	// re-asserts this on entry anyway.
+	a.applyDefaultAgentZen()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()
