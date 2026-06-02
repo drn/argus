@@ -623,11 +623,38 @@ func TestSmoke_AgentDefaultSplitLayout(t *testing.T) {
 	testutil.True(t, leftW > 0)
 	testutil.True(t, fileW > 0)
 
-	// Exit and re-enter — exitAgentView resets to the configured (split) default.
+	// Exit — exitAgentView resets to the configured (split) default.
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { zen = app.agentZen })
 	testutil.Equal(t, zen, false)
+
+	// Re-enter, temporarily zoom with Ctrl+Z, then exit and re-enter again:
+	// the per-session toggle must NOT leak into the resting default — the next
+	// entry must re-assert split because applyDefaultAgentZen reads the config
+	// fresh on every entry/exit.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, false)
+
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0) // zoom for this session only
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, true)
+
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0) // exit resets to configured default
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // re-enter
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+	})
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
 }
 
 // TestSmoke_AgentZenForcesTerminalFocus verifies that zooming while the file

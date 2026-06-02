@@ -478,6 +478,11 @@ func TestSettings_RenderAgentZoomDetail(t *testing.T) {
 	// Also exercise the split-mode detail branch.
 	sv.defaultAgentZoom = false
 	sv.Draw(drawSim(t))
+
+	// And a very short pane height to exercise the bounds guards (description
+	// lines + footer suppressed) without writing out of the detail rect.
+	sv.SetRect(0, 0, 100, 3)
+	sv.Draw(drawSim(t))
 }
 
 func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {

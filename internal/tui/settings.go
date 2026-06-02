@@ -2524,12 +2524,18 @@ func (sv *SettingsView) renderAgentZoomDetail(screen tcell.Screen, x, y, w, h in
 	if sv.defaultAgentZoom {
 		current = "Zoomed (single-pane terminal)"
 	}
-	widget.DrawText(screen, x, y+r, w, current, tcell.StyleDefault.Foreground(theme.ColorComplete))
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, current, tcell.StyleDefault.Foreground(theme.ColorComplete))
+	}
 	r += 2
 
-	widget.DrawText(screen, x, y+r, w, "Layout the agent view opens in. Ctrl+Z still", theme.StyleDimmed)
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Layout the agent view opens in. Ctrl+Z still", theme.StyleDimmed)
+	}
 	r++
-	widget.DrawText(screen, x, y+r, w, "toggles zoom per-session at runtime.", theme.StyleDimmed)
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "toggles zoom per-session at runtime.", theme.StyleDimmed)
+	}
 
 	if r+1 < h {
 		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] toggle", theme.StyleDimmed)
