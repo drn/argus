@@ -205,6 +205,37 @@ func TestBuildCmd_ExportsTaskID(t *testing.T) {
 	}
 }
 
+// TestBuildCmd_ForcesTerminalEnv confirms TERM/COLORTERM are forced onto the
+// spawned agent regardless of what the daemon inherited. The agent's terminal
+// is argus's truecolor x/vt emulator, but a launchd-started daemon has no TERM
+// at all — without the override, agents resumed after a daemon restart render
+// colorless (Claude falls back to reverse-video-only output).
+func TestBuildCmd_ForcesTerminalEnv(t *testing.T) {
+	// Simulate the launchd case: no TERM/COLORTERM in the parent env.
+	t.Setenv("TERM", "")
+	t.Setenv("COLORTERM", "")
+
+	cfg := testConfig()
+	task := &model.Task{ID: "task-id-7", Name: "x", Worktree: t.TempDir()}
+
+	cmd, _, err := BuildCmd(task, cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Later entries win per exec.Cmd.Env dedup semantics, so scan for the
+	// LAST value of each key.
+	last := map[string]string{}
+	for _, kv := range cmd.Env {
+		for _, key := range []string{"TERM=", "COLORTERM="} {
+			if len(kv) >= len(key) && kv[:len(key)] == key {
+				last[key] = kv[len(key):]
+			}
+		}
+	}
+	testutil.Equal(t, last["TERM="], "xterm-256color")
+	testutil.Equal(t, last["COLORTERM="], "truecolor")
+}
+
 // TestBuildCmd_NoEnvOverrideWhenIDEmpty defends the defensive skip: a task
 // row pre-Add has no ID, and emitting a literal "ARGUS_TASK_ID=" would be
 // worse than not exporting at all. CreateAndStart guards against this in
