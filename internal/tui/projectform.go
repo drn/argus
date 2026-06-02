@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -148,9 +149,21 @@ func (pf *ProjectForm) Result() (name string, p config.Project) {
 	return string(pf.fields[pfFieldName]), proj
 }
 
-// pathValue returns the normalized path field value (trimmed, tilde-expanded).
+// pathValue returns the normalized path field value (trimmed, tilde-expanded,
+// and absolutized). The path is persisted to the project config and later
+// chdir'd by the daemon whose cwd is non-deterministic, so a relative value
+// must never survive — absolutize it here as the authoritative guard even if
+// the autocomplete or a hand-typed entry produced a relative string. Empty
+// input is left empty so callers can distinguish "no path" from cwd.
 func (pf *ProjectForm) pathValue() string {
-	return expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath])))
+	p := expandTilde(strings.TrimSpace(string(pf.fields[pfFieldPath])))
+	if p == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // maybeLoadBranches fires OnBranchFocus when the path has changed since

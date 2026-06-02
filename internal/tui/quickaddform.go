@@ -159,6 +159,24 @@ func dirCompletions(raw string) []string {
 
 	expanded := expandTilde(raw)
 
+	// Resolve a relative input against the process cwd so the completions —
+	// and the paths they ultimately produce — are always absolute. A bare
+	// "Development" must complete to "/Users/.../Development", never the
+	// relative "Development": a relative project path is later chdir'd by the
+	// daemon, whose cwd is non-deterministic (launchd pins $HOME, but the TUI
+	// auto-start fallback inherits wherever argus was launched), so a relative
+	// path silently breaks worktree creation. filepath.Abs strips a trailing
+	// slash via Clean, so restore it to preserve list-children semantics below.
+	if !filepath.IsAbs(expanded) {
+		hadSlash := strings.HasSuffix(expanded, "/")
+		if abs, err := filepath.Abs(expanded); err == nil {
+			expanded = abs
+			if hadSlash && !strings.HasSuffix(expanded, "/") {
+				expanded += "/"
+			}
+		}
+	}
+
 	// If path ends with /, list children of that directory.
 	// Otherwise, list siblings matching the prefix.
 	var parentDir, prefix string
