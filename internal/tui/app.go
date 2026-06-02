@@ -2883,10 +2883,16 @@ func (a *App) startSession(task *model.Task) {
 	// For Claude-style backends, generate a session ID on first run so we can
 	// resume the conversation later. Codex and pi capture their IDs post-exit
 	// (in handleSessionExitUI → CaptureCodexSessionID / CapturePiSessionID).
+	// generatedSessionID tracks whether THIS call minted the ID, so the error
+	// branch below only clears IDs it created — preserving any pre-existing
+	// ID across restart failures (daemon restart cascade, transient RPC error)
+	// so the next retry can still --resume the conversation.
+	generatedSessionID := false
 	if !resume {
 		backend, berr := agent.ResolveBackend(task, cfg)
 		if berr == nil && !agent.IsCodexBackend(backend.Command) && !agent.IsPiBackend(backend.Command) {
 			task.SessionID = model.GenerateSessionID()
+			generatedSessionID = true
 			a.db.Update(task) //nolint:errcheck
 			uxlog.Log("[tui] generated session ID %s for task %s", task.SessionID, task.ID)
 		}
@@ -2911,7 +2917,14 @@ func (a *App) startSession(task *model.Task) {
 		a.statusbar.SetError("Start failed: " + err.Error())
 		// Revert to pending so the task isn't left in a ghost state.
 		task.SetStatus(model.StatusPending)
-		task.SessionID = ""
+		// Only clear the SessionID if WE just generated it — a pre-existing
+		// ID (from a prior successful run) must survive transient Start
+		// failures so the user's next retry can --resume the conversation.
+		// Wiping it here was the cause of the "fresh session with original
+		// prompt re-injected after daemon+TUI reboot" bug.
+		if generatedSessionID {
+			task.SessionID = ""
+		}
 		task.StartedAt = time.Time{}
 		a.db.Update(task) //nolint:errcheck
 		return

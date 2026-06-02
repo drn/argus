@@ -313,12 +313,71 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		app.onTaskSelect(task, true)
 
 		// startSession was attempted — verifies auto-start triggers for
-		// Pending tasks with a SessionID (daemon restart scenario).
+		// Pending tasks with a SessionID (daemon restart scenario). After a
+		// failed start, the task reverts to Pending but the pre-existing
+		// SessionID must be preserved so the next retry can --resume.
 		got, _ := d.Get("t-pending")
-		// After failed start, task reverts to Pending with cleared SessionID.
-		if got.SessionID != "" {
-			t.Error("expected auto-start attempt to clear SessionID on failure")
+		if got.Status != model.StatusPending {
+			t.Errorf("status = %v, want Pending (reverted after failed start)", got.Status)
 		}
+		if got.SessionID != "sess-789" {
+			t.Errorf("SessionID = %q, want %q preserved across failed restart", got.SessionID, "sess-789")
+		}
+	})
+
+	t.Run("failed restart preserves pre-existing SessionID but clears self-generated one", func(t *testing.T) {
+		// Regression for the "lost-conversation after daemon+TUI reboot" bug.
+		// When startSession generates the SessionID in this call and Start
+		// then fails, the ID must be cleared (it points to nothing). When the
+		// SessionID was already on the task before this call (e.g., a Claude
+		// task being resumed after a daemon restart), Start failure must
+		// preserve it so the next retry can --resume the conversation.
+
+		t.Run("preserves pre-existing", func(t *testing.T) {
+			d := testDB(t)
+			runner := agent.NewRunner(nil)
+			app := New(d, runner, false)
+
+			task := &model.Task{
+				ID:        "t-resume-fail",
+				Name:      "resume failure",
+				SessionID: "sess-preexisting",
+				Project:   "p",
+			}
+			task.SetStatus(model.StatusInReview)
+			d.Add(task) //nolint:errcheck
+
+			app.startSession(task) // runner.Start will fail (no worktree)
+
+			got, _ := d.Get("t-resume-fail")
+			if got.SessionID != "sess-preexisting" {
+				t.Errorf("SessionID = %q, want %q preserved", got.SessionID, "sess-preexisting")
+			}
+			if got.Status != model.StatusPending {
+				t.Errorf("status = %v, want Pending", got.Status)
+			}
+		})
+
+		t.Run("clears self-generated", func(t *testing.T) {
+			d := testDB(t)
+			runner := agent.NewRunner(nil)
+			app := New(d, runner, false)
+
+			task := &model.Task{
+				ID:      "t-fresh-fail",
+				Name:    "fresh failure",
+				Project: "p", // no SessionID — startSession will generate one
+			}
+			task.SetStatus(model.StatusPending)
+			d.Add(task) //nolint:errcheck
+
+			app.startSession(task) // runner.Start will fail (no worktree)
+
+			got, _ := d.Get("t-fresh-fail")
+			if got.SessionID != "" {
+				t.Errorf("SessionID = %q, want cleared (self-generated, never used)", got.SessionID)
+			}
+		})
 	})
 
 	t.Run("no auto-start when autoStart is false", func(t *testing.T) {
