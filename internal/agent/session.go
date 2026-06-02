@@ -98,6 +98,10 @@ func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, er
 		logFile, _ = os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	}
 
+	// Persist the PTY size alongside the log so dead-session previews can
+	// re-emulate the bytes at the width they were formatted for.
+	SaveSessionSize(taskID, int(cols), int(rows))
+
 	s := &Session{
 		TaskID:      taskID,
 		Cmd:         cmd,
@@ -538,15 +542,21 @@ func (s *Session) WorkDir() string {
 	return ""
 }
 
-// Resize sets the PTY window size.
+// Resize sets the PTY window size and updates the persisted size sidecar.
+// Setsize must stay under s.mu — it calls os.File.Fd(), which races with
+// waitLoop's Close() (see gotchas/pty-terminal.md).
 func (s *Session) Resize(rows, cols uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ptyCols = cols
 	s.ptyRows = rows
 	if s.ptmxClosed {
+		// The process is gone — keep the sidecar at the last size the
+		// agent actually rendered for, so dead-session previews re-emulate
+		// the log at the right width.
 		return nil
 	}
+	SaveSessionSize(s.TaskID, int(cols), int(rows))
 	return pty.Setsize(s.ptmx, &pty.Winsize{
 		Rows: rows,
 		Cols: cols,

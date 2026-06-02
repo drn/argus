@@ -2379,10 +2379,37 @@ func (a *App) fetchTaskGitStatus(taskID, dir string) {
 	})
 }
 
+// previewEmuSize picks the VT emulator dimensions for a preview render.
+// Preference order: live PTY size, persisted session-size sidecar
+// (agent.LoadSessionSize — survives session exit), pane dimensions as the
+// last resort. The agent's PTY is routinely much wider than the preview
+// pane; re-emulating its absolute cursor positioning (CSI nG / CSI nC) in
+// a pane-width emulator clamps columns at the right edge and autowraps the
+// tail — the "scrambled preview" defect. Emulate at the session's real
+// width and let RefreshOutput clip to the pane instead. Returns the chosen
+// source for uxlog. See gotchas/pty-terminal.md.
+func previewEmuSize(taskID string, ptyCols, ptyRows, paneW, paneH int) (emuCols, emuRows int, src string) {
+	if ptyCols > 0 {
+		emuRows = paneH
+		if ptyRows > 0 {
+			emuRows = ptyRows
+		}
+		return ptyCols, emuRows, "pty"
+	}
+	if cols, rows, ok := agent.LoadSessionSize(taskID); ok {
+		return cols, rows, "sizefile"
+	}
+	return paneW, paneH, "pane"
+}
+
 // refreshPreview fetches output for the selected task and pre-renders cells.
 // Called from the tview main goroutine (via QueueUpdateDraw in onTick).
 // The TotalWritten/LogSize cache short-circuits on repeated calls; first
 // load of a large dead session may briefly block the UI.
+//
+// It must NEVER resize the agent's real PTY — a Resize RPC here would
+// SIGWINCH live agents as the user scrolls the task list. Width mismatch is
+// resolved on the emulation side only (previewEmuSize).
 func (a *App) refreshPreview(taskID string) {
 	w, h := a.taskPreview.DrawSize()
 	if w <= 0 || h <= 0 {
@@ -2395,7 +2422,8 @@ func (a *App) refreshPreview(taskID string) {
 		// Protected by a.mu — accessed from tick goroutine and onTaskCursorChange goroutine.
 		tw := sess.TotalWritten()
 		a.mu.Lock()
-		if taskID == a.lastPreviewTaskID && tw == a.lastPreviewTW {
+		taskChanged := taskID != a.lastPreviewTaskID
+		if !taskChanged && tw == a.lastPreviewTW {
 			a.mu.Unlock()
 			return
 		}
@@ -2407,12 +2435,13 @@ func (a *App) refreshPreview(taskID string) {
 		// Use the PTY's actual dimensions for the emulator so cursor
 		// positioning and text wrapping match the agent view. The preview
 		// viewport (w x h) selects which rows to display.
-		emuCols, emuRows := w, h
-		if ptyCols, ptyRows := sess.PTYSize(); ptyCols > 0 {
-			emuCols = ptyCols
-			if ptyRows > 0 {
-				emuRows = ptyRows
-			}
+		ptyCols, ptyRows := sess.PTYSize()
+		emuCols, emuRows, src := previewEmuSize(taskID, ptyCols, ptyRows, w, h)
+		// Log on task switch always, and on every refresh that had to fall
+		// back past the live PTY size (RPC failure / stale info) — the
+		// fallback is the path that can scramble, so it must leave a trail.
+		if taskChanged || src != "pty" {
+			uxlog.Log("[tui] preview: live task=%s emu=%dx%d (%s) view=%dx%d raw=%d", taskID, emuCols, emuRows, src, w, h, len(raw))
 		}
 		a.taskPreview.RefreshOutput(raw, emuCols, emuRows, w, h)
 		return
@@ -2435,7 +2464,13 @@ func (a *App) refreshPreview(taskID string) {
 	if logSize > 0 {
 		logData := LoadSessionLog(taskID)
 		if len(logData) > 0 {
-			a.taskPreview.RefreshOutput(logData, w, h, w, h)
+			// Dead session: the PTY is gone, so the persisted sidecar is
+			// the only record of the width the log bytes were formatted
+			// for. Pane-size fallback is a best-effort for pre-sidecar
+			// sessions and may scramble wide content.
+			emuCols, emuRows, src := previewEmuSize(taskID, 0, 0, w, h)
+			uxlog.Log("[tui] preview: dead task=%s emu=%dx%d (%s) view=%dx%d log=%d", taskID, emuCols, emuRows, src, w, h, len(logData))
+			a.taskPreview.RefreshOutput(logData, emuCols, emuRows, w, h)
 			return
 		}
 	}
