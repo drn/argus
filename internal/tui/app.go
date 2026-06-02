@@ -61,6 +61,7 @@ const (
 	modeRestartDaemonPrompt
 	modeAppleEventsPicker
 	modeHelp
+	modeErrorModal
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -112,6 +113,9 @@ type App struct {
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
 	helpPrevPage string
+
+	// Error modal (created on demand to surface failed actions prominently)
+	errorModal *modal.ErrorModal
 
 	// Restart-daemon prompt (created on demand when binary mtime mismatch
 	// is detected at startup). daemonStale is set by main before Run() and
@@ -1453,6 +1457,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Error modal — any key dismisses it.
+	if a.mode == modeErrorModal && a.errorModal != nil {
+		a.handleErrorModalKey(event)
+		return nil
+	}
+
 	// Confirm delete project modal
 	if a.mode == modeConfirmDeleteProject && a.confirmDeleteProjectModal != nil {
 		a.handleConfirmDeleteProjectKey(event)
@@ -2717,7 +2727,12 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			if !ok {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
-					a.statusbar.SetError("Create failed: agent.CreateAndStart requires local mode (use POST /api/tasks remotely)")
+					msg := "agent.CreateAndStart requires local mode (use POST /api/tasks remotely)"
+					a.statusbar.SetError("Create failed: " + msg)
+					if a.mode == modeAgent && a.agentState.TaskID == "" {
+						a.exitAgentView()
+					}
+					a.showError("Create failed", msg)
 				})
 				return
 			}
@@ -2731,6 +2746,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 					if a.mode == modeAgent && a.agentState.TaskID == "" {
 						a.exitAgentView()
 					}
+					a.showError("Create failed", err.Error())
 				})
 				uxlog.Log("[tui] create-and-start failed: %v", err)
 				return
@@ -3185,6 +3201,55 @@ func (a *App) closeHelp() {
 	}
 }
 
+// --- Error modal ---
+
+// showError surfaces a failed action in a prominent dismiss-only modal. This is
+// the correct surface for hard failures of explicit user actions (e.g. agent
+// creation): the status bar truncates and is easily missed, so a silent failure
+// there leaves the user staring at a closed form with no visible reason. Must
+// run on the tview main goroutine.
+func (a *App) showError(title, body string) {
+	// Replace any existing error modal's contents rather than stacking pages.
+	if a.errorModal != nil {
+		a.pages.RemovePage("error")
+	}
+	a.errorModal = modal.NewErrorModal(title, body)
+	a.mode = modeErrorModal
+	a.pages.AddPage("error", a.errorModal, true, true)
+	a.pages.SwitchToPage("error")
+	a.tapp.SetFocus(a.errorModal)
+	uxlog.Log("[tui] error modal shown: %s — %s", title, body)
+}
+
+// handleErrorModalKey dismisses the error modal on any key.
+func (a *App) handleErrorModalKey(event *tcell.EventKey) {
+	handler := a.errorModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+	if a.errorModal.Closed() {
+		a.closeErrorModal()
+	}
+}
+
+// closeErrorModal dismisses the error modal and returns to the active tab's
+// page. Create/fork failures have already exited any pending agent view, so
+// landing on the task list (or whichever tab is active) is the safe outcome.
+func (a *App) closeErrorModal() {
+	a.mode = modeTaskList
+	a.errorModal = nil
+	a.pages.RemovePage("error")
+	switch a.header.ActiveTab() {
+	case widget.TabSettings:
+		a.pages.SwitchToPage("settings")
+		a.tapp.SetFocus(a.settings)
+	case widget.TabDAG:
+		a.pages.SwitchToPage("dag")
+		a.tapp.SetFocus(a.dagWidget)
+	default:
+		a.pages.SwitchToPage("tasks")
+		a.tapp.SetFocus(a.tasklist)
+	}
+}
+
 // --- Fork task ---
 
 // openForkModal shows the fork confirmation modal for the given task.
@@ -3350,7 +3415,9 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 		d, ok := a.db.(*db.DB)
 		if !ok {
 			a.tapp.QueueUpdateDraw(func() {
-				a.statusbar.SetError("Fork failed: requires local mode (use POST /api/tasks/{id}/fork remotely)")
+				msg := "requires local mode (use POST /api/tasks/{id}/fork remotely)"
+				a.statusbar.SetError("Fork failed: " + msg)
+				a.showError("Fork failed", msg)
 			})
 			uxlog.Log("[fork] not available in remote mode")
 			return
@@ -3359,6 +3426,7 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
 				a.statusbar.SetError("Fork failed: " + err.Error())
+				a.showError("Fork failed", err.Error())
 			})
 			uxlog.Log("[fork] create-and-start failed: %v", err)
 			return

@@ -387,6 +387,40 @@ func TestSmoke_HelpModalOpensOnQuestionKey(t *testing.T) {
 	}
 }
 
+func TestSmoke_ErrorModalOpensAndDismisses(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Surface an error the way the create-and-start failure callback does.
+	readUI(t, app.tapp, func() {
+		app.showError("Create failed", "worktree: chdir nope: no such file or directory")
+	})
+	syncUI(t, app.tapp)
+
+	var open bool
+	readUI(t, app.tapp, func() {
+		open = app.errorModal != nil && app.mode == modeErrorModal && app.pages.HasPage("error")
+	})
+	if !open {
+		t.Fatal("showError should open the error modal")
+	}
+
+	// Any key dismisses it and returns to the task list.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	var closed bool
+	readUI(t, app.tapp, func() {
+		closed = app.errorModal == nil && app.mode == modeTaskList && !app.pages.HasPage("error")
+	})
+	if !closed {
+		t.Fatal("a key press should dismiss the error modal")
+	}
+}
+
 func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
