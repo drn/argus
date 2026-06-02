@@ -1873,9 +1873,10 @@ func (a *App) updateFocusIndicators() {
 
 // clearAgentZen turns single-pane (zoom) mode off and restores the 1:3:1 agent
 // layout. Idempotent — safe to call when zen is already off (the ResizeItem
-// calls just re-assert the proportional sizing). Shared by toggleAgentZen's
-// un-zoom branch.
-// Main goroutine only.
+// calls just re-assert the proportional sizing). Reached from App setup, both
+// agent-view entry points, and exitAgentView via applyDefaultAgentZen when
+// ui.default_agent_zoom is false, and directly from toggleAgentZen's un-zoom
+// branch. Main goroutine only.
 func (a *App) clearAgentZen() {
 	a.agentZen = false
 	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
@@ -2913,9 +2914,10 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent
-// terminal pane. Prefers the host terminal size with the default zoomed
-// (single-pane) agent-page layout (always accurate when stdout is a TTY);
-// falls back to the pane's actual inner rect; finally defaults to 24x80.
+// terminal pane. Prefers the host terminal size assuming the zoomed
+// (single-pane) full-width layout — regardless of the ui.default_agent_zoom
+// setting (see ptySizeFromHostTerm) — which is always accurate when stdout is a
+// TTY; falls back to the pane's actual inner rect; finally defaults to 24x80.
 //
 // Host terminal is preferred over the pane rect because tview's Box returns
 // its default 15x10 rect before Flex has laid it out — and computePTYSize
