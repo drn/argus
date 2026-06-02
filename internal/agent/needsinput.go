@@ -32,6 +32,10 @@ var needsInputSelectionRe = regexp.MustCompile(`❯[ \t]*1\.`)
 // live inside the most recent few KB of bytes (cursor moves + repaints). We
 // scan a generous window so wide terminals with rich repaint sequences still
 // match — and ANSI stripping shrinks the effective text further.
+//
+// Keep in sync with tui.detectNeedsInputTailBytes — the TUI reads the same-sized
+// tail from the on-disk log, and the stale-log tradeoff documented on
+// tui.sessionBlockedOnPrompt ("~16 KB of newer output") assumes they match.
 const needsInputTailWindow = 16 * 1024
 
 // DetectNeedsInput returns true if the tail of `buf` indicates the agent is

@@ -1347,6 +1347,9 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
 // idle task's session log per tick. Large enough to contain Claude's full
 // selection-UI overlay after the colorized repaint inflates line widths.
+//
+// Keep in sync with agent.needsInputTailWindow (the ring-buffer equivalent used
+// by agent.BlockedOnPrompt) so the TUI and API detect over the same-sized tail.
 const detectNeedsInputTailBytes = 16 * 1024
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
