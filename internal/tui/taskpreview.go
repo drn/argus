@@ -168,9 +168,11 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 	// Tail slices (ring buffer / 64KB log tail) routinely begin mid-CSI;
 	// AlignToEscBoundary skips any partial CSI/OSC prefix that would
 	// otherwise render as a smudge of orphan digits/punctuation at the
-	// top of the emulator.
+	// top of the emulator. FilterOSC then drops OSC sequences so a UTF-8
+	// window title can't leak onto the preview (same x/ansi bug the live
+	// agent pane works around — see internal/tui/terminal/oscfilter.go).
 	emu := terminal.NewDrainedEmulator(emuCols, emuRows)
-	if _, err := terminal.SafeEmuWrite(emu, terminal.AlignToEscBoundary(raw)); err != nil {
+	if _, err := terminal.SafeEmuWrite(emu, terminal.FilterOSC(terminal.AlignToEscBoundary(raw))); err != nil {
 		tp.mu.Lock()
 		tp.statusMsg = "Preview unavailable"
 		tp.cells = nil
