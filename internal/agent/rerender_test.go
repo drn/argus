@@ -14,6 +14,7 @@ func TestShouldKickRerender(t *testing.T) {
 		panelCols      int
 		idle           bool
 		alreadyPending bool
+		needsInput     bool
 		want           RerenderDecision
 	}{
 		{
@@ -94,10 +95,32 @@ func TestShouldKickRerender(t *testing.T) {
 			hasSessionID: true, initCols: 120, panelCols: 120, idle: true,
 			want: RerenderSkip,
 		},
+		{
+			// The re-entry-on-resize bug: agent idle because it's blocked on
+			// an AskUserQuestion overlay. A kick here would dismiss the
+			// question via the --session-id restart. Defer instead.
+			name:         "defer when idle but blocked on prompt",
+			hasSessionID: true, initCols: 20, panelCols: 190, idle: true, needsInput: true,
+			want: RerenderDeferPrompt,
+		},
+		{
+			// needsInput only matters once idle — a busy agent still defers as
+			// busy (it isn't actually blocked yet, just streaming).
+			name:         "busy takes precedence over needsInput",
+			hasSessionID: true, initCols: 20, panelCols: 190, idle: false, needsInput: true,
+			want: RerenderDeferBusy,
+		},
+		{
+			// needsInput is irrelevant when the margin gate fails — no kick
+			// was going to happen anyway.
+			name:         "skip when sub-margin even if needsInput",
+			hasSessionID: true, initCols: 100, panelCols: 105, idle: true, needsInput: true,
+			want: RerenderSkip,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ShouldKickRerender(tc.hasSessionID, tc.initCols, tc.panelCols, tc.idle, tc.alreadyPending)
+			got := ShouldKickRerender(tc.hasSessionID, tc.initCols, tc.panelCols, tc.idle, tc.alreadyPending, tc.needsInput)
 			testutil.Equal(t, got, tc.want)
 		})
 	}

@@ -1086,6 +1086,14 @@ func (s *Server) maybeKickRerender(taskID string, rows, cols uint16) bool {
 		s.invalidateColsCache(taskID)
 		return false
 	}
+	if agent.BlockedOnPrompt(sess) {
+		// Agent is idle because it's blocked on a user prompt (AskUserQuestion
+		// overlay, permission, plan-mode confirm). A kick would stop+restart
+		// and silently dismiss the prompt the user is about to answer.
+		// Invalidate so a later resize re-evaluates once the agent moves on.
+		s.invalidateColsCache(taskID)
+		return false
+	}
 	task, err := s.db.Get(taskID)
 	if err != nil || task == nil {
 		// Transient DB error — invalidate so the next same-cols /resize

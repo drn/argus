@@ -70,7 +70,7 @@ func TestIsRedundantAttach(t *testing.T) {
 
 	// Invalidation API contract: every non-Skip "could have kicked but
 	// didn't" outcome in maybeKickRerender's goroutine (RerenderDeferBusy,
-	// sess.Stop() error) calls `invalidateAttachCache(taskID)` so the next
+	// RerenderDeferPrompt, sess.Stop() error) calls `invalidateAttachCache(taskID)` so the next
 	// reopen at the same cols re-evaluates instead of permanently short-
 	// circuiting. Drive the helper directly to pin the invariant — if any
 	// production branch stops invoking invalidateAttachCache, the cache
@@ -88,6 +88,37 @@ func TestIsRedundantAttach(t *testing.T) {
 	if app.isRedundantAttach("never-cached", 200) {
 		t.Fatal("invalidating a never-cached entry should leave it absent (next call proceeds)")
 	}
+}
+
+func TestSessionBlockedOnPrompt(t *testing.T) {
+	// The TUI's needsInput computation for maybeKickRerender: idle AND a
+	// selection-UI / trailing-question marker in the on-disk session log.
+	// This is the gate that keeps a genuine resize from killing a session
+	// that's actually waiting on a question (the re-entry-on-resize bug).
+	t.Setenv("HOME", t.TempDir())
+
+	writeLog := func(t *testing.T, taskID, content string) {
+		t.Helper()
+		logPath := agent.SessionLogPath(taskID)
+		testutil.NoError(t, os.MkdirAll(logPath[:strings.LastIndex(logPath, "/")], 0o755))
+		testutil.NoError(t, os.WriteFile(logPath, []byte(content), 0o644))
+	}
+
+	t.Run("not idle is never blocked even with a prompt marker", func(t *testing.T) {
+		writeLog(t, "busy-task", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		testutil.Equal(t, sessionBlockedOnPrompt("busy-task", false), false)
+	})
+	t.Run("idle with selection-UI marker is blocked", func(t *testing.T) {
+		writeLog(t, "prompt-task", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		testutil.Equal(t, sessionBlockedOnPrompt("prompt-task", true), true)
+	})
+	t.Run("idle with plain output is not blocked", func(t *testing.T) {
+		writeLog(t, "plain-task", "Reading foo.go\nDone.\n")
+		testutil.Equal(t, sessionBlockedOnPrompt("plain-task", true), false)
+	})
+	t.Run("idle with no log file is not blocked", func(t *testing.T) {
+		testutil.Equal(t, sessionBlockedOnPrompt("missing-task", true), false)
+	})
 }
 
 func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {

@@ -60,6 +60,25 @@ func DetectNeedsInput(buf []byte) bool {
 	return endsInQuestion(stripped)
 }
 
+// BlockedOnPrompt reports whether the session's recent output shows the agent
+// blocked on a user prompt (selection UI overlay or a trailing question). A
+// rerender kick must never fire while this is true: stop+restart via
+// --session-id rehydrates the conversation but NOT the ephemeral prompt
+// overlay, silently dismissing the question. Reads the session's local ring
+// buffer — correct server-side (daemon owns the live ring) but unreliable in
+// daemon-client mode where the ring only fills after a stream attaches; that
+// path detects via the disk log instead (see the TUI's readSessionLogTailBytes).
+//
+// Like DetectNeedsInput, pair this with an idle check at the call site — a
+// prompt the agent is still streaming past is not blocking. The sole caller
+// (the API resize handler) gates on IsIdle() before reaching here.
+func BlockedOnPrompt(sess SessionHandle) bool {
+	if sess == nil {
+		return false
+	}
+	return DetectNeedsInput(sess.RecentOutputTail(needsInputTailWindow))
+}
+
 // endsInQuestion returns true when the assistant's last visible line of text
 // — the line immediately above Claude's input prompt box — ends with `?` (or
 // the full-width `？`).

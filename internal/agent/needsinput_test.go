@@ -115,3 +115,17 @@ func TestDetectNeedsInput(t *testing.T) {
 		})
 	}
 }
+
+func TestBlockedOnPrompt(t *testing.T) {
+	t.Run("nil session is not blocked", func(t *testing.T) {
+		testutil.Equal(t, BlockedOnPrompt(nil), false)
+	})
+	t.Run("plain output is not blocked", func(t *testing.T) {
+		sess := &fakeSession{tail: []byte("Reading foo.go\nDone.\n")}
+		testutil.Equal(t, BlockedOnPrompt(sess), false)
+	})
+	t.Run("selection-UI overlay is blocked", func(t *testing.T) {
+		sess := &fakeSession{tail: []byte("Do you want to proceed?\n❯ 1. Yes\n  2. No\n")}
+		testutil.Equal(t, BlockedOnPrompt(sess), true)
+	})
+}
