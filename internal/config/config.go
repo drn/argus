@@ -102,6 +102,10 @@ type UIConfig struct {
 	ShowIcons        bool   `toml:"show_icons"`
 	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
 	SpinnerStyle     string `toml:"spinner_style"`
+	// DefaultAgentZoom controls the resting agent-view layout: true (the
+	// default) opens single-pane/zoomed with the side panels collapsed; false
+	// opens the 1:3:1 three-pane layout. Ctrl+Z still toggles at runtime.
+	DefaultAgentZoom bool `toml:"default_agent_zoom"`
 }
 
 // SandboxConfig controls OS-level sandboxing of agent processes.
@@ -148,10 +152,11 @@ func DefaultConfig() Config {
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),
 		UI: UIConfig{
-			Theme:        "default",
-			ShowElapsed:  true,
-			ShowIcons:    true,
-			SpinnerStyle: "progress",
+			Theme:            "default",
+			ShowElapsed:      true,
+			ShowIcons:        true,
+			SpinnerStyle:     "progress",
+			DefaultAgentZoom: true,
 		},
 		KB: KBConfig{
 			HTTPPort: 7742,

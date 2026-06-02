@@ -143,14 +143,26 @@ func TestApp_HandleAgentKey_CmdArrows(t *testing.T) {
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl|tcell.ModAlt))
 	testutil.Equal(t, app.agentState.TaskID, "a")
 
-	// Cmd+Left changes agentFocus.
+	// In split (un-zoomed) mode, Cmd+Left/Right switch panes.
+	app.clearAgentZen()
 	app.agentFocus = focusFiles
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt))
 	testutil.Equal(t, app.agentFocus, focusTerminal)
-
-	// Cmd+Right.
 	app.handleAgentKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt))
 	testutil.Equal(t, app.agentFocus, focusFiles)
+
+	// In zoomed (single-pane) mode the side panels are hidden, so Cmd+Left/Right
+	// must NOT switch panes — focus stays put and the key is still consumed.
+	app.setAgentZen() // snaps focus back to the terminal
+	testutil.Equal(t, app.agentFocus, focusTerminal)
+	if ev := app.handleAgentKey(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt)); ev != nil {
+		t.Fatalf("Cmd+Right should be consumed when zoomed, got %v", ev)
+	}
+	testutil.Equal(t, app.agentFocus, focusTerminal)
+	if ev := app.handleAgentKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)); ev != nil {
+		t.Fatalf("Cmd+Left should be consumed when zoomed, got %v", ev)
+	}
+	testutil.Equal(t, app.agentFocus, focusTerminal)
 }
 
 func TestApp_HandleAgentKey_EnterRestart(t *testing.T) {

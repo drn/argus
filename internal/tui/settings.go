@@ -43,6 +43,7 @@ const (
 	srAPI
 	srDaemon
 	srSpinner
+	srAgentZoom
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
@@ -202,6 +203,9 @@ type SettingsView struct {
 
 	// Spinner.
 	spinnerStyle string // current spinner style name
+
+	// Default agent-view layout: zoomed (single-pane) vs. split (1:3:1).
+	defaultAgentZoom bool
 
 	// Project name list (used by other UI features).
 	projectNames []string
@@ -428,6 +432,9 @@ func (sv *SettingsView) Refresh() {
 	if sv.spinnerStyle == "" {
 		sv.spinnerStyle = string(spinner.StyleProgress)
 	}
+
+	// Default agent-view layout.
+	sv.defaultAgentZoom = cfg.UI.DefaultAgentZoom
 
 	sv.projectNames = projNames
 
@@ -846,6 +853,12 @@ func (sv *SettingsView) rebuildRows() {
 		spinLabel := fmt.Sprintf("Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
 		sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
 
+		zoomLabel := "Default agent view: Split"
+		if sv.defaultAgentZoom {
+			zoomLabel = "Default agent view: Zoomed"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srAgentZoom, label: zoomLabel, key: "_agent_zoom"})
+
 	case catLogs:
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "UX Log", key: "ux"})
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "Daemon Log", key: "daemon"})
@@ -979,6 +992,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		case srSpinner:
 			sv.cycleSpinner(-1)
 			return true
+		case srAgentZoom:
+			sv.toggleDefaultAgentZoom()
+			return true
 		case srVaultPath:
 			sv.cycleVaultPath(-1)
 			return true
@@ -997,6 +1013,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		switch sv.currentRowKind() {
 		case srSpinner:
 			sv.cycleSpinner(1)
+			return true
+		case srAgentZoom:
+			sv.toggleDefaultAgentZoom()
 			return true
 		case srVaultPath:
 			sv.cycleVaultPath(1)
@@ -1328,6 +1347,9 @@ func (sv *SettingsView) handleEnter() bool {
 	case srSpinner:
 		sv.cycleSpinner(1)
 		return true
+	case srAgentZoom:
+		sv.toggleDefaultAgentZoom()
+		return true
 	case srVaultPath:
 		// Start inline editing for the selected vault path.
 		sv.editingVault = row.key
@@ -1633,6 +1655,22 @@ func (sv *SettingsView) cycleSpinner(dir int) {
 	sv.rebuildRows()
 }
 
+// toggleDefaultAgentZoom flips the resting agent-view layout between zoomed
+// (single-pane) and split (1:3:1) and persists it. Takes effect on the next
+// agent-view entry; Ctrl+Z still toggles per-session at runtime.
+func (sv *SettingsView) toggleDefaultAgentZoom() {
+	sv.defaultAgentZoom = !sv.defaultAgentZoom
+	val := "false"
+	if sv.defaultAgentZoom {
+		val = "true"
+	}
+	if err := sv.database.SetConfigValue("ui.default_agent_zoom", val); err != nil {
+		uxlog.Log("[settings] failed to persist default agent zoom: %v", err)
+	}
+	uxlog.Log("[settings] default agent zoom toggled to %s", val)
+	sv.rebuildRows()
+}
+
 // cycleVaultPath cycles the vault path forward or backward through discovered iCloud vaults.
 func (sv *SettingsView) cycleVaultPath(dir int) {
 	if len(sv.discoveredVaults) == 0 {
@@ -1896,6 +1934,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderVaultPathDetail(screen, x, y, w, h, row)
 	case srSpinner:
 		sv.renderSpinnerDetail(screen, x, y, w, h)
+	case srAgentZoom:
+		sv.renderAgentZoomDetail(screen, x, y, w, h)
 	case srLogs:
 		sv.renderLogsDetail(screen, x, y, w, h, row)
 	case srDaemon:
@@ -2473,6 +2513,32 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 
 	if r+1 < h {
 		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderAgentZoomDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Default Agent View", theme.StyleTitle)
+	r := 2
+
+	current := "Split (terminal + git/files side panels)"
+	if sv.defaultAgentZoom {
+		current = "Zoomed (single-pane terminal)"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, current, tcell.StyleDefault.Foreground(theme.ColorComplete))
+	}
+	r += 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Layout the agent view opens in. Ctrl+Z still", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "toggles zoom per-session at runtime.", theme.StyleDimmed)
+	}
+
+	if r+1 < h {
+		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] toggle", theme.StyleDimmed)
 	}
 }
 

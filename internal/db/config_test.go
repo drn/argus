@@ -16,6 +16,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 		"ui.spinner":             "braille",
 		"ui.show_elapsed":        "false",
 		"ui.show_icons":          "false",
+		"ui.default_agent_zoom":  "false",
 		"ui.cleanup_worktrees":   "false",
 		"sandbox.enabled":        "true",
 		"sandbox.deny_read":      "/x,/y",
@@ -39,6 +40,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.UI.SpinnerStyle, "braille")
 	testutil.Equal(t, cfg.UI.ShowElapsed, false)
 	testutil.Equal(t, cfg.UI.ShowIcons, false)
+	testutil.Equal(t, cfg.UI.DefaultAgentZoom, false)
 	if cfg.UI.CleanupWorktrees == nil || *cfg.UI.CleanupWorktrees {
 		t.Error("CleanupWorktrees should be set false")
 	}
@@ -51,6 +53,12 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.API.Enabled, true)
 	testutil.Equal(t, cfg.API.HTTPPort, 8123)
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
+}
+
+func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {
+	d := testDB(t)
+	// No ui.default_agent_zoom override → falls back to DefaultConfig (true).
+	testutil.Equal(t, d.Config().UI.DefaultAgentZoom, true)
 }
 
 // TestDB_Config_BadIntegerPorts covers the strconv.Atoi error path for ports.

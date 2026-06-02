@@ -587,6 +587,76 @@ func TestSmoke_AgentZenToggle(t *testing.T) {
 	testutil.Equal(t, fileW, 0)
 }
 
+// TestSmoke_AgentDefaultSplitLayout verifies that when ui.default_agent_zoom is
+// false the agent view opens in the split (1:3:1) layout with the side panels
+// visible, rather than the zoomed default.
+func TestSmoke_AgentDefaultSplitLayout(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("ui.default_agent_zoom", "false"))
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	task := &model.Task{
+		ID:        "split-1",
+		Name:      "split test",
+		Status:    model.StatusPending,
+		Project:   "p",
+		CreatedAt: time.Now(),
+	}
+	testutil.NoError(t, d.Add(task))
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	var zen bool
+	var leftW, fileW int
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+	})
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+
+	// Exit — exitAgentView resets to the configured (split) default.
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, false)
+
+	// Re-enter, temporarily zoom with Ctrl+Z, then exit and re-enter again:
+	// the per-session toggle must NOT leak into the resting default — the next
+	// entry must re-assert split because applyDefaultAgentZen reads the config
+	// fresh on every entry/exit.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, false)
+
+	sim.InjectKey(tcell.KeyCtrlZ, 0, 0) // zoom for this session only
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { zen = app.agentZen })
+	testutil.Equal(t, zen, true)
+
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0) // exit resets to configured default
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyEnter, 0, 0) // re-enter
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		zen = app.agentZen
+		_, _, leftW, _ = app.agentLeftCol.GetRect()
+		_, _, fileW, _ = app.filePanel.GetRect()
+	})
+	testutil.Equal(t, zen, false)
+	testutil.True(t, leftW > 0)
+	testutil.True(t, fileW > 0)
+}
+
 // TestSmoke_AgentZenForcesTerminalFocus verifies that zooming while the file
 // panel is focused snaps focus back to the terminal — the file panel is hidden
 // in zen mode, so leaving focus there would swallow keys with no visible target.

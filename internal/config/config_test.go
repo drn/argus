@@ -22,6 +22,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.UI.ShowIcons {
 		t.Error("ShowIcons should default to true")
 	}
+	if !cfg.UI.DefaultAgentZoom {
+		t.Error("DefaultAgentZoom should default to true")
+	}
 }
 
 func TestDefaultKeybindings(t *testing.T) {

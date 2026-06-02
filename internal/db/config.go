@@ -75,6 +75,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{"ui.show_elapsed", &cfg.UI.ShowElapsed},
 		{"ui.show_icons", &cfg.UI.ShowIcons},
+		{"ui.default_agent_zoom", &cfg.UI.DefaultAgentZoom},
 	}
 	for _, f := range boolFields {
 		if v, ok := kv[f.key]; ok {
