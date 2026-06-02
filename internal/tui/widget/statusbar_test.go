@@ -13,7 +13,7 @@ func TestStatusBar_InfoMessage(t *testing.T) {
 	sb.SetRect(0, 0, 80, 1)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(80, 1)
 	defer screen.Fini()
 
@@ -38,7 +38,7 @@ func TestStatusBar_ErrorTakesPrecedenceOverInfo(t *testing.T) {
 	})
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(80, 1)
 
 	// Info message shows when no error.
@@ -71,7 +71,7 @@ func TestStatusBar_PluginMode_RendersBarHintsAndExitHint(t *testing.T) {
 	sb.SetRect(0, 0, 80, 1)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(80, 1)
 	defer screen.Fini()
 
@@ -96,7 +96,7 @@ func TestStatusBar_PluginMode_ExitHintSurvivesManyLongHints(t *testing.T) {
 	sb.SetRect(0, 0, 80, 1)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(80, 1)
 	defer screen.Fini()
 
@@ -122,7 +122,7 @@ func TestStatusBar_PluginMode_EmptyHintsShowsAffordance(t *testing.T) {
 	sb.SetRect(0, 0, 80, 1)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(80, 1)
 	defer screen.Fini()
 
@@ -144,7 +144,7 @@ func TestStatusBar_PluginMode_OffRestoresTabHints(t *testing.T) {
 	sb.SetTab(TabTasks)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(w, 1)
 	defer screen.Fini()
 
@@ -176,7 +176,7 @@ func TestStatusBar_PluginMode_NarrowWidthClampsAndTruncatesAffordance(t *testing
 	sb.SetRect(0, 0, w, 1)
 
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(w, 1)
 	defer screen.Fini()
 
@@ -210,7 +210,7 @@ func TestStatusBar_PluginMode_ZeroWidthIsNoOp(t *testing.T) {
 	sb := NewStatusBar()
 	sb.SetRect(0, 0, 0, 1)
 	screen := tcell.NewSimulationScreen("UTF-8")
-	screen.Init()
+	testutil.NoError(t, screen.Init())
 	screen.SetSize(1, 1)
 	defer screen.Fini()
 	sb.SetPluginMode(true, "Ludwig", []PluginHint{{Key: "j", Label: "down"}})
