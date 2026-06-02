@@ -86,6 +86,24 @@ func TestSeedDefaults_ConfigInsertError(t *testing.T) {
 	testutil.Error(t, err)
 }
 
+// TestSeedDefaults_SeedsUIBools verifies that the boolean UI prefs are seeded
+// into the config table on a fresh DB. ui.default_agent_zoom must be present
+// alongside its siblings (show_elapsed/show_icons) so the seeding stays in sync
+// with the UIConfig bool fields — db.Config()'s absent-key fallback would mask a
+// missing seed, so this asserts the raw row exists.
+func TestSeedDefaults_SeedsUIBools(t *testing.T) {
+	d, err := OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	for _, key := range []string{"ui.show_elapsed", "ui.show_icons", "ui.default_agent_zoom"} {
+		var value string
+		err := d.conn.QueryRow(`SELECT value FROM config WHERE key=?`, key).Scan(&value)
+		testutil.NoError(t, err)
+		testutil.Equal(t, value, "true")
+	}
+}
+
 // TestFixupBackends_UpdateExecError covers the UPDATE error path. We close the
 // conn after a backend that will trigger an update is set. fixupBackends uses
 // QueryRow which fails on closed conn → "continue", so UPDATE never runs.
