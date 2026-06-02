@@ -472,6 +472,17 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	// Remove session log file.
 	os.Remove(agent.SessionLogPath(id)) //nolint:errcheck,gosec // G304: id was validated by db.Get above; SessionLogPath roots at ~/.argus/sessions/<id>.log
 
+	// Remove registered artifacts (manifest rows + on-disk bytes). Best-effort:
+	// a residual dir or row is harmless (orphaned, unreachable without a task)
+	// but we clear both so a deleted task leaves nothing behind. ArtifactsDir
+	// roots at ~/.argus/artifacts/<id>; id was validated by db.Get above.
+	if n, derr := s.db.DeleteArtifactsForTask(id); derr != nil {
+		uxlog.Log("[api] delete: artifact row cleanup failed: id=%s err=%v", id, derr)
+	} else if n > 0 {
+		uxlog.Log("[api] delete: cleared %d artifact row(s) for id=%s", n, id)
+	}
+	os.RemoveAll(agent.ArtifactsDir(id)) //nolint:errcheck,gosec // G304: id validated by db.Get; ArtifactsDir roots at ~/.argus/artifacts/<id>
+
 	if err := s.db.Delete(id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

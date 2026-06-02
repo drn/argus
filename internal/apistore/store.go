@@ -232,6 +232,17 @@ func (s *Store) DeleteMessagesForTask(taskID string) (int, error) {
 	return 0, errors.New("apistore: DeleteMessagesForTask not exposed over REST; archive the task instead")
 }
 
+// DeleteArtifactsForTask isn't exposed as a dedicated endpoint. In remote
+// mode the daemon owns artifact cleanup: deleting a task over REST
+// (DELETE /api/tasks/{id}) runs the server-side DeleteArtifactsForTask +
+// on-disk removal itself, so the TUI doesn't need to. Returning an error
+// keeps the interface satisfied while signalling that the local TUI path
+// should no-op this call when it's talking to a remote daemon.
+func (s *Store) DeleteArtifactsForTask(taskID string) (int, error) {
+	_ = taskID
+	return 0, errors.New("apistore: DeleteArtifactsForTask not exposed over REST; the daemon cleans up on task delete")
+}
+
 // Schedules fetches the schedule list, parses RFC3339 timestamps, and
 // returns the model shape. The wire format carries empty strings for
 // zero times — best-effort parses, leaving the field zero on failure.

@@ -218,6 +218,41 @@ func TestProjectForm_RoundTrip_PreservesPathLists(t *testing.T) {
 	testutil.DeepEqual(t, proj.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
+func TestProjectForm_PathValue_AbsolutizesRelative(t *testing.T) {
+	// A relative path entered or produced by autocomplete must be absolutized
+	// before it reaches project config — the daemon's cwd is non-deterministic
+	// and would chdir a relative path incorrectly, breaking worktree creation.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	pf := NewProjectForm()
+	pf.fields[pfFieldPath] = []rune("  Development/Personal/hera  ")
+	got := pf.pathValue()
+	testutil.Equal(t, filepath.IsAbs(got), true)
+	testutil.Equal(t, got, filepath.Join(root, "Development/Personal/hera"))
+}
+
+func TestProjectForm_PathValue_Empty(t *testing.T) {
+	pf := NewProjectForm()
+	pf.fields[pfFieldPath] = []rune("   ")
+	testutil.Equal(t, pf.pathValue(), "")
+}
+
+func TestProjectForm_PathValue_TildeExpandsToAbsolute(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pf := NewProjectForm()
+	pf.fields[pfFieldPath] = []rune("~/foo/bar")
+	got := pf.pathValue()
+	testutil.Equal(t, filepath.IsAbs(got), true)
+	testutil.Equal(t, got, filepath.Join(home, "foo/bar"))
+}
+
 // --- Path autocomplete tests ---
 
 // setupACDirs creates a temp directory with subdirectories for autocomplete tests.

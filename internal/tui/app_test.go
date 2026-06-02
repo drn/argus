@@ -313,12 +313,71 @@ func TestOnTaskSelectAutoStart(t *testing.T) {
 		app.onTaskSelect(task, true)
 
 		// startSession was attempted — verifies auto-start triggers for
-		// Pending tasks with a SessionID (daemon restart scenario).
+		// Pending tasks with a SessionID (daemon restart scenario). After a
+		// failed start, the task reverts to Pending but the pre-existing
+		// SessionID must be preserved so the next retry can --resume.
 		got, _ := d.Get("t-pending")
-		// After failed start, task reverts to Pending with cleared SessionID.
-		if got.SessionID != "" {
-			t.Error("expected auto-start attempt to clear SessionID on failure")
+		if got.Status != model.StatusPending {
+			t.Errorf("status = %v, want Pending (reverted after failed start)", got.Status)
 		}
+		if got.SessionID != "sess-789" {
+			t.Errorf("SessionID = %q, want %q preserved across failed restart", got.SessionID, "sess-789")
+		}
+	})
+
+	t.Run("failed restart preserves pre-existing SessionID but clears self-generated one", func(t *testing.T) {
+		// Regression for the "lost-conversation after daemon+TUI reboot" bug.
+		// When startSession generates the SessionID in this call and Start
+		// then fails, the ID must be cleared (it points to nothing). When the
+		// SessionID was already on the task before this call (e.g., a Claude
+		// task being resumed after a daemon restart), Start failure must
+		// preserve it so the next retry can --resume the conversation.
+
+		t.Run("preserves pre-existing", func(t *testing.T) {
+			d := testDB(t)
+			runner := agent.NewRunner(nil)
+			app := New(d, runner, false)
+
+			task := &model.Task{
+				ID:        "t-resume-fail",
+				Name:      "resume failure",
+				SessionID: "sess-preexisting",
+				Project:   "p",
+			}
+			task.SetStatus(model.StatusInReview)
+			d.Add(task) //nolint:errcheck
+
+			app.startSession(task) // runner.Start will fail (no worktree)
+
+			got, _ := d.Get("t-resume-fail")
+			if got.SessionID != "sess-preexisting" {
+				t.Errorf("SessionID = %q, want %q preserved", got.SessionID, "sess-preexisting")
+			}
+			if got.Status != model.StatusPending {
+				t.Errorf("status = %v, want Pending", got.Status)
+			}
+		})
+
+		t.Run("clears self-generated", func(t *testing.T) {
+			d := testDB(t)
+			runner := agent.NewRunner(nil)
+			app := New(d, runner, false)
+
+			task := &model.Task{
+				ID:      "t-fresh-fail",
+				Name:    "fresh failure",
+				Project: "p", // no SessionID — startSession will generate one
+			}
+			task.SetStatus(model.StatusPending)
+			d.Add(task) //nolint:errcheck
+
+			app.startSession(task) // runner.Start will fail (no worktree)
+
+			got, _ := d.Get("t-fresh-fail")
+			if got.SessionID != "" {
+				t.Errorf("SessionID = %q, want cleared (self-generated, never used)", got.SessionID)
+			}
+		})
 	})
 
 	t.Run("no auto-start when autoStart is false", func(t *testing.T) {
@@ -1418,15 +1477,16 @@ func TestPTYSizeFromHostTerm(t *testing.T) {
 		err                error
 		wantRows, wantCols uint16
 	}{
-		{"typical wide", 320, 100, nil, 96, 190},
-		{"standard 80x24", 80, 24, nil, 20, 46},
-		// 50-col host: 50*3/5-2 = 28 ⇒ no clamp.
-		{"narrow 50x20", 50, 20, nil, 16, 28},
+		// Zoomed default: full host width minus the 2-col pane border.
+		{"typical wide", 320, 100, nil, 96, 318},
+		{"standard 80x24", 80, 24, nil, 20, 78},
+		// 50-col host: 50-2 = 48 ⇒ no clamp.
+		{"narrow 50x20", 50, 20, nil, 16, 48},
 		// Pathological tiny host triggers both clamps.
-		{"tiny clamps both floors", 30, 8, nil, 5, 20},
+		{"tiny clamps both floors", 18, 8, nil, 5, 20},
 		// Real-world reproduction of the original bug. Anything works as long
 		// as it isn't 20x8 — the PTY size that left Claude rendering narrow.
-		{"realistic iTerm2 split", 200, 60, nil, 56, 118},
+		{"realistic iTerm2 split", 200, 60, nil, 56, 198},
 		// Unusable signals: function must yield 0,0 so callers fall back.
 		{"err short-circuits", 320, 100, errFakeNoTTY, 0, 0},
 		{"zero width", 0, 100, nil, 0, 0},

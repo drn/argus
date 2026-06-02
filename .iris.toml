@@ -1,0 +1,16 @@
+# iris-managed-system config for argus.
+#
+# Lets `iris_set_dogfood` point the `dev` branch at a composed SHA and
+# rebuild/restart the local argus daemon. Dogfood is entirely local —
+# this file does not need to be merged upstream for dogfooding to work.
+#
+# Machine-specific overrides belong in .iris.local.toml (gitignored).
+
+default_branch = "master"
+dogfood_branch = "dev"
+
+# Build the dogfood checkout into the launchd binary location.
+build_command = "go build -o $HOME/.argus/argusd ./cmd/argus"
+
+# Restart the LaunchAgent (KeepAlive respawns it from ~/.argus/argusd).
+restart_command = "launchctl kickstart -k gui/$(id -u)/com.drn.argus.daemon"

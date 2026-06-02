@@ -64,6 +64,11 @@ type Store interface {
 	// given task ID. Returns the deletion count.
 	DeleteMessagesForTask(taskID string) (int, error)
 
+	// DeleteArtifactsForTask removes every registered-artifact manifest row
+	// for the given task ID. Returns the deletion count. The on-disk bytes
+	// under ~/.argus/artifacts/<id> are removed separately by the caller.
+	DeleteArtifactsForTask(taskID string) (int, error)
+
 	// Schedules returns every persisted schedule. Used by the Settings tab.
 	Schedules() ([]*model.ScheduledTask, error)
 

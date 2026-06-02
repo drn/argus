@@ -98,6 +98,12 @@ type TerminalPane struct {
 	emuRows       int
 	cursorVisible bool
 
+	// oscStrip removes OSC sequences from the live byte stream before it
+	// reaches emu, working around an x/ansi parser bug that leaks UTF-8 window
+	// titles onto the screen. Reset whenever emu is recreated and re-fed from a
+	// clean escape boundary. See oscfilter.go. Owned by the Draw goroutine.
+	oscStrip oscFilter
+
 	// Cached PTY size — set from Draw() (main goroutine), read by sync goroutine.
 	ptyCols int
 	ptyRows int
@@ -1163,7 +1169,9 @@ func (tp *TerminalPane) asyncReplayRebuild(taskID string, scrollOffset, viewport
 	// Tail slices begin at arbitrary byte positions — see AlignToEscBoundary
 	// (defect 4). Without this, partial CSI prefixes show up as orphan
 	// digits/punctuation at the top of the scrollback emulator.
-	_, _ = SafeEmuWrite(emu, AlignToEscBoundary(raw))
+	// FilterOSC strips OSC sequences first (see oscfilter.go) so a UTF-8
+	// window title can't leak onto the scrollback view.
+	_, _ = SafeEmuWrite(emu, FilterOSC(AlignToEscBoundary(raw)))
 
 	// Compute max scroll from emulator's scrollback capacity.
 	sbLen := emu.ScrollbackLen()
@@ -1245,6 +1253,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	needRebuild := tp.emu == nil || tp.emuCols != ptyCols || tp.emuRows != ptyRows
 	if needRebuild {
 		tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+		tp.oscStrip.reset()
 		tp.emuFedTotal = 0
 		tp.emuCols = ptyCols
 		tp.emuRows = ptyRows
@@ -1275,6 +1284,7 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 		if fullReplay {
 			if !needRebuild {
 				tp.emu = tp.newTrackedEmulator(ptyCols, ptyRows)
+				tp.oscStrip.reset()
 				tp.paintCacheValid = false
 			}
 			history, finalTotal := readLiveRebuildHistory(sess, tp.taskID)
@@ -1291,15 +1301,20 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 				// the log/ring tail may have started mid-sequence at,
 				// which x/vt would otherwise render as a smudge of
 				// orphan parameter bytes at the top of the screen
-				// (defect 4).
-				_, _ = SafeEmuWrite(tp.emu, AlignToEscBoundary(history))
+				// (defect 4). The aligned tail starts at a clean escape
+				// boundary, and oscStrip was reset alongside the fresh
+				// emulator, so the OSC filter continues from a known state
+				// into the incremental feeds below.
+				_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(AlignToEscBoundary(history)))
 				tp.emuFedTotal = finalTotal
 			}
 		} else if len(raw) > 0 {
 			// Incremental feed: the delta is contiguous with what the
 			// emulator has already parsed, so no ESC realignment is
 			// needed (parser state is already at the right boundary).
-			_, _ = SafeEmuWrite(tp.emu, raw[len(raw)-int(newBytes):])
+			// oscStrip carries state across feeds so an OSC sequence split
+			// between two deltas is still stripped.
+			_, _ = SafeEmuWrite(tp.emu, tp.oscStrip.filter(raw[len(raw)-int(newBytes):]))
 			tp.emuFedTotal = totalWritten
 		} else if tp.emuFedTotal == 0 {
 			msg := "Waiting for output..."

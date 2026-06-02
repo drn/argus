@@ -65,6 +65,16 @@ func SessionLogPath(taskID string) string {
 	return filepath.Join(SessionsDir(), taskID+".log")
 }
 
+// ArtifactsDir returns the directory holding a task's registered viewable
+// artifacts: ~/.argus/artifacts/<taskID>. This is durable, Argus-owned storage
+// distinct from the agent worktree (sandboxed, removed on task delete) and
+// from /tmp (ephemeral) — registration copies the produced file here so the
+// Argus Web serving routes have a stable, scoped root to read from.
+func ArtifactsDir(taskID string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".argus", "artifacts", taskID)
+}
+
 // StartSession allocates a PTY with the given initial size, starts the command,
 // and begins reading output into a ring buffer.
 func StartSession(taskID string, cmd *exec.Cmd, rows, cols uint16) (*Session, error) {

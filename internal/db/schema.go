@@ -242,6 +242,29 @@ func (d *DB) createTables() error {
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_in_reply_to ON task_messages(in_reply_to)`)               //nolint:errcheck
 	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_msg_from_created ON task_messages(from_task_id, created_at)`) //nolint:errcheck
 
+	// Session artifacts: files an agent/skill produced (HTML reports, PDFs,
+	// rendered markdown, images) and registered for viewing in Argus Web. The
+	// bytes live at ~/.argus/artifacts/<task-id>/<filename>; this table is the
+	// manifest that SCOPES serving — a row must exist for a file to be served,
+	// so a user-supplied name only selects a registered row and never builds a
+	// filesystem path directly. One row per (task_id, filename); re-registering
+	// the same filename overwrites (last write wins).
+	if _, err := d.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS artifacts (
+			id          TEXT PRIMARY KEY,
+			task_id     TEXT NOT NULL,
+			name        TEXT NOT NULL,
+			filename    TEXT NOT NULL,
+			type        TEXT NOT NULL DEFAULT 'text',
+			size        INTEGER NOT NULL DEFAULT 0,
+			created_at  TEXT NOT NULL,
+			UNIQUE(task_id, filename)
+		)
+	`); err != nil {
+		return fmt.Errorf("creating artifacts table: %w", err)
+	}
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id, created_at)`) //nolint:errcheck
+
 	// Per-task sidecar metadata. Composite PK (task_id, namespace, key) keeps
 	// each plugin's keys isolated under its own namespace prefix; ON
 	// CONFLICT(...) DO UPDATE in SetMeta upserts so a write never has to
