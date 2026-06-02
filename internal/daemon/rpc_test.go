@@ -757,12 +757,18 @@ func TestDaemon_RegisterUnregisterStream(t *testing.T) {
 }
 
 // TestServe_ListenError exercises Serve's listen-error path — close the ready
-// channel and return a wrapped error. We trigger it by binding to a path that
-// can't be created (e.g. inside a non-existent directory).
+// channel and return a wrapped error. The lock file (in the socket's dir) must
+// stay creatable so we exercise the listen branch specifically and not the
+// lock branch, so we point the socket at a non-empty directory: os.Remove
+// can't clear it and net.Listen then fails.
 func TestServe_ListenError(t *testing.T) {
 	d, _ := testDaemon(t)
-	bad := filepath.Join(t.TempDir(), "no-such-subdir", "test.sock")
-	err := d.Serve(bad)
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "busy.sock")
+	if err := os.MkdirAll(filepath.Join(sockPath, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := d.Serve(sockPath)
 	testutil.Error(t, err)
 	testutil.Contains(t, err.Error(), "listen")
 }

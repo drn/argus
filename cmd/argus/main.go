@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -342,6 +343,12 @@ func runDaemon() {
 
 	d := daemon.New(database)
 	if err := d.Serve(daemon.DefaultSocketPath()); err != nil {
+		if errors.Is(err, daemon.ErrDaemonAlreadyRunning) {
+			// Lost the singleton race — another daemon is already serving the
+			// socket. Exit cleanly so the TUI/launchd treats this as success.
+			log.Printf("daemon already running; nothing to do")
+			return
+		}
 		log.Fatalf("daemon error: %v", err)
 	}
 }
