@@ -514,10 +514,11 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// SetAfterDrawFunc is registered only to detect terminal resize and
-	// emit one Sync per resize event — see afterDraw doc. The full
-	// pendingSync/forceRedraw/OnContentChange scaffolding from before
-	// the May 2026 cleanup is NOT here; only the resize-Sync case
+	// SetAfterDrawFunc is registered for two things: detect terminal resize
+	// and emit one Sync per resize event (see afterDraw doc), and reconcile
+	// the active plugin view's resize envelope after every draw (no Sync
+	// involved). The full pendingSync/forceRedraw/OnContentChange scaffolding
+	// from before the May 2026 cleanup is NOT here; only the resize-Sync case
 	// remains because it's the one "repair screen damage" case tview's
 	// Clear+Show diff cycle can't handle on its own (the prior size's
 	// cells in the terminal aren't fully overwritten by the new size's
@@ -527,8 +528,10 @@ func (a *App) buildUI() {
 	a.tapp.SetRoot(a.root, true)
 }
 
-// afterDraw detects terminal resize and Syncs once. It does NOT handle
-// the deleted pendingSync/forceRedraw/OnContentChange triggers — those
+// afterDraw detects terminal resize and Syncs once, then reconciles the
+// active plugin view's resize envelope (no Sync — a plain WebSocket send,
+// deduped against the last envelope delivered). It does NOT handle the
+// deleted pendingSync/forceRedraw/OnContentChange triggers — those
 // scaffolds are gone (see post-mortem in gotchas/ui-threading.md).
 //
 // Why resize needs Sync: tview's draw cycle (screen.Clear() + root.Draw()

@@ -407,6 +407,46 @@ func TestSmoke_PluginView_FirstResizeEnvelopeIsPostLayout(t *testing.T) {
 	testutil.Equal(t, fake.focusedCount.Load(), int32(1))
 }
 
+// TestPluginView_DeactivateThenFreshActivate pins the state-reset contract:
+// after a deactivate, a fresh activation gets its own post-layout envelope
+// and its own focus — stale lastSent/focusSent state from the prior
+// connection must not suppress either.
+func TestPluginView_DeactivateThenFreshActivate(t *testing.T) {
+	d := testDB(t)
+	r := views.New(d)
+	_, err := r.Register("", "Ludwig", "ctrl+l", "ws://127.0.0.1:5111/ws")
+	testutil.NoError(t, err)
+
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true)
+	fake := &fakePluginConnector{}
+	app.pluginConnFactory = func(url string, onBytes func([]byte), onControl func([]byte), in <-chan []byte) pluginConnector {
+		fake.onBytes = onBytes
+		fake.onControl = onControl
+		return fake
+	}
+	app.loadPluginViews()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
+	syncUI(t, app.tapp)
+	waitFor(t, 1*time.Second, func() bool {
+		return len(fake.resizeSnapshot()) > 0 && fake.focusedCount.Load() == 1
+	})
+
+	readUI(t, app.tapp, func() { app.deactivatePluginView() })
+	syncUI(t, app.tapp)
+
+	// Fresh activation: a new envelope and a new focus must both arrive.
+	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
+	syncUI(t, app.tapp)
+	waitFor(t, 1*time.Second, func() bool {
+		return len(fake.resizeSnapshot()) >= 2 && fake.focusedCount.Load() == 2
+	})
+}
+
 // TestReconcilePluginViewSize_ResendsOnDriftAndRetriesOnError pins the
 // reconciliation contract: a last-sent size that differs from the computed
 // viewport is corrected on the next reconcile (no terminal resize needed),

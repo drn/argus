@@ -128,6 +128,10 @@ type pluginViewMount struct {
 	focusSent    bool
 	lastSentCols int
 	lastSentRows int
+	// sendFailLogged gates failure logging to the first failure of a streak —
+	// the reconciler retries every draw, and a wedged connection would
+	// otherwise flood ux.log with one line per draw. Cleared on success.
+	sendFailLogged bool
 
 	// hotkeys is the latest dictionary the plugin pushed via a hotkeys
 	// control frame. Stage 5 renders the bar:true subset in the bottom bar;
@@ -249,6 +253,7 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 	m.laidOut = false
 	m.focusSent = false
 	m.lastSentCols, m.lastSentRows = 0, 0
+	m.sendFailLogged = false
 
 	go func(c pluginConnector) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -262,12 +267,14 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 		// tview Box default is 15x10 → a garbage 13x8 envelope). Mark the
 		// connection ready and kick a draw; the afterDraw reconciler sends the
 		// first resize envelope from the real post-layout rect, then focus.
-		a.tapp.QueueUpdateDraw(func() {
-			if a.activePlugin != m || m.conn != c {
-				return // released or replaced while dialing
-			}
-			m.connReady = true
-		})
+		if a.tapp != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				if a.activePlugin != m || m.conn != c {
+					return // released or replaced while dialing
+				}
+				m.connReady = true
+			})
+		}
 	}(conn)
 }
 
@@ -292,6 +299,7 @@ func (a *App) deactivatePluginView() {
 	m.laidOut = false
 	m.focusSent = false
 	m.lastSentCols, m.lastSentRows = 0, 0
+	m.sendFailLogged = false
 
 	// Tear down a lingering help overlay before clearing state — otherwise the
 	// page would survive into the next plugin. RemovePage directly (not
@@ -492,9 +500,15 @@ func (a *App) reconcilePluginViewSize() {
 	}
 	if err := m.conn.SendResize(cols, rows); err != nil {
 		// Leave lastSent unchanged so the envelope is retried on the next draw.
-		uxlog.Log("[plugin-view] send resize %dx%d failed: %v", cols, rows, err)
+		// Log only the first failure of a streak — retrying per draw would
+		// otherwise flood ux.log while a connection is wedged.
+		if !m.sendFailLogged {
+			m.sendFailLogged = true
+			uxlog.Log("[plugin-view] send resize %dx%d failed (retrying per draw): %v", cols, rows, err)
+		}
 		return
 	}
+	m.sendFailLogged = false
 	uxlog.Log("[plugin-view] resize envelope %dx%d (was %dx%d)", cols, rows, m.lastSentCols, m.lastSentRows)
 	m.lastSentCols, m.lastSentRows = cols, rows
 	if !m.focusSent {
