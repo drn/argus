@@ -48,6 +48,18 @@ const sandboxProfileBase = `(version 1)
 (allow network*)
 ; Allow Launch Services open (needed for OAuth browser login flow)
 (allow lsopen)
+; IOKit user-client opens — required for headful Chrome (Playwright/Puppeteer).
+; At startup Chrome calls IORegisterForSystemPower, which does IOServiceOpen on
+; IOPMrootDomain (and the GPU process opens IOAccelerator/IOSurface clients).
+; (deny default) blocks the open, so IOServiceOpen returns MACH_PORT_NULL and
+; Chrome dereferences the null notification port — a SIGSEGV (EXC_BAD_ACCESS,
+; KERN_INVALID_ADDRESS at 0x10) ~7ms into launch, inside IOKit, before any page
+; loads. Registry *reads* (ioreg) already work via (allow mach*); only the
+; user-client open was missing. Both op names are emitted for portability:
+; iokit-open is the legacy umbrella, iokit-open-user-client the macOS 12+ form
+; that IOServiceOpen maps to. This grants no extra filesystem access.
+(allow iokit-open)
+(allow iokit-open-user-client)
 (allow file-read*)
 ; SSH keys are allowed — needed for git push/fetch over SSH.
 ; Blocking reads provides minimal security since (allow network*) is granted.
