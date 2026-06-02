@@ -167,9 +167,10 @@ func PrunePrepare(database *db.DB, opts PruneOptions) (*PrunePlan, error) {
 		}
 	}
 
-	// Remove session logs.
+	// Remove session logs and their size sidecars.
 	for _, t := range pruned {
-		os.Remove(SessionLogPath(t.ID)) //nolint:errcheck
+		os.Remove(SessionLogPath(t.ID))  //nolint:errcheck
+		os.Remove(SessionSizePath(t.ID)) //nolint:errcheck
 	}
 
 	var toClean []*model.Task
