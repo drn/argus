@@ -1,16 +1,26 @@
 # iris-managed-system config for argus.
 #
-# Lets `iris_set_dogfood` point the `dev` branch at a composed SHA and
-# rebuild/restart the local argus daemon. Dogfood is entirely local —
-# this file does not need to be merged upstream for dogfooding to work.
+# Registers argus as an iris-managed system so `iris_set_dogfood` can point
+# the dogfood branch (see .iris.local.toml) at a composed SHA, rebuild the
+# argusd binary, and restart the local LaunchAgent. Dogfooding is entirely
+# local; this file does not need to be merged upstream for it to work.
 #
-# Machine-specific overrides belong in .iris.local.toml (gitignored).
+# Per-developer overrides (dogfood_branch, CI timeout) live in the gitignored
+# .iris.local.toml overlay, never here.
 
+schema_version = 1
 default_branch = "master"
-dogfood_branch = "dev"
 
-# Build the dogfood checkout into the launchd binary location.
-build_command = "go build -o $HOME/.argus/argusd ./cmd/argus"
+# Build the live argusd binary. The launchd ProgramArguments point at
+# ~/.argus/argusd, which symlinks ~/.local/bin/argus → ~/go/bin/argus. With
+# GOBIN unset, `go install` writes to $GOPATH/bin (GOPATH defaults to
+# $HOME/go), and the daemon and iris's build both run as the user — so plain
+# `go install ./cmd/argus` lands ~/go/bin/argus, the exact file the daemon
+# runs. No machine-specific paths here: this file is shared/checked in.
+[build]
+command = ["go", "install", "./cmd/argus"]
 
-# Restart the LaunchAgent (KeepAlive respawns it from ~/.argus/argusd).
-restart_command = "launchctl kickstart -k gui/$(id -u)/com.drn.argus.daemon"
+# Restart via the user LaunchAgent; iris kickstarts the label.
+[restart]
+mechanism = "launchagent"
+label = "com.drn.argus.daemon"
