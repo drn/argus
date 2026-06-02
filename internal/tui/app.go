@@ -1884,9 +1884,10 @@ func (a *App) clearAgentZen() {
 
 // setAgentZen turns single-pane (zoom) mode on: the left column (attention bar
 // + git) and the file panel collapse to zero width so the agent terminal fills
-// the whole pane row. Idempotent. Zoom is the default agent-view layout, so this
-// is called from App setup, both agent-view entry points (enterPendingAgentView,
-// onTaskSelect), exitAgentView, and toggleAgentZen's zoom branch.
+// the whole pane row. Idempotent. Reached from App setup, both agent-view entry
+// points (enterPendingAgentView, onTaskSelect), and exitAgentView via
+// applyDefaultAgentZen when ui.default_agent_zoom is true (the default), and
+// directly from toggleAgentZen's zoom branch.
 //
 // The focus guard snaps focus back to the terminal because the file panel is
 // hidden at zero width — leaving focus there would silently swallow keys with no
@@ -2965,17 +2966,19 @@ const agentViewRowOverhead = 4
 const agentViewColOverhead = 2
 
 // ptySizeFromHostTerm derives the agent PTY size from the host terminal,
-// applying the agent page's default zoomed (single-pane) column layout and the
+// applying the zoomed (single-pane) full-width column layout and the
 // header/footer/border row deductions. Returns 0,0 when the input is unusable.
 func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	if err != nil || tw <= 0 || th <= 0 {
 		return 0, 0
 	}
-	// Agent view opens zoomed by default (setAgentZen collapses the left col +
-	// file panel to zero width), so the terminal pane spans the full host width
-	// minus its own custom border on both sides (agentViewColOverhead). Seeding
-	// from the full width keeps the initial PTY size aligned with the laid-out
-	// pane, so no SIGWINCH-triggered repaint fires on agent-view entry.
+	// Seeds at the zoomed full-width layout: the terminal pane spans the full
+	// host width minus its own custom border on both sides (agentViewColOverhead).
+	// When ui.default_agent_zoom is true (the default) this matches the laid-out
+	// pane exactly, so no SIGWINCH repaint fires on entry. When the configured
+	// default is split (1:3:1), the pane lays out narrower and the terminal
+	// pane's own Draw() recompute corrects the size on the next frame — one
+	// SIGWINCH repaint on entry, accepted (see gotchas/keybindings.md).
 	centerW := max(tw-agentViewColOverhead, 20)
 	// Every entry path that calls computePTYSize hides the tab header BEFORE
 	// this function runs — enterPendingAgentView (new task) and onTaskSelect

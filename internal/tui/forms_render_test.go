@@ -159,7 +159,9 @@ func TestApp_HandleAgentKey_CmdArrows(t *testing.T) {
 		t.Fatalf("Cmd+Right should be consumed when zoomed, got %v", ev)
 	}
 	testutil.Equal(t, app.agentFocus, focusTerminal)
-	app.handleAgentKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt))
+	if ev := app.handleAgentKey(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt)); ev != nil {
+		t.Fatalf("Cmd+Left should be consumed when zoomed, got %v", ev)
+	}
 	testutil.Equal(t, app.agentFocus, focusTerminal)
 }
 
