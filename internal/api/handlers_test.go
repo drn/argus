@@ -727,6 +727,74 @@ func TestMaybeKickRerender_Gates(t *testing.T) {
 	})
 }
 
+func TestMaybeKickRerender_DefersWhenBlockedOnPrompt(t *testing.T) {
+	// Regression for the re-entry-on-resize bug: a genuine resize whose cols
+	// cross the rerender margin, while the agent is idle but blocked on a
+	// selection-UI prompt, must NOT kick — the --session-id restart would
+	// dismiss the question. The BlockedOnPrompt gate suppresses it. Exercises
+	// the real *agent.Session ring-buffer path end-to-end.
+	if testing.Short() {
+		t.Skip("starts a real PTY-backed session and waits for idle; skipped in -short")
+	}
+	t.Setenv("HOME", t.TempDir())
+	srv, d := testServer(t)
+
+	// Backend emits Claude's selection-UI marker (❯ 1.), then sleeps so the
+	// session stays alive and goes idle (no further output) after the
+	// idle threshold. Started with SessionID="" so BuildCmd doesn't append
+	// --session-id and mangle the sleep; the DB row's SessionID is set below.
+	testutil.NoError(t, d.SetBackend("prompt-sleep", config.Backend{
+		Command: "printf '❯ 1. Yes\\n'; sleep 30",
+	}))
+	task := &model.Task{
+		Name:     "blocked",
+		Status:   model.StatusInProgress,
+		Backend:  "prompt-sleep",
+		Worktree: t.TempDir(),
+	}
+	testutil.NoError(t, d.Add(task))
+
+	sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+	testutil.NoError(t, err)
+	t.Cleanup(func() {
+		_ = srv.runner.Stop(task.ID)
+		<-sess.Done()
+	})
+
+	// Give the DB row a SessionID so that, absent the gate, the later gates
+	// would pass and maybeKickRerender would fall through to KickRerender —
+	// making the no-pending-restart assertion below a real proof the gate
+	// fired, not an artifact of a SessionID=="" early return.
+	task.SessionID = "sid-resume"
+	testutil.NoError(t, d.Update(task))
+
+	// Wait until the marker is emitted AND the session reads as idle.
+	deadline := time.Now().Add(5 * time.Second)
+	blocked := false
+	for time.Now().Before(deadline) {
+		if sess.IsIdle() && agent.BlockedOnPrompt(sess) {
+			blocked = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatalf("session never became idle+blocked (idle=%v tail=%q)", sess.IsIdle(), sess.RecentOutputTail(256))
+	}
+
+	// Resize to 120 cols (init was 80 → delta 40 ≥ RerenderMargin).
+	got := srv.maybeKickRerender(task.ID, 24, 120)
+	testutil.Equal(t, got, false)
+	// No restart queued — proves we returned at the BlockedOnPrompt gate
+	// rather than reaching KickRerender (the DB task now has a SessionID).
+	testutil.Equal(t, srv.runner.HasPendingRestart(task.ID), false)
+	// The gate invalidates the cols cache so a later resize re-evaluates
+	// once the agent moves past the prompt.
+	if srv.isRedundantResize(task.ID, 120) {
+		t.Fatal("BlockedOnPrompt gate must invalidate the cols cache (resize at 120 should re-evaluate)")
+	}
+}
+
 func TestHandleGitDiff_PathTraversal(t *testing.T) {
 	srv, d := testServer(t)
 	mux := srv.routes()

@@ -1,8 +1,12 @@
 package agent
 
-// Rerender decisions are the outcome of ShouldKickRerender. Both the TUI's
-// agent-view-entry path and the API's resize handler share this predicate so
-// the gate is identical no matter who initiates a kick.
+// Rerender decisions are the outcome of ShouldKickRerender, the shared gating
+// logic for the kick. The TUI's agent-view-entry path calls ShouldKickRerender
+// directly; the API's resize handler (Server.maybeKickRerender) inlines the
+// equivalent gates in the same order (margin → idle → BlockedOnPrompt) rather
+// than calling this function, so it can interleave DB lookups and cache
+// invalidation between them. Keep the two in sync: a new gate added here must
+// be mirrored in the API handler (and vice versa).
 //
 // The kick mechanism — stop the live session, restart it with --session-id so
 // the agent re-emits the entire conversation at the new PTY size — is the only
@@ -34,6 +38,14 @@ const (
 	// kill mid-tool-call. The caller should retry on the next opportunity
 	// (e.g., next agent-view entry, next resize).
 	RerenderDeferBusy
+	// RerenderDeferPrompt — predicate matches and the agent is idle, but it's
+	// blocked on a user prompt (AskUserQuestion overlay, permission request,
+	// plan-mode confirm, or a trailing plain-text question). Stopping the
+	// session would rehydrate the conversation via --session-id but NOT the
+	// ephemeral prompt UI, silently dismissing the question the user came back
+	// to answer. Defer until the user responds; the caller should invalidate
+	// any cols cache so a later resize re-evaluates once the agent moves on.
+	RerenderDeferPrompt
 	// RerenderKick — stop the session. The exit handler is responsible for
 	// resuming via --session-id at the new dimensions.
 	RerenderKick
@@ -68,7 +80,13 @@ func MarginExceedsRerenderThreshold(initCols, panelCols int) bool {
 // starts at the new width). Width changes during the session (SIGWINCH) don't
 // move it — they only affect live UI, leaving scrollback baked at the original
 // width.
-func ShouldKickRerender(hasSessionID bool, initCols, panelCols int, idle, alreadyPending bool) RerenderDecision {
+//
+// needsInput gates the kick on whether the agent is blocked on a user prompt.
+// An agent waiting on an AskUserQuestion overlay (or any selection/confirm UI)
+// reads as idle, so without this gate a resize that crosses the margin would
+// stop+restart it and dismiss the prompt the user returned to answer. The kick
+// only repairs scrollback wrapping — never worth losing an in-flight question.
+func ShouldKickRerender(hasSessionID bool, initCols, panelCols int, idle, alreadyPending, needsInput bool) RerenderDecision {
 	if !hasSessionID || alreadyPending {
 		return RerenderSkip
 	}
@@ -77,6 +95,9 @@ func ShouldKickRerender(hasSessionID bool, initCols, panelCols int, idle, alread
 	}
 	if !idle {
 		return RerenderDeferBusy
+	}
+	if needsInput {
+		return RerenderDeferPrompt
 	}
 	return RerenderKick
 }

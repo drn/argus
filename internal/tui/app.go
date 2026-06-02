@@ -1347,6 +1347,9 @@ func (a *App) detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput []strin
 // detectNeedsInputTailBytes is how many bytes to read from the end of each
 // idle task's session log per tick. Large enough to contain Claude's full
 // selection-UI overlay after the colorized repaint inflates line widths.
+//
+// Keep in sync with agent.needsInputTailWindow (the ring-buffer equivalent used
+// by agent.BlockedOnPrompt) so the TUI and API detect over the same-sized tail.
 const detectNeedsInputTailBytes = 16 * 1024
 
 // readSessionLogTailBytes returns the last n raw bytes of a task's session
@@ -1384,6 +1387,25 @@ func readSessionLogTailBytes(taskID string, n int) []byte {
 		return nil
 	}
 	return data
+}
+
+// sessionBlockedOnPrompt reports whether the task's agent is idle AND blocked
+// on a user prompt (selection-UI overlay or trailing question), by scanning the
+// on-disk session log tail. The TUI counterpart to the API's
+// agent.BlockedOnPrompt, but it reads the disk log rather than the session ring
+// — the only reliable source in daemon-client mode, where the local ring stays
+// empty until a stream attaches. Gated on idle because a streaming agent can't
+// be blocked.
+//
+// Known tradeoff: the log is truncated only on StartSession (O_TRUNC), so a
+// selection-prompt marker lingers in the tail after the user answers until
+// ~16 KB of newer output pushes it out or the session restarts. During that
+// window a genuine resize defers the (purely cosmetic) scrollback re-render
+// rather than firing it. Deferring a re-render is strictly preferable to the
+// alternative this gate exists to prevent — killing a session that is actually
+// waiting on a question and dismissing it via the --session-id restart.
+func sessionBlockedOnPrompt(taskID string, idle bool) bool {
+	return idle && agent.DetectNeedsInput(readSessionLogTailBytes(taskID, detectNeedsInputTailBytes))
 }
 
 // refreshTasks fetches running/idle session IDs (RPC) and updates the task
@@ -2609,13 +2631,14 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 		// RPC calls — must NOT happen on the tview main goroutine.
 		initCols, _ := sess.InitialPTYSize()
 		idle := sess.IsIdle()
+		needsInput := sessionBlockedOnPrompt(taskID, idle)
 		a.tapp.QueueUpdateDraw(func() {
 			// Re-check liveness and the pending flag — anything could have
 			// changed during the RPC round-trip.
 			if !sess.Alive() || a.pendingRerenderRestart[taskID] {
 				return
 			}
-			decision := agent.ShouldKickRerender(true, initCols, int(panelCols), idle, false)
+			decision := agent.ShouldKickRerender(true, initCols, int(panelCols), idle, false, needsInput)
 			switch decision {
 			case agent.RerenderSkip:
 				return
@@ -2624,6 +2647,13 @@ func (a *App) maybeKickRerender(task *model.Task, sess agent.SessionHandle) {
 				// same-cols reopen re-evaluates when the agent goes idle.
 				a.invalidateAttachCache(taskID)
 				uxlog.Log("[tui] rerender deferred: task=%s busy (init=%d panel=%d)", taskID, initCols, panelCols)
+				return
+			case agent.RerenderDeferPrompt:
+				// Agent is blocked on a user prompt — kicking would dismiss
+				// the question. Invalidate so a later resize re-evaluates
+				// once the user has answered and the agent moves on.
+				a.invalidateAttachCache(taskID)
+				uxlog.Log("[tui] rerender deferred: task=%s blocked on user prompt — preserving question (init=%d panel=%d)", taskID, initCols, panelCols)
 				return
 			case agent.RerenderKick:
 				uxlog.Log("[tui] rerender: stopping task=%s session=%s (init=%dx panel=%dx)", taskID, task.SessionID, initCols, panelCols)
