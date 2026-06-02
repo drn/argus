@@ -546,16 +546,24 @@ func (a *App) buildUI() {
 // startup is already a high-noise rendering moment.
 func (a *App) afterDraw(screen tcell.Screen) {
 	w, h := screen.Size()
-	if w == a.lastScreenW && h == a.lastScreenH {
-		return
+	if w != a.lastScreenW || h != a.lastScreenH {
+		a.lastScreenW = w
+		a.lastScreenH = h
+		uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
+		screen.Sync()
 	}
-	a.lastScreenW = w
-	a.lastScreenH = h
-	uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
-	screen.Sync()
-	// Forward the resize to the active plugin view (if any). Best-effort —
-	// errors land in uxlog rather than the user's terminal.
-	a.resizePluginViewIfActive()
+	// Plugin resize-envelope reconciliation runs after EVERY draw, not just
+	// terminal resize: the pane's first real layout pass changes the computed
+	// viewport without the screen size changing, and a lost/raced initial
+	// envelope is corrected the same way. The draw that just completed is also
+	// the signal that the pane's rect is real — mark it laid out when its page
+	// was the one on screen (the help overlay may be in front instead).
+	if m := a.activePlugin; m != nil && !m.laidOut {
+		if front, _ := a.pages.GetFrontPage(); front == m.pageName {
+			m.laidOut = true
+		}
+	}
+	a.reconcilePluginViewSize()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/terminalpane"
 	"github.com/drn/argus/internal/tui/views"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
@@ -22,6 +24,7 @@ type fakePluginConnector struct {
 	mu             sync.Mutex
 	dialed         atomic.Bool
 	resizes        [][2]int
+	resizeErr      error
 	focusedCount   atomic.Int32
 	blurredCount   atomic.Int32
 	closedCount    atomic.Int32
@@ -46,9 +49,24 @@ func (f *fakePluginConnector) Dial(ctx context.Context) error {
 
 func (f *fakePluginConnector) SendResize(cols, rows int) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.resizeErr != nil {
+		return f.resizeErr
+	}
 	f.resizes = append(f.resizes, [2]int{cols, rows})
-	f.mu.Unlock()
 	return nil
+}
+
+func (f *fakePluginConnector) setResizeErr(err error) {
+	f.mu.Lock()
+	f.resizeErr = err
+	f.mu.Unlock()
+}
+
+func (f *fakePluginConnector) resizeSnapshot() [][2]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][2]int(nil), f.resizes...)
 }
 
 func (f *fakePluginConnector) SendFocus() error {
@@ -304,11 +322,153 @@ func TestDefaultPluginConnectorFactory_ReturnsNonNil(t *testing.T) {
 	testutil.NoError(t, c.Close())
 }
 
-func TestResizePluginViewIfActive_NoOpWhenInactive(t *testing.T) {
+func TestReconcilePluginViewSize_NoOpWhenInactive(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, true)
-	app.resizePluginViewIfActive() // must not panic
+	app.reconcilePluginViewSize() // must not panic
+}
+
+// TestPluginViewportSize_PreLayoutUsesScreenChrome pins the fix for the
+// pre-layout garbage envelope: a never-drawn pane's Box rect is the tview
+// default (15x10), and the viewport must NOT derive from it (13x8). Before
+// the first layout pass the size falls back to screen-minus-chrome.
+func TestPluginViewportSize_PreLayoutUsesScreenChrome(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(100, 30)
+	app.screen = &lazyScreen{Screen: sim}
+
+	// A mount whose pane has never been laid out — its rect is the Box default.
+	bytesIn := make(chan []byte, 1)
+	app.activePlugin = &pluginViewMount{pane: terminalpane.New(bytesIn), pageName: "plugin-view:test"}
+
+	cols, rows := app.pluginViewportSize()
+	testutil.Equal(t, cols, 100-pluginViewColOverhead)
+	testutil.Equal(t, rows, 30-pluginViewRowOverhead)
+}
+
+// TestSmoke_PluginView_FirstResizeEnvelopeIsPostLayout pins the end-to-end
+// contract: every resize envelope sent after activation matches the pane's
+// real post-layout inner rect — never the 13x8 pre-layout Box default — and
+// repeated draws with an unchanged size do not re-send duplicates.
+func TestSmoke_PluginView_FirstResizeEnvelopeIsPostLayout(t *testing.T) {
+	d := testDB(t)
+	r := views.New(d)
+	_, err := r.Register("", "Ludwig", "ctrl+l", "ws://127.0.0.1:5111/ws")
+	testutil.NoError(t, err)
+
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true)
+	fake := &fakePluginConnector{}
+	app.pluginConnFactory = func(url string, onBytes func([]byte), onControl func([]byte), in <-chan []byte) pluginConnector {
+		fake.onBytes = onBytes
+		fake.onControl = onControl
+		return fake
+	}
+	app.loadPluginViews()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
+	syncUI(t, app.tapp)
+	waitFor(t, 1*time.Second, func() bool { return len(fake.resizeSnapshot()) > 0 })
+
+	// Kick extra draws — the reconciler must dedupe an unchanged size.
+	app.tapp.QueueUpdateDraw(func() {})
+	syncUI(t, app.tapp)
+	app.tapp.QueueUpdateDraw(func() {})
+	syncUI(t, app.tapp)
+
+	// The envelope must match the pane's real post-layout inner rect.
+	var want [2]int
+	readUI(t, app.tapp, func() {
+		_, _, w, h := app.pluginMounts[0].pane.GetRect()
+		want = [2]int{w - 2, h - 2}
+	})
+	if want == [2]int{13, 8} {
+		t.Fatal("pane rect is still the pre-layout Box default; test setup broken")
+	}
+	resizes := fake.resizeSnapshot()
+	for i, rz := range resizes {
+		if rz != want {
+			t.Fatalf("envelope %d = %dx%d, want %dx%d (pre-layout garbage must never be sent)", i, rz[0], rz[1], want[0], want[1])
+		}
+	}
+	testutil.Equal(t, len(resizes), 1)
+
+	// Focus follows the first successful resize, exactly once.
+	testutil.Equal(t, fake.focusedCount.Load(), int32(1))
+}
+
+// TestReconcilePluginViewSize_ResendsOnDriftAndRetriesOnError pins the
+// reconciliation contract: a last-sent size that differs from the computed
+// viewport is corrected on the next reconcile (no terminal resize needed),
+// and a failed send leaves last-sent unchanged so the envelope is retried.
+func TestReconcilePluginViewSize_ResendsOnDriftAndRetriesOnError(t *testing.T) {
+	d := testDB(t)
+	r := views.New(d)
+	_, err := r.Register("", "Ludwig", "ctrl+l", "ws://127.0.0.1:5111/ws")
+	testutil.NoError(t, err)
+
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, true)
+	fake := &fakePluginConnector{}
+	app.pluginConnFactory = func(url string, onBytes func([]byte), onControl func([]byte), in <-chan []byte) pluginConnector {
+		fake.onBytes = onBytes
+		fake.onControl = onControl
+		return fake
+	}
+	app.loadPluginViews()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
+	syncUI(t, app.tapp)
+	waitFor(t, 1*time.Second, func() bool { return len(fake.resizeSnapshot()) > 0 })
+
+	// The reconciler's target is the pane's real post-layout inner rect.
+	var want [2]int
+	readUI(t, app.tapp, func() {
+		_, _, w, h := app.pluginMounts[0].pane.GetRect()
+		want = [2]int{w - 2, h - 2}
+	})
+
+	// Simulate drift: pretend a stale size was the last envelope delivered.
+	readUI(t, app.tapp, func() {
+		app.activePlugin.lastSentCols, app.activePlugin.lastSentRows = 13, 8
+		app.reconcilePluginViewSize()
+	})
+	resizes := fake.resizeSnapshot()
+	if last := resizes[len(resizes)-1]; last != want {
+		t.Fatalf("drift not corrected: last envelope = %dx%d, want %dx%d", last[0], last[1], want[0], want[1])
+	}
+
+	// Failed send: last-sent stays stale so the next reconcile retries.
+	fake.setResizeErr(errors.New("boom"))
+	readUI(t, app.tapp, func() {
+		app.activePlugin.lastSentCols, app.activePlugin.lastSentRows = 13, 8
+		app.reconcilePluginViewSize()
+		testutil.Equal(t, app.activePlugin.lastSentCols, 13)
+		testutil.Equal(t, app.activePlugin.lastSentRows, 8)
+	})
+	fake.setResizeErr(nil)
+	before := len(fake.resizeSnapshot())
+	readUI(t, app.tapp, func() { app.reconcilePluginViewSize() })
+	resizes = fake.resizeSnapshot()
+	if len(resizes) != before+1 {
+		t.Fatalf("retry after error did not send: %d → %d envelopes", before, len(resizes))
+	}
+	if last := resizes[len(resizes)-1]; last != want {
+		t.Fatalf("retry envelope = %dx%d, want %dx%d", last[0], last[1], want[0], want[1])
+	}
 }
 
 func TestDeactivatePluginView_NoOpWhenInactive(t *testing.T) {
@@ -349,18 +509,18 @@ func TestActivatePluginView_ReactivationResendsResize(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyCtrlL, 0, 0)
 	syncUI(t, app.tapp)
-	waitFor(t, 1*time.Second, func() bool { return fake.dialed.Load() })
+	// Wait for the dial to complete AND the initial post-layout envelope to
+	// land, so the re-send below is unambiguously caused by the re-activation.
+	waitFor(t, 1*time.Second, func() bool {
+		return fake.dialed.Load() && len(fake.resizeSnapshot()) > 0
+	})
 
-	fake.mu.Lock()
-	firstCount := len(fake.resizes)
-	fake.mu.Unlock()
+	firstCount := len(fake.resizeSnapshot())
 
 	// Re-activate the same view; should re-send resize without re-dialing.
 	readUI(t, app.tapp, func() { app.activatePluginView(app.pluginMounts[0]) })
 
-	fake.mu.Lock()
-	secondCount := len(fake.resizes)
-	fake.mu.Unlock()
+	secondCount := len(fake.resizeSnapshot())
 	if secondCount <= firstCount {
 		t.Fatalf("resize count did not grow on re-activation: %d → %d", firstCount, secondCount)
 	}
