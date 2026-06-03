@@ -1973,7 +1973,7 @@ func (sv *SettingsView) renderAPIDetail(screen tcell.Screen, x, y, w, h int) {
 		}
 	}
 	if h > 1 {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2115,7 +2115,7 @@ func (sv *SettingsView) renderSourcePathDetail(screen tcell.Screen, x, y, w, h i
 	r++
 	widget.DrawText(screen, x, y+r, w, "the \"Update Argus\" action to run go install.", theme.StyleDimmed)
 	if h > 1 {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] edit", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] edit  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2238,7 +2238,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if row+2 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2405,7 +2405,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	r += 2
 
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB  [◀] rail", theme.StyleDimmed)
 	}
 }
 
