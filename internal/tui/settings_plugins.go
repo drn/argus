@@ -140,7 +140,7 @@ func pluginFieldHint(f *pluginsettings.FormField, editing bool) string {
 	case pluginsettings.FieldBool:
 		return "[enter] toggle"
 	case pluginsettings.FieldEnum:
-		return "[◀/▶] cycle  [enter] cycle"
+		return "[▶/enter] cycle  [◀] rail"
 	case pluginsettings.FieldInt, pluginsettings.FieldString:
 		return "[enter] edit value"
 	}

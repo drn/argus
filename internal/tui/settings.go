@@ -988,21 +988,12 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		if sv.focus == focusRail {
 			return false
 		}
-		switch sv.currentRowKind() {
-		case srSpinner:
-			sv.cycleSpinner(-1)
-			return true
-		case srAgentZoom:
-			sv.toggleDefaultAgentZoom()
-			return true
-		case srVaultPath:
-			sv.cycleVaultPath(-1)
-			return true
-		case srPluginField:
-			if sv.handlePluginCycle(-1) {
-				return true
-			}
-		}
+		// From the pane, Left always returns focus to the rail — including on
+		// value rows that cycle (spinner, agent-zoom, vault, plugin enums).
+		// Overloading Left as "cycle backwards" trapped the cursor in any
+		// category whose rows all cycle (Appearance is spinner + agent-zoom),
+		// leaving no arrow-key path back to the rail. Right/Enter still cycle
+		// (wrapping), so every option stays reachable.
 		sv.setFocus(focusRail)
 		return true
 	case tcell.KeyRight:
@@ -2472,7 +2463,7 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 		if editing {
 			widget.DrawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", theme.StyleDimmed)
 		} else if len(sv.discoveredVaults) > 0 {
-			widget.DrawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", theme.StyleDimmed)
+			widget.DrawText(screen, x, y+r, w, "[enter] edit  [▶] cycle  [◀] rail", theme.StyleDimmed)
 		} else {
 			widget.DrawText(screen, x, y+r, w, "[enter] edit path", theme.StyleDimmed)
 		}
@@ -2512,7 +2503,7 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if r+1 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] cycle  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2538,7 +2529,7 @@ func (sv *SettingsView) renderAgentZoomDetail(screen tcell.Screen, x, y, w, h in
 	}
 
 	if r+1 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] toggle", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] toggle  [◀] rail", theme.StyleDimmed)
 	}
 }
 

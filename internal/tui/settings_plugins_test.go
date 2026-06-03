@@ -383,7 +383,7 @@ func TestSettings_PluginFieldHintAndTrunc(t *testing.T) {
 		want    string
 	}{
 		{pluginsettings.FormField{Type: pluginsettings.FieldBool}, false, "[enter] toggle"},
-		{pluginsettings.FormField{Type: pluginsettings.FieldEnum}, false, "[◀/▶] cycle  [enter] cycle"},
+		{pluginsettings.FormField{Type: pluginsettings.FieldEnum}, false, "[▶/enter] cycle  [◀] rail"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldInt}, false, "[enter] edit value"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldString}, true, "[enter] save  [esc] cancel"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldType("unknown")}, false, ""},
