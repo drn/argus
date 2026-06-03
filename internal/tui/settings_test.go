@@ -1150,7 +1150,7 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 		t.Fatal("vault path row not found")
 	}
 
-	t.Run("right arrow cycles metis to first discovered vault", func(t *testing.T) {
+	t.Run("forward cycle selects first discovered vault", func(t *testing.T) {
 		sv.cursor = metisIdx
 		sv.cycleVaultPath(1)
 		testutil.Equal(t, sv.metisVaultPath, "/vaults/Alpha")
@@ -1159,12 +1159,12 @@ func TestSettingsView_VaultPathCycle(t *testing.T) {
 		testutil.Equal(t, cfg.KB.MetisVaultPath, "/vaults/Alpha")
 	})
 
-	t.Run("right arrow cycles metis forward", func(t *testing.T) {
+	t.Run("forward cycle advances to next vault", func(t *testing.T) {
 		sv.cycleVaultPath(1)
 		testutil.Equal(t, sv.metisVaultPath, "/vaults/Beta")
 	})
 
-	t.Run("left arrow cycles metis backward", func(t *testing.T) {
+	t.Run("backward cycle returns to previous vault", func(t *testing.T) {
 		sv.cycleVaultPath(-1)
 		testutil.Equal(t, sv.metisVaultPath, "/vaults/Alpha")
 	})
@@ -1201,7 +1201,7 @@ func TestSettingsView_VaultPathCycleNoVaults(t *testing.T) {
 		}
 	}
 
-	// Left/Right should be no-ops.
+	// Cycling in either direction should be a no-op with no discovered vaults.
 	sv.cycleVaultPath(1)
 	testutil.Equal(t, sv.metisVaultPath, origMetis)
 

@@ -60,8 +60,9 @@ func formatFieldValue(f *pluginsettings.FormField, v any) string {
 
 // renderPluginFieldDetail draws the per-field detail block. Shows the
 // field's type, the active value, and the type-appropriate hint at the
-// bottom. The pane is read-mostly: bool toggles via enter, enum cycles via
-// arrow keys, string/int open an inline editor via enter.
+// bottom. The pane is read-mostly: bool toggles via enter/▶, enum cycles
+// forward via ▶/enter, string/int open an inline editor via enter; ◀ always
+// returns focus to the rail.
 func (sv *SettingsView) renderPluginFieldDetail(screen tcell.Screen, x, y, w, h int, row *settingsRow) {
 	sec := sv.activePluginSection()
 	if sec == nil || sec.Spec == nil {
@@ -138,7 +139,7 @@ func pluginFieldHint(f *pluginsettings.FormField, editing bool) string {
 	}
 	switch f.Type {
 	case pluginsettings.FieldBool:
-		return "[enter] toggle"
+		return "[enter/▶] toggle  [◀] rail"
 	case pluginsettings.FieldEnum:
 		return "[▶/enter] cycle  [◀] rail"
 	case pluginsettings.FieldInt, pluginsettings.FieldString:
@@ -328,9 +329,11 @@ func (sv *SettingsView) handlePluginFieldEditKey(ev *tcell.EventKey) bool {
 	return false
 }
 
-// handlePluginCycle is fired by left/right arrows over a plugin field row.
-// Bool/enum cycle; int/string fall through (false return) so the global
-// handler can do its own thing.
+// handlePluginCycle is fired by the Right arrow over a plugin field row.
+// Bool toggles, enum cycles forward; int/string fall through (false return)
+// so the global handler can do its own thing. Left no longer routes here —
+// it returns focus to the rail (see HandleKey). The dir parameter still
+// supports backward cycling and is exercised by unit tests.
 func (sv *SettingsView) handlePluginCycle(dir int) bool {
 	sec := sv.activePluginSection()
 	if sec == nil {
