@@ -108,6 +108,65 @@ func TestDetectNeedsInput(t *testing.T) {
 			"⏺ Want me to ship it?\n\n\n\n╭───╮\n│ > │\n╰───╯\n",
 			true,
 		},
+		{
+			// Shape captured from a real session log (~/.argus/sessions): the
+			// current Claude Code UI renders the idle input prompt as ❯ + NBSP
+			// (U+00A0) with no ╭ box anywhere, visual lines are separated by
+			// bare \r, and a spinner-glyph timing line ("✻ Brewed for 57s")
+			// sits between the transcript and the prompt.
+			"new-UI question with timing line above bare-prompt fires",
+			"⏺ Does Section 1 look right?\r✻ Brewed for 57s\r\r❯\u00a0 \r\r",
+			true,
+		},
+		{
+			"new-UI statement with timing line above bare-prompt does not fire",
+			"⏺ Shipped it.\r✻ Worked for 28m 5s\r\r❯\u00a0 \r\r",
+			false,
+		},
+		{
+			"new-UI question with multi-word duration and different verb fires",
+			"⏺ Want me to ship it?\r✻ Cogitated for 6m 56s\r\r❯\u00a0\r · ← for agents\r\r",
+			true,
+		},
+		{
+			"new-UI question with alternate spinner glyph on timing line fires",
+			"⏺ Ready to proceed?\r✶ Pondered for 12s\r\r❯\u00a0 \r\r",
+			true,
+		},
+		{
+			"new-UI question without timing line fires",
+			"⏺ Does Section 1 look right?\r\r❯\u00a0 \r\r",
+			true,
+		},
+		{
+			"new-UI hint lines below prompt do not dominate",
+			"⏺ All done.\r✻ Brewed for 57s\r\r❯\u00a0 \r\r" +
+				"──────────────────\r\r⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents\r\r",
+			false,
+		},
+		{
+			"old-UI timing line between question and prompt box is skipped",
+			"⏺ Does Section 1 look right?\n\n✻ Brewed for 57s\n\n╭───╮\n│ > │\n╰───╯\n",
+			true,
+		},
+		{
+			"separator rule above prompt is skipped",
+			"⏺ Want me to ship it?\r────────────\r❯\u00a0 \r\r",
+			true,
+		},
+		{
+			"bare prompt with nothing above does not fire",
+			"❯\u00a0 \r\r",
+			false,
+		},
+		{
+			// A transcript that merely *contains* ❯+NBSP earlier must not
+			// anchor there: the prompt signature anchors on the LAST match,
+			// and content below the real prompt is hint/status chrome.
+			"question above latest prompt wins over earlier prompt occurrence",
+			"❯\u00a0 \r\r⏺ Shipped it.\r✻ Brewed for 3s\r\r❯\u00a0 \r\r",
+			false,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
