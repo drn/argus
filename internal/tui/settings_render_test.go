@@ -437,10 +437,23 @@ func TestSettings_HandleKey_R(t *testing.T) {
 func TestSettings_HandleKey_LeftRightOnSpinner(t *testing.T) {
 	sv := makeSettings(t)
 	selectRowInCategory(t, sv, catAppearance, srSpinner, "")
-	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+
+	// Right cycles the spinner forward and keeps focus on the pane.
+	before := sv.spinnerStyle
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
-	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+	if sv.spinnerStyle == before {
+		t.Errorf("Right should cycle the spinner forward, still %q", sv.spinnerStyle)
+	}
+
+	// Left returns focus to the rail WITHOUT cycling the value.
+	after := sv.spinnerStyle
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.spinnerStyle, after) // Left did not cycle
 }
 
 func TestSettings_AgentZoomToggle(t *testing.T) {
@@ -515,11 +528,21 @@ func TestSettings_RenderAgentZoomDetail(t *testing.T) {
 func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {
 	sv := makeSettings(t)
 	sv.discoveredVaults = []string{"/a", "/b"}
+	sv.metisVaultPath = "/a"
 	selectRowInCategory(t, sv, catKnowledgeBase, srVaultPath, vaultKeyMetis)
-	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+
+	// Right cycles the vault path forward and keeps focus on the pane.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
-	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+	testutil.Equal(t, sv.metisVaultPath, "/b")
+
+	// Left returns focus to the rail WITHOUT cycling the value.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.metisVaultPath, "/b") // Left did not cycle
 }
 
 func TestSettings_HandleKey_LeftFromPaneSwitchesFocus(t *testing.T) {
