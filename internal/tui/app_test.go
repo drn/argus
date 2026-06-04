@@ -1446,6 +1446,91 @@ func TestApp_ExecuteForkRemote_FallbackNoForker(t *testing.T) {
 	app.executeForkRemote(&model.Task{ID: "src1", Project: "p"}, "p", "fork-x")
 }
 
+// permissiveTaskMux serves the endpoints the remote success paths touch
+// (fork/create + the follow-up raw fetch + the refresh/select round trips),
+// with a catch-all so onTaskSelect's incidental calls don't 404-panic.
+func permissiveTaskMux(t *testing.T, forkResp string) *http.ServeMux {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(forkResp))
+	})
+	mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x","status":"in_progress","project":"proj"}`))
+	})
+	mux.HandleFunc("/api/tasks-raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tasks":[{"id":"f1","name":"fork-x","status":"in_progress","project":"proj"}]}`))
+	})
+	mux.HandleFunc("/api/sessions/state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"running":[],"idle":[]}`))
+	})
+	// Catch-all: anything else onTaskSelect/refresh incidentally hits is benign.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	return mux
+}
+
+// TestApp_ExecuteForkRemote_SuccessPathUpdatesUI drives the success branch
+// under a running event loop so the QueueUpdateDraw closure actually executes,
+// then asserts the user-visible effects: recentStarts populated and the
+// degraded-fork info notice surfaced.
+func TestApp_ExecuteForkRemote_SuccessPathUpdatesUI(t *testing.T) {
+	srv := httptest.NewServer(permissiveTaskMux(t, `{"id":"f1","name":"fork-x","status":"in_progress"}`))
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// With a running loop, QueueUpdateDraw unblocks, so this returns after the
+	// success closure has run.
+	app.executeForkRemote(&model.Task{ID: "src1", Name: "alpha", Project: "proj"}, "proj", "fork-x")
+
+	var hasStart bool
+	var info string
+	readUI(t, app.tapp, func() {
+		_, hasStart = app.recentStarts["f1"]
+		info = app.statusbar.Info()
+	})
+	testutil.Equal(t, hasStart, true)
+	testutil.Contains(t, info, "context not carried")
+}
+
+// TestApp_RunScheduleNowRemote_SuccessPathRefreshes drives the schedule-fire
+// success branch under a running loop and asserts it took the success path
+// (no error surfaced) rather than the error branch.
+func TestApp_RunScheduleNowRemote_SuccessPathRefreshes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	app.runScheduleNowRemote("s1")
+
+	var errText string
+	readUI(t, app.tapp, func() { errText = app.statusbar.Error() })
+	testutil.Equal(t, errText, "")
+}
+
 func TestCtrlRPrunesCompleted(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

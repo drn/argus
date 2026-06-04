@@ -3664,6 +3664,12 @@ func (a *App) executeForkRemote(source *model.Task, project, forkName string) {
 		uxlog.Log("[fork] no remote handler for task %s", source.ID)
 		return
 	}
+	// Mirror the local fork path's BeforeStart/AfterStart hooks (which bump
+	// startGen around CreateAndStart) so a concurrent reconciliation tick can't
+	// flip the freshly-forked task to "complete" in the window before its
+	// session shows up in the server's running set.
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
 	created, err := forker.ForkTask(context.Background(), source.ID, forkName, "", project)
 	if err != nil {
 		a.tapp.QueueUpdateDraw(func() {
@@ -3676,6 +3682,11 @@ func (a *App) executeForkRemote(source *model.Task, project, forkName string) {
 	a.tapp.QueueUpdateDraw(func() {
 		a.recentStarts[created.ID] = time.Now()
 		uxlog.Log("[fork] created task %s (%s) forked from %s (remote, context not carried)", created.ID, created.Name, source.ID)
+		// Surface the degradation: a remote fork can't carry the source's
+		// session-log / git-diff context (those live on the daemon), so the
+		// user gets a visible signal rather than a fork that looks identical
+		// to a local context-rich one.
+		a.statusbar.SetInfo("Forked (remote: source context not carried)")
 		a.refreshTasksLocal()
 		a.tasklist.SelectByID(created.ID)
 		a.onTaskSelect(created, true)
@@ -3983,6 +3994,13 @@ func (a *App) runScheduleNowRemote(id string) {
 		uxlog.Log("[settings] run schedule %s: no remote handler", id)
 		return
 	}
+	// Bump startGen around the fire so a concurrent reconciliation tick can't
+	// flip the schedule's freshly-created task to "complete" before its session
+	// appears in the server's running set. (The local runScheduleNow doesn't
+	// bump — but the remote round trip + SSE attach widens the window, so the
+	// extra protection is worth the two lines.)
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
 	taskID, err := runner.RunSchedule(context.Background(), id)
 	if err != nil {
 		uxlog.Log("[settings] run schedule %s (remote): %v", id, err)
