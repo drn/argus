@@ -155,6 +155,65 @@ func TestStore_PluginSections_ErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestStore_CreateTask(t *testing.T) {
+	f := newFakeAPI(t)
+	var captured string
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.Method, "POST")
+		captured = readBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"t9","name":"slug","status":"in_progress"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/t9/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{
+			ID: "t9", Name: "slug", Status: model.StatusInProgress, Project: "proj", Backend: "claude",
+		})
+	})
+
+	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "t9")
+	testutil.Equal(t, got.Status, model.StatusInProgress)
+	testutil.Equal(t, got.Project, "proj")
+	// Request carried the create fields.
+	testutil.Contains(t, captured, `"prompt":"do a thing"`)
+	testutil.Contains(t, captured, `"project":"proj"`)
+	testutil.Contains(t, captured, `"backend":"claude"`)
+}
+
+// When the post-create raw fetch fails, CreateTask still returns a minimal
+// task built from the (lossy) create response — the row exists on the server.
+func TestStore_CreateTask_RawFetchFallback(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"t9","name":"slug","status":"pending"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/t9/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+
+	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "t9")
+	testutil.Equal(t, got.Name, "slug")
+	testutil.Equal(t, got.Status, model.StatusPending)
+	testutil.Equal(t, got.Project, "proj")
+	testutil.Equal(t, got.Prompt, "p")
+}
+
+func TestStore_CreateTask_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "project not found", http.StatusInternalServerError)
+	})
+	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	if err == nil {
+		t.Fatal("expected error from CreateTask")
+	}
+}
+
 func readBody(r *http.Request) string {
 	buf := make([]byte, 4096)
 	n, _ := r.Body.Read(buf)

@@ -2871,20 +2871,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		}
 
 		go func() {
-			d, ok := a.db.(*db.DB)
-			if !ok {
-				a.tapp.QueueUpdateDraw(func() {
-					a.statusbar.ClearInfo()
-					msg := "agent.CreateAndStart requires local mode (use POST /api/tasks remotely)"
-					a.statusbar.SetError("Create failed: " + msg)
-					if a.mode == modeAgent && a.agentState.TaskID == "" {
-						a.exitAgentView()
-					}
-					a.showError("Create failed", msg)
-				})
-				return
-			}
-			created, _, err := agent.CreateAndStart(d, a.runner, input)
+			created, err := a.createTaskTransactional(input)
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
@@ -2922,6 +2909,40 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			})
 		}()
 	}
+}
+
+// remoteTaskCreator is satisfied by *apistore.Store. In --remote mode the TUI
+// can't run agent.CreateAndStart (the worktree + PTY live on the daemon's
+// host), so fresh-task creation routes through POST /api/tasks instead. Kept
+// as a structural interface so the tui package doesn't import apistore.
+type remoteTaskCreator interface {
+	CreateTask(ctx context.Context, name, prompt, project, backend string) (*model.Task, error)
+}
+
+// createTaskTransactional creates a fresh task and returns the resulting row.
+// Local mode (a.db is *db.DB) runs the fully-transactional agent.CreateAndStart
+// in-process. Remote mode (a.db is *apistore.Store) POSTs to /api/tasks so the
+// daemon does the worktree + session creation server-side; base-branch override
+// and attachments aren't carried over the REST path. Runs on a background
+// goroutine — callers dispatch UI updates via QueueUpdateDraw.
+func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, error) {
+	if d, ok := a.db.(*db.DB); ok {
+		created, _, err := agent.CreateAndStart(d, a.runner, input)
+		return created, err
+	}
+	rc, ok := a.db.(remoteTaskCreator)
+	if !ok {
+		return nil, fmt.Errorf("task creation requires local mode (use POST /api/tasks remotely)")
+	}
+	if input.BaseBranch != "" {
+		uxlog.Log("[tui] remote create: base-branch %q ignored (POST /api/tasks has no base-branch field)", input.BaseBranch)
+	}
+	// Mirror CreateAndStart's BeforeStart/AfterStart hooks: bump startGen so a
+	// concurrent tick doesn't reconcile the new task as "not running" in the
+	// window before the SSE stream attaches server-side.
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend)
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent
