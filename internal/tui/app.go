@@ -4187,6 +4187,9 @@ type remotePruner interface {
 func (a *App) pruneCompletedRemote() {
 	pruner, ok := a.db.(remotePruner)
 	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remotePruner) — defensive guard against
+		// a future third store implementation that supports neither path.
 		a.statusbar.SetError("Prune-completed requires local mode (use POST /api/maintenance/prune-completed remotely)")
 		return
 	}
