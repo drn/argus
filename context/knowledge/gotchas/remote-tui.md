@@ -47,6 +47,8 @@ If you add a TUI method that needs a new endpoint, follow the same pattern: writ
 
 ## What doesn't work yet
 
-- Daemon-admin actions: `Settings → Update Argus`, `Restart Daemon`, `Install / Uninstall LaunchAgent`. Conceptually meaningless from a remote process — these manage the OS install on the daemon's machine, not the client's. Phase 6 follow-up: hide them in the UI when `App.db` is `*apistore.Store`.
+- **Plugin views** (`loadPluginViews`) are a clean no-op in remote mode. Mounting them needs a `views.Registry` that reads over the REST API instead of `*db.DB` — a genuine follow-up feature, not a wire-up. This is the only remaining `a.db.(*db.DB)` site that fully no-ops remotely.
 - `POST /api/tasks` multipart attachments via remote TUI. Remote-mode new-task creation is wired (JSON only — name/prompt/project/backend); attachments and base-branch override are NOT carried because `apiclient.CreateTaskReq` / the JSON `createTaskReq` have no field for them. To support uploads over remote, add a multipart round-trip through `c.do(ctx, "POST", "/api/tasks", multipartBody, multipartContentType)` and feed the new-task form's attachments into it.
-- `agent.CreateAndStart`'s callback hooks (`OnWorktreeCreated` for fork-context-file writes) — these run in the daemon's process. The TUI's fork flow needs to be redesigned around `POST /api/tasks/{id}/fork` for remote mode.
+- Full-fidelity remote **fork**. Fork is wired (`executeForkRemote` → `POST /api/tasks/{id}/fork`) but DEGRADED: the server-side `handleForkTask` does not extract the source's session log / git diff or write `.context/` fork files (those live on the daemon). The TUI surfaces a statusbar notice when this happens. Full fidelity would require server-side context extraction in `handleForkTask` (the `OnWorktreeCreated` hook that local mode uses runs in-process and can't reach across the REST boundary).
+
+Daemon-admin actions (`Update Argus`, `Restart Daemon`, `Install/Uninstall LaunchAgent`) are now hidden in remote mode via `SettingsView.SetRemote(true)` — see the daemon-admin bullet under "Key invariants" above.

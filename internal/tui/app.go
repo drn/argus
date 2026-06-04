@@ -3591,9 +3591,22 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 	rows, cols := a.computePTYSize()
 
 	go func() {
-		// Extract context from the source task (reads session log + git diff).
-		ctx := extractForkContext(source)
+		d, ok := a.db.(*db.DB)
+		if !ok {
+			// Remote mode: the worktree + session log live on the daemon, so
+			// the local context extraction below can't run (it reads local
+			// files that don't exist on the client) and the rich context
+			// carryover is unavailable. Delegate to the server's fork endpoint,
+			// which forks from the source's original prompt + backend. Done
+			// before extractForkContext so we don't waste two failed file reads.
+			// See gotchas/remote-tui.md for the degradation.
+			a.executeForkRemote(source, proj, forkName)
+			return
+		}
 
+		// Local mode: extract context from the source task (reads session log
+		// + git diff) and write it into the fork's worktree.
+		ctx := extractForkContext(source)
 		input := agent.CreateInput{
 			Name:    forkName,
 			Prompt:  buildForkPrompt(source, ctx, proj),
@@ -3612,16 +3625,6 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			AfterStart:  func() { a.startGen.Add(1) },
 		}
 
-		d, ok := a.db.(*db.DB)
-		if !ok {
-			// Remote mode: the worktree + session log live on the daemon, so
-			// extractForkContext (which reads local files) can't run and the
-			// rich context carryover is unavailable. Delegate to the server's
-			// fork endpoint, which forks from the source's original prompt +
-			// backend. See gotchas/remote-tui.md for the degradation.
-			a.executeForkRemote(source, proj, forkName)
-			return
-		}
 		created, _, err := agent.CreateAndStart(d, a.runner, input)
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
@@ -3925,6 +3928,19 @@ func (a *App) deleteSchedule(id string) {
 // (manual run + tick aligned to the same minute) but not impossible —
 // acceptable trade-off given this is an admin-only TUI action.
 func (a *App) runScheduleNow(id string) {
+	// Remote mode: the daemon's scheduler fires the schedule server-side (task
+	// creation + LastRunAt/LastTaskID/NextRunAt bookkeeping). Dispatch in a
+	// goroutine and skip the local GetSchedule/ParseSchedule below — for
+	// *apistore.Store, GetSchedule is a blocking HTTP round trip that must not
+	// run on the UI thread.
+	if _, ok := a.db.(*db.DB); !ok {
+		go a.runScheduleNowRemote(id)
+		return
+	}
+
+	// Local mode: replicate the daemon scheduler's fire() bookkeeping. These
+	// calls hit SQLite synchronously (fast), so running them on the UI thread
+	// before spawning the goroutine is fine.
 	s, err := a.db.GetSchedule(id)
 	if err != nil {
 		uxlog.Log("[settings] run schedule %s: %v", id, err)
@@ -3941,10 +3957,8 @@ func (a *App) runScheduleNow(id string) {
 	go func() {
 		d, ok := a.db.(*db.DB)
 		if !ok {
-			// Remote mode: the daemon's scheduler fires the schedule
-			// server-side (task creation + LastRunAt/LastTaskID/NextRunAt
-			// bookkeeping), so delegate over REST and refresh the view.
-			a.runScheduleNowRemote(id)
+			// Unreachable: a.db was confirmed *db.DB above and doesn't change
+			// at runtime. Defensive guard against future store-swap drift.
 			return
 		}
 		task, _, err := agent.CreateAndStart(d, a.runner, agent.CreateInput{
@@ -4344,4 +4358,7 @@ func (a *App) exitAgentView() {
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
+	// Also clear any transient info notice (e.g. the remote-fork
+	// "context not carried" message) so it doesn't linger on the task list.
+	a.statusbar.ClearInfo()
 }
