@@ -1413,12 +1413,23 @@ func TestCaptureSessionID_DispatchesByBackend(t *testing.T) {
 		testutil.Equal(t, got, sid)
 	})
 
-	t.Run("claude backend is a no-op", func(t *testing.T) {
+	t.Run("claude backend scans ~/.claude transcripts", func(t *testing.T) {
+		home := t.TempDir() // clean (untainted) base, override HOME for this subtest
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, "claude-dispatch-wt")
+		testutil.NoError(t, os.MkdirAll(wt, 0o755))
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		sid := "12345678-90ab-4cde-8f01-23456789abcd"
+		testutil.NoError(t, os.WriteFile(
+			filepath.Join(projDir, sid+".jsonl"), []byte("{}\n"), 0o644,
+		))
+
 		cfg := testConfig()
-		task := &model.Task{Backend: "claude", Worktree: t.TempDir()}
+		task := &model.Task{Backend: "claude", Worktree: wt}
 		got, err := CaptureSessionID(task, cfg)
 		testutil.NoError(t, err)
-		testutil.Equal(t, got, "")
+		testutil.Equal(t, got, sid)
 	})
 
 	t.Run("unknown bare backend is a no-op", func(t *testing.T) {
@@ -1451,4 +1462,150 @@ func TestBuildCmd_ResumeNoSessionIDPi(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "pi")
+}
+
+func TestIsClaudeBackend(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"bare claude", "claude", true},
+		{"claude with flags", "claude --dangerously-skip-permissions --permission-mode plan", true},
+		{"absolute path", "/usr/local/bin/claude", true},
+		{"empty", "", false},
+		{"prefix only", "claude-helper", false},
+		{"pi", "pi --model claude", false},
+		{"codex", "codex --dangerously-bypass-approvals-and-sandbox", false},
+		{"bare unknown", "my-agent", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, IsClaudeBackend(tc.cmd), tc.want)
+		})
+	}
+}
+
+func TestClaudeEncodeCwd(t *testing.T) {
+	// Claude replaces every non-alphanumeric byte with a single '-', with NO
+	// collapsing of consecutive dashes — broader than piEncodeCwd's "/ \ :" map.
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		{"/Users/me/proj", "-Users-me-proj"},
+		// The ".argus" dot AND the preceding slash each map to their own dash,
+		// producing the real-world "--argus" double dash. This is the case that
+		// pins divergence from piEncodeCwd (which would leave the dot intact).
+		{"/Users/aaron/.argus/worktrees/x", "-Users-aaron--argus-worktrees-x"},
+		{"relative/path", "relative-path"},
+		{"/", "-"},
+		{"", ""},
+		// Hyphens in the source survive (they're already '-'); underscores and
+		// dots are mapped.
+		{"/a/b-c/d_e.f", "-a-b-c-d-e-f"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cwd, func(t *testing.T) {
+			testutil.Equal(t, claudeEncodeCwd(tc.cwd), tc.want)
+		})
+	}
+}
+
+func TestCaptureClaudeSessionID(t *testing.T) {
+	t.Run("newest transcript wins", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, ".argus", "worktrees", "p", "t")
+		testutil.NoError(t, os.MkdirAll(wt, 0o755))
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+
+		// Original session + a newer post-/clear session; newest mtime wins.
+		older := filepath.Join(projDir, "aaaaaaaa-bbbb-4ccc-9ddd-111111111111.jsonl")
+		newer := filepath.Join(projDir, "cccccccc-bbbb-4ccc-9ddd-222222222222.jsonl")
+		testutil.NoError(t, os.WriteFile(older, []byte("{}\n"), 0o644))
+		testutil.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+		past := time.Now().Add(-1 * time.Hour)
+		testutil.NoError(t, os.Chtimes(older, past, past))
+
+		sid, err := CaptureClaudeSessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, sid, "cccccccc-bbbb-4ccc-9ddd-222222222222")
+	})
+
+	t.Run("empty worktree", func(t *testing.T) {
+		_, err := CaptureClaudeSessionID("")
+		if err == nil {
+			t.Fatal("expected error for empty worktree path")
+		}
+	})
+
+	t.Run("missing project dir", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		_, err := CaptureClaudeSessionID("/nonexistent/cwd")
+		if err == nil {
+			t.Fatal("expected error when project dir doesn't exist")
+		}
+	})
+
+	t.Run("no UUID-named transcripts", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := t.TempDir()
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		// Wrong extension and a non-UUID name — neither matches the regex.
+		testutil.NoError(t, os.WriteFile(filepath.Join(projDir, "garbage.txt"), []byte("x"), 0o644))
+		testutil.NoError(t, os.WriteFile(filepath.Join(projDir, "not-a-uuid.jsonl"), []byte("x"), 0o644))
+
+		_, err := CaptureClaudeSessionID(wt)
+		if err == nil {
+			t.Fatal("expected error when no transcript files match")
+		}
+	})
+}
+
+func TestNeedsSessionRecapture(t *testing.T) {
+	cfg := testConfig()
+	tests := []struct {
+		name    string
+		backend string
+		session string
+		want    bool
+	}{
+		{"claude always recaptures (no session)", "claude", "", true},
+		{"claude always recaptures (with session)", "claude", "existing-uuid", true},
+		{"codex captures once (empty)", "codex", "", true},
+		{"codex skips once captured", "codex", "existing-uuid", false},
+		{"pi captures once (empty)", "pi", "", true},
+		{"pi skips once captured", "pi", "existing-uuid", false},
+		{"unknown backend never recaptures", "bare", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.Task{Backend: tc.backend, SessionID: tc.session}
+			testutil.Equal(t, NeedsSessionRecapture(task, cfg), tc.want)
+		})
+	}
+
+	t.Run("ResolveBackend error returns false", func(t *testing.T) {
+		task := &model.Task{Backend: "no-such-backend"}
+		testutil.Equal(t, NeedsSessionRecapture(task, cfg), false)
+	})
+}
+
+// TestBuildCmd_ResumeUsesRecapturedClaudeID proves the end-to-end payoff: once a
+// post-exit recapture rewrites task.SessionID to the post-/clear UUID, the next
+// resume command targets that new conversation via --resume, not the original.
+func TestBuildCmd_ResumeUsesRecapturedClaudeID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Backend:   "claude",
+		SessionID: "cccccccc-bbbb-4ccc-9ddd-222222222222", // refreshed post-/clear
+		Worktree:  t.TempDir(),
+	}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Contains(t, cmd.Args[2], "--resume 'cccccccc-bbbb-4ccc-9ddd-222222222222'")
 }

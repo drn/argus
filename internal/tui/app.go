@@ -1110,9 +1110,12 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
 	}
-	if t.SessionID == "" && t.Worktree != "" {
-		// Snapshot the task for the capture goroutine — agent.CaptureSessionID
-		// will resolve the backend and dispatch (codex / pi / no-op).
+	if t.Worktree != "" {
+		// Snapshot the task for the capture goroutine, which resolves the
+		// backend and decides whether to recapture (agent.NeedsSessionRecapture)
+		// off the main goroutine. We snapshot regardless of SessionID because
+		// Claude must re-capture on every exit (a /clear mints a new UUID) even
+		// though its SessionID is always non-empty.
 		captureTask = t
 	}
 	if t.Status == model.StatusInProgress {
@@ -1145,6 +1148,12 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	if captureTask != nil {
 		go func(snap model.Task) {
 			cfg := a.db.Config()
+			// Codex/Pi capture once; Claude refreshes every exit; unknown
+			// backends never recapture. Decided here (off the tview main
+			// goroutine) so the filesystem/SQLite work below never blocks it.
+			if !agent.NeedsSessionRecapture(&snap, cfg) {
+				return
+			}
 			// Resolve the backend name once so log lines tag which dialect
 			// (codex / pi / claude) the capture targeted — keeps the previous
 			// per-kind logging searchability after the dispatcher refactor.
@@ -1155,15 +1164,18 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 					kind = "codex"
 				case agent.IsPiBackend(b.Command):
 					kind = "pi"
+				case agent.IsClaudeBackend(b.Command):
+					kind = "claude"
 				}
 			}
 			sid, err := agent.CaptureSessionID(&snap, cfg)
 			if err != nil {
+				// Capture failure leaves the existing SessionID intact.
 				uxlog.Log("[tui] %s session ID capture failed for task %s: %v", kind, snap.ID, err)
 				return
 			}
-			if sid == "" {
-				return
+			if sid == "" || sid == snap.SessionID {
+				return // Unrecognized backend, or no change (common no-/clear exit).
 			}
 			uxlog.Log("[tui] captured %s session ID %s for task %s", kind, sid, snap.ID)
 			a.tapp.QueueUpdateDraw(func() {

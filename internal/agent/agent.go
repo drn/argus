@@ -30,6 +30,17 @@ var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 // Pi writes sessions to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl.
 var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
 
+// claudeSessionFileRe matches Claude's transcript filenames: <uuid>.jsonl. The
+// filename IS the session UUID. Claude writes one file per conversation under
+// ~/.claude/projects/<encoded-cwd>/, so the whole basename (minus .jsonl) is the
+// session ID — unlike pi, there's no timestamp prefix to strip.
+var claudeSessionFileRe = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
+
+// claudeCwdNonAlnumRe matches every byte that is NOT an ASCII letter or digit.
+// Claude encodes a cwd into a project-dir name by replacing each such byte with
+// a single '-' (see claudeEncodeCwd).
+var claudeCwdNonAlnumRe = regexp.MustCompile(`[^A-Za-z0-9]`)
+
 // ResolveSandboxConfig returns the effective sandbox config for a task.
 // Per-project settings are merged on top of the global config:
 //   - project Enabled (non-nil) overrides the global Enabled flag
@@ -115,6 +126,16 @@ func IsPiBackend(command string) bool {
 	return len(fields) > 0 && filepath.Base(fields[0]) == "pi"
 }
 
+// IsClaudeBackend reports whether a backend command is Claude Code. Detection
+// uses the basename of the first word to handle both bare names ("claude") and
+// absolute paths ("/usr/local/bin/claude"). Only the exact name "claude"
+// matches — kept strict so unknown/custom backends stay capture no-ops and rely
+// on their pinned --session-id (see NeedsSessionRecapture / CaptureSessionID).
+func IsClaudeBackend(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "claude"
+}
+
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
 // slash or backslash (matching pi's `cwd.replace(/^[/\\]/, "")` — NOT a
 // TrimLeft), then replace remaining /, \, : with -, then wrap in --…--.
@@ -171,6 +192,70 @@ func CapturePiSessionID(worktreePath string) (string, error) {
 	return newestID, nil
 }
 
+// claudeEncodeCwd mirrors Claude Code's project-dir naming: replace every byte
+// that is not an ASCII letter or digit with a single '-', with NO collapsing of
+// consecutive dashes. So "/Users/aaron/.argus/worktrees/x" becomes
+// "-Users-aaron--argus-worktrees-x" (the leading '/' and the '.' of ".argus"
+// each map to their own '-', producing the "--argus" double dash).
+//
+// This diverges from piEncodeCwd, which only maps the path separators "/ \ :"
+// and wraps the result in "--…--". Claude maps ALL non-alphanumerics and adds no
+// wrapper. Using pi's narrower rule here would point Argus at the wrong project
+// directory (e.g. ".argus" would survive as a literal dot) and break post-exit
+// UUID capture.
+func claudeEncodeCwd(cwd string) string {
+	return claudeCwdNonAlnumRe.ReplaceAllString(cwd, "-")
+}
+
+// CaptureClaudeSessionID finds the most recent Claude transcript for the given
+// worktree path under ~/.claude/projects/<encoded-cwd>/ and returns its session
+// UUID (the transcript filename minus ".jsonl"). Returns an error if the project
+// directory is missing or contains no UUID-named transcript.
+//
+// Newest-by-mtime is the active conversation: each Argus task owns a unique
+// worktree, so its project directory is scoped to just that task's sessions, and
+// after a Claude /clear the freshly-minted UUID's transcript is the newest one.
+// Sub-agent (Task tool) records interleave into the main transcript file rather
+// than spawning separate files, so no sidechain filtering is needed.
+func CaptureClaudeSessionID(worktreePath string) (string, error) {
+	if worktreePath == "" {
+		return "", fmt.Errorf("CaptureClaudeSessionID: worktree path is empty")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("CaptureClaudeSessionID: home dir: %w", err)
+	}
+	dir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(worktreePath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("CaptureClaudeSessionID: read dir %s: %w", dir, err)
+	}
+
+	var newestID string
+	var newestMod int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		m := claudeSessionFileRe.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if mod := info.ModTime().UnixNano(); mod > newestMod {
+			newestMod = mod
+			newestID = m[1]
+		}
+	}
+	if newestID == "" {
+		return "", fmt.Errorf("CaptureClaudeSessionID: no transcript files in %s", dir)
+	}
+	return newestID, nil
+}
+
 // CaptureCodexSessionID looks up the most recent codex session for the given
 // worktree path in codex's local state database (~/.codex/state_5.sqlite).
 // Returns the session UUID or an error if none is found.
@@ -205,10 +290,11 @@ func CaptureCodexSessionID(worktreePath string) (string, error) {
 }
 
 // CaptureSessionID dispatches to the backend-specific post-exit capture
-// function based on the resolved backend command. Returns ("", nil) for
-// backends that mint their session ID at start (Claude-style) — there's
-// nothing to capture for those, the ID was set on task.SessionID before
-// the agent ran. Used by both the TUI (handleSessionExitUI) and the daemon
+// function based on the resolved backend command. Codex/Pi scan their own state
+// (SQLite / session files); Claude scans its transcript directory so a /clear
+// (which mints a fresh UUID) is honored on the next resume. Returns ("", nil)
+// for unknown backends, which pre-mint and pin their ID via --session-id with
+// nothing to scan for. Used by both the TUI (handleSessionExitUI) and the daemon
 // (onFinish) so headless / PWA-only users still get resume support.
 func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
 	backend, err := ResolveBackend(task, cfg)
@@ -220,8 +306,32 @@ func CaptureSessionID(task *model.Task, cfg config.Config) (string, error) {
 		return CaptureCodexSessionID(task.Worktree)
 	case IsPiBackend(backend.Command):
 		return CapturePiSessionID(task.Worktree)
+	case IsClaudeBackend(backend.Command):
+		return CaptureClaudeSessionID(task.Worktree)
 	default:
 		return "", nil
+	}
+}
+
+// NeedsSessionRecapture reports whether a finished task should re-run
+// CaptureSessionID. Codex/Pi mint their ID lazily and keep it stable across
+// resumes, so they capture once — only while SessionID is still empty. Claude
+// mints a fresh UUID on every /clear, so its stored ID goes stale and must be
+// refreshed on every exit. Unknown backends never recapture (they rely on the
+// pinned --session-id). Both exit sites (daemon captureSessionIDPostExit and TUI
+// handleSessionExitUI) gate on this so they stay in lockstep.
+func NeedsSessionRecapture(task *model.Task, cfg config.Config) bool {
+	backend, err := ResolveBackend(task, cfg)
+	if err != nil {
+		return false
+	}
+	switch {
+	case IsClaudeBackend(backend.Command):
+		return true
+	case IsCodexBackend(backend.Command), IsPiBackend(backend.Command):
+		return task.SessionID == ""
+	default:
+		return false
 	}
 }
 
