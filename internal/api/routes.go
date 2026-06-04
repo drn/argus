@@ -129,17 +129,17 @@ func (s *Server) routes() *http.ServeMux {
 	// or device); plugin-scoped tokens land here once PR 1 ships.
 	mux.HandleFunc("GET /api/events/stream", s.handleEventsStream)
 
-	// Inter-task messaging. Inbox read + ack are per-task scope (device
-	// tokens OK); sending is requireMaster.
+	// Inter-task messaging. Open to any authenticated token (single-tier
+	// auth — see requireMaster doc for the master-only denylist).
 	mux.HandleFunc("GET /api/tasks/{id}/inbox", s.handleListInbox)
 	mux.HandleFunc("POST /api/tasks/{id}/inbox/ack", s.handleAckInbox)
 	mux.HandleFunc("POST /api/tasks/{id}/messages", s.handleSendMessage)
 
 	// Per-task sidecar metadata. PR 3 of the plugin substrate plan: a generic
 	// k/v store keyed by (task_id, namespace, key) so plugins can annotate
-	// tasks without piling new columns onto the tasks schema. Reads are
-	// open to device tokens; writes are master-only until PR 1 (scope tokens)
-	// lands and allows plugin-scoped writes into the plugin's own namespace.
+	// tasks without piling new columns onto the tasks schema. Single-tier
+	// auth: reads and writes are open to any authenticated token; scope tokens
+	// are namespace-confined on write (see handlePutMeta / requireMaster doc).
 	mux.HandleFunc("GET /api/tasks/{id}/meta", s.handleGetMeta)
 	mux.HandleFunc("PUT /api/tasks/{id}/meta", s.handlePutMeta)
 

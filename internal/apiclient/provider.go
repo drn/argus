@@ -120,9 +120,10 @@ func (p *Provider) Stop(taskID string) error {
 	return p.c.StopTask(context.Background(), taskID)
 }
 
-// StopAll halts every running session. Master-only — Provider operates with
-// the master token in local mode and a device token in remote mode; in the
-// latter case the server returns 403.
+// StopAll halts every running session. Open to any authenticated token under
+// the single-tier auth model (it is not on the master-only RCE/credential
+// denylist), so it succeeds with either a master token (local mode) or a
+// device token (remote mode).
 func (p *Provider) StopAll() {
 	_, _ = p.c.StopAll(context.Background())
 }

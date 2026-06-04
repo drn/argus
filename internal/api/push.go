@@ -103,13 +103,10 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePushTest sends a test notification to all registered devices.
-// Useful for verifying the subscribe flow worked end-to-end. Master-only —
-// without this guard, any device token holder could spam every registered
-// device.
+// Useful for verifying the subscribe flow worked end-to-end. Single-tier
+// auth: any authenticated token may trigger it (worst case is a test
+// notification to your own devices — no RCE/credential risk).
 func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	if s.push == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
 		return

@@ -114,13 +114,21 @@ type defaultsUpdate struct {
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
+	// Single-tier auth: any authenticated token may update KB, API, and UX
+	// defaults (default backend / share project) — none can inject a command
+	// the way a backend template can. The ONE exception is the sandbox section:
+	// sandbox.enabled / deny_read / extra_write / allow_apple_events govern the
+	// host's sandbox-exec boundary (which files an agent may read/write), so
+	// loosening them is a security-control change reserved for the master
+	// token. A device token that omits the sandbox section is unaffected.
 	var req updateSettingsReq
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Sandbox != nil && authOrigin(r) != "master" {
+		http.Error(w, `{"error":"master token required for sandbox settings"}`, http.StatusForbidden)
 		return
 	}
 	updates := buildSettingsUpdates(req)

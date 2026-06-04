@@ -101,11 +101,11 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
 
 ## REST API surface
 
-- **`POST /api/tasks/{id}/messages` is master-only (`requireMaster`).**
-  Sending a message between tasks is a cross-task mutation; the device
-  token can only read its task's inbox and ack. Don't relax this without
-  understanding the threat model (a stolen device token shouldn't be able
-  to spoof a message between agents).
+- **`POST /api/tasks/{id}/messages` is open to any authenticated token**
+  (single-tier auth — see `web-remote.md` "Per-device tokens"). Sending a
+  message between tasks is a cross-task mutation but carries no
+  RCE/credential risk, so it is not on the master-only denylist (backends
+  CRUD, self-update, token mint/revoke). Inbox read + ack are likewise open.
 - **`GET /api/tasks/{id}/inbox` is per-task scope, no requireMaster gate.**
   Same tier as archive/rename — reachable from the PWA's per-task UI on a
   device token.

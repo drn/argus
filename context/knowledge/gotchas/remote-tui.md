@@ -18,7 +18,7 @@ Non-obvious invariants for the `argus --remote URL --token TOKEN` mode added in 
 - **Fork works in remote mode but is DEGRADED** via `executeForkRemote` + the `remoteForker` interface (`ForkTask(ctx, srcID, name, prompt, project)`, satisfied by `*apistore.Store`), firing `POST /api/tasks/{id}/fork`. **The server-side fork endpoint does NOT extract the source's session log + git diff or write `.context/` fork files** — those live on the daemon and aren't reconstructed — so the remote fork starts from the source's *original* prompt + backend (linked via the `task.forked` event), not the context-enriched fork prompt the local path builds via `extractForkContext` → `buildForkPrompt` → `OnWorktreeCreated`. Passing an empty prompt to `ForkTask` lets the server inherit the source's prompt. Because the degraded fork looks identical to a local one in the task list, the success path sets a statusbar info notice ("Forked (remote: source context not carried)") so the user gets a visible signal. It also double-bumps `startGen` around the call (mirroring the local fork's `BeforeStart`/`AfterStart` hooks). If full-fidelity remote fork ever matters, add server-side context extraction to `handleForkTask`. Defensive `!ok` branch is log-only (off-UI-thread).
 - **Daemon-admin Settings actions are hidden in remote mode.** `SettingsView.SetRemote(true)` (called from `tui.New` when `database` is not `*db.DB`) gates the Restart Daemon / Source Path / Update Argus rows (already `daemonConnected`-gated) AND the LaunchAgent auto-start row on `!sv.remote` — they manage the OS install on the *local* machine, so they'd target the wrong host from a remote client. This is the `SettingsView`'s own `remote` flag, distinct from `daemonConnected` (which is `true` in remote mode because the client IS connected, just remotely).
 - **One TUI site still type-asserts `a.db.(*db.DB)` and no-ops in remote mode**: plugin views (`loadPluginViews`). Mounting plugin views over the REST API is a genuine follow-up feature (needs a `views.Registry` that reads from the API, not `*db.DB`), not a one-line wire-up — left as a clean no-op for now.
-- **Backend writes are master-only.** `apistore.SetBackend` POSTs first then falls back to PUT on conflict. The same is true of `SetProject`. If the operator's token is a device token (PWA share), backend/project CRUD will 403 — `Store.SetProject` returns the apiclient error verbatim, the Settings tab surfaces it in the status bar.
+- **Backend writes are master-only; project writes are NOT (single-tier auth — see `web-remote.md` "Per-device tokens").** `apistore.SetBackend` POSTs first then falls back to PUT on conflict; the same shape applies to `SetProject`. With a device token, backend CRUD still 403s (RCE denylist) while project CRUD now succeeds. `Store.SetProject`/`SetBackend` return the apiclient error verbatim, and the Settings tab surfaces it in the status bar.
 - **`apistore.DeleteMessagesForTask` returns an error** because no REST endpoint exposes it today. Archive cleanup covers most callers (the server-side archive handler fires the same DB call). If you need explicit message purge over remote, add `DELETE /api/tasks/{id}/messages` and wire it in `apistore` before relying on that code path.
 - **The `cmd/argus/remote.go` config refresher runs every 30 s.** If a config value mutates on the server (e.g. someone adds a project from the PWA), expect up to a 30 s lag before the remote TUI sees it. Don't shorten this without confirming the round-trip cost — Config() is read on every drawTaskRow and every Settings refresh.
 - **`apiclient.Provider.OnSessionExit` callback signature is intentionally a near-mirror of `daemon.ExitInfo`** so `tui.App.HandleSessionExit` works identically across local and remote. If you add a field to `daemon.ExitInfo`, add it to `apiclient.SessionExitInfo` too.
@@ -33,13 +33,13 @@ The PWA uses lossy `taskJSON` (drops `SessionID`, `DependsOn`, `BaseBranch`, `Re
 
 - `GET /api/tasks-raw` — all tasks as full `model.Task`
 - `GET /api/tasks/{id}/raw` — one task as full `model.Task`
-- `PUT /api/tasks/{id}/raw` — overwrite (master-only)
-- `POST /api/tasks-raw` — insert (master-only; rarely used — prefer `POST /api/tasks` for fresh tasks)
+- `PUT /api/tasks/{id}/raw` — overwrite (any authenticated token)
+- `POST /api/tasks-raw` — insert (any authenticated token; rarely used — prefer `POST /api/tasks` for fresh tasks)
 - `GET /api/schedules/{id}/raw` — full `model.ScheduledTask`
 
 Phase 2 added:
-- `POST/PUT/DELETE /api/backends/{name}` — backend CRUD
-- `GET /api/config` — full `config.Config` snapshot (master-only)
+- `POST/PUT/DELETE /api/backends/{name}` — backend CRUD (master-only; RCE denylist)
+- `GET /api/config` — full `config.Config` snapshot (any authenticated token)
 - `GET /api/sessions/state` — runner's running/idle lists
 - `GET /api/sessions/{id}/pending-restart` — runner's kick-restart flag
 
