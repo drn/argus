@@ -4109,7 +4109,10 @@ func (a *App) pruneCompletedTasks() {
 	// the task list refresh below shows the pruned rows already gone.
 	d, ok := a.db.(*db.DB)
 	if !ok {
-		a.statusbar.SetError("Prune-completed requires local mode (use POST /api/maintenance/prune-completed remotely)")
+		// Remote mode: the local prune flow (PrunePrepare) shells out to
+		// git/PTY directly, which only works against the local daemon. Delegate
+		// the whole operation to the server via REST instead.
+		a.pruneCompletedRemote()
 		return
 	}
 	preview, err := agent.PrunePrepare(d, agent.PruneOptions{
@@ -4164,6 +4167,45 @@ func (a *App) pruneCompletedTasks() {
 			}
 			a.refreshTasksWithIDs(runningIDs, idleIDs)
 			a.mu.Unlock()
+		})
+	}()
+}
+
+// remotePruner is satisfied by *apistore.Store in --remote mode. The whole
+// prune-completed operation (DB delete, session stop, worktree + orphan
+// cleanup) runs server-side on the daemon; the client only fires the request
+// and refreshes the task list with the result.
+type remotePruner interface {
+	PruneCompleted(ctx context.Context) (pruned, worktrees, orphans int, err error)
+}
+
+// pruneCompletedRemote delegates prune-completed to the daemon over REST.
+// Used when a.db is not a local *db.DB (i.e. --remote mode). The HTTP round
+// trip runs in a background goroutine so the UI thread never blocks; results
+// land back via QueueUpdateDraw. The caller (pruneCompletedTasks) has already
+// passed the re-entrancy guard, so the header notice is clear on entry.
+func (a *App) pruneCompletedRemote() {
+	pruner, ok := a.db.(remotePruner)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remotePruner) — defensive guard against
+		// a future third store implementation that supports neither path.
+		a.statusbar.SetError("Prune-completed requires local mode (use POST /api/maintenance/prune-completed remotely)")
+		return
+	}
+
+	a.header.SetNotice("Pruning completed tasks…")
+	go func() {
+		pruned, worktrees, orphans, err := pruner.PruneCompleted(context.Background())
+		a.tapp.QueueUpdateDraw(func() {
+			a.header.ClearNotice()
+			if err != nil {
+				uxlog.Log("[tui] remote prune error: %v", err)
+				a.statusbar.SetError("Prune failed: " + err.Error())
+				return
+			}
+			uxlog.Log("[tui] remote prune: pruned=%d worktrees=%d orphans=%d", pruned, worktrees, orphans)
+			a.refreshTasksLocal()
 		})
 	}()
 }
