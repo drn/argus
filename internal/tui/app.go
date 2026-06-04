@@ -337,6 +337,11 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
+	// Remote mode (a.db is not the local *db.DB) hides daemon-admin actions
+	// that manage the local OS install.
+	if _, isLocal := database.(*db.DB); !isLocal {
+		app.settings.SetRemote(true)
+	}
 	app.settings.OnRestartDaemon = func() {
 		app.mu.Lock()
 		app.daemonRestarting = true
@@ -3586,9 +3591,22 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 	rows, cols := a.computePTYSize()
 
 	go func() {
-		// Extract context from the source task (reads session log + git diff).
-		ctx := extractForkContext(source)
+		d, ok := a.db.(*db.DB)
+		if !ok {
+			// Remote mode: the worktree + session log live on the daemon, so
+			// the local context extraction below can't run (it reads local
+			// files that don't exist on the client) and the rich context
+			// carryover is unavailable. Delegate to the server's fork endpoint,
+			// which forks from the source's original prompt + backend. Done
+			// before extractForkContext so we don't waste two failed file reads.
+			// See gotchas/remote-tui.md for the degradation.
+			a.executeForkRemote(source, proj, forkName)
+			return
+		}
 
+		// Local mode: extract context from the source task (reads session log
+		// + git diff) and write it into the fork's worktree.
+		ctx := extractForkContext(source)
 		input := agent.CreateInput{
 			Name:    forkName,
 			Prompt:  buildForkPrompt(source, ctx, proj),
@@ -3607,16 +3625,6 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			AfterStart:  func() { a.startGen.Add(1) },
 		}
 
-		d, ok := a.db.(*db.DB)
-		if !ok {
-			a.tapp.QueueUpdateDraw(func() {
-				msg := "requires local mode (use POST /api/tasks/{id}/fork remotely)"
-				a.statusbar.SetError("Fork failed: " + msg)
-				a.showError("Fork failed", msg)
-			})
-			uxlog.Log("[fork] not available in remote mode")
-			return
-		}
 		created, _, err := agent.CreateAndStart(d, a.runner, input)
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
@@ -3635,6 +3643,57 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			a.onTaskSelect(created, true)
 		})
 	}()
+}
+
+// remoteForker is satisfied by *apistore.Store in --remote mode. The fork runs
+// server-side via POST /api/tasks/{id}/fork. The remote fork is DEGRADED
+// relative to local: the server endpoint does not extract the source's session
+// log / git diff or write .context/ fork files (those live on the daemon and
+// aren't reconstructed), so the new task starts from the source's original
+// prompt + backend rather than a context-enriched fork prompt.
+type remoteForker interface {
+	ForkTask(ctx context.Context, srcID, name, prompt, project string) (*model.Task, error)
+}
+
+// executeForkRemote delegates a fork to the daemon over REST. Called from
+// executeFork's goroutine when a.db is not a local *db.DB, so the HTTP round
+// trip is already off the UI thread. Passing an empty prompt lets the server
+// inherit the source task's prompt. Results land back via QueueUpdateDraw.
+func (a *App) executeForkRemote(source *model.Task, project, forkName string) {
+	forker, ok := a.db.(remoteForker)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remoteForker) — defensive guard.
+		uxlog.Log("[fork] no remote handler for task %s", source.ID)
+		return
+	}
+	// Mirror the local fork path's BeforeStart/AfterStart hooks (which bump
+	// startGen around CreateAndStart) so a concurrent reconciliation tick can't
+	// flip the freshly-forked task to "complete" in the window before its
+	// session shows up in the server's running set.
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	created, err := forker.ForkTask(context.Background(), source.ID, forkName, "", project)
+	if err != nil {
+		a.tapp.QueueUpdateDraw(func() {
+			a.statusbar.SetError("Fork failed: " + err.Error())
+			a.showError("Fork failed", err.Error())
+		})
+		uxlog.Log("[fork] remote fork of %s failed: %v", source.ID, err)
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		a.recentStarts[created.ID] = time.Now()
+		uxlog.Log("[fork] created task %s (%s) forked from %s (remote, context not carried)", created.ID, created.Name, source.ID)
+		// Surface the degradation: a remote fork can't carry the source's
+		// session-log / git-diff context (those live on the daemon), so the
+		// user gets a visible signal rather than a fork that looks identical
+		// to a local context-rich one.
+		a.statusbar.SetInfo("Forked (remote: source context not carried)")
+		a.refreshTasksLocal()
+		a.tasklist.SelectByID(created.ID)
+		a.onTaskSelect(created, true)
+	})
 }
 
 // --- Project form ---
@@ -3869,6 +3928,19 @@ func (a *App) deleteSchedule(id string) {
 // (manual run + tick aligned to the same minute) but not impossible —
 // acceptable trade-off given this is an admin-only TUI action.
 func (a *App) runScheduleNow(id string) {
+	// Remote mode: the daemon's scheduler fires the schedule server-side (task
+	// creation + LastRunAt/LastTaskID/NextRunAt bookkeeping). Dispatch in a
+	// goroutine and skip the local GetSchedule/ParseSchedule below — for
+	// *apistore.Store, GetSchedule is a blocking HTTP round trip that must not
+	// run on the UI thread.
+	if _, ok := a.db.(*db.DB); !ok {
+		go a.runScheduleNowRemote(id)
+		return
+	}
+
+	// Local mode: replicate the daemon scheduler's fire() bookkeeping. These
+	// calls hit SQLite synchronously (fast), so running them on the UI thread
+	// before spawning the goroutine is fine.
 	s, err := a.db.GetSchedule(id)
 	if err != nil {
 		uxlog.Log("[settings] run schedule %s: %v", id, err)
@@ -3885,10 +3957,8 @@ func (a *App) runScheduleNow(id string) {
 	go func() {
 		d, ok := a.db.(*db.DB)
 		if !ok {
-			s.LastError = "schedule fire requires local mode"
-			s.LastRunAt = now
-			_ = a.db.UpdateSchedule(s)
-			uxlog.Log("[settings] run schedule %s: not available in remote mode", id)
+			// Unreachable: a.db was confirmed *db.DB above and doesn't change
+			// at runtime. Defensive guard against future store-swap drift.
 			return
 		}
 		task, _, err := agent.CreateAndStart(d, a.runner, agent.CreateInput{
@@ -3916,6 +3986,46 @@ func (a *App) runScheduleNow(id string) {
 		uxlog.Log("[settings] manually fired schedule %s -> task %s", id, task.ID)
 		a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 	}()
+}
+
+// remoteScheduleRunner is satisfied by *apistore.Store in --remote mode. The
+// daemon's scheduler runs the whole out-of-cycle fire server-side (task
+// creation + schedule-row bookkeeping); the client only triggers it.
+type remoteScheduleRunner interface {
+	RunSchedule(ctx context.Context, id string) (taskID string, err error)
+}
+
+// runScheduleNowRemote delegates a manual schedule fire to the daemon over
+// REST. Called from runScheduleNow's goroutine when a.db is not a local
+// *db.DB, so the HTTP round trip is already off the UI thread; results land
+// back via QueueUpdateDraw. The schedule's LastRunAt/NextRunAt bookkeeping is
+// updated server-side, so a Settings refresh re-reads the new state.
+func (a *App) runScheduleNowRemote(id string) {
+	runner, ok := a.db.(remoteScheduleRunner)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remoteScheduleRunner) — defensive guard.
+		uxlog.Log("[settings] run schedule %s: no remote handler", id)
+		return
+	}
+	// Bump startGen around the fire so a concurrent reconciliation tick can't
+	// flip the schedule's freshly-created task to "complete" before its session
+	// appears in the server's running set. (The local runScheduleNow doesn't
+	// bump — but the remote round trip + SSE attach widens the window, so the
+	// extra protection is worth the two lines.)
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	taskID, err := runner.RunSchedule(context.Background(), id)
+	if err != nil {
+		uxlog.Log("[settings] run schedule %s (remote): %v", id, err)
+		a.tapp.QueueUpdateDraw(func() {
+			a.statusbar.SetError("Run schedule failed: " + err.Error())
+			a.settings.Refresh()
+		})
+		return
+	}
+	uxlog.Log("[settings] manually fired schedule %s -> task %s (remote)", id, taskID)
+	a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 }
 
 // --- Quick-add form ---
@@ -4248,4 +4358,7 @@ func (a *App) exitAgentView() {
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
+	// Also clear any transient info notice (e.g. the remote-fork
+	// "context not carried" message) so it doesn't linger on the task list.
+	a.statusbar.ClearInfo()
 }

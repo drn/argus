@@ -106,6 +106,41 @@ func TestSettings_RenderSpinnerDetail(t *testing.T) {
 	sv.Draw(drawSim(t))
 }
 
+// hasRowKind reports whether any row in the current rows slice has the given
+// kind. The caller must setCategory first.
+func hasRowKind(sv *SettingsView, kind settingsRowKind) bool {
+	for _, r := range sv.rows {
+		if r.kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
+	d := testDB(t)
+	sv := NewSettingsView(d)
+	sv.SetDaemonConnected(true)
+	sv.Refresh()
+
+	// Local mode (default): daemon-admin actions are present. srAutoStart is
+	// platform-gated (launchagent.Available()) so it's only asserted absent in
+	// remote mode below, never asserted present here.
+	sv.setCategory(catSystem)
+	testutil.Equal(t, hasRowKind(sv, srDaemon), true)
+	testutil.Equal(t, hasRowKind(sv, srSourcePath), true)
+	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), true)
+
+	// Remote mode hides every daemon-admin action — they'd target the wrong
+	// (client) machine.
+	sv.SetRemote(true)
+	sv.setCategory(catSystem)
+	testutil.Equal(t, hasRowKind(sv, srDaemon), false)
+	testutil.Equal(t, hasRowKind(sv, srSourcePath), false)
+	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), false)
+	testutil.Equal(t, hasRowKind(sv, srAutoStart), false)
+}
+
 func TestSettings_RenderDaemonDetail(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true)

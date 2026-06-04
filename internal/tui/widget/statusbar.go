@@ -119,6 +119,13 @@ func (sb *StatusBar) ClearInfo() {
 	sb.infoMsg = ""
 }
 
+// Info returns the currently-displayed informational message ("" if none).
+// Exposed for tests that assert info-path wiring without scraping the row,
+// mirroring Error().
+func (sb *StatusBar) Info() string {
+	return sb.infoMsg
+}
+
 // Draw renders the status bar.
 func (sb *StatusBar) Draw(screen tcell.Screen) {
 	sb.Box.DrawForSubclass(screen, sb)
