@@ -246,6 +246,87 @@ func TestStore_PruneCompleted_ErrorPropagates(t *testing.T) {
 	testutil.Equal(t, orphans, 0)
 }
 
+func TestStore_ForkTask(t *testing.T) {
+	f := newFakeAPI(t)
+	var captured string
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.Method, "POST")
+		captured = readBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-alpha","status":"in_progress"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{
+			ID: "f1", Name: "fork-alpha", Status: model.StatusInProgress, Project: "proj",
+		})
+	})
+
+	got, err := f.store().ForkTask(context.Background(), "src1", "fork-alpha", "", "proj")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "f1")
+	testutil.Equal(t, got.Project, "proj")
+	testutil.Contains(t, captured, `"name":"fork-alpha"`)
+	testutil.Contains(t, captured, `"project":"proj"`)
+}
+
+func TestStore_ForkTask_RawFetchFallback(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-alpha","status":"pending"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+
+	got, err := f.store().ForkTask(context.Background(), "src1", "", "", "proj")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "f1")
+	testutil.Equal(t, got.Name, "fork-alpha")
+	testutil.Equal(t, got.Status, model.StatusPending)
+	testutil.Equal(t, got.Project, "proj")
+}
+
+func TestStore_ForkTask_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "task not found", http.StatusNotFound)
+	})
+	_, err := f.store().ForkTask(context.Background(), "src1", "n", "p", "proj")
+	if err == nil {
+		t.Fatal("expected error from ForkTask")
+	}
+}
+
+func TestStore_RunSchedule(t *testing.T) {
+	f := newFakeAPI(t)
+	var method, path string
+	f.mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+
+	taskID, err := f.store().RunSchedule(context.Background(), "s1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, method, "POST")
+	testutil.Equal(t, path, "/api/schedules/s1/run")
+	testutil.Equal(t, taskID, "t42")
+}
+
+func TestStore_RunSchedule_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "scheduler not running", http.StatusServiceUnavailable)
+	})
+	taskID, err := f.store().RunSchedule(context.Background(), "s1")
+	if err == nil {
+		t.Fatal("expected error from RunSchedule")
+	}
+	testutil.Equal(t, taskID, "")
+}
+
 func readBody(r *http.Request) string {
 	buf := make([]byte, 4096)
 	n, _ := r.Body.Read(buf)

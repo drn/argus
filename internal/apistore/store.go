@@ -165,6 +165,55 @@ func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend s
 	}, nil
 }
 
+// ForkTask forks an existing task on the remote daemon via
+// POST /api/tasks/{id}/fork and returns the resulting row.
+//
+// Like CreateTask, it is NOT part of tui/store.Store — the local fork path
+// (agent.CreateAndStart with an OnWorktreeCreated hook) extracts the source's
+// session log + git diff and writes .context/ fork files, none of which the
+// server-side fork endpoint reconstructs. The remote fork is therefore
+// DEGRADED: it starts from the source's original prompt + backend, linked via
+// the task.forked event, without the context carryover. See gotchas/remote-tui.md.
+//
+// An empty prompt tells the server to inherit the source task's prompt; an
+// empty name tells it to use "<src>-fork".
+func (s *Store) ForkTask(ctx context.Context, srcID, name, prompt, project string) (*model.Task, error) {
+	resp, err := s.c.ForkTask(ctx, srcID, apiclient.ForkReq{
+		Name:    name,
+		Prompt:  prompt,
+		Project: project,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if t, gErr := s.c.GetTaskRaw(ctx, resp.ID); gErr == nil {
+		return t, nil
+	}
+	st, _ := model.ParseStatus(resp.Status)
+	return &model.Task{
+		ID:      resp.ID,
+		Name:    resp.Name,
+		Status:  st,
+		Project: project,
+	}, nil
+}
+
+// RunSchedule fires a schedule out-of-cycle on the remote daemon via
+// POST /api/schedules/{id}/run and returns the created task's ID. The daemon's
+// scheduler runs the full fire server-side — task creation AND the schedule
+// row's LastRunAt/LastTaskID/NextRunAt bookkeeping — so the TUI only needs to
+// trigger it and refresh the Settings view afterward.
+//
+// NOT part of tui/store.Store — the local path drives agent.CreateAndStart +
+// the schedule bookkeeping itself, which this method delegates to the server.
+func (s *Store) RunSchedule(ctx context.Context, id string) (string, error) {
+	resp, err := s.c.RunSchedule(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return resp.TaskID, nil
+}
+
 // Update writes the task via PUT /api/tasks/{id}/raw.
 func (s *Store) Update(t *model.Task) error {
 	return s.c.UpdateTaskRaw(context.Background(), t)

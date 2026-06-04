@@ -224,6 +224,11 @@ type SettingsView struct {
 	// Daemon.
 	daemonConnected  bool
 	daemonRestarting bool
+	// remote is true when the TUI runs in --remote mode (a.db is an
+	// *apistore.Store). Daemon-admin actions (Restart Daemon, Update Argus,
+	// LaunchAgent auto-start) manage the OS install on the *local* machine,
+	// so they're meaningless from a remote client and hidden when remote.
+	remote bool
 
 	// Auto-start (LaunchAgent on macOS).
 	autoStartStatus  launchagent.Status
@@ -522,6 +527,14 @@ func (sv *SettingsView) SetDaemonConnected(connected bool) {
 	sv.rebuildRows()
 }
 
+// SetRemote marks the view as running in --remote mode, which hides the
+// daemon-admin actions (Restart Daemon, Update Argus, LaunchAgent auto-start)
+// that only make sense against the local machine. Called once at construction.
+func (sv *SettingsView) SetRemote(remote bool) {
+	sv.remote = remote
+	sv.rebuildRows()
+}
+
 func (sv *SettingsView) setTasks(tasks []*model.Task) {
 	sv.taskCounts = make(map[string]statusCounts)
 	for _, t := range tasks {
@@ -743,7 +756,9 @@ func (sv *SettingsView) rebuildRows() {
 				sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 			}
 		}
-		if sv.daemonConnected {
+		// Daemon-admin actions manage the local OS install; hide them in
+		// --remote mode where they'd target the wrong (client) machine.
+		if sv.daemonConnected && !sv.remote {
 			label := "Restart Daemon"
 			if sv.daemonRestarting {
 				label = "Restarting..."
@@ -764,7 +779,7 @@ func (sv *SettingsView) rebuildRows() {
 			}
 			sv.rows = append(sv.rows, settingsRow{kind: srUpdateArgus, label: updateLabel, key: "_argus_update"})
 		}
-		if launchagent.Available() {
+		if launchagent.Available() && !sv.remote {
 			autoLabel := "Auto-start at login: disabled"
 			if sv.autoStartStatus.Installed {
 				if sv.autoStartStatus.Loaded {

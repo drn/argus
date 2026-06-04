@@ -1372,6 +1372,80 @@ func TestPruneCompleted_RemoteDelegatesToServer(t *testing.T) {
 	testutil.Equal(t, app.header.Notice(), "Pruning completed tasks…")
 }
 
+func TestApp_RunScheduleNowRemote_DelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	// Run in a goroutine: in production this helper is always invoked from
+	// runScheduleNow's goroutine, and it ends with QueueUpdateDraw, which
+	// blocks without a running event loop. The HTTP request fires (and signals
+	// `hit`) before that point, so the channel receive observes the call.
+	go app.runScheduleNowRemote("s1")
+
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected run-schedule request to reach the server")
+	}
+}
+
+func TestApp_RunScheduleNowRemote_FallbackNoRunner(t *testing.T) {
+	// nonRemoteStore is neither *db.DB nor a remoteScheduleRunner, so the
+	// defensive branch (log-only) runs. Must not panic or set an error.
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.runScheduleNowRemote("s1")
+	testutil.Equal(t, app.statusbar.Error(), "")
+}
+
+func TestApp_ExecuteForkRemote_DelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x","status":"in_progress"}`))
+	})
+	mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	// Goroutine for the same reason as the schedule test: executeForkRemote is
+	// invoked from executeFork's goroutine in production and ends with a
+	// blocking QueueUpdateDraw. The fork POST signals `hit` before that.
+	go app.executeForkRemote(&model.Task{ID: "src1", Name: "alpha", Project: "proj"}, "proj", "fork-x")
+
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected fork request to reach the server")
+	}
+}
+
+func TestApp_ExecuteForkRemote_FallbackNoForker(t *testing.T) {
+	// nonRemoteStore satisfies neither *db.DB nor remoteForker — the defensive
+	// log-only branch runs. Must not panic.
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.executeForkRemote(&model.Task{ID: "src1", Project: "p"}, "p", "fork-x")
+}
+
 func TestCtrlRPrunesCompleted(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
