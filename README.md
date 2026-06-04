@@ -139,6 +139,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
 | `ctrl+z`              | Toggle the git + file side panes (agent view opens single-pane by default) |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
+| `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
