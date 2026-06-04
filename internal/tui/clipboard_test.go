@@ -7,7 +7,19 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apiclient"
+	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/testutil"
+)
+
+// Compile-time assertions: both runner transports that back the agent view
+// satisfy clipboardAccessor, so ctrl+y copy works in local daemon mode AND in
+// --remote mode. Lives in _test.go so importing apiclient/daemon-client here
+// doesn't drag those deps into production tui code. If a future refactor drops
+// either method, this fails the build and pinpoints the drift.
+var (
+	_ clipboardAccessor = (*dclient.Client)(nil)
+	_ clipboardAccessor = (*apiclient.Provider)(nil)
 )
 
 // fakeProvider satisfies agent.SessionProvider + clipboardAccessor.
