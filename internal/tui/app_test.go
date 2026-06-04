@@ -528,11 +528,15 @@ func TestExitAgentView(t *testing.T) {
 	app := New(d, runner, false)
 
 	app.mode = modeAgent
+	// A transient info notice (e.g. the remote-fork "context not carried"
+	// message) must be cleared on exit so it doesn't linger on the task list.
+	app.statusbar.SetInfo("Forked (remote: source context not carried)")
 	app.exitAgentView()
 
 	if app.mode != modeTaskList {
 		t.Errorf("mode = %v, want modeTaskList", app.mode)
 	}
+	testutil.Equal(t, app.statusbar.Info(), "")
 }
 
 func TestTcellKeyToBytes(t *testing.T) {
