@@ -222,6 +222,9 @@ func (p *Provider) HasPendingRestart(taskID string) bool {
 // treat empty text as "no payload" anyway.
 func (p *Provider) ClipboardGet(taskID string) (string, bool) {
 	entry, err := p.c.GetClipboard(context.Background(), taskID)
+	// GetClipboard returns a non-nil entry on success and (nil, err) on
+	// failure, so err != nil already covers the nil case; the entry == nil
+	// check is belt-and-suspenders against a future (nil, nil) return.
 	if err != nil || entry == nil {
 		return "", false
 	}
