@@ -122,6 +122,49 @@ func (s *Store) Add(t *model.Task) error {
 	return s.c.AddTaskRaw(context.Background(), t)
 }
 
+// CreateTask is the remote-mode equivalent of agent.CreateAndStart: it POSTs
+// to /api/tasks so the daemon runs the transactional worktree + session
+// creation on its own host, then fetches the freshly-created row so the TUI
+// can enter the agent view with a complete model.Task.
+//
+// It is deliberately NOT part of tui/store.Store — there is no *db.DB analog
+// (local mode calls agent.CreateAndStart directly, which needs the in-process
+// runner). The TUI type-asserts a.db to this method's interface when running
+// remote. Base-branch override and attachment uploads aren't supported here:
+// the JSON endpoint has no field for them (see gotchas/remote-tui.md).
+//
+// On success the daemon may asynchronously rename an auto-named task via
+// Haiku; the returned Task carries the regex-slug name and the next list
+// refresh picks up the final name.
+func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend string) (*model.Task, error) {
+	resp, err := s.c.CreateTask(ctx, apiclient.CreateTaskReq{
+		Name:    name,
+		Prompt:  prompt,
+		Project: project,
+		Backend: backend,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The create response is lossy (id/name/status only). Fetch the full row
+	// so the caller gets a complete model.Task. If that follow-up read fails
+	// the task still exists on the server — fall back to a minimal struct
+	// built from the create response so the UI can select + attach, and the
+	// next list refresh fills in the rest.
+	if t, gErr := s.c.GetTaskRaw(ctx, resp.ID); gErr == nil {
+		return t, nil
+	}
+	st, _ := model.ParseStatus(resp.Status) // defaults to StatusPending on parse error
+	return &model.Task{
+		ID:      resp.ID,
+		Name:    resp.Name,
+		Status:  st,
+		Project: project,
+		Backend: backend,
+		Prompt:  prompt,
+	}, nil
+}
+
 // Update writes the task via PUT /api/tasks/{id}/raw.
 func (s *Store) Update(t *model.Task) error {
 	return s.c.UpdateTaskRaw(context.Background(), t)
