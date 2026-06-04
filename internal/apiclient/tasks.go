@@ -214,7 +214,7 @@ func (c *Client) GetDAG(ctx context.Context, f DAGFilter) ([]map[string]any, err
 }
 
 // StopAll stops every running session and marks all in_progress tasks
-// in_review. Master-only.
+// in_review. Open to any authenticated token (single-tier auth).
 func (c *Client) StopAll(ctx context.Context) (int, error) {
 	var resp struct {
 		Stopped int `json:"stopped"`
@@ -233,7 +233,7 @@ type PruneReport struct {
 }
 
 // PruneCompleted removes every task with status=complete, sweeps orphan
-// worktrees. Master-only.
+// worktrees. Open to any authenticated token (single-tier auth).
 func (c *Client) PruneCompleted(ctx context.Context) (*PruneReport, error) {
 	var resp PruneReport
 	if err := c.doJSON(ctx, "POST", "/api/maintenance/prune-completed", nil, &resp); err != nil {
@@ -244,7 +244,7 @@ func (c *Client) PruneCompleted(ctx context.Context) (*PruneReport, error) {
 
 // ListTasksRaw returns every task as a full model.Task. Use this in the TUI
 // store adapter where lossy TaskJSON would drop fields like SessionID,
-// DependsOn, Result, AgentPID, Pinned, etc. Master-only on the server.
+// DependsOn, Result, AgentPID, Pinned, etc. Open to any authenticated token.
 // Added in phase 3 (gap fill for tui store interface).
 func (c *Client) ListTasksRaw(ctx context.Context) ([]*model.Task, error) {
 	var resp struct {
@@ -265,14 +265,16 @@ func (c *Client) GetTaskRaw(ctx context.Context, id string) (*model.Task, error)
 	return &t, nil
 }
 
-// UpdateTaskRaw applies a full model.Task overwrite. Master-only. Added in
-// phase 3 — the TUI's store adapter uses this to mirror db.DB.Update().
+// UpdateTaskRaw applies a full model.Task overwrite. Open to any authenticated
+// token. The server pins Worktree/Branch/BaseBranch to existing DB values.
+// Added in phase 3 — the TUI's store adapter uses this to mirror db.DB.Update().
 func (c *Client) UpdateTaskRaw(ctx context.Context, t *model.Task) error {
 	return c.doJSON(ctx, "PUT", "/api/tasks/"+t.ID+"/raw", t, nil)
 }
 
-// AddTaskRaw inserts a model.Task row directly. Master-only. Used by the TUI
-// store adapter to mirror db.DB.Add() for paths that don't go through the
+// AddTaskRaw inserts a model.Task row directly. Open to any authenticated
+// token; the server rejects a Worktree outside the worktrees root. Used by the
+// TUI store adapter to mirror db.DB.Add() for paths that don't go through the
 // agent.CreateAndStart lifecycle (e.g., orchestrator stack creation).
 //
 // Mutates t in place with any server-assigned fields (ID, CreatedAt) so
@@ -289,8 +291,8 @@ func (c *Client) AddTaskRaw(ctx context.Context, t *model.Task) error {
 	return nil
 }
 
-// GetScheduleRaw returns a schedule as a full model.ScheduledTask. Master-only.
-// Added in phase 3.
+// GetScheduleRaw returns a schedule as a full model.ScheduledTask. Open to any
+// authenticated token. Added in phase 3.
 func (c *Client) GetScheduleRaw(ctx context.Context, id string) (*model.ScheduledTask, error) {
 	var s model.ScheduledTask
 	if err := c.doJSON(ctx, "GET", "/api/schedules/"+id+"/raw", nil, &s); err != nil {

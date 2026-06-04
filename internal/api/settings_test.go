@@ -188,18 +188,50 @@ func TestHandleSettings_PermissionModeRoundtrip(t *testing.T) {
 	testutil.Equal(t, d.Config().Defaults.PermissionMode, config.PermissionModePlan)
 }
 
-func TestHandleSettings_PutRequiresMaster(t *testing.T) {
+// Single-tier auth: settings PUT is open to any authenticated token EXCEPT the
+// sandbox section, which is master-only (it governs the host sandbox-exec
+// boundary). This is the regression test for "Failed to set default share
+// project via web app" — the phone PWA uses a device token and must be able to
+// save UX defaults — plus a pin that sandbox writes stay master-gated.
+func TestHandleSettings_PutDeviceAllowed(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
 	testutil.NoError(t, err)
+	devicePut := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+plain)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
 
-	req := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(`{"sandbox":{"enabled":true}}`))
-	req.Header.Set("Authorization", "Bearer "+plain)
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	// The originally-reported failure: a device token setting the default
+	// share project must now succeed.
+	w := devicePut(`{"defaults":{"share_project":"argus"}}`)
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.ShareProject, "argus")
+
+	// KB is also writable by a device token.
+	w = devicePut(`{"kb":{"metis_vault_path":"/tmp/vault"}}`)
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().KB.MetisVaultPath, "/tmp/vault")
+
+	// But the sandbox section is master-only — a device token is rejected and
+	// the value is unchanged.
+	w = devicePut(`{"sandbox":{"enabled":true}}`)
 	testutil.Equal(t, w.Code, http.StatusForbidden)
+	testutil.Equal(t, d.Config().Sandbox.Enabled, false)
+
+	// Master can write the sandbox section.
+	mreq := httptest.NewRequest("PUT", "/api/settings", strings.NewReader(`{"sandbox":{"enabled":true}}`))
+	mreq.Header.Set("Authorization", "Bearer "+srv.token)
+	mreq.Header.Set("Content-Type", "application/json")
+	mw := httptest.NewRecorder()
+	handler.ServeHTTP(mw, mreq)
+	testutil.Equal(t, mw.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Sandbox.Enabled, true)
 }
 
 func TestHandleSettings_GetIsAvailableToDevice(t *testing.T) {
@@ -322,11 +354,11 @@ func TestHandleProjects_RoundTripsSandboxOverride(t *testing.T) {
 	testutil.DeepEqual(t, stored.Sandbox.AllowAppleEvents, []string{"com.apple.iChat"})
 }
 
-// TestHandleProjectsFull_AuthSymmetry pins the read/write auth split for the
-// projects CRUD group: master-only mutations (POST/PUT/DELETE), device-token
-// readable list (GET /api/projects/full). Matches the symmetry of
-// GET/PUT /api/settings — read is broad, write is master. Catches a future
-// regression that accidentally tightens or loosens either side.
+// TestHandleProjectsFull_AuthSymmetry pins single-tier auth for the projects
+// CRUD group: any authenticated token can both read (GET /api/projects/full)
+// and mutate (POST/PUT/DELETE). Projects are NOT on the master-only denylist
+// (that is backends CRUD, self-update, and token mint/revoke). Catches a
+// future regression that re-introduces a master-only gate here.
 func TestHandleProjectsFull_AuthSymmetry(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
@@ -352,22 +384,22 @@ func TestHandleProjectsFull_AuthSymmetry(t *testing.T) {
 		testutil.Contains(t, w.Body.String(), "com.apple.iChat")
 	})
 
-	t.Run("device token cannot create", func(t *testing.T) {
+	t.Run("device token can create", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/projects",
 			strings.NewReader(`{"name":"beta","path":"/tmp/beta"}`))
 		req.Header.Set("Authorization", "Bearer "+plain)
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		testutil.Equal(t, w.Code, http.StatusForbidden)
+		testutil.Equal(t, w.Code, http.StatusCreated)
 	})
 
-	t.Run("device token cannot delete", func(t *testing.T) {
+	t.Run("device token can delete", func(t *testing.T) {
 		req := httptest.NewRequest("DELETE", "/api/projects/alpha", nil)
 		req.Header.Set("Authorization", "Bearer "+plain)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		testutil.Equal(t, w.Code, http.StatusForbidden)
+		testutil.Equal(t, w.Code, http.StatusOK)
 	})
 }
 
