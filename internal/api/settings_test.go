@@ -75,6 +75,24 @@ func TestBuildSettingsUpdates(t *testing.T) {
 		testutil.Equal(t, ok, true)
 		testutil.Equal(t, val, "")
 	})
+
+	t.Run("defaults permission_mode valid flows through", func(t *testing.T) {
+		mode := config.PermissionModeAcceptEdits
+		got := buildSettingsUpdates(updateSettingsReq{
+			Defaults: &defaultsUpdate{PermissionMode: &mode},
+		})
+		testutil.Equal(t, got["defaults.permission_mode"], config.PermissionModeAcceptEdits)
+	})
+
+	t.Run("defaults permission_mode invalid dropped", func(t *testing.T) {
+		for _, bad := range []string{"", "bogus", "Plan"} {
+			got := buildSettingsUpdates(updateSettingsReq{
+				Defaults: &defaultsUpdate{PermissionMode: &bad},
+			})
+			_, ok := got["defaults.permission_mode"]
+			testutil.Equal(t, ok, false)
+		}
+	})
 }
 
 func TestHandleSettings_GetReturnsCurrentValues(t *testing.T) {
@@ -142,6 +160,32 @@ func TestHandleSettings_ShareProjectRoundtrip(t *testing.T) {
 	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"share_project": ""}}`))
 	testutil.Equal(t, w.Code, http.StatusOK)
 	testutil.Equal(t, d.Config().Defaults.ShareProject, "")
+}
+
+func TestHandleSettings_PermissionModeRoundtrip(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+	handler := authMiddleware(srv.token, d, nil, mux)
+
+	// PUT a valid mode persists and surfaces via GET.
+	body := `{"defaults": {"permission_mode": "plan"}}`
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", body))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.PermissionMode, config.PermissionModePlan)
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/settings", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp settingsResponse
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	testutil.Equal(t, resp.Defaults.PermissionMode, config.PermissionModePlan)
+
+	// An invalid mode is rejected (not stored), leaving the prior value intact.
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, authedReq("PUT", "/api/settings", `{"defaults": {"permission_mode": "bogus"}}`))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	testutil.Equal(t, d.Config().Defaults.PermissionMode, config.PermissionModePlan)
 }
 
 func TestHandleSettings_PutRequiresMaster(t *testing.T) {

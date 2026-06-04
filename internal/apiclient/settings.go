@@ -28,8 +28,9 @@ type APISettingsJSON struct {
 
 // DefaultsJSON mirrors api.defaultsJSON.
 type DefaultsJSON struct {
-	Backend      string `json:"backend"`
-	ShareProject string `json:"share_project"`
+	Backend        string `json:"backend"`
+	ShareProject   string `json:"share_project"`
+	PermissionMode string `json:"permission_mode"`
 }
 
 // SettingsResp is the full /api/settings shape.
@@ -61,8 +62,9 @@ type APIUpdate struct {
 
 // DefaultsUpdate is the partial-update payload for the defaults section.
 type DefaultsUpdate struct {
-	Backend      *string `json:"backend,omitempty"`
-	ShareProject *string `json:"share_project,omitempty"`
+	Backend        *string `json:"backend,omitempty"`
+	ShareProject   *string `json:"share_project,omitempty"`
+	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 
 // SettingsUpdate is the request body for PUT /api/settings. Every section is

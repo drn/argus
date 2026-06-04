@@ -124,21 +124,25 @@ func (d *DB) fixupBackends() error {
 
 		needsUpdate := false
 
-		// Fix: claude backend is missing --dangerously-skip-permissions.
-		if name == "claude" && !strings.Contains(command, "--dangerously-skip-permissions") {
-			needsUpdate = true
-		}
-
-		// Migrate: add --permission-mode plan so agents default to read-only plan mode.
-		// Appends to existing command (preserving user customizations) rather than replacing.
-		if name == "claude" && !strings.Contains(command, "--permission-mode") {
-			appended := command + " --permission-mode plan"
-			if _, err := d.conn.Exec(
-				`UPDATE backends SET command=? WHERE name=?`, appended, name,
-			); err != nil {
-				return err
+		// Migrate: permission flags used to be baked into the claude command
+		// (e.g. "claude --dangerously-skip-permissions --permission-mode plan").
+		// They are now injected by agent.BuildCmd from defaults.permission_mode,
+		// which falls back to bypass-active (--dangerously-skip-permissions) when
+		// unconfigured. Strip the baked flags once so the injected setting becomes
+		// the single source of truth. We intentionally do NOT seed a config value:
+		// leaving the key unset means the launched command reverts to the bypass
+		// default, undoing the previously force-added plan mode. Idempotent —
+		// once stripped there are no tokens to remove.
+		if name == "claude" && commandHasPermissionTokens(command) {
+			stripped := stripPermissionTokens(command)
+			if stripped != command {
+				if _, uerr := d.conn.Exec(
+					`UPDATE backends SET command=? WHERE name=?`, stripped, name,
+				); uerr != nil {
+					return uerr
+				}
+				command = stripped // subsequent checks see the stripped command
 			}
-			command = appended // update local var so subsequent checks see the new command
 		}
 
 		// Fix: codex backend uses old flags (--yolo or --full-auto) instead of
@@ -172,4 +176,37 @@ func (d *DB) fixupBackends() error {
 	}
 
 	return nil
+}
+
+// commandHasPermissionTokens reports whether a backend command contains any
+// baked-in Claude permission flag that the new injection model now owns.
+func commandHasPermissionTokens(command string) bool {
+	return strings.Contains(command, "--permission-mode") ||
+		strings.Contains(command, "--dangerously-skip-permissions") ||
+		strings.Contains(command, "--allow-dangerously-skip-permissions")
+}
+
+// stripPermissionTokens removes permission-related flags (and the value token
+// following a bare --permission-mode) from a command, preserving all other
+// flags. Used once during migration to hand permission control to the injected
+// defaults.permission_mode setting.
+func stripPermissionTokens(command string) string {
+	fields := strings.Fields(command)
+	out := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		switch {
+		case f == "--dangerously-skip-permissions",
+			f == "--allow-dangerously-skip-permissions":
+			continue
+		case f == "--permission-mode":
+			i++ // also drop the following value token (e.g. "plan")
+			continue
+		case strings.HasPrefix(f, "--permission-mode="):
+			continue
+		default:
+			out = append(out, f)
+		}
+	}
+	return strings.Join(out, " ")
 }

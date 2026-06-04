@@ -144,10 +144,9 @@ func TestFixupBackends_AlreadyCorrect(t *testing.T) {
 	testutil.NoError(t, d.fixupBackends())
 }
 
-// TestFixupBackends_PreservesUserCustomization is a placeholder — we already
-// have tests for many fixupBackends paths in db_test.go; this just verifies
-// the path that includes user customizations when --permission-mode is missing.
-func TestFixupBackends_AppendsPermissionMode(t *testing.T) {
+// TestFixupBackends_StripPreservesOtherFlags confirms the permission-token
+// strip removes only permission flags and leaves unrelated flags in place.
+func TestFixupBackends_StripPreservesOtherFlags(t *testing.T) {
 	d := testDB(t)
 	testutil.NoError(t, d.SetBackend("claude", config.Backend{
 		Command:    "claude --dangerously-skip-permissions --extra-flag",
@@ -156,6 +155,29 @@ func TestFixupBackends_AppendsPermissionMode(t *testing.T) {
 	testutil.NoError(t, d.fixupBackends())
 	backends, err := d.Backends()
 	testutil.NoError(t, err)
-	testutil.Contains(t, backends["claude"].Command, "--permission-mode plan")
-	testutil.Contains(t, backends["claude"].Command, "--extra-flag")
+	got := backends["claude"].Command
+	testutil.Equal(t, got, "claude --extra-flag")
+}
+
+// TestStripPermissionTokens covers the token forms the migration must handle:
+// the space-separated and = forms of --permission-mode, plus both skip flags.
+func TestStripPermissionTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"skip+plan", "claude --dangerously-skip-permissions --permission-mode plan", "claude"},
+		{"eq form", "claude --permission-mode=acceptEdits", "claude"},
+		{"allow variant", "claude --allow-dangerously-skip-permissions --permission-mode plan", "claude"},
+		{"keeps others", "claude --model opus --permission-mode plan --verbose", "claude --model opus --verbose"},
+		{"no tokens", "claude --model opus", "claude --model opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, stripPermissionTokens(tc.in), tc.want)
+			// commandHasPermissionTokens must agree with whether a change occurred.
+			testutil.Equal(t, commandHasPermissionTokens(tc.in), tc.in != tc.want)
+		})
+	}
 }

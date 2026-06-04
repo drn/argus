@@ -61,6 +61,69 @@ func TestSettingsView_RailNavigation(t *testing.T) {
 	testutil.Equal(t, sv.focus, focusPane)
 }
 
+func TestSettingsView_PermissionModeCycle(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catDefaults)
+	sv.setFocus(focusPane)
+
+	// Unconfigured → row reflects the bypass-active default.
+	testutil.Equal(t, sv.permissionMode, config.PermissionModeBypassActive)
+	testutil.Equal(t, sv.currentRowKind(), srPermissionMode)
+	if len(sv.rows) == 0 || !strings.Contains(sv.rows[0].label, "Permission mode:") {
+		t.Fatalf("expected a 'Permission mode:' row, got %+v", sv.rows)
+	}
+
+	// Right cycles forward, wrapping from the last entry to the first.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.permissionMode, config.PermissionModeDefault)
+
+	// Change is persisted to the store.
+	testutil.Equal(t, sv.database.Config().Defaults.PermissionMode, config.PermissionModeDefault)
+
+	// Enter also cycles; a full lap returns to the same value.
+	start := sv.permissionMode
+	for range config.PermissionModes {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	}
+	testutil.Equal(t, sv.permissionMode, start)
+}
+
+// TestSettingsView_CyclePermissionModeWraps pins the wrap math in both
+// directions (the negative-modulo branch is otherwise unexercised by the
+// forward-only key bindings).
+func TestSettingsView_CyclePermissionModeWraps(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catDefaults)
+
+	modes := config.PermissionModes
+	// Backward from index 0 wraps to the last entry.
+	sv.permissionMode = modes[0]
+	sv.cyclePermissionMode(-1)
+	testutil.Equal(t, sv.permissionMode, modes[len(modes)-1])
+
+	// Forward from the last entry wraps to the first.
+	sv.cyclePermissionMode(1)
+	testutil.Equal(t, sv.permissionMode, modes[0])
+
+	// An unrecognized stored value resets to index 0 on cycle.
+	sv.permissionMode = "bogus"
+	sv.cyclePermissionMode(1)
+	testutil.Equal(t, sv.permissionMode, modes[1])
+}
+
+// TestSettingsView_DefaultsPaneRenders pins the catDefaults Draw path
+// (renderPermissionModeDetail) so the new pane can't silently stop rendering.
+func TestSettingsView_DefaultsPaneRenders(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catDefaults)
+	sv.setFocus(focusPane)
+	out := readSettingsScreen(t, sv, 80, 24)
+	testutil.Contains(t, out, "Default Permission Mode")                     // detail title
+	testutil.Contains(t, out, config.PermissionModeLabel(sv.permissionMode)) // current value
+	testutil.Contains(t, out, "Defaults")                                    // rail entry
+}
+
 func TestSettingsView_RailNavigationBottomBound(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.setFocus(focusRail)
