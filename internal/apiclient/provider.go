@@ -213,6 +213,27 @@ func (p *Provider) HasPendingRestart(taskID string) bool {
 	return pending
 }
 
+// ClipboardGet fetches any agent-staged clipboard text for a task. It mirrors
+// the daemon client's method of the same name so the TUI's clipboardAccessor
+// type assertion succeeds in --remote mode, making ctrl+y copy work over HTTP.
+// Returns empty string and false when nothing is staged or the request fails.
+// Presence is keyed on non-empty text: the GET endpoint returns 204 (decoded
+// as empty text) when nothing is staged, and the downstream TUI consumers
+// treat empty text as "no payload" anyway.
+func (p *Provider) ClipboardGet(taskID string) (string, bool) {
+	entry, err := p.c.GetClipboard(context.Background(), taskID)
+	if err != nil || entry == nil {
+		return "", false
+	}
+	return entry.Text, entry.Text != ""
+}
+
+// ClipboardClear removes any agent-staged clipboard text for a task. Mirrors
+// the daemon client's method so the TUI clears server-side state after ctrl+y.
+func (p *Provider) ClipboardClear(taskID string) error {
+	return p.c.ClearClipboard(context.Background(), taskID)
+}
+
 // getOrCreateSession is the internal accessor used by Start/Get. Holds the
 // provider lock for the lookup-or-create critical section so two concurrent
 // callers don't both spawn a stream reader for the same task.

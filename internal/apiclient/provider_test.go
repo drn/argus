@@ -286,3 +286,57 @@ func TestProvider_Start_Resume(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.True(t, h != nil)
 }
+
+// TestProvider_Clipboard exercises the clipboardAccessor methods that make
+// ctrl+y copy work in --remote mode. The mock server mirrors the real API's
+// contract: GET returns 204 (no body) when nothing is staged and 200 with
+// {"text":...} when a payload exists; DELETE clears.
+func TestProvider_Clipboard(t *testing.T) {
+	var cleared []string
+	staged := "staged text"
+	present := true
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/t1/clipboard", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if !present {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"text":"` + staged + `"}`))
+		case http.MethodDelete:
+			cleared = append(cleared, "t1")
+			present = false
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	p := NewProvider(New(srv.URL, "tok", WithHTTPClient(srv.Client())))
+	defer p.Close()
+
+	t.Run("get present", func(t *testing.T) {
+		text, ok := p.ClipboardGet("t1")
+		testutil.Equal(t, text, "staged text")
+		testutil.Equal(t, ok, true)
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		testutil.NoError(t, p.ClipboardClear("t1"))
+		testutil.DeepEqual(t, cleared, []string{"t1"})
+	})
+
+	t.Run("get absent after clear", func(t *testing.T) {
+		text, ok := p.ClipboardGet("t1")
+		testutil.Equal(t, text, "")
+		testutil.Equal(t, ok, false)
+	})
+
+	t.Run("get error returns absent", func(t *testing.T) {
+		// Unknown task → server 404 → request error → absent.
+		text, ok := p.ClipboardGet("nope")
+		testutil.Equal(t, text, "")
+		testutil.Equal(t, ok, false)
+	})
+}
