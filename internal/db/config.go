@@ -50,6 +50,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
 		{"defaults.share_project", &cfg.Defaults.ShareProject},
+		{"defaults.permission_mode", &cfg.Defaults.PermissionMode},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
 		{"keybindings.status", &cfg.Keybindings.Status},

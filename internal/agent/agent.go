@@ -115,6 +115,26 @@ func IsPiBackend(command string) bool {
 	return len(fields) > 0 && filepath.Base(fields[0]) == "pi"
 }
 
+// IsClaudeBackend reports whether a backend command is claude-based.
+// Detection uses the basename of the first word to handle both bare names
+// ("claude") and absolute paths ("/usr/local/bin/claude"). Permission-mode
+// flag injection is scoped to this check so custom/bare commands (e.g. a
+// bash- or sleep-backed test backend) never receive Claude-only flags.
+func IsClaudeBackend(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && filepath.Base(fields[0]) == "claude"
+}
+
+// hasPermissionFlags reports whether a backend command already specifies a
+// Claude permission flag. When true, BuildCmd does NOT inject the configured
+// PermissionMode flags — a hand-edited command always wins, and we never
+// emit a conflicting/duplicate --permission-mode.
+func hasPermissionFlags(command string) bool {
+	return strings.Contains(command, "--permission-mode") ||
+		strings.Contains(command, "--dangerously-skip-permissions") ||
+		strings.Contains(command, "--allow-dangerously-skip-permissions")
+}
+
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
 // slash or backslash (matching pi's `cwd.replace(/^[/\\]/, "")` — NOT a
 // TrimLeft), then replace remaining /, \, : with -, then wrap in --…--.
@@ -240,6 +260,17 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 
 	isCodex := IsCodexBackend(backend.Command)
 	isPi := IsPiBackend(backend.Command)
+
+	// Inject the configured permission mode for claude backends only. Scoped to
+	// IsClaudeBackend (not "not codex/pi") so custom/bare commands never receive
+	// Claude-only flags. Skipped when the command already names a permission
+	// flag (command wins) so we never double-inject. Injected before
+	// resume/session-id/prompt suffixes so the flags precede the "--" separator.
+	if IsClaudeBackend(backend.Command) && !hasPermissionFlags(backend.Command) {
+		if flags := config.PermissionModeFlags(cfg.Defaults.PermissionMode); flags != "" {
+			cmdStr += " " + flags
+		}
+	}
 
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's

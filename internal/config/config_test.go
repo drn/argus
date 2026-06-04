@@ -61,3 +61,48 @@ func TestShouldCleanupWorktrees(t *testing.T) {
 		t.Error("explicit false should return false")
 	}
 }
+
+func TestPermissionModeFlags(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{PermissionModeDefault, "--permission-mode default"},
+		{PermissionModeAcceptEdits, "--permission-mode acceptEdits"},
+		{PermissionModePlan, "--permission-mode plan"},
+		{PermissionModeBypassAllow, "--allow-dangerously-skip-permissions --permission-mode plan"},
+		{PermissionModeBypassActive, "--dangerously-skip-permissions"},
+		{"", ""},
+		{"bogus", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			if got := PermissionModeFlags(tc.mode); got != tc.want {
+				t.Errorf("PermissionModeFlags(%q) = %q, want %q", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPermissionModeLabel(t *testing.T) {
+	for _, m := range PermissionModes {
+		if PermissionModeLabel(m) == "" {
+			t.Errorf("PermissionModeLabel(%q) is empty", m)
+		}
+	}
+	// Unknown values echo back verbatim.
+	if got := PermissionModeLabel("custom"); got != "custom" {
+		t.Errorf("PermissionModeLabel(custom) = %q, want custom", got)
+	}
+}
+
+func TestDefaultConfig_PermissionModeAndCleanCommand(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Defaults.PermissionMode != PermissionModeBypassActive {
+		t.Errorf("default permission mode = %q, want %q", cfg.Defaults.PermissionMode, PermissionModeBypassActive)
+	}
+	// Permission flags must NOT be baked into the command — they're injected.
+	if cmd := cfg.Backends["claude"].Command; cmd != "claude" {
+		t.Errorf("claude command = %q, want bare \"claude\"", cmd)
+	}
+}
