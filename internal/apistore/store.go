@@ -514,3 +514,20 @@ func (s *Store) PluginSections() ([]settings.Section, error) {
 	}
 	return out, nil
 }
+
+// PruneCompleted removes every status=complete task on the daemon, sweeping
+// their worktrees + branches and any orphan worktrees, via
+// POST /api/maintenance/prune-completed. It returns the per-category counts.
+//
+// This is NOT part of the store.Store interface — the local TUI prune flow
+// (agent.PrunePrepare) shells out to git/PTY directly, which only works
+// against the local daemon. In remote mode the whole operation runs on the
+// server, so the TUI type-asserts the store to a narrow remote-pruner
+// interface and calls this instead. Master-only on the server.
+func (s *Store) PruneCompleted(ctx context.Context) (pruned, worktrees, orphans int, err error) {
+	rep, err := s.c.PruneCompleted(ctx)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return rep.Pruned, rep.Worktrees, rep.Orphans, nil
+}

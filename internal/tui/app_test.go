@@ -2,6 +2,8 @@ package tui
 
 import (
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apiclient"
+	"github.com/drn/argus/internal/apistore"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -1321,6 +1325,51 @@ func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 	if !strings.Contains(notice, "0/1") {
 		t.Errorf("header notice = %q, want progress showing total of 1 (not double-counted)", notice)
 	}
+}
+
+// nonRemoteStore is a store.Store that is neither *db.DB (so prune routes to
+// the remote path) nor a remotePruner (so the remote path hits its defensive
+// fallback). Embedding *db.DB supplies every store.Store method; db.DB's
+// PruneCompleted has a different signature, so the wrapper does NOT satisfy
+// remotePruner.
+type nonRemoteStore struct{ *db.DB }
+
+func TestPruneCompleted_RemoteFallbackWhenNoPruner(t *testing.T) {
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.wtRoot = t.TempDir()
+
+	app.pruneCompletedTasks()
+
+	testutil.Contains(t, app.statusbar.Error(), "requires local mode")
+}
+
+func TestPruneCompleted_RemoteDelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pruned":2,"worktrees":1,"orphans":0}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	app.wtRoot = t.TempDir()
+
+	app.pruneCompletedTasks()
+
+	// The HTTP round trip runs in pruneCompletedRemote's goroutine; the
+	// post-request refresh is dispatched via QueueUpdateDraw (no-op without a
+	// running event loop), but the request itself fires regardless.
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected prune-completed request to reach the server")
+	}
+	testutil.Equal(t, app.header.Notice(), "Pruning completed tasks…")
 }
 
 func TestCtrlRPrunesCompleted(t *testing.T) {
