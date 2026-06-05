@@ -28,6 +28,7 @@ const (
 	EventTypeTaskStatusChanged = "task.status_changed"
 	EventTypeTaskCompleted     = "task.completed"
 	EventTypeTaskArchived      = "task.archived"
+	EventTypeTaskDeleted       = "task.deleted"
 	EventTypeTaskRenamed       = "task.renamed"
 	EventTypeTaskForked        = "task.forked"
 	EventTypeMessageSent       = "message.sent"

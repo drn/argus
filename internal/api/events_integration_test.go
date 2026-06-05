@@ -92,6 +92,81 @@ func TestEventsIntegration_DBMutationsEmitEvents(t *testing.T) {
 	}
 }
 
+// TestEventsIntegration_DeleteTaskEmitsDeleted verifies that DELETE /api/tasks/{id}
+// emits exactly one task.deleted event with the correct task id.
+func TestEventsIntegration_DeleteTaskEmitsDeleted(t *testing.T) {
+	srv, _ := testServer(t)
+	prev := events.SetSink(srv)
+	t.Cleanup(func() { events.SetSink(prev) })
+
+	task := &model.Task{ID: "del-task-1", Name: "to-delete", Status: model.StatusPending}
+	testutil.NoError(t, srv.db.Add(task))
+
+	ch, unsub := srv.eventBus.subscribe()
+	t.Cleanup(unsub)
+
+	mux := srv.routes()
+	req := authedReq("DELETE", "/api/tasks/"+task.ID, "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == model.EventTypeTaskDeleted {
+				testutil.Equal(t, ev.TaskID, task.ID)
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for task.deleted event")
+		}
+	}
+}
+
+// TestEventsIntegration_PruneCompletedEmitsDeleted verifies that
+// POST /api/maintenance/prune-completed emits one task.deleted per pruned task.
+func TestEventsIntegration_PruneCompletedEmitsDeleted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv, _ := testServer(t)
+	prev := events.SetSink(srv)
+	t.Cleanup(func() { events.SetSink(prev) })
+
+	testutil.NoError(t, srv.db.Add(&model.Task{ID: "prune-1", Name: "done-a", Status: model.StatusComplete}))
+	testutil.NoError(t, srv.db.Add(&model.Task{ID: "prune-2", Name: "done-b", Status: model.StatusComplete}))
+	testutil.NoError(t, srv.db.Add(&model.Task{ID: "prune-3", Name: "active", Status: model.StatusInProgress}))
+
+	ch, unsub := srv.eventBus.subscribe()
+	t.Cleanup(unsub)
+
+	mux := srv.routes()
+	req := authedReq("POST", "/api/maintenance/prune-completed", "")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	deleted := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(deleted) < 2 {
+		select {
+		case ev := <-ch:
+			if ev.Type == model.EventTypeTaskDeleted {
+				deleted[ev.TaskID] = true
+			}
+		case <-deadline:
+			t.Fatalf("timeout: only got task.deleted for %v", deleted)
+		}
+	}
+	if !deleted["prune-1"] || !deleted["prune-2"] {
+		t.Errorf("expected task.deleted for prune-1 and prune-2, got %v", deleted)
+	}
+	if deleted["prune-3"] {
+		t.Error("in-progress task prune-3 should not have a task.deleted event")
+	}
+}
+
 // TestEventsIntegration_MessageFlowEmits exercises the messaging emission
 // sites (db.InsertMessage / db.AckMessages).
 func TestEventsIntegration_MessageFlowEmits(t *testing.T) {
