@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	_ "modernc.org/sqlite"
@@ -29,17 +30,6 @@ var codexSessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 // piSessionFileRe matches pi's session filenames: <timestamp>_<uuid>.jsonl.
 // Pi writes sessions to ~/.pi/agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl.
 var piSessionFileRe = regexp.MustCompile(`_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
-
-// claudeSessionFileRe matches Claude's transcript filenames: <uuid>.jsonl. The
-// filename IS the session UUID. Claude writes one file per conversation under
-// ~/.claude/projects/<encoded-cwd>/, so the whole basename (minus .jsonl) is the
-// session ID — unlike pi, there's no timestamp prefix to strip.
-var claudeSessionFileRe = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$`)
-
-// claudeCwdNonAlnumRe matches every byte that is NOT an ASCII letter or digit.
-// Claude encodes a cwd into a project-dir name by replacing each such byte with
-// a single '-' (see claudeEncodeCwd).
-var claudeCwdNonAlnumRe = regexp.MustCompile(`[^A-Za-z0-9]`)
 
 // ResolveSandboxConfig returns the effective sandbox config for a task.
 // Per-project settings are merged on top of the global config:
@@ -204,68 +194,30 @@ func CapturePiSessionID(worktreePath string) (string, error) {
 	return newestID, nil
 }
 
-// claudeEncodeCwd mirrors Claude Code's project-dir naming: replace every byte
-// that is not an ASCII letter or digit with a single '-', with NO collapsing of
-// consecutive dashes. So "/Users/aaron/.argus/worktrees/x" becomes
-// "-Users-aaron--argus-worktrees-x" (the leading '/' and the '.' of ".argus"
-// each map to their own '-', producing the "--argus" double dash).
+// CaptureClaudeSessionID returns the session UUID of the most recently active
+// Claude transcript for the given worktree. It delegates to claudesession.List
+// — the single source of truth for discovering and parsing
+// ~/.claude/projects/<encoded-cwd>/*.jsonl — which orders newest-activity-first,
+// and returns its top entry's ID.
 //
-// This diverges from piEncodeCwd, which only maps the path separators "/ \ :"
-// and wraps the result in "--…--". Claude maps ALL non-alphanumerics and adds no
-// wrapper. Using pi's narrower rule here would point Argus at the wrong project
-// directory (e.g. ".argus" would survive as a literal dot) and break post-exit
-// UUID capture.
-func claudeEncodeCwd(cwd string) string {
-	return claudeCwdNonAlnumRe.ReplaceAllString(cwd, "-")
-}
-
-// CaptureClaudeSessionID finds the most recent Claude transcript for the given
-// worktree path under ~/.claude/projects/<encoded-cwd>/ and returns its session
-// UUID (the transcript filename minus ".jsonl"). Returns an error if the project
-// directory is missing or contains no UUID-named transcript.
-//
-// Newest-by-mtime is the active conversation: each Argus task owns a unique
+// Newest-first is the active conversation: each Argus task owns a unique
 // worktree, so its project directory is scoped to just that task's sessions, and
-// after a Claude /clear the freshly-minted UUID's transcript is the newest one.
+// after a Claude /clear the freshly-minted UUID's transcript sorts first.
 // Sub-agent (Task tool) records interleave into the main transcript file rather
 // than spawning separate files, so no sidechain filtering is needed.
+//
+// Returns an error when the worktree path is empty, the project directory is
+// missing, or it holds no UUID-named transcript; callers treat the error as
+// "nothing to capture — leave the pinned SessionID intact".
 func CaptureClaudeSessionID(worktreePath string) (string, error) {
-	if worktreePath == "" {
-		return "", fmt.Errorf("CaptureClaudeSessionID: worktree path is empty")
-	}
-	home, err := os.UserHomeDir()
+	sessions, err := claudesession.List(worktreePath)
 	if err != nil {
-		return "", fmt.Errorf("CaptureClaudeSessionID: home dir: %w", err)
+		return "", fmt.Errorf("CaptureClaudeSessionID: %w", err)
 	}
-	dir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(worktreePath))
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("CaptureClaudeSessionID: read dir %s: %w", dir, err)
+	if len(sessions) == 0 {
+		return "", fmt.Errorf("CaptureClaudeSessionID: no Claude transcript for %s", worktreePath)
 	}
-
-	var newestID string
-	var newestMod int64
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		m := claudeSessionFileRe.FindStringSubmatch(e.Name())
-		if m == nil {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if mod := info.ModTime().UnixNano(); mod > newestMod {
-			newestMod = mod
-			newestID = m[1]
-		}
-	}
-	if newestID == "" {
-		return "", fmt.Errorf("CaptureClaudeSessionID: no transcript files in %s", dir)
-	}
-	return newestID, nil
+	return sessions[0].ID, nil
 }
 
 // CaptureCodexSessionID looks up the most recent codex session for the given
