@@ -106,6 +106,41 @@ func TestSettings_RenderSpinnerDetail(t *testing.T) {
 	sv.Draw(drawSim(t))
 }
 
+// hasRowKind reports whether any row in the current rows slice has the given
+// kind. The caller must setCategory first.
+func hasRowKind(sv *SettingsView, kind settingsRowKind) bool {
+	for _, r := range sv.rows {
+		if r.kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
+	d := testDB(t)
+	sv := NewSettingsView(d)
+	sv.SetDaemonConnected(true)
+	sv.Refresh()
+
+	// Local mode (default): daemon-admin actions are present. srAutoStart is
+	// platform-gated (launchagent.Available()) so it's only asserted absent in
+	// remote mode below, never asserted present here.
+	sv.setCategory(catSystem)
+	testutil.Equal(t, hasRowKind(sv, srDaemon), true)
+	testutil.Equal(t, hasRowKind(sv, srSourcePath), true)
+	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), true)
+
+	// Remote mode hides every daemon-admin action — they'd target the wrong
+	// (client) machine.
+	sv.SetRemote(true)
+	sv.setCategory(catSystem)
+	testutil.Equal(t, hasRowKind(sv, srDaemon), false)
+	testutil.Equal(t, hasRowKind(sv, srSourcePath), false)
+	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), false)
+	testutil.Equal(t, hasRowKind(sv, srAutoStart), false)
+}
+
 func TestSettings_RenderDaemonDetail(t *testing.T) {
 	sv := makeSettings(t)
 	sv.SetDaemonConnected(true)
@@ -437,20 +472,112 @@ func TestSettings_HandleKey_R(t *testing.T) {
 func TestSettings_HandleKey_LeftRightOnSpinner(t *testing.T) {
 	sv := makeSettings(t)
 	selectRowInCategory(t, sv, catAppearance, srSpinner, "")
-	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+
+	// Right cycles the spinner forward and keeps focus on the pane.
+	before := sv.spinnerStyle
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusPane)
+	if sv.spinnerStyle == before {
+		t.Errorf("Right should cycle the spinner forward, still %q", sv.spinnerStyle)
+	}
+
+	// Left returns focus to the rail WITHOUT cycling the value.
+	after := sv.spinnerStyle
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.spinnerStyle, after) // Left did not cycle
+}
+
+func TestSettings_AgentZoomToggle(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+
+	// Default is zoomed (true).
+	testutil.Equal(t, sv.defaultAgentZoom, true)
+
+	// Enter toggles to split and persists.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.defaultAgentZoom, false)
+	testutil.Equal(t, sv.database.Config().UI.DefaultAgentZoom, false)
+
+	// Right also toggles it back (forward cycle wraps).
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
 	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.defaultAgentZoom, true)
+
+	// Left does NOT toggle — it returns focus to the rail so the cursor can
+	// always escape the pane (regression: Appearance rows all cycle, which
+	// used to trap the cursor with no arrow-key path back to the rail).
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+	testutil.Equal(t, sv.focus, focusPane)
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.defaultAgentZoom, true) // unchanged by Left
+}
+
+// TestSettings_LeftEscapesAppearancePane pins the fix for Aaron's "can't escape
+// the box" report: in the Appearance category (whose only rows both cycle on
+// Right/Enter), Left must always move focus back to the rail.
+func TestSettings_LeftEscapesAppearancePane(t *testing.T) {
+	cases := []struct {
+		name string
+		kind settingsRowKind
+	}{
+		{"spinner", srSpinner},
+		{"agent_zoom", srAgentZoom},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sv := makeSettings(t)
+			selectRowInCategory(t, sv, catAppearance, c.kind, "")
+			testutil.Equal(t, sv.focus, focusPane)
+			got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+			testutil.Equal(t, got, true)
+			testutil.Equal(t, sv.focus, focusRail)
+		})
+	}
+}
+
+func TestSettings_RenderAgentZoomDetail(t *testing.T) {
+	sv := makeSettings(t)
+	selectRowInCategory(t, sv, catAppearance, srAgentZoom, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+
+	// Also exercise the split-mode detail branch.
+	sv.defaultAgentZoom = false
+	sv.Draw(drawSim(t))
+
+	// And a very short pane height to exercise the bounds guards (description
+	// lines + footer suppressed) without writing out of the detail rect.
+	sv.SetRect(0, 0, 100, 3)
+	sv.Draw(drawSim(t))
 }
 
 func TestSettings_HandleKey_LeftRightOnVault(t *testing.T) {
 	sv := makeSettings(t)
 	sv.discoveredVaults = []string{"/a", "/b"}
+	sv.metisVaultPath = "/a"
 	selectRowInCategory(t, sv, catKnowledgeBase, srVaultPath, vaultKeyMetis)
-	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+
+	// Right cycles the vault path forward and keeps focus on the pane.
+	got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
 	testutil.Equal(t, got, true)
-	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+	testutil.Equal(t, sv.focus, focusPane)
+	testutil.Equal(t, sv.metisVaultPath, "/b")
+
+	// Left returns focus to the rail WITHOUT cycling the value.
+	got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
 	testutil.Equal(t, got, true)
+	testutil.Equal(t, sv.focus, focusRail)
+	testutil.Equal(t, sv.metisVaultPath, "/b") // Left did not cycle
 }
 
 func TestSettings_HandleKey_LeftFromPaneSwitchesFocus(t *testing.T) {

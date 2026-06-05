@@ -94,18 +94,15 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 //
 //	{"to": "<task_id>", "body": "...", "kind": "note|question|answer", "in_reply_to": "<msg_id>"}
 //
-// requireMaster — sending a message from one task to another mutates shared
-// state across tasks. The mobile inbox UI is read-only; outbound sends are
-// admin-tier (or come in via MCP from the agent itself).
+// Single-tier auth: any authenticated token may send. Sending a message from
+// one task to another mutates shared state but carries no RCE/credential risk
+// (the denylist covers backends CRUD, self-update, and token mint/revoke).
 //
 // Unlike the MCP `task_message_send` tool, this handler does NOT nudge the
 // recipient's PTY. The API server doesn't carry a runner-backed nudger
 // (the daemon owns that adapter for the MCP path). Messages are still
 // durable; the recipient sees them on the next `task_inbox` call.
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	from := r.PathValue("id")
 	if _, err := s.db.Get(from); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {

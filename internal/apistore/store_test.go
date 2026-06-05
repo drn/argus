@@ -155,6 +155,178 @@ func TestStore_PluginSections_ErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestStore_CreateTask(t *testing.T) {
+	f := newFakeAPI(t)
+	var captured string
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.Method, "POST")
+		captured = readBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"t9","name":"slug","status":"in_progress"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/t9/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{
+			ID: "t9", Name: "slug", Status: model.StatusInProgress, Project: "proj", Backend: "claude",
+		})
+	})
+
+	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "t9")
+	testutil.Equal(t, got.Status, model.StatusInProgress)
+	testutil.Equal(t, got.Project, "proj")
+	// Request carried the create fields.
+	testutil.Contains(t, captured, `"prompt":"do a thing"`)
+	testutil.Contains(t, captured, `"project":"proj"`)
+	testutil.Contains(t, captured, `"backend":"claude"`)
+}
+
+// When the post-create raw fetch fails, CreateTask still returns a minimal
+// task built from the (lossy) create response — the row exists on the server.
+func TestStore_CreateTask_RawFetchFallback(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"t9","name":"slug","status":"pending"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/t9/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+
+	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "t9")
+	testutil.Equal(t, got.Name, "slug")
+	testutil.Equal(t, got.Status, model.StatusPending)
+	testutil.Equal(t, got.Project, "proj")
+	testutil.Equal(t, got.Prompt, "p")
+}
+
+func TestStore_CreateTask_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "project not found", http.StatusInternalServerError)
+	})
+	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	if err == nil {
+		t.Fatal("expected error from CreateTask")
+	}
+}
+
+func TestStore_PruneCompleted(t *testing.T) {
+	f := newFakeAPI(t)
+	var method, path string
+	f.mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pruned":3,"worktrees":2,"orphans":1}`))
+	})
+
+	pruned, worktrees, orphans, err := f.store().PruneCompleted(context.Background())
+	testutil.NoError(t, err)
+	testutil.Equal(t, method, "POST")
+	testutil.Equal(t, path, "/api/maintenance/prune-completed")
+	testutil.Equal(t, pruned, 3)
+	testutil.Equal(t, worktrees, 2)
+	testutil.Equal(t, orphans, 1)
+}
+
+func TestStore_PruneCompleted_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	pruned, worktrees, orphans, err := f.store().PruneCompleted(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	testutil.Equal(t, pruned, 0)
+	testutil.Equal(t, worktrees, 0)
+	testutil.Equal(t, orphans, 0)
+}
+
+func TestStore_ForkTask(t *testing.T) {
+	f := newFakeAPI(t)
+	var captured string
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.Method, "POST")
+		captured = readBody(r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-alpha","status":"in_progress"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{
+			ID: "f1", Name: "fork-alpha", Status: model.StatusInProgress, Project: "proj",
+		})
+	})
+
+	got, err := f.store().ForkTask(context.Background(), "src1", "fork-alpha", "", "proj")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "f1")
+	testutil.Equal(t, got.Project, "proj")
+	testutil.Contains(t, captured, `"name":"fork-alpha"`)
+	testutil.Contains(t, captured, `"project":"proj"`)
+}
+
+func TestStore_ForkTask_RawFetchFallback(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-alpha","status":"pending"}`))
+	})
+	f.mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+
+	got, err := f.store().ForkTask(context.Background(), "src1", "", "", "proj")
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, "f1")
+	testutil.Equal(t, got.Name, "fork-alpha")
+	testutil.Equal(t, got.Status, model.StatusPending)
+	testutil.Equal(t, got.Project, "proj")
+}
+
+func TestStore_ForkTask_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "task not found", http.StatusNotFound)
+	})
+	_, err := f.store().ForkTask(context.Background(), "src1", "n", "p", "proj")
+	if err == nil {
+		t.Fatal("expected error from ForkTask")
+	}
+}
+
+func TestStore_RunSchedule(t *testing.T) {
+	f := newFakeAPI(t)
+	var method, path string
+	f.mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+
+	taskID, err := f.store().RunSchedule(context.Background(), "s1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, method, "POST")
+	testutil.Equal(t, path, "/api/schedules/s1/run")
+	testutil.Equal(t, taskID, "t42")
+}
+
+func TestStore_RunSchedule_ErrorPropagates(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "scheduler not running", http.StatusServiceUnavailable)
+	})
+	taskID, err := f.store().RunSchedule(context.Background(), "s1")
+	if err == nil {
+		t.Fatal("expected error from RunSchedule")
+	}
+	testutil.Equal(t, taskID, "")
+}
+
 func readBody(r *http.Request) string {
 	buf := make([]byte, 4096)
 	n, _ := r.Body.Read(buf)

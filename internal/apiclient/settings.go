@@ -28,8 +28,9 @@ type APISettingsJSON struct {
 
 // DefaultsJSON mirrors api.defaultsJSON.
 type DefaultsJSON struct {
-	Backend      string `json:"backend"`
-	ShareProject string `json:"share_project"`
+	Backend        string `json:"backend"`
+	ShareProject   string `json:"share_project"`
+	PermissionMode string `json:"permission_mode"`
 }
 
 // SettingsResp is the full /api/settings shape.
@@ -61,8 +62,9 @@ type APIUpdate struct {
 
 // DefaultsUpdate is the partial-update payload for the defaults section.
 type DefaultsUpdate struct {
-	Backend      *string `json:"backend,omitempty"`
-	ShareProject *string `json:"share_project,omitempty"`
+	Backend        *string `json:"backend,omitempty"`
+	ShareProject   *string `json:"share_project,omitempty"`
+	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 
 // SettingsUpdate is the request body for PUT /api/settings. Every section is
@@ -83,7 +85,9 @@ func (c *Client) GetSettings(ctx context.Context) (*SettingsResp, error) {
 	return &resp, nil
 }
 
-// UpdateSettings applies a partial update. Master-only.
+// UpdateSettings applies a partial update. The sandbox section requires the
+// master token; KB / API / UX-defaults sections accept any authenticated token
+// (single-tier auth).
 func (c *Client) UpdateSettings(ctx context.Context, req SettingsUpdate) (*SettingsResp, error) {
 	var resp SettingsResp
 	if err := c.doJSON(ctx, "PUT", "/api/settings", req, &resp); err != nil {
@@ -247,7 +251,9 @@ func (c *Client) RevokeToken(ctx context.Context, id string) error {
 // type definition that would drift on every config schema change.
 type ConfigJSON = map[string]any
 
-// GetConfig returns the daemon's full config.Config snapshot. Master-only.
+// GetConfig returns the daemon's full config.Config snapshot. Open to any
+// authenticated token (single-tier auth; read-only disclosure of the same
+// backend command templates already readable via GET /api/backends).
 // Added in phase 2 (gap fill) so a remote TUI doesn't need a dozen
 // specialised endpoints for projects/backends/keybindings/sandbox/etc.
 func (c *Client) GetConfig(ctx context.Context) (ConfigJSON, error) {

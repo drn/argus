@@ -203,13 +203,14 @@ func (d *Daemon) Runner() *agent.Runner {
 	return d.runner
 }
 
-// captureSessionIDPostExit fires the backend-specific UUID capture for tasks
-// whose session ID wasn't pre-minted (codex, pi). Runs in its own goroutine
-// from onFinish so it never blocks the runner exit path. Guards on
-// SessionID=="" so concurrent TUI-side capture is harmless: both paths run
-// CaptureSessionID, which is a pure read of the same backend state (codex
-// state_5.sqlite, pi sessions readdir), so last-writer-wins produces the
-// same value in the common case.
+// captureSessionIDPostExit refreshes a task's session UUID from backend state.
+// Runs in its own goroutine from onFinish so it never blocks the runner exit
+// path. The recapture decision is delegated to agent.NeedsSessionRecapture:
+// codex/pi capture once (while SessionID is empty), Claude refreshes on every
+// exit (a /clear mints a new UUID under ~/.claude/projects), unknown backends
+// never recapture. Concurrent TUI-side capture is harmless: both paths run
+// CaptureSessionID, a pure read of the same backend state, so last-writer-wins
+// produces the same value in the common case.
 //
 // Edge case: if the user starts a brand-new session for the same task in
 // the few-ms gap between onFinish and the TUI's QueueUpdateDraw, the two
@@ -217,8 +218,9 @@ func (d *Daemon) Runner() *agent.Runner {
 // still points at a valid session for the same task, so we intentionally
 // accept this benign drift rather than serialize the two paths.
 //
-// No-op for Claude-style backends (dispatcher returns ("", nil)) and for
-// tasks already deleted before the goroutine runs.
+// No-op for unknown backends (dispatcher returns ("", nil)), for unchanged IDs
+// (the common no-/clear Claude exit), and for tasks already deleted before the
+// goroutine runs.
 //
 // NOTE on log lines: this logs without a backend-kind tag (e.g. "codex" /
 // "pi"). The daemon's slog output already carries the structured task=<id>
@@ -228,16 +230,24 @@ func (d *Daemon) Runner() *agent.Runner {
 // asymmetry intentional — don't mirror the TUI tag dance here.
 func (d *Daemon) captureSessionIDPostExit(taskID string) {
 	t, err := d.db.Get(taskID)
-	if err != nil || t == nil || t.SessionID != "" || t.Worktree == "" {
+	if err != nil || t == nil || t.Worktree == "" {
 		return
 	}
-	sid, err := agent.CaptureSessionID(t, d.db.Config())
+	// Codex/Pi capture once (guard on empty SessionID); Claude refreshes on
+	// every exit so a /clear-minted UUID supersedes the stale one. Unknown
+	// backends never recapture.
+	cfg := d.db.Config()
+	if !agent.NeedsSessionRecapture(t, cfg) {
+		return
+	}
+	sid, err := agent.CaptureSessionID(t, cfg)
 	if err != nil {
+		// Capture failure leaves the existing SessionID intact — never clobber.
 		slog.Warn("daemon: session ID capture failed", "task", taskID, "err", err)
 		return
 	}
-	if sid == "" {
-		return // Claude-style backend or unrecognized; nothing to persist.
+	if sid == "" || sid == t.SessionID {
+		return // Unrecognized backend, or no change (common no-/clear exit).
 	}
 	t2, err := d.db.Get(taskID)
 	if err != nil || t2 == nil {

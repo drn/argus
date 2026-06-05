@@ -43,6 +43,7 @@ const (
 	srAPI
 	srDaemon
 	srSpinner
+	srAgentZoom
 	srVaultPath
 	srUpdateArgus
 	srSourcePath
@@ -50,6 +51,7 @@ const (
 	srAutoStart
 	srPluginField
 	srPluginSubmit
+	srPermissionMode
 )
 
 // settingsCategory groups related settings rows into a left-rail entry.
@@ -66,6 +68,7 @@ const (
 	catSandbox
 	catProjects
 	catBackends
+	catDefaults
 	catSchedules
 	catKnowledgeBase
 	catRemoteAPI
@@ -89,6 +92,8 @@ func (c settingsCategory) Label() string {
 		return "Projects"
 	case catBackends:
 		return "Backends"
+	case catDefaults:
+		return "Defaults"
 	case catSchedules:
 		return "Schedules"
 	case catKnowledgeBase:
@@ -110,7 +115,7 @@ func (c settingsCategory) Label() string {
 // builtinCategories is the fixed top portion of the rail. Plugins, when
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
-	catSystem, catSandbox, catProjects, catBackends, catSchedules,
+	catSystem, catSandbox, catProjects, catBackends, catDefaults, catSchedules,
 	catKnowledgeBase, catRemoteAPI, catAppearance, catLogs,
 }
 
@@ -203,6 +208,14 @@ type SettingsView struct {
 	// Spinner.
 	spinnerStyle string // current spinner style name
 
+	// Default agent-view layout: zoomed (single-pane) vs. split (1:3:1).
+	defaultAgentZoom bool
+
+	// Default permission mode injected into Claude-style backend commands
+	// (one of config.PermissionModes). Empty falls back to the bypass-active
+	// default via config.DefaultConfig.
+	permissionMode string
+
 	// Project name list (used by other UI features).
 	projectNames []string
 
@@ -220,6 +233,11 @@ type SettingsView struct {
 	// Daemon.
 	daemonConnected  bool
 	daemonRestarting bool
+	// remote is true when the TUI runs in --remote mode (a.db is an
+	// *apistore.Store). Daemon-admin actions (Restart Daemon, Update Argus,
+	// LaunchAgent auto-start) manage the OS install on the *local* machine,
+	// so they're meaningless from a remote client and hidden when remote.
+	remote bool
 
 	// Auto-start (LaunchAgent on macOS).
 	autoStartStatus  launchagent.Status
@@ -429,6 +447,16 @@ func (sv *SettingsView) Refresh() {
 		sv.spinnerStyle = string(spinner.StyleProgress)
 	}
 
+	// Default agent-view layout.
+	sv.defaultAgentZoom = cfg.UI.DefaultAgentZoom
+
+	// Default permission mode. Fall back to the config default when unset so
+	// the row always reflects what BuildCmd will actually inject.
+	sv.permissionMode = cfg.Defaults.PermissionMode
+	if sv.permissionMode == "" {
+		sv.permissionMode = config.DefaultConfig().Defaults.PermissionMode
+	}
+
 	sv.projectNames = projNames
 
 	// Argus self-update source path.
@@ -512,6 +540,14 @@ func (sv *SettingsView) SetDaemonConnected(connected bool) {
 	} else {
 		sv.warnings = nil
 	}
+	sv.rebuildRows()
+}
+
+// SetRemote marks the view as running in --remote mode, which hides the
+// daemon-admin actions (Restart Daemon, Update Argus, LaunchAgent auto-start)
+// that only make sense against the local machine. Called once at construction.
+func (sv *SettingsView) SetRemote(remote bool) {
+	sv.remote = remote
 	sv.rebuildRows()
 }
 
@@ -736,7 +772,9 @@ func (sv *SettingsView) rebuildRows() {
 				sv.rows = append(sv.rows, settingsRow{kind: srWarning, label: "⚠ " + w, key: fmt.Sprintf("_warn_%d", i)})
 			}
 		}
-		if sv.daemonConnected {
+		// Daemon-admin actions manage the local OS install; hide them in
+		// --remote mode where they'd target the wrong (client) machine.
+		if sv.daemonConnected && !sv.remote {
 			label := "Restart Daemon"
 			if sv.daemonRestarting {
 				label = "Restarting..."
@@ -757,7 +795,7 @@ func (sv *SettingsView) rebuildRows() {
 			}
 			sv.rows = append(sv.rows, settingsRow{kind: srUpdateArgus, label: updateLabel, key: "_argus_update"})
 		}
-		if launchagent.Available() {
+		if launchagent.Available() && !sv.remote {
 			autoLabel := "Auto-start at login: disabled"
 			if sv.autoStartStatus.Installed {
 				if sv.autoStartStatus.Loaded {
@@ -842,9 +880,19 @@ func (sv *SettingsView) rebuildRows() {
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
 
+	case catDefaults:
+		pmLabel := fmt.Sprintf("Permission mode: %s", config.PermissionModeLabel(sv.permissionMode))
+		sv.rows = append(sv.rows, settingsRow{kind: srPermissionMode, label: pmLabel, key: "_permission_mode"})
+
 	case catAppearance:
 		spinLabel := fmt.Sprintf("Spinner: %s", spinner.Get(spinner.Style(sv.spinnerStyle)).Label)
 		sv.rows = append(sv.rows, settingsRow{kind: srSpinner, label: spinLabel, key: "_spinner"})
+
+		zoomLabel := "Default agent view: Split"
+		if sv.defaultAgentZoom {
+			zoomLabel = "Default agent view: Zoomed"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srAgentZoom, label: zoomLabel, key: "_agent_zoom"})
 
 	case catLogs:
 		sv.rows = append(sv.rows, settingsRow{kind: srLogs, label: "UX Log", key: "ux"})
@@ -975,18 +1023,12 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		if sv.focus == focusRail {
 			return false
 		}
-		switch sv.currentRowKind() {
-		case srSpinner:
-			sv.cycleSpinner(-1)
-			return true
-		case srVaultPath:
-			sv.cycleVaultPath(-1)
-			return true
-		case srPluginField:
-			if sv.handlePluginCycle(-1) {
-				return true
-			}
-		}
+		// From the pane, Left always returns focus to the rail — including on
+		// value rows that cycle (spinner, agent-zoom, vault, plugin enums).
+		// Overloading Left as "cycle backwards" trapped the cursor in any
+		// category whose rows all cycle (Appearance is spinner + agent-zoom),
+		// leaving no arrow-key path back to the rail. Right/Enter still cycle
+		// (wrapping), so every option stays reachable.
 		sv.setFocus(focusRail)
 		return true
 	case tcell.KeyRight:
@@ -997,6 +1039,12 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 		switch sv.currentRowKind() {
 		case srSpinner:
 			sv.cycleSpinner(1)
+			return true
+		case srAgentZoom:
+			sv.toggleDefaultAgentZoom()
+			return true
+		case srPermissionMode:
+			sv.cyclePermissionMode(1)
 			return true
 		case srVaultPath:
 			sv.cycleVaultPath(1)
@@ -1328,6 +1376,12 @@ func (sv *SettingsView) handleEnter() bool {
 	case srSpinner:
 		sv.cycleSpinner(1)
 		return true
+	case srAgentZoom:
+		sv.toggleDefaultAgentZoom()
+		return true
+	case srPermissionMode:
+		sv.cyclePermissionMode(1)
+		return true
 	case srVaultPath:
 		// Start inline editing for the selected vault path.
 		sv.editingVault = row.key
@@ -1633,6 +1687,44 @@ func (sv *SettingsView) cycleSpinner(dir int) {
 	sv.rebuildRows()
 }
 
+// toggleDefaultAgentZoom flips the resting agent-view layout between zoomed
+// (single-pane) and split (1:3:1) and persists it. Takes effect on the next
+// agent-view entry; Ctrl+Z still toggles per-session at runtime.
+func (sv *SettingsView) toggleDefaultAgentZoom() {
+	sv.defaultAgentZoom = !sv.defaultAgentZoom
+	val := "false"
+	if sv.defaultAgentZoom {
+		val = "true"
+	}
+	if err := sv.database.SetConfigValue("ui.default_agent_zoom", val); err != nil {
+		uxlog.Log("[settings] failed to persist default agent zoom: %v", err)
+	}
+	uxlog.Log("[settings] default agent zoom toggled to %s", val)
+	sv.rebuildRows()
+}
+
+// cyclePermissionMode cycles the default permission mode forward or backward
+// through config.PermissionModes and persists it. Takes effect on the next
+// Claude-style session launch (agent.BuildCmd injects the mapped flags).
+func (sv *SettingsView) cyclePermissionMode(dir int) {
+	modes := config.PermissionModes
+	idx := 0
+	for i, m := range modes {
+		if m == sv.permissionMode {
+			idx = i
+			break
+		}
+	}
+	// Wrap in both directions so every option stays reachable.
+	next := ((idx+dir)%len(modes) + len(modes)) % len(modes)
+	sv.permissionMode = modes[next]
+	if err := sv.database.SetConfigValue("defaults.permission_mode", sv.permissionMode); err != nil {
+		uxlog.Log("[settings] failed to persist permission mode: %v", err)
+	}
+	uxlog.Log("[settings] permission mode set to %q", sv.permissionMode)
+	sv.rebuildRows()
+}
+
 // cycleVaultPath cycles the vault path forward or backward through discovered iCloud vaults.
 func (sv *SettingsView) cycleVaultPath(dir int) {
 	if len(sv.discoveredVaults) == 0 {
@@ -1896,6 +1988,10 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderVaultPathDetail(screen, x, y, w, h, row)
 	case srSpinner:
 		sv.renderSpinnerDetail(screen, x, y, w, h)
+	case srAgentZoom:
+		sv.renderAgentZoomDetail(screen, x, y, w, h)
+	case srPermissionMode:
+		sv.renderPermissionModeDetail(screen, x, y, w, h)
 	case srLogs:
 		sv.renderLogsDetail(screen, x, y, w, h, row)
 	case srDaemon:
@@ -1942,7 +2038,7 @@ func (sv *SettingsView) renderAPIDetail(screen tcell.Screen, x, y, w, h int) {
 		}
 	}
 	if h > 1 {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2084,7 +2180,7 @@ func (sv *SettingsView) renderSourcePathDetail(screen tcell.Screen, x, y, w, h i
 	r++
 	widget.DrawText(screen, x, y+r, w, "the \"Update Argus\" action to run go install.", theme.StyleDimmed)
 	if h > 1 {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] edit", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] edit  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2207,7 +2303,7 @@ func (sv *SettingsView) renderSandboxDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if row+2 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter] toggle  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2374,7 +2470,7 @@ func (sv *SettingsView) renderKBDetail(screen tcell.Screen, x, y, w, h int) {
 	r += 2
 
 	if r < h {
-		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+r, w, "[enter] toggle KB  [◀] rail", theme.StyleDimmed)
 	}
 }
 
@@ -2432,7 +2528,7 @@ func (sv *SettingsView) renderVaultPathDetail(screen tcell.Screen, x, y, w, h in
 		if editing {
 			widget.DrawText(screen, x, y+r, w, "[enter] save  [tab] complete  [esc] cancel", theme.StyleDimmed)
 		} else if len(sv.discoveredVaults) > 0 {
-			widget.DrawText(screen, x, y+r, w, "[enter] edit path  [◀/▶] cycle vaults", theme.StyleDimmed)
+			widget.DrawText(screen, x, y+r, w, "[enter] edit  [▶] cycle  [◀] rail", theme.StyleDimmed)
 		} else {
 			widget.DrawText(screen, x, y+r, w, "[enter] edit path", theme.StyleDimmed)
 		}
@@ -2472,7 +2568,65 @@ func (sv *SettingsView) renderSpinnerDetail(screen tcell.Screen, x, y, w, h int)
 	}
 
 	if r+1 < h {
-		widget.DrawText(screen, x, y+h-1, w, "[enter/◀/▶] cycle styles", theme.StyleDimmed)
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] cycle  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderAgentZoomDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Default Agent View", theme.StyleTitle)
+	r := 2
+
+	current := "Split (terminal + git/files side panels)"
+	if sv.defaultAgentZoom {
+		current = "Zoomed (single-pane terminal)"
+	}
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, current, tcell.StyleDefault.Foreground(theme.ColorComplete))
+	}
+	r += 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Layout the agent view opens in. Ctrl+Z still", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "toggles zoom per-session at runtime.", theme.StyleDimmed)
+	}
+
+	if r+1 < h {
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] toggle  [◀] rail", theme.StyleDimmed)
+	}
+}
+
+func (sv *SettingsView) renderPermissionModeDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Default Permission Mode", theme.StyleTitle)
+	r := 2
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, config.PermissionModeLabel(sv.permissionMode),
+			tcell.StyleDefault.Foreground(theme.ColorComplete))
+	}
+	r += 2
+
+	if flags := config.PermissionModeFlags(sv.permissionMode); flags != "" && r < h {
+		widget.DrawText(screen, x, y+r, w, "Flags: "+flags, theme.StyleDimmed)
+		r += 2
+	}
+
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "Flags injected into Claude-style commands at", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "launch. A backend command that already names a", theme.StyleDimmed)
+	}
+	r++
+	if r < h {
+		widget.DrawText(screen, x, y+r, w, "permission flag overrides this setting.", theme.StyleDimmed)
+	}
+
+	if r+1 < h {
+		widget.DrawText(screen, x, y+h-1, w, "[enter/▶] cycle  [◀] rail", theme.StyleDimmed)
 	}
 }
 

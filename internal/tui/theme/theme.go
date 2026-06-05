@@ -41,6 +41,7 @@ const (
 	IconMoonStars   = rune(0x0F0594) // 󰖔 nf-md-weather_night — unvisited / needs attention
 	IconMoonOutline = rune(0xF186)   //  nf-fa-moon_o — visited / idle
 	IconNeedsInput  = rune(0xF059)   //  nf-fa-question_circle — idle AND blocked on a user prompt
+	IconReview      = rune(0x0F00BC) // 󰂼 nf-md-clipboard_check — in-review / ready to check off
 
 	// PR review indicator glyphs (add-pr-review-indicator). All three live in
 	// the git-pull-request family so they read as "this is about a PR", but use

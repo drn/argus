@@ -252,7 +252,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 		{
 			name:     "in review",
 			tasks:    []*model.Task{{ID: "1", Status: model.StatusInReview}},
-			wantChar: theme.IconMoonStars,
+			wantChar: theme.IconReview,
 		},
 		{
 			name: "mixed complete and pending",
@@ -277,7 +277,7 @@ func TestTaskListView_ProjectStatusIcon(t *testing.T) {
 			},
 			running:  map[string]bool{"1": true},
 			idle:     map[string]bool{"1": true},
-			wantChar: theme.IconMoonStars,
+			wantChar: theme.IconReview,
 		},
 		{
 			name: "running in progress plus in review shows spinner",

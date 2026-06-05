@@ -156,6 +156,40 @@ func TestSettingsView_PluginFieldEnumCycle(t *testing.T) {
 	testutil.Equal(t, val, "codex")
 }
 
+// TestSettings_LeftEscapesPluginField pins the universal "Left → rail"
+// behavior for plugin field rows and confirms Right toggles a bool in place —
+// matching the field hints. A plugin section whose rows all cycle would
+// otherwise be a focus trap (same class as the Appearance bug this branch fixes).
+func TestSettings_LeftEscapesPluginField(t *testing.T) {
+	t.Run("bool: Right toggles in place, Left returns to rail", func(t *testing.T) {
+		sv := selectFirstPluginSection(t)
+		sv.cursor = 0 // bool field
+		testutil.Equal(t, sv.focus, focusPane)
+		sec := sv.activePluginSection()
+
+		got := sv.HandleKey(tcell.NewEventKey(tcell.KeyRight, 0, 0))
+		testutil.Equal(t, got, true)
+		testutil.Equal(t, sv.focus, focusPane)
+		on, _ := sv.pluginValueFor(sec, &sec.Spec.Fields[0]).(bool)
+		testutil.Equal(t, on, true) // Right toggled the bool
+
+		got = sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+		testutil.Equal(t, got, true)
+		testutil.Equal(t, sv.focus, focusRail)
+		still, _ := sv.pluginValueFor(sec, &sec.Spec.Fields[0]).(bool)
+		testutil.Equal(t, still, true) // Left did NOT toggle
+	})
+
+	t.Run("enum: Left returns to rail", func(t *testing.T) {
+		sv := selectFirstPluginSection(t)
+		sv.cursor = 3 // enum field
+		testutil.Equal(t, sv.focus, focusPane)
+		got := sv.HandleKey(tcell.NewEventKey(tcell.KeyLeft, 0, 0))
+		testutil.Equal(t, got, true)
+		testutil.Equal(t, sv.focus, focusRail)
+	})
+}
+
 func TestSettingsView_PluginFieldStringInlineEdit(t *testing.T) {
 	sv := selectFirstPluginSection(t)
 	// String field is row 2 (index 2).
@@ -382,8 +416,8 @@ func TestSettings_PluginFieldHintAndTrunc(t *testing.T) {
 		editing bool
 		want    string
 	}{
-		{pluginsettings.FormField{Type: pluginsettings.FieldBool}, false, "[enter] toggle"},
-		{pluginsettings.FormField{Type: pluginsettings.FieldEnum}, false, "[◀/▶] cycle  [enter] cycle"},
+		{pluginsettings.FormField{Type: pluginsettings.FieldBool}, false, "[enter/▶] toggle  [◀] rail"},
+		{pluginsettings.FormField{Type: pluginsettings.FieldEnum}, false, "[▶/enter] cycle  [◀] rail"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldInt}, false, "[enter] edit value"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldString}, true, "[enter] save  [esc] cancel"},
 		{pluginsettings.FormField{Type: pluginsettings.FieldType("unknown")}, false, ""},

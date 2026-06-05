@@ -55,7 +55,7 @@ type metaEntryJSON struct {
 //
 // Reads are open to any authenticated request (master OR device) — symmetric
 // with handleListInbox and the other per-task read endpoints. Writes go
-// through handlePutMeta and require master.
+// through handlePutMeta and are likewise open to any authenticated token.
 func (s *Server) handleGetMeta(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
@@ -88,13 +88,12 @@ func (s *Server) handleGetMeta(w http.ResponseWriter, r *http.Request) {
 // metaPutReq is the union shape accepted by PUT /api/tasks/{id}/meta. Exactly
 // one of (Key+Value) or Entries must be set.
 //
-// Namespace handling depends on the auth tier of the request:
-//   - master tokens: Namespace is taken from the body as-is. Required.
+// Namespace handling depends on whether the token is plugin-scoped:
+//   - master / device tokens: Namespace is taken from the body as-is. Required.
 //   - scope:<name> tokens: Namespace is auto-derived from the auth tag and
 //     forced to <name>. If the body sets a namespace that disagrees, the
 //     handler rejects with 403 (defense in depth — prevents one plugin from
 //     writing into another plugin's namespace).
-//   - device tokens: rejected at the auth gate; never reach this struct.
 type metaPutReq struct {
 	Namespace string            `json:"namespace"`
 	Key       string            `json:"key"`
@@ -103,18 +102,16 @@ type metaPutReq struct {
 }
 
 // handlePutMeta upserts one row or a batch of rows under the path-bound
-// task's metadata. Master tokens write any namespace explicitly; scope tokens
-// write into their auth-derived namespace only. Device tokens are rejected.
+// task's metadata. Single-tier auth: any authenticated token may write.
+// Master and device tokens are unconfined (namespace comes from the body);
+// scope tokens write only into their auth-derived namespace.
 // See metaPutReq for the accepted body shapes and namespace policy.
 func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
-	// Gate: accept master OR scope:<name>. Anything else (device, no auth
-	// tag) gets the same 403 requireMaster would have returned.
+	// Single-tier auth: any authenticated token may write. Scope tokens stay
+	// namespace-confined (plugin namespacing, not a permission tier — see the
+	// resolution below); master and device tokens are unconfined and take the
+	// namespace from the body.
 	scope, hasScope := scopeFromAuth(r)
-	isMaster := r.Header.Get("X-Argus-Auth") == "master"
-	if !isMaster && !hasScope {
-		http.Error(w, `{"error":"master or scope token required"}`, http.StatusForbidden)
-		return
-	}
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
@@ -133,7 +130,7 @@ func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Namespace resolution. Scope tokens force-override (and reject explicit
-	// mismatch); master tokens require an explicit namespace.
+	// mismatch); master and device tokens require an explicit namespace.
 	if hasScope {
 		if req.Namespace != "" && req.Namespace != scope {
 			writeJSON(w, http.StatusForbidden, map[string]string{

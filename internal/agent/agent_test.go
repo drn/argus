@@ -16,6 +16,11 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+// testConfig deliberately keeps permission flags BAKED into the claude command
+// (rather than relying on Defaults.PermissionMode injection). This exercises the
+// "command wins" path: BuildCmd's hasPermissionFlags guard must suppress
+// injection when the command already names a permission flag. Tests that
+// exercise the injection path use permModeConfig (bare "claude") instead.
 func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
@@ -180,6 +185,99 @@ func TestBuildCmd(t *testing.T) {
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
+}
+
+// permModeConfig returns a config whose claude backend command carries NO
+// baked permission flags (so injection is exercised) and whose default
+// permission mode is the given value.
+func permModeConfig(mode string) config.Config {
+	return config.Config{
+		Defaults: config.Defaults{Backend: "claude", PermissionMode: mode},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude"},
+			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":     {Command: "pi"},
+		},
+	}
+}
+
+func TestBuildCmd_PermissionMode(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{config.PermissionModeDefault, "claude --permission-mode default -- 'go'"},
+		{config.PermissionModeAcceptEdits, "claude --permission-mode acceptEdits -- 'go'"},
+		{config.PermissionModePlan, "claude --permission-mode plan -- 'go'"},
+		{config.PermissionModeBypassAllow, "claude --allow-dangerously-skip-permissions --permission-mode plan -- 'go'"},
+		{config.PermissionModeBypassActive, "claude --dangerously-skip-permissions -- 'go'"},
+		{"", "claude -- 'go'"}, // unconfigured/unknown → no injection
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := permModeConfig(tc.mode)
+			task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
+	cfg := permModeConfig(config.PermissionModeBypassActive)
+
+	t.Run("codex", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "codex --dangerously-bypass-approvals-and-sandbox -- 'go'")
+	})
+
+	t.Run("pi", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	})
+
+	t.Run("bare custom command", func(t *testing.T) {
+		// A non-claude custom backend must NOT receive Claude permission flags.
+		cfg := config.Config{
+			Defaults: config.Defaults{Backend: "bash", PermissionMode: config.PermissionModeBypassActive},
+			Backends: map[string]config.Backend{"bash": {Command: "bash -c 'sleep 0.1'"}},
+		}
+		task := &model.Task{Name: "t", Backend: "bash", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "bash -c 'sleep 0.1' -- 'go'")
+	})
+}
+
+// TestBuildCmd_PermissionMode_CommandWins confirms a backend command that
+// already names a permission flag suppresses injection (no duplicate/conflict).
+func TestBuildCmd_PermissionMode_CommandWins(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude", PermissionMode: config.PermissionModeBypassActive},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude --permission-mode acceptEdits"},
+		},
+	}
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --permission-mode acceptEdits -- 'go'")
+}
+
+// TestBuildCmd_PermissionMode_BeforeSessionID confirms injected flags precede
+// the --session-id suffix.
+func TestBuildCmd_PermissionMode_BeforeSessionID(t *testing.T) {
+	cfg := permModeConfig(config.PermissionModeBypassActive)
+	task := &model.Task{Name: "t", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2],
+		"claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'")
 }
 
 // TestBuildCmd_ExportsTaskID confirms ARGUS_TASK_ID lands in the spawned
@@ -1413,12 +1511,23 @@ func TestCaptureSessionID_DispatchesByBackend(t *testing.T) {
 		testutil.Equal(t, got, sid)
 	})
 
-	t.Run("claude backend is a no-op", func(t *testing.T) {
+	t.Run("claude backend scans ~/.claude transcripts", func(t *testing.T) {
+		home := t.TempDir() // clean (untainted) base, override HOME for this subtest
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, "claude-dispatch-wt")
+		testutil.NoError(t, os.MkdirAll(wt, 0o755))
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		sid := "12345678-90ab-4cde-8f01-23456789abcd"
+		testutil.NoError(t, os.WriteFile(
+			filepath.Join(projDir, sid+".jsonl"), []byte("{}\n"), 0o644,
+		))
+
 		cfg := testConfig()
-		task := &model.Task{Backend: "claude", Worktree: t.TempDir()}
+		task := &model.Task{Backend: "claude", Worktree: wt}
 		got, err := CaptureSessionID(task, cfg)
 		testutil.NoError(t, err)
-		testutil.Equal(t, got, "")
+		testutil.Equal(t, got, sid)
 	})
 
 	t.Run("unknown bare backend is a no-op", func(t *testing.T) {
@@ -1451,4 +1560,150 @@ func TestBuildCmd_ResumeNoSessionIDPi(t *testing.T) {
 	cmd, _, err := BuildCmd(task, cfg, true)
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "pi")
+}
+
+func TestIsClaudeBackend(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"bare claude", "claude", true},
+		{"claude with flags", "claude --dangerously-skip-permissions --permission-mode plan", true},
+		{"absolute path", "/usr/local/bin/claude", true},
+		{"empty", "", false},
+		{"prefix only", "claude-helper", false},
+		{"pi", "pi --model claude", false},
+		{"codex", "codex --dangerously-bypass-approvals-and-sandbox", false},
+		{"bare unknown", "my-agent", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, IsClaudeBackend(tc.cmd), tc.want)
+		})
+	}
+}
+
+func TestClaudeEncodeCwd(t *testing.T) {
+	// Claude replaces every non-alphanumeric byte with a single '-', with NO
+	// collapsing of consecutive dashes — broader than piEncodeCwd's "/ \ :" map.
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		{"/Users/me/proj", "-Users-me-proj"},
+		// The ".argus" dot AND the preceding slash each map to their own dash,
+		// producing the real-world "--argus" double dash. This is the case that
+		// pins divergence from piEncodeCwd (which would leave the dot intact).
+		{"/Users/aaron/.argus/worktrees/x", "-Users-aaron--argus-worktrees-x"},
+		{"relative/path", "relative-path"},
+		{"/", "-"},
+		{"", ""},
+		// Hyphens in the source survive (they're already '-'); underscores and
+		// dots are mapped.
+		{"/a/b-c/d_e.f", "-a-b-c-d-e-f"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.cwd, func(t *testing.T) {
+			testutil.Equal(t, claudeEncodeCwd(tc.cwd), tc.want)
+		})
+	}
+}
+
+func TestCaptureClaudeSessionID(t *testing.T) {
+	t.Run("newest transcript wins", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := filepath.Join(home, ".argus", "worktrees", "p", "t")
+		testutil.NoError(t, os.MkdirAll(wt, 0o755))
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+
+		// Original session + a newer post-/clear session; newest mtime wins.
+		older := filepath.Join(projDir, "aaaaaaaa-bbbb-4ccc-9ddd-111111111111.jsonl")
+		newer := filepath.Join(projDir, "cccccccc-bbbb-4ccc-9ddd-222222222222.jsonl")
+		testutil.NoError(t, os.WriteFile(older, []byte("{}\n"), 0o644))
+		testutil.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+		past := time.Now().Add(-1 * time.Hour)
+		testutil.NoError(t, os.Chtimes(older, past, past))
+
+		sid, err := CaptureClaudeSessionID(wt)
+		testutil.NoError(t, err)
+		testutil.Equal(t, sid, "cccccccc-bbbb-4ccc-9ddd-222222222222")
+	})
+
+	t.Run("empty worktree", func(t *testing.T) {
+		_, err := CaptureClaudeSessionID("")
+		if err == nil {
+			t.Fatal("expected error for empty worktree path")
+		}
+	})
+
+	t.Run("missing project dir", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		_, err := CaptureClaudeSessionID("/nonexistent/cwd")
+		if err == nil {
+			t.Fatal("expected error when project dir doesn't exist")
+		}
+	})
+
+	t.Run("no UUID-named transcripts", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		wt := t.TempDir()
+		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+		// Wrong extension and a non-UUID name — neither matches the regex.
+		testutil.NoError(t, os.WriteFile(filepath.Join(projDir, "garbage.txt"), []byte("x"), 0o644))
+		testutil.NoError(t, os.WriteFile(filepath.Join(projDir, "not-a-uuid.jsonl"), []byte("x"), 0o644))
+
+		_, err := CaptureClaudeSessionID(wt)
+		if err == nil {
+			t.Fatal("expected error when no transcript files match")
+		}
+	})
+}
+
+func TestNeedsSessionRecapture(t *testing.T) {
+	cfg := testConfig()
+	tests := []struct {
+		name    string
+		backend string
+		session string
+		want    bool
+	}{
+		{"claude always recaptures (no session)", "claude", "", true},
+		{"claude always recaptures (with session)", "claude", "existing-uuid", true},
+		{"codex captures once (empty)", "codex", "", true},
+		{"codex skips once captured", "codex", "existing-uuid", false},
+		{"pi captures once (empty)", "pi", "", true},
+		{"pi skips once captured", "pi", "existing-uuid", false},
+		{"unknown backend never recaptures", "bare", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.Task{Backend: tc.backend, SessionID: tc.session}
+			testutil.Equal(t, NeedsSessionRecapture(task, cfg), tc.want)
+		})
+	}
+
+	t.Run("ResolveBackend error returns false", func(t *testing.T) {
+		task := &model.Task{Backend: "no-such-backend"}
+		testutil.Equal(t, NeedsSessionRecapture(task, cfg), false)
+	})
+}
+
+// TestBuildCmd_ResumeUsesRecapturedClaudeID proves the end-to-end payoff: once a
+// post-exit recapture rewrites task.SessionID to the post-/clear UUID, the next
+// resume command targets that new conversation via --resume, not the original.
+func TestBuildCmd_ResumeUsesRecapturedClaudeID(t *testing.T) {
+	cfg := testConfig()
+	task := &model.Task{
+		Backend:   "claude",
+		SessionID: "cccccccc-bbbb-4ccc-9ddd-222222222222", // refreshed post-/clear
+		Worktree:  t.TempDir(),
+	}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Contains(t, cmd.Args[2], "--resume 'cccccccc-bbbb-4ccc-9ddd-222222222222'")
 }

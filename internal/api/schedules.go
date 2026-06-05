@@ -91,15 +91,10 @@ type scheduleRequest struct {
 }
 
 func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
-	// Schedules carry full prompt content, which can encode operational
-	// instructions or sensitive context the master operator may not want
-	// exposed to per-device tokens. Mutating endpoints already require
-	// master; making the read master-only too keeps the surface symmetric
-	// and matches Settings → projects/backends, which device tokens
-	// (mobile clients) cannot edit but also do not need to enumerate.
-	if requireMaster(w, r) {
-		return
-	}
+	// Single-tier auth: any authenticated token may list/manage schedules.
+	// Schedules carry prompt content but no credentials, and creating one
+	// cannot inject a command the way a backend template can (the denylist
+	// covers backends CRUD, self-update, and token mint/revoke).
 	schedules, err := s.db.Schedules()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load schedules: " + err.Error()})
@@ -113,9 +108,6 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxScheduleBodyBytes)
 	var req scheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -153,9 +145,6 @@ func formatRunOnce(t time.Time) string {
 }
 
 func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
@@ -212,9 +201,6 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
@@ -233,9 +219,6 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	if s.scheduler == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scheduler not running"})
 		return

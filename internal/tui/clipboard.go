@@ -6,10 +6,11 @@ import (
 	"github.com/drn/argus/internal/uxlog"
 )
 
-// clipboardAccessor is satisfied by `*dclient.Client`. The in-process Runner
-// does NOT implement it — when the TUI runs in fallback (no daemon) mode,
-// type assertion fails and the agent-staged clipboard feature stays dormant.
-// The OS clipboard write helper (copyToClipboard) still works in both modes.
+// clipboardAccessor is satisfied by `*dclient.Client` (local daemon mode) and
+// `*apiclient.Provider` (--remote mode). The in-process Runner does NOT
+// implement it — when the TUI runs in fallback (no daemon) mode, type
+// assertion fails and the agent-staged clipboard feature stays dormant. The
+// OS clipboard write helper (copyToClipboard) still works in all modes.
 type clipboardAccessor interface {
 	ClipboardGet(taskID string) (string, bool)
 	ClipboardClear(taskID string) error

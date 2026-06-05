@@ -22,6 +22,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
@@ -61,6 +62,7 @@ const (
 	modeRenameTask
 	modeLinkPicker
 	modeFuzzyLinkPicker
+	modeSessionPicker
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeRestartDaemonPrompt
@@ -133,6 +135,7 @@ type App struct {
 	linkPickerModal      *LinkPickerModal
 	linkPickerPrevPage   string
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
+	sessionPickerModal   *SessionPickerModal
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -337,6 +340,11 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
+	// Remote mode (a.db is not the local *db.DB) hides daemon-admin actions
+	// that manage the local OS install.
+	if _, isLocal := database.(*db.DB); !isLocal {
+		app.settings.SetRemote(true)
+	}
 	app.settings.OnRestartDaemon = func() {
 		app.mu.Lock()
 		app.daemonRestarting = true
@@ -475,13 +483,13 @@ func (a *App) buildUI() {
 		AddItem(a.agentLeftCol, 0, 1, false).
 		AddItem(a.agentPane, 0, 3, false).
 		AddItem(a.filePanel, 0, 1, false)
-	// Zoom is the default agent-view layout. Collapse the side panels at setup
-	// so the resting agentZen flag + panel proportions match the documented
-	// default before the first agent-view entry re-asserts them — otherwise the
-	// struct's zero-value state (agentZen=false, 1:3:1 flex) would be a layout
-	// that's never actually drawn. (agentFocus is already focusTerminal here —
-	// its zero value — so setAgentZen's focus guard is a no-op at setup.)
-	a.setAgentZen()
+	// Apply the configured default agent-view layout at setup so the resting
+	// agentZen flag + panel proportions match the configured default before the
+	// first agent-view entry re-asserts them — otherwise the struct's zero-value
+	// state (agentZen=false, 1:3:1 flex) would be a layout that's never actually
+	// drawn when the user has zoom enabled. (agentFocus is already focusTerminal
+	// here — its zero value — so setAgentZen's focus guard is a no-op at setup.)
+	a.applyDefaultAgentZen()
 	a.agentPage = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
@@ -514,10 +522,11 @@ func (a *App) buildUI() {
 		AddItem(a.pages, 0, 1, true).
 		AddItem(a.statusbar, 1, 0, false)
 
-	// SetAfterDrawFunc is registered only to detect terminal resize and
-	// emit one Sync per resize event — see afterDraw doc. The full
-	// pendingSync/forceRedraw/OnContentChange scaffolding from before
-	// the May 2026 cleanup is NOT here; only the resize-Sync case
+	// SetAfterDrawFunc is registered for two things: detect terminal resize
+	// and emit one Sync per resize event (see afterDraw doc), and reconcile
+	// the active plugin view's resize envelope after every draw (no Sync
+	// involved). The full pendingSync/forceRedraw/OnContentChange scaffolding
+	// from before the May 2026 cleanup is NOT here; only the resize-Sync case
 	// remains because it's the one "repair screen damage" case tview's
 	// Clear+Show diff cycle can't handle on its own (the prior size's
 	// cells in the terminal aren't fully overwritten by the new size's
@@ -527,8 +536,10 @@ func (a *App) buildUI() {
 	a.tapp.SetRoot(a.root, true)
 }
 
-// afterDraw detects terminal resize and Syncs once. It does NOT handle
-// the deleted pendingSync/forceRedraw/OnContentChange triggers — those
+// afterDraw detects terminal resize and Syncs once, then reconciles the
+// active plugin view's resize envelope (no Sync — a plain WebSocket send,
+// deduped against the last envelope delivered). It does NOT handle the
+// deleted pendingSync/forceRedraw/OnContentChange triggers — those
 // scaffolds are gone (see post-mortem in gotchas/ui-threading.md).
 //
 // Why resize needs Sync: tview's draw cycle (screen.Clear() + root.Draw()
@@ -546,16 +557,24 @@ func (a *App) buildUI() {
 // startup is already a high-noise rendering moment.
 func (a *App) afterDraw(screen tcell.Screen) {
 	w, h := screen.Size()
-	if w == a.lastScreenW && h == a.lastScreenH {
-		return
+	if w != a.lastScreenW || h != a.lastScreenH {
+		a.lastScreenW = w
+		a.lastScreenH = h
+		uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
+		screen.Sync()
 	}
-	a.lastScreenW = w
-	a.lastScreenH = h
-	uxlog.Log("[tui] afterDraw resize %dx%d — Sync", w, h)
-	screen.Sync()
-	// Forward the resize to the active plugin view (if any). Best-effort —
-	// errors land in uxlog rather than the user's terminal.
-	a.resizePluginViewIfActive()
+	// Plugin resize-envelope reconciliation runs after EVERY draw, not just
+	// terminal resize: the pane's first real layout pass changes the computed
+	// viewport without the screen size changing, and a lost/raced initial
+	// envelope is corrected the same way. The draw that just completed is also
+	// the signal that the pane's rect is real — mark it laid out when its page
+	// was the one on screen (the help overlay may be in front instead).
+	if m := a.activePlugin; m != nil && !m.laidOut {
+		if front, _ := a.pages.GetFrontPage(); front == m.pageName {
+			m.laidOut = true
+		}
+	}
+	a.reconcilePluginViewSize()
 }
 
 // SetDaemonStale records that the connected daemon's binary differs from the
@@ -1110,9 +1129,12 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		uxlog.Log("[tui] handleSessionExitUI: task %s lookup failed: %v", taskID, err)
 		return
 	}
-	if t.SessionID == "" && t.Worktree != "" {
-		// Snapshot the task for the capture goroutine — agent.CaptureSessionID
-		// will resolve the backend and dispatch (codex / pi / no-op).
+	if t.Worktree != "" {
+		// Snapshot the task for the capture goroutine, which resolves the
+		// backend and decides whether to recapture (agent.NeedsSessionRecapture)
+		// off the main goroutine. We snapshot regardless of SessionID because
+		// Claude must re-capture on every exit (a /clear mints a new UUID) even
+		// though its SessionID is always non-empty.
 		captureTask = t
 	}
 	if t.Status == model.StatusInProgress {
@@ -1145,6 +1167,12 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	if captureTask != nil {
 		go func(snap model.Task) {
 			cfg := a.db.Config()
+			// Codex/Pi capture once; Claude refreshes every exit; unknown
+			// backends never recapture. Decided here (off the tview main
+			// goroutine) so the filesystem/SQLite work below never blocks it.
+			if !agent.NeedsSessionRecapture(&snap, cfg) {
+				return
+			}
 			// Resolve the backend name once so log lines tag which dialect
 			// (codex / pi / claude) the capture targeted — keeps the previous
 			// per-kind logging searchability after the dispatcher refactor.
@@ -1155,15 +1183,18 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 					kind = "codex"
 				case agent.IsPiBackend(b.Command):
 					kind = "pi"
+				case agent.IsClaudeBackend(b.Command):
+					kind = "claude"
 				}
 			}
 			sid, err := agent.CaptureSessionID(&snap, cfg)
 			if err != nil {
+				// Capture failure leaves the existing SessionID intact.
 				uxlog.Log("[tui] %s session ID capture failed for task %s: %v", kind, snap.ID, err)
 				return
 			}
-			if sid == "" {
-				return
+			if sid == "" || sid == snap.SessionID {
+				return // Unrecognized backend, or no change (common no-/clear exit).
 			}
 			uxlog.Log("[tui] captured %s session ID %s for task %s", kind, sid, snap.ID)
 			a.tapp.QueueUpdateDraw(func() {
@@ -1725,6 +1756,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Session picker modal (agent view)
+	if a.mode == modeSessionPicker && a.sessionPickerModal != nil {
+		a.handleSessionPickerKey(event)
+		return nil
+	}
+
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
@@ -1902,9 +1939,10 @@ func (a *App) updateFocusIndicators() {
 
 // clearAgentZen turns single-pane (zoom) mode off and restores the 1:3:1 agent
 // layout. Idempotent — safe to call when zen is already off (the ResizeItem
-// calls just re-assert the proportional sizing). Shared by toggleAgentZen's
-// un-zoom branch.
-// Main goroutine only.
+// calls just re-assert the proportional sizing). Reached from App setup, both
+// agent-view entry points, and exitAgentView via applyDefaultAgentZen when
+// ui.default_agent_zoom is false, and directly from toggleAgentZen's un-zoom
+// branch. Main goroutine only.
 func (a *App) clearAgentZen() {
 	a.agentZen = false
 	a.agentPanels.ResizeItem(a.agentLeftCol, 0, 1)
@@ -1913,9 +1951,10 @@ func (a *App) clearAgentZen() {
 
 // setAgentZen turns single-pane (zoom) mode on: the left column (attention bar
 // + git) and the file panel collapse to zero width so the agent terminal fills
-// the whole pane row. Idempotent. Zoom is the default agent-view layout, so this
-// is called from App setup, both agent-view entry points (enterPendingAgentView,
-// onTaskSelect), exitAgentView, and toggleAgentZen's zoom branch.
+// the whole pane row. Idempotent. Reached from App setup, both agent-view entry
+// points (enterPendingAgentView, onTaskSelect), and exitAgentView via
+// applyDefaultAgentZen when ui.default_agent_zoom is true (the default), and
+// directly from toggleAgentZen's zoom branch.
 //
 // The focus guard snaps focus back to the terminal because the file panel is
 // hidden at zero width — leaving focus there would silently swallow keys with no
@@ -1930,6 +1969,21 @@ func (a *App) setAgentZen() {
 	if a.agentFocus != focusTerminal {
 		a.agentFocus = focusTerminal
 		a.updateFocusIndicators()
+	}
+}
+
+// applyDefaultAgentZen sets the resting agent-view layout to the user's
+// configured default: zoomed (single-pane) when ui.default_agent_zoom is true
+// (the default), or the 1:3:1 three-pane layout otherwise. Shared by App setup,
+// both agent-view entry points (enterPendingAgentView, onTaskSelect), and
+// exitAgentView so the agentZen flag and panel proportions always match the
+// configured default before/after each agent-view session. Ctrl+Z still toggles
+// at runtime regardless of the default. Main goroutine only.
+func (a *App) applyDefaultAgentZen() {
+	if a.db.Config().UI.DefaultAgentZoom {
+		a.setAgentZen()
+	} else {
+		a.clearAgentZen()
 	}
 }
 
@@ -1977,6 +2031,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
 		return nil
+	case tcell.KeyCtrlR: // Switch Claude session — intercepted before PTY (shadows Claude's transcript toggle)
+		a.openSessionPicker()
+		return nil
 	case tcell.KeyCtrlP: // Open PR for the worktree's branch via gh
 		a.openPR()
 		return nil
@@ -1995,7 +2052,10 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyLeft:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
-			if a.agentFocus > focusTerminal {
+			// Zoomed view is single-pane — the side panels are collapsed to zero
+			// width, so a pane switch would move focus to an invisible panel and
+			// silently swallow keys. Consume the key without changing panes.
+			if !a.agentZen && a.agentFocus > focusTerminal {
 				a.agentFocus--
 				a.updateFocusIndicators()
 			}
@@ -2003,7 +2063,7 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyRight:
 		if event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0 {
-			if a.agentFocus < focusFiles {
+			if !a.agentZen && a.agentFocus < focusFiles {
 				a.agentFocus++
 				a.updateFocusIndicators()
 			}
@@ -2540,9 +2600,9 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 
-	// Zoom is the default agent-view layout: open single-pane with the side
-	// panels collapsed. Ctrl+Z toggles them back on.
-	a.setAgentZen()
+	// Open with the configured default layout (zoomed single-pane by default).
+	// Ctrl+Z toggles the side panels at runtime regardless.
+	a.applyDefaultAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	// Leave pane taskID empty — task isn't in the DB yet, no log to replay.
 	a.agentPane.SetTaskID("")
@@ -2575,9 +2635,9 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
-	// Zoom is the default agent-view layout: open single-pane with the side
-	// panels collapsed. Ctrl+Z toggles them back on.
-	a.setAgentZen()
+	// Open with the configured default layout (zoomed single-pane by default).
+	// Ctrl+Z toggles the side panels at runtime regardless.
+	a.applyDefaultAgentZen()
 	a.agentHeader.SetTaskName(task.Name)
 	a.agentPane.SetTaskID(task.ID)
 	a.agentPane.ResetVT()
@@ -2869,20 +2929,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 		}
 
 		go func() {
-			d, ok := a.db.(*db.DB)
-			if !ok {
-				a.tapp.QueueUpdateDraw(func() {
-					a.statusbar.ClearInfo()
-					msg := "agent.CreateAndStart requires local mode (use POST /api/tasks remotely)"
-					a.statusbar.SetError("Create failed: " + msg)
-					if a.mode == modeAgent && a.agentState.TaskID == "" {
-						a.exitAgentView()
-					}
-					a.showError("Create failed", msg)
-				})
-				return
-			}
-			created, _, err := agent.CreateAndStart(d, a.runner, input)
+			created, err := a.createTaskTransactional(input)
 			if err != nil {
 				a.tapp.QueueUpdateDraw(func() {
 					a.statusbar.ClearInfo()
@@ -2922,10 +2969,45 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 	}
 }
 
+// remoteTaskCreator is satisfied by *apistore.Store. In --remote mode the TUI
+// can't run agent.CreateAndStart (the worktree + PTY live on the daemon's
+// host), so fresh-task creation routes through POST /api/tasks instead. Kept
+// as a structural interface so the tui package doesn't import apistore.
+type remoteTaskCreator interface {
+	CreateTask(ctx context.Context, name, prompt, project, backend string) (*model.Task, error)
+}
+
+// createTaskTransactional creates a fresh task and returns the resulting row.
+// Local mode (a.db is *db.DB) runs the fully-transactional agent.CreateAndStart
+// in-process. Remote mode (a.db is *apistore.Store) POSTs to /api/tasks so the
+// daemon does the worktree + session creation server-side; base-branch override
+// and attachments aren't carried over the REST path. Runs on a background
+// goroutine — callers dispatch UI updates via QueueUpdateDraw.
+func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, error) {
+	if d, ok := a.db.(*db.DB); ok {
+		created, _, err := agent.CreateAndStart(d, a.runner, input)
+		return created, err
+	}
+	rc, ok := a.db.(remoteTaskCreator)
+	if !ok {
+		return nil, fmt.Errorf("task creation requires local mode (use POST /api/tasks remotely)")
+	}
+	if input.BaseBranch != "" {
+		uxlog.Log("[tui] remote create: base-branch %q ignored (POST /api/tasks has no base-branch field)", input.BaseBranch)
+	}
+	// Mirror CreateAndStart's BeforeStart/AfterStart hooks: bump startGen so a
+	// concurrent tick doesn't reconcile the new task as "not running" in the
+	// window before the SSE stream attaches server-side.
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend)
+}
+
 // computePTYSize returns the best available PTY dimensions for the agent
-// terminal pane. Prefers the host terminal size with the default zoomed
-// (single-pane) agent-page layout (always accurate when stdout is a TTY);
-// falls back to the pane's actual inner rect; finally defaults to 24x80.
+// terminal pane. Prefers the host terminal size assuming the zoomed
+// (single-pane) full-width layout — regardless of the ui.default_agent_zoom
+// setting (see ptySizeFromHostTerm) — which is always accurate when stdout is a
+// TTY; falls back to the pane's actual inner rect; finally defaults to 24x80.
 //
 // Host terminal is preferred over the pane rect because tview's Box returns
 // its default 15x10 rect before Flex has laid it out — and computePTYSize
@@ -2976,17 +3058,19 @@ const agentViewRowOverhead = 4
 const agentViewColOverhead = 2
 
 // ptySizeFromHostTerm derives the agent PTY size from the host terminal,
-// applying the agent page's default zoomed (single-pane) column layout and the
+// applying the zoomed (single-pane) full-width column layout and the
 // header/footer/border row deductions. Returns 0,0 when the input is unusable.
 func ptySizeFromHostTerm(tw, th int, err error) (rows, cols uint16) {
 	if err != nil || tw <= 0 || th <= 0 {
 		return 0, 0
 	}
-	// Agent view opens zoomed by default (setAgentZen collapses the left col +
-	// file panel to zero width), so the terminal pane spans the full host width
-	// minus its own custom border on both sides (agentViewColOverhead). Seeding
-	// from the full width keeps the initial PTY size aligned with the laid-out
-	// pane, so no SIGWINCH-triggered repaint fires on agent-view entry.
+	// Seeds at the zoomed full-width layout: the terminal pane spans the full
+	// host width minus its own custom border on both sides (agentViewColOverhead).
+	// When ui.default_agent_zoom is true (the default) this matches the laid-out
+	// pane exactly, so no SIGWINCH repaint fires on entry. When the configured
+	// default is split (1:3:1), the pane lays out narrower and the terminal
+	// pane's own Draw() recompute corrects the size on the next frame — one
+	// SIGWINCH repaint on entry, accepted (see gotchas/keybindings.md).
 	centerW := max(tw-agentViewColOverhead, 20)
 	// Every entry path that calls computePTYSize hides the tab header BEFORE
 	// this function runs — enterPendingAgentView (new task) and onTaskSelect
@@ -3289,6 +3373,143 @@ func (a *App) closeFuzzyLinkPickerModal() {
 	a.tapp.SetFocus(a.agentPane)
 }
 
+// openSessionPicker lists the current task's Claude sessions and opens the
+// session switcher modal. The session discovery (filesystem scan + JSONL
+// parse) runs in a background goroutine so the tview main goroutine never
+// blocks on disk I/O — a long-running conversation's JSONL can be many MB.
+//
+// The switcher is Claude-only: codex and pi store sessions in their own
+// formats and resume through different flags, so for those backends this is a
+// no-op with a brief status notice.
+func (a *App) openSessionPicker() {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" {
+		return
+	}
+	task, err := a.db.Get(taskID)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] session picker: task %s lookup failed: %v", taskID, err)
+		return
+	}
+
+	cfg := a.db.Config()
+	backend, berr := agent.ResolveBackend(task, cfg)
+	if berr != nil {
+		uxlog.Log("[tui] session picker: resolve backend failed for task %s: %v", taskID, berr)
+		return
+	}
+	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) {
+		uxlog.Log("[tui] session picker: backend %q is not Claude — switcher unavailable", backend.Command)
+		a.statusbar.SetInfo("Session switcher is Claude-only")
+		return
+	}
+
+	worktree := task.Worktree
+	currentID := task.SessionID
+	go func() {
+		sessions, err := claudesession.List(worktree)
+		if err != nil {
+			uxlog.Log("[tui] session picker: list failed for %s: %v", worktree, err)
+			return
+		}
+		uxlog.Log("[tui] session picker: %d sessions found for task %s", len(sessions), taskID)
+		a.tapp.QueueUpdateDraw(func() {
+			// Guard: the user may have left agent view while I/O was in flight.
+			if a.mode != modeAgent || a.agentState.TaskID != taskID {
+				return
+			}
+			a.openSessionPickerModal(sessions, currentID)
+		})
+	}()
+}
+
+// openSessionPickerModal shows the session switcher dialog.
+// Only callable from modeAgent — close always restores modeAgent.
+func (a *App) openSessionPickerModal(sessions []claudesession.Session, currentID string) {
+	a.sessionPickerModal = NewSessionPickerModal(sessions, currentID)
+	a.mode = modeSessionPicker
+	a.pages.AddPage("sessionpicker", a.sessionPickerModal, true, true)
+	a.tapp.SetFocus(a.sessionPickerModal)
+}
+
+// handleSessionPickerKey processes keys in the session switcher modal.
+func (a *App) handleSessionPickerKey(event *tcell.EventKey) {
+	handler := a.sessionPickerModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.sessionPickerModal.Canceled() {
+		a.closeSessionPickerModal()
+		return
+	}
+	if a.sessionPickerModal.Selected() {
+		chosen := a.sessionPickerModal.SelectedSession()
+		a.closeSessionPickerModal()
+		a.switchSession(chosen.ID, chosen.Title)
+	}
+}
+
+// closeSessionPickerModal closes the switcher and restores agent view.
+func (a *App) closeSessionPickerModal() {
+	a.mode = modeAgent
+	a.sessionPickerModal = nil
+	a.pages.RemovePage("sessionpicker")
+	a.tapp.SetFocus(a.agentPane)
+}
+
+// switchSession rebinds the current agent task to a different Claude session
+// and restarts the agent so it resumes that conversation (BuildCmd appends
+// --resume <SessionID>). Selecting the session the task is already bound to is
+// a no-op.
+//
+// When the session is live, the restart reuses the rerender-restart machinery:
+// set pendingRerenderRestart, stop the session, and let handleSessionExitUI
+// restart it in place once the exit notification arrives. This avoids racing
+// the async exit callback — the restart happens inside the exit handler rather
+// than alongside it. When the session is already dead, startSession runs
+// directly.
+func (a *App) switchSession(newID, title string) {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" || newID == "" {
+		return
+	}
+	task, err := a.db.Get(taskID)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] session switch: task %s lookup failed: %v", taskID, err)
+		return
+	}
+	if task.SessionID == newID {
+		uxlog.Log("[tui] session switch: task %s already on session %s — no-op", taskID, newID)
+		return
+	}
+
+	task.SessionID = newID
+	a.db.Update(task) //nolint:errcheck
+	uxlog.Log("[tui] session switch: task %s → session %s (%q)", taskID, newID, title)
+
+	sess := a.agentPane.Session()
+	if sess != nil && sess.Alive() {
+		// Live session: queue the in-place restart, then stop. The exit
+		// handler reads the freshly persisted SessionID and resumes it.
+		a.pendingRerenderRestart[taskID] = true
+		a.statusbar.SetInfo("Switching session…")
+		if err := a.runner.Stop(taskID); err != nil {
+			delete(a.pendingRerenderRestart, taskID)
+			a.statusbar.SetError("Session switch failed: " + err.Error())
+			uxlog.Log("[tui] session switch: stop failed for task %s: %v", taskID, err)
+		}
+		return
+	}
+	// Dead session: restart directly with the new SessionID.
+	task.SetStatus(model.StatusInProgress)
+	a.db.Update(task) //nolint:errcheck
+	a.startSession(task)
+	a.refreshTasksAsync()
+}
+
 // openConfirmDelete shows the confirm delete modal for the given task.
 func (a *App) openConfirmDelete(t *model.Task) {
 	a.confirmDeleteModal = modal.NewConfirmDeleteModal(t)
@@ -3560,9 +3781,22 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 	rows, cols := a.computePTYSize()
 
 	go func() {
-		// Extract context from the source task (reads session log + git diff).
-		ctx := extractForkContext(source)
+		d, ok := a.db.(*db.DB)
+		if !ok {
+			// Remote mode: the worktree + session log live on the daemon, so
+			// the local context extraction below can't run (it reads local
+			// files that don't exist on the client) and the rich context
+			// carryover is unavailable. Delegate to the server's fork endpoint,
+			// which forks from the source's original prompt + backend. Done
+			// before extractForkContext so we don't waste two failed file reads.
+			// See gotchas/remote-tui.md for the degradation.
+			a.executeForkRemote(source, proj, forkName)
+			return
+		}
 
+		// Local mode: extract context from the source task (reads session log
+		// + git diff) and write it into the fork's worktree.
+		ctx := extractForkContext(source)
 		input := agent.CreateInput{
 			Name:    forkName,
 			Prompt:  buildForkPrompt(source, ctx, proj),
@@ -3581,16 +3815,6 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			AfterStart:  func() { a.startGen.Add(1) },
 		}
 
-		d, ok := a.db.(*db.DB)
-		if !ok {
-			a.tapp.QueueUpdateDraw(func() {
-				msg := "requires local mode (use POST /api/tasks/{id}/fork remotely)"
-				a.statusbar.SetError("Fork failed: " + msg)
-				a.showError("Fork failed", msg)
-			})
-			uxlog.Log("[fork] not available in remote mode")
-			return
-		}
 		created, _, err := agent.CreateAndStart(d, a.runner, input)
 		if err != nil {
 			a.tapp.QueueUpdateDraw(func() {
@@ -3609,6 +3833,57 @@ func (a *App) executeFork(source *model.Task, targetProject string) {
 			a.onTaskSelect(created, true)
 		})
 	}()
+}
+
+// remoteForker is satisfied by *apistore.Store in --remote mode. The fork runs
+// server-side via POST /api/tasks/{id}/fork. The remote fork is DEGRADED
+// relative to local: the server endpoint does not extract the source's session
+// log / git diff or write .context/ fork files (those live on the daemon and
+// aren't reconstructed), so the new task starts from the source's original
+// prompt + backend rather than a context-enriched fork prompt.
+type remoteForker interface {
+	ForkTask(ctx context.Context, srcID, name, prompt, project string) (*model.Task, error)
+}
+
+// executeForkRemote delegates a fork to the daemon over REST. Called from
+// executeFork's goroutine when a.db is not a local *db.DB, so the HTTP round
+// trip is already off the UI thread. Passing an empty prompt lets the server
+// inherit the source task's prompt. Results land back via QueueUpdateDraw.
+func (a *App) executeForkRemote(source *model.Task, project, forkName string) {
+	forker, ok := a.db.(remoteForker)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remoteForker) — defensive guard.
+		uxlog.Log("[fork] no remote handler for task %s", source.ID)
+		return
+	}
+	// Mirror the local fork path's BeforeStart/AfterStart hooks (which bump
+	// startGen around CreateAndStart) so a concurrent reconciliation tick can't
+	// flip the freshly-forked task to "complete" in the window before its
+	// session shows up in the server's running set.
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	created, err := forker.ForkTask(context.Background(), source.ID, forkName, "", project)
+	if err != nil {
+		a.tapp.QueueUpdateDraw(func() {
+			a.statusbar.SetError("Fork failed: " + err.Error())
+			a.showError("Fork failed", err.Error())
+		})
+		uxlog.Log("[fork] remote fork of %s failed: %v", source.ID, err)
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		a.recentStarts[created.ID] = time.Now()
+		uxlog.Log("[fork] created task %s (%s) forked from %s (remote, context not carried)", created.ID, created.Name, source.ID)
+		// Surface the degradation: a remote fork can't carry the source's
+		// session-log / git-diff context (those live on the daemon), so the
+		// user gets a visible signal rather than a fork that looks identical
+		// to a local context-rich one.
+		a.statusbar.SetInfo("Forked (remote: source context not carried)")
+		a.refreshTasksLocal()
+		a.tasklist.SelectByID(created.ID)
+		a.onTaskSelect(created, true)
+	})
 }
 
 // --- Project form ---
@@ -3843,6 +4118,19 @@ func (a *App) deleteSchedule(id string) {
 // (manual run + tick aligned to the same minute) but not impossible —
 // acceptable trade-off given this is an admin-only TUI action.
 func (a *App) runScheduleNow(id string) {
+	// Remote mode: the daemon's scheduler fires the schedule server-side (task
+	// creation + LastRunAt/LastTaskID/NextRunAt bookkeeping). Dispatch in a
+	// goroutine and skip the local GetSchedule/ParseSchedule below — for
+	// *apistore.Store, GetSchedule is a blocking HTTP round trip that must not
+	// run on the UI thread.
+	if _, ok := a.db.(*db.DB); !ok {
+		go a.runScheduleNowRemote(id)
+		return
+	}
+
+	// Local mode: replicate the daemon scheduler's fire() bookkeeping. These
+	// calls hit SQLite synchronously (fast), so running them on the UI thread
+	// before spawning the goroutine is fine.
 	s, err := a.db.GetSchedule(id)
 	if err != nil {
 		uxlog.Log("[settings] run schedule %s: %v", id, err)
@@ -3859,10 +4147,8 @@ func (a *App) runScheduleNow(id string) {
 	go func() {
 		d, ok := a.db.(*db.DB)
 		if !ok {
-			s.LastError = "schedule fire requires local mode"
-			s.LastRunAt = now
-			_ = a.db.UpdateSchedule(s)
-			uxlog.Log("[settings] run schedule %s: not available in remote mode", id)
+			// Unreachable: a.db was confirmed *db.DB above and doesn't change
+			// at runtime. Defensive guard against future store-swap drift.
 			return
 		}
 		task, _, err := agent.CreateAndStart(d, a.runner, agent.CreateInput{
@@ -3890,6 +4176,46 @@ func (a *App) runScheduleNow(id string) {
 		uxlog.Log("[settings] manually fired schedule %s -> task %s", id, task.ID)
 		a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 	}()
+}
+
+// remoteScheduleRunner is satisfied by *apistore.Store in --remote mode. The
+// daemon's scheduler runs the whole out-of-cycle fire server-side (task
+// creation + schedule-row bookkeeping); the client only triggers it.
+type remoteScheduleRunner interface {
+	RunSchedule(ctx context.Context, id string) (taskID string, err error)
+}
+
+// runScheduleNowRemote delegates a manual schedule fire to the daemon over
+// REST. Called from runScheduleNow's goroutine when a.db is not a local
+// *db.DB, so the HTTP round trip is already off the UI thread; results land
+// back via QueueUpdateDraw. The schedule's LastRunAt/NextRunAt bookkeeping is
+// updated server-side, so a Settings refresh re-reads the new state.
+func (a *App) runScheduleNowRemote(id string) {
+	runner, ok := a.db.(remoteScheduleRunner)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remoteScheduleRunner) — defensive guard.
+		uxlog.Log("[settings] run schedule %s: no remote handler", id)
+		return
+	}
+	// Bump startGen around the fire so a concurrent reconciliation tick can't
+	// flip the schedule's freshly-created task to "complete" before its session
+	// appears in the server's running set. (The local runScheduleNow doesn't
+	// bump — but the remote round trip + SSE attach widens the window, so the
+	// extra protection is worth the two lines.)
+	a.startGen.Add(1)
+	defer a.startGen.Add(1)
+	taskID, err := runner.RunSchedule(context.Background(), id)
+	if err != nil {
+		uxlog.Log("[settings] run schedule %s (remote): %v", id, err)
+		a.tapp.QueueUpdateDraw(func() {
+			a.statusbar.SetError("Run schedule failed: " + err.Error())
+			a.settings.Refresh()
+		})
+		return
+	}
+	uxlog.Log("[settings] manually fired schedule %s -> task %s (remote)", id, taskID)
+	a.tapp.QueueUpdateDraw(func() { a.settings.Refresh() })
 }
 
 // --- Quick-add form ---
@@ -4083,7 +4409,10 @@ func (a *App) pruneCompletedTasks() {
 	// the task list refresh below shows the pruned rows already gone.
 	d, ok := a.db.(*db.DB)
 	if !ok {
-		a.statusbar.SetError("Prune-completed requires local mode (use POST /api/maintenance/prune-completed remotely)")
+		// Remote mode: the local prune flow (PrunePrepare) shells out to
+		// git/PTY directly, which only works against the local daemon. Delegate
+		// the whole operation to the server via REST instead.
+		a.pruneCompletedRemote()
 		return
 	}
 	preview, err := agent.PrunePrepare(d, agent.PruneOptions{
@@ -4142,6 +4471,45 @@ func (a *App) pruneCompletedTasks() {
 	}()
 }
 
+// remotePruner is satisfied by *apistore.Store in --remote mode. The whole
+// prune-completed operation (DB delete, session stop, worktree + orphan
+// cleanup) runs server-side on the daemon; the client only fires the request
+// and refreshes the task list with the result.
+type remotePruner interface {
+	PruneCompleted(ctx context.Context) (pruned, worktrees, orphans int, err error)
+}
+
+// pruneCompletedRemote delegates prune-completed to the daemon over REST.
+// Used when a.db is not a local *db.DB (i.e. --remote mode). The HTTP round
+// trip runs in a background goroutine so the UI thread never blocks; results
+// land back via QueueUpdateDraw. The caller (pruneCompletedTasks) has already
+// passed the re-entrancy guard, so the header notice is clear on entry.
+func (a *App) pruneCompletedRemote() {
+	pruner, ok := a.db.(remotePruner)
+	if !ok {
+		// Unreachable with today's store types (the only non-*db.DB store,
+		// *apistore.Store, implements remotePruner) — defensive guard against
+		// a future third store implementation that supports neither path.
+		a.statusbar.SetError("Prune-completed requires local mode (use POST /api/maintenance/prune-completed remotely)")
+		return
+	}
+
+	a.header.SetNotice("Pruning completed tasks…")
+	go func() {
+		pruned, worktrees, orphans, err := pruner.PruneCompleted(context.Background())
+		a.tapp.QueueUpdateDraw(func() {
+			a.header.ClearNotice()
+			if err != nil {
+				uxlog.Log("[tui] remote prune error: %v", err)
+				a.statusbar.SetError("Prune failed: " + err.Error())
+				return
+			}
+			uxlog.Log("[tui] remote prune: pruned=%d worktrees=%d orphans=%d", pruned, worktrees, orphans)
+			a.refreshTasksLocal()
+		})
+	}()
+}
+
 // navigateAgentTask switches to the next (+1) or previous (-1) task
 // while staying in the agent view.
 func (a *App) navigateAgentTask(direction int) {
@@ -4164,10 +4532,10 @@ func (a *App) exitAgentView() {
 	a.mode = modeTaskList
 	a.agentFocus = focusTerminal
 	a.mu.Unlock()
-	// Reset to the default zoomed (single-pane) layout so the agentZen flag and
-	// panel proportions stay consistent while in the task list; the next agent
-	// view re-asserts this on entry anyway.
-	a.setAgentZen()
+	// Reset to the configured default layout so the agentZen flag and panel
+	// proportions stay consistent while in the task list; the next agent view
+	// re-asserts this on entry anyway.
+	a.applyDefaultAgentZen()
 	a.agentPane.SetSession(nil)
 	a.agentPane.SetFocused(false)
 	a.agentPane.ExitDiffMode()
@@ -4180,4 +4548,7 @@ func (a *App) exitAgentView() {
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 	a.statusbar.ClearError()
+	// Also clear any transient info notice (e.g. the remote-fork
+	// "context not carried" message) so it doesn't linger on the task list.
+	a.statusbar.ClearInfo()
 }

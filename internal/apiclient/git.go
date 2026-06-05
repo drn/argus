@@ -40,6 +40,12 @@ func (c *Client) FileTree(ctx context.Context, id, dir string) (map[string]any, 
 }
 
 // ClipboardEntry is the agent-staged clipboard snapshot for a task.
+//
+// Present is never populated by the server: the GET handler returns HTTP 204
+// (empty body) when nothing is staged and 200 {"text":...} otherwise, so
+// presence is derived from a non-empty Text rather than this flag. The field
+// is retained only for wire compatibility — do not rely on it. See
+// Provider.ClipboardGet.
 type ClipboardEntry struct {
 	Text    string `json:"text"`
 	Present bool   `json:"present"`

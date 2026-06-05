@@ -50,6 +50,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{"defaults.backend", &cfg.Defaults.Backend},
 		{"defaults.share_project", &cfg.Defaults.ShareProject},
+		{"defaults.permission_mode", &cfg.Defaults.PermissionMode},
 		{"keybindings.new", &cfg.Keybindings.New},
 		{"keybindings.attach", &cfg.Keybindings.Attach},
 		{"keybindings.status", &cfg.Keybindings.Status},
@@ -75,6 +76,7 @@ func (d *DB) Config() config.Config {
 	}{
 		{"ui.show_elapsed", &cfg.UI.ShowElapsed},
 		{"ui.show_icons", &cfg.UI.ShowIcons},
+		{"ui.default_agent_zoom", &cfg.UI.DefaultAgentZoom},
 	}
 	for _, f := range boolFields {
 		if v, ok := kv[f.key]; ok {
