@@ -15,20 +15,22 @@ func TestPRGlyph(t *testing.T) {
 		state     model.PRState
 		wantRune  rune
 		wantStyle tcell.Style
+		wantOK    bool
 	}{
-		{"awaiting-review", model.PRAwaitingReview, IconPRAwaiting, StylePRAwaiting},
-		{"changes-requested", model.PRChangesRequested, IconPRChanges, StylePRChanges},
-		{"approved", model.PRApproved, IconPRApproved, StylePRApproved},
-		{"none-blank", model.PRNone, ' ', tcell.StyleDefault},
-		{"draft-blank", model.PRDraft, ' ', tcell.StyleDefault},
-		{"merged-closed-blank", model.PRMergedClosed, ' ', tcell.StyleDefault},
-		{"unknown-blank", model.PRUnknown, ' ', tcell.StyleDefault},
+		{"awaiting-review", model.PRAwaitingReview, IconPRAwaiting, StylePRAwaiting, true},
+		{"changes-requested", model.PRChangesRequested, IconPRChanges, StylePRChanges, true},
+		{"approved", model.PRApproved, IconPRApproved, StylePRApproved, true},
+		{"none-blank", model.PRNone, ' ', tcell.StyleDefault, false},
+		{"draft-blank", model.PRDraft, ' ', tcell.StyleDefault, false},
+		{"merged-closed-blank", model.PRMergedClosed, ' ', tcell.StyleDefault, false},
+		{"unknown-blank", model.PRUnknown, ' ', tcell.StyleDefault, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotRune, gotStyle := PRGlyph(tc.state)
+			gotRune, gotStyle, gotOK := PRGlyph(tc.state)
 			testutil.Equal(t, gotRune, tc.wantRune)
 			testutil.Equal(t, gotStyle, tc.wantStyle)
+			testutil.Equal(t, gotOK, tc.wantOK)
 		})
 	}
 }
@@ -39,7 +41,7 @@ func TestPRGlyph(t *testing.T) {
 func TestPRGlyph_ActionableGlyphsDistinct(t *testing.T) {
 	seen := map[rune]model.PRState{}
 	for _, s := range []model.PRState{model.PRAwaitingReview, model.PRChangesRequested, model.PRApproved} {
-		r, _ := PRGlyph(s)
+		r, _, _ := PRGlyph(s)
 		if r == ' ' {
 			t.Fatalf("actionable state %v rendered blank", s)
 		}

@@ -54,7 +54,7 @@
 
 ## PR Review Indicator
 
-- **The PR indicator is a RESERVED second cell that always advances the column by 2, even when blank.** `drawTaskRow` reserves the cell after the status glyph unconditionally; an actionable PR state paints a glyph there, a non-actionable state leaves it blank — but the name column starts at the same offset either way, so the name never jitters as PR state appears or vanishes between polls.
+- **The PR indicator cell only consumes width when the PR state is actionable; otherwise the name reclaims the space.** `drawTaskRow` advances the column by 2 (glyph + space) ONLY when `theme.PRGlyph` returns `ok` (awaiting-review / changes-requested / approved); for none/draft/merged-closed/unknown the cell is skipped and the name shifts left by 2. The earlier "always-reserved blank cell" was reverted on dogfood feedback — the wasted column read worse than the name shifting when a PR appears/vanishes. `maxNameW` derives from `col`, so it adapts either way.
 - **PR state is ORTHOGONAL to the `in_review` status glyph — they coexist, never replace each other.** The status glyph reflects the manual workflow state (`pending`/`in_progress`/`in_review`/`complete`); the PR cell reflects a system-observed GitHub fact. A task can show both the `in_review` glyph and a PR-approved glyph simultaneously; the PR cell must never overwrite or substitute for the status glyph.
 
 ## Spinner Animation

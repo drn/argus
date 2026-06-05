@@ -78,20 +78,21 @@ var (
 	StylePRApproved = tcell.StyleDefault.Foreground(ColorPRApproved).Bold(true)
 )
 
-// PRGlyph maps a PR review state to the glyph and style its reserved task-row
-// cell should render. Only the three actionable states (awaiting-review,
-// changes-requested, approved) produce a visible glyph; every other state
-// (none, draft, merged-closed, unknown) returns a blank space with the default
-// style so the reserved cell stays empty without shifting the name column.
-func PRGlyph(s model.PRState) (rune, tcell.Style) {
+// PRGlyph maps a PR review state to the glyph and style its task-row
+// cell should render, and an "ok" flag reporting whether the state is
+// actionable. Only the three actionable states (awaiting-review,
+// changes-requested, approved) produce a visible glyph and ok=true; every
+// other state (none, draft, merged-closed, unknown) returns ok=false so the
+// caller can skip the cell entirely and let the name column reclaim the space.
+func PRGlyph(s model.PRState) (rune, tcell.Style, bool) {
 	switch s {
 	case model.PRAwaitingReview:
-		return IconPRAwaiting, StylePRAwaiting
+		return IconPRAwaiting, StylePRAwaiting, true
 	case model.PRChangesRequested:
-		return IconPRChanges, StylePRChanges
+		return IconPRChanges, StylePRChanges, true
 	case model.PRApproved:
-		return IconPRApproved, StylePRApproved
+		return IconPRApproved, StylePRApproved, true
 	default:
-		return ' ', tcell.StyleDefault
+		return ' ', tcell.StyleDefault, false
 	}
 }

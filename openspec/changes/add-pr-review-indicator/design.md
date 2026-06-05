@@ -20,7 +20,7 @@ Argus tasks each own a git worktree and an `argus/<task>` branch. After an agent
 
 ### Rendering: second indicator cell (coexist), not replacement
 
-The task row draws one status glyph chosen by a priority chain (`tasklist.go drawTaskRow`, status at line 1149, `col += 2` at 1150). PR state is **orthogonal** to that glyph: a task can be actively running *and* have an open PR, or `in_review` (a manual workflow state) with no PR yet. So we add a *reserved second cell* after the status glyph rather than overloading it (the `needsInput` replacement pattern would hide live agent state). The cell is always reserved (blank when no indicator) so the name column never jitters as PRs appear/vanish. `maxNameW` (line 1154) is derived from `col`, so it adapts automatically once the cell advances `col` by 2.
+The task row draws one status glyph chosen by a priority chain (`tasklist.go drawTaskRow`, status at line 1149, `col += 2` at 1150). PR state is **orthogonal** to that glyph: a task can be actively running *and* have an open PR, or `in_review` (a manual workflow state) with no PR yet. So we add a *second cell* after the status glyph rather than overloading it (the `needsInput` replacement pattern would hide live agent state). The cell only consumes width when the task has an actionable PR state; for non-actionable states it is skipped and the task name reclaims the space (the name shifts left by two columns when no PR is present — the dogfood-confirmed preference over reserving an always-blank column). `maxNameW` (line 1154) is derived from `col`, so it adapts automatically whether or not the cell advanced `col` by 2.
 
 ### Granularity: distinct glyph + color per review state
 
@@ -89,8 +89,8 @@ The TUI reads cached state inside the existing tick that already calls `SetNeeds
 
 ### TUI rendering (capability: pr-status)
 
-- it should draw a distinct glyph/color in a reserved cell beside the status glyph for awaiting-review, changes-requested, and approved.
-- it should draw a blank reserved cell (no name-column shift) for none/draft/merged-closed/unknown.
+- it should draw a distinct glyph/color in a cell beside the status glyph for awaiting-review, changes-requested, and approved.
+- it should omit the PR cell for none/draft/merged-closed/unknown, letting the task name reclaim the space.
 - it should keep the existing status glyph unchanged regardless of PR state.
 
 ### Web parity (capability: pr-status)

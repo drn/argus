@@ -1175,13 +1175,14 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
 	col += 2 // status char + space
 
-	// Reserved PR review indicator cell (add-pr-review-indicator). Always
-	// occupies its width — blank space when the task has no actionable PR
-	// state — so the name column never shifts as PR state appears/changes.
-	// Orthogonal to (never replaces) the status glyph above.
-	prChar, prStyle := theme.PRGlyph(tl.prStates[task.ID])
-	screen.SetContent(col, y, prChar, nil, prStyle)
-	col += 2 // PR indicator + space
+	// PR review indicator cell (add-pr-review-indicator). Only consumes width
+	// when the task has an actionable PR state; otherwise the cell is skipped
+	// and the name column reclaims the space. Orthogonal to (never replaces)
+	// the status glyph above.
+	if prChar, prStyle, ok := theme.PRGlyph(tl.prStates[task.ID]); ok {
+		screen.SetContent(col, y, prChar, nil, prStyle)
+		col += 2 // PR indicator + space
+	}
 
 	// Name gets priority; elapsed is right-aligned.
 	nameStr := task.Name

@@ -489,13 +489,14 @@ func TestTaskListView_DrawTaskRow_NeedsInput(t *testing.T) {
 	}
 }
 
-// prCellCol / nameStartCol encode the row layout the PR-indicator tests rely
-// on: 4-char prefix, status glyph at col 4 (+2), reserved PR cell at col 6
-// (+2), name starting at col 8.
+// The PR-indicator tests rely on this row layout: 4-char prefix, status glyph
+// at col 4 (+2). When the task has an actionable PR state, its glyph occupies
+// col 6 (+2) and the name starts at col 8. When there is no actionable PR, the
+// cell is skipped and the name reclaims col 6.
 const (
 	prStatusCol = 4
-	prCellCol   = 6
-	prNameCol   = 8
+	prCellCol   = 6 // PR glyph column when present; name start column when absent
+	prNameCol   = 8 // name start column when a PR glyph is present
 )
 
 // firstRune returns the first rune of a cell string from SimulationScreen.Get,
@@ -533,10 +534,10 @@ func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
 			testutil.Equal(t, firstRune(gotPRStr), tc.glyph)
 
 			// Style matches the theme's PR style for this state.
-			_, wantStyle := theme.PRGlyph(tc.state)
+			_, wantStyle, _ := theme.PRGlyph(tc.state)
 			testutil.Equal(t, gotStyle, wantStyle)
 
-			// Name starts at the fixed name column regardless of PR state.
+			// With an actionable PR, the name starts after the PR cell.
 			nameRun := ""
 			for col := prNameCol; col < 60; col++ {
 				s, _, _ := sim.Get(col, 0)
@@ -547,7 +548,7 @@ func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
 	}
 }
 
-func TestDrawTaskRow_PRIndicator_BlankForNonActionable(t *testing.T) {
+func TestDrawTaskRow_PRIndicator_ReclaimsSpaceForNonActionable(t *testing.T) {
 	for _, state := range []model.PRState{model.PRNone, model.PRDraft, model.PRMergedClosed, model.PRUnknown} {
 		t.Run(state.String(), func(t *testing.T) {
 			sim := newSim(t, 60, 5)
@@ -558,17 +559,19 @@ func TestDrawTaskRow_PRIndicator_BlankForNonActionable(t *testing.T) {
 
 			tl.drawTaskRow(sim, 0, 0, 60, task, false)
 
-			gotPR, _, _ := sim.Get(prCellCol, 0)
-			testutil.Equal(t, firstRune(gotPR), ' ')
+			// No PR cell: the name reclaims the space, starting at prCellCol.
+			gotFirst, _, _ := sim.Get(prCellCol, 0)
+			testutil.Equal(t, firstRune(gotFirst), 'f')
 		})
 	}
 }
 
-// TestDrawTaskRow_PRIndicator_NameDoesNotShift is the anti-jitter guard: the
-// task name must start at the exact same column whether or not the task has an
-// actionable PR state, and the status glyph must be identical in both cases.
-func TestDrawTaskRow_PRIndicator_NameDoesNotShift(t *testing.T) {
-	render := func(state model.PRState) (statusRune rune, nameRun string) {
+// TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR pins the spacing
+// behavior: with an actionable PR the name starts after the PR cell
+// (prNameCol); without one the cell is skipped and the name shifts left to
+// prCellCol. The status glyph is identical in both cases.
+func TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR(t *testing.T) {
+	render := func(state model.PRState) (statusRune rune, nameStartCol int) {
 		sim := newSim(t, 60, 5)
 		tl := NewTaskListView()
 		task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
@@ -578,20 +581,25 @@ func TestDrawTaskRow_PRIndicator_NameDoesNotShift(t *testing.T) {
 
 		statusStr, _, _ := sim.Get(prStatusCol, 0)
 		statusRune = firstRune(statusStr)
-		for col := prNameCol; col < 60; col++ {
+		nameStartCol = -1
+		for col := prStatusCol + 1; col < 60; col++ {
 			s, _, _ := sim.Get(col, 0)
-			nameRun += s
+			if firstRune(s) == 'f' {
+				nameStartCol = col
+				break
+			}
 		}
-		return statusRune, nameRun
+		return statusRune, nameStartCol
 	}
 
-	statusWith, nameWith := render(model.PRApproved)
-	statusWithout, nameWithout := render(model.PRNone)
+	statusWith, startWith := render(model.PRApproved)
+	statusWithout, startWithout := render(model.PRNone)
 
 	// Status glyph unchanged regardless of PR state.
 	testutil.Equal(t, statusWith, statusWithout)
-	// Name column identical regardless of PR state (no shift).
-	testutil.Equal(t, nameWith, nameWithout)
+	// With a PR the name starts after the PR cell; without, it reclaims it.
+	testutil.Equal(t, startWith, prNameCol)
+	testutil.Equal(t, startWithout, prCellCol)
 }
 
 func TestSetPRStates_NilSafe(t *testing.T) {

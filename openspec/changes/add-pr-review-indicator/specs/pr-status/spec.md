@@ -60,15 +60,15 @@ The system SHALL poll PR review state from a daemon-side background loop on a fi
 
 ### Requirement: TUI task-list indicator
 
-The TUI task list SHALL render a reserved indicator cell immediately after each task's status glyph, showing a distinct glyph and color for `awaiting-review`, `changes-requested`, and `approved`, and rendering blank for all other states. The cell MUST coexist with the existing status glyph (never replace it) and MUST always occupy its reserved width so the task name column does not shift as PR state changes.
+The TUI task list SHALL render an indicator cell immediately after each task's status glyph, showing a distinct glyph and color for `awaiting-review`, `changes-requested`, and `approved`. For all other states the cell MUST be omitted so the task name reclaims that horizontal space. The indicator MUST coexist with the existing status glyph (never replace it).
 
 #### Scenario: Indicator shown for actionable review states
 - **WHEN** a task's cached PR state is `awaiting-review`, `changes-requested`, or `approved`
-- **THEN** the task row shows the corresponding glyph and color in the reserved cell beside the unchanged status glyph
+- **THEN** the task row shows the corresponding glyph and color in a cell between the unchanged status glyph and the task name
 
-#### Scenario: Blank cell for non-actionable states
+#### Scenario: Space reclaimed for non-actionable states
 - **WHEN** a task's cached PR state is `none`, `draft`, `merged-closed`, or `unknown`
-- **THEN** the reserved cell is blank and the task name column is positioned identically to a task with an actionable PR state
+- **THEN** no PR cell is rendered and the task name starts immediately after the status glyph, reclaiming the space the cell would have occupied
 
 ### Requirement: Web PWA parity
 
