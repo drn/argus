@@ -35,7 +35,7 @@ func TestTaskPreviewPanel_WideSessionEmulatedAtPTYWidth_NoScramble(t *testing.T)
 	tp.SetTaskID("wide-task")
 
 	// Emulate at the session's real PTY width (200), clip to the 36-col view.
-	tp.RefreshOutput(wideSessionBytes, 200, 24, 36, 6)
+	tp.RefreshOutput("wide-task", wideSessionBytes, uint64(len(wideSessionBytes)), 200, 24, 36, 6)
 	tp.Draw(screen)
 
 	if !previewScreenContains(screen, "Summary of changes") {

@@ -36,8 +36,17 @@ const replayScrollbackSize = 50_000
 // the response pipe. x/vt uses io.Pipe() internally — when the emulator
 // processes terminal query sequences (DA1, DA2, DSR, etc.), it writes responses
 // to pw which blocks until pr is read. Without draining, Write() hangs
-// indefinitely on any input containing these sequences. The drain goroutine
-// exits when the emulator is closed or garbage collected.
+// indefinitely on any input containing these sequences.
+//
+// Lifecycle caveat: the drain goroutine blocks in Read forever and keeps the
+// emulator reachable, so GC never reclaims it. The only way to stop it is
+// Emulator.Close (closes pw → the blocked read returns EOF) — but
+// SafeEmulator.Read is unlocked, so Close races that read on e.closed (the
+// -race detector flags it). The safe pattern for a caller that needs a clean
+// emulator repeatedly on a hot path is therefore to REUSE one emulator and
+// reset it via RIS (`ESC c`) rather than allocate-and-Close per use — see
+// PreviewVT.rebuild, which rebuilds on every task-list cursor move yet holds
+// at one drain goroutine for its lifetime.
 func NewDrainedEmulator(cols, rows int) *xvt.SafeEmulator {
 	emu := xvt.NewSafeEmulator(cols, rows)
 	go io.Copy(io.Discard, emu) //nolint:errcheck

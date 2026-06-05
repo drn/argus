@@ -2507,9 +2507,12 @@ func (a *App) refreshPreview(taskID string) {
 
 	sess := a.runner.Get(taskID)
 	if sess != nil {
-		// Skip 256KB ring buffer copy when output hasn't changed.
+		// Snapshot the ring tail and high-water mark atomically — the preview
+		// emulator advances incrementally off `total`, so reading the tail and
+		// total separately would let readLoop slip bytes between them.
+		raw, tw := sess.RecentOutputTailWithTotal(256 * 1024)
+		// Skip the refresh when output hasn't changed.
 		// Protected by a.mu — accessed from tick goroutine and onTaskCursorChange goroutine.
-		tw := sess.TotalWritten()
 		a.mu.Lock()
 		taskChanged := taskID != a.lastPreviewTaskID
 		if !taskChanged && tw == a.lastPreviewTW {
@@ -2520,7 +2523,6 @@ func (a *App) refreshPreview(taskID string) {
 		a.lastPreviewTW = tw
 		a.lastPreviewLogSize = 0 // reset so dead-session path re-reads log after session exit
 		a.mu.Unlock()
-		raw := sess.RecentOutput()
 		// Use the PTY's actual dimensions for the emulator so cursor
 		// positioning and text wrapping match the agent view. The preview
 		// viewport (w x h) selects which rows to display.
@@ -2530,9 +2532,9 @@ func (a *App) refreshPreview(taskID string) {
 		// back past the live PTY size (RPC failure / stale info) — the
 		// fallback is the path that can scramble, so it must leave a trail.
 		if taskChanged || src != "pty" {
-			uxlog.Log("[tui] preview: live task=%s emu=%dx%d (%s) view=%dx%d raw=%d", taskID, emuCols, emuRows, src, w, h, len(raw))
+			uxlog.Log("[tui] preview: live task=%s emu=%dx%d (%s) view=%dx%d raw=%d total=%d", taskID, emuCols, emuRows, src, w, h, len(raw), tw)
 		}
-		a.taskPreview.RefreshOutput(raw, emuCols, emuRows, w, h)
+		a.taskPreview.RefreshOutput(taskID, raw, tw, emuCols, emuRows, w, h)
 		return
 	}
 
@@ -2559,7 +2561,11 @@ func (a *App) refreshPreview(taskID string) {
 			// sessions and may scramble wide content.
 			emuCols, emuRows, src := previewEmuSize(taskID, 0, 0, w, h)
 			uxlog.Log("[tui] preview: dead task=%s emu=%dx%d (%s) view=%dx%d log=%d", taskID, emuCols, emuRows, src, w, h, len(logData))
-			a.taskPreview.RefreshOutput(logData, emuCols, emuRows, w, h)
+			// logData is the 64KB tail; logSize is the full stream length. A
+			// finished session is static, so this single full replay (emu
+			// rebuilds on the task switch) reconstructs the viewport and later
+			// ticks short-circuit on the unchanged logSize above.
+			a.taskPreview.RefreshOutput(taskID, logData, uint64(logSize), emuCols, emuRows, w, h)
 			return
 		}
 	}
