@@ -489,6 +489,133 @@ func TestTaskListView_DrawTaskRow_NeedsInput(t *testing.T) {
 	}
 }
 
+// The PR-indicator tests rely on this row layout: 4-char prefix, status glyph
+// at col 4 (+2). When the task has an actionable PR state, its glyph occupies
+// col 6 (+2) and the name starts at col 8. When there is no actionable PR, the
+// cell is skipped and the name reclaims col 6.
+const (
+	prStatusCol = 4
+	prCellCol   = 6 // PR glyph column when present; name start column when absent
+	prNameCol   = 8 // name start column when a PR glyph is present
+)
+
+// firstRune returns the first rune of a cell string from SimulationScreen.Get,
+// or a space for an empty cell. Get is the non-deprecated cell accessor (the
+// older GetContent trips staticcheck SA1019).
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return ' '
+}
+
+func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
+	cases := []struct {
+		name  string
+		state model.PRState
+		glyph rune
+	}{
+		{"awaiting", model.PRAwaitingReview, theme.IconPRAwaiting},
+		{"changes", model.PRChangesRequested, theme.IconPRChanges},
+		{"approved", model.PRApproved, theme.IconPRApproved},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sim := newSim(t, 60, 5)
+			tl := NewTaskListView()
+			task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+			tl.SetTasks([]*model.Task{task})
+			tl.SetPRStates(map[string]model.PRState{"1": tc.state})
+
+			tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+			// PR glyph appears at the reserved cell.
+			gotPRStr, gotStyle, _ := sim.Get(prCellCol, 0)
+			testutil.Equal(t, firstRune(gotPRStr), tc.glyph)
+
+			// Style matches the theme's PR style for this state.
+			_, wantStyle, _ := theme.PRGlyph(tc.state)
+			testutil.Equal(t, gotStyle, wantStyle)
+
+			// With an actionable PR, the name starts after the PR cell.
+			nameRun := ""
+			for col := prNameCol; col < 60; col++ {
+				s, _, _ := sim.Get(col, 0)
+				nameRun += s
+			}
+			testutil.Contains(t, strings.TrimSpace(nameRun), "fix-bug")
+		})
+	}
+}
+
+func TestDrawTaskRow_PRIndicator_ReclaimsSpaceForNonActionable(t *testing.T) {
+	for _, state := range []model.PRState{model.PRNone, model.PRDraft, model.PRMergedClosed, model.PRUnknown} {
+		t.Run(state.String(), func(t *testing.T) {
+			sim := newSim(t, 60, 5)
+			tl := NewTaskListView()
+			task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+			tl.SetTasks([]*model.Task{task})
+			tl.SetPRStates(map[string]model.PRState{"1": state})
+
+			tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+			// No PR cell: the name reclaims the space, starting at prCellCol.
+			gotFirst, _, _ := sim.Get(prCellCol, 0)
+			testutil.Equal(t, firstRune(gotFirst), 'f')
+		})
+	}
+}
+
+// TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR pins the spacing
+// behavior: with an actionable PR the name starts after the PR cell
+// (prNameCol); without one the cell is skipped and the name shifts left to
+// prCellCol. The status glyph is identical in both cases.
+func TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR(t *testing.T) {
+	render := func(state model.PRState) (statusRune rune, nameStartCol int) {
+		sim := newSim(t, 60, 5)
+		tl := NewTaskListView()
+		task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+		tl.SetTasks([]*model.Task{task})
+		tl.SetPRStates(map[string]model.PRState{"1": state})
+		tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+		statusStr, _, _ := sim.Get(prStatusCol, 0)
+		statusRune = firstRune(statusStr)
+		nameStartCol = -1
+		for col := prStatusCol + 1; col < 60; col++ {
+			s, _, _ := sim.Get(col, 0)
+			if firstRune(s) == 'f' {
+				nameStartCol = col
+				break
+			}
+		}
+		return statusRune, nameStartCol
+	}
+
+	statusWith, startWith := render(model.PRApproved)
+	statusWithout, startWithout := render(model.PRNone)
+
+	// Status glyph unchanged regardless of PR state.
+	testutil.Equal(t, statusWith, statusWithout)
+	// With a PR the name starts after the PR cell; without, it reclaims it.
+	testutil.Equal(t, startWith, prNameCol)
+	testutil.Equal(t, startWithout, prCellCol)
+}
+
+func TestSetPRStates_NilSafe(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})
+	tl.SetPRStates(nil) // must not panic and must clear
+	testutil.Equal(t, len(tl.prStates), 0)
+}
+
+func TestPRStateFor(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRChangesRequested})
+	testutil.Equal(t, tl.PRStateFor("1"), model.PRChangesRequested)
+	testutil.Equal(t, tl.PRStateFor("missing"), model.PRNone)
+}
+
 func TestTaskListView_StatusCycleKeys(t *testing.T) {
 	tl := NewTaskListView()
 	var changed *model.Task

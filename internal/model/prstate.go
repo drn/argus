@@ -1,0 +1,73 @@
+package model
+
+import "fmt"
+
+// PRState represents the review state of a GitHub pull request associated
+// with a task branch. It is glyph-agnostic; rendering lives in the theme
+// and TUI layers.
+type PRState int
+
+const (
+	// PRNone means no pull request exists for the branch.
+	PRNone PRState = iota
+	// PRDraft means the PR exists but is still in draft state.
+	PRDraft
+	// PRAwaitingReview means the PR is open, non-draft, and has not yet
+	// received a review decision (or the decision is REVIEW_REQUIRED).
+	PRAwaitingReview
+	// PRChangesRequested means at least one reviewer requested changes.
+	PRChangesRequested
+	// PRApproved means the PR has been approved by all required reviewers.
+	PRApproved
+	// PRMergedClosed means the PR was merged or closed.
+	PRMergedClosed
+	// PRUnknown is the fallback when gh is unavailable or unauthenticated.
+	// It is not an error visible to the user; the indicator cell renders blank.
+	PRUnknown
+)
+
+var prStateNames = [...]string{
+	"none",
+	"draft",
+	"awaiting-review",
+	"changes-requested",
+	"approved",
+	"merged-closed",
+	"unknown",
+}
+
+// String returns the stable string representation used for persistence and
+// JSON serialization.
+func (s PRState) String() string {
+	if int(s) >= 0 && int(s) < len(prStateNames) {
+		return prStateNames[s]
+	}
+	return fmt.Sprintf("unknown(%d)", int(s))
+}
+
+// ParsePRState converts a stable string name (e.g. "awaiting-review") into
+// a PRState. Returns an error for unrecognized values.
+func ParsePRState(str string) (PRState, error) {
+	for i, name := range prStateNames {
+		if name == str {
+			return PRState(i), nil
+		}
+	}
+	return PRNone, fmt.Errorf("unknown pr state: %q", str)
+}
+
+// MarshalText implements encoding.TextMarshaler so PRState round-trips
+// through JSON, YAML, and any encoding that calls MarshalText.
+func (s PRState) MarshalText() ([]byte, error) {
+	return []byte(s.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *PRState) UnmarshalText(data []byte) error {
+	parsed, err := ParsePRState(string(data))
+	if err != nil {
+		return err
+	}
+	*s = parsed
+	return nil
+}

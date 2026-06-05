@@ -230,6 +230,72 @@ func TestDB_SetArchived_UnarchiveLeavesMetaAlone(t *testing.T) {
 	testutil.Equal(t, len(got), 1)
 }
 
+// TestDB_ListMetaByNamespace verifies the batch-read shape: one indexed
+// query returns all (taskID → key → value) rows for the given namespace.
+func TestDB_ListMetaByNamespace(t *testing.T) {
+	d := testDB(t)
+
+	// Two tasks, each with two keys in the "pr" namespace.
+	testutil.NoError(t, d.SetMeta("task-1", "pr", "state", "approved"))
+	testutil.NoError(t, d.SetMeta("task-1", "pr", "url", "https://github.com/x/y/pull/1"))
+	testutil.NoError(t, d.SetMeta("task-2", "pr", "state", "awaiting-review"))
+	testutil.NoError(t, d.SetMeta("task-2", "pr", "url", "https://github.com/x/y/pull/2"))
+	// Unrelated namespace rows — must not appear in the result.
+	testutil.NoError(t, d.SetMeta("task-1", "other", "k", "v"))
+
+	got, err := d.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 2)
+
+	t1 := got["task-1"]
+	testutil.Equal(t, t1["state"], "approved")
+	testutil.Equal(t, t1["url"], "https://github.com/x/y/pull/1")
+
+	t2 := got["task-2"]
+	testutil.Equal(t, t2["state"], "awaiting-review")
+	testutil.Equal(t, t2["url"], "https://github.com/x/y/pull/2")
+}
+
+func TestDB_ListMetaByNamespace_Empty(t *testing.T) {
+	d := testDB(t)
+	got, err := d.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 0)
+}
+
+func TestDB_ListMetaByNamespace_MultipleNamespacesIsolated(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetMeta("task-1", "pr", "state", "approved"))
+	testutil.NoError(t, d.SetMeta("task-1", "mcp", "last_run", "now"))
+
+	got, err := d.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+
+	// "mcp" namespace must not appear.
+	if _, ok := got["task-1"]["last_run"]; ok {
+		t.Error("expected no mcp namespace key in pr result")
+	}
+}
+
+func TestDB_DeleteMetaForTask_ClearsPRNamespace(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetMeta("task-1", "pr", "state", "approved"))
+	testutil.NoError(t, d.SetMeta("task-1", "pr", "url", "https://github.com/x/y/pull/1"))
+	testutil.NoError(t, d.SetMeta("task-2", "pr", "state", "draft"))
+
+	n, err := d.DeleteMetaForTask("task-1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, n, 2)
+
+	got, err := d.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 1)
+	if _, ok := got["task-2"]; !ok {
+		t.Error("expected task-2 to remain after deleting task-1")
+	}
+}
+
 // TestDB_TaskMeta_ErrorBranchesAfterClose pokes the database-closed error
 // paths so every task_meta method's SQL-failure branch shows up in coverage.
 func TestDB_TaskMeta_ErrorBranchesAfterClose(t *testing.T) {
@@ -255,6 +321,11 @@ func TestDB_TaskMeta_ErrorBranchesAfterClose(t *testing.T) {
 	})
 	t.Run("DeleteMetaForTask", func(t *testing.T) {
 		if _, err := d.DeleteMetaForTask("t"); err == nil {
+			t.Fatal("expected error on closed DB")
+		}
+	})
+	t.Run("ListMetaByNamespace", func(t *testing.T) {
+		if _, err := d.ListMetaByNamespace("ns"); err == nil {
 			t.Fatal("expected error on closed DB")
 		}
 	})

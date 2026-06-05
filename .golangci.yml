@@ -30,6 +30,7 @@ linters:
     gosec:
       excludes:
         - G104 # unhandled errors — covered by errcheck
+        - G204 # subprocess with variable — git/gh CLI args are fixed call-site literals; orchestrating these binaries is the tool's job
         - G304 # file path from variable — expected in CLI tools
         - G301 # directory permissions — fixture dirs don't carry secrets
         - G306 # file write permissions — fixture files don't carry secrets

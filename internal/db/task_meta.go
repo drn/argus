@@ -126,6 +126,38 @@ func (d *DB) ListMeta(taskID, namespace string) ([]TaskMetaEntry, error) {
 	return out, nil
 }
 
+// ListMetaByNamespace returns every (task_id → key → value) entry for the
+// given namespace across all tasks in a single indexed query. This is the
+// batch-read path for the TUI tick (e.g. reading all "pr" namespace rows once
+// instead of one query per task). The returned map is never nil — an empty
+// namespace or no matching rows returns an empty map.
+func (d *DB) ListMetaByNamespace(namespace string) (map[string]map[string]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rows, err := d.conn.Query(
+		`SELECT task_id, key, value FROM task_meta WHERE namespace=? ORDER BY task_id ASC, key ASC`,
+		namespace,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list meta by namespace: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]map[string]string)
+	for rows.Next() {
+		var taskID, key, value string
+		if err := rows.Scan(&taskID, &key, &value); err != nil {
+			return nil, fmt.Errorf("scan meta by namespace: %w", err)
+		}
+		if out[taskID] == nil {
+			out[taskID] = make(map[string]string)
+		}
+		out[taskID][key] = value
+	}
+	return out, nil
+}
+
 // DeleteMetaForTask removes every metadata row for taskID across every
 // namespace. Called by Delete and SetArchived(archived=true) so a destroyed
 // or archived task doesn't accumulate orphan sidecar rows. Returns the row

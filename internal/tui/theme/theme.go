@@ -1,7 +1,11 @@
 // Package theme defines colors, icons, and styles for the Argus TUI.
 package theme
 
-import "github.com/gdamore/tcell/v2"
+import (
+	"github.com/gdamore/tcell/v2"
+
+	"github.com/drn/argus/internal/model"
+)
 
 // Color constants for the 256-color palette theme.
 var (
@@ -24,6 +28,12 @@ var (
 	ColorHighlight  = tcell.Color236                   // slightly lighter dark gray — cursor/selection highlight
 	ColorFilter     = tcell.Color201                   // magenta — active filter query
 	ColorNeedsInput = tcell.NewRGBColor(250, 163, 120) // #faa378 light orange — agent blocked on user prompt
+
+	// PR review indicator colors (add-pr-review-indicator). One per actionable
+	// review state; non-actionable states render no cell so they need no color.
+	ColorPRAwaiting = tcell.NewRGBColor(178, 148, 250) // #b294fa purple — PR open, awaiting review
+	ColorPRChanges  = tcell.NewRGBColor(240, 96, 96)   // #f06060 red — reviewer requested changes
+	ColorPRApproved = tcell.NewRGBColor(120, 220, 120) // #78dc78 green — PR approved
 )
 
 // Icon constants for status indicators (Nerd Font codepoints).
@@ -32,6 +42,15 @@ const (
 	IconMoonOutline = rune(0xF186)   //  nf-fa-moon_o — visited / idle
 	IconNeedsInput  = rune(0xF059)   //  nf-fa-question_circle — idle AND blocked on a user prompt
 	IconReview      = rune(0x0F00BC) // 󰂼 nf-md-clipboard_check — in-review / ready to check off
+
+	// PR review indicator glyphs (add-pr-review-indicator). All three live in
+	// the git-pull-request family so they read as "this is about a PR", but use
+	// distinct overlays so the three actionable states are tellable apart at a
+	// glance. CODEPOINTS NOT RENDER-TESTED IN A TERMINAL YET — eyeball these in
+	// a real Nerd Font terminal for distinctness before relying on them.
+	IconPRAwaiting = rune(0xF407)  //  nf-oct-git_pull_request — open PR awaiting review
+	IconPRChanges  = rune(0xF09D8) // 󰧘 nf-md-source_pull (changes requested overlay)
+	IconPRApproved = rune(0xF0DDF) // 󰷟 nf-md-source_branch_check (approved overlay)
 )
 
 // Styles for common UI elements.
@@ -52,4 +71,28 @@ var (
 	StyleError         = tcell.StyleDefault.Foreground(ColorError)
 	StyleFilter        = tcell.StyleDefault.Foreground(ColorFilter).Bold(true)
 	StyleNeedsInput    = tcell.StyleDefault.Foreground(ColorNeedsInput).Bold(true)
+
+	// PR review indicator styles (add-pr-review-indicator).
+	StylePRAwaiting = tcell.StyleDefault.Foreground(ColorPRAwaiting).Bold(true)
+	StylePRChanges  = tcell.StyleDefault.Foreground(ColorPRChanges).Bold(true)
+	StylePRApproved = tcell.StyleDefault.Foreground(ColorPRApproved).Bold(true)
 )
+
+// PRGlyph maps a PR review state to the glyph and style its task-row
+// cell should render, and an "ok" flag reporting whether the state is
+// actionable. Only the three actionable states (awaiting-review,
+// changes-requested, approved) produce a visible glyph and ok=true; every
+// other state (none, draft, merged-closed, unknown) returns ok=false so the
+// caller can skip the cell entirely and let the name column reclaim the space.
+func PRGlyph(s model.PRState) (rune, tcell.Style, bool) {
+	switch s {
+	case model.PRAwaitingReview:
+		return IconPRAwaiting, StylePRAwaiting, true
+	case model.PRChangesRequested:
+		return IconPRChanges, StylePRChanges, true
+	case model.PRApproved:
+		return IconPRApproved, StylePRApproved, true
+	default:
+		return ' ', tcell.StyleDefault, false
+	}
+}
