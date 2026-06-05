@@ -1573,16 +1573,11 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 // render. The TUI NEVER invokes gh/gitutil.FetchPRState itself — the daemon
 // poller is the sole writer; this is a pure cache read.
 //
-// Local-only: the meta cache lives in the SQLite store, so this is gated on a
-// *db.DB type-assert (the established pattern for local-only ops, see
-// gotchas/remote-tui.md). In --remote mode it returns nil (all cells blank);
-// surfacing pr_state over the REST DTO + apistore is the Stage 6 follow-up.
+// Works in both modes via the store.Store interface: local mode (*db.DB) hits
+// the SQLite index directly, while remote mode (*apistore.Store) reconstructs
+// the "pr" namespace from the task list DTO's pr_state field. No type-assert.
 func (a *App) readPRStates() map[string]model.PRState {
-	d, ok := a.db.(*db.DB)
-	if !ok {
-		return nil // remote store — Stage 6 follow-up
-	}
-	raw, err := d.ListMetaByNamespace("pr")
+	raw, err := a.db.ListMetaByNamespace("pr")
 	if err != nil {
 		uxlog.Log("[pr] tui: read pr meta failed: %v", err)
 		return nil

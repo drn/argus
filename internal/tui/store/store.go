@@ -99,6 +99,14 @@ type Store interface {
 	// SetArchived flips the archived column.
 	SetArchived(id string, archived bool) error
 
+	// ListMetaByNamespace returns every (taskID → key → value) row for the
+	// given task_meta namespace across all tasks in one batch. The TUI tick
+	// uses this to read the daemon-populated "pr" review-state cache without
+	// shelling out to gh. Local mode hits the SQLite index directly; remote
+	// mode reconstructs the "pr" namespace from the task list DTO's pr_state
+	// field. The returned map is never nil.
+	ListMetaByNamespace(namespace string) (map[string]map[string]string, error)
+
 	// PluginSections returns every plugin-registered settings section in
 	// (title, scope) order. Corrupt rows (unparseable spec JSON) are
 	// silently dropped — see db.DB.PluginSections for the reasoning. The

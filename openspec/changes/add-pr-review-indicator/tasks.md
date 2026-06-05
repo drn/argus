@@ -10,7 +10,7 @@
 - [x] 1.4 Write failing tests for `db.ListMetaByNamespace` (batch read shape) and that `DeleteMetaForTask` clears the `pr` namespace.
 - [x] 1.5 Write failing daemon poller tests: skips archived/branchless tasks, writes `state`+`url` via `SetMetaBatch`, stops on `d.done`, respects concurrency cap.
 - [x] 1.6 Write failing TUI render tests (`drawTaskRow` against a mock screen): actionable states draw glyph+color in the reserved cell, non-actionable draw blank, status glyph unchanged, name column does not shift.
-- [ ] 1.7 Write failing API test: `handleListTasks` returns `pr_state` from seeded `task_meta` and does not call `prFetcher`.
+- [x] 1.7 Write failing API test: `handleListTasks` returns `pr_state` from seeded `task_meta` and does not call `prFetcher`.
 - [x] 1.8 Write failing uxlog test: gh-absent logs exactly once across repeated polls.
 - [x] 1.9 Confirm every `it should X` criterion in design.md has a failing test (Prove-It Pattern).
 
@@ -47,10 +47,10 @@
 
 **Depends on:** Stage 3
 
-- [ ] 6.1 Add `PRState string \`json:"pr_state,omitempty"\`` to `taskJSON`; populate from a batch `task_meta` `pr` read in `handleListTasks`/`handleGetTask` (`internal/api/handlers.go`); handler must not shell out to gh.
-- [ ] 6.2 Render PR badges per `pr_state` in `renderTaskList` + `.badge-pr-*` CSS in `internal/api/static/index.html`; keep `effectiveStatus` untouched.
-- [ ] 6.3 Bump `SW_VERSION` in `internal/api/static/sw.js`.
-- [ ] 6.4 Add a Playwright spec in `web-tests/` asserting the badge renders for a seeded `pr_state`.
+- [x] 6.1 Add `PRState string \`json:"pr_state,omitempty"\`` to `taskJSON`; populate from a batch `task_meta` `pr` read in `handleListTasks`/`handleGetTask` (`internal/api/handlers.go`); handler must not shell out to gh.
+- [x] 6.2 Render PR badges per `pr_state` in `renderTaskList` + `.badge-pr-*` CSS in `internal/api/static/index.html`; keep `effectiveStatus` untouched.
+- [x] 6.3 Bump `SW_VERSION` in `internal/api/static/sw.js`.
+- [x] 6.4 Add a Playwright spec in `web-tests/` asserting the badge renders for a seeded `pr_state`.
 
 ## 7. Docs + gate
 

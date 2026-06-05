@@ -564,4 +564,70 @@ type plainErr struct{ msg string }
 
 func (e *plainErr) Error() string { return e.msg }
 
+func TestStore_ListMetaByNamespace_PR(t *testing.T) {
+	t.Run("reconstructs pr namespace from task DTOs", func(t *testing.T) {
+		var gotArchived string
+		s, _ := newStore(t, func(mux *http.ServeMux) {
+			mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+				gotArchived = r.URL.Query().Get("archived")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"tasks":[
+					{"id":"a","name":"a","status":"complete","project":"p","pr_state":"awaiting-review"},
+					{"id":"b","name":"b","status":"complete","project":"p","pr_state":"approved"},
+					{"id":"c","name":"c","status":"complete","project":"p"}
+				]}`))
+			})
+		})
+
+		got, err := s.ListMetaByNamespace("pr")
+		testutil.NoError(t, err)
+		// archived=all so completed-but-archived PRs still resolve.
+		testutil.Equal(t, gotArchived, "all")
+		testutil.Equal(t, got["a"]["state"], "awaiting-review")
+		testutil.Equal(t, got["b"]["state"], "approved")
+		// Task with no pr_state is omitted entirely.
+		_, hasC := got["c"]
+		testutil.Equal(t, hasC, false)
+	})
+
+	t.Run("non-pr namespace returns empty map, no request", func(t *testing.T) {
+		var hits int32
+		s, _ := newStore(t, func(mux *http.ServeMux) {
+			mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				_, _ = w.Write([]byte(`{"tasks":[]}`))
+			})
+		})
+		got, err := s.ListMetaByNamespace("other")
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+		testutil.Equal(t, atomic.LoadInt32(&hits), int32(0))
+	})
+
+	t.Run("propagates transport error", func(t *testing.T) {
+		s, _ := newStore(t, func(mux *http.ServeMux) {
+			mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "boom", http.StatusInternalServerError)
+			})
+		})
+		_, err := s.ListMetaByNamespace("pr")
+		if err == nil {
+			t.Fatal("expected error from 500 response")
+		}
+	})
+}
+
+func TestStore_ListMetaByNamespace_NeverNil(t *testing.T) {
+	s, _ := newStore(t, func(mux *http.ServeMux) {
+		mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"tasks":[]}`))
+		})
+	})
+	got, err := s.ListMetaByNamespace("pr")
+	testutil.NoError(t, err)
+	if got == nil {
+		t.Fatal("map must never be nil")
+	}
+}
+
 func errorsNew(msg string) error { return &plainErr{msg} }

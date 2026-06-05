@@ -105,6 +105,13 @@ type taskJSON struct {
 	Archived     bool   `json:"archived,omitempty"`
 	WorktreePath string `json:"worktree_path,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
+	// PRState is the cached GitHub PR review state for the task's branch,
+	// sourced from task_meta namespace "pr" (key "state") written by the
+	// daemon poller. The handler NEVER shells out to gh — this is a pure
+	// cache read. omitempty drops "none"/empty so the SPA only sees
+	// actionable values; the badge renderer ignores draft/merged-closed/
+	// unknown anyway.
+	PRState string `json:"pr_state,omitempty"`
 }
 
 // taskRuntimeState carries non-persisted, derived-at-request-time fields used
@@ -113,6 +120,11 @@ type taskJSON struct {
 type taskRuntimeState struct {
 	Idle       bool
 	NeedsInput bool
+	// PRState is the cached PR review state string ("awaiting-review", etc.)
+	// from task_meta namespace "pr". Empty / "none" maps to an omitted DTO
+	// field via omitempty. Populated by the caller from a batch task_meta
+	// read — never by shelling out to gh.
+	PRState string
 }
 
 func taskToJSON(t *model.Task, rt taskRuntimeState) taskJSON {
@@ -130,7 +142,19 @@ func taskToJSON(t *model.Task, rt taskRuntimeState) taskJSON {
 		Archived:     t.Archived,
 		WorktreePath: t.Worktree,
 		Prompt:       t.Prompt,
+		PRState:      prDTOValue(rt.PRState),
 	}
+}
+
+// prDTOValue normalizes a cached PR state string for the DTO. "none" (and the
+// empty string) collapse to "" so omitempty drops the field; every other value
+// passes through verbatim. Centralizing the rule keeps handleListTasks and
+// handleGetTask consistent.
+func prDTOValue(state string) string {
+	if state == "" || state == model.PRNone.String() {
+		return ""
+	}
+	return state
 }
 
 // computeRuntimeState derives the per-request runtime state for a task.
@@ -181,6 +205,16 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
 
+	// Batch-read the cached PR review state once (one indexed query) rather
+	// than per-task. The daemon poller is the sole writer; this handler is a
+	// pure cache read and MUST NOT shell out to gh. A read failure is
+	// non-fatal — we just omit pr_state for this response.
+	prMeta, err := s.db.ListMetaByNamespace("pr")
+	if err != nil {
+		uxlog.Log("[pr] api: list pr meta failed: %v", err)
+		prMeta = nil
+	}
+
 	result := make([]taskJSON, 0)
 	for _, t := range tasks {
 		switch archivedFilter {
@@ -201,7 +235,11 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		if projectFilter != "" && t.Project != projectFilter {
 			continue
 		}
-		result = append(result, taskToJSON(t, computeRuntimeState(t, runningSet, idleSet, needsInputSet)))
+		rt := computeRuntimeState(t, runningSet, idleSet, needsInputSet)
+		if kv := prMeta[t.ID]; kv != nil {
+			rt.PRState = kv["state"]
+		}
+		result = append(result, taskToJSON(t, rt))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": result})
@@ -217,7 +255,19 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
-	writeJSON(w, http.StatusOK, taskToJSON(task, computeRuntimeState(task, runningSet, idleSet, needsInputSet)))
+	rt := computeRuntimeState(task, runningSet, idleSet, needsInputSet)
+	// Pure cache read of the daemon-written PR state; never shells out to gh.
+	if entries, merr := s.db.ListMeta(task.ID, "pr"); merr == nil {
+		for _, e := range entries {
+			if e.Key == "state" {
+				rt.PRState = e.Value
+				break
+			}
+		}
+	} else {
+		uxlog.Log("[pr] api: list pr meta for %s failed: %v", task.ID, merr)
+	}
+	writeJSON(w, http.StatusOK, taskToJSON(task, rt))
 }
 
 // --- Create Task ---

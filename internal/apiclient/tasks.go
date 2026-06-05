@@ -23,6 +23,10 @@ type TaskJSON struct {
 	Archived     bool   `json:"archived,omitempty"`
 	WorktreePath string `json:"worktree_path,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
+	// PRState mirrors api.taskJSON.PRState — the cached PR review state for
+	// the task's branch (omitempty drops "none"/empty). apistore reads this
+	// to satisfy ListMetaByNamespace("pr") in remote TUI mode.
+	PRState string `json:"pr_state,omitempty"`
 }
 
 // ListTasksFilter narrows the list returned by ListTasks. Empty fields are

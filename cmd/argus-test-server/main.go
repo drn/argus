@@ -109,6 +109,14 @@ func main() {
 	if err := d.Update(task); err != nil {
 		log.Fatalf("db update: %v", err)
 	}
+	// Seed a cached PR review state (the daemon poller's job in production) so
+	// the PWA PR-badge spec has something to assert without spawning gh.
+	if err := d.SetMetaBatch(task.ID, "pr", map[string]string{
+		"state": model.PRAwaitingReview.String(),
+		"url":   "https://github.com/example/repo/pull/1",
+	}); err != nil {
+		log.Fatalf("seed pr meta: %v", err)
+	}
 
 	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
 		if backend == "" {
@@ -166,7 +174,11 @@ func main() {
 		}
 		nt.SetStatus(model.StatusInProgress)
 		nt.Prompt = "Investigate flaky CI runs and add retry logic."
-		d.Update(nt) //nolint:errcheck
+		d.Update(nt)                                   //nolint:errcheck
+		d.SetMetaBatch(nt.ID, "pr", map[string]string{ //nolint:errcheck
+			"state": model.PRAwaitingReview.String(),
+			"url":   "https://github.com/example/repo/pull/1",
+		})
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"reset":true,"task":%q}`, nt.ID) //nolint:errcheck
 	})

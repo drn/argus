@@ -136,6 +136,12 @@ button:disabled { opacity: 0.5; cursor: default; }
 .badge-idle { background: #2d2000; color: var(--yellow); }
 .badge-in_review { background: #2d2000; color: var(--yellow); }
 .badge-complete { background: #1a1a3a; color: var(--purple); }
+/* PR review-state badges. Orthogonal to the status badge (a task can be
+   Running/Done AND have an open PR), so they coexist as a second pill. Hues
+   match the TUI's ColorPRAwaiting/Changes/Approved. */
+.badge-pr-awaiting { background: #251b3a; color: #b294fa; }
+.badge-pr-changes  { background: #3a1b1b; color: #f06060; }
+.badge-pr-approved { background: #18301a; color: #78dc78; }
 .task-info { flex: 1; min-width: 0; }
 .task-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
@@ -2224,7 +2230,7 @@ function renderTaskList() {
       const eff = effectiveStatus(t);
       return `
       <div class="task-item" onclick="openDetail('${escAttr(t.id)}')">
-        <span class="task-badge badge-${esc(eff)}">${statusLabel(eff)}</span>
+        <span class="task-badge badge-${esc(eff)}">${statusLabel(eff)}</span>${prBadge(t)}
         <div class="task-info">
           <div class="task-name">${esc(t.name)}</div>
           <div class="task-meta">${t.elapsed ? esc(t.elapsed) : ''}</div>
@@ -2292,6 +2298,22 @@ document.getElementById('task-list').addEventListener('click', e => {
 
 function statusLabel(s) {
   return { pending: 'Pending', in_progress: 'Running', idle: 'Idle', in_review: 'Review', complete: 'Done' }[s] || s;
+}
+
+// prBadge renders a second pill for actionable PR review states only
+// (awaiting-review / changes-requested / approved). draft, merged-closed,
+// unknown, none, and a missing pr_state all render nothing — this axis is
+// orthogonal to effectiveStatus and never folded into it. The server sources
+// pr_state from cached task_meta (the daemon poller), so this is a pure read.
+const PR_BADGES = {
+  'awaiting-review':   { cls: 'badge-pr-awaiting', label: 'PR', title: 'PR awaiting review' },
+  'changes-requested': { cls: 'badge-pr-changes',  label: 'PR', title: 'PR changes requested' },
+  'approved':          { cls: 'badge-pr-approved', label: 'PR', title: 'PR approved' },
+};
+function prBadge(t) {
+  const b = PR_BADGES[t.pr_state];
+  if (!b) return '';
+  return `<span class="task-badge ${b.cls}" title="${escAttr(b.title)}">${esc(b.label)}</span>`;
 }
 
 // effectiveStatus collapses (status, idle) into a single key used for badges,

@@ -437,6 +437,35 @@ func (s *Store) SetArchived(id string, archived bool) error {
 	return s.c.UnarchiveTask(context.Background(), id)
 }
 
+// ListMetaByNamespace reconstructs a task_meta namespace from the REST task
+// list. Today only the "pr" namespace is exposed over REST (the task DTO
+// carries pr_state) — that's the sole TUI caller. Any other namespace returns
+// an empty map rather than an error so the tick degrades to blank cells
+// instead of spamming the status bar.
+//
+// The returned shape mirrors db.DB.ListMetaByNamespace: taskID → key → value,
+// with key "state". The map is never nil. The remote daemon's poller is the
+// sole writer; this is a pure read, identical to the local path.
+func (s *Store) ListMetaByNamespace(namespace string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string)
+	if namespace != "pr" {
+		return out, nil
+	}
+	// archived=all so a completed-but-archived task's PR badge still resolves
+	// (parity with the local index scan, which is namespace-wide).
+	tasks, err := s.c.ListTasks(context.Background(), apiclient.ListTasksFilter{Archived: "all"})
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tasks {
+		if t.PRState == "" {
+			continue
+		}
+		out[t.ID] = map[string]string{"state": t.PRState}
+	}
+	return out, nil
+}
+
 // PluginSections fetches the registered plugin settings sections via GET
 // /api/plugins/settings/sections and reconstructs settings.Section values
 // (the wire shape elides the `spec` envelope for compactness, so we
