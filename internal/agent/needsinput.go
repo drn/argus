@@ -83,38 +83,85 @@ func BlockedOnPrompt(sess SessionHandle) bool {
 	return DetectNeedsInput(sess.RecentOutputTail(needsInputTailWindow))
 }
 
+// promptNBSP is the visible-text signature of Claude Code's current idle
+// input prompt: U+276F (❯) immediately followed by a non-breaking space
+// (U+00A0). The NBSP is the discriminator — transcript text that happens to
+// contain ❯ (shell prompts in command output, the selection UI's `❯ 1.`)
+// uses a regular space, while Claude's input-line renderer emits the NBSP.
+const promptNBSP = "❯\u00a0"
+
 // endsInQuestion returns true when the assistant's last visible line of text
-// — the line immediately above Claude's input prompt box — ends with `?` (or
-// the full-width `？`).
+// — the line immediately above Claude's input prompt — ends with `?` (or the
+// full-width `？`).
 //
-// Anchoring on Claude's prompt-box opener (`╭`) is what makes the heuristic
-// usable: every hint line below the input box (e.g. `? for shortcuts`) is
-// excluded, and we only inspect the genuine transcript above it. Without the
-// anchor, those hint lines would dominate the search and produce constant
-// false positives on every idle session.
+// Anchoring on Claude's input prompt is what makes the heuristic usable:
+// every hint/status line below the input (e.g. `? for shortcuts`,
+// `· ← for agents`) is excluded, and we only inspect the genuine transcript
+// above it. Without the anchor, those hint lines would dominate the search
+// and produce constant false positives on every idle session. Two prompt
+// shapes are recognized, latest occurrence wins:
 //
-// When `╭` is absent — either because the buffer is too short or Claude has
-// not rendered the prompt yet — we conservatively return false. The selection-
-// UI branch above still fires in those cases when it's actually warranted.
+//   - `❯` + NBSP — the current Claude Code idle input line (no box).
+//   - `╭` — the prompt-box opener drawn by older Claude Code versions.
+//
+// When neither is present — buffer too short, or Claude has not rendered the
+// prompt yet — we conservatively return false. The selection-UI branch above
+// still fires in those cases when it's actually warranted.
+//
+// The backward walk skips decoration lines, not just blank ones: Claude
+// renders a spinner-glyph timing line (`✻ Brewed for 57s`) between the last
+// transcript line and the prompt, so the question we're after is one line
+// further up. See decorationLine.
 func endsInQuestion(stripped string) bool {
 	idx := strings.LastIndex(stripped, "╭")
+	if j := strings.LastIndex(stripped, promptNBSP); j > idx {
+		idx = j
+	}
 	if idx < 0 {
 		return false
 	}
 	above := stripped[:idx]
-	// Walk backward through whatever sits above the prompt box, skipping
-	// blank lines until we hit the last content line of the transcript.
+	// Walk backward through whatever sits above the prompt, skipping blank
+	// and decoration lines until we hit the last content line of the
+	// transcript. Lines split on `\r` as well as `\n`: after ANSI strip the
+	// live PTY stream separates visual lines with bare carriage returns.
 	for {
-		newline := strings.LastIndexByte(above, '\n')
-		line := above[newline+1:]
+		cut := strings.LastIndexAny(above, "\n\r")
+		line := above[cut+1:]
 		trimmed := strings.TrimRightFunc(line, unicode.IsSpace)
-		if trimmed != "" {
+		if trimmed != "" && !decorationLine(trimmed) {
 			r, _ := utf8.DecodeLastRuneInString(trimmed)
 			return r == '?' || r == '？'
 		}
-		if newline < 0 {
+		if cut < 0 {
 			return false
 		}
-		above = above[:newline]
+		above = above[:cut]
 	}
+}
+
+// spinnerGlyphs are the runes Claude Code's spinner animation cycles through.
+// The post-response timing line ("✻ Brewed for 57s", "✶ Pondered for 12s", …)
+// starts with one of these; the verb varies per response, so we key on the
+// glyph (UI shape), never the wording.
+var spinnerGlyphs = map[rune]bool{
+	'·': true, '✢': true, '✳': true, '✶': true, '✻': true, '✽': true,
+}
+
+// decorationLine reports whether a non-blank line above the prompt is UI
+// chrome rather than transcript content: the spinner-glyph timing line, or a
+// horizontal rule of box-drawing dashes. Transcript content lines start with
+// `⏺`/`⎿` or plain text, so neither check can swallow a real question.
+func decorationLine(line string) bool {
+	line = strings.TrimLeftFunc(line, unicode.IsSpace)
+	r, _ := utf8.DecodeRuneInString(line)
+	if spinnerGlyphs[r] {
+		return true
+	}
+	for _, r := range line {
+		if r != '─' && r != '━' && r != '═' {
+			return false
+		}
+	}
+	return true
 }

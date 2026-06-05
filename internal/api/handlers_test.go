@@ -818,7 +818,9 @@ func TestHandleGitDiff_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestHandleStopAll_MasterOnly(t *testing.T) {
+// Single-tier auth: stop-all is open to any authenticated token (not on the
+// master-only RCE/credential denylist).
+func TestHandleStopAll_AnyToken(t *testing.T) {
 	srv, d := testServer(t)
 	// Wrap with auth middleware so X-Argus-Auth gets set.
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
@@ -830,29 +832,32 @@ func TestHandleStopAll_MasterOnly(t *testing.T) {
 		testutil.Equal(t, w.Code, http.StatusOK)
 	})
 
-	t.Run("rejects device token", func(t *testing.T) {
+	t.Run("accepts device token", func(t *testing.T) {
 		plain, _, err := MintToken(d, "phone")
 		testutil.NoError(t, err)
 		req := httptest.NewRequest("POST", "/api/sessions/stop-all", nil)
 		req.Header.Set("Authorization", "Bearer "+plain)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		testutil.Equal(t, w.Code, http.StatusForbidden)
+		testutil.Equal(t, w.Code, http.StatusOK)
 	})
 }
 
-func TestHandlePushTest_MasterOnly(t *testing.T) {
+// Single-tier auth: push/test is open to any authenticated token. testServer
+// wires no push manager, so the device request passes auth and reaches the
+// "push not available" 503 — proving it was NOT rejected at the auth gate.
+func TestHandlePushTest_AnyToken(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 
-	t.Run("rejects device token", func(t *testing.T) {
+	t.Run("device token passes auth", func(t *testing.T) {
 		plain, _, err := MintToken(d, "phone")
 		testutil.NoError(t, err)
 		req := httptest.NewRequest("POST", "/api/push/test", nil)
 		req.Header.Set("Authorization", "Bearer "+plain)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
-		testutil.Equal(t, w.Code, http.StatusForbidden)
+		testutil.Equal(t, w.Code, http.StatusServiceUnavailable)
 	})
 }
 
@@ -879,7 +884,14 @@ func TestHandleCreateToken_MasterOnly(t *testing.T) {
 	})
 }
 
-func TestProjectsBackends_MasterOnly(t *testing.T) {
+// TestDenylist_MasterOnly is the single, complete regression table for the
+// master-only denylist under single-tier auth: backends CRUD (command
+// templates → RCE), self-update (source path + rebuild/restart), and token
+// list/mint/revoke (credential management). Every entry must reject a device
+// token with 403. Keeping all denylist endpoints in ONE table means a future
+// addition to the denylist has an obvious home and can't silently ship
+// without a device→403 assertion.
+func TestDenylist_MasterOnly(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
@@ -902,10 +914,15 @@ func TestProjectsBackends_MasterOnly(t *testing.T) {
 		url    string
 		body   string
 	}{
-		{"projects create", "POST", "/api/projects", `{"name":"x","path":"/tmp/x"}`},
-		{"projects update", "PUT", "/api/projects/x", `{"path":"/tmp/y"}`},
-		{"projects delete", "DELETE", "/api/projects/x", ""},
+		{"backends create", "POST", "/api/backends", `{"name":"x","command":"echo"}`},
+		{"backends update", "PUT", "/api/backends/x", `{"command":"echo"}`},
+		{"backends delete", "DELETE", "/api/backends/x", ""},
+		{"source-path get", "GET", "/api/source-path", ""},
+		{"source-path set", "PUT", "/api/source-path", `{"path":"/tmp/x"}`},
+		{"self update", "POST", "/api/update", ""},
 		{"tokens list", "GET", "/api/tokens", ""},
+		{"tokens mint", "POST", "/api/tokens", `{"label":"x"}`},
+		{"tokens revoke", "DELETE", "/api/tokens/1", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name+" forbidden for device", func(t *testing.T) {
@@ -914,6 +931,60 @@ func TestProjectsBackends_MasterOnly(t *testing.T) {
 			testutil.Equal(t, w.Code, http.StatusForbidden)
 		})
 	}
+}
+
+// Single-tier auth: project CRUD is NOT on the denylist, so a device token may
+// create/update/delete projects.
+func TestProjects_DeviceAllowed(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
+	plain, _, err := MintToken(d, "phone")
+	testutil.NoError(t, err)
+	device := func(method, url, body string) *http.Request {
+		var req *http.Request
+		if body != "" {
+			req = httptest.NewRequest(method, url, strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+		} else {
+			req = httptest.NewRequest(method, url, nil)
+		}
+		req.Header.Set("Authorization", "Bearer "+plain)
+		return req
+	}
+
+	t.Run("create", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, device("POST", "/api/projects", `{"name":"x","path":"/tmp/x"}`))
+		testutil.Equal(t, w.Code, http.StatusCreated)
+	})
+	t.Run("update", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, device("PUT", "/api/projects/x", `{"path":"/tmp/y"}`))
+		testutil.Equal(t, w.Code, http.StatusOK)
+	})
+	t.Run("delete", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, device("DELETE", "/api/projects/x", ""))
+		testutil.Equal(t, w.Code, http.StatusOK)
+	})
+}
+
+// TestHandleListBackends_DeviceAllowed pins that GET /api/backends is readable
+// by a device token. Backend *writes* are on the master-only denylist, but the
+// list is intentionally open (handleGetConfig's disclosure rationale depends on
+// it). Without this pin, an accidental requireMaster on handleListBackends
+// would silently break that contract and the remote-TUI config read.
+func TestHandleListBackends_DeviceAllowed(t *testing.T) {
+	srv, d := testServer(t)
+	handler := authMiddleware(srv.token, d, nil, srv.routes())
+	plain, _, err := MintToken(d, "phone")
+	testutil.NoError(t, err)
+
+	req := httptest.NewRequest("GET", "/api/backends", nil)
+	req.Header.Set("Authorization", "Bearer "+plain)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
 }
 
 func TestHandleForkTask_RejectsEmptyProject(t *testing.T) {
@@ -4017,8 +4088,9 @@ func TestSpawnSuccessorDaemon(t *testing.T) {
 }
 
 // TestHandlePruneCompleted exercises the maintenance endpoint that mirrors
-// the TUI's Ctrl+R: pruning complete tasks, cleaning their worktrees, and
-// gating master-only.
+// the TUI's Ctrl+R: pruning complete tasks and cleaning their worktrees.
+// Single-tier auth: open to any authenticated token (it only deletes
+// already-completed tasks), so a device token is accepted, not rejected.
 func TestHandlePruneCompleted(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate db.DataDir() from real ~/.argus
 
@@ -4029,19 +4101,20 @@ func TestHandlePruneCompleted(t *testing.T) {
 	testutil.NoError(t, d.Add(&model.Task{ID: "t2", Name: "done-1", Status: model.StatusComplete}))
 	testutil.NoError(t, d.Add(&model.Task{ID: "t3", Name: "done-2", Status: model.StatusComplete}))
 
-	t.Run("rejects device token", func(t *testing.T) {
-		plain, _, err := MintToken(d, "phone")
+	t.Run("device token passes auth (single-tier)", func(t *testing.T) {
+		// Prune is not on the master-only denylist, so a device token is
+		// accepted. Uses a throwaway server so its prune doesn't disturb the
+		// fixture the master subtests below rely on.
+		ds, dd := testServer(t)
+		dh := authMiddleware(ds.token, dd, nil, ds.routes())
+		testutil.NoError(t, dd.Add(&model.Task{ID: "c1", Name: "done", Status: model.StatusComplete}))
+		plain, _, err := MintToken(dd, "phone")
 		testutil.NoError(t, err)
 		req := httptest.NewRequest("POST", "/api/maintenance/prune-completed", nil)
 		req.Header.Set("Authorization", "Bearer "+plain)
 		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-		testutil.Equal(t, w.Code, http.StatusForbidden)
-
-		// All tasks still present.
-		tasks, err := d.Tasks()
-		testutil.NoError(t, err)
-		testutil.Equal(t, len(tasks), 3)
+		dh.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
 	})
 
 	t.Run("master prunes complete tasks", func(t *testing.T) {

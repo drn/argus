@@ -962,10 +962,10 @@ func (tl *TaskListView) drawFilterInput(screen tcell.Screen, x, y, w int) {
 }
 
 // projectStatusIcon returns the aggregated status icon and style for a project's tasks.
-// Priority: any needs-input > any actively running > any in_review > idle in_progress > all complete > mixed > all pending.
+// Priority: any needs-input > any actively running > any in_review > idle+unvisited in_progress > idle in_progress > all complete > mixed > all pending.
 // Needs-input outranks "actively running" so a single blocked task in a busy project still surfaces to the user.
 func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Style) {
-	var hasNeedsInput, hasActivelyRunning, hasIdleInProgress, hasInReview, hasPending, hasComplete bool
+	var hasNeedsInput, hasActivelyRunning, hasIdleInProgress, hasIdleUnvisited, hasInReview, hasPending, hasComplete bool
 
 	for _, t := range tasks {
 		switch t.Status {
@@ -973,8 +973,9 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 			if tl.needsInput[t.ID] {
 				hasNeedsInput = true
 			} else if tl.idleUnvisited[t.ID] {
-				// Idle+unvisited InProgress tasks count as InReview at project level.
-				hasInReview = true
+				// Idle+unvisited InProgress tasks surface the moon+stars
+				// "needs a look" icon — distinct from an explicit in_review.
+				hasIdleUnvisited = true
 			} else {
 				hasIdleInProgress = true
 				if tl.running[t.ID] && !tl.idle[t.ID] {
@@ -996,6 +997,9 @@ func (tl *TaskListView) projectStatusIcon(tasks []*model.Task) (rune, tcell.Styl
 	case hasActivelyRunning:
 		return widget.SpinnerFrame(tl.animFrame), theme.StyleInProgress
 	case hasInReview:
+		return theme.IconReview, theme.StyleInReview
+	case hasIdleUnvisited:
+		// Idle InProgress tasks not yet revisited — moon+stars, needs a look.
 		return theme.IconMoonStars, theme.StyleInReview
 	case hasIdleInProgress:
 		// All in-progress tasks are idle (waiting for input).
@@ -1121,7 +1125,7 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 			statusStyle = theme.StyleInProgress
 		}
 	case model.StatusInReview:
-		statusChar = theme.IconMoonStars
+		statusChar = theme.IconReview
 		statusStyle = theme.StyleInReview
 	case model.StatusComplete:
 		statusChar = '✓'

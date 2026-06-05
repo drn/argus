@@ -952,6 +952,70 @@ func TestSandbox_KeychainWritable(t *testing.T) {
 	}
 }
 
+// TestSandbox_IOKitOpenGranted is the always-on regression guard for the
+// headful-Chrome fix: the base profile MUST grant IOKit user-client opens.
+// Without these rules, IOServiceOpen (e.g. IORegisterForSystemPower on
+// IOPMrootDomain) returns MACH_PORT_NULL and Chrome SIGSEGVs on the null
+// deref ~7ms into launch, before any page loads. Both op names are required
+// for portability across macOS versions (legacy iokit-open vs. macOS 12+
+// iokit-open-user-client that IOServiceOpen maps to).
+func TestSandbox_IOKitOpenGranted(t *testing.T) {
+	for _, rule := range []string{"(allow iokit-open)", "(allow iokit-open-user-client)"} {
+		if !strings.Contains(sandboxProfileBase, rule) {
+			t.Errorf("base sandbox profile missing %q — headful Chrome/Playwright will SIGSEGV on IOServiceOpen", rule)
+		}
+	}
+}
+
+// iokitProbeSrc opens an IOKit user client exactly the way Chrome does at
+// startup (IORegisterForSystemPower → IOServiceOpen on IOPMrootDomain). It
+// exits 0 only when the open succeeds; under a profile lacking the iokit-open
+// grant the connection comes back MACH_PORT_NULL and it exits 2 — the precise
+// null pointer Chrome then dereferences into a SIGSEGV.
+const iokitProbeSrc = `#include <IOKit/IOKitLib.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+int main(void) {
+	IONotificationPortRef port = 0;
+	io_object_t notifier = 0;
+	io_connect_t root = IORegisterForSystemPower(0, &port, 0, &notifier);
+	return (root == MACH_PORT_NULL || port == 0) ? 2 : 0;
+}`
+
+// TestSandbox_IOKitUserClientOpenable is the behavioral end-to-end check: it
+// compiles the probe and runs it under the real generated profile, proving the
+// iokit-open grant actually permits IOServiceOpen (not just that the op name
+// parses). Skips when sandbox-exec can't apply (nested/missing) or no C
+// compiler is available, so it only runs on a non-sandboxed darwin dev box;
+// TestSandbox_IOKitOpenGranted is the always-on guard everywhere else.
+func TestSandbox_IOKitUserClientOpenable(t *testing.T) {
+	if !sandboxExecFunctional(t) {
+		t.Skip("sandbox-exec not functional (missing or nested sandbox)")
+	}
+	// Constant path (the macOS clang shim) keeps gosec G204 quiet — same reason
+	// the other exec.Command callsites use the sandboxExecPath const.
+	const ccPath = "/usr/bin/cc"
+	if _, err := os.Stat(ccPath); err != nil {
+		t.Skip("no C compiler at " + ccPath + " to build the IOKit probe")
+	}
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "iokit_probe.c")
+	bin := filepath.Join(dir, "iokit_probe")
+	if err := os.WriteFile(src, []byte(iokitProbeSrc), 0o644); err != nil {
+		t.Fatalf("write probe source: %v", err)
+	}
+	//nolint:gosec // G204: test-only; command is a const path, args are test temp paths.
+	build := exec.Command(ccPath, "-o", bin, src, "-framework", "IOKit", "-framework", "CoreFoundation")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("could not build IOKit probe (toolchain unavailable): %v\n%s", err, out)
+	}
+
+	out, err := sandboxRun(t, t.TempDir(), config.SandboxConfig{}, shellQuote(bin))
+	if err != nil {
+		t.Fatalf("IOKit user-client open denied under sandbox profile — headful Chrome would SIGSEGV here: %v\n%s", err, out)
+	}
+}
+
 func TestBuildCmd_WithSandboxDisabled(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sandbox.Enabled = false

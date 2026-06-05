@@ -10,22 +10,24 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	d := testDB(t)
 
 	overrides := map[string]string{
-		"defaults.backend":       "codex",
-		"defaults.share_project": "argus",
-		"ui.theme":               "dark",
-		"ui.spinner":             "braille",
-		"ui.show_elapsed":        "false",
-		"ui.show_icons":          "false",
-		"ui.cleanup_worktrees":   "false",
-		"sandbox.enabled":        "true",
-		"sandbox.deny_read":      "/x,/y",
-		"sandbox.extra_write":    "/a,/b",
-		"kb.enabled":             "true",
-		"kb.http_port":           "9999",
-		"kb.metis_vault_path":    "/tmp/metis",
-		"api.enabled":            "true",
-		"api.http_port":          "8123",
-		"argus.source_path":      "/path/to/argus",
+		"defaults.backend":         "codex",
+		"defaults.share_project":   "argus",
+		"defaults.permission_mode": "acceptEdits",
+		"ui.theme":                 "dark",
+		"ui.spinner":               "braille",
+		"ui.show_elapsed":          "false",
+		"ui.show_icons":            "false",
+		"ui.default_agent_zoom":    "false",
+		"ui.cleanup_worktrees":     "false",
+		"sandbox.enabled":          "true",
+		"sandbox.deny_read":        "/x,/y",
+		"sandbox.extra_write":      "/a,/b",
+		"kb.enabled":               "true",
+		"kb.http_port":             "9999",
+		"kb.metis_vault_path":      "/tmp/metis",
+		"api.enabled":              "true",
+		"api.http_port":            "8123",
+		"argus.source_path":        "/path/to/argus",
 	}
 	for k, v := range overrides {
 		testutil.NoError(t, d.SetConfigValue(k, v))
@@ -35,10 +37,12 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 
 	testutil.Equal(t, cfg.Defaults.Backend, "codex")
 	testutil.Equal(t, cfg.Defaults.ShareProject, "argus")
+	testutil.Equal(t, cfg.Defaults.PermissionMode, "acceptEdits")
 	testutil.Equal(t, cfg.UI.Theme, "dark")
 	testutil.Equal(t, cfg.UI.SpinnerStyle, "braille")
 	testutil.Equal(t, cfg.UI.ShowElapsed, false)
 	testutil.Equal(t, cfg.UI.ShowIcons, false)
+	testutil.Equal(t, cfg.UI.DefaultAgentZoom, false)
 	if cfg.UI.CleanupWorktrees == nil || *cfg.UI.CleanupWorktrees {
 		t.Error("CleanupWorktrees should be set false")
 	}
@@ -51,6 +55,12 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.API.Enabled, true)
 	testutil.Equal(t, cfg.API.HTTPPort, 8123)
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
+}
+
+func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {
+	d := testDB(t)
+	// No ui.default_agent_zoom override → falls back to DefaultConfig (true).
+	testutil.Equal(t, d.Config().UI.DefaultAgentZoom, true)
 }
 
 // TestDB_Config_BadIntegerPorts covers the strconv.Atoi error path for ports.

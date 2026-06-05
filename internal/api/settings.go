@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -45,8 +47,9 @@ type apiSettings struct {
 }
 
 type defaultsJSON struct {
-	Backend      string `json:"backend"`
-	ShareProject string `json:"share_project"`
+	Backend        string `json:"backend"`
+	ShareProject   string `json:"share_project"`
+	PermissionMode string `json:"permission_mode"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -68,8 +71,9 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			HTTPPort: cfg.API.HTTPPort,
 		},
 		Defaults: defaultsJSON{
-			Backend:      cfg.Defaults.Backend,
-			ShareProject: cfg.Defaults.ShareProject,
+			Backend:        cfg.Defaults.Backend,
+			ShareProject:   cfg.Defaults.ShareProject,
+			PermissionMode: cfg.Defaults.PermissionMode,
 		},
 	})
 }
@@ -104,18 +108,27 @@ type apiUpdate struct {
 }
 
 type defaultsUpdate struct {
-	Backend      *string `json:"backend,omitempty"`
-	ShareProject *string `json:"share_project,omitempty"`
+	Backend        *string `json:"backend,omitempty"`
+	ShareProject   *string `json:"share_project,omitempty"`
+	PermissionMode *string `json:"permission_mode,omitempty"`
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
+	// Single-tier auth: any authenticated token may update KB, API, and UX
+	// defaults (default backend / share project) — none can inject a command
+	// the way a backend template can. The ONE exception is the sandbox section:
+	// sandbox.enabled / deny_read / extra_write / allow_apple_events govern the
+	// host's sandbox-exec boundary (which files an agent may read/write), so
+	// loosening them is a security-control change reserved for the master
+	// token. A device token that omits the sandbox section is unaffected.
 	var req updateSettingsReq
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Sandbox != nil && authOrigin(r) != "master" {
+		http.Error(w, `{"error":"master token required for sandbox settings"}`, http.StatusForbidden)
 		return
 	}
 	updates := buildSettingsUpdates(req)
@@ -179,6 +192,14 @@ func buildSettingsUpdates(req updateSettingsReq) map[string]string {
 		}
 		if d.ShareProject != nil {
 			out["defaults.share_project"] = *d.ShareProject
+		}
+		// Only accept a recognized permission mode. An unknown/empty value
+		// would persist a config row that BuildCmd treats as "no flags"
+		// (PermissionModeFlags returns "") while the settings UI still snaps
+		// the display to the bypass-active default — a confusing mismatch.
+		// Drop invalid values (mirrors the allow_apple_events precedent).
+		if d.PermissionMode != nil && slices.Contains(config.PermissionModes, *d.PermissionMode) {
+			out["defaults.permission_mode"] = *d.PermissionMode
 		}
 	}
 	return out

@@ -1390,16 +1390,19 @@ func TestFixupBackends_FixesPromptFlagOnly(t *testing.T) {
 	}
 }
 
-func TestFixupBackends_MissingPermissionModePlan(t *testing.T) {
+// TestFixupBackends_StripsBakedPermissionTokens pins the migration that moves
+// permission control out of the command string and into the injected
+// defaults.permission_mode setting. A legacy command collapses to bare "claude"
+// and no config value is seeded (so it reverts to the bypass-active default).
+func TestFixupBackends_StripsBakedPermissionTokens(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 
-	// Simulate a backend with --dangerously-skip-permissions but missing --permission-mode plan
 	if err := d.SetBackend("claude", config.Backend{
-		Command:    "claude --dangerously-skip-permissions",
+		Command:    "claude --dangerously-skip-permissions --permission-mode plan",
 		PromptFlag: "",
 	}); err != nil {
 		t.Fatal(err)
@@ -1411,22 +1414,29 @@ func TestFixupBackends_MissingPermissionModePlan(t *testing.T) {
 
 	backends, err := d.Backends()
 	testutil.NoError(t, err)
-	b := backends["claude"]
-	// Fixup appends --permission-mode plan to existing command (preserving customizations)
-	want := "claude --dangerously-skip-permissions --permission-mode plan"
-	if b.Command != want {
-		t.Errorf("expected command %q, got %q", want, b.Command)
-	}
+	testutil.Equal(t, backends["claude"].Command, "claude")
+
+	// No defaults.permission_mode value is seeded — it stays unconfigured so
+	// the launched command falls back to the bypass-active default.
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Defaults.PermissionMode, config.PermissionModeBypassActive)
+
+	// Idempotent — a second pass is a no-op.
+	testutil.NoError(t, d.fixupBackends())
+	backends, err = d.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends["claude"].Command, "claude")
 }
 
-func TestFixupBackends_PermissionModePreservesCustomFlags(t *testing.T) {
+// TestFixupBackends_StripsTokensKeepsCustomFlags confirms only the permission
+// tokens are removed — other user customizations (e.g. --model) survive.
+func TestFixupBackends_StripsTokensKeepsCustomFlags(t *testing.T) {
 	d, err := OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer d.Close()
 
-	// User has custom flags — fixup should append, not replace
 	if err := d.SetBackend("claude", config.Backend{
 		Command:    "claude --dangerously-skip-permissions --model claude-opus-4-5",
 		PromptFlag: "",
@@ -1440,11 +1450,7 @@ func TestFixupBackends_PermissionModePreservesCustomFlags(t *testing.T) {
 
 	backends, err := d.Backends()
 	testutil.NoError(t, err)
-	b := backends["claude"]
-	want := "claude --dangerously-skip-permissions --model claude-opus-4-5 --permission-mode plan"
-	if b.Command != want {
-		t.Errorf("expected command %q, got %q", want, b.Command)
-	}
+	testutil.Equal(t, backends["claude"].Command, "claude --model claude-opus-4-5")
 }
 
 func TestFixupBackends_NonClaudeBackendUntouched(t *testing.T) {

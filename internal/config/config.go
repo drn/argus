@@ -51,6 +51,73 @@ type Defaults struct {
 	// the PWA share target lands a payload (iOS/Android share sheet → /share).
 	// Empty falls back to the currently expanded project folder.
 	ShareProject string `toml:"share_project"`
+	// PermissionMode controls the permission flags injected into Claude-style
+	// backend commands by agent.BuildCmd (one of the PermissionModes values).
+	// It is NOT baked into the backend command string — see PermissionModeFlags.
+	PermissionMode string `toml:"permission_mode"`
+}
+
+// PermissionMode values control how Claude-style sessions launch. The flags are
+// injected at command-build time (agent.BuildCmd) rather than stored in the
+// backend command, so the mode is a single configurable knob.
+const (
+	PermissionModeDefault     = "default"
+	PermissionModeAcceptEdits = "acceptEdits"
+	PermissionModePlan        = "plan"
+	// PermissionModeBypassAllow starts in plan mode but adds bypassPermissions
+	// to the Shift+Tab cycle via --allow-dangerously-skip-permissions (the
+	// documented way to keep "dangerously skip permissions" reachable without
+	// activating it at launch).
+	PermissionModeBypassAllow = "bypass-allow"
+	// PermissionModeBypassActive launches directly in bypassPermissions mode.
+	PermissionModeBypassActive = "bypass-active"
+)
+
+// PermissionModes is the ordered list of selectable permission modes, used by
+// the settings UI to cycle through values.
+var PermissionModes = []string{
+	PermissionModeDefault,
+	PermissionModeAcceptEdits,
+	PermissionModePlan,
+	PermissionModeBypassAllow,
+	PermissionModeBypassActive,
+}
+
+// PermissionModeFlags returns the Claude CLI flags for a permission mode.
+// Returns "" for an empty or unrecognized mode (no flags injected).
+func PermissionModeFlags(mode string) string {
+	switch mode {
+	case PermissionModeDefault:
+		return "--permission-mode default"
+	case PermissionModeAcceptEdits:
+		return "--permission-mode acceptEdits"
+	case PermissionModePlan:
+		return "--permission-mode plan"
+	case PermissionModeBypassAllow:
+		return "--allow-dangerously-skip-permissions --permission-mode plan"
+	case PermissionModeBypassActive:
+		return "--dangerously-skip-permissions"
+	default:
+		return ""
+	}
+}
+
+// PermissionModeLabel returns a human-readable label for the settings UI.
+func PermissionModeLabel(mode string) string {
+	switch mode {
+	case PermissionModeDefault:
+		return "Default (prompt per action)"
+	case PermissionModeAcceptEdits:
+		return "Accept edits"
+	case PermissionModePlan:
+		return "Plan (read-only)"
+	case PermissionModeBypassAllow:
+		return "Plan + bypass reachable (Shift+Tab)"
+	case PermissionModeBypassActive:
+		return "Bypass permissions (active)"
+	default:
+		return mode
+	}
 }
 
 type Backend struct {
@@ -102,6 +169,10 @@ type UIConfig struct {
 	ShowIcons        bool   `toml:"show_icons"`
 	CleanupWorktrees *bool  `toml:"cleanup_worktrees,omitempty"`
 	SpinnerStyle     string `toml:"spinner_style"`
+	// DefaultAgentZoom controls the resting agent-view layout: true (the
+	// default) opens single-pane/zoomed with the side panels collapsed; false
+	// opens the 1:3:1 three-pane layout. Ctrl+Z still toggles at runtime.
+	DefaultAgentZoom bool `toml:"default_agent_zoom"`
 }
 
 // SandboxConfig controls OS-level sandboxing of agent processes.
@@ -130,10 +201,12 @@ func (u UIConfig) ShouldCleanupWorktrees() bool {
 // DefaultConfig returns a config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Defaults: Defaults{Backend: "claude"},
+		Defaults: Defaults{Backend: "claude", PermissionMode: PermissionModeBypassActive},
 		Backends: map[string]Backend{
 			"claude": {
-				Command:    "claude --dangerously-skip-permissions --permission-mode plan",
+				// Permission flags are injected by agent.BuildCmd from
+				// Defaults.PermissionMode — not baked into the command.
+				Command:    "claude",
 				PromptFlag: "",
 			},
 			"codex": {
@@ -148,10 +221,11 @@ func DefaultConfig() Config {
 		Projects:    make(map[string]Project),
 		Keybindings: DefaultKeybindings(),
 		UI: UIConfig{
-			Theme:        "default",
-			ShowElapsed:  true,
-			ShowIcons:    true,
-			SpinnerStyle: "progress",
+			Theme:            "default",
+			ShowElapsed:      true,
+			ShowIcons:        true,
+			SpinnerStyle:     "progress",
+			DefaultAgentZoom: true,
 		},
 		KB: KBConfig{
 			HTTPPort: 7742,

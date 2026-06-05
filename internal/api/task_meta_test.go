@@ -136,7 +136,10 @@ func TestAPI_PutMeta_Batch_Master(t *testing.T) {
 	testutil.Equal(t, len(entries), 3)
 }
 
-func TestAPI_PutMeta_RequiresMaster(t *testing.T) {
+// Single-tier auth: a device token may write metadata (unconfined — the
+// namespace comes from the body, same as a master token). Scope tokens stay
+// namespace-confined, covered by the scope tests below.
+func TestAPI_PutMeta_DeviceAllowed(t *testing.T) {
 	srv, d := testServer(t)
 	task := &model.Task{Name: "t"}
 	testutil.NoError(t, d.Add(task))
@@ -146,7 +149,12 @@ func TestAPI_PutMeta_RequiresMaster(t *testing.T) {
 	req := deviceReq("PUT", "/api/tasks/"+task.ID+"/meta", body)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	testutil.Equal(t, w.Code, http.StatusForbidden)
+	testutil.Equal(t, w.Code, http.StatusOK)
+
+	entries, err := d.ListMeta(task.ID, "ns-a")
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(entries), 1)
+	testutil.Equal(t, entries[0].Value, "v")
 }
 
 // scopeReq stamps X-Argus-Auth: scope:<name> to simulate a request that
@@ -221,21 +229,44 @@ func TestAPI_PutMeta_Scope_CrossNamespace_Forbidden(t *testing.T) {
 	testutil.Equal(t, len(entries), 0)
 }
 
-// TestAPI_PutMeta_Scope_EmptySuffix_Rejected covers the scopeFromAuth
-// empty-suffix branch — a malformed `X-Argus-Auth: scope:` header must NOT
-// be treated as a valid scope token (would otherwise allow a write into the
+// TestAPI_PutMeta_Scope_EmptySuffix covers the scopeFromAuth empty-suffix
+// branch — a malformed `X-Argus-Auth: scope:` header is NOT a valid scope
+// token, so under single-tier auth it falls through to the unconfined
+// (device-equivalent) path: the explicit body namespace is honored, and an
+// omitted namespace is rejected with 400 (NOT silently written to the
 // empty-string namespace).
-func TestAPI_PutMeta_Scope_EmptySuffix_Rejected(t *testing.T) {
+func TestAPI_PutMeta_Scope_EmptySuffix(t *testing.T) {
 	srv, d := testServer(t)
 	task := &model.Task{Name: "t"}
 	testutil.NoError(t, d.Add(task))
-
 	mux := srv.routes()
-	req := scopeReq("PUT", "/api/tasks/"+task.ID+"/meta",
-		`{"namespace":"x","key":"k","value":"v"}`, "")
-	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, req)
-	testutil.Equal(t, w.Code, http.StatusForbidden)
+
+	t.Run("explicit namespace honored", func(t *testing.T) {
+		req := scopeReq("PUT", "/api/tasks/"+task.ID+"/meta",
+			`{"namespace":"x","key":"k","value":"v"}`, "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		entries, err := d.ListMeta(task.ID, "x")
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(entries), 1)
+	})
+
+	t.Run("omitted namespace rejected, not written empty", func(t *testing.T) {
+		req := scopeReq("PUT", "/api/tasks/"+task.ID+"/meta",
+			`{"key":"k","value":"v"}`, "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusBadRequest)
+		empty, err := d.ListMeta(task.ID, "")
+		testutil.NoError(t, err)
+		// Only the "x" row from the previous subtest exists; nothing under "".
+		for _, e := range empty {
+			if e.Namespace == "" {
+				t.Fatalf("write leaked into empty-string namespace: %+v", e)
+			}
+		}
+	})
 }
 
 func TestAPI_PutMeta_Master_ExplicitNamespace_Unchanged(t *testing.T) {

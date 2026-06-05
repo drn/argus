@@ -103,6 +103,12 @@ func (sb *StatusBar) ClearError() {
 	sb.errMsg = ""
 }
 
+// Error returns the currently-displayed error message ("" if none). Exposed
+// for tests that assert error-path wiring without scraping the rendered row.
+func (sb *StatusBar) Error() string {
+	return sb.errMsg
+}
+
 // SetInfo sets an informational (non-error) status message.
 func (sb *StatusBar) SetInfo(msg string) {
 	sb.infoMsg = msg
@@ -111,6 +117,13 @@ func (sb *StatusBar) SetInfo(msg string) {
 // ClearInfo clears the informational status message.
 func (sb *StatusBar) ClearInfo() {
 	sb.infoMsg = ""
+}
+
+// Info returns the currently-displayed informational message ("" if none).
+// Exposed for tests that assert info-path wiring without scraping the row,
+// mirroring Error().
+func (sb *StatusBar) Info() string {
+	return sb.infoMsg
 }
 
 // Draw renders the status bar.

@@ -87,11 +87,10 @@ func TestAPI_LinkTask_MissingParent(t *testing.T) {
 	testutil.Equal(t, w.Code, http.StatusNotFound)
 }
 
-// TestAPI_HaltDownstream_RequiresMaster gates halt-downstream to master-only.
-// Per-task linking endpoints (link/unlink/deps/plan-slug) intentionally
-// accept device tokens — they match the archive/rename tier — so they have
-// no requireMaster test.
-func TestAPI_HaltDownstream_RequiresMaster(t *testing.T) {
+// TestAPI_HaltDownstream_DeviceAllowed verifies that under single-tier auth a
+// device token may halt downstream — it is cross-task and destructive but not
+// on the master-only RCE/credential denylist, so it is no longer master-gated.
+func TestAPI_HaltDownstream_DeviceAllowed(t *testing.T) {
 	srv, _ := testServer(t)
 	a := &model.Task{Name: "A", Status: model.StatusInProgress}
 	testutil.NoError(t, srv.db.Add(a))
@@ -104,7 +103,7 @@ func TestAPI_HaltDownstream_RequiresMaster(t *testing.T) {
 	req.Header.Set("X-Argus-Auth", "device")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	testutil.Equal(t, w.Code, http.StatusForbidden)
+	testutil.Equal(t, w.Code, http.StatusOK)
 }
 
 func TestAPI_UnlinkTask(t *testing.T) {

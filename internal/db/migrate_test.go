@@ -86,6 +86,24 @@ func TestSeedDefaults_ConfigInsertError(t *testing.T) {
 	testutil.Error(t, err)
 }
 
+// TestSeedDefaults_SeedsUIBools verifies that the boolean UI prefs are seeded
+// into the config table on a fresh DB. ui.default_agent_zoom must be present
+// alongside its siblings (show_elapsed/show_icons) so the seeding stays in sync
+// with the UIConfig bool fields — db.Config()'s absent-key fallback would mask a
+// missing seed, so this asserts the raw row exists.
+func TestSeedDefaults_SeedsUIBools(t *testing.T) {
+	d, err := OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	for _, key := range []string{"ui.show_elapsed", "ui.show_icons", "ui.default_agent_zoom"} {
+		var value string
+		err := d.conn.QueryRow(`SELECT value FROM config WHERE key=?`, key).Scan(&value)
+		testutil.NoError(t, err)
+		testutil.Equal(t, value, "true")
+	}
+}
+
 // TestFixupBackends_UpdateExecError covers the UPDATE error path. We close the
 // conn after a backend that will trigger an update is set. fixupBackends uses
 // QueryRow which fails on closed conn → "continue", so UPDATE never runs.
@@ -126,10 +144,9 @@ func TestFixupBackends_AlreadyCorrect(t *testing.T) {
 	testutil.NoError(t, d.fixupBackends())
 }
 
-// TestFixupBackends_PreservesUserCustomization is a placeholder — we already
-// have tests for many fixupBackends paths in db_test.go; this just verifies
-// the path that includes user customizations when --permission-mode is missing.
-func TestFixupBackends_AppendsPermissionMode(t *testing.T) {
+// TestFixupBackends_StripPreservesOtherFlags confirms the permission-token
+// strip removes only permission flags and leaves unrelated flags in place.
+func TestFixupBackends_StripPreservesOtherFlags(t *testing.T) {
 	d := testDB(t)
 	testutil.NoError(t, d.SetBackend("claude", config.Backend{
 		Command:    "claude --dangerously-skip-permissions --extra-flag",
@@ -138,6 +155,29 @@ func TestFixupBackends_AppendsPermissionMode(t *testing.T) {
 	testutil.NoError(t, d.fixupBackends())
 	backends, err := d.Backends()
 	testutil.NoError(t, err)
-	testutil.Contains(t, backends["claude"].Command, "--permission-mode plan")
-	testutil.Contains(t, backends["claude"].Command, "--extra-flag")
+	got := backends["claude"].Command
+	testutil.Equal(t, got, "claude --extra-flag")
+}
+
+// TestStripPermissionTokens covers the token forms the migration must handle:
+// the space-separated and = forms of --permission-mode, plus both skip flags.
+func TestStripPermissionTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"skip+plan", "claude --dangerously-skip-permissions --permission-mode plan", "claude"},
+		{"eq form", "claude --permission-mode=acceptEdits", "claude"},
+		{"allow variant", "claude --allow-dangerously-skip-permissions --permission-mode plan", "claude"},
+		{"keeps others", "claude --model opus --permission-mode plan --verbose", "claude --model opus --verbose"},
+		{"no tokens", "claude --model opus", "claude --model opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, stripPermissionTokens(tc.in), tc.want)
+			// commandHasPermissionTokens must agree with whether a change occurred.
+			testutil.Equal(t, commandHasPermissionTokens(tc.in), tc.in != tc.want)
+		})
+	}
 }

@@ -120,9 +120,10 @@ func (p *Provider) Stop(taskID string) error {
 	return p.c.StopTask(context.Background(), taskID)
 }
 
-// StopAll halts every running session. Master-only — Provider operates with
-// the master token in local mode and a device token in remote mode; in the
-// latter case the server returns 403.
+// StopAll halts every running session. Open to any authenticated token under
+// the single-tier auth model (it is not on the master-only RCE/credential
+// denylist), so it succeeds with either a master token (local mode) or a
+// device token (remote mode).
 func (p *Provider) StopAll() {
 	_, _ = p.c.StopAll(context.Background())
 }
@@ -211,6 +212,30 @@ func (p *Provider) HasPendingRestart(taskID string) bool {
 		return false
 	}
 	return pending
+}
+
+// ClipboardGet fetches any agent-staged clipboard text for a task. It mirrors
+// the daemon client's method of the same name so the TUI's clipboardAccessor
+// type assertion succeeds in --remote mode, making ctrl+y copy work over HTTP.
+// Returns empty string and false when nothing is staged or the request fails.
+// Presence is keyed on non-empty text: the GET endpoint returns 204 (decoded
+// as empty text) when nothing is staged, and the downstream TUI consumers
+// treat empty text as "no payload" anyway.
+func (p *Provider) ClipboardGet(taskID string) (string, bool) {
+	entry, err := p.c.GetClipboard(context.Background(), taskID)
+	// GetClipboard returns a non-nil entry on success and (nil, err) on
+	// failure, so err != nil already covers the nil case; the entry == nil
+	// check is belt-and-suspenders against a future (nil, nil) return.
+	if err != nil || entry == nil {
+		return "", false
+	}
+	return entry.Text, entry.Text != ""
+}
+
+// ClipboardClear removes any agent-staged clipboard text for a task. Mirrors
+// the daemon client's method so the TUI clears server-side state after ctrl+y.
+func (p *Provider) ClipboardClear(taskID string) error {
+	return p.c.ClearClipboard(context.Background(), taskID)
 }
 
 // getOrCreateSession is the internal accessor used by Start/Get. Holds the

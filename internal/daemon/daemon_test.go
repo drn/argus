@@ -7,6 +7,7 @@ import (
 	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -630,18 +631,19 @@ func TestDaemon_CaptureSessionIDPostExit_NoWorktree(t *testing.T) {
 	testutil.Equal(t, got.SessionID, "")
 }
 
-// TestDaemon_CaptureSessionIDPostExit_ClaudeNoOp: Claude-style backends mint
-// the UUID at start via --session-id; the dispatcher returns ("", nil) and
-// the daemon must NOT clobber the persisted SessionID with "".
-func TestDaemon_CaptureSessionIDPostExit_ClaudeNoOp(t *testing.T) {
+// TestDaemon_CaptureSessionIDPostExit_ClaudeNoTranscript: Claude now scans
+// ~/.claude/projects on every exit, but when no transcript dir exists the
+// capture errors and the daemon must NOT clobber the persisted SessionID.
+func TestDaemon_CaptureSessionIDPostExit_ClaudeNoTranscript(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no ~/.claude/projects/<enc> → capture errors
 	d, _ := testDaemon(t)
+	pre := "11111111-1111-7111-9111-111111111111"
 	tk := &model.Task{
-		Name:     "t",
-		Project:  "p",
-		Worktree: t.TempDir(),
-		Backend:  "claude",
-		// SessionID empty — Claude path is unusual here (Claude pre-mints
-		// before BuildCmd) but we're asserting the daemon doesn't overwrite.
+		Name:      "t",
+		Project:   "p",
+		Worktree:  t.TempDir(),
+		Backend:   "claude",
+		SessionID: pre,
 	}
 	testutil.NoError(t, d.db.Add(tk))
 
@@ -649,7 +651,44 @@ func TestDaemon_CaptureSessionIDPostExit_ClaudeNoOp(t *testing.T) {
 
 	got, err := d.db.Get(tk.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, got.SessionID, "")
+	testutil.Equal(t, got.SessionID, pre) // unchanged after capture error
+}
+
+// TestDaemon_CaptureSessionIDPostExit_ClaudeRefresh pins the /clear fix: a
+// Claude task already has a pinned SessionID, but a newer transcript (the
+// post-/clear conversation) lives in ~/.claude/projects. The daemon must
+// refresh the row to the newest UUID so the next resume targets it.
+func TestDaemon_CaptureSessionIDPostExit_ClaudeRefresh(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d, _ := testDaemon(t)
+
+	wt := filepath.Join(home, "claude-refresh-wt")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+	// Mirror claudeEncodeCwd inline (package-private to agent): every
+	// non-alphanumeric byte → '-'. agent_test.TestClaudeEncodeCwd pins the
+	// canonical behavior; here a local copy is enough to prove daemon wiring.
+	enc := regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(wt, "-")
+	projDir := filepath.Join(home, ".claude", "projects", enc)
+	testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+
+	original := "11111111-1111-7111-9111-111111111111"
+	postClear := "22222222-2222-7222-9222-222222222222"
+	orig := filepath.Join(projDir, original+".jsonl")
+	newer := filepath.Join(projDir, postClear+".jsonl")
+	testutil.NoError(t, os.WriteFile(orig, []byte("{}\n"), 0o644))
+	testutil.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+	past := time.Now().Add(-1 * time.Hour)
+	testutil.NoError(t, os.Chtimes(orig, past, past))
+
+	tk := &model.Task{Name: "t", Project: "p", Worktree: wt, Backend: "claude", SessionID: original}
+	testutil.NoError(t, d.db.Add(tk))
+
+	d.captureSessionIDPostExit(tk.ID)
+
+	got, err := d.db.Get(tk.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, postClear) // refreshed to the post-/clear UUID
 }
 
 // TestDaemon_CaptureSessionIDPostExit_PiSuccess pins the happy path: a pi
