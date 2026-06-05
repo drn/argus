@@ -147,6 +147,7 @@ func hasPermissionFlags(command string) bool {
 		strings.Contains(command, "--dangerously-skip-permissions") ||
 		strings.Contains(command, "--allow-dangerously-skip-permissions")
 }
+
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
 // slash or backslash (matching pi's `cwd.replace(/^[/\\]/, "")` — NOT a
 // TrimLeft), then replace remaining /, \, : with -, then wrap in --…--.
