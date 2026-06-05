@@ -38,11 +38,14 @@ func ResetGhAbsentLogged() {
 // (pure JSON parsing) lets the bulk of coverage run without spawning
 // any processes.
 var prRunner = func(ctx context.Context, dir string, args ...string) (string, int, error) {
-	ghPath, err := exec.LookPath("gh")
-	if err != nil {
+	if _, err := exec.LookPath("gh"); err != nil {
 		return "", 0, errGhAbsent
 	}
-	cmd := exec.CommandContext(ctx, ghPath, args...)
+	// Use the literal "gh" (not the LookPath-resolved variable) as the command
+	// name so the binary is a constant — exec.CommandContext performs its own
+	// PATH resolution. Passing a variable as the command name trips gosec G204;
+	// the literal keeps it constant while args remain a fixed call-site list.
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = dir
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

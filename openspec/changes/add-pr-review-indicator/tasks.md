@@ -56,5 +56,5 @@
 
 **Depends on:** Stages 4, 5, 6
 
-- [ ] 7.1 Add gotchas: `tasklist-ui.md` (reserved-cell anti-jitter, orthogonality vs `in_review`) and `web-remote.md` (pr_state DTO, daemon-only-fetch / handlers-never-shell-out, 60s keep-stale contract); update `context/knowledge/index.md` bullet counts.
-- [ ] 7.2 Run `make pre-pr` and get a clean pass (build → vet → fmt-check → lint-pr → vuln → test-cover-gate).
+- [x] 7.1 Add gotchas: `tasklist-ui.md` (reserved-cell anti-jitter, orthogonality vs `in_review`) and `web-remote.md` (pr_state DTO, daemon-only-fetch / handlers-never-shell-out, 60s keep-stale contract); update `context/knowledge/index.md` bullet counts.
+- [x] 7.2 Run `make pre-pr` and get a clean pass (build → vet → fmt-check → lint-pr → vuln → test-cover-gate).

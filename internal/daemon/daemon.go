@@ -340,6 +340,23 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	uxlog.Log("[pr] poll: eligible=%d written=%d errored=%d", len(eligible), written, errored)
 }
 
+// runPRPoller is the PR-status poller goroutine body. It runs pollPRStatesOnce
+// every prPollInterval until d.done is closed, at which point it returns so
+// daemon shutdown does not hang. Extracted from Serve so tests can verify the
+// d.done-gated exit deterministically without binding a real socket.
+func (d *Daemon) runPRPoller() {
+	ticker := time.NewTicker(prPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.done:
+			return
+		case <-ticker.C:
+			d.pollPRStatesOnce(context.Background())
+		}
+	}
+}
+
 // Clipboard returns the agent-staged clipboard store. Used by the API
 // server (HTTP + SSE subscribe) and the MCP server (agent stages text).
 func (d *Daemon) Clipboard() *clipboard.Store {
@@ -511,18 +528,7 @@ func (d *Daemon) Serve(sockPath string) error {
 	// d.done terminates the goroutine promptly on daemon shutdown. Each tick's
 	// work is factored into pollPRStatesOnce so tests can drive a single pass
 	// directly instead of racing the ticker.
-	go func() {
-		ticker := time.NewTicker(prPollInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-d.done:
-				return
-			case <-ticker.C:
-				d.pollPRStatesOnce(context.Background())
-			}
-		}
-	}()
+	go d.runPRPoller()
 
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	if cfg.KB.Enabled {

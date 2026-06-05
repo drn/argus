@@ -49,6 +49,11 @@
 
 - **`drawTaskRow` gives the task name priority over the branch in width allocation.** The name is sized first (ignoring branch), then the branch fills remaining space. If branch is sized first (reserving space before name), narrow terminals squeeze the name to zero while showing a useless branch fragment.
 
+## PR Review Indicator
+
+- **The PR indicator is a RESERVED second cell that always advances the column by 2, even when blank.** `drawTaskRow` reserves the cell after the status glyph unconditionally; an actionable PR state paints a glyph there, a non-actionable state leaves it blank — but the name column starts at the same offset either way, so the name never jitters as PR state appears or vanishes between polls.
+- **PR state is ORTHOGONAL to the `in_review` status glyph — they coexist, never replace each other.** The status glyph reflects the manual workflow state (`pending`/`in_progress`/`in_review`/`complete`); the PR cell reflects a system-observed GitHub fact. A task can show both the `in_review` glyph and a PR-approved glyph simultaneously; the PR cell must never overwrite or substitute for the status glyph.
+
 ## Spinner Animation
 
 - **Project status icon priority: actively running > in_review > idle in_progress.** If any task in a project is actively running (`running && !idle`), the project shows the spinner — even if other tasks are in-review. The variable is `hasActivelyRunning`, not the old `allInProgressIdle` inverse.

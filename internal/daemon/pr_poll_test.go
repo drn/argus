@@ -124,24 +124,29 @@ func TestPollPR_PersistsPRNone(t *testing.T) {
 	testutil.Equal(t, got["state"], "none")
 }
 
-// TestPollPR_GoroutineStopsOnShutdown verifies the poller goroutine started in
-// Serve terminates via d.done so daemon shutdown does not hang. The poll
-// interval is 60s, so we don't observe a tick — we assert Serve returns
-// promptly after Shutdown, which can only happen if every d.done-gated
-// goroutine (including the poller) has exited its select.
+// TestPollPR_GoroutineStopsOnShutdown verifies the poller goroutine
+// (runPRPoller, the body Serve launches) terminates via d.done so daemon
+// shutdown does not hang. We drive the goroutine directly — no socket, no
+// Serve — and assert it returns promptly once d.done is closed. The poll
+// interval is 60s so no tick fires; the only way runPRPoller returns is via
+// the d.done branch of its select. This mirrors the lightweight pattern the
+// MCP idle-sweep tests use (test the loop, not a real listener).
 func TestPollPR_GoroutineStopsOnShutdown(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	d, sockPath := testDaemon(t)
+	d, _ := testDaemon(t)
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- d.Serve(sockPath) }()
-	waitForSocket(t, sockPath)
+	stopped := make(chan struct{})
+	go func() {
+		d.runPRPoller()
+		close(stopped)
+	}()
 
-	d.Shutdown()
+	// Closing d.done is exactly what Shutdown does for every gated goroutine.
+	close(d.done)
+
 	select {
-	case <-errCh:
+	case <-stopped:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Serve did not return after Shutdown (a d.done goroutine is stuck)")
+		t.Fatal("runPRPoller did not return after d.done closed (goroutine stuck)")
 	}
 }
 

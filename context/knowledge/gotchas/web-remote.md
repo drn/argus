@@ -242,6 +242,12 @@ Non-obvious invariants for the SPA + REST API + push notifications stack.
 - **Tab-scoped hotkeys (`/`, `a`) read `.tab.active`'s `data-tab` attribute, not a JS variable** — there is no global "current tab" state in the SPA (it lives in DOM class state on the tab buttons). Mirroring it into a JS variable would just be a second source of truth. The lookup is O(1) on `.tab.active` so the cost is nil.
 - **`?` requires Shift** but the listener key-matches on `e.key === '?'` (the printable result), not on physical key + modifier. This intentionally matches the user's mental model (`?` is a key that exists on the keyboard) and avoids the keyboard-layout sniffing required to handle `Shift+/` correctly across QWERTY/AZERTY/Dvorak.
 
+## PR review state (`pr_state`)
+
+- **The `pr_state` DTO field is populated from cached `task_meta` namespace `pr` ONLY — the API handler must NEVER shell out to `gh` inline.** `handleListTasks`/`handleGetTask` do a batch `task_meta` read and surface the cached value; same rule as git status (no synchronous git/gh work on the request path). Shelling out per-request would block the handler on network I/O and turn a list call into N `gh` processes.
+- **The 60s daemon poller is the single writer of the `pr` namespace; transient errors KEEP-STALE.** A `gh`/network error leaves the existing cached value untouched (no write) — a good cached state is never overwritten by a failed fetch. Only a nil-error result (including an authoritative `none`) is persisted.
+- **gh-absent / unauthenticated logs once and renders nothing.** When `gh` is missing or not logged in, the fetcher logs a single uxlog line (not once-per-poll) and the cell/badge stays blank — no error surfaced to the user, no per-tick log spam.
+
 ## Session artifacts (render & view)
 
 - **Artifact serving is scoped by the DB manifest row, NOT by the path.** `GET /api/tasks/{id}/artifacts/{filename}` looks `filename` up (the on-disk basename column, NOT the display `name`) in the `artifacts` table for that task; no row → 404 even if the file physically exists in `~/.argus/artifacts/<id>/`. Do NOT "optimize" by joining `ArtifactsDir(id)+filename` and serving directly — that reintroduces the arbitrary-FS-read hole the row-allowlist exists to close. `resolveArtifactPath` is the belt-and-suspenders second gate (Clean + symlink-resolve + prefix check, returning the resolved real path so `os.Open` can't be redirected by a post-check symlink swap); the row lookup is the first.

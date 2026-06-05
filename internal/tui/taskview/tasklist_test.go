@@ -498,6 +498,16 @@ const (
 	prNameCol   = 8
 )
 
+// firstRune returns the first rune of a cell string from SimulationScreen.Get,
+// or a space for an empty cell. Get is the non-deprecated cell accessor (the
+// older GetContent trips staticcheck SA1019).
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return ' '
+}
+
 func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -519,19 +529,18 @@ func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
 			tl.drawTaskRow(sim, 0, 0, 60, task, false)
 
 			// PR glyph appears at the reserved cell.
-			gotPR, _, _, _ := sim.GetContent(prCellCol, 0)
-			testutil.Equal(t, gotPR, tc.glyph)
+			gotPRStr, gotStyle, _ := sim.Get(prCellCol, 0)
+			testutil.Equal(t, firstRune(gotPRStr), tc.glyph)
 
 			// Style matches the theme's PR style for this state.
 			_, wantStyle := theme.PRGlyph(tc.state)
-			_, _, gotStyle, _ := sim.GetContent(prCellCol, 0)
 			testutil.Equal(t, gotStyle, wantStyle)
 
 			// Name starts at the fixed name column regardless of PR state.
 			nameRun := ""
 			for col := prNameCol; col < 60; col++ {
-				r, _, _, _ := sim.GetContent(col, 0)
-				nameRun += string(r)
+				s, _, _ := sim.Get(col, 0)
+				nameRun += s
 			}
 			testutil.Contains(t, strings.TrimSpace(nameRun), "fix-bug")
 		})
@@ -549,8 +558,8 @@ func TestDrawTaskRow_PRIndicator_BlankForNonActionable(t *testing.T) {
 
 			tl.drawTaskRow(sim, 0, 0, 60, task, false)
 
-			gotPR, _, _, _ := sim.GetContent(prCellCol, 0)
-			testutil.Equal(t, gotPR, ' ')
+			gotPR, _, _ := sim.Get(prCellCol, 0)
+			testutil.Equal(t, firstRune(gotPR), ' ')
 		})
 	}
 }
@@ -567,10 +576,11 @@ func TestDrawTaskRow_PRIndicator_NameDoesNotShift(t *testing.T) {
 		tl.SetPRStates(map[string]model.PRState{"1": state})
 		tl.drawTaskRow(sim, 0, 0, 60, task, false)
 
-		statusRune, _, _, _ = sim.GetContent(prStatusCol, 0)
+		statusStr, _, _ := sim.Get(prStatusCol, 0)
+		statusRune = firstRune(statusStr)
 		for col := prNameCol; col < 60; col++ {
-			r, _, _, _ := sim.GetContent(col, 0)
-			nameRun += string(r)
+			s, _, _ := sim.Get(col, 0)
+			nameRun += s
 		}
 		return statusRune, nameRun
 	}
