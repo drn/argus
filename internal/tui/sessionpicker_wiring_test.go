@@ -137,7 +137,7 @@ func TestSwitchSession_LiveSessionQueuesRestart(t *testing.T) {
 	}
 	testutil.NoError(t, d.Add(task))
 	cfg := config.DefaultConfig()
-	cfg.Backends["test"] = config.Backend{Command: "sleep 30"}
+	cfg.Backends["test"] = config.Backend{Command: "sh -c 'sleep 30'"}
 	sess, err := runner.Start(task, cfg, 24, 80, false)
 	testutil.NoError(t, err)
 	defer runner.Stop(task.ID) //nolint:errcheck
