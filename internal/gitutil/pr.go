@@ -19,14 +19,21 @@ import (
 // installed. Callers map this to PRUnknown and log it at most once.
 var errGhAbsent = errors.New("gh not found in PATH")
 
-// ghAbsentOnce guards the single uxlog line emitted when gh is absent or
-// unauthenticated. Reset via ResetGhAbsentLogged in tests.
-var ghAbsentOnce sync.Once
+// ghAbsentOnce guards the single uxlog line emitted when gh is not installed.
+// ghUnauthOnce guards the distinct line emitted when gh is installed but not
+// authenticated. They are separate so each remediation ("install gh" vs
+// "gh auth login") logs exactly once regardless of which condition is seen
+// first. Reset via ResetGhLogged in tests.
+var (
+	ghAbsentOnce sync.Once
+	ghUnauthOnce sync.Once
+)
 
-// ResetGhAbsentLogged resets the once-guard so tests can verify the log-once
+// ResetGhLogged resets both once-guards so tests can verify the log-once
 // behaviour across multiple FetchPRState calls. Not for production use.
-func ResetGhAbsentLogged() {
+func ResetGhLogged() {
 	ghAbsentOnce = sync.Once{}
+	ghUnauthOnce = sync.Once{}
 }
 
 // prRunner is the test seam for executing gh. The real implementation
@@ -92,12 +99,10 @@ func mapPRState(raw string, exitCode int) (model.PRState, string, error) {
 		return model.PRNone, "", fmt.Errorf("gh exited %d: %s", exitCode, strings.TrimSpace(raw))
 	}
 
-	// Zero exit: parse JSON.
+	// Zero exit: parse JSON. json.Unmarshal is lenient by design — it ignores
+	// any unknown fields, so a future gh release adding keys to the pr-view
+	// payload won't break parsing.
 	var p prJSON
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.DisallowUnknownFields()
-	// Use a permissive reader to avoid breaking on gh adding fields later.
-	// Reparse with a standard decoder that is lenient.
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return model.PRNone, "", fmt.Errorf("parse gh json: %w", err)
 	}
@@ -160,7 +165,7 @@ func FetchPRState(ctx context.Context, worktreeDir, branch string) (model.PRStat
 	// gh not installed.
 	if errors.Is(runErr, errGhAbsent) {
 		ghAbsentOnce.Do(func() {
-			uxlog.Log("[pr] gh not found in PATH — PR state detection disabled")
+			uxlog.Log("[pr] gh not found in PATH — install GitHub CLI to enable PR state detection")
 		})
 		return model.PRUnknown, "", nil
 	}
@@ -177,8 +182,8 @@ func FetchPRState(ctx context.Context, worktreeDir, branch string) (model.PRStat
 		// Check if this is an auth error (log once).
 		var authErr *errGhAuth
 		if errors.As(err, &authErr) {
-			ghAbsentOnce.Do(func() {
-				uxlog.Log("[pr] gh unauthenticated — PR state detection disabled: %s", authErr.msg)
+			ghUnauthOnce.Do(func() {
+				uxlog.Log("[pr] gh unauthenticated — run `gh auth login` to enable PR state detection: %s", authErr.msg)
 			})
 			return model.PRUnknown, "", nil
 		}

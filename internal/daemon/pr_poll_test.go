@@ -150,6 +150,47 @@ func TestPollPR_GoroutineStopsOnShutdown(t *testing.T) {
 	}
 }
 
+// TestPollPR_InFlightFetchSeesCancellation verifies that the context handed to
+// pollPRStatesOnce (the same one runPRPoller cancels on shutdown) propagates
+// into the prFetch seam so an in-flight `gh` fetch aborts promptly instead of
+// running to its 5s timeout. Socketless — we drive pollPRStatesOnce directly
+// with a cancelable context, mirroring what runPRPoller's d.done branch does.
+func TestPollPR_InFlightFetchSeesCancellation(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "t1", "argus/t1", false)
+
+	entered := make(chan struct{})
+	sawCancel := make(chan struct{})
+	d.prFetch = func(ctx context.Context, _, _ string) (model.PRState, string, error) {
+		close(entered)
+		select {
+		case <-ctx.Done():
+			close(sawCancel)
+			return model.PRUnknown, "", ctx.Err()
+		case <-time.After(5 * time.Second):
+			t.Error("fetch ran to timeout — ctx cancellation did not propagate")
+			return model.PRApproved, "u", nil
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		d.pollPRStatesOnce(ctx)
+		close(done)
+	}()
+
+	<-entered
+	cancel() // exactly what runPRPoller's d.done branch does on shutdown
+
+	select {
+	case <-sawCancel:
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight fetch never observed context cancellation")
+	}
+	<-done
+}
+
 func TestPollPR_ListTasksError(t *testing.T) {
 	d, _ := testDaemon(t)
 	seedTask(t, d.db, "t1", "argus/t1", false)

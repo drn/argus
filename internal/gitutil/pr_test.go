@@ -161,7 +161,7 @@ func TestFetchPRState_TransientError(t *testing.T) {
 func TestFetchPRState_GhAbsent_ReturnsUnknown(t *testing.T) {
 	orig := prRunner
 	t.Cleanup(func() { prRunner = orig })
-	ResetGhAbsentLogged()
+	ResetGhLogged()
 
 	prRunner = func(_ context.Context, _ string, _ ...string) (string, int, error) {
 		return "", 0, errGhAbsent
@@ -175,7 +175,7 @@ func TestFetchPRState_GhAbsent_ReturnsUnknown(t *testing.T) {
 func TestFetchPRState_GhAbsent_LogsOnce(t *testing.T) {
 	orig := prRunner
 	t.Cleanup(func() { prRunner = orig })
-	ResetGhAbsentLogged()
+	ResetGhLogged()
 	readLog := initTestUxlog(t)
 
 	prRunner = func(_ context.Context, _ string, _ ...string) (string, int, error) {
@@ -197,7 +197,7 @@ func TestFetchPRState_GhAbsent_LogsOnce(t *testing.T) {
 func TestFetchPRState_GhUnauthenticated_LogsOnce(t *testing.T) {
 	orig := prRunner
 	t.Cleanup(func() { prRunner = orig })
-	ResetGhAbsentLogged()
+	ResetGhLogged()
 	readLog := initTestUxlog(t)
 
 	prRunner = func(_ context.Context, _ string, _ ...string) (string, int, error) {
@@ -205,12 +205,17 @@ func TestFetchPRState_GhUnauthenticated_LogsOnce(t *testing.T) {
 		return "To get started with GitHub CLI, please run: gh auth login\nalternatively, populate the GH_TOKEN environment variable with a personal access token\n", 4, nil
 	}
 
-	state, _, err := FetchPRState(context.Background(), "/any/dir", "x")
-	testutil.NoError(t, err)
-	testutil.Equal(t, state, model.PRUnknown)
+	// Three calls — the unauth log should appear exactly once.
+	for range 3 {
+		state, _, err := FetchPRState(context.Background(), "/any/dir", "x")
+		testutil.NoError(t, err)
+		testutil.Equal(t, state, model.PRUnknown)
+	}
 
 	content := readLog()
 	testutil.Contains(t, content, "[pr]")
+	count := strings.Count(content, "[pr]")
+	testutil.Equal(t, count, 1)
 }
 
 func TestMapPRState_UnexpectedState(t *testing.T) {

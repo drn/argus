@@ -347,12 +347,21 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 func (d *Daemon) runPRPoller() {
 	ticker := time.NewTicker(prPollInterval)
 	defer ticker.Stop()
+
+	// Derive a cancelable context so a tick already running pollPRStatesOnce
+	// (which spawns up to prPollConcurrency `gh` procs, each with a 5s timeout)
+	// aborts immediately on shutdown instead of letting those procs run to
+	// their timeout. cancel() fires both on the d.done branch and on return.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	for {
 		select {
 		case <-d.done:
+			cancel()
 			return
 		case <-ticker.C:
-			d.pollPRStatesOnce(context.Background())
+			d.pollPRStatesOnce(ctx)
 		}
 	}
 }
