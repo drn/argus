@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
@@ -62,7 +63,7 @@ func TestTaskPreviewPanel_RefreshAndDraw(t *testing.T) {
 	tp.SetTaskID("test-task")
 
 	// Pre-render cells with simple PTY output
-	tp.RefreshOutput([]byte("Hello, World!\r\n"), 36, 6, 36, 6)
+	tp.RefreshOutput("test-task", []byte("Hello, World!\r\n"), uint64(len("Hello, World!\r\n")), 36, 6, 36, 6)
 	tp.Draw(screen)
 	// Should render cached cells without panic
 }
@@ -72,7 +73,7 @@ func TestTaskPreviewPanel_RefreshEmptyOutput(t *testing.T) {
 	tp.SetTaskID("test-task")
 
 	// Empty output sets status message
-	tp.RefreshOutput(nil, 40, 10, 40, 10)
+	tp.RefreshOutput("test-task", nil, 0, 40, 10, 40, 10)
 
 	tp.mu.Lock()
 	msg := tp.statusMsg
@@ -129,7 +130,7 @@ func TestTaskPreviewPanel_RefreshPanicRecovery(t *testing.T) {
 	// Feed data that might trigger emulator panic due to size mismatch.
 	// CSI 82;1H + reverse index into a 5-row emulator.
 	data := []byte("hello\r\n\x1b[82;1H\x1bM")
-	tp.RefreshOutput(data, 10, 5, 10, 5)
+	tp.RefreshOutput("test-task", data, uint64(len(data)), 10, 5, 10, 5)
 
 	tp.mu.Lock()
 	msg := tp.statusMsg
@@ -146,7 +147,7 @@ func TestTaskPreviewPanel_RefreshPanicRecovery(t *testing.T) {
 func TestTaskPreviewPanel_SetTaskIDClears(t *testing.T) {
 	tp := NewTaskPreviewPanel()
 	tp.SetTaskID("task-1")
-	tp.RefreshOutput([]byte("data"), 40, 10, 40, 10)
+	tp.RefreshOutput("task-1", []byte("data"), uint64(len("data")), 40, 10, 40, 10)
 
 	// Switching task should clear cells
 	tp.SetTaskID("task-2")
@@ -177,7 +178,7 @@ func TestTaskPreviewPanel_RefreshUsesLatestVisibleLines(t *testing.T) {
 		"line-5",
 		"line-6",
 	}, "\r\n") + "\r\n")
-	tp.RefreshOutput(raw, 20, 3, 20, 3)
+	tp.RefreshOutput("test-task", raw, uint64(len(raw)), 20, 3, 20, 3)
 	tp.Draw(screen)
 
 	if !previewScreenContains(screen, "line-4") {
@@ -209,7 +210,7 @@ func TestTaskPreviewPanel_LargerEmuThanViewport(t *testing.T) {
 	// With a 6-row viewport, we should see the bottom content, not blank rows.
 	raw := []byte("\x1b[18;1Hbottom-content\r\n\x1b[19;1Hvery-last-line\r\n")
 	// emuCols=36, emuRows=20 (PTY size), viewCols=36, viewRows=6 (panel size)
-	tp.RefreshOutput(raw, 36, 20, 36, 6)
+	tp.RefreshOutput("test-task", raw, uint64(len(raw)), 36, 20, 36, 6)
 	tp.Draw(screen)
 
 	if !previewScreenContains(screen, "bottom-content") {
@@ -242,7 +243,7 @@ func TestTaskPreviewPanel_AlignsRawToEscBoundary(t *testing.T) {
 	// renders "5;3H" as orphan literal text. Alignment skips to the
 	// first ESC so only the well-formed sequence is parsed.
 	raw := []byte("5;3HpartialCSI\x1b[2J\x1b[1;1HCLEAN\r\n")
-	tp.RefreshOutput(raw, 36, 6, 36, 6)
+	tp.RefreshOutput("test-task", raw, uint64(len(raw)), 36, 6, 36, 6)
 	tp.Draw(screen)
 
 	if previewScreenContains(screen, "5;3HpartialCSI") {
@@ -269,7 +270,7 @@ func TestTaskPreviewPanel_SmallerEmuThanViewport(t *testing.T) {
 	// PTY is only 5 rows tall, viewport is 16 rows. Content at row 3.
 	raw := []byte("\x1b[3;1Hshort-pty-content\r\n\x1b[4;1Hmore-content\r\n")
 	// emuCols=36, emuRows=5 (small PTY), viewCols=36, viewRows=16 (tall panel)
-	tp.RefreshOutput(raw, 36, 5, 36, 16)
+	tp.RefreshOutput("test-task", raw, uint64(len(raw)), 36, 5, 36, 16)
 	tp.Draw(screen)
 
 	if !previewScreenContains(screen, "short-pty-content") {
@@ -278,6 +279,119 @@ func TestTaskPreviewPanel_SmallerEmuThanViewport(t *testing.T) {
 	if !previewScreenContains(screen, "more-content") {
 		t.Fatal("expected second line from short PTY to appear")
 	}
+}
+
+// TestTaskPreviewPanel_NoGhostAcrossIncrementalRefresh is the panel-level
+// regression guard for the ghost-cell defect that motivated the persistent
+// emulator (Slack D03SBKHGK). The agent draws a progress counter "20 widgets",
+// then a later frame collapses the line to "9 widgets" + ESC[K (erase the
+// orphaned trailing char). The ring buffer delivers these as a growing tail
+// across two refreshes — exactly how the tick loop feeds the panel. With the
+// old throwaway-per-refresh emulator the erase fell outside the replayed
+// window and a ghost "s" survived; the persistent emulator applies it.
+func TestTaskPreviewPanel_NoGhostAcrossIncrementalRefresh(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 10)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 8)
+	tp.SetTaskID("ghost-task")
+
+	frame1 := []byte("\x1b[2J\x1b[H20 widgets")
+	// Frame 2 returns home and overwrites with the shorter "9 widgets", then
+	// ESC[K erases the orphaned trailing "s" left from "20 widgets".
+	frame2 := []byte("\x1b[H9 widgets\x1b[K")
+	cumulative := append(append([]byte{}, frame1...), frame2...)
+
+	// Two incremental refreshes, mirroring the ring tail growing between ticks.
+	tp.RefreshOutput("ghost-task", frame1, uint64(len(frame1)), 36, 6, 36, 6)
+	tp.RefreshOutput("ghost-task", cumulative, uint64(len(cumulative)), 36, 6, 36, 6)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "9 widgets") {
+		t.Fatal("expected collapsed frame to render")
+	}
+	if previewScreenContains(screen, "widgetss") || previewScreenContains(screen, "20 widgets") {
+		t.Fatal("ghost cells from the superseded progress frame survived the refresh")
+	}
+}
+
+// TestTaskPreviewPanel_RendersScrollbackRows exercises the grid build's
+// sbLen>0 branch (ScrollbackCellAt). When more lines are written than the
+// emulator is tall, the oldest scroll into scrollback (capped at 1 by
+// PreviewVT). With a viewport taller than the emulator, the grid must include
+// that scrollback row alongside the main-screen rows — and it must be the
+// current task's own scrolled-off line, never a prior task's (rebuild's
+// ClearScrollback guarantees isolation; this asserts the rendering path works).
+func TestTaskPreviewPanel_RendersScrollbackRows(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(40, 12)
+
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 10)
+	tp.SetTaskID("sb-task")
+
+	// 5 lines into a 4-row emulator (no trailing newline): exactly one scroll
+	// fires after "line-4", pushing "line-1" into the (cap-1) scrollback;
+	// "line-2".."line-5" stay on the main screen.
+	raw := []byte("line-1\r\nline-2\r\nline-3\r\nline-4\r\nline-5")
+	// emuRows=4 (short), viewRows=8 (tall) so the viewport reaches into scrollback.
+	tp.RefreshOutput("sb-task", raw, uint64(len(raw)), 36, 4, 36, 8)
+	tp.Draw(screen)
+
+	if !previewScreenContains(screen, "line-5") {
+		t.Fatal("expected newest main-screen row to render")
+	}
+	if !previewScreenContains(screen, "line-1") {
+		t.Fatal("expected the scrolled-off row to render from scrollback (sbLen>0 branch)")
+	}
+}
+
+// TestTaskPreviewPanel_ConcurrentRefreshAndDraw exercises the vtMu invariant:
+// RefreshOutput runs on both the tick goroutine and onTaskCursorChange's
+// background goroutine, while Draw runs on the tview goroutine. vtMu serializes
+// the two RefreshOutput callers (the persistent emulator is stateful) and Draw
+// takes only tp.mu. This test fires both patterns concurrently; it must be run
+// under -race to be meaningful (the suite is).
+func TestTaskPreviewPanel_ConcurrentRefreshAndDraw(t *testing.T) {
+	tp := NewTaskPreviewPanel()
+	tp.SetRect(1, 1, 38, 8)
+	tp.SetTaskID("race-task")
+	raw := []byte("\x1b[2J\x1b[Hconcurrent output")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { screen.Fini() })
+	screen.SetSize(40, 10)
+
+	var wg sync.WaitGroup
+	// Two concurrent RefreshOutput callers (tick + cursor-change goroutines).
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 60 {
+				tp.RefreshOutput("race-task", raw, uint64(len(raw))+uint64(j), 36, 6, 36, 6)
+			}
+		}()
+	}
+	// A Draw loop (tview goroutine) reading cached cells under tp.mu.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 60 {
+			tp.Draw(screen)
+		}
+	}()
+	wg.Wait()
 }
 
 func previewScreenContains(screen tcell.SimulationScreen, needle string) bool {

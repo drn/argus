@@ -29,6 +29,19 @@ type TaskPreviewPanel struct {
 	mu     sync.Mutex
 	taskID string
 
+	// vtMu serializes RefreshOutput against itself. RefreshOutput runs on
+	// both the tick goroutine and the cursor-change goroutine (see
+	// App.onTaskCursorChange), and previewVT is stateful — concurrent Feed
+	// calls would corrupt the persistent emulator. vtMu is held across the
+	// whole Feed + grid-build region (the emulator must not be mutated while
+	// its cells are read). Draw takes only tp.mu, never vtMu, so painting is
+	// never blocked by a heavy feed.
+	vtMu sync.Mutex
+	// previewVT is the persistent, incrementally-fed emulator that replaces
+	// the old throwaway-per-refresh emulator (eliminating ghost progress-frame
+	// cells). Owned by RefreshOutput under vtMu.
+	previewVT terminal.PreviewVT
+
 	// Pre-rendered cell grid, updated by RefreshOutput().
 	cells     [][]previewCell
 	cellCols  int
@@ -133,11 +146,24 @@ func (tp *TaskPreviewPanel) DrawSize() (cols, rows int) {
 	return tp.drawCols, tp.drawRows
 }
 
-// RefreshOutput fetches session output and pre-renders cells.
-// Called from a goroutine — never from the UI thread.
-// emuCols/emuRows are the VT emulator dimensions (should match PTY size for correct
-// cursor positioning). viewCols/viewRows are the viewport dimensions for the output grid.
-func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols, viewRows int) {
+// RefreshOutput advances the persistent emulator with the task's latest output
+// and pre-renders cells. It runs on both the tick goroutine (via
+// QueueUpdateDraw, i.e. the tview main goroutine) and onTaskCursorChange's
+// background goroutine; vtMu serializes the two and is held across the feed
+// plus the emulator-cell reads. Draw takes only tp.mu, so painting is never
+// blocked by a feed — but the tick-path caller does briefly contend on vtMu
+// (bounded to one feed + grid build).
+//
+// `tail` is the most recent bytes of the output stream and `totalWritten` is
+// the stream's high-water mark (RecentOutputTailWithTotal for a live session;
+// log tail + file size for a finished one). Feeding (tail, totalWritten) lets
+// the emulator advance incrementally instead of rebuilding every refresh — the
+// fix for ghost progress-frame cells. See terminal.PreviewVT.
+//
+// emuCols/emuRows are the VT emulator dimensions (should match PTY size for
+// correct cursor positioning). viewCols/viewRows are the viewport dimensions
+// for the output grid.
+func (tp *TaskPreviewPanel) RefreshOutput(taskID string, tail []byte, totalWritten uint64, emuCols, emuRows, viewCols, viewRows int) {
 	if emuCols < 10 {
 		emuCols = 10
 	}
@@ -151,36 +177,19 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 		viewRows = 3
 	}
 
-	if len(raw) == 0 {
-		tp.mu.Lock()
-		tp.statusMsg = "Waiting for output..."
-		tp.cells = nil
-		changed := tp.snapshotShapeLocked()
-		tp.mu.Unlock()
-		if changed {
-			tp.notifyBranchChange()
-		}
+	// Hold vtMu across the whole feed + read. previewVT is stateful and shared
+	// between the two RefreshOutput goroutines; the emulator must not be
+	// mutated while paintEmu-style reads walk its cells below.
+	tp.vtMu.Lock()
+	defer tp.vtMu.Unlock()
+
+	emu, err := tp.previewVT.Feed(taskID, emuCols, emuRows, tail, totalWritten)
+	if err != nil {
+		tp.publishStatus("Preview unavailable")
 		return
 	}
-
-	// Run VT emulation off the UI thread.
-	// Use drained emulator to prevent hangs on terminal query sequences.
-	// Tail slices (ring buffer / 64KB log tail) routinely begin mid-CSI;
-	// AlignToEscBoundary skips any partial CSI/OSC prefix that would
-	// otherwise render as a smudge of orphan digits/punctuation at the
-	// top of the emulator. FilterOSC then drops OSC sequences so a UTF-8
-	// window title can't leak onto the preview (same x/ansi bug the live
-	// agent pane works around — see internal/tui/terminal/oscfilter.go).
-	emu := terminal.NewDrainedEmulator(emuCols, emuRows)
-	if _, err := terminal.SafeEmuWrite(emu, terminal.FilterOSC(terminal.AlignToEscBoundary(raw))); err != nil {
-		tp.mu.Lock()
-		tp.statusMsg = "Preview unavailable"
-		tp.cells = nil
-		changed := tp.snapshotShapeLocked()
-		tp.mu.Unlock()
-		if changed {
-			tp.notifyBranchChange()
-		}
+	if emu == nil {
+		tp.publishStatus("Waiting for output...")
 		return
 	}
 
@@ -266,6 +275,14 @@ func (tp *TaskPreviewPanel) RefreshOutput(raw []byte, emuCols, emuRows, viewCols
 // OnBranchChange when the rendered shape changes (cells transition to nil,
 // or the centered message text differs in width).
 func (tp *TaskPreviewPanel) SetStatus(msg string) {
+	tp.publishStatus(msg)
+}
+
+// publishStatus swaps the panel to a centered status message (clears cached
+// cells) and fires OnBranchChange if the rendered shape changed. Safe to call
+// while holding vtMu — it takes only tp.mu, and notifyBranchChange runs after
+// tp.mu is released (the callback is log-only; see OnBranchChange).
+func (tp *TaskPreviewPanel) publishStatus(msg string) {
 	tp.mu.Lock()
 	tp.statusMsg = msg
 	tp.cells = nil

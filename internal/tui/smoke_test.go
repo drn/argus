@@ -1274,7 +1274,7 @@ func TestSmoke_TaskPreviewBranchChangeFiresRedraw(t *testing.T) {
 	// changes ("No active agent" → "Waiting for output..."). Shape flips.
 	prev = strings.Count(readLog(), previewChanged)
 	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput(nil, 80, 24, 80, 24)
+		app.taskPreview.RefreshOutput("preview", nil, 0, 80, 24, 80, 24)
 	})
 	if strings.Count(readLog(), previewChanged) <= prev {
 		t.Errorf("RefreshOutput(empty) must fire preview branch change (statusMsg width changed)")
@@ -1283,17 +1283,19 @@ func TestSmoke_TaskPreviewBranchChangeFiresRedraw(t *testing.T) {
 	// RefreshOutput with content: cells transitions nil → grid. Shape flips.
 	prev = strings.Count(readLog(), previewChanged)
 	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("hello world\n"), 80, 24, 80, 24)
+		app.taskPreview.RefreshOutput("preview", []byte("hello world\n"), uint64(len("hello world\n")), 80, 24, 80, 24)
 	})
 	if strings.Count(readLog(), previewChanged) <= prev {
 		t.Errorf("RefreshOutput(content) must fire preview branch change (cells nil→grid)")
 	}
 
-	// Repeat RefreshOutput with same dimensions and grid output: shape
-	// unchanged (cellsNil=false, cols/rows unchanged), must not fire.
+	// Another RefreshOutput as a genuine stream continuation (the cumulative
+	// tail grows by "more\n", totalWritten advances accordingly): shape stays
+	// grid (cellsNil=false, cols/rows unchanged), so it must not fire.
 	prev = strings.Count(readLog(), previewChanged)
 	app.tapp.QueueUpdateDraw(func() {
-		app.taskPreview.RefreshOutput([]byte("hello world 2\n"), 80, 24, 80, 24)
+		cont := "hello world\nmore\n"
+		app.taskPreview.RefreshOutput("preview", []byte(cont), uint64(len(cont)), 80, 24, 80, 24)
 	})
 	if strings.Count(readLog(), previewChanged) != prev {
 		t.Errorf("repeated RefreshOutput at same dims must not fire preview branch change")
