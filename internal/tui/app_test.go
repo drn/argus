@@ -262,6 +262,60 @@ func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {
 	}
 }
 
+// TestHandleSessionExitUI_ClaudeRefreshesSessionID pins the /clear fix end to
+// end in the TUI: a Claude task with a pinned SessionID exits, a newer
+// transcript (the post-/clear conversation) sits in ~/.claude/projects, and the
+// background capture goroutine must persist the newer UUID via QueueUpdateDraw.
+func TestHandleSessionExitUI_ClaudeRefreshesSessionID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	_, stop := wireApp(t, app) // running event loop so QueueUpdateDraw fires
+	defer stop()
+
+	wt := filepath.Join(home, "claude-tui-wt")
+	testutil.NoError(t, os.MkdirAll(wt, 0o755))
+	// Mirror claudeEncodeCwd (package-private to agent): non-alphanumeric → '-'.
+	enc := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '-'
+	}, wt)
+	projDir := filepath.Join(home, ".claude", "projects", enc)
+	testutil.NoError(t, os.MkdirAll(projDir, 0o755))
+
+	original := "11111111-1111-7111-9111-111111111111"
+	postClear := "22222222-2222-7222-9222-222222222222"
+	orig := filepath.Join(projDir, original+".jsonl")
+	newer := filepath.Join(projDir, postClear+".jsonl")
+	testutil.NoError(t, os.WriteFile(orig, []byte("{}\n"), 0o644))
+	testutil.NoError(t, os.WriteFile(newer, []byte("{}\n"), 0o644))
+	past := time.Now().Add(-1 * time.Hour)
+	testutil.NoError(t, os.Chtimes(orig, past, past))
+
+	task := &model.Task{Name: "claude-clear", Status: model.StatusInProgress, Worktree: wt, Backend: "claude", SessionID: original}
+	testutil.NoError(t, d.Add(task))
+
+	app.handleSessionExitUI(task.ID, true /* stopped */, false /* pendingRestart */)
+
+	// Capture runs in a goroutine then persists via QueueUpdateDraw; poll until
+	// the row reflects the refreshed UUID (or time out).
+	deadline := time.Now().Add(uiTimeout)
+	for time.Now().Before(deadline) {
+		if got, _ := d.Get(task.ID); got != nil && got.SessionID == postClear {
+			break
+		}
+		syncUI(t, app.tapp)
+	}
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.SessionID, postClear)
+}
+
 func TestNew(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
