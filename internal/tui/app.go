@@ -22,6 +22,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/app/agentview"
+	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	dclient "github.com/drn/argus/internal/daemon/client"
@@ -61,6 +62,7 @@ const (
 	modeRenameTask
 	modeLinkPicker
 	modeFuzzyLinkPicker
+	modeSessionPicker
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeRestartDaemonPrompt
@@ -133,6 +135,7 @@ type App struct {
 	linkPickerModal      *LinkPickerModal
 	linkPickerPrevPage   string
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
+	sessionPickerModal   *SessionPickerModal
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -1724,6 +1727,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Session picker modal (agent view)
+	if a.mode == modeSessionPicker && a.sessionPickerModal != nil {
+		a.handleSessionPickerKey(event)
+		return nil
+	}
+
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
@@ -1992,6 +2001,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyCtrlL: // Overrides typical "clear screen" — intercepted before PTY
 		a.openAgentLinks()
+		return nil
+	case tcell.KeyCtrlR: // Switch Claude session — intercepted before PTY (shadows Claude's transcript toggle)
+		a.openSessionPicker()
 		return nil
 	case tcell.KeyCtrlP: // Open PR for the worktree's branch via gh
 		a.openPR()
@@ -3330,6 +3342,143 @@ func (a *App) closeFuzzyLinkPickerModal() {
 	a.pages.RemovePage("fuzzylinkpicker")
 	// Restore focus to the agent pane.
 	a.tapp.SetFocus(a.agentPane)
+}
+
+// openSessionPicker lists the current task's Claude sessions and opens the
+// session switcher modal. The session discovery (filesystem scan + JSONL
+// parse) runs in a background goroutine so the tview main goroutine never
+// blocks on disk I/O — a long-running conversation's JSONL can be many MB.
+//
+// The switcher is Claude-only: codex and pi store sessions in their own
+// formats and resume through different flags, so for those backends this is a
+// no-op with a brief status notice.
+func (a *App) openSessionPicker() {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" {
+		return
+	}
+	task, err := a.db.Get(taskID)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] session picker: task %s lookup failed: %v", taskID, err)
+		return
+	}
+
+	cfg := a.db.Config()
+	backend, berr := agent.ResolveBackend(task, cfg)
+	if berr != nil {
+		uxlog.Log("[tui] session picker: resolve backend failed for task %s: %v", taskID, berr)
+		return
+	}
+	if agent.IsCodexBackend(backend.Command) || agent.IsPiBackend(backend.Command) {
+		uxlog.Log("[tui] session picker: backend %q is not Claude — switcher unavailable", backend.Command)
+		a.statusbar.SetInfo("Session switcher is Claude-only")
+		return
+	}
+
+	worktree := task.Worktree
+	currentID := task.SessionID
+	go func() {
+		sessions, err := claudesession.List(worktree)
+		if err != nil {
+			uxlog.Log("[tui] session picker: list failed for %s: %v", worktree, err)
+			return
+		}
+		uxlog.Log("[tui] session picker: %d sessions found for task %s", len(sessions), taskID)
+		a.tapp.QueueUpdateDraw(func() {
+			// Guard: the user may have left agent view while I/O was in flight.
+			if a.mode != modeAgent || a.agentState.TaskID != taskID {
+				return
+			}
+			a.openSessionPickerModal(sessions, currentID)
+		})
+	}()
+}
+
+// openSessionPickerModal shows the session switcher dialog.
+// Only callable from modeAgent — close always restores modeAgent.
+func (a *App) openSessionPickerModal(sessions []claudesession.Session, currentID string) {
+	a.sessionPickerModal = NewSessionPickerModal(sessions, currentID)
+	a.mode = modeSessionPicker
+	a.pages.AddPage("sessionpicker", a.sessionPickerModal, true, true)
+	a.tapp.SetFocus(a.sessionPickerModal)
+}
+
+// handleSessionPickerKey processes keys in the session switcher modal.
+func (a *App) handleSessionPickerKey(event *tcell.EventKey) {
+	handler := a.sessionPickerModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.sessionPickerModal.Canceled() {
+		a.closeSessionPickerModal()
+		return
+	}
+	if a.sessionPickerModal.Selected() {
+		chosen := a.sessionPickerModal.SelectedSession()
+		a.closeSessionPickerModal()
+		a.switchSession(chosen.ID, chosen.Title)
+	}
+}
+
+// closeSessionPickerModal closes the switcher and restores agent view.
+func (a *App) closeSessionPickerModal() {
+	a.mode = modeAgent
+	a.sessionPickerModal = nil
+	a.pages.RemovePage("sessionpicker")
+	a.tapp.SetFocus(a.agentPane)
+}
+
+// switchSession rebinds the current agent task to a different Claude session
+// and restarts the agent so it resumes that conversation (BuildCmd appends
+// --resume <SessionID>). Selecting the session the task is already bound to is
+// a no-op.
+//
+// When the session is live, the restart reuses the rerender-restart machinery:
+// set pendingRerenderRestart, stop the session, and let handleSessionExitUI
+// restart it in place once the exit notification arrives. This avoids racing
+// the async exit callback — the restart happens inside the exit handler rather
+// than alongside it. When the session is already dead, startSession runs
+// directly.
+func (a *App) switchSession(newID, title string) {
+	a.mu.Lock()
+	taskID := a.agentState.TaskID
+	a.mu.Unlock()
+	if taskID == "" || newID == "" {
+		return
+	}
+	task, err := a.db.Get(taskID)
+	if err != nil || task == nil {
+		uxlog.Log("[tui] session switch: task %s lookup failed: %v", taskID, err)
+		return
+	}
+	if task.SessionID == newID {
+		uxlog.Log("[tui] session switch: task %s already on session %s — no-op", taskID, newID)
+		return
+	}
+
+	task.SessionID = newID
+	a.db.Update(task) //nolint:errcheck
+	uxlog.Log("[tui] session switch: task %s → session %s (%q)", taskID, newID, title)
+
+	sess := a.agentPane.Session()
+	if sess != nil && sess.Alive() {
+		// Live session: queue the in-place restart, then stop. The exit
+		// handler reads the freshly persisted SessionID and resumes it.
+		a.pendingRerenderRestart[taskID] = true
+		a.statusbar.SetInfo("Switching session…")
+		if err := a.runner.Stop(taskID); err != nil {
+			delete(a.pendingRerenderRestart, taskID)
+			a.statusbar.SetError("Session switch failed: " + err.Error())
+			uxlog.Log("[tui] session switch: stop failed for task %s: %v", taskID, err)
+		}
+		return
+	}
+	// Dead session: restart directly with the new SessionID.
+	task.SetStatus(model.StatusInProgress)
+	a.db.Update(task) //nolint:errcheck
+	a.startSession(task)
+	a.refreshTasksAsync()
 }
 
 // openConfirmDelete shows the confirm delete modal for the given task.

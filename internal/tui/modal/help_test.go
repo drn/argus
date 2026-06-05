@@ -38,9 +38,12 @@ func TestHelpModal_InputHandler(t *testing.T) {
 }
 
 func TestHelpModal_Draw(t *testing.T) {
-	sim := drawAt(t, 100, 40)
+	// Height must clear the full section list (the modal scrolls when it
+	// can't); 48 leaves headroom so every section header — including the last
+	// one, Settings — renders without scrolling.
+	sim := drawAt(t, 100, 48)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 40)
+	m.SetRect(0, 0, 100, 48)
 	m.Draw(sim)
 	sim.Sync()
 
