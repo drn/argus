@@ -80,7 +80,7 @@ The server SHALL accept non-revoked per-device tokens persisted as SHA-256 hashe
 
 ### Requirement: Master-only gating for destructive and configuration endpoints
 
-Endpoints that mutate shared configuration or act across all tasks SHALL require the master token: project CRUD, backend CRUD, config and settings reads/writes, token minting/listing/revocation, stop-all sessions, and prune-completed. A request authenticated with a device token or a plugin-scoped token SHALL be rejected with 403 for these endpoints. Per-task operations (stop, delete, archive, rename, set-status, write input) SHALL remain available to any authenticated token.
+Endpoints that mutate shared configuration or act across all tasks SHALL require the master token: project CRUD, backend CRUD, the config snapshot read (`GET /api/config`), settings writes (`PUT /api/settings`), token minting/listing/revocation, stop-all sessions, and prune-completed. A request authenticated with a device token or a plugin-scoped token SHALL be rejected with 403 for these endpoints. The curated settings read (`GET /api/settings`) SHALL remain available to any authenticated token, including device tokens. Per-task operations (stop, delete, archive, rename, set-status, write input) SHALL remain available to any authenticated token.
 
 #### Scenario: Device token rejected from a master-only endpoint
 
@@ -101,6 +101,11 @@ Endpoints that mutate shared configuration or act across all tasks SHALL require
 
 - **WHEN** a request authenticated as `device` calls a per-task operation such as stop or delete
 - **THEN** the operation executes (subject to task existence)
+
+#### Scenario: Settings read available to a device token
+
+- **WHEN** a request authenticated as `device` calls `GET /api/settings`
+- **THEN** the server returns the curated settings view (the read is not master-gated)
 
 ### Requirement: Task creation
 
