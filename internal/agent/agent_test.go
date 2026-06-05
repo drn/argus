@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/claudesession"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -1516,7 +1517,7 @@ func TestCaptureSessionID_DispatchesByBackend(t *testing.T) {
 		t.Setenv("HOME", home)
 		wt := filepath.Join(home, "claude-dispatch-wt")
 		testutil.NoError(t, os.MkdirAll(wt, 0o755))
-		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		projDir := filepath.Join(home, ".claude", "projects", claudesession.EncodeProjectDir(wt))
 		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
 		sid := "12345678-90ab-4cde-8f01-23456789abcd"
 		testutil.NoError(t, os.WriteFile(
@@ -1584,39 +1585,13 @@ func TestIsClaudeBackend(t *testing.T) {
 	}
 }
 
-func TestClaudeEncodeCwd(t *testing.T) {
-	// Claude replaces every non-alphanumeric byte with a single '-', with NO
-	// collapsing of consecutive dashes — broader than piEncodeCwd's "/ \ :" map.
-	tests := []struct {
-		cwd  string
-		want string
-	}{
-		{"/Users/me/proj", "-Users-me-proj"},
-		// The ".argus" dot AND the preceding slash each map to their own dash,
-		// producing the real-world "--argus" double dash. This is the case that
-		// pins divergence from piEncodeCwd (which would leave the dot intact).
-		{"/Users/aaron/.argus/worktrees/x", "-Users-aaron--argus-worktrees-x"},
-		{"relative/path", "relative-path"},
-		{"/", "-"},
-		{"", ""},
-		// Hyphens in the source survive (they're already '-'); underscores and
-		// dots are mapped.
-		{"/a/b-c/d_e.f", "-a-b-c-d-e-f"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.cwd, func(t *testing.T) {
-			testutil.Equal(t, claudeEncodeCwd(tc.cwd), tc.want)
-		})
-	}
-}
-
 func TestCaptureClaudeSessionID(t *testing.T) {
 	t.Run("newest transcript wins", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		wt := filepath.Join(home, ".argus", "worktrees", "p", "t")
 		testutil.NoError(t, os.MkdirAll(wt, 0o755))
-		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		projDir := filepath.Join(home, ".claude", "projects", claudesession.EncodeProjectDir(wt))
 		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
 
 		// Original session + a newer post-/clear session; newest mtime wins.
@@ -1651,7 +1626,7 @@ func TestCaptureClaudeSessionID(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		wt := t.TempDir()
-		projDir := filepath.Join(home, ".claude", "projects", claudeEncodeCwd(wt))
+		projDir := filepath.Join(home, ".claude", "projects", claudesession.EncodeProjectDir(wt))
 		testutil.NoError(t, os.MkdirAll(projDir, 0o755))
 		// Wrong extension and a non-UUID name — neither matches the regex.
 		testutil.NoError(t, os.WriteFile(filepath.Join(projDir, "garbage.txt"), []byte("x"), 0o644))

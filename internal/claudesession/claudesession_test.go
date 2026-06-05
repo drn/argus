@@ -19,6 +19,11 @@ func TestEncodeProjectDir(t *testing.T) {
 		{"dot becomes dash", "/a/.b", "-a--b"},
 		{"underscores and spaces", "/x/a_b c", "-x-a-b-c"},
 		{"already kebab", "/p/foo-bar", "-p-foo-bar"},
+		// Edge cases consolidated from agent.claudeEncodeCwd (now removed):
+		{"single slash", "/", "-"},
+		{"empty", "", ""},
+		{"relative path", "relative/path", "relative-path"},
+		{"hyphens survive; dots and underscores map", "/a/b-c/d_e.f", "-a-b-c-d-e-f"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
