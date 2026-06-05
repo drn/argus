@@ -364,6 +364,91 @@ func TestTerminalPane_PasteHandlerForwardsToInputBack(t *testing.T) {
 	}
 }
 
+func TestTerminalPane_MouseHandlerForwardsWheel(t *testing.T) {
+	cases := []struct {
+		name   string
+		action tview.MouseAction
+		ex, ey int
+		want   string
+	}{
+		{"wheel up at inner origin", tview.MouseScrollUp, 1, 1, "\x1b[<64;1;1M"},
+		{"wheel down at inner origin", tview.MouseScrollDown, 1, 1, "\x1b[<65;1;1M"},
+		{"wheel up mid-pane", tview.MouseScrollUp, 20, 6, "\x1b[<64;20;6M"},
+		{"wheel down mid-pane", tview.MouseScrollDown, 20, 6, "\x1b[<65;20;6M"},
+		{"wheel up clamps top-left border", tview.MouseScrollUp, 0, 0, "\x1b[<64;1;1M"},
+		{"wheel down clamps bottom-right border", tview.MouseScrollDown, 41, 11, "\x1b[<65;40;10M"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := make(chan []byte)
+			tp := New(src)
+			defer tp.Close()
+			back := make(chan []byte, 4)
+			tp.SetInputBack(back)
+			// Outer rect 0,0,42,12 — inner is 1,1,40,10 after the border.
+			tp.SetRect(0, 0, 42, 12)
+
+			ev := tcell.NewEventMouse(tc.ex, tc.ey, tcell.ButtonNone, tcell.ModNone)
+			consumed, _ := tp.MouseHandler()(tc.action, ev, func(_ tview.Primitive) {})
+			if !consumed {
+				t.Fatal("expected wheel event to be consumed")
+			}
+			select {
+			case got := <-back:
+				testutil.Equal(t, string(got), tc.want)
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("InputBack did not receive wheel bytes")
+			}
+		})
+	}
+}
+
+func TestTerminalPane_MouseHandlerIgnoresNonWheelActions(t *testing.T) {
+	cases := []struct {
+		name   string
+		action tview.MouseAction
+	}{
+		{"left down", tview.MouseLeftDown},
+		{"left click", tview.MouseLeftClick},
+		{"move", tview.MouseMove},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := make(chan []byte)
+			tp := New(src)
+			defer tp.Close()
+			back := make(chan []byte, 4)
+			tp.SetInputBack(back)
+			tp.SetRect(0, 0, 42, 12)
+
+			ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
+			consumed, _ := tp.MouseHandler()(tc.action, ev, func(_ tview.Primitive) {})
+			if consumed {
+				t.Fatal("expected non-wheel action to be unconsumed")
+			}
+			select {
+			case got := <-back:
+				t.Fatalf("expected no bytes for non-wheel action, got %q", got)
+			case <-time.After(20 * time.Millisecond):
+			}
+		})
+	}
+}
+
+func TestTerminalPane_MouseHandlerWheelWithoutInputBack(t *testing.T) {
+	src := make(chan []byte)
+	tp := New(src)
+	defer tp.Close()
+	tp.SetRect(0, 0, 42, 12)
+
+	// No input-back channel: the wheel tick is consumed but dropped.
+	ev := tcell.NewEventMouse(5, 5, tcell.ButtonNone, tcell.ModNone)
+	consumed, _ := tp.MouseHandler()(tview.MouseScrollUp, ev, func(_ tview.Primitive) {})
+	if !consumed {
+		t.Fatal("expected wheel event to be consumed without InputBack")
+	}
+}
+
 func TestTerminalPane_CloseIsIdempotent(t *testing.T) {
 	src := make(chan []byte)
 	tp := New(src)

@@ -112,6 +112,27 @@ type pluginViewMount struct {
 
 	conn pluginConnector // nil when the view is not active
 
+	// Resize-envelope reconciliation state. All four fields are owned by the
+	// tview goroutine (set in activate/deactivate, the dial-complete
+	// QueueUpdateDraw closure, and the afterDraw reconciler) — no locking.
+	//
+	// connReady flips true once the WebSocket dial completed; envelopes are
+	// never sent before it. laidOut flips true the first time the pane's page
+	// is the front page in afterDraw — i.e. the pane has a real post-layout
+	// rect; before that, GetRect() returns the tview Box default (15x10) and
+	// must not feed an envelope. lastSentCols/Rows record the last resize
+	// envelope delivered on the current connection so the reconciler re-sends
+	// exactly when the computed viewport drifts from what the plugin believes.
+	connReady    bool
+	laidOut      bool
+	focusSent    bool
+	lastSentCols int
+	lastSentRows int
+	// sendFailLogged gates failure logging to the first failure of a streak —
+	// the reconciler retries every draw, and a wedged connection would
+	// otherwise flood ux.log with one line per draw. Cleared on success.
+	sendFailLogged bool
+
 	// hotkeys is the latest dictionary the plugin pushed via a hotkeys
 	// control frame. Stage 5 renders the bar:true subset in the bottom bar;
 	// Stage 6 renders the full set in the help overlay. Set on dispatch, only
@@ -188,11 +209,10 @@ func (a *App) loadPluginViews() {
 // view re-sends the resize envelope so a stale plugin can recover.
 func (a *App) activatePluginView(m *pluginViewMount) {
 	if a.activePlugin != nil && a.activePlugin == m {
-		// Re-send resize as a recovery hint and bail.
-		if a.activePlugin.conn != nil {
-			cols, rows := a.pluginViewportSize()
-			_ = a.activePlugin.conn.SendResize(cols, rows)
-		}
+		// Recovery hint: zero the last-sent size so the reconciler re-sends
+		// the current viewport even though it hasn't changed.
+		m.lastSentCols, m.lastSentRows = 0, 0
+		a.reconcilePluginViewSize()
 		return
 	}
 	if a.activePlugin != nil {
@@ -227,6 +247,13 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 		a.dispatchPluginControl(m, b)
 	}, m.keysOut)
 	m.conn = conn
+	// Fresh connection: reset the reconciliation state so the first envelope
+	// on this conn is sent from a real post-layout rect, followed by focus.
+	m.connReady = false
+	m.laidOut = false
+	m.focusSent = false
+	m.lastSentCols, m.lastSentRows = 0, 0
+	m.sendFailLogged = false
 
 	go func(c pluginConnector) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -235,12 +262,18 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 			uxlog.Log("[plugin-view] dial %q failed: %v", m.view.Title, err)
 			return
 		}
-		cols, rows := a.pluginViewportSize()
-		if err := c.SendResize(cols, rows); err != nil {
-			uxlog.Log("[plugin-view] send resize failed: %v", err)
-		}
-		if err := c.SendFocus(); err != nil {
-			uxlog.Log("[plugin-view] send focus failed: %v", err)
+		// Never compute the viewport on this goroutine: the pane rect is owned
+		// by the tview goroutine and may predate the first layout pass (the
+		// tview Box default is 15x10 → a garbage 13x8 envelope). Mark the
+		// connection ready and kick a draw; the afterDraw reconciler sends the
+		// first resize envelope from the real post-layout rect, then focus.
+		if a.tapp != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				if a.activePlugin != m || m.conn != c {
+					return // released or replaced while dialing
+				}
+				m.connReady = true
+			})
 		}
 	}(conn)
 }
@@ -260,6 +293,13 @@ func (a *App) deactivatePluginView() {
 		_ = m.conn.Close()
 		m.conn = nil
 	}
+	// Reset reconciliation state — mounts are reused across activations, and
+	// stale last-sent values must not suppress the next connection's envelope.
+	m.connReady = false
+	m.laidOut = false
+	m.focusSent = false
+	m.lastSentCols, m.lastSentRows = 0, 0
+	m.sendFailLogged = false
 
 	// Tear down a lingering help overlay before clearing state — otherwise the
 	// page would survive into the next plugin. RemovePage directly (not
@@ -412,31 +452,69 @@ func pluginHelpSections(items []HotkeyItem) []modal.HelpSection {
 	return []modal.HelpSection{{Title: "Hotkeys", Bindings: bindings}}
 }
 
+// pluginViewColOverhead / pluginViewRowOverhead are the fixed chrome around a
+// plugin pane when deriving its viewport from the raw screen size: the pane
+// fills the pages area (screen minus the 1-row header and 1-row status bar)
+// and draws its own 1-cell border on each side. Used only until the pane's
+// first real layout pass; after that the post-layout rect is authoritative.
+const (
+	pluginViewColOverhead = 2 // pane border left+right
+	pluginViewRowOverhead = 4 // header + statusbar + pane border top+bottom
+)
+
 // pluginViewportSize returns the cols/rows the active plugin view should
-// render into. Falls back to the screen size when the streampane hasn't been
-// drawn yet.
+// render into. The pane rect is trusted only after its first layout pass
+// (m.laidOut) — a never-drawn tview Box reports the 15x10 default, which
+// would yield a garbage 13x8 viewport. Before layout, derive from the screen
+// size minus fixed chrome. Must be called on the tview goroutine.
 func (a *App) pluginViewportSize() (int, int) {
-	if a.activePlugin != nil {
-		x, y, w, h := a.activePlugin.pane.GetRect()
-		_ = x
-		_ = y
+	if m := a.activePlugin; m != nil && m.laidOut {
+		_, _, w, h := m.pane.GetRect()
 		if w > 2 && h > 2 {
 			return w - 2, h - 2 // subtract border
 		}
 	}
 	if a.screen != nil {
 		w, h := a.screen.Size()
-		return w, h
+		return max(w-pluginViewColOverhead, 1), max(h-pluginViewRowOverhead, 1)
 	}
 	return 80, 24
 }
 
-// resizePluginViewIfActive forwards a resize envelope to the active plugin
-// view (if any). Called from afterDraw when the terminal dimensions change.
-func (a *App) resizePluginViewIfActive() {
-	if a.activePlugin == nil || a.activePlugin.conn == nil {
+// reconcilePluginViewSize sends a resize envelope to the active plugin view
+// when the computed viewport differs from the last envelope delivered on the
+// current connection. This is the ONLY path that sends plugin resize
+// envelopes; it runs on the tview goroutine after every draw (and directly on
+// re-activation as a recovery hint), so the initial envelope, terminal
+// resizes, and corrections for a lost/raced/garbage envelope all flow through
+// the same dedupe. The focus envelope follows the first successful resize so
+// the plugin learns its size before it learns it has the keyboard.
+func (a *App) reconcilePluginViewSize() {
+	m := a.activePlugin
+	if m == nil || m.conn == nil || !m.connReady || !m.laidOut {
 		return
 	}
 	cols, rows := a.pluginViewportSize()
-	_ = a.activePlugin.conn.SendResize(cols, rows)
+	if cols == m.lastSentCols && rows == m.lastSentRows {
+		return
+	}
+	if err := m.conn.SendResize(cols, rows); err != nil {
+		// Leave lastSent unchanged so the envelope is retried on the next draw.
+		// Log only the first failure of a streak — retrying per draw would
+		// otherwise flood ux.log while a connection is wedged.
+		if !m.sendFailLogged {
+			m.sendFailLogged = true
+			uxlog.Log("[plugin-view] send resize %dx%d failed (retrying per draw): %v", cols, rows, err)
+		}
+		return
+	}
+	m.sendFailLogged = false
+	uxlog.Log("[plugin-view] resize envelope %dx%d (was %dx%d)", cols, rows, m.lastSentCols, m.lastSentRows)
+	m.lastSentCols, m.lastSentRows = cols, rows
+	if !m.focusSent {
+		m.focusSent = true
+		if err := m.conn.SendFocus(); err != nil {
+			uxlog.Log("[plugin-view] send focus failed: %v", err)
+		}
+	}
 }

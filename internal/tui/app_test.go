@@ -2,6 +2,8 @@ package tui
 
 import (
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apiclient"
+	"github.com/drn/argus/internal/apistore"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -578,11 +582,15 @@ func TestExitAgentView(t *testing.T) {
 	app := New(d, runner, false)
 
 	app.mode = modeAgent
+	// A transient info notice (e.g. the remote-fork "context not carried"
+	// message) must be cleared on exit so it doesn't linger on the task list.
+	app.statusbar.SetInfo("Forked (remote: source context not carried)")
 	app.exitAgentView()
 
 	if app.mode != modeTaskList {
 		t.Errorf("mode = %v, want modeTaskList", app.mode)
 	}
+	testutil.Equal(t, app.statusbar.Info(), "")
 }
 
 func TestTcellKeyToBytes(t *testing.T) {
@@ -1375,6 +1383,210 @@ func TestPruneDoesNotDoubleCountWorktrees(t *testing.T) {
 	if !strings.Contains(notice, "0/1") {
 		t.Errorf("header notice = %q, want progress showing total of 1 (not double-counted)", notice)
 	}
+}
+
+// nonRemoteStore is a store.Store that is neither *db.DB (so prune routes to
+// the remote path) nor a remotePruner (so the remote path hits its defensive
+// fallback). Embedding *db.DB supplies every store.Store method; db.DB's
+// PruneCompleted has a different signature, so the wrapper does NOT satisfy
+// remotePruner.
+type nonRemoteStore struct{ *db.DB }
+
+func TestPruneCompleted_RemoteFallbackWhenNoPruner(t *testing.T) {
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.wtRoot = t.TempDir()
+
+	app.pruneCompletedTasks()
+
+	testutil.Contains(t, app.statusbar.Error(), "requires local mode")
+}
+
+func TestPruneCompleted_RemoteDelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/maintenance/prune-completed", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pruned":2,"worktrees":1,"orphans":0}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	app.wtRoot = t.TempDir()
+
+	app.pruneCompletedTasks()
+
+	// The HTTP round trip runs in pruneCompletedRemote's goroutine; the
+	// post-request refresh is dispatched via QueueUpdateDraw (no-op without a
+	// running event loop), but the request itself fires regardless.
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected prune-completed request to reach the server")
+	}
+	testutil.Equal(t, app.header.Notice(), "Pruning completed tasks…")
+}
+
+func TestApp_RunScheduleNowRemote_DelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	// Run in a goroutine: in production this helper is always invoked from
+	// runScheduleNow's goroutine, and it ends with QueueUpdateDraw, which
+	// blocks without a running event loop. The HTTP request fires (and signals
+	// `hit`) before that point, so the channel receive observes the call.
+	go app.runScheduleNowRemote("s1")
+
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected run-schedule request to reach the server")
+	}
+}
+
+func TestApp_RunScheduleNowRemote_FallbackNoRunner(t *testing.T) {
+	// nonRemoteStore is neither *db.DB nor a remoteScheduleRunner, so the
+	// defensive branch (log-only) runs. Must not panic or set an error.
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.runScheduleNowRemote("s1")
+	testutil.Equal(t, app.statusbar.Error(), "")
+}
+
+func TestApp_ExecuteForkRemote_DelegatesToServer(t *testing.T) {
+	hit := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		hit <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x","status":"in_progress"}`))
+	})
+	mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x"}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+
+	// Goroutine for the same reason as the schedule test: executeForkRemote is
+	// invoked from executeFork's goroutine in production and ends with a
+	// blocking QueueUpdateDraw. The fork POST signals `hit` before that.
+	go app.executeForkRemote(&model.Task{ID: "src1", Name: "alpha", Project: "proj"}, "proj", "fork-x")
+
+	select {
+	case method := <-hit:
+		testutil.Equal(t, method, "POST")
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected fork request to reach the server")
+	}
+}
+
+func TestApp_ExecuteForkRemote_FallbackNoForker(t *testing.T) {
+	// nonRemoteStore satisfies neither *db.DB nor remoteForker — the defensive
+	// log-only branch runs. Must not panic.
+	app := New(&nonRemoteStore{testDB(t)}, agent.NewRunner(nil), false)
+	app.executeForkRemote(&model.Task{ID: "src1", Project: "p"}, "p", "fork-x")
+}
+
+// permissiveTaskMux serves the endpoints the remote success paths touch
+// (fork/create + the follow-up raw fetch + the refresh/select round trips),
+// with a catch-all so onTaskSelect's incidental calls don't 404-panic.
+func permissiveTaskMux(t *testing.T, forkResp string) *http.ServeMux {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/src1/fork", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(forkResp))
+	})
+	mux.HandleFunc("/api/tasks/f1/raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f1","name":"fork-x","status":"in_progress","project":"proj"}`))
+	})
+	mux.HandleFunc("/api/tasks-raw", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tasks":[{"id":"f1","name":"fork-x","status":"in_progress","project":"proj"}]}`))
+	})
+	mux.HandleFunc("/api/sessions/state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"running":[],"idle":[]}`))
+	})
+	// Catch-all: anything else onTaskSelect/refresh incidentally hits is benign.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	return mux
+}
+
+// TestApp_ExecuteForkRemote_SuccessPathUpdatesUI drives the success branch
+// under a running event loop so the QueueUpdateDraw closure actually executes,
+// then asserts the user-visible effects: recentStarts populated and the
+// degraded-fork info notice surfaced.
+func TestApp_ExecuteForkRemote_SuccessPathUpdatesUI(t *testing.T) {
+	srv := httptest.NewServer(permissiveTaskMux(t, `{"id":"f1","name":"fork-x","status":"in_progress"}`))
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// With a running loop, QueueUpdateDraw unblocks, so this returns after the
+	// success closure has run.
+	app.executeForkRemote(&model.Task{ID: "src1", Name: "alpha", Project: "proj"}, "proj", "fork-x")
+
+	var hasStart bool
+	var info string
+	readUI(t, app.tapp, func() {
+		_, hasStart = app.recentStarts["f1"]
+		info = app.statusbar.Info()
+	})
+	testutil.Equal(t, hasStart, true)
+	testutil.Contains(t, info, "context not carried")
+}
+
+// TestApp_RunScheduleNowRemote_SuccessPathRefreshes drives the schedule-fire
+// success branch under a running loop and asserts it took the success path
+// (no error surfaced) rather than the error branch.
+func TestApp_RunScheduleNowRemote_SuccessPathRefreshes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/schedules/s1/run", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task_id":"t42"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := apiclient.New(srv.URL, "tok", apiclient.WithHTTPClient(srv.Client()))
+	app := New(apistore.New(c), agent.NewRunner(nil), false)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	app.runScheduleNowRemote("s1")
+
+	var errText string
+	readUI(t, app.tapp, func() { errText = app.statusbar.Error() })
+	testutil.Equal(t, errText, "")
 }
 
 func TestCtrlRPrunesCompleted(t *testing.T) {

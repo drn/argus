@@ -78,7 +78,26 @@ func LoadOrCreateToken(path string) (string, error) {
 
 // requireMaster writes a 403 if the request was authenticated with a device
 // token rather than the master token. Returns true if the caller should stop
-// processing. Used by destructive/configuration-mutating endpoints.
+// processing.
+//
+// Single-tier auth model: every authenticated token has the same permissions
+// EXCEPT for a small RCE/credential denylist that stays master-only. As of
+// this writing that denylist is: backends CRUD (command templates → arbitrary
+// command execution), self-update (source-path + rebuild/restart), and token
+// list/mint/revoke (credential management). Everything else — tasks, projects,
+// schedules, settings, messages, push, raw endpoints, task_meta writes — is
+// open to any token.
+// Plugin-scoped tokens (X-Argus-Auth: scope:<name>) are still namespaced for
+// MCP tool registration in mcp_tools.go; that is namespacing, not a tier.
+//
+// Two exceptions are gated OUTSIDE requireMaster (per-section / per-endpoint,
+// not whole-endpoint), so grepping requireMaster callsites won't surface them:
+//   - PUT /api/settings is open EXCEPT the `sandbox` section, which is
+//     master-only (handleUpdateSettings) — it governs the sandbox-exec
+//     boundary, a security control rather than a UX preference.
+//   - MCP tool register/unregister (mcp_tools.go) and plugin view
+//     register/list/delete (plugin_views.go) require master OR a scope token
+//     and reject plain device tokens.
 func requireMaster(w http.ResponseWriter, r *http.Request) bool {
 	if r.Header.Get("X-Argus-Auth") != "master" {
 		http.Error(w, `{"error":"master token required"}`, http.StatusForbidden)

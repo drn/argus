@@ -77,7 +77,9 @@ func TestAPI_SendMessage_Happy(t *testing.T) {
 	testutil.Equal(t, inbox.UnreadCount, 1)
 }
 
-func TestAPI_SendMessage_DeviceRejected(t *testing.T) {
+// Single-tier auth: a device token may send inter-task messages (no
+// RCE/credential risk — not on the master-only denylist).
+func TestAPI_SendMessage_DeviceAllowed(t *testing.T) {
 	srv, d := testServer(t)
 	from := &model.Task{Name: "from"}
 	to := &model.Task{Name: "to"}
@@ -89,7 +91,7 @@ func TestAPI_SendMessage_DeviceRejected(t *testing.T) {
 	req := deviceReq("POST", "/api/tasks/"+from.ID+"/messages", body)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
-	testutil.Equal(t, w.Code, http.StatusForbidden)
+	testutil.Equal(t, w.Code, http.StatusCreated)
 }
 
 func TestAPI_SendMessage_BadRequest(t *testing.T) {

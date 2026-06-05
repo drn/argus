@@ -135,9 +135,9 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | Key                   | Action                                                                    |
 | --------------------- | ------------------------------------------------------------------------- |
 | `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
-| `Cmd+←` / `Cmd+→`     | Switch panels                                                             |
+| `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden)                |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
-| `ctrl+z`              | Toggle the git + file side panes (agent view opens single-pane by default) |
+| `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
@@ -215,7 +215,8 @@ Global sandbox settings are managed in the **Settings tab** (`4` key):
 Per-project overrides are set in the **project form** (`e` on a project in Settings) — **Inherit**, **Enabled**, or **Disabled**. Per-project deny-read and extra-write paths are appended to the global lists.
 
 **Always denied read:** `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`
-**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (so Playwright/Chrome can launch — its crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
+**Always allowed write:** the task's worktree directory, `/tmp`, `/var/folders`, `~/.claude.json`, `~/.claude/`, `~/Library/Application Support/Google/Chrome` (Chrome's crashpad writes there regardless of `--user-data-dir`), the main repo's `.git` dir.
+**Always allowed (IOKit):** user-client opens (`iokit-open` / `iokit-open-user-client`) — required for headful Chrome (Playwright/Puppeteer), which calls `IOServiceOpen` on `IOPMrootDomain` at startup and SIGSEGVs on the denied open otherwise. The crashpad write rule above is necessary but not sufficient on its own.
 
 ### Running inside tmux
 
@@ -286,7 +287,7 @@ Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-com
 | `task_message_ack`  | Mark messages read. Pass `message_ids` (up to 500). IDs not addressed to the caller are silently ignored.                                                                                                                                                |
 | `task_ask`          | Convenience: send a question and optionally block until a reply lands. Params: `to`, `body`, optional `timeout_seconds` (default 0 = return immediately; max 120). When blocking, polls the answer at 500 ms cadence; callers wanting longer waits poll. |
 
-If the recipient has a live agent session the daemon also writes a single notification line into their PTY (best-effort). Same surface available over REST: `GET /api/tasks/{id}/inbox`, `POST /api/tasks/{id}/inbox/ack`, `POST /api/tasks/{id}/messages` (master-only).
+If the recipient has a live agent session the daemon also writes a single notification line into their PTY (best-effort). Same surface available over REST: `GET /api/tasks/{id}/inbox`, `POST /api/tasks/{id}/inbox/ack`, `POST /api/tasks/{id}/messages`.
 
 **Schedule Management:**
 
@@ -307,6 +308,8 @@ If the recipient has a live agent session the daemon also writes a single notifi
 ### Remote Control: REST API
 
 All endpoints require auth — `Authorization: Bearer <token>` header or `?token=<token>` query param (the latter is required for `EventSource`/SSE because browsers cannot set headers on it). The token can be the master token from `~/.argus/api-token` or any non-revoked device token.
+
+Every authenticated token has the same permissions **except** a small master-only denylist: **backends CRUD** (command templates can run arbitrary code), **self-update** (`/api/source-path`, `/api/update`), and **token list/mint/revoke** (`/api/tokens`). Those endpoints return `403` for device tokens; everything else — tasks, projects, schedules, settings, messages, push — accepts any token. One extra carve-out lives inside `PUT /api/settings`: the **`sandbox` section is master-only** (it governs the host sandbox-exec boundary), while KB/API/UX-defaults are open.
 
 #### Tasks
 
@@ -356,9 +359,9 @@ All endpoints require auth — `Authorization: Bearer <token>` header or `?token
 | `PUT`    | `/api/projects/{name}` | Update                                                                                                                                                                              |
 | `DELETE` | `/api/projects/{name}` | Delete                                                                                                                                                                              |
 | `GET`    | `/api/backends`        | List with command + prompt_flag                                                                                                                                                     |
-| `POST`   | `/api/backends`        | Create                                                                                                                                                                              |
-| `PUT`    | `/api/backends/{name}` | Update                                                                                                                                                                              |
-| `DELETE` | `/api/backends/{name}` | Delete                                                                                                                                                                              |
+| `POST`   | `/api/backends`        | Create. **Master token required** (command templates can run arbitrary code).                                                                                                       |
+| `PUT`    | `/api/backends/{name}` | Update. **Master token required.**                                                                                                                                                  |
+| `DELETE` | `/api/backends/{name}` | Delete. **Master token required.**                                                                                                                                                  |
 | `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                                                                                                    |
 
 #### Push notifications (Web Push, VAPID)
@@ -387,20 +390,20 @@ Tokens are stored as SHA-256 hashes; plaintext is never persisted on the server.
 
 | Method   | Endpoint                  | Description                                                                                                                                           |
 | -------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/schedules`          | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. **Master token required** (prompts can carry sensitive instructions). |
-| `POST`   | `/api/schedules`          | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. **Master token required.** Returns the created row.                      |
-| `PUT`    | `/api/schedules/{id}`     | Partial update — every field optional. Useful for toggling `enabled`. **Master token required.**                                                      |
-| `DELETE` | `/api/schedules/{id}`     | Remove. Tasks already created by the schedule are not affected. **Master token required.**                                                            |
-| `POST`   | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. **Master token required.**                                                   |
+| `GET`    | `/api/schedules`          | List schedules with `next_run_at`, `last_run_at`, `last_task_id`, `last_error`. |
+| `POST`   | `/api/schedules`          | Create. Body: `{"name","project","prompt","schedule","backend?","enabled"}`. Returns the created row. |
+| `PUT`    | `/api/schedules/{id}`     | Partial update — every field optional. Useful for toggling `enabled`. |
+| `DELETE` | `/api/schedules/{id}`     | Remove. Tasks already created by the schedule are not affected. |
+| `POST`   | `/api/schedules/{id}/run` | Fire the schedule now, regardless of cron timing. Returns `{"task_id"}`. |
 
 Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`), descriptors (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`), and intervals (`@every 30m`).
 
-#### Settings & logs (master only for mutations)
+#### Settings & logs
 
 | Method | Endpoint                         | Description                                                                                                                                  |
 | ------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host). Device tokens may read.      |
-| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. **Master token required.** |
+| `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
+| `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
 
 ### Keep the host awake

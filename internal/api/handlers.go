@@ -455,9 +455,9 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 // --- Delete Task ---
 
 // handleDeleteTask is a per-task destructive endpoint. Auth: requires a valid
-// token but NOT master — same tier as handleStopTask, since per-task ops are
-// expected from the mobile PWA. requireMaster gates apply only to cross-task
-// or config-mutating endpoints (handleStopAll, project/backend/token CRUD).
+// token but NOT master. Under the single-tier model only the RCE/credential
+// denylist stays master-only: backends CRUD, self-update, and token
+// mint/revoke/list.
 func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
@@ -624,11 +624,9 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 // --- Stop All ---
 
 func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
-	// Destructive: master-only. Device tokens can stop individual tasks but
-	// cannot halt every running agent in one call.
-	if requireMaster(w, r) {
-		return
-	}
+	// Any authenticated token. Single-tier auth: only the RCE/credential
+	// denylist (backends CRUD, self-update, token mint/revoke) stays
+	// master-only.
 	s.runner.StopAll()
 	// Mark every running task as in_review.
 	tasks, err := s.db.Tasks()
@@ -654,12 +652,9 @@ func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
 // Also sweeps orphaned worktree directories under ~/.argus/worktrees that no
 // longer correspond to any DB row. Mirrors the TUI's Ctrl+R action.
 //
-// Destructive and cross-task; master-only.
+// Destructive and cross-task, but only deletes already-completed tasks, so
+// open to any authenticated token under the single-tier model.
 func (s *Server) handlePruneCompleted(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
-
 	cfg := s.db.Config()
 	projects := make(map[string]string, len(cfg.Projects))
 	for name, p := range cfg.Projects {
@@ -1378,9 +1373,6 @@ func sortProjects(items []projectJSON, less func(a, b projectJSON) bool) {
 }
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1399,9 +1391,6 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	name := r.PathValue("name")
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
@@ -1423,9 +1412,6 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	name := r.PathValue("name")
 	if err := s.db.DeleteProject(name); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1460,9 +1446,10 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backends": out})
 }
 
-// handleCreateBackend persists a new backend definition. Same surface as
-// handleCreateProject — master-only since it mutates shared config that
-// every running task could spawn against.
+// handleCreateBackend persists a new backend definition. Master-only (RCE
+// denylist) — a backend is a command template, so write access is equivalent
+// to arbitrary command execution on the host the next time a task spawns.
+// Unlike project CRUD (open under single-tier auth), this stays gated.
 func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 	if requireMaster(w, r) {
 		return
@@ -1526,12 +1513,10 @@ func (s *Server) handleDeleteBackend(w http.ResponseWriter, r *http.Request) {
 // what's exposed by /api/settings. The TUI calls db.Config() in many
 // places (project lookup, default backend, sandbox state, UI prefs); this
 // endpoint lets a remote TUI build the same value over HTTP without
-// adding a dozen specialised endpoints. Master-only — keybindings and
-// other UI prefs are master-tier configuration.
+// adding a dozen specialised endpoints. Read-only; open to any authenticated
+// token (the backend command templates it discloses are already readable via
+// GET /api/backends).
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	writeJSON(w, http.StatusOK, s.db.Config())
 }
 

@@ -14,6 +14,7 @@
 package terminalpane
 
 import (
+	"fmt"
 	"image/color"
 	"io"
 	"sync"
@@ -263,6 +264,36 @@ func (tp *TerminalPane) InputHandler() func(event *tcell.EventKey, setFocus func
 	}
 	return tp.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {
 		tp.send(eventBytes(event))
+	})
+}
+
+// MouseHandler forwards mouse-wheel events to the plugin as SGR mouse
+// sequences (ESC [ < Cb ; Cx ; Cy M — Cb 64 = wheel-up, 65 = wheel-down) so
+// plugins can scroll their own surfaces. Coordinates are 1-based relative to
+// the pane's inner rect (the same rect Draw paints: outer minus the 1-cell
+// border), clamped so a tick on the border still lands in range. Every other
+// action is left unconsumed — focus is already surrendered to the plugin
+// page. Without an input-back channel, wheel events are consumed but dropped
+// (same read-only posture as InputHandler).
+func (tp *TerminalPane) MouseHandler() func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
+	return tp.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, _ func(p tview.Primitive)) (bool, tview.Primitive) {
+		var cb int
+		switch action {
+		case tview.MouseScrollUp:
+			cb = 64
+		case tview.MouseScrollDown:
+			cb = 65
+		default:
+			return false, nil
+		}
+		// Inner rect mirrors Draw: GetRect minus the border. With innerX =
+		// x+1, the 1-based inner-relative column is ex - (x+1) + 1 = ex - x.
+		x, y, w, h := tp.GetRect()
+		ex, ey := event.Position()
+		cx := min(max(ex-x, 1), max(w-2, 1))
+		cy := min(max(ey-y, 1), max(h-2, 1))
+		tp.send([]byte(fmt.Sprintf("\x1b[<%d;%d;%dM", cb, cx, cy)))
+		return true, nil
 	})
 }
 

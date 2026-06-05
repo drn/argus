@@ -82,13 +82,10 @@ func (s *Server) handleUnlinkTask(w http.ResponseWriter, r *http.Request) {
 // descendants. Returns the per-row summary so the UI can render "halted N
 // tasks (2 stopped, 3 archived)".
 //
-// requireMaster — cross-task mutation tier (matches handleStopAll). A halt
-// can stop multiple agents and archive multiple rows in one call, so it
-// must not be reachable from a device token that compromised on one phone.
+// Single-tier auth: any authenticated token may halt. Cross-task and
+// destructive (stops agents, archives rows) but carries no RCE/credential
+// risk — same tier as handleStopAll under the single-tier model.
 func (s *Server) handleHaltDownstream(w http.ResponseWriter, r *http.Request) {
-	if requireMaster(w, r) {
-		return
-	}
 	id := r.PathValue("id")
 	report, err := orch.HaltDownstream(s.db, s.runner, id, haltSessionNotFound)
 	if err != nil {

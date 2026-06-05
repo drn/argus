@@ -286,3 +286,72 @@ func TestProvider_Start_Resume(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.True(t, h != nil)
 }
+
+// TestProvider_Clipboard exercises the clipboardAccessor methods that make
+// ctrl+y copy work in --remote mode. The mock server mirrors the real API's
+// contract: GET returns 204 (no body) when nothing is staged and 200 with
+// {"text":...} when a payload exists; DELETE clears. A dedicated mux is used
+// instead of the shared fakeServer because fakeServer's catch-all
+// /api/tasks/ handler has no clipboard route and the 204-vs-200 presence
+// semantics are specific to this test.
+//
+// Server-mutated state (present, cleared) is guarded by mu because the
+// httptest handler runs on its own goroutine; without it the -race detector
+// can flag handler writes against test-goroutine reads. The subtests are
+// intentionally order-dependent: "clear" must run before "get absent after
+// clear" (it flips present=false server-side). t.Run subtests run
+// sequentially, so this holds — do not add t.Parallel().
+func TestProvider_Clipboard(t *testing.T) {
+	var mu sync.Mutex
+	cleared := []string{}
+	staged := "staged text"
+	present := true
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/tasks/t1/clipboard", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			if !present {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"text":"` + staged + `"}`))
+		case http.MethodDelete:
+			cleared = append(cleared, "t1")
+			present = false
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	p := NewProvider(New(srv.URL, "tok", WithHTTPClient(srv.Client())))
+	defer p.Close()
+
+	t.Run("get present", func(t *testing.T) {
+		text, ok := p.ClipboardGet("t1")
+		testutil.Equal(t, text, "staged text")
+		testutil.Equal(t, ok, true)
+	})
+
+	t.Run("clear", func(t *testing.T) {
+		testutil.NoError(t, p.ClipboardClear("t1"))
+		mu.Lock()
+		defer mu.Unlock()
+		testutil.DeepEqual(t, cleared, []string{"t1"})
+	})
+
+	t.Run("get absent after clear", func(t *testing.T) {
+		text, ok := p.ClipboardGet("t1")
+		testutil.Equal(t, text, "")
+		testutil.Equal(t, ok, false)
+	})
+
+	t.Run("get error returns absent", func(t *testing.T) {
+		// Unknown task → server 404 → request error → absent.
+		text, ok := p.ClipboardGet("nope")
+		testutil.Equal(t, text, "")
+		testutil.Equal(t, ok, false)
+	})
+}

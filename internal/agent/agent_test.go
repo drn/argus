@@ -16,6 +16,11 @@ import (
 	"github.com/drn/argus/internal/testutil"
 )
 
+// testConfig deliberately keeps permission flags BAKED into the claude command
+// (rather than relying on Defaults.PermissionMode injection). This exercises the
+// "command wins" path: BuildCmd's hasPermissionFlags guard must suppress
+// injection when the command already names a permission flag. Tests that
+// exercise the injection path use permModeConfig (bare "claude") instead.
 func testConfig() config.Config {
 	return config.Config{
 		Defaults: config.Defaults{Backend: "claude"},
@@ -180,6 +185,99 @@ func TestBuildCmd(t *testing.T) {
 	if args[2] != expected {
 		t.Errorf("expected %q, got %q", expected, args[2])
 	}
+}
+
+// permModeConfig returns a config whose claude backend command carries NO
+// baked permission flags (so injection is exercised) and whose default
+// permission mode is the given value.
+func permModeConfig(mode string) config.Config {
+	return config.Config{
+		Defaults: config.Defaults{Backend: "claude", PermissionMode: mode},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude"},
+			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":     {Command: "pi"},
+		},
+	}
+}
+
+func TestBuildCmd_PermissionMode(t *testing.T) {
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{config.PermissionModeDefault, "claude --permission-mode default -- 'go'"},
+		{config.PermissionModeAcceptEdits, "claude --permission-mode acceptEdits -- 'go'"},
+		{config.PermissionModePlan, "claude --permission-mode plan -- 'go'"},
+		{config.PermissionModeBypassAllow, "claude --allow-dangerously-skip-permissions --permission-mode plan -- 'go'"},
+		{config.PermissionModeBypassActive, "claude --dangerously-skip-permissions -- 'go'"},
+		{"", "claude -- 'go'"}, // unconfigured/unknown → no injection
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := permModeConfig(tc.mode)
+			task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_PermissionMode_SkippedForNonClaude(t *testing.T) {
+	cfg := permModeConfig(config.PermissionModeBypassActive)
+
+	t.Run("codex", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "codex", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "codex --dangerously-bypass-approvals-and-sandbox -- 'go'")
+	})
+
+	t.Run("pi", func(t *testing.T) {
+		task := &model.Task{Name: "t", Backend: "pi", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "pi 'go'")
+	})
+
+	t.Run("bare custom command", func(t *testing.T) {
+		// A non-claude custom backend must NOT receive Claude permission flags.
+		cfg := config.Config{
+			Defaults: config.Defaults{Backend: "bash", PermissionMode: config.PermissionModeBypassActive},
+			Backends: map[string]config.Backend{"bash": {Command: "bash -c 'sleep 0.1'"}},
+		}
+		task := &model.Task{Name: "t", Backend: "bash", Prompt: "go", Worktree: t.TempDir()}
+		cmd, _, err := BuildCmd(task, cfg, false)
+		testutil.NoError(t, err)
+		testutil.Equal(t, cmd.Args[2], "bash -c 'sleep 0.1' -- 'go'")
+	})
+}
+
+// TestBuildCmd_PermissionMode_CommandWins confirms a backend command that
+// already names a permission flag suppresses injection (no duplicate/conflict).
+func TestBuildCmd_PermissionMode_CommandWins(t *testing.T) {
+	cfg := config.Config{
+		Defaults: config.Defaults{Backend: "claude", PermissionMode: config.PermissionModeBypassActive},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude --permission-mode acceptEdits"},
+		},
+	}
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --permission-mode acceptEdits -- 'go'")
+}
+
+// TestBuildCmd_PermissionMode_BeforeSessionID confirms injected flags precede
+// the --session-id suffix.
+func TestBuildCmd_PermissionMode_BeforeSessionID(t *testing.T) {
+	cfg := permModeConfig(config.PermissionModeBypassActive)
+	task := &model.Task{Name: "t", SessionID: "aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2],
+		"claude --dangerously-skip-permissions --session-id 'aaaaaaaa-bbbb-4ccc-9ddd-eeeeeeeeeeee'")
 }
 
 // TestBuildCmd_ExportsTaskID confirms ARGUS_TASK_ID lands in the spawned

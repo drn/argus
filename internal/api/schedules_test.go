@@ -260,7 +260,11 @@ func TestScheduleHandlers_RunNow(t *testing.T) {
 	}
 }
 
-func TestScheduleHandlers_MasterOnly(t *testing.T) {
+// Single-tier auth: schedule endpoints are open to any authenticated token
+// (no RCE/credential risk — not on the master-only denylist). A device token
+// must NOT be rejected with 403; the exact success/not-found code varies per
+// endpoint, so we only assert "not forbidden".
+func TestScheduleHandlers_AnyToken(t *testing.T) {
 	srv, d := testServer(t)
 	handler := authMiddleware(srv.token, d, nil, srv.routes())
 	plain, _, err := MintToken(d, "phone")
@@ -293,7 +297,33 @@ func TestScheduleHandlers_MasterOnly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, device(tc.method, tc.url, tc.body))
-			testutil.Equal(t, w.Code, http.StatusForbidden)
+			if w.Code == http.StatusForbidden {
+				t.Fatalf("device token forbidden on %s %s; single-tier auth should allow it", tc.method, tc.url)
+			}
 		})
 	}
+
+	// Stronger positives: a device token must get concrete success codes, not
+	// merely avoid a 403.
+	t.Run("list returns 200 for device token", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, device("GET", "/api/schedules", ""))
+		testutil.Equal(t, w.Code, http.StatusOK)
+	})
+
+	t.Run("create persists via device token", func(t *testing.T) {
+		body := `{"name":"dev-sched","project":"p","prompt":"go","schedule":"@daily"}`
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, device("POST", "/api/schedules", body))
+		testutil.Equal(t, w.Code, http.StatusCreated)
+		schedules, err := d.Schedules()
+		testutil.NoError(t, err)
+		found := false
+		for _, sc := range schedules {
+			if sc.Name == "dev-sched" {
+				found = true
+			}
+		}
+		testutil.Equal(t, found, true)
+	})
 }
