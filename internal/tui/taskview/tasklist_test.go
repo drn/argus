@@ -489,6 +489,115 @@ func TestTaskListView_DrawTaskRow_NeedsInput(t *testing.T) {
 	}
 }
 
+// prCellCol / nameStartCol encode the row layout the PR-indicator tests rely
+// on: 4-char prefix, status glyph at col 4 (+2), reserved PR cell at col 6
+// (+2), name starting at col 8.
+const (
+	prStatusCol = 4
+	prCellCol   = 6
+	prNameCol   = 8
+)
+
+func TestDrawTaskRow_PRIndicator_Actionable(t *testing.T) {
+	cases := []struct {
+		name  string
+		state model.PRState
+		glyph rune
+	}{
+		{"awaiting", model.PRAwaitingReview, theme.IconPRAwaiting},
+		{"changes", model.PRChangesRequested, theme.IconPRChanges},
+		{"approved", model.PRApproved, theme.IconPRApproved},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sim := newSim(t, 60, 5)
+			tl := NewTaskListView()
+			task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+			tl.SetTasks([]*model.Task{task})
+			tl.SetPRStates(map[string]model.PRState{"1": tc.state})
+
+			tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+			// PR glyph appears at the reserved cell.
+			gotPR, _, _, _ := sim.GetContent(prCellCol, 0)
+			testutil.Equal(t, gotPR, tc.glyph)
+
+			// Style matches the theme's PR style for this state.
+			_, wantStyle := theme.PRGlyph(tc.state)
+			_, _, gotStyle, _ := sim.GetContent(prCellCol, 0)
+			testutil.Equal(t, gotStyle, wantStyle)
+
+			// Name starts at the fixed name column regardless of PR state.
+			nameRun := ""
+			for col := prNameCol; col < 60; col++ {
+				r, _, _, _ := sim.GetContent(col, 0)
+				nameRun += string(r)
+			}
+			testutil.Contains(t, strings.TrimSpace(nameRun), "fix-bug")
+		})
+	}
+}
+
+func TestDrawTaskRow_PRIndicator_BlankForNonActionable(t *testing.T) {
+	for _, state := range []model.PRState{model.PRNone, model.PRDraft, model.PRMergedClosed, model.PRUnknown} {
+		t.Run(state.String(), func(t *testing.T) {
+			sim := newSim(t, 60, 5)
+			tl := NewTaskListView()
+			task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+			tl.SetTasks([]*model.Task{task})
+			tl.SetPRStates(map[string]model.PRState{"1": state})
+
+			tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+			gotPR, _, _, _ := sim.GetContent(prCellCol, 0)
+			testutil.Equal(t, gotPR, ' ')
+		})
+	}
+}
+
+// TestDrawTaskRow_PRIndicator_NameDoesNotShift is the anti-jitter guard: the
+// task name must start at the exact same column whether or not the task has an
+// actionable PR state, and the status glyph must be identical in both cases.
+func TestDrawTaskRow_PRIndicator_NameDoesNotShift(t *testing.T) {
+	render := func(state model.PRState) (statusRune rune, nameRun string) {
+		sim := newSim(t, 60, 5)
+		tl := NewTaskListView()
+		task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInReview}
+		tl.SetTasks([]*model.Task{task})
+		tl.SetPRStates(map[string]model.PRState{"1": state})
+		tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+		statusRune, _, _, _ = sim.GetContent(prStatusCol, 0)
+		for col := prNameCol; col < 60; col++ {
+			r, _, _, _ := sim.GetContent(col, 0)
+			nameRun += string(r)
+		}
+		return statusRune, nameRun
+	}
+
+	statusWith, nameWith := render(model.PRApproved)
+	statusWithout, nameWithout := render(model.PRNone)
+
+	// Status glyph unchanged regardless of PR state.
+	testutil.Equal(t, statusWith, statusWithout)
+	// Name column identical regardless of PR state (no shift).
+	testutil.Equal(t, nameWith, nameWithout)
+}
+
+func TestSetPRStates_NilSafe(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})
+	tl.SetPRStates(nil) // must not panic and must clear
+	testutil.Equal(t, len(tl.prStates), 0)
+}
+
+func TestPRStateFor(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRChangesRequested})
+	testutil.Equal(t, tl.PRStateFor("1"), model.PRChangesRequested)
+	testutil.Equal(t, tl.PRStateFor("missing"), model.PRNone)
+}
+
 func TestTaskListView_StatusCycleKeys(t *testing.T) {
 	tl := NewTaskListView()
 	var changed *model.Task

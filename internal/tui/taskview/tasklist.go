@@ -62,9 +62,10 @@ type TaskListView struct {
 	rows          []taskRow
 	running       map[string]bool
 	idle          map[string]bool
-	idleUnvisited map[string]bool // task IDs idle since user last viewed the agent view
-	needsInput    map[string]bool // task IDs whose agent appears blocked on a user prompt
-	animFrame     int             // current spinner frame (time-based, updated in Draw)
+	idleUnvisited map[string]bool          // task IDs idle since user last viewed the agent view
+	needsInput    map[string]bool          // task IDs whose agent appears blocked on a user prompt
+	prStates      map[string]model.PRState // task ID → cached GitHub PR review state (from task_meta "pr")
+	animFrame     int                      // current spinner frame (time-based, updated in Draw)
 
 	cursor          int
 	offset          int    // scroll offset
@@ -121,6 +122,7 @@ func NewTaskListView() *TaskListView {
 		idle:          make(map[string]bool),
 		idleUnvisited: make(map[string]bool),
 		needsInput:    make(map[string]bool),
+		prStates:      make(map[string]model.PRState),
 		lastRowsSig:   ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
@@ -188,6 +190,26 @@ func (tl *TaskListView) SetNeedsInput(ids []string) {
 	for _, id := range ids {
 		tl.needsInput[id] = true
 	}
+}
+
+// SetPRStates updates the per-task cached GitHub PR review state used to draw
+// the reserved PR indicator cell in each task row. The map is task ID →
+// model.PRState, read from the daemon-populated task_meta "pr" namespace on the
+// app tick. The TUI never invokes gh itself — it only renders this cache. A
+// nil map is treated as "no PR state known for any task" (all cells blank).
+func (tl *TaskListView) SetPRStates(states map[string]model.PRState) {
+	if states == nil {
+		tl.prStates = make(map[string]model.PRState)
+		return
+	}
+	tl.prStates = states
+}
+
+// PRStateFor returns the cached PR review state for a task ID, or PRNone when
+// no state is cached. Used by callers (and tests) that need to inspect the
+// rendered indicator without reaching into unexported fields.
+func (tl *TaskListView) PRStateFor(taskID string) model.PRState {
+	return tl.prStates[taskID]
 }
 
 // updateSpinnerFrame computes the current spinner frame from wall clock time.
@@ -1148,6 +1170,14 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 
 	screen.SetContent(col, y, statusChar, nil, statusStyle)
 	col += 2 // status char + space
+
+	// Reserved PR review indicator cell (add-pr-review-indicator). Always
+	// occupies its width — blank space when the task has no actionable PR
+	// state — so the name column never shifts as PR state appears/changes.
+	// Orthogonal to (never replaces) the status glyph above.
+	prChar, prStyle := theme.PRGlyph(tl.prStates[task.ID])
+	screen.SetContent(col, y, prChar, nil, prStyle)
+	col += 2 // PR indicator + space
 
 	// Name gets priority; elapsed is right-aligned.
 	nameStr := task.Name

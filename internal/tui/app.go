@@ -1550,6 +1550,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.syncIdleUnvisited()
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
+	a.tasklist.SetPRStates(a.readPRStates())
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
@@ -1565,6 +1566,39 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 			a.taskDetail.SetTask(nil, false)
 		}
 	}
+}
+
+// readPRStates reads the daemon-populated PR review state cache from task_meta
+// namespace "pr" and returns a task ID → model.PRState map for the task list to
+// render. The TUI NEVER invokes gh/gitutil.FetchPRState itself — the daemon
+// poller is the sole writer; this is a pure cache read.
+//
+// Local-only: the meta cache lives in the SQLite store, so this is gated on a
+// *db.DB type-assert (the established pattern for local-only ops, see
+// gotchas/remote-tui.md). In --remote mode it returns nil (all cells blank);
+// surfacing pr_state over the REST DTO + apistore is the Stage 6 follow-up.
+func (a *App) readPRStates() map[string]model.PRState {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return nil // remote store — Stage 6 follow-up
+	}
+	raw, err := d.ListMetaByNamespace("pr")
+	if err != nil {
+		uxlog.Log("[pr] tui: read pr meta failed: %v", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]model.PRState, len(raw))
+	for taskID, kv := range raw {
+		s, perr := model.ParsePRState(kv["state"])
+		if perr != nil {
+			continue // skip unparseable; leave that task's cell blank
+		}
+		out[taskID] = s
+	}
+	return out
 }
 
 // pluginFailsafeWindow is the maximum gap between two Ctrl+Q presses for the

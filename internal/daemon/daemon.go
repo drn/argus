@@ -24,6 +24,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/depswatcher"
 	"github.com/drn/argus/internal/events"
+	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -31,7 +32,17 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
+	"github.com/drn/argus/internal/uxlog"
 )
+
+// prPollInterval is the cadence at which the daemon refreshes cached PR review
+// state for every eligible task. Kept well above per-tick gh cost so a large
+// task set stays under GitHub's authenticated rate limit (design.md).
+const prPollInterval = 60 * time.Second
+
+// prPollConcurrency caps the number of concurrent `gh pr view` processes the
+// poller spawns per tick. Bounded so a big task set can't fork-bomb gh.
+const prPollConcurrency = 4
 
 // DefaultSocketPath returns the default Unix socket path.
 func DefaultSocketPath() string {
@@ -80,6 +91,11 @@ type Daemon struct {
 	binaryPath  string
 	binaryMtime time.Time
 	bootedAt    time.Time
+
+	// prFetch is the injectable seam the PR-status poller calls to resolve a
+	// task branch's review state. Defaults to gitutil.FetchPRState; tests swap
+	// it for a fake so the poller never spawns a real gh process.
+	prFetch func(ctx context.Context, worktreeDir, branch string) (model.PRState, string, error)
 }
 
 // New creates a new Daemon.
@@ -92,6 +108,7 @@ func New(database *db.DB) *Daemon {
 		ready:     make(chan struct{}),
 		bootedAt:  time.Now(),
 		clipboard: clipboard.New(),
+		prFetch:   gitutil.FetchPRState,
 	}
 
 	// Capture the binary path + mtime at startup. The on-disk binary may be
@@ -256,6 +273,73 @@ func (d *Daemon) transitionTaskOnExit(taskID string, stopped bool) {
 	slog.Info("session exit: status flipped", "task", taskID, "status", t.Status.String())
 }
 
+// pollPRStatesOnce runs a single PR-status refresh pass over every eligible
+// task. Eligible = not archived AND has a non-empty Branch. For each eligible
+// task it calls d.prFetch (the gitutil.FetchPRState seam) under a bounded
+// worker pool (prPollConcurrency) and persists a successful result into
+// task_meta namespace "pr" (keys "state" and "url").
+//
+// Keep-stale contract: a fetch that returns a non-nil error is transient — the
+// existing cached value is left untouched (no write). A nil error (including an
+// unambiguous PRNone or a PRUnknown for gh-absent) is authoritative and is
+// written. This mirrors gitutil.FetchPRState's documented return contract.
+func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
+	tasks, err := d.db.Tasks()
+	if err != nil {
+		uxlog.Log("[pr] poll: list tasks failed: %v", err)
+		return
+	}
+
+	// Collect eligible tasks up front so the logged count is exact.
+	eligible := make([]*model.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t == nil || t.Archived || t.Branch == "" {
+			continue
+		}
+		eligible = append(eligible, t)
+	}
+	if len(eligible) == 0 {
+		return
+	}
+
+	sem := make(chan struct{}, prPollConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var written, errored int
+
+	for _, t := range eligible {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(t *model.Task) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			state, url, ferr := d.prFetch(ctx, t.Worktree, t.Branch)
+			if ferr != nil {
+				// Transient failure — keep the cached value intact.
+				mu.Lock()
+				errored++
+				mu.Unlock()
+				uxlog.Log("[pr] poll: fetch failed for %s (keeping stale): %v", t.ID, ferr)
+				return
+			}
+			if werr := d.db.SetMetaBatch(t.ID, "pr", map[string]string{
+				"state": state.String(),
+				"url":   url,
+			}); werr != nil {
+				uxlog.Log("[pr] poll: persist failed for %s: %v", t.ID, werr)
+				return
+			}
+			mu.Lock()
+			written++
+			mu.Unlock()
+		}(t)
+	}
+	wg.Wait()
+
+	uxlog.Log("[pr] poll: eligible=%d written=%d errored=%d", len(eligible), written, errored)
+}
+
 // Clipboard returns the agent-staged clipboard store. Used by the API
 // server (HTTP + SSE subscribe) and the MCP server (agent stages text).
 func (d *Daemon) Clipboard() *clipboard.Store {
@@ -417,6 +501,25 @@ func (d *Daemon) Serve(sockPath string) error {
 				for _, t := range swept {
 					slog.Info("mcp idle sweep", "scope", t.Scope, "name", t.Name, "last_seen", t.LastSeenAt.UTC().Format(time.RFC3339))
 				}
+			}
+		}
+	}()
+
+	// PR-status poller (add-pr-review-indicator). Refreshes cached GitHub PR
+	// review state for every non-archived task that has a branch, persisting
+	// into task_meta namespace "pr". Mirrors the idle-sweep shutdown pattern:
+	// d.done terminates the goroutine promptly on daemon shutdown. Each tick's
+	// work is factored into pollPRStatesOnce so tests can drive a single pass
+	// directly instead of racing the ticker.
+	go func() {
+		ticker := time.NewTicker(prPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.done:
+				return
+			case <-ticker.C:
+				d.pollPRStatesOnce(context.Background())
 			}
 		}
 	}()

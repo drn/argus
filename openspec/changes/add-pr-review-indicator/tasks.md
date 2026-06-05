@@ -8,8 +8,8 @@
 - [x] 1.2 Write failing tests for detection mapping (`internal/gitutil/pr_test.go`) by injecting a fake `prFetcher`/gh-output: table-cover awaiting-review, changes-requested, approved, draft, none (non-zero exit), merged, closed, gh-absent→unknown, malformed JSON.
 - [x] 1.3 Write failing tests for keep-stale-on-error: timeout/network error returns error and the poller does not clobber an existing `task_meta` value.
 - [x] 1.4 Write failing tests for `db.ListMetaByNamespace` (batch read shape) and that `DeleteMetaForTask` clears the `pr` namespace.
-- [ ] 1.5 Write failing daemon poller tests: skips archived/branchless tasks, writes `state`+`url` via `SetMetaBatch`, stops on `d.done`, respects concurrency cap.
-- [ ] 1.6 Write failing TUI render tests (`drawTaskRow` against a mock screen): actionable states draw glyph+color in the reserved cell, non-actionable draw blank, status glyph unchanged, name column does not shift.
+- [x] 1.5 Write failing daemon poller tests: skips archived/branchless tasks, writes `state`+`url` via `SetMetaBatch`, stops on `d.done`, respects concurrency cap.
+- [x] 1.6 Write failing TUI render tests (`drawTaskRow` against a mock screen): actionable states draw glyph+color in the reserved cell, non-actionable draw blank, status glyph unchanged, name column does not shift.
 - [ ] 1.7 Write failing API test: `handleListTasks` returns `pr_state` from seeded `task_meta` and does not call `prFetcher`.
 - [x] 1.8 Write failing uxlog test: gh-absent logs exactly once across repeated polls.
 - [x] 1.9 Confirm every `it should X` criterion in design.md has a failing test (Prove-It Pattern).
@@ -31,17 +31,17 @@
 
 **Depends on:** Stages 2, 3
 
-- [ ] 4.1 Add a 60s poller goroutine in `internal/daemon/daemon.go` beside the MCP idle sweep (~404), gated by `d.done`.
-- [ ] 4.2 Bounded worker pool (≤4 concurrent gh procs) over non-archived tasks with a branch; write `state`+`url` via `SetMetaBatch(taskID,"pr",…)`; keep-stale on error.
+- [x] 4.1 Add a 60s poller goroutine in `internal/daemon/daemon.go` beside the MCP idle sweep (~404), gated by `d.done`.
+- [x] 4.2 Bounded worker pool (≤4 concurrent gh procs) over non-archived tasks with a branch; write `state`+`url` via `SetMetaBatch(taskID,"pr",…)`; keep-stale on error.
 
 ## 5. TUI rendering
 
 **Depends on:** Stages 2, 3
 
-- [ ] 5.1 Add `IconPRAwaiting/Changes/Approved` + `ColorPR*`/styles + `PRGlyph(PRState) (rune, tcell.Style)` in `internal/tui/theme/theme.go` (render-test codepoints for distinctness).
-- [ ] 5.2 Add `prStates map[string]model.PRState` field + `SetPRStates` setter in `internal/tui/taskview/tasklist.go` (mirror `needsInput`/`SetNeedsInput`).
-- [ ] 5.3 Insert the reserved PR cell after the status glyph in `drawTaskRow` (after line 1149/1150); confirm `maxNameW` adapts.
-- [ ] 5.4 Wire `SetPRStates` from `ListMetaByNamespace("pr")` into the existing tick in `internal/tui/app.go` (~1547), inside the current `QueueUpdateDraw` flow.
+- [x] 5.1 Add `IconPRAwaiting/Changes/Approved` + `ColorPR*`/styles + `PRGlyph(PRState) (rune, tcell.Style)` in `internal/tui/theme/theme.go` (render-test codepoints for distinctness).
+- [x] 5.2 Add `prStates map[string]model.PRState` field + `SetPRStates` setter in `internal/tui/taskview/tasklist.go` (mirror `needsInput`/`SetNeedsInput`).
+- [x] 5.3 Insert the reserved PR cell after the status glyph in `drawTaskRow` (after line 1149/1150); confirm `maxNameW` adapts.
+- [x] 5.4 Wire `SetPRStates` from `ListMetaByNamespace("pr")` into the existing tick in `internal/tui/app.go` (~1547), inside the current `QueueUpdateDraw` flow.
 
 ## 6. Web PWA parity
 
