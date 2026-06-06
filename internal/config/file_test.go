@@ -3,7 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/testutil"
 )
@@ -142,11 +144,108 @@ theme = "first"`)
 	// Second read with no file change is a cache hit, same result.
 	testutil.Equal(t, l.Apply(base).UI.Theme, "first")
 
-	// Rewriting with different-length content changes the size, forcing a
-	// reload regardless of modtime resolution.
+	// Rewriting with different-length content changes the size, which forces a
+	// reload (the size half of the size+mtime cache key differs).
 	testutil.NoError(t, os.WriteFile(path, []byte(`[ui]
 theme = "second-value"`), 0o644))
 	testutil.Equal(t, l.Apply(base).UI.Theme, "second-value")
+}
+
+// TestFileLoader_ReloadOnMtimeOnlyChange covers the cache-key branch where the
+// size is unchanged but the modtime advances (an in-place edit of identical
+// length) — the size-change test above can't reach it.
+func TestFileLoader_ReloadOnMtimeOnlyChange(t *testing.T) {
+	path := writeFile(t, `[ui]
+theme = "aaaa"`)
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	testutil.Equal(t, l.Apply(base).UI.Theme, "aaaa")
+
+	// Same byte length, different content; bump the modtime so the loader can't
+	// rely on size alone to detect the change.
+	testutil.NoError(t, os.WriteFile(path, []byte(`[ui]
+theme = "bbbb"`), 0o644))
+	info, err := os.Stat(path)
+	testutil.NoError(t, err)
+	testutil.NoError(t, os.Chtimes(path, info.ModTime().Add(time.Hour), info.ModTime().Add(time.Hour)))
+
+	testutil.Equal(t, l.Apply(base).UI.Theme, "bbbb")
+}
+
+// TestFileLoader_BoolFalseOverridesTrueDefault guards the Go zero-value overlay
+// trap: an explicit `false` in the file must override a base `true`, while an
+// omitted key must leave the base `true` intact. BurntSushi only writes keys
+// present in the document, so both halves must hold.
+func TestFileLoader_BoolFalseOverridesTrueDefault(t *testing.T) {
+	base := DefaultConfig() // ShowElapsed and ShowIcons both default true
+
+	t.Run("explicit false wins", func(t *testing.T) {
+		l := NewFileLoader(writeFile(t, `[ui]
+show_elapsed = false`))
+		got := l.Apply(base)
+		testutil.Equal(t, got.UI.ShowElapsed, false)
+		// An untouched bool keeps the base value.
+		testutil.Equal(t, got.UI.ShowIcons, true)
+	})
+
+	t.Run("omitted key keeps base true", func(t *testing.T) {
+		l := NewFileLoader(writeFile(t, `[ui]
+theme = "x"`))
+		got := l.Apply(base)
+		testutil.Equal(t, got.UI.ShowElapsed, true)
+		testutil.Equal(t, got.UI.ShowIcons, true)
+	})
+}
+
+// TestFileLoader_ProjectSandboxDecodesFromTOML locks the behavior documented on
+// ProjectSandboxConfig: although its fields carry no `toml:` tags, a
+// [projects.<name>.sandbox] table still decodes (matched by lowercased field
+// name) because the parent Project.Sandbox field is tagged.
+func TestFileLoader_ProjectSandboxDecodesFromTOML(t *testing.T) {
+	l := NewFileLoader(writeFile(t, `
+[projects.demo]
+path = "/repo/demo"
+
+[projects.demo.sandbox]
+enabled = true
+denyread = ["/secret"]
+`))
+	base := DefaultConfig()
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+
+	p, ok := got.Projects["demo"]
+	if !ok {
+		t.Fatal("demo project should be present after overlay")
+	}
+	testutil.Equal(t, p.Path, "/repo/demo")
+	if p.Sandbox.Enabled == nil || !*p.Sandbox.Enabled {
+		t.Fatal("project sandbox.enabled should decode to true from TOML")
+	}
+	testutil.DeepEqual(t, p.Sandbox.DenyRead, []string{"/secret"})
+}
+
+// TestFileLoader_ConcurrentApply exercises the loader's mutex under -race with
+// many goroutines reading while the file changes underneath them.
+func TestFileLoader_ConcurrentApply(t *testing.T) {
+	l := NewFileLoader(writeFile(t, `[ui]
+theme = "concurrent"`))
+	base := DefaultConfig()
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			for range 25 {
+				_ = l.Apply(base)
+			}
+		})
+	}
+	wg.Wait()
+
+	// Loader is still usable and consistent after the hammering.
+	testutil.Equal(t, l.Apply(base).UI.Theme, "concurrent")
 }
 
 func TestFileLoader_RecoversAfterFileRemoved(t *testing.T) {

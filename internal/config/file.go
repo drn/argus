@@ -78,6 +78,12 @@ func (l *FileLoader) Apply(base Config) Config {
 
 	data, changed, ok := l.readLocked()
 	if !ok {
+		// A genuine read/stat failure (not a simply-absent file) is logged once,
+		// on the transition into the error, so a persistently unreadable file
+		// doesn't spam the log on every (frequent) Config() call.
+		if changed && l.err != nil {
+			slog.Warn("argus config: cannot read config.toml, keeping current config", "path", l.path, "err", l.err)
+		}
 		return base
 	}
 
