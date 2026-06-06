@@ -127,10 +127,16 @@ type Backend struct {
 
 // ProjectSandboxConfig holds per-project sandbox overrides.
 // A nil Enabled means "inherit from global"; non-nil overrides the global setting.
-// Per-project overrides live in the projects DB table (not TOML), so fields
-// here intentionally lack `toml:` struct tags — the parallel global fields
-// in SandboxConfig do carry TOML tags. Don't add tags here without also
-// reconfirming the DB-as-source-of-truth invariant.
+//
+// The DB projects table is the PRIMARY source for these per-project overrides.
+// The fields carry no explicit `toml:` tags, but note this does NOT keep them
+// out of TOML: the parent Project.Sandbox field is `toml:"sandbox"`, so the
+// config.toml overlay (config.FileLoader) will decode a
+// [projects.<name>.sandbox] table into this struct, matching each field by its
+// lowercased Go name (enabled, denyread, extrawrite, allowappleevents). That is
+// acceptable as part of the deliberate "config.toml overrides everything" layer
+// — but if you add explicit tags here, pick snake_case to match SandboxConfig's
+// global fields (deny_read, extra_write, …) so the file syntax is consistent.
 type ProjectSandboxConfig struct {
 	Enabled    *bool    // nil = inherit global; true/false = override
 	DenyRead   []string // additional paths appended to the global deny_read list
