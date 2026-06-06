@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,49 @@ func TestFileLoader_ParseErrorLeavesBaseUnchanged(t *testing.T) {
 		t.Fatal("expected a parse error")
 	}
 	testutil.Contains(t, l.Err().Error(), "parsing")
+
+	// Second call on the same broken file: cache hit, decode fails again, but
+	// the error is already set so it is not re-logged. Still returns base.
+	testutil.DeepEqual(t, l.Apply(base), base)
+	testutil.Contains(t, l.Err().Error(), "parsing")
+}
+
+// TestFileLoader_RecoversAfterParseErrorFixed covers the bad→good transition:
+// once the file parses, the overlay applies and Err() clears.
+func TestFileLoader_RecoversAfterParseErrorFixed(t *testing.T) {
+	path := writeFile(t, "not = = valid [[[")
+	l := NewFileLoader(path)
+	base := DefaultConfig()
+
+	testutil.DeepEqual(t, l.Apply(base), base)
+	if l.Err() == nil {
+		t.Fatal("expected a parse error before the fix")
+	}
+
+	testutil.NoError(t, os.WriteFile(path, []byte(`[ui]
+theme = "fixed"`), 0o644))
+
+	got := l.Apply(base)
+	testutil.NoError(t, l.Err())
+	testutil.Equal(t, got.UI.Theme, "fixed")
+}
+
+// TestFileLoader_ProjectSandboxSnakeCaseIgnored locks the documented footgun:
+// ProjectSandboxConfig fields match by lowercased Go name, so snake_case
+// (deny_read) is silently ignored while the lowercased form (denyread) decodes.
+func TestFileLoader_ProjectSandboxSnakeCaseIgnored(t *testing.T) {
+	l := NewFileLoader(writeFile(t, `
+[projects.demo.sandbox]
+deny_read = ["/secret"]
+`))
+
+	got := l.Apply(DefaultConfig())
+	testutil.NoError(t, l.Err())
+
+	// snake_case does not match the untagged DenyRead field → stays nil.
+	if got.Projects["demo"].Sandbox.DenyRead != nil {
+		t.Errorf("snake_case deny_read should be ignored, got %v", got.Projects["demo"].Sandbox.DenyRead)
+	}
 }
 
 func TestFileLoader_CacheHitAndReload(t *testing.T) {
@@ -234,17 +278,23 @@ func TestFileLoader_ConcurrentApply(t *testing.T) {
 theme = "concurrent"`))
 	base := DefaultConfig()
 
+	// The file is never modified during the test, so every Apply must return
+	// the same overridden value — this makes it a correctness check under -race,
+	// not just a crash/deadlock probe.
+	var bad atomic.Int64
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
 			for range 25 {
-				_ = l.Apply(base)
+				if l.Apply(base).UI.Theme != "concurrent" {
+					bad.Add(1)
+				}
 			}
 		})
 	}
 	wg.Wait()
 
-	// Loader is still usable and consistent after the hammering.
+	testutil.Equal(t, bad.Load(), int64(0))
 	testutil.Equal(t, l.Apply(base).UI.Theme, "concurrent")
 }
 
@@ -275,6 +325,11 @@ func TestFileLoader_ReadErrorSurfaced(t *testing.T) {
 	if l.Err() == nil {
 		t.Fatal("expected a read error for a directory path")
 	}
+	testutil.Contains(t, l.Err().Error(), "reading")
+
+	// A second call with the same persistent error exercises the
+	// already-errored (no re-log) branch and must stay consistent.
+	testutil.DeepEqual(t, l.Apply(base), base)
 	testutil.Contains(t, l.Err().Error(), "reading")
 }
 

@@ -464,4 +464,4 @@ enabled = false
 deny_read = ["~/.gnupg", "~/.aws"]
 ```
 
-Because the file wins over the settings menu, any key present here masks changes you make in Settings — that's intentional. A malformed file is ignored (logged to `~/.argus/ux.log`) and the last good config stays in force.
+Because the file wins over the settings menu, any key present here masks changes you make in Settings — that's intentional. Unknown or misspelled keys are silently ignored (the file stays forward-compatible), so check the spelling against the struct tags if an override seems to do nothing. A malformed file is ignored — logged to `~/.argus/ux.log` (or `~/.argus/daemon.log` when the daemon reads it) — and Argus falls back to the defaults + settings-menu values until the file parses again.

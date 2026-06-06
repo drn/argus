@@ -76,12 +76,15 @@ func (l *FileLoader) Apply(base Config) Config {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Errors are logged once on the nil→error transition (a persistently broken
+	// file must not spam the log on every — frequent — Config() call). Tracking
+	// the prior error state, rather than the file-changed flag, also catches a
+	// genuine stat/read failure on the very first call.
+	prevErr := l.err
+
 	data, changed, ok := l.readLocked()
 	if !ok {
-		// A genuine read/stat failure (not a simply-absent file) is logged once,
-		// on the transition into the error, so a persistently unreadable file
-		// doesn't spam the log on every (frequent) Config() call.
-		if changed && l.err != nil {
+		if l.err != nil && prevErr == nil {
 			slog.Warn("argus config: cannot read config.toml, keeping current config", "path", l.path, "err", l.err)
 		}
 		return base
@@ -91,19 +94,19 @@ func (l *FileLoader) Apply(base Config) Config {
 	merged.Backends = cloneBackends(base.Backends)
 	merged.Projects = cloneProjects(base.Projects)
 
-	_, derr := toml.Decode(string(data), &merged)
-	// Log only when the file actually changed on disk, so a persistently broken
-	// (or persistently valid) file doesn't spam the log on every db.Config call.
-	if changed {
-		if derr != nil {
-			slog.Warn("argus config: ignoring config.toml (parse error)", "path", l.path, "err", derr)
-		} else {
-			slog.Info("argus config: applied config.toml overrides", "path", l.path)
-		}
-	}
-	if derr != nil {
+	// The returned MetaData (which keys decoded) is intentionally discarded:
+	// unknown/misspelled keys are silently ignored so the file stays
+	// forward-compatible. Don't "fix" this into a strict decode — a typo
+	// blocking the whole overlay would be worse than a silent no-op.
+	if _, derr := toml.Decode(string(data), &merged); derr != nil {
 		l.err = fmt.Errorf("parsing %s: %w", l.path, derr)
+		if prevErr == nil {
+			slog.Warn("argus config: ignoring config.toml (parse error)", "path", l.path, "err", derr)
+		}
 		return base
+	}
+	if changed {
+		slog.Info("argus config: applied config.toml overrides", "path", l.path)
 	}
 	l.err = nil
 	return merged
@@ -122,20 +125,18 @@ func (l *FileLoader) Err() error {
 
 // readLocked returns the (possibly cached) file bytes. The bool "changed"
 // reports whether a fresh read happened (vs. a cache hit); "ok" is false when
-// the file is absent or unreadable. Caller must hold l.mu.
+// the file is absent or unreadable. On any error it sets l.err (cleared to nil
+// for a simply-absent file, which is not an error). Caller must hold l.mu.
 func (l *FileLoader) readLocked() (data []byte, changed, ok bool) {
 	info, err := os.Stat(l.path)
 	if err != nil {
-		// An absent file is the common, non-error case; anything else is logged
-		// once (on the transition into the error) by surfacing it via Err().
-		wasPresent := l.primed && l.cached != nil
 		l.cached, l.size, l.modTime, l.primed = nil, 0, time.Time{}, true
 		if errors.Is(err, fs.ErrNotExist) {
-			l.err = nil
+			l.err = nil // an absent file is the common, non-error case
 		} else {
 			l.err = fmt.Errorf("stat %s: %w", l.path, err)
 		}
-		return nil, wasPresent, false
+		return nil, false, false
 	}
 
 	if l.primed && l.cached != nil && info.Size() == l.size && info.ModTime().Equal(l.modTime) {
@@ -146,7 +147,7 @@ func (l *FileLoader) readLocked() (data []byte, changed, ok bool) {
 	if err != nil {
 		l.cached, l.size, l.modTime, l.primed = nil, 0, time.Time{}, true
 		l.err = fmt.Errorf("reading %s: %w", l.path, err)
-		return nil, true, false
+		return nil, false, false
 	}
 	l.cached, l.size, l.modTime, l.primed = contents, info.Size(), info.ModTime(), true
 	return contents, true, true
