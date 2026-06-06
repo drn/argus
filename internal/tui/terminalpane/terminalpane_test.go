@@ -680,6 +680,86 @@ func TestTerminalPane_PaintNoOpWhenEmulatorMissing(t *testing.T) {
 	tp.paint(sim, 0, 0, 10, 4) // must not panic
 }
 
+// --- cursor rendering tests ---
+
+func TestTerminalPane_CursorInitiallyHidden(t *testing.T) {
+	src := make(chan []byte)
+	tp := New(src)
+	defer tp.Close()
+	// Before any bytes arrive the atomic should default to false (hidden).
+	if tp.cursorVisible.Load() {
+		t.Error("cursor should default to hidden before any frames")
+	}
+}
+
+func TestTerminalPane_CursorVisiblePaintedWithCursorColors(t *testing.T) {
+	src := make(chan []byte, 1)
+	tp := New(src)
+	defer tp.Close()
+	tp.Resize(20, 4)
+
+	// ESC[?25h = show cursor; ESC[3;6H = move cursor to row 3, col 6 (1-based).
+	// No character written — cursor stays at emu 0-based (row=2, col=5).
+	src <- []byte("\x1b[?25h\x1b[3;6H")
+	waitForTouched(t, tp, 1)
+
+	sim := newSimScreen(t, 22, 6)
+	// Outer 0,0,22,6 → inner origin (1,1). Cursor at emu (col=5,row=2) → screen (6,3).
+	drawInRect(t, tp, sim, 0, 0, 22, 6)
+
+	_, style := readCell(sim, 6, 3)
+	fg, bg, _ := style.Decompose()
+	if fg != cursorFG {
+		t.Errorf("cursor cell fg: got %v want %v (cursorFG)", fg, cursorFG)
+	}
+	if bg != cursorBG {
+		t.Errorf("cursor cell bg: got %v want %v (cursorBG)", bg, cursorBG)
+	}
+}
+
+func TestTerminalPane_CursorHiddenNoCursorColors(t *testing.T) {
+	src := make(chan []byte, 1)
+	tp := New(src)
+	defer tp.Close()
+	tp.Resize(20, 4)
+
+	// Show cursor, move it to (1,1) 1-based = emu (col=0,row=0), then hide it.
+	// The cursor position cell must not get cursor colors when visibility is off.
+	src <- []byte("\x1b[?25h\x1b[1;1H\x1b[?25l")
+	waitForTouched(t, tp, 1)
+
+	sim := newSimScreen(t, 22, 6)
+	drawInRect(t, tp, sim, 0, 0, 22, 6)
+
+	// Cursor at emu (col=0,row=0) → screen (1,1). Hidden — must not have cursor colors.
+	_, style := readCell(sim, 1, 1)
+	fg, bg, _ := style.Decompose()
+	if fg == cursorFG && bg == cursorBG {
+		t.Error("hidden cursor must not paint cursor colors on the cursor cell")
+	}
+}
+
+func TestTerminalPane_CursorAtOriginVisible(t *testing.T) {
+	src := make(chan []byte, 1)
+	tp := New(src)
+	defer tp.Close()
+	tp.Resize(20, 4)
+
+	// Show cursor at home position — no character written, cursor stays at (0,0).
+	src <- []byte("\x1b[?25h\x1b[1;1H")
+	waitForTouched(t, tp, 1)
+
+	sim := newSimScreen(t, 22, 6)
+	drawInRect(t, tp, sim, 0, 0, 22, 6)
+
+	// Emu (col=0, row=0) → screen (1,1).
+	_, style := readCell(sim, 1, 1)
+	fg, bg, _ := style.Decompose()
+	if fg != cursorFG || bg != cursorBG {
+		t.Errorf("cursor at origin must have cursor colors; fg=%v bg=%v", fg, bg)
+	}
+}
+
 func TestEventBytes_AllCases(t *testing.T) {
 	cases := []struct {
 		key  tcell.Key

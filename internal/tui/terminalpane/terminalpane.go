@@ -39,6 +39,14 @@ const (
 	minRows     = 2
 )
 
+// cursorFG / cursorBG are the cell colors painted at the emulator cursor
+// position when cursor visibility is on. Matches internal/tui/terminal so
+// plugin panes and task panes look consistent.
+var (
+	cursorFG = tcell.PaletteColor(17)  // dark blue
+	cursorBG = tcell.PaletteColor(153) // light blue
+)
+
 // TerminalPane renders an ANSI byte stream through a VT emulator.
 type TerminalPane struct {
 	*tview.Box
@@ -51,6 +59,12 @@ type TerminalPane struct {
 	rows int
 
 	touched uint64 // accessed via sync/atomic
+
+	// cursorVisible tracks the emulator's DECTCEM cursor-visibility state.
+	// Written by the CursorVisibility callback (fires inside emu.Write, no tp.mu
+	// held) and read by paint() on the tview goroutine; both sides use atomic
+	// access to avoid a data race.
+	cursorVisible atomic.Bool
 
 	source    <-chan []byte
 	inputBack chan<- []byte
@@ -79,6 +93,20 @@ func New(source <-chan []byte) *TerminalPane {
 		done:    make(chan struct{}),
 	}
 	tp.emu = newDrainedEmulator(tp.cols, tp.rows)
+	// Wire the cursor-visibility callback before starting the consumer goroutine
+	// so every DECTCEM mode change (ESC[?25h / ESC[?25l) updates cursorVisible.
+	tp.emu.SetCallbacks(xvt.Callbacks{
+		CursorVisibility: func(visible bool) {
+			tp.cursorVisible.Store(visible)
+		},
+	})
+	// Sync emulator and tracking to cursor-hidden: the emulator starts with
+	// cursor visible (DECTCEM on by default), but writing ESC[?25l forces it to
+	// hidden and fires the callback to set cursorVisible=false. Without this,
+	// ESC[?25h from the plugin would hit the emulator while it is already in the
+	// visible state, producing no state change and no callback — so the cursor
+	// would never appear.
+	_, _ = tp.emu.Write([]byte("\x1b[?25l"))
 	go tp.consume()
 	return tp
 }
@@ -213,6 +241,8 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 // paint walks the emulator's main screen and writes each cell to tcell.
 // No scrollback rendering — plugin views ship discrete full-screen frames;
 // the host terminal already owns the scrollback for the surrounding TUI.
+// When the plugin's cursor is visible (DECTCEM on), the cursor cell is painted
+// with cursorFG/cursorBG to match the task-pane cursor appearance.
 func (tp *TerminalPane) paint(screen tcell.Screen, x, y, w, h int) {
 	tp.mu.Lock()
 	emu := tp.emu
@@ -222,6 +252,9 @@ func (tp *TerminalPane) paint(screen tcell.Screen, x, y, w, h int) {
 	if emu == nil {
 		return
 	}
+
+	curVisible := tp.cursorVisible.Load()
+	cur := emu.CursorPosition()
 
 	renderCols := min(cols, w)
 	renderRows := min(rows, h)
@@ -239,6 +272,9 @@ func (tp *TerminalPane) paint(screen tcell.Screen, x, y, w, h int) {
 					}
 				}
 				st = uvCellToTcellStyle(cell)
+			}
+			if curVisible && col == cur.X && row == cur.Y {
+				st = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}
 			screen.SetContent(x+col, y+row, ch, nil, st)
 		}
