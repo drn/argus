@@ -435,33 +435,140 @@ All state (tasks, projects, backends, keybindings, UI settings, KB index) is per
 
 An optional `~/.argus/config.toml` overrides any setting, layered on top of the built-in defaults and the SQLite-backed settings (precedence: **defaults < settings menu < `config.toml`**). It's the alacritty-style power-user layer — customize beyond what the settings menu exposes, and keep your config in version control. The file is optional; a missing file changes nothing. Edits are picked up live on the next read.
 
-Any field on the `Config` struct can be set; sections mirror the struct tags. Fields you omit fall through to the DB/default value:
+Behavior notes:
+
+- **The file wins over the settings menu** — any key present here masks changes you make in Settings. That's intentional.
+- **Unknown or misspelled keys are silently ignored** (the file stays forward-compatible), so check the spelling against the tables below if an override seems to do nothing.
+- **A malformed file is ignored** — logged to `~/.argus/ux.log` (or `~/.argus/daemon.log` when the daemon reads it) — and Argus falls back to the defaults + settings-menu values until the file parses again.
+- **Maps merge by key.** `[backends.<name>]` / `[projects.<name>]` add a new key or replace an existing one *wholesale* — a partial entry zeroes the fields you omit (it can blank a project's `path`), so define those entries in full.
+
+Every option below is overridable. A ⚠️ marks options that are **read but not yet honored** — they're persisted and accepted by the file, but no code consumes them yet (key remapping and theming are planned; see the table notes).
+
+#### `[defaults]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `backend` | string | `"claude"` | Backend used for a new task when none is chosen in the New Task form. Must name a key under `[backends]`. |
+| `share_project` | string | `""` | Project preselected in the New Task form when the PWA share target (iOS/Android share sheet) lands a payload. Empty falls back to the currently expanded project folder. |
+| `permission_mode` | string | `"bypass-active"` | Permission flags injected into Claude-style backends at launch. One of `default`, `acceptEdits`, `plan`, `bypass-allow`, `bypass-active`. |
+
+#### `[backends.<name>]`
+
+Command templates, keyed by name. Seeded with `claude`, `codex`, and `pi`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
+| `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
+
+#### `[projects.<name>]`
+
+Registered repos, keyed by name. The DB projects table is the primary source; entries here override it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `path` | string | — | Absolute path to the git repository. |
+| `branch` | string | — | Base branch new worktrees fork from. |
+| `backend` | string | — | Per-project backend override; falls back to `defaults.backend`. |
+
+`[projects.<name>.sandbox]` — per-project sandbox overrides. **These untagged fields match by lowercased Go name, not snake_case** (`denyread`, not `deny_read`):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | inherit | Override the global sandbox on/off for this project (omit to inherit `sandbox.enabled`). |
+| `denyread` | []string | `[]` | Extra paths appended to the global deny-read list for this project. |
+| `extrawrite` | []string | `[]` | Extra writable paths appended to the global list. |
+| `allowappleevents` | []string | `[]` | Extra AppleEvent destination bundle IDs allowed for this project. |
+
+#### `[ui]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `spinner_style` | string | `"progress"` | Spinner animation: `progress`, `dots`, `braille`, or `classic`. |
+| `default_agent_zoom` | bool | `true` | Resting agent-view layout: `true` opens single-pane/zoomed (side panels collapsed); `false` opens the 1:3:1 three-pane layout. `Ctrl+Z` toggles at runtime. |
+| `theme` | string | `"default"` | ⚠️ Color theme name. Only `default` exists today and nothing reads this yet — reserved for a future theming layer. |
+| `show_elapsed` | bool | `true` | ⚠️ Reserved — show elapsed time on task rows. Not yet consumed. |
+| `show_icons` | bool | `true` | ⚠️ Reserved — show status icons. Not yet consumed. |
+| `cleanup_worktrees` | bool | `true` | ⚠️ Reserved — auto-remove worktrees on task delete. Not yet consumed (worktrees are currently always cleaned up). |
+
+#### `[keybindings]` ⚠️
+
+All keybindings are **reserved**: they're loaded into config but the TUI key routing is still hardcoded, so setting them has no effect yet. This is the "more robust config backend → remap hotkeys" work that's planned, not shipped.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `new` | string | `"n"` | New task. |
+| `attach` | string | `"enter"` | Attach to / open the selected task's agent. |
+| `status` | string | `"s"` | Advance task status. |
+| `delete` | string | `"d"` | Delete task. |
+| `quit` | string | `"q"` | Quit. |
+| `help` | string | `"?"` | Help overlay. |
+| `filter` | string | `"/"` | Filter the task list. |
+| `prompt` | string | `"p"` | Open the prompt modal. |
+| `worktree` | string | `"w"` | Worktree action. |
+
+#### `[sandbox]`
+
+macOS `sandbox-exec` (SBPL) controls for agent processes.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Wrap agent processes in a per-session SBPL profile. |
+| `deny_read` | []string | `[]` | Paths denied read access, on top of the always-denied `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud`. |
+| `extra_write` | []string | `[]` | Additional writable paths. |
+| `allow_apple_events` | []string | `[]` | CFBundleIdentifiers allowed as AppleEvent destinations (e.g. `com.apple.iChat`) — required to script Messages/Finder from a sandboxed agent. |
+
+#### `[kb]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Run the knowledge-base MCP server. |
+| `http_port` | int | `7742` | KB server port. |
+| `metis_vault_path` | string | iCloud Metis vault | Obsidian vault indexed for the KB. |
+
+#### `[api]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Run the HTTP REST API + PWA for remote control. |
+| `http_port` | int | `7743` | API port (binds `127.0.0.1` + the Tailscale IP only — never `0.0.0.0`). |
+
+#### `[argus]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `source_path` | string | `""` | Local clone of the Argus repo used by the self-update (`go install`) flow. |
+
+#### Example
 
 ```toml
-[ui]
-theme = "default"
-spinner_style = "braille"
-show_icons = true
-default_agent_zoom = true
-
-[keybindings]
-new = "n"
-status = "s"
-delete = "d"
-
 [defaults]
 backend = "claude"
 permission_mode = "bypass-active"
 
-# Backends and projects merge by key — a new key is added, an existing key is
-# replaced wholesale (specify every field you want kept).
+[ui]
+spinner_style = "braille"
+default_agent_zoom = true
+
+# Maps merge by key; an existing key is replaced wholesale, so list every
+# field you want to keep.
 [backends.claude]
 command = "claude"
 prompt_flag = ""
 
+[projects.argus]
+path = "/Users/me/code/argus"
+branch = "master"
+
+[projects.argus.sandbox]
+enabled = true
+denyread = ["~/.ssh"]   # note: lowercased, not deny_read
+
 [sandbox]
 enabled = false
 deny_read = ["~/.gnupg", "~/.aws"]
-```
 
-Because the file wins over the settings menu, any key present here masks changes you make in Settings — that's intentional. Unknown or misspelled keys are silently ignored (the file stays forward-compatible), so check the spelling against the struct tags if an override seems to do nothing. A malformed file is ignored — logged to `~/.argus/ux.log` (or `~/.argus/daemon.log` when the daemon reads it) — and Argus falls back to the defaults + settings-menu values until the file parses again.
+[api]
+enabled = true
+http_port = 7743
+```
