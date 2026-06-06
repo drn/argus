@@ -430,3 +430,38 @@ When the PWA cannot reach the API — daemon stopped, host asleep, or Tailscale 
 ### Data
 
 All state (tasks, projects, backends, keybindings, UI settings, KB index) is persisted in SQLite at `~/.argus/data.sql`.
+
+### Config file (`~/.argus/config.toml`)
+
+An optional `~/.argus/config.toml` overrides any setting, layered on top of the built-in defaults and the SQLite-backed settings (precedence: **defaults < settings menu < `config.toml`**). It's the alacritty-style power-user layer — customize beyond what the settings menu exposes, and keep your config in version control. The file is optional; a missing file changes nothing. Edits are picked up live on the next read.
+
+Any field on the `Config` struct can be set; sections mirror the struct tags. Fields you omit fall through to the DB/default value:
+
+```toml
+[ui]
+theme = "default"
+spinner_style = "braille"
+show_icons = true
+default_agent_zoom = true
+
+[keybindings]
+new = "n"
+status = "s"
+delete = "d"
+
+[defaults]
+backend = "claude"
+permission_mode = "bypass-active"
+
+# Backends and projects merge by key — a new key is added, an existing key is
+# replaced wholesale (specify every field you want kept).
+[backends.claude]
+command = "claude"
+prompt_flag = ""
+
+[sandbox]
+enabled = false
+deny_read = ["~/.gnupg", "~/.aws"]
+```
+
+Because the file wins over the settings menu, any key present here masks changes you make in Settings — that's intentional. A malformed file is ignored (logged to `~/.argus/ux.log`) and the last good config stays in force.
