@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -18,6 +20,11 @@ const schemaVersion = 1
 type DB struct {
 	conn *sql.DB
 	mu   sync.Mutex
+
+	// cfgLoader overlays ~/.argus/config.toml (next to the DB file) onto the
+	// assembled Config in Config(). Nil for in-memory/test DBs so they never
+	// read the real user file.
+	cfgLoader *config.FileLoader
 }
 
 // DataDir returns the argus data directory (~/.argus).
@@ -43,7 +50,9 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	d := &DB{conn: conn}
+	// config.toml lives next to the DB file (~/.argus/config.toml), so deriving
+	// the path from the DB path keeps tests pointed at their temp dir.
+	d := &DB{conn: conn, cfgLoader: config.NewFileLoader(filepath.Join(filepath.Dir(path), config.FileName))}
 	if err := d.createTables(); err != nil {
 		conn.Close()
 		return nil, err

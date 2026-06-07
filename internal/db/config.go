@@ -132,7 +132,10 @@ func (d *DB) Config() config.Config {
 		cfg.Argus.SourcePath = v
 	}
 
-	return cfg
+	// Overlay the optional ~/.argus/config.toml on top of defaults + DB. Fields
+	// present in the file win; absent fields keep the value resolved above.
+	// Nil loader (in-memory/test DB) is a no-op.
+	return d.cfgLoader.Apply(cfg)
 }
 
 func (d *DB) SetConfigValue(key, value string) error {

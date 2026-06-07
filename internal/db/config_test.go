@@ -1,10 +1,71 @@
 package db
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/testutil"
 )
+
+// TestDB_Config_TOMLOverlay verifies that ~/.argus/config.toml (resolved next
+// to the DB file) overrides both code defaults and DB-stored settings.
+func TestDB_Config_TOMLOverlay(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	// DB-stored value that the file will override, plus one the file leaves alone.
+	testutil.NoError(t, d.SetConfigValue("ui.theme", "from-db"))
+	testutil.NoError(t, d.SetConfigValue("ui.spinner", "from-db-spinner"))
+
+	toml := `
+[ui]
+theme = "from-toml"
+
+[backends.custom]
+command = "my-agent"
+`
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte(toml), 0o644))
+
+	cfg := d.Config()
+
+	// File wins over the DB value.
+	testutil.Equal(t, cfg.UI.Theme, "from-toml")
+	// DB value with no file override survives.
+	testutil.Equal(t, cfg.UI.SpinnerStyle, "from-db-spinner")
+	// File-added backend merges with the seeded defaults.
+	testutil.Equal(t, cfg.Backends["custom"].Command, "my-agent")
+	if _, ok := cfg.Backends["claude"]; !ok {
+		t.Error("seeded claude backend should survive the overlay")
+	}
+}
+
+// TestDB_Config_NoTOMLFile confirms the overlay is a no-op when the file is
+// absent — DB/default values stand.
+func TestDB_Config_NoTOMLFile(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	testutil.NoError(t, d.SetConfigValue("ui.theme", "from-db"))
+
+	testutil.Equal(t, d.Config().UI.Theme, "from-db")
+}
+
+// TestDB_Config_InMemoryHasNoLoader confirms in-memory DBs never wire a file
+// loader (so tests can't accidentally read the real ~/.argus/config.toml).
+func TestDB_Config_InMemoryHasNoLoader(t *testing.T) {
+	d := testDB(t)
+	if d.cfgLoader != nil {
+		t.Error("in-memory DB must not have a config file loader")
+	}
+	// Config() must still work with a nil loader.
+	testutil.Equal(t, d.Config().UI.Theme, "default")
+}
 
 func TestDB_Config_AllOverrides(t *testing.T) {
 	d := testDB(t)
