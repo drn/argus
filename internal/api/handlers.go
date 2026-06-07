@@ -604,6 +604,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	events.Emit(model.EventTypeTaskDeleted, id, nil)
 	// Drop any per-task cache entry so deleted tasks don't accumulate in
 	// the long-lived daemon process.
 	s.invalidateColsCache(id)
@@ -791,6 +792,9 @@ func (s *Server) handlePruneCompleted(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, t := range plan.Pruned {
+		events.Emit(model.EventTypeTaskDeleted, t.ID, nil)
+	}
 	uxlog.Log("[api] prune-completed: pruned=%d worktrees=%d orphans=%d",
 		len(plan.Pruned), plan.WorktreeCount, plan.OrphanCount)
 

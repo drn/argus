@@ -452,9 +452,11 @@ func TestSmoke_NewTaskFormPaste(t *testing.T) {
 	// Poll for the prompt to populate. syncUI's 50 ms eventSettle is enough
 	// on a quiet machine but not reliably enough under -race on CI, where
 	// draining 20 queued events through the tcell→tview boundary can take
-	// longer than the fixed wait.
+	// longer than the fixed wait. Use 5s (not uiTimeout) because this is
+	// the total polling budget, not a per-call ceiling — CI machines under
+	// -race are slow enough to consume the full 2s uiTimeout here.
 	var prompt string
-	deadline := time.Now().Add(uiTimeout)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		syncUI(t, app.tapp)
 		readUI(t, app.tapp, func() { prompt = string(form.prompt) })
