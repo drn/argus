@@ -434,6 +434,73 @@ func (s *Server) handleStopTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
+// --- Restart Task ---
+
+// handleRestartTask re-spawns a finished agent session via
+// POST /api/tasks/{id}/restart. It is the argus side of hera's agent-reattach
+// feature: hera calls this endpoint when the user presses Enter on a dead
+// session row so the prior conversation is resumed in the same worktree.
+//
+// Behaviour:
+//   - 404 if the task does not exist.
+//   - 409 if a non-idle session is already running (agent is live — no restart
+//     needed).
+//   - 200 + {"status":"restarted","pid":<n>} on success. The new PTY session
+//     streams through the same ring-buffer / SSE path that consumers (hera's
+//     proxy subscription, the SPA terminal) already listen on, so they pick up
+//     the resumed output automatically without re-subscribing.
+//
+// The session is always started with resume=true so BuildCmd appends
+// --resume <last-session-id> for Claude/pi backends when task.SessionID is
+// non-empty. If the task has no prior session ID (first-start path), BuildCmd
+// omits the flag and starts fresh.
+func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, err := s.db.Get(id)
+	if err != nil || task == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+
+	// 409 only when the agent is actively working. Idle in_progress tasks
+	// (no live session, or session.IsIdle()) are exactly what this endpoint
+	// targets — they should be restarted, not rejected.
+	if sess := s.runner.Get(task.ID); sess != nil && !sess.IsIdle() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "task already running"})
+		return
+	}
+
+	cfg := s.db.Config()
+	// Always resume so BuildCmd appends --resume <session-id> when the task
+	// has a prior session (the normal post-exit case). If SessionID is empty,
+	// BuildCmd starts fresh — same graceful degradation as /resume.
+	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, true)
+	if err != nil {
+		uxlog.Log("[api] restart: start failed task=%s err=%v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	task.SetStatus(model.StatusInProgress)
+	task.AgentPID = sess.PID()
+	s.db.Update(task) //nolint:errcheck
+
+	if reattached {
+		uxlog.Log("[api] restart: healed task=%s pid=%d", id, task.AgentPID)
+	} else {
+		uxlog.Log("[api] restart: started task=%s pid=%d resume=%t", id, task.AgentPID, task.SessionID != "")
+	}
+
+	resp := map[string]any{
+		"status": "restarted",
+		"pid":    task.AgentPID,
+	}
+	if reattached {
+		resp["healed"] = true
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // --- Resume Task ---
 
 func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {

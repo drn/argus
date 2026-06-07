@@ -409,6 +409,98 @@ func TestHandleResumeTask(t *testing.T) {
 	})
 }
 
+// TestHandleRestartTask covers POST /api/tasks/{id}/restart: the endpoint
+// hera calls to re-spawn a dead agent session via --resume <last-session-id>.
+func TestHandleRestartTask(t *testing.T) {
+	t.Run("404 when task missing", func(t *testing.T) {
+		srv, _ := testServer(t)
+		mux := srv.routes()
+		req := authedReq("POST", "/api/tasks/missing/restart", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusNotFound)
+	})
+
+	t.Run("409 when task has a live non-idle session", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		srv, d := testServer(t)
+		mux := srv.routes()
+
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "running",
+			Status:   model.StatusInProgress,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+		sess, err := srv.runner.Start(task, d.Config(), 24, 80, false)
+		testutil.NoError(t, err)
+		t.Cleanup(func() {
+			_ = srv.runner.Stop(task.ID)
+			<-sess.Done()
+		})
+
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/restart", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusConflict)
+	})
+
+	t.Run("restarts a dead task", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("starts a real PTY-backed sleep; skipped in -short")
+		}
+		srv, d := testServer(t)
+		mux := srv.routes()
+
+		testutil.NoError(t, d.SetBackend("sh-sleep", config.Backend{Command: "sleep 30"}))
+		task := &model.Task{
+			Name:     "dead",
+			Status:   model.StatusInReview,
+			Backend:  "sh-sleep",
+			Worktree: t.TempDir(),
+		}
+		testutil.NoError(t, d.Add(task))
+
+		req := authedReq("POST", "/api/tasks/"+task.ID+"/restart", "")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+		t.Cleanup(func() {
+			if sess := srv.runner.Get(task.ID); sess != nil {
+				_ = srv.runner.Stop(task.ID)
+				<-sess.Done()
+			}
+		})
+
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp["status"], "restarted")
+		pid, _ := resp["pid"].(float64)
+		testutil.True(t, pid > 0)
+
+		// DB row must be flipped to in_progress.
+		got, err := d.Get(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+	})
+
+	t.Run("500 when start fails (no backend)", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+
+		task := &model.Task{Name: "no-backend", Status: model.StatusInReview}
+		testutil.NoError(t, d.Add(task))
+
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/restart", ""))
+		testutil.Equal(t, w.Code, http.StatusInternalServerError)
+	})
+}
+
 func TestHandleDeleteTask(t *testing.T) {
 	srv, d := testServer(t)
 	mux := srv.routes()
