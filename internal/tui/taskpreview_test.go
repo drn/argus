@@ -460,3 +460,132 @@ func TestStatSessionLog_RealFile(t *testing.T) {
 	got := statSessionLog("x")
 	testutil.Equal(t, got, int64(5))
 }
+
+func TestGrayscaleColor(t *testing.T) {
+	tests := []struct {
+		name string
+		in   tcell.Color
+		want tcell.Color
+	}{
+		{"default passes through", tcell.ColorDefault, tcell.ColorDefault},
+		{"pure red maps to luminance gray", tcell.NewRGBColor(255, 0, 0), tcell.NewRGBColor(76, 76, 76)},
+		{"pure green maps to luminance gray", tcell.NewRGBColor(0, 255, 0), tcell.NewRGBColor(149, 149, 149)},
+		{"white stays white", tcell.NewRGBColor(255, 255, 255), tcell.NewRGBColor(255, 255, 255)},
+		{"black stays black", tcell.NewRGBColor(0, 0, 0), tcell.NewRGBColor(0, 0, 0)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, grayscaleColor(tc.in), tc.want)
+		})
+	}
+}
+
+func TestGrayscaleColor_PaletteResolvesToGray(t *testing.T) {
+	// A 256-palette color must resolve through Hex() to a true gray (r==g==b),
+	// not pass through as a still-colored palette index.
+	got := grayscaleColor(tcell.PaletteColor(196)) // bright red
+	r, g, b := got.RGB()
+	if r < 0 || r != g || g != b {
+		t.Fatalf("expected gray (r==g==b), got rgb(%d,%d,%d)", r, g, b)
+	}
+}
+
+func TestDesaturateStyle_GraysBothChannelsKeepsAttrs(t *testing.T) {
+	style := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(200, 30, 30)).
+		Background(tcell.NewRGBColor(20, 20, 220)).
+		Bold(true)
+	out := desaturateStyle(style)
+
+	fg, bg, attr := out.Decompose()
+	assertGray(t, fg)
+	assertGray(t, bg)
+	if attr&tcell.AttrBold == 0 {
+		t.Error("expected bold attribute to survive desaturation")
+	}
+}
+
+func TestDesaturateStyle_GraysUnderlineColor(t *testing.T) {
+	// SGR 58 sets an explicit (colored) underline. Decompose() doesn't return
+	// it, so desaturateStyle must gray it via the dedicated underline channel —
+	// otherwise it leaks color into the otherwise-grayscale preview.
+	style := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(200, 30, 30)).
+		Underline(tcell.UnderlineStyleCurly, tcell.NewRGBColor(0, 200, 0))
+	out := desaturateStyle(style)
+
+	assertGray(t, out.GetUnderlineColor())
+	// The underline STYLE (curly) must survive — only its color is grayed.
+	testutil.Equal(t, out.GetUnderlineStyle(), tcell.UnderlineStyleCurly)
+}
+
+func TestDesaturateStyle_DefaultUnderlineColorUntouched(t *testing.T) {
+	// A cell with an underline but no explicit color: ulColor is ColorDefault
+	// (invalid), so it must pass through unchanged rather than become hard gray.
+	style := tcell.StyleDefault.Underline(true)
+	out := desaturateStyle(style)
+	testutil.Equal(t, out.GetUnderlineColor(), tcell.ColorDefault)
+}
+
+func TestDesaturateStyle_DefaultForegroundColoredBackground(t *testing.T) {
+	// The common terminal pattern: default fg, colored bg. The default fg must
+	// stay default (terminal's own), the bg grays.
+	style := tcell.StyleDefault.Background(tcell.NewRGBColor(20, 20, 220))
+	out := desaturateStyle(style)
+
+	fg, bg, _ := out.Decompose()
+	testutil.Equal(t, fg, tcell.ColorDefault)
+	assertGray(t, bg)
+	if !bg.Valid() {
+		t.Error("expected background to be grayed, not left default")
+	}
+}
+
+func TestDesaturateStyle_ReverseAttrSurvives(t *testing.T) {
+	style := tcell.StyleDefault.
+		Foreground(tcell.NewRGBColor(200, 30, 30)).
+		Background(tcell.NewRGBColor(20, 20, 220)).
+		Reverse(true)
+	out := desaturateStyle(style)
+
+	fg, bg, attr := out.Decompose()
+	assertGray(t, fg)
+	assertGray(t, bg)
+	if attr&tcell.AttrReverse == 0 {
+		t.Error("expected reverse attribute to survive desaturation")
+	}
+}
+
+func TestTaskPreviewPanel_RendersGrayscale(t *testing.T) {
+	tp := NewTaskPreviewPanel()
+	tp.SetTaskID("color-task")
+	// SGR 31 = red fg, 44 = blue bg.
+	out := []byte("\x1b[31;44mRED ON BLUE\x1b[0m\r\n")
+	tp.RefreshOutput("color-task", out, uint64(len(out)), 36, 6, 36, 6)
+
+	tp.mu.Lock()
+	cells := tp.cells
+	tp.mu.Unlock()
+	if cells == nil {
+		t.Fatal("expected rendered cells")
+	}
+	for y := range cells {
+		for x := range cells[y] {
+			fg, bg, _ := cells[y][x].style.Decompose()
+			assertGray(t, fg)
+			assertGray(t, bg)
+		}
+	}
+}
+
+// assertGray passes if c is ColorDefault or a true gray (r==g==b).
+func assertGray(t *testing.T, c tcell.Color) {
+	t.Helper()
+	if !c.Valid() {
+		return // ColorDefault — preserved, acceptable
+	}
+	r, g, b := c.RGB()
+	if r != g || g != b {
+		t.Fatalf("expected gray (r==g==b), got rgb(%d,%d,%d)", r, g, b)
+	}
+}
