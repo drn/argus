@@ -38,7 +38,7 @@ type StatusBar struct {
 // maxPluginBarHints caps how many plugin hints the bar will attempt to render
 // so a misbehaving plugin can't flood the bar. The reserved exit hint is
 // always rendered regardless of this cap.
-const maxPluginBarHints = 8
+const maxPluginBarHints = 20
 
 // pluginExitHintKey / pluginExitHintLabel are the reserved "return to argus"
 // affordance. Esc is surrendered to the plugin, so the only advertised exit is
