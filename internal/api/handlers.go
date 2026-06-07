@@ -1126,7 +1126,15 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	// The kick stops the session; the runner's exit goroutine restarts it
 	// at the new dimensions via --session-id so the agent re-emits the
 	// entire conversation. Best-effort: never let this fail the resize.
-	rerendered := s.maybeKickRerender(id, req.Rows, req.Cols)
+	//
+	// ?skip_kick=1 suppresses the kill+resume step while still delivering
+	// SIGWINCH. Callers that manage their own resize lifecycle (e.g. hera's
+	// pinnedTerminalPane) pass this flag to avoid oscillation loops where
+	// repeated geometry changes would otherwise trigger repeated restarts.
+	rerendered := false
+	if r.URL.Query().Get("skip_kick") != "1" {
+		rerendered = s.maybeKickRerender(id, req.Rows, req.Cols)
+	}
 
 	writeJSON(w, http.StatusOK, struct {
 		Cols       int  `json:"cols"`

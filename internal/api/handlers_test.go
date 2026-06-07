@@ -2551,6 +2551,36 @@ func TestHandleResize_LiveSession(t *testing.T) {
 		mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/resize", `{"cols":100,"rows":40}`))
 		testutil.Equal(t, w.Code, http.StatusOK)
 	})
+
+	t.Run("skip_kick=1 suppresses rerender even with large delta", func(t *testing.T) {
+		// Give the task a SessionID so maybeKickRerender clears all early-exit
+		// gates. With ?skip_kick=1 the handler must skip the call entirely and
+		// always return rerendered:false, regardless of delta or idle state.
+		task.SessionID = "fake-session-skip-kick-test"
+		testutil.NoError(t, d.Update(task))
+		srv.invalidateColsCache(task.ID) // ensure cols-cache doesn't short-circuit
+
+		req := httptest.NewRequest(
+			"POST",
+			"/api/tasks/"+task.ID+"/resize?skip_kick=1",
+			strings.NewReader(`{"cols":200,"rows":24}`),
+		)
+		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusOK)
+
+		var resp struct {
+			Cols       int  `json:"cols"`
+			Rows       int  `json:"rows"`
+			Rerendered bool `json:"rerendered"`
+		}
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		testutil.Equal(t, resp.Rerendered, false)
+		testutil.Equal(t, resp.Cols, 200)
+		testutil.Equal(t, resp.Rows, 24)
+	})
 }
 
 func TestHandleGetSize_LiveSession(t *testing.T) {
