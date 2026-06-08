@@ -197,11 +197,11 @@ func (n *Notifier) processOne(taskID string, d *delivery, now time.Time) {
 	}
 
 	// All gates passed: submit.
-	// Three separate writes mirror how a human presses Enter:
-	//   1. Ctrl+U  – kill any stale partial input
-	//   2. text    – prime the input buffer (no trailing CR)
-	//   3. delay   – brief pause so CR is processed as a distinct keypress
-	//   4. \r      – submit; must be its own WriteInput, not appended to text
+	// Three separate WriteInput calls, with a brief pause before the third:
+	//   1. Ctrl+U – kill any stale partial input
+	//   2. text   – prime the input buffer (no trailing CR)
+	//      (submitCRDelay pause here — ensures CR arrives as a distinct keypress)
+	//   3. \r     – submit; must be its own call, never appended to text
 	// The glued ctrl+u+text+CR sequence leaves the line un-submitted in some
 	// shell/agent configurations; the separated form is empirically reliable.
 	if _, err := sess.WriteInput([]byte("\x15")); err != nil {
