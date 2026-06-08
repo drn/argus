@@ -136,6 +136,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks/{id}/inbox/ack", s.handleAckInbox)
 	mux.HandleFunc("POST /api/tasks/{id}/messages", s.handleSendMessage)
 
+	// Reliable pane-delivery (post/cancel). Open to any authenticated token —
+	// plugins use plugin-scoped tokens to deliver pointer text to recipient tasks.
+	mux.HandleFunc("POST /api/tasks/{id}/notify", s.handleNotify)
+	mux.HandleFunc("DELETE /api/tasks/{id}/notify/{delivery_id}", s.handleCancelNotify)
+
 	// Per-task sidecar metadata. PR 3 of the plugin substrate plan: a generic
 	// k/v store keyed by (task_id, namespace, key) so plugins can annotate
 	// tasks without piling new columns onto the tasks schema. Single-tier

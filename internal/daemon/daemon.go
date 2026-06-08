@@ -30,6 +30,7 @@ import (
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/uxlog"
@@ -96,6 +97,15 @@ type Daemon struct {
 	// task branch's review state. Defaults to gitutil.FetchPRState; tests swap
 	// it for a fake so the poller never spawns a real gh process.
 	prFetch func(ctx context.Context, worktreeDir, branch string) (model.PRState, string, error)
+
+	// notifier is the reliable pane-delivery service. Created in Serve once
+	// the runner and focus tracker are ready. Nil until Serve runs.
+	notifier *notify.Notifier
+
+	// focusTracker tracks which task pane a human is currently focused on.
+	// Shared between the daemon (notifier gate), the API server (REST wiring),
+	// and the TUI (focus signals). Created in Serve.
+	focusTracker *notify.FocusTracker
 }
 
 // New creates a new Daemon.
@@ -509,6 +519,15 @@ func (d *Daemon) Serve(sockPath string) error {
 	d.deps = dw
 	go dw.Start()
 
+	// Reliable pane-delivery: create the FocusTracker and Notifier before
+	// the MCP and API servers so both can be wired at construction.
+	d.focusTracker = notify.NewFocusTracker(func(taskID string, focused bool) {
+		events.Emit(model.EventTypeSessionFocus, taskID, map[string]any{"focused": focused})
+	})
+	d.notifier = notify.New(notify.AdaptRunner(func(id string) notify.SessionHandleIface {
+		return d.runner.Get(id)
+	}), d.focusTracker)
+
 	// Plugin substrate (PR 4): build the runtime MCP-tool registry up front
 	// so both the MCP server (which consults it on tools/list and tools/call)
 	// and the API server (which exposes POST/DELETE /api/mcp/tools) see the
@@ -569,7 +588,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		)
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
-		mcpSrv.SetMessageManager(d.db, runnerNudger{runner: d.runner})
+		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
@@ -631,6 +650,8 @@ func (d *Daemon) Serve(sockPath string) error {
 			apiSrv.SetScheduler(sch)
 			apiSrv.SetClipboard(d.clipboard)
 			apiSrv.SetMCPRegistry(pluginRegistry)
+			apiSrv.SetNotifier(d.notifier)
+			apiSrv.SetFocusTracker(d.focusTracker)
 			d.apiServer = apiSrv
 			// Wire the events.Sink to the API server's event bus so emission
 			// sites (db, orch, runner, this file) feed /api/events/stream.

@@ -19,6 +19,7 @@ import (
 	dclient "github.com/drn/argus/internal/daemon/client"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/launchagent"
+	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/tui"
 	"github.com/drn/argus/internal/uxlog"
 )
@@ -224,6 +225,27 @@ func runTUI() {
 	app.SetDaemonStale(daemonStale)
 	appRef = app
 	appRef2 = app
+
+	// Wire focus tracker: in daemon mode use the client (fires async RPC to
+	// the daemon's FocusTracker); in in-process mode create a local tracker
+	// and a Notifier that drives the in-process runner.
+	if client != nil {
+		app.SetFocusTracker(client)
+	} else {
+		ft := notify.NewFocusTracker(nil)
+		app.SetFocusTracker(ft)
+		// In-process notifier: reconcile periodically via a background goroutine.
+		n := notify.New(notify.AdaptRunner(func(id string) notify.SessionHandleIface {
+			return runner.Get(id)
+		}), ft)
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				n.Reconcile(time.Now())
+			}
+		}()
+	}
 
 	// OS-level fd 2 redirect — installed RIGHT BEFORE app.Run() because
 	// tcell only takes over the terminal once Run starts, so direct fd 2

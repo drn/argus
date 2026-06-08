@@ -18,6 +18,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/mcp"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/push"
 	"github.com/drn/argus/internal/tui/settings"
 )
@@ -73,6 +74,27 @@ type Server struct {
 	// plugin's callback_url); tests override it to assert on what would
 	// have been forwarded without spinning up a fake plugin server.
 	pluginSubmitFn func(ctx context.Context, callbackURL, authHeader string, body []byte) (int, []byte, error)
+
+	// notifier is the reliable pane-delivery service. Optional: nil disables
+	// the /notify endpoints (returns 503). Set via SetNotifier before ListenAndServe.
+	notifier *notify.Notifier
+
+	// focusTracker is the daemon-level human-focus registry. Optional: nil
+	// disables focus-based gating (the notifier falls through to idle-only).
+	// Set via SetFocusTracker before ListenAndServe.
+	focusTracker *notify.FocusTracker
+}
+
+// SetNotifier wires the reliable pane-delivery service into the API server.
+// Must be called before ListenAndServe.
+func (s *Server) SetNotifier(n *notify.Notifier) {
+	s.notifier = n
+}
+
+// SetFocusTracker wires the daemon-level focus tracker into the API server.
+// Must be called before ListenAndServe.
+func (s *Server) SetFocusTracker(f *notify.FocusTracker) {
+	s.focusTracker = f
 }
 
 // New creates a new API server. pushMgr is optional; pass nil to disable

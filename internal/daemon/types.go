@@ -318,3 +318,11 @@ type SetPlanSlugReq struct {
 	TaskID   string
 	PlanSlug string
 }
+
+// SetFocusedReq notifies the daemon that the TUI has entered or left agent
+// view for a task. The daemon forwards this to the FocusTracker so the
+// reliable pane-delivery reconciler knows whether a human is present.
+type SetFocusedReq struct {
+	TaskID  string
+	Focused bool
+}

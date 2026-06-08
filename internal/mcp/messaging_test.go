@@ -146,16 +146,19 @@ type mockNudger struct {
 }
 
 type nudgeCall struct {
-	target string
-	line   string
+	target     string
+	deliveryID string
+	line       string
 }
 
-func (n *mockNudger) Nudge(target, line string) error {
+func (n *mockNudger) Nudge(target, deliveryID, line string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.called = append(n.called, nudgeCall{target, line})
+	n.called = append(n.called, nudgeCall{target, deliveryID, line})
 	return n.err
 }
+
+func (n *mockNudger) Cancel(_, _ string) error { return nil }
 
 func (n *mockNudger) Calls() []nudgeCall {
 	n.mu.Lock()

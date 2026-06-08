@@ -2,37 +2,45 @@ package daemon
 
 import (
 	"errors"
+	"strings"
 
-	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/notify"
 )
 
 // ErrNudgeNoSession is returned by runnerNudger.Nudge when the target task has
-// no live PTY. Senders treat this as a non-error (best-effort delivery): the
-// message is already durably committed in task_messages, so a missing PTY
-// just means delivery=queued rather than delivery=nudged.
+// no live PTY and no notifier is wired. Senders treat this as a non-error
+// (best-effort delivery): the message is already durably committed in
+// task_messages, so a missing PTY just means delivery=queued.
 var ErrNudgeNoSession = errors.New("no live session for nudge target")
 
-// runnerNudger adapts *agent.Runner to mcp.MessageNudger. Lookup is a
-// snapshot at call time — if the session exits between snapshot and Write,
-// the write errors and we surface that up to the caller.
+// runnerNudger adapts *notify.Notifier to mcp.MessageNudger. Nudge registers
+// a reliable delivery keyed by deliveryID so the text is submitted (with
+// idle+focus gates) exactly once. Cancel tears down a pending delivery when
+// the recipient acknowledges the message.
 type runnerNudger struct {
-	runner *agent.Runner
+	notifier *notify.Notifier
 }
 
-// Nudge writes a single-line notification into the target task's PTY. Returns
-// ErrNudgeNoSession when no live session exists. Any other error comes from
-// the PTY write itself (closed pipe, etc.) and is bubbled up so the MCP
-// handler can log it.
-func (n runnerNudger) Nudge(targetTaskID string, line string) error {
-	if n.runner == nil {
+// Nudge registers a reliable delivery of line to the target task. deliveryID
+// should be the message's DB ID so the delivery can be cancelled on ack.
+// Returns ErrNudgeNoSession only when no notifier is wired (disabled mode).
+func (n runnerNudger) Nudge(targetTaskID, deliveryID, line string) error {
+	if n.notifier == nil {
 		return ErrNudgeNoSession
 	}
-	sess := n.runner.Get(targetTaskID)
-	if sess == nil {
-		return ErrNudgeNoSession
+	// Strip outer newlines: the notifier adds Ctrl+U + text + CR itself.
+	text := strings.Trim(line, "\n\r")
+	n.notifier.ReliableNotify(targetTaskID, text, deliveryID, notify.NotifyOpts{})
+	return nil
+}
+
+// Cancel tears down a pending reliable delivery for the named message.
+// Called when the recipient acknowledges the message (read_at set).
+// Safe to call when no delivery is registered (no-op).
+func (n runnerNudger) Cancel(targetTaskID, deliveryID string) error {
+	if n.notifier == nil {
+		return nil
 	}
-	if _, err := sess.WriteInput([]byte(line)); err != nil {
-		return err
-	}
+	n.notifier.Cancel(targetTaskID, deliveryID)
 	return nil
 }

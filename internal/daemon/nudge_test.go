@@ -2,78 +2,121 @@ package daemon
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/drn/argus/internal/agent"
-	"github.com/drn/argus/internal/config"
-	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/testutil"
 )
 
-// TestNudge_NoRunnerReturnsSentinel covers the nil-runner branch — defensive
-// path mostly exercised by direct unit assertion, but worth pinning so a
-// future refactor that swaps in a typed-nil runner pointer doesn't silently
-// pass through.
-func TestNudge_NoRunnerReturnsSentinel(t *testing.T) {
+// noFocus implements notify.FocusReader — always unfocused.
+type noFocus struct{}
+
+func (noFocus) IsFocused(string) bool { return false }
+
+// fakeNudgeRunner is a simple notify.RunnerIface backed by a map.
+type fakeNudgeRunner struct {
+	sessions map[string]*fakeNudgeSession
+}
+
+func (r *fakeNudgeRunner) Get(taskID string) notify.SessionHandleIface {
+	if r.sessions == nil {
+		return nil
+	}
+	return r.sessions[taskID]
+}
+
+func (r *fakeNudgeRunner) addSession(taskID string, idle bool) *fakeNudgeSession {
+	if r.sessions == nil {
+		r.sessions = make(map[string]*fakeNudgeSession)
+	}
+	s := &fakeNudgeSession{idle: idle}
+	r.sessions[taskID] = s
+	return s
+}
+
+type fakeNudgeSession struct {
+	idle   bool
+	writes [][]byte
+}
+
+func (s *fakeNudgeSession) IsIdle() bool { return s.idle }
+func (s *fakeNudgeSession) WriteInput(p []byte) (int, error) {
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	s.writes = append(s.writes, cp)
+	return len(p), nil
+}
+
+// TestNudge_NoNotifierReturnsSentinel covers the nil-notifier branch.
+func TestNudge_NoNotifierReturnsSentinel(t *testing.T) {
 	n := runnerNudger{}
-	err := n.Nudge("any-id", "line\n")
-	if !errors.Is(err, ErrNudgeNoSession) {
-		t.Fatalf("expected ErrNudgeNoSession, got %v", err)
-	}
+	err := n.Nudge("any-id", "msg-1", "line\n")
+	testutil.ErrorIs(t, err, ErrNudgeNoSession)
 }
 
-// TestNudge_UnknownTaskReturnsSentinel covers the no-live-session case: a
-// real runner exists but nothing's started for the target task.
-func TestNudge_UnknownTaskReturnsSentinel(t *testing.T) {
-	r := agent.NewRunner(nil)
-	n := runnerNudger{runner: r}
-	err := n.Nudge("no-such-task", "line\n")
-	if !errors.Is(err, ErrNudgeNoSession) {
-		t.Fatalf("expected ErrNudgeNoSession, got %v", err)
-	}
-}
+// TestNudge_WithNotifier_RegistersDelivery checks that Nudge registers a
+// reliable delivery when a notifier is wired, even when no session is live.
+func TestNudge_WithNotifier_RegistersDelivery(t *testing.T) {
+	r := &fakeNudgeRunner{}
+	notifier := notify.New(r, noFocus{})
+	n := runnerNudger{notifier: notifier}
 
-// TestNudge_LiveSessionWritesToPTY confirms the happy path: when a session
-// exists, the nudge line lands as input to its PTY. We start a session
-// running `cat`, nudge it, then read back the echoed output.
-func TestNudge_LiveSessionWritesToPTY(t *testing.T) {
-	if testing.Short() {
-		t.Skip("uses real PTY")
-	}
-	r := agent.NewRunner(nil)
-	cfg := config.Config{
-		Defaults: config.Defaults{Backend: "test"},
-		Backends: map[string]config.Backend{
-			// `cat` echoes stdin back, so the nudge bytes appear in the
-			// session's ring buffer where we can read them.
-			"test": {Command: "sh -c 'cat'", PromptFlag: ""},
-		},
-		Projects: make(map[string]config.Project),
-	}
-	task := &model.Task{ID: "nudge-target", Name: "test", Worktree: t.TempDir()}
-	_, err := r.Start(task, cfg, 24, 80, false)
+	err := n.Nudge("task-1", "msg-42", "text\n")
 	testutil.NoError(t, err)
-	defer r.StopAll()
 
-	n := runnerNudger{runner: r}
-	if err := n.Nudge("nudge-target", "hello-nudge\n"); err != nil {
-		t.Fatalf("nudge failed: %v", err)
-	}
+	state := notifier.DeliveryState("task-1", "msg-42")
+	testutil.Equal(t, state, notify.StatePending)
+}
 
-	// Give cat a moment to echo; poll the session's ring buffer for the
-	// nudge text. Bounded by 2s so a stuck PTY doesn't hang CI.
-	sess := r.Get("nudge-target")
-	if sess == nil {
-		t.Fatal("session disappeared after nudge")
+// TestNudge_Cancel_CallsNotifierCancel checks that Cancel removes the pending delivery.
+func TestNudge_Cancel_CallsNotifierCancel(t *testing.T) {
+	r := &fakeNudgeRunner{}
+	notifier := notify.New(r, noFocus{})
+	n := runnerNudger{notifier: notifier}
+
+	_ = n.Nudge("task-1", "msg-42", "text\n")
+	err := n.Cancel("task-1", "msg-42")
+	testutil.NoError(t, err)
+
+	state := notifier.DeliveryState("task-1", "msg-42")
+	testutil.Equal(t, state, notify.DeliveryState(""))
+}
+
+// TestNudge_NilNotifier_CancelIsNoOp verifies cancel with nil notifier does not panic.
+func TestNudge_NilNotifier_CancelIsNoOp(t *testing.T) {
+	n := runnerNudger{}
+	err := n.Cancel("task-1", "msg-1")
+	testutil.NoError(t, err)
+}
+
+// TestNudge_StripsOuterNewlines verifies that outer newlines are stripped from
+// the line before passing it to ReliableNotify (the notifier adds its own CR).
+func TestNudge_StripsOuterNewlines(t *testing.T) {
+	r := &fakeNudgeRunner{}
+	notifier := notify.New(r, noFocus{})
+	n := runnerNudger{notifier: notifier}
+
+	// Line with leading+trailing newlines as the old nudge format used.
+	_ = n.Nudge("task-1", "msg-1", "\nhello-nudge\n")
+
+	// Add a live idle session so Reconcile can submit.
+	sess := r.addSession("task-1", true)
+	notifier.Reconcile(time.Now())
+
+	writes := sess.writes
+	if len(writes) < 2 {
+		t.Fatalf("expected at least 2 writes (ctrl+u + text), got %d; writes=%v", len(writes), writes)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(string(sess.RecentOutput()), "hello-nudge") {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	// writes[0] = ctrl+u, writes[1] = text+CR
+	text := string(writes[1])
+	if len(text) > 0 && (text[0] == '\n' || text[0] == '\r') {
+		t.Errorf("leading newline not stripped, got %q", text)
 	}
-	t.Fatalf("nudge bytes never appeared in PTY output; got %q", string(sess.RecentOutput()))
+	if len(text) > 1 && (text[len(text)-2] == '\n') {
+		t.Errorf("trailing newline before CR not stripped, got %q", text)
+	}
+	if !errors.Is(nil, nil) {
+		t.Error("sanity check failed") // never reached
+	}
 }

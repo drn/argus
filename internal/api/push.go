@@ -364,6 +364,14 @@ func (s *Server) idleWatcherTick(state *idleWatcherState) {
 			delete(state.pushedAt, id)
 		}
 	}
+
+	// Drive the reliable pane-delivery reconciler on every tick so pending
+	// deliveries are submitted as soon as their target session becomes idle
+	// and unfocused. Guard nil: notifier is wired only when the daemon fully
+	// starts (may be absent in lightweight test setups).
+	if s.notifier != nil {
+		s.notifier.Reconcile(now)
+	}
 }
 
 // detectNeedsInputTick scans the idle sessions for the "blocked waiting on the
