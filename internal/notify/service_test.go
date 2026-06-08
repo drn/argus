@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -297,4 +298,73 @@ func TestNotifier_PreClear_WritesCtrlU(t *testing.T) {
 	testutil.Equal(t, len(writes), 2)
 	testutil.Equal(t, writes[0][0], byte(0x15)) // Ctrl+U
 	testutil.Equal(t, string(writes[1]), "text\r")
+}
+
+func TestNotifier_FocusLifts_PendingDeliverySubmits(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true) // idle
+	ft := NewFocusTracker(nil)
+	ft.SetFocused("t1", true) // human focused initially
+	n := newTestNotifier(r, ft)
+
+	n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+	testutil.Equal(t, len(sess.allWrites()), 0) // blocked by focus
+
+	ft.SetFocused("t1", false) // human leaves
+	n.Reconcile(time.Now())
+	testutil.Equal(t, len(sess.allWrites()), 2) // ctrl+u + text\r
+}
+
+func TestNotifier_WriteInputCtrlUFailure_DeliveryRemainesPending(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true)
+	sess.writeErr = fmt.Errorf("write error")
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	// No writes because ctrl+u failed.
+	testutil.Equal(t, len(sess.allWrites()), 0)
+	// Delivery should still be pending for retry.
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+}
+
+func TestNotifier_CancelActiveDelivery_PromotesQueued(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", false) // busy — no immediate submit
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	// Register d1 (active), d2 (queued).
+	n.ReliableNotify("t1", "first", "d1", NotifyOpts{})
+	n.ReliableNotify("t1", "second", "d2", NotifyOpts{})
+
+	// Cancel d1; d2 should be promoted to active.
+	n.Cancel("t1", "d1")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), DeliveryState(""))
+	testutil.Equal(t, n.DeliveryState("t1", "d2"), StatePending)
+
+	// Make session idle; reconcile should submit d2.
+	sess.mu.Lock()
+	sess.idle = true
+	sess.mu.Unlock()
+	n.Reconcile(time.Now())
+	testutil.Equal(t, len(sess.allWrites()), 2)
+	testutil.Equal(t, string(sess.allWrites()[1]), "second\r")
+}
+
+func TestNotifier_CancelQueuedDelivery(t *testing.T) {
+	r := newFakeRunner()
+	r.addSession("t1", false) // busy
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	// d1 active, d2 queued.
+	n.ReliableNotify("t1", "first", "d1", NotifyOpts{})
+	n.ReliableNotify("t1", "second", "d2", NotifyOpts{})
+
+	// Cancel the queued one — d1 stays active, d2 gone.
+	n.Cancel("t1", "d2")
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+	testutil.Equal(t, n.DeliveryState("t1", "d2"), DeliveryState(""))
 }

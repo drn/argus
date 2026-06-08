@@ -51,7 +51,8 @@ const (
 	// EventTypeSessionFocus fires when the TUI's agent view gains or loses
 	// human focus for a task. Payload: {"focused":true|false}. Emitted by
 	// the FocusTracker transition callback so plugins can observe human
-	// presence without polling. Not persisted; informational only.
+	// presence without polling. Persisted to the events table like all other
+	// event types; consumed by SSE subscribers.
 	EventTypeSessionFocus = "session.focus"
 
 	// EventTypeResync is synthesised by the SSE handler when a client

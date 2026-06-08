@@ -2659,11 +2659,18 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.syncIdleUnvisited()
 
 	a.mu.Lock()
+	prevTaskID := a.agentState.TaskID
 	a.mode = modeAgent
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 	if a.focusTracker != nil {
+		// Clear focus on the prior task when navigating task-to-task inside
+		// agent view (navigateAgentTask), so a task we just left isn't
+		// permanently stuck as focused in the daemon's FocusTracker.
+		if prevTaskID != "" && prevTaskID != task.ID {
+			a.focusTracker.SetFocused(prevTaskID, false)
+		}
 		a.focusTracker.SetFocused(task.ID, true)
 	}
 	// Open with the configured default layout (zoomed single-pane by default).

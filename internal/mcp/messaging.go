@@ -435,6 +435,11 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 	if reply == nil {
 		return toolResult(id, fmt.Sprintf("Question sent: id=%s. No reply within %ds — poll task_inbox later (in_reply_to=%s).", msg.ID, p.TimeoutSeconds, msg.ID))
 	}
+	// Cancel the pending PTY nudge: the recipient has already answered, so
+	// delivering the "you have a question" notification now would be noise.
+	if s.nudger != nil {
+		_ = s.nudger.Cancel(recipient.ID, msg.ID) //nolint:errcheck // best-effort; delivery may have already submitted
+	}
 	return toolResult(id, fmt.Sprintf("Reply to %s from %s (id=%s):\n\n%s", msg.ID, recipient.ID, reply.ID, reply.Body))
 }
 

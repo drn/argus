@@ -79,26 +79,20 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if already submitted (idempotent 200).
-	if existing := s.notifier.DeliveryState(taskID, req.DeliveryID); existing == "submitted" {
-		writeJSON(w, http.StatusOK, notifyResp{DeliveryID: req.DeliveryID, State: "submitted"})
+	// Idempotent: already submitted → 200.
+	if existing := s.notifier.DeliveryState(taskID, req.DeliveryID); existing == notify.StateSubmitted {
+		writeJSON(w, http.StatusOK, notifyResp{DeliveryID: req.DeliveryID, State: string(notify.StateSubmitted)})
 		return
 	}
 
-	cancel := s.notifier.ReliableNotify(taskID, req.Text, req.DeliveryID, notify.NotifyOpts{
+	_ = s.notifier.ReliableNotify(taskID, req.Text, req.DeliveryID, notify.NotifyOpts{
 		DeadlineMS: req.DeadlineMS,
 	})
-	_ = cancel // caller uses DELETE to cancel; we don't need to store it here
+	// caller cancels via DELETE /notify/{delivery_id}; the cancel func is not stored here.
 
-	// Check post-notify state to see if it submitted inline.
-	state := s.notifier.DeliveryState(taskID, req.DeliveryID)
-	if state == "" {
-		// Submitted inline (no longer tracked as pending).
-		state = "submitted"
-	}
-
-	uxlog.Log("[api] notify registered task=%s delivery_id=%s state=%s", taskID, req.DeliveryID, state)
-	writeJSON(w, http.StatusAccepted, notifyResp{DeliveryID: req.DeliveryID, State: string(state)})
+	// The delivery is now pending — Reconcile will submit it on the next idle tick.
+	uxlog.Log("[api] notify registered task=%s delivery_id=%s", taskID, req.DeliveryID)
+	writeJSON(w, http.StatusAccepted, notifyResp{DeliveryID: req.DeliveryID, State: string(notify.StatePending)})
 }
 
 // handleCancelNotify handles DELETE /api/tasks/{id}/notify/{delivery_id}.
@@ -113,7 +107,7 @@ func (s *Server) handleCancelNotify(w http.ResponseWriter, r *http.Request) {
 
 	// Check existence before cancel to determine response.
 	prior := s.notifier.DeliveryState(taskID, deliveryID)
-	wasPending := prior == "pending"
+	wasPending := prior == notify.StatePending
 
 	s.notifier.Cancel(taskID, deliveryID)
 
