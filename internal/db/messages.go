@@ -305,6 +305,65 @@ func (d *DB) WaitForReply(ctx context.Context, questionID, fromID string) (*mode
 	}
 }
 
+// InsertSystemMessage inserts a daemon-originated message without rate-limiting.
+// Use this for system signals (e.g. ARGUS_BOUNCED) where the sender is the
+// daemon itself (SystemTaskID) rather than a real task. The inbox-full cap
+// still applies; the self-send check and per-sender rate limit are bypassed
+// because:
+//   - self-send: the system sender is never a real task ID (digit-only strings)
+//   - rate limit: bounce signals are rare event-driven calls, not agent chatter
+func (d *DB) InsertSystemMessage(m *model.TaskMessage) (*model.TaskMessage, error) {
+	out, err := d.insertSystemMessageLocked(m)
+	if err != nil {
+		return nil, err
+	}
+	events.Emit(model.EventTypeMessageSent, out.To, map[string]any{
+		"id":   out.ID,
+		"from": out.From,
+		"to":   out.To,
+		"kind": string(out.Kind),
+	})
+	return out, nil
+}
+
+func (d *DB) insertSystemMessageLocked(m *model.TaskMessage) (*model.TaskMessage, error) {
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	if len(m.Body) > model.MaxMessageBodyBytes {
+		return nil, ErrMessageBodyTooLarge
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+
+	var unread int
+	if err := d.conn.QueryRow(`SELECT COUNT(*) FROM task_messages WHERE to_task_id=? AND read_at=''`, m.To).Scan(&unread); err != nil {
+		return nil, fmt.Errorf("count unread: %w", err)
+	}
+	if unread >= MaxUnreadPerRecipient {
+		return nil, ErrMessageInboxFull
+	}
+
+	if m.ID == "" {
+		m.ID = generateID()
+	}
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+
+	_, err := d.conn.Exec(
+		`INSERT INTO task_messages (id, from_task_id, to_task_id, kind, body, in_reply_to, created_at, read_at) VALUES (?,?,?,?,?,?,?,?)`,
+		m.ID, m.From, m.To, string(m.Kind), m.Body, m.InReplyTo, formatTime(m.CreatedAt), formatTime(m.ReadAt),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert system message: %w", err)
+	}
+	return m, nil
+}
+
 // DeleteMessagesForTask removes every message either sent by OR addressed to
 // taskID. Called when a task is archived or destroyed so a dead recipient's
 // queued inbox doesn't sit forever counting against MaxUnreadPerRecipient

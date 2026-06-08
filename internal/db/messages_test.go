@@ -440,6 +440,78 @@ func TestDB_SetArchived_CascadesMessages(t *testing.T) {
 	testutil.Equal(t, unread, 0)
 }
 
+// TestDB_InsertSystemMessage tests the system-message path that bypasses rate
+// limiting (used by bounce recovery to emit ARGUS_BOUNCED signals).
+func TestDB_InsertSystemMessage(t *testing.T) {
+	t.Run("happy path stamps id and created_at", func(t *testing.T) {
+		d := testDB(t)
+		m, err := d.InsertSystemMessage(newMessage("argus:system", "T", model.KindNote, "hi"))
+		testutil.NoError(t, err)
+		if m.ID == "" {
+			t.Fatal("expected ID to be generated")
+		}
+		if m.CreatedAt.IsZero() {
+			t.Fatal("expected CreatedAt to be stamped")
+		}
+	})
+
+	t.Run("validates kind", func(t *testing.T) {
+		d := testDB(t)
+		_, err := d.InsertSystemMessage(&model.TaskMessage{From: "argus:system", To: "T", Kind: "bogus", Body: "x"})
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+
+	t.Run("rejects oversized body", func(t *testing.T) {
+		d := testDB(t)
+		big := strings.Repeat("x", model.MaxMessageBodyBytes+1)
+		_, err := d.InsertSystemMessage(newMessage("argus:system", "T", model.KindNote, big))
+		if !errors.Is(err, ErrMessageBodyTooLarge) {
+			t.Fatalf("expected ErrMessageBodyTooLarge, got %v", err)
+		}
+	})
+
+	t.Run("rejects when recipient inbox is full", func(t *testing.T) {
+		d := testDB(t)
+		for i := range MaxUnreadPerRecipient {
+			_, err := d.InsertMessage(newMessage(fmt.Sprintf("S%d", i), "T", model.KindNote, "x"))
+			testutil.NoError(t, err)
+		}
+		_, err := d.InsertSystemMessage(newMessage("argus:system", "T", model.KindNote, "bounce"))
+		if !errors.Is(err, ErrMessageInboxFull) {
+			t.Fatalf("expected ErrMessageInboxFull, got %v", err)
+		}
+	})
+
+	t.Run("bypasses rate limit — 51 messages from same system sender succeed", func(t *testing.T) {
+		d := testDB(t)
+		// Send more than MaxSendsPerMinute from the same sender to prove the
+		// rate limit is not applied for system messages.
+		for i := range MaxSendsPerMinute + 1 {
+			to := fmt.Sprintf("recipient-%d", i) // unique recipients, no inbox fill
+			_, err := d.InsertSystemMessage(newMessage("argus:system", to, model.KindNote, "bounce"))
+			if err != nil {
+				t.Fatalf("InsertSystemMessage %d failed: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("message is readable via Inbox", func(t *testing.T) {
+		d := testDB(t)
+		_, err := d.InsertSystemMessage(newMessage("argus:system", "dest", model.KindNote, `{"type":"ARGUS_BOUNCED"}`))
+		testutil.NoError(t, err)
+
+		msgs, err := d.Inbox("dest", InboxFilter{})
+		testutil.NoError(t, err)
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(msgs))
+		}
+		testutil.Equal(t, msgs[0].From, "argus:system")
+		testutil.Equal(t, msgs[0].Body, `{"type":"ARGUS_BOUNCED"}`)
+	})
+}
+
 // TestDB_SetArchived_UnarchiveLeavesMessagesAlone confirms the cleanup
 // only fires on archive=true. There would be nothing to clean on unarchive
 // (messages were wiped at archive), but the asymmetric SQL clause matters

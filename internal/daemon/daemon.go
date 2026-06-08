@@ -427,6 +427,15 @@ func (d *Daemon) Serve(sockPath string) error {
 		slog.Info("reconciled stale sessions", "count", n)
 	}
 
+	// Emit ARGUS_BOUNCED into the inbox of every task that had a live session
+	// when the previous daemon exited. Runs after stale-session reconcile so
+	// tasks are already flipped to InReview before the signal lands. Runs
+	// before accepting connections so agents that auto-resume see the signal
+	// on their first inbox poll.
+	if err := replayBounceSignals(d.db, db.DataDir()); err != nil {
+		slog.Warn("bounce: replay failed", "err", err)
+	}
+
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		close(d.ready) // unblock Shutdown even on listen failure
@@ -764,6 +773,13 @@ func (d *Daemon) Shutdown() {
 // the cleanup goroutine and leaving zombie agent processes + stale files.
 func (d *Daemon) cleanup() {
 	slog.Info("daemon shutting down")
+
+	// Persist the live session set before stopping agents so hera workers can
+	// detect the bounce on the next daemon start (see bounce.go).
+	if err := writeLiveTasksFile(d.runner, db.DataDir()); err != nil {
+		slog.Warn("bounce: persist live-tasks failed", "err", err)
+	}
+
 	d.runner.StopAll()
 
 	// Stop the scheduler if running.
