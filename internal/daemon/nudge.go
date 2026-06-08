@@ -23,7 +23,9 @@ type runnerNudger struct {
 
 // Nudge registers a reliable delivery of line to the target task. deliveryID
 // should be the message's DB ID so the delivery can be cancelled on ack.
-// Returns ErrNudgeNoSession only when no notifier is wired (disabled mode).
+// Returns ErrNudgeNoSession when no notifier is wired OR when no live session
+// exists for the target at registration time — callers use this to report
+// delivered="queued" vs delivered="nudged" accurately.
 func (n runnerNudger) Nudge(targetTaskID, deliveryID, line string) error {
 	if n.notifier == nil {
 		return ErrNudgeNoSession
@@ -31,6 +33,12 @@ func (n runnerNudger) Nudge(targetTaskID, deliveryID, line string) error {
 	// Strip outer newlines: the notifier adds Ctrl+U + text + CR itself.
 	text := strings.Trim(line, "\n\r")
 	n.notifier.ReliableNotify(targetTaskID, text, deliveryID, notify.NotifyOpts{})
+	// Return ErrNudgeNoSession when no session is live so the MCP layer can
+	// accurately report delivered="queued". The delivery is still registered
+	// and will submit when a session appears.
+	if !n.notifier.SessionExists(targetTaskID) {
+		return ErrNudgeNoSession
+	}
 	return nil
 }
 

@@ -16,10 +16,11 @@ import (
 // 5-second tick is the intended driver).
 type Notifier struct {
 	mu      sync.Mutex
-	pending map[string]*delivery       // taskID → active delivery (one per task)
-	queue   map[string][]*delivery     // taskID → queued deliveries (second and beyond)
-	subKeys map[string][]string        // taskID → ordered submitted deliveryID list (FIFO eviction)
-	subSet  map[string]map[string]bool // taskID → submitted deliveryID set
+	pending map[string]*delivery         // taskID → active delivery (one per task)
+	queue   map[string][]*delivery       // taskID → queued deliveries (second and beyond)
+	cancels map[string]map[string]func() // taskID → deliveryID → cancel func (live deliveries only)
+	subKeys map[string][]string          // taskID → ordered submitted deliveryID list (FIFO eviction)
+	subSet  map[string]map[string]bool   // taskID → submitted deliveryID set
 	runner  RunnerIface
 	focus   FocusReader
 }
@@ -29,6 +30,7 @@ func New(runner RunnerIface, focus FocusReader) *Notifier {
 	return &Notifier{
 		pending: make(map[string]*delivery),
 		queue:   make(map[string][]*delivery),
+		cancels: make(map[string]map[string]func()),
 		subKeys: make(map[string][]string),
 		subSet:  make(map[string]map[string]bool),
 		runner:  runner,
@@ -59,17 +61,10 @@ func (n *Notifier) ReliableNotify(taskID, text, deliveryID string, opts NotifyOp
 		return func() {}
 	}
 
-	// Already pending as the active delivery? Return no-op cancel (the original
-	// caller retains the real cancel). Idempotent re-post doesn't gain new cancel authority.
-	if p := n.pending[taskID]; p != nil && p.deliveryID == deliveryID {
-		return func() {}
-	}
-
-	// Already queued? Same: return no-op.
-	for _, q := range n.queue[taskID] {
-		if q.deliveryID == deliveryID {
-			return func() {}
-		}
+	// Already pending or queued? Return the shared cancel func so every caller
+	// that posted the same deliveryID can cancel the same delivery.
+	if existing := n.storedCancel(taskID, deliveryID); existing != nil {
+		return existing
 	}
 
 	d := &delivery{
@@ -80,6 +75,7 @@ func (n *Notifier) ReliableNotify(taskID, text, deliveryID string, opts NotifyOp
 		cancelCh:   make(chan struct{}),
 	}
 	cancelFn := makeCancelFn(d.cancelCh)
+	n.storeCancel(taskID, deliveryID, cancelFn)
 
 	if n.pending[taskID] == nil {
 		n.pending[taskID] = d
@@ -112,6 +108,7 @@ func (n *Notifier) Cancel(taskID, deliveryID string) {
 			close(p.cancelCh)
 		}
 		delete(n.pending, taskID)
+		n.dropCancel(taskID, deliveryID)
 		// Promote next queued.
 		if q := n.queue[taskID]; len(q) > 0 {
 			n.pending[taskID] = q[0]
@@ -135,6 +132,7 @@ func (n *Notifier) Cancel(taskID, deliveryID string) {
 			if len(n.queue[taskID]) == 0 {
 				delete(n.queue, taskID)
 			}
+			n.dropCancel(taskID, deliveryID)
 			return
 		}
 	}
@@ -225,6 +223,7 @@ func (n *Notifier) removeAndAdvance(taskID, deliveryID string, submitted bool) {
 		return
 	}
 	delete(n.pending, taskID)
+	n.dropCancel(taskID, deliveryID)
 
 	if submitted {
 		n.markSubmitted(taskID, deliveryID)
@@ -236,6 +235,36 @@ func (n *Notifier) removeAndAdvance(taskID, deliveryID string, submitted bool) {
 		n.queue[taskID] = q[1:]
 		if len(n.queue[taskID]) == 0 {
 			delete(n.queue, taskID)
+		}
+	}
+}
+
+// storeCancel records the cancel func for a live (pending/queued) delivery.
+// Caller must hold n.mu.
+func (n *Notifier) storeCancel(taskID, deliveryID string, fn func()) {
+	if n.cancels[taskID] == nil {
+		n.cancels[taskID] = make(map[string]func())
+	}
+	n.cancels[taskID][deliveryID] = fn
+}
+
+// storedCancel returns the cancel func for a pending/queued delivery, or nil
+// if no live delivery for that (taskID, deliveryID) pair exists.
+// Caller must hold n.mu.
+func (n *Notifier) storedCancel(taskID, deliveryID string) func() {
+	if m := n.cancels[taskID]; m != nil {
+		return m[deliveryID]
+	}
+	return nil
+}
+
+// dropCancel removes the stored cancel func for a delivery that has been
+// submitted or cancelled. Caller must hold n.mu.
+func (n *Notifier) dropCancel(taskID, deliveryID string) {
+	if m := n.cancels[taskID]; m != nil {
+		delete(m, deliveryID)
+		if len(m) == 0 {
+			delete(n.cancels, taskID)
 		}
 	}
 }
@@ -268,6 +297,14 @@ func (n *Notifier) markSubmitted(taskID, deliveryID string) {
 		n.subKeys[taskID] = n.subKeys[taskID][1:]
 		delete(n.subSet[taskID], oldest)
 	}
+}
+
+// SessionExists returns true when the runner reports a live session for taskID.
+// Used by callers that want to distinguish "delivery registered, session live"
+// (likely to submit soon) from "delivery registered, no session yet" (queued
+// until the session starts).
+func (n *Notifier) SessionExists(taskID string) bool {
+	return n.runner.Get(taskID) != nil
 }
 
 // DeliveryState returns the current state of a delivery. "submitted" means

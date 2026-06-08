@@ -95,6 +95,31 @@ func TestHandleNotify_MissingDeliveryID_Returns400(t *testing.T) {
 	testutil.Equal(t, w.Code, http.StatusBadRequest)
 }
 
+func TestHandleNotify_DeadlineMS_BelowMinimum_Returns400(t *testing.T) {
+	srv, d := testServer(t)
+	newNotifierForTest(srv)
+	task := &model.Task{Name: "n1", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	mux := srv.routes()
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/notify",
+		`{"text":"hi","submit":true,"delivery_id":"d1","deadline_ms":500}`))
+	testutil.Equal(t, w.Code, http.StatusBadRequest)
+}
+
+func TestHandleNotify_DeadlineMS_Zero_UsesDefault(t *testing.T) {
+	srv, d := testServer(t)
+	newNotifierForTest(srv)
+	task := &model.Task{Name: "n1", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+	mux := srv.routes()
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/notify",
+		`{"text":"hi","submit":true,"delivery_id":"d1","deadline_ms":0}`))
+	// 0 means "use default" — should succeed.
+	testutil.Equal(t, w.Code, http.StatusAccepted)
+}
+
 func TestHandleNotify_BadDeliveryIDFormat_Returns400(t *testing.T) {
 	srv, d := testServer(t)
 	newNotifierForTest(srv)

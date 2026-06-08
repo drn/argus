@@ -55,18 +55,31 @@ func TestNudge_NoNotifierReturnsSentinel(t *testing.T) {
 	testutil.ErrorIs(t, err, ErrNudgeNoSession)
 }
 
-// TestNudge_WithNotifier_RegistersDelivery checks that Nudge registers a
-// reliable delivery when a notifier is wired, even when no session is live.
-func TestNudge_WithNotifier_RegistersDelivery(t *testing.T) {
-	r := &fakeNudgeRunner{}
+// TestNudge_WithNotifier_NoSession_ReturnsQueuedSentinel checks that Nudge
+// returns ErrNudgeNoSession when no session is live, so the MCP layer reports
+// delivered="queued" accurately. The delivery is still registered.
+func TestNudge_WithNotifier_NoSession_ReturnsQueuedSentinel(t *testing.T) {
+	r := &fakeNudgeRunner{} // no sessions
 	notifier := notify.New(r, noFocus{})
 	n := runnerNudger{notifier: notifier}
 
 	err := n.Nudge("task-1", "msg-42", "text\n")
-	testutil.NoError(t, err)
+	testutil.ErrorIs(t, err, ErrNudgeNoSession) // reports queued
 
-	state := notifier.DeliveryState("task-1", "msg-42")
-	testutil.Equal(t, state, notify.StatePending)
+	// Delivery is still registered for when a session appears.
+	testutil.Equal(t, notifier.DeliveryState("task-1", "msg-42"), notify.StatePending)
+}
+
+// TestNudge_WithNotifier_LiveSession_ReturnsNil checks that Nudge returns nil
+// when a session is live, so the MCP layer reports delivered="nudged".
+func TestNudge_WithNotifier_LiveSession_ReturnsNil(t *testing.T) {
+	r := &fakeNudgeRunner{}
+	r.addSession("task-1", false) // live but busy
+	notifier := notify.New(r, noFocus{})
+	n := runnerNudger{notifier: notifier}
+
+	err := n.Nudge("task-1", "msg-42", "text\n")
+	testutil.NoError(t, err) // session exists → "nudged"
 }
 
 // TestNudge_Cancel_CallsNotifierCancel checks that Cancel removes the pending delivery.

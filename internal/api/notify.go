@@ -71,8 +71,10 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "delivery_id must contain only alphanumeric characters, hyphens, or underscores"})
 		return
 	}
-	if req.DeadlineMS < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deadline_ms must be >= 0"})
+	// deadline_ms=0 means "use the default (5 minutes)". Any explicit value
+	// must be between 1000ms (1 second) and 3600000ms (1 hour).
+	if req.DeadlineMS != 0 && req.DeadlineMS < 1000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deadline_ms minimum is 1000 (1 second); use 0 for the default (5 minutes)"})
 		return
 	}
 	if req.DeadlineMS > 3_600_000 {

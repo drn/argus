@@ -168,26 +168,30 @@ func TestNotifier_DeadlineEvictsDelivery(t *testing.T) {
 	testutil.Equal(t, n.DeliveryState("t1", "d1"), "")
 }
 
-func TestNotifier_DeduplicatePending(t *testing.T) {
+func TestNotifier_DeduplicatePending_SharedCancel(t *testing.T) {
 	r := newFakeRunner()
 	sess := r.addSession("t1", false) // busy
 	n := newTestNotifier(r, fakeNoFocus{})
 
 	cancel1 := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
 	cancel2 := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{}) // same ID
-	defer cancel1()
-	defer cancel2()
 
-	// Should only be one pending delivery.
-	testutil.Equal(t, n.DeliveryState("t1", "d1"), StatePending)
+	// Both cancel funcs cancel the same delivery.
+	cancel2() // cancel via the SECOND func
+	n.Reconcile(time.Now())
+	// No submit — the shared delivery was cancelled.
+	testutil.Equal(t, len(sess.allWrites()), 0)
+	testutil.Equal(t, n.DeliveryState("t1", "d1"), DeliveryState(""))
 
-	// Make idle and submit.
+	// Calling cancel1 after the delivery is gone is a no-op.
+	cancel1()
+
+	// A fresh delivery with a new ID still works.
+	_ = n.ReliableNotify("t1", "hello", "d2", NotifyOpts{})
 	sess.mu.Lock()
 	sess.idle = true
 	sess.mu.Unlock()
 	n.Reconcile(time.Now())
-
-	// Exactly one submit (two writes: ctrl+u + text).
 	testutil.Equal(t, len(sess.allWrites()), 2)
 }
 
@@ -261,6 +265,15 @@ func TestNotifier_SerializeConcurrentDeliveries(t *testing.T) {
 	testutil.Equal(t, len(writes2), 4) // two more writes for "second"
 	testutil.Equal(t, string(writes2[2]), "\x15")
 	testutil.Equal(t, string(writes2[3]), "second\r")
+}
+
+func TestNotifier_SessionExists(t *testing.T) {
+	r := newFakeRunner()
+	n := newTestNotifier(r, fakeNoFocus{})
+	testutil.Equal(t, n.SessionExists("t1"), false)
+
+	r.addSession("t1", true)
+	testutil.Equal(t, n.SessionExists("t1"), true)
 }
 
 func TestNotifier_DeliveryState_ReturnsCorrectValues(t *testing.T) {
