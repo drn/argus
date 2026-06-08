@@ -52,24 +52,33 @@ table and the four MCP tools that ride on top of it.
   contract comment on `nudgeLineFormat` in `internal/mcp/messaging.go` —
   do not extend the format with user-controllable strings.
 
-## Nudge contract
+## Nudge contract (reliable pane delivery)
 
-- **Nudge is best-effort. The message is durable regardless.** If the
-  recipient's session is paused, finished, or crashing during the write,
-  `Nudge` returns `ErrNudgeNoSession` (or a write error) and the tool
-  reports `delivered: queued` instead of `delivered: nudged`. The
-  `task_messages` row is committed before the nudge is attempted.
-- **Nudge writes a single literal line to the PTY** (`[argus] new message
-from <id> (kind=<k>) — call task_inbox`). The receiving agent sees this
-  as if a user typed it. If a specific backend mis-handles operator-style
-  injected lines, switch to a sidecar-file delivery without breaking the
-  message contract.
-- **The nudge is sent inside the MCP request handler, not from a background
-  goroutine.** Latency is a single PTY write (μs) — cheap. Means a slow PTY
-  write would block the response; in practice it's instant. If this ever
-  becomes a problem, move it to a goroutine but track which messages still
-  need to be nudged (otherwise a daemon restart loses queued nudges, which
-  is fine, but track it explicitly).
+- **Nudge goes through `internal/notify.Notifier` (reliable pane delivery),
+  not a bare PTY write.** The message is committed before `Nudge` is called.
+  `Nudge` registers a reliable delivery keyed by `msg.ID` as `deliveryID`.
+  The reconciler (driven by the idleWatcher 5-second tick) submits via
+  `Ctrl+U + text + CR` when the session is idle AND no human is focused.
+- **`task_message_ack` cancels the delivery.** When the recipient acks, the
+  tool calls `nudger.Cancel(callerID, msgID)` for each acked ID — if the
+  delivery already submitted, cancel is a no-op.
+- **`runnerNudger.Nudge` with a nil notifier returns `ErrNudgeNoSession`.**
+  In-process fallback mode without a wired notifier degrades gracefully;
+  the message is durable, delivery is skipped.
+- **Pre-clear (`Ctrl+U`) before inject.** `\x15` discards any stale partial
+  input in the shell's line buffer so the delivery text lands cleanly.
+  If the line is empty, Ctrl+U is a no-op at the shell level.
+- **CR, not LF.** The notifier appends `\r` (carriage return, 0x0d) to
+  submit the line. The original nudge used `\n` (linefeed, 0x0a) which
+  never auto-submits in a normal interactive shell — that was the root bug.
+- **deliveryID namespace:** message DB IDs are 10-digit numerics; hera uses
+  its own IDs. No cross-namespace collision unless both generate the same
+  string (cosmetically wrong but not harmful — one cancel becomes a no-op).
+- **Deadline:** default 5 minutes. Delivery is abandoned after the deadline
+  if the session never becomes safe. Durable message row is unaffected.
+- **Single-writer invariant:** only one auto-submit CR per task is in flight
+  at any moment. The `Notifier` serializes concurrent deliveries into a
+  queue; the second delivery is promoted after the first submits.
 
 ## Archive and delete cleanup
 

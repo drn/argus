@@ -444,3 +444,14 @@ func (s *RPCService) SetPlanSlug(req *SetPlanSlugReq, resp *StatusResp) error {
 	resp.OK = true
 	return nil
 }
+
+// SetFocused registers or clears TUI agent-view focus for a task. Called by
+// the TUI's daemon client when the user enters or exits agent view so the
+// reliable pane-delivery reconciler can gate auto-submits on human presence.
+func (s *RPCService) SetFocused(req *SetFocusedReq, _ *Empty) error {
+	if s.daemon.focusTracker == nil || req.TaskID == "" {
+		return nil
+	}
+	s.daemon.focusTracker.SetFocused(req.TaskID, req.Focused)
+	return nil
+}

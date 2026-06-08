@@ -23,14 +23,16 @@ type MessageStore interface {
 	DeleteMessagesForTask(taskID string) (int, error)
 }
 
-// MessageNudger writes a notification line into a target task's PTY when a
-// message arrives. Best-effort — the message is durable regardless. The MCP
-// handler only calls Nudge when SetMessageManager wired a non-nil nudger.
+// MessageNudger delivers notifications to a target task's PTY via the
+// reliable pane-delivery service. Best-effort — the durable message row is
+// committed before Nudge is called so a delivery failure never rolls back
+// the send.
 //
-// Returns an error so the handler can log nudge failures; failure does NOT
-// invalidate the send (the message row is committed before the nudge).
+// Nudge registers a reliable delivery keyed by deliveryID (the message DB ID).
+// Cancel tears it down when the recipient acknowledges the message.
 type MessageNudger interface {
-	Nudge(targetTaskID string, line string) error
+	Nudge(targetTaskID, deliveryID, line string) error
+	Cancel(targetTaskID, deliveryID string) error
 }
 
 // maxAckIDsPerCall caps how many message IDs a single task_message_ack tool
@@ -229,7 +231,7 @@ func (s *Server) toolTaskMessageSend(id interface{}, args json.RawMessage) *Resp
 	delivered := "queued"
 	if s.nudger != nil {
 		line := fmt.Sprintf(nudgeLineFormat, caller.ID, msg.Kind)
-		if nudgeErr := s.nudger.Nudge(recipient.ID, line); nudgeErr == nil {
+		if nudgeErr := s.nudger.Nudge(recipient.ID, msg.ID, line); nudgeErr == nil {
 			delivered = "nudged"
 		}
 	}
@@ -338,6 +340,14 @@ func (s *Server) toolTaskMessageAck(id interface{}, args json.RawMessage) *Respo
 		log.Printf("[mcp] task_message_ack failed: id=%s err=%v", caller.ID, err)
 		return toolError(id, fmt.Sprintf("ack failed: %v", err))
 	}
+	// Cancel any pending reliable delivery for each acked message. The ack
+	// means the recipient has read it so the PTY notification is no longer
+	// needed. Best-effort: if the delivery already submitted, Cancel is a no-op.
+	if s.nudger != nil {
+		for _, msgID := range p.MessageIDs {
+			_ = s.nudger.Cancel(caller.ID, msgID) //nolint:errcheck
+		}
+	}
 	return toolResult(id, fmt.Sprintf("Acked %d of %d message ID%s.", n, len(p.MessageIDs), plural(len(p.MessageIDs))))
 }
 
@@ -401,7 +411,7 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 
 	if s.nudger != nil {
 		line := fmt.Sprintf(nudgeLineFormat, caller.ID, model.KindQuestion)
-		_ = s.nudger.Nudge(recipient.ID, line) //nolint:errcheck // best-effort; nudge failure does not invalidate the durable message
+		_ = s.nudger.Nudge(recipient.ID, msg.ID, line) //nolint:errcheck // best-effort; nudge failure does not invalidate the durable message
 	}
 
 	if p.TimeoutSeconds == 0 {
@@ -424,6 +434,11 @@ func (s *Server) toolTaskAsk(id interface{}, args json.RawMessage) *Response {
 	}
 	if reply == nil {
 		return toolResult(id, fmt.Sprintf("Question sent: id=%s. No reply within %ds — poll task_inbox later (in_reply_to=%s).", msg.ID, p.TimeoutSeconds, msg.ID))
+	}
+	// Cancel the pending PTY nudge: the recipient has already answered, so
+	// delivering the "you have a question" notification now would be noise.
+	if s.nudger != nil {
+		_ = s.nudger.Cancel(recipient.ID, msg.ID) //nolint:errcheck // best-effort; delivery may have already submitted
 	}
 	return toolResult(id, fmt.Sprintf("Reply to %s from %s (id=%s):\n\n%s", msg.ID, recipient.ID, reply.ID, reply.Body))
 }

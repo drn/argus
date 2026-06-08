@@ -460,3 +460,16 @@ func (c *Client) removeSession(taskID string) {
 		fn(taskID, info)
 	}
 }
+
+// SetFocused notifies the daemon that the TUI has entered or left agent view
+// for a task. Fire-and-forget in a goroutine: focus signals are best-effort
+// and must never block the TUI main goroutine. Implements focusTrackerIface
+// in internal/tui so the daemon client can be wired directly to App.SetFocusTracker.
+func (c *Client) SetFocused(taskID string, focused bool) {
+	go func() {
+		var empty daemon.Empty
+		if err := c.call("Daemon.SetFocused", &daemon.SetFocusedReq{TaskID: taskID, Focused: focused}, &empty); err != nil {
+			uxlog.Log("client.SetFocused: task=%s focused=%v err=%v", taskID, focused, err)
+		}
+	}()
+}

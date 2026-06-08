@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "name": "cmd",
+      "paths": [
+        "cmd/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-notify",
+      "paths": [
+        "internal/notify/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-kb",
+      "paths": [
+        "internal/kb/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-config",
+      "paths": [
+        "internal/config/"
+      ],
+      "specs": [
+        "specs/config-management/spec.md"
+      ]
+    },
+    {
+      "name": "internal-tui",
+      "paths": [
+        "internal/tui/"
+      ],
+      "specs": [
+        "specs/remote-tui/spec.md",
+        "specs/tui-shell/spec.md"
+      ]
+    },
+    {
+      "name": "internal-apiclient",
+      "paths": [
+        "internal/apiclient/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-gitutil",
+      "paths": [
+        "internal/gitutil/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-launchagent",
+      "paths": [
+        "internal/launchagent/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-agent",
+      "paths": [
+        "internal/agent/"
+      ],
+      "specs": [
+        "specs/agent-execution/spec.md",
+        "specs/agent-view/spec.md"
+      ]
+    },
+    {
+      "name": "internal-mcp",
+      "paths": [
+        "internal/mcp/"
+      ],
+      "specs": [
+        "specs/mcp-injection/spec.md",
+        "specs/mcp-server/spec.md"
+      ]
+    },
+    {
+      "name": "internal-daemon",
+      "paths": [
+        "internal/daemon/"
+      ],
+      "specs": [
+        "specs/daemon-client/spec.md",
+        "specs/daemon-lifecycle/spec.md"
+      ]
+    },
+    {
+      "name": "internal-model",
+      "paths": [
+        "internal/model/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-db",
+      "paths": [
+        "internal/db/"
+      ],
+      "specs": []
+    },
+    {
+      "name": "internal-api",
+      "paths": [
+        "internal/api/"
+      ],
+      "specs": [
+        "specs/rest-api/spec.md"
+      ]
+    },
+    {
+      "name": "web-tests",
+      "paths": [
+        "web-tests/"
+      ],
+      "specs": [
+        "specs/web-push/spec.md"
+      ]
+    },
+    {
+      "name": "scripts",
+      "paths": [
+        "scripts/"
+      ],
+      "specs": []
+    }
+  ],
+  "extensions": [
+    "go",
+    "js",
+    "ts",
+    "tsx"
+  ],
+  "excludes": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/.next/**",
+    "**/build/**",
+    "**/vendor/**",
+    "**/coverage/**",
+    "**/*.bundle.js",
+    "**/*.min.js"
+  ],
+  "pitfalls": [],
+  "test_suites": [
+    {
+      "dir": ".",
+      "command": "devbox run -- bash -c 'cd . && go test ./...'"
+    },
+    {
+      "dir": "web-tests",
+      "command": "devbox run -- bash -c 'cd web-tests && echo \"Error: no test specified\" && exit 1'"
+    }
+  ],
+  "mapping_cache": {}
+}

@@ -297,6 +297,11 @@ type App struct {
 	// connector factory as plugin views so smoke tests can stub.
 	streamConns   map[pluginStreamKey]pluginConnector
 	streamConnsMu sync.Mutex
+
+	// focusTracker is the daemon-level human-focus registry. When non-nil,
+	// the App signals SetFocused on agent-view enter/exit so the reliable
+	// pane-delivery service can gate auto-submits. Optional: nil is safe.
+	focusTracker focusTrackerIface
 }
 
 // pluginStreamKey identifies an open stream-section connector. Matches the
@@ -305,6 +310,19 @@ type App struct {
 type pluginStreamKey struct {
 	scope string
 	title string
+}
+
+// focusTrackerIface is the minimal interface the TUI needs from FocusTracker.
+// Defined here so the notify package is not imported into the tui package
+// (avoiding a dependency on internal/notify from internal/tui).
+type focusTrackerIface interface {
+	SetFocused(taskID string, focused bool)
+}
+
+// SetFocusTracker wires the daemon-level focus tracker into the TUI.
+// Must be called before Run(). Optional — nil is safe.
+func (a *App) SetFocusTracker(ft focusTrackerIface) {
+	a.focusTracker = ft
 }
 
 // New creates the tui application shell.
@@ -2606,6 +2624,10 @@ func (a *App) enterPendingAgentView(task *model.Task) {
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
 
+	if a.focusTracker != nil && task.ID != "" {
+		a.focusTracker.SetFocused(task.ID, true)
+	}
+
 	// Open with the configured default layout (zoomed single-pane by default).
 	// Ctrl+Z toggles the side panels at runtime regardless.
 	a.applyDefaultAgentZen()
@@ -2637,10 +2659,20 @@ func (a *App) onTaskSelect(task *model.Task, autoStart bool) {
 	a.syncIdleUnvisited()
 
 	a.mu.Lock()
+	prevTaskID := a.agentState.TaskID
 	a.mode = modeAgent
 	a.agentFocus = focusTerminal
 	a.agentState.Reset(task.ID, task.Name)
 	a.mu.Unlock()
+	if a.focusTracker != nil {
+		// Clear focus on the prior task when navigating task-to-task inside
+		// agent view (navigateAgentTask), so a task we just left isn't
+		// permanently stuck as focused in the daemon's FocusTracker.
+		if prevTaskID != "" && prevTaskID != task.ID {
+			a.focusTracker.SetFocused(prevTaskID, false)
+		}
+		a.focusTracker.SetFocused(task.ID, true)
+	}
 	// Open with the configured default layout (zoomed single-pane by default).
 	// Ctrl+Z toggles the side panels at runtime regardless.
 	a.applyDefaultAgentZen()
@@ -4537,7 +4569,11 @@ func (a *App) exitAgentView() {
 	a.mu.Lock()
 	a.mode = modeTaskList
 	a.agentFocus = focusTerminal
+	exitTaskID := a.agentState.TaskID
 	a.mu.Unlock()
+	if a.focusTracker != nil && exitTaskID != "" {
+		a.focusTracker.SetFocused(exitTaskID, false)
+	}
 	// Reset to the configured default layout so the agentZen flag and panel
 	// proportions stay consistent while in the task list; the next agent view
 	// re-asserts this on entry anyway.

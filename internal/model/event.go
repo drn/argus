@@ -48,6 +48,13 @@ const (
 	// re-deriving argus's detection heuristic from session logs.
 	EventTypeSessionNeedsInput = "session.needs_input"
 
+	// EventTypeSessionFocus fires when the TUI's agent view gains or loses
+	// human focus for a task. Payload: {"focused":true|false}. Emitted by
+	// the FocusTracker transition callback so plugins can observe human
+	// presence without polling. Persisted to the events table like all other
+	// event types; consumed by SSE subscribers.
+	EventTypeSessionFocus = "session.focus"
+
 	// EventTypeResync is synthesised by the SSE handler when a client
 	// connects with a `since` cursor older than the oldest retained event.
 	// It is never persisted in the events table — clients seeing it should
