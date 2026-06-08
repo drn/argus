@@ -99,11 +99,11 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	// idle-watcher tick.
 	s.notifier.Reconcile(time.Now())
 
+	// DeliveryState returns StateSubmitted when the delivery was genuinely
+	// submitted, StatePending when it is still queued, or "" when it was
+	// removed without submission (deadline expiry, write failure, cancel).
+	// Never assume "" means submitted — that would misreport failed removals.
 	state := s.notifier.DeliveryState(taskID, req.DeliveryID)
-	if state == "" {
-		// Delivery is gone from pending — it was submitted by the inline Reconcile.
-		state = notify.StateSubmitted
-	}
 	uxlog.Log("[api] notify registered task=%s delivery_id=%s state=%s", taskID, req.DeliveryID, state)
 	writeJSON(w, http.StatusAccepted, notifyResp{DeliveryID: req.DeliveryID, State: string(state)})
 }
