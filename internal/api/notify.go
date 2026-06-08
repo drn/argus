@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"time"
 
 	"github.com/drn/argus/internal/notify"
 	"github.com/drn/argus/internal/uxlog"
@@ -90,9 +91,19 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	})
 	// caller cancels via DELETE /notify/{delivery_id}; the cancel func is not stored here.
 
-	// The delivery is now pending — Reconcile will submit it on the next idle tick.
-	uxlog.Log("[api] notify registered task=%s delivery_id=%s", taskID, req.DeliveryID)
-	writeJSON(w, http.StatusAccepted, notifyResp{DeliveryID: req.DeliveryID, State: string(notify.StatePending)})
+	// Attempt an inline Reconcile so that if the session is already idle and
+	// unfocused the delivery submits immediately and the response says "submitted".
+	// If the session is busy or focused, the delivery stays pending for the next
+	// idle-watcher tick.
+	s.notifier.Reconcile(time.Now())
+
+	state := s.notifier.DeliveryState(taskID, req.DeliveryID)
+	if state == "" {
+		// Delivery is gone from pending — it was submitted by the inline Reconcile.
+		state = notify.StateSubmitted
+	}
+	uxlog.Log("[api] notify registered task=%s delivery_id=%s state=%s", taskID, req.DeliveryID, state)
+	writeJSON(w, http.StatusAccepted, notifyResp{DeliveryID: req.DeliveryID, State: string(state)})
 }
 
 // handleCancelNotify handles DELETE /api/tasks/{id}/notify/{delivery_id}.

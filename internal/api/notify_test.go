@@ -121,28 +121,57 @@ func TestHandleNotify_ValidRequest_Returns202Pending(t *testing.T) {
 	testutil.Contains(t, w.Body.String(), `"pending"`)
 }
 
-func TestHandleNotify_RepostSubmitted_Returns200(t *testing.T) {
+// notifyIdleRunner returns an idle session for any task ID — used to test
+// the inline-submit path where handleNotify calls Reconcile immediately.
+type notifyIdleRunner struct{}
+
+func (notifyIdleRunner) Get(string) notify.SessionHandleIface { return &notifyIdleSession{} }
+
+type notifyIdleSession struct{ writes [][]byte }
+
+func (s *notifyIdleSession) IsIdle() bool { return true }
+func (s *notifyIdleSession) WriteInput(p []byte) (int, error) {
+	s.writes = append(s.writes, append([]byte(nil), p...))
+	return len(p), nil
+}
+
+func TestHandleNotify_SessionIdle_ReturnsSubmitted(t *testing.T) {
 	srv, d := testServer(t)
-	n := notify.New(notifyNilRunner{}, notifyNoFocus{})
+	n := notify.New(notifyIdleRunner{}, notifyNoFocus{})
 	srv.SetNotifier(n)
 	task := &model.Task{Name: "n1", Status: model.StatusInProgress}
 	testutil.NoError(t, d.Add(task))
-
-	// Manually mark as submitted.
-	cancel := n.ReliableNotify(task.ID, "hello", "d1", notify.NotifyOpts{})
-	n.Cancel(task.ID, "d1") // remove from pending without submitting
-	// Use a session to get it submitted:
-	// (For this test, just check idempotent 200 after marking submitted via
-	// a session that's idle, which we'd need a real session for. Instead,
-	// just test the pending → cancel path and the 202 path.)
-	_ = cancel
-
-	// Re-post the same ID after cancel (should be pending or unknown → 202).
 	mux := srv.routes()
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+task.ID+"/notify",
 		`{"text":"hello","submit":true,"delivery_id":"d1"}`))
+	// Session is idle+unfocused — inline Reconcile should submit immediately.
 	testutil.Equal(t, w.Code, http.StatusAccepted)
+	testutil.Contains(t, w.Body.String(), `"submitted"`)
+}
+
+func TestHandleNotify_RepostSubmitted_Returns200(t *testing.T) {
+	srv, d := testServer(t)
+	// Use idle runner so first POST submits inline.
+	n := notify.New(notifyIdleRunner{}, notifyNoFocus{})
+	srv.SetNotifier(n)
+	task := &model.Task{Name: "n1", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(task))
+
+	mux := srv.routes()
+	// First POST — submits inline because session is idle.
+	w1 := httptest.NewRecorder()
+	mux.ServeHTTP(w1, authedReq("POST", "/api/tasks/"+task.ID+"/notify",
+		`{"text":"hello","submit":true,"delivery_id":"d1"}`))
+	testutil.Equal(t, w1.Code, http.StatusAccepted)
+	testutil.Contains(t, w1.Body.String(), `"submitted"`)
+
+	// Second POST with same delivery_id — idempotent 200.
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, authedReq("POST", "/api/tasks/"+task.ID+"/notify",
+		`{"text":"hello","submit":true,"delivery_id":"d1"}`))
+	testutil.Equal(t, w2.Code, http.StatusOK)
+	testutil.Contains(t, w2.Body.String(), `"submitted"`)
 }
 
 func TestHandleNotify_DeviceTokenAccepted(t *testing.T) {
