@@ -104,9 +104,10 @@ func TestNotifier_ImmediateSubmit(t *testing.T) {
 	n.Reconcile(time.Now())
 
 	writes := sess.allWrites()
-	testutil.Equal(t, len(writes), 2)
+	testutil.Equal(t, len(writes), 3)
 	testutil.Equal(t, string(writes[0]), "\x15")
-	testutil.Equal(t, string(writes[1]), "hello\r")
+	testutil.Equal(t, string(writes[1]), "hello")
+	testutil.Equal(t, string(writes[2]), "\r")
 }
 
 func TestNotifier_DeferredWhenBusy(t *testing.T) {
@@ -125,7 +126,7 @@ func TestNotifier_DeferredWhenBusy(t *testing.T) {
 	sess.idle = true
 	sess.mu.Unlock()
 	n.Reconcile(time.Now())
-	testutil.Equal(t, len(sess.allWrites()), 2)
+	testutil.Equal(t, len(sess.allWrites()), 3)
 }
 
 func TestNotifier_DeferredWhenFocused(t *testing.T) {
@@ -192,7 +193,7 @@ func TestNotifier_DeduplicatePending_SharedCancel(t *testing.T) {
 	sess.idle = true
 	sess.mu.Unlock()
 	n.Reconcile(time.Now())
-	testutil.Equal(t, len(sess.allWrites()), 2)
+	testutil.Equal(t, len(sess.allWrites()), 3)
 }
 
 func TestNotifier_DeduplicateSubmitted(t *testing.T) {
@@ -203,14 +204,14 @@ func TestNotifier_DeduplicateSubmitted(t *testing.T) {
 	cancel1 := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
 	defer cancel1()
 	n.Reconcile(time.Now())
-	testutil.Equal(t, len(sess.allWrites()), 2)
+	testutil.Equal(t, len(sess.allWrites()), 3)
 
 	// Re-post the same deliveryID.
 	cancel2 := n.ReliableNotify("t1", "hello", "d1", NotifyOpts{})
 	defer cancel2()
 	n.Reconcile(time.Now())
-	// Still only 2 writes (no second submission).
-	testutil.Equal(t, len(sess.allWrites()), 2)
+	// Still only 3 writes (no second submission).
+	testutil.Equal(t, len(sess.allWrites()), 3)
 }
 
 func TestNotifier_NoSession_DeferDelivery(t *testing.T) {
@@ -257,14 +258,15 @@ func TestNotifier_SerializeConcurrentDeliveries(t *testing.T) {
 	// First reconcile submits d1.
 	n.Reconcile(time.Now())
 	writes1 := sess.allWrites()
-	testutil.Equal(t, len(writes1), 2) // ctrl+u + "first\r"
+	testutil.Equal(t, len(writes1), 3) // ctrl+u + "first" + CR
 
 	// Second reconcile submits d2.
 	n.Reconcile(time.Now())
 	writes2 := sess.allWrites()
-	testutil.Equal(t, len(writes2), 4) // two more writes for "second"
-	testutil.Equal(t, string(writes2[2]), "\x15")
-	testutil.Equal(t, string(writes2[3]), "second\r")
+	testutil.Equal(t, len(writes2), 6) // three more writes for "second"
+	testutil.Equal(t, string(writes2[3]), "\x15")
+	testutil.Equal(t, string(writes2[4]), "second")
+	testutil.Equal(t, string(writes2[5]), "\r")
 }
 
 func TestNotifier_SessionExists(t *testing.T) {
@@ -308,9 +310,37 @@ func TestNotifier_PreClear_WritesCtrlU(t *testing.T) {
 	n.Reconcile(time.Now())
 
 	writes := sess.allWrites()
-	testutil.Equal(t, len(writes), 2)
+	testutil.Equal(t, len(writes), 3)
 	testutil.Equal(t, writes[0][0], byte(0x15)) // Ctrl+U
-	testutil.Equal(t, string(writes[1]), "text\r")
+	testutil.Equal(t, string(writes[1]), "text")
+	testutil.Equal(t, string(writes[2]), "\r")
+}
+
+// TestNotifier_SubmitThreeOrderedWrites verifies that submit issues exactly three
+// WriteInput calls in order: Ctrl+U (0x15), then the text WITHOUT a trailing CR,
+// then a standalone CR (0x0D). The gap between writes 2 and 3 exists in production
+// but is not observable here because fakeSession.WriteInput is synchronous.
+//
+// NOTE: whether the CR is interpreted as "Enter" vs "paste continuation" depends
+// on the target shell/agent's line-discipline and cannot be verified with this
+// byte-level fake. Real-TUI submit correctness must be verified empirically after
+// deploy by confirming the message appears in the agent's conversation.
+func TestNotifier_SubmitThreeOrderedWrites(t *testing.T) {
+	r := newFakeRunner()
+	sess := r.addSession("t1", true) // idle
+	n := newTestNotifier(r, fakeNoFocus{})
+
+	n.ReliableNotify("t1", "the message", "d1", NotifyOpts{})
+	n.Reconcile(time.Now())
+
+	writes := sess.allWrites()
+	testutil.Equal(t, len(writes), 3)
+	// Write 1: Ctrl+U line-kill.
+	testutil.Equal(t, string(writes[0]), "\x15")
+	// Write 2: text without trailing CR.
+	testutil.Equal(t, string(writes[1]), "the message")
+	// Write 3: standalone CR — not appended to write 2.
+	testutil.Equal(t, string(writes[2]), "\r")
 }
 
 func TestNotifier_FocusLifts_PendingDeliverySubmits(t *testing.T) {
@@ -326,7 +356,7 @@ func TestNotifier_FocusLifts_PendingDeliverySubmits(t *testing.T) {
 
 	ft.SetFocused("t1", false) // human leaves
 	n.Reconcile(time.Now())
-	testutil.Equal(t, len(sess.allWrites()), 2) // ctrl+u + text\r
+	testutil.Equal(t, len(sess.allWrites()), 3) // ctrl+u + text + CR
 }
 
 func TestNotifier_WriteInputCtrlUFailure_DeliveryRemainesPending(t *testing.T) {
@@ -363,8 +393,9 @@ func TestNotifier_CancelActiveDelivery_PromotesQueued(t *testing.T) {
 	sess.idle = true
 	sess.mu.Unlock()
 	n.Reconcile(time.Now())
-	testutil.Equal(t, len(sess.allWrites()), 2)
-	testutil.Equal(t, string(sess.allWrites()[1]), "second\r")
+	testutil.Equal(t, len(sess.allWrites()), 3)
+	testutil.Equal(t, string(sess.allWrites()[1]), "second")
+	testutil.Equal(t, string(sess.allWrites()[2]), "\r")
 }
 
 func TestNotifier_CancelQueuedDelivery(t *testing.T) {

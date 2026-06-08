@@ -15,6 +15,12 @@ const defaultDeadlineMS = 5 * 60 * 1000
 // evicted ID would re-inject; in practice a task never accumulates this many.
 const maxSubmittedPerTask = 1000
 
+// submitCRDelay is the pause between writing the delivery text and sending the
+// final CR. The gap ensures CR is processed as a distinct keypress rather than
+// as part of a single paste sequence, which is necessary for reliable submission
+// in some shell/agent configurations.
+const submitCRDelay = 50 * time.Millisecond
+
 // NotifyOpts controls optional parameters for ReliableNotify.
 type NotifyOpts struct {
 	// DeadlineMS is the maximum milliseconds to wait for a safe submit window.

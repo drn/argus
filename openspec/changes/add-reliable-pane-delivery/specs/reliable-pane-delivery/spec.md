@@ -47,7 +47,7 @@ The system SHALL ensure that re-posting the same deliveryID for the same task is
 
 ### Requirement: Pre-clear before inject
 
-The system SHALL emit a Ctrl+U (line-kill) signal before injecting the delivery text so that any stale partial input in the shell's line buffer is discarded. If the shell's input line is empty, Ctrl+U SHALL be a no-op at the shell level. The sequence is: Ctrl+U, then text+CR.
+The system SHALL emit a Ctrl+U (line-kill) signal before injecting the delivery text so that any stale partial input in the shell's line buffer is discarded. If the shell's input line is empty, Ctrl+U SHALL be a no-op at the shell level. The submit sequence is three separate PTY writes: (1) Ctrl+U, (2) the delivery text without any trailing CR, (3) a brief pause (~50 ms), then (4) a standalone CR as its own write. The CR MUST be delivered as a separate `WriteInput` call after the text write — not appended to the text — so that the target shell/agent processes it as a distinct keypress (Enter) rather than as part of a paste sequence.
 
 #### Scenario: Clean input line yields normal submission
 
@@ -58,6 +58,11 @@ The system SHALL emit a Ctrl+U (line-kill) signal before injecting the delivery 
 
 - **WHEN** the PTY's shell input line contains partial text at the moment of submit
 - **THEN** the Ctrl+U clears the partial text before the delivery text and CR are written
+
+#### Scenario: CR delivered as separate write
+
+- **WHEN** the notifier submits a delivery
+- **THEN** the PTY receives three ordered writes: Ctrl+U (0x15), then the text without a trailing CR, then a standalone CR (0x0D) as its own write — never glued to the text write
 
 ### Requirement: Deadline backstop
 
