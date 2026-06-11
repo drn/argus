@@ -207,6 +207,13 @@ func TestStore_SetPinned_GetError(t *testing.T) {
 	if err := f.store().SetPinned("t1", true); err == nil {
 		t.Fatal("expected error when fetch fails")
 	}
+}
+
+func TestStore_SetStatus_GetError(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
 	if err := f.store().SetStatus("t1", model.StatusComplete); err == nil {
 		t.Fatal("expected error when fetch fails")
 	}

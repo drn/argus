@@ -1175,11 +1175,16 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		// InProgress before resuming, so they tolerate the transient flip.
 		if !pendingRestart {
 			if stopped {
-				t.SetStatus(model.StatusInReview)
+				t.SetStatus(model.StatusInReview) // in-memory: drives nav/render below
 			} else {
 				t.SetStatus(model.StatusComplete)
 			}
-			a.db.Update(t) //nolint:errcheck
+			// Persist via the partial setter, not Update: t was Get'd fresh above,
+			// but the concurrent autoname goroutine could land a rename in the
+			// straight-line window before this write. SetStatus touches only
+			// status/timestamps, so it can't clobber that name — same reasoning
+			// as the reconciliation and OnPin/OnStatusChange paths.
+			a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
 			uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 		} else {
 			uxlog.Log("[tui] task %s exit deferred: daemon kick-restart in flight", t.ID)
