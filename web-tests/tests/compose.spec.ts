@@ -11,6 +11,33 @@ async function login(page) {
   await expect(page.locator('.term-status.live')).toBeVisible({ timeout: 5000 });
 }
 
+// sendCompose splits a submit into two ordered POSTs — the prompt text, then
+// '\r' alone after a ~50ms pause — so the agent's stdin reader sees the Enter
+// as a distinct keypress instead of folding it into a paste batch. Glued
+// text+CR in one PTY write trips Claude Code's paste heuristic: the CR is
+// treated as a newline (Shift+Enter) and the whole prompt sits drafted but
+// unsubmitted — the PR #688 bug class, fixed for notify in
+// internal/notify/service.go and here for the compose bar. These helpers pin
+// that contract: collect every /input POST body, wait for the trailing CR,
+// then assert the exact two-write sequence.
+// The page.on('request') listener is never removed — safe because every test
+// gets a fresh page object, but don't call this twice on the same page or the
+// earlier call's array keeps collecting.
+function collectInputPosts(page): string[] {
+  const posts: string[] = [];
+  page.on('request', req => {
+    if (req.url().includes('/input') && req.method() === 'POST') posts.push(req.postData() ?? '');
+  });
+  return posts;
+}
+
+function waitForCR(page) {
+  return page.waitForRequest(req =>
+    req.url().includes('/input') && req.method() === 'POST' && req.postData() === '\r',
+    { timeout: 5000 }
+  );
+}
+
 // IS_TOUCH is computed at script load from `'ontouchstart' in window` and
 // `(pointer: coarse)`. On the iphone device profile both are true, on desktop
 // neither — so the same #compose-bar element flips visible/hidden by project.
@@ -27,21 +54,20 @@ test.describe('compose bar', () => {
     }
   });
 
-  test('Send button forwards value + CR to /input and clears textarea', async ({ page }, testInfo) => {
+  test('Send button forwards value then CR as two ordered POSTs and clears textarea', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'iphone', 'compose bar is touch-gated');
     await login(page);
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-send').click();
-    const req = await inputReq;
-    // \r (CR), not \n — raw-terminal Enter key. \n is interpreted as an
-    // embedded newline by Claude Code and would not submit the prompt.
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    // Two separate writes: text first, then '\r' (CR, not \n — raw-terminal
+    // Enter key) alone. Gluing them into one POST trips the agent's paste
+    // heuristic and the prompt sits drafted-but-unsubmitted.
+    expect(posts).toEqual(['hello world', '\r']);
 
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
@@ -61,13 +87,12 @@ test.describe('compose bar', () => {
     // Shift+Enter must not have sent.
     await expect(ci).toHaveValue('one\ntwo');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.keyboard.press('Enter');
-    const req = await inputReq;
-    expect(req.postData()).toBe('one\ntwo\r');
+    await crReq;
+    // Embedded newline preserved in the text write; CR is its own write.
+    expect(posts).toEqual(['one\ntwo', '\r']);
 
     await expect(ci).toHaveValue('');
   });
@@ -85,10 +110,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.dispatchEvent(new InputEvent('beforeinput', {
@@ -97,8 +120,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -117,10 +140,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       // Enter with isComposing=true — the keydown handler must NOT claim the
@@ -138,8 +159,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -155,10 +176,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.dispatchEvent(new InputEvent('beforeinput', {
@@ -168,8 +187,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -183,10 +202,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.dispatchEvent(new InputEvent('beforeinput', {
@@ -195,8 +212,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -254,10 +271,8 @@ test.describe('compose bar', () => {
       el.setSelectionRange(el.value.length, el.value.length);
     });
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.dispatchEvent(new InputEvent('beforeinput', {
         inputType: 'insertText',
@@ -266,12 +281,12 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
+    await crReq;
     // The prefix ('world') must be merged into the textarea value before
-    // sendCompose reads it, so the POST contains 'hello world\r' — without
-    // the prefix-preservation the POST would be 'hello \r' and the user's
-    // last word would silently vanish.
-    expect(req.postData()).toBe('hello world\r');
+    // sendCompose reads it, so the text write is 'hello world' — without
+    // the prefix-preservation it would be 'hello ' and the user's last
+    // word would silently vanish.
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -289,10 +304,8 @@ test.describe('compose bar', () => {
       el.setSelectionRange(el.value.length, el.value.length);
     });
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.dispatchEvent(new InputEvent('beforeinput', {
         inputType: 'insertReplacementText',
@@ -301,8 +314,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -324,10 +337,8 @@ test.describe('compose bar', () => {
       el.setSelectionRange(6, 11);
     });
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.dispatchEvent(new InputEvent('beforeinput', {
         inputType: 'insertReplacementText',
@@ -336,12 +347,12 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
+    await crReq;
     // setRangeText replaces the IME target range (6..11 = "wrold") with the
-    // corrected word "world", yielding "hello world\r" in the POST. If the
-    // splice ignored the selection range and appended instead, the POST
-    // would be "hello wroldworld\r".
-    expect(req.postData()).toBe('hello world\r');
+    // corrected word "world", yielding a "hello world" text write. If the
+    // splice ignored the selection range and appended instead, the write
+    // would be "hello wroldworld".
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -357,10 +368,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       // Simulate the browser default having applied — the textarea ends in
@@ -375,8 +384,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -394,10 +403,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello ');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       // Browser default would insert 'world\n\n' on `data: 'world\n\n'`.
@@ -413,9 +420,9 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    // Trailing newlines stripped, no embedded `\n` smuggled into the POST.
-    expect(req.postData()).toBe('hello world\r');
+    await crReq;
+    // Trailing newlines stripped, no embedded `\n` smuggled into the text write.
+    expect(posts).toEqual(['hello world', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -434,15 +441,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello ');
 
-    let postCount = 0;
-    page.on('request', req => {
-      if (req.url().includes('/input') && req.method() === 'POST') postCount++;
-    });
-
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);
@@ -458,11 +458,11 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello world\r');
-    // Give a beat for any spurious second POST to land — none should.
+    await crReq;
+    // Give a beat for any spurious extra POSTs to land — exactly one
+    // text write + one CR write should exist, no double-fired sequence.
     await page.waitForTimeout(200);
-    expect(postCount).toBe(1);
+    expect(posts).toEqual(['hello world', '\r']);
   });
 
   // Regression: the variant-N+1 case — `keydown(Enter, isComposing=true)`
@@ -477,10 +477,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello world');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       // 1) iOS dispatches keydown(Enter) with isComposing=true (active
@@ -512,8 +510,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello worldfinal\r');
+    await crReq;
+    expect(posts).toEqual(['hello worldfinal', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -671,15 +669,13 @@ test.describe('compose bar', () => {
       el.value = 'send this prompt to the agent\n';
     });
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-send').tap();
-    const req = await inputReq;
-    // Trailing \n must be stripped before \r is appended. Otherwise the
-    // POST is "text\n\r" and Claude Code drafts-without-submitting.
-    expect(req.postData()).toBe('send this prompt to the agent\r');
+    await crReq;
+    // Trailing \n must be stripped before the split send. Otherwise the
+    // text write is "text\n" and Claude Code drafts-without-submitting.
+    expect(posts).toEqual(['send this prompt to the agent', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -694,10 +690,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.value = 'hello\n';
@@ -708,8 +702,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello\r');
+    await crReq;
+    expect(posts).toEqual(['hello', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -722,10 +716,8 @@ test.describe('compose bar', () => {
 
     await page.locator('#compose-input').fill('hello');
 
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-input').evaluate((el: HTMLTextAreaElement) => {
       el.focus();
       el.value = 'hello\n';
@@ -736,8 +728,8 @@ test.describe('compose bar', () => {
         bubbles: true,
       }));
     });
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello\r');
+    await crReq;
+    expect(posts).toEqual(['hello', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -847,14 +839,12 @@ test.describe('compose bar', () => {
     await expect(page.locator('#compose-input')).toHaveValue('pasted text\n');
 
     // Step 2: user taps send. Layer 3 in sendCompose must strip the trailing
-    // `\n` so the POST is `"pasted text\r"` not `"pasted text\n\r"`.
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    // `\n` so the text write is `"pasted text"` not `"pasted text\n"`.
+    const posts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await page.locator('#compose-send').tap();
-    const req = await inputReq;
-    expect(req.postData()).toBe('pasted text\r');
+    await crReq;
+    expect(posts).toEqual(['pasted text', '\r']);
     await expect(page.locator('#compose-input')).toHaveValue('');
   });
 
@@ -977,15 +967,13 @@ test.describe('compose bar', () => {
     await expect(dd).not.toHaveClass(/open/);
     expect(posted).toBe(false);
 
-    // Now Enter on a non-slash value sends normally.
+    // Now Enter on a non-slash value sends normally (split text + CR).
     await ci.fill('hello');
-    const inputReq = page.waitForRequest(req =>
-      req.url().includes('/input') && req.method() === 'POST',
-      { timeout: 3000 }
-    );
+    const sendPosts = collectInputPosts(page);
+    const crReq = waitForCR(page);
     await ci.press('Enter');
-    const req = await inputReq;
-    expect(req.postData()).toBe('hello\r');
+    await crReq;
+    expect(sendPosts).toEqual(['hello', '\r']);
   });
 
   test('skill autocomplete: tapping a dropdown item inserts and closes', async ({ page }, testInfo) => {
