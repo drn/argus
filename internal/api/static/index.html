@@ -2534,14 +2534,24 @@ function setupTerm() {
   });
 }
 
-function sendInputBytes(data) {
-  if (!currentTask) return;
-  recordInputBytes(currentTask.id, data);
-  fetch(API + `/api/tasks/${currentTask.id}/input`, {
+// postInputBytes returns the raw fetch promise (rejects on network error,
+// resolves with the Response otherwise) so callers that must SEQUENCE writes
+// — sendCompose's split text→CR submit — can order them and abort the CR if
+// the text write failed. taskId is explicit (not currentTask.id) so an
+// in-flight sequenced send keeps targeting the task it started on even if
+// the user navigates away mid-chain.
+function postInputBytes(taskId, data) {
+  recordInputBytes(taskId, data);
+  return fetch(API + `/api/tasks/${taskId}/input`, {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'text/plain' },
     body: data,
-  }).catch(() => {});
+  });
+}
+
+function sendInputBytes(data) {
+  if (!currentTask) return;
+  postInputBytes(currentTask.id, data).catch(() => {});
 }
 
 // --- Input history capture ---
@@ -6008,6 +6018,18 @@ function setKeyBarVisible(v) {
 // the daemon silently truncates and the user sees no error from.
 const COMPOSE_MAX_BYTES = 64 * 1024;
 
+// Pause between the text write and the CR write in sendCompose's split
+// submit. Mirrors submitCRDelay in internal/notify/service.go — wide enough
+// that the agent's stdin reader sees the CR as a distinct keypress, narrow
+// enough to be imperceptible.
+const COMPOSE_CR_DELAY_MS = 50;
+
+// Global ordering chain for compose submits. Each sendCompose appends its
+// text→pause→CR sequence here so a rapid double-send can't interleave as
+// text1, text2, CR, CR (which would glue both prompts into one submission
+// plus a stray empty Enter).
+let composeSendChain = Promise.resolve();
+
 function sendCompose() {
   const ci = document.getElementById('compose-input');
   if (!ci) return;
@@ -6038,10 +6060,31 @@ function sendCompose() {
     return;
   }
   // \r (carriage return) is the Enter/submit key in raw-terminal-mode TUIs
-  // like Claude Code — matches what xterm.js's onData and the desktop TUI
-  // both send. \n would be interpreted as an embedded newline (Shift+Enter),
-  // leaving the prompt drafted-but-unsubmitted in the agent's buffer.
-  sendInputBytes(v + '\r');
+  // like Claude Code — \n would be interpreted as an embedded newline
+  // (Shift+Enter), leaving the prompt drafted-but-unsubmitted.
+  //
+  // CRITICAL: the CR must be a SEPARATE write, not glued onto the text.
+  // handleWriteInput forwards the POST body to the PTY in a single
+  // WriteInput, and Claude Code's stdin reader treats a multi-byte chunk
+  // containing text+CR as a paste batch — the CR becomes a newline
+  // (Shift+Enter) instead of a submit, leaving the whole prompt drafted in
+  // the agent's composer with a trailing newline. Same bug class PR #688
+  // fixed for the notify path (internal/notify/service.go: three ordered
+  // WriteInputs with a submitCRDelay pause). Typed xterm input never hits
+  // this because each keystroke is its own POST; only the compose bar
+  // bundles a full prompt into one body. The first write is awaited (two
+  // fire-and-forget fetches could arrive out of order) and the CR is
+  // skipped if it failed — a bare CR after a failed text write would
+  // submit whatever stale draft sits in the agent's input box.
+  const taskId = currentTask.id;
+  composeSendChain = composeSendChain.then(async () => {
+    try {
+      const r = await postInputBytes(taskId, v);
+      if (!r.ok) return;
+      await new Promise(res => setTimeout(res, COMPOSE_CR_DELAY_MS));
+      await postInputBytes(taskId, '\r');
+    } catch {}
+  });
   ci.value = '';
   // field-sizing:content handles shrink-back on supporting browsers; explicit
   // height reset is a no-op there and a fallback elsewhere.
