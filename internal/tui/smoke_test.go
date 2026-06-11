@@ -310,6 +310,40 @@ func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 	testutil.Equal(t, got.Name, "haiku-name")
 }
 
+// TestSmoke_SessionExitFlipUsesNameSafeStatusWrite covers the fourth rerouted
+// write path: handleSessionExitUI's InProgress→Complete/InReview flip. It now
+// persists via db.SetStatus (name-safe) instead of full-row db.Update, and the
+// `t.Status == InProgress` guard makes a second exit notification a no-op — the
+// guard that also prevents a double status/completed event when the daemon
+// already flipped the row before the TUI's notification arrives.
+func TestSmoke_SessionExitFlipUsesNameSafeStatusWrite(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "haiku-name", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Natural exit (not stopped) → Complete, name preserved by the partial write.
+	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
+	syncUI(t, app.tapp)
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.Name, "haiku-name")
+	firstEnded := got.EndedAt
+
+	// Second notification: row is no longer InProgress, so the guard skips the
+	// flip entirely — status and ended_at must be untouched (no re-stamp, no
+	// duplicate event).
+	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
+	syncUI(t, app.tapp)
+	got, _ = d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.EndedAt.Equal(firstEnded), true)
+}
+
 func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

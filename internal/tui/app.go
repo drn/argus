@@ -1261,6 +1261,13 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 			// Force the resumed task back into InProgress; either the daemon's
 			// onFinish callback or this function's StatusInProgress branch
 			// above has just flipped it to InReview.
+			//
+			// Stays on full-row db.Update (not the name-safe db.SetStatus the
+			// other status flips use): startSession on the next line immediately
+			// writes the same struct again with SessionID+AgentPID, so a partial
+			// status setter here would be pointless — name-safety for this path
+			// hinges on startSession's multi-field write, which is the
+			// pre-existing out-of-scope case.
 			t.SetStatus(model.StatusInProgress)
 			a.db.Update(t) //nolint:errcheck
 			a.startSession(t)
