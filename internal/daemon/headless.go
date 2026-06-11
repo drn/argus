@@ -16,6 +16,7 @@ type HeadlessInput struct {
 	Prompt     string
 	Project    string
 	Backend    string
+	Model      string // optional per-task model override (empty = backend default)
 	AutoName   bool
 	BaseBranch string
 	DependsOn  []string
@@ -46,6 +47,7 @@ func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, in Headle
 		Prompt:     in.Prompt,
 		Project:    in.Project,
 		Backend:    in.Backend,
+		Model:      in.Model,
 		AutoName:   in.AutoName,
 		BaseBranch: in.BaseBranch,
 		DependsOn:  in.DependsOn,

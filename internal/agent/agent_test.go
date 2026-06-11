@@ -1682,3 +1682,148 @@ func TestBuildCmd_ResumeUsesRecapturedClaudeID(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Contains(t, cmd.Args[2], "--resume 'cccccccc-bbbb-4ccc-9ddd-222222222222'")
 }
+
+// --- Model injection ---
+
+func TestResolveModel(t *testing.T) {
+	cases := []struct {
+		name         string
+		taskModel    string
+		backendModel string
+		want         string
+	}{
+		{"both empty", "", "", ""},
+		{"backend default", "", "sonnet", "sonnet"},
+		{"task override wins", "opus", "sonnet", "opus"},
+		{"task only", "haiku", "", "haiku"},
+		{"whitespace task falls back", "   ", "sonnet", "sonnet"},
+		{"trims backend", "", "  sonnet  ", "sonnet"},
+		{"trims task", " opus ", "", "opus"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &model.Task{Model: tc.taskModel}
+			b := config.Backend{Model: tc.backendModel}
+			testutil.Equal(t, ResolveModel(task, b), tc.want)
+		})
+	}
+}
+
+// modelConfig returns a config with bare commands (no baked flags) so model
+// injection is exercised without permission-mode noise.
+func modelConfig() config.Config {
+	return config.Config{
+		Defaults: config.Defaults{Backend: "claude"},
+		Backends: map[string]config.Backend{
+			"claude": {Command: "claude"},
+			"codex":  {Command: "codex --dangerously-bypass-approvals-and-sandbox"},
+			"pi":     {Command: "pi"},
+			"bare":   {Command: "my-agent"},
+		},
+	}
+}
+
+func TestBuildCmd_ModelInjection(t *testing.T) {
+	cases := []struct {
+		name      string
+		backend   string
+		taskModel string
+		want      string
+	}{
+		{"claude task model", "claude", "sonnet", "claude --model 'sonnet' -- 'go'"},
+		{"claude no model", "claude", "", "claude -- 'go'"},
+		{"codex task model", "codex", "gpt-5", "codex --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' -- 'go'"},
+		{"pi task model", "pi", "glm", "pi --model 'glm' 'go'"},
+		{"unknown backend skipped", "bare", "sonnet", "my-agent -- 'go'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := modelConfig()
+			task := &model.Task{Name: "t", Prompt: "go", Backend: tc.backend, Model: tc.taskModel, Worktree: t.TempDir()}
+			cmd, _, err := BuildCmd(task, cfg, false)
+			testutil.NoError(t, err)
+			testutil.Equal(t, cmd.Args[2], tc.want)
+		})
+	}
+}
+
+func TestBuildCmd_ModelInjection_BackendDefault(t *testing.T) {
+	cfg := modelConfig()
+	b := cfg.Backends["claude"]
+	b.Model = "sonnet"
+	cfg.Backends["claude"] = b
+
+	task := &model.Task{Name: "t", Prompt: "go", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --model 'sonnet' -- 'go'")
+}
+
+func TestBuildCmd_ModelInjection_TaskOverridesBackendDefault(t *testing.T) {
+	cfg := modelConfig()
+	b := cfg.Backends["claude"]
+	b.Model = "sonnet"
+	cfg.Backends["claude"] = b
+
+	task := &model.Task{Name: "t", Prompt: "go", Model: "opus", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --model 'opus' -- 'go'")
+}
+
+// A backend command that already names --model wins — no double injection.
+func TestBuildCmd_ModelInjection_CommandWins(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Backends["claude"] = config.Backend{Command: "claude --model opus"}
+
+	task := &model.Task{Name: "t", Prompt: "go", Model: "sonnet", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --model opus -- 'go'")
+}
+
+// Permission-mode flags precede the model flag for claude backends.
+func TestBuildCmd_ModelInjection_AfterPermissionFlags(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Defaults.PermissionMode = config.PermissionModePlan
+
+	task := &model.Task{Name: "t", Prompt: "go", Model: "sonnet", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --permission-mode plan --model 'sonnet' -- 'go'")
+}
+
+func TestBuildCmd_ModelInjection_ClaudeResume(t *testing.T) {
+	cfg := modelConfig()
+	task := &model.Task{Name: "t", Backend: "claude", Model: "sonnet", SessionID: "abc-123", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --model 'sonnet' --resume 'abc-123'")
+}
+
+// Codex resume replaces the base command, so the model flag must be
+// re-appended — and must precede the positional session-id argument.
+func TestBuildCmd_ModelInjection_CodexResume(t *testing.T) {
+	cfg := modelConfig()
+	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-5", SessionID: "abc-123", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox --model 'gpt-5' 'abc-123'")
+}
+
+func TestBuildCmd_ModelInjection_PiResume(t *testing.T) {
+	cfg := modelConfig()
+	task := &model.Task{Name: "t", Backend: "pi", Model: "glm", SessionID: "abc-123", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "pi --model 'glm' --session 'abc-123'")
+}
+
+// Model values are shell-quoted — a hostile model string cannot break out.
+func TestBuildCmd_ModelInjection_ShellQuoted(t *testing.T) {
+	cfg := modelConfig()
+	task := &model.Task{Name: "t", Prompt: "go", Model: "x'; rm -rf /", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], `claude --model 'x'\''; rm -rf /' -- 'go'`)
+}

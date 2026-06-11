@@ -29,6 +29,7 @@ type CreateInput struct {
 	Prompt     string
 	Project    string
 	Backend    string // optional; empty = cfg.Defaults.Backend
+	Model      string // optional; overrides the backend's default model for this task
 	BaseBranch string // optional; overrides projCfg.Branch for this task
 
 	// DependsOn is the list of task IDs that must reach status=complete
@@ -190,6 +191,7 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		Project:    input.Project,
 		Prompt:     prompt,
 		Backend:    backend,
+		Model:      strings.TrimSpace(input.Model),
 		Worktree:   wtPath,
 		Branch:     branchName,
 		BaseBranch: baseBranch,

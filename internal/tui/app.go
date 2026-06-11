@@ -2981,6 +2981,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 			Prompt:     task.Prompt,
 			Project:    proj,
 			Backend:    task.Backend,
+			Model:      task.Model,
 			BaseBranch: task.Branch,
 			// INVARIANT: the new-task form has no name field — task.Name is
 			// always GenerateNameFromPrompt(prompt). If a name field is added
@@ -3038,7 +3039,7 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 // host), so fresh-task creation routes through POST /api/tasks instead. Kept
 // as a structural interface so the tui package doesn't import apistore.
 type remoteTaskCreator interface {
-	CreateTask(ctx context.Context, name, prompt, project, backend string) (*model.Task, error)
+	CreateTask(ctx context.Context, name, prompt, project, backend, taskModel string) (*model.Task, error)
 }
 
 // createTaskTransactional creates a fresh task and returns the resulting row.
@@ -3064,7 +3065,7 @@ func (a *App) createTaskTransactional(input agent.CreateInput) (*model.Task, err
 	// window before the SSE stream attaches server-side.
 	a.startGen.Add(1)
 	defer a.startGen.Add(1)
-	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend)
+	return rc.CreateTask(context.Background(), input.Name, input.Prompt, input.Project, input.Backend, input.Model)
 }
 
 // computePTYSize returns the best available PTY dimensions for the agent

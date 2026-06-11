@@ -1476,6 +1476,10 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <select id="create-backend"></select>
     </div>
     <div class="form-group">
+      <label>Model (optional)</label>
+      <input type="text" id="create-model" placeholder="Backend default" autocapitalize="none" autocorrect="off">
+    </div>
+    <div class="form-group">
       <label>Name (optional)</label>
       <input type="text" id="create-name" placeholder="Auto-generated from prompt">
     </div>
@@ -4462,8 +4466,21 @@ async function loadBackends() {
       || (createBackendsCache[0] && createBackendsCache[0].name)
       || '';
     if (preferred) sel.value = preferred;
+    // Surface the selected backend's default model as the placeholder so an
+    // empty override is self-documenting. onchange assignment is idempotent
+    // across loadBackends re-runs (unlike addEventListener).
+    sel.onchange = updateCreateModelPlaceholder;
+    updateCreateModelPlaceholder();
     backendsLoaded = true;
   } catch(e) {}
+}
+
+function updateCreateModelPlaceholder() {
+  const input = document.getElementById('create-model');
+  const sel = document.getElementById('create-backend');
+  if (!input || !sel) return;
+  const b = createBackendsCache.find(x => x.name === sel.value);
+  input.placeholder = (b && b.model) ? `Backend default (${b.model})` : 'Backend default';
 }
 
 // --- File upload state for the New Task form ---
@@ -4576,6 +4593,8 @@ async function createTask() {
   // Empty backend = let the server use the configured default. The dropdown
   // is a no-op until /api/backends loads, so we tolerate the empty case.
   const backend = document.getElementById('create-backend').value;
+  // Empty model = use the backend's configured default model.
+  const taskModel = document.getElementById('create-model').value.trim();
   if (!project) { showToast('Select a project'); return; }
   if (!prompt && !name && createFiles.length === 0) {
     showToast('Enter a name, prompt, or attach a file');
@@ -4594,18 +4613,20 @@ async function createTask() {
       fd.append('prompt', prompt);
       fd.append('project', project);
       if (backend) fd.append('backend', backend);
+      if (taskModel) fd.append('model', taskModel);
       for (const f of createFiles) fd.append('files', f, f.name);
       r = await api('/api/tasks', { method: 'POST', body: fd });
     } else {
       r = await api('/api/tasks', {
         method: 'POST',
-        body: JSON.stringify({ name, prompt, project, backend })
+        body: JSON.stringify({ name, prompt, project, backend, model: taskModel })
       });
     }
     const data = await r.json();
     if (r.ok) {
       document.getElementById('create-name').value = '';
       document.getElementById('create-prompt').value = '';
+      document.getElementById('create-model').value = '';
       createFiles = [];
       renderCreateFilesList();
       switchTab('tasks');
@@ -5370,10 +5391,11 @@ function renderBackendsBlock() {
   const def = settingsCache && settingsCache.defaults && settingsCache.defaults.backend;
   el.innerHTML = backendsCache.map((b) => {
     const star = b.name === def ? ' ★' : '';
+    const modelLabel = b.model ? ` · model: ${esc(b.model)}` : '';
     return `<div class="settings-row">
       <div class="grow">
         <div class="label">${esc(b.name)}${star}</div>
-        <div class="meta">${esc(b.command)}</div>
+        <div class="meta">${esc(b.command)}${modelLabel}</div>
       </div>
     </div>`;
   }).join('');

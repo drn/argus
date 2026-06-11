@@ -136,12 +136,13 @@ func (s *Store) Add(t *model.Task) error {
 // On success the daemon may asynchronously rename an auto-named task via
 // Haiku; the returned Task carries the regex-slug name and the next list
 // refresh picks up the final name.
-func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend string) (*model.Task, error) {
+func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend, taskModel string) (*model.Task, error) {
 	resp, err := s.c.CreateTask(ctx, apiclient.CreateTaskReq{
 		Name:    name,
 		Prompt:  prompt,
 		Project: project,
 		Backend: backend,
+		Model:   taskModel,
 	})
 	if err != nil {
 		return nil, err
@@ -161,6 +162,7 @@ func (s *Store) CreateTask(ctx context.Context, name, prompt, project, backend s
 		Status:  st,
 		Project: project,
 		Backend: backend,
+		Model:   taskModel,
 		Prompt:  prompt,
 	}, nil
 }

@@ -586,6 +586,7 @@ func (d *Daemon) Serve(sockPath string) error {
 					Name:       input.Name,
 					Prompt:     input.Prompt,
 					Project:    input.Project,
+					Model:      input.Model,
 					AutoName:   input.AutoName,
 					BaseBranch: input.BaseBranch,
 					DependsOn:  input.DependsOn,
@@ -647,12 +648,13 @@ func (d *Daemon) Serve(sockPath string) error {
 		if err != nil {
 			slog.Error("api token error", "err", err)
 		} else {
-			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend string, autoName bool) (*model.Task, error) {
+			apiSrv := api.New(d.db, d.runner, token, func(name, prompt, project, backend, taskModel string, autoName bool) (*model.Task, error) {
 				return HeadlessCreateTask(d.db, d.runner, HeadlessInput{
 					Name:     name,
 					Prompt:   prompt,
 					Project:  project,
 					Backend:  backend,
+					Model:    taskModel,
 					AutoName: autoName,
 				})
 			}, pushMgr)

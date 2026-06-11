@@ -23,12 +23,13 @@ import (
 	"github.com/drn/argus/internal/tui/settings"
 )
 
-// TaskCreator creates a task from name, prompt, project, and optional backend.
-// backend overrides the per-project / global default backend for this task; pass
-// "" to use the configured default. autoName signals the underlying creator to
-// fire async Haiku name-gen when name was string-interpolated from prompt
-// rather than user-typed.
-type TaskCreator func(name, prompt, project, backend string, autoName bool) (*model.Task, error)
+// TaskCreator creates a task from name, prompt, project, and optional
+// backend/model. backend overrides the per-project / global default backend
+// for this task; pass "" to use the configured default. model overrides the
+// backend's default model; pass "" to use the backend default. autoName
+// signals the underlying creator to fire async Haiku name-gen when name was
+// string-interpolated from prompt rather than user-typed.
+type TaskCreator func(name, prompt, project, backend, taskModel string, autoName bool) (*model.Task, error)
 
 // Server is the HTTP REST API server.
 type Server struct {

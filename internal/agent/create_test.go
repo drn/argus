@@ -532,3 +532,26 @@ func TestStartPendingBlocked_GuardClauses(t *testing.T) {
 		})
 	}
 }
+
+// CreateAndStart persists the per-task model override (trimmed) so the
+// session-start path resolves it via ResolveModel on every (re)start.
+func TestCreateAndStart_PersistsModel(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 1}
+
+	task, _, err := CreateAndStart(d, fr, CreateInput{
+		Name:    "model-task",
+		Prompt:  "go",
+		Project: "proj",
+		Model:   "  sonnet  ",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Model, "sonnet")
+
+	row, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, row.Model, "sonnet")
+
+	RemoveWorktreeAndBranch(task.Worktree, task.Branch, repo)
+}

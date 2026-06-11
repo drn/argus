@@ -1596,3 +1596,107 @@ func TestSettings_HandleEdit_Schedule(t *testing.T) {
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, called, true)
 }
+
+// --- Backend default-model editing ---
+
+// selectBackendRow moves the settings cursor onto the first backend row.
+func selectBackendRow(t *testing.T, sv *SettingsView) *backendEntry {
+	t.Helper()
+	sv.setCategory(catBackends)
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+	be := sv.SelectedBackend()
+	if be == nil {
+		t.Fatal("test setup: no backend row found")
+	}
+	return be
+}
+
+func TestSettingsView_MKeyStartsModelEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+
+	handled := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	testutil.Equal(t, handled, true)
+	testutil.Equal(t, sv.editingBackendModel, be.Name)
+	testutil.Equal(t, sv.IsEditing(), true)
+}
+
+func TestSettingsView_MKeyOnNonBackendRow(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catSandbox)
+	sv.cursor = 0
+	handled := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	testutil.Equal(t, handled, false)
+	testutil.Equal(t, sv.editingBackendModel, "")
+}
+
+func TestSettingsView_ModelEditSavePersists(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range "opus" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	testutil.Equal(t, sv.editingBackendModel, "")
+	// In-memory entry updated.
+	testutil.Equal(t, sv.SelectedBackend().Backend.Model, "opus")
+	// Persisted through the store — survives a full Refresh.
+	sv.Refresh()
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "opus")
+}
+
+func TestSettingsView_ModelEditEscapeCancels(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range "xyz" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+
+	testutil.Equal(t, sv.editingBackendModel, "")
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "")
+}
+
+func TestSettingsView_ModelEditBackspaceAndTrim(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range " opusX" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0)) // delete the X
+	// Arrow keys are consumed (no cursor movement) while editing.
+	testutil.Equal(t, sv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0)), true)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "opus") // leading space trimmed
+}
+
+func TestSettingsView_ModelEditPaste(t *testing.T) {
+	sv := testSettingsView(t)
+	selectBackendRow(t, sv)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+
+	sv.PasteHandler()("sonnet", nil)
+	testutil.Equal(t, sv.editModelBuf, "sonnet")
+}

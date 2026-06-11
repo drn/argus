@@ -33,6 +33,7 @@ type StartReq struct {
 	Prompt    string
 	Project   string
 	Backend   string
+	Model     string
 	Worktree  string
 	Branch    string
 	Rows      uint16

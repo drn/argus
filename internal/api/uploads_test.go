@@ -239,7 +239,8 @@ func TestParseMultipartTaskForm_RoundTrips(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	name, prompt, project, backend, atts, err := parseMultipartTaskForm(req)
+	name, prompt, project, backend, taskModel, atts, err := parseMultipartTaskForm(req)
+	testutil.Equal(t, taskModel, "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, name, "task-name")
 	testutil.Equal(t, prompt, "do the thing")
@@ -266,7 +267,7 @@ func TestParseMultipartTaskForm_ReadsBackend(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, backend, _, err := parseMultipartTaskForm(req)
+	_, _, _, backend, _, _, err := parseMultipartTaskForm(req)
 	testutil.NoError(t, err)
 	testutil.Equal(t, backend, "codex")
 }
@@ -282,7 +283,7 @@ func TestParseMultipartTaskForm_EnforcesPerFileCap(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/tasks", body)
 	req.Header.Set("Content-Type", ct)
 
-	_, _, _, _, _, err := parseMultipartTaskForm(req)
+	_, _, _, _, _, _, err := parseMultipartTaskForm(req)
 	if !errors.Is(err, errAttachmentTooLarge) {
 		t.Fatalf("got %v, want errAttachmentTooLarge", err)
 	}
@@ -374,3 +375,23 @@ func TestHandleCreateTask_MultipartDispatch_UnknownProject(t *testing.T) {
 // Avoid unused-import warning when agent isn't directly referenced — we use
 // it transitively via Attachment in handler tests.
 var _ = agent.Attachment{}
+
+// TestParseMultipartTaskForm_ReadsModel verifies the optional `model` text
+// field round-trips through the parser. Required so the New Task form's
+// model input reaches CreateInput.Model even on uploads.
+func TestParseMultipartTaskForm_ReadsModel(t *testing.T) {
+	ct, body := buildMultipart(t,
+		[][3]string{
+			{"prompt", "go", ""},
+			{"project", "p1", ""},
+			{"model", "opus", ""},
+		},
+		nil,
+	)
+	req := httptest.NewRequest("POST", "/api/tasks", body)
+	req.Header.Set("Content-Type", ct)
+
+	_, _, _, _, taskModel, _, err := parseMultipartTaskForm(req)
+	testutil.NoError(t, err)
+	testutil.Equal(t, taskModel, "opus")
+}

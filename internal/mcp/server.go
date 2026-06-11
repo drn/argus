@@ -38,6 +38,11 @@ type TaskCreateInput struct {
 	Project  string
 	AutoName bool
 
+	// Model overrides the backend's default model for this task's agent
+	// session. Empty string falls back to the backend's configured default
+	// (then the CLI's own default). Free text — not validated here.
+	Model string
+
 	// BaseBranch overrides the project default start point for the worktree.
 	// Empty string falls back to projCfg.Branch (today: master/main). Used
 	// for stacked-PR workflows where each sub-task branches off the previous
@@ -558,6 +563,7 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
 				"depends_on":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional. Upstream task IDs whose status must reach 'complete' before this task's agent starts. The worktree is still created immediately."},
 				"plan_slug":   map[string]interface{}{"type": "string", "description": "Optional. Orchestrator grouping label for the DAG view; opaque to the daemon. Tasks sharing the same plan_slug render as one stack."},
+				"model":       map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-5'), passed to the backend CLI as --model. Empty = the backend's configured default."},
 				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
 			},
 			"required": []string{"prompt", "project"},
@@ -1098,6 +1104,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		BaseBranch string   `json:"base_branch"`
 		DependsOn  []string `json:"depends_on"`
 		PlanSlug   string   `json:"plan_slug"`
+		Model      string   `json:"model"`
 		Upsert     bool     `json:"upsert"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
@@ -1215,6 +1222,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		Prompt:     p.Prompt,
 		Project:    p.Project,
 		AutoName:   autoName,
+		Model:      strings.TrimSpace(p.Model),
 		BaseBranch: strings.TrimSpace(p.BaseBranch),
 		DependsOn:  p.DependsOn,
 		PlanSlug:   strings.TrimSpace(p.PlanSlug),

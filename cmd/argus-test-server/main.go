@@ -118,7 +118,7 @@ func main() {
 		log.Fatalf("seed pr meta: %v", err)
 	}
 
-	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
 		if backend == "" {
 			backend = "bash-test"
 		}
@@ -127,6 +127,7 @@ func main() {
 			Prompt:   prompt,
 			Project:  project,
 			Backend:  backend,
+			Model:    taskModel,
 			Worktree: projDir,
 			Status:   model.StatusInProgress,
 		}

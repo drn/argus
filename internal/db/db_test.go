@@ -2195,3 +2195,21 @@ func TestDB_AddSchedule_DefaultsCreatedAt(t *testing.T) {
 		t.Errorf("CreatedAt overwritten; got %v want %v", s2.CreatedAt, custom)
 	}
 }
+
+// Task model column round-trips through Add / Get / Update.
+func TestDB_TaskModelRoundTrip(t *testing.T) {
+	d := testDB(t)
+
+	task := &model.Task{Name: "model task", Model: "sonnet"}
+	testutil.NoError(t, d.Add(task))
+
+	got, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Model, "sonnet")
+
+	got.Model = "opus"
+	testutil.NoError(t, d.Update(got))
+	got2, err := d.Get(task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got2.Model, "opus")
+}

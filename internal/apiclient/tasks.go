@@ -65,6 +65,7 @@ type CreateTaskReq struct {
 	Prompt  string `json:"prompt"`
 	Project string `json:"project"`
 	Backend string `json:"backend,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 // CreateTaskResp is the create-task response envelope.

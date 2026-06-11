@@ -28,6 +28,7 @@ type Task struct {
 	Branch     string    `json:"branch"`
 	Prompt     string    `json:"prompt"`
 	Backend    string    `json:"backend,omitempty"`
+	Model      string    `json:"model,omitempty"`
 	Worktree   string    `json:"worktree,omitempty"`
 	AgentPID   int       `json:"agent_pid,omitempty"`
 	SessionID  string    `json:"session_id,omitempty"`

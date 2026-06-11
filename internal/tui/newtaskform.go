@@ -21,8 +21,9 @@ const (
 	ntFieldProject = 0
 	ntFieldBranch  = 1
 	ntFieldBackend = 2
-	ntFieldPrompt  = 3
-	ntFieldCount   = 4
+	ntFieldModel   = 3
+	ntFieldPrompt  = 4
+	ntFieldCount   = 5
 )
 
 // maxPromptLines is the maximum visible lines for the prompt textarea.
@@ -41,10 +42,14 @@ type NewTaskForm struct {
 	cursorPos    int    // cursor position in prompt runes
 	scrollOffset int    // first visible wrapped line (for scrolling)
 	promptWidth  int    // cached inner width from last Draw, used by cursor movement
-	focused      int    // 0=project, 1=branch, 2=backend, 3=prompt
-	done         bool
-	canceled     bool
-	errMsg       string
+	focused      int    // 0=project, 1=branch, 2=backend, 3=model, 4=prompt
+
+	// model override state — free text; empty means the backend's default
+	modelInput     []rune
+	modelCursorPos int
+	done           bool
+	canceled       bool
+	errMsg         string
 
 	projects map[string]config.Project
 	backends map[string]config.Backend
@@ -173,7 +178,21 @@ func (f *NewTaskForm) Task() *model.Task {
 		Branch:  branch,
 		Prompt:  prompt,
 		Backend: backend,
+		Model:   strings.TrimSpace(string(f.modelInput)),
 	}
+}
+
+// backendDefaultModel returns the configured default model of the currently
+// selected backend, or "" when the backend has none. Used as the model
+// field's placeholder so the user sees what an empty override resolves to.
+func (f *NewTaskForm) backendDefaultModel() string {
+	if len(f.backendNames) == 0 || f.backendIdx >= len(f.backendNames) {
+		return ""
+	}
+	if b, ok := f.backends[f.backendNames[f.backendIdx]]; ok {
+		return b.Model
+	}
+	return ""
 }
 
 // resolvedBranch returns the branch to use: the typed text if non-empty,
@@ -521,6 +540,13 @@ func (f *NewTaskForm) PasteHandler() func(pastedText string, setFocus func(p tvi
 			f.branchInput = newInput
 			f.branchCursorPos += len(runes)
 			f.updateBranchAC()
+		case ntFieldModel:
+			newInput := make([]rune, 0, len(f.modelInput)+len(runes))
+			newInput = append(newInput, f.modelInput[:f.modelCursorPos]...)
+			newInput = append(newInput, runes...)
+			newInput = append(newInput, f.modelInput[f.modelCursorPos:]...)
+			f.modelInput = newInput
+			f.modelCursorPos += len(runes)
 		case ntFieldPrompt:
 			newPrompt := make([]rune, 0, len(f.prompt)+len(runes))
 			newPrompt = append(newPrompt, f.prompt[:f.cursorPos]...)
@@ -605,6 +631,8 @@ func (f *NewTaskForm) InputHandler() func(event *tcell.EventKey, setFocus func(p
 			f.handleBranchKey(event)
 		case ntFieldBackend:
 			f.handleSelectorKey(event, &f.backendIdx, len(f.backendNames))
+		case ntFieldModel:
+			f.handleModelKey(event)
 		case ntFieldPrompt:
 			f.handlePromptKey(event)
 		}
@@ -825,6 +853,88 @@ func (f *NewTaskForm) handleBranchKey(event *tcell.EventKey) {
 	}
 }
 
+// handleModelKey handles key events when the model override field is focused.
+// A plain single-line text input — no autocomplete (model names are free
+// text; the meaningful set differs per backend and even per CLI version).
+func (f *NewTaskForm) handleModelKey(event *tcell.EventKey) {
+	mod := event.Modifiers()
+	hasAlt := mod&tcell.ModAlt != 0
+
+	switch event.Key() {
+	case tcell.KeyEnter, tcell.KeyDown:
+		f.focused = ntFieldPrompt
+		return
+	case tcell.KeyUp:
+		f.focused = ntFieldBackend
+		return
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if hasAlt {
+			f.modelInput, f.modelCursorPos = widget.DeleteWordLeft(f.modelInput, f.modelCursorPos)
+			return
+		}
+		if f.modelCursorPos > 0 {
+			f.modelInput = append(f.modelInput[:f.modelCursorPos-1], f.modelInput[f.modelCursorPos:]...)
+			f.modelCursorPos--
+		}
+		return
+	case tcell.KeyCtrlW:
+		f.modelInput, f.modelCursorPos = widget.DeleteWordLeft(f.modelInput, f.modelCursorPos)
+		return
+	case tcell.KeyDelete:
+		if f.modelCursorPos < len(f.modelInput) {
+			f.modelInput = append(f.modelInput[:f.modelCursorPos], f.modelInput[f.modelCursorPos+1:]...)
+		}
+		return
+	case tcell.KeyLeft:
+		if hasAlt {
+			f.modelCursorPos = widget.WordLeftPos(f.modelInput, f.modelCursorPos)
+			return
+		}
+		if f.modelCursorPos > 0 {
+			f.modelCursorPos--
+		}
+		return
+	case tcell.KeyRight:
+		if hasAlt {
+			f.modelCursorPos = widget.WordRightPos(f.modelInput, f.modelCursorPos)
+			return
+		}
+		if f.modelCursorPos < len(f.modelInput) {
+			f.modelCursorPos++
+		}
+		return
+	case tcell.KeyHome, tcell.KeyCtrlA:
+		f.modelCursorPos = 0
+		return
+	case tcell.KeyEnd, tcell.KeyCtrlE:
+		f.modelCursorPos = len(f.modelInput)
+		return
+	case tcell.KeyCtrlU:
+		f.modelInput = f.modelInput[f.modelCursorPos:]
+		f.modelCursorPos = 0
+		return
+	case tcell.KeyCtrlK:
+		f.modelInput = f.modelInput[:f.modelCursorPos]
+		return
+	case tcell.KeyRune:
+		r := event.Rune()
+		if hasAlt {
+			switch r {
+			case 'b', 'B':
+				f.modelCursorPos = widget.WordLeftPos(f.modelInput, f.modelCursorPos)
+			case 'f', 'F':
+				f.modelCursorPos = widget.WordRightPos(f.modelInput, f.modelCursorPos)
+			case 'd', 'D':
+				f.modelInput, f.modelCursorPos = widget.DeleteWordRight(f.modelInput, f.modelCursorPos)
+			}
+			return
+		}
+		f.modelInput = append(f.modelInput[:f.modelCursorPos], append([]rune{r}, f.modelInput[f.modelCursorPos:]...)...)
+		f.modelCursorPos++
+		return
+	}
+}
+
 func (f *NewTaskForm) handleSelectorKey(event *tcell.EventKey, idx *int, count int) {
 	if count == 0 {
 		return
@@ -942,7 +1052,7 @@ func (f *NewTaskForm) handlePromptKey(event *tcell.EventKey) {
 		}
 		// Move cursor up one wrapped line if possible, otherwise leave prompt field
 		if !f.moveCursorUp() {
-			f.focused = ntFieldBackend
+			f.focused = ntFieldModel
 		}
 		return
 	case tcell.KeyDown:
@@ -1179,8 +1289,8 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 		}
 	}
 
-	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
-	modalH := 10 + visiblePromptLines + acRows + projACRows + branchACRows
+	// Modal height: border(1) + padding(1) + project(1) + projAC(P) + branch(1) + branchAC(B) + backend(1) + model(1) + label(1) + prompt(N) + ac(M) + gap(1) + help(1) + padding(1) + border(1)
+	modalH := 11 + visiblePromptLines + acRows + projACRows + branchACRows
 	if f.errMsg != "" {
 		modalH += 2
 	}
@@ -1232,6 +1342,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 
 	// Backend selector
 	f.drawSelector(screen, innerX, row, innerW, "Backend", f.backendNames, f.backendIdx, f.focused == ntFieldBackend)
+	row++
+
+	// Model override field
+	f.drawModelField(screen, innerX, row, innerW)
 	row++
 
 	// Prompt field
@@ -1544,6 +1658,72 @@ func (f *NewTaskForm) drawBranchField(screen tcell.Screen, x, y, w int) {
 			widget.DrawText(screen, inputX, inputRow, inputW, string(inputRunes), unfocusedStyle)
 		}
 	}
+}
+
+// drawModelField renders the model override text input. The placeholder shows
+// what an empty override resolves to: the selected backend's configured
+// default model, or the CLI's own default when none is configured.
+func (f *NewTaskForm) drawModelField(screen tcell.Screen, x, y, w int) {
+	focused := f.focused == ntFieldModel
+	modalBG := tcell.ColorDefault
+
+	labelStyle := theme.StyleDimmed
+	if focused {
+		labelStyle = theme.StyleTitle
+	}
+	label := "Model:"
+	labelW := utf8.RuneCountInString(label)
+	widget.DrawText(screen, x, y, w, label, labelStyle)
+
+	inputX := x + labelW + 1
+	inputW := w - labelW - 1
+	if inputW <= 0 {
+		return
+	}
+
+	inputRunes := f.modelInput
+	inputEmptyStyle := tcell.StyleDefault.Background(modalBG)
+	inputStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
+	cursorStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.Color252)
+
+	if focused {
+		for col := 0; col < inputW; col++ {
+			var ch rune
+			var st tcell.Style
+			if col < len(inputRunes) {
+				ch = inputRunes[col]
+				st = inputStyle
+			} else {
+				ch = ' '
+				st = inputEmptyStyle
+			}
+			if col == f.modelCursorPos {
+				st = cursorStyle
+			}
+			screen.SetContent(inputX+col, y, ch, nil, st)
+		}
+		return
+	}
+
+	if len(inputRunes) == 0 {
+		placeholder := "default"
+		if m := f.backendDefaultModel(); m != "" {
+			placeholder = "default: " + m
+		}
+		placeholderStyle := tcell.StyleDefault.Foreground(theme.ColorDimmed).Background(modalBG)
+		pRunes := []rune(placeholder)
+		for col := 0; col < inputW; col++ {
+			if col < len(pRunes) {
+				screen.SetContent(inputX+col, y, pRunes[col], nil, placeholderStyle)
+			} else {
+				screen.SetContent(inputX+col, y, ' ', nil, inputEmptyStyle)
+			}
+		}
+		return
+	}
+
+	unfocusedStyle := tcell.StyleDefault.Foreground(theme.ColorNormal).Background(modalBG)
+	widget.DrawText(screen, inputX, y, inputW, string(inputRunes), unfocusedStyle)
 }
 
 // drawBranchAC renders the branch autocomplete dropdown.

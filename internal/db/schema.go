@@ -15,6 +15,7 @@ func (d *DB) createTables() error {
 			branch      TEXT NOT NULL DEFAULT '',
 			prompt      TEXT NOT NULL DEFAULT '',
 			backend     TEXT NOT NULL DEFAULT '',
+			model       TEXT NOT NULL DEFAULT '',
 			worktree    TEXT NOT NULL DEFAULT '',
 			agent_pid   INTEGER NOT NULL DEFAULT 0,
 			session_id  TEXT NOT NULL DEFAULT '',
@@ -43,7 +44,8 @@ func (d *DB) createTables() error {
 			name           TEXT PRIMARY KEY,
 			command        TEXT NOT NULL,
 			prompt_flag    TEXT NOT NULL DEFAULT '',
-			resume_command TEXT NOT NULL DEFAULT ''
+			resume_command TEXT NOT NULL DEFAULT '',
+			model          TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE IF NOT EXISTS config (
 			key   TEXT PRIMARY KEY,
@@ -112,6 +114,10 @@ func (d *DB) createTables() error {
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Per-backend default model and per-task model override.
+	d.conn.Exec(`ALTER TABLE backends ADD COLUMN model TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''`)    //nolint:errcheck
 
 	// KB FTS5 full-text search table (virtual table — CREATE VIRTUAL TABLE).
 	// Note: FTS5 doesn't support UPDATE; use DELETE+INSERT in a transaction.

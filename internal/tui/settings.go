@@ -244,6 +244,10 @@ type SettingsView struct {
 	autoStartBusy    bool   // true while install/uninstall is in flight
 	autoStartMessage string // last result, shown in detail panel
 
+	// Backend default-model editing.
+	editingBackendModel string // backend name while inline-editing its model, "" otherwise
+	editModelBuf        string // buffer for the in-progress model edit
+
 	// Self-update.
 	argusSourcePath string
 	editingSource   bool   // true while inline-editing the source path
@@ -954,6 +958,9 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 		} else if sv.editingSource {
 			sv.editSourceBuf += pastedText
 			sv.rebuildRows()
+		} else if sv.editingBackendModel != "" {
+			sv.editModelBuf += pastedText
+			sv.rebuildRows()
 		} else if sv.activeEditKey != "" {
 			sv.editPluginBuf += pastedText
 			sv.rebuildRows()
@@ -963,7 +970,7 @@ func (sv *SettingsView) PasteHandler() func(pastedText string, setFocus func(p t
 
 // IsEditing returns true when the user is inline-editing any field.
 func (sv *SettingsView) IsEditing() bool {
-	return sv.editingVault != "" || sv.editingSource || sv.activeEditKey != ""
+	return sv.editingVault != "" || sv.editingSource || sv.editingBackendModel != "" || sv.activeEditKey != ""
 }
 
 // SelectedProject returns the project at the cursor, or nil.
@@ -1002,6 +1009,9 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 	}
 	if sv.editingSource {
 		return sv.handleEditSourceKey(ev)
+	}
+	if sv.editingBackendModel != "" {
+		return sv.handleEditModelKey(ev)
 	}
 	if sv.activeEditKey != "" {
 		return sv.handlePluginFieldEditKey(ev)
@@ -1122,6 +1132,11 @@ func (sv *SettingsView) HandleKey(ev *tcell.EventKey) bool {
 				return false
 			}
 			return sv.handleRunSchedule()
+		case 'm':
+			if sv.focus == focusRail {
+				return false
+			}
+			return sv.handleEditModel()
 		}
 	}
 	return false
@@ -1603,6 +1618,64 @@ func (sv *SettingsView) handleEditSourceKey(ev *tcell.EventKey) bool {
 		return true
 	case tcell.KeyRune:
 		sv.editSourceBuf += string(ev.Rune())
+		sv.rebuildRows()
+		return true
+	}
+	return false
+}
+
+// handleEditModel begins inline-editing the selected backend's default model.
+// Returns false (key unhandled) when the cursor is not on a backend row.
+func (sv *SettingsView) handleEditModel() bool {
+	be := sv.SelectedBackend()
+	if be == nil {
+		return false
+	}
+	sv.editingBackendModel = be.Name
+	sv.editModelBuf = be.Backend.Model
+	uxlog.Log("[settings] editing model for backend %s (current %q)", be.Name, be.Backend.Model)
+	return true
+}
+
+// handleEditModelKey handles keystrokes while inline-editing a backend's
+// default model. Enter persists via store.SetBackend (works in both local and
+// remote mode); Escape cancels.
+func (sv *SettingsView) handleEditModelKey(ev *tcell.EventKey) bool {
+	switch ev.Key() {
+	case tcell.KeyEnter:
+		name := sv.editingBackendModel
+		modelVal := strings.TrimSpace(sv.editModelBuf)
+		sv.editingBackendModel = ""
+		for i := range sv.backends {
+			if sv.backends[i].Name != name {
+				continue
+			}
+			sv.backends[i].Backend.Model = modelVal
+			if err := sv.database.SetBackend(name, sv.backends[i].Backend); err != nil {
+				uxlog.Log("[settings] failed to persist model for backend %s: %v", name, err)
+			} else {
+				uxlog.Log("[settings] backend %s default model set to %q", name, modelVal)
+			}
+			break
+		}
+		sv.rebuildRows()
+		return true
+	case tcell.KeyEscape:
+		sv.editingBackendModel = ""
+		uxlog.Log("[settings] model edit canceled")
+		sv.rebuildRows()
+		return true
+	case tcell.KeyDown, tcell.KeyUp, tcell.KeyLeft, tcell.KeyRight:
+		return true // consume to avoid cursor movement while editing
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if len(sv.editModelBuf) > 0 {
+			_, size := utf8.DecodeLastRuneInString(sv.editModelBuf)
+			sv.editModelBuf = sv.editModelBuf[:len(sv.editModelBuf)-size]
+			sv.rebuildRows()
+		}
+		return true
+	case tcell.KeyRune:
+		sv.editModelBuf += string(ev.Rune())
 		sv.rebuildRows()
 		return true
 	}
@@ -2436,11 +2509,25 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	widget.DrawText(screen, x, y+r, w, "  Command: "+cmd, theme.StyleDimmed)
 	r++
 	widget.DrawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, theme.StyleDimmed)
+	r++
+
+	// Default model — inline-editable via [m].
+	if sv.editingBackendModel == be.Name {
+		widget.DrawText(screen, x, y+r, w, "  Model: "+sv.editModelBuf+"▎", tcell.StyleDefault.Foreground(theme.ColorComplete))
+	} else {
+		modelVal := be.Backend.Model
+		if modelVal == "" {
+			modelVal = "(CLI default)"
+		}
+		widget.DrawText(screen, x, y+r, w, "  Model: "+modelVal, theme.StyleDimmed)
+	}
 	r += 2
 
-	hints := "[d] set as default  (read-only: backends are hardcoded)"
-	if be.Name == sv.defaultBackend {
-		hints = "(already default; backends are hardcoded)"
+	hints := "[d] set as default  [m] edit model  (command is hardcoded)"
+	if sv.editingBackendModel == be.Name {
+		hints = "[enter] save model  [esc] cancel"
+	} else if be.Name == sv.defaultBackend {
+		hints = "[m] edit model  (already default; command is hardcoded)"
 	}
 	if r < h {
 		widget.DrawText(screen, x, y+r, w, hints, theme.StyleDimmed)
