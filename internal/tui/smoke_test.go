@@ -232,6 +232,120 @@ func TestLazyScreen_EnableDisableDoesNotPanic(t *testing.T) {
 
 // ---------- 2. App smoke tests for major UI paths ----------
 
+// TestSmoke_PinToggleDoesNotClobberBackgroundRename is the end-to-end
+// regression for the "task rename isn't working on some occasions" bug: a
+// background autoname (Haiku) rename lands in the DB while the task list still
+// holds a pre-rename snapshot. Toggling pin/status on that stale snapshot used
+// to call db.Update (full row) and silently revert the name. The handlers now
+// route through SetPinned / SetStatus (partial column writes), so the name
+// survives.
+func TestSmoke_PinToggleDoesNotClobberBackgroundRename(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Background autoname rename lands in the DB after the app's initial
+	// refresh cached the old name.
+	if err := d.Rename(task.ID, "haiku-name"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The task list calls the handler with its cached struct, which still
+	// carries the pre-rename name. SetPinned was already toggled on it.
+	stale := &model.Task{ID: task.ID, Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	stale.SetPinned(true)
+	readUI(t, app.tapp, func() { app.tasklist.OnPin(stale) })
+	syncUI(t, app.tapp)
+
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Name, "haiku-name")
+	testutil.Equal(t, got.Pinned, true)
+
+	// Same guard for the status-cycle handler.
+	stale2 := &model.Task{ID: task.ID, Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	stale2.SetStatus(model.StatusInReview)
+	readUI(t, app.tapp, func() { app.tasklist.OnStatusChange(stale2) })
+	syncUI(t, app.tapp)
+
+	got, _ = d.Get(task.ID)
+	testutil.Equal(t, got.Name, "haiku-name")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
+// TestSmoke_ReconciliationUsesNameSafeStatusWrite covers the daemon-mode
+// reconciliation path (refreshTasksWithIDs): an InProgress task with no live
+// session flips to Complete. It now persists via db.SetStatus (partial write)
+// instead of the full-row db.Update, so the status flip can't carry a stale
+// name back to the DB. Note: refreshTasksWithIDs reloads a.tasks fresh at the
+// top of the call, so the struct is normally current — this test pins the
+// path's status transition + name preservation; the partial-write semantics
+// that defeat the concurrent-autoname microsecond race are proven by the
+// db.SetStatus unit tests.
+func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "haiku-name", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true) // daemonConnected = true
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Empty-but-non-nil running set: the in-progress task has no live session
+	// and is not in the start-grace window, so reconciliation flips it Complete.
+	readUI(t, app.tapp, func() {
+		// refreshTasksWithIDs is documented to run with a.mu held (its callers
+		// refreshTasks/refreshTasksLocal lock first); replicate that contract.
+		app.mu.Lock()
+		app.refreshTasksWithIDs([]string{}, nil)
+		app.mu.Unlock()
+	})
+	syncUI(t, app.tapp)
+
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.Name, "haiku-name")
+}
+
+// TestSmoke_SessionExitFlipUsesNameSafeStatusWrite covers the fourth rerouted
+// write path: handleSessionExitUI's InProgress→Complete/InReview flip. It now
+// persists via db.SetStatus (name-safe) instead of full-row db.Update, and the
+// `t.Status == InProgress` guard makes a second exit notification a no-op — the
+// guard that also prevents a double status/completed event when the daemon
+// already flipped the row before the TUI's notification arrives.
+func TestSmoke_SessionExitFlipUsesNameSafeStatusWrite(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "haiku-name", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Natural exit (not stopped) → Complete, name preserved by the partial write.
+	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
+	syncUI(t, app.tapp)
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.Name, "haiku-name")
+	firstEnded := got.EndedAt
+
+	// Second notification: row is no longer InProgress, so the guard skips the
+	// flip entirely — status and ended_at must be untouched (no re-stamp, no
+	// duplicate event).
+	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
+	syncUI(t, app.tapp)
+	got, _ = d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.EndedAt.Equal(firstEnded), true)
+}
+
 func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

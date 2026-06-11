@@ -99,6 +99,16 @@ type Store interface {
 	// SetArchived flips the archived column.
 	SetArchived(id string, archived bool) error
 
+	// SetPinned flips the pinned column (clearing archived when pinning).
+	// Partial-column write so the task-list pin toggle can't clobber a name
+	// rewritten by a background autoname rename.
+	SetPinned(id string, pinned bool) error
+
+	// SetStatus writes the status column and its derived timestamps. Partial-
+	// column write so the task-list status cycle can't clobber a name rewritten
+	// by a background autoname rename.
+	SetStatus(id string, s model.Status) error
+
 	// ListMetaByNamespace returns every (taskID → key → value) row for the
 	// given task_meta namespace across all tasks in one batch. The TUI tick
 	// uses this to read the daemon-populated "pr" review-state cache without

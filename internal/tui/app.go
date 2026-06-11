@@ -411,7 +411,11 @@ func (a *App) buildUI() {
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		// Route through SetStatus (partial column update) not Update: the
+		// task-list struct is a cached snapshot that may carry a stale name —
+		// a background autoname (Haiku) rename can land in the DB between
+		// refreshes. A full-row Update here would silently revert that rename.
+		a.db.SetStatus(t.ID, t.Status) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnArchive = func(t *model.Task) {
@@ -432,7 +436,12 @@ func (a *App) buildUI() {
 	}
 	a.tasklist.OnPin = func(t *model.Task) {
 		uxlog.Log("[tui] pin toggle: task %s (%s) pinned=%v", t.ID, t.Name, t.Pinned)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		// Route through SetPinned (partial column update) not Update for the
+		// same reason as OnStatusChange above: the cached task struct may hold
+		// a stale name that a background autoname rename has already superseded
+		// in the DB, and a full-row Update would clobber it. SetPinned also
+		// preserves the pinned/archived mutual-exclusivity invariant.
+		a.db.SetPinned(t.ID, t.Pinned) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnRename = func(t *model.Task) {
@@ -1166,11 +1175,16 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		// InProgress before resuming, so they tolerate the transient flip.
 		if !pendingRestart {
 			if stopped {
-				t.SetStatus(model.StatusInReview)
+				t.SetStatus(model.StatusInReview) // in-memory: drives nav/render below
 			} else {
 				t.SetStatus(model.StatusComplete)
 			}
-			a.db.Update(t) //nolint:errcheck
+			// Persist via the partial setter, not Update: t was Get'd fresh above,
+			// but the concurrent autoname goroutine could land a rename in the
+			// straight-line window before this write. SetStatus touches only
+			// status/timestamps, so it can't clobber that name — same reasoning
+			// as the reconciliation and OnPin/OnStatusChange paths.
+			a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
 			uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 		} else {
 			uxlog.Log("[tui] task %s exit deferred: daemon kick-restart in flight", t.ID)
@@ -1247,6 +1261,13 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 			// Force the resumed task back into InProgress; either the daemon's
 			// onFinish callback or this function's StatusInProgress branch
 			// above has just flipped it to InReview.
+			//
+			// Stays on full-row db.Update (not the name-safe db.SetStatus the
+			// other status flips use): startSession on the next line immediately
+			// writes the same struct again with SessionID+AgentPID, so a partial
+			// status setter here would be pointless — name-safety for this path
+			// hinges on startSession's multi-field write, which is the
+			// pre-existing out-of-scope case.
 			t.SetStatus(model.StatusInProgress)
 			a.db.Update(t) //nolint:errcheck
 			a.startSession(t)
@@ -1551,8 +1572,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 					uxlog.Log("[tui] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
 					continue
 				}
-				t.SetStatus(model.StatusComplete)
-				a.db.Update(t) //nolint:errcheck
+				t.SetStatus(model.StatusComplete) // in-memory: drives this frame's render
+				// Persist via the partial setter, not Update: although a.tasks was
+				// just reloaded from the DB at the top of this call, the concurrent
+				// autoname goroutine could land a rename in the microsecond window
+				// before this write. SetStatus touches only status/timestamps, so it
+				// can't clobber that name — same reasoning as OnPin/OnStatusChange.
+				a.db.SetStatus(t.ID, model.StatusComplete) //nolint:errcheck
 				uxlog.Log("[tui] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
 				delete(a.recentStarts, t.ID) // consumed; no need to check again
 			}

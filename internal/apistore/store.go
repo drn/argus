@@ -531,6 +531,49 @@ func (s *Store) SetArchived(id string, archived bool) error {
 	return s.c.UnarchiveTask(context.Background(), id)
 }
 
+// SetPinned writes only the pinned column. There is no dedicated REST endpoint,
+// so we re-fetch the current row (authoritative, fresh name) and write it back
+// via the raw endpoint mutating only Pinned through the model setter. The
+// re-fetch is what makes this safe against the name-clobber the local SetPinned
+// avoids structurally: the server's name is whatever a background autoname
+// rename last wrote, not the TUI's stale snapshot.
+func (s *Store) SetPinned(id string, pinned bool) error {
+	ctx := context.Background()
+	t, err := s.c.GetTaskRaw(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Same-value no-op, symmetric with SetStatus's guard: skip the PUT when the
+	// pinned bit already matches. Pinning has no derived side effect (no
+	// timestamp re-stamp), so this is purely a redundant-round-trip saver, but
+	// keeping the two setters symmetric avoids a confusing precedent.
+	if t.Pinned == pinned {
+		return nil
+	}
+	t.SetPinned(pinned)
+	return s.c.UpdateTaskRaw(ctx, t)
+}
+
+// SetStatus writes only the status column (and derived timestamps). Same
+// re-fetch-then-write pattern as SetPinned so the fresh server-side name is
+// preserved instead of the caller's possibly-stale snapshot.
+func (s *Store) SetStatus(id string, status model.Status) error {
+	ctx := context.Background()
+	t, err := s.c.GetTaskRaw(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Same-status no-op, mirroring local db.SetStatus's fast path. Without this,
+	// model.SetStatus(Complete) on an already-complete row would re-stamp
+	// ended_at to "now" and the PUT would persist that drift — a divergence
+	// from local mode. Skipping the write keeps the two backends in lockstep.
+	if t.Status == status {
+		return nil
+	}
+	t.SetStatus(status)
+	return s.c.UpdateTaskRaw(ctx, t)
+}
+
 // ListMetaByNamespace reconstructs a task_meta namespace from the REST task
 // list. Today only the "pr" namespace is exposed over REST (the task DTO
 // carries pr_state) — that's the sole TUI caller. Any other namespace returns
