@@ -543,6 +543,13 @@ func (s *Store) SetPinned(id string, pinned bool) error {
 	if err != nil {
 		return err
 	}
+	// Same-value no-op, symmetric with SetStatus's guard: skip the PUT when the
+	// pinned bit already matches. Pinning has no derived side effect (no
+	// timestamp re-stamp), so this is purely a redundant-round-trip saver, but
+	// keeping the two setters symmetric avoids a confusing precedent.
+	if t.Pinned == pinned {
+		return nil
+	}
 	t.SetPinned(pinned)
 	return s.c.UpdateTaskRaw(ctx, t)
 }

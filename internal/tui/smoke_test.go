@@ -299,6 +299,8 @@ func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 	// Empty-but-non-nil running set: the in-progress task has no live session
 	// and is not in the start-grace window, so reconciliation flips it Complete.
 	readUI(t, app.tapp, func() {
+		// refreshTasksWithIDs is documented to run with a.mu held (its callers
+		// refreshTasks/refreshTasksLocal lock first); replicate that contract.
 		app.mu.Lock()
 		app.refreshTasksWithIDs([]string{}, nil)
 		app.mu.Unlock()

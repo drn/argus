@@ -396,6 +396,11 @@ func (d *DB) SetArchived(id string, archived bool) error {
 // most importantly `name`, which a background autoname (Haiku) rename may have
 // just rewritten in the DB. Mirrors model.Task.SetPinned: pinning clears
 // archived; unpinning leaves archived alone.
+//
+// Unlike SetArchived, this emits no event — pin state has no event type in
+// internal/model and no consumer (hera, idle watcher, SSE) listens for it.
+// The old db.Update pin path emitted nothing pin-specific either, so this is
+// deliberate parity, not an omission.
 func (d *DB) SetPinned(id string, pinned bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

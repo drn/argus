@@ -186,16 +186,41 @@ func TestStore_SetStatus_PreservesServerName(t *testing.T) {
 // would re-stamp ended_at on the server), keeping local and remote in lockstep.
 func TestStore_SetStatus_SameStatusNoWrite(t *testing.T) {
 	f := newFakeAPI(t)
-	putCalled := false
+	getCalled, putCalled := false, false
 	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
+		switch r.Method {
+		case http.MethodPut:
 			putCalled = true
+		case http.MethodGet:
+			getCalled = true
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&model.Task{ID: "t1", Name: "haiku-name", Status: model.StatusComplete})
 	})
 
 	testutil.NoError(t, f.store().SetStatus("t1", model.StatusComplete))
+	testutil.Equal(t, getCalled, true) // re-fetch happens; the no-op is decided from the authoritative row
+	testutil.Equal(t, putCalled, false)
+}
+
+// TestStore_SetPinned_SameValueNoWrite mirrors the SetStatus no-op test: a
+// pin set to the already-current value re-fetches but issues no PUT.
+func TestStore_SetPinned_SameValueNoWrite(t *testing.T) {
+	f := newFakeAPI(t)
+	getCalled, putCalled := false, false
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalled = true
+		case http.MethodGet:
+			getCalled = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{ID: "t1", Name: "haiku-name", Pinned: true})
+	})
+
+	testutil.NoError(t, f.store().SetPinned("t1", true))
+	testutil.Equal(t, getCalled, true)
 	testutil.Equal(t, putCalled, false)
 }
 
