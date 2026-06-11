@@ -1560,8 +1560,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 					uxlog.Log("[tui] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
 					continue
 				}
-				t.SetStatus(model.StatusComplete)
-				a.db.Update(t) //nolint:errcheck
+				t.SetStatus(model.StatusComplete) // in-memory: drives this frame's render
+				// Persist via the partial setter, not Update: although a.tasks was
+				// just reloaded from the DB at the top of this call, the concurrent
+				// autoname goroutine could land a rename in the microsecond window
+				// before this write. SetStatus touches only status/timestamps, so it
+				// can't clobber that name — same reasoning as OnPin/OnStatusChange.
+				a.db.SetStatus(t.ID, model.StatusComplete) //nolint:errcheck
 				uxlog.Log("[tui] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
 				delete(a.recentStarts, t.ID) // consumed; no need to check again
 			}

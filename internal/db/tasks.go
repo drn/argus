@@ -456,6 +456,15 @@ func (d *DB) setStatusLocked(id string, s model.Status) (model.Status, error) {
 	}
 	oldStatus, _ := model.ParseStatus(oldStatusStr)
 
+	// No-op fast path: a same-status set must not touch the row. Without this,
+	// model.SetStatus(Complete) on an already-complete task would re-stamp
+	// ended_at to time.Now() and the UPDATE would persist the drift. The caller
+	// suppresses the event when oldStatus == s, so returning here is equivalent
+	// minus the wasted write.
+	if oldStatus == s {
+		return oldStatus, nil
+	}
+
 	// Reuse model.Task.SetStatus so the started_at/ended_at rules stay in one
 	// place (set started_at on first InProgress, stamp ended_at on Complete).
 	tmp := &model.Task{Status: oldStatus, StartedAt: parseTime(startedStr), EndedAt: parseTime(endedStr)}

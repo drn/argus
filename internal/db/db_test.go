@@ -259,6 +259,65 @@ func TestDB_SetStatus(t *testing.T) {
 		testutil.Equal(t, got.Status, model.StatusInReview)
 	})
 
+	t.Run("emits status_changed and completed events", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		sink := installRecordingSink(t)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusComplete))
+		if !sliceContains(sink.types(), model.EventTypeTaskStatusChanged) {
+			t.Errorf("expected %s event, got %v", model.EventTypeTaskStatusChanged, sink.types())
+		}
+		if !sliceContains(sink.types(), model.EventTypeTaskCompleted) {
+			t.Errorf("expected %s event, got %v", model.EventTypeTaskCompleted, sink.types())
+		}
+	})
+
+	t.Run("non-complete transition emits status_changed but not completed", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		sink := installRecordingSink(t)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusInReview))
+		if !sliceContains(sink.types(), model.EventTypeTaskStatusChanged) {
+			t.Errorf("expected %s event, got %v", model.EventTypeTaskStatusChanged, sink.types())
+		}
+		if sliceContains(sink.types(), model.EventTypeTaskCompleted) {
+			t.Errorf("did not expect %s event for non-complete transition", model.EventTypeTaskCompleted)
+		}
+	})
+
+	t.Run("same-status set is a no-op: no event, ended_at unchanged", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		_ = d.SetStatus(task.ID, model.StatusComplete)
+		before, _ := d.Get(task.ID)
+		sink := installRecordingSink(t)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusComplete))
+		if len(sink.types()) != 0 {
+			t.Errorf("expected no events for same-status set, got %v", sink.types())
+		}
+		after, _ := d.Get(task.ID)
+		testutil.Equal(t, after.EndedAt.Equal(before.EndedAt), true)
+	})
+
+	t.Run("Complete→InReview preserves ended_at (does not clear)", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusComplete))
+		completed, _ := d.Get(task.ID)
+		if completed.EndedAt.IsZero() {
+			t.Fatal("precondition: ended_at should be set after Complete")
+		}
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusInReview))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusInReview)
+		// Cycling back down from Complete must not wipe the recorded ended_at.
+		testutil.Equal(t, got.EndedAt.Equal(completed.EndedAt), true)
+	})
+
 	t.Run("missing task → error", func(t *testing.T) {
 		d := testDB(t)
 		testutil.ErrorIs(t, d.SetStatus("nonexistent", model.StatusComplete), ErrTaskNotFound)

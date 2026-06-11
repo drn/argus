@@ -277,6 +277,39 @@ func TestSmoke_PinToggleDoesNotClobberBackgroundRename(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
+// TestSmoke_ReconciliationUsesNameSafeStatusWrite covers the daemon-mode
+// reconciliation path (refreshTasksWithIDs): an InProgress task with no live
+// session flips to Complete. It now persists via db.SetStatus (partial write)
+// instead of the full-row db.Update, so the status flip can't carry a stale
+// name back to the DB. Note: refreshTasksWithIDs reloads a.tasks fresh at the
+// top of the call, so the struct is normally current — this test pins the
+// path's status transition + name preservation; the partial-write semantics
+// that defeat the concurrent-autoname microsecond race are proven by the
+// db.SetStatus unit tests.
+func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "haiku-name", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true) // daemonConnected = true
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Empty-but-non-nil running set: the in-progress task has no live session
+	// and is not in the start-grace window, so reconciliation flips it Complete.
+	readUI(t, app.tapp, func() {
+		app.mu.Lock()
+		app.refreshTasksWithIDs([]string{}, nil)
+		app.mu.Unlock()
+	})
+	syncUI(t, app.tapp)
+
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.Name, "haiku-name")
+}
+
 func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
