@@ -181,6 +181,24 @@ func TestStore_SetStatus_PreservesServerName(t *testing.T) {
 	testutil.Equal(t, wrote.Status, model.StatusComplete)
 }
 
+// TestStore_SetStatus_SameStatusNoWrite confirms the remote no-op fast path
+// matches local db.SetStatus: a same-status set must not issue a PUT (which
+// would re-stamp ended_at on the server), keeping local and remote in lockstep.
+func TestStore_SetStatus_SameStatusNoWrite(t *testing.T) {
+	f := newFakeAPI(t)
+	putCalled := false
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			putCalled = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{ID: "t1", Name: "haiku-name", Status: model.StatusComplete})
+	})
+
+	testutil.NoError(t, f.store().SetStatus("t1", model.StatusComplete))
+	testutil.Equal(t, putCalled, false)
+}
+
 func TestStore_SetPinned_GetError(t *testing.T) {
 	f := newFakeAPI(t)
 	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {

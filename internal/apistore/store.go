@@ -556,6 +556,13 @@ func (s *Store) SetStatus(id string, status model.Status) error {
 	if err != nil {
 		return err
 	}
+	// Same-status no-op, mirroring local db.SetStatus's fast path. Without this,
+	// model.SetStatus(Complete) on an already-complete row would re-stamp
+	// ended_at to "now" and the PUT would persist that drift — a divergence
+	// from local mode. Skipping the write keeps the two backends in lockstep.
+	if t.Status == status {
+		return nil
+	}
 	t.SetStatus(status)
 	return s.c.UpdateTaskRaw(ctx, t)
 }
