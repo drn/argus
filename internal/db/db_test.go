@@ -178,6 +178,93 @@ func TestDB_RenameIfName(t *testing.T) {
 	})
 }
 
+func TestDB_SetPinned(t *testing.T) {
+	t.Run("pin sets pinned and clears archived", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress, Archived: true}
+		_ = d.Add(task)
+		testutil.NoError(t, d.SetPinned(task.ID, true))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Pinned, true)
+		testutil.Equal(t, got.Archived, false)
+	})
+
+	t.Run("unpin leaves archived alone", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress, Pinned: true}
+		_ = d.Add(task)
+		testutil.NoError(t, d.SetPinned(task.ID, false))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Pinned, false)
+	})
+
+	// The regression this whole change exists for: a partial pin write must
+	// NOT clobber a name that a background autoname rename wrote after the
+	// caller last read the row.
+	t.Run("preserves name written after caller's read", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		// Simulate a background autoname rename landing in the DB.
+		testutil.NoError(t, d.Rename(task.ID, "haiku-name"))
+		// A pin toggle that only knows the old name must not revert it.
+		testutil.NoError(t, d.SetPinned(task.ID, true))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Name, "haiku-name")
+		testutil.Equal(t, got.Pinned, true)
+	})
+
+	t.Run("missing task → error", func(t *testing.T) {
+		d := testDB(t)
+		testutil.ErrorIs(t, d.SetPinned("nonexistent", true), ErrTaskNotFound)
+		testutil.ErrorIs(t, d.SetPinned("nonexistent", false), ErrTaskNotFound)
+	})
+}
+
+func TestDB_SetStatus(t *testing.T) {
+	t.Run("writes status and stamps ended_at on complete", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusComplete))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusComplete)
+		if got.EndedAt.IsZero() {
+			t.Error("expected ended_at to be stamped on Complete")
+		}
+	})
+
+	t.Run("first InProgress stamps started_at", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusPending}
+		_ = d.Add(task)
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusInProgress))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+		if got.StartedAt.IsZero() {
+			t.Error("expected started_at to be stamped on first InProgress")
+		}
+	})
+
+	// Same regression guard as SetPinned: a status cycle must not clobber a
+	// name a background autoname rename wrote after the caller's last read.
+	t.Run("preserves name written after caller's read", func(t *testing.T) {
+		d := testDB(t)
+		task := &model.Task{Name: "slug", Status: model.StatusInProgress}
+		_ = d.Add(task)
+		testutil.NoError(t, d.Rename(task.ID, "haiku-name"))
+		testutil.NoError(t, d.SetStatus(task.ID, model.StatusInReview))
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Name, "haiku-name")
+		testutil.Equal(t, got.Status, model.StatusInReview)
+	})
+
+	t.Run("missing task → error", func(t *testing.T) {
+		d := testDB(t)
+		testutil.ErrorIs(t, d.SetStatus("nonexistent", model.StatusComplete), ErrTaskNotFound)
+	})
+}
+
 func TestDB_Delete(t *testing.T) {
 	d := testDB(t)
 

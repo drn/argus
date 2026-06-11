@@ -126,6 +126,74 @@ func TestStore_Rename(t *testing.T) {
 	testutil.Contains(t, captured, `"name":"renamed"`)
 }
 
+// TestStore_SetPinned_PreservesServerName confirms the remote partial-pin
+// path re-fetches the authoritative row before writing, so a name a background
+// autoname rename already wrote on the server is not clobbered by the TUI's
+// stale snapshot. The store never sends a name of its own — it round-trips
+// whatever the server returns.
+func TestStore_SetPinned_PreservesServerName(t *testing.T) {
+	f := newFakeAPI(t)
+	var wrote *model.Task
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var tk model.Task
+			_ = json.NewDecoder(r.Body).Decode(&tk)
+			wrote = &tk
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&tk)
+			return
+		}
+		// GET: server's current name reflects the autoname rename.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{ID: "t1", Name: "haiku-name", Status: model.StatusInProgress})
+	})
+
+	testutil.NoError(t, f.store().SetPinned("t1", true))
+	if wrote == nil {
+		t.Fatal("server never received write")
+	}
+	testutil.Equal(t, wrote.Name, "haiku-name")
+	testutil.Equal(t, wrote.Pinned, true)
+	testutil.Equal(t, wrote.Archived, false)
+}
+
+func TestStore_SetStatus_PreservesServerName(t *testing.T) {
+	f := newFakeAPI(t)
+	var wrote *model.Task
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			var tk model.Task
+			_ = json.NewDecoder(r.Body).Decode(&tk)
+			wrote = &tk
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&tk)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&model.Task{ID: "t1", Name: "haiku-name", Status: model.StatusInProgress})
+	})
+
+	testutil.NoError(t, f.store().SetStatus("t1", model.StatusComplete))
+	if wrote == nil {
+		t.Fatal("server never received write")
+	}
+	testutil.Equal(t, wrote.Name, "haiku-name")
+	testutil.Equal(t, wrote.Status, model.StatusComplete)
+}
+
+func TestStore_SetPinned_GetError(t *testing.T) {
+	f := newFakeAPI(t)
+	f.mux.HandleFunc("/api/tasks/t1/raw", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	if err := f.store().SetPinned("t1", true); err == nil {
+		t.Fatal("expected error when fetch fails")
+	}
+	if err := f.store().SetStatus("t1", model.StatusComplete); err == nil {
+		t.Fatal("expected error when fetch fails")
+	}
+}
+
 func TestStore_PluginSections(t *testing.T) {
 	f := newFakeAPI(t)
 	f.mux.HandleFunc("/api/plugins/settings/sections", func(w http.ResponseWriter, r *http.Request) {

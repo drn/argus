@@ -390,6 +390,89 @@ func (d *DB) SetArchived(id string, archived bool) error {
 	return err
 }
 
+// SetPinned writes only the pinned column (plus the archived-clearing leg of
+// the mutual-exclusivity invariant when pinned=true). Used by the task list's
+// pin toggle so a stale in-memory snapshot can't clobber other columns —
+// most importantly `name`, which a background autoname (Haiku) rename may have
+// just rewritten in the DB. Mirrors model.Task.SetPinned: pinning clears
+// archived; unpinning leaves archived alone.
+func (d *DB) SetPinned(id string, pinned bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var (
+		res sql.Result
+		err error
+	)
+	if pinned {
+		res, err = d.conn.Exec(`UPDATE tasks SET pinned=1, archived=0 WHERE id=?`, id)
+	} else {
+		res, err = d.conn.Exec(`UPDATE tasks SET pinned=0 WHERE id=?`, id)
+	}
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+	}
+	return nil
+}
+
+// SetStatus writes only the status column and its derived timestamps
+// (started_at / ended_at), mirroring model.Task.SetStatus's timestamp rules.
+// Used by the task list's manual status-cycle so a stale in-memory snapshot
+// can't clobber other columns — most importantly `name`, which a background
+// autoname (Haiku) rename may have just rewritten in the DB. Emits the same
+// status-changed / completed events as the full-row Update path so downstream
+// consumers (hera, idle watcher) see the transition regardless of write path.
+func (d *DB) SetStatus(id string, s model.Status) error {
+	oldStatus, err := d.setStatusLocked(id, s)
+	if err != nil {
+		return err
+	}
+	if oldStatus != s {
+		events.Emit(model.EventTypeTaskStatusChanged, id, map[string]string{
+			"from": oldStatus.String(),
+			"to":   s.String(),
+		})
+		if s == model.StatusComplete {
+			events.Emit(model.EventTypeTaskCompleted, id, nil)
+		}
+	}
+	return nil
+}
+
+func (d *DB) setStatusLocked(id string, s model.Status) (model.Status, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var oldStatusStr, startedStr, endedStr string
+	if err := d.conn.QueryRow(`SELECT status, started_at, ended_at FROM tasks WHERE id=?`, id).Scan(&oldStatusStr, &startedStr, &endedStr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return model.StatusPending, fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+		}
+		return model.StatusPending, err
+	}
+	oldStatus, _ := model.ParseStatus(oldStatusStr)
+
+	// Reuse model.Task.SetStatus so the started_at/ended_at rules stay in one
+	// place (set started_at on first InProgress, stamp ended_at on Complete).
+	tmp := &model.Task{Status: oldStatus, StartedAt: parseTime(startedStr), EndedAt: parseTime(endedStr)}
+	tmp.SetStatus(s)
+
+	res, err := d.conn.Exec(`UPDATE tasks SET status=?, started_at=?, ended_at=? WHERE id=?`,
+		tmp.Status.String(), formatTime(tmp.StartedAt), formatTime(tmp.EndedAt), id)
+	if err != nil {
+		return oldStatus, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return oldStatus, fmt.Errorf("%w: %s", ErrTaskNotFound, id)
+	}
+	return oldStatus, nil
+}
+
 // FindByNameProject returns the first non-archived task matching (name,
 // project), or (nil, nil) if no match. Used by task_create idempotency to
 // detect duplicate orchestration sub-tasks before spawning a second worktree.

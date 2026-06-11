@@ -50,6 +50,8 @@ func (stubStore) DeleteBackend(string) error              { return nil }
 func (stubStore) SetDependsOn(string, []string) error     { return nil }
 func (stubStore) SetPlanSlug(string, string) error        { return nil }
 func (stubStore) SetArchived(string, bool) error          { return nil }
+func (stubStore) SetPinned(string, bool) error            { return nil }
+func (stubStore) SetStatus(string, model.Status) error    { return nil }
 func (stubStore) ListMetaByNamespace(string) (map[string]map[string]string, error) {
 	return nil, nil
 }

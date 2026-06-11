@@ -232,6 +232,51 @@ func TestLazyScreen_EnableDisableDoesNotPanic(t *testing.T) {
 
 // ---------- 2. App smoke tests for major UI paths ----------
 
+// TestSmoke_PinToggleDoesNotClobberBackgroundRename is the end-to-end
+// regression for the "task rename isn't working on some occasions" bug: a
+// background autoname (Haiku) rename lands in the DB while the task list still
+// holds a pre-rename snapshot. Toggling pin/status on that stale snapshot used
+// to call db.Update (full row) and silently revert the name. The handlers now
+// route through SetPinned / SetStatus (partial column writes), so the name
+// survives.
+func TestSmoke_PinToggleDoesNotClobberBackgroundRename(t *testing.T) {
+	d := testDB(t)
+	task := &model.Task{Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	if err := d.Add(task); err != nil {
+		t.Fatal(err)
+	}
+	app := New(d, agent.NewRunner(nil), true)
+	_, stop := wireApp(t, app)
+	defer stop()
+
+	// Background autoname rename lands in the DB after the app's initial
+	// refresh cached the old name.
+	if err := d.Rename(task.ID, "haiku-name"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The task list calls the handler with its cached struct, which still
+	// carries the pre-rename name. SetPinned was already toggled on it.
+	stale := &model.Task{ID: task.ID, Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	stale.SetPinned(true)
+	readUI(t, app.tapp, func() { app.tasklist.OnPin(stale) })
+	syncUI(t, app.tapp)
+
+	got, _ := d.Get(task.ID)
+	testutil.Equal(t, got.Name, "haiku-name")
+	testutil.Equal(t, got.Pinned, true)
+
+	// Same guard for the status-cycle handler.
+	stale2 := &model.Task{ID: task.ID, Name: "slug-abc", Status: model.StatusInProgress, Project: "p"}
+	stale2.SetStatus(model.StatusInReview)
+	readUI(t, app.tapp, func() { app.tasklist.OnStatusChange(stale2) })
+	syncUI(t, app.tapp)
+
+	got, _ = d.Get(task.ID)
+	testutil.Equal(t, got.Name, "haiku-name")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
 func TestSmoke_RestartDaemonPrompt_OpensAndSkips(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

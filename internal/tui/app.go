@@ -411,7 +411,11 @@ func (a *App) buildUI() {
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		// Route through SetStatus (partial column update) not Update: the
+		// task-list struct is a cached snapshot that may carry a stale name —
+		// a background autoname (Haiku) rename can land in the DB between
+		// refreshes. A full-row Update here would silently revert that rename.
+		a.db.SetStatus(t.ID, t.Status) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnArchive = func(t *model.Task) {
@@ -432,7 +436,12 @@ func (a *App) buildUI() {
 	}
 	a.tasklist.OnPin = func(t *model.Task) {
 		uxlog.Log("[tui] pin toggle: task %s (%s) pinned=%v", t.ID, t.Name, t.Pinned)
-		a.db.Update(t) //nolint:errcheck // best-effort; display is source of truth
+		// Route through SetPinned (partial column update) not Update for the
+		// same reason as OnStatusChange above: the cached task struct may hold
+		// a stale name that a background autoname rename has already superseded
+		// in the DB, and a full-row Update would clobber it. SetPinned also
+		// preserves the pinned/archived mutual-exclusivity invariant.
+		a.db.SetPinned(t.ID, t.Pinned) //nolint:errcheck // best-effort; display is source of truth
 		a.refreshTasksAsync()
 	}
 	a.tasklist.OnRename = func(t *model.Task) {
