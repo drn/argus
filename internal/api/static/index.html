@@ -2539,7 +2539,10 @@ function setupTerm() {
 // — sendCompose's split text→CR submit — can order them and abort the CR if
 // the text write failed. taskId is explicit (not currentTask.id) so an
 // in-flight sequenced send keeps targeting the task it started on even if
-// the user navigates away mid-chain.
+// the user navigates away mid-chain. Input history still works under the
+// split: recordInputBytes(text) accumulates without flushing (no terminal
+// \r/\n), then recordInputBytes('\r') flushes the entry — same net result
+// as the old single text+CR call.
 function postInputBytes(taskId, data) {
   recordInputBytes(taskId, data);
   return fetch(API + `/api/tasks/${taskId}/input`, {
@@ -6160,7 +6163,7 @@ function sendCompose() {
   // future iOS variant or third-party keyboard / dictation tool that lands a
   // trailing newline in the textarea via an unrecognized inputType still
   // submits. `sendCompose` itself strips trailing newlines from `ci.value`
-  // before the `+ '\r'` append (see top of function), which is the belt for
+  // before queueing the split text→CR send, which is the belt for
   // dictation tools that mutate `.value` directly and fire no event at all —
   // neither beforeinput nor input ever runs in that path, so layers 1 and 2
   // can't see it. The first two layers gate on stamps so neither double-fires

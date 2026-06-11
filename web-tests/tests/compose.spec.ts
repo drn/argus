@@ -20,6 +20,9 @@ async function login(page) {
 // internal/notify/service.go and here for the compose bar. These helpers pin
 // that contract: collect every /input POST body, wait for the trailing CR,
 // then assert the exact two-write sequence.
+// The page.on('request') listener is never removed — safe because every test
+// gets a fresh page object, but don't call this twice on the same page or the
+// earlier call's array keeps collecting.
 function collectInputPosts(page): string[] {
   const posts: string[] = [];
   page.on('request', req => {
@@ -966,9 +969,11 @@ test.describe('compose bar', () => {
 
     // Now Enter on a non-slash value sends normally (split text + CR).
     await ci.fill('hello');
+    const sendPosts = collectInputPosts(page);
     const crReq = waitForCR(page);
     await ci.press('Enter');
     await crReq;
+    expect(sendPosts).toEqual(['hello', '\r']);
   });
 
   test('skill autocomplete: tapping a dropdown item inserts and closes', async ({ page }, testInfo) => {
