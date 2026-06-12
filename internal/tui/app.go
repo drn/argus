@@ -339,8 +339,11 @@ func (a *App) SetFocusTracker(ft focusTrackerIface) {
 //
 // Stale-session reconciliation is owned by the runner-holder (daemon Serve, or
 // in-process startup in cmd/argus/main.go) — they sweep InProgress → InReview
-// before the TUI sees the DB, so the TUI's tick reconciler only handles
-// "session exited while we were watching" (always Complete).
+// before the TUI sees the DB. The TUI's tick reconciler is a backstop for an
+// InProgress row whose session has since vanished from the daemon's list; it
+// lands such rows in InReview (never Complete — it has no exit event and cannot
+// know the agent finished cleanly; the authoritative Complete comes only from an
+// observed clean exit via transitionTaskOnExit / handleSessionExitUI).
 func New(database store.Store, runner agent.SessionProvider, daemonConnected bool) *App {
 	// Use the terminal's default background instead of tview's hard-coded black.
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
@@ -1268,6 +1271,11 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 	// re-loads the conversation and renders history at the wider size. Skip
 	// the post-exit clearing/navigation below — startSession will reattach
 	// the agent pane in place.
+	//
+	// Gate on !cleanExit (not just "stopped"): a rerender kick always exits
+	// non-clean because KickRerender calls sess.Stop() — and if the agent instead
+	// crashed during the kick window, restarting it is still the right move, so
+	// any non-clean exit with a pending rerender flag continues here.
 	//
 	// Only restart if the user is still viewing this task. If they navigated
 	// away after the kick, fall through to the normal exit path so the task

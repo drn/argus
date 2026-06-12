@@ -1626,10 +1626,33 @@ func TestReconcileSkipsOnNilRunning(t *testing.T) {
 	app.refreshTasksWithIDs(nil, nil)
 
 	for _, task := range app.tasks {
-		if task.Status == model.StatusComplete {
-			t.Errorf("task %q was wrongly reconciled to Complete on nil runningIDs", task.Name)
+		if task.Status != model.StatusInProgress {
+			t.Errorf("task %q was wrongly reconciled (%s) on nil runningIDs; must stay InProgress", task.Name, task.Status)
 		}
 	}
+}
+
+// TestReconcileSkipsNonInProgress pins the guard that protects the daemon's
+// authoritative exit-driven flip: reconciliation must NEVER touch a row that has
+// already left InProgress. This is the race backstop — if the daemon (or the
+// exit handler) has already flipped a row to Complete or InReview, a later tick
+// that still sees the session absent must leave it alone, never re-flip it.
+func TestReconcileSkipsNonInProgress(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.daemonConnected = true
+
+	d.Add(&model.Task{ID: "done", Name: "already-complete", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
+	d.Add(&model.Task{ID: "rev", Name: "already-review", Status: model.StatusInReview, Project: "p", CreatedAt: time.Now()})
+
+	// Empty (non-nil) running set: neither task has a live session, but both have
+	// already left InProgress, so reconciliation must skip them entirely.
+	app.refreshTasksWithIDs([]string{}, []string{})
+
+	got, _ := d.Get("done")
+	testutil.Equal(t, got.Status, model.StatusComplete) // daemon's clean-exit Complete preserved
+	got, _ = d.Get("rev")
+	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
 func TestReconcileWorksOnEmptyRunning(t *testing.T) {

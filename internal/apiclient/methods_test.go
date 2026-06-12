@@ -328,8 +328,16 @@ func TestSession_RunStream_ExitEventClosesSession(t *testing.T) {
 	p.OnSessionExit(func(taskID string, info SessionExitInfo) { exited <- info })
 	s := p.getOrCreateSession("t1")
 	select {
-	case <-exited:
-		// good — event:exit fired the callback
+	case info := <-exited:
+		// On a clean server `event: exit` (err==nil), the inverted convention sets
+		// Stopped=true / Err="" so the daemon.ExitInfo mapped from this in remote.go
+		// reads CleanExit()==false → remote tasks land InReview, never Complete (the
+		// SSE client can't observe the real exit code). Pins that load-bearing
+		// convention so a future "fix" of Stopped:err==nil can't silently flip
+		// remote clean exits to Complete.
+		testutil.Equal(t, info.Stopped, true)
+		testutil.Equal(t, info.Err, "")
+		testutil.Equal(t, info.StreamLost, false)
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnSessionExit never fired after server `event: exit`")
 	}
