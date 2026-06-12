@@ -38,9 +38,10 @@ type Provider struct {
 }
 
 // SessionExitInfo carries the reason a session ended back to the TUI. The
-// shape mirrors daemon.ExitInfo so the TUI's existing HandleSessionExit /
-// NotifySessionExit handlers can consume both transports without specialised
-// branches.
+// shape mirrors daemon.ExitInfo so the remote path can reuse the TUI's existing
+// HandleSessionExit handler (cmd/argus/remote.go) without a specialised branch.
+// (NotifySessionExit is the in-process callback and is never reached from the
+// apiclient transport.)
 type SessionExitInfo struct {
 	Err        string
 	Stopped    bool

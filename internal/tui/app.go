@@ -1143,7 +1143,9 @@ func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutp
 }
 
 // HandleSessionExit is called from the daemon client's OnSessionExit callback.
-// It updates task status and refreshes the UI.
+// It flips task status (via handleSessionExitUI) and refreshes the UI — EXCEPT
+// when info.StreamLost is set, in which case the process may still be alive, so
+// it logs and returns WITHOUT touching status (the row stays as-is).
 func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	if info.StreamLost {
 		uxlog.Log("[tui] stream lost: task=%s — status unchanged, process may still be alive", taskID)
