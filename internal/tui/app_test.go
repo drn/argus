@@ -1642,8 +1642,8 @@ func TestReconcileSkipsNonInProgress(t *testing.T) {
 	app := New(d, agent.NewRunner(nil), false)
 	app.daemonConnected = true
 
-	d.Add(&model.Task{ID: "done", Name: "already-complete", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()})
-	d.Add(&model.Task{ID: "rev", Name: "already-review", Status: model.StatusInReview, Project: "p", CreatedAt: time.Now()})
+	testutil.NoError(t, d.Add(&model.Task{ID: "done", Name: "already-complete", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "rev", Name: "already-review", Status: model.StatusInReview, Project: "p", CreatedAt: time.Now()}))
 
 	// Empty (non-nil) running set: neither task has a live session, but both have
 	// already left InProgress, so reconciliation must skip them entirely.
@@ -2605,7 +2605,7 @@ func TestApp_NotifySessionExit_CrashGoesToInReview(t *testing.T) {
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
 	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
-	d.Add(task)
+	testutil.NoError(t, d.Add(task))
 	app.refreshTasks()
 
 	_, stop := wireApp(t, app)
@@ -2631,7 +2631,7 @@ func TestApp_HandleSessionExit_StreamLost(t *testing.T) {
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
 	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
-	d.Add(task)
+	testutil.NoError(t, d.Add(task))
 
 	// StreamLost means "stream disconnected but the process may still be alive" —
 	// HandleSessionExit must return early WITHOUT flipping status (not InReview,
@@ -2650,7 +2650,7 @@ func TestApp_HandleSessionExit_NonCleanGoesToInReview(t *testing.T) {
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
 	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
-	d.Add(task)
+	testutil.NoError(t, d.Add(task))
 	app.refreshTasks()
 
 	_, stop := wireApp(t, app)

@@ -276,7 +276,7 @@ func TestStream_ExitClean(t *testing.T) {
 func TestRmSessRPCFail(t *testing.T) {
 	fd := newFakeDaemon(t)
 	c := fakeClient(t, fd)
-	c.rpc.Close() // break the transport so GetExitInfo fails inside removeSession
+	_ = c.rpc.Close() // break the transport so GetExitInfo fails inside removeSession
 
 	exitCh := make(chan daemon.ExitInfo, 1)
 	c.OnSessionExit(func(_ string, info daemon.ExitInfo) {
