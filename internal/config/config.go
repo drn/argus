@@ -123,6 +123,11 @@ func PermissionModeLabel(mode string) string {
 type Backend struct {
 	Command    string `toml:"command"`
 	PromptFlag string `toml:"prompt_flag"`
+	// Model is the default model for this backend, injected by agent.BuildCmd
+	// as `--model <value>` for known backend CLIs (claude, codex, pi). Empty
+	// means the CLI's own default. A per-task model (model.Task.Model) takes
+	// precedence over this value.
+	Model string `toml:"model"`
 }
 
 // ProjectSandboxConfig holds per-project sandbox overrides.

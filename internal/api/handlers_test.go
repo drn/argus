@@ -38,12 +38,13 @@ func testServer(t *testing.T) (*Server, *db.DB) {
 	t.Cleanup(func() { d.Close() })
 
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
 		task := &model.Task{
 			Name:    name,
 			Prompt:  prompt,
 			Project: project,
 			Backend: backend,
+			Model:   taskModel,
 			Status:  model.StatusInProgress,
 		}
 		d.Add(task)
@@ -272,6 +273,43 @@ func TestHandleCreateTask(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, got.Backend, "codex")
 	})
+
+	// Same end-to-end pin for the per-task model override.
+	t.Run("persists model override", func(t *testing.T) {
+		srv, d := testServer(t)
+		mux := srv.routes()
+		body := `{"name":"with-model","prompt":"do it","project":"proj","model":"opus"}`
+		req := authedReq("POST", "/api/tasks", body)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		testutil.Equal(t, w.Code, http.StatusCreated)
+		var resp map[string]any
+		testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		got, err := d.Get(resp["id"].(string))
+		testutil.NoError(t, err)
+		testutil.Equal(t, got.Model, "opus")
+	})
+}
+
+// Forks inherit the source task's model alongside its backend so the new
+// session starts with the same agent configuration.
+func TestHandleForkTask_InheritsModel(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	src := &model.Task{Name: "src-m", Status: model.StatusComplete, Project: "proj1", Backend: "claude", Model: "opus", Prompt: "p"}
+	testutil.NoError(t, d.Add(src))
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("POST", "/api/tasks/"+src.ID+"/fork", `{}`))
+	testutil.Equal(t, w.Code, http.StatusCreated)
+
+	var resp map[string]any
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	got, err := d.Get(resp["id"].(string))
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Backend, "claude")
+	testutil.Equal(t, got.Model, "opus")
 }
 
 // TestHandleResumeTask covers the resume endpoint paths: 404 on missing task,
@@ -3801,7 +3839,7 @@ func TestHandleCreateTask_CreatorError(t *testing.T) {
 	testutil.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	runner := agent.NewRunner(nil)
-	creator := func(name, prompt, project, backend string, _ bool) (*model.Task, error) {
+	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
 		return nil, fmt.Errorf("forced fail")
 	}
 	srv := New(d, runner, "test-token", creator, nil)

@@ -289,7 +289,7 @@ func TestStore_CreateTask(t *testing.T) {
 		})
 	})
 
-	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude")
+	got, err := f.store().CreateTask(context.Background(), "", "do a thing", "proj", "claude", "opus")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.ID, "t9")
 	testutil.Equal(t, got.Status, model.StatusInProgress)
@@ -298,6 +298,7 @@ func TestStore_CreateTask(t *testing.T) {
 	testutil.Contains(t, captured, `"prompt":"do a thing"`)
 	testutil.Contains(t, captured, `"project":"proj"`)
 	testutil.Contains(t, captured, `"backend":"claude"`)
+	testutil.Contains(t, captured, `"model":"opus"`)
 }
 
 // When the post-create raw fetch fails, CreateTask still returns a minimal
@@ -312,7 +313,7 @@ func TestStore_CreateTask_RawFetchFallback(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
 
-	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	got, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "")
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.ID, "t9")
 	testutil.Equal(t, got.Name, "slug")
@@ -326,7 +327,7 @@ func TestStore_CreateTask_ErrorPropagates(t *testing.T) {
 	f.mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found", http.StatusInternalServerError)
 	})
-	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "")
+	_, err := f.store().CreateTask(context.Background(), "n", "p", "proj", "", "")
 	if err == nil {
 		t.Fatal("expected error from CreateTask")
 	}

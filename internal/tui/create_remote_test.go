@@ -6,12 +6,20 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apistore"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
 )
+
+// Compile-time canary: *apistore.Store must keep satisfying the structural
+// remoteTaskCreator interface. The tui package deliberately doesn't import
+// apistore in production code, so without this assertion a signature drift
+// (like CreateTask gaining a parameter) would only surface at runtime in
+// --remote mode as "task creation requires local mode".
+var _ remoteTaskCreator = (*apistore.Store)(nil)
 
 // stubStore satisfies store.Store with zero-value returns. It deliberately
 // does NOT implement remoteTaskCreator, so it exercises createTaskTransactional's
@@ -63,13 +71,13 @@ func (stubStore) PluginSections() ([]settings.Section, error) {
 // store.Store and remoteTaskCreator — the remote-mode shape.
 type creatorStore struct {
 	stubStore
-	gotName, gotPrompt, gotProject, gotBackend string
-	ret                                        *model.Task
-	err                                        error
+	gotName, gotPrompt, gotProject, gotBackend, gotModel string
+	ret                                                  *model.Task
+	err                                                  error
 }
 
-func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend string) (*model.Task, error) {
-	c.gotName, c.gotPrompt, c.gotProject, c.gotBackend = name, prompt, project, backend
+func (c *creatorStore) CreateTask(_ context.Context, name, prompt, project, backend, taskModel string) (*model.Task, error) {
+	c.gotName, c.gotPrompt, c.gotProject, c.gotBackend, c.gotModel = name, prompt, project, backend, taskModel
 	return c.ret, c.err
 }
 
@@ -83,6 +91,7 @@ func TestCreateTaskTransactional_RemoteRoutesThroughCreateTask(t *testing.T) {
 		Prompt:     "build it",
 		Project:    "proj",
 		Backend:    "claude",
+		Model:      "opus",
 		BaseBranch: "develop", // ignored over REST — must not error
 	})
 	testutil.NoError(t, err)
@@ -90,6 +99,7 @@ func TestCreateTaskTransactional_RemoteRoutesThroughCreateTask(t *testing.T) {
 	testutil.Equal(t, cs.gotPrompt, "build it")
 	testutil.Equal(t, cs.gotProject, "proj")
 	testutil.Equal(t, cs.gotBackend, "claude")
+	testutil.Equal(t, cs.gotModel, "opus")
 	// startGen is double-bumped (before + after) so a concurrent tick skips
 	// reconciliation while the SSE stream attaches.
 	testutil.Equal(t, a.startGen.Load(), before+2)

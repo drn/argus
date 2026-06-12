@@ -3,6 +3,7 @@ package apistore
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,21 +156,25 @@ func TestStore_Backends(t *testing.T) {
 	s, _ := newStore(t, func(mux *http.ServeMux) {
 		mux.HandleFunc("/api/backends", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"backends":[{"name":"claude","command":"claude","prompt_flag":"-p"}]}`))
+			_, _ = w.Write([]byte(`{"backends":[{"name":"claude","command":"claude","prompt_flag":"-p","model":"sonnet"}]}`))
 		})
 	})
 	got, err := s.Backends()
 	testutil.NoError(t, err)
 	testutil.Equal(t, got["claude"].Command, "claude")
 	testutil.Equal(t, got["claude"].PromptFlag, "-p")
+	testutil.Equal(t, got["claude"].Model, "sonnet")
 }
 
 func TestStore_SetBackend_And_Delete(t *testing.T) {
 	var postHits, delHits int32
+	var postBody atomic.Value
 	s, _ := newStore(t, func(mux *http.ServeMux) {
 		mux.HandleFunc("/api/backends", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == "POST" {
 				atomic.AddInt32(&postHits, 1)
+				b, _ := io.ReadAll(r.Body)
+				postBody.Store(string(b))
 				w.WriteHeader(http.StatusCreated)
 			}
 		})
@@ -180,10 +185,13 @@ func TestStore_SetBackend_And_Delete(t *testing.T) {
 			}
 		})
 	})
-	testutil.NoError(t, s.SetBackend("foo", config.Backend{Command: "cmd"}))
+	testutil.NoError(t, s.SetBackend("foo", config.Backend{Command: "cmd", Model: "opus"}))
 	testutil.NoError(t, s.DeleteBackend("foo"))
 	testutil.Equal(t, atomic.LoadInt32(&postHits), int32(1))
 	testutil.Equal(t, atomic.LoadInt32(&delHits), int32(1))
+	// Model must survive the wire round-trip — a BackendJSON without the
+	// model field silently wipes the stored default on every settings save.
+	testutil.Contains(t, postBody.Load().(string), `"model":"opus"`)
 }
 
 func TestStore_Schedules_RoundTrip(t *testing.T) {

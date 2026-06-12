@@ -88,6 +88,16 @@ func ResolveBackend(task *model.Task, cfg config.Config) (config.Backend, error)
 	return backend, nil
 }
 
+// ResolveModel returns the effective model for a task: the per-task override
+// when set, otherwise the backend's default model. Empty means "let the CLI
+// pick its own default" — BuildCmd injects no --model flag in that case.
+func ResolveModel(task *model.Task, backend config.Backend) string {
+	if m := strings.TrimSpace(task.Model); m != "" {
+		return m
+	}
+	return strings.TrimSpace(backend.Model)
+}
+
 // ResolveDir returns the working directory for a task.
 // Returns the project path if configured, otherwise empty string.
 func ResolveDir(task *model.Task, cfg config.Config) string {
@@ -136,6 +146,16 @@ func hasPermissionFlags(command string) bool {
 	return strings.Contains(command, "--permission-mode") ||
 		strings.Contains(command, "--dangerously-skip-permissions") ||
 		strings.Contains(command, "--allow-dangerously-skip-permissions")
+}
+
+// hasModelFlag reports whether a backend command already names the --model
+// flag as a standalone token ("--model <x>", "--model=<x>", or a trailing
+// "--model"). A bare substring check would also match hypothetical flags
+// like --model-format and wrongly suppress injection.
+func hasModelFlag(command string) bool {
+	return strings.Contains(command, "--model ") ||
+		strings.Contains(command, "--model=") ||
+		strings.HasSuffix(command, "--model")
 }
 
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
@@ -326,6 +346,20 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		}
 	}
 
+	// Inject the resolved model (task override > backend default) for known
+	// backend CLIs — claude, codex, and pi all accept --model. Scoped like
+	// permission-mode injection so custom/bare commands never receive the
+	// flag, and skipped when the command already names --model (a hand-edited
+	// command always wins). Computed once here because the codex resume branch
+	// below replaces cmdStr and must re-append the flag itself.
+	modelFlag := ""
+	if m := ResolveModel(task, backend); m != "" &&
+		(IsClaudeBackend(backend.Command) || isCodex || isPi) &&
+		!hasModelFlag(backend.Command) {
+		modelFlag = " --model " + shellQuote(m)
+	}
+	cmdStr += modelFlag
+
 	if resume {
 		// Codex resumes by replacing the base command unconditionally — that's
 		// codex's contract and TestBuildCmd_Resume pins it. Claude and pi only
@@ -335,7 +369,8 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 		// than emitting an obviously-broken `--resume ''` flag.
 		switch {
 		case isCodex:
-			cmdStr = codexResumeCmd + " " + shellQuote(task.SessionID)
+			// Flags must precede the positional session-id argument.
+			cmdStr = codexResumeCmd + modelFlag + " " + shellQuote(task.SessionID)
 		case isPi && task.SessionID != "":
 			// Pi-style: append --session <UUID> (pi accepts partial UUIDs).
 			cmdStr += " --session " + shellQuote(task.SessionID)

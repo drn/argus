@@ -296,6 +296,10 @@ type createTaskReq struct {
 	// per-project / global default. Validated against the configured backends
 	// before the task is created.
 	Backend string `json:"backend"`
+	// Model overrides the backend's default model for this task. Empty = use
+	// the backend's configured default (or the CLI's own default). Free text —
+	// not validated, since the meaningful set differs per backend CLI.
+	Model string `json:"model"`
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +337,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		name = sanitizeName(req.Prompt)
 	}
 
-	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, autoName)
+	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, autoName)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -362,7 +366,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	// 50MB total cap + headroom for the multipart envelope and text fields.
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentTotalBytes+1<<20)
 
-	name, prompt, project, backend, atts, err := parseMultipartTaskForm(r)
+	name, prompt, project, backend, taskModel, atts, err := parseMultipartTaskForm(r)
 	if err != nil {
 		writeJSON(w, statusForUploadErr(err), map[string]string{"error": err.Error()})
 		return
@@ -396,6 +400,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 		Prompt:      prompt,
 		Project:     project,
 		Backend:     backend,
+		Model:       taskModel,
 		Attachments: atts,
 		AutoName:    autoName,
 	})
@@ -843,9 +848,10 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
-	// Forks inherit the source task's backend so the new task starts with the
-	// same agent rather than silently defaulting back to the global setting.
-	task, err := s.createTask(name, prompt, project, src.Backend, false)
+	// Forks inherit the source task's backend and model so the new task starts
+	// with the same agent rather than silently defaulting back to the global
+	// setting.
+	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1547,6 +1553,9 @@ type backendJSON struct {
 	Name       string `json:"name"`
 	Command    string `json:"command"`
 	PromptFlag string `json:"prompt_flag,omitempty"`
+	// Model is the backend's default model, injected as --model at session
+	// start unless the task carries its own override.
+	Model string `json:"model,omitempty"`
 }
 
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
@@ -1557,7 +1566,7 @@ func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]backendJSON, 0, len(backends))
 	for name, b := range backends {
-		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag})
+		out = append(out, backendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model})
 	}
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].Name < out[j-1].Name; j-- {
@@ -1585,7 +1594,7 @@ func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and command are required"})
 		return
 	}
-	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag}); err != nil {
+	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1609,7 +1618,7 @@ func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
 		return
 	}
-	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag}); err != nil {
+	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

@@ -10,7 +10,7 @@ func (d *DB) Backends() (map[string]config.Backend, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.conn.Query(`SELECT name, command, prompt_flag FROM backends ORDER BY name`)
+	rows, err := d.conn.Query(`SELECT name, command, prompt_flag, model FROM backends ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("query backends: %w", err)
 	}
@@ -20,7 +20,7 @@ func (d *DB) Backends() (map[string]config.Backend, error) {
 	for rows.Next() {
 		var name string
 		var b config.Backend
-		if err := rows.Scan(&name, &b.Command, &b.PromptFlag); err != nil {
+		if err := rows.Scan(&name, &b.Command, &b.PromptFlag, &b.Model); err != nil {
 			continue
 		}
 		backends[name] = b
@@ -44,8 +44,8 @@ func (d *DB) SetBackend(name string, b config.Backend) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag) VALUES (?, ?, ?)`,
-		name, b.Command, b.PromptFlag)
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO backends (name, command, prompt_flag, model) VALUES (?, ?, ?, ?)`,
+		name, b.Command, b.PromptFlag, b.Model)
 	return err
 }
 

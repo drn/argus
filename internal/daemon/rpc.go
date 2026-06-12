@@ -62,6 +62,7 @@ func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
 		Prompt:    req.Prompt,
 		Project:   req.Project,
 		Backend:   req.Backend,
+		Model:     req.Model,
 		Worktree:  req.Worktree,
 		Branch:    req.Branch,
 	}

@@ -130,6 +130,7 @@ func (c *Client) Start(task *model.Task, cfg config.Config, rows, cols uint16, r
 		Prompt:    task.Prompt,
 		Project:   task.Project,
 		Backend:   task.Backend,
+		Model:     task.Model,
 		Worktree:  task.Worktree,
 		Branch:    task.Branch,
 		Rows:      rows,

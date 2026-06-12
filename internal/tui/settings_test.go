@@ -1596,3 +1596,186 @@ func TestSettings_HandleEdit_Schedule(t *testing.T) {
 	testutil.Equal(t, got, true)
 	testutil.Equal(t, called, true)
 }
+
+// --- Backend default-model editing ---
+
+// selectBackendRow moves the settings cursor onto the first backend row.
+func selectBackendRow(t *testing.T, sv *SettingsView) *backendEntry {
+	t.Helper()
+	sv.setCategory(catBackends)
+	for i, row := range sv.rows {
+		if row.kind == srBackend {
+			sv.cursor = i
+			break
+		}
+	}
+	be := sv.SelectedBackend()
+	if be == nil {
+		t.Fatal("test setup: no backend row found")
+	}
+	return be
+}
+
+func TestSettingsView_MKeyStartsModelEdit(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+
+	handled := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	testutil.Equal(t, handled, true)
+	testutil.Equal(t, sv.editingBackendModel, be.Name)
+	testutil.Equal(t, sv.IsEditing(), true)
+}
+
+func TestSettingsView_MKeyOnNonBackendRow(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catSandbox)
+	sv.cursor = 0
+	handled := sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	testutil.Equal(t, handled, false)
+	testutil.Equal(t, sv.editingBackendModel, "")
+}
+
+func TestSettingsView_ModelEditSavePersists(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range "opus" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	testutil.Equal(t, sv.editingBackendModel, "")
+	// In-memory entry updated.
+	testutil.Equal(t, sv.SelectedBackend().Backend.Model, "opus")
+	// Persisted through the store — survives a full Refresh.
+	sv.Refresh()
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "opus")
+}
+
+func TestSettingsView_ModelEditEscapeCancels(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range "xyz" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+
+	testutil.Equal(t, sv.editingBackendModel, "")
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "")
+}
+
+func TestSettingsView_ModelEditBackspaceAndTrim(t *testing.T) {
+	sv := testSettingsView(t)
+	be := selectBackendRow(t, sv)
+	name := be.Name
+
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+	for _, r := range " opusX" {
+		sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, r, 0))
+	}
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyBackspace2, 0, 0)) // delete the X
+	// Arrow keys are consumed (no cursor movement) while editing.
+	testutil.Equal(t, sv.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, 0)), true)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	backends, err := sv.database.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends[name].Model, "opus") // leading space trimmed
+}
+
+func TestSettingsView_ModelEditPaste(t *testing.T) {
+	sv := testSettingsView(t)
+	selectBackendRow(t, sv)
+	sv.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'm', 0))
+
+	sv.PasteHandler()("sonnet", nil)
+	testutil.Equal(t, sv.editModelBuf, "sonnet")
+}
+
+// The backend detail panel's hints row must fit inside the minimum detail
+// area the pane layout guarantees (svDetailReserve - 1 rows after the
+// separator) — for both the default backend (tallest case: star row) and a
+// non-default backend, in normal and editing states. Pins the
+// svDetailReserve bump that came with the model row.
+func TestSettingsView_BackendDetailHintsFitReserve(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	testutil.NoError(t, database.SetBackend("zz-extra", config.Backend{Command: "echo"}))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(func() { sim.Fini() })
+	sim.SetSize(80, 24)
+
+	rowText := func(row int) string {
+		var b strings.Builder
+		w, _ := sim.Size()
+		for x := 0; x < w; x++ {
+			s, _, _ := sim.Get(x, row)
+			b.WriteString(s)
+		}
+		return b.String()
+	}
+	paneText := func(h int) string {
+		var all strings.Builder
+		for row := 0; row < h; row++ {
+			all.WriteString(rowText(row))
+			all.WriteString("\n")
+		}
+		return all.String()
+	}
+
+	minDetailH := svDetailReserve - 1 // separator consumes one reserved row
+
+	sv.setCategory(catBackends)
+	for _, key := range []string{sv.defaultBackend, "zz-extra"} {
+		for i, row := range sv.rows {
+			if row.kind == srBackend && row.key == key {
+				sv.cursor = i
+			}
+		}
+		be := sv.SelectedBackend()
+		if be == nil || be.Name != key {
+			t.Fatalf("test setup: could not select backend %q", key)
+		}
+
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, minDetailH, sv.SelectedRow())
+		if got := paneText(minDetailH); !strings.Contains(got, "[m] edit model") {
+			t.Errorf("backend %q: hints row missing at minimum detail height %d:\n%s", key, minDetailH, got)
+		}
+
+		// Editing state swaps the hints line — it must fit too.
+		sv.editingBackendModel = key
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, minDetailH, sv.SelectedRow())
+		if got := paneText(minDetailH); !strings.Contains(got, "[enter] save model") {
+			t.Errorf("backend %q: editing hints missing at minimum detail height %d:\n%s", key, minDetailH, got)
+		}
+		sv.editingBackendModel = ""
+
+		// At a comfortable height the model row AND the hints must both
+		// render (no bottom-anchor overlap with content).
+		const tallH = 12
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, tallH, sv.SelectedRow())
+		got := paneText(tallH)
+		if !strings.Contains(got, "Model: (CLI default)") {
+			t.Errorf("backend %q: model row missing at height %d:\n%s", key, tallH, got)
+		}
+		if !strings.Contains(got, "[m] edit model") {
+			t.Errorf("backend %q: hints missing at height %d:\n%s", key, tallH, got)
+		}
+	}
+}

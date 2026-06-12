@@ -706,6 +706,7 @@ func testServerWithTasks() (*Server, *mockTaskDB, *mockStopper) {
 			Project:    input.Project,
 			Branch:     "argus/" + input.Name,
 			Prompt:     input.Prompt,
+			Model:      input.Model,
 			BaseBranch: input.BaseBranch,
 			DependsOn:  input.DependsOn,
 		}
@@ -815,6 +816,25 @@ func TestTaskCreate(t *testing.T) {
 		testutil.Equal(t, cr.IsError, true)
 		testutil.Contains(t, cr.Content[0].Text, "prompt is required")
 	})
+}
+
+// The optional `model` argument flows through TaskCreateInput to the creator
+// (and from there to HeadlessCreateTask → agent.CreateAndStart in production).
+func TestTaskCreate_ModelPassthrough(t *testing.T) {
+	s, taskDB, _ := testServerWithTasks()
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "task_create",
+		Arguments: json.RawMessage(`{"name": "with-model", "prompt": "go", "project": "myapp", "model": " opus "}`),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	if cr.IsError {
+		t.Fatalf("unexpected error: %s", cr.Content[0].Text)
+	}
+	created := taskDB.tasks[len(taskDB.tasks)-1]
+	testutil.Equal(t, created.Name, "with-model")
+	testutil.Equal(t, created.Model, "opus") // trimmed by the tool handler
 }
 
 func TestTaskList(t *testing.T) {

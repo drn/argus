@@ -138,3 +138,40 @@ func mapKeys(m map[string]any) []string {
 	}
 	return out
 }
+
+// The backend default-model round-trips through the CRUD surface: POST and
+// PUT persist it, GET /api/backends exposes it for the SPA / remote TUI.
+func TestHandleBackends_ModelRoundTrip(t *testing.T) {
+	srv, d := testServer(t)
+	mux := srv.routes()
+
+	req := masterReq("POST", "/api/backends", `{"name":"foo","command":"cmd","model":"sonnet"}`)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusCreated)
+	got, _ := d.Backends()
+	testutil.Equal(t, got["foo"].Model, "sonnet")
+
+	req = masterReq("PUT", "/api/backends/foo", `{"command":"cmd","model":"opus"}`)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	testutil.Equal(t, w.Code, http.StatusOK)
+	got, _ = d.Backends()
+	testutil.Equal(t, got["foo"].Model, "opus")
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, authedReq("GET", "/api/backends", ""))
+	testutil.Equal(t, w.Code, http.StatusOK)
+	var resp struct {
+		Backends []backendJSON `json:"backends"`
+	}
+	testutil.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	found := false
+	for _, b := range resp.Backends {
+		if b.Name == "foo" {
+			found = true
+			testutil.Equal(t, b.Model, "opus")
+		}
+	}
+	testutil.True(t, found)
+}

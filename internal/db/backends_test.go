@@ -58,3 +58,25 @@ func TestDB_KBMetadataMap(t *testing.T) {
 		testutil.Equal(t, m["notes/b.md"], mtB.Unix())
 	})
 }
+
+// Backend default-model column round-trips through SetBackend / Backends.
+func TestDB_BackendModelRoundTrip(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetBackend("custom", config.Backend{Command: "claude", PromptFlag: "-p", Model: "opus"}))
+
+	backends, err := d.Backends()
+	testutil.NoError(t, err)
+	b, ok := backends["custom"]
+	if !ok {
+		t.Fatal("custom backend missing")
+	}
+	testutil.Equal(t, b.Command, "claude")
+	testutil.Equal(t, b.PromptFlag, "-p")
+	testutil.Equal(t, b.Model, "opus")
+
+	// Upsert clears the model when set back to empty.
+	testutil.NoError(t, d.SetBackend("custom", config.Backend{Command: "claude"}))
+	backends, err = d.Backends()
+	testutil.NoError(t, err)
+	testutil.Equal(t, backends["custom"].Model, "")
+}
