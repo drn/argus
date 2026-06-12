@@ -128,7 +128,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` | Switch tabs (Tasks / Settings)                                  |
+| `1` / `2` / `3` | Switch tabs (Tasks / DAG / Settings); `Tab` / `Shift+Tab` cycle |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 

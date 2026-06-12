@@ -11,10 +11,11 @@ This document is the setup/install guide. For the conceptual overview see the **
 #    (a) TUI:  Settings → Knowledge Base → Enter on "KB: Disabled", set Metis path
 #    (b) config: edit ~/.argus/config.toml  ([kb] block below)
 
-# 2. Restart the daemon so it starts the MCP server + indexer and injects config
-argus daemon stop          # the TUI auto-starts a fresh daemon on next launch
+# 2. Restart the daemon so it picks up the change (starts the MCP server +
+#    indexer, injects MCP config). Relaunching the TUI spawns a fresh daemon:
+argus daemon stop          # then relaunch `argus` — the TUI auto-starts a new daemon
 
-# 3. Verify
+# 3. Verify — with the daemon running (these CLI calls talk to it over its socket):
 argus kb status            # → document count, vault path, MCP port
 argus kb search "onboarding"
 ```
@@ -45,7 +46,7 @@ If you'd rather not install Obsidian, just create a plain directory of markdown 
 
 ## Option A — enable in the TUI (recommended)
 
-1. Open Argus, press `g` (or your settings key) to reach **Settings**, and select the **Knowledge Base** category.
+1. Open Argus and press `3` to reach the **Settings** tab (or cycle tabs with `Tab` / `Shift+Tab`), then select the **Knowledge Base** category.
 2. The first row reads `KB: Disabled`. Press `Enter` to toggle it to `KB: Enabled`.
 3. The second row is `Metis: <path>`. Press `Enter` to edit it. As you type, the field autocompletes from iCloud Obsidian vaults discovered on this machine (any directory containing a `.obsidian/` folder under `~/Library/Mobile Documents/iCloud~md~obsidian/Documents`). You can also type any absolute path — the vault does **not** have to be an iCloud/Obsidian vault; any directory of `.md` files works.
 4. Both rows will show **`(restart required)`** until the daemon restarts with the new values.
