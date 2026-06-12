@@ -8,7 +8,7 @@
   <a href="https://github.com/drn/argus/actions/workflows/ci.yml"><img src="https://github.com/drn/argus/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
-Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of Claude Code and Codex sessions side by side, each in its own git worktree, all under a single keyboard-driven UI — and reach the same swarm from your phone, from another laptop, from another agent, or from your own notes.
+Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of agents — Claude Code, Codex, or any LLM CLI, cloud or local — side by side, each in its own git worktree, all under a single keyboard-driven UI — and reach the same swarm from your phone, from another laptop, from another agent, or from your own notes.
 
 <p align="center">
   <img src="screenshots/task-list.png" width="405" alt="Task list with project folders, live agent preview, and inline git status">
@@ -25,6 +25,7 @@ Coding agents are cheap to start and expensive to babysit. Five `claude` tabs be
 - **An idle detector** quietly promotes any agent waiting for input to "in review" — so a glance at the list tells you who needs you.
 - **A built-in HTTP API + PWA** mirrors every keystroke from your phone, so the dashboard travels with you.
 - **A built-in MCP server** lets agents talk to Argus directly — search your notes, spawn other agents, or hand off work between models.
+- **Harness- and model-agnostic by design.** Argus orchestrates the workflow, not a single tool. Every backend is just a templated command, so the same worktree → branch → review → notify loop is identical whether the agent underneath is Claude Code, Codex, opencode, or a local model via ollama — pick the harness and model per task, keep one standardized workflow across all of them.
 
 ## The Three Pillars
 
