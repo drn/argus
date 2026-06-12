@@ -57,6 +57,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Sample a few bindings to catch regressions in the section list.
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
+	testutil.Contains(t, body, "task switcher")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {
