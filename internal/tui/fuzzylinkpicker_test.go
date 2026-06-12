@@ -35,6 +35,24 @@ func TestFuzzyMatch(t *testing.T) {
 	}
 }
 
+func TestFuzzyLinkPickerModal_DrawVariousSizesNoPanic(t *testing.T) {
+	links := []Link{
+		{Label: "GitHub PR", URL: "https://github.com/foo/bar/pull/1"},
+		{Label: "Docs", URL: "https://docs.example.com"},
+	}
+	// Widths 1–9 drive the filter-field width negative; Draw must clamp it
+	// rather than panic on the scroll-truncation slice.
+	cases := []struct{ w, h int }{{1, 10}, {5, 20}, {8, 20}, {9, 20}, {30, 5}, {80, 24}, {200, 60}, {0, 0}}
+	for _, tc := range cases {
+		m := NewFuzzyLinkPickerModal(links)
+		m.SetRect(0, 0, tc.w, tc.h)
+		screen := tcell.NewSimulationScreen("")
+		testutil.NoError(t, screen.Init())
+		screen.SetSize(tc.w, tc.h)
+		m.Draw(screen) // must not panic
+	}
+}
+
 func TestFuzzyLinkPickerModal_Refilter(t *testing.T) {
 	links := []Link{
 		{Label: "GitHub PR", URL: "https://github.com/foo/bar/pull/1"},
