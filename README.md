@@ -73,6 +73,8 @@ Argus indexes your Obsidian vault as a SQLite FTS5 store and serves it over MCP.
 
 Pair this with the MCP task tools and an agent can read a meeting note, decide what to build, spawn its own worker tasks, and archive itself when done — all in a single conversation.
 
+Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** to enable it, point it at a vault, and verify.
+
 ## Also In The Box
 
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
@@ -126,7 +128,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` | Switch tabs (Tasks / Settings)                                  |
+| `1` / `2` / `3` | Switch tabs (Tasks / DAG / Settings); `Tab` / `Shift+Tab` cycle |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -526,6 +528,8 @@ macOS `sandbox-exec` (SBPL) controls for agent processes.
 | `enabled` | bool | `false` | Run the knowledge-base MCP server. |
 | `http_port` | int | `7742` | KB server port. |
 | `metis_vault_path` | string | iCloud Metis vault | Obsidian vault indexed for the KB. |
+
+Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.md)**.
 
 #### `[api]`
 
