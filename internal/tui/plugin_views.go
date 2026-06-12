@@ -388,7 +388,11 @@ func (a *App) startPluginReconnect(m *pluginViewMount) {
 	a.statusbar.SetPluginMode(true, m.view.Title, nil)
 	uxlog.Log("[plugin-view] reconnecting %q (overlay shown)", m.view.Title)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// G118 false positive: cancel intentionally outlives this function — it is
+	// stored on m.reconnectCancel and invoked by stopPluginReconnect (teardown)
+	// and finishPluginReconnect (successful resume). gosec can't see the
+	// cross-function call through the struct field.
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored on m.reconnectCancel, called in stopPluginReconnect/finishPluginReconnect
 	m.reconnectCancel = cancel
 	go a.pluginReconnectLoop(ctx, m)
 }
