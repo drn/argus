@@ -1647,7 +1647,11 @@ func TestReconcileSkipsNonInProgress(t *testing.T) {
 
 	// Empty (non-nil) running set: neither task has a live session, but both have
 	// already left InProgress, so reconciliation must skip them entirely.
+	// Hold a.mu to honor refreshTasksWithIDs' documented caller contract (its
+	// production callers lock first).
+	app.mu.Lock()
 	app.refreshTasksWithIDs([]string{}, []string{})
+	app.mu.Unlock()
 
 	got, _ := d.Get("done")
 	testutil.Equal(t, got.Status, model.StatusComplete) // daemon's clean-exit Complete preserved
@@ -2626,8 +2630,45 @@ func TestApp_HandleSessionExit_StreamLost(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
 
+	// StreamLost means "stream disconnected but the process may still be alive" —
+	// HandleSessionExit must return early WITHOUT flipping status (not InReview,
+	// not Complete). The row stays InProgress so a reconnect can resume cleanly.
 	app.HandleSessionExit("t1", daemon.ExitInfo{StreamLost: true})
+
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusInProgress)
+}
+
+// TestApp_HandleSessionExit_NonCleanGoesToInReview pins the daemon-client entry
+// point for a non-clean exit (non-empty Err, not stopped — e.g. a crash / exit
+// 127): CleanExit() is false → the row must land InReview, not Complete.
+func TestApp_HandleSessionExit_NonCleanGoesToInReview(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	done := make(chan struct{})
+	go func() {
+		app.HandleSessionExit("t1", daemon.ExitInfo{Err: "exit status 127"})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("HandleSessionExit blocked")
+	}
+	syncUI(t, app.tapp)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
 func TestApp_HandleSessionExit_DispatchesToUI(t *testing.T) {
