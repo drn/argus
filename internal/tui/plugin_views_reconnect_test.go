@@ -117,6 +117,43 @@ func TestSmoke_PluginView_ReconnectShowsOverlayAndResumes(t *testing.T) {
 	}
 }
 
+// TestSmoke_PluginView_ReconnectAfterResume pins the multi-bounce path: after a
+// successful resume adopts the new connection, a SECOND disconnect on that
+// connection re-enters the reconnect loop and resumes again. hera can bounce
+// more than once, so the onClose wiring must survive across resumes.
+func TestSmoke_PluginView_ReconnectAfterResume(t *testing.T) {
+	app, _, fake, stop := newReconnectApp(t)
+	defer stop()
+
+	// First bounce → reconnect → resume.
+	fake.fireClose(errors.New("EOF #1"))
+	syncUI(t, app.tapp)
+	waitFor(t, 2*time.Second, func() bool { return fake.focusedCount.Load() >= 2 })
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.activePlugin.reconnecting, false)
+	})
+
+	// Second bounce on the freshly adopted connection must re-enter reconnect.
+	fake.setDialErr(errors.New("refused again"))
+	fake.fireClose(errors.New("EOF #2"))
+	syncUI(t, app.tapp)
+	var reconnecting, hasOverlay bool
+	readUI(t, app.tapp, func() {
+		reconnecting = app.activePlugin != nil && app.activePlugin.reconnecting
+		hasOverlay = app.pages.HasPage(pluginReconnectPage)
+	})
+	testutil.Equal(t, reconnecting, true)
+	testutil.Equal(t, hasOverlay, true)
+
+	// Daemon returns again → second resume.
+	fake.setDialErr(nil)
+	waitFor(t, 2*time.Second, func() bool { return fake.focusedCount.Load() >= 3 })
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.activePlugin.reconnecting, false)
+		testutil.Equal(t, app.pages.HasPage(pluginReconnectPage), false)
+	})
+}
+
 func TestSmoke_PluginView_EscExitsDuringReconnect(t *testing.T) {
 	app, sim, fake, stop := newReconnectApp(t)
 	defer stop()
