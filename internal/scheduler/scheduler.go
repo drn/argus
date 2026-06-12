@@ -21,10 +21,11 @@ import (
 // would not buy us anything because cron expressions can't fire more often.
 const defaultTickInterval = time.Minute
 
-// TaskCreator creates a task. Same shape used by the HTTP API so the
-// scheduler plugs into the existing headless flow. backend overrides the
-// per-project / global default backend when non-empty; empty falls back to
-// the configured default.
+// TaskCreator creates a task via the same headless flow the HTTP API uses.
+// backend overrides the per-project / global default backend when non-empty;
+// empty falls back to the configured default. Deliberately narrower than
+// api.TaskCreator: schedules carry no per-task model override, so fired tasks
+// always use the backend's default model (agent.ResolveModel).
 type TaskCreator func(name, prompt, project, backend string) (*model.Task, error)
 
 // Scheduler is the cron service. It owns its own ticker goroutine; methods

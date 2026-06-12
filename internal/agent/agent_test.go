@@ -1827,3 +1827,17 @@ func TestBuildCmd_ModelInjection_ShellQuoted(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], `claude --model 'x'\''; rm -rf /' -- 'go'`)
 }
+
+// Command-wins × codex resume: when the backend command bakes --model, no
+// task/backend model is injected into the resume command either (and the
+// baked flag is lost because codex resume replaces the command — the
+// pre-existing codex resume contract).
+func TestBuildCmd_ModelInjection_CodexResumeCommandWins(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Backends["codex"] = config.Backend{Command: "codex --dangerously-bypass-approvals-and-sandbox --model gpt-4"}
+
+	task := &model.Task{Name: "t", Backend: "codex", Model: "gpt-5", SessionID: "abc-123", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox 'abc-123'")
+}

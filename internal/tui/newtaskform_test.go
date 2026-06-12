@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/config"
@@ -1777,4 +1778,63 @@ func TestNewTaskForm_ModelFieldPaste(t *testing.T) {
 	f.PasteHandler()("sonnet", nil)
 	testutil.Equal(t, string(f.modelInput), "sonnet")
 	testutil.Equal(t, f.modelCursorPos, 6)
+}
+
+// simRowText scrapes one row of a SimulationScreen into a string.
+func simRowText(sim tcell.SimulationScreen, row int) string {
+	w, _ := sim.Size()
+	var b strings.Builder
+	for x := 0; x < w; x++ {
+		s, _, _ := sim.Get(x, row)
+		b.WriteString(s)
+	}
+	return b.String()
+}
+
+// Draw smoke for the model field: the label renders, the placeholder shows
+// the backend's default model when unfocused+empty, typed text renders when
+// focused, and the row sits between Backend and Prompt.
+func TestNewTaskForm_DrawModelField(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude", Model: "sonnet"}}, "b",
+	)
+	f.SetRect(0, 0, 80, 24)
+	sim := drawSim(t)
+
+	// Unfocused + empty → placeholder with the backend default.
+	f.focused = ntFieldPrompt
+	f.Draw(sim)
+	var modelRow, backendRow, promptRow int
+	_, h := sim.Size()
+	for row := 0; row < h; row++ {
+		line := simRowText(sim, row)
+		if strings.Contains(line, "Model:") {
+			modelRow = row
+			testutil.Contains(t, line, "default: sonnet")
+		}
+		if strings.Contains(line, "Backend:") {
+			backendRow = row
+		}
+		if strings.Contains(line, "Prompt:") {
+			promptRow = row
+		}
+	}
+	if modelRow == 0 {
+		t.Fatal("Model row not rendered")
+	}
+	if backendRow >= modelRow || modelRow >= promptRow {
+		t.Errorf("row order backend=%d model=%d prompt=%d, want backend < model < prompt", backendRow, modelRow, promptRow)
+	}
+
+	// Focused + typed text → text renders (placeholder gone).
+	f.focused = ntFieldModel
+	f.modelInput = []rune("opus")
+	f.modelCursorPos = 4
+	f.Draw(sim)
+	line := simRowText(sim, modelRow)
+	testutil.Contains(t, line, "opus")
+	if strings.Contains(line, "default: sonnet") {
+		t.Error("placeholder should not render once text is typed")
+	}
 }

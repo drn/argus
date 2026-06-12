@@ -2512,14 +2512,16 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	r++
 
 	// Default model — inline-editable via [m].
-	if sv.editingBackendModel == be.Name {
-		widget.DrawText(screen, x, y+r, w, "  Model: "+sv.editModelBuf+"▎", tcell.StyleDefault.Foreground(theme.ColorComplete))
-	} else {
-		modelVal := be.Backend.Model
-		if modelVal == "" {
-			modelVal = "(CLI default)"
+	if r < h {
+		if sv.editingBackendModel == be.Name {
+			widget.DrawText(screen, x, y+r, w, "  Model: "+sv.editModelBuf+"▎", tcell.StyleDefault.Foreground(theme.ColorComplete))
+		} else {
+			modelVal := be.Backend.Model
+			if modelVal == "" {
+				modelVal = "(CLI default)"
+			}
+			widget.DrawText(screen, x, y+r, w, "  Model: "+modelVal, theme.StyleDimmed)
 		}
-		widget.DrawText(screen, x, y+r, w, "  Model: "+modelVal, theme.StyleDimmed)
 	}
 	r += 2
 

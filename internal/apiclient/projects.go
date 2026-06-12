@@ -59,6 +59,7 @@ type BackendJSON struct {
 	Name       string `json:"name"`
 	Command    string `json:"command"`
 	PromptFlag string `json:"prompt_flag,omitempty"`
+	Model      string `json:"model,omitempty"`
 }
 
 // ListBackends returns the configured agent backends (sorted by name).

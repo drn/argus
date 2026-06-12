@@ -6,12 +6,20 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/apistore"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/settings"
 	"github.com/drn/argus/internal/tui/store"
 )
+
+// Compile-time canary: *apistore.Store must keep satisfying the structural
+// remoteTaskCreator interface. The tui package deliberately doesn't import
+// apistore in production code, so without this assertion a signature drift
+// (like CreateTask gaining a parameter) would only surface at runtime in
+// --remote mode as "task creation requires local mode".
+var _ remoteTaskCreator = (*apistore.Store)(nil)
 
 // stubStore satisfies store.Store with zero-value returns. It deliberately
 // does NOT implement remoteTaskCreator, so it exercises createTaskTransactional's

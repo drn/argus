@@ -432,7 +432,7 @@ func (s *Store) Backends() (map[string]config.Backend, error) {
 	}
 	out := make(map[string]config.Backend, len(wire))
 	for _, b := range wire {
-		out[b.Name] = config.Backend{Command: b.Command, PromptFlag: b.PromptFlag}
+		out[b.Name] = config.Backend{Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model}
 	}
 	return out, nil
 }
@@ -443,7 +443,7 @@ func (s *Store) Backends() (map[string]config.Backend, error) {
 // POST first; on 409 conflict or 5xx, fall back to PUT. Other 4xx surface
 // so an invalid payload (empty command) isn't masked by a second 4xx.
 func (s *Store) SetBackend(name string, b config.Backend) error {
-	body := apiclient.BackendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag}
+	body := apiclient.BackendJSON{Name: name, Command: b.Command, PromptFlag: b.PromptFlag, Model: b.Model}
 	err := s.c.CreateBackend(context.Background(), body)
 	if err == nil {
 		return nil
