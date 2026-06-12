@@ -105,6 +105,30 @@ argus daemon install   # macOS — auto-start at login via launchd
 
 To open the PWA, enable **Remote API** in Settings, then point your phone at `http://<your-machine>:7743/` and paste the master token from `~/.argus/api-token`. Tailscale recommended.
 
+## Getting Started
+
+### Prerequisites
+
+- **Go 1.26+** — to `go install` the binary above.
+- **Git** — every project Argus drives must be a git repository.
+- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex` and `pi` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
+- **Optional:** [`gh`](https://cli.github.com) (GitHub CLI) powers the open-repo / open-PR keys and the PR-status indicator — features degrade quietly if it's absent. [Tailscale](https://tailscale.com) is recommended for reaching the PWA from your phone.
+
+### First run
+
+```bash
+argus
+```
+
+The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
+
+1. **Register a project.** Press `3` for the **Settings** tab, move to the **Projects** section, and either:
+   - press `i` to **quick-add** — point it at a directory (e.g. `~/src`) and Argus scans for git repos; select the ones to import; or
+   - press `n` to add one **manually** — give it a name and the absolute path to the repo root (base branch and backend are optional; they fall back to git's default and `claude`).
+2. **Create your first task.** Press `1` for the **Tasks** tab, then `n`. Pick the project, type a prompt, and hit `Enter`. Argus cuts a fresh worktree at `~/.argus/worktrees/<project>/<task>` on an `argus/<task>` branch, starts the agent, and drops you into the agent view with its live terminal.
+3. **Drive it.** `Enter` reopens an agent, `s` advances status, `ctrl+z` toggles the git/file side panes, `ctrl+q` steps back out. The full keymap is in the [Keybindings](#keybindings) reference below.
+4. **Go mobile (optional).** Enable **Remote API** in Settings and open the PWA as described under [Install](#install).
+
 ---
 
 ## Reference
