@@ -29,6 +29,26 @@ func TestTask_Elapsed_Completed(t *testing.T) {
 	}
 }
 
+func TestTask_Elapsed_InProgress_ReturnsPositive(t *testing.T) {
+	// Running task (StartedAt set, EndedAt zero) must report live positive
+	// elapsed via time.Since — the clamp must NOT swallow the normal path.
+	task := &Task{StartedAt: time.Now().Add(-10 * time.Minute)}
+	d := task.Elapsed()
+	if d < 9*time.Minute || d > 11*time.Minute {
+		t.Errorf("expected ~10m for in-progress task, got %v", d)
+	}
+}
+
+func TestTask_Elapsed_ZeroDuration_StartEqualsEnd(t *testing.T) {
+	// A task that started and ended at the same instant is a legitimate zero,
+	// not a skew artifact; Elapsed returns 0 (boundary: not negative).
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	task := &Task{StartedAt: start, EndedAt: start}
+	if d := task.Elapsed(); d != 0 {
+		t.Errorf("expected 0 for equal start/end, got %v", d)
+	}
+}
+
 func TestTask_Elapsed_FutureStartedAt_ClampsToZero(t *testing.T) {
 	// A backward wall-clock correction can leave StartedAt in the future on a
 	// running task; Elapsed must floor at 0 rather than report negative time.
@@ -77,6 +97,10 @@ func TestTask_ElapsedString(t *testing.T) {
 			StartedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 			EndedAt:   time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC),
 		}, "2d"},
+		{"ended before started", Task{
+			StartedAt: time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC),
+			EndedAt:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
