@@ -141,14 +141,14 @@ const svMaxACVisible = 8
 //     below it has room to breathe. Tuned to fit the longest category
 //     (Projects) without dominating the pane.
 //   - svDetailReserve is the row budget reserved below the items list:
-//     1 separator + 9 detail rows minimum. The tallest fixed detail is the
-//     default-backend Backends view (title, star, gap, Config header,
-//     command, prompt flag, model, gap, hints) — its hints row lands at
-//     detail row 8, so the detail area needs ≥ 9 rows. Pinned by
+//     1 separator + 6 detail rows minimum. Detail renderers whose content
+//     can exceed that budget bottom-anchor their hints row at y+h-1 (see
+//     renderProjectDetail and renderBackendDetail) so the key bindings stay
+//     visible at any pane height. Pinned by
 //     TestSettingsView_BackendDetailHintsFitReserve.
 const (
 	svMaxItemsVisible = 8
-	svDetailReserve   = 10
+	svDetailReserve   = 7
 )
 
 // settingsRow is a single row in the settings section list.
@@ -2515,8 +2515,9 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	widget.DrawText(screen, x, y+r, w, "  Prompt Flag: "+be.Backend.PromptFlag, theme.StyleDimmed)
 	r++
 
-	// Default model — inline-editable via [m].
-	if r < h {
+	// Default model — inline-editable via [m]. Guarded against landing on
+	// the bottom-anchored hints row at minimal pane heights.
+	if r < h-1 {
 		if sv.editingBackendModel == be.Name {
 			widget.DrawText(screen, x, y+r, w, "  Model: "+sv.editModelBuf+"▎", tcell.StyleDefault.Foreground(theme.ColorComplete))
 		} else {
@@ -2527,7 +2528,6 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 			widget.DrawText(screen, x, y+r, w, "  Model: "+modelVal, theme.StyleDimmed)
 		}
 	}
-	r += 2
 
 	hints := "[d] set as default  [m] edit model  (command is hardcoded)"
 	if sv.editingBackendModel == be.Name {
@@ -2535,8 +2535,10 @@ func (sv *SettingsView) renderBackendDetail(screen tcell.Screen, x, y, w, h int,
 	} else if be.Name == sv.defaultBackend {
 		hints = "[m] edit model  (already default; command is hardcoded)"
 	}
-	if r < h {
-		widget.DrawText(screen, x, y+r, w, hints, theme.StyleDimmed)
+	// Bottom-anchored like renderProjectDetail so the key bindings stay
+	// visible at any pane height the layout can produce.
+	if h > 2 {
+		widget.DrawText(screen, x, y+h-1, w, hints, theme.StyleDimmed)
 	}
 }
 

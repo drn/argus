@@ -1764,5 +1764,18 @@ func TestSettingsView_BackendDetailHintsFitReserve(t *testing.T) {
 			t.Errorf("backend %q: editing hints missing at minimum detail height %d:\n%s", key, minDetailH, got)
 		}
 		sv.editingBackendModel = ""
+
+		// At a comfortable height the model row AND the hints must both
+		// render (no bottom-anchor overlap with content).
+		const tallH = 12
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, tallH, sv.SelectedRow())
+		got := paneText(tallH)
+		if !strings.Contains(got, "Model: (CLI default)") {
+			t.Errorf("backend %q: model row missing at height %d:\n%s", key, tallH, got)
+		}
+		if !strings.Contains(got, "[m] edit model") {
+			t.Errorf("backend %q: hints missing at height %d:\n%s", key, tallH, got)
+		}
 	}
 }
