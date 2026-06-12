@@ -478,7 +478,41 @@ func (a *App) finishPluginReconnect(m *pluginViewMount, conn pluginConnector) {
 		uxlog.Log("[plugin-view] reconnected %q — resuming (resize+focus handshake)", m.view.Title)
 		// Drive the resume handshake now (also re-runs every afterDraw).
 		a.reconcilePluginViewSize()
+		// A warm-restarted plugin daemon can render its first frame within tens
+		// of ms of the new connection — before it applies this initial resize —
+		// and then stays stuck at its default (tiny) size until the NEXT resize
+		// it processes. Schedule one delayed re-send so the plugin gets a resize
+		// after it has settled, mimicking the manual-resize that heals it.
+		a.scheduleResumeResize(m, conn)
 	})
+}
+
+// scheduleResumeResize re-sends the resize envelope once, a short delay after a
+// successful reconnect, to defeat the plugin's warm-restart first-frame race
+// (see resumeResizeDelay). Runs its wait on a goroutine, then forces the
+// reconciler to re-emit on the tview goroutine. Guards against teardown and a
+// newer connection: it only fires while `conn` is still the active mount's live
+// connection and the view is not mid-reconnect again.
+func (a *App) scheduleResumeResize(m *pluginViewMount, conn pluginConnector) {
+	if a.tapp == nil {
+		return
+	}
+	delay := a.resumeResizeDelay
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		<-timer.C
+		a.tapp.QueueUpdateDraw(func() {
+			if a.activePlugin != m || m.conn != conn || m.reconnecting {
+				return // torn down, replaced, or reconnecting again
+			}
+			// Force the reconciler past its dedupe so the (unchanged) size is
+			// re-emitted — this is the resize the plugin actually applies.
+			m.lastSentCols, m.lastSentRows = 0, 0
+			a.reconcilePluginViewSize()
+			uxlog.Log("[plugin-view] resume: delayed resize re-send to %q", m.view.Title)
+		})
+	}()
 }
 
 // stopPluginReconnect cancels an in-flight reconnect: stops the redial loop,

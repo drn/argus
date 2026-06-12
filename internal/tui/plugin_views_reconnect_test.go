@@ -52,6 +52,9 @@ func newReconnectApp(t *testing.T) (*App, tcell.SimulationScreen, *fakePluginCon
 
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, true)
+	// Shrink the post-resume delayed resize re-send so the test doesn't wait
+	// the 300ms production default (and so the re-send fires within the test).
+	app.resumeResizeDelay = 5 * time.Millisecond
 	fake := &fakePluginConnector{}
 	app.pluginConnFactory = func(url string, onBytes func([]byte), onControl func([]byte), in <-chan []byte) pluginConnector {
 		fake.onBytes = onBytes
@@ -161,6 +164,37 @@ func TestSmoke_PluginView_ReconnectAfterResume(t *testing.T) {
 		testutil.Equal(t, app.activePlugin.reconnecting, false)
 		testutil.Equal(t, app.pages.HasPage(pluginReconnectPage), false)
 	})
+}
+
+// TestSmoke_PluginView_ResumeReSendsResizeAfterDelay pins the fix for the
+// warm-restart first-frame race: after a successful resume, argus re-sends the
+// resize envelope once more a short delay later (defeating a plugin that
+// rendered before applying the initial resize and would otherwise stay tiny
+// until a manual resize). Asserts an EXTRA resize lands after the resume's
+// immediate one.
+func TestSmoke_PluginView_ResumeReSendsResizeAfterDelay(t *testing.T) {
+	app, _, fake, stop := newReconnectApp(t)
+	defer stop()
+
+	// Drop and immediately let the redial succeed → resume.
+	fake.fireClose(errors.New("EOF"))
+	syncUI(t, app.tapp)
+	waitFor(t, 2*time.Second, func() bool { return fake.focusedCount.Load() >= 2 })
+
+	// Three resizes total: initial activation, the resume's immediate re-emit,
+	// and the delayed post-resume re-send (resumeResizeDelay=5ms in
+	// newReconnectApp). The delayed one is QueueUpdateDraw'd, so drain on poll.
+	waitFor(t, 2*time.Second, func() bool {
+		syncUI(t, app.tapp)
+		return len(fake.resizeSnapshot()) >= 3
+	})
+	last := fake.resizeSnapshot()
+	// Every re-send matches the live viewport — never a tiny/zero size.
+	for i, got := range last {
+		if got[0] <= 2 || got[1] <= 2 {
+			t.Fatalf("resize %d had bad dims %dx%d", i, got[0], got[1])
+		}
+	}
 }
 
 func TestSmoke_PluginView_EscExitsDuringReconnect(t *testing.T) {

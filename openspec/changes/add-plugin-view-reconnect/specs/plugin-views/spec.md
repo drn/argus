@@ -64,7 +64,7 @@ When the WebSocket connection to an active plugin view drops unexpectedly (the p
 
 ### Requirement: Seamless resume after reconnect
 
-When a reconnect dial succeeds, argus SHALL wire a fresh connection to the same plugin pane, dismiss the reconnecting overlay, and perform the same initial resize-then-focus handshake as a new connection — sending the current post-layout viewport as a resize envelope followed by a focus envelope — so the plugin re-renders at the correct size without any manual quit/relaunch.
+When a reconnect dial succeeds, argus SHALL wire a fresh connection to the same plugin pane, dismiss the reconnecting overlay, and perform the same initial resize-then-focus handshake as a new connection — sending the current post-layout viewport as a resize envelope followed by a focus envelope — so the plugin re-renders at the correct size without any manual quit/relaunch. Because a warm-restarted plugin daemon may render its first frame before it applies that initial resize, argus SHALL re-send the resize envelope once more a short time after the resume so the plugin receives a resize after it has settled and re-renders at the correct size.
 
 #### Scenario: resume re-sends resize and focus
 
@@ -75,6 +75,11 @@ When a reconnect dial succeeds, argus SHALL wire a fresh connection to the same 
 
 - **WHEN** a reconnect succeeds
 - **THEN** the last-sent size and focus-sent state are reset so the first envelope on the new connection is sent even though the viewport size did not change
+
+#### Scenario: resume re-sends the resize after a short delay
+
+- **WHEN** a reconnect dial succeeds and the resume completes
+- **THEN** argus re-sends the current resize envelope once more a short time later (defeating a warm-restarted plugin that rendered before applying the first resize), with the real viewport dimensions — never a tiny or zero size
 
 ### Requirement: Exit while reconnecting
 
