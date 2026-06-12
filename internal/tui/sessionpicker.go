@@ -214,6 +214,10 @@ func (m *SessionPickerModal) Draw(screen tcell.Screen) {
 	before := string(m.query[:m.qCursor])
 	after := string(m.query[m.qCursor:])
 	fieldW := innerW - 2
+	// On a very narrow terminal innerW can be ≤ 2, making fieldW ≤ 0; a
+	// negative fieldW underflows the scroll-truncation slice below into an
+	// out-of-range panic, so clamp to ≥ 1.
+	fieldW = max(fieldW, 1)
 	val := before + "█" + after
 	if runes := []rune(val); len(runes) > fieldW {
 		val = string(runes[len(runes)-fieldW:])

@@ -172,7 +172,9 @@ func TestSessionPicker_DrawNoMatches(t *testing.T) {
 }
 
 func TestSessionPicker_DrawVariousSizesNoPanic(t *testing.T) {
-	cases := []struct{ w, h int }{{30, 5}, {80, 24}, {200, 60}, {0, 0}}
+	// Widths 1–9 drive the filter-field width negative; Draw must clamp it
+	// rather than panic on the scroll-truncation slice.
+	cases := []struct{ w, h int }{{1, 10}, {5, 20}, {8, 20}, {9, 20}, {30, 5}, {80, 24}, {200, 60}, {0, 0}}
 	for _, tc := range cases {
 		m := NewSessionPickerModal(sampleSessions(), "")
 		m.SetRect(0, 0, tc.w, tc.h)
