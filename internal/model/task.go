@@ -46,14 +46,26 @@ type Task struct {
 
 // Elapsed returns the duration since the task was started.
 // Returns zero if the task hasn't started.
+//
+// StartedAt/EndedAt are wall-clock timestamps (time.Now), so a backward
+// clock correction — NTP resync after a laptop sleep/wake, for example —
+// can leave StartedAt sitting in the future or after EndedAt. That would
+// otherwise surface as a negative elapsed time (e.g. "-2503s" / "-41h").
+// Floor the result at zero so a clock skew never renders as negative duration.
 func (t *Task) Elapsed() time.Duration {
 	if t.StartedAt.IsZero() {
 		return 0
 	}
+	var d time.Duration
 	if !t.EndedAt.IsZero() {
-		return t.EndedAt.Sub(t.StartedAt)
+		d = t.EndedAt.Sub(t.StartedAt)
+	} else {
+		d = time.Since(t.StartedAt)
 	}
-	return time.Since(t.StartedAt)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // ElapsedString returns a human-readable elapsed time.
