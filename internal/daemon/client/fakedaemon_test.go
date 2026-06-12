@@ -56,6 +56,15 @@ func (s *FakeRPCService) Ping(_ *daemon.Empty, resp *daemon.PongResp) error {
 	return nil
 }
 
+// GetExitInfo answers the query removeSession makes on session exit. It reports
+// a successful, clean exit (StreamLost=false). Tests that need to exercise the
+// RPC-FAILURE branch of removeSession close the client transport instead, which
+// makes the call error out without reaching this handler.
+func (s *FakeRPCService) GetExitInfo(_ *daemon.TaskIDReq, resp *daemon.ExitInfo) error {
+	resp.StreamLost = false
+	return nil
+}
+
 // Shutdown returns a daemon-side error so the client wrapper hits the
 // resp.Error branch.
 func (s *FakeRPCService) Shutdown(_ *daemon.Empty, resp *daemon.StatusResp) error {
@@ -255,6 +264,38 @@ func TestStream_ExitClean(t *testing.T) {
 		testutil.False(t, info.StreamLost) // process exit, not stream lost
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected exit callback")
+	}
+}
+
+// TestRmSessRPCFail pins the invariant guard in removeSession: when the
+// GetExitInfo RPC fails, a zero-value ExitInfo would read CleanExit()==true and
+// wrongly mark the task Complete. removeSession must force StreamLost=true so
+// HandleSessionExit treats it as "process maybe alive, status unchanged" instead
+// of fabricating a clean completion. (Name kept short: macOS 104-byte unix
+// socket path limit — t.TempDir() embeds the test name in the socket path.)
+func TestRmSessRPCFail(t *testing.T) {
+	fd := newFakeDaemon(t)
+	c := fakeClient(t, fd)
+	c.rpc.Close() // break the transport so GetExitInfo fails inside removeSession
+
+	exitCh := make(chan daemon.ExitInfo, 1)
+	c.OnSessionExit(func(_ string, info daemon.ExitInfo) {
+		select {
+		case exitCh <- info:
+		default:
+		}
+	})
+	c.mu.Lock()
+	c.sessions["t"] = newRemoteSession("t", c)
+	c.mu.Unlock()
+
+	c.removeSession("t")
+
+	select {
+	case info := <-exitCh:
+		testutil.True(t, info.StreamLost)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected exit callback after RPC-failure removeSession")
 	}
 }
 

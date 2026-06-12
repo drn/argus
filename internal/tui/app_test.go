@@ -2729,6 +2729,33 @@ func TestApp_HandleSessionExitUI_FlipToInReview(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
+// TestHandleSessionExitUI_RerenderGateEntersOnNonCleanExit pins that the
+// pendingRerenderRestart gate (now keyed on !cleanExit, not "stopped") is
+// entered for ANY non-clean exit — including a crash (err!=nil), not just a
+// deliberate Stop. With the user no longer viewing the task, the gate consumes
+// (deletes) the rerender flag and falls through to the normal exit path, leaving
+// the task InReview. This exercises the widened guard introduced by the cleanExit
+// refactor without needing a live session/startSession to restart.
+func TestHandleSessionExitUI_RerenderGateEntersOnNonCleanExit(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	testutil.NoError(t, d.Add(task))
+
+	// Rerender restart was queued, but the user is NOT viewing this task's pane.
+	app.pendingRerenderRestart["t1"] = true
+	app.mode = modeTaskList // not viewing → gate clears flag, falls through
+
+	app.handleSessionExitUI("t1", false /* cleanExit → non-clean (crash or stop) */, false)
+
+	// The rerender flag was consumed and the task settled InReview.
+	if app.pendingRerenderRestart["t1"] {
+		t.Error("pendingRerenderRestart flag should have been consumed by the gate")
+	}
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusInReview)
+}
+
 func TestApp_OnTaskCursorChange_Nil(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

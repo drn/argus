@@ -883,8 +883,8 @@ func (a *App) onTick() {
 		a.mu.Lock()
 		// If a session was started between the RPC snapshot and now, the
 		// runningIDs are stale — the new session won't be in them, causing
-		// reconciliation to wrongly mark it Complete. Pass nil to skip
-		// reconciliation this tick; the next tick will have fresh IDs.
+		// reconciliation to wrongly flip it to InReview (a false termination).
+		// Pass nil to skip reconciliation this tick; the next tick will have fresh IDs.
 		if a.startGen.Load() != startGen {
 			uxlog.Log("[tui] tick: startGen changed (%d → %d), skipping reconciliation with stale runningIDs", startGen, a.startGen.Load())
 			runningIDs = nil
@@ -1534,7 +1534,7 @@ func (a *App) refreshTasksAsync() {
 			// If a session was started between the RPC snapshot and now,
 			// the runningIDs are stale — pass nil to skip reconciliation.
 			// Same guard as onTick to prevent the race where an async
-			// refresh marks a newly-started task Complete.
+			// refresh flips a newly-started task to InReview (a false termination).
 			if a.startGen.Load() != startGen {
 				uxlog.Log("[tui] refreshTasksAsync: startGen changed, skipping reconciliation with stale runningIDs")
 				runningIDs = nil
