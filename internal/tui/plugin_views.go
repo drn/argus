@@ -86,6 +86,10 @@ type pluginConnector interface {
 	SendFocus() error
 	SendBlur() error
 	Close() error
+	// SetOnClose registers the unexpected-disconnect callback (fired when a
+	// pump exits for a reason other than an explicit Close). The App uses it to
+	// drive reconnect. Called once right after construction.
+	SetOnClose(func(error))
 }
 
 // pluginConnectorFactory builds a Connector wired to the given URL and byte
@@ -132,6 +136,24 @@ type pluginViewMount struct {
 	// the reconciler retries every draw, and a wedged connection would
 	// otherwise flood ux.log with one line per draw. Cleared on success.
 	sendFailLogged bool
+
+	// Reconnect state. All owned by the tview goroutine (set in the disconnect
+	// handler, the redial-success closure, and deactivate) — no locking, same
+	// as the reconciliation fields above.
+	//
+	// reconnecting is true while the WebSocket has dropped unexpectedly and the
+	// redial loop is running with the overlay up. reconnectAttempt counts dial
+	// failures on the current outage (resets to 0 on a fresh connection).
+	// reconnectStart marks when the outage began (via a.nowFn) so the overlay
+	// can flip to a "still trying…" message after the grace period.
+	// reconnectCancel stops the redial goroutine; called in deactivate and on a
+	// successful resume. reconnectModal is the overlay widget, kept so the loop
+	// can update its message live.
+	reconnecting     bool
+	reconnectAttempt int
+	reconnectStart   time.Time
+	reconnectCancel  context.CancelFunc
+	reconnectModal   *modal.ReconnectModal
 
 	// hotkeys is the latest dictionary the plugin pushed via a hotkeys
 	// control frame. Stage 5 renders the bar:true subset in the bottom bar;
@@ -232,20 +254,7 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 	// any were pushed before activation) plus the reserved exit hint.
 	a.statusbar.SetPluginMode(true, m.view.Title, barHints(m.hotkeys))
 
-	conn := a.pluginConnFactory(m.view.CallbackURL, func(b []byte) {
-		// Forward plugin → streampane source. Non-blocking — drop on
-		// backpressure to match the rest of argus's PTY plumbing.
-		select {
-		case m.bytesIn <- b:
-		default:
-		}
-	}, func(b []byte) {
-		// onControl runs on the connector's read-pump goroutine — it must NOT
-		// touch tview or App state directly. dispatchPluginControl decodes
-		// defensively and routes every tview interaction through
-		// QueueUpdateDraw.
-		a.dispatchPluginControl(m, b)
-	}, m.keysOut)
+	conn := a.newPluginConn(m)
 	m.conn = conn
 	// Fresh connection: reset the reconciliation state so the first envelope
 	// on this conn is sent from a real post-layout rect, followed by focus.
@@ -278,6 +287,213 @@ func (a *App) activatePluginView(m *pluginViewMount) {
 	}(conn)
 }
 
+// newPluginConn builds a connector for the mount wired to its persistent byte
+// sinks and the unexpected-disconnect handler. Shared by activatePluginView
+// (initial dial) and the reconnect loop (re-dial), so both connections behave
+// identically — same byte plumbing, same onClose → reconnect trigger.
+func (a *App) newPluginConn(m *pluginViewMount) pluginConnector {
+	conn := a.pluginConnFactory(m.view.CallbackURL, func(b []byte) {
+		// Forward plugin → streampane source. Non-blocking — drop on
+		// backpressure to match the rest of argus's PTY plumbing.
+		select {
+		case m.bytesIn <- b:
+		default:
+		}
+	}, func(b []byte) {
+		// onControl runs on the connector's read-pump goroutine — it must NOT
+		// touch tview or App state directly. dispatchPluginControl decodes
+		// defensively and routes every tview interaction through
+		// QueueUpdateDraw.
+		a.dispatchPluginControl(m, b)
+	}, m.keysOut)
+	conn.SetOnClose(func(err error) {
+		// Runs on a pump goroutine — onPluginDisconnect hops to the tview
+		// goroutine. `conn` is captured so a stale drop from a replaced
+		// connection is ignored (m.conn != conn under the queued closure).
+		a.onPluginDisconnect(m, conn, err)
+	})
+	return conn
+}
+
+// Reconnect tunables. The dial timeout bounds a single attempt; the backoff
+// schedule caps at 2s (a daemon bounce is seconds); the grace period is how
+// long the overlay stays on the optimistic "Reconnecting…" message before it
+// flips to the "still trying…" exit hint.
+const (
+	pluginReconnectPage        = "pluginreconnect"
+	pluginReconnectDialTimeout = 3 * time.Second
+	pluginReconnectGrace       = 2 * time.Minute
+)
+
+// reconnectBackoff returns the sleep before the next dial attempt: 250ms, 500ms,
+// 1s, then a steady 2s. Pure function of the (zero-based) failed-attempt count
+// so tests are deterministic without a clock.
+func reconnectBackoff(attempt int) time.Duration {
+	switch {
+	case attempt <= 0:
+		return 250 * time.Millisecond
+	case attempt == 1:
+		return 500 * time.Millisecond
+	case attempt == 2:
+		return time.Second
+	default:
+		return 2 * time.Second
+	}
+}
+
+// reconnectMessage is the overlay body for the current outage state. Before the
+// grace period it is optimistic; after, it surfaces that the wait is unusual.
+func reconnectMessage(elapsed time.Duration, attempt int) string {
+	if elapsed >= pluginReconnectGrace {
+		return fmt.Sprintf("Still trying to reconnect… (attempt %d)", attempt+1)
+	}
+	return fmt.Sprintf("Reconnecting… (attempt %d)", attempt+1)
+}
+
+// onPluginDisconnect is the connector's onClose sink. It runs on a pump
+// goroutine, so it hops to the tview goroutine, re-checks that the dropped
+// connection is still the active one, and starts a reconnect if so. Idempotent
+// against an already-reconnecting mount.
+func (a *App) onPluginDisconnect(m *pluginViewMount, dropped pluginConnector, err error) {
+	uxlog.Log("[plugin-view] disconnect on %q: %v", m.view.Title, err)
+	if a.tapp == nil {
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		if a.activePlugin != m || m.conn != dropped {
+			uxlog.Log("[plugin-view] disconnect ignored: mount inactive or stale conn")
+			return
+		}
+		if m.reconnecting {
+			return // a reconnect is already in flight
+		}
+		a.startPluginReconnect(m)
+	})
+}
+
+// startPluginReconnect shows the reconnect overlay and launches the redial
+// loop. Runs on the tview goroutine.
+func (a *App) startPluginReconnect(m *pluginViewMount) {
+	m.reconnecting = true
+	m.reconnectAttempt = 0
+	m.reconnectStart = a.nowFn()
+	// Pause the resize reconciler while the connection is down — its target
+	// (m.conn) is the dropped connector. finishPluginReconnect flips connReady
+	// back on for the fresh connection.
+	m.connReady = false
+	m.reconnectModal = modal.NewReconnectModal(m.view.Title, reconnectMessage(0, 0))
+	a.pages.AddPage(pluginReconnectPage, m.reconnectModal, true, true)
+	a.pages.SwitchToPage(pluginReconnectPage)
+	a.tapp.SetFocus(m.reconnectModal)
+	a.statusbar.SetPluginMode(true, m.view.Title, nil)
+	uxlog.Log("[plugin-view] reconnecting %q (overlay shown)", m.view.Title)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.reconnectCancel = cancel
+	go a.pluginReconnectLoop(ctx, m)
+}
+
+// pluginReconnectLoop re-dials the view's callback URL with capped backoff until
+// it succeeds or the context is cancelled (deactivate / Esc / failsafe). Runs on
+// its own goroutine; every tview/App touch goes through QueueUpdateDraw.
+func (a *App) pluginReconnectLoop(ctx context.Context, m *pluginViewMount) {
+	attempt := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn := a.newPluginConn(m)
+		dialCtx, cancel := context.WithTimeout(ctx, pluginReconnectDialTimeout)
+		err := conn.Dial(dialCtx)
+		cancel()
+		if err == nil {
+			a.finishPluginReconnect(m, conn)
+			return
+		}
+		// Dial failed — discard this connector and back off.
+		_ = conn.Close()
+		uxlog.Log("[plugin-view] reconnect dial %q attempt %d failed: %v", m.view.Title, attempt+1, err)
+		if a.tapp != nil {
+			a.tapp.QueueUpdateDraw(func() {
+				if a.activePlugin != m || !m.reconnecting {
+					return
+				}
+				m.reconnectAttempt = attempt + 1
+				if m.reconnectModal != nil {
+					m.reconnectModal.SetMessage(reconnectMessage(a.nowFn().Sub(m.reconnectStart), m.reconnectAttempt))
+				}
+			})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(reconnectBackoff(attempt)):
+		}
+		attempt++
+	}
+}
+
+// finishPluginReconnect adopts a freshly dialed connection: it resets the
+// resize/focus handshake state so the reconciler re-sends resize→focus exactly
+// like a new connection, dismisses the overlay, and restores the plugin pane.
+// Runs the state mutation on the tview goroutine. If the view was torn down
+// while dialing, the new connection is closed and discarded.
+func (a *App) finishPluginReconnect(m *pluginViewMount, conn pluginConnector) {
+	if a.tapp == nil {
+		_ = conn.Close()
+		return
+	}
+	a.tapp.QueueUpdateDraw(func() {
+		if a.activePlugin != m || !m.reconnecting {
+			// Raced with deactivate — discard the orphan connection.
+			_ = conn.Close()
+			return
+		}
+		m.conn = conn
+		m.reconnecting = false
+		m.reconnectAttempt = 0
+		m.reconnectCancel = nil
+		// Reset the handshake state so the first envelope on the new connection
+		// is sent even though the viewport size hasn't changed. laidOut stays
+		// true: the pane never un-laid-out, so the post-layout rect is
+		// immediately authoritative (the resume envelope is the real size, not
+		// the 13x8 pre-layout default).
+		m.connReady = true
+		m.focusSent = false
+		m.lastSentCols, m.lastSentRows = 0, 0
+		m.sendFailLogged = false
+
+		a.pages.RemovePage(pluginReconnectPage)
+		m.reconnectModal = nil
+		a.pages.SwitchToPage(m.pageName)
+		a.tapp.SetFocus(m.pane)
+		a.statusbar.SetPluginMode(true, m.view.Title, barHints(m.hotkeys))
+		uxlog.Log("[plugin-view] reconnected %q — resuming (resize+focus handshake)", m.view.Title)
+		// Drive the resume handshake now (also re-runs every afterDraw).
+		a.reconcilePluginViewSize()
+	})
+}
+
+// stopPluginReconnect cancels an in-flight reconnect: stops the redial loop,
+// removes the overlay, and clears all reconnect state. Safe to call when not
+// reconnecting. Runs on the tview goroutine; called from deactivatePluginView.
+func (a *App) stopPluginReconnect(m *pluginViewMount) {
+	if m.reconnectCancel != nil {
+		m.reconnectCancel()
+		m.reconnectCancel = nil
+	}
+	if m.reconnectModal != nil {
+		a.pages.RemovePage(pluginReconnectPage)
+		m.reconnectModal = nil
+	}
+	m.reconnecting = false
+	m.reconnectAttempt = 0
+	m.reconnectStart = time.Time{}
+}
+
 // deactivatePluginView closes the active plugin view: sends blur, closes the
 // WS, switches back to the tasks page.
 func (a *App) deactivatePluginView() {
@@ -287,6 +503,12 @@ func (a *App) deactivatePluginView() {
 	m := a.activePlugin
 	a.activePlugin = nil
 	uxlog.Log("[plugin-view] release: %q gave back the keyboard", m.view.Title)
+
+	// Cancel any in-flight reconnect FIRST: stops the redial loop and removes
+	// the overlay. Done before clearing a.activePlugin's conn so a racing
+	// finishPluginReconnect closure sees reconnecting=false and discards its
+	// orphan connection.
+	a.stopPluginReconnect(m)
 
 	if m.conn != nil {
 		_ = m.conn.SendBlur()

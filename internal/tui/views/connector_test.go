@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,18 @@ type pluginEcho struct {
 	textToSend  chan string // buffered text frames to push from server → client
 	done        chan struct{}
 	closeOnce   sync.Once
+	serverConn  *websocket.Conn // captured server-side conn, for forced drops
+}
+
+// dropServerConn force-closes the server-side WebSocket, simulating a plugin
+// daemon dying mid-session. The client read pump errors and fires onClose.
+func (p *pluginEcho) dropServerConn() {
+	p.mu.Lock()
+	conn := p.serverConn
+	p.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close(websocket.StatusAbnormalClosure, "simulated daemon death")
+	}
 }
 
 func newPluginEcho() *pluginEcho {
@@ -47,6 +60,9 @@ func (p *pluginEcho) handler() http.Handler {
 		if err != nil {
 			return
 		}
+		p.mu.Lock()
+		p.serverConn = c
+		p.mu.Unlock()
 		defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
 		// Pump pending ANSI bytes asynchronously.
 		go func() {
@@ -425,6 +441,85 @@ func TestConnector_MalformedTextDoesNotStopPump(t *testing.T) {
 		defer byMu.Unlock()
 		return string(bin) == "still-flowing"
 	})
+}
+
+func TestConnector_OnCloseFiresOnRemoteDisconnect(t *testing.T) {
+	plugin := newPluginEcho()
+	srv := httptest.NewServer(plugin.handler())
+	t.Cleanup(srv.Close)
+
+	var (
+		mu       sync.Mutex
+		closeErr error
+		fired    int
+	)
+	in := make(chan []byte, 4)
+	c := NewConnector(wsURL(srv), nil, nil, in)
+	c.SetOnClose(func(err error) {
+		mu.Lock()
+		closeErr = err
+		fired++
+		mu.Unlock()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	testutil.NoError(t, c.Dial(ctx))
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Kill the server side — the client read pump errors and must fire onClose.
+	plugin.dropServerConn()
+
+	waitFor(t, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return fired >= 1
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	testutil.Equal(t, fired, 1) // fired exactly once even though both pumps may exit
+	if closeErr == nil {
+		t.Fatal("expected a non-nil close error on remote disconnect")
+	}
+}
+
+func TestConnector_OnCloseSuppressedOnExplicitClose(t *testing.T) {
+	plugin := newPluginEcho()
+	srv := httptest.NewServer(plugin.handler())
+	t.Cleanup(srv.Close)
+
+	var fired atomic.Bool
+	in := make(chan []byte, 4)
+	c := NewConnector(wsURL(srv), nil, nil, in)
+	c.SetOnClose(func(error) { fired.Store(true) })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	testutil.NoError(t, c.Dial(ctx))
+
+	// Deliberate teardown — onClose must NOT fire (no phantom reconnect).
+	testutil.NoError(t, c.Close())
+
+	// Give the pumps a beat to unwind after the explicit close.
+	time.Sleep(50 * time.Millisecond)
+	if fired.Load() {
+		t.Fatal("onClose fired on explicit Close() — would trigger a phantom reconnect")
+	}
+}
+
+func TestConnector_SetOnCloseNilIsSafe(t *testing.T) {
+	plugin := newPluginEcho()
+	srv := httptest.NewServer(plugin.handler())
+	t.Cleanup(srv.Close)
+
+	in := make(chan []byte, 4)
+	c := NewConnector(wsURL(srv), nil, nil, in) // no onClose registered
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	testutil.NoError(t, c.Dial(ctx))
+	t.Cleanup(func() { _ = c.Close() })
+
+	// A remote disconnect with a nil onClose must not panic.
+	plugin.dropServerConn()
+	time.Sleep(50 * time.Millisecond)
 }
 
 func TestConnector_NilOnControlIgnoresTextFrame(t *testing.T) {
