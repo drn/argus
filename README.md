@@ -151,8 +151,8 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | ------- | ------------------------- |
 | `Enter` | Open diff                 |
 | `s`     | Toggle split/unified diff |
-| `o`     | Reveal in Finder          |
-| `e`     | Open in editor            |
+| `f`     | Reveal in Finder          |
+| `o`     | Open file (default app)   |
 | `t`     | Open terminal in worktree |
 
 #### Modals & Forms
