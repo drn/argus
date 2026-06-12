@@ -78,7 +78,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 ## Also In The Box
 
 - **Remote TUI** — `argus --remote https://your-mac.tail-xxxx.ts.net --token "$ARGUS_TOKEN"` launches the full TUI against a daemon running on another machine. Same keybindings, same panels, same agent stream — over Tailscale. No local SQLite, no daemon socket; every call rides the REST API the PWA already uses.
-- **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags and plan-mode defaults.
+- **Multi-backend** — Claude Code, Codex, or any LLM CLI as a templated command. Per-backend prompt flags, plan-mode defaults, and a default model, plus a per-task model override injected as `--model` at launch.
 - **Worktree isolation** — every task gets `~/.argus/worktrees/<project>/<task>` and an `argus/<task>` branch, all transactionally created and cleaned up.
 - **Session resume** — `--resume` on Claude Code, `codex resume <id>` on Codex. Your conversation survives a daemon restart.
 - **Consistent scrollback across viewers** — switch between the TUI and the PWA at very different widths and the agent re-emits the conversation at the new size. Idle-gated so it never fires mid-tool-call; the SPA reattaches transparently.
@@ -105,6 +105,30 @@ argus daemon install   # macOS — auto-start at login via launchd
 
 To open the PWA, enable **Remote API** in Settings, then point your phone at `http://<your-machine>:7743/` and paste the master token from `~/.argus/api-token`. Tailscale recommended.
 
+## Getting Started
+
+### Prerequisites
+
+- **Go 1.26+** — to `go install` the binary above.
+- **Git** — every project Argus drives must be a git repository.
+- **At least one agent CLI on your `PATH`.** Argus shells out to whatever backend you pick; it doesn't bundle a model. The default backend is **Claude Code** (`claude`), and `codex` and `pi` come pre-configured too. Install the one you use and make sure it runs from a plain shell (`claude --version`).
+- **Optional:** [`gh`](https://cli.github.com) (GitHub CLI) powers the open-repo / open-PR keys and the PR-status indicator — features degrade quietly if it's absent. [Tailscale](https://tailscale.com) is recommended for reaching the PWA from your phone.
+
+### First run
+
+```bash
+argus
+```
+
+The first launch creates `~/.argus/data.sql`, seeds the `claude` / `codex` / `pi` backends, and auto-starts the background daemon. You land on an empty task list — **no projects are seeded, so add one before creating a task.**
+
+1. **Register a project.** Press `3` for the **Settings** tab, move to the **Projects** section, and either:
+   - press `i` to **quick-add** — point it at a directory (e.g. `~/src`) and Argus scans for git repos; select the ones to import; or
+   - press `n` to add one **manually** — give it a name and the absolute path to the repo root (base branch and backend are optional; they fall back to git's default and `claude`).
+2. **Create your first task.** Press `1` for the **Tasks** tab, then `n`. Pick the project, type a prompt, and hit `Enter`. Argus cuts a fresh worktree at `~/.argus/worktrees/<project>/<task>` on an `argus/<task>` branch, starts the agent, and drops you into the agent view with its live terminal.
+3. **Drive it.** `Enter` reopens an agent, `s` advances status, `ctrl+z` toggles the git/file side panes, `ctrl+q` steps back out. The full keymap is in the [Keybindings](#keybindings) reference below.
+4. **Go mobile (optional).** Enable **Remote API** in Settings and open the PWA as described under [Install](#install).
+
 ---
 
 ## Reference
@@ -124,6 +148,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `a`       | Toggle archive                                                  |
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Copy task prompt to clipboard                                   |
+| `r`       | Rename task (display name only; branch/worktree stay locked)    |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
@@ -136,7 +161,8 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 | Key                   | Action                                                                    |
 | --------------------- | ------------------------------------------------------------------------- |
-| `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
+| `ctrl+q`              | Back, 3-level (diff → files panel → task list)                            |
+| `Esc`                 | Refocus terminal from diff/files; on the terminal, forwarded to the agent (does NOT exit the agent view) |
 | `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden)                |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
 | `ctrl+k`              | Open task switcher (fuzzy-search all tasks by name; tasks needing input pinned to the top) |
@@ -173,6 +199,8 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `n`                   | New project / backend / schedule                         |
 | `e`                   | Edit project / backend / schedule                        |
 | `d`                   | Delete project / set default backend / delete schedule   |
+| `a`                   | Edit project's AppleEvents allowlist (on a project row)  |
+| `m`                   | Edit backend's default model (on a backend row)          |
 | `t`                   | Toggle schedule enabled (on the Scheduled Tasks section) |
 | `r`                   | Run schedule now (on the Scheduled Tasks section)        |
 | `i`                   | Quick add projects                                       |
@@ -208,7 +236,7 @@ The plist is configured with `RunAtLoad` and `KeepAlive { SuccessfulExit = false
 
 Argus can run agent processes inside macOS `sandbox-exec` for filesystem and credential isolation. Each agent session gets an SBPL profile that restricts reads and writes.
 
-Global sandbox settings are managed in the **Settings tab** (`4` key):
+Global sandbox settings are managed in the **Settings tab** (`3` key):
 
 | Setting     | Description                                        |
 | ----------- | -------------------------------------------------- |
@@ -243,7 +271,7 @@ Cycle through styles in the **Settings tab** using `Enter` or `◀`/`▶` on the
 
 | Style                  | Frames                     | Speed |
 | ---------------------- | -------------------------- | ----- |
-| **Progress** (default) | Nerd Font progress icons   | 100ms |
+| **Progress** (default) | Nerd Font progress icons   | 150ms |
 | **Dots**               | Braille dots `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`  | 100ms |
 | **Braille**            | Braille pattern `⣷⣯⣟⡿⢿⣻⣽⣾` | 100ms |
 | **Classic**            | ASCII `\|/-\\`             | 150ms |
@@ -266,7 +294,7 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 
 | Tool                   | Description                                                                                                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`. Orchestration: `base_branch`, `depends_on`, `plan_slug`, `upsert`.            |
+| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`, `model` (optional `--model` override). Orchestration: `base_branch`, `depends_on`, `plan_slug`, `upsert`. |
 | `task_list`            | List tasks, filtered by `status` and/or `project`. Returned task objects include `plan_slug` for DAG-view filtering.                                               |
 | `task_get`             | Get task details by `id`                                                                                                                                           |
 | `task_stop`            | Stop a running agent (moves task to "in review")                                                                                                                   |
@@ -309,6 +337,12 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `argus_clipboard_set` | Stage text for the user to copy with one tap (PWA Copy button) or one keypress (TUI `ctrl+y`). Params: `text` (required), `id` or `cwd`. Last-write-wins, 5-min TTL, 1 MiB max. |
 
+**Artifacts:**
+
+| Tool                | Description                                                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `artifact_register` | Register a file the agent produced (HTML report, PDF, markdown, image, or text) so it renders in Argus Web. Params: `path` (required), `title`, `type`, `id` or `cwd`. Self-contained files render best; 25 MiB max. |
+
 ### Remote Control: REST API
 
 All endpoints require auth — `Authorization: Bearer <token>` header or `?token=<token>` query param (the latter is required for `EventSource`/SSE because browsers cannot set headers on it). The token can be the master token from `~/.argus/api-token` or any non-revoked device token.
@@ -321,10 +355,11 @@ Every authenticated token has the same permissions **except** a small master-onl
 | -------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`    | `/api/status`               | Running/idle session counts, task counts by status                                                                                                                                                                                                                               |
 | `GET`    | `/api/tasks`                | List tasks. Filters: `?status=`, `?project=`, `?archived=1` (or `=all`). Each task carries `idle: true` when `in_progress` but the session is missing or waiting for input.                                                                                                      |
-| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
+| `POST`   | `/api/tasks`                | Create and start a task. JSON `{"name", "prompt", "project", "backend?", "model?"}`, OR `multipart/form-data` with `name`/`prompt`/`project`/`backend`/`model` plus `files` parts (uploaded into `<worktree>/.context/`, paths appended to the prompt). Per-file 10MB / total 50MB / 20 files cap. |
 | `GET`    | `/api/tasks/{id}`           | Get single task detail (includes `archived`, `worktree_path`, `prompt`, `idle`)                                                                                                                                                                                                  |
 | `POST`   | `/api/tasks/{id}/stop`      | Stop a running agent (moves to `in_review`)                                                                                                                                                                                                                                      |
-| `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent                                                                                                                                                                                                                                                           |
+| `POST`   | `/api/tasks/{id}/resume`    | Resume a stopped agent (un-pause an `in_review` task)                                                                                                                                                                                                                            |
+| `POST`   | `/api/tasks/{id}/restart`   | Re-spawn a finished session in the same worktree (resumes the prior conversation)                                                                                                                                                                                                |
 | `DELETE` | `/api/tasks/{id}`           | Delete a task                                                                                                                                                                                                                                                                    |
 | `POST`   | `/api/tasks/{id}/archive`   | Archive (hidden from default list)                                                                                                                                                                                                                                               |
 | `POST`   | `/api/tasks/{id}/unarchive` | Restore from archive                                                                                                                                                                                                                                                             |
@@ -353,6 +388,32 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `GET`  | `/api/tasks/{id}/git/diff?path=<file>` | Unified diff for a single file                          |
 | `GET`  | `/api/tasks/{id}/files?dir=<rel>`      | Worktree file listing                                   |
 
+#### Session artifacts
+
+| Method | Endpoint                                  | Description                                                                                                            |
+| ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/tasks/{id}/artifacts`               | List artifacts the agent registered via `artifact_register` (name, title, type, size)                                |
+| `GET`  | `/api/tasks/{id}/artifacts/{filename}`    | Serve one artifact's raw bytes. Scoped to the registered manifest set (no path traversal); HTML served in a sandbox. |
+
+#### Task dependencies / DAG
+
+These mirror the `task_link` / `task_unlink` / `task_deps` / `task_halt_downstream` / `task_set_plan_slug` MCP tools so scripts and the DAG view can drive orchestration over REST.
+
+| Method   | Endpoint                                | Description                                                              |
+| -------- | --------------------------------------- | ------------------------------------------------------------------------ |
+| `GET`    | `/api/dag`                              | Full DAG snapshot for the DAG view                                       |
+| `GET`    | `/api/tasks/{id}/deps`                  | One-hop upstream + downstream neighbours of a task                       |
+| `POST`   | `/api/tasks/{id}/deps`                  | Add a dependency edge. Body: `{"parent_id":"..."}`                       |
+| `DELETE` | `/api/tasks/{id}/deps/{parent_id}`      | Remove a dependency edge                                                 |
+| `POST`   | `/api/tasks/{id}/halt-downstream`       | Cascade stop/archive through every transitive descendant (seed untouched) |
+| `POST`   | `/api/tasks/{id}/plan-slug`             | Stamp the orchestrator grouping label. Body: `{"plan_slug":"..."}`       |
+
+#### Maintenance
+
+| Method | Endpoint                            | Description                                                                                  |
+| ------ | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `POST` | `/api/maintenance/prune-completed`  | Delete all completed tasks — removes worktrees/branches and sweeps orphans (mirrors TUI `ctrl+r`) |
+
 #### Projects & backends (full CRUD)
 
 | Method   | Endpoint               | Description                                                                                                                                                                         |
@@ -362,8 +423,8 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `POST`   | `/api/projects`        | Create. Body: `{"name", "path", "branch?", "backend?", "sandbox?"}` where `sandbox` is `{"enabled": true\|false\|null, "deny_read":[], "extra_write":[]}` (`null` = inherit global) |
 | `PUT`    | `/api/projects/{name}` | Update                                                                                                                                                                              |
 | `DELETE` | `/api/projects/{name}` | Delete                                                                                                                                                                              |
-| `GET`    | `/api/backends`        | List with command + prompt_flag                                                                                                                                                     |
-| `POST`   | `/api/backends`        | Create. **Master token required** (command templates can run arbitrary code).                                                                                                       |
+| `GET`    | `/api/backends`        | List with command + prompt_flag + model                                                                                                                                             |
+| `POST`   | `/api/backends`        | Create. Body includes optional `model` (default `--model`). **Master token required** (command templates can run arbitrary code).                                                   |
 | `PUT`    | `/api/backends/{name}` | Update. **Master token required.**                                                                                                                                                  |
 | `DELETE` | `/api/backends/{name}` | Delete. **Master token required.**                                                                                                                                                  |
 | `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                                                                                                    |
@@ -409,6 +470,42 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 | `GET`  | `/api/settings`                  | Returns sandbox / KB / API / defaults config plus `sandbox.available` (whether `sandbox-exec` is on this host).                              |
 | `PUT`  | `/api/settings`                  | Partial update — every section is optional. Body: `{"sandbox":{...}, "kb":{...}, "api":{...}, "defaults":{...}}`. The `sandbox` section is **master token required**; other sections accept any token. |
 | `GET`  | `/api/logs/{ux\|daemon}?bytes=N` | Tail the last N bytes of the log (default 64K, max 1M). Missing files return `200` with empty body.                                          |
+
+### Plugin substrate
+
+Argus can host external programs as **plugins** — a separate process (on `127.0.0.1`) that registers MCP tools, Settings forms, and full-screen views, and consumes a live event stream. This is the substrate that out-of-tree orchestrators like **hera** run on; no orchestrator code ships in this repo, it's all driven over these endpoints.
+
+Plugins authenticate with a **scope token** (`X-Argus-Auth: scope:<name>`), a third tier alongside master and device tokens. Scope tokens are minted programmatically by the daemon (not over HTTP). A scope token may only register/unregister tools, sections, and views under **its own scope** — cross-scope access returns `403`. Revoking a scope token cascades: every tool, section, and view registered under that scope is dropped. Scope tokens are still blocked from the master-only denylist (token mint/revoke, backends CRUD, self-update, sandbox settings).
+
+**MCP tool registration** — a plugin exposes tools through Argus's MCP server (port 7742); on invoke, the daemon POSTs `{tool, input, context}` to the tool's `callback_url`.
+
+| Method   | Endpoint                | Token         | Description                                                                                                                          |
+| -------- | ----------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/mcp/tools`        | `scope:<n>`   | Register a tool. Body: `{name, description, input_schema, callback_url, auth_header?}`. `name` must start with `<scope>_`. 100/scope, idle-swept after 10 min. |
+| `DELETE` | `/api/mcp/tools/{name}` | master / owner | Unregister a tool                                                                                                                    |
+
+**Plugin views** — a plugin hosts a full-screen TUI pane, dialed over WebSocket at `callback_url`. While active, Argus surrenders all keystrokes to the plugin (binary frames); the plugin sends control frames back (`hotkeys`, `help`, `release`) and receives `resize`/`focus`/`blur`. A double-`ctrl+q` within 400 ms is the reserved failsafe to force back to Argus.
+
+| Method   | Endpoint                  | Token         | Description                                                          |
+| -------- | ------------------------- | ------------- | ------------------------------------------------------------------- |
+| `POST`   | `/api/plugins/views`      | master / `scope:<n>` | Register a view. Body: `{title, hotkey, callback_url}` (ws:// URL). Opened by its hotkey in the TUI. |
+| `GET`    | `/api/plugins/views`      | master / `scope:<n>` | List views (scope sees only its own)                                |
+| `DELETE` | `/api/plugins/views/{id}` | master / owner | Delete a view                                                       |
+
+**Plugin settings sections** — a plugin registers a form (fields: `bool` / `int` / `string` / `enum`) or a live `stream` section that appears in Argus Settings. On save, the daemon POSTs the `{key: value}` map to the section's `callback_url`.
+
+| Method   | Endpoint                                                | Token         | Description                                                        |
+| -------- | ------------------------------------------------------- | ------------- | ----------------------------------------------------------------- |
+| `POST`   | `/api/plugins/settings/sections`                        | `scope:<n>`   | Register. Body: `{title, type:"form"\|"stream", callback_url, auth_header?, fields?}` |
+| `GET`    | `/api/plugins/settings/sections`                        | any           | List all registered sections                                      |
+| `POST`   | `/api/plugins/settings/sections/{scope}/{title}/submit` | any           | Proxy a user's saved values to the plugin's callback              |
+| `DELETE` | `/api/plugins/settings/sections/{scope}/{title}`        | master / owner | Unregister a section                                              |
+
+**Event stream** — clients (PWA, plugins) subscribe to a live SSE feed of daemon events.
+
+| Method | Endpoint                       | Token | Description                                                                                                                                                                                |
+| ------ | ------------------------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/events/stream?since=<n>` | any   | SSE feed of `task.*`, `session.*`, `message.*`, `link.*` events. `since` is an exclusive cursor that replays missed events; a cursor older than the ring emits a synthetic `resync` so the client re-snapshots. 30 s keepalives. |
 
 ### Keep the host awake
 
@@ -463,6 +560,7 @@ Command templates, keyed by name. Seeded with `claude`, `codex`, and `pi`.
 |-----|------|---------|-------------|
 | `command` | string | — | Executable plus base flags for the agent CLI (e.g. `claude`, `codex --dangerously-bypass-approvals-and-sandbox`). Permission flags come from `defaults.permission_mode` and are **not** baked in here. |
 | `prompt_flag` | string | `""` | Flag used to pass the initial prompt to the backend (empty = positional/piped). |
+| `model` | string | `""` | Default model for this backend, injected as `--model <value>` for known CLIs (claude, codex, pi). Empty = the CLI's own default. A per-task model overrides it. |
 
 #### `[projects.<name>]`
 
