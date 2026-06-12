@@ -11,7 +11,9 @@
 Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of Claude Code and Codex sessions side by side, each in its own git worktree, all under a single keyboard-driven UI — and reach the same swarm from your phone, from another laptop, from another agent, or from your own notes.
 
 <p align="center">
-  <img src="screenshots/task-list.png" width="820" alt="Task list with project folders, live agent preview, and inline git status">
+  <img src="screenshots/task-list.png" width="405" alt="Task list with project folders, live agent preview, and inline git status">
+  &nbsp;
+  <img src="screenshots/file-diff.png" width="405" alt="Inline diff viewer with split and unified views">
 </p>
 
 ## Why Argus
@@ -31,7 +33,13 @@ Coding agents are cheap to start and expensive to babysit. Five `claude` tabs be
 Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** in Safari and you have a phone-shaped operations console for your agents — running locally on your machine, reachable over your Tailscale mesh, never exposed to the public internet.
 
 <p align="center">
-  <img src="screenshots/agent-view.png" width="820" alt="Agent view with terminal, git status, and file explorer">
+  <img src="screenshots/pwa-task-list.png" width="200" alt="PWA task list grouped by project with running/idle/done status and PR badges">
+  &nbsp;
+  <img src="screenshots/pwa-agent-session.png" width="200" alt="PWA agent terminal with live Claude Code output, the compose bar, and the model/effort status line">
+  &nbsp;
+  <img src="screenshots/pwa-agent-view.png" width="200" alt="PWA agent terminal rendering a full session over SSE">
+  &nbsp;
+  <img src="screenshots/pwa-new-task.png" width="200" alt="PWA New Task form with project, agent, model, prompt, and file drop">
 </p>
 
 - **Real terminals in the browser** — xterm.js fed by an SSE byte stream, with PTY auto-resize on rotation. Not a polling log viewer.
@@ -43,10 +51,6 @@ Argus ships a real, installable Progressive Web App. Tap **Add to Home Screen** 
 - **Per-device API tokens** — your iPhone, your iPad, and your laptop each get their own labeled token. Revoke any of them from the dashboard. Master token mints; SHA-256 hashes are all that's stored.
 - **Offline-aware** — when the daemon is unreachable (laptop closed, Tailscale off) the PWA flips to a branded offline screen and reconnects automatically.
 - **Pure-local** — runs on `localhost` and your Tailscale IP only, never `0.0.0.0`. Hotel/cafe LANs cannot reach the API even with the token.
-
-<p align="center">
-  <img src="screenshots/file-diff.png" width="820" alt="Inline diff viewer with split and unified views">
-</p>
 
 ### 🤝 Full MCP Server
 
@@ -63,6 +67,10 @@ The same MCP server is auto-injected into every worktree Argus creates, so newly
 ### 🧠 Knowledge Base
 
 Argus indexes your Obsidian vault as a SQLite FTS5 store and serves it over MCP. Every agent it spawns sees your notes — your design docs, your meeting captures, your durable preferences — as a first-class lookup, not a copy-paste afterthought.
+
+<p align="center">
+  <img src="screenshots/knowledge-graph.png" width="820" alt="Obsidian graph view of the indexed vault — session captures, handoffs, and reports linked into a knowledge graph">
+</p>
 
 - **`kb_search`** — ranked full-text search across the entire vault, with snippets.
 - **`kb_read`** — full markdown by vault-relative path. Wiki-link friendly.
