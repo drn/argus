@@ -29,11 +29,24 @@ type pluginEcho struct {
 	done        chan struct{}
 	closeOnce   sync.Once
 	serverConn  *websocket.Conn // captured server-side conn, for forced drops
+	connected   chan struct{}   // closed once serverConn is captured by the handler
+	connectOnce sync.Once       // guards the connected close against repeat Accepts
 }
 
 // dropServerConn force-closes the server-side WebSocket, simulating a plugin
 // daemon dying mid-session. The client read pump errors and fires onClose.
+//
+// The client's Dial returns the instant it reads the 101 handshake response,
+// which races the server handler storing serverConn. Without waiting for that
+// store, a fast caller can observe a nil serverConn, no-op the drop, and leave
+// the client read pump blocked forever (the bug behind a flaky onClose test
+// under GOMAXPROCS=2 + CPU contention). Block on connected so the drop always
+// targets a live conn.
 func (p *pluginEcho) dropServerConn() {
+	select {
+	case <-p.connected:
+	case <-time.After(5 * time.Second):
+	}
 	p.mu.Lock()
 	conn := p.serverConn
 	p.mu.Unlock()
@@ -47,6 +60,7 @@ func newPluginEcho() *pluginEcho {
 		bytesToSend: make(chan []byte, 16),
 		textToSend:  make(chan string, 16),
 		done:        make(chan struct{}),
+		connected:   make(chan struct{}),
 	}
 }
 
@@ -63,6 +77,7 @@ func (p *pluginEcho) handler() http.Handler {
 		p.mu.Lock()
 		p.serverConn = c
 		p.mu.Unlock()
+		p.connectOnce.Do(func() { close(p.connected) })
 		defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
 		// Pump pending ANSI bytes asynchronously.
 		go func() {
@@ -467,9 +482,11 @@ func TestConnector_OnCloseFiresOnRemoteDisconnect(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	// Kill the server side — the client read pump errors and must fire onClose.
+	// dropServerConn waits for the handler to capture the server conn first, so
+	// the drop always lands on a live socket (see dropServerConn for the race).
 	plugin.dropServerConn()
 
-	waitFor(t, time.Second, func() bool {
+	waitFor(t, 2*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return fired >= 1
