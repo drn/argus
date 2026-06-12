@@ -293,6 +293,14 @@ type App struct {
 	// nowFn is the clock used by the failsafe window check. Defaults to
 	// time.Now; tests override it to make the timing deterministic.
 	nowFn func() time.Time
+	// resumeResizeDelay is how long after a successful plugin-view reconnect to
+	// re-send the resize envelope. A plugin daemon that restarts warm can render
+	// its first frame within tens of ms of the new WebSocket connecting — before
+	// it has applied argus's initial resize — and then it only repaints at the
+	// right size on the NEXT resize it processes. Re-sending once after a short
+	// delay (when the plugin has settled) mimics that healing resize so the
+	// resumed view isn't stuck rendering tiny. Tests shrink this to keep fast.
+	resumeResizeDelay time.Duration
 
 	// Stream-section connectors. Keyed by (scope, title). Created on
 	// SettingsView.OnStreamFocus, closed on OnStreamBlur. Reuses the same
@@ -352,6 +360,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		wtRoot:                 filepath.Join(db.DataDir(), "worktrees"),
 		clipboardWriter:        pbcopyWriter,
 		nowFn:                  time.Now,
+		resumeResizeDelay:      300 * time.Millisecond,
 	}
 	if dc, ok := runner.(*dclient.Client); ok {
 		app.daemonClient = dc
@@ -1694,6 +1703,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		// keyboard beyond this single dismissal.
 		if a.pluginHelpVisible {
 			a.dismissPluginHelp()
+			return nil
+		}
+		// While reconnecting, the plugin is GONE — full surrender no longer
+		// applies (there's nothing to forward to). A single Esc exits to the
+		// task list, alongside the double-Ctrl+Q failsafe. When the plugin is
+		// live, Esc falls through and forwards to the plugin (unchanged).
+		if a.activePlugin != nil && a.activePlugin.reconnecting && event.Key() == tcell.KeyEscape {
+			uxlog.Log("[plugin-view] esc during reconnect — exit to task list")
+			a.deactivatePluginView()
 			return nil
 		}
 		if event.Key() == tcell.KeyCtrlQ {
