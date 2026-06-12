@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // --- DirAC Draw ---
@@ -35,7 +37,7 @@ func TestDirAC_Draw_Closed(t *testing.T) {
 	testutil.Equal(t, rows, 0)
 }
 
-// --- handleFilePanelKey: 'f', 'o', 't' branches ---
+// --- handleFilePanelKey: 'f', 'o', 'e', 't' branches ---
 
 func TestApp_HandleFilePanelKey_FOAndT(t *testing.T) {
 	d := testDB(t)
@@ -49,11 +51,14 @@ func TestApp_HandleFilePanelKey_FOAndT(t *testing.T) {
 	app.worktreeDir = t.TempDir()
 
 	var systemArgs [][]string
+	var editorArgs [][]string
 	var termHits int
 	oldSystem := systemOpener
+	oldEditor := editorOpener
 	oldTerm := terminalOpener
-	t.Cleanup(func() { systemOpener = oldSystem; terminalOpener = oldTerm })
+	t.Cleanup(func() { systemOpener = oldSystem; editorOpener = oldEditor; terminalOpener = oldTerm })
 	systemOpener = func(args ...string) error { systemArgs = append(systemArgs, args); return nil }
+	editorOpener = func(wt, path string) error { editorArgs = append(editorArgs, []string{wt, path}); return nil }
 	terminalOpener = func(string) error { termHits++; return nil }
 
 	wantFile := app.worktreeDir + "/a.go"
@@ -68,16 +73,15 @@ func TestApp_HandleFilePanelKey_FOAndT(t *testing.T) {
 	testutil.Nil(t, got)
 	testutil.DeepEqual(t, systemArgs[len(systemArgs)-1], []string{wantFile})
 
+	// 'e' opens the selected file in the editor (tmux + $EDITOR).
+	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, editorArgs[len(editorArgs)-1], []string{app.worktreeDir, "a.go"})
+
 	// 't' opens a terminal in the worktree.
 	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 't', 0))
 	testutil.Nil(t, got)
 	testutil.Equal(t, termHits, 1)
-
-	// 'e' is no longer bound — the event falls through unconsumed.
-	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
-	if got == nil {
-		t.Error("'e' should no longer be handled by the file panel")
-	}
 
 	// 'j' navigates down.
 	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'j', 0))
@@ -90,6 +94,33 @@ func TestApp_HandleFilePanelKey_FOAndT(t *testing.T) {
 	// Enter opens diff.
 	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 	testutil.Nil(t, got)
+}
+
+// openInEditor logs (does not panic) when the opener fails. Exercises the
+// error branch that the success-path key test cannot reach.
+func TestApp_OpenInEditor_OpenerError(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ux.log")
+	if err := uxlog.Init(logPath); err != nil {
+		t.Fatalf("uxlog.Init: %v", err)
+	}
+	defer uxlog.Close()
+
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.filePanel.SetRect(0, 0, 40, 20)
+	app.filePanel.SetFiles([]gitutil.ChangedFile{{Status: "M", Path: "a.go"}})
+	app.worktreeDir = t.TempDir()
+
+	old := editorOpener
+	t.Cleanup(func() { editorOpener = old })
+	editorOpener = func(string, string) error { return errors.New("boom") }
+
+	app.openInEditor() // must not panic; logs the failure
+
+	data, err := os.ReadFile(logPath)
+	testutil.NoError(t, err)
+	testutil.Contains(t, string(data), "open in editor failed")
 }
 
 // --- handleDiffKey: scroll with j/k/s/q ---

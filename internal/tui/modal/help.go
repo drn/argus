@@ -87,6 +87,7 @@ var HelpSections = []HelpSection{
 			{"s", "toggle split/unified"},
 			{"f", "reveal in Finder"},
 			{"o", "open file"},
+			{"e", "open in editor ($EDITOR)"},
 			{"t", "open terminal in worktree"},
 		},
 	},

@@ -667,6 +667,35 @@ func TestApp_OpenFile_NoFile(t *testing.T) {
 	app.openFile()
 }
 
+func TestApp_OpenInEditor_NoFile(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.openInEditor()
+}
+
+func TestEditorArgv(t *testing.T) {
+	tests := []struct {
+		name   string
+		editor string
+		want   []string
+	}{
+		{"explicit editor", "nvim", []string{"new-window", "-c", "/wt", "--", "nvim", "/wt/a.go"}},
+		{"editor with flags", "code -w", []string{"new-window", "-c", "/wt", "--", "code", "-w", "/wt/a.go"}},
+		{"empty falls back to vi", "", []string{"new-window", "-c", "/wt", "--", "vi", "/wt/a.go"}},
+		{"whitespace falls back to vi", "   ", []string{"new-window", "-c", "/wt", "--", "vi", "/wt/a.go"}},
+		{"surrounding whitespace is trimmed by Fields", "  nvim  ", []string{"new-window", "-c", "/wt", "--", "nvim", "/wt/a.go"}},
+		// Documents the known limitation: shell quoting is NOT interpreted, so
+		// the inner `""` survives as a literal token rather than an empty arg.
+		{"shell quoting is not interpreted", `emacsclient -a ""`, []string{"new-window", "-c", "/wt", "--", "emacsclient", "-a", `""`, "/wt/a.go"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.DeepEqual(t, editorArgv(tt.editor, "/wt", "a.go"), tt.want)
+		})
+	}
+}
+
 func TestApp_OpenTerminal_NoWorktree(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)

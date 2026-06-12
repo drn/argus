@@ -189,6 +189,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `s`     | Toggle split/unified diff |
 | `f`     | Reveal in Finder          |
 | `o`     | Open file (default app)   |
+| `e`     | Open in editor (`$EDITOR`) |
 | `t`     | Open terminal in worktree |
 
 #### Modals & Forms
