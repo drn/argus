@@ -1841,3 +1841,34 @@ func TestBuildCmd_ModelInjection_CodexResumeCommandWins(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, cmd.Args[2], "codex resume --dangerously-bypass-approvals-and-sandbox 'abc-123'")
 }
+
+func TestHasModelFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{"space form", "claude --model opus", true},
+		{"equals form", "claude --model=opus", true},
+		{"trailing", "claude --model", true},
+		{"absent", "claude --permission-mode plan", false},
+		{"prefix flag does not match", "my-agent --model-format json", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testutil.Equal(t, hasModelFlag(tc.cmd), tc.want)
+		})
+	}
+}
+
+// A command with a --model-prefixed but distinct flag still gets injection.
+func TestBuildCmd_ModelInjection_PrefixFlagDoesNotSuppress(t *testing.T) {
+	cfg := modelConfig()
+	cfg.Backends["claude"] = config.Backend{Command: "claude --model-format json"}
+
+	task := &model.Task{Name: "t", Prompt: "go", Model: "sonnet", Worktree: t.TempDir()}
+	cmd, _, err := BuildCmd(task, cfg, false)
+	testutil.NoError(t, err)
+	testutil.Equal(t, cmd.Args[2], "claude --model-format json --model 'sonnet' -- 'go'")
+}

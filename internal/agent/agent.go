@@ -148,6 +148,16 @@ func hasPermissionFlags(command string) bool {
 		strings.Contains(command, "--allow-dangerously-skip-permissions")
 }
 
+// hasModelFlag reports whether a backend command already names the --model
+// flag as a standalone token ("--model <x>", "--model=<x>", or a trailing
+// "--model"). A bare substring check would also match hypothetical flags
+// like --model-format and wrongly suppress injection.
+func hasModelFlag(command string) bool {
+	return strings.Contains(command, "--model ") ||
+		strings.Contains(command, "--model=") ||
+		strings.HasSuffix(command, "--model")
+}
+
 // piEncodeCwd mirrors pi's getDefaultSessionDir(): strip exactly ONE leading
 // slash or backslash (matching pi's `cwd.replace(/^[/\\]/, "")` — NOT a
 // TrimLeft), then replace remaining /, \, : with -, then wrap in --…--.
@@ -345,7 +355,7 @@ func BuildCmd(task *model.Task, cfg config.Config, resume bool) (*exec.Cmd, func
 	modelFlag := ""
 	if m := ResolveModel(task, backend); m != "" &&
 		(IsClaudeBackend(backend.Command) || isCodex || isPi) &&
-		!strings.Contains(backend.Command, "--model") {
+		!hasModelFlag(backend.Command) {
 		modelFlag = " --model " + shellQuote(m)
 	}
 	cmdStr += modelFlag

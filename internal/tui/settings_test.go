@@ -1700,3 +1700,69 @@ func TestSettingsView_ModelEditPaste(t *testing.T) {
 	sv.PasteHandler()("sonnet", nil)
 	testutil.Equal(t, sv.editModelBuf, "sonnet")
 }
+
+// The backend detail panel's hints row must fit inside the minimum detail
+// area the pane layout guarantees (svDetailReserve - 1 rows after the
+// separator) — for both the default backend (tallest case: star row) and a
+// non-default backend, in normal and editing states. Pins the
+// svDetailReserve bump that came with the model row.
+func TestSettingsView_BackendDetailHintsFitReserve(t *testing.T) {
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	testutil.NoError(t, database.SetBackend("zz-extra", config.Backend{Command: "echo"}))
+	sv := NewSettingsView(database)
+	sv.Refresh()
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(func() { sim.Fini() })
+	sim.SetSize(80, 24)
+
+	rowText := func(row int) string {
+		var b strings.Builder
+		w, _ := sim.Size()
+		for x := 0; x < w; x++ {
+			s, _, _ := sim.Get(x, row)
+			b.WriteString(s)
+		}
+		return b.String()
+	}
+	paneText := func(h int) string {
+		var all strings.Builder
+		for row := 0; row < h; row++ {
+			all.WriteString(rowText(row))
+			all.WriteString("\n")
+		}
+		return all.String()
+	}
+
+	minDetailH := svDetailReserve - 1 // separator consumes one reserved row
+
+	sv.setCategory(catBackends)
+	for _, key := range []string{sv.defaultBackend, "zz-extra"} {
+		for i, row := range sv.rows {
+			if row.kind == srBackend && row.key == key {
+				sv.cursor = i
+			}
+		}
+		be := sv.SelectedBackend()
+		if be == nil || be.Name != key {
+			t.Fatalf("test setup: could not select backend %q", key)
+		}
+
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, minDetailH, sv.SelectedRow())
+		if got := paneText(minDetailH); !strings.Contains(got, "[m] edit model") {
+			t.Errorf("backend %q: hints row missing at minimum detail height %d:\n%s", key, minDetailH, got)
+		}
+
+		// Editing state swaps the hints line — it must fit too.
+		sv.editingBackendModel = key
+		sim.Clear()
+		sv.renderBackendDetail(sim, 0, 0, 80, minDetailH, sv.SelectedRow())
+		if got := paneText(minDetailH); !strings.Contains(got, "[enter] save model") {
+			t.Errorf("backend %q: editing hints missing at minimum detail height %d:\n%s", key, minDetailH, got)
+		}
+		sv.editingBackendModel = ""
+	}
+}

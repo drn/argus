@@ -141,10 +141,14 @@ const svMaxACVisible = 8
 //     below it has room to breathe. Tuned to fit the longest category
 //     (Projects) without dominating the pane.
 //   - svDetailReserve is the row budget reserved below the items list:
-//     1 separator + 6 detail rows minimum.
+//     1 separator + 9 detail rows minimum. The tallest fixed detail is the
+//     default-backend Backends view (title, star, gap, Config header,
+//     command, prompt flag, model, gap, hints) — its hints row lands at
+//     detail row 8, so the detail area needs ≥ 9 rows. Pinned by
+//     TestSettingsView_BackendDetailHintsFitReserve.
 const (
 	svMaxItemsVisible = 8
-	svDetailReserve   = 7
+	svDetailReserve   = 10
 )
 
 // settingsRow is a single row in the settings section list.
