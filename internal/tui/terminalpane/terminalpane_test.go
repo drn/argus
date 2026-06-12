@@ -354,13 +354,30 @@ func TestTerminalPane_PasteHandlerForwardsToInputBack(t *testing.T) {
 	if ph == nil {
 		t.Fatal("expected non-nil PasteHandler")
 	}
-	ph("pasted", func(_ tview.Primitive) {})
 
-	select {
-	case got := <-back:
-		testutil.Equal(t, string(got), "pasted")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("paste did not reach InputBack")
+	cases := []struct {
+		name  string
+		paste string
+	}{
+		{"single line", "abc"},
+		{"multi line", "abc\ndef"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ph(tc.paste, func(_ tview.Primitive) {})
+
+			select {
+			case got := <-back:
+				// PasteHandler must re-wrap the unwrapped content tview hands it
+				// in bracketed-paste markers so a downstream tcell parser (a
+				// plugin's, or a real PTY with bracketed paste enabled) coalesces
+				// the paste into one EventPaste instead of N keystrokes. Newlines
+				// inside the paste must survive intact between the markers.
+				testutil.Equal(t, string(got), "\x1b[200~"+tc.paste+"\x1b[201~")
+			case <-time.After(200 * time.Millisecond):
+				t.Fatal("paste did not reach InputBack")
+			}
+		})
 	}
 }
 
