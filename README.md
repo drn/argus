@@ -236,7 +236,7 @@ The plist is configured with `RunAtLoad` and `KeepAlive { SuccessfulExit = false
 
 Argus can run agent processes inside macOS `sandbox-exec` for filesystem and credential isolation. Each agent session gets an SBPL profile that restricts reads and writes.
 
-Global sandbox settings are managed in the **Settings tab** (`4` key):
+Global sandbox settings are managed in the **Settings tab** (`3` key):
 
 | Setting     | Description                                        |
 | ----------- | -------------------------------------------------- |
