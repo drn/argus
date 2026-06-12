@@ -35,9 +35,9 @@ func TestDirAC_Draw_Closed(t *testing.T) {
 	testutil.Equal(t, rows, 0)
 }
 
-// --- handleFilePanelKey: 'o', 'e', 't' branches ---
+// --- handleFilePanelKey: 'f', 'o', 't' branches ---
 
-func TestApp_HandleFilePanelKey_OEAndT(t *testing.T) {
+func TestApp_HandleFilePanelKey_FOAndT(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -48,17 +48,36 @@ func TestApp_HandleFilePanelKey_OEAndT(t *testing.T) {
 	app.filePanel.SetFiles([]gitutil.ChangedFile{{Status: "M", Path: "a.go"}})
 	app.worktreeDir = t.TempDir()
 
-	// 'o' calls openInFinder.
-	got := app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'o', 0))
-	testutil.Nil(t, got)
+	var systemArgs [][]string
+	var termHits int
+	oldSystem := systemOpener
+	oldTerm := terminalOpener
+	t.Cleanup(func() { systemOpener = oldSystem; terminalOpener = oldTerm })
+	systemOpener = func(args ...string) error { systemArgs = append(systemArgs, args); return nil }
+	terminalOpener = func(string) error { termHits++; return nil }
 
-	// 'e' calls openInEditor.
-	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
-	testutil.Nil(t, got)
+	wantFile := app.worktreeDir + "/a.go"
 
-	// 't' calls openTerminal.
+	// 'f' reveals the selected file in Finder (`open -R <path>`).
+	got := app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'f', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, systemArgs[len(systemArgs)-1], []string{"-R", wantFile})
+
+	// 'o' opens the selected file with its default handler (`open <path>`).
+	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'o', 0))
+	testutil.Nil(t, got)
+	testutil.DeepEqual(t, systemArgs[len(systemArgs)-1], []string{wantFile})
+
+	// 't' opens a terminal in the worktree.
 	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 't', 0))
 	testutil.Nil(t, got)
+	testutil.Equal(t, termHits, 1)
+
+	// 'e' is no longer bound — the event falls through unconsumed.
+	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'e', 0))
+	if got == nil {
+		t.Error("'e' should no longer be handled by the file panel")
+	}
 
 	// 'j' navigates down.
 	got = app.handleFilePanelKey(tcell.NewEventKey(tcell.KeyRune, 'j', 0))

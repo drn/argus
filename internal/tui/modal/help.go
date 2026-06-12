@@ -84,8 +84,8 @@ var HelpSections = []HelpSection{
 		Bindings: []HelpBinding{
 			{"Enter", "open diff"},
 			{"s", "toggle split/unified"},
-			{"o", "reveal in Finder"},
-			{"e", "open in editor"},
+			{"f", "reveal in Finder"},
+			{"o", "open file"},
 			{"t", "open terminal in worktree"},
 		},
 	},

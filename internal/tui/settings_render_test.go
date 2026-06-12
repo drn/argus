@@ -660,11 +660,11 @@ func TestApp_OpenInFinder_NoFile(t *testing.T) {
 	app.openInFinder()
 }
 
-func TestApp_OpenInEditor_NoFile(t *testing.T) {
+func TestApp_OpenFile_NoFile(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	app.openInEditor()
+	app.openFile()
 }
 
 func TestApp_OpenTerminal_NoWorktree(t *testing.T) {

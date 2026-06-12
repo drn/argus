@@ -2247,11 +2247,11 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 				go a.fetchDirChildren(dir)
 			}
 			return nil
-		case 'o':
+		case 'f':
 			a.openInFinder()
 			return nil
-		case 'e':
-			a.openInEditor()
+		case 'o':
+			a.openFile()
 			return nil
 		case 't':
 			a.openTerminal()
@@ -2360,18 +2360,35 @@ func (a *App) openFileDiff() {
 	}()
 }
 
+// systemOpener is the package-level seam for the macOS `open` command. Tests
+// stub this out so they don't actually launch Finder or a default app. `open`
+// with `-R` reveals a path in Finder; without `-R` it opens the path with its
+// default system handler.
+var systemOpener = func(args ...string) error {
+	return exec.Command("open", args...).Start()
+}
+
+// openInFinder reveals the selected file in Finder (bound to `f`).
 func (a *App) openInFinder() {
 	f := a.filePanel.SelectedFile()
 	if f == nil || a.worktreeDir == "" {
 		return
 	}
-	exec.Command("open", "-R", a.worktreeDir+"/"+f.Path).Start() //nolint:errcheck
+	if err := systemOpener("-R", a.worktreeDir+"/"+f.Path); err != nil {
+		uxlog.Log("[tui] reveal in Finder failed: %v", err)
+	}
 }
 
-// editorOpener is the package-level seam for "open file in tmux + nvim".
-// Tests stub this out so they don't actually spawn a tmux window.
-var editorOpener = func(worktreeDir, path string) error {
-	return exec.Command("tmux", "new-window", "nvim", worktreeDir+"/"+path).Start()
+// openFile opens the selected file with its default system handler (bound to
+// `o`).
+func (a *App) openFile() {
+	f := a.filePanel.SelectedFile()
+	if f == nil || a.worktreeDir == "" {
+		return
+	}
+	if err := systemOpener(a.worktreeDir + "/" + f.Path); err != nil {
+		uxlog.Log("[tui] open file failed: %v", err)
+	}
 }
 
 // terminalOpener is the package-level seam for "open shell in worktree dir
@@ -2398,16 +2415,6 @@ var repoOpener = func(dir string) error {
 	cmd := exec.Command("gh", "repo", "view", "--web")
 	cmd.Dir = dir
 	return cmd.Start()
-}
-
-func (a *App) openInEditor() {
-	f := a.filePanel.SelectedFile()
-	if f == nil || a.worktreeDir == "" {
-		return
-	}
-	if err := editorOpener(a.worktreeDir, f.Path); err != nil {
-		uxlog.Log("[tui] open in editor failed: %v", err)
-	}
 }
 
 func (a *App) openTerminal() {
