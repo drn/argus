@@ -95,6 +95,15 @@ func TestSmoke_PluginView_ReconnectShowsOverlayAndResumes(t *testing.T) {
 	testutil.Equal(t, hasOverlay, true)
 	testutil.Equal(t, mode, modePluginView)
 
+	// While reconnecting, the plugin's bottom-bar hotkey hints are dropped (the
+	// plugin no longer has the keyboard); the exit affordance lives on the overlay.
+	var barHintCount int
+	readUI(t, app.tapp, func() {
+		_, _, hints := app.statusbar.PluginMode()
+		barHintCount = len(hints)
+	})
+	testutil.Equal(t, barHintCount, 0)
+
 	// Let the daemon "come back": redials now succeed → seamless resume.
 	fake.setDialErr(nil)
 	waitFor(t, 2*time.Second, func() bool { return fake.focusedCount.Load() >= 2 })

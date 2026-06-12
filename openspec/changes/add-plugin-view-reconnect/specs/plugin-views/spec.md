@@ -47,10 +47,20 @@ When the WebSocket connection to an active plugin view drops unexpectedly (the p
 - **WHEN** the dial keeps failing because the daemon has not finished restarting
 - **THEN** argus keeps retrying with capped backoff and leaves the reconnecting overlay up; it does not give up on its own
 
-#### Scenario: prolonged outage surfaces the exit hint
+#### Scenario: exit keys are always visible on the overlay
+
+- **WHEN** the reconnecting overlay is shown (at any elapsed time)
+- **THEN** the overlay renders the keys that exit the view (Esc, or double-Ctrl+Q)
+
+#### Scenario: prolonged outage escalates the headline message
 
 - **WHEN** reconnection has been retrying for an extended period (about two minutes)
-- **THEN** the overlay text changes to indicate it is still trying and surfaces the keys that exit the view
+- **THEN** the overlay's headline message changes from "Reconnecting…" to a "still trying" message (the exit-key hint remains visible throughout)
+
+#### Scenario: the plugin's bottom-bar hotkeys are not shown while reconnecting
+
+- **WHEN** a plugin view is in the reconnecting state
+- **THEN** argus does not render the plugin's pushed hotkey hints in the bottom bar (the plugin no longer has the keyboard); the exit affordance is surfaced by the reconnecting overlay, and the bar's hints are restored on a successful resume
 
 ### Requirement: Seamless resume after reconnect
 
