@@ -478,7 +478,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .artifact-meta { flex: 1 1 auto; min-width: 0; }
 .artifact-name { font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifact-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-.artifact-chevron { color: var(--text-dim); flex: 0 0 auto; font-size: 18px; }
+.artifact-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.artifact-btn {
+  font-size: 13px; color: var(--accent); background: transparent;
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 12px; cursor: pointer; white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.artifact-btn:active { background: var(--surface); }
 .artifact-vtoolbar {
   display: flex; align-items: center; gap: 12px;
   padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); min-height: 40px;
@@ -3921,6 +3928,7 @@ function closeFilesView() {
 // HTML frames are sandboxed allow-scripts WITHOUT allow-same-origin → opaque
 // origin → no access to the parent window or its token in localStorage.
 let artifactsViewTask = null;
+let artifactsViewArt = null; // the artifact currently rendered in the viewer
 let artifactObjectURLs = [];
 
 function revokeArtifactURLs() {
@@ -3945,10 +3953,12 @@ function closeArtifactsView() {
   document.getElementById('artifacts-view').classList.remove('open');
   revokeArtifactURLs();
   artifactsViewTask = null;
+  artifactsViewArt = null;
 }
 
 async function loadArtifactsList(taskId) {
   revokeArtifactURLs();
+  artifactsViewArt = null; // back to the list — nothing is "open" anymore
   const body = document.getElementById('artifacts-body');
   body.className = 'artifacts-body';
   body.innerHTML = '<div class="files-empty">Loading…</div>';
@@ -3995,14 +4005,59 @@ function renderArtifactsList(arts, taskId) {
         <div class="artifact-name">${esc(a.name || a.filename)}</div>
         <div class="artifact-sub">${esc(a.type)} · ${fmtBytes(a.size)}</div>
       </div>
-      <div class="artifact-chevron">›</div>
+      <div class="artifact-actions">
+        <button type="button" class="artifact-btn" data-act="open">Open</button>
+        <button type="button" class="artifact-btn" data-act="download">Download</button>
+      </div>
     </div>`).join('');
   // Wire taps in JS (not inline) so we can hand the full artifact object to
-  // the viewer without round-tripping it through an attribute.
+  // the viewer/downloader without round-tripping it through an attribute. Open
+  // renders the artifact inline in Argus; Download triggers a file save. The
+  // row body also opens, so a tap anywhere outside the buttons is "open".
   body.querySelectorAll('.artifact-item').forEach(el => {
     const a = arts[parseInt(el.dataset.idx, 10)];
     el.onclick = () => openArtifactViewer(taskId, a);
+    el.querySelector('[data-act="open"]').onclick = (e) => {
+      e.stopPropagation();
+      openArtifactViewer(taskId, a);
+    };
+    el.querySelector('[data-act="download"]').onclick = (e) => {
+      e.stopPropagation();
+      downloadArtifact(taskId, a);
+    };
   });
+}
+
+// Fetches the artifact bytes through the authed API (the raw endpoint needs a
+// bearer token, so a plain `<a href>` to it can't carry auth) and triggers a
+// browser download via a synthetic `<a download>` click against a blob URL.
+// Kept separate from the inline viewer so Open and Download are deterministic —
+// the old combined "Open / Download" link was an `<a download>` whose blob:
+// behavior varied by platform (inline preview vs. save), which is why the open
+// render used to be reachable only intermittently.
+async function downloadArtifact(taskId, art) {
+  try {
+    const r = await api(`/api/tasks/${taskId}/artifacts/${encodeURIComponent(art.filename)}`);
+    if (!r.ok) throw new Error('fetch ' + r.status);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = art.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoke after a tick so the browser has grabbed the URL for the download.
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* already revoked */ } }, 4000);
+  } catch (e) {
+    showToast('Download failed: ' + e.message);
+  }
+}
+
+// Download entry point for the in-viewer toolbar, which only has the currently
+// open artifact in scope (stashed in artifactsViewArt by openArtifactViewer).
+function downloadCurrentArtifact() {
+  if (artifactsViewTask && artifactsViewArt) downloadArtifact(artifactsViewTask.id, artifactsViewArt);
 }
 
 function artifactBackToolbar(taskId, extraRight) {
@@ -4012,6 +4067,7 @@ function artifactBackToolbar(taskId, extraRight) {
 
 async function openArtifactViewer(taskId, art) {
   revokeArtifactURLs();
+  artifactsViewArt = art;
   const body = document.getElementById('artifacts-body');
   body.className = 'artifacts-body viewing';
   body.innerHTML = artifactBackToolbar(taskId, '') + '<div class="files-empty">Loading…</div>';
@@ -4038,7 +4094,7 @@ async function openArtifactViewer(taskId, art) {
 
 function renderBlobArtifact(taskId, art, url) {
   const body = document.getElementById('artifacts-body');
-  const dl = `<a href="${url}" download="${escAttr(art.filename)}">Open / Download</a>`;
+  const dl = `<span class="link" onclick="downloadCurrentArtifact()">Download</span>`;
   if (art.type === 'html') {
     // sandbox="allow-scripts" (no allow-same-origin) → opaque origin: report
     // scripts run but can't reach the parent or its token.
@@ -4066,9 +4122,10 @@ function renderBlobArtifact(taskId, art, url) {
 
 function renderTextArtifact(taskId, art, txt) {
   const body = document.getElementById('artifacts-body');
+  const dl = `<span class="link" onclick="downloadCurrentArtifact()">Download</span>`;
   if (art.type === 'markdown') {
     const doc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${MD_CSS}</style></head><body>${renderMarkdownToHTML(txt)}</body></html>`;
-    body.innerHTML = artifactBackToolbar(taskId, '');
+    body.innerHTML = artifactBackToolbar(taskId, dl);
     const frame = document.createElement('iframe');
     frame.className = 'artifact-frame';
     // allow-popups lets external links open; no allow-scripts, so the rendered
@@ -4077,7 +4134,7 @@ function renderTextArtifact(taskId, art, txt) {
     frame.srcdoc = doc;
     body.appendChild(frame);
   } else {
-    body.innerHTML = artifactBackToolbar(taskId, '') + `<pre class="artifact-pre">${esc(txt)}</pre>`;
+    body.innerHTML = artifactBackToolbar(taskId, dl) + `<pre class="artifact-pre">${esc(txt)}</pre>`;
   }
 }
 
