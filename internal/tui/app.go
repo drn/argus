@@ -2271,6 +2271,9 @@ func (a *App) handleFilePanelKey(event *tcell.EventKey) *tcell.EventKey {
 		case 'o':
 			a.openFile()
 			return nil
+		case 'e':
+			a.openInEditor()
+			return nil
 		case 't':
 			a.openTerminal()
 			return nil
@@ -2406,6 +2409,46 @@ func (a *App) openFile() {
 	}
 	if err := systemOpener(a.worktreeDir + "/" + f.Path); err != nil {
 		uxlog.Log("[tui] open file failed: %v", err)
+	}
+}
+
+// editorArgv builds the tmux argv for opening a file in a new window running
+// $EDITOR. It falls back to `vi` when $EDITOR is empty/unset, and splits the
+// editor value on whitespace so values like `code -w` or `nvim -p` work. The
+// `--` guards against the file path or editor flags being parsed as tmux
+// options. Pulled out as a pure function so the resolution logic is testable
+// without shelling out to tmux.
+//
+// Limitation: shell-style quoting in $EDITOR is NOT interpreted — splitting is
+// plain whitespace via strings.Fields, so a value like `emacsclient -a ""`
+// yields the literal token `""` rather than an empty argument. The common
+// real-world forms (`vi`, `code -w`, `nvim -p`) all use unquoted whitespace and
+// work correctly; anything relying on shell quoting must wrap itself in a
+// script on $PATH and set $EDITOR to that script's name.
+func editorArgv(editor, worktreeDir, path string) []string {
+	if strings.TrimSpace(editor) == "" {
+		editor = "vi"
+	}
+	args := append([]string{"new-window", "-c", worktreeDir, "--"}, strings.Fields(editor)...)
+	return append(args, worktreeDir+"/"+path)
+}
+
+// editorOpener is the package-level seam for "open file in a new tmux window
+// running $EDITOR". Tests stub this out so they don't actually spawn tmux
+// windows.
+var editorOpener = func(worktreeDir, path string) error {
+	return exec.Command("tmux", editorArgv(os.Getenv("EDITOR"), worktreeDir, path)...).Start()
+}
+
+// openInEditor opens the selected file in a new tmux window running $EDITOR
+// (bound to `e`).
+func (a *App) openInEditor() {
+	f := a.filePanel.SelectedFile()
+	if f == nil || a.worktreeDir == "" {
+		return
+	}
+	if err := editorOpener(a.worktreeDir, f.Path); err != nil {
+		uxlog.Log("[tui] open in editor failed: %v", err)
 	}
 }
 
