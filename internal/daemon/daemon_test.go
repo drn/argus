@@ -410,16 +410,18 @@ func waitForSocket(t *testing.T, sockPath string) {
 
 func TestDaemon_TransitionTaskOnExit(t *testing.T) {
 	tests := []struct {
-		name    string
-		initial model.Status
-		stopped bool
-		want    model.Status
+		name      string
+		initial   model.Status
+		cleanExit bool
+		want      model.Status
 	}{
-		{"in_progress + natural exit -> complete", model.StatusInProgress, false, model.StatusComplete},
-		{"in_progress + stopped -> in_review", model.StatusInProgress, true, model.StatusInReview},
-		{"in_review + exit -> in_review (no-op)", model.StatusInReview, false, model.StatusInReview},
-		{"complete + exit -> complete (no-op)", model.StatusComplete, true, model.StatusComplete},
-		{"pending + exit -> pending (no-op)", model.StatusPending, false, model.StatusPending},
+		// Only a clean self-exit (Ctrl-D / `/exit`, zero exit code) completes.
+		{"in_progress + clean exit -> complete", model.StatusInProgress, true, model.StatusComplete},
+		// Everything non-clean is recoverable → in_review, never complete.
+		{"in_progress + non-clean exit -> in_review", model.StatusInProgress, false, model.StatusInReview},
+		{"in_review + clean exit -> in_review (no-op)", model.StatusInReview, true, model.StatusInReview},
+		{"complete + non-clean exit -> complete (no-op)", model.StatusComplete, false, model.StatusComplete},
+		{"pending + clean exit -> pending (no-op)", model.StatusPending, true, model.StatusPending},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -427,11 +429,34 @@ func TestDaemon_TransitionTaskOnExit(t *testing.T) {
 			task := &model.Task{Name: "x", Status: tt.initial}
 			testutil.NoError(t, d.db.Add(task))
 
-			d.transitionTaskOnExit(task.ID, tt.stopped)
+			d.transitionTaskOnExit(task.ID, tt.cleanExit)
 
 			got, err := d.db.Get(task.ID)
 			testutil.NoError(t, err)
 			testutil.Equal(t, got.Status, tt.want)
+		})
+	}
+}
+
+// TestExitInfo_CleanExit pins the single authoritative predicate that gates the
+// Complete transition: a task is "complete" ONLY on a self-driven, zero-exit-code
+// process end. A stop, a crash (non-empty Err), or an unconfirmed stream loss are
+// all recoverable and must read as not-clean so both flip sites land InReview.
+func TestExitInfo_CleanExit(t *testing.T) {
+	tests := []struct {
+		name string
+		info ExitInfo
+		want bool
+	}{
+		{"natural zero-exit", ExitInfo{}, true},
+		{"explicit stop", ExitInfo{Stopped: true}, false},
+		{"crash / missing binary (exit 127)", ExitInfo{Err: "exit status 127"}, false},
+		{"stream lost (process maybe alive)", ExitInfo{StreamLost: true}, false},
+		{"stopped + error together", ExitInfo{Stopped: true, Err: "boom"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testutil.Equal(t, tt.info.CleanExit(), tt.want)
 		})
 	}
 }

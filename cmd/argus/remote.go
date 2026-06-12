@@ -100,6 +100,14 @@ func runRemoteTUI(baseURL, token string) {
 		// Reuse the daemon-client exit handler — apiclient.SessionExitInfo
 		// shape mirrors daemon.ExitInfo on purpose so the TUI's existing
 		// HandleSessionExit doesn't need a remote-specific branch.
+		//
+		// NOTE on CleanExit() in remote mode: the SSE client never observes the
+		// agent's real exit code (only the stream close), so the fields below
+		// cannot represent a true clean exit. The resulting ExitInfo reads
+		// CleanExit()==false, so the local flip lands InReview — the correct
+		// conservative answer for a client that can't observe completion. The
+		// remote daemon's own transitionTaskOnExit records the authoritative
+		// status, which this TUI surfaces via /api/tasks.
 		appRef.HandleSessionExit(taskID, daemon.ExitInfo{
 			Err:        info.Err,
 			Stopped:    info.Stopped,

@@ -279,13 +279,14 @@ func TestSmoke_PinToggleDoesNotClobberBackgroundRename(t *testing.T) {
 
 // TestSmoke_ReconciliationUsesNameSafeStatusWrite covers the daemon-mode
 // reconciliation path (refreshTasksWithIDs): an InProgress task with no live
-// session flips to Complete. It now persists via db.SetStatus (partial write)
-// instead of the full-row db.Update, so the status flip can't carry a stale
-// name back to the DB. Note: refreshTasksWithIDs reloads a.tasks fresh at the
-// top of the call, so the struct is normally current — this test pins the
-// path's status transition + name preservation; the partial-write semantics
-// that defeat the concurrent-autoname microsecond race are proven by the
-// db.SetStatus unit tests.
+// session flips to InReview (NOT Complete — reconciliation is a pure inference
+// from session-list absence with no observed exit, so it must never mark a task
+// done). It persists via db.SetStatus (partial write) instead of the full-row
+// db.Update, so the status flip can't carry a stale name back to the DB. Note:
+// refreshTasksWithIDs reloads a.tasks fresh at the top of the call, so the
+// struct is normally current — this test pins the path's status transition +
+// name preservation; the partial-write semantics that defeat the
+// concurrent-autoname microsecond race are proven by the db.SetStatus unit tests.
 func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 	d := testDB(t)
 	task := &model.Task{Name: "haiku-name", Status: model.StatusInProgress, Project: "p"}
@@ -297,7 +298,7 @@ func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 	defer stop()
 
 	// Empty-but-non-nil running set: the in-progress task has no live session
-	// and is not in the start-grace window, so reconciliation flips it Complete.
+	// and is not in the start-grace window, so reconciliation flips it InReview.
 	readUI(t, app.tapp, func() {
 		// refreshTasksWithIDs is documented to run with a.mu held (its callers
 		// refreshTasks/refreshTasksLocal lock first); replicate that contract.
@@ -308,7 +309,7 @@ func TestSmoke_ReconciliationUsesNameSafeStatusWrite(t *testing.T) {
 	syncUI(t, app.tapp)
 
 	got, _ := d.Get(task.ID)
-	testutil.Equal(t, got.Status, model.StatusComplete)
+	testutil.Equal(t, got.Status, model.StatusInReview)
 	testutil.Equal(t, got.Name, "haiku-name")
 }
 
@@ -324,13 +325,22 @@ func TestSmoke_SessionExitFlipUsesNameSafeStatusWrite(t *testing.T) {
 	if err := d.Add(task); err != nil {
 		t.Fatal(err)
 	}
+	// Daemon mode (daemonConnected=true) so this pins the daemon-mode flip path
+	// (HandleSessionExit → handleSessionExitUI → name-safe db.SetStatus). Called
+	// directly (no event loop) so the unrelated tick/refresh reconciler — which,
+	// post-fix, lands a sessionless InProgress row in InReview — can't race the
+	// flip and make the InProgress guard skip it. The reconciler→InReview path is
+	// covered by TestSmoke_ReconciliationUsesNameSafeStatusWrite; here we isolate
+	// the exit-flip write itself.
 	app := New(d, agent.NewRunner(nil), true)
-	_, stop := wireApp(t, app)
-	defer stop()
+	// New()'s initial refreshTasks() reconciles this sessionless InProgress row to
+	// InReview in daemon mode (correct — no live session). Reset to InProgress so
+	// this test exercises the EXIT-FLIP write itself, not the reconciler (the
+	// reconciler→InReview path is covered by TestSmoke_ReconciliationUsesNameSafeStatusWrite).
+	testutil.NoError(t, d.SetStatus(task.ID, model.StatusInProgress))
 
-	// Natural exit (not stopped) → Complete, name preserved by the partial write.
-	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
-	syncUI(t, app.tapp)
+	// Clean self-exit (cleanExit=true) → Complete, name preserved by the partial write.
+	app.handleSessionExitUI(task.ID, true /* cleanExit */, false)
 	got, _ := d.Get(task.ID)
 	testutil.Equal(t, got.Status, model.StatusComplete)
 	testutil.Equal(t, got.Name, "haiku-name")
@@ -339,8 +349,7 @@ func TestSmoke_SessionExitFlipUsesNameSafeStatusWrite(t *testing.T) {
 	// Second notification: row is no longer InProgress, so the guard skips the
 	// flip entirely — status and ended_at must be untouched (no re-stamp, no
 	// duplicate event).
-	readUI(t, app.tapp, func() { app.handleSessionExitUI(task.ID, false, false) })
-	syncUI(t, app.tapp)
+	app.handleSessionExitUI(task.ID, true /* cleanExit */, false)
 	got, _ = d.Get(task.ID)
 	testutil.Equal(t, got.Status, model.StatusComplete)
 	testutil.Equal(t, got.EndedAt.Equal(firstEnded), true)

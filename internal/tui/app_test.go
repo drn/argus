@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -223,7 +224,7 @@ func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {
 	task := &model.Task{Name: "kick-deferred", Status: model.StatusInProgress, Worktree: t.TempDir()}
 	testutil.NoError(t, d.Add(task))
 
-	app.handleSessionExitUI(task.ID, true /* stopped */, true /* pendingRestart */)
+	app.handleSessionExitUI(task.ID, false /* cleanExit */, true /* pendingRestart */)
 
 	fresh, _ := d.Get(task.ID)
 	if fresh == nil {
@@ -233,32 +234,32 @@ func TestHandleSessionExitUI_SkipsTransitionWhenPendingRestart(t *testing.T) {
 		t.Errorf("expected status InProgress when pendingRestart=true, got %s", fresh.Status)
 	}
 
-	// Same skip behavior when stopped=false (process exited naturally during
-	// a kick window — rare but valid).
-	task2 := &model.Task{Name: "kick-pending-natural", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	// Same skip behavior even on a clean exit during a kick window (rare but
+	// valid) — pendingRestart always wins, the row stays InProgress.
+	task2 := &model.Task{Name: "kick-pending-clean", Status: model.StatusInProgress, Worktree: t.TempDir()}
 	testutil.NoError(t, d.Add(task2))
-	app.handleSessionExitUI(task2.ID, false /* stopped */, true /* pendingRestart */)
+	app.handleSessionExitUI(task2.ID, true /* cleanExit */, true /* pendingRestart */)
 	fresh2, _ := d.Get(task2.ID)
 	if fresh2.Status != model.StatusInProgress {
-		t.Errorf("expected status InProgress when pendingRestart=true and stopped=false, got %s", fresh2.Status)
+		t.Errorf("expected status InProgress when pendingRestart=true and cleanExit=true, got %s", fresh2.Status)
 	}
 
-	// Without pendingRestart, stopped=true → InReview.
-	task3 := &model.Task{Name: "kick-not-deferred-stop", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	// Without pendingRestart, a non-clean exit (stop/crash/fast-fail) → InReview.
+	task3 := &model.Task{Name: "non-clean-review", Status: model.StatusInProgress, Worktree: t.TempDir()}
 	testutil.NoError(t, d.Add(task3))
-	app.handleSessionExitUI(task3.ID, true /* stopped */, false /* pendingRestart */)
+	app.handleSessionExitUI(task3.ID, false /* cleanExit */, false /* pendingRestart */)
 	fresh3, _ := d.Get(task3.ID)
 	if fresh3.Status != model.StatusInReview {
-		t.Errorf("expected status InReview when pendingRestart=false, got %s", fresh3.Status)
+		t.Errorf("expected status InReview on non-clean exit, got %s", fresh3.Status)
 	}
 
-	// Without pendingRestart, stopped=false → Complete.
-	task4 := &model.Task{Name: "natural-complete", Status: model.StatusInProgress, Worktree: t.TempDir()}
+	// Without pendingRestart, a clean self-exit → Complete.
+	task4 := &model.Task{Name: "clean-complete", Status: model.StatusInProgress, Worktree: t.TempDir()}
 	testutil.NoError(t, d.Add(task4))
-	app.handleSessionExitUI(task4.ID, false /* stopped */, false /* pendingRestart */)
+	app.handleSessionExitUI(task4.ID, true /* cleanExit */, false /* pendingRestart */)
 	fresh4, _ := d.Get(task4.ID)
 	if fresh4.Status != model.StatusComplete {
-		t.Errorf("expected status Complete when pendingRestart=false and stopped=false, got %s", fresh4.Status)
+		t.Errorf("expected status Complete on clean exit, got %s", fresh4.Status)
 	}
 }
 
@@ -300,7 +301,7 @@ func TestHandleSessionExitUI_ClaudeRefreshesSessionID(t *testing.T) {
 	task := &model.Task{Name: "claude-clear", Status: model.StatusInProgress, Worktree: wt, Backend: "claude", SessionID: original}
 	testutil.NoError(t, d.Add(task))
 
-	app.handleSessionExitUI(task.ID, true /* stopped */, false /* pendingRestart */)
+	app.handleSessionExitUI(task.ID, false /* cleanExit */, false /* pendingRestart */)
 
 	// Capture runs in a goroutine then persists via QueueUpdateDraw; poll until
 	// the row reflects the refreshed UUID (or time out).
@@ -1641,17 +1642,21 @@ func TestReconcileWorksOnEmptyRunning(t *testing.T) {
 
 	d.Add(&model.Task{ID: "t1", Name: "stale-task", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()})
 
-	// Pass empty non-nil runningIDs (daemon confirmed nothing running) — should reconcile
+	// Pass empty non-nil runningIDs (daemon confirmed nothing running) — should
+	// reconcile to InReview (inferred absence, no observed exit → never Complete).
 	app.refreshTasksWithIDs([]string{}, []string{})
 
 	found := false
 	for _, task := range app.tasks {
-		if task.ID == "t1" && task.Status == model.StatusComplete {
+		if task.ID == "t1" && task.Status == model.StatusInReview {
 			found = true
+		}
+		if task.ID == "t1" && task.Status == model.StatusComplete {
+			t.Error("reconciliation must NOT mark an inferred-absent task Complete")
 		}
 	}
 	if !found {
-		t.Error("stale task should have been reconciled to Complete with empty (non-nil) runningIDs")
+		t.Error("stale task should have been reconciled to InReview with empty (non-nil) runningIDs")
 	}
 }
 
@@ -1779,7 +1784,7 @@ func TestReconcileWorksWhenStartGenUnchanged(t *testing.T) {
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
-			testutil.Equal(t, task.Status, model.StatusComplete)
+			testutil.Equal(t, task.Status, model.StatusInReview)
 		}
 	}
 }
@@ -1829,7 +1834,7 @@ func TestReconcileGracePeriodExpiresAfterTimeout(t *testing.T) {
 
 	for _, task := range app.tasks {
 		if task.ID == "t1" {
-			testutil.Equal(t, task.Status, model.StatusComplete)
+			testutil.Equal(t, task.Status, model.StatusInReview)
 		}
 	}
 }
@@ -2551,6 +2556,7 @@ func TestApp_NotifySessionExit(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
+		// Clean in-process exit: err=nil, stopped=false → cleanExit → Complete.
 		app.NotifySessionExit("t1", nil, false, []byte("done"))
 		close(done)
 	}()
@@ -2560,6 +2566,37 @@ func TestApp_NotifySessionExit(t *testing.T) {
 		t.Fatal("NotifySessionExit blocked")
 	}
 	syncUI(t, app.tapp)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusComplete)
+}
+
+// TestApp_NotifySessionExit_CrashGoesToInReview pins the original bug class end
+// to end through the in-process entry point: a non-zero / missing-binary exit
+// arrives with err != nil (stopped=false) and MUST land InReview, never Complete.
+func TestApp_NotifySessionExit_CrashGoesToInReview(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
+	d.Add(task)
+	app.refreshTasks()
+
+	_, stop := wireApp(t, app)
+	t.Cleanup(stop)
+
+	done := make(chan struct{})
+	go func() {
+		app.NotifySessionExit("t1", errors.New("exit status 127"), false /* not stopped */, []byte("claude: command not found"))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(uiTimeout):
+		t.Fatal("NotifySessionExit blocked")
+	}
+	syncUI(t, app.tapp)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
 func TestApp_HandleSessionExit_StreamLost(t *testing.T) {
@@ -2583,6 +2620,7 @@ func TestApp_HandleSessionExit_DispatchesToUI(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
+		// Clean daemon-reported exit (not stopped, no err) → CleanExit() → Complete.
 		app.HandleSessionExit("t1", daemon.ExitInfo{Stopped: false, LastOutput: []byte("done")})
 		close(done)
 	}()
@@ -2592,6 +2630,8 @@ func TestApp_HandleSessionExit_DispatchesToUI(t *testing.T) {
 		t.Fatal("HandleSessionExit blocked")
 	}
 	syncUI(t, app.tapp)
+	got, _ := d.Get("t1")
+	testutil.Equal(t, got.Status, model.StatusComplete)
 }
 
 func TestApp_HandleSessionExitUI_TaskNotFound(t *testing.T) {
@@ -2608,7 +2648,7 @@ func TestApp_HandleSessionExitUI_FlipToComplete(t *testing.T) {
 	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
 	d.Add(task)
 
-	app.handleSessionExitUI("t1", false, false)
+	app.handleSessionExitUI("t1", true /* cleanExit */, false)
 	got, _ := d.Get("t1")
 	testutil.Equal(t, got.Status, model.StatusComplete)
 }
@@ -2620,7 +2660,7 @@ func TestApp_HandleSessionExitUI_FlipToInReview(t *testing.T) {
 	task := &model.Task{ID: "t1", Project: "p", Name: "n", Status: model.StatusInProgress, CreatedAt: time.Now()}
 	d.Add(task)
 
-	app.handleSessionExitUI("t1", true, false)
+	app.handleSessionExitUI("t1", false /* cleanExit → non-clean */, false)
 	got, _ := d.Get("t1")
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
@@ -2798,7 +2838,8 @@ func TestApp_HandleSessionExitUI_ViewingExitsAgent(t *testing.T) {
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "n")
 
-	app.handleSessionExitUI("t1", false, false)
+	// Clean exit (→ Complete) while viewing → navigate back to the task list.
+	app.handleSessionExitUI("t1", true /* cleanExit */, false)
 	testutil.Equal(t, app.mode, modeTaskList)
 }
 
@@ -2812,7 +2853,9 @@ func TestApp_HandleSessionExitUI_ViewingStoppedClearsSession(t *testing.T) {
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "n")
 
-	app.handleSessionExitUI("t1", true, false)
+	// Non-clean exit (→ InReview) while viewing → STAY in the agent pane so the
+	// user sees the exited state and can resume in place (no bounce to the list).
+	app.handleSessionExitUI("t1", false /* cleanExit → non-clean */, false)
 	testutil.Equal(t, app.mode, modeAgent)
 }
 
