@@ -57,3 +57,4 @@ web-tests/.cache/
 # Per-developer iris overrides (machine-specific)
 .iris.local.toml
 .claude/reviews/
+.workflow/
