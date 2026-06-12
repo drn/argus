@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"sync"
 	"time"
 
@@ -58,6 +57,22 @@ type Connector struct {
 	conn    *websocket.Conn
 	closeCh chan struct{}
 	once    sync.Once
+
+	// onClose is fired at most once when a read/write pump exits for a reason
+	// OTHER than an explicit Close() — i.e. the remote disconnected or the
+	// socket errored. It is the App's signal to start a reconnect. Registered
+	// via SetOnClose after construction; may be nil. Runs on a pump goroutine,
+	// so the handler MUST hop to the tview goroutine before touching tview/App
+	// state (same contract as onControl).
+	onClose func(error)
+	// explicitClose is set true by Close() BEFORE the underlying conn is closed,
+	// so the pump's Read/Write unblocks only after the flag is visible. fireClose
+	// reads it to suppress the onClose callback on a deliberate teardown — a
+	// deactivate or failsafe must never look like an unexpected disconnect.
+	explicitClose bool
+	// fireCloseOnce guards onClose so two pumps exiting (read + write) fire it
+	// at most once.
+	fireCloseOnce sync.Once
 
 	// dialer is the function used by Dial to open the WebSocket. The default
 	// is websocket.Dial; tests can override to inject a controlled handshake.
@@ -118,6 +133,35 @@ func (c *Connector) Dial(ctx context.Context) error {
 	return nil
 }
 
+// SetOnClose registers the unexpected-disconnect callback. Call once, before
+// Dial, on the goroutine that constructs the connector. The callback fires at
+// most once and only when a pump exits without an explicit Close() — it is the
+// App's cue to begin reconnecting.
+func (c *Connector) SetOnClose(fn func(error)) {
+	c.mu.Lock()
+	c.onClose = fn
+	c.mu.Unlock()
+}
+
+// fireClose invokes onClose exactly once, unless an explicit Close() is in
+// progress/done (explicitClose). Called from both pumps on their error/EOF
+// exit paths; the sync.Once + explicit-close guard make it safe to call from
+// either or both.
+func (c *Connector) fireClose(err error) {
+	c.mu.Lock()
+	explicit := c.explicitClose
+	cb := c.onClose
+	c.mu.Unlock()
+	if explicit {
+		return
+	}
+	c.fireCloseOnce.Do(func() {
+		if cb != nil {
+			cb(err)
+		}
+	})
+}
+
 // SendResize emits a {"type":"resize","cols":N,"rows":M} envelope as a TEXT
 // frame. Sent on initial connect + every terminal resize while the plugin
 // view is active.
@@ -140,7 +184,12 @@ func (c *Connector) Close() error {
 	var err error
 	c.once.Do(func() {
 		close(c.closeCh)
+		// Set explicitClose BEFORE closing the conn: the pump's blocked
+		// Read/Write only unblocks after Close, so the flag is guaranteed
+		// visible by the time fireClose runs — suppressing a phantom onClose
+		// on deliberate teardown.
 		c.mu.Lock()
+		c.explicitClose = true
 		conn := c.conn
 		c.mu.Unlock()
 		if conn != nil {
@@ -181,9 +230,10 @@ func (c *Connector) readPump() {
 		}
 		typ, data, err := conn.Read(context.Background())
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
+			// EOF or any read error means the remote went away (or we're being
+			// torn down). fireClose suppresses the callback when an explicit
+			// Close() is in flight, so this only signals unexpected drops.
+			c.fireClose(err)
 			return
 		}
 		if typ != websocket.MessageBinary {
@@ -224,6 +274,10 @@ func (c *Connector) writePump() {
 			err := conn.Write(ctx, websocket.MessageBinary, b)
 			cancel()
 			if err != nil {
+				// A failed write means the socket died under us. Signal the
+				// disconnect (deduped with the read pump via fireCloseOnce;
+				// suppressed if Close() is in flight).
+				c.fireClose(err)
 				return
 			}
 		}

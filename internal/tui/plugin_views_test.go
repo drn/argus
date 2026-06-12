@@ -31,12 +31,33 @@ type fakePluginConnector struct {
 	dialErr        error
 	onBytes        func([]byte)
 	onControl      func([]byte)
+	onClose        func(error)
 	bytesToReceive [][]byte
 }
 
+func (f *fakePluginConnector) SetOnClose(fn func(error)) {
+	f.mu.Lock()
+	f.onClose = fn
+	f.mu.Unlock()
+}
+
+// fireClose invokes the registered onClose handler, simulating an unexpected
+// disconnect (the plugin daemon dying). Test-only helper.
+func (f *fakePluginConnector) fireClose(err error) {
+	f.mu.Lock()
+	cb := f.onClose
+	f.mu.Unlock()
+	if cb != nil {
+		cb(err)
+	}
+}
+
 func (f *fakePluginConnector) Dial(ctx context.Context) error {
-	if f.dialErr != nil {
-		return f.dialErr
+	f.mu.Lock()
+	dialErr := f.dialErr
+	f.mu.Unlock()
+	if dialErr != nil {
+		return dialErr
 	}
 	f.dialed.Store(true)
 	for _, b := range f.bytesToReceive {
@@ -45,6 +66,12 @@ func (f *fakePluginConnector) Dial(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (f *fakePluginConnector) setDialErr(err error) {
+	f.mu.Lock()
+	f.dialErr = err
+	f.mu.Unlock()
 }
 
 func (f *fakePluginConnector) SendResize(cols, rows int) error {

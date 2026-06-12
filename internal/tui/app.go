@@ -1696,6 +1696,15 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.dismissPluginHelp()
 			return nil
 		}
+		// While reconnecting, the plugin is GONE — full surrender no longer
+		// applies (there's nothing to forward to). A single Esc exits to the
+		// task list, alongside the double-Ctrl+Q failsafe. When the plugin is
+		// live, Esc falls through and forwards to the plugin (unchanged).
+		if a.activePlugin != nil && a.activePlugin.reconnecting && event.Key() == tcell.KeyEscape {
+			uxlog.Log("[plugin-view] esc during reconnect — exit to task list")
+			a.deactivatePluginView()
+			return nil
+		}
 		if event.Key() == tcell.KeyCtrlQ {
 			now := a.nowFn()
 			if !a.lastCtrlQ.IsZero() && now.Sub(a.lastCtrlQ) <= pluginFailsafeWindow {
