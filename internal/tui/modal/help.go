@@ -73,6 +73,7 @@ var HelpSections = []HelpSection{
 			{"Cmd+↑ / Cmd+↓", "navigate tasks"},
 			{"Shift+↑ / Shift+↓", "scroll terminal"},
 			{"ctrl+z", "toggle single-pane (zoom)"},
+			{"ctrl+k", "task switcher"},
 			{"ctrl+l", "link picker"},
 			{"ctrl+r", "switch Claude session"},
 			{"ctrl+p", "open PR"},
