@@ -29,6 +29,34 @@ func TestTask_Elapsed_Completed(t *testing.T) {
 	}
 }
 
+func TestTask_Elapsed_FutureStartedAt_ClampsToZero(t *testing.T) {
+	// A backward wall-clock correction can leave StartedAt in the future on a
+	// running task; Elapsed must floor at 0 rather than report negative time.
+	task := &Task{StartedAt: time.Now().Add(42 * time.Minute)}
+	if d := task.Elapsed(); d != 0 {
+		t.Errorf("expected 0 for future StartedAt, got %v", d)
+	}
+}
+
+func TestTask_Elapsed_EndedBeforeStarted_ClampsToZero(t *testing.T) {
+	// Both timestamps stamped under clock skew can leave EndedAt < StartedAt.
+	start := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	end := start.Add(-10 * time.Minute)
+	task := &Task{StartedAt: start, EndedAt: end}
+	if d := task.Elapsed(); d != 0 {
+		t.Errorf("expected 0 when EndedAt precedes StartedAt, got %v", d)
+	}
+}
+
+func TestTask_ElapsedString_NegativeDuration_RendersEmpty(t *testing.T) {
+	// The "-2503s" / "-41h" display regression: a future StartedAt must not
+	// render as a negative string. Elapsed clamps to 0, so the string is empty.
+	task := &Task{StartedAt: time.Now().Add(2 * time.Hour)}
+	if got := task.ElapsedString(); got != "" {
+		t.Errorf("ElapsedString() = %q, want \"\"", got)
+	}
+}
+
 func TestTask_ElapsedString(t *testing.T) {
 	tests := []struct {
 		name string
