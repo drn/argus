@@ -4229,6 +4229,9 @@ async function openArtifactFullscreen(taskId, art) {
       node = makeArtifactNode(art, { txt });
     } else {
       const blob = await r.blob();
+      // Gen check BEFORE createObjectURL: a superseded/dismissed load returns
+      // here and never allocates a URL, so the only live blob URL is always the
+      // current one (any prior was revoked at the top of this call). No leak.
       if (gen !== artifactFsGen) return;
       artifactFsURL = URL.createObjectURL(blob);
       node = makeArtifactNode(art, { url: artifactFsURL });
