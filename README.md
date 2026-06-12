@@ -137,6 +137,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+q` / `Esc`      | Back (3-level: diff → files → task list)                                  |
 | `Cmd+←` / `Cmd+→`     | Switch panels (no-op when zoomed — side panels are hidden)                |
 | `Cmd+↑` / `Cmd+↓`     | Navigate between tasks                                                    |
+| `ctrl+k`              | Open task switcher (fuzzy-search all tasks by name; tasks needing input pinned to the top) |
 | `ctrl+z`              | Toggle the git + file side panes (default layout set by Settings → Appearance → "Default agent view") |
 | `ctrl+l`              | Open link picker (fuzzy search all session URLs)                          |
 | `ctrl+r`              | Switch Claude session (searchable picker of this task's conversations; resumes the chosen one). Claude backends only |

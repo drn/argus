@@ -63,6 +63,7 @@ const (
 	modeLinkPicker
 	modeFuzzyLinkPicker
 	modeSessionPicker
+	modeTaskSwitcher
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeRestartDaemonPrompt
@@ -136,6 +137,7 @@ type App struct {
 	linkPickerPrevPage   string
 	fuzzyLinkPickerModal *FuzzyLinkPickerModal
 	sessionPickerModal   *SessionPickerModal
+	taskSwitcherModal    *TaskSwitcherModal
 
 	// Fork task modal (created on demand)
 	forkModal *ForkTaskModal
@@ -1806,6 +1808,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Task switcher modal (agent view)
+	if a.mode == modeTaskSwitcher && a.taskSwitcherModal != nil {
+		a.handleTaskSwitcherKey(event)
+		return nil
+	}
+
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
@@ -2077,6 +2085,9 @@ func (a *App) handleAgentKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyCtrlR: // Switch Claude session — intercepted before PTY (shadows Claude's transcript toggle)
 		a.openSessionPicker()
+		return nil
+	case tcell.KeyCtrlK: // Open task switcher — intercepted before PTY (shadows readline kill-line)
+		a.openTaskSwitcher()
 		return nil
 	case tcell.KeyCtrlP: // Open PR for the worktree's branch via gh
 		a.openPR()
@@ -3520,6 +3531,97 @@ func (a *App) closeSessionPickerModal() {
 	a.mode = modeAgent
 	a.sessionPickerModal = nil
 	a.pages.RemovePage("sessionpicker")
+	a.tapp.SetFocus(a.agentPane)
+}
+
+// openTaskSwitcher builds the task switcher entries from the cached task list
+// and the current needs-input set, then opens the switcher modal. Both
+// a.tasks and a.needsInputIDs are maintained on the tview goroutine by the
+// tick loop, so the switcher is built synchronously with no disk I/O. Entries
+// are sorted needs-input-first (then alphabetically), and the currently-viewed
+// task plus archived tasks are excluded.
+func (a *App) openTaskSwitcher() {
+	a.mu.Lock()
+	currentID := a.agentState.TaskID
+	a.mu.Unlock()
+	needs := make(map[string]bool, len(a.needsInputIDs))
+	for _, id := range a.needsInputIDs {
+		needs[id] = true
+	}
+	entries := make([]taskSwitcherEntry, 0, len(a.tasks))
+	for _, t := range a.tasks {
+		if t.Archived || t.ID == currentID {
+			continue
+		}
+		entries = append(entries, taskSwitcherEntry{
+			ID:         t.ID,
+			Name:       t.Name,
+			Project:    t.Project,
+			Status:     t.Status,
+			NeedsInput: needs[t.ID],
+		})
+	}
+	// Needs-input first, then alphabetical by name (case-insensitive),
+	// breaking final ties on ID for stable ordering.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].NeedsInput != entries[j].NeedsInput {
+			return entries[i].NeedsInput
+		}
+		li, lj := strings.ToLower(entries[i].Name), strings.ToLower(entries[j].Name)
+		if li != lj {
+			return li < lj
+		}
+		return entries[i].ID < entries[j].ID
+	})
+	uxlog.Log("[tui] task switcher: %d candidate tasks (current=%s)", len(entries), currentID)
+	a.openTaskSwitcherModal(entries)
+}
+
+// openTaskSwitcherModal shows the task switcher dialog.
+// Only callable from modeAgent — close always restores modeAgent.
+func (a *App) openTaskSwitcherModal(entries []taskSwitcherEntry) {
+	a.taskSwitcherModal = NewTaskSwitcherModal(entries)
+	a.mode = modeTaskSwitcher
+	a.pages.AddPage("taskswitcher", a.taskSwitcherModal, true, true)
+	a.tapp.SetFocus(a.taskSwitcherModal)
+}
+
+// handleTaskSwitcherKey processes keys in the task switcher modal.
+func (a *App) handleTaskSwitcherKey(event *tcell.EventKey) {
+	handler := a.taskSwitcherModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.taskSwitcherModal.Canceled() {
+		a.closeTaskSwitcherModal()
+		return
+	}
+	if a.taskSwitcherModal.Selected() {
+		chosen := a.taskSwitcherModal.SelectedTask()
+		a.closeTaskSwitcherModal()
+		if chosen == "" {
+			return
+		}
+		task, err := a.db.Get(chosen)
+		if err != nil || task == nil {
+			uxlog.Log("[tui] task switcher: selected task %s lookup failed: %v", chosen, err)
+			return
+		}
+		uxlog.Log("[tui] task switcher: switching to task %s (%s)", task.ID, task.Name)
+		// Keep the task-list cursor in sync so exiting the agent view (Ctrl+Q)
+		// lands on the task we switched to, not the one we left — mirrors
+		// navigateAgentTask. onTaskSelect (autoStart=false) does not restart a
+		// dead session, matching in-agent-view navigation rather than the
+		// task-list Enter path.
+		a.tasklist.SelectByID(chosen)
+		a.onTaskSelect(task, false)
+	}
+}
+
+// closeTaskSwitcherModal closes the switcher and restores agent view.
+func (a *App) closeTaskSwitcherModal() {
+	a.mode = modeAgent
+	a.taskSwitcherModal = nil
+	a.pages.RemovePage("taskswitcher")
 	a.tapp.SetFocus(a.agentPane)
 }
 
