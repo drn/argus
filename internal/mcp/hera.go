@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
@@ -35,6 +37,10 @@ type HeraStore interface {
 	HeraInbox(roleID int64) ([]*db.HeraMessage, error)
 	// Task meta mirror (best-effort soft-fail).
 	SetMeta(taskID, namespace, key, value string) error
+	// RollHeraWorkerToReview is the BUG-050 close-out roll shared with the
+	// session-exit hooks; the hera_status("done") trigger calls it. No-op
+	// unless the task is a live worker AND currently in_progress.
+	RollHeraWorkerToReview(taskID string) (bool, error)
 }
 
 // heraToolDefs contains the 9 hera_* tool schemas, ported verbatim from
@@ -128,7 +134,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_spawn_worker",
-		Description: "Spawn a new born-bound worker task for this orchestrator. (M4 stub — not yet implemented natively.)",
+		Description: "Spawn a new born-bound worker task under this orchestrator. Caller must hold a live coordinator binding. Creates an argus task (worktree + session) and, transactionally, a worker role + binding pre-bound to it. An orientation prefix naming the coordinator + orchestrator is prepended to the prompt; the verbatim prompt is stored on the role. Defaults the project to the coordinator's own.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -184,9 +190,14 @@ type callerRoleResult struct {
 // SetHeraService wires the native hera_* MCP tools. Must be called before
 // ListenAndServe. Mirrors the SetMessageManager precedent: fields are read at
 // request time without a mutex, so all Set* calls must precede server start.
-func (s *Server) SetHeraService(svc *hera.Service, store HeraStore) {
+//
+// spawner may be nil — the other hera tools still work, but hera_spawn_worker
+// returns a "spawn not configured" error. The daemon supplies a non-nil
+// spawner that runs the transactional born-bound create.
+func (s *Server) SetHeraService(svc *hera.Service, store HeraStore, spawner HeraSpawner) {
 	s.heraSvc = svc
 	s.heraStore = store
+	s.heraSpawn = spawner
 }
 
 // heraEnabled returns true when the hera service is wired AND task management
@@ -313,14 +324,18 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		OrchestratorID: orch.ID,
 		Name:           p.CoordinatorRoleName,
 		Kind:           db.HeraKindCoordinator,
-		Prompt:         p.Prompt,
+		// M4 fix: persist the coordinator's argus project on the role so
+		// downstream spawn/adopt can default a worker's project without a
+		// task lookup. Historical rows may be empty; consumers tolerate that.
+		ArgusProject: task.Project,
+		Prompt:       p.Prompt,
 	}, task.ID, task.Worktree)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("create coordinator role: %v", err))
 	}
 
 	// Mirror to task_meta best-effort — failure must never undo local state.
-	if metaErr := s.heraStore.SetMeta(task.ID, "hera", "role", string(db.HeraKindCoordinator)); metaErr != nil {
+	if metaErr := s.heraStore.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)); metaErr != nil {
 		slog.Warn("[hera] meta mirror failed", "tool", "hera_new_orchestrator", "task_id", task.ID, "err", metaErr)
 	}
 
@@ -407,7 +422,9 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 		OrchestratorID: orch.ID,
 		Name:           p.RoleName,
 		Kind:           db.HeraRoleKind(p.Kind),
-		Prompt:         p.Prompt,
+		// M4 fix: persist the attaching task's argus project on the role.
+		ArgusProject: task.Project,
+		Prompt:       p.Prompt,
 	}, task.ID, task.Worktree)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("create role: %v", err))
@@ -422,7 +439,7 @@ func (s *Server) toolHeraJoin(id interface{}, args json.RawMessage) *Response {
 	}
 
 	// Mirror to task_meta best-effort.
-	if metaErr := s.heraStore.SetMeta(task.ID, "hera", "role", string(role.Kind)); metaErr != nil {
+	if metaErr := s.heraStore.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(role.Kind)); metaErr != nil {
 		slog.Warn("[hera] meta mirror failed", "tool", "hera_join", "task_id", task.ID, "err", metaErr)
 	}
 
@@ -653,8 +670,25 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 	}
 
 	// Mirror to task_meta best-effort.
-	if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, "hera", "thread_status", p.Status); metaErr != nil {
+	if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyThreadStatus, p.Status); metaErr != nil {
 		slog.Warn("[hera] meta mirror failed", "tool", "hera_status", "task_id", caller.binding.ArgusTaskID, "err", metaErr)
+	}
+
+	// BUG-050 PRIMARY trigger: a WORKER reporting status="done" rolls its bound
+	// task to in_review + stamps ready_to_close — the idle-but-done case the
+	// exit hook misses (Claude workers finish their report and go idle, they
+	// don't exit). Worker-kind ONLY (coordinators/freelance just update status);
+	// RollHeraWorkerToReview itself no-ops unless the task is in_progress, so it
+	// never clobbers a human-set in_review/complete and never auto-completes. It
+	// touches DB status + meta only — the live session is left running. Failure
+	// is soft (logged, never surfaced) so the status update always succeeds; the
+	// call is idempotent (re-calling done is a no-op once flipped).
+	if sv == db.HeraStatusDone && caller.role.Kind == db.HeraKindWorker {
+		if flipped, rErr := s.heraStore.RollHeraWorkerToReview(caller.binding.ArgusTaskID); rErr != nil {
+			slog.Warn("[hera] status(done): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
+		} else if flipped {
+			slog.Info("[hera] status(done): rolled worker task to in_review", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
+		}
 	}
 
 	slog.Info("[hera] status ok", "role", caller.role.Name, "status", p.Status, "orch", caller.orch.Name)
@@ -666,8 +700,130 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 	return toolResult(id, b.String())
 }
 
-func (s *Server) toolHeraSpawnWorker(id interface{}, _ json.RawMessage) *Response {
-	return toolError(id, "native hera_spawn_worker lands in M4 (born-bound spawn); use the external hera daemon or argus task_create until then")
+func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	if s.heraSpawn == nil {
+		return toolError(id, "hera spawn not configured (daemon did not wire a spawner)")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Orchestrator string `json:"orchestrator"`
+		RoleName     string `json:"role_name"`
+		Prompt       string `json:"prompt"`
+		Project      string `json:"project"`
+		Branch       string `json:"branch"`
+		Backend      string `json:"backend"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+	prompt := strings.TrimSpace(p.Prompt)
+	if prompt == "" {
+		return toolError(id, "prompt is required")
+	}
+
+	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+	if caller.role.Kind != db.HeraKindCoordinator {
+		return toolError(id, fmt.Sprintf(
+			"caller role %q has kind %q; only coordinators may spawn workers",
+			caller.role.Name, caller.role.Kind))
+	}
+
+	// Project: explicit override first, then the COORDINATOR'S OWN TASK project
+	// (caller.task.Project — authoritative). We deliberately do NOT trust
+	// role.ArgusProject here: historical roles created before the M4 fix have an
+	// empty argus_project, and the live task row is always correct.
+	project := strings.TrimSpace(p.Project)
+	if project == "" {
+		project = caller.task.Project
+	}
+	if project == "" {
+		return toolError(id, "no project resolved (coordinator task has no project and none was supplied)")
+	}
+
+	// Base worker role name: explicit role_name, else a slug of the prompt. The
+	// daemon spawner uniquifies it within the orchestrator (suffix -2, -3, …).
+	baseName := strings.TrimSpace(p.RoleName)
+	if baseName == "" {
+		baseName = deriveHeraWorkerName(prompt)
+	}
+
+	// Prepend the orientation prefix so the worker knows it is born-bound and
+	// who its coordinator + orchestrator are. The verbatim user prompt follows
+	// the separator and is also stored on the role row.
+	taskPrompt := heraWorkerOrientation(caller.orch.Name, caller.role.Name) + "\n\n---\n\n" + prompt
+
+	res, err := s.heraSpawn(HeraSpawnInput{
+		Project:        project,
+		BaseName:       baseName,
+		TaskPrompt:     taskPrompt,
+		RolePrompt:     prompt,
+		Branch:         p.Branch,
+		Backend:        p.Backend,
+		OrchestratorID: caller.orch.ID,
+	})
+	if err != nil {
+		return toolError(id, fmt.Sprintf("spawn worker: %v", err))
+	}
+
+	slog.Info("[hera] spawn_worker ok",
+		"orch", caller.orch.Name, "role", res.Role.Name, "binding_id", res.Binding.ID,
+		"task_id", res.Task.ID, "coordinator", caller.role.Name)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Worker spawned.\n\n")
+	fmt.Fprintf(&b, "- **orchestrator**: %s\n", caller.orch.Name)
+	fmt.Fprintf(&b, "- **role_name**: %s\n", res.Role.Name)
+	fmt.Fprintf(&b, "- **kind**: %s\n", res.Role.Kind)
+	fmt.Fprintf(&b, "- **binding_id**: %d\n", res.Binding.ID)
+	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", res.Task.ID)
+	fmt.Fprintf(&b, "- **project**: %s\n", project)
+	return toolResult(id, b.String())
+}
+
+// heraWorkerNameRe matches runs of ASCII lowercase letters and digits, used to
+// build a URL-slug-style role name from a prompt.
+var heraWorkerNameRe = regexp.MustCompile(`[a-z0-9]+`)
+
+// deriveHeraWorkerName produces a slug from the first 40 chars of the prompt,
+// mirroring Hera's swDeriveWorkerName. Returns "worker" for empty/symbol input.
+func deriveHeraWorkerName(prompt string) string {
+	runes := []rune(prompt)
+	if len(runes) > 40 {
+		runes = runes[:40]
+	}
+	lower := strings.Map(func(r rune) rune { return unicode.ToLower(r) }, string(runes))
+	tokens := heraWorkerNameRe.FindAllString(lower, -1)
+	if len(tokens) == 0 {
+		return "worker"
+	}
+	slug := strings.Join(tokens, "-")
+	if slug == "" {
+		return "worker"
+	}
+	return slug
+}
+
+// heraWorkerOrientation is the orientation prefix prepended to a spawned
+// worker's prompt. Ports Hera's spawn-handler guidance verbatim (hera_send for
+// progress, sub-coordinator escalation, iris for PRs), augmented to name the
+// orchestrator and state that the worker is born-bound.
+func heraWorkerOrientation(orchestrator, coordinator string) string {
+	return fmt.Sprintf(
+		"You are a worker agent born bound to hera orchestrator %q under coordinator %q. "+
+			"You may report progress via hera_send. If this task requires changes to another repo "+
+			"or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
+			"coordinator_role_name=\"coord\", prompt=\"...\") to become a sub-coordinator, then use "+
+			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers in that project. "+
+			"When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) "+
+			"so argus records the PR URL and the hera rail shows the PR indicator.",
+		orchestrator, coordinator)
 }
 
 func (s *Server) toolHeraTreeUpdates(id interface{}, _ json.RawMessage) *Response {

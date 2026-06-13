@@ -26,6 +26,7 @@ import (
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/heraadopt"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -102,6 +103,7 @@ type Daemon struct {
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
 	deps      *depswatcher.Watcher // depends_on auto-resolver; always started
+	heraAdopt *heraadopt.Watcher   // hera auto-adopt watcher (M4); always started
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
@@ -298,6 +300,24 @@ func (d *Daemon) captureSessionIDPostExit(taskID string) {
 // No-op if the row has already moved on (e.g., the TUI's HandleSessionExit
 // won the race, or the user manually changed status mid-exit).
 func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
+	// Hera worker finish policy (BUG-050, locked decision #4) — the EXIT-HOOK
+	// BACKSTOP. The PRIMARY trigger is hera_status("done") in the MCP arm
+	// (Claude workers finish their report and go idle rather than exiting); this
+	// exit hook catches the cases where a worker session actually ends. Both go
+	// through db.RollHeraWorkerToReview so they can't drift: a task holding a
+	// live worker-kind binding NEVER self-completes — it lands in_review (even on
+	// a clean exit) and is stamped meta:hera.ready_to_close for coordinator/human
+	// close-out. Coordinators/freelance and non-hera tasks are NOT rolled here and
+	// fall through to the unchanged #707 rule below.
+	if flipped, err := d.db.RollHeraWorkerToReview(taskID); err != nil {
+		// Soft-fail: a hera lookup error must not change the default behaviour.
+		slog.Warn("session exit: hera worker roll failed (using default policy)", "task", taskID, "err", err)
+	} else if flipped {
+		slog.Info("session exit: hera worker rolled to in_review", "task", taskID)
+		return
+	}
+
+	// Non-worker (or worker no longer in_progress): unchanged #707 logic.
 	t, err := d.db.Get(taskID)
 	if err != nil || t == nil || t.Status != model.StatusInProgress {
 		return
@@ -312,6 +332,68 @@ func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
 		return
 	}
 	slog.Info("session exit: status flipped", "task", taskID, "status", t.Status.String())
+}
+
+// heraSpawnWorker performs the transactional born-bound worker spawn (M4). It
+// is injected into the MCP server via SetHeraService. The role + binding write
+// is an AfterPersist hook inside agent.CreateAndStart, so it joins that call's
+// LIFO compensating stack: a role/binding-insert failure unwinds the
+// task+worktree+row (no orphan task), and a later session-start failure unwinds
+// the role+binding too (no orphan role/binding). meta:hera.role=worker is
+// stamped inside the hook, before the session starts, because the auto-adopt
+// watcher and rail rendering key on it.
+func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, error) {
+	// Uniquify the role name within the orchestrator up front so the argus task
+	// is titled after the role (not the orientation preamble). The partial
+	// unique index on hera_roles is the backstop against a concurrent-spawn race.
+	uniqueName, err := d.db.UniqueHeraRoleName(in.OrchestratorID, in.BaseName)
+	if err != nil {
+		return nil, fmt.Errorf("derive unique role name: %w", err)
+	}
+
+	var role *db.HeraRole
+	var binding *db.HeraBinding
+	task, _, err := agent.CreateAndStart(d.db, d.runner, agent.CreateInput{
+		Name:       uniqueName,
+		Prompt:     in.TaskPrompt,
+		Project:    in.Project,
+		Backend:    in.Backend,
+		BaseBranch: in.Branch,
+		AutoName:   false, // name is the meaningful role slug — no Haiku rename
+		AfterPersist: func(t *model.Task) (func(), error) {
+			// Stamp meta:hera.role=worker BEFORE the session starts. Best-effort:
+			// a meta failure must not abort an otherwise-valid spawn.
+			if mErr := d.db.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
+				slog.Warn("[hera] spawn: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
+			}
+			r, b, cErr := d.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+				OrchestratorID: in.OrchestratorID,
+				Name:           uniqueName,
+				Kind:           db.HeraKindWorker,
+				ArgusProject:   in.Project,
+				Prompt:         in.RolePrompt,
+			}, t.ID, t.Worktree)
+			if cErr != nil {
+				// Returning the error makes CreateAndStart unwind the task row +
+				// worktree; the session was not started yet, so nothing leaks.
+				return nil, cErr
+			}
+			role, binding = r, b
+			// Compensating cleanup for a LATER failure (runner.Start). Deleting
+			// the role cascades its binding away, so the subsequent db.Delete
+			// (task row) finds no live binding to end — no orphan either way.
+			cleanup := func() {
+				if dErr := d.db.DeleteHeraRole(r.ID); dErr != nil {
+					slog.Warn("[hera] spawn unwind: delete role failed", "role_id", r.ID, "err", dErr)
+				}
+			}
+			return cleanup, nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &mcp.HeraSpawnResult{Task: task, Role: role, Binding: binding}, nil
 }
 
 // pollPRStatesOnce runs a single PR-status refresh pass over every eligible
@@ -458,6 +540,16 @@ func (d *Daemon) Serve(sockPath string) error {
 		slog.Info("reconciled stale sessions", "count", n)
 	}
 
+	// Sweep hera bindings whose argus task row no longer exists — the row was
+	// deleted while the daemon was down so the delete-cascade never severed the
+	// binding (risk e). End them with reason "task_missing". Runs alongside the
+	// stale-session reconcile, before accepting connections.
+	if n, err := heraadopt.ReconcileBindings(d.db); err != nil {
+		slog.Warn("reconcile hera bindings failed", "err", err)
+	} else if n > 0 {
+		slog.Info("reconciled hera bindings", "ended", n)
+	}
+
 	// Emit ARGUS_BOUNCED into the inbox of every task that had a live session
 	// when the previous daemon exited. Runs after stale-session reconcile so
 	// tasks are already flipped to InReview before the signal lands. Runs
@@ -549,6 +641,15 @@ func (d *Daemon) Serve(sockPath string) error {
 	d.deps = dw
 	go dw.Start()
 
+	// Start the hera auto-adopt watcher (M4). Always-on — an empty hera table
+	// set makes every tick a no-op, so there is no separate gate today (M8
+	// folds it under cfg.Hera.Enabled alongside the rest of the hera subsystem).
+	// It re-derives rule D4 from ground truth each tick and only ever writes
+	// hera binding rows — never a task session or status (race d). Modeled on
+	// the depswatcher loop; see internal/heraadopt for the design rationale.
+	d.heraAdopt = heraadopt.New(d.db)
+	go d.heraAdopt.Start()
+
 	// Reliable pane-delivery: create the FocusTracker and Notifier before
 	// the MCP and API servers so both can be wired at construction.
 	d.focusTracker = notify.NewFocusTracker(func(taskID string, focused bool) {
@@ -621,7 +722,7 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
 		// M8: gate on cfg.Hera.Enabled once the Settings toggle lands (Milestone 8).
-		mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db)
+		mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
@@ -836,6 +937,11 @@ func (d *Daemon) cleanup() {
 	// Stop the depends_on watcher if running.
 	if d.deps != nil {
 		d.deps.Stop()
+	}
+
+	// Stop the hera auto-adopt watcher if running.
+	if d.heraAdopt != nil {
+		d.heraAdopt.Stop()
 	}
 
 	// Stop the KB indexer if running.

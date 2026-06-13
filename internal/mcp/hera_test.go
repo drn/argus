@@ -31,8 +31,62 @@ func testHeraServer(t *testing.T) (*Server, *db.DB) {
 		&mockStopper{},
 	)
 	heraSvc := hera.New(d, nil) // nil notifier: delivery skipped, messages still persisted
-	s.SetHeraService(heraSvc, d)
+	s.SetHeraService(heraSvc, d, fakeHeraSpawn(d))
 	return s, d
+}
+
+// fakeHeraSpawn returns a HeraSpawner that mimics the daemon's born-bound spawn
+// against the real in-memory DB but without a worktree/session: it persists a
+// task row, stamps meta:hera.role=worker, and creates the role+binding. This
+// lets MCP-arm tests exercise resolution + response formatting end-to-end. The
+// real transactional LIFO unwinding is covered in the agent + db layers.
+func fakeHeraSpawn(d *db.DB) HeraSpawner {
+	return func(in HeraSpawnInput) (*HeraSpawnResult, error) {
+		name, err := d.UniqueHeraRoleName(in.OrchestratorID, in.BaseName)
+		if err != nil {
+			return nil, err
+		}
+		task := &model.Task{
+			Name:     name,
+			Status:   model.StatusInProgress,
+			Project:  in.Project,
+			Worktree: "/wt/spawn-" + name,
+			Prompt:   in.TaskPrompt,
+		}
+		if err := d.Add(task); err != nil {
+			return nil, err
+		}
+		_ = d.SetMeta(task.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker))
+		role, binding, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+			OrchestratorID: in.OrchestratorID,
+			Name:           name,
+			Kind:           db.HeraKindWorker,
+			ArgusProject:   in.Project,
+			Prompt:         in.RolePrompt,
+		}, task.ID, task.Worktree)
+		if err != nil {
+			return nil, err
+		}
+		return &HeraSpawnResult{Task: task, Role: role, Binding: binding}, nil
+	}
+}
+
+// seedCoordinator bootstraps an orchestrator + coordinator binding for a task
+// at the given worktree, returning the coordinator task. Mirrors the
+// hera_new_orchestrator tool path used by other tests.
+func seedCoordinator(t *testing.T, s *Server, d *db.DB, orch, worktree string) *model.Task {
+	t.Helper()
+	task := addHeraTestTask(t, d, worktree)
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_new_orchestrator",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "name": %q, "coordinator_role_name": "coord"
+		}`, worktree, orch)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	return task
 }
 
 // addHeraTestTask inserts a task with the given worktree into the DB and
@@ -107,7 +161,7 @@ func TestToolsList_DupGuard_HeraEnabled(t *testing.T) {
 	s, _, d := newMCPWithRegistry(t)
 	// Wire hera so the dup-guard activates.
 	heraSvc := hera.New(d, nil)
-	s.SetHeraService(heraSvc, d)
+	s.SetHeraService(heraSvc, d, nil)
 	s.SetTaskManager(
 		func(input TaskCreateInput) (*model.Task, error) { return nil, nil },
 		d,
@@ -147,7 +201,7 @@ func TestToolsList_DupGuard_HeraEnabled(t *testing.T) {
 func TestToolsList_DupGuard_IrisScope(t *testing.T) {
 	s, _, d := newMCPWithRegistry(t)
 	heraSvc := hera.New(d, nil)
-	s.SetHeraService(heraSvc, d)
+	s.SetHeraService(heraSvc, d, nil)
 	s.SetTaskManager(
 		func(input TaskCreateInput) (*model.Task, error) { return nil, nil },
 		d,
@@ -800,7 +854,9 @@ func TestHera_GetMessages_NotFound(t *testing.T) {
 
 // --- stub tools ---
 
-func TestHera_SpawnWorker_Stub(t *testing.T) {
+func TestHera_SpawnWorker_UnboundCallerRejected(t *testing.T) {
+	// A cwd that matches no task (hence no caller role) is rejected before any
+	// spawn — exercises the caller-resolution failure path.
 	s, _ := testHeraServer(t)
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name:      "hera_spawn_worker",
@@ -809,7 +865,7 @@ func TestHera_SpawnWorker_Stub(t *testing.T) {
 	testutil.NoError(t, respErr(resp))
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, true)
-	testutil.Contains(t, cr.Content[0].Text, "M4")
+	testutil.Contains(t, cr.Content[0].Text, "no task matches cwd")
 }
 
 func TestHera_TreeUpdates_Stub(t *testing.T) {
@@ -892,4 +948,332 @@ func TestHera_Join_ClaimMode_UnreadCount(t *testing.T) {
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, false)
 	testutil.Contains(t, cr.Content[0].Text, "**unread_message_count**: 2")
+}
+
+// --- hera_spawn_worker (M4) ---
+
+// spawnArgs builds the JSON arguments for a hera_spawn_worker call.
+func spawnArgs(cwd, prompt, roleName, project, orch string) json.RawMessage {
+	m := map[string]string{"cwd": cwd, "prompt": prompt}
+	if roleName != "" {
+		m["role_name"] = roleName
+	}
+	if project != "" {
+		m["project"] = project
+	}
+	if orch != "" {
+		m["orchestrator"] = orch
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
+func TestHera_SpawnWorker_HappyPath(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "Implement the parser", "parser-work", "", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**orchestrator**: myorch")
+	testutil.Contains(t, cr.Content[0].Text, "**role_name**: parser-work")
+	testutil.Contains(t, cr.Content[0].Text, "**kind**: worker")
+	testutil.Contains(t, cr.Content[0].Text, "**project**: test-project")
+
+	// The orchestrator now has a worker role with the verbatim prompt.
+	orch, err := d.HeraOrchestratorByName("myorch")
+	testutil.NoError(t, err)
+	workers, err := d.ListHeraRolesByKind(orch.ID, db.HeraKindWorker)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(workers), 1)
+	testutil.Equal(t, workers[0].Name, "parser-work")
+	testutil.Equal(t, workers[0].Prompt, "Implement the parser") // verbatim, no prefix
+	testutil.Equal(t, workers[0].ArgusProject, "test-project")
+
+	// The worker has a live binding under the orchestrator.
+	bnd, err := d.HeraLiveBindingByTaskAndOrchestrator(workerTaskByName(t, d, "parser-work").ID, orch.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bnd.RoleID, workers[0].ID)
+
+	// meta:hera.role=worker stamped on the new task.
+	wt := workerTaskByName(t, d, "parser-work")
+	meta, err := d.ListMeta(wt.ID, db.HeraMetaNamespace)
+	testutil.NoError(t, err)
+	found := false
+	for _, e := range meta {
+		if e.Key == db.HeraMetaKeyRole && e.Value == string(db.HeraKindWorker) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("meta:hera.role=worker not stamped on spawned task")
+	}
+
+	// The delivered task prompt is orientation-prefixed, with the verbatim
+	// prompt after the separator.
+	testutil.Contains(t, wt.Prompt, "born bound to hera orchestrator \"myorch\" under coordinator \"coord\"")
+	testutil.Contains(t, wt.Prompt, "\n\n---\n\nImplement the parser")
+}
+
+// workerTaskByName finds the spawned worker task by its (unique) name.
+func workerTaskByName(t *testing.T, d *db.DB, name string) *model.Task {
+	t.Helper()
+	tasks, err := d.Tasks()
+	testutil.NoError(t, err)
+	for _, tk := range tasks {
+		if tk.Name == name {
+			return tk
+		}
+	}
+	t.Fatalf("worker task %q not found", name)
+	return nil
+}
+
+func TestHera_SpawnWorker_NonCoordinatorRejected(t *testing.T) {
+	s, d := testHeraServer(t)
+	// Bootstrap an orchestrator, then attach a worker from a different task and
+	// have THAT worker try to spawn.
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	workerTask := addHeraTestTask(t, d, "/wt/worker")
+	doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "orchestrator": "myorch", "role_name": "w1", "kind": "worker"
+		}`, workerTask.Worktree)),
+	})
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(workerTask.Worktree, "do a thing", "", "", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "only coordinators may spawn workers")
+}
+
+func TestHera_SpawnWorker_ProjectOverride(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "do a thing", "w", "other-project", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**project**: other-project")
+}
+
+func TestHera_SpawnWorker_MissingArgs(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+
+	t.Run("missing cwd", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_spawn_worker",
+			Arguments: json.RawMessage(`{"prompt":"x"}`),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "cwd is required")
+	})
+	t.Run("missing prompt", func(t *testing.T) {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name:      "hera_spawn_worker",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"cwd":%q,"prompt":"   "}`, coord.Worktree)),
+		})
+		cr := callResult(t, resp)
+		testutil.Equal(t, cr.IsError, true)
+		testutil.Contains(t, cr.Content[0].Text, "prompt is required")
+	})
+}
+
+func TestHera_SpawnWorker_NotConfigured(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	s.heraSpawn = nil // simulate a daemon that didn't wire the spawner
+
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "x", "", "", ""),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "spawn not configured")
+}
+
+func TestHera_SpawnWorker_SpawnerError(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	s.heraSpawn = func(HeraSpawnInput) (*HeraSpawnResult, error) {
+		return nil, fmt.Errorf("worktree creation failed")
+	}
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "x", "", "", ""),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "spawn worker: worktree creation failed")
+}
+
+func TestHera_SpawnWorker_MultiCoordinatorDisambiguation(t *testing.T) {
+	s, d := testHeraServer(t)
+	// One task is coordinator in two orchestrators.
+	coord := addHeraTestTask(t, d, "/wt/multi")
+	for _, orch := range []string{"orchA", "orchB"} {
+		resp := doRequest(t, s, "tools/call", ToolCallParams{
+			Name: "hera_new_orchestrator",
+			Arguments: json.RawMessage(fmt.Sprintf(`{
+				"cwd": %q, "name": %q, "coordinator_role_name": "coord"
+			}`, coord.Worktree, orch)),
+		})
+		testutil.Equal(t, callResult(t, resp).IsError, false)
+	}
+
+	// Spawn without orchestrator → ambiguous.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "x", "w", "", ""),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, true)
+	testutil.Contains(t, cr.Content[0].Text, "multiple orchestrators")
+
+	// Spawn with orchestrator=orchB → resolves to that one.
+	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "x", "w", "", "orchB"),
+	})
+	cr2 := callResult(t, resp2)
+	testutil.Equal(t, cr2.IsError, false)
+	testutil.Contains(t, cr2.Content[0].Text, "**orchestrator**: orchB")
+}
+
+func TestHera_SpawnWorker_RoleNameSlugAndUnique(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+
+	// role_name omitted → slug derived from the prompt.
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "Fix the login bug!", "", "", ""),
+	})
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+	testutil.Contains(t, cr.Content[0].Text, "**role_name**: fix-the-login-bug")
+
+	// A second spawn that derives the same base gets uniquified.
+	resp2 := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "Fix the login bug!", "", "", ""),
+	})
+	cr2 := callResult(t, resp2)
+	testutil.Equal(t, cr2.IsError, false)
+	testutil.Contains(t, cr2.Content[0].Text, "**role_name**: fix-the-login-bug-2")
+}
+
+func TestDeriveHeraWorkerName(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Fix the login bug", "fix-the-login-bug"},
+		{"", "worker"},
+		{"!!!", "worker"},
+		{"  Spaces  here ", "spaces-here"},
+		{"this prompt is definitely much longer than forty characters total", "this-prompt-is-definitely-much-longer-th"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			testutil.Equal(t, deriveHeraWorkerName(c.in), c.want)
+		})
+	}
+}
+
+// --- hera_status(done) BUG-050 primary trigger (M4 refinement) ---
+
+// attachWorker joins workerTask as a worker under orch (which coordTask must
+// already coordinate), returning nothing — the binding is what matters.
+func attachWorker(t *testing.T, s *Server, orch, workerWorktree string) {
+	t.Helper()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "orchestrator": %q, "role_name": "w1", "kind": "worker"
+		}`, workerWorktree, orch)),
+	})
+	testutil.Equal(t, callResult(t, resp).IsError, false)
+}
+
+func heraStatus(t *testing.T, s *Server, cwd, status string) ToolCallResult {
+	t.Helper()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "status": %q}`, cwd, status)),
+	})
+	testutil.NoError(t, respErr(resp))
+	return callResult(t, resp)
+}
+
+func TestHera_Status_Done_RollsWorkerToReview(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker") // status InProgress
+	attachWorker(t, s, "myorch", worker.Worktree)
+
+	cr := heraStatus(t, s, worker.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false) // status call always succeeds
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusInReview)
+	meta, _ := d.ListMeta(worker.ID, db.HeraMetaNamespace)
+	found := false
+	for _, e := range meta {
+		if e.Key == db.HeraMetaKeyReadyToClose && e.Value == "true" {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+func TestHera_Status_Done_CoordinatorUnchanged(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord") // InProgress coordinator
+
+	cr := heraStatus(t, s, coord.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(coord.ID)
+	testutil.Equal(t, got.Status, model.StatusInProgress) // NOT rolled
+}
+
+func TestHera_Status_Working_NoFlip(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker")
+	attachWorker(t, s, "myorch", worker.Worktree)
+
+	cr := heraStatus(t, s, worker.Worktree, "working")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusInProgress) // working ≠ done → no flip
+}
+
+func TestHera_Status_Done_DoesNotClobberComplete(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker")
+	attachWorker(t, s, "myorch", worker.Worktree)
+	// Human/agent already marked it complete.
+	testutil.NoError(t, d.SetStatus(worker.ID, model.StatusComplete))
+
+	cr := heraStatus(t, s, worker.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete) // not clobbered
 }

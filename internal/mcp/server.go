@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
@@ -60,6 +61,36 @@ type TaskCreateInput struct {
 	// to the daemon — same contract as Result.
 	PlanSlug string
 }
+
+// HeraSpawnInput is the payload the MCP hera_spawn_worker arm hands to the
+// daemon-injected born-bound spawner. The MCP layer owns caller resolution,
+// the coordinator-kind check, project resolution, base-name derivation, and
+// building the orientation-prefixed prompt; the daemon owns the transactional
+// task + role + binding creation (agent.CreateAndStart + an AfterPersist hook),
+// because only the daemon co-locates the DB, runner, and hera store.
+type HeraSpawnInput struct {
+	Project        string // resolved argus project (input override or coordinator's task project)
+	BaseName       string // base worker role name; daemon uniquifies within the orchestrator
+	TaskPrompt     string // orientation-prefixed prompt delivered to the worker session
+	RolePrompt     string // verbatim user prompt, stored on the role row for the Details pane
+	Branch         string // optional base branch passed through to CreateAndStart
+	Backend        string // optional backend override
+	OrchestratorID int64  // orchestrator the new worker role + binding belong to
+}
+
+// HeraSpawnResult is the success payload returned by a HeraSpawner.
+type HeraSpawnResult struct {
+	Task    *model.Task
+	Role    *db.HeraRole
+	Binding *db.HeraBinding
+}
+
+// HeraSpawner performs the transactional born-bound worker spawn inside the
+// daemon. Injected via SetHeraService; nil when hera is disabled or the daemon
+// did not wire it. Implementations MUST guarantee no orphan task/worktree on a
+// role/binding-insert failure and no orphan role/binding on a session-start
+// failure (the AfterPersist LIFO-cleanup contract).
+type HeraSpawner func(in HeraSpawnInput) (*HeraSpawnResult, error)
 
 // TaskCreator creates a task with worktree and starts an agent session.
 // Same call shape used by daemon.HeadlessCreateTask (the daemon wraps it to
@@ -159,6 +190,7 @@ type Server struct {
 	artifacts   ArtifactStore   // optional; set via SetArtifactManager
 	heraSvc     *hera.Service   // optional; set via SetHeraService
 	heraStore   HeraStore       // optional; set via SetHeraService
+	heraSpawn   HeraSpawner     // optional; set via SetHeraService (born-bound spawn)
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so

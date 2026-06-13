@@ -4,7 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/drn/argus/internal/model"
 )
 
 // Hera role/binding/orchestrator store (Milestone 1 of merging Hera into Argus
@@ -34,6 +37,32 @@ var (
 // heraEndReasonTaskDeleted is stamped on bindings ended by the task-delete
 // cascade hook in tasks.go Delete.
 const heraEndReasonTaskDeleted = "argus_deleted"
+
+// HeraEndReasonTaskMissing is stamped on bindings ended by the daemon-startup
+// reconciliation sweep (M4) when their argus task row no longer exists — the
+// row was deleted while the daemon was down so the delete-cascade never fired.
+const HeraEndReasonTaskMissing = "task_missing"
+
+// Task-meta mirror keys (namespace "hera"). The role layer mirrors a small
+// amount of state into the task_meta sidecar (best-effort, soft-fail) so
+// display predicates and other plugins can read it without joining the hera
+// tables. Authoritative state always lives in the hera_* tables.
+const (
+	// HeraMetaNamespace is the task_meta namespace for hera mirror keys.
+	HeraMetaNamespace = "hera"
+	// HeraMetaKeyRole mirrors a bound task's role kind. The auto-adopt watcher
+	// (rule D4) keys on the value "worker".
+	HeraMetaKeyRole = "role"
+	// HeraMetaKeyThreadStatus mirrors a role's status (idle/working/...).
+	HeraMetaKeyThreadStatus = "thread_status"
+	// HeraMetaKeyReadyToClose marks a finished worker task that is awaiting
+	// coordinator/human close-out (BUG-050). The session-exit finish policy
+	// stamps it "true"; the M6 rail + task-list rendering consume it.
+	HeraMetaKeyReadyToClose = "ready_to_close"
+	// HeraMetaKeyPrompt optionally carries a worker's verbatim prompt so the
+	// auto-adopt path can populate the adopted role's prompt. Tolerated absent.
+	HeraMetaKeyPrompt = "prompt"
+)
 
 // HeraRoleKind enumerates the valid kinds for a hera_roles row.
 type HeraRoleKind string
@@ -617,6 +646,113 @@ func (d *DB) ListHeraLiveBindingsByTask(taskID string) ([]*HeraBinding, error) {
 	return d.heraListBindings(
 		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
 		 FROM hera_bindings WHERE argus_task_id=? AND ended_at IS NULL ORDER BY started_at ASC, id ASC`, taskID)
+}
+
+// TaskHoldsLiveHeraWorkerBinding reports whether taskID has at least one live
+// binding whose role is worker-kind. The session-exit finish policy (BUG-050)
+// uses this to force a worker task to in_review even on a clean exit — workers
+// are closed out by the coordinator/human, never self-completing. Coordinator
+// and freelance bindings do NOT count. A query error is returned so the caller
+// can soft-fail (preserve the default PR #707 behaviour) rather than guessing.
+func (d *DB) TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var n int
+	err := d.conn.QueryRow(
+		`SELECT COUNT(*) FROM hera_bindings b JOIN hera_roles r ON r.id = b.role_id
+		 WHERE b.argus_task_id=? AND b.ended_at IS NULL AND r.kind=?`,
+		taskID, string(HeraKindWorker)).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("task holds live worker binding: %w", err)
+	}
+	return n > 0, nil
+}
+
+// RollHeraWorkerToReview implements the BUG-050 worker close-out roll: it moves
+// a worker-bound task to in_review and stamps meta:hera.ready_to_close=true. It
+// is the SINGLE shared helper behind BOTH close-out triggers — the session-exit
+// hooks (backstop) and the hera_status("done") hook (primary path, since Claude
+// workers finish their report and go idle rather than exiting) — so the two can
+// never drift.
+//
+// It acts ONLY when the task currently holds a live worker-kind binding AND is
+// in StatusInProgress. It never auto-completes, never clobbers a human-set
+// in_review/complete (the in_progress guard), and never touches the agent
+// session (DB status + meta only — callers must not stop/restart). Returns
+// (true, nil) when it flipped, (false, nil) on a no-op (not worker-bound, or not
+// in_progress). Idempotent: a second call is a no-op because the task is no
+// longer in_progress.
+//
+// SetStatus emits task.status_changed OUTSIDE the DB mutex (events.md); the
+// ready_to_close stamp is best-effort soft-fail — a meta failure is logged and
+// the flip still stands.
+func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
+	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
+	if err != nil {
+		return false, err
+	}
+	if !worker {
+		return false, nil
+	}
+	t, err := d.Get(taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != model.StatusInProgress {
+		return false, nil // never clobber a human-set in_review/complete
+	}
+	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
+		return false, err
+	}
+	if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
+		slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
+	}
+	return true, nil
+}
+
+// UniqueHeraRoleName returns base unchanged when no ACTIVE role under orchID
+// already uses it, else base-2, base-3, … until a free slot is found. Mirrors
+// Hera's ops.uniqueWorkerName. Archived roles do NOT block (they don't occupy
+// the idx_hera_roles_active_name partial unique index, so a fresh active role
+// can reuse an archived sibling's name). An empty base defaults to "worker".
+//
+// The returned name is a best-effort pre-check computed under the DB mutex; the
+// partial unique index is the actual race backstop, so two concurrent creates
+// racing on the same computed name resolve deterministically (the loser's
+// INSERT fails) rather than duplicating.
+func (d *DB) UniqueHeraRoleName(orchID int64, base string) (string, error) {
+	if base == "" {
+		base = "worker"
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(
+		`SELECT name FROM hera_roles WHERE orchestrator_id=? AND archived_at IS NULL`, orchID)
+	if err != nil {
+		return "", fmt.Errorf("unique hera role name: %w", err)
+	}
+	defer rows.Close()
+	used := make(map[string]bool)
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return "", fmt.Errorf("unique hera role name: scan: %w", err)
+		}
+		used[n] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("unique hera role name: rows: %w", err)
+	}
+	if !used[base] {
+		return base, nil
+	}
+	for i := 2; i <= len(used)+2; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if !used[cand] {
+			return cand, nil
+		}
+	}
+	return fmt.Sprintf("%s-%d", base, len(used)+3), nil
 }
 
 // HeraLiveBindingByRole returns the live binding for a role, or ErrHeraNotFound.
