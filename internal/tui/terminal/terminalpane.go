@@ -195,6 +195,11 @@ type TerminalPane struct {
 	// "No active session".
 	pending bool
 
+	// borderTitle overrides the bordered-panel title. Empty → " Agent " (the
+	// main agent view's default). The native Hera view sets " Coordinator " on
+	// its middle pane so the same widget reads correctly in both surfaces.
+	borderTitle string
+
 	// OnClick is called when the user clicks on the terminal pane.
 	// The app wires this to switch agentFocus back to the terminal.
 	OnClick func()
@@ -397,6 +402,12 @@ func (tp *TerminalPane) SyncPTYSize() {
 // SetFocused sets the focus state for border rendering.
 func (tp *TerminalPane) SetFocused(f bool) {
 	tp.focused = f
+}
+
+// SetBorderTitle overrides the bordered-panel title (default " Agent "). Used
+// by the native Hera view to label its coordinator pane distinctly.
+func (tp *TerminalPane) SetBorderTitle(t string) {
+	tp.borderTitle = t
 }
 
 // EagerReplayBuild kicks off an async replay rebuild from the session log
@@ -909,7 +920,11 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 	if tp.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	inner := widget.DrawBorderedPanel(screen, x, y, width, height, " Agent ", borderStyle)
+	title := tp.borderTitle
+	if title == "" {
+		title = " Agent "
+	}
+	inner := widget.DrawBorderedPanel(screen, x, y, width, height, title, borderStyle)
 	x, y, width, height = inner.X, inner.Y, inner.W, inner.H
 	if width <= 0 || height <= 0 {
 		return

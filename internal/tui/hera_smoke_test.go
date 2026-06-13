@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
@@ -199,4 +200,41 @@ func TestSmoke_HeraRemoteModeBanner(t *testing.T) {
 		page, _ := app.pages.GetFrontPage()
 		testutil.Equal(t, page, "hera")
 	})
+}
+
+// TestSmoke_HeraTabSelectionThreadsThroughRunner is the App-level integration
+// for M6b: switching to the Hera tab builds the rail from the local db, and
+// navigating to a worker role drives applySelection, which calls the wired
+// runner.Get resolver (nil here since no session is started — the pane binds in
+// replay mode) and threads the (role, orchestrator, task) selection context for
+// 6c. The page draws the real coord/agent panes without panicking. Live-session
+// feed semantics are covered by the internal/tui/hera package tests.
+func TestSmoke_HeraTabSelectionThreadsThroughRunner(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedHeraBoundRole(t, d, orch, "worker", db.HeraKindWorker, "t-worker")
+
+	app := New(d, agent.NewRunner(nil), true)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRune, '2', 0) // → Hera tab
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.heraPage.Rail().Model().IsEmpty() {
+			t.Error("hera rail empty after tab entry")
+		}
+	})
+
+	// Navigate: orch header (row 0) → coord role (1) → worker role (2).
+	for i := 0; i < 2; i++ {
+		sim.InjectKey(tcell.KeyRune, 'j', 0)
+		syncUI(t, app.tapp)
+	}
+	var sel hera.Selection
+	readUI(t, app.tapp, func() { sel = app.heraPage.SelectionContext() })
+	testutil.Equal(t, sel.TaskID(), "t-worker")
+	testutil.Equal(t, sel.IsCoordinator(), false)
+	testutil.Equal(t, sel.CoordTaskID(), "t-coord")
 }
