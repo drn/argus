@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"net"
 	"net/rpc"
 	"os"
@@ -875,6 +877,29 @@ func TestRPC_StopSession_NotFound(t *testing.T) {
 	testutil.NoError(t, c.Call("Daemon.StopSession", &TaskIDReq{TaskID: "no-such"}, &resp))
 	testutil.False(t, resp.OK)
 	testutil.NotEqual(t, resp.Error, "")
+}
+
+// TestLogRPCErr verifies the helper returns err.Error() (for assignment to a
+// response's Error field) regardless of the method name passed for logging. It
+// folds the repeated `resp.Error = err.Error(); slog.Error(method, "err", err)`
+// pair shared by several RPC handlers, so the contract under test is purely
+// that the returned string equals err.Error().
+func TestLogRPCErr(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		err    error
+	}{
+		{"simple error", "rpc.KBSearch", errors.New("boom")},
+		{"wrapped error", "rpc.KBList", fmt.Errorf("list failed: %w", errors.New("db closed"))},
+		{"method with suffix", "rpc.UpdateSelf failed", errors.New("go install: exit status 1")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := logRPCErr(tt.method, tt.err)
+			testutil.Equal(t, got, tt.err.Error())
+		})
+	}
 }
 
 // _ keeps agent referenced.
