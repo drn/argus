@@ -256,6 +256,15 @@ func (s *Session) runStream() {
 		exited, err := s.streamOnce()
 		if exited {
 			s.close()
+			// On a server-confirmed exit, err==nil. We set Stopped=true so the
+			// TUI's terminal-status predicate (daemon.ExitInfo.CleanExit() =
+			// !Stopped && Err=="" && !StreamLost) reads NON-clean → the row lands
+			// InReview, not Complete. Deliberate: the SSE client never observes the
+			// agent's real exit code, so it must not claim a clean completion. Do
+			// NOT "fix" this to Stopped:false — that would make remote clean exits
+			// wrongly Complete. The remote daemon's own transitionTaskOnExit holds
+			// the authoritative status, surfaced to this TUI via /api/tasks.
+			// (Pinned by the OnSessionExit test in methods_test.go.)
 			s.p.removeSession(s.taskID, SessionExitInfo{Err: errString(err), Stopped: err == nil})
 			return
 		}

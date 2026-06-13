@@ -65,6 +65,22 @@ type ExitInfo struct {
 	PendingRestart bool // true when a kick-restart is queued (TUI must skip status flip)
 }
 
+// CleanExit is the single, authoritative predicate for "the agent process
+// exited on its own, normally" — the ONLY condition under which a task may be
+// marked Complete. Everything else (explicit stop, non-zero exit / crash,
+// fast-fail launch surfaced as an error, or an unconfirmed stream loss) is a
+// recoverable exit and lands the task in InReview so the user can resume.
+//
+// Both status-flip sites — the daemon's transitionTaskOnExit (authoritative for
+// headless/PWA) and the TUI's handleSessionExitUI (an idempotent retry that can
+// win the race) — MUST derive their decision from this one predicate so they
+// can never disagree. The rule is intentionally timing-independent: a missing
+// binary / crash arrives as a non-empty Err, so we never need a wall-clock
+// heuristic to tell "did real work happen" in the common case.
+func (e ExitInfo) CleanExit() bool {
+	return !e.Stopped && e.Err == "" && !e.StreamLost
+}
+
 // Daemon manages agent sessions and exposes them over a Unix socket.
 type Daemon struct {
 	db        *db.DB
@@ -149,13 +165,14 @@ func New(database *db.DB) *Daemon {
 		// from the tview main goroutine (the gotcha at daemon-rpc.md:9).
 		pending := d.runner.HasPendingRestart(taskID)
 
-		d.mu.Lock()
-		d.exitInfos[taskID] = ExitInfo{
+		ei := ExitInfo{
 			Err:            errStr,
 			Stopped:        stopped,
 			LastOutput:     lastOutput,
 			PendingRestart: pending,
 		}
+		d.mu.Lock()
+		d.exitInfos[taskID] = ei
 		conns := d.streams[taskID]
 		delete(d.streams, taskID)
 		d.mu.Unlock()
@@ -173,7 +190,7 @@ func New(database *db.DB) *Daemon {
 		// the runner's exit goroutine). Transitioning to InReview here would
 		// race the restart and leave the row in the wrong state mid-flip.
 		if !pending {
-			d.transitionTaskOnExit(taskID, stopped)
+			d.transitionTaskOnExit(taskID, ei.CleanExit())
 		}
 
 		// Capture session ID for backends that mint it themselves post-exit
@@ -272,19 +289,22 @@ func (d *Daemon) captureSessionIDPostExit(taskID string) {
 }
 
 // transitionTaskOnExit flips an InProgress task to its terminal status when
-// its session exits. Stopped sessions land in InReview (manual interruption,
-// the user may want to resume); naturally-exited sessions land in Complete.
+// its session exits. Only a clean exit (ExitInfo.CleanExit — the process ended
+// on its own with a zero exit code, e.g. the user typed Ctrl-D / `/exit`) lands
+// the task in Complete; every other exit (explicit stop, crash, missing-binary
+// launch failure, unconfirmed stream loss) lands in InReview so the user can
+// resume rather than having a still-unfinished task silently marked done.
 // No-op if the row has already moved on (e.g., the TUI's HandleSessionExit
 // won the race, or the user manually changed status mid-exit).
-func (d *Daemon) transitionTaskOnExit(taskID string, stopped bool) {
+func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
 	t, err := d.db.Get(taskID)
 	if err != nil || t == nil || t.Status != model.StatusInProgress {
 		return
 	}
-	if stopped {
-		t.SetStatus(model.StatusInReview)
-	} else {
+	if cleanExit {
 		t.SetStatus(model.StatusComplete)
+	} else {
+		t.SetStatus(model.StatusInReview)
 	}
 	if uerr := d.db.Update(t); uerr != nil {
 		slog.Warn("session exit: status update failed", "task", taskID, "err", uerr)

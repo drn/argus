@@ -456,8 +456,16 @@ func (c *Client) removeSession(taskID string) {
 		// Query exit info from daemon before firing callback.
 		var info daemon.ExitInfo
 		err := c.call("Daemon.GetExitInfo", &daemon.TaskIDReq{TaskID: taskID}, &info)
-		uxlog.Log("client.removeSession: task=%s exitInfo err=%v rpcErr=%v stopped=%v lastOutput=%d bytes",
-			taskID, info.Err, err, info.Stopped, len(info.LastOutput))
+		if err != nil {
+			// RPC failed → we have NO observed exit info. A zero-value ExitInfo
+			// would read CleanExit()==true and wrongly mark the task Complete
+			// (violating "Complete only on an observed clean exit"). Force
+			// StreamLost so HandleSessionExit treats it as "process maybe alive,
+			// status unchanged" — the tick reconciler later lands it InReview.
+			info.StreamLost = true
+		}
+		uxlog.Log("client.removeSession: task=%s exitInfo err=%v rpcErr=%v stopped=%v streamLost=%v lastOutput=%d bytes",
+			taskID, info.Err, err, info.Stopped, info.StreamLost, len(info.LastOutput))
 		fn(taskID, info)
 	}
 }

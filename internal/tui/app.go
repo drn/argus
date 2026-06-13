@@ -339,8 +339,11 @@ func (a *App) SetFocusTracker(ft focusTrackerIface) {
 //
 // Stale-session reconciliation is owned by the runner-holder (daemon Serve, or
 // in-process startup in cmd/argus/main.go) — they sweep InProgress → InReview
-// before the TUI sees the DB, so the TUI's tick reconciler only handles
-// "session exited while we were watching" (always Complete).
+// before the TUI sees the DB. The TUI's tick reconciler is a backstop for an
+// InProgress row whose session has since vanished from the daemon's list; it
+// lands such rows in InReview (never Complete — it has no exit event and cannot
+// know the agent finished cleanly; the authoritative Complete comes only from an
+// observed clean exit via transitionTaskOnExit / handleSessionExitUI).
 func New(database store.Store, runner agent.SessionProvider, daemonConnected bool) *App {
 	// Use the terminal's default background instead of tview's hard-coded black.
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorDefault
@@ -880,8 +883,8 @@ func (a *App) onTick() {
 		a.mu.Lock()
 		// If a session was started between the RPC snapshot and now, the
 		// runningIDs are stale — the new session won't be in them, causing
-		// reconciliation to wrongly mark it Complete. Pass nil to skip
-		// reconciliation this tick; the next tick will have fresh IDs.
+		// reconciliation to wrongly flip it to InReview (a false termination).
+		// Pass nil to skip reconciliation this tick; the next tick will have fresh IDs.
 		if a.startGen.Load() != startGen {
 			uxlog.Log("[tui] tick: startGen changed (%d → %d), skipping reconciliation with stale runningIDs", startGen, a.startGen.Load())
 			runningIDs = nil
@@ -1123,13 +1126,26 @@ func (a *App) NotifySessionExit(taskID string, err error, stopped bool, lastOutp
 	// In-process mode reads HasPendingRestart synchronously off the local
 	// runner — no RPC, no main-thread stall.
 	pending := a.runner.HasPendingRestart(taskID)
+	// Derive cleanExit from the SAME predicate the daemon uses — construct the
+	// equivalent ExitInfo and call CleanExit() rather than re-implementing the
+	// rule inline, so the in-process and daemon flip sites can never drift (e.g.
+	// if CleanExit() ever grows another term). In-process mode has no stream, so
+	// StreamLost is always false here. Only a self-driven, zero-exit process is
+	// "complete"; a crash / missing-binary fast-fail (err != nil) → InReview.
+	var errStr string
+	if err != nil {
+		errStr = err.Error()
+	}
+	cleanExit := (daemon.ExitInfo{Stopped: stopped, Err: errStr}).CleanExit()
 	a.tapp.QueueUpdateDraw(func() {
-		a.handleSessionExitUI(taskID, stopped, pending)
+		a.handleSessionExitUI(taskID, cleanExit, pending)
 	})
 }
 
 // HandleSessionExit is called from the daemon client's OnSessionExit callback.
-// It updates task status and refreshes the UI.
+// It flips task status (via handleSessionExitUI) and refreshes the UI — EXCEPT
+// when info.StreamLost is set, in which case the process may still be alive, so
+// it logs and returns WITHOUT touching status (the row stays as-is).
 func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	if info.StreamLost {
 		uxlog.Log("[tui] stream lost: task=%s — status unchanged, process may still be alive", taskID)
@@ -1140,8 +1156,10 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 	a.tapp.QueueUpdateDraw(func() {
 		// PendingRestart was stamped by the daemon's onFinish under the same
 		// snapshot it used to decide whether to skip transitionTaskOnExit, so
-		// the TUI never has to RPC from the main goroutine.
-		a.handleSessionExitUI(taskID, info.Stopped, info.PendingRestart)
+		// the TUI never has to RPC from the main goroutine. CleanExit() is the
+		// shared predicate the daemon used for its own flip — reuse it so the
+		// two sites can never reach different terminal statuses.
+		a.handleSessionExitUI(taskID, info.CleanExit(), info.PendingRestart)
 	})
 }
 
@@ -1149,7 +1167,7 @@ func (a *App) HandleSessionExit(taskID string, info daemon.ExitInfo) {
 // Called by both NotifySessionExit (in-process) and HandleSessionExit (daemon).
 // pendingRestart is captured by the caller from a non-RPC source (in-process:
 // direct method call; daemon: ExitInfo.PendingRestart stamped by daemon side).
-func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
+func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool) {
 	// Two callers, two flip-site stories:
 	//   - Daemon mode (HandleSessionExit): the daemon's onFinish callback
 	//     already ran transitionTaskOnExit before closing the stream that
@@ -1185,10 +1203,10 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		// (a.pendingRerenderRestart) are handled below where we revert to
 		// InProgress before resuming, so they tolerate the transient flip.
 		if !pendingRestart {
-			if stopped {
-				t.SetStatus(model.StatusInReview) // in-memory: drives nav/render below
-			} else {
+			if cleanExit {
 				t.SetStatus(model.StatusComplete)
+			} else {
+				t.SetStatus(model.StatusInReview) // crash/stop/fast-fail → recoverable
 			}
 			// Persist via the partial setter, not Update: t was Get'd fresh above,
 			// but the concurrent autoname goroutine could land a rename in the
@@ -1256,10 +1274,15 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 	// the post-exit clearing/navigation below — startSession will reattach
 	// the agent pane in place.
 	//
+	// Gate on !cleanExit (not just "stopped"): a rerender kick always exits
+	// non-clean because KickRerender calls sess.Stop() — and if the agent instead
+	// crashed during the kick window, restarting it is still the right move, so
+	// any non-clean exit with a pending rerender flag continues here.
+	//
 	// Only restart if the user is still viewing this task. If they navigated
 	// away after the kick, fall through to the normal exit path so the task
 	// settles at InReview and the user can resume it manually later.
-	if stopped && a.pendingRerenderRestart[taskID] {
+	if !cleanExit && a.pendingRerenderRestart[taskID] {
 		delete(a.pendingRerenderRestart, taskID)
 		a.mu.Lock()
 		stillViewing := a.mode == modeAgent && a.agentState.TaskID == taskID
@@ -1291,13 +1314,16 @@ func (a *App) handleSessionExitUI(taskID string, stopped, pendingRestart bool) {
 		}
 	}
 
-	// If we're viewing this task's agent pane and it completed, navigate back
-	// to the task list. If stopped (set to in-review), just clear the session.
+	// If we're viewing this task's agent pane and it exited cleanly (→ Complete),
+	// navigate back to the task list. If it ended any other way (→ InReview: a
+	// stop, a crash, or a missing-binary fast-fail), STAY in the agent pane and
+	// clear the session so the user sees the exited state and can resume in place
+	// rather than being bounced to the list with no explanation.
 	a.mu.Lock()
 	viewing := a.mode == modeAgent && a.agentState.TaskID == taskID
 	a.mu.Unlock()
 	if viewing {
-		if !stopped {
+		if cleanExit {
 			a.exitAgentView()
 		} else {
 			a.agentPane.SetSession(nil)
@@ -1510,7 +1536,7 @@ func (a *App) refreshTasksAsync() {
 			// If a session was started between the RPC snapshot and now,
 			// the runningIDs are stale — pass nil to skip reconciliation.
 			// Same guard as onTick to prevent the race where an async
-			// refresh marks a newly-started task Complete.
+			// refresh flips a newly-started task to InReview (a false termination).
 			if a.startGen.Load() != startGen {
 				uxlog.Log("[tui] refreshTasksAsync: startGen changed, skipping reconciliation with stale runningIDs")
 				runningIDs = nil
@@ -1558,12 +1584,15 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.idleIDs = idleIDs
 
 	// Reconcile stale in-progress tasks: if a task is InProgress in the DB
-	// but has no running session, mark it Complete. This is the safety net
-	// for "session exited while we were watching but the OnSessionExit
-	// notification didn't make it through" — the genuine exit path, so
-	// Complete is correct. Stale rows from a daemon crash/restart are flipped
-	// to InReview by ReconcileStaleSessions before the listener opens, so
-	// they shouldn't reach this path in practice.
+	// but has no running session, mark it InReview. This is a pure INFERENCE
+	// from session-list absence — we have no exit event, so we cannot know the
+	// agent finished cleanly and MUST NOT mark it Complete (that's reserved for
+	// an observed clean exit; see handleSessionExitUI / transitionTaskOnExit).
+	// InReview is the safe, recoverable landing the user can resume — matching
+	// ReconcileStaleSessions' startup policy. This path is a backstop for "the
+	// OnSessionExit notification didn't make it through"; the authoritative
+	// flip is the daemon's exit-driven transition, which this can only ever
+	// agree with or conservatively under-call (InReview, never Complete).
 	//
 	// Only reconcile when connected to a daemon — the daemon is the source of
 	// truth for running sessions. In-process mode has its own onFinish callback.
@@ -1583,14 +1612,14 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 					uxlog.Log("[tui] reconciliation grace period for task %s (%s), started %v ago", t.ID, t.Name, now.Sub(startedAt).Round(time.Millisecond))
 					continue
 				}
-				t.SetStatus(model.StatusComplete) // in-memory: drives this frame's render
+				t.SetStatus(model.StatusInReview) // in-memory: drives this frame's render
 				// Persist via the partial setter, not Update: although a.tasks was
 				// just reloaded from the DB at the top of this call, the concurrent
 				// autoname goroutine could land a rename in the microsecond window
 				// before this write. SetStatus touches only status/timestamps, so it
 				// can't clobber that name — same reasoning as OnPin/OnStatusChange.
-				a.db.SetStatus(t.ID, model.StatusComplete) //nolint:errcheck
-				uxlog.Log("[tui] reconciled stale task %s (%s) → complete (no running session)", t.ID, t.Name)
+				a.db.SetStatus(t.ID, model.StatusInReview) //nolint:errcheck
+				uxlog.Log("[tui] reconciled stale task %s (%s) → in_review (no running session; inferred, not observed)", t.ID, t.Name)
 				delete(a.recentStarts, t.ID) // consumed; no need to check again
 			}
 		}
