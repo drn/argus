@@ -335,65 +335,24 @@ func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
 }
 
 // heraSpawnWorker performs the transactional born-bound worker spawn (M4). It
-// is injected into the MCP server via SetHeraService. The role + binding write
-// is an AfterPersist hook inside agent.CreateAndStart, so it joins that call's
-// LIFO compensating stack: a role/binding-insert failure unwinds the
-// task+worktree+row (no orphan task), and a later session-start failure unwinds
-// the role+binding too (no orphan role/binding). meta:hera.role=worker is
-// stamped inside the hook, before the session starts, because the auto-adopt
-// watcher and rail rendering key on it.
+// is injected into the MCP server via SetHeraService. The actual spawn semantics
+// live in the shared agent.SpawnHeraWorker primitive (single source of truth,
+// also called by the native Hera view's rail `w` key); this method is a thin
+// adapter that translates the MCP payload to/from the shared types.
 func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, error) {
-	// Uniquify the role name within the orchestrator up front so the argus task
-	// is titled after the role (not the orientation preamble). The partial
-	// unique index on hera_roles is the backstop against a concurrent-spawn race.
-	uniqueName, err := d.db.UniqueHeraRoleName(in.OrchestratorID, in.BaseName)
-	if err != nil {
-		return nil, fmt.Errorf("derive unique role name: %w", err)
-	}
-
-	var role *db.HeraRole
-	var binding *db.HeraBinding
-	task, _, err := agent.CreateAndStart(d.db, d.runner, agent.CreateInput{
-		Name:       uniqueName,
-		Prompt:     in.TaskPrompt,
-		Project:    in.Project,
-		Backend:    in.Backend,
-		BaseBranch: in.Branch,
-		AutoName:   false, // name is the meaningful role slug — no Haiku rename
-		AfterPersist: func(t *model.Task) (func(), error) {
-			// Stamp meta:hera.role=worker BEFORE the session starts. Best-effort:
-			// a meta failure must not abort an otherwise-valid spawn.
-			if mErr := d.db.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
-				slog.Warn("[hera] spawn: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
-			}
-			r, b, cErr := d.db.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
-				OrchestratorID: in.OrchestratorID,
-				Name:           uniqueName,
-				Kind:           db.HeraKindWorker,
-				ArgusProject:   in.Project,
-				Prompt:         in.RolePrompt,
-			}, t.ID, t.Worktree)
-			if cErr != nil {
-				// Returning the error makes CreateAndStart unwind the task row +
-				// worktree; the session was not started yet, so nothing leaks.
-				return nil, cErr
-			}
-			role, binding = r, b
-			// Compensating cleanup for a LATER failure (runner.Start). Deleting
-			// the role cascades its binding away, so the subsequent db.Delete
-			// (task row) finds no live binding to end — no orphan either way.
-			cleanup := func() {
-				if dErr := d.db.DeleteHeraRole(r.ID); dErr != nil {
-					slog.Warn("[hera] spawn unwind: delete role failed", "role_id", r.ID, "err", dErr)
-				}
-			}
-			return cleanup, nil
-		},
+	res, err := agent.SpawnHeraWorker(d.db, d.runner, agent.HeraWorkerSpawnInput{
+		OrchestratorID: in.OrchestratorID,
+		BaseName:       in.BaseName,
+		TaskPrompt:     in.TaskPrompt,
+		RolePrompt:     in.RolePrompt,
+		Project:        in.Project,
+		Branch:         in.Branch,
+		Backend:        in.Backend,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &mcp.HeraSpawnResult{Task: task, Role: role, Binding: binding}, nil
+	return &mcp.HeraSpawnResult{Task: res.Task, Role: res.Role, Binding: res.Binding}, nil
 }
 
 // pollPRStatesOnce runs a single PR-status refresh pass over every eligible

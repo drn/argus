@@ -39,17 +39,18 @@ func TestHelpModal_InputHandler(t *testing.T) {
 
 func TestHelpModal_Draw(t *testing.T) {
 	// Height must clear the full section list (the modal scrolls when it
-	// can't); 48 leaves headroom so every section header — including the last
+	// can't); 64 leaves headroom so every section header — including the last
 	// one, Settings — renders without scrolling.
-	sim := drawAt(t, 100, 48)
+	sim := drawAt(t, 100, 64)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 48)
+	m.SetRect(0, 0, 100, 64)
 	m.Draw(sim)
 	sim.Sync()
 
 	body := screenString(sim)
 	testutil.Contains(t, body, "Keybindings")
 	testutil.Contains(t, body, "Task List")
+	testutil.Contains(t, body, "Hera View (rail)")
 	testutil.Contains(t, body, "Agent View")
 	testutil.Contains(t, body, "File Panel")
 	testutil.Contains(t, body, "Settings")

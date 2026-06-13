@@ -1402,21 +1402,6 @@ func TestHera_SpawnWorker_RoleNameSlugAndUnique(t *testing.T) {
 	testutil.Contains(t, cr2.Content[0].Text, "**role_name**: fix-the-login-bug-2")
 }
 
-func TestDeriveHeraWorkerName(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"Fix the login bug", "fix-the-login-bug"},
-		{"", "worker"},
-		{"!!!", "worker"},
-		{"  Spaces  here ", "spaces-here"},
-		{"this prompt is definitely much longer than forty characters total", "this-prompt-is-definitely-much-longer-th"},
-	}
-	for _, c := range cases {
-		t.Run(c.in, func(t *testing.T) {
-			testutil.Equal(t, deriveHeraWorkerName(c.in), c.want)
-		})
-	}
-}
-
 // --- hera_status(done) BUG-050 primary trigger (M4 refinement) ---
 
 // attachWorker joins workerTask as a worker under orch (which coordTask must

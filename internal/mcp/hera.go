@@ -5,11 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/model"
@@ -757,13 +756,13 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 	// daemon spawner uniquifies it within the orchestrator (suffix -2, -3, …).
 	baseName := strings.TrimSpace(p.RoleName)
 	if baseName == "" {
-		baseName = deriveHeraWorkerName(prompt)
+		baseName = agent.DeriveHeraWorkerName(prompt)
 	}
 
 	// Prepend the orientation prefix so the worker knows it is born-bound and
 	// who its coordinator + orchestrator are. The verbatim user prompt follows
 	// the separator and is also stored on the role row.
-	taskPrompt := heraWorkerOrientation(caller.orch.Name, caller.role.Name) + "\n\n---\n\n" + prompt
+	taskPrompt := agent.HeraWorkerOrientation(caller.orch.Name, caller.role.Name) + "\n\n---\n\n" + prompt
 
 	res, err := s.heraSpawn(HeraSpawnInput{
 		Project:        project,
@@ -790,45 +789,6 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 	fmt.Fprintf(&b, "- **argus_task_id**: %s\n", res.Task.ID)
 	fmt.Fprintf(&b, "- **project**: %s\n", project)
 	return toolResult(id, b.String())
-}
-
-// heraWorkerNameRe matches runs of ASCII lowercase letters and digits, used to
-// build a URL-slug-style role name from a prompt.
-var heraWorkerNameRe = regexp.MustCompile(`[a-z0-9]+`)
-
-// deriveHeraWorkerName produces a slug from the first 40 chars of the prompt,
-// mirroring Hera's swDeriveWorkerName. Returns "worker" for empty/symbol input.
-func deriveHeraWorkerName(prompt string) string {
-	runes := []rune(prompt)
-	if len(runes) > 40 {
-		runes = runes[:40]
-	}
-	lower := strings.Map(func(r rune) rune { return unicode.ToLower(r) }, string(runes))
-	tokens := heraWorkerNameRe.FindAllString(lower, -1)
-	if len(tokens) == 0 {
-		return "worker"
-	}
-	slug := strings.Join(tokens, "-")
-	if slug == "" {
-		return "worker"
-	}
-	return slug
-}
-
-// heraWorkerOrientation is the orientation prefix prepended to a spawned
-// worker's prompt. Ports Hera's spawn-handler guidance verbatim (hera_send for
-// progress, sub-coordinator escalation, iris for PRs), augmented to name the
-// orchestrator and state that the worker is born-bound.
-func heraWorkerOrientation(orchestrator, coordinator string) string {
-	return fmt.Sprintf(
-		"You are a worker agent born bound to hera orchestrator %q under coordinator %q. "+
-			"You may report progress via hera_send. If this task requires changes to another repo "+
-			"or you need to spawn sub-agents, call hera_new_orchestrator(cwd=$PWD, name=\"...\", "+
-			"coordinator_role_name=\"coord\", prompt=\"...\") to become a sub-coordinator, then use "+
-			"hera_spawn_worker(project=\"TARGET-PROJECT\", ...) to dispatch workers in that project. "+
-			"When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) "+
-			"so argus records the PR URL and the hera rail shows the PR indicator.",
-		orchestrator, coordinator)
 }
 
 func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Response {
