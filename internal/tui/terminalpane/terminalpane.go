@@ -245,11 +245,28 @@ func (tp *TerminalPane) paint(screen tcell.Screen, x, y, w, h int) {
 	}
 }
 
-// PasteHandler forwards pasted text to the configured InputBack channel.
-// Without an input-back channel the handler is a non-blocking no-op.
+// Bracketed-paste markers. tview's bracket-paste support consumes the
+// ESC[200~ / ESC[201~ framing on argus's *real* terminal and hands
+// WrapPasteHandler the already-unwrapped content. If we forward only that
+// content, the downstream consumer of the input-back stream (a plugin's tcell
+// parser over the WebSocket, or a real PTY with bracketed paste enabled) sees
+// raw bytes with no framing and treats every rune as an individual keystroke —
+// which is why pasting into a hera modal was ingested rune-by-rune. Re-wrapping
+// once here restores the framing so the consumer coalesces the whole paste into
+// a single paste event.
+const (
+	bracketPasteStart = "\x1b[200~"
+	bracketPasteEnd   = "\x1b[201~"
+)
+
+// PasteHandler forwards pasted text to the configured InputBack channel,
+// re-wrapped in bracketed-paste markers. Without an input-back channel the
+// handler is a non-blocking no-op. The markers bracket the entire paste in a
+// single send (send does not chunk), so multi-line and large pastes arrive
+// framed as one paste event with embedded newlines intact.
 func (tp *TerminalPane) PasteHandler() func(pastedText string, setFocus func(p tview.Primitive)) {
 	return tp.WrapPasteHandler(func(pastedText string, _ func(p tview.Primitive)) {
-		tp.send([]byte(pastedText))
+		tp.send([]byte(bracketPasteStart + pastedText + bracketPasteEnd))
 	})
 }
 
