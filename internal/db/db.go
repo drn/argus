@@ -45,7 +45,12 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("creating data dir: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)")
+	// foreign_keys(on) makes the hera_* table FK cascades (orchestrator → roles →
+	// bindings / role_status) actually fire. SQLite defaults foreign_keys OFF
+	// per-connection; the modernc _pragma DSN applies it to every pooled
+	// connection. Safe for the rest of the schema — no other table declares an
+	// FK, so enabling enforcement is a no-op for them.
+	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -70,7 +75,9 @@ func Open(path string) (*DB, error) {
 
 // OpenInMemory creates an in-memory database for testing.
 func OpenInMemory() (*DB, error) {
-	conn, err := sql.Open("sqlite", ":memory:")
+	// Match Open: enable FK enforcement so hera_* cascade tests exercise the
+	// same behavior as production.
+	conn, err := sql.Open("sqlite", ":memory:?_pragma=foreign_keys(on)")
 	if err != nil {
 		return nil, err
 	}

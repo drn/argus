@@ -530,6 +530,18 @@ func (d *DB) Delete(id string) error {
 		if _, err := tx.Exec(`DELETE FROM task_meta WHERE task_id=?`, id); err != nil {
 			return err
 		}
+		// End every live hera binding for the deleted task. Deletion is the only
+		// task lifecycle event that ends bindings — SetArchived deliberately
+		// leaves them intact because archive is resumable. There is no FK from
+		// hera_bindings.argus_task_id to tasks (argus_task_id is plain TEXT), so
+		// this app-level cleanup is what severs the link. Bindings are ended
+		// (ended_at stamped), not deleted, so the role's binding history survives.
+		if _, err := tx.Exec(
+			`UPDATE hera_bindings SET ended_at=?, end_reason=? WHERE argus_task_id=? AND ended_at IS NULL`,
+			formatTime(time.Now()), heraEndReasonTaskDeleted, id,
+		); err != nil {
+			return err
+		}
 		return nil
 	})
 }
