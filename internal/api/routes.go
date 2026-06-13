@@ -233,7 +233,7 @@ func (s *Server) handleVendor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	projects, err := s.db.Projects()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects: " + err.Error()})
+		writeErr(w, http.StatusInternalServerError, "failed to load projects", err)
 		return
 	}
 	names := make([]string, 0, len(projects))

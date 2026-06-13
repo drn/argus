@@ -124,7 +124,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req updateSettingsReq
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.Sandbox != nil && authOrigin(r) != "master" {
@@ -134,7 +134,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	updates := buildSettingsUpdates(req)
 	for k, v := range updates {
 		if err := s.db.SetConfigValue(k, v); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 			return
 		}
 		uxlog.Log("[api] settings %s = %q", k, v)
@@ -227,7 +227,7 @@ func (s *Server) handleGetLog(w http.ResponseWriter, r *http.Request) {
 	// rooted at db.DataDir(). gosec's taint analysis can't see that.
 	path, err := logPath(r.PathValue("name"))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	// Default tail = 64KB, max 1MB.
@@ -244,7 +244,7 @@ func (s *Server) handleGetLog(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

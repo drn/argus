@@ -2851,6 +2851,60 @@ func TestWriteJSON_EncodeError(t *testing.T) {
 	testutil.Equal(t, rec.Code, http.StatusOK)
 }
 
+func TestWriteErr(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		msg      string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "bare error, no message",
+			status:   http.StatusInternalServerError,
+			msg:      "",
+			err:      fmt.Errorf("boom"),
+			wantCode: http.StatusInternalServerError,
+			wantBody: `{"error":"boom"}`,
+		},
+		{
+			name:     "message prefix with error",
+			status:   http.StatusBadRequest,
+			msg:      "invalid JSON",
+			err:      fmt.Errorf("unexpected EOF"),
+			wantCode: http.StatusBadRequest,
+			wantBody: `{"error":"invalid JSON: unexpected EOF"}`,
+		},
+		{
+			name:     "static message, no error",
+			status:   http.StatusNotFound,
+			msg:      "task not found",
+			err:      nil,
+			wantCode: http.StatusNotFound,
+			wantBody: `{"error":"task not found"}`,
+		},
+		{
+			name:     "empty message and nil error",
+			status:   http.StatusBadRequest,
+			msg:      "",
+			err:      nil,
+			wantCode: http.StatusBadRequest,
+			wantBody: `{"error":""}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writeErr(rec, tc.status, tc.msg, tc.err)
+			testutil.Equal(t, rec.Code, tc.wantCode)
+			testutil.Equal(t, rec.Header().Get("Content-Type"), "application/json")
+			// json.Encoder appends a trailing newline; trim it for comparison.
+			testutil.Equal(t, strings.TrimRight(rec.Body.String(), "\n"), tc.wantBody)
+		})
+	}
+}
+
 // --- LoadOrCreateToken edge cases ---
 
 func TestLoadOrCreateToken_MkdirError(t *testing.T) {

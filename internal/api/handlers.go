@@ -51,7 +51,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := s.db.Tasks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load tasks: " + err.Error()})
+		writeErr(w, http.StatusInternalServerError, "failed to load tasks", err)
 		return
 	}
 	var tc taskCounts
@@ -192,7 +192,7 @@ func (s *Server) sessionStateMaps() (runningSet, idleSet, needsInputSet map[stri
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.db.Tasks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load tasks: " + err.Error()})
+		writeErr(w, http.StatusInternalServerError, "failed to load tasks", err)
 		return
 	}
 
@@ -251,7 +251,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	runningSet, idleSet, needsInputSet := s.sessionStateMaps()
@@ -315,19 +315,19 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskReq
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.Project == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		writeErr(w, http.StatusBadRequest, "project is required", nil)
 		return
 	}
 	if req.Prompt == "" && req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name or prompt is required"})
+		writeErr(w, http.StatusBadRequest, "name or prompt is required", nil)
 		return
 	}
 	if err := s.validateBackend(req.Backend); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	autoName := req.Name == ""
@@ -339,7 +339,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 	task, err := s.createTask(name, req.Prompt, req.Project, req.Backend, req.Model, autoName)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -368,19 +368,19 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 
 	name, prompt, project, backend, taskModel, atts, err := parseMultipartTaskForm(r)
 	if err != nil {
-		writeJSON(w, statusForUploadErr(err), map[string]string{"error": err.Error()})
+		writeErr(w, statusForUploadErr(err), "", err)
 		return
 	}
 	if project == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+		writeErr(w, http.StatusBadRequest, "project is required", nil)
 		return
 	}
 	if prompt == "" && name == "" && len(atts) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name, prompt, or files required"})
+		writeErr(w, http.StatusBadRequest, "name, prompt, or files required", nil)
 		return
 	}
 	if err := s.validateBackend(backend); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	// autoName fires only when name was synthesized from prompt — not from
@@ -406,7 +406,7 @@ func (s *Server) handleCreateTaskMultipart(w http.ResponseWriter, r *http.Reques
 	})
 	if err != nil {
 		uxlog.Log("[uploads] create task failed name=%q project=%q files=%d err=%v", name, project, len(atts), err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -424,12 +424,12 @@ func (s *Server) handleStopTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 
 	if err := s.runner.Stop(id); err != nil && !errors.Is(err, agent.ErrSessionNotFound) {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -463,7 +463,7 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 
@@ -471,7 +471,7 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	// (no live session, or session.IsIdle()) are exactly what this endpoint
 	// targets — they should be restarted, not rejected.
 	if sess := s.runner.Get(task.ID); sess != nil && !sess.IsIdle() {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "task already running"})
+		writeErr(w, http.StatusConflict, "task already running", nil)
 		return
 	}
 
@@ -482,7 +482,7 @@ func (s *Server) handleRestartTask(w http.ResponseWriter, r *http.Request) {
 	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, true)
 	if err != nil {
 		uxlog.Log("[api] restart: start failed task=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -512,7 +512,7 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 
@@ -532,7 +532,7 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		// the check to atomic without auditing the StartOrReattach call
 		// sites that share the same pattern.
 		if sess := s.runner.Get(task.ID); sess != nil && !sess.IsIdle() {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "task already running"})
+			writeErr(w, http.StatusConflict, "task already running", nil)
 			return
 		}
 	}
@@ -550,7 +550,7 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 	sess, reattached, err := s.runner.StartOrReattach(task, cfg, 24, 80, resume)
 	if err != nil {
 		uxlog.Log("[api] resume: start failed task=%s status=%s err=%v", id, prevStatus, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -584,7 +584,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 
@@ -606,7 +606,7 @@ func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
 	os.RemoveAll(agent.ArtifactsDir(id)) //nolint:errcheck,gosec // G304: id validated by db.Get; ArtifactsDir roots at ~/.argus/artifacts/<id>
 
 	if err := s.db.Delete(id); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	events.Emit(model.EventTypeTaskDeleted, id, nil)
@@ -647,12 +647,12 @@ func (s *Server) setArchive(w http.ResponseWriter, r *http.Request, archived boo
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	task.SetArchived(archived)
 	if err := s.db.Update(task); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	// Mirror the MCP task_archive cleanup so the archive surface stays
@@ -680,24 +680,24 @@ func (s *Server) handleRenameTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	var req renameReq
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
+		writeErr(w, http.StatusBadRequest, "name is required", nil)
 		return
 	}
 	// Targeted rename — avoids racing concurrent status changes from the
 	// agent process. Mirrors the MCP task_rename and TUI rename modal paths.
 	if err := s.db.Rename(task.ID, name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"name": name})
@@ -713,13 +713,13 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	var req statusSetReq
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	var st model.Status
@@ -733,12 +733,12 @@ func (s *Server) handleSetStatus(w http.ResponseWriter, r *http.Request) {
 	case "complete":
 		st = model.StatusComplete
 	default:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown status: " + req.Status})
+		writeErr(w, http.StatusBadRequest, "unknown status: "+req.Status, nil)
 		return
 	}
 	task.SetStatus(st)
 	if err := s.db.Update(task); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": task.Status.String()})
@@ -754,7 +754,7 @@ func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {
 	// Mark every running task as in_review.
 	tasks, err := s.db.Tasks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	stopped := 0
@@ -793,7 +793,7 @@ func (s *Server) handlePruneCompleted(w http.ResponseWriter, r *http.Request) {
 		Runner: s.runner,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -822,13 +822,13 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	src, err := s.db.Get(id)
 	if err != nil || src == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	var req forkReq
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -844,7 +844,7 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 		project = src.Project
 	}
 	if project == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required (source task has no project)"})
+		writeErr(w, http.StatusBadRequest, "project is required (source task has no project)", nil)
 		return
 	}
 	// Fork name is structured ("<src>-fork" or user-typed); never auto-rename.
@@ -853,7 +853,7 @@ func (s *Server) handleForkTask(w http.ResponseWriter, r *http.Request) {
 	// setting.
 	task, err := s.createTask(name, prompt, project, src.Backend, src.Model, false)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	// task.forked is plugin-visible context — it carries the parent linkage
@@ -928,14 +928,14 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no output available"})
+		writeErr(w, http.StatusNotFound, "no output available", nil)
 		return
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	fileSize := info.Size()
@@ -964,7 +964,7 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := f.Seek(startOff, io.SeekStart); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if clean {
@@ -1022,7 +1022,7 @@ func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 		defer f.Close()
 		info, err := f.Stat()
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 			return
 		}
 		offset := info.Size() - int64(linksReadCap)
@@ -1032,7 +1032,7 @@ func (s *Server) handleGetLinks(w http.ResponseWriter, r *http.Request) {
 		f.Seek(offset, io.SeekStart) //nolint:errcheck
 		raw, err = io.ReadAll(f)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 			return
 		}
 	}
@@ -1052,18 +1052,18 @@ func (s *Server) handleWriteInput(w http.ResponseWriter, r *http.Request) {
 
 	sess := s.runner.Get(id)
 	if sess == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active session"})
+		writeErr(w, http.StatusNotFound, "no active session", nil)
 		return
 	}
 
 	data, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 
 	if _, err := sess.WriteInput(data); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -1086,7 +1086,7 @@ func (s *Server) handleGetSize(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.runner.Get(id)
 	if sess == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active session"})
+		writeErr(w, http.StatusNotFound, "no active session", nil)
 		return
 	}
 	cols, rows := sess.PTYSize()
@@ -1102,26 +1102,26 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess := s.runner.Get(id)
 	if sess == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active session"})
+		writeErr(w, http.StatusNotFound, "no active session", nil)
 		return
 	}
 	var req resizeReq
 	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.Cols == 0 || req.Rows == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cols and rows must be > 0"})
+		writeErr(w, http.StatusBadRequest, "cols and rows must be > 0", nil)
 		return
 	}
 	// Sanity bounds — terminals beyond these are pathological.
 	if req.Cols > 1000 || req.Rows > 1000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cols/rows out of range"})
+		writeErr(w, http.StatusBadRequest, "cols/rows out of range", nil)
 		return
 	}
 	if err := sess.Resize(req.Rows, req.Cols); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -1252,13 +1252,13 @@ func (s *Server) handleStreamOutput(w http.ResponseWriter, r *http.Request) {
 
 	sess := s.runner.Get(id)
 	if sess == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active session"})
+		writeErr(w, http.StatusNotFound, "no active session", nil)
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+		writeErr(w, http.StatusInternalServerError, "streaming not supported", nil)
 		return
 	}
 
@@ -1478,7 +1478,7 @@ func projectFromJSON(req projectJSON) config.Project {
 func (s *Server) handleListProjectsFull(w http.ResponseWriter, r *http.Request) {
 	projects, err := s.db.Projects()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	out := make([]projectJSON, 0, len(projects))
@@ -1503,15 +1503,15 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Path) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and path are required"})
+		writeErr(w, http.StatusBadRequest, "name and path are required", nil)
 		return
 	}
 	if err := s.db.SetProject(req.Name, projectFromJSON(req)); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, req)
@@ -1522,16 +1522,16 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	var req projectJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	// Path is required on update too.
 	if strings.TrimSpace(req.Path) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		writeErr(w, http.StatusBadRequest, "path is required", nil)
 		return
 	}
 	if err := s.db.SetProject(name, projectFromJSON(req)); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	req.Name = name
@@ -1541,7 +1541,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := s.db.DeleteProject(name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
@@ -1561,7 +1561,7 @@ type backendJSON struct {
 func (s *Server) handleListBackends(w http.ResponseWriter, r *http.Request) {
 	backends, err := s.db.Backends()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	out := make([]backendJSON, 0, len(backends))
@@ -1587,15 +1587,15 @@ func (s *Server) handleCreateBackend(w http.ResponseWriter, r *http.Request) {
 	var req backendJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Command) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name and command are required"})
+		writeErr(w, http.StatusBadRequest, "name and command are required", nil)
 		return
 	}
 	if err := s.db.SetBackend(req.Name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, req)
@@ -1611,15 +1611,15 @@ func (s *Server) handleUpdateBackend(w http.ResponseWriter, r *http.Request) {
 	var req backendJSON
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if strings.TrimSpace(req.Command) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command is required"})
+		writeErr(w, http.StatusBadRequest, "command is required", nil)
 		return
 	}
 	if err := s.db.SetBackend(name, config.Backend{Command: req.Command, PromptFlag: req.PromptFlag, Model: req.Model}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	req.Name = name
@@ -1633,7 +1633,7 @@ func (s *Server) handleDeleteBackend(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	if err := s.db.DeleteBackend(name); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
@@ -1678,7 +1678,7 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil || task.Worktree == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task or worktree not found"})
+		writeErr(w, http.StatusNotFound, "task or worktree not found", nil)
 		return
 	}
 	msg := gitutil.FetchGitStatus(task.ID, task.Worktree)
@@ -1689,7 +1689,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil || task.Worktree == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task or worktree not found"})
+		writeErr(w, http.StatusNotFound, "task or worktree not found", nil)
 		return
 	}
 	path := r.URL.Query().Get("path")
@@ -1697,7 +1697,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 		// Reject absolute paths — gitutil.FetchFileDiff falls back to
 		// `git diff --no-index <path>` which would otherwise read arbitrary
 		// files (e.g. /etc/passwd) for files not in the worktree.
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "valid path query param required"})
+		writeErr(w, http.StatusBadRequest, "valid path query param required", nil)
 		return
 	}
 	msg := gitutil.FetchFileDiff(task.ID, task.Worktree, path)
@@ -1708,12 +1708,12 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil || task.Worktree == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task or worktree not found"})
+		writeErr(w, http.StatusNotFound, "task or worktree not found", nil)
 		return
 	}
 	dir := r.URL.Query().Get("dir")
 	if strings.Contains(dir, "..") || filepath.IsAbs(dir) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid dir"})
+		writeErr(w, http.StatusBadRequest, "invalid dir", nil)
 		return
 	}
 	msg := gitutil.FetchDirFiles(task.ID, task.Worktree, dir)
@@ -1762,6 +1762,27 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("[api] json encode error: %v", err)
 	}
+}
+
+// writeErr writes a standard `{"error": "..."}` JSON body at the given status.
+// It is the single helper behind the error-response sites across internal/api,
+// replacing the repeated inline writeJSON(..., map[string]string{"error": ...}).
+//
+// The emitted message is composed to stay byte-identical to the call sites it
+// replaces:
+//   - msg == "", err != nil  -> err.Error()            (the bare err.Error() form)
+//   - msg != "", err != nil  -> msg + ": " + err.Error() (the "prefix: " + err form)
+//   - msg != "", err == nil  -> msg                     (a static message)
+//   - msg == "", err == nil  -> ""                      (degenerate; avoid)
+func writeErr(w http.ResponseWriter, status int, msg string, err error) {
+	text := msg
+	switch {
+	case err != nil && msg != "":
+		text = msg + ": " + err.Error()
+	case err != nil:
+		text = err.Error()
+	}
+	writeJSON(w, status, map[string]string{"error": text})
 }
 
 func sanitizeName(prompt string) string {

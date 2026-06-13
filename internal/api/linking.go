@@ -46,7 +46,7 @@ func (s *Server) handleLinkTask(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if err := orch.Link(s.db, id, req.ParentID); err != nil {
@@ -105,7 +105,7 @@ func (s *Server) handleSetPlanSlug(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if err := orch.SetPlanSlug(s.db, id, req.PlanSlug); err != nil {
@@ -150,10 +150,10 @@ func (s *Server) handleDAG(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeOrchError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, orch.ErrEmptyID):
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 	case errors.Is(err, db.ErrTaskNotFound):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusNotFound, "", err)
 	default:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 	}
 }
