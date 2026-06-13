@@ -15,6 +15,32 @@ type BootInfoResp struct {
 	BootedAt    time.Time // wall-clock time the daemon started
 }
 
+// ProtocolVersion is the version of the session-server R/S protocol that the
+// session-supervisor speaks (see context/plans/session-supervisor.md §4.4).
+// It is reported in the Hello handshake so a future daemon (P2) can connect to
+// an already-running, possibly-older supervisor and feature-detect its
+// capabilities before relying on any newer RPC or field.
+//
+// The protocol is ADDITIVE-ONLY: bump this constant whenever a new RPC method
+// or a new (optional) request/response field is introduced. Never remove or
+// repurpose an existing method/field — the daemon must always be able to talk
+// to a supervisor binary it did not itself start (go install + daemon restart
+// does NOT restart the supervisor; agents would die). Treat it as a frozen
+// public contract and review changes like an API break.
+const ProtocolVersion = 1
+
+// HelloResp is the session-supervisor's handshake reply. ProtocolVersion lets
+// the daemon (P2) decide which RPCs/fields it may use against this supervisor;
+// the binary identity mirrors BootInfoResp so a future daemon can also reason
+// about supervisor staleness (a stale supervisor is NOT auto-restarted — that
+// would interrupt agents; see the design doc §4.4).
+type HelloResp struct {
+	ProtocolVersion int
+	BinaryPath      string    // resolved path of the supervisor executable at boot
+	BinaryMtime     time.Time // mtime of the binary at boot (zero if stat failed)
+	BootedAt        time.Time // wall-clock time the supervisor started
+}
+
 // PortsResp returns the live HTTP ports the daemon is bound to. Both servers
 // pick their port via bindWithRetry on startup, so neither value is stable
 // across daemon restarts. Plugins that need to call the REST API or MCP

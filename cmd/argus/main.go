@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -47,6 +48,23 @@ func main() {
 				runDaemonStatus()
 			default:
 				fmt.Fprintf(os.Stderr, "unknown daemon subcommand: %s\n", sub)
+				os.Exit(1)
+			}
+			return
+		case "session-supervisor":
+			sub := "start"
+			if len(os.Args) > 2 {
+				sub = os.Args[2]
+			}
+			switch sub {
+			case "start":
+				runSupervisor()
+			case "stop":
+				runSupervisorStop()
+			case "status":
+				runSupervisorStatus()
+			default:
+				fmt.Fprintf(os.Stderr, "unknown session-supervisor subcommand: %s\n", sub)
 				os.Exit(1)
 			}
 			return
@@ -513,4 +531,143 @@ func runDaemonRestart() {
 		fmt.Println("no daemon running, starting new instance...")
 	}
 	runDaemon()
+}
+
+// configureProcessLogging routes the stdlib logger and the slog default to w.
+// The supervisor (run detached or foreground) uses it so slog.*/log.* calls
+// from agent.Runner and the session core never reach a controlling terminal —
+// the same discipline runDaemon applies inline. Extracted so the wiring can be
+// pinned by a regression test (the supervisor forks PTY children, so a stray
+// stderr write is a real hazard; see CLAUDE.md rule 6).
+func configureProcessLogging(w io.Writer) {
+	log.SetOutput(w)
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, nil)))
+}
+
+// runSupervisor runs the session-supervisor serve loop in the foreground. It
+// mirrors runDaemon's logging discipline (slog + stdlib log redirected to
+// ~/.argus/supervisor.log) because the supervisor forks PTY children and must
+// never write to fd 1/2 after startup — a stray write would leak into the
+// controlling terminal of whatever launched it (or corrupt nothing when
+// detached, where fd 2 is /dev/null). The daemon Setsid-forks this in P2; here
+// `start` is the runnable entry point for that fork (and for tests/manual runs).
+//
+// The supervisor holds NO database of its own — it only reads config to resolve
+// backends. We open the DB here solely to inject database.Config as the
+// supervisor's cfgFn, keeping the *daemon.Supervisor type free of any DB
+// coupling. P1 is dark: nothing connects to the supervisor yet.
+func runSupervisor() {
+	if err := os.MkdirAll(db.DataDir(), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "cannot create data dir: %v\n", err)
+		os.Exit(1)
+	}
+	logPath := filepath.Join(db.DataDir(), "supervisor.log")
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot open supervisor log: %v\n", err)
+		os.Exit(1)
+	}
+	defer logFile.Close() //nolint:errcheck // process is exiting; close error is non-actionable
+	// Route stdlib log + slog default to the file. Without this, slog.* calls
+	// (in agent.Runner, the session core, etc.) write to os.Stderr — for a
+	// detached supervisor that's /dev/null (invisible), for a foreground one
+	// that's the terminal. Mirrors runDaemon's redirect; CLAUDE.md rule 6.
+	configureProcessLogging(logFile)
+
+	// Pin the working directory to $HOME so relative project paths resolve
+	// consistently regardless of how the supervisor was launched (mirrors the
+	// daemon). Non-fatal: absolute paths still work from any cwd.
+	if home, herr := os.UserHomeDir(); herr != nil {
+		log.Printf("cannot resolve home dir; leaving working directory unchanged: %v", herr)
+	} else if cerr := os.Chdir(home); cerr != nil {
+		log.Printf("cannot chdir to home %q; leaving working directory unchanged: %v", home, cerr)
+	} else {
+		log.Printf("supervisor working directory pinned to %s", home)
+	}
+
+	database, err := db.Open(db.DefaultPath())
+	if err != nil {
+		log.Fatalf("error opening database: %v", err)
+	}
+	defer database.Close() //nolint:errcheck // process is exiting; close error is non-actionable
+
+	s := daemon.NewSupervisor(database.Config)
+	if err := s.Serve(daemon.DefaultSupervisorSocketPath()); err != nil {
+		if errors.Is(err, daemon.ErrDaemonAlreadyRunning) {
+			// Lost the singleton race — another supervisor is already serving.
+			// Exit cleanly so a launcher treats this as success.
+			log.Printf("supervisor already running; nothing to do")
+			return
+		}
+		log.Fatalf("supervisor error: %v", err)
+	}
+}
+
+// stopSupervisor sends a graceful-shutdown RPC to the supervisor over its
+// socket. Mirrors stopDaemon. Returns (true, nil) if stopped, (false, nil) if
+// not running, or (false, err) on unexpected failure.
+func stopSupervisor(sockPath string) (bool, error) {
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return false, nil // not running
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("R")); err != nil {
+		return false, fmt.Errorf("write error: %w", err)
+	}
+
+	client := jsonrpc.NewClient(conn)
+	defer client.Close() //nolint:errcheck // short-lived CLI client; close error is non-actionable
+
+	var resp daemon.StatusResp
+	if err := client.Call("Daemon.Shutdown", &daemon.Empty{}, &resp); err != nil {
+		return false, fmt.Errorf("shutdown error: %w", err)
+	}
+	return true, nil
+}
+
+func runSupervisorStop() {
+	stopped, err := stopSupervisor(daemon.DefaultSupervisorSocketPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if stopped {
+		fmt.Println("supervisor stopped")
+	} else {
+		fmt.Println("no supervisor running")
+	}
+}
+
+// runSupervisorStatus pings the supervisor and prints whether it is responding
+// plus its reported protocol version. Mirrors the daemon's status probe shape.
+func runSupervisorStatus() {
+	sockPath := daemon.DefaultSupervisorSocketPath()
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		fmt.Println("supervisor: not running")
+		return
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("R")); err != nil {
+		fmt.Fprintf(os.Stderr, "write error: %v\n", err)
+		os.Exit(1)
+	}
+	client := jsonrpc.NewClient(conn)
+	defer client.Close() //nolint:errcheck // short-lived CLI client; close error is non-actionable
+
+	var pong daemon.PongResp
+	if err := client.Call("Daemon.Ping", &daemon.Empty{}, &pong); err != nil {
+		fmt.Fprintf(os.Stderr, "ping error: %v\n", err)
+		os.Exit(1)
+	}
+	var hello daemon.HelloResp
+	if err := client.Call("Daemon.Hello", &daemon.Empty{}, &hello); err != nil {
+		// Ping succeeded but Hello failed — still report running.
+		fmt.Println("supervisor: running (protocol unknown)")
+		return
+	}
+	fmt.Printf("supervisor: running (protocol v%d)\n", hello.ProtocolVersion)
 }
