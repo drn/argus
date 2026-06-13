@@ -44,6 +44,12 @@ type Header struct {
 	*tview.Box
 	activeTab Tab
 
+	// tabLabels holds the per-slot display text. Initialized from TabLabels;
+	// individual slots are overridden via SetTabLabel (e.g. "DAG" when Hera is
+	// disabled). Width computations and Draw both consume this field so the
+	// label and centering always agree.
+	tabLabels [len(TabLabels)]string
+
 	// Notice: general-purpose status indicator (left side of header).
 	noticeText string // empty = no notice
 }
@@ -54,7 +60,24 @@ func NewHeader() *Header {
 		Box:       tview.NewBox(),
 		activeTab: TabTasks,
 	}
+	h.tabLabels = TabLabels
 	return h
+}
+
+// SetTabLabel overrides the display text for a single tab slot. Call before or
+// after construction; takes effect on the next Draw.
+func (h *Header) SetTabLabel(t Tab, label string) {
+	if idx := int(t); idx >= 0 && idx < len(h.tabLabels) {
+		h.tabLabels[idx] = label
+	}
+}
+
+// TabLabel returns the current display text for tab slot t.
+func (h *Header) TabLabel(t Tab) string {
+	if idx := int(t); idx >= 0 && idx < len(h.tabLabels) {
+		return h.tabLabels[idx]
+	}
+	return ""
 }
 
 // SetTab changes the active tab.
@@ -123,7 +146,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 	// Compute total width of all tab segments to center them.
 	// Each segment = 1 (open chevron) + len(text) + 1 (close chevron).
 	totalWidth := 0
-	for _, label := range TabLabels {
+	for _, label := range h.tabLabels {
 		text := fmt.Sprintf(" %s ", label)
 		totalWidth += 1 + len(text) + 1 // open sep + text + close sep
 	}
@@ -134,7 +157,7 @@ func (h *Header) Draw(screen tcell.Screen) {
 	}
 
 	// Draw tabs
-	for i, label := range TabLabels {
+	for i, label := range h.tabLabels {
 		if col >= x+width {
 			break
 		}

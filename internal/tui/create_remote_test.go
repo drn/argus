@@ -34,7 +34,7 @@ func (stubStore) Add(*model.Task) error           { return nil }
 func (stubStore) Update(*model.Task) error        { return nil }
 func (stubStore) Delete(string) error             { return nil }
 func (stubStore) Rename(string, string) error     { return nil }
-func (stubStore) Config() config.Config           { return config.Config{} }
+func (stubStore) Config() config.Config           { return config.DefaultConfig() }
 func (stubStore) Projects() (map[string]config.Project, error) {
 	return map[string]config.Project{}, nil
 }

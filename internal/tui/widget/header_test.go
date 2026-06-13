@@ -90,6 +90,52 @@ func TestHeader_DrawWithoutNotice(t *testing.T) {
 	}
 }
 
+func TestHeader_SetTabLabel_DefaultsFromTabLabels(t *testing.T) {
+	h := NewHeader()
+	for i, want := range TabLabels {
+		if got := h.TabLabel(Tab(i)); got != want {
+			t.Errorf("TabLabel(%d) = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestHeader_SetTabLabel_Override(t *testing.T) {
+	h := NewHeader()
+	h.SetTabLabel(TabHera, "DAG")
+	if got := h.TabLabel(TabHera); got != "DAG" {
+		t.Errorf("TabLabel(TabHera) after override = %q, want DAG", got)
+	}
+	// Other tabs must be unaffected.
+	if got := h.TabLabel(TabTasks); got != "Tasks" {
+		t.Errorf("TabLabel(TabTasks) = %q, want Tasks", got)
+	}
+}
+
+func TestHeader_SetTabLabel_RenderedInDraw(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	screen.Init() //nolint:errcheck
+	screen.SetSize(80, 1)
+
+	h := NewHeader()
+	h.SetTabLabel(TabHera, "DAG")
+	h.SetRect(0, 0, 80, 1)
+	h.Draw(screen)
+
+	all := readAllScreenText(screen, 80, 1)
+	if !strings.Contains(all, "DAG") {
+		t.Errorf("overridden label DAG not found in rendered output: %q", all)
+	}
+	if strings.Contains(all, "Hera") {
+		t.Errorf("original label Hera should not appear after override: %q", all)
+	}
+}
+
+func TestHeader_SetTabLabel_OutOfBounds(t *testing.T) {
+	h := NewHeader()
+	// Should not panic on invalid tab.
+	h.SetTabLabel(Tab(99), "Nope")
+}
+
 // readAllScreenText reads all text from the simulation screen.
 func readAllScreenText(screen tcell.SimulationScreen, width, height int) string {
 	var lines []string

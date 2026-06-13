@@ -41,6 +41,7 @@ const (
 	srLogs
 	srKB
 	srAPI
+	srHera
 	srDaemon
 	srSpinner
 	srAgentZoom
@@ -72,6 +73,7 @@ const (
 	catSchedules
 	catKnowledgeBase
 	catRemoteAPI
+	catHera
 	catAppearance
 	catLogs
 	// catPlugin is a sentinel: the rail can hold any number of plugin
@@ -100,6 +102,8 @@ func (c settingsCategory) Label() string {
 		return "Knowledge Base"
 	case catRemoteAPI:
 		return "Remote API"
+	case catHera:
+		return "Hera"
 	case catAppearance:
 		return "Appearance"
 	case catLogs:
@@ -116,7 +120,7 @@ func (c settingsCategory) Label() string {
 // present, render after a "Plugins" header below this list.
 var builtinCategories = []settingsCategory{
 	catSystem, catSandbox, catProjects, catBackends, catDefaults, catSchedules,
-	catKnowledgeBase, catRemoteAPI, catAppearance, catLogs,
+	catKnowledgeBase, catRemoteAPI, catHera, catAppearance, catLogs,
 }
 
 // settingsFocus is which sub-panel currently owns input within the settings view.
@@ -208,6 +212,9 @@ type SettingsView struct {
 	apiEnabledAtBoot bool // value when daemon started; used to show "restart required"
 	apiBootRecorded  bool // true after first Refresh captures boot value
 	apiPort          int
+
+	// Hera.
+	heraEnabled bool
 
 	// Spinner.
 	spinnerStyle string // current spinner style name
@@ -315,6 +322,11 @@ type SettingsView struct {
 	OnEditSchedule           func(s *model.ScheduledTask)
 	OnDeleteSchedule         func(id string)
 	OnRunSchedule            func(id string)
+
+	// OnHeraToggle fires after persisting a hera.enabled change. The argument
+	// is the new enabled state. The app wires this to live-re-route the second
+	// tab and relabel it when the toggle fires while on the Hera tab.
+	OnHeraToggle func(enabled bool)
 
 	// OnBranchChange fires whenever the active category changes or focus
 	// moves between the left rail and the right pane — i.e. whenever the
@@ -448,6 +460,9 @@ func (sv *SettingsView) Refresh() {
 	if sv.apiPort == 0 {
 		sv.apiPort = 7743
 	}
+
+	// Hera.
+	sv.heraEnabled = cfg.Hera.Enabled
 
 	// Spinner.
 	sv.spinnerStyle = cfg.UI.SpinnerStyle
@@ -887,6 +902,13 @@ func (sv *SettingsView) rebuildRows() {
 			apiLabel += " (restart required)"
 		}
 		sv.rows = append(sv.rows, settingsRow{kind: srAPI, label: apiLabel, key: "_api"})
+
+	case catHera:
+		heraLabel := "Disabled"
+		if sv.heraEnabled {
+			heraLabel = "Enabled"
+		}
+		sv.rows = append(sv.rows, settingsRow{kind: srHera, label: heraLabel, key: "_hera"})
 
 	case catDefaults:
 		pmLabel := fmt.Sprintf("Permission mode: %s", config.PermissionModeLabel(sv.permissionMode))
@@ -1391,6 +1413,22 @@ func (sv *SettingsView) handleEnter() bool {
 		sv.database.SetConfigValue("api.enabled", val)
 		uxlog.Log("[settings] API toggled to %s", val)
 		sv.rebuildRows()
+		return true
+	case srHera:
+		// Toggle Hera native view.
+		sv.heraEnabled = !sv.heraEnabled
+		val := "false"
+		if sv.heraEnabled {
+			val = "true"
+		}
+		if err := sv.database.SetConfigValue("hera.enabled", val); err != nil {
+			uxlog.Log("[settings] Hera toggle persist error: %v", err)
+		}
+		uxlog.Log("[settings] Hera toggled to %s", val)
+		sv.rebuildRows()
+		if sv.OnHeraToggle != nil {
+			sv.OnHeraToggle(sv.heraEnabled)
+		}
 		return true
 	case srSpinner:
 		sv.cycleSpinner(1)

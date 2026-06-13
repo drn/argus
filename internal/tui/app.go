@@ -437,6 +437,18 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.settings.OnDeleteSchedule = func(id string) { app.deleteSchedule(id) }
 	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
 	app.settings.OnBranchChange = func() { app.forceRedraw("settings branch changed") }
+	app.settings.OnHeraToggle = func(enabled bool) {
+		// Update the tab label immediately, even when not on the Hera tab.
+		app.header.SetTabLabel(widget.TabHera, heraTab2Label(enabled))
+		// If the user toggled while on the Hera tab (e.g. via a future global
+		// keybinding), re-route the second tab without switching away from it.
+		if app.header.ActiveTab() == widget.TabHera {
+			app.tapp.QueueUpdateDraw(func() {
+				app.switchToHeraTab2()
+			})
+		}
+		uxlog.Log("[hera-view] hera.enabled toggled to %v", enabled)
+	}
 	app.settings.OnStreamFocus = app.openStreamSection
 	app.settings.OnStreamBlur = app.closeStreamSection
 	app.settings.SetPluginSubmit(app.submitPluginSection)
@@ -446,6 +458,10 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
 
 	app.buildUI()
+	// Set the initial second-tab label based on the current hera.enabled setting.
+	// buildUI() creates the header with the default "Hera" label; override to
+	// "DAG" here when hera is disabled so the label is correct before the first Draw.
+	app.header.SetTabLabel(widget.TabHera, heraTab2Label(cfg.Hera.Enabled))
 	app.refreshTasks()
 
 	return app
@@ -1820,7 +1836,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
-	if a.header.ActiveTab() == widget.TabHera {
+	// Guard on cfg.Hera.Enabled: when disabled the tab shows the dag page and
+	// there is no need to drive the hera page's refresh/reconcile loop.
+	if a.header.ActiveTab() == widget.TabHera && a.db.Config().Hera.Enabled {
 		a.heraPage.ScheduleRefresh()
 		// Late-bind any coordinator/worker session that came up after the pane
 		// was bound (main thread — SetSession is main-goroutine-only).
@@ -2742,9 +2760,8 @@ func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
 
-	// The legacy DAG widget never renders as the active surface in 6a (the
-	// second tab routes to the native Hera view); keep its border in the
-	// unfocused palette. M8 re-enables the dag route under cfg.Hera.Enabled.
+	// The legacy DAG widget renders only when Hera is disabled; keep its
+	// border in the unfocused palette until we explicitly re-focus it below.
 	a.dagWidget.SetFocused(false)
 	switch t {
 	case widget.TabTasks:
@@ -2759,18 +2776,57 @@ func (a *App) switchTab(t widget.Tab) {
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
 	case widget.TabHera:
-		// M8: route to "dag" instead when cfg.Hera.Enabled is false. For now
-		// the second tab is always the native Hera view; dagPage stays
-		// registered for that future fallback.
 		a.mode = modeTaskList
-		a.heraPage.Refresh()
-		a.pages.SwitchToPage("hera")
-		a.tapp.SetFocus(a.heraPage)
+		a.switchToHeraTab2()
 	case widget.TabSettings:
 		a.mode = modeTaskList
 		a.settings.Refresh()
 		a.pages.SwitchToPage("settings")
 		a.tapp.SetFocus(a.settingsPage)
+	}
+}
+
+// heraTab2Label returns the display label for the second tab based on the
+// current hera.enabled setting.
+func heraTab2Label(enabled bool) string {
+	if enabled {
+		return "Hera"
+	}
+	return "DAG"
+}
+
+// switchToHeraTab2 routes the second tab slot to "hera" or "dag" depending on
+// cfg.Hera.Enabled, updates the tab label, and refreshes the visible content.
+// Called both from switchTab and from the settings OnHeraToggle live re-route.
+// Must run on the tview main goroutine.
+func (a *App) switchToHeraTab2() {
+	cfg := a.db.Config()
+	a.header.SetTabLabel(widget.TabHera, heraTab2Label(cfg.Hera.Enabled))
+	if cfg.Hera.Enabled {
+		a.heraPage.Refresh()
+		a.pages.SwitchToPage("hera")
+		a.tapp.SetFocus(a.heraPage)
+		uxlog.Log("[hera-view] tab 2 routed to hera (enabled)")
+	} else {
+		a.dagWidget.SetFocused(true)
+		go a.refreshDAG()
+		a.pages.SwitchToPage("dag")
+		a.tapp.SetFocus(a.dagPage)
+		uxlog.Log("[hera-view] tab 2 routed to dag (hera disabled)")
+	}
+}
+
+// focusHeraTab2Page switches to the correct second-tab page (hera or dag)
+// without triggering a refresh. Used by modal-close paths that need to restore
+// the page after closing a modal while on the Hera tab.
+func (a *App) focusHeraTab2Page() {
+	cfg := a.db.Config()
+	if cfg.Hera.Enabled {
+		a.pages.SwitchToPage("hera")
+		a.tapp.SetFocus(a.heraPage)
+	} else {
+		a.pages.SwitchToPage("dag")
+		a.tapp.SetFocus(a.dagPage)
 	}
 }
 
@@ -4056,7 +4112,9 @@ func (a *App) closeHelp() {
 	case widget.TabSettings:
 		a.tapp.SetFocus(a.settings)
 	case widget.TabHera:
-		a.tapp.SetFocus(a.heraPage)
+		// The second tab may show "hera" or "dag" depending on cfg.Hera.Enabled;
+		// focusHeraTab2Page routes to the correct one without a content refresh.
+		a.focusHeraTab2Page()
 	default:
 		a.tapp.SetFocus(a.tasklist)
 	}
@@ -4103,8 +4161,7 @@ func (a *App) closeErrorModal() {
 		a.pages.SwitchToPage("settings")
 		a.tapp.SetFocus(a.settings)
 	case widget.TabHera:
-		a.pages.SwitchToPage("hera")
-		a.tapp.SetFocus(a.heraPage)
+		a.focusHeraTab2Page()
 	default:
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
