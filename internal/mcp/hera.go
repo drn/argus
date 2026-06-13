@@ -35,6 +35,11 @@ type HeraStore interface {
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	// Inbox count for hera_join claim response (does NOT cancel deliveries).
 	HeraInbox(roleID int64) ([]*db.HeraMessage, error)
+	// Subtree roll-up + per-role tree cursor (M5).
+	SubtreeOrchIDs(rootOrchID int64) ([]int64, error)
+	HeraTreeUpdatesSince(rootOrchID, since int64) ([]db.HeraMessageTLDR, int64, error)
+	GetHeraTreeCursor(roleID int64) (int64, error)
+	SetHeraTreeCursor(roleID, cursor int64) error
 	// Task meta mirror (best-effort soft-fail).
 	SetMeta(taskID, namespace, key, value string) error
 	// RollHeraWorkerToReview is the BUG-050 close-out roll shared with the
@@ -151,20 +156,20 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_tree_updates",
-		Description: "Retrieve a rolled-up view of the orchestrator subtree since a message cursor. (M5 stub — not yet implemented natively.)",
+		Description: "Scan the caller's orchestrator subtree for new messages since a cursor. Returns TLDR-only subject lines — no bodies. Call hera_get_messages for full content on IDs of interest. Cursor is stored per-role and auto-advances; pass `since` to override.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"cwd":          map[string]interface{}{"type": "string", "description": "Absolute path of the calling agent's working directory"},
 				"orchestrator": map[string]interface{}{"type": "string", "description": "Orchestrator name (optional if the task has one live binding)"},
-				"since":        map[string]interface{}{"type": "integer", "description": "Message ID cursor; omit to use stored cursor"},
+				"since":        map[string]interface{}{"type": "integer", "description": "Message ID cursor; omit to use (and auto-advance) the stored per-role cursor"},
 			},
 			"required": []string{"cwd"},
 		},
 	},
 	{
 		Name:        "hera_get_messages",
-		Description: "Fetch full message bodies for specific message IDs. Access is restricted to messages within the caller's orchestrator (M3; full subtree in M5).",
+		Description: "Fetch full message bodies by ID. Use after hera_tree_updates to drill into messages of interest. Access is restricted to messages within the caller's orchestrator subtree; inaccessible or missing IDs get a per-ID error field rather than a top-level error.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -826,8 +831,112 @@ func heraWorkerOrientation(orchestrator, coordinator string) string {
 		orchestrator, coordinator)
 }
 
-func (s *Server) toolHeraTreeUpdates(id interface{}, _ json.RawMessage) *Response {
-	return toolError(id, "native hera_tree_updates lands in M5 (subtree roll-up)")
+func (s *Server) toolHeraTreeUpdates(id interface{}, args json.RawMessage) *Response {
+	if !s.heraEnabled() {
+		return toolError(id, "hera not configured")
+	}
+	var p struct {
+		Cwd          string `json:"cwd"`
+		Orchestrator string `json:"orchestrator"`
+		Since        *int64 `json:"since"`
+	}
+	json.Unmarshal(args, &p) //nolint:errcheck
+
+	if p.Cwd == "" {
+		return toolError(id, "cwd is required")
+	}
+
+	caller, err := s.resolveCallerRole(p.Cwd, p.Orchestrator)
+	if err != nil {
+		return toolError(id, err.Error())
+	}
+
+	// Effective cursor: an explicit `since` overrides (and does NOT advance) the
+	// stored per-role cursor; otherwise read the stored cursor and auto-advance.
+	explicit := p.Since != nil
+	var cursor int64
+	if explicit {
+		cursor = *p.Since
+	} else {
+		cursor, err = s.heraStore.GetHeraTreeCursor(caller.role.ID)
+		if err != nil {
+			return toolError(id, fmt.Sprintf("read tree cursor: %v", err))
+		}
+	}
+
+	msgs, nextCursor, err := s.heraStore.HeraTreeUpdatesSince(caller.orch.ID, cursor)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("tree updates: %v", err))
+	}
+
+	// Auto-advance the stored cursor unless the caller pinned an explicit `since`.
+	// An empty result leaves the cursor unchanged (nextCursor == cursor).
+	if !explicit {
+		if uErr := s.heraStore.SetHeraTreeCursor(caller.role.ID, nextCursor); uErr != nil {
+			slog.Warn("[hera] tree_updates: cursor advance failed (results still returned)",
+				"role_id", caller.role.ID, "err", uErr)
+		}
+	}
+
+	// Resolve role + orchestrator names in the handler (TLDR projection carries
+	// ids only). Cache lookups — a busy subtree repeats senders/recipients.
+	roleCache := map[int64]*db.HeraRole{}
+	orchNameCache := map[int64]string{}
+	resolveRole := func(rid int64) *db.HeraRole {
+		if r, ok := roleCache[rid]; ok {
+			return r
+		}
+		r, rErr := s.heraStore.HeraRole(rid)
+		if rErr != nil {
+			r = nil
+		}
+		roleCache[rid] = r
+		return r
+	}
+	resolveOrchName := func(oid int64) string {
+		if n, ok := orchNameCache[oid]; ok {
+			return n
+		}
+		n := fmt.Sprintf("orch:%d", oid)
+		if o, oErr := s.heraStore.HeraOrchestrator(oid); oErr == nil {
+			n = o.Name
+		}
+		orchNameCache[oid] = n
+		return n
+	}
+
+	type lineEntry = map[string]interface{}
+	lines := make([]lineEntry, 0, len(msgs))
+	for _, m := range msgs {
+		fromName := fmt.Sprintf("role:%d", m.FromRoleID)
+		fromOrch := ""
+		if r := resolveRole(m.FromRoleID); r != nil {
+			fromName = r.Name
+			fromOrch = resolveOrchName(r.OrchestratorID)
+		}
+		toName := fmt.Sprintf("role:%d", m.ToRoleID)
+		toOrch := ""
+		if r := resolveRole(m.ToRoleID); r != nil {
+			toName = r.Name
+			toOrch = resolveOrchName(r.OrchestratorID)
+		}
+		lines = append(lines, lineEntry{
+			"id":                m.ID,
+			"from_role":         fromName,
+			"from_orchestrator": fromOrch,
+			"to_role":           toName,
+			"to_orchestrator":   toOrch,
+			"tldr":              m.Tldr,
+			"sent_at":           m.SentAt.Format(time.RFC3339),
+		})
+	}
+
+	out, _ := json.Marshal(map[string]interface{}{
+		"count":       len(lines),
+		"next_cursor": nextCursor,
+		"messages":    lines,
+	})
+	return toolResult(id, string(out))
 }
 
 func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Response {
@@ -853,6 +962,18 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 		return toolError(id, err.Error())
 	}
 
+	// Access scope (M5): the caller may read any message whose sender OR recipient
+	// role lives in the caller's orchestrator SUBTREE (M3 restricted this to the
+	// caller's single orchestrator). Resolve the subtree once, up front.
+	orchIDs, err := s.heraStore.SubtreeOrchIDs(caller.orch.ID)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("resolve subtree: %v", err))
+	}
+	subtree := make(map[int64]struct{}, len(orchIDs))
+	for _, oid := range orchIDs {
+		subtree[oid] = struct{}{}
+	}
+
 	msgs, err := s.heraSvc.GetByIDs(p.IDs)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("get messages failed: %v", err))
@@ -864,6 +985,19 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 		byID[m.ID] = m
 	}
 
+	orchNameCache := map[int64]string{}
+	resolveOrchName := func(oid int64) string {
+		if n, ok := orchNameCache[oid]; ok {
+			return n
+		}
+		n := fmt.Sprintf("orch:%d", oid)
+		if o, oErr := s.heraStore.HeraOrchestrator(oid); oErr == nil {
+			n = o.Name
+		}
+		orchNameCache[oid] = n
+		return n
+	}
+
 	type msgEntry = map[string]interface{}
 	results := make([]msgEntry, 0, len(p.IDs))
 	for _, reqID := range p.IDs {
@@ -872,27 +1006,38 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 			results = append(results, msgEntry{"id": reqID, "error": "not found"})
 			continue
 		}
-		// Access rule (M3): from_role or to_role must be in caller's orchestrator.
-		// M5 expands this to the full subtree via SubtreeOrchIDs BFS.
-		if !s.heraMessageInOrch(m, caller.orch.ID) {
-			results = append(results, msgEntry{"id": reqID, "error": "access denied: message not in caller's orchestrator"})
+		// Resolve sender/recipient roles for both the access check and the names.
+		fromRole, _ := s.heraStore.HeraRole(m.FromRoleID)
+		toRole, _ := s.heraStore.HeraRole(m.ToRoleID)
+
+		// Access rule (M5): sender OR recipient role must be in the caller's
+		// orchestrator SUBTREE (M3 restricted this to the caller's single orch).
+		if !heraRoleInSubtree(fromRole, subtree) && !heraRoleInSubtree(toRole, subtree) {
+			results = append(results, msgEntry{"id": reqID, "error": "access denied: message not in caller's subtree"})
 			continue
 		}
+
 		fromName := fmt.Sprintf("role:%d", m.FromRoleID)
-		if fromRole, rErr := s.heraStore.HeraRole(m.FromRoleID); rErr == nil {
+		fromOrch := ""
+		if fromRole != nil {
 			fromName = fromRole.Name
+			fromOrch = resolveOrchName(fromRole.OrchestratorID)
 		}
 		toName := fmt.Sprintf("role:%d", m.ToRoleID)
-		if toRole, rErr := s.heraStore.HeraRole(m.ToRoleID); rErr == nil {
+		toOrch := ""
+		if toRole != nil {
 			toName = toRole.Name
+			toOrch = resolveOrchName(toRole.OrchestratorID)
 		}
 		entry := msgEntry{
-			"id":        m.ID,
-			"from_role": fromName,
-			"to_role":   toName,
-			"sent_at":   m.SentAt.Format(time.RFC3339),
-			"tldr":      m.Tldr,
-			"body":      m.Body,
+			"id":                m.ID,
+			"from_role":         fromName,
+			"from_orchestrator": fromOrch,
+			"to_role":           toName,
+			"to_orchestrator":   toOrch,
+			"sent_at":           m.SentAt.Format(time.RFC3339),
+			"tldr":              m.Tldr,
+			"body":              m.Body,
 		}
 		if m.InReplyTo != nil {
 			entry["in_reply_to"] = *m.InReplyTo
@@ -904,14 +1049,12 @@ func (s *Server) toolHeraGetMessages(id interface{}, args json.RawMessage) *Resp
 	return toolResult(id, string(out))
 }
 
-// heraMessageInOrch returns true when the message's sender or recipient role
-// belongs to orchID. M3 access rule — M5 will expand to subtree traversal.
-func (s *Server) heraMessageInOrch(m *db.HeraMessage, orchID int64) bool {
-	if fromRole, err := s.heraStore.HeraRole(m.FromRoleID); err == nil && fromRole.OrchestratorID == orchID {
-		return true
+// heraRoleInSubtree reports whether role is non-nil and its orchestrator is in
+// the subtree set. The M5 access predicate for hera_get_messages.
+func heraRoleInSubtree(role *db.HeraRole, subtree map[int64]struct{}) bool {
+	if role == nil {
+		return false
 	}
-	if toRole, err := s.heraStore.HeraRole(m.ToRoleID); err == nil && toRole.OrchestratorID == orchID {
-		return true
-	}
-	return false
+	_, ok := subtree[role.OrchestratorID]
+	return ok
 }
