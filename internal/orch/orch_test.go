@@ -386,6 +386,25 @@ func TestSetPlanSlug_MissingTask(t *testing.T) {
 	}
 }
 
+func TestCycleError_Error(t *testing.T) {
+	tests := []struct {
+		name string
+		path []string
+		want string
+	}{
+		{"single node self-loop", []string{"A"}, "cycle detected: [A]"},
+		{"two node cycle", []string{"A", "B", "A"}, "cycle detected: [A B A]"},
+		{"multi node cycle", []string{"A", "B", "C", "A"}, "cycle detected: [A B C A]"},
+		{"empty path", nil, "cycle detected: []"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &CycleError{Path: tt.path}
+			testutil.Equal(t, err.Error(), tt.want)
+		})
+	}
+}
+
 // joinIDs is a tiny helper so testutil.Contains can be used on string slices
 // without pulling strings.Join into every assertion.
 func joinIDs(ids []string) string {
