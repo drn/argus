@@ -117,22 +117,93 @@ func (a *App) openAgentForTask(id string) {
 	a.onTaskSelect(task, false)
 }
 
-// openLinkPickerForTask is the placeholder hook for the `l` keybinding on
-// the DAG tab. The full picker UI is a follow-up — for now we surface a
-// notice so users know to use the web UI or MCP. Stamping the notice
-// instead of crashing keeps the keybinding discoverable without shipping
-// half-done modal plumbing. See gotchas/dag-rendering.md.
+// openLinkPickerForTask is the `l` keybinding handler on the DAG (both the
+// embedded Hera Details DAG and the legacy DAG tab share this). It opens a
+// fuzzy parent picker over every non-archived task that is not already a parent
+// of the child (and not the child itself); selecting one routes to orch.Link,
+// which rejects a cycle-forming edge via its internal FindCycle (see doLink).
+//
+// Candidates are NOT scoped to the orchestrator: a depends_on link is a global
+// relationship and may target a task outside the DAG's view. The DAG render mode
+// is orchestrator-scoped for *viewing*; linking is unconstrained. See
+// gotchas/dag-rendering.md.
 func (a *App) openLinkPickerForTask(child string) {
-	uxlog.Log("[tui] DAG link picker requested for child=%s — TUI picker is a follow-up; use web UI or MCP task_link", child)
-	a.header.SetNotice("link from DAG: use web UI / task_link (TUI picker WIP)")
-	a.forceRedraw("dag link notice")
+	if child == "" {
+		return
+	}
+	tasks, err := a.db.Tasks()
+	if err != nil {
+		uxlog.Log("[tui] DAG link picker: db.Tasks failed: %v", err)
+		a.header.SetNotice("link failed: " + err.Error())
+		a.forceRedraw("dag link error")
+		return
+	}
+	childTask := findTask(tasks, child)
+	if childTask == nil {
+		uxlog.Log("[tui] DAG link picker: child %s vanished", child)
+		return
+	}
+	existingParent := make(map[string]bool, len(childTask.DependsOn))
+	for _, p := range childTask.DependsOn {
+		existingParent[p] = true
+	}
+	entries := make([]taskSwitcherEntry, 0, len(tasks))
+	for _, t := range tasks {
+		if t.Archived || t.ID == child || existingParent[t.ID] {
+			continue
+		}
+		entries = append(entries, taskSwitcherEntry{ID: t.ID, Name: t.Name, Project: t.Project, Status: t.Status})
+	}
+	if len(entries) == 0 {
+		uxlog.Log("[tui] DAG link picker: no candidate parents for child=%s", child)
+		a.header.SetNotice("link: no available parent tasks")
+		a.forceRedraw("dag link empty")
+		return
+	}
+	sortTaskPickerEntries(entries)
+	uxlog.Log("[tui] DAG link picker: child=%s %d candidate parents", child, len(entries))
+	a.openHeraPicker(" Link → parent ", "↑/↓ select  Enter link  Esc cancel", entries, func(parent string) {
+		a.doLink(child, parent)
+	})
 }
 
-// openUnlinkPickerForTask mirrors openLinkPickerForTask for `L`.
+// openUnlinkPickerForTask is the `L` keybinding handler: it offers the child's
+// CURRENT parents (its live depends_on edges) and routes the chosen one to
+// orch.Unlink. A child with no parents surfaces a notice rather than an empty
+// picker.
 func (a *App) openUnlinkPickerForTask(child string) {
-	uxlog.Log("[tui] DAG unlink picker requested for child=%s — TUI picker is a follow-up; use web UI or MCP task_unlink", child)
-	a.header.SetNotice("unlink from DAG: use web UI / task_unlink (TUI picker WIP)")
-	a.forceRedraw("dag unlink notice")
+	if child == "" {
+		return
+	}
+	tasks, err := a.db.Tasks()
+	if err != nil {
+		uxlog.Log("[tui] DAG unlink picker: db.Tasks failed: %v", err)
+		a.header.SetNotice("unlink failed: " + err.Error())
+		a.forceRedraw("dag unlink error")
+		return
+	}
+	childTask := findTask(tasks, child)
+	if childTask == nil || len(childTask.DependsOn) == 0 {
+		uxlog.Log("[tui] DAG unlink picker: child=%s has no parents", child)
+		a.header.SetNotice("unlink: task has no parent links")
+		a.forceRedraw("dag unlink empty")
+		return
+	}
+	entries := make([]taskSwitcherEntry, 0, len(childTask.DependsOn))
+	for _, pid := range childTask.DependsOn {
+		if p := findTask(tasks, pid); p != nil {
+			entries = append(entries, taskSwitcherEntry{ID: p.ID, Name: p.Name, Project: p.Project, Status: p.Status})
+		} else {
+			// Stale ref (parent deleted/archived): still offer it so the dangling
+			// edge can be cleaned up. Label with the raw ID.
+			entries = append(entries, taskSwitcherEntry{ID: pid, Name: pid})
+		}
+	}
+	sortTaskPickerEntries(entries)
+	uxlog.Log("[tui] DAG unlink picker: child=%s %d parents", child, len(entries))
+	a.openHeraPicker(" Unlink parent ", "↑/↓ select  Enter unlink  Esc cancel", entries, func(parent string) {
+		a.doUnlink(child, parent)
+	})
 }
 
 // confirmHaltDownstream is the `h` keybinding handler. Calls
@@ -162,6 +233,7 @@ func (a *App) confirmHaltDownstream(id string) {
 		id, report.Stopped, report.Archived, report.NotFound)
 	a.header.SetNotice("halted " + summarizeHalt(report))
 	a.refreshDAG()
+	a.heraPage.Refresh() // rebuilds the embedded Hera DAG when it's the active surface
 	a.refreshTasksLocal()
 	a.forceRedraw("halt complete")
 }

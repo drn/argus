@@ -17,6 +17,55 @@ func runeKey(r rune) *tcell.EventKey {
 	return tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone)
 }
 
+// drawTopRow renders the widget at (0,0,w,h) and returns the top border row
+// text — where DrawBorderedPanel centers the title.
+func drawTopRow(t *testing.T, w *Widget, width, height int) string {
+	t.Helper()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(width, height)
+	w.SetRect(0, 0, width, height)
+	w.Draw(sim)
+	sim.Show()
+	cells, _, _ := sim.GetContents()
+	runes := make([]rune, 0, width)
+	for i := 0; i < width; i++ {
+		c := cells[i] // row 0
+		if len(c.Runes) > 0 {
+			runes = append(runes, c.Runes[0])
+		}
+	}
+	return string(runes)
+}
+
+func TestWidget_TitleDefaultAndOverride(t *testing.T) {
+	w := New()
+	w.SetNodes([]Node{{ID: "A"}})
+	// Default title.
+	if got := drawTopRow(t, w, 40, 10); !containsSub(got, "DAG") {
+		t.Fatalf("default title row = %q, want it to contain DAG", got)
+	}
+	// Retitled (the embedded-Hera case).
+	w.SetTitle(" Dependencies ")
+	got := drawTopRow(t, w, 40, 10)
+	if !containsSub(got, "Dependencies") {
+		t.Fatalf("retitled row = %q, want Dependencies", got)
+	}
+	if containsSub(got, "DAG") {
+		t.Fatalf("retitled row %q still shows DAG", got)
+	}
+}
+
+func containsSub(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 func TestWidget_SetNodesClampsCursor(t *testing.T) {
 	w := New()
 	w.SetNodes([]Node{{ID: "A"}, {ID: "B", DependsOn: []string{"A"}}})

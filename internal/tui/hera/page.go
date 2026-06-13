@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -12,6 +13,27 @@ import (
 // heraRailWidth is the fixed character width of the navigation rail (matches
 // Hera's RailWidth ballpark, trimmed for Argus chrome).
 const heraRailWidth = 34
+
+// detailsSubMode selects what the right (Details) region renders when a
+// COORDINATOR role is selected. M7 folds the Sugiyama DAG widget in as a second
+// sub-mode of that region; `g` (handled in handleDetailsKey) toggles between
+// them. A worker/leaf selection ignores this — it always shows the AGENT
+// terminal (the sub-mode is sticky in the background but only consulted while a
+// coordinator is selected).
+type detailsSubMode uint8
+
+const (
+	subModeRoster detailsSubMode = iota // read-only worker roster (M6b default)
+	subModeDAG                          // embedded dependency-graph DAG (M7)
+)
+
+// DAGNodeProvider returns the dagview nodes scoped to the given orchestrator's
+// live-bound tasks, projected through Argus's `dagNodesFromTasks` (archived-drop
+// + orphan-filter). The App wires it (it owns db.Tasks() + the shared
+// projection); remote mode never sets it, so the DAG render mode shows an empty
+// graph there. Keeping the projection in the App avoids forking dagNodesFromTasks
+// into the hera package (web/TUI parity) and a Tasks() seam onto HeraReader.
+type DAGNodeProvider func(orch *OrchView) []dagview.Node
 
 // HeraPage is the top-level Hera-view page added to the App's Pages. It lays
 // out the three Hera regions — rail | coordinator (HERA) pane | agent/details
@@ -46,9 +68,14 @@ type HeraPage struct {
 	resolve   SessionResolver        // runner seam; nil in remote mode
 	prMeta    map[string]map[string]string
 
+	// M7 DAG render mode of the Details region (coordinator selection only).
+	dag         *dagview.Widget // embedded dependency graph; reused from the legacy DAG tab
+	dagProvider DAGNodeProvider // scoped-node projection seam (nil in remote mode)
+
 	// Selection + per-pane bound task (so SetSession only fires on change).
 	sel         Selection
 	detailsMode bool
+	detailsSub  detailsSubMode // roster ↔ DAG within a coordinator's Details region
 	coordBound  string
 	agentBound  string
 
@@ -84,8 +111,12 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		coordPane: terminal.NewTerminalPane(),
 		agentPane: terminal.NewTerminalPane(),
 		details:   NewDetailsView(),
+		dag:       dagview.New(),
 	}
 	p.coordPane.SetBorderTitle(" Coordinator ")
+	// Retitle the embedded DAG so it reads as the coordinator's dependency graph,
+	// not a second top-level " DAG " tab (gotchas/dag-rendering.md).
+	p.dag.SetTitle(" Dependencies ")
 	p.rail.SetFocused(true)
 	// Rebind the panes whenever the rail cursor lands on a different role.
 	p.rail.SetOnSelectionChanged(p.applySelection)
@@ -103,6 +134,21 @@ func (p *HeraPage) Reconcile() { p.reconcileSessions() }
 // callbacks, exactly as it wires the main agent view's pane.
 func (p *HeraPage) CoordPane() *terminal.TerminalPane { return p.coordPane }
 func (p *HeraPage) AgentPane() *terminal.TerminalPane { return p.agentPane }
+
+// DAG exposes the embedded DAG widget so the App can wire its callbacks
+// (OnEnter/OnLink/OnUnlink/OnHalt/OnBranchChange) exactly as it wires the legacy
+// DAG tab's widget — the link/unlink/halt handlers are shared between the two
+// surfaces. The page owns the widget's rect, focus, and node set; the App owns
+// what its callbacks do.
+func (p *HeraPage) DAG() *dagview.Widget { return p.dag }
+
+// SetDAGNodeProvider wires the orchestrator-scoped node projection. Called once
+// by the App in local mode; left nil in remote mode (the DAG render mode then
+// shows an empty graph).
+func (p *HeraPage) SetDAGNodeProvider(fn DAGNodeProvider) { p.dagProvider = fn }
+
+// DetailsSubMode reports the current Details-region sub-mode (test seam).
+func (p *HeraPage) DetailsSubMode() detailsSubMode { return p.detailsSub }
 
 // Rail exposes the inner rail (test seam + 6b wiring).
 func (p *HeraPage) Rail() *Rail { return p.rail }
@@ -200,9 +246,17 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 		p.coordPane.Draw(screen)
 	}
 	if agentW >= 2 {
-		if p.detailsMode {
+		switch {
+		case p.detailsMode && p.detailsSub == subModeDAG:
+			// Coordinator + DAG sub-mode: the dependency graph fills the region.
+			// The widget draws its own bordered panel (retitled " Dependencies "),
+			// covering the full sub-rect — no stale cells, no Sync.
+			p.dag.SetRect(p.agentX, y, agentW, h)
+			p.dag.SetFocused(p.focus.State() == FocusAgent)
+			p.dag.Draw(screen)
+		case p.detailsMode:
 			p.details.Draw(screen, p.agentX, y, agentW, h, p.focus.State() == FocusAgent)
-		} else {
+		default:
 			p.agentPane.SetFocused(p.focus.State() == FocusAgent)
 			p.agentPane.SetRect(p.agentX, y, agentW, h)
 			p.agentPane.Draw(screen)
@@ -257,11 +311,59 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		case FocusCoord:
 			p.forwardKey(p.coordPane, event)
 		case FocusAgent:
-			if !p.detailsMode {
+			if p.detailsMode {
+				p.handleDetailsKey(event, setFocus)
+			} else {
 				p.forwardKey(p.agentPane, event)
 			}
 		}
 	})
+}
+
+// handleDetailsKey routes keys for a focused Details region (coordinator
+// selected). `g` toggles roster ↔ DAG; in DAG sub-mode every other key is
+// forwarded to the embedded dagview widget (cursor nav + l/L/h/Enter, which
+// fire the OnLink/OnUnlink/OnHalt/OnEnter callbacks the App wired). `g` is free:
+// the dagview keyset is arrows/hjkl/l/L/h/Enter, and the global handler reserves
+// only 1/2/3/q/? — see gotchas/keybindings.md. Roster sub-mode is read-only, so
+// non-`g` keys are dropped there.
+func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
+	if event.Key() == tcell.KeyRune && event.Rune() == 'g' {
+		p.toggleDetailsSubMode()
+		return
+	}
+	if p.detailsSub == subModeDAG {
+		p.dag.InputHandler()(event, setFocus)
+	}
+}
+
+// toggleDetailsSubMode flips the Details region between the roster and the DAG.
+// Entering DAG mode (re)builds the orchestrator-scoped node set so the graph is
+// fresh; the sub-mode is sticky across selections (a user who prefers the DAG
+// keeps seeing it as they move between coordinators).
+func (p *HeraPage) toggleDetailsSubMode() {
+	if p.detailsSub == subModeRoster {
+		p.detailsSub = subModeDAG
+		p.rebuildDAG()
+		uxlog.Log("[hera-view] details DAG mode ON")
+	} else {
+		p.detailsSub = subModeRoster
+		uxlog.Log("[hera-view] details DAG mode OFF")
+	}
+}
+
+// rebuildDAG reprojects the selected orchestrator's dependency subgraph into the
+// embedded widget. A nil provider (remote mode) or no orchestrator selection
+// yields an empty graph. MUST run on the tview main thread (SetNodes recomputes
+// layout but touches no I/O).
+func (p *HeraPage) rebuildDAG() {
+	if p.dagProvider == nil || p.sel.Orch == nil {
+		p.dag.SetNodes(nil)
+		return
+	}
+	nodes := p.dagProvider(p.sel.Orch)
+	p.dag.SetNodes(nodes)
+	uxlog.Log("[hera-view] DAG render mode: orch=%s nodes=%d", p.sel.Orch.Name, len(nodes))
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
@@ -367,7 +469,10 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 					p.focus.SetRegion(FocusCoord)
 				}
 			case FocusAgent:
-				if !p.detailsMode {
+				switch {
+				case p.detailsMode && p.detailsSub == subModeDAG:
+					consumed, _ = p.dag.MouseHandler()(action, event, setFocus)
+				case !p.detailsMode:
 					consumed, _ = p.agentPane.MouseHandler()(action, event, setFocus)
 				}
 				if click {

@@ -19,6 +19,7 @@ type Widget struct {
 	cursor   string
 	focused  bool
 	failed   map[string]bool
+	title    string // bordered-panel title; " DAG " by default, retitled when embedded
 	OnClick  func() // optional; fires when the widget gains focus via click
 	OnEnter  func(id string)
 	OnLink   func(child string)
@@ -42,8 +43,16 @@ func New() *Widget {
 	return &Widget{
 		Box:    tview.NewBox(),
 		failed: map[string]bool{},
+		title:  " DAG ",
 	}
 }
+
+// SetTitle overrides the bordered-panel title. The standalone DAG tab keeps the
+// default " DAG "; the native Hera view retitles it (e.g. " Dependencies ")
+// when the widget is embedded as the Details-pane DAG render mode, so the title
+// doesn't read as a second top-level tab. Pass "" to suppress the title text
+// (the border still draws). See gotchas/dag-rendering.md.
+func (w *Widget) SetTitle(title string) { w.title = title }
 
 // SetNodes installs a new snapshot. Recomputes layout, repopulates the
 // failed-result cache, and clamps the cursor to the new node set.
@@ -149,7 +158,7 @@ func (w *Widget) Draw(screen tcell.Screen) {
 	if w.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	inner := widget.DrawBorderedPanel(screen, x, y, wpx, hpx, " DAG ", borderStyle)
+	inner := widget.DrawBorderedPanel(screen, x, y, wpx, hpx, w.title, borderStyle)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
