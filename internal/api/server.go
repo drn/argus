@@ -33,8 +33,11 @@ type TaskCreator func(name, prompt, project, backend, taskModel string, autoName
 
 // Server is the HTTP REST API server.
 type Server struct {
-	db          *db.DB
-	runner      *agent.Runner
+	db *db.DB
+	// runner is the session backend, typed as agent.SessionRunner so the daemon
+	// can hand it either an in-process *agent.Runner (supervisor OFF) or a
+	// supervisor-client (supervisor ON) — the API server drives both identically.
+	runner      agent.SessionRunner
 	token       string
 	createTask  TaskCreator
 	httpSrv     *http.Server
@@ -102,7 +105,7 @@ func (s *Server) SetFocusTracker(f *notify.FocusTracker) {
 // push notifications entirely (the /api/push/* endpoints will return 503 and
 // no idle-watcher goroutine starts). Daemon owns the manager so it can also
 // be wired into the scheduler for kick-off pushes — see daemon/daemon.go.
-func New(database *db.DB, runner *agent.Runner, token string, creator TaskCreator, pushMgr *push.Manager) *Server {
+func New(database *db.DB, runner agent.SessionRunner, token string, creator TaskCreator, pushMgr *push.Manager) *Server {
 	srv := &Server{
 		db:             database,
 		runner:         runner,

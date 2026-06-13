@@ -16,7 +16,21 @@ type Config struct {
 	KB          KBConfig           `toml:"kb"`
 	API         APIConfig          `toml:"api"`
 	Hera        HeraConfig         `toml:"hera"`
+	Supervisor  SupervisorConfig   `toml:"supervisor"`
 	Argus       ArgusConfig        `toml:"argus"`
+}
+
+// SupervisorConfig controls whether the daemon drives agent PTYs through the
+// out-of-process session-supervisor (see context/plans/session-supervisor.md)
+// instead of its own in-process runner.
+type SupervisorConfig struct {
+	// Enabled defaults to FALSE (absent key ⇒ off). When false, the daemon owns
+	// agent PTYs in-process exactly as before P2 — byte-identical. When true, the
+	// daemon connects to the session-supervisor over supervisor.sock (auto-starting
+	// it if absent) and proxies every session through it, so the daemon can bounce
+	// without interrupting agents. config.toml wins over the DB when both are set
+	// (standard overlay rule; mirrors kb.enabled / api.enabled / hera.enabled).
+	Enabled bool `toml:"enabled"`
 }
 
 // HeraConfig controls the native Hera multi-agent coordination view.

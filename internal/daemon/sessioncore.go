@@ -36,7 +36,14 @@ const streamPendingRestartMaxWait = 10 * time.Second
 // for the supervisor) — and the shutdown `done` channel. The core never touches
 // the DB; it is pure PTY/session plumbing.
 type sessionCore struct {
-	runner *agent.Runner
+	// runner is the session backend, typed as the agent.SessionRunner interface
+	// (not concrete *agent.Runner) so the SAME core serves two backends without
+	// any handler knowing which: the daemon/supervisor mount an in-process
+	// *agent.Runner (supervisor OFF, or the supervisor itself), while a daemon in
+	// supervisor-ON mode mounts a supervisor-client *client.Client. Both satisfy
+	// SessionRunner. Behavior under an in-process runner is byte-identical to
+	// pre-P2 — interface dispatch resolves to the exact same methods.
+	runner agent.SessionRunner
 	cfgFn  func() config.Config
 	done   <-chan struct{}
 
@@ -45,10 +52,27 @@ type sessionCore struct {
 	exitInfos map[string]ExitInfo   // taskID → cached exit info (brief)
 }
 
+// rawSessionLister is the in-process runner's listing surface: it returns live
+// *agent.Session handles. *agent.Runner satisfies it; a supervisor-client does
+// not (it has no local sessions to iterate). ListSessions type-asserts to this
+// for the OFF/supervisor path so that path stays byte-identical.
+type rawSessionLister interface {
+	Sessions() map[string]*agent.Session
+	PendingRestartIDs() []string
+}
+
+// sessionInfoLister is the supervisor-client's listing surface: it relays the
+// already-built SessionInfo (synthetic pending-restart entries included) from
+// the supervisor, because the daemon cannot iterate the supervisor's in-process
+// sessions. *client.Client satisfies it via ListSessionInfo.
+type sessionInfoLister interface {
+	ListSessionInfo() []SessionInfo
+}
+
 // newSessionCore wires a runner, a config accessor, and a shutdown channel into
 // the session-serving substrate. The maps are owned here; the caller retains
 // ownership of the runner (so it controls onFinish) and the done channel.
-func newSessionCore(runner *agent.Runner, cfgFn func() config.Config, done <-chan struct{}) *sessionCore {
+func newSessionCore(runner agent.SessionRunner, cfgFn func() config.Config, done <-chan struct{}) *sessionCore {
 	return &sessionCore{
 		runner:    runner,
 		cfgFn:     cfgFn,
@@ -149,8 +173,23 @@ func (c *sessionCore) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
 // entries, daemon-client reconcilers (TUI tick) see InProgress + not-running
 // → mark Complete after recentStartGrace, racing the imminent restart.
 func (c *sessionCore) ListSessions(_ *Empty, resp *ListResp) error {
-	sessions := c.runner.Sessions()
-	pending := c.runner.PendingRestartIDs()
+	// Supervisor-client backend (daemon in ON mode): relay the supervisor's
+	// already-built SessionInfo. The daemon holds no local *agent.Session set to
+	// iterate, so the in-process path below cannot apply.
+	if lister, ok := c.runner.(sessionInfoLister); ok {
+		resp.Sessions = lister.ListSessionInfo()
+		return nil
+	}
+
+	// In-process runner backend (OFF / the supervisor itself): build SessionInfo
+	// from the live *agent.Session set + synthetic pending-restart entries.
+	// Byte-identical to pre-P2.
+	rl, ok := c.runner.(rawSessionLister)
+	if !ok {
+		return nil
+	}
+	sessions := rl.Sessions()
+	pending := rl.PendingRestartIDs()
 	resp.Sessions = make([]SessionInfo, 0, len(sessions)+len(pending))
 	for id, sess := range sessions {
 		cols, rows := sess.PTYSize()
@@ -210,6 +249,35 @@ func (c *sessionCore) Resize(req *ResizeReq, resp *StatusResp) error {
 		return nil
 	}
 	if err := sess.Resize(req.Rows, req.Cols); err != nil {
+		resp.Error = err.Error()
+		return nil
+	}
+	resp.OK = true
+	return nil
+}
+
+// KickRerender stops a session and queues an in-place restart at new dimensions
+// (protocol v2). The supervisor serves this so the daemon's API resize path can
+// drive a rerender through the supervisor's runner — the pendingRestart
+// bookkeeping that keeps the intervening exit from flipping task status MUST run
+// where the session lives. cfg is resolved here via cfgFn (not shipped on the
+// wire). Promoted onto both *Daemon and *Supervisor; only the supervisor's is
+// actually invoked in ON mode (the daemon's API client targets supervisor.sock),
+// but keeping it uniform on the core means a future direct caller works too.
+func (c *sessionCore) KickRerender(req *KickReq, resp *StatusResp) error {
+	slog.Info("rpc.KickRerender", "task", req.TaskID, "cols", req.Cols, "rows", req.Rows)
+	task := &model.Task{
+		ID:        req.TaskID,
+		SessionID: req.SessionID,
+		Prompt:    req.Prompt,
+		Project:   req.Project,
+		Backend:   req.Backend,
+		Model:     req.Model,
+		Worktree:  req.Worktree,
+		Branch:    req.Branch,
+	}
+	if err := c.runner.KickRerender(task, c.cfgFn(), req.Rows, req.Cols); err != nil {
+		slog.Error("rpc.KickRerender failed", "task", req.TaskID, "err", err)
 		resp.Error = err.Error()
 		return nil
 	}

@@ -30,6 +30,39 @@ type SessionProvider interface {
 	HasPendingRestart(taskID string) bool
 }
 
+// SessionRunner is the full in-daemon session-management surface: SessionProvider
+// plus the kick-rerender / reattach / needs-input extras that the daemon's API
+// server and resize/resume paths drive. Both *Runner (in-process) and the
+// daemon's session-supervisor client (internal/daemon/client.Client) satisfy it,
+// so the daemon's `d.runner` can be either one — an in-process runner (supervisor
+// OFF, byte-identical to pre-P2) or a supervisor-client (supervisor ON) — without
+// any consumer in the daemon process knowing which.
+//
+// It is intentionally NOT used by the remote-TUI apiclient path (cmd/argus
+// --remote): that stays on the narrower SessionProvider, so widening this set
+// never forces the HTTP apiclient to grow methods it cannot serve.
+type SessionRunner interface {
+	SessionProvider
+
+	// StartOrReattach returns the live session for task.ID if one already
+	// exists (reattached=true), otherwise starts a new one (reattached=false).
+	StartOrReattach(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (SessionHandle, bool, error)
+
+	// KickRerender stops a live session and queues a same-task restart at the
+	// supplied dimensions so the agent re-flows its scrollback. The runner owns
+	// the pendingRestart bookkeeping that keeps the intervening exit from
+	// flipping task status — callers MUST NOT emulate it with Stop+Start.
+	KickRerender(task *model.Task, cfg config.Config, rows, cols uint16) error
+
+	// NeedsInputIDs / SetNeedsInputIDs hold the daemon-computed "this session is
+	// waiting on the user" set. It is derived state owned by whatever runner the
+	// daemon process holds (in-process runner OFF; supervisor-client ON, where it
+	// is a purely local set — needs-input is a daemon-side notion, not something
+	// the supervisor tracks).
+	NeedsInputIDs() []string
+	SetNeedsInputIDs(ids []string)
+}
+
 // SessionHandle abstracts a single agent session.
 // Implemented by Session (in-process) and RemoteSession (daemon client).
 //
@@ -106,5 +139,6 @@ type SessionHandle interface {
 
 // Compile-time assertions.
 var _ SessionProvider = (*Runner)(nil)
+var _ SessionRunner = (*Runner)(nil)
 var _ SessionHandle = (*Session)(nil)
 var _ agentview.TerminalAdapter = (*Session)(nil)

@@ -45,6 +45,13 @@ func TestHeraConfig_TOMLOverride(t *testing.T) {
 	}
 }
 
+func TestSupervisorConfig_DefaultDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Supervisor.Enabled {
+		t.Error("Supervisor.Enabled must default to false; absent key ⇒ in-process runner (OFF, byte-identical to pre-P2)")
+	}
+}
+
 func TestDefaultKeybindings(t *testing.T) {
 	kb := DefaultKeybindings()
 	if kb.New != "n" {

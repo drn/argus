@@ -56,6 +56,13 @@ func (s *FakeRPCService) Ping(_ *daemon.Empty, resp *daemon.PongResp) error {
 	return nil
 }
 
+// Hello answers the supervisor handshake so the client's Hello() can be tested.
+func (s *FakeRPCService) Hello(_ *daemon.Empty, resp *daemon.HelloResp) error {
+	resp.ProtocolVersion = daemon.ProtocolVersion
+	resp.BinaryPath = "/fake/supervisor"
+	return nil
+}
+
 // GetExitInfo answers the query removeSession makes on session exit. It reports
 // a successful, clean exit (StreamLost=false). Tests that need to exercise the
 // RPC-FAILURE branch of removeSession close the client transport instead, which

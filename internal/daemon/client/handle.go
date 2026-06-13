@@ -32,6 +32,7 @@ type RemoteSession struct {
 
 	mu        sync.Mutex
 	buf       *agent.RingBuffer // local ring buffer, populated by stream reader
+	writers   []io.Writer       // stream reader tees output to all attached writers (see fan-out note below)
 	pid       int
 	info      daemon.SessionInfo // cached session info
 	done      chan struct{}      // closed when stream EOF
@@ -249,24 +250,100 @@ func (rs *RemoteSession) refreshInfo() {
 	rs.updateInfo(info)
 }
 
-// AddWriter is a no-op on RemoteSession. The daemon manages writers directly;
-// the client receives output via its stream connection.
-func (rs *RemoteSession) AddWriter(_ io.Writer) {}
+// Writer fan-out — the supervisor-client double-proxy (session-supervisor P2).
+//
+// When the daemon is the *consumer* of this client (supervisor mode), its own
+// handleStream registers each TUI stream conn as a writer here and the stream
+// reader (stream.go) tees supervisor bytes to them — supervisor.readLoop →
+// daemon RemoteSession.buf + writers → TUI conn → x/vt. So these MUST fan out,
+// mirroring agent.Session's writer set exactly (replay-then-attach, tolerant
+// gap-not-duplicate ordering, errored-writer auto-removal).
+//
+// For the original TUI consumer (daemon mode, talking to the daemon directly)
+// nothing registers writers — the terminalpane polls RecentOutputTail — so the
+// fan-out is dormant and behavior is unchanged. The bytes still land in rs.buf
+// for those pollers regardless of whether any writer is attached.
 
-// AddWriterFrom is a no-op on RemoteSession for the same reason as AddWriter:
-// streaming is handled by the daemon-side stream connection, not by the
-// client's local writer set. The non-blocking-writer constraint documented
-// on Session.AddWriterFrom does NOT apply here — there's no readLoop to
-// stall, and `w` is never invoked. Exists only to satisfy SessionHandle.
-func (rs *RemoteSession) AddWriterFrom(_ io.Writer, _ uint64) {}
+// AddWriter registers w to receive output: it replays the full local ring, then
+// attaches for live output. Replay is sent BEFORE registering so live bytes
+// can't race ahead of the replay (gap-not-duplicate; see Session.AddWriter).
+func (rs *RemoteSession) AddWriter(w io.Writer) {
+	rs.AddWriterFromTolerant(w, 0)
+}
 
-// AddWriterFromTolerant is a no-op on RemoteSession — same reasoning as
-// AddWriterFrom. Daemon-side streaming is the only path that actually
-// fans bytes; this exists only to satisfy SessionHandle.
-func (rs *RemoteSession) AddWriterFromTolerant(_ io.Writer, _ uint64) {}
+// AddWriterFrom registers w to receive output starting at byte `offset`,
+// replaying [offset..currentTotal) under the lock so the live attach happens at
+// exactly currentTotal — no gap, no duplicate. w.Write MUST NOT block (the lock
+// is held through replay and the stream reader takes the same lock). Mirrors
+// Session.AddWriterFrom; used by the daemon API server's SSE /stream channelWriter.
+func (rs *RemoteSession) AddWriterFrom(w io.Writer, offset uint64) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
 
-// RemoveWriter is a no-op on RemoteSession.
-func (rs *RemoteSession) RemoveWriter(_ io.Writer) {}
+	currentTotal := rs.buf.TotalWritten()
+	if offset < currentTotal {
+		gap := currentTotal - offset
+		var replay []byte
+		if gap > uint64(rs.buf.Len()) { //nolint:gosec // Len() is non-negative
+			replay = rs.buf.Bytes()
+		} else {
+			replay = rs.buf.Tail(int(gap)) //nolint:gosec // gap <= Len() per branch guard
+		}
+		if len(replay) > 0 {
+			if _, err := w.Write(replay); err != nil {
+				return
+			}
+		}
+	}
+	rs.writers = append(rs.writers, w)
+}
+
+// AddWriterFromTolerant replays [offset..currentTotal) OUTSIDE the lock, then
+// re-acquires it to attach — so a slow/blocking w.Write (e.g. a net.Conn under
+// kernel flow control, like the daemon's TUI stream socket) cannot stall the
+// stream reader. Accepts a small gap rather than a duplicate. `offset` of 0
+// replays the full ring. Mirrors Session.AddWriterFromTolerant.
+func (rs *RemoteSession) AddWriterFromTolerant(w io.Writer, offset uint64) {
+	rs.mu.Lock()
+	currentTotal := rs.buf.TotalWritten()
+	var replay []byte
+	if offset < currentTotal {
+		gap := currentTotal - offset
+		if gap > uint64(rs.buf.Len()) { //nolint:gosec // Len() is non-negative
+			replay = rs.buf.Bytes()
+		} else {
+			replay = rs.buf.Tail(int(gap)) //nolint:gosec // gap <= Len() per branch guard
+		}
+	}
+	rs.mu.Unlock()
+
+	if len(replay) > 0 {
+		if _, err := w.Write(replay); err != nil {
+			return
+		}
+	}
+
+	rs.mu.Lock()
+	rs.writers = append(rs.writers, w)
+	rs.mu.Unlock()
+}
+
+// RemoveWriter unregisters a writer. Safe to call concurrently.
+func (rs *RemoteSession) RemoveWriter(w io.Writer) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.removeWriterLocked(w)
+}
+
+// removeWriterLocked removes a writer from the slice. Caller must hold rs.mu.
+func (rs *RemoteSession) removeWriterLocked(w io.Writer) {
+	for i, existing := range rs.writers {
+		if existing == w {
+			rs.writers = append(rs.writers[:i], rs.writers[i+1:]...)
+			return
+		}
+	}
+}
 
 // close shuts down the remote session.
 func (rs *RemoteSession) close() {
