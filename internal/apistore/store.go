@@ -65,24 +65,15 @@ func New(c *apiclient.Client) *Store {
 func (s *Store) RefreshConfig(ctx context.Context) (config.Config, error) {
 	raw, err := s.c.GetConfig(ctx)
 	if err != nil {
-		s.configMu.RLock()
-		cur := s.cachedConfig
-		s.configMu.RUnlock()
-		return cur, err
+		return s.cachedSnapshot(), err
 	}
 	buf, err := json.Marshal(raw)
 	if err != nil {
-		s.configMu.RLock()
-		cur := s.cachedConfig
-		s.configMu.RUnlock()
-		return cur, err
+		return s.cachedSnapshot(), err
 	}
 	var cfg config.Config
 	if err := json.Unmarshal(buf, &cfg); err != nil {
-		s.configMu.RLock()
-		cur := s.cachedConfig
-		s.configMu.RUnlock()
-		return cur, err
+		return s.cachedSnapshot(), err
 	}
 	s.configMu.Lock()
 	s.cachedConfig = cfg
@@ -90,13 +81,22 @@ func (s *Store) RefreshConfig(ctx context.Context) (config.Config, error) {
 	return cfg, nil
 }
 
-// Config returns the cached snapshot. Callers depending on a fresh value
-// must call RefreshConfig first. RLock guarantees the returned value is a
-// fully-written snapshot — never a half-mutated struct mid-RefreshConfig.
-func (s *Store) Config() config.Config {
+// cachedSnapshot returns the last cached config under RLock. It is the single
+// reader of cachedConfig: RefreshConfig's error paths and Config() both route
+// through it. RLock guarantees the returned value is a fully-written snapshot —
+// never a half-mutated struct mid-RefreshConfig (the cache WRITE holds the
+// full Lock). HTTP I/O and JSON parsing must stay OUTSIDE this helper so RLock
+// readers never block on the network round trip.
+func (s *Store) cachedSnapshot() config.Config {
 	s.configMu.RLock()
 	defer s.configMu.RUnlock()
 	return s.cachedConfig
+}
+
+// Config returns the cached snapshot. Callers depending on a fresh value
+// must call RefreshConfig first.
+func (s *Store) Config() config.Config {
+	return s.cachedSnapshot()
 }
 
 // Tasks returns every task as a full model.Task via /api/tasks-raw.
