@@ -7,20 +7,20 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/kb"
-	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/orch"
 	"github.com/drn/argus/internal/selfupdate"
 )
 
-// RPCService implements the JSON-RPC methods exposed by the daemon.
+// RPCService implements the JSON-RPC methods exposed by the daemon. The
+// session-scoped methods (Ping, StartSession, StopSession, StopAll,
+// SessionStatus, ListSessions, HasPendingRestart, WriteInput, Resize,
+// GetExitInfo) are promoted from the embedded *sessionCore so they register
+// under "Daemon" exactly as before — and so the session-supervisor (P1) can
+// expose the identical set by embedding the same core. The daemon-specific
+// methods below stay here and reach the rest of the daemon via s.daemon.
 type RPCService struct {
+	*sessionCore
 	daemon *Daemon
-}
-
-// Ping verifies the daemon is responsive.
-func (s *RPCService) Ping(_ *Empty, resp *PongResp) error {
-	resp.OK = true
-	return nil
 }
 
 // BootInfo returns the daemon's boot-time identity (binary path + mtime).
@@ -49,175 +49,6 @@ func (s *RPCService) Ports(_ *Empty, resp *PortsResp) error {
 	resp.MCPPort = s.daemon.mcpPort
 	resp.APIPort = s.daemon.apiPort
 	s.daemon.mu.Unlock()
-	return nil
-}
-
-// StartSession starts a new agent session.
-func (s *RPCService) StartSession(req *StartReq, resp *StartResp) error {
-	slog.Info("rpc.StartSession", "task", req.TaskID, "session", req.SessionID, "project", req.Project, "resume", req.Resume, "cols", req.Cols, "rows", req.Rows, "worktree", req.Worktree)
-
-	task := &model.Task{
-		ID:        req.TaskID,
-		SessionID: req.SessionID,
-		Prompt:    req.Prompt,
-		Project:   req.Project,
-		Backend:   req.Backend,
-		Model:     req.Model,
-		Worktree:  req.Worktree,
-		Branch:    req.Branch,
-	}
-
-	cfg := s.daemon.db.Config()
-	sess, err := s.daemon.runner.Start(task, cfg, req.Rows, req.Cols, req.Resume)
-	if err != nil {
-		slog.Error("rpc.StartSession failed", "task", req.TaskID, "err", err)
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.PID = sess.PID()
-	slog.Info("rpc.StartSession ok", "task", req.TaskID, "pid", resp.PID)
-	return nil
-}
-
-// StopSession stops a running session.
-func (s *RPCService) StopSession(req *TaskIDReq, resp *StatusResp) error {
-	slog.Info("rpc.StopSession", "task", req.TaskID)
-	if err := s.daemon.runner.Stop(req.TaskID); err != nil {
-		slog.Error("rpc.StopSession failed", "task", req.TaskID, "err", err)
-		resp.Error = err.Error()
-		return nil
-	}
-	slog.Info("rpc.StopSession ok", "task", req.TaskID)
-	resp.OK = true
-	return nil
-}
-
-// StopAll stops all running sessions.
-func (s *RPCService) StopAll(_ *Empty, resp *StatusResp) error {
-	slog.Info("rpc.StopAll")
-	s.daemon.runner.StopAll()
-	slog.Info("rpc.StopAll ok")
-	resp.OK = true
-	return nil
-}
-
-// SessionStatus returns info about a single session.
-func (s *RPCService) SessionStatus(req *TaskIDReq, resp *SessionInfo) error {
-	sess := s.daemon.runner.Get(req.TaskID)
-	if sess == nil {
-		resp.TaskID = req.TaskID
-		// During the brief gap between a kick-restart's old-session exit and
-		// the new session's slot being filled, report Alive=true so stream
-		// clients retry the connection instead of giving up and tearing down
-		// their local UI state. The actual liveness will be reported once
-		// the new session is in place.
-		if s.daemon.runner.HasPendingRestart(req.TaskID) {
-			resp.Alive = true
-		}
-		return nil
-	}
-	cols, rows := sess.PTYSize()
-	initCols, initRows := sess.InitialPTYSize()
-	resp.TaskID = req.TaskID
-	resp.Alive = sess.Alive()
-	resp.Idle = sess.IsIdle()
-	resp.PID = sess.PID()
-	resp.Cols = cols
-	resp.Rows = rows
-	resp.InitialCols = initCols
-	resp.InitialRows = initRows
-	resp.WorkDir = sess.WorkDir()
-	resp.TotalWritten = sess.TotalWritten()
-	return nil
-}
-
-// ListSessions returns info about all running sessions, plus synthetic
-// Alive=true entries for tasks with a queued kick-restart but no current
-// session (the brief gap between exit and Start). Without these synthetic
-// entries, daemon-client reconcilers (TUI tick) see InProgress + not-running
-// → mark Complete after recentStartGrace, racing the imminent restart.
-func (s *RPCService) ListSessions(_ *Empty, resp *ListResp) error {
-	sessions := s.daemon.runner.Sessions()
-	pending := s.daemon.runner.PendingRestartIDs()
-	resp.Sessions = make([]SessionInfo, 0, len(sessions)+len(pending))
-	for id, sess := range sessions {
-		cols, rows := sess.PTYSize()
-		initCols, initRows := sess.InitialPTYSize()
-		resp.Sessions = append(resp.Sessions, SessionInfo{
-			TaskID:       id,
-			Alive:        sess.Alive(),
-			Idle:         sess.IsIdle(),
-			PID:          sess.PID(),
-			Cols:         cols,
-			Rows:         rows,
-			InitialCols:  initCols,
-			InitialRows:  initRows,
-			WorkDir:      sess.WorkDir(),
-			TotalWritten: sess.TotalWritten(),
-		})
-	}
-	// Synthetic entries for the kick-restart gap. Mirrors SessionStatus's
-	// Alive=true synthetic when a single-task lookup hits the same window.
-	for _, id := range pending {
-		resp.Sessions = append(resp.Sessions, SessionInfo{
-			TaskID: id,
-			Alive:  true,
-		})
-	}
-	return nil
-}
-
-// HasPendingRestart reports whether the runner has a kick-restart queued
-// for this task. The TUI consults this from handleSessionExitUI so it knows
-// to skip the InProgress→InReview transition while the daemon is mid-restart.
-func (s *RPCService) HasPendingRestart(req *TaskIDReq, resp *PendingRestartResp) error {
-	resp.Pending = s.daemon.runner.HasPendingRestart(req.TaskID)
-	return nil
-}
-
-// WriteInput sends data to a session's PTY stdin.
-func (s *RPCService) WriteInput(req *WriteReq, resp *StatusResp) error {
-	sess := s.daemon.runner.Get(req.TaskID)
-	if sess == nil {
-		resp.Error = "session not found"
-		return nil
-	}
-	if _, err := sess.WriteInput(req.Data); err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.OK = true
-	return nil
-}
-
-// Resize changes a session's PTY dimensions.
-func (s *RPCService) Resize(req *ResizeReq, resp *StatusResp) error {
-	sess := s.daemon.runner.Get(req.TaskID)
-	if sess == nil {
-		resp.Error = "session not found"
-		return nil
-	}
-	if err := sess.Resize(req.Rows, req.Cols); err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.OK = true
-	return nil
-}
-
-// GetExitInfo returns cached exit info for a finished session.
-// Returns empty ExitInfo if the session is still running or info has expired.
-func (s *RPCService) GetExitInfo(req *TaskIDReq, resp *ExitInfo) error {
-	s.daemon.mu.Lock()
-	info, ok := s.daemon.exitInfos[req.TaskID]
-	if ok {
-		delete(s.daemon.exitInfos, req.TaskID) // consume once
-	}
-	s.daemon.mu.Unlock()
-
-	if ok {
-		*resp = info
-	}
 	return nil
 }
 
