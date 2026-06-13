@@ -27,8 +27,8 @@ func TestTabLabels(t *testing.T) {
 	if len(tabKeys) != 3 {
 		t.Errorf("tabKeys count = %d, want 3", len(tabKeys))
 	}
-	if TabLabels[TabDAG] != "DAG" {
-		t.Errorf("TabLabels[TabDAG] = %q, want DAG", TabLabels[TabDAG])
+	if TabLabels[TabHera] != "Hera" {
+		t.Errorf("TabLabels[TabHera] = %q, want Hera", TabLabels[TabHera])
 	}
 }
 

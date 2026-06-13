@@ -461,14 +461,14 @@ func TestSmoke_TabSwitching(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
-	// Switch to each tab via numeric keys. After TabDAG was inserted between
-	// TabTasks and TabSettings, the numeric mapping is 1=Tasks, 2=DAG,
-	// 3=Settings.
+	// Switch to each tab via numeric keys. The second tab is the native Hera
+	// view (M6a relabel of the old DAG slot), so the numeric mapping is
+	// 1=Tasks, 2=Hera, 3=Settings.
 	for _, tc := range []struct {
 		key  rune
 		want widget.Tab
 	}{
-		{'2', widget.TabDAG},
+		{'2', widget.TabHera},
 		{'3', widget.TabSettings},
 		{'1', widget.TabTasks},
 	} {
@@ -1747,11 +1747,12 @@ func TestSmoke_SettingsPagePasteRouting(t *testing.T) {
 	}
 }
 
-// TestSmoke_DAGTabRendersAndFiresRedraw exercises the new DAG tab end-to-end:
-// switching to the tab populates the widget, the OnBranchChange callback
-// fires forceRedraw on the snapshot install, and the cursor can be moved by
-// the inner widget's input handler.
-func TestSmoke_DAGTabRendersAndFiresRedraw(t *testing.T) {
+// TestSmoke_HeraTabRoutesAndRenders exercises the M6a tab swap end-to-end:
+// the second tab now routes to the native Hera view ("hera" page, not "dag"),
+// focus lands on the HeraPage, and the page-change forceRedraw fires. The DAG
+// page stays registered for the M8 disabled-fallback but is no longer the
+// second-tab route.
+func TestSmoke_HeraTabRoutesAndRenders(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ux.log")
 	if err := uxlog.Init(logPath); err != nil {
 		t.Fatalf("uxlog.Init: %v", err)
@@ -1761,9 +1762,6 @@ func TestSmoke_DAGTabRendersAndFiresRedraw(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
-	// Two linked tasks so the DAG has edges to render.
-	_ = d.Add(&model.Task{ID: "p1", Name: "parent", Status: model.StatusComplete, CreatedAt: time.Now()})
-	_ = d.Add(&model.Task{ID: "c1", Name: "child", Status: model.StatusInProgress, DependsOn: []string{"p1"}, CreatedAt: time.Now()})
 	app.refreshTasks()
 
 	sim, stop := wireApp(t, app)
@@ -1774,34 +1772,33 @@ func TestSmoke_DAGTabRendersAndFiresRedraw(t *testing.T) {
 		return string(b)
 	}
 
-	// Switch to the DAG tab via the global Right arrow.
-	prior := strings.Count(readLog(), "force redraw: dag branch changed")
+	// Switch to the Hera tab via the global Right arrow.
+	prior := strings.Count(readLog(), "force redraw: pages changed")
 	sim.InjectKey(tcell.KeyRight, 0, 0)
 	syncUI(t, app.tapp)
 
-	// DAG tab active + page switched.
+	// Hera tab active + "hera" page front + focus on the HeraPage.
 	readUI(t, app.tapp, func() {
-		if app.header.ActiveTab() != widget.TabDAG {
-			t.Errorf("expected TabDAG active, got %v", app.header.ActiveTab())
+		if app.header.ActiveTab() != widget.TabHera {
+			t.Errorf("expected TabHera active, got %v", app.header.ActiveTab())
 		}
 		page, _ := app.pages.GetFrontPage()
-		if page != "dag" {
-			t.Errorf("expected dag page, got %q", page)
+		if page != "hera" {
+			t.Errorf("expected hera page, got %q", page)
+		}
+		if app.tapp.GetFocus() != app.heraPage {
+			t.Errorf("expected focus on heraPage, got %T", app.tapp.GetFocus())
+		}
+		// The "dag" page is still registered (M8 fallback) but not routed.
+		if !app.pages.HasPage("dag") {
+			t.Error("dag page should remain registered for the M8 fallback")
 		}
 	})
 
-	// branch-change must have fired (snapshot installed → forceRedraw).
-	if strings.Count(readLog(), "force redraw: dag branch changed") <= prior {
-		t.Errorf("expected dag branch-change forceRedraw after tab switch; log so far:\n%s", readLog())
+	// The page swap fired a forceRedraw (pages SetChangedFunc).
+	if strings.Count(readLog(), "force redraw: pages changed") <= prior {
+		t.Errorf("expected pages-changed forceRedraw after tab switch; log so far:\n%s", readLog())
 	}
-
-	// Cursor lives on a real node.
-	readUI(t, app.tapp, func() {
-		cur := app.dagWidget.CurrentTask()
-		if cur != "p1" && cur != "c1" {
-			t.Errorf("dag cursor = %q, want p1 or c1", cur)
-		}
-	})
 }
 
 // TestSmoke_NumericTabKeysRouteCorrectly guards the keybinding bug where
@@ -1829,7 +1826,7 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
-		if app.header.ActiveTab() != widget.TabDAG {
+		if app.header.ActiveTab() != widget.TabHera {
 			t.Errorf("'2' routed to %v, want TabDAG", app.header.ActiveTab())
 		}
 	})
@@ -1853,14 +1850,14 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 	})
 }
 
-// TestSmoke_ClickDAGPageDoesNotStealFocus enforces the CLAUDE.md page-wrapper
-// rule: clicking on any non-interactive area inside the DAG page must keep
-// focus on the page wrapper, which forwards InputHandler to the inner
-// widget. Without this contract, tview's default Box.MouseHandler can park
-// focus on a primitive with no InputHandler and silently drop keystrokes.
-// Pattern mirrors TestSmoke_TaskPageClickKeepsFocus / SettingsPage's click
-// test.
-func TestSmoke_ClickDAGPageDoesNotStealFocus(t *testing.T) {
+// TestSmoke_ClickHeraPageDoesNotStealFocus enforces the CLAUDE.md page-wrapper
+// rule for the native Hera view: clicking on any non-interactive area —
+// including the placeholder coordinator/agent panes (which have no
+// InputHandler in 6a) — must keep focus on the HeraPage wrapper, which forwards
+// InputHandler to the rail. Without this contract, tview's default
+// Box.MouseHandler can park focus on a placeholder pane and silently drop
+// keystrokes. Pattern mirrors TestSmoke_TaskPageClickKeepsFocus.
+func TestSmoke_ClickHeraPageDoesNotStealFocus(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -1870,35 +1867,31 @@ func TestSmoke_ClickDAGPageDoesNotStealFocus(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
-	// Switch to DAG tab.
+	// Switch to the Hera tab.
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 
 	var focused tview.Primitive
 	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
-	if focused != app.dagPage {
-		t.Fatalf("expected initial focus on dagPage, got %T", focused)
+	if focused != app.heraPage {
+		t.Fatalf("expected initial focus on heraPage, got %T", focused)
 	}
 
-	// Click on a position likely to land on the page wrapper's border row.
+	// Click on the wrapper's border row.
 	sim.InjectMouse(0, 1, tcell.Button1, 0)
 	syncUI(t, app.tapp)
-
 	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
-	if focused != app.dagPage {
-		t.Errorf("click on dag page wrapper border stole focus from dagPage (got %T)", focused)
+	if focused != app.heraPage {
+		t.Errorf("click on hera page border stole focus from heraPage (got %T)", focused)
 	}
 
-	// Click inside the widget area too — focus must STILL be on the page
-	// wrapper so the wrapper's InputHandler routes keystrokes to the inner
-	// widget (the wrapper has an InputHandler that forwards; the inner
-	// widget alone would still receive keys but the wrapper-focused path
-	// is what the rest of the page contract assumes).
-	sim.InjectMouse(20, 10, tcell.Button1, 0)
+	// Click deep inside the right-hand placeholder pane area — focus must
+	// STILL be on the page wrapper so its InputHandler routes keys to the rail.
+	sim.InjectMouse(60, 12, tcell.Button1, 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { focused = app.tapp.GetFocus() })
-	if focused != app.dagPage {
-		t.Errorf("click inside dag node area stole focus from dagPage (got %T)", focused)
+	if focused != app.heraPage {
+		t.Errorf("click inside placeholder pane stole focus from heraPage (got %T)", focused)
 	}
 }
 

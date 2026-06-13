@@ -193,17 +193,17 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 	case TabSettings:
 		hints = []hint{
 			{"n", "new project"}, {"d", "del"},
-			{"1", "tasks"}, {"2", "DAG"}, {"?", "help"}, {"q", "quit"},
+			{"1", "tasks"}, {"2", "hera"}, {"?", "help"}, {"q", "quit"},
 		}
-	case TabDAG:
+	case TabHera:
 		hints = []hint{
-			{"l", "link"}, {"L", "unlink"}, {"h", "halt"}, {"RET", "open"},
+			{"j/k", "nav"}, {"SP", "fold"},
 			{"1", "tasks"}, {"3", "settings"}, {"?", "help"}, {"q", "quit"},
 		}
 	default:
 		hints = []hint{
 			{"n", "new"}, {"RET", "attach"}, {"s", "status"}, {"r", "rename"},
-			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"2", "DAG"}, {"3", "settings"},
+			{"^p", "PR"}, {"^f", "fork"}, {"^d", "del"}, {"^r", "prune"}, {"H", "hera-workers"}, {"2", "hera"}, {"3", "settings"},
 			{"?", "help"}, {"q", "quit"},
 		}
 	}

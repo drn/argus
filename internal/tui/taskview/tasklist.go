@@ -65,6 +65,7 @@ type TaskListView struct {
 	idleUnvisited map[string]bool          // task IDs idle since user last viewed the agent view
 	needsInput    map[string]bool          // task IDs whose agent appears blocked on a user prompt
 	prStates      map[string]model.PRState // task ID → cached GitHub PR review state (from task_meta "pr")
+	heraWorkers   map[string]bool          // task IDs that are hera-spawned workers (task_meta hera.role=worker)
 	animFrame     int                      // current spinner frame (time-based, updated in Draw)
 
 	cursor          int
@@ -80,6 +81,11 @@ type TaskListView struct {
 	// Filter state: `/` activates filter input, typing narrows visible tasks.
 	filtering bool   // true while the filter input is focused
 	filter    string // current filter text (case-insensitive substring match)
+
+	// hideHeraWorkers hides hera-spawned worker tasks from the Tasks tab (they
+	// live in the Hera tab). Default true; the `H` key toggles it to reveal
+	// them inline. See gotchas/tasklist-ui.md.
+	hideHeraWorkers bool
 
 	// Callback when user selects a task (Enter key).
 	OnSelect func(task *model.Task)
@@ -106,6 +112,10 @@ type TaskListView struct {
 	// reserves/releases the bottom row without changing the row signature.
 	// See gotchas/ui-threading.md.
 	OnFilterToggle func()
+	// Callback fired when the hide-hera-workers reveal toggle flips (`H`).
+	// Lets the App log the transition. The row rebuild itself fires
+	// OnLayoutChange via the normal signature-change path.
+	OnHeraWorkersToggle func(hidden bool)
 
 	// Signature of the last buildRows output. Used to suppress
 	// OnLayoutChange when the rebuild produced the same rows.
@@ -117,13 +127,15 @@ type TaskListView struct {
 // NewTaskListView creates a task list view.
 func NewTaskListView() *TaskListView {
 	tl := &TaskListView{
-		Box:           tview.NewBox(),
-		running:       make(map[string]bool),
-		idle:          make(map[string]bool),
-		idleUnvisited: make(map[string]bool),
-		needsInput:    make(map[string]bool),
-		prStates:      make(map[string]model.PRState),
-		lastRowsSig:   ^uint64(0), // sentinel — first build always fires OnLayoutChange
+		Box:             tview.NewBox(),
+		running:         make(map[string]bool),
+		idle:            make(map[string]bool),
+		idleUnvisited:   make(map[string]bool),
+		needsInput:      make(map[string]bool),
+		prStates:        make(map[string]model.PRState),
+		heraWorkers:     make(map[string]bool),
+		hideHeraWorkers: true,       // hera-spawned workers live in the Hera tab by default
+		lastRowsSig:     ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
 	return tl
 }
@@ -212,12 +224,58 @@ func (tl *TaskListView) PRStateFor(taskID string) model.PRState {
 	return tl.prStates[taskID]
 }
 
+// SetHeraWorkers updates the set of task IDs that are hera-spawned workers
+// (meta:hera.role=worker). The App feeds this from the task_meta "hera"
+// namespace on the tick. While hideHeraWorkers is true (the default), these
+// rows are skipped from the Tasks tab in buildRows. A nil map clears the set.
+func (tl *TaskListView) SetHeraWorkers(ids map[string]bool) {
+	if ids == nil {
+		tl.heraWorkers = make(map[string]bool)
+		return
+	}
+	tl.heraWorkers = ids
+}
+
+// isHeraSpawnedWorker reports whether a task is a hera-spawned worker.
+func (tl *TaskListView) isHeraSpawnedWorker(t *model.Task) bool {
+	return tl.heraWorkers[t.ID]
+}
+
+// HideHeraWorkers reports whether hera-spawned workers are currently hidden
+// from the Tasks tab (test seam).
+func (tl *TaskListView) HideHeraWorkers() bool { return tl.hideHeraWorkers }
+
+// ToggleHeraWorkers flips whether hera-spawned workers are hidden, rebuilds
+// rows, and fires OnHeraWorkersToggle. Bound to the `H` key.
+func (tl *TaskListView) ToggleHeraWorkers() {
+	tl.hideHeraWorkers = !tl.hideHeraWorkers
+	tl.buildRows()
+	tl.clampCursor()
+	if tl.OnHeraWorkersToggle != nil {
+		tl.OnHeraWorkersToggle(tl.hideHeraWorkers)
+	}
+}
+
 // updateSpinnerFrame computes the current spinner frame from wall clock time.
 func (tl *TaskListView) updateSpinnerFrame() {
 	interval := widget.SpinnerTickInterval()
 	if interval > 0 {
 		tl.animFrame = int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
 	}
+}
+
+// VisibleTaskIDs returns the IDs of every task row currently in the flattened
+// row list (after filter + hide-hera-workers), in display order. Inspection /
+// test seam — lets callers assert what the Tasks tab actually shows without
+// reaching into unexported state.
+func (tl *TaskListView) VisibleTaskIDs() []string {
+	var ids []string
+	for _, r := range tl.rows {
+		if r.kind == rowTask && r.task != nil {
+			ids = append(ids, r.task.ID)
+		}
+	}
+	return ids
 }
 
 // SelectedTask returns the task at the current cursor, or nil.
@@ -272,6 +330,11 @@ func (tl *TaskListView) buildRows() {
 	var pinned, active, archived []*model.Task
 	for _, t := range tl.tasks {
 		if !tl.matchesFilter(t) {
+			continue
+		}
+		// Hide hera-spawned workers unless the reveal toggle (`H`) is on. They
+		// live in the Hera tab; hiding keeps the normal Tasks list clean.
+		if tl.hideHeraWorkers && tl.isHeraSpawnedWorker(t) {
 			continue
 		}
 		switch {
@@ -871,6 +934,8 @@ func (tl *TaskListView) InputHandler() func(event *tcell.EventKey, setFocus func
 				if t := tl.SelectedTask(); t != nil && t.Prompt != "" && tl.OnCopyPrompt != nil {
 					tl.OnCopyPrompt(t)
 				}
+			case 'H':
+				tl.ToggleHeraWorkers()
 			}
 		}
 	})

@@ -1,0 +1,25 @@
+package hera
+
+import "github.com/drn/argus/internal/db"
+
+// HeraReader is the narrow, READ-ONLY data-access seam the rail builds from.
+// It lists exactly the methods BuildModel calls on the M1 hera store.
+//
+// Local mode passes the real *db.DB, which satisfies this implicitly. Remote
+// mode (*apistore.Store) does NOT implement the hera_* methods — the TUI
+// degrades by passing a nil HeraReader to the page, which renders an
+// "Hera unavailable in remote mode" banner instead of panicking or breaking
+// the --remote build (see gotchas/remote-tui.md). The App resolves the reader
+// once via a `a.db.(*db.DB)` type-assert, mirroring the other four local-only
+// type-assert sites.
+//
+// ListMetaByNamespace is the one method also on store.Store (task_meta is
+// task-addressed, not hera-addressed); the rail uses it to read the
+// meta:hera.ready_to_close flag (M4) for a role's bound task.
+type HeraReader interface {
+	ListHeraOrchestrators(includeArchived bool) ([]*db.HeraOrchestrator, error)
+	ListHeraRoles(orchID int64, includeArchived bool) ([]*db.HeraRole, error)
+	ListHeraLiveBindings() ([]*db.HeraBinding, error)
+	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
+	ListMetaByNamespace(namespace string) (map[string]map[string]string, error)
+}

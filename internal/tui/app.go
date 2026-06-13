@@ -34,6 +34,7 @@ import (
 	"github.com/drn/argus/internal/scheduler"
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/gitpanel"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/keyenc"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/tui/store"
@@ -111,6 +112,12 @@ type App struct {
 	// entry and after a halt cascade — the tick loop does NOT refresh it).
 	dagWidget *dagview.Widget
 	dagPage   *DAGPage
+
+	// Hera tab (created at construction; rail rebuilt by refreshHera on tab
+	// entry and on the tick while the Hera tab is active). The legacy dagPage
+	// stays registered for the M8 disabled-fallback route. heraPage may render
+	// a remote-mode "unavailable" banner when a.db is not a local *db.DB.
+	heraPage *hera.HeraPage
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -435,6 +442,10 @@ func (a *App) buildUI() {
 	a.tasklist.OnCursorChange = a.onTaskCursorChange
 	a.tasklist.OnLayoutChange = func() { a.forceRedraw("tasklist rows changed") }
 	a.tasklist.OnFilterToggle = func() { a.forceRedraw("tasklist filter toggled") }
+	a.tasklist.OnHeraWorkersToggle = func(hidden bool) {
+		uxlog.Log("[hera-view] tasklist hide-hera-workers toggled: hidden=%v", hidden)
+		a.forceRedraw("tasklist hera-workers toggled")
+	}
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
 		// Route through SetStatus (partial column update) not Update: the
@@ -557,10 +568,24 @@ func (a *App) buildUI() {
 	a.dagWidget.OnHalt = func(id string) { a.confirmHaltDownstream(id) }
 	a.dagPage = NewDAGPage(a.dagWidget)
 
+	// Native Hera view (M6a). The rail reads the local *db.DB hera store; in
+	// --remote mode (a.db is *apistore.Store, which has no hera methods) the
+	// reader is nil and the page renders an "unavailable" banner — it never
+	// breaks the remote build (see gotchas/remote-tui.md). This mirrors the
+	// other local-only type-assert sites.
+	var heraReader hera.HeraReader
+	if d, ok := a.db.(*db.DB); ok {
+		heraReader = d
+	}
+	a.heraPage = hera.NewHeraPage(heraReader)
+
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
+		// "dag" stays registered for the M8 disabled-fallback route; 6a always
+		// routes the second tab to "hera".
 		AddPage("dag", a.dagPage, true, false).
+		AddPage("hera", a.heraPage, true, false).
 		AddPage("settings", a.settingsPage, true, false)
 	a.loadPluginViews()
 	// Every Pages mutation (AddPage / RemovePage / SwitchToPage / Show / Hide)
@@ -1701,6 +1726,13 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
+	a.tasklist.SetHeraWorkers(a.readHeraWorkers())
+	// Keep the Hera rail fresh while its tab is active (debounced inside the
+	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
+	// and fast, so this is safe on the tview thread; we never run git here.
+	if a.header.ActiveTab() == widget.TabHera {
+		a.heraPage.ScheduleRefresh()
+	}
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
 	a.statusbar.SetRunning(a.runningIDs)
@@ -1742,6 +1774,31 @@ func (a *App) readPRStates() map[string]model.PRState {
 			continue // skip unparseable; leave that task's cell blank
 		}
 		out[taskID] = s
+	}
+	return out
+}
+
+// readHeraWorkers reads the task_meta "hera" namespace and returns the set of
+// task IDs that are hera-spawned workers (meta:hera.role=worker, stamped at
+// born-bound spawn / auto-adopt in M4). The task list hides these by default
+// so the normal Tasks tab stays clean — they live in the Hera tab — with a
+// reveal toggle (the `H` key). Pure cache read; works in both modes via the
+// store.Store interface (remote mode returns no "hera" rows, so nothing is
+// hidden — a safe degradation). A read error logs and hides nothing.
+func (a *App) readHeraWorkers() map[string]bool {
+	raw, err := a.db.ListMetaByNamespace(db.HeraMetaNamespace)
+	if err != nil {
+		uxlog.Log("[hera-view] read hera meta failed: %v", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(raw))
+	for taskID, kv := range raw {
+		if kv[db.HeraMetaKeyRole] == string(db.HeraKindWorker) {
+			out[taskID] = true
+		}
 	}
 	return out
 }
@@ -2034,7 +2091,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 		case '2':
 			if a.mode != modeAgent {
-				a.switchTab(widget.TabDAG)
+				a.switchTab(widget.TabHera)
 				return nil
 			}
 		case '3':
@@ -2574,9 +2631,10 @@ func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
 
-	// The DAG widget's focused-state border lights up only when the DAG tab
-	// is the active surface. Anywhere else, the unfocused palette renders.
-	a.dagWidget.SetFocused(t == widget.TabDAG)
+	// The legacy DAG widget never renders as the active surface in 6a (the
+	// second tab routes to the native Hera view); keep its border in the
+	// unfocused palette. M8 re-enables the dag route under cfg.Hera.Enabled.
+	a.dagWidget.SetFocused(false)
 	switch t {
 	case widget.TabTasks:
 		if a.mode == modeAgent {
@@ -2589,11 +2647,14 @@ func (a *App) switchTab(t widget.Tab) {
 		a.mode = modeTaskList
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)
-	case widget.TabDAG:
+	case widget.TabHera:
+		// M8: route to "dag" instead when cfg.Hera.Enabled is false. For now
+		// the second tab is always the native Hera view; dagPage stays
+		// registered for that future fallback.
 		a.mode = modeTaskList
-		a.refreshDAG()
-		a.pages.SwitchToPage("dag")
-		a.tapp.SetFocus(a.dagPage)
+		a.heraPage.Refresh()
+		a.pages.SwitchToPage("hera")
+		a.tapp.SetFocus(a.heraPage)
 	case widget.TabSettings:
 		a.mode = modeTaskList
 		a.settings.Refresh()
@@ -3883,8 +3944,8 @@ func (a *App) closeHelp() {
 	switch a.header.ActiveTab() {
 	case widget.TabSettings:
 		a.tapp.SetFocus(a.settings)
-	case widget.TabDAG:
-		a.tapp.SetFocus(a.dagWidget)
+	case widget.TabHera:
+		a.tapp.SetFocus(a.heraPage)
 	default:
 		a.tapp.SetFocus(a.tasklist)
 	}
@@ -3930,9 +3991,9 @@ func (a *App) closeErrorModal() {
 	case widget.TabSettings:
 		a.pages.SwitchToPage("settings")
 		a.tapp.SetFocus(a.settings)
-	case widget.TabDAG:
-		a.pages.SwitchToPage("dag")
-		a.tapp.SetFocus(a.dagWidget)
+	case widget.TabHera:
+		a.pages.SwitchToPage("hera")
+		a.tapp.SetFocus(a.heraPage)
 	default:
 		a.pages.SwitchToPage("tasks")
 		a.tapp.SetFocus(a.tasklist)

@@ -15,11 +15,14 @@ type Tab int
 
 const (
 	TabTasks Tab = iota
-	TabDAG
+	// TabHera is the second tab slot. It was historically TabDAG; M6 relabels
+	// it to the native Hera view (the DAG renderer folds into the Hera view's
+	// details pane in M7). The enum slot is kept so the `2` hotkey is stable.
+	TabHera
 	TabSettings
 )
 
-var TabLabels = [...]string{"Tasks", "DAG", "Settings"}
+var TabLabels = [...]string{"Tasks", "Hera", "Settings"}
 var tabKeys = [...]string{"1", "2", "3"}
 
 // Powerline separator (right-facing filled chevron).
