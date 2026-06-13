@@ -23,6 +23,16 @@ type RPCService struct {
 	daemon *Daemon
 }
 
+// logRPCErr logs an RPC handler error under the given method name and returns
+// err.Error() for assignment to the response's Error field. It folds the
+// repeated `resp.Error = err.Error(); slog.Error(method, "err", err)` pair
+// that several handlers share into one call. Handlers whose error log carries
+// extra structured fields (e.g. ClipboardSet's "task") keep their inline form.
+func logRPCErr(method string, err error) string {
+	slog.Error(method, "err", err)
+	return err.Error()
+}
+
 // BootInfo returns the daemon's boot-time identity (binary path + mtime).
 // The TUI uses this to detect when the on-disk binary has been rebuilt since
 // the daemon started, and prompt the user to restart.
@@ -70,8 +80,7 @@ func (s *RPCService) KBSearch(req *KBSearchReq, resp *KBSearchResp) error {
 	}
 	results, err := s.daemon.db.KBSearch(sanitized, req.Limit)
 	if err != nil {
-		resp.Error = err.Error()
-		slog.Error("rpc.KBSearch", "err", err)
+		resp.Error = logRPCErr("rpc.KBSearch", err)
 		return nil
 	}
 	for _, r := range results {
@@ -94,8 +103,7 @@ func (s *RPCService) KBIngest(req *KBIngestReq, resp *KBIngestResp) error {
 	doc.IngestedAt = time.Now()
 	doc.ModifiedAt = time.Now()
 	if err := s.daemon.db.KBUpsert(&doc); err != nil {
-		resp.Error = err.Error()
-		slog.Error("rpc.KBIngest", "err", err)
+		resp.Error = logRPCErr("rpc.KBIngest", err)
 	} else {
 		slog.Info("rpc.KBIngest ok", "path", req.Path)
 	}
@@ -107,8 +115,7 @@ func (s *RPCService) KBList(req *KBListReq, resp *KBListResp) error {
 	slog.Info("rpc.KBList", "prefix", req.Prefix, "limit", req.Limit)
 	docs, err := s.daemon.db.KBList(req.Prefix, req.Limit)
 	if err != nil {
-		resp.Error = err.Error()
-		slog.Error("rpc.KBList", "err", err)
+		resp.Error = logRPCErr("rpc.KBList", err)
 		return nil
 	}
 	for _, doc := range docs {
@@ -133,8 +140,7 @@ func (s *RPCService) UpdateSelf(_ *Empty, resp *UpdateSelfResp) error {
 	out, err := selfupdate.Run(cfg.Argus.SourcePath)
 	resp.Output = out
 	if err != nil {
-		resp.Error = err.Error()
-		slog.Error("rpc.UpdateSelf failed", "err", err)
+		resp.Error = logRPCErr("rpc.UpdateSelf failed", err)
 	} else {
 		slog.Info("rpc.UpdateSelf ok")
 	}
