@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,40 @@ func TestClient_ConnectAndPing(t *testing.T) {
 	if c.HasSession("nonexistent") {
 		t.Error("expected false for nonexistent session")
 	}
+}
+
+// TestClient_CloseConcurrent pins the closeOnce fix: Close() must be safe to
+// call concurrently (and repeatedly) without panicking on "close of closed
+// channel". In supervisor mode the daemon's cleanup() closes d.supClient while
+// another path (test cleanup, restartDaemon) may close the same instance — the
+// old non-atomic select/close double-closed c.closed under load. Run under
+// -race for full value.
+func TestClient_CloseConcurrent(t *testing.T) {
+	_, sockPath, _ := testSetup(t)
+
+	c, err := Connect(sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Release all closers at the same instant to maximise the check-then-close
+	// window the old code raced on.
+	const closers = 32
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < closers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-release
+			_ = c.Close()
+		}()
+	}
+	close(release)
+	wg.Wait()
+
+	// A subsequent Close is still a no-op (idempotent).
+	_ = c.Close()
 }
 
 func TestClient_StartAndGetOutput(t *testing.T) {

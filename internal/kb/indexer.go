@@ -25,6 +25,16 @@ type Indexer struct {
 	readyCh   chan struct{} // closed when fsnotify watcher is set up
 	wg        sync.WaitGroup
 
+	// lifecycleMu serializes Start vs Stop so that every wg.Add() in Start
+	// happens-before wg.Wait() in Stop. Without it, a daemon that shuts down
+	// immediately after startup can call Stop()'s wg.Wait() concurrently with
+	// Start()'s wg.Add(1) — the classic "WaitGroup.Add called concurrently with
+	// Wait" data race (caught by -race in TestServe_ShutdownAll on Linux CI).
+	// stopped, set under lifecycleMu, makes a Start that loses the race to Stop a
+	// no-op so it never adds goroutines after Wait has already returned.
+	lifecycleMu sync.Mutex
+	stopped     bool
+
 	scanMu   sync.Mutex
 	scanning bool // true while a background full scan is running
 }
@@ -52,6 +62,15 @@ func (idx *Indexer) Scanning() bool {
 // (synchronous, fast — only touches changed files). Otherwise it runs a
 // full scan in the background so the daemon starts immediately.
 func (idx *Indexer) Start() error {
+	// Hold lifecycleMu for the whole setup so the wg.Add(1) calls below are
+	// ordered before any concurrent Stop()'s wg.Wait(). If Stop already ran,
+	// don't spin up goroutines — Wait has (or is about to) return.
+	idx.lifecycleMu.Lock()
+	defer idx.lifecycleMu.Unlock()
+	if idx.stopped {
+		return nil
+	}
+
 	if idx.vaultPath == "" {
 		close(idx.readyCh)
 		return nil
@@ -103,14 +122,21 @@ func (idx *Indexer) Ready() <-chan struct{} {
 	return idx.readyCh
 }
 
-// Stop signals the background goroutine to exit and waits for it.
+// Stop signals the background goroutine to exit and waits for it. Acquiring
+// lifecycleMu before Wait guarantees a concurrent Start has either fully
+// completed its wg.Add() calls (so Add happens-before this Wait) or will see
+// stopped==true and add nothing — closing the WaitGroup Add-vs-Wait race.
 func (idx *Indexer) Stop() {
+	idx.lifecycleMu.Lock()
+	idx.stopped = true
 	select {
 	case <-idx.stopCh:
 		// already stopped
 	default:
 		close(idx.stopCh)
 	}
+	idx.lifecycleMu.Unlock()
+
 	idx.wg.Wait()
 }
 

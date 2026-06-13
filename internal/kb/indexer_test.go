@@ -246,6 +246,32 @@ func TestIncrementalScan_DeletesRemoved(t *testing.T) {
 	testutil.Equal(t, deleted[0], "gone.md")
 }
 
+// TestStartStop_ConcurrentNoRace pins the lifecycle-mutex fix: Start (which
+// calls wg.Add) and Stop (which calls wg.Wait) running concurrently must not
+// trip the "WaitGroup.Add called concurrently with Wait" data race. This is the
+// race that surfaced under Linux CI's -race in daemon.TestServe_ShutdownAll
+// (daemon shuts down immediately after the KB indexer's Start goroutine fires).
+// Run under -race to be meaningful.
+func TestStartStop_ConcurrentNoRace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsnotify test")
+	}
+	for i := 0; i < 20; i++ {
+		vault := t.TempDir()
+		os.WriteFile(filepath.Join(vault, "x.md"), []byte("# x"), 0o644) //nolint:errcheck
+		idx := NewIndexer(newMockStore(), vault)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = idx.Start() }()
+		go func() { defer wg.Done(); idx.Stop() }()
+		wg.Wait()
+
+		// A Stop that lost the race to Start must still tear the watcher down.
+		idx.Stop()
+	}
+}
+
 func TestStart_EmptyDB_BackgroundFullScan(t *testing.T) {
 	if testing.Short() {
 		t.Skip("fsnotify test")

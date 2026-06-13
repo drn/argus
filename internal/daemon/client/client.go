@@ -53,11 +53,13 @@ var _ agent.SessionRunner = (*Client)(nil)
 
 // Client connects to the daemon and implements agent.SessionProvider.
 type Client struct {
-	rpc      *rpc.Client
-	sockPath string
-	sessions map[string]*RemoteSession
-	mu       sync.Mutex
-	closed   chan struct{} // closed by Close(); stops connectStream retries
+	rpc       *rpc.Client
+	sockPath  string
+	sessions  map[string]*RemoteSession
+	mu        sync.Mutex
+	closed    chan struct{} // closed by Close(); stops connectStream retries
+	closeOnce sync.Once     // makes Close idempotent + concurrency-safe
+	closeErr  error         // result of the single rpc.Close, read after closeOnce
 
 	// leakedCalls tracks goroutines from timed-out RPC calls that are still
 	// blocked in rpc.Call. Logged for observability — drain goroutines
@@ -112,25 +114,32 @@ func (c *Client) OnSessionExit(fn func(taskID string, info daemon.ExitInfo)) {
 
 // Close shuts down the client and all stream connections.
 // Signals all connectStream goroutines to stop retrying via the closed channel.
+//
+// Idempotent + concurrency-safe via closeOnce: in supervisor mode the daemon's
+// cleanup() closes this client (it is d.supClient) on the Serve goroutine, while
+// another path — a test's t.Cleanup, or restartDaemon swapping the client — may
+// close the same instance concurrently. The old `select{<-closed: default:
+// close(closed)}` was a non-atomic check-then-close: two racers both took the
+// default and double-closed the channel → "close of closed channel" panic
+// (caught under Linux CI's parallel -race load in TestSupTee).
 func (c *Client) Close() error {
-	// Signal all goroutines to stop before closing individual sessions.
-	select {
-	case <-c.closed:
-	default:
+	c.closeOnce.Do(func() {
+		// Signal all goroutines to stop before closing individual sessions.
 		close(c.closed)
-	}
 
-	c.mu.Lock()
-	sessions := make(map[string]*RemoteSession, len(c.sessions))
-	for k, v := range c.sessions {
-		sessions[k] = v
-	}
-	c.mu.Unlock()
+		c.mu.Lock()
+		sessions := make(map[string]*RemoteSession, len(c.sessions))
+		for k, v := range c.sessions {
+			sessions[k] = v
+		}
+		c.mu.Unlock()
 
-	for _, rs := range sessions {
-		rs.close()
-	}
-	return c.rpc.Close()
+		for _, rs := range sessions {
+			rs.close()
+		}
+		c.closeErr = c.rpc.Close()
+	})
+	return c.closeErr
 }
 
 // Start requests the daemon to start a session and opens a stream for its output.

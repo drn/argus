@@ -19,14 +19,36 @@ import (
 // finished or crashed; letting the user decide via Resume is safer than
 // silently marking Complete.
 func ReconcileStaleSessions(database *db.DB) (int, error) {
+	flipped, err := ReconcileStaleSessionsExcept(database, nil)
+	return len(flipped), err
+}
+
+// ReconcileStaleSessionsExcept is the session-supervisor variant of
+// ReconcileStaleSessions: it flips InProgress→InReview for every task EXCEPT
+// those whose ID is in alive — the set the supervisor still reports running
+// across a daemon bounce. Those tasks are RE-ATTACHED (their agents never died),
+// so flipping them to InReview would be a false termination; they stay
+// InProgress. It returns the IDs it actually flipped — the TRUE orphans (the
+// supervisor lost them, e.g. it also restarted) — so the caller can post an
+// ARGUS_BOUNCED signal to exactly those and not to the re-attached ones.
+//
+// A nil/empty alive set flips every InProgress task, making this exactly
+// equivalent to the in-process ReconcileStaleSessions (which is implemented as
+// a thin wrapper). InReview (never Complete) is still the right landing state
+// for an orphan: an inferred absence has no observed exit, so the #707 rule
+// "Complete only on an observed clean exit" holds.
+func ReconcileStaleSessionsExcept(database *db.DB, alive map[string]bool) ([]string, error) {
 	tasks, err := database.Tasks()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	count := 0
+	var flipped []string
 	for _, t := range tasks {
 		if t.Status != model.StatusInProgress {
 			continue
+		}
+		if alive[t.ID] {
+			continue // re-attached live supervisor session — leave InProgress
 		}
 		t.SetStatus(model.StatusInReview)
 		if uerr := database.Update(t); uerr != nil {
@@ -34,7 +56,7 @@ func ReconcileStaleSessions(database *db.DB) (int, error) {
 			continue
 		}
 		slog.Info("reconcile: stale in_progress → in_review", "task", t.ID, "name", t.Name)
-		count++
+		flipped = append(flipped, t.ID)
 	}
-	return count, nil
+	return flipped, nil
 }
