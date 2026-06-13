@@ -3195,3 +3195,68 @@ func TestApp_AfterDrawSyncsOnResizeOnly(t *testing.T) {
 	}
 	testutil.Equal(t, rec.syncCount, 3)
 }
+
+// TestHandleSessionExitUI_HeraWorkerFinishPolicy mirrors the daemon's BUG-050
+// rule on the TUI flip site: a worker-bound task never self-completes, even on
+// a clean exit, and gets the ready_to_close mark. Coordinator/non-hera tasks
+// follow the unchanged #707 rule. This keeps the two flip sites in lockstep so
+// they can never disagree.
+func TestHandleSessionExitUI_HeraWorkerFinishPolicy(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	bind := func(taskID, name string, kind db.HeraRoleKind) {
+		o, err := d.CreateHeraOrchestrator("o-" + taskID)
+		testutil.NoError(t, err)
+		r, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: name, Kind: kind, ArgusProject: "p"})
+		testutil.NoError(t, err)
+		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: r.ID, ArgusTaskID: taskID, WorktreePath: "/wt/" + taskID})
+		testutil.NoError(t, err)
+	}
+	readyToClose := func(taskID string) bool {
+		meta, err := d.ListMeta(taskID, db.HeraMetaNamespace)
+		testutil.NoError(t, err)
+		for _, e := range meta {
+			if e.Key == db.HeraMetaKeyReadyToClose && e.Value == "true" {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("worker clean exit -> in_review + ready_to_close", func(t *testing.T) {
+		task := &model.Task{Name: "w", Status: model.StatusInProgress, Worktree: t.TempDir()}
+		testutil.NoError(t, d.Add(task))
+		bind(task.ID, "w", db.HeraKindWorker)
+
+		app.handleSessionExitUI(task.ID, true /* cleanExit */, false /* pendingRestart */)
+
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusInReview)
+		testutil.Equal(t, readyToClose(task.ID), true)
+	})
+
+	t.Run("coordinator clean exit -> complete (not auto-rolled)", func(t *testing.T) {
+		task := &model.Task{Name: "c", Status: model.StatusInProgress, Worktree: t.TempDir()}
+		testutil.NoError(t, d.Add(task))
+		bind(task.ID, "coord", db.HeraKindCoordinator)
+
+		app.handleSessionExitUI(task.ID, true, false)
+
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusComplete)
+		testutil.Equal(t, readyToClose(task.ID), false)
+	})
+
+	t.Run("worker pendingRestart -> no flip, no mark", func(t *testing.T) {
+		task := &model.Task{Name: "wr", Status: model.StatusInProgress, Worktree: t.TempDir()}
+		testutil.NoError(t, d.Add(task))
+		bind(task.ID, "wr", db.HeraKindWorker)
+
+		app.handleSessionExitUI(task.ID, true /* cleanExit */, true /* pendingRestart */)
+
+		got, _ := d.Get(task.ID)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+		testutil.Equal(t, readyToClose(task.ID), false)
+	})
+}

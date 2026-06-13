@@ -73,6 +73,24 @@ type CreateInput struct {
 	// races without QueueUpdateDraw.
 	OnWorktreeCreated func(wtPath string) error
 
+	// AfterPersist runs after the task row is persisted (task.ID populated)
+	// and the session ID is reserved, but BEFORE the agent session starts and
+	// before the DependsOn short-circuit. It is the hook hera born-bound spawn
+	// uses to insert the role+binding while the task exists but is not yet
+	// running — so the worker is bound the instant it exists ("born bound").
+	//
+	// Contract:
+	//   - Returns an error → CreateAndStart runs the unwind chain (removing the
+	//     persisted row + worktree) and returns the error. No session is started.
+	//   - Returns (cleanup, nil) → cleanup (may be nil) is pushed onto the LIFO
+	//     compensating stack, so a LATER failure (runner.Start) also reverts the
+	//     hook's own side effects. This is what makes the binding write "one
+	//     more compensating step" rather than a non-transactional afterthought.
+	//
+	// Runs on the calling goroutine; same tview-safety caveat as
+	// OnWorktreeCreated (no tview widget calls without QueueUpdateDraw).
+	AfterPersist func(task *model.Task) (cleanup func(), err error)
+
 	// BeforeStart runs immediately before runner.Start. Used by the TUI to
 	// bump its startGen counter so in-flight tick reconciliations see a new
 	// generation.
@@ -220,6 +238,26 @@ func CreateAndStart(database *db.DB, runner SessionProvider, input CreateInput) 
 		task.SessionID = model.GenerateSessionID()
 		if uErr := database.Update(task); uErr != nil {
 			slog.Warn("CreateAndStart: persist session ID failed (continuing)", "id", taskID, "err", uErr)
+		}
+	}
+
+	// Step 4c: optional post-persist hook (hera born-bound binding write). Runs
+	// with a live task ID but before the session starts, so the row + worktree
+	// are already on the compensating stack and the hook's own cleanup joins
+	// that stack — a later runner.Start failure unwinds the binding too. Placed
+	// before the DependsOn short-circuit so a blocked born-bound task is also
+	// bound at creation time.
+	if input.AfterPersist != nil {
+		cleanup, hookErr := input.AfterPersist(task)
+		if hookErr != nil {
+			unwind("AfterPersist", hookErr)
+			return nil, nil, fmt.Errorf("after-persist hook: %w", hookErr)
+		}
+		if cleanup != nil {
+			cleanups = append(cleanups, func(trigger string) {
+				slog.Info("CreateAndStart unwind: after-persist cleanup", "trigger", trigger, "id", taskID)
+				cleanup()
+			})
 		}
 	}
 

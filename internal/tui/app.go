@@ -329,6 +329,17 @@ type focusTrackerIface interface {
 	SetFocused(taskID string, focused bool)
 }
 
+// heraFinishStore is the local-DB surface the session-exit finish policy mirror
+// needs (BUG-050). Satisfied by *db.DB. In --remote mode a.db is an
+// *apistore.Store that does NOT satisfy it, so the mirror in handleSessionExitUI
+// is skipped — the remote daemon already applied the policy authoritatively in
+// transitionTaskOnExit. Same local-only type-assertion pattern as the
+// remoteTaskCreator / remoteForker daemon-admin guards elsewhere in this file.
+type heraFinishStore interface {
+	TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error)
+	SetMeta(taskID, namespace, key, value string) error
+}
+
 // SetFocusTracker wires the daemon-level focus tracker into the TUI.
 // Must be called before Run(). Optional — nil is safe.
 func (a *App) SetFocusTracker(ft focusTrackerIface) {
@@ -1203,10 +1214,30 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 		// (a.pendingRerenderRestart) are handled below where we revert to
 		// InProgress before resuming, so they tolerate the transient flip.
 		if !pendingRestart {
-			if cleanExit {
+			// Hera worker finish policy mirror (BUG-050). Kept in lockstep with
+			// the daemon's transitionTaskOnExit so the two flip sites can never
+			// disagree (the PR #707 invariant): a task holding a live worker-kind
+			// hera binding never self-completes — the coordinator/human closes it
+			// out. In daemon mode the daemon flips first (its onFinish runs before
+			// the stream close that triggers us), so by the time we read t.Status
+			// it has already moved off InProgress and this whole block is a no-op;
+			// the mirror is load-bearing in daemon-less in-process mode, where this
+			// is the ONLY flip site (no *Daemon.transitionTaskOnExit runs). The
+			// hera lookup is local-only: a.db is *db.DB locally and satisfies
+			// heraFinishStore; in --remote mode it does not, so we fall through to
+			// the plain rule (the remote daemon already applied the policy).
+			workerBound := false
+			if fs, ok := a.db.(heraFinishStore); ok {
+				if wb, wErr := fs.TaskHoldsLiveHeraWorkerBinding(t.ID); wErr != nil {
+					uxlog.Log("[tui] hera worker-binding check failed for %s (default policy): %v", t.ID, wErr)
+				} else {
+					workerBound = wb
+				}
+			}
+			if cleanExit && !workerBound {
 				t.SetStatus(model.StatusComplete)
 			} else {
-				t.SetStatus(model.StatusInReview) // crash/stop/fast-fail → recoverable
+				t.SetStatus(model.StatusInReview) // crash/stop/fast-fail/worker → recoverable
 			}
 			// Persist via the partial setter, not Update: t was Get'd fresh above,
 			// but the concurrent autoname goroutine could land a rename in the
@@ -1214,7 +1245,15 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 			// status/timestamps, so it can't clobber that name — same reasoning
 			// as the reconciliation and OnPin/OnStatusChange paths.
 			a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
-			uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
+			if workerBound {
+				// Best-effort soft-fail mark consumed by the M6 rail/task-list.
+				if fs, ok := a.db.(heraFinishStore); ok {
+					if mErr := fs.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"); mErr != nil {
+						uxlog.Log("[tui] hera ready_to_close stamp failed for %s: %v", t.ID, mErr)
+					}
+				}
+			}
+			uxlog.Log("[tui] task %s (%s) → %s (hera_worker=%v)", t.ID, t.Name, t.Status, workerBound)
 		} else {
 			uxlog.Log("[tui] task %s exit deferred: daemon kick-restart in flight", t.ID)
 		}
