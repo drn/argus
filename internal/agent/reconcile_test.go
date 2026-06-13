@@ -75,3 +75,60 @@ func TestReconcileStaleSessions_TasksError(t *testing.T) {
 		t.Fatal("expected error when DB is closed")
 	}
 }
+
+// TestReconcileStaleSessionsExcept_SkipsAliveFlipsOrphans is the supervisor-mode
+// (P3) reconcile: tasks in the alive set (re-attached, kept running by the
+// supervisor across the daemon bounce) stay InProgress; InProgress tasks NOT in
+// the set are true orphans and flip to InReview. The returned slice is exactly
+// the orphans, so the caller can signal ARGUS_BOUNCED to just them.
+func TestReconcileStaleSessionsExcept_SkipsAliveFlipsOrphans(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	alive := &model.Task{Name: "alive", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(alive))
+	orphan := &model.Task{Name: "orphan", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(orphan))
+	done := &model.Task{Name: "done", Project: "proj", Status: model.StatusComplete}
+	testutil.NoError(t, d.Add(done))
+
+	flipped, err := ReconcileStaleSessionsExcept(d, map[string]bool{alive.ID: true})
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, flipped, []string{orphan.ID})
+
+	got, err := d.Get(alive.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusInProgress) // re-attached — not flipped
+
+	got, err = d.Get(orphan.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusInReview) // true orphan — flipped
+
+	got, err = d.Get(done.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusComplete) // untouched
+}
+
+// TestReconcileStaleSessionsExcept_NilAliveFlipsAll proves a nil alive set is
+// equivalent to the in-process ReconcileStaleSessions (every InProgress flips).
+func TestReconcileStaleSessionsExcept_NilAliveFlipsAll(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	a := &model.Task{Name: "a", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(a))
+	b := &model.Task{Name: "b", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.Add(b))
+
+	flipped, err := ReconcileStaleSessionsExcept(d, nil)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(flipped), 2)
+
+	for _, id := range []string{a.ID, b.ID} {
+		got, gerr := d.Get(id)
+		testutil.NoError(t, gerr)
+		testutil.Equal(t, got.Status, model.StatusInReview)
+	}
+}

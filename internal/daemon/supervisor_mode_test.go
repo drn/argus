@@ -17,15 +17,26 @@ type fakeSupClient struct {
 	stopAllCalled bool
 	closeCalled   bool
 	exitFn        func(string, ExitInfo)
+
+	// running is the live task-ID set Running() reports. nil mirrors the real
+	// client's RPC-failure return (the daemon must NOT reconcile on nil); a
+	// non-nil (even empty) slice is an authoritative "these are alive" answer.
+	running []string
+	// getCalls records the task IDs passed to Get — the supervisor-mode startup
+	// reconcile calls Get on every live ID to re-attach (arm the exit relay).
+	getCalls []string
 }
 
 func (f *fakeSupClient) Start(*model.Task, config.Config, uint16, uint16, bool) (agent.SessionHandle, error) {
 	return nil, nil
 }
-func (f *fakeSupClient) Stop(string) error                        { return nil }
-func (f *fakeSupClient) StopAll()                                 { f.stopAllCalled = true }
-func (f *fakeSupClient) Get(string) agent.SessionHandle           { return nil }
-func (f *fakeSupClient) Running() []string                        { return nil }
+func (f *fakeSupClient) Stop(string) error { return nil }
+func (f *fakeSupClient) StopAll()          { f.stopAllCalled = true }
+func (f *fakeSupClient) Get(id string) agent.SessionHandle {
+	f.getCalls = append(f.getCalls, id)
+	return nil
+}
+func (f *fakeSupClient) Running() []string                        { return f.running }
 func (f *fakeSupClient) Idle() []string                           { return nil }
 func (f *fakeSupClient) RunningAndIdle() (running, idle []string) { return nil, nil }
 func (f *fakeSupClient) HasSession(string) bool                   { return false }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/heraadopt"
 	"github.com/drn/argus/internal/model"
 )
 
@@ -84,6 +85,149 @@ func replayBounceSignals(database *db.DB, dataDir string) error {
 		return nil
 	}
 
+	sent := sendBounceSignals(database, ids)
+
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("bounce: failed to remove live-tasks file", "err", err)
+	}
+	slog.Info("bounce: replay complete", "total", len(ids), "sent", sent)
+	return nil
+}
+
+// ReconcileOnStartup runs the daemon's once-per-boot reconciliation of DB
+// session state against reality. Serve calls it after the singleton takeover
+// and before the listener accepts connections; it is also the seam tests drive
+// directly (so they never bind a socket or touch the live daemon). It has two
+// modes, selected by whether a supervisor-client is mounted:
+//
+//   - In-process (supervisor OFF, d.supClient == nil): byte-identical to the
+//     pre-P3 path. The previous daemon StopAll'd every agent, so EVERY InProgress
+//     row is an orphan → flip all to InReview, then replay ARGUS_BOUNCED from the
+//     live-tasks file the previous cleanup wrote.
+//
+//   - Supervisor (ON, d.supClient != nil): the supervisor kept the agents alive
+//     across the daemon bounce, so we RE-ATTACH instead of orphaning. See
+//     reattachSupervised — it queries the supervisor's live set, re-arms each
+//     live session, and flips only the true orphans.
+//
+// heraadopt.ReconcileBindings runs in BOTH modes: it is keyed on task-row
+// existence (not session liveness), so a re-attached task's row exists and its
+// hera binding survives for free — M4 composes with re-attach without change.
+func (d *Daemon) ReconcileOnStartup() {
+	if d.supClient != nil {
+		d.reattachSupervised()
+	} else {
+		if n, err := agent.ReconcileStaleSessions(d.db); err != nil {
+			slog.Warn("reconcile stale sessions failed", "err", err)
+		} else if n > 0 {
+			slog.Info("reconciled stale sessions", "count", n)
+		}
+	}
+
+	// Sweep hera bindings whose argus task row no longer exists — the row was
+	// deleted while the daemon was down so the delete-cascade never severed the
+	// binding (risk e). End them with reason "task_missing". Idempotent; runs
+	// every boot in both modes.
+	if n, err := heraadopt.ReconcileBindings(d.db); err != nil {
+		slog.Warn("reconcile hera bindings failed", "err", err)
+	} else if n > 0 {
+		slog.Info("reconciled hera bindings", "ended", n)
+	}
+
+	// In-process mode: emit ARGUS_BOUNCED for every task that had a live session
+	// when the previous daemon exited (read from the live-tasks file). Supervisor
+	// mode does NOT use the file — re-attached agents were never interrupted, and
+	// the true-orphan signals are sent inside reattachSupervised against the live
+	// set, so a stale file (there shouldn't be one — supervisor-mode cleanup never
+	// writes it) must not double-fire.
+	if d.supClient == nil {
+		if err := replayBounceSignals(d.db, db.DataDir()); err != nil {
+			slog.Warn("bounce: replay failed", "err", err)
+		}
+	}
+}
+
+// reattachSupervised is the supervisor-mode (P3) startup reconcile. The
+// supervisor is a separate long-lived process that owns the agent PTYs, so a
+// daemon bounce leaves the agents running. This:
+//
+//  1. Queries the supervisor's live task-ID set (authoritative — the supervisor
+//     owns the sessions). If the query fails (nil — distinct from an empty
+//     authoritative set), it SKIPS reconciliation entirely: flipping live agents
+//     to InReview on an unconfirmed empty set would be a false termination. The
+//     next bounce or the TUI tick reconciles once the supervisor answers. This
+//     mirrors the TUI's runningIDs!=nil guard (daemon-rpc.md).
+//
+//  2. RE-ATTACHES each live session by calling Get on the supervisor-client.
+//     Get opens a stream (StreamHeader{Since:0}) so the supervisor replays its
+//     ring and the daemon's local ring rebuilds — AND it arms the supervisor-
+//     client's exit relay (connectStream → removeSession → OnSessionExit →
+//     handleSessionExit). The armed relay is LOAD-BEARING for #707 across the
+//     bounce: without it, a re-attached session that later exits cleanly while no
+//     TUI/PWA client is attached would never reach handleSessionExit and the task
+//     would never flip to Complete.
+//
+//  3. Flips ONLY the true orphans (InProgress rows the supervisor does NOT report
+//     alive — e.g. the supervisor also restarted/crashed) to InReview, leaving
+//     re-attached tasks InProgress.
+//
+//  4. Posts ARGUS_BOUNCED to those true orphans only (they actually lost their
+//     session); re-attached agents were never interrupted and get nothing. In the
+//     pure re-attach case (the supervisor kept everything), this is a no-op.
+func (d *Daemon) reattachSupervised() {
+	live := d.supClient.Running()
+	if live == nil {
+		// nil ⇒ the ListSessions RPC to the supervisor failed; we cannot tell live
+		// from orphan. Do NOT flip — wrongly InReview-ing still-alive agents is a
+		// false termination. (An authoritative empty set is non-nil, so a genuine
+		// "no sessions" case still reconciles.)
+		slog.Warn("reattach: supervisor live-set query failed; skipping reconcile to avoid false termination")
+		return
+	}
+
+	liveSet := make(map[string]bool, len(live))
+	for _, id := range live {
+		liveSet[id] = true
+	}
+
+	// Re-attach each live session: rebuild the local ring + arm the exit relay.
+	reattached := 0
+	for id := range liveSet {
+		if sess := d.supClient.Get(id); sess != nil {
+			reattached++
+		}
+	}
+	slog.Info("reattach: re-attached live supervisor sessions", "reattached", reattached, "live", len(liveSet))
+
+	// Flip only the true orphans; re-attached (live) tasks stay InProgress.
+	orphans, err := agent.ReconcileStaleSessionsExcept(d.db, liveSet)
+	if err != nil {
+		slog.Warn("reattach: reconcile stale sessions failed", "err", err)
+		return
+	}
+	if len(orphans) > 0 {
+		slog.Info("reattach: reconciled true orphans", "count", len(orphans))
+	}
+
+	// Signal ARGUS_BOUNCED to the true orphans only.
+	if sent := sendBounceSignals(d.db, orphans); sent > 0 {
+		slog.Info("reattach: signalled orphans", "sent", sent)
+	}
+}
+
+// sendBounceSignals posts an ARGUS_BOUNCED note into each given task's inbox,
+// skipping tasks that no longer exist or are archived. Returns the number of
+// signals actually sent. Two callers share it:
+//
+//   - replayBounceSignals (in-process mode): feeds the IDs read from the
+//     live-tasks-at-shutdown file (every session alive when the daemon stopped).
+//   - the supervisor-mode startup reconcile (P3): feeds ONLY the true-orphan IDs
+//     (InProgress rows the supervisor no longer reports alive). Re-attached
+//     agents were never interrupted, so they are deliberately NOT signalled.
+//
+// Per-task send failures are logged and skipped so one bad row never blocks the
+// rest of the batch.
+func sendBounceSignals(database *db.DB, ids []string) int {
 	sent := 0
 	for _, id := range ids {
 		t, getErr := database.Get(id)
@@ -103,10 +247,5 @@ func replayBounceSignals(database *db.DB, dataDir string) error {
 		}
 		sent++
 	}
-
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("bounce: failed to remove live-tasks file", "err", err)
-	}
-	slog.Info("bounce: replay complete", "total", len(ids), "sent", sent)
-	return nil
+	return sent
 }

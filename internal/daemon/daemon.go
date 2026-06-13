@@ -572,35 +572,12 @@ func (d *Daemon) Serve(sockPath string) error {
 	// Remove stale socket file.
 	os.Remove(sockPath)
 
-	// Sweep DB for tasks stuck at InProgress. The previous daemon's sessions
-	// (if any) are dead; the runner here is empty, so any InProgress row is
-	// orphaned. Flip them to InReview so the TUI/PWA can resume or discard.
-	// Done before the listener accepts connections so first-poll clients see
-	// the reconciled state.
-	if n, err := agent.ReconcileStaleSessions(d.db); err != nil {
-		slog.Warn("reconcile stale sessions failed", "err", err)
-	} else if n > 0 {
-		slog.Info("reconciled stale sessions", "count", n)
-	}
-
-	// Sweep hera bindings whose argus task row no longer exists — the row was
-	// deleted while the daemon was down so the delete-cascade never severed the
-	// binding (risk e). End them with reason "task_missing". Runs alongside the
-	// stale-session reconcile, before accepting connections.
-	if n, err := heraadopt.ReconcileBindings(d.db); err != nil {
-		slog.Warn("reconcile hera bindings failed", "err", err)
-	} else if n > 0 {
-		slog.Info("reconciled hera bindings", "ended", n)
-	}
-
-	// Emit ARGUS_BOUNCED into the inbox of every task that had a live session
-	// when the previous daemon exited. Runs after stale-session reconcile so
-	// tasks are already flipped to InReview before the signal lands. Runs
-	// before accepting connections so agents that auto-resume see the signal
-	// on their first inbox poll.
-	if err := replayBounceSignals(d.db, db.DataDir()); err != nil {
-		slog.Warn("bounce: replay failed", "err", err)
-	}
+	// Reconcile DB session state against reality before accepting connections so
+	// first-poll clients see the settled state. Mode-aware (see ReconcileOnStartup):
+	// in-process mode flips every stale InProgress→InReview and replays bounce
+	// signals from the live-tasks file; supervisor mode re-attaches the agents the
+	// supervisor kept alive and flips only the true orphans.
+	d.ReconcileOnStartup()
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
