@@ -74,6 +74,7 @@ const (
 	modePluginView
 	modeHeraInput   // Hera-view rename / spawn-prompt input modal
 	modeHeraConfirm // Hera-view archive-of-live / delete confirmation modal
+	modeHeraPicker  // Hera-view DAG link/unlink parent picker (task list modal)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -131,6 +132,12 @@ type App struct {
 	heraConfirmModal *modal.ConfirmModal
 	heraInputSubmit  func(string) // called with the field value on input-modal submit
 	heraConfirmDo    func()       // called on confirm-modal accept
+
+	// Hera-view DAG link/unlink parent picker (M7). The modal is a reused
+	// TaskSwitcherModal retitled for the link/unlink flow; heraPickerSubmit
+	// captures the child task so the chosen parent ID routes to orch.Link/Unlink.
+	heraPickerModal  *TaskSwitcherModal
+	heraPickerSubmit func(parentID string)
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -613,6 +620,10 @@ func (a *App) buildUI() {
 	a.heraPage.CoordPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
 	a.heraPage.AgentPane().OnBranchChange = func() { a.forceRedraw("hera agent pane branch changed") }
 	a.heraPage.AgentPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
+	// M7: the embedded Details-pane DAG (coordinator selection) shares the legacy
+	// DAG tab's widget callbacks. OnBranchChange stays log-only (never Sync) — the
+	// cursor-highlight ghost-prevention contract, identical to the standalone tab.
+	a.heraPage.DAG().OnBranchChange = func() { a.forceRedraw("hera dag branch changed") }
 
 	// M6c: thin mutation layer + rail keyset. Wired only in local mode (heraReader
 	// is the same *db.DB; remote mode leaves heraOps nil and the callbacks unwired,
@@ -629,6 +640,23 @@ func (a *App) buildUI() {
 		a.heraPage.OnStatusRevert = func(sel hera.Selection) { a.heraStatusStep(sel, -1) }
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
+
+		// M7: DAG render mode of the Details pane. The dependency-action callbacks
+		// are shared with the legacy DAG tab (openLinkPickerForTask etc.); the node
+		// provider scopes the graph to the selected orchestrator's live-bound tasks
+		// and reuses dagNodesFromTasks (no layout fork — web/TUI parity holds).
+		a.heraPage.DAG().OnEnter = func(id string) { a.openAgentForTask(id) }
+		a.heraPage.DAG().OnLink = func(child string) { a.openLinkPickerForTask(child) }
+		a.heraPage.DAG().OnUnlink = func(child string) { a.openUnlinkPickerForTask(child) }
+		a.heraPage.DAG().OnHalt = func(id string) { a.confirmHaltDownstream(id) }
+		a.heraPage.SetDAGNodeProvider(func(o *hera.OrchView) []dagview.Node {
+			tasks, err := a.db.Tasks()
+			if err != nil {
+				uxlog.Log("[hera-view] DAG provider: db.Tasks failed: %v", err)
+				return nil
+			}
+			return dagNodesFromTasks(scopeTasksToOrch(tasks, o))
+		})
 	}
 
 	a.pages = tview.NewPages().
@@ -2033,6 +2061,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Hera-view confirm modal (archive-of-live / delete) — delegate to the modal.
 	if a.mode == modeHeraConfirm && a.heraConfirmModal != nil {
 		a.handleHeraConfirmKey(event)
+		return nil
+	}
+
+	// Hera-view DAG link/unlink parent picker — delegate to the modal.
+	if a.mode == modeHeraPicker && a.heraPickerModal != nil {
+		a.handleHeraPickerKey(event)
 		return nil
 	}
 

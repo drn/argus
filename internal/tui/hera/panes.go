@@ -70,6 +70,11 @@ func (p *HeraPage) applySelection() {
 	if p.detailsMode {
 		p.bindPane(p.agentPane, &p.agentBound, "", "agent")
 		p.details.SetOrch(p.sel.Orch, p.prMeta)
+		// In DAG sub-mode, reproject this coordinator's dependency subgraph
+		// (roster sub-mode reads straight from the model, no rebuild needed).
+		if p.detailsSub == subModeDAG {
+			p.rebuildDAG()
+		}
 	} else {
 		p.bindPane(p.agentPane, &p.agentBound, p.sel.TaskID(), "agent")
 	}

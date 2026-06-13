@@ -274,3 +274,48 @@ func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 	}
 	testutil.Equal(t, found, true)
 }
+
+// TestSmoke_HeraDetailsDAGModeAndLinkPicker drives the M7 flow end-to-end
+// through the real event loop: Hera tab → coordinator selected → Tab into the
+// Details region → `g` enters the DAG render mode (showing the orchestrator's
+// dependency subgraph) → `l` opens the link parent-picker. Proves the global
+// key routing, focus ladder, and DAG-mode key wiring all compose.
+func TestSmoke_HeraDetailsDAGModeAndLinkPicker(t *testing.T) {
+	d := testDB(t)
+	orch := seedHeraOrch(t, d, "orch")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
+	// An edge so the orchestrator-scoped DAG has nodes (orphan filter keeps a
+	// referenced source + its child).
+	testutil.NoError(t, d.SetDependsOn("tw", []string{"tc"}))
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sim.InjectKey(tcell.KeyRune, '2', 0) // → Hera tab (cursor lands on orch header)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyRune, 'j', 0) // → coordinator role
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true) })
+
+	// Tab into the Details region (rail → coord → agent), then `g` → DAG mode.
+	sim.InjectKey(tcell.KeyTab, 0, 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyTab, 0, 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyRune, 'g', 0)
+	syncUI(t, app.tapp)
+	// The embedded DAG has nodes (cursor non-empty) and is the active sub-mode.
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.DAG().CurrentTask() != "", true) })
+
+	// `l` on a DAG node opens the link parent-picker.
+	sim.InjectKey(tcell.KeyRune, 'l', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraPicker) })
+
+	// Esc closes the picker and returns to the task-list mode on the Hera page.
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+}

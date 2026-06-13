@@ -34,6 +34,8 @@ type TaskSwitcherModal struct {
 	cursor   int // position within filtered
 	selected bool
 	canceled bool
+	title    string // centered title bar text (default " Switch task ")
+	help     string // footer hint (default switch wording)
 }
 
 // NewTaskSwitcherModal creates a task switcher over the given entries.
@@ -42,6 +44,20 @@ func NewTaskSwitcherModal(entries []taskSwitcherEntry) *TaskSwitcherModal {
 		Box:      tview.NewBox(),
 		all:      entries,
 		filtered: entries,
+		title:    " Switch task ",
+		help:     "↑/↓ select  Enter switch  Esc cancel",
+	}
+}
+
+// SetTitles overrides the modal title bar and footer hint so the same widget can
+// drive the Hera DAG link/unlink parent picker (M7) without reading "Switch
+// task". Empty strings keep the current value.
+func (m *TaskSwitcherModal) SetTitles(title, help string) {
+	if title != "" {
+		m.title = title
+	}
+	if help != "" {
+		m.help = help
 	}
 }
 
@@ -200,10 +216,13 @@ func (m *TaskSwitcherModal) Draw(screen tcell.Screen) {
 
 	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
-	title := " Switch task "
+	title := m.title
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
 	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true)
-	for i, r := range title {
+	// Iterate the []rune (not the byte-indexed range over the string) so a
+	// multi-byte title rune — e.g. an arrow in the link-picker title — doesn't
+	// leave gap cells (the rune-vs-byte placement bug; see gotchas/dag-rendering.md).
+	for i, r := range []rune(title) {
 		screen.SetContent(titleX+i, my, r, nil, titleStyle)
 	}
 
@@ -269,6 +288,5 @@ func (m *TaskSwitcherModal) Draw(screen tcell.Screen) {
 	}
 
 	helpRow := my + modalH - 2
-	help := "↑/↓ select  Enter switch  Esc cancel"
-	widget.DrawText(screen, innerX, helpRow, innerW, help, theme.StyleDimmed)
+	widget.DrawText(screen, innerX, helpRow, innerW, m.help, theme.StyleDimmed)
 }
