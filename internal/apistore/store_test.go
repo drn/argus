@@ -111,6 +111,66 @@ func TestStore_RefreshConfig(t *testing.T) {
 	testutil.Equal(t, s.Config().Defaults.Backend, "claude")
 }
 
+// TestStore_RefreshConfig_ErrorPathsReturnCachedSnapshot pins the dedup'd
+// error-path behavior of RefreshConfig: every failure mode (HTTP transport
+// error, then a garbage body that fails JSON unmarshal) must return the last
+// successfully-cached snapshot alongside the error — never a zero-value
+// config that would blank the live UI. The cache read is routed through
+// cachedSnapshot(); this exercises both branches that depend on it.
+func TestStore_RefreshConfig_ErrorPathsReturnCachedSnapshot(t *testing.T) {
+	// mode flips per-subtest so the single /api/config handler can simulate
+	// a healthy fetch, a transport-level failure, and a garbage 200 body.
+	const (
+		modeOK      = "ok"
+		modeHTTPErr = "http_err"
+		modeGarbage = "garbage"
+	)
+	f := newFakeAPI(t)
+	mode := modeOK
+	f.mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		switch mode {
+		case modeHTTPErr:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case modeGarbage:
+			// 200 OK but a JSON shape that can't unmarshal into config.Config
+			// (Defaults must be an object, not a string) — drives the
+			// json.Unmarshal error path.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Defaults":"not-an-object"}`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(f.configResponse)
+		}
+	})
+
+	s := f.store()
+	// Prime the cache with a good snapshot.
+	_, err := s.RefreshConfig(context.Background())
+	testutil.NoError(t, err)
+	testutil.Equal(t, s.Config().Defaults.Backend, "claude")
+
+	tests := []struct {
+		name string
+		mode string
+	}{
+		{"http transport error", modeHTTPErr},
+		{"garbage body unmarshal error", modeGarbage},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mode = tc.mode
+			cfg, err := s.RefreshConfig(context.Background())
+			if err == nil {
+				t.Fatal("expected error from RefreshConfig")
+			}
+			// Returned snapshot is the last-cached value, not the zero config.
+			testutil.Equal(t, cfg.Defaults.Backend, "claude")
+			// And the cache itself is untouched by the failed refresh.
+			testutil.Equal(t, s.Config().Defaults.Backend, "claude")
+		})
+	}
+}
+
 func TestStore_Rename(t *testing.T) {
 	f := newFakeAPI(t)
 	var captured string
