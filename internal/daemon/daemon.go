@@ -600,14 +600,15 @@ func (d *Daemon) Serve(sockPath string) error {
 	d.deps = dw
 	go dw.Start()
 
-	// Start the hera auto-adopt watcher (M4). Always-on — an empty hera table
-	// set makes every tick a no-op, so there is no separate gate today (M8
-	// folds it under cfg.Hera.Enabled alongside the rest of the hera subsystem).
-	// It re-derives rule D4 from ground truth each tick and only ever writes
-	// hera binding rows — never a task session or status (race d). Modeled on
-	// the depswatcher loop; see internal/heraadopt for the design rationale.
-	d.heraAdopt = heraadopt.New(d.db)
-	go d.heraAdopt.Start()
+	// Start the hera auto-adopt watcher (M4), gated on cfg.Hera.Enabled.
+	// When disabled, d.heraAdopt stays nil and the Stop() guard at shutdown
+	// is a no-op. When enabled, it re-derives rule D4 each tick and only
+	// ever writes hera binding rows — never a task session or status (race d).
+	// Modeled on the depswatcher loop; see internal/heraadopt for the rationale.
+	if cfg.Hera.Enabled {
+		d.heraAdopt = heraadopt.New(d.db)
+		go d.heraAdopt.Start()
+	}
 
 	// Reliable pane-delivery: create the FocusTracker and Notifier before
 	// the MCP and API servers so both can be wired at construction.
@@ -680,8 +681,14 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
-		// M8: gate on cfg.Hera.Enabled once the Settings toggle lands (Milestone 8).
-		mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
+		// Gate on cfg.Hera.Enabled: when disabled, the native hera_* tools are
+		// not registered so the MCP server exposes no hera-scope tools. An
+		// external Hera daemon (if running) can still register its tools via the
+		// plugin proxy path — the dup-tool guard (hera-scope filter) is already
+		// in place when the native service is wired, and is simply absent here.
+		if cfg.Hera.Enabled {
+			mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db, d.heraSpawnWorker)
+		}
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv

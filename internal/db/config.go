@@ -127,6 +127,13 @@ func (d *DB) Config() config.Config {
 		}
 	}
 
+	// Hera config. Absent key ⇒ true (enabled by default); only an explicit
+	// "false" stored in the DB disables it. The config.toml overlay (applied
+	// below by cfgLoader.Apply) wins over this DB value when both are set.
+	if v, ok := kv["hera.enabled"]; ok {
+		cfg.Hera.Enabled = v == "true"
+	}
+
 	// Argus self-update config.
 	if v, ok := kv["argus.source_path"]; ok {
 		cfg.Argus.SourcePath = v

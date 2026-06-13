@@ -15,7 +15,16 @@ type Config struct {
 	Sandbox     SandboxConfig      `toml:"sandbox"`
 	KB          KBConfig           `toml:"kb"`
 	API         APIConfig          `toml:"api"`
+	Hera        HeraConfig         `toml:"hera"`
 	Argus       ArgusConfig        `toml:"argus"`
+}
+
+// HeraConfig controls the native Hera multi-agent coordination view.
+type HeraConfig struct {
+	// Enabled defaults to true (absent key ⇒ on). Set to false to disable
+	// the native Hera view and fall back to the legacy DAG-only second tab.
+	// config.toml wins over the DB when both are set (standard overlay rule).
+	Enabled bool `toml:"enabled"`
 }
 
 // ArgusConfig holds settings for self-updating the Argus binary.
@@ -243,6 +252,9 @@ func DefaultConfig() Config {
 		},
 		API: APIConfig{
 			HTTPPort: 7743,
+		},
+		Hera: HeraConfig{
+			Enabled: true, // default on; only explicit "false" in DB/toml disables it
 		},
 	}
 }

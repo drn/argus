@@ -88,6 +88,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 		"kb.metis_vault_path":      "/tmp/metis",
 		"api.enabled":              "true",
 		"api.http_port":            "8123",
+		"hera.enabled":             "false",
 		"argus.source_path":        "/path/to/argus",
 	}
 	for k, v := range overrides {
@@ -115,7 +116,35 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.KB.MetisVaultPath, "/tmp/metis")
 	testutil.Equal(t, cfg.API.Enabled, true)
 	testutil.Equal(t, cfg.API.HTTPPort, 8123)
+	testutil.Equal(t, cfg.Hera.Enabled, false)
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
+}
+
+// TestDB_Config_HeraEnabledDefaultTrue verifies that an absent hera.enabled key
+// leaves Hera enabled (the default), matching the kb/api absent-key convention.
+func TestDB_Config_HeraEnabledDefaultTrue(t *testing.T) {
+	d := testDB(t)
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Hera.Enabled, true)
+}
+
+// TestDB_Config_HeraEnabledExplicitFalse verifies that writing "false" disables
+// the native Hera view.
+func TestDB_Config_HeraEnabledExplicitFalse(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("hera.enabled", "false"))
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Hera.Enabled, false)
+}
+
+// TestDB_Config_HeraEnabledExplicitTrue verifies that writing "true" re-enables
+// Hera after a prior disable.
+func TestDB_Config_HeraEnabledExplicitTrue(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("hera.enabled", "false"))
+	testutil.NoError(t, d.SetConfigValue("hera.enabled", "true"))
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Hera.Enabled, true)
 }
 
 func TestDB_Config_DefaultAgentZoomDefaultsTrue(t *testing.T) {

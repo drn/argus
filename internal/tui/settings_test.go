@@ -1626,6 +1626,145 @@ func TestSettingsView_MKeyStartsModelEdit(t *testing.T) {
 	testutil.Equal(t, sv.IsEditing(), true)
 }
 
+// --- Hera toggle ---
+
+func TestSettingsView_HeraToggle(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catHera)
+
+	// Default from in-memory DB: Hera enabled (absent key ⇒ true).
+	testutil.Equal(t, sv.heraEnabled, true)
+
+	// Toggle once → disabled.
+	for i, row := range sv.rows {
+		if row.kind == srHera {
+			sv.cursor = i
+			sv.handleEnter()
+			break
+		}
+	}
+	testutil.Equal(t, sv.heraEnabled, false)
+
+	// Toggle back → enabled.
+	for i, row := range sv.rows {
+		if row.kind == srHera {
+			sv.cursor = i
+			sv.handleEnter()
+			break
+		}
+	}
+	testutil.Equal(t, sv.heraEnabled, true)
+}
+
+func TestSettingsView_HeraToggle_PersistsToStore(t *testing.T) {
+	database, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sv := NewSettingsView(database)
+	sv.Refresh()
+	sv.setCategory(catHera)
+
+	for i, row := range sv.rows {
+		if row.kind == srHera {
+			sv.cursor = i
+			sv.handleEnter()
+			break
+		}
+	}
+
+	// Re-read from the store to confirm persistence.
+	cfg := database.Config()
+	testutil.Equal(t, cfg.Hera.Enabled, false)
+}
+
+func TestSettingsView_HeraToggle_FiresOnHeraToggle(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catHera)
+
+	var got bool
+	var calls int
+	sv.OnHeraToggle = func(enabled bool) {
+		got = enabled
+		calls++
+	}
+
+	for i, row := range sv.rows {
+		if row.kind == srHera {
+			sv.cursor = i
+			sv.handleEnter()
+			break
+		}
+	}
+
+	testutil.Equal(t, calls, 1)
+	testutil.Equal(t, got, false) // was true (default), toggled to false
+}
+
+func TestSettingsView_HeraCategory_InBuiltinList(t *testing.T) {
+	found := false
+	for _, c := range builtinCategories {
+		if c == catHera {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("catHera not found in builtinCategories")
+	}
+}
+
+func TestSettingsView_HeraCategory_LabelIsHera(t *testing.T) {
+	testutil.Equal(t, catHera.Label(), "Hera")
+}
+
+func TestSettingsView_HeraCategory_HasSrHeraRow(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catHera)
+	var found bool
+	for _, row := range sv.rows {
+		if row.kind == srHera {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("catHera should produce an srHera row")
+	}
+}
+
+func TestSettingsView_HeraCategory_RowLabelReflectsState(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catHera)
+
+	// Initially enabled (default).
+	for _, row := range sv.rows {
+		if row.kind == srHera {
+			if row.label != "Enabled" {
+				t.Errorf("row label when enabled = %q, want Enabled", row.label)
+			}
+			break
+		}
+	}
+
+	// Toggle to disabled.
+	for i, row := range sv.rows {
+		if row.kind == srHera {
+			sv.cursor = i
+			sv.handleEnter()
+			break
+		}
+	}
+	for _, row := range sv.rows {
+		if row.kind == srHera {
+			if row.label != "Disabled" {
+				t.Errorf("row label when disabled = %q, want Disabled", row.label)
+			}
+			break
+		}
+	}
+}
+
 func TestSettingsView_MKeyOnNonBackendRow(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.setCategory(catSandbox)

@@ -25,6 +25,24 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.UI.DefaultAgentZoom {
 		t.Error("DefaultAgentZoom should default to true")
 	}
+	if !cfg.Hera.Enabled {
+		t.Error("Hera.Enabled should default to true (absent key ⇒ enabled)")
+	}
+}
+
+func TestHeraConfig_DefaultEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Hera.Enabled {
+		t.Error("Hera.Enabled must default to true; absent DB key ⇒ native Hera on")
+	}
+}
+
+func TestHeraConfig_TOMLOverride(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Hera.Enabled = false
+	if cfg.Hera.Enabled {
+		t.Error("explicit false must override the default")
+	}
 }
 
 func TestDefaultKeybindings(t *testing.T) {
