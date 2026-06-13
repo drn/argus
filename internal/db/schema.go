@@ -384,5 +384,84 @@ func (d *DB) createTables() error {
 		return fmt.Errorf("creating plugin_views table: %w", err)
 	}
 
+	if err := d.createHeraTables(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// createHeraTables installs the native Hera role/binding/orchestrator model
+// (Milestone 1 of merging Hera into Argus — see context/plans/merge-hera-into-argus.md).
+// These are the FINAL shape of Hera's 10 versioned migrations collapsed into
+// drop-in CREATE TABLE IF NOT EXISTS statements; Argus has no versioned
+// migration runner, so the migration history is not replayed.
+//
+// FK cascade (orchestrator → roles → bindings / role_status) is REAL here —
+// it requires PRAGMA foreign_keys=ON, which Open/OpenInMemory now enable on the
+// connection. The binding → argus task relationship is deliberately NOT an FK:
+// argus_task_id is plain TEXT because tasks are soft-archivable and a hard FK
+// would either block archive or cascade-wipe bindings the user expects to
+// resume. That cleanup is app-level — see Delete in tasks.go, which ends live
+// bindings, while SetArchived leaves them intact (archive is resumable).
+func (d *DB) createHeraTables() error {
+	ddl := `
+		CREATE TABLE IF NOT EXISTS hera_orchestrators (
+			id          INTEGER PRIMARY KEY,
+			name        TEXT NOT NULL,
+			created_at  TEXT NOT NULL,
+			archived_at TEXT,
+			pinned_at   TEXT
+		);
+		-- Partial unique on name scoped to active rows: an archived orchestrator
+		-- may coexist with a fresh active row of the same name (Hera migration 0003).
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_orch_active_name ON hera_orchestrators(name) WHERE archived_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_hera_orch_archived ON hera_orchestrators(archived_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_orch_pinned   ON hera_orchestrators(pinned_at);
+
+		CREATE TABLE IF NOT EXISTS hera_roles (
+			id              INTEGER PRIMARY KEY,
+			orchestrator_id INTEGER NOT NULL REFERENCES hera_orchestrators(id) ON DELETE CASCADE,
+			name            TEXT NOT NULL,
+			kind            TEXT NOT NULL CHECK (kind IN ('coordinator','worker','freelance')),
+			argus_project   TEXT NOT NULL,
+			prompt          TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL,
+			archived_at     TEXT,
+			pinned_at       TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_archived ON hera_roles(archived_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_pinned   ON hera_roles(pinned_at);
+
+		CREATE TABLE IF NOT EXISTS hera_bindings (
+			id              INTEGER PRIMARY KEY,
+			role_id         INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			orchestrator_id INTEGER REFERENCES hera_orchestrators(id) ON DELETE CASCADE,
+			argus_task_id   TEXT NOT NULL,
+			worktree_path   TEXT NOT NULL,
+			started_at      TEXT NOT NULL,
+			ended_at        TEXT,
+			end_reason      TEXT
+		);
+		-- THE multi-binding invariant (Hera migration 0004): live-uniqueness is
+		-- per-(task, orchestrator), NOT per-task. One argus task may simultaneously
+		-- be a worker in orchestrator A and a coordinator in B. orchestrator_id is
+		-- denormalized from the role so these partial indexes need no JOIN. Role-side
+		-- uniqueness stays one-live-binding-per-role (a role is incarnated at most once).
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_role          ON hera_bindings(role_id) WHERE ended_at IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_task_orch     ON hera_bindings(argus_task_id, orchestrator_id) WHERE ended_at IS NULL;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_bindings_live_worktree_orch ON hera_bindings(worktree_path, orchestrator_id) WHERE ended_at IS NULL;
+
+		CREATE TABLE IF NOT EXISTS hera_role_status (
+			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,
+			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done')),
+			updated_at TEXT NOT NULL
+		);
+	`
+	if _, err := d.conn.Exec(ddl); err != nil {
+		return fmt.Errorf("creating hera tables: %w", err)
+	}
 	return nil
 }
