@@ -122,13 +122,14 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
 }
 
-// TestDB_Config_SupervisorEnabledDefaultFalse verifies that an absent
-// supervisor.enabled key leaves the supervisor OFF (the default — the daemon
-// owns agent PTYs in-process, byte-identical to pre-P2).
-func TestDB_Config_SupervisorEnabledDefaultFalse(t *testing.T) {
+// TestDB_Config_SupervisorEnabledDefaultTrue verifies that an absent
+// supervisor.enabled key leaves the supervisor ON (the P4 default — agents run
+// under the out-of-process session-supervisor so the daemon can bounce freely),
+// matching the hera/kb/api absent-key convention (here: default ON like hera).
+func TestDB_Config_SupervisorEnabledDefaultTrue(t *testing.T) {
 	d := testDB(t)
 	cfg := d.Config()
-	testutil.Equal(t, cfg.Supervisor.Enabled, false)
+	testutil.Equal(t, cfg.Supervisor.Enabled, true)
 }
 
 // TestDB_Config_SupervisorEnabledExplicitTrue verifies that writing "true"
@@ -140,14 +141,36 @@ func TestDB_Config_SupervisorEnabledExplicitTrue(t *testing.T) {
 	testutil.Equal(t, cfg.Supervisor.Enabled, true)
 }
 
-// TestDB_Config_SupervisorEnabledExplicitFalse verifies that writing "false"
-// (after a prior "true") disables the supervisor again.
+// TestDB_Config_SupervisorEnabledExplicitFalse verifies the DB rollback: writing
+// "false" disables the supervisor (restores the in-process runner path) even
+// though the default is now ON.
 func TestDB_Config_SupervisorEnabledExplicitFalse(t *testing.T) {
 	d := testDB(t)
-	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "true"))
 	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "false"))
 	cfg := d.Config()
 	testutil.Equal(t, cfg.Supervisor.Enabled, false)
+}
+
+// TestDB_Config_SupervisorTOMLRollback verifies the config.toml rollback path:
+// a `supervisor.enabled = false` in config.toml overrides both the default-ON
+// and a DB-stored "true", restoring the retained in-process runner. This is the
+// power-user rollback knob (toml wins over DB; standard overlay precedence).
+func TestDB_Config_SupervisorTOMLRollback(t *testing.T) {
+	dir := t.TempDir()
+	d, err := Open(filepath.Join(dir, "data.sql"))
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	// DB says ON; the toml file must still win and force OFF (the rollback).
+	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "true"))
+
+	toml := `
+[supervisor]
+enabled = false
+`
+	testutil.NoError(t, os.WriteFile(filepath.Join(dir, config.FileName), []byte(toml), 0o644))
+
+	testutil.Equal(t, d.Config().Supervisor.Enabled, false)
 }
 
 // TestDB_Config_HeraEnabledDefaultTrue verifies that an absent hera.enabled key

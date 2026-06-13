@@ -24,12 +24,15 @@ type Config struct {
 // out-of-process session-supervisor (see context/plans/session-supervisor.md)
 // instead of its own in-process runner.
 type SupervisorConfig struct {
-	// Enabled defaults to FALSE (absent key ⇒ off). When false, the daemon owns
-	// agent PTYs in-process exactly as before P2 — byte-identical. When true, the
-	// daemon connects to the session-supervisor over supervisor.sock (auto-starting
-	// it if absent) and proxies every session through it, so the daemon can bounce
-	// without interrupting agents. config.toml wins over the DB when both are set
-	// (standard overlay rule; mirrors kb.enabled / api.enabled / hera.enabled).
+	// Enabled defaults to TRUE (absent key ⇒ on, as of P4 — mirroring how
+	// hera.enabled defaults on). When true, the daemon connects to the
+	// session-supervisor over supervisor.sock (auto-starting it if absent) and
+	// proxies every session through it, so the daemon can bounce without
+	// interrupting agents. An explicit "false" (DB or config.toml) is the
+	// ROLLBACK: it restores the in-process runner path — byte-identical to
+	// pre-P2 — which is RETAINED for one release per the migration plan, NOT
+	// deleted. config.toml wins over the DB when both are set (standard overlay
+	// rule; mirrors kb.enabled / api.enabled / hera.enabled).
 	Enabled bool `toml:"enabled"`
 }
 
@@ -269,6 +272,13 @@ func DefaultConfig() Config {
 		},
 		Hera: HeraConfig{
 			Enabled: true, // default on; only explicit "false" in DB/toml disables it
+		},
+		Supervisor: SupervisorConfig{
+			// Default ON as of P4: agents run under the out-of-process
+			// session-supervisor so the daemon can bounce without interrupting
+			// them. Only an explicit "false" in DB/toml rolls back to the
+			// retained in-process runner path.
+			Enabled: true,
 		},
 	}
 }

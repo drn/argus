@@ -138,12 +138,34 @@ func (d *Daemon) ReconcileOnStartup() {
 	// when the previous daemon exited (read from the live-tasks file). Supervisor
 	// mode does NOT use the file — re-attached agents were never interrupted, and
 	// the true-orphan signals are sent inside reattachSupervised against the live
-	// set, so a stale file (there shouldn't be one — supervisor-mode cleanup never
-	// writes it) must not double-fire.
+	// set.
+	//
+	// Supervisor mode (the P4 default) instead DISCARDS any stale live-tasks file.
+	// The P4 default flip means the very first supervisor-mode start can inherit a
+	// file written by the last OFF-mode (in-process) run: those agents already
+	// died with the old daemon and reattachSupervised has just orphaned + signalled
+	// their rows exactly once. Leaving the file on disk would let a later ON→OFF
+	// rollback replay that now-stale snapshot and double-signal long-resolved
+	// tasks, so we remove it here. Supervisor-mode cleanup never writes the file,
+	// so removing it is purely defensive against the OFF→ON transition.
 	if d.supClient == nil {
 		if err := replayBounceSignals(d.db, db.DataDir()); err != nil {
 			slog.Warn("bounce: replay failed", "err", err)
 		}
+	} else {
+		discardStaleLiveTasksFile(db.DataDir())
+	}
+}
+
+// discardStaleLiveTasksFile removes a leftover live-tasks-at-shutdown file in
+// supervisor mode. It only ever exists across an OFF→ON transition (the P4
+// default flip): supervisor-mode cleanup never writes it. Removing it stops a
+// later ON→OFF rollback from replaying a stale snapshot. A missing file is the
+// common, non-error case.
+func discardStaleLiveTasksFile(dataDir string) {
+	path := liveTasksAtShutdownPath(dataDir)
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Warn("bounce: failed to discard stale live-tasks file in supervisor mode", "err", err)
 	}
 }
 

@@ -28,6 +28,9 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.Hera.Enabled {
 		t.Error("Hera.Enabled should default to true (absent key ⇒ enabled)")
 	}
+	if !cfg.Supervisor.Enabled {
+		t.Error("Supervisor.Enabled should default to true (absent key ⇒ supervisor mode, as of P4)")
+	}
 }
 
 func TestHeraConfig_DefaultEnabled(t *testing.T) {
@@ -45,10 +48,23 @@ func TestHeraConfig_TOMLOverride(t *testing.T) {
 	}
 }
 
-func TestSupervisorConfig_DefaultDisabled(t *testing.T) {
+// TestSupervisorConfig_DefaultEnabled pins the P4 flip: an absent key ⇒
+// supervisor mode ON, mirroring hera.enabled. The in-process runner is reached
+// only via an explicit "false" (the retained rollback).
+func TestSupervisorConfig_DefaultEnabled(t *testing.T) {
 	cfg := DefaultConfig()
+	if !cfg.Supervisor.Enabled {
+		t.Error("Supervisor.Enabled must default to true; absent key ⇒ out-of-process supervisor (ON, as of P4)")
+	}
+}
+
+// TestSupervisorConfig_ExplicitFalseRollback confirms the rollback knob: setting
+// Enabled=false restores the in-process path (retained one release, not deleted).
+func TestSupervisorConfig_ExplicitFalseRollback(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Supervisor.Enabled = false
 	if cfg.Supervisor.Enabled {
-		t.Error("Supervisor.Enabled must default to false; absent key ⇒ in-process runner (OFF, byte-identical to pre-P2)")
+		t.Error("explicit false must override the default-ON (rollback to in-process runner)")
 	}
 }
 

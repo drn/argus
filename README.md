@@ -230,6 +230,25 @@ A few local-only operations gracefully degrade in remote mode: spawning a fresh 
 
 From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart. The same controls are exposed in the web UI under **Settings → Argus update** (master token only).
 
+### Daemon & session-supervisor
+
+Argus splits agent supervision across **two** background processes:
+
+- The **daemon** (`argus daemon`) owns coordination — hera, the REST API, MCP, the scheduler, the DB, and the TUI's Unix socket. It is **bounce-able**: restarting it (for an upgrade, a config change, or to iterate on coordination) is cheap.
+- The **session-supervisor** (`argus session-supervisor`) owns the agent PTYs themselves — the `exec.Cmd`, the master fd, the read/wait loops, the ring buffers, and the real exit codes. It is **long-lived and rarely restarted**. The daemon connects to it over `~/.argus/supervisor.sock` and proxies every session through it.
+
+Because the supervisor — not the daemon — is the agent's parent process, **bouncing the daemon no longer interrupts agents.** A daemon restart re-attaches to the still-running sessions (the in-flight turn continues); only restarting the *supervisor* interrupts agents (they get SIGHUP when their PTY master closes), which is why the supervisor's interface is kept strict and it almost never needs to restart. Self-update therefore restarts the daemon, not the supervisor — your agents keep running across the swap.
+
+The daemon auto-starts a supervisor on its own startup if none is answering on the socket (Setsid-detached, so it outlives daemon bounces). You rarely need to drive it by hand, but the subcommands exist:
+
+```bash
+argus session-supervisor start    # start the supervisor (auto-started by the daemon if absent)
+argus session-supervisor stop     # stop it — INTERRUPTS all agents (they re-resume on next start)
+argus session-supervisor status   # show supervisor pid/socket/protocol state
+```
+
+**Supervisor mode is ON by default** (`supervisor.enabled`, see the config table below). To **roll back** to the legacy in-process path — where the daemon owns the PTYs itself, exactly as before the supervisor existed — set `supervisor.enabled = false` (config.toml or the DB) and restart the daemon. The in-process path is retained as a supported fallback for one release.
+
 ### Auto-start at Login (macOS)
 
 Toggle from **Settings → Status → Auto-start at login** (Enter), or use the CLI:
@@ -645,6 +664,12 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Run the HTTP REST API + PWA for remote control. |
 | `http_port` | int | `7743` | API port (binds `127.0.0.1` + the Tailscale IP only — never `0.0.0.0`). |
+
+#### `[supervisor]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Drive agent PTYs through the out-of-process [session-supervisor](#daemon--session-supervisor) so the daemon can bounce without interrupting agents. Set `false` to **roll back** to the legacy in-process runner (daemon owns the PTYs); retained one release as a supported fallback. config.toml wins over the DB. |
 
 #### `[argus]`
 

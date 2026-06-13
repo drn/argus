@@ -147,6 +147,58 @@ func TestReconcileOnStartup_OffMode_FlipsAllAndReplaysFile(t *testing.T) {
 	}
 }
 
+// TestReconcileOnStartup_Supervised_FirstStartAfterOffRun is the P4 migration
+// case: the default flips ON, so the very first supervisor-mode start inherits a
+// stale InProgress row AND a stale live-tasks file left by the last OFF-mode
+// (in-process) run. Those old in-process agents died with the old daemon, and
+// the fresh supervisor reports an authoritative empty live set. Asserts the
+// transition is clean: the stale row flips to InReview, is signalled
+// ARGUS_BOUNCED exactly once (via the orphan path, NOT a file replay), and the
+// stale live-tasks file is DISCARDED so a later ON→OFF rollback can't replay it.
+func TestReconcileOnStartup_Supervised_FirstStartAfterOffRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d, _ := testDaemon(t)
+
+	stale := &model.Task{Name: "stale-inproc", Project: "proj", Status: model.StatusInProgress}
+	testutil.NoError(t, d.db.Add(stale))
+
+	// Seed the live-tasks file the previous OFF-mode cleanup wrote.
+	dir := db.DataDir()
+	testutil.NoError(t, os.MkdirAll(dir, 0o755))
+	payload, _ := json.Marshal([]string{stale.ID})
+	path := liveTasksAtShutdownPath(dir)
+	testutil.NoError(t, os.WriteFile(path, payload, 0o644))
+
+	// Now in supervisor mode (the P4 default), with a fresh supervisor that owns
+	// nothing (the old in-process agents are gone).
+	fake := &fakeSupClient{running: []string{}}
+	d.UseSupervisorRunner(fake)
+
+	d.ReconcileOnStartup()
+
+	// No crash; the stale row is orphaned exactly as reattachSupervised dictates.
+	testutil.Equal(t, len(fake.getCalls), 0) // nothing live to re-attach
+	got, err := d.db.Get(stale.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Status, model.StatusInReview)
+
+	// Signalled exactly once — and via the orphan path, so a single ARGUS_BOUNCED.
+	msgs, err := d.db.Inbox(stale.ID, db.InboxFilter{})
+	testutil.NoError(t, err)
+	bounces := 0
+	for _, m := range msgs {
+		if m.From == SystemTaskID && m.Body == `{"type":"ARGUS_BOUNCED"}` {
+			bounces++
+		}
+	}
+	testutil.Equal(t, bounces, 1)
+
+	// The stale file is discarded so a later rollback can't replay it.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("expected stale live-tasks file discarded on first supervisor-mode start")
+	}
+}
+
 // TestSendBounceSignals_SkipsMissingAndArchived pins the shared helper directly:
 // signals land only for existing, non-archived tasks; the returned count matches.
 func TestSendBounceSignals_SkipsMissingAndArchived(t *testing.T) {
