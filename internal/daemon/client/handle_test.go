@@ -3,6 +3,7 @@ package client
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +246,36 @@ func TestH_AddRemNoop(t *testing.T) {
 	rs.AddWriter(nil)
 	rs.AddWriterFrom(nil, 0)
 	rs.RemoveWriter(nil)
+}
+
+// TestH_CloseIdempotent pins that RemoteSession.close() is safe under
+// concurrent callers. The session's connectStream goroutine and Client.Close()
+// (test cleanup / restartDaemon swap / supervisor-mode daemon cleanup) race to
+// close the same done channel; the pre-fix select-default check-then-close
+// double-closed it → "close of closed channel" panic under -race load.
+func TestH_CloseIdempotent(t *testing.T) {
+	_, sockPath, _ := testSetup(t)
+	c, err := Connect(sockPath)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { c.Close() }) //nolint:errcheck
+
+	rs := newRemoteSession("idem", c)
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rs.close() // must not panic on concurrent double-close
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-rs.Done():
+	default:
+		t.Fatal("done channel should be closed after close()")
+	}
 }
 
 func TestH_RefreshErr(t *testing.T) {

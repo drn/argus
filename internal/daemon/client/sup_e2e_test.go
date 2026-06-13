@@ -161,6 +161,56 @@ func TestSupCrash(t *testing.T) {
 	waitStatus(t, database, task.ID, model.StatusInReview)
 }
 
+// TestSupCrashRelayErr is the relay-level #707 proof: a REAL non-zero exit
+// through the supervisor must deliver an ExitInfo carrying the exit error
+// (Err != "", CleanExit()==false), never an empty/clean one. P2's matrix tested
+// handleSessionExit with SYNTHETIC ExitInfo, so it never exercised the
+// supervisor→GetExitInfo fetch — which once raced the supervisor's exit-info
+// cache write: if the stream EOF (handleConn's conn close on handleStream's
+// sess.Done() return) beat onFinish's cache, GetExitInfo returned "not found" →
+// a zero-value ExitInfo → CleanExit()==true → the crashed task wrongly flipped
+// Complete. handleStream now waits for the cache before returning, so the EOF
+// the client observes is always post-cache. We wire our OWN onSessionExit to
+// capture the ExitInfo the relay actually delivered and assert it carries the
+// crash error.
+func TestSupCrashRelayErr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { database.Close() }) //nolint:errcheck
+
+	supSock := filepath.Join(t.TempDir(), "s.sock")
+	sup := daemon.NewSupervisor(database.Config)
+	go sup.Serve(supSock) //nolint:errcheck
+	t.Cleanup(func() { sup.Shutdown() })
+	waitFile(t, supSock)
+
+	sc, err := Connect(supSock)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { sc.Close() }) //nolint:errcheck
+
+	got := make(chan daemon.ExitInfo, 1)
+	sc.OnSessionExit(func(_ string, info daemon.ExitInfo) { got <- info })
+
+	bk := "be-crashrelay"
+	testutil.NoError(t, database.SetBackend(bk, config.Backend{Command: "sh -c 'exit 7'"}))
+	task := &model.Task{ID: "crashrelay", Name: "crashrelay", Status: model.StatusInProgress, Backend: bk, Worktree: t.TempDir()}
+	testutil.NoError(t, database.Add(task))
+	_, err = sc.Start(task, config.Config{}, 24, 80, false)
+	testutil.NoError(t, err)
+
+	select {
+	case info := <-got:
+		if info.Err == "" {
+			t.Fatalf("crash relay delivered empty Err (StreamLost=%v, CleanExit=%v) — #707 violation: a crashed task would flip Complete", info.StreamLost, info.CleanExit())
+		}
+		testutil.Equal(t, info.StreamLost, false)
+		testutil.Equal(t, info.CleanExit(), false)
+	case <-time.After(10 * time.Second):
+		t.Fatal("no exit relay delivered within 10s")
+	}
+}
+
 // TestSupStop: an explicit stop → the daemon flips the task InReview.
 func TestSupStop(t *testing.T) {
 	d, sc, database := supE2E(t)
