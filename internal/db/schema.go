@@ -484,6 +484,21 @@ func (d *DB) createHeraTables() error {
 		CREATE INDEX IF NOT EXISTS idx_hera_msg_inbox ON hera_messages(to_role_id, sent_at, id) WHERE read_at IS NULL;
 		-- Sender index covers the rate-limit rolling-window COUNT query.
 		CREATE INDEX IF NOT EXISTS idx_hera_msg_sent  ON hera_messages(from_role_id, sent_at);
+
+		-- Per-role tree-scan cursor (Milestone 5). A disposable read bookmark — the
+		-- id of the last message a role saw via hera_tree_updates' subtree roll-up,
+		-- re-seeded on every read. (Hera's event_cursor is NOT ported: the in-process
+		-- events ring needs no cross-restart SSE cursor.)
+		--
+		-- role_id PK + ON DELETE CASCADE is LOAD-BEARING (Hera BUG-034): a bare
+		-- REFERENCES with the default NO ACTION would block role/orchestrator delete
+		-- with "FOREIGN KEY constraint failed (787)" because the cursor row pins its
+		-- parent role. CASCADE lets a role/orchestrator delete clean the cursor too.
+		CREATE TABLE IF NOT EXISTS tree_read_cursors (
+			role_id    INTEGER PRIMARY KEY REFERENCES hera_roles(id) ON DELETE CASCADE,
+			cursor     INTEGER NOT NULL,
+			updated_at TEXT NOT NULL
+		);
 	`
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return fmt.Errorf("creating hera tables: %w", err)
