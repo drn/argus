@@ -11,6 +11,7 @@ import (
 // Rename is display-only — worktree dir, branch, and session ID are preserved.
 type RenameTaskForm struct {
 	*tview.Box
+	title    string
 	name     []rune
 	cursor   int
 	done     bool
@@ -20,9 +21,18 @@ type RenameTaskForm struct {
 
 // NewRenameTaskForm creates a rename form pre-populated with the current name.
 func NewRenameTaskForm(currentName string) *RenameTaskForm {
-	runes := []rune(currentName)
+	return NewInputForm("Rename Task", currentName)
+}
+
+// NewInputForm creates a single-field text-input modal with a custom title,
+// pre-populated with initial. It is the generic form behind RenameTaskForm,
+// reused by the Hera view for rename (orchestrator/role) and worker-spawn
+// prompt entry. PasteHandler is inherited, so bracketed paste fills the field.
+func NewInputForm(title, initial string) *RenameTaskForm {
+	runes := []rune(initial)
 	return &RenameTaskForm{
 		Box:    tview.NewBox(),
+		title:  title,
 		name:   runes,
 		cursor: len(runes),
 	}
@@ -138,7 +148,7 @@ func (rf *RenameTaskForm) Draw(screen tcell.Screen) {
 	formY = max(formY, y)
 
 	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
-	widget.DrawText(screen, formX+2, formY+1, formW-4, "Rename Task", theme.StyleTitle)
+	widget.DrawText(screen, formX+2, formY+1, formW-4, rf.title, theme.StyleTitle)
 
 	// Name field with cursor.
 	before := string(rf.name[:rf.cursor])

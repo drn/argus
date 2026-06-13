@@ -72,6 +72,8 @@ const (
 	modeHelp
 	modeErrorModal
 	modePluginView
+	modeHeraInput   // Hera-view rename / spawn-prompt input modal
+	modeHeraConfirm // Hera-view archive-of-live / delete confirmation modal
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -118,6 +120,17 @@ type App struct {
 	// stays registered for the M8 disabled-fallback route. heraPage may render
 	// a remote-mode "unavailable" banner when a.db is not a local *db.DB.
 	heraPage *hera.HeraPage
+
+	// Hera-view mutation layer (M6c) + its modal state. heraOps is nil in
+	// remote mode (no local *db.DB), in which case the Hera tab's mutation keys
+	// are inert. heraInputModal/heraConfirmModal are created on demand; the
+	// pending closures capture the selected (role,orchestrator) target so the
+	// submit/confirm path acts on the right binding (multi-binding isolation).
+	heraOps          *hera.Ops
+	heraInputModal   *RenameTaskForm
+	heraConfirmModal *modal.ConfirmModal
+	heraInputSubmit  func(string) // called with the field value on input-modal submit
+	heraConfirmDo    func()       // called on confirm-modal accept
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -600,6 +613,23 @@ func (a *App) buildUI() {
 	a.heraPage.CoordPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
 	a.heraPage.AgentPane().OnBranchChange = func() { a.forceRedraw("hera agent pane branch changed") }
 	a.heraPage.AgentPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
+
+	// M6c: thin mutation layer + rail keyset. Wired only in local mode (heraReader
+	// is the same *db.DB; remote mode leaves heraOps nil and the callbacks unwired,
+	// so the Hera tab's mutation keys are inert). Each callback owns the modal /
+	// confirm / refresh orchestration; the DB writes live in hera.Ops, and worker
+	// spawn reuses the shared agent.SpawnHeraWorker primitive.
+	if d, ok := a.db.(*db.DB); ok {
+		a.heraOps = hera.NewOps(d)
+		a.heraPage.OnSpawnWorker = a.heraSpawnWorker
+		a.heraPage.OnRename = a.heraOpenRename
+		a.heraPage.OnArchiveToggle = a.heraArchiveToggle
+		a.heraPage.OnPinToggle = a.heraPinToggle
+		a.heraPage.OnStatusAdvance = func(sel hera.Selection) { a.heraStatusStep(sel, +1) }
+		a.heraPage.OnStatusRevert = func(sel hera.Selection) { a.heraStatusStep(sel, -1) }
+		a.heraPage.OnDelete = a.heraOpenDelete
+		a.heraPage.OnReattach = a.heraReattach
+	}
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
@@ -1991,6 +2021,18 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Rename task modal — delegate everything to the modal
 	if a.mode == modeRenameTask && a.renameModal != nil {
 		a.handleRenameTaskKey(event)
+		return nil
+	}
+
+	// Hera-view input modal (rename / spawn prompt) — delegate to the modal.
+	if a.mode == modeHeraInput && a.heraInputModal != nil {
+		a.handleHeraInputKey(event)
+		return nil
+	}
+
+	// Hera-view confirm modal (archive-of-live / delete) — delegate to the modal.
+	if a.mode == modeHeraConfirm && a.heraConfirmModal != nil {
+		a.handleHeraConfirmKey(event)
 		return nil
 	}
 

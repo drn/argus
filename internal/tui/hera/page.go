@@ -52,6 +52,22 @@ type HeraPage struct {
 	coordBound  string
 	agentBound  string
 
+	// 6c mutation callbacks. The rail-focus key handler maps keys to these,
+	// passing the current Selection (the multi-binding-disambiguated (role,orch)
+	// context). The App wires them to handlers that own the modals / confirms /
+	// refresh; the thin DB writes themselves live in hera.Ops + agent.SpawnHeraWorker.
+	//
+	// nil-safe: a nil callback (remote mode never wires them; an intentionally
+	// unbound action) makes the key an inert no-op — never a panic.
+	OnSpawnWorker   func(Selection) // `w` — spawn worker under selected coordinator's orchestrator
+	OnRename        func(Selection) // `r` — rename selected role/orchestrator (modal)
+	OnArchiveToggle func(Selection) // `a` — archive/unarchive selected role/orchestrator
+	OnPinToggle     func(Selection) // `P` — pin/unpin selected role/orchestrator
+	OnStatusAdvance func(Selection) // `s` — advance selected role status one rung
+	OnStatusRevert  func(Selection) // `S` — revert selected role status one rung
+	OnDelete        func(Selection) // ctrl+d — delete selected role/orchestrator (confirm)
+	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
+
 	// Region rects from the last Draw (mouse hit-testing in regionAt).
 	coordX, coordW int
 	agentX, agentW int
@@ -234,6 +250,9 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		}
 		switch p.focus.State() {
 		case FocusRail:
+			if p.handleRailMutation(event) {
+				return
+			}
 			p.rail.InputHandler()(event, setFocus)
 		case FocusCoord:
 			p.forwardKey(p.coordPane, event)
@@ -243,6 +262,65 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			}
 		}
 	})
+}
+
+// handleRailMutation maps the rail-focus mutation keyset to the page's mutation
+// callbacks, acting on the CURRENT rail selection. It returns true when it
+// consumed the key (so the caller skips rail navigation). Keys with no target
+// (empty selection) or no wired callback fall through as inert no-ops.
+//
+// The keyset mirrors Hera's rail bindings, adapted to Argus key routing — see
+// gotchas/keybindings.md for the full keymap + global-collision audit. Tab /
+// Ctrl+Q (focus ladder) are handled by the caller before this; nav keys
+// (j/k/↑/↓/space) fall through to the rail.
+func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
+	sel := p.rail.Selection()
+	switch event.Key() {
+	case tcell.KeyCtrlD:
+		return p.fire(p.OnDelete, sel)
+	case tcell.KeyEnter:
+		// Enter "enters" the selected role: restart a dead session (reattach)
+		// then move focus into the pane to interact. A live row just advances
+		// focus. An empty selection only advances focus.
+		taskID := sel.TaskID()
+		if taskID != "" && p.OnReattach != nil && (p.resolve == nil || p.resolve(taskID) == nil) {
+			uxlog.Log("[hera-view] reattach key on task=%s (no live session)", taskID)
+			p.OnReattach(sel)
+		}
+		p.focus.Advance()
+		return true
+	case tcell.KeyRune:
+		switch event.Rune() {
+		case 'w':
+			return p.fire(p.OnSpawnWorker, sel)
+		case 'r':
+			return p.fire(p.OnRename, sel)
+		case 'a':
+			return p.fire(p.OnArchiveToggle, sel)
+		case 'P':
+			return p.fire(p.OnPinToggle, sel)
+		case 's':
+			return p.fire(p.OnStatusAdvance, sel)
+		case 'S':
+			return p.fire(p.OnStatusRevert, sel)
+		}
+	}
+	return false
+}
+
+// fire invokes a mutation callback when it is wired and the selection has a
+// target, returning whether the key was consumed. A wired callback always
+// consumes its key (even on an empty selection) so the keystroke never leaks
+// to rail navigation; an unwired callback lets the key fall through.
+func (p *HeraPage) fire(cb func(Selection), sel Selection) bool {
+	if cb == nil {
+		return false
+	}
+	if sel.Role == nil && sel.Orch == nil {
+		return true // wired, but nothing selected — consume silently
+	}
+	cb(sel)
+	return true
 }
 
 // PasteHandler forwards bracketed paste to the focused terminal pane (which
