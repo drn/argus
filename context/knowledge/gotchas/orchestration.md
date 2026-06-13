@@ -46,6 +46,15 @@ Stacked-PR / depends_on flow — invariants that caused bugs when violated.
 - **Role+binding creation is transactional in one tx** (`CreateHeraRoleWithBinding`), fixing Hera's deferred debt where it was two non-transactional execs. If the binding insert violates a live-uniqueness index, the role insert rolls back too — no orphan role. Born-bound spawn (M4) builds on this.
 - **The partial unique indexes are the race backstop, not just the app-level pre-checks.** `CreateHeraOrchestrator`/`CreateHeraRole` pre-check for an existing active row, but two concurrent creates resolve deterministically at the index (INSERT fails) rather than corrupting state.
 
+## Hera MCP tools (M3)
+
+- **`heraEnabled()` requires both heraSvc AND taskMgmtEnabled()** — caller resolution (cwd → task → binding) goes through `resolveTask`, which dereferences `s.taskDB` without a nil check. A server with `heraSvc` wired but no `taskDB` would panic. Always call both `SetHeraService` and `SetTaskManager` before starting the server.
+- **dup-tool guard is scope-based, not name-based.** When `heraEnabled()`, all plugin registry entries with `Scope == "hera"` are filtered from `tools/list`. This suppresses the external Hera daemon's registered tools during the native cutover. Non-hera scopes (iris, plannotator, …) pass through regardless of name.
+- **`hera_inbox` marks messages as read via an explicit `MarkRead` call after `Inbox`.** `Service.Inbox` only fetches unread messages and cancels deliveries — it does NOT stamp `read_at`. `toolHeraInbox` calls `MarkRead` immediately after to match the tool description's "marks messages as read" contract. `toolHeraJoin` (claim mode) deliberately calls only `HeraStore.HeraInbox` (not `Service.Inbox`) so join reporting doesn't consume the inbox.
+- **`SetHeraService` must be called before `ListenAndServe`** — `heraSvc` and `heraStore` are read at request time without a mutex, following the `SetMessageManager` precedent. All `Set*` calls must precede server start.
+- **`SetMeta` calls are best-effort soft-fail.** Any failure in `SetMeta` (task_meta mirror) logs a warning but never returns an error to the caller and never undoes the primary DB write. This is structural, not an oversight — meta is a display aid, not authoritative state.
+- **`resolveCallerRole` with `orchestratorName=""` returns `ErrHeraAmbiguous` when 2+ live bindings match the task.** Callers get a human-readable list of orchestrator names. Supply `orchestrator=<name>` to disambiguate. This mirrors the `HeraLiveBindingByTask` M1 rule.
+
 ## Linking + DAG
 
 - **orch.Link stages the hypothetical edge on a child *copy*, not the snapshot's pointer.** A `Store` implementation that shares pointers between `Get()` and `Tasks()` (e.g. the MCP test mock) would otherwise see the parent appended twice — once via the snapshot mutation, once via the post-cycle-check `Update`. Production `*db.DB` returns fresh scanned objects so this never bites in real code, but the defensive copy keeps tests using a sharing mock from emitting duplicate edges.
