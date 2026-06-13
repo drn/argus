@@ -58,6 +58,71 @@ func (m Model) IsEmpty() bool {
 		len(m.Archived) == 0 && len(m.Freelance) == 0
 }
 
+// OrchByID finds the OrchView with the given id across every non-freelance
+// section, returning a pointer into the model's backing array (so callers read
+// the live projection, never a copy), or nil when not found. Used to resolve a
+// selected role's containing orchestrator — the disambiguator that makes a
+// multi-binding task's two roles feed two different pane contexts.
+func (m *Model) OrchByID(id int64) *OrchView {
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			if sec[i].ID == id {
+				return &sec[i]
+			}
+		}
+	}
+	return nil
+}
+
+// CoordTaskID returns the live argus task of this orchestrator's coordinator
+// role, or "" when no coordinator role holds a live binding. The HERA pane
+// feeds from this so it always shows the orchestrator's coordinator session,
+// regardless of which role under the orchestrator is selected (the coord-vs-
+// agent session rule — see panes.go).
+func (o *OrchView) CoordTaskID() string {
+	for i := range o.Roles {
+		if o.Roles[i].Kind == db.HeraKindCoordinator && o.Roles[i].Live {
+			return o.Roles[i].TaskID
+		}
+	}
+	return ""
+}
+
+// Selection is the (role, orchestrator, task) context resolved from the rail
+// cursor. It is the single value threaded to the pane feeds (6b) and — via
+// HeraPage.SelectionContext — to the future mutation extension point (6c). The
+// orchestrator is ALWAYS the disambiguator: a multi-binding task reached
+// through two different roles yields two different Selections (different Role,
+// different Orch), so every downstream op acts on the right binding's task.
+type Selection struct {
+	Role *RoleView // selected role; nil when the cursor is on an orch header
+	Orch *OrchView // selected/containing orchestrator; nil when the rail is empty
+}
+
+// TaskID returns the selected role's bound argus task, or "" when none.
+func (s Selection) TaskID() string {
+	if s.Role == nil {
+		return ""
+	}
+	return s.Role.TaskID
+}
+
+// IsCoordinator reports whether the selected role is a coordinator. The right
+// region renders the coordinator details summary (not a terminal) for a
+// coordinator selection.
+func (s Selection) IsCoordinator() bool {
+	return s.Role != nil && s.Role.Kind == db.HeraKindCoordinator
+}
+
+// CoordTaskID returns the live coordinator task of the selected orchestrator,
+// or "" when none. The HERA (middle) pane feeds from this.
+func (s Selection) CoordTaskID() string {
+	if s.Orch == nil {
+		return ""
+	}
+	return s.Orch.CoordTaskID()
+}
+
 // BuildModel reads the hera store and assembles the read-only rail snapshot.
 // It is pure-read: every call goes through HeraReader's List/Status/Meta
 // methods, all of which are mutex-guarded and fast on *db.DB, so it is safe to

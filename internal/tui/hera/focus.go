@@ -124,3 +124,21 @@ func (f *FocusMachine) Retreat() {
 
 // ToRail forces focus back to the rail (Hera's Ctrl+Q "escape to rail").
 func (f *FocusMachine) ToRail() { f.state = FocusRail }
+
+// SetRegion focuses the target region directly (used by mouse clicks), but only
+// if that region is present — clicks on an absent region are ignored so focus
+// never lands somewhere that isn't in the layout. The rail is always present.
+func (f *FocusMachine) SetRegion(target Focus) {
+	switch target {
+	case FocusRail:
+		f.state = FocusRail
+	case FocusCoord:
+		if f.coordPresent {
+			f.state = FocusCoord
+		}
+	case FocusAgent:
+		if f.agentPresent {
+			f.state = FocusAgent
+		}
+	}
+}

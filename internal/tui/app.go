@@ -578,6 +578,28 @@ func (a *App) buildUI() {
 		heraReader = d
 	}
 	a.heraPage = hera.NewHeraPage(heraReader)
+	if heraReader != nil {
+		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
+		// a.runner at call time on the main thread — applySelection/refresh and
+		// restartDaemon both run on the tview goroutine, so this never races.
+		a.heraPage.SetSessionResolver(func(taskID string) agentview.TerminalAdapter {
+			if taskID == "" {
+				return nil
+			}
+			sess := a.runner.Get(taskID)
+			if sess == nil {
+				return nil
+			}
+			return sess
+		})
+	}
+	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
+	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
+	// a QueueUpdateDraw for async replay-rebuild completion.
+	a.heraPage.CoordPane().OnBranchChange = func() { a.forceRedraw("hera coord pane branch changed") }
+	a.heraPage.CoordPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
+	a.heraPage.AgentPane().OnBranchChange = func() { a.forceRedraw("hera agent pane branch changed") }
+	a.heraPage.AgentPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
@@ -869,6 +891,10 @@ func (a *App) spinnerLoop() {
 				}
 			}
 			a.mu.Unlock()
+			// Reconcile hera pane PTY sizes at the spinner cadence (~100ms) so a
+			// freshly-bound session doesn't paint at a stale width for up to a
+			// full 1s tick. No-op when no hera pane is drawn this frame.
+			a.heraPage.SyncPanes()
 			if hasActiveRunning {
 				a.tapp.QueueUpdateDraw(func() {})
 			}
@@ -894,6 +920,12 @@ func (a *App) onTick() {
 	runner := a.runner
 	a.mu.Unlock()
 	runningIDs, idleIDs := runner.RunningAndIdle()
+
+	// Reconcile hera pane PTY sizes off the main thread (Resize RPC). Safe to
+	// call always: it no-ops for unbound panes and for panes whose Draw didn't
+	// run this frame (pendingResize stays zero when the Hera tab is inactive),
+	// so it can never fight the main agent view's resize of the same task.
+	a.heraPage.SyncPanes()
 
 	// Read daemon state for health check BEFORE QueueUpdateDraw — daemon
 	// fields are protected by a.mu and don't touch tview widgets.
@@ -1732,6 +1764,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// and fast, so this is safe on the tview thread; we never run git here.
 	if a.header.ActiveTab() == widget.TabHera {
 		a.heraPage.ScheduleRefresh()
+		// Late-bind any coordinator/worker session that came up after the pane
+		// was bound (main thread — SetSession is main-goroutine-only).
+		a.heraPage.Reconcile()
 	}
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)

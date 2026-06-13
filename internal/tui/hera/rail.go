@@ -322,6 +322,21 @@ func (r *Rail) SelectedOrch() *OrchView {
 	return r.rows[r.cursor].orch
 }
 
+// Selection returns the (role, orchestrator) context under the cursor. The
+// orchestrator is resolved from the selected role's OrchID — correct even in
+// the multi-binding case where the same task surfaces under two orchestrators
+// (each via a distinct role with a distinct OrchID) — or taken directly when
+// the cursor rests on an orchestrator header. 6b binds the panes off this; 6c
+// reads it for mutations via the orchestrator disambiguator.
+func (r *Rail) Selection() Selection {
+	role := r.Selected()
+	orch := r.SelectedOrch()
+	if orch == nil && role != nil {
+		orch = r.model.OrchByID(role.OrchID)
+	}
+	return Selection{Role: role, Orch: orch}
+}
+
 // Rows returns the flattened row count (test seam).
 func (r *Rail) Rows() int { return len(r.rows) }
 
