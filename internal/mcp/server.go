@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/kb"
 	"github.com/drn/argus/internal/model"
 )
@@ -156,6 +157,8 @@ type Server struct {
 	messages    MessageStore    // optional; set via SetMessageManager
 	nudger      MessageNudger   // optional; set via SetMessageManager (best-effort)
 	artifacts   ArtifactStore   // optional; set via SetArtifactManager
+	heraSvc     *hera.Service   // optional; set via SetHeraService
+	heraStore   HeraStore       // optional; set via SetHeraService
 	createMu    sync.Mutex
 	creating    int // number of in-flight task_create calls
 	// creatingKeys tracks (project, name) pairs currently being created so
@@ -801,12 +804,22 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	if s.artifactsEnabled() {
 		tools = append(tools, artifactToolDefs...)
 	}
+	if s.heraEnabled() {
+		tools = append(tools, heraToolDefs...)
+	}
 	if s.registry != nil {
 		// Failures here are logged and swallowed: surfacing a registry error
 		// here would break the entire tools/list response for built-in tools
 		// the user did NOT register. Plugin tools are best-effort additive.
 		if plugins, err := s.registry.List(); err == nil {
 			for _, p := range plugins {
+				// DUP-TOOL GUARD (M3): when native hera is enabled, suppress
+				// hera-scope plugin rows — the external Hera daemon may still
+				// be registered and tools/list must not show duplicates.
+				// Other plugin scopes (iris, plannotator, …) pass through.
+				if s.heraEnabled() && p.Scope == "hera" {
+					continue
+				}
 				tools = append(tools, Tool{
 					Name:        p.Name,
 					Description: p.Description,
@@ -889,6 +902,24 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskAsk(req.ID, params.Arguments)
 	case "artifact_register":
 		return s.toolArtifactRegister(req.ID, params.Arguments)
+	case "hera_new_orchestrator":
+		return s.toolHeraNewOrchestrator(req.ID, params.Arguments)
+	case "hera_join":
+		return s.toolHeraJoin(req.ID, params.Arguments)
+	case "hera_send":
+		return s.toolHeraSend(req.ID, params.Arguments)
+	case "hera_inbox":
+		return s.toolHeraInbox(req.ID, params.Arguments)
+	case "hera_mark_read":
+		return s.toolHeraMarkRead(req.ID, params.Arguments)
+	case "hera_status":
+		return s.toolHeraStatus(req.ID, params.Arguments)
+	case "hera_spawn_worker":
+		return s.toolHeraSpawnWorker(req.ID, params.Arguments)
+	case "hera_tree_updates":
+		return s.toolHeraTreeUpdates(req.ID, params.Arguments)
+	case "hera_get_messages":
+		return s.toolHeraGetMessages(req.ID, params.Arguments)
 	default:
 		// Plugin-registered tool? PR 4 — dispatch into the registry which
 		// HTTP-POSTs to the plugin's callback_url and returns the response

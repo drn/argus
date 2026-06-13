@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/depswatcher"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
+	"github.com/drn/argus/internal/hera"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -619,6 +620,8 @@ func (d *Daemon) Serve(sockPath string) error {
 		mcpSrv.SetClipboard(d.clipboard)
 		mcpSrv.SetScheduleManager(d.db, sch)
 		mcpSrv.SetMessageManager(d.db, runnerNudger{notifier: d.notifier})
+		// M8: gate on cfg.Hera.Enabled once the Settings toggle lands (Milestone 8).
+		mcpSrv.SetHeraService(hera.New(d.db, d.notifier), d.db)
 		mcpSrv.SetArtifactManager(d.db)
 		mcpSrv.SetPluginRegistry(pluginRegistry)
 		d.mcpServer = mcpSrv
