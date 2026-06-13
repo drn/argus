@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -505,8 +506,8 @@ func TestDaemon_PendingRPC(t *testing.T) {
 
 	// Inject a pendingRestart entry directly so we don't depend on a live
 	// session for this RPC roundtrip test.
-	d.runner.SetPendingRestartForTest("rpc-pending", true)
-	defer d.runner.SetPendingRestartForTest("rpc-pending", false)
+	d.runner.(*agent.Runner).SetPendingRestartForTest("rpc-pending", true)
+	defer d.runner.(*agent.Runner).SetPendingRestartForTest("rpc-pending", false)
 
 	var resp PendingRestartResp
 	if err := client.Call("Daemon.HasPendingRestart", &TaskIDReq{TaskID: "rpc-pending"}, &resp); err != nil {
@@ -536,8 +537,8 @@ func TestDaemon_ListPendGap(t *testing.T) {
 
 	client := dialRPC(t, sockPath)
 
-	d.runner.SetPendingRestartForTest("gap-task", true)
-	defer d.runner.SetPendingRestartForTest("gap-task", false)
+	d.runner.(*agent.Runner).SetPendingRestartForTest("gap-task", true)
+	defer d.runner.(*agent.Runner).SetPendingRestartForTest("gap-task", false)
 
 	var resp ListResp
 	if err := client.Call("Daemon.ListSessions", &Empty{}, &resp); err != nil {
@@ -565,8 +566,8 @@ func TestDaemon_StatusAliveGap(t *testing.T) {
 
 	client := dialRPC(t, sockPath)
 
-	d.runner.SetPendingRestartForTest("status-pending", true)
-	defer d.runner.SetPendingRestartForTest("status-pending", false)
+	d.runner.(*agent.Runner).SetPendingRestartForTest("status-pending", true)
+	defer d.runner.(*agent.Runner).SetPendingRestartForTest("status-pending", false)
 
 	var resp SessionInfo
 	if err := client.Call("Daemon.SessionStatus", &TaskIDReq{TaskID: "status-pending"}, &resp); err != nil {

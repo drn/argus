@@ -31,8 +31,12 @@ func liveTasksAtShutdownPath(dataDir string) string {
 // to disk. Called in cleanup() just before StopAll so the snapshot reflects
 // live sessions. Uses write-then-rename for atomicity: a SIGKILL mid-write
 // leaves either the old file or a complete new one, never a partial payload.
-// No-op when the runner has no active sessions.
-func writeLiveTasksFile(runner *agent.Runner, dataDir string) error {
+// No-op when the runner has no active sessions. Accepts the agent.SessionProvider
+// interface (not concrete *agent.Runner) so it works whether the daemon owns an
+// in-process runner or a supervisor-client — though in supervisor mode the daemon
+// skips this call entirely (agents survive the bounce, so there's nothing to
+// signal; see Daemon.cleanup).
+func writeLiveTasksFile(runner agent.SessionProvider, dataDir string) error {
 	ids := runner.Running()
 	if len(ids) == 0 {
 		return nil

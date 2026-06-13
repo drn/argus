@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
@@ -130,8 +131,8 @@ func TestDetectNeedsInputTick(t *testing.T) {
 	// Tick 1: "a" is idle + blocked → enters needs-input; "b" idle but not
 	// blocked → nothing.
 	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
-	testutil.Equal(t, srv.runner.NeedsInput("a"), true)
-	testutil.Equal(t, srv.runner.NeedsInput("b"), false)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), true)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("b"), false)
 
 	ev := sink.events()
 	testutil.Equal(t, len(ev), 1)
@@ -145,7 +146,7 @@ func TestDetectNeedsInputTick(t *testing.T) {
 	// No re-entry event (steady state was just cleared), one clear event.
 	tails["a"] = idleTail
 	srv.detectNeedsInputTick(state, []string{"a", "b"}, []string{"a", "b"}, tailOf)
-	testutil.Equal(t, srv.runner.NeedsInput("a"), false)
+	testutil.Equal(t, srv.runner.(*agent.Runner).NeedsInput("a"), false)
 
 	ev = sink.events()
 	testutil.Equal(t, len(ev), 2)

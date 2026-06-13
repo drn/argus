@@ -134,6 +134,15 @@ func (d *DB) Config() config.Config {
 		cfg.Hera.Enabled = v == "true"
 	}
 
+	// Supervisor config. Absent key ⇒ false (off by default): the daemon owns
+	// agent PTYs in-process, byte-identical to pre-P2. Only an explicit "true"
+	// stored in the DB enables the out-of-process session-supervisor. The
+	// config.toml overlay (applied below by cfgLoader.Apply) wins over this DB
+	// value when both are set.
+	if v, ok := kv["supervisor.enabled"]; ok {
+		cfg.Supervisor.Enabled = v == "true"
+	}
+
 	// Argus self-update config.
 	if v, ok := kv["argus.source_path"]; ok {
 		cfg.Argus.SourcePath = v

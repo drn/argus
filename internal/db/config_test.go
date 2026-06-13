@@ -89,6 +89,7 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 		"api.enabled":              "true",
 		"api.http_port":            "8123",
 		"hera.enabled":             "false",
+		"supervisor.enabled":       "true",
 		"argus.source_path":        "/path/to/argus",
 	}
 	for k, v := range overrides {
@@ -117,7 +118,36 @@ func TestDB_Config_AllOverrides(t *testing.T) {
 	testutil.Equal(t, cfg.API.Enabled, true)
 	testutil.Equal(t, cfg.API.HTTPPort, 8123)
 	testutil.Equal(t, cfg.Hera.Enabled, false)
+	testutil.Equal(t, cfg.Supervisor.Enabled, true)
 	testutil.Equal(t, cfg.Argus.SourcePath, "/path/to/argus")
+}
+
+// TestDB_Config_SupervisorEnabledDefaultFalse verifies that an absent
+// supervisor.enabled key leaves the supervisor OFF (the default — the daemon
+// owns agent PTYs in-process, byte-identical to pre-P2).
+func TestDB_Config_SupervisorEnabledDefaultFalse(t *testing.T) {
+	d := testDB(t)
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Supervisor.Enabled, false)
+}
+
+// TestDB_Config_SupervisorEnabledExplicitTrue verifies that writing "true"
+// enables the out-of-process session-supervisor.
+func TestDB_Config_SupervisorEnabledExplicitTrue(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "true"))
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Supervisor.Enabled, true)
+}
+
+// TestDB_Config_SupervisorEnabledExplicitFalse verifies that writing "false"
+// (after a prior "true") disables the supervisor again.
+func TestDB_Config_SupervisorEnabledExplicitFalse(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "true"))
+	testutil.NoError(t, d.SetConfigValue("supervisor.enabled", "false"))
+	cfg := d.Config()
+	testutil.Equal(t, cfg.Supervisor.Enabled, false)
 }
 
 // TestDB_Config_HeraEnabledDefaultTrue verifies that an absent hera.enabled key

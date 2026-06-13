@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"time"
 
@@ -135,14 +136,40 @@ func (rs *RemoteSession) streamOnce(sockPath string) (processExited, daemonDown 
 
 	uxlog.Log("stream: connected task=%s", rs.taskID)
 
-	// Read output stream into local ring buffer.
+	// Read output stream into local ring buffer, teeing to any attached writers.
+	// The tee mirrors agent.Session.readLoop: snapshot the writer slice under
+	// the lock, write outside it (a TUI net.Conn writer may block on flow
+	// control — holding rs.mu through the write would stall this reader and back
+	// up the whole double-proxy), then drop errored writers under the lock. This
+	// is the supervisor→daemon→TUI fan-out hop; in plain daemon mode no writers
+	// are attached so it's just the buf.Write.
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
+			data := buf[:n]
 			rs.mu.Lock()
-			rs.buf.Write(buf[:n])
+			rs.buf.Write(data)
+			var ws []io.Writer
+			if len(rs.writers) > 0 {
+				ws = make([]io.Writer, len(rs.writers))
+				copy(ws, rs.writers)
+			}
 			rs.mu.Unlock()
+
+			var failed []io.Writer
+			for _, w := range ws {
+				if _, werr := w.Write(data); werr != nil {
+					failed = append(failed, w)
+				}
+			}
+			if len(failed) > 0 {
+				rs.mu.Lock()
+				for _, f := range failed {
+					rs.removeWriterLocked(f)
+				}
+				rs.mu.Unlock()
+			}
 		}
 		if err != nil {
 			uxlog.Log("stream: ended task=%s err=%v", rs.taskID, err)

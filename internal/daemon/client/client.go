@@ -43,8 +43,13 @@ func isTestBinary() bool {
 		strings.Contains(os.Args[0], "/_test/")
 }
 
-// Compile-time assertion.
+// Compile-time assertions. Client implements the narrow SessionProvider (its
+// original role: the TUI's daemon client) AND the wider SessionRunner — the
+// latter so the daemon can assign a supervisor-targeting Client to d.runner and
+// drive every consumer (incl. the API server's resize/resume/needs-input paths)
+// through it (session-supervisor P2).
 var _ agent.SessionProvider = (*Client)(nil)
+var _ agent.SessionRunner = (*Client)(nil)
 
 // Client connects to the daemon and implements agent.SessionProvider.
 type Client struct {
@@ -62,6 +67,13 @@ type Client struct {
 	// onSessionExit is called when a session's stream EOF is detected.
 	// Includes exit info (error, stopped flag, last output) from the daemon.
 	onSessionExit func(taskID string, info daemon.ExitInfo)
+
+	// needsInput holds the daemon-computed "waiting on the user" set. When this
+	// Client is the daemon's supervisor-client (d.runner in supervisor mode), the
+	// API server's idle watcher writes it here and reads it back — needs-input is
+	// a daemon-side notion the supervisor does not track, so it lives locally
+	// (no RPC). Guarded by c.mu.
+	needsInput []string
 }
 
 // Connect dials the daemon socket and returns a Client.
@@ -326,6 +338,92 @@ func (c *Client) HasPendingRestart(taskID string) bool {
 	return resp.Pending
 }
 
+// StartOrReattach returns the live session for task.ID if the daemon reports one
+// alive (reattached=true), otherwise starts a fresh one (reattached=false). This
+// satisfies agent.SessionRunner so the daemon's API resume path works when the
+// daemon's runner is a supervisor-client. Composed from Get + Start rather than a
+// dedicated RPC — the daemon-side StartSession already rejects a duplicate, and
+// Get's liveness probe is the same check the in-process runner does internally.
+func (c *Client) StartOrReattach(task *model.Task, cfg config.Config, rows, cols uint16, resume bool) (agent.SessionHandle, bool, error) {
+	if existing := c.Get(task.ID); existing != nil {
+		return existing, true, nil
+	}
+	sess, err := c.Start(task, cfg, rows, cols, resume)
+	if err != nil {
+		return nil, false, err
+	}
+	return sess, false, nil
+}
+
+// KickRerender drives a kick-rerender restart through the daemon/supervisor. cfg
+// is intentionally NOT shipped — the server resolves it via its own cfgFn (the
+// supervisor must not need the caller's config; design decision, see plan §P2).
+// The runner's pendingRestart bookkeeping (which keeps the intervening exit from
+// flipping task status) MUST run server-side, so this cannot be a client-side
+// Stop+Start. Against a v1 supervisor the RPC method is absent and errors; the
+// caller (api.maybeKickRerender) already treats a kick error as a non-fatal
+// no-op, so an older supervisor degrades to "no rerender" rather than breaking.
+func (c *Client) KickRerender(task *model.Task, _ config.Config, rows, cols uint16) error {
+	var resp daemon.StatusResp
+	if err := c.call("Daemon.KickRerender", &daemon.KickReq{
+		TaskID:    task.ID,
+		SessionID: task.SessionID,
+		Prompt:    task.Prompt,
+		Project:   task.Project,
+		Backend:   task.Backend,
+		Model:     task.Model,
+		Worktree:  task.Worktree,
+		Branch:    task.Branch,
+		Rows:      rows,
+		Cols:      cols,
+	}, &resp); err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+// NeedsInputIDs returns the locally-held needs-input set (see field doc).
+func (c *Client) NeedsInputIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.needsInput...)
+}
+
+// SetNeedsInputIDs replaces the locally-held needs-input set.
+func (c *Client) SetNeedsInputIDs(ids []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.needsInput = append([]string(nil), ids...)
+}
+
+// ListSessionInfo returns the full SessionInfo list reported by the server. The
+// daemon's own sessionCore.ListSessions forwards through this when its runner is
+// a supervisor-client (the daemon can't iterate the supervisor's in-process
+// *agent.Session set, so it relays the supervisor's already-built SessionInfo —
+// synthetic pending-restart entries included). Nil on RPC failure.
+func (c *Client) ListSessionInfo() []daemon.SessionInfo {
+	var resp daemon.ListResp
+	if err := c.call("Daemon.ListSessions", &daemon.Empty{}, &resp); err != nil {
+		return nil
+	}
+	return resp.Sessions
+}
+
+// Hello performs the supervisor protocol handshake, returning its ProtocolVersion
+// and boot identity. The daemon (P2) calls this once on connect to feature-detect
+// before relying on any newer RPC/field, and to surface supervisor staleness —
+// it never auto-restarts a live supervisor on version skew (design §4.4).
+func (c *Client) Hello() (daemon.HelloResp, error) {
+	var resp daemon.HelloResp
+	if err := c.call("Daemon.Hello", &daemon.Empty{}, &resp); err != nil {
+		return daemon.HelloResp{}, err
+	}
+	return resp, nil
+}
+
 // WorkDir returns the working directory of a session.
 func (c *Client) WorkDir(taskID string) string {
 	var info daemon.SessionInfo
@@ -400,6 +498,19 @@ func AutoStart(sockPath string) (*Client, error) {
 		return nil, ErrTestBinary
 	}
 	return autoStartFork(sockPath)
+}
+
+// AutoStartSupervisor launches the session-supervisor as a detached background
+// process and returns a Client connected to its socket. Mirrors AutoStart (same
+// Setsid detach + socket poll); the *.test backstop keeps `go test` from
+// fork-bombing by re-running the test binary as `session-supervisor start`. The
+// daemon calls this on startup in supervisor mode iff no live supervisor answers
+// a Ping on supervisor.sock.
+func AutoStartSupervisor(sockPath string) (*Client, error) {
+	if isTestBinary() {
+		return nil, ErrTestBinary
+	}
+	return autoStartSupervisorFork(sockPath)
 }
 
 // WaitForShutdown polls until the daemon socket is gone (up to timeout).

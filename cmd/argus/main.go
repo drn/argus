@@ -385,6 +385,23 @@ func runDaemon() {
 	defer database.Close()
 
 	d := daemon.New(database)
+
+	// Supervisor mode (cfg.Supervisor.Enabled, default OFF): drive agent PTYs
+	// through the out-of-process session-supervisor so the daemon can bounce
+	// (to iterate on hera/coordination) without interrupting agents. Connect to
+	// a live supervisor — auto-starting one if absent — do the version handshake,
+	// and mount the client as the daemon's runner BEFORE Serve so every consumer
+	// captures it. Any failure falls back to the in-process runner (OFF behavior):
+	// a broken supervisor must never take the daemon offline.
+	if database.Config().Supervisor.Enabled {
+		if c := connectSupervisor(); c != nil {
+			d.UseSupervisorRunner(c)
+			log.Printf("supervisor mode: daemon driving agents through %s", daemon.DefaultSupervisorSocketPath())
+		} else {
+			log.Printf("supervisor mode requested but unavailable; falling back to in-process runner")
+		}
+	}
+
 	if err := d.Serve(daemon.DefaultSocketPath()); err != nil {
 		if errors.Is(err, daemon.ErrDaemonAlreadyRunning) {
 			// Lost the singleton race — another daemon is already serving the
@@ -394,6 +411,42 @@ func runDaemon() {
 		}
 		log.Fatalf("daemon error: %v", err)
 	}
+}
+
+// connectSupervisor returns a session-supervisor client for the daemon to mount
+// as its runner, or nil if no healthy supervisor can be reached/started (the
+// caller then falls back to the in-process runner). It connects to a live
+// supervisor, auto-starts one if absent, and requires a successful Hello
+// handshake before committing — a half-broken supervisor is worse than the
+// in-process fallback. On protocol skew it NEVER auto-restarts the running
+// supervisor (that would SIGHUP its agents — design §4.4); it logs and proceeds
+// within the running supervisor's capabilities.
+func connectSupervisor() daemon.SupervisorClient {
+	sock := daemon.DefaultSupervisorSocketPath()
+	c, err := dclient.Connect(sock)
+	if err != nil {
+		// No live supervisor on the socket — auto-start one (Setsid-detached so
+		// it outlives daemon bounces) and poll until it answers.
+		c, err = dclient.AutoStartSupervisor(sock)
+		if err != nil {
+			log.Printf("supervisor: connect + auto-start both failed: %v", err)
+			return nil
+		}
+	}
+
+	hello, herr := c.Hello()
+	if herr != nil {
+		log.Printf("supervisor: handshake failed (%v); falling back to in-process runner", herr)
+		c.Close() //nolint:errcheck // discarding an unhealthy client
+		return nil
+	}
+	if !daemon.SupervisorProtocolMatch(hello) {
+		log.Printf("supervisor: protocol skew daemon=v%d supervisor=v%d — proceeding within the running supervisor's capabilities (NOT auto-restarting a live supervisor; agents would die)",
+			daemon.ProtocolVersion, hello.ProtocolVersion)
+	} else {
+		log.Printf("supervisor: connected protocol=v%d binary=%s", hello.ProtocolVersion, hello.BinaryPath)
+	}
+	return c
 }
 
 // stopDaemon sends a shutdown RPC to the daemon. Returns (true, nil) if the

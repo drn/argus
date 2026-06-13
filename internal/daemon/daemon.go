@@ -131,6 +131,47 @@ type Daemon struct {
 	// Shared between the daemon (notifier gate), the API server (REST wiring),
 	// and the TUI (focus signals). Created in Serve.
 	focusTracker *notify.FocusTracker
+
+	// supClient is non-nil iff the daemon is in supervisor mode (cfg.Supervisor
+	// .Enabled): it is the supervisor-client mounted as d.runner. Its presence
+	// flips two behaviors — exit handling is driven by its OnSessionExit relay
+	// (wired in UseSupervisorRunner) rather than the in-process runner's onFinish,
+	// and cleanup detaches it (Close) instead of StopAll-ing, so the supervisor's
+	// agents survive the daemon bounce. nil ⇒ in-process mode (byte-identical to
+	// pre-P2). Set once before Serve via UseSupervisorRunner.
+	supClient SupervisorClient
+}
+
+// SupervisorClient is the daemon's view of a live session-supervisor connection:
+// the full agent.SessionRunner surface (so it can BE d.runner), plus the exit
+// relay + handshake + lifecycle hooks the daemon needs. The concrete impl is
+// internal/daemon/client.Client — which imports THIS package, so the daemon must
+// not import it back; it depends only on this interface, and cmd/argus injects
+// the concrete value via UseSupervisorRunner.
+type SupervisorClient interface {
+	agent.SessionRunner
+	// OnSessionExit registers the callback fired (with relayed ExitInfo, incl.
+	// the GetExitInfo-failure ⇒ StreamLost backstop) when a supervisor session's
+	// stream EOFs. The daemon wires it to handleSessionExit.
+	OnSessionExit(func(taskID string, info ExitInfo))
+	// Hello performs the protocol-version handshake with the supervisor.
+	Hello() (HelloResp, error)
+	// Close detaches the client (and its stream goroutines) WITHOUT stopping the
+	// supervisor or its agents.
+	Close() error
+}
+
+// UseSupervisorRunner switches the daemon into supervisor mode: it mounts the
+// supervisor-client as d.runner — replacing the dormant in-process runner New
+// created — and wires the client's exit relay to handleSessionExit so the #707
+// status flip still runs against the daemon's DB. Call BEFORE Serve so every
+// consumer (sessionCore RPC, depswatcher, scheduler, MCP, API server, notifier)
+// captures the client. The in-process runner created in New is left unused; its
+// onFinish never fires because it never starts a session.
+func (d *Daemon) UseSupervisorRunner(c SupervisorClient) {
+	d.runner = c
+	d.supClient = c
+	c.OnSessionExit(d.handleSessionExit)
 }
 
 // New creates a new Daemon.
@@ -157,78 +198,28 @@ func New(database *db.DB) *Daemon {
 		}
 	}
 
-	// Create runner with onFinish callback that caches exit info, flips
-	// the DB status, and notifies stream clients by closing their connections.
-	// The closure reads promoted core fields (d.exitInfos/d.streams/d.mu) and
-	// d.runner; it only fires after a session exits (post-Serve), by which time
-	// d.sessionCore is set just below — so the promotion targets are live.
+	// Create the in-process runner with an onFinish callback that builds the
+	// ExitInfo and hands it to handleSessionExit (the shared DB-side exit sink).
+	// The closure reads promoted core fields and d.runner; it only fires after a
+	// session exits (post-Serve), by which time d.sessionCore is set below.
+	//
+	// In supervisor mode this runner is replaced (UseSupervisorRunner) before any
+	// session starts, so this onFinish never fires there — the supervisor-client's
+	// OnSessionExit relay calls handleSessionExit instead (with StreamLost set on
+	// a failed relay). Both sources funnel through the one sink.
 	runner := agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
-		slog.Info("session exited", "task", taskID, "stopped", stopped, "err", err, "lastOutputBytes", len(lastOutput))
-
 		var errStr string
 		if err != nil {
 			errStr = err.Error()
 		}
-
 		// Snapshot HasPendingRestart once and stamp it onto ExitInfo so the
 		// TUI can read it from the exit notification without an extra RPC
 		// from the tview main goroutine (the gotcha at daemon-rpc.md:9).
-		pending := d.runner.HasPendingRestart(taskID)
-
-		ei := ExitInfo{
+		d.handleSessionExit(taskID, ExitInfo{
 			Err:            errStr,
 			Stopped:        stopped,
 			LastOutput:     lastOutput,
-			PendingRestart: pending,
-		}
-		d.mu.Lock()
-		d.exitInfos[taskID] = ei
-		conns := d.streams[taskID]
-		delete(d.streams, taskID)
-		d.mu.Unlock()
-
-		// Flip the DB row out of InProgress. Without this, a daemon-only
-		// setup (web-app users with no TUI attached) leaves the row stuck
-		// in_progress forever — the API then reports idle:true and the PWA
-		// pops a Resume modal for a task whose agent has already exited.
-		// The TUI's HandleSessionExit also runs this transition; both call
-		// sites are guarded by the StatusInProgress check, so whichever
-		// fires first wins and the other becomes a no-op.
-		//
-		// SKIP when a kick-restart is in flight (KickRerender stopped the
-		// session and queued a same-task Start that fires immediately from
-		// the runner's exit goroutine). Transitioning to InReview here would
-		// race the restart and leave the row in the wrong state mid-flip.
-		if !pending {
-			d.transitionTaskOnExit(taskID, ei.CleanExit())
-		}
-
-		// Capture session ID for backends that mint it themselves post-exit
-		// (codex via state_5.sqlite, pi via session-file scan). The TUI's
-		// handleSessionExitUI also fires this for foreground sessions; both
-		// paths are idempotent (guard on SessionID == "" before scheduling).
-		// Without this branch, headless / PWA-only users can never resume
-		// codex or pi tasks because nothing ever writes back the UUID.
-		go d.captureSessionIDPostExit(taskID)
-
-		// Signal stream EOF to all connected clients by closing their connections.
-		slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))
-		for _, conn := range conns {
-			conn.Close()
-		}
-
-		// Clear any agent-staged clipboard for the finished task — the
-		// agent that staged it is gone, the user shouldn't see a stale
-		// copy button after the session ends.
-		d.clipboard.Clear(taskID)
-
-		// Surface session lifecycle to plugins. Fired AFTER the runner has
-		// removed the session and after the DB transition has run so an
-		// SSE subscriber waking on this event sees a coherent snapshot.
-		events.Emit(model.EventTypeSessionExited, taskID, map[string]any{
-			"stopped":         stopped,
-			"err":             errStr,
-			"pending_restart": pending,
+			PendingRestart: d.runner.HasPendingRestart(taskID),
 		})
 	})
 
@@ -240,8 +231,86 @@ func New(database *db.DB) *Daemon {
 	return d
 }
 
-// Runner returns the underlying runner for direct access (e.g., AddWriter).
-func (d *Daemon) Runner() *agent.Runner {
+// handleSessionExit is the single DB-side sink for a finished session. It caches
+// ExitInfo (for GetExitInfo), flips task status (#707), recaptures the backend
+// session ID, closes TUI stream clients, clears the staged clipboard, and emits
+// the lifecycle event. Two callers funnel through it:
+//
+//   - supervisor OFF: the in-process runner's onFinish builds ExitInfo from the
+//     real Cmd.Wait result (StreamLost always false) and calls this directly.
+//   - supervisor ON: the supervisor-client's OnSessionExit relay delivers the
+//     ExitInfo it fetched from the supervisor via GetExitInfo — including the
+//     GetExitInfo-RPC-failure ⇒ StreamLost backstop, which now guards the
+//     supervisor→daemon boundary exactly as it has always guarded daemon→TUI.
+//
+// StreamLost short-circuits the status flip + recapture: a lost relay means the
+// process MAY still be alive on the supervisor, so flipping to Complete/InReview
+// would be wrong (#707 — "Complete only on an observed clean exit"). The
+// StreamLost ExitInfo is still cached so the daemon's own TUI clients read it via
+// GetExitInfo (a zero ExitInfo would CleanExit()=true → wrong Complete) and so
+// their stream conns are closed.
+func (d *Daemon) handleSessionExit(taskID string, ei ExitInfo) {
+	slog.Info("session exited", "task", taskID, "stopped", ei.Stopped, "err", ei.Err, "streamLost", ei.StreamLost, "pending", ei.PendingRestart, "lastOutputBytes", len(ei.LastOutput))
+
+	d.mu.Lock()
+	d.exitInfos[taskID] = ei
+	conns := d.streams[taskID]
+	delete(d.streams, taskID)
+	d.mu.Unlock()
+
+	if ei.StreamLost {
+		slog.Warn("session exit relay: stream lost — status unchanged, process may still be alive", "task", taskID, "clients", len(conns))
+		for _, conn := range conns {
+			conn.Close() //nolint:errcheck // best-effort EOF signal; conn is being discarded
+		}
+		return
+	}
+
+	// Flip the DB row out of InProgress. Without this, a daemon-only setup
+	// (web-app users with no TUI attached) leaves the row stuck in_progress
+	// forever — the API then reports idle:true and the PWA pops a Resume modal
+	// for a task whose agent has already exited. The TUI's HandleSessionExit also
+	// runs this transition; both sites are guarded by the StatusInProgress check,
+	// so whichever fires first wins and the other becomes a no-op.
+	//
+	// SKIP when a kick-restart is in flight (KickRerender stopped the session and
+	// queued a same-task Start). Transitioning here would race the restart and
+	// leave the row in the wrong state mid-flip.
+	if !ei.PendingRestart {
+		d.transitionTaskOnExit(taskID, ei.CleanExit())
+	}
+
+	// Capture session ID for backends that mint it themselves post-exit (codex
+	// via state_5.sqlite, pi via session-file scan; Claude refreshes on /clear).
+	// In supervisor mode the daemon still owns this — it reads the worktree-scoped
+	// backend state, which lives on the shared filesystem both processes see, and
+	// the relay only fires after the supervisor observed Cmd.Wait, so the state
+	// file is already written (design §5: recapture daemon-side on the exit relay).
+	go d.captureSessionIDPostExit(taskID)
+
+	// Signal stream EOF to all connected clients by closing their connections.
+	slog.Info("session exited, closing stream clients", "task", taskID, "clients", len(conns))
+	for _, conn := range conns {
+		conn.Close() //nolint:errcheck // best-effort EOF signal; conn is being discarded
+	}
+
+	// Clear any agent-staged clipboard for the finished task — the agent that
+	// staged it is gone; the user shouldn't see a stale copy button.
+	d.clipboard.Clear(taskID)
+
+	// Surface session lifecycle to plugins. Fired AFTER the DB transition so an
+	// SSE subscriber waking on this event sees a coherent snapshot.
+	events.Emit(model.EventTypeSessionExited, taskID, map[string]any{
+		"stopped":         ei.Stopped,
+		"err":             ei.Err,
+		"pending_restart": ei.PendingRestart,
+	})
+}
+
+// Runner returns the underlying session runner. Typed as agent.SessionRunner
+// since d.runner may be an in-process *agent.Runner (supervisor OFF) or a
+// supervisor-client (supervisor ON).
+func (d *Daemon) Runner() agent.SessionRunner {
 	return d.runner
 }
 
@@ -884,13 +953,25 @@ func (d *Daemon) Shutdown() {
 func (d *Daemon) cleanup() {
 	slog.Info("daemon shutting down")
 
-	// Persist the live session set before stopping agents so hera workers can
-	// detect the bounce on the next daemon start (see bounce.go).
-	if err := writeLiveTasksFile(d.runner, db.DataDir()); err != nil {
-		slog.Warn("bounce: persist live-tasks failed", "err", err)
+	if d.supClient != nil {
+		// Supervisor mode: the supervisor owns the agent PTYs and MUST survive
+		// this daemon's exit — that is the entire point (agents keep running
+		// across a daemon bounce; P3 re-attaches them). So do NOT StopAll (it
+		// would kill them) and do NOT write the bounce live-tasks file (re-attach
+		// supersedes the bounce-signal replay; that's P3). Just detach the client
+		// connection + its stream goroutines.
+		if err := d.supClient.Close(); err != nil {
+			slog.Warn("supervisor client close", "err", err)
+		}
+	} else {
+		// In-process mode (pre-P2 path, byte-identical): persist the live session
+		// set before stopping agents so hera workers detect the bounce on the next
+		// daemon start (see bounce.go), then stop every agent.
+		if err := writeLiveTasksFile(d.runner, db.DataDir()); err != nil {
+			slog.Warn("bounce: persist live-tasks failed", "err", err)
+		}
+		d.runner.StopAll()
 	}
-
-	d.runner.StopAll()
 
 	// Stop the scheduler if running.
 	if d.scheduler != nil {

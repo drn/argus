@@ -27,7 +27,27 @@ type BootInfoResp struct {
 // to a supervisor binary it did not itself start (go install + daemon restart
 // does NOT restart the supervisor; agents would die). Treat it as a frozen
 // public contract and review changes like an API break.
-const ProtocolVersion = 1
+//
+// Version history:
+//   - v1 (P1): Ping, StartSession, StopSession, StopAll, SessionStatus,
+//     ListSessions, HasPendingRestart, WriteInput, Resize, GetExitInfo, Hello, Shutdown.
+//   - v2 (P2): + KickRerender (the daemon's API-server resize path drives a
+//     kick-rerender restart through the supervisor; the runner's pendingRestart
+//     bookkeeping must run supervisor-side, so it can't be composed client-side
+//     from Stop+Start). Additive: a v1 supervisor simply lacks the method and a
+//     KickRerender RPC against it errors, which the daemon treats as a no-op kick.
+const ProtocolVersion = 2
+
+// SupervisorProtocolMatch reports whether a supervisor's handshake version
+// equals the daemon's. A mismatch is NOT fatal and NEVER triggers an auto-
+// restart of the live supervisor: restarting it would SIGHUP its agents (the
+// one event P2 exists to avoid — design §4.4). The daemon logs the skew and
+// proceeds within the running supervisor's capabilities. This is a pure helper
+// so the connect path's skew decision is unit-testable (the connect glue itself
+// forks/dials and is coverage-exempt).
+func SupervisorProtocolMatch(hello HelloResp) bool {
+	return hello.ProtocolVersion == ProtocolVersion
+}
 
 // HelloResp is the session-supervisor's handshake reply. ProtocolVersion lets
 // the daemon (P2) decide which RPCs/fields it may use against this supervisor;
@@ -109,6 +129,24 @@ type ResizeReq struct {
 	TaskID string
 	Rows   uint16
 	Cols   uint16
+}
+
+// KickReq is the RPC request to kick-rerender a session (P2, protocol v2). It
+// carries the full task projection (like StartReq, minus Resume — a kick always
+// resumes) because the supervisor's runner stores the task to rebuild the
+// command for the in-place restart. The supervisor resolves cfg via its own
+// cfgFn, so the daemon does not ship config on the wire.
+type KickReq struct {
+	TaskID    string
+	SessionID string
+	Prompt    string
+	Project   string
+	Backend   string
+	Model     string
+	Worktree  string
+	Branch    string
+	Rows      uint16
+	Cols      uint16
 }
 
 // StreamHeader is sent by the client on a stream connection to subscribe
