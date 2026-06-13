@@ -459,6 +459,31 @@ func (d *DB) createHeraTables() error {
 			status     TEXT NOT NULL CHECK (status IN ('idle','working','blocked','done')),
 			updated_at TEXT NOT NULL
 		);
+
+		-- Role-addressed message bus (Milestone 2). FK cascades on both sender
+		-- and recipient role deletes — if a role is hard-deleted, its messages go
+		-- too. in_reply_to SET NULL on parent delete so threads don't break.
+		-- read_at is real NULL (never '') — the partial inbox index below requires it.
+		-- delivery_mode tracks how (or whether) the message reached the recipient PTY.
+		CREATE TABLE IF NOT EXISTS hera_messages (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			from_role_id   INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			to_role_id     INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			body           TEXT NOT NULL,
+			tldr           TEXT NOT NULL DEFAULT '',
+			in_reply_to    INTEGER REFERENCES hera_messages(id) ON DELETE SET NULL,
+			sent_at        TEXT NOT NULL,
+			read_at        TEXT,
+			delivery_mode  TEXT NOT NULL DEFAULT 'pending',
+			delivered_at   TEXT
+		);
+		-- Partial inbox index: only indexes unread rows, so cost scales with the
+		-- unread count not the full message history. Covers the HeraInbox + unread-
+		-- cap queries. sent_at + id provide a stable oldest-first ordering within
+		-- the partial scan.
+		CREATE INDEX IF NOT EXISTS idx_hera_msg_inbox ON hera_messages(to_role_id, sent_at, id) WHERE read_at IS NULL;
+		-- Sender index covers the rate-limit rolling-window COUNT query.
+		CREATE INDEX IF NOT EXISTS idx_hera_msg_sent  ON hera_messages(from_role_id, sent_at);
 	`
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return fmt.Errorf("creating hera tables: %w", err)

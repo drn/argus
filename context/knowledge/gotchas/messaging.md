@@ -134,3 +134,38 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
   cadence into the real `db.WaitForReply` — the prod cadence is tuned to
   the typical "task replies within a few seconds" case where 500ms tick
   is plenty.
+
+## Hera message bus (M2)
+
+- **`hera_messages.read_at` is real NULL, never `''`.** The partial inbox index
+  (`WHERE read_at IS NULL`) only covers rows where the column is actually NULL;
+  an empty string would exclude those rows silently. All hera scanners use
+  `sql.NullString` and all writes use `NULL`. This diverges from the `task_messages`
+  convention (`read_at=''` for unread) — the distinction is intentional and must
+  not be conflated.
+- **Filling the `hera_messages` inbox cap (500) in tests requires varied senders.**
+  `SendHeraMessage` enforces a 50/min per-sender rate limit — batching 500 sends
+  from a single sender will hit the rate limit at 50. Use 10 distinct sender roles
+  (500 ÷ 50 = 10) so no single sender's window is exceeded. Same pattern as
+  `messages_test.go`.
+- **`hera_messages` delivery mode is stamped at enqueue time, not submit time.**
+  `MarkHeraMessageDelivered` is called immediately after `notifier.ReliableNotify`
+  — stamping "idle_submit" to mean "registered for reliable delivery", NOT "actually
+  submitted to the PTY". The actual PTY submission happens asynchronously on the
+  next Reconcile tick. This is a subtle semantic difference from Hera's original
+  `SetDelivered` (which was called post-delivery).
+- **hera delivery IDs use the prefix `"hera:"` to avoid collision with
+  task_messages delivery IDs.** task_messages uses raw numeric DB IDs as delivery
+  IDs (e.g. "1781310427580289000"); hera uses "hera:1", "hera:2", etc. Both
+  namespaces live in the same Notifier — the prefix prevents a hera cancel from
+  accidentally cancelling a task_messages delivery with the same numeric ID.
+- **`hera.Service.Inbox` cancels pending notifier deliveries eagerly.** Unlike
+  `task_inbox` (which requires an explicit ack call to cancel), `hera.Service.Inbox`
+  cancels deliveries for returned messages immediately — reading IS the acknowledgment
+  in Hera's design. `MarkRead` also cancels. Both paths are idempotent (cancel is
+  a no-op on already-submitted deliveries).
+- **doorbell line includes user-controlled strings (role name, tldr).**
+  Unlike `task_messages` nudge (which uses only digit-only task IDs and a typed enum),
+  the hera doorbell `[hera from <role-name>] msg #<id> — <tldr>` contains user-
+  supplied text. Acceptable under the cooperative single-user local threat model,
+  but do NOT copy this pattern to the task_messages nudge format.
