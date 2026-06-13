@@ -330,14 +330,15 @@ type focusTrackerIface interface {
 }
 
 // heraFinishStore is the local-DB surface the session-exit finish policy mirror
-// needs (BUG-050). Satisfied by *db.DB. In --remote mode a.db is an
+// needs (BUG-050). Satisfied by *db.DB via the shared db.RollHeraWorkerToReview
+// helper (the same one the daemon exit hook and the hera_status("done") MCP arm
+// call, so all triggers stay in lockstep). In --remote mode a.db is an
 // *apistore.Store that does NOT satisfy it, so the mirror in handleSessionExitUI
 // is skipped — the remote daemon already applied the policy authoritatively in
 // transitionTaskOnExit. Same local-only type-assertion pattern as the
 // remoteTaskCreator / remoteForker daemon-admin guards elsewhere in this file.
 type heraFinishStore interface {
-	TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error)
-	SetMeta(taskID, namespace, key, value string) error
+	RollHeraWorkerToReview(taskID string) (bool, error)
 }
 
 // SetFocusTracker wires the daemon-level focus tracker into the TUI.
@@ -1215,45 +1216,40 @@ func (a *App) handleSessionExitUI(taskID string, cleanExit, pendingRestart bool)
 		// InProgress before resuming, so they tolerate the transient flip.
 		if !pendingRestart {
 			// Hera worker finish policy mirror (BUG-050). Kept in lockstep with
-			// the daemon's transitionTaskOnExit so the two flip sites can never
-			// disagree (the PR #707 invariant): a task holding a live worker-kind
-			// hera binding never self-completes — the coordinator/human closes it
-			// out. In daemon mode the daemon flips first (its onFinish runs before
-			// the stream close that triggers us), so by the time we read t.Status
-			// it has already moved off InProgress and this whole block is a no-op;
-			// the mirror is load-bearing in daemon-less in-process mode, where this
-			// is the ONLY flip site (no *Daemon.transitionTaskOnExit runs). The
-			// hera lookup is local-only: a.db is *db.DB locally and satisfies
-			// heraFinishStore; in --remote mode it does not, so we fall through to
-			// the plain rule (the remote daemon already applied the policy).
-			workerBound := false
+			// the daemon's transitionTaskOnExit and the hera_status("done") MCP
+			// arm via the shared db.RollHeraWorkerToReview helper, so all flip
+			// sites can never disagree (the PR #707 invariant): a task holding a
+			// live worker-kind hera binding never self-completes — the
+			// coordinator/human closes it out. In daemon mode the daemon flips
+			// first (its onFinish runs before the stream close that triggers us),
+			// so this is a no-op; it is load-bearing in daemon-less in-process
+			// mode, where this is the ONLY flip site. Local-only: a.db is *db.DB
+			// locally and satisfies heraFinishStore; in --remote mode it does not,
+			// so we fall through to the plain rule (remote daemon is authoritative).
+			rolled := false
 			if fs, ok := a.db.(heraFinishStore); ok {
-				if wb, wErr := fs.TaskHoldsLiveHeraWorkerBinding(t.ID); wErr != nil {
-					uxlog.Log("[tui] hera worker-binding check failed for %s (default policy): %v", t.ID, wErr)
+				if f, err := fs.RollHeraWorkerToReview(t.ID); err != nil {
+					uxlog.Log("[tui] hera worker roll failed for %s (default policy): %v", t.ID, err)
 				} else {
-					workerBound = wb
+					rolled = f
 				}
 			}
-			if cleanExit && !workerBound {
-				t.SetStatus(model.StatusComplete)
+			if rolled {
+				uxlog.Log("[tui] task %s (%s) → in_review (hera worker close-out)", t.ID, t.Name)
 			} else {
-				t.SetStatus(model.StatusInReview) // crash/stop/fast-fail/worker → recoverable
-			}
-			// Persist via the partial setter, not Update: t was Get'd fresh above,
-			// but the concurrent autoname goroutine could land a rename in the
-			// straight-line window before this write. SetStatus touches only
-			// status/timestamps, so it can't clobber that name — same reasoning
-			// as the reconciliation and OnPin/OnStatusChange paths.
-			a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
-			if workerBound {
-				// Best-effort soft-fail mark consumed by the M6 rail/task-list.
-				if fs, ok := a.db.(heraFinishStore); ok {
-					if mErr := fs.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"); mErr != nil {
-						uxlog.Log("[tui] hera ready_to_close stamp failed for %s: %v", t.ID, mErr)
-					}
+				if cleanExit {
+					t.SetStatus(model.StatusComplete)
+				} else {
+					t.SetStatus(model.StatusInReview) // crash/stop/fast-fail → recoverable
 				}
+				// Persist via the partial setter, not Update: t was Get'd fresh
+				// above, but the concurrent autoname goroutine could land a rename
+				// in the straight-line window before this write. SetStatus touches
+				// only status/timestamps, so it can't clobber that name — same
+				// reasoning as the reconciliation and OnPin/OnStatusChange paths.
+				a.db.SetStatus(t.ID, t.Status) //nolint:errcheck
+				uxlog.Log("[tui] task %s (%s) → %s", t.ID, t.Name, t.Status)
 			}
-			uxlog.Log("[tui] task %s (%s) → %s (hera_worker=%v)", t.ID, t.Name, t.Status, workerBound)
 		} else {
 			uxlog.Log("[tui] task %s exit deferred: daemon kick-restart in flight", t.ID)
 		}

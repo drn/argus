@@ -3,6 +3,7 @@ package db
 import (
 	"testing"
 
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -133,5 +134,77 @@ func TestUniqueHeraRoleName(t *testing.T) {
 		got, err := d.UniqueHeraRoleName(ob.ID, "fix-bug")
 		testutil.NoError(t, err)
 		testutil.Equal(t, got, "fix-bug")
+	})
+}
+
+func TestRollHeraWorkerToReview(t *testing.T) {
+	setup := func(t *testing.T, status model.Status, kind HeraRoleKind, bind bool) (*DB, string) {
+		t.Helper()
+		d := heraTestDB(t)
+		task := &model.Task{Name: "t", Status: status, Project: "p"}
+		testutil.NoError(t, d.Add(task))
+		if bind {
+			o := mkOrch(t, d, "o")
+			r := mkRole(t, d, o.ID, "r", kind)
+			mkBinding(t, d, r.ID, task.ID, "/wt/t")
+		}
+		return d, task.ID
+	}
+
+	t.Run("worker in_progress -> flips + stamps + true", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindWorker, true)
+		flipped, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, true)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusInReview)
+		meta, _ := d.ListMeta(id, HeraMetaNamespace)
+		found := false
+		for _, e := range meta {
+			if e.Key == HeraMetaKeyReadyToClose && e.Value == "true" {
+				found = true
+			}
+		}
+		testutil.Equal(t, found, true)
+	})
+
+	t.Run("idempotent: second call is a no-op", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindWorker, true)
+		_, _ = d.RollHeraWorkerToReview(id)
+		flipped, err := d.RollHeraWorkerToReview(id) // now in_review
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, false)
+	})
+
+	t.Run("non-worker (coordinator) -> no-op", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindCoordinator, true)
+		flipped, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, false)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusInProgress)
+	})
+
+	t.Run("no binding -> no-op", func(t *testing.T) {
+		d, id := setup(t, model.StatusInProgress, HeraKindWorker, false)
+		flipped, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, false)
+	})
+
+	t.Run("already complete -> not clobbered", func(t *testing.T) {
+		d, id := setup(t, model.StatusComplete, HeraKindWorker, true)
+		flipped, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, false)
+		got, _ := d.Get(id)
+		testutil.Equal(t, got.Status, model.StatusComplete)
+	})
+
+	t.Run("human-set in_review -> not re-flipped", func(t *testing.T) {
+		d, id := setup(t, model.StatusInReview, HeraKindWorker, true)
+		flipped, err := d.RollHeraWorkerToReview(id)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, false)
 	})
 }

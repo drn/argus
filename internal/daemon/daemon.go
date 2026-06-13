@@ -300,27 +300,29 @@ func (d *Daemon) captureSessionIDPostExit(taskID string) {
 // No-op if the row has already moved on (e.g., the TUI's HandleSessionExit
 // won the race, or the user manually changed status mid-exit).
 func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
+	// Hera worker finish policy (BUG-050, locked decision #4) — the EXIT-HOOK
+	// BACKSTOP. The PRIMARY trigger is hera_status("done") in the MCP arm
+	// (Claude workers finish their report and go idle rather than exiting); this
+	// exit hook catches the cases where a worker session actually ends. Both go
+	// through db.RollHeraWorkerToReview so they can't drift: a task holding a
+	// live worker-kind binding NEVER self-completes — it lands in_review (even on
+	// a clean exit) and is stamped meta:hera.ready_to_close for coordinator/human
+	// close-out. Coordinators/freelance and non-hera tasks are NOT rolled here and
+	// fall through to the unchanged #707 rule below.
+	if flipped, err := d.db.RollHeraWorkerToReview(taskID); err != nil {
+		// Soft-fail: a hera lookup error must not change the default behaviour.
+		slog.Warn("session exit: hera worker roll failed (using default policy)", "task", taskID, "err", err)
+	} else if flipped {
+		slog.Info("session exit: hera worker rolled to in_review", "task", taskID)
+		return
+	}
+
+	// Non-worker (or worker no longer in_progress): unchanged #707 logic.
 	t, err := d.db.Get(taskID)
 	if err != nil || t == nil || t.Status != model.StatusInProgress {
 		return
 	}
-
-	// Hera worker finish policy (BUG-050, locked decision #4): a task holding a
-	// live worker-kind hera binding NEVER self-completes — workers are closed
-	// out by the coordinator/human. Force in_review even on a clean exit, and
-	// stamp meta:hera.ready_to_close so the rail/task-list can flag it for
-	// close-out. This does NOT weaken CleanExit for non-hera tasks: a task with
-	// no live worker binding follows the unchanged #707 rule below. Coordinators
-	// are NOT auto-rolled (only worker-kind) — a coordinator pane that exits
-	// cleanly still lands Complete, matching pre-M4 behaviour.
-	workerBound, wErr := d.db.TaskHoldsLiveHeraWorkerBinding(taskID)
-	if wErr != nil {
-		// Soft-fail: a hera lookup error must not change the default behaviour.
-		slog.Warn("session exit: hera worker-binding check failed (using default policy)", "task", taskID, "err", wErr)
-		workerBound = false
-	}
-
-	if cleanExit && !workerBound {
+	if cleanExit {
 		t.SetStatus(model.StatusComplete)
 	} else {
 		t.SetStatus(model.StatusInReview)
@@ -329,13 +331,7 @@ func (d *Daemon) transitionTaskOnExit(taskID string, cleanExit bool) {
 		slog.Warn("session exit: status update failed", "task", taskID, "err", uerr)
 		return
 	}
-	if workerBound {
-		// Best-effort soft-fail: the mark is a display aid, not authoritative.
-		if mErr := d.db.SetMeta(taskID, db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"); mErr != nil {
-			slog.Warn("session exit: ready_to_close stamp failed", "task", taskID, "err", mErr)
-		}
-	}
-	slog.Info("session exit: status flipped", "task", taskID, "status", t.Status.String(), "hera_worker", workerBound)
+	slog.Info("session exit: status flipped", "task", taskID, "status", t.Status.String())
 }
 
 // heraSpawnWorker performs the transactional born-bound worker spawn (M4). It

@@ -4,7 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/drn/argus/internal/model"
 )
 
 // Hera role/binding/orchestrator store (Milestone 1 of merging Hera into Argus
@@ -663,6 +666,48 @@ func (d *DB) TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error) {
 		return false, fmt.Errorf("task holds live worker binding: %w", err)
 	}
 	return n > 0, nil
+}
+
+// RollHeraWorkerToReview implements the BUG-050 worker close-out roll: it moves
+// a worker-bound task to in_review and stamps meta:hera.ready_to_close=true. It
+// is the SINGLE shared helper behind BOTH close-out triggers — the session-exit
+// hooks (backstop) and the hera_status("done") hook (primary path, since Claude
+// workers finish their report and go idle rather than exiting) — so the two can
+// never drift.
+//
+// It acts ONLY when the task currently holds a live worker-kind binding AND is
+// in StatusInProgress. It never auto-completes, never clobbers a human-set
+// in_review/complete (the in_progress guard), and never touches the agent
+// session (DB status + meta only — callers must not stop/restart). Returns
+// (true, nil) when it flipped, (false, nil) on a no-op (not worker-bound, or not
+// in_progress). Idempotent: a second call is a no-op because the task is no
+// longer in_progress.
+//
+// SetStatus emits task.status_changed OUTSIDE the DB mutex (events.md); the
+// ready_to_close stamp is best-effort soft-fail — a meta failure is logged and
+// the flip still stands.
+func (d *DB) RollHeraWorkerToReview(taskID string) (bool, error) {
+	worker, err := d.TaskHoldsLiveHeraWorkerBinding(taskID)
+	if err != nil {
+		return false, err
+	}
+	if !worker {
+		return false, nil
+	}
+	t, err := d.Get(taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != model.StatusInProgress {
+		return false, nil // never clobber a human-set in_review/complete
+	}
+	if err := d.SetStatus(taskID, model.StatusInReview); err != nil {
+		return false, err
+	}
+	if mErr := d.SetMeta(taskID, HeraMetaNamespace, HeraMetaKeyReadyToClose, "true"); mErr != nil {
+		slog.Warn("[hera] ready_to_close stamp failed (flip stands)", "task", taskID, "err", mErr)
+	}
+	return true, nil
 }
 
 // UniqueHeraRoleName returns base unchanged when no ACTIVE role under orchID

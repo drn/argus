@@ -37,6 +37,10 @@ type HeraStore interface {
 	HeraInbox(roleID int64) ([]*db.HeraMessage, error)
 	// Task meta mirror (best-effort soft-fail).
 	SetMeta(taskID, namespace, key, value string) error
+	// RollHeraWorkerToReview is the BUG-050 close-out roll shared with the
+	// session-exit hooks; the hera_status("done") trigger calls it. No-op
+	// unless the task is a live worker AND currently in_progress.
+	RollHeraWorkerToReview(taskID string) (bool, error)
 }
 
 // heraToolDefs contains the 9 hera_* tool schemas, ported verbatim from
@@ -668,6 +672,23 @@ func (s *Server) toolHeraStatus(id interface{}, args json.RawMessage) *Response 
 	// Mirror to task_meta best-effort.
 	if metaErr := s.heraStore.SetMeta(caller.binding.ArgusTaskID, db.HeraMetaNamespace, db.HeraMetaKeyThreadStatus, p.Status); metaErr != nil {
 		slog.Warn("[hera] meta mirror failed", "tool", "hera_status", "task_id", caller.binding.ArgusTaskID, "err", metaErr)
+	}
+
+	// BUG-050 PRIMARY trigger: a WORKER reporting status="done" rolls its bound
+	// task to in_review + stamps ready_to_close — the idle-but-done case the
+	// exit hook misses (Claude workers finish their report and go idle, they
+	// don't exit). Worker-kind ONLY (coordinators/freelance just update status);
+	// RollHeraWorkerToReview itself no-ops unless the task is in_progress, so it
+	// never clobbers a human-set in_review/complete and never auto-completes. It
+	// touches DB status + meta only — the live session is left running. Failure
+	// is soft (logged, never surfaced) so the status update always succeeds; the
+	// call is idempotent (re-calling done is a no-op once flipped).
+	if sv == db.HeraStatusDone && caller.role.Kind == db.HeraKindWorker {
+		if flipped, rErr := s.heraStore.RollHeraWorkerToReview(caller.binding.ArgusTaskID); rErr != nil {
+			slog.Warn("[hera] status(done): worker roll failed (status still updated)", "task_id", caller.binding.ArgusTaskID, "err", rErr)
+		} else if flipped {
+			slog.Info("[hera] status(done): rolled worker task to in_review", "task_id", caller.binding.ArgusTaskID, "role", caller.role.Name)
+		}
 	}
 
 	slog.Info("[hera] status ok", "role", caller.role.Name, "status", p.Status, "orch", caller.orch.Name)

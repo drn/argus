@@ -1192,3 +1192,88 @@ func TestDeriveHeraWorkerName(t *testing.T) {
 		})
 	}
 }
+
+// --- hera_status(done) BUG-050 primary trigger (M4 refinement) ---
+
+// attachWorker joins workerTask as a worker under orch (which coordTask must
+// already coordinate), returning nothing — the binding is what matters.
+func attachWorker(t *testing.T, s *Server, orch, workerWorktree string) {
+	t.Helper()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name: "hera_join",
+		Arguments: json.RawMessage(fmt.Sprintf(`{
+			"cwd": %q, "orchestrator": %q, "role_name": "w1", "kind": "worker"
+		}`, workerWorktree, orch)),
+	})
+	testutil.Equal(t, callResult(t, resp).IsError, false)
+}
+
+func heraStatus(t *testing.T, s *Server, cwd, status string) ToolCallResult {
+	t.Helper()
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_status",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "status": %q}`, cwd, status)),
+	})
+	testutil.NoError(t, respErr(resp))
+	return callResult(t, resp)
+}
+
+func TestHera_Status_Done_RollsWorkerToReview(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker") // status InProgress
+	attachWorker(t, s, "myorch", worker.Worktree)
+
+	cr := heraStatus(t, s, worker.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false) // status call always succeeds
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusInReview)
+	meta, _ := d.ListMeta(worker.ID, db.HeraMetaNamespace)
+	found := false
+	for _, e := range meta {
+		if e.Key == db.HeraMetaKeyReadyToClose && e.Value == "true" {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+func TestHera_Status_Done_CoordinatorUnchanged(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord") // InProgress coordinator
+
+	cr := heraStatus(t, s, coord.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(coord.ID)
+	testutil.Equal(t, got.Status, model.StatusInProgress) // NOT rolled
+}
+
+func TestHera_Status_Working_NoFlip(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker")
+	attachWorker(t, s, "myorch", worker.Worktree)
+
+	cr := heraStatus(t, s, worker.Worktree, "working")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusInProgress) // working ≠ done → no flip
+}
+
+func TestHera_Status_Done_DoesNotClobberComplete(t *testing.T) {
+	s, d := testHeraServer(t)
+	seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	worker := addHeraTestTask(t, d, "/wt/worker")
+	attachWorker(t, s, "myorch", worker.Worktree)
+	// Human/agent already marked it complete.
+	testutil.NoError(t, d.SetStatus(worker.ID, model.StatusComplete))
+
+	cr := heraStatus(t, s, worker.Worktree, "done")
+	testutil.Equal(t, cr.IsError, false)
+
+	got, _ := d.Get(worker.ID)
+	testutil.Equal(t, got.Status, model.StatusComplete) // not clobbered
+}
