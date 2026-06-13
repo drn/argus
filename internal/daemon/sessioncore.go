@@ -22,6 +22,16 @@ const streamPendingRestartWaitInterval = 50 * time.Millisecond
 // without making truly-dead sessions linger.
 const streamPendingRestartMaxWait = 10 * time.Second
 
+// exitInfoCacheMaxWait bounds how long handleStream waits, after observing
+// sess.Done(), for the runner's exit goroutine to cache the ExitInfo before it
+// returns (and the conn closes, signalling EOF to the stream client). See
+// awaitExitInfoCached / the #707 race note in handleStream. Generous because
+// onFinish runs promptly after Done(); the bound is only a liveness backstop.
+const exitInfoCacheMaxWait = 5 * time.Second
+
+// exitInfoCachePollInterval is how often awaitExitInfoCached re-checks the cache.
+const exitInfoCachePollInterval = 2 * time.Millisecond
+
 // sessionCore is the reusable session-serving substrate: the agent.Runner, the
 // per-task stream-conn registry, the brief exit-info cache, and the R/S stream
 // handler + session-scoped JSON-RPC methods. It is the seam the daemon mounts
@@ -383,11 +393,47 @@ func (c *sessionCore) handleStream(conn net.Conn) {
 	// so a read will block until the connection is closed.
 	select {
 	case <-sess.Done():
+		// The process exited. Two things race off sess.Done(): (1) THIS select
+		// returns → handleConn's deferred conn.Close fires → the stream client sees
+		// EOF and fetches GetExitInfo; (2) the runner's exit goroutine runs onFinish,
+		// which caches the ExitInfo (Err/Stopped) and then closes the registered
+		// conns. sess.Done() closes in waitLoop BEFORE onFinish runs, so if (1) wins,
+		// the client's GetExitInfo reads "not found" → a zero-value ExitInfo →
+		// CleanExit()==true → a crashed task wrongly flips Complete (#707). The
+		// GetExitInfo-RPC-failure backstop does NOT cover this: the RPC succeeds, it
+		// just returns empty. So wait (bounded) for the ExitInfo to be cached before
+		// returning, guaranteeing the EOF the client observes is always post-cache.
+		// This applies in both modes (daemon→TUI and supervisor→daemon) — the relay
+		// fetch races the cache identically.
+		c.awaitExitInfoCached(header.TaskID, exitInfoCacheMaxWait)
 		slog.Info("stream: session exited", "task", header.TaskID)
 	case <-c.done:
 		slog.Info("stream: daemon shutting down", "task", header.TaskID)
 	case <-waitForClose(conn):
 		slog.Info("stream: client disconnected", "task", header.TaskID)
+	}
+}
+
+// awaitExitInfoCached blocks until the task's ExitInfo has been recorded in the
+// cache (by the runner's exit goroutine / onFinish) or the bound elapses or the
+// core shuts down. Closes the #707 race in handleStream where the stream EOF
+// could otherwise precede the cache write. A consumed entry (already fetched by
+// the relay) or a bound timeout simply returns — the residual is rare and the
+// fetch that consumed it already delivered the real ExitInfo.
+func (c *sessionCore) awaitExitInfoCached(taskID string, max time.Duration) {
+	deadline := time.Now().Add(max)
+	for {
+		c.mu.Lock()
+		_, ok := c.exitInfos[taskID]
+		c.mu.Unlock()
+		if ok || time.Now().After(deadline) {
+			return
+		}
+		select {
+		case <-c.done:
+			return
+		case <-time.After(exitInfoCachePollInterval):
+		}
 	}
 }
 

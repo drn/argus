@@ -134,11 +134,14 @@ func (d *DB) Config() config.Config {
 		cfg.Hera.Enabled = v == "true"
 	}
 
-	// Supervisor config. Absent key ⇒ false (off by default): the daemon owns
-	// agent PTYs in-process, byte-identical to pre-P2. Only an explicit "true"
-	// stored in the DB enables the out-of-process session-supervisor. The
-	// config.toml overlay (applied below by cfgLoader.Apply) wins over this DB
-	// value when both are set.
+	// Supervisor config. Absent key ⇒ true (on by default as of P4 — the base
+	// value from DefaultConfig is true, mirroring hera.enabled): agents run
+	// under the out-of-process session-supervisor so the daemon can bounce
+	// without interrupting them. An explicit "false" stored in the DB is the
+	// ROLLBACK — it restores the retained in-process runner path (byte-identical
+	// to pre-P2). The config.toml overlay (applied below by cfgLoader.Apply)
+	// wins over this DB value when both are set, so a toml supervisor.enabled
+	// = false is also a valid rollback.
 	if v, ok := kv["supervisor.enabled"]; ok {
 		cfg.Supervisor.Enabled = v == "true"
 	}

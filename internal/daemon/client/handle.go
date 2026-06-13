@@ -36,6 +36,7 @@ type RemoteSession struct {
 	pid       int
 	info      daemon.SessionInfo // cached session info
 	done      chan struct{}      // closed when stream EOF
+	closeOnce sync.Once          // guards close(done) — see close()
 	inputCh   chan []byte        // async input channel for WriteInput
 	lastInput time.Time          // wall-clock time of last WriteInput call
 }
@@ -346,10 +347,14 @@ func (rs *RemoteSession) removeWriterLocked(w io.Writer) {
 }
 
 // close shuts down the remote session.
+// close is idempotent + concurrency-safe via closeOnce. Multiple goroutines
+// race to close a session's done channel: the session's own connectStream
+// goroutine on exit/stream-loss, AND Client.Close() iterating every session on
+// shutdown (test t.Cleanup, restartDaemon client swap, supervisor-mode daemon
+// cleanup). The old `select{<-done: default: close(done)}` was a non-atomic
+// check-then-close: two racers both took the default and double-closed → "close
+// of closed channel" panic (surfaced under parallel -race load). Mirrors the
+// Client.closeOnce fix one level down.
 func (rs *RemoteSession) close() {
-	select {
-	case <-rs.done:
-	default:
-		close(rs.done)
-	}
+	rs.closeOnce.Do(func() { close(rs.done) })
 }

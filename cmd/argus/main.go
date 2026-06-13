@@ -386,13 +386,15 @@ func runDaemon() {
 
 	d := daemon.New(database)
 
-	// Supervisor mode (cfg.Supervisor.Enabled, default OFF): drive agent PTYs
-	// through the out-of-process session-supervisor so the daemon can bounce
-	// (to iterate on hera/coordination) without interrupting agents. Connect to
-	// a live supervisor — auto-starting one if absent — do the version handshake,
-	// and mount the client as the daemon's runner BEFORE Serve so every consumer
-	// captures it. Any failure falls back to the in-process runner (OFF behavior):
-	// a broken supervisor must never take the daemon offline.
+	// Supervisor mode (cfg.Supervisor.Enabled, default ON as of P4): drive agent
+	// PTYs through the out-of-process session-supervisor so the daemon can bounce
+	// (to iterate on hera/coordination, or to pick up a rebuilt binary) without
+	// interrupting agents. Connect to a live supervisor — auto-starting one if
+	// absent — do the version handshake, and mount the client as the daemon's
+	// runner BEFORE Serve so every consumer captures it. Any failure falls back to
+	// the in-process runner (the retained OFF/rollback behavior): a broken
+	// supervisor must never take the daemon offline. Set supervisor.enabled=false
+	// (DB or config.toml) to force the in-process runner explicitly (rollback).
 	if database.Config().Supervisor.Enabled {
 		if c := connectSupervisor(); c != nil {
 			d.UseSupervisorRunner(c)

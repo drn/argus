@@ -1,12 +1,14 @@
 package client
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/config"
 	"github.com/drn/argus/internal/daemon"
 	"github.com/drn/argus/internal/db"
@@ -90,6 +92,61 @@ func startE2E(t *testing.T, d *daemon.Daemon, sc *Client, database *db.DB, id, c
 	return task
 }
 
+// TestSupColdStart exercises the cold-start ordering the daemon performs in
+// supervisor mode (the P4 default): no daemon, no supervisor → first launch must
+// (1) fail to Connect to an absent supervisor socket, (2) take the auto-start
+// path — which under `go test` the fork-bomb backstop REFUSES (ErrTestBinary)
+// rather than re-exec the test binary as `session-supervisor start`; in
+// production it Setsid-forks the real binary — and (3) once a supervisor is up,
+// Connect succeeds, the daemon mounts it (supervisor mode ACTIVE), and a session
+// round-trips through it. We never fork a real supervisor: after asserting the
+// backstop we stand up an in-process Supervisor on the same socket to stand in
+// for the just-started process.
+func TestSupColdStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { database.Close() }) //nolint:errcheck
+
+	supSock := filepath.Join(t.TempDir(), "s.sock")
+
+	// 1. Cold: nothing is listening — Connect fails (no live supervisor).
+	if _, cerr := Connect(supSock); cerr == nil {
+		t.Fatal("Connect to an absent supervisor socket must fail")
+	}
+
+	// 2. The cold-start path then auto-starts one. The *.test fork-bomb backstop
+	//    must refuse here — proving a test run never spawns a real supervisor.
+	if _, aerr := AutoStartSupervisor(supSock); !errors.Is(aerr, ErrTestBinary) {
+		t.Fatalf("AutoStartSupervisor under test = %v, want ErrTestBinary", aerr)
+	}
+
+	// 3. Stand in for the just-started supervisor: a real in-process Supervisor on
+	//    the same socket. Connect now succeeds and the version handshake matches.
+	sup := daemon.NewSupervisor(database.Config)
+	go sup.Serve(supSock) //nolint:errcheck
+	t.Cleanup(func() { sup.Shutdown() })
+	waitFile(t, supSock)
+
+	sc, err := Connect(supSock)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { sc.Close() }) //nolint:errcheck
+
+	hello, herr := sc.Hello()
+	testutil.NoError(t, herr)
+	testutil.Equal(t, daemon.SupervisorProtocolMatch(hello), true)
+
+	// 4. Mount it: supervisor mode is now active — the daemon drives agents
+	//    through the supervisor-client, not an in-process runner.
+	d := daemon.New(database)
+	d.UseSupervisorRunner(sc)
+	testutil.Equal(t, d.Runner() == agent.SessionRunner(sc), true)
+
+	// 5. A session started cold round-trips supervisor→daemon to Complete.
+	task := startE2E(t, d, sc, database, "cold", "sh -c 'sleep 0.2'")
+	waitStatus(t, database, task.ID, model.StatusComplete)
+}
+
 // TestSupClean: a clean (zero-exit) agent → the daemon flips the task Complete.
 func TestSupClean(t *testing.T) {
 	d, sc, database := supE2E(t)
@@ -102,6 +159,56 @@ func TestSupCrash(t *testing.T) {
 	d, sc, database := supE2E(t)
 	task := startE2E(t, d, sc, database, "crash", "sh -c 'sleep 0.3; exit 1'")
 	waitStatus(t, database, task.ID, model.StatusInReview)
+}
+
+// TestSupCrashRelayErr is the relay-level #707 proof: a REAL non-zero exit
+// through the supervisor must deliver an ExitInfo carrying the exit error
+// (Err != "", CleanExit()==false), never an empty/clean one. P2's matrix tested
+// handleSessionExit with SYNTHETIC ExitInfo, so it never exercised the
+// supervisor→GetExitInfo fetch — which once raced the supervisor's exit-info
+// cache write: if the stream EOF (handleConn's conn close on handleStream's
+// sess.Done() return) beat onFinish's cache, GetExitInfo returned "not found" →
+// a zero-value ExitInfo → CleanExit()==true → the crashed task wrongly flipped
+// Complete. handleStream now waits for the cache before returning, so the EOF
+// the client observes is always post-cache. We wire our OWN onSessionExit to
+// capture the ExitInfo the relay actually delivered and assert it carries the
+// crash error.
+func TestSupCrashRelayErr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { database.Close() }) //nolint:errcheck
+
+	supSock := filepath.Join(t.TempDir(), "s.sock")
+	sup := daemon.NewSupervisor(database.Config)
+	go sup.Serve(supSock) //nolint:errcheck
+	t.Cleanup(func() { sup.Shutdown() })
+	waitFile(t, supSock)
+
+	sc, err := Connect(supSock)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { sc.Close() }) //nolint:errcheck
+
+	got := make(chan daemon.ExitInfo, 1)
+	sc.OnSessionExit(func(_ string, info daemon.ExitInfo) { got <- info })
+
+	bk := "be-crashrelay"
+	testutil.NoError(t, database.SetBackend(bk, config.Backend{Command: "sh -c 'exit 7'"}))
+	task := &model.Task{ID: "crashrelay", Name: "crashrelay", Status: model.StatusInProgress, Backend: bk, Worktree: t.TempDir()}
+	testutil.NoError(t, database.Add(task))
+	_, err = sc.Start(task, config.Config{}, 24, 80, false)
+	testutil.NoError(t, err)
+
+	select {
+	case info := <-got:
+		if info.Err == "" {
+			t.Fatalf("crash relay delivered empty Err (StreamLost=%v, CleanExit=%v) — #707 violation: a crashed task would flip Complete", info.StreamLost, info.CleanExit())
+		}
+		testutil.Equal(t, info.StreamLost, false)
+		testutil.Equal(t, info.CleanExit(), false)
+	case <-time.After(10 * time.Second):
+		t.Fatal("no exit relay delivered within 10s")
+	}
 }
 
 // TestSupStop: an explicit stop → the daemon flips the task InReview.
