@@ -21,7 +21,8 @@ Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of ag
 Coding agents are cheap to start and expensive to babysit. Five `claude` tabs become five forgotten branches. A `codex` you fire off at lunch is a black box until you `cmd-tab` back. Argus replaces that pile of terminals with a persistent orchestrator that knows what every agent is doing, where its worktree lives, when it goes idle, and who needs your attention next.
 
 - **One keystroke** spins up an isolated worktree, a fresh branch, and a fresh agent, all wired into a live dashboard.
-- **A persistent daemon** keeps PTYs alive across TUI restarts and laptop reboots. Your sessions outlive your terminal.
+- **Native multi-agent coordination.** A dedicated **Hera** tab turns one agent into a team: a coordinator delegates to workers it spawns, an idle-gated message bus passes work between them, and a dependency DAG tracks what blocks what — all first-class in the same UI, no separate tool.
+- **A persistent daemon** keeps PTYs alive across TUI restarts and laptop reboots — and a separate session-supervisor keeps them alive across *daemon* restarts too, so you can upgrade Argus mid-flight without interrupting a single agent. Your sessions outlive your terminal.
 - **An idle detector** quietly promotes any agent waiting for input to "in review" — so a glance at the list tells you who needs you.
 - **A built-in HTTP API + PWA** mirrors every keystroke from your phone, so the dashboard travels with you.
 - **A built-in MCP server** lets agents talk to Argus directly — search your notes, spawn other agents, or hand off work between models.
@@ -95,6 +96,7 @@ Disabled by default — see **[Knowledge Base setup](docs/knowledge-base.md)** t
 - **Smart auto-naming** — a Claude Haiku call quietly turns a free-form prompt into a kebab-case task name. Falls open to a regex slug if `claude` is unavailable.
 - **Scheduled tasks** — cron, descriptors, intervals, or one-shot runs. Each fire spawns a fresh task. Manage from TUI, PWA, or MCP.
 - **macOS sandbox-exec** — per-session SBPL profiles. `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config/gcloud` blocked by default.
+- **Session-supervisor** — agent PTYs live in a long-lived out-of-process supervisor, not the daemon, so bouncing the daemon (for an upgrade or a config change) re-attaches to still-running agents instead of killing them. On by default; one flag rolls back to the legacy in-process runner.
 - **Self-update** — `git pull` + `go install` + daemon restart from a single Settings row. Active sessions reattach across the swap.
 - **Auto-start at login** — install the daemon as a launchd LaunchAgent so your agents survive reboots without launching the TUI.
 - **Full PTY emulation** — `charmbracelet/x/vt` painting cells directly to `tcell`. Colors, attributes, OSC 8 hyperlinks, infinite scrollback, bracket paste.
@@ -158,11 +160,12 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `P`       | Toggle pin (★ section pinned to the top of the task list)       |
 | `c`       | Copy task prompt to clipboard                                   |
 | `r`       | Rename task (display name only; branch/worktree stay locked)    |
+| `H`       | Toggle hidden Hera-spawned workers (hidden by default — they live in the Hera tab) |
 | `ctrl+d`  | Destroy task (kill agent + remove worktree + delete branch)     |
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / DAG / Settings); `Tab` / `Shift+Tab` cycle |
+| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings); `Tab` / `Shift+Tab` cycle. The `2` tab shows **Hera** by default; with `hera.enabled = false` it falls back to the legacy **DAG** view |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -181,6 +184,27 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+p`              | Open PR for the worktree branch in browser (via `gh pr view --web`)       |
 | `ctrl+y`              | Copy agent-staged text (only when payload pending; otherwise sent to PTY) |
 | `Shift+↑` / `Shift+↓` | Scroll terminal (with acceleration)                                       |
+
+#### Hera Tab
+
+The Hera tab (`2`, when `hera.enabled`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+
+| Key             | Action                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------- |
+| `j` / `k`       | Move the rail cursor down / up                                                          |
+| `Space`         | Collapse / expand an orchestrator, or the Freelance / Archive section                  |
+| `Tab` / `Shift+Tab` | Cycle focus across rail → coordinator pane → details region                        |
+| `Enter`         | Re-attach a dead session for the selected role, then move focus into its pane          |
+| `w`             | Spawn a worker under the selected orchestrator                                          |
+| `r`             | Rename the selected role / orchestrator                                                 |
+| `a`             | Archive / unarchive the selected role / orchestrator                                    |
+| `P`             | Pin / unpin the selected role / orchestrator                                            |
+| `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
+| `ctrl+d`        | Delete the selected role / orchestrator                                                 |
+| `g`             | (coordinator selected) Toggle the details region between the **roster** and the **dependency DAG** |
+| `ctrl+q`        | Return focus to the rail                                                                |
+
+When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it shows a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks), and `g` flips it to the embedded dependency DAG — where the standard DAG-view navigation (arrows / `hjkl`, `l`/`L` link/unlink, `h` halt, `Enter`) applies. New-orchestrator creation has no key (use the `hera_new_orchestrator` MCP tool).
 
 #### File Panel
 
@@ -229,6 +253,17 @@ A few local-only operations gracefully degrade in remote mode: spawning a fresh 
 ### Self-Update
 
 From the **Settings tab** (Status section, when the daemon is connected) the **Source path** row holds the path to your local Argus checkout, and the **Update Argus** row runs `git pull --ff-only` followed by `go install ./...` and then restarts the daemon so the new binary takes over. Active sessions reattach across the restart. The same controls are exposed in the web UI under **Settings → Argus update** (master token only).
+
+### Hera (native multi-agent coordination)
+
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and their dependencies render as a DAG folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+
+**Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
+
+- **`hera.enabled = true` (default)** — native Hera is active. It stores its state in the same `~/.argus/data.sql` (the `hera_*` tables), exposes the `hera_*` MCP tools in-process, and owns the second tab. The legacy Hera plugin's tools are suppressed so they never double-register.
+- **`hera.enabled = false`** — native Hera is off: the second tab falls back to the legacy **DAG-only** view, the `hera_*` tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus.
+
+The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB; the second tab's label updates live.
 
 ### Daemon & session-supervisor
 
@@ -349,6 +384,20 @@ Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-com
 | `task_ask`          | Convenience: send a question and optionally block until a reply lands. Params: `to`, `body`, optional `timeout_seconds` (default 0 = return immediately; max 120). When blocking, polls the answer at 500 ms cadence; callers wanting longer waits poll. |
 
 If the recipient has a live agent session the daemon also writes a single notification line into their PTY (best-effort). Same surface available over REST: `GET /api/tasks/{id}/inbox`, `POST /api/tasks/{id}/inbox/ack`, `POST /api/tasks/{id}/messages`.
+
+**Hera** (native multi-agent coordination — served only when `hera.enabled`; see the [Hera](#hera-native-multi-agent-coordination) reference):
+
+| Tool                    | Description                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
+| `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
+| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding).                            |
+| `hera_send`             | Send a role-addressed message; workers/freelancers default to the coordinator when `to` is omitted, coordinators must name a recipient.           |
+| `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
+| `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |
+| `hera_status`           | Set the caller role's status (`idle`/`working`/`blocked`/`done`), mirrored to `task_meta`; a worker reporting `done` rolls its task to in-review. |
+| `hera_tree_updates`     | Scan the caller's orchestrator subtree for messages since a per-role cursor; returns TLDR subject lines only and auto-advances the cursor.        |
+| `hera_get_messages`     | Fetch full message bodies by ID (after `hera_tree_updates`), scoped to the caller's orchestrator subtree.                                         |
 
 **Schedule Management:**
 
@@ -502,7 +551,7 @@ Schedule expressions accept the standard 5-field cron syntax (e.g. `0 9 * * 1-5`
 
 ### Plugin substrate
 
-Argus can host external programs as **plugins** — a separate process (on `127.0.0.1`) that registers MCP tools, Settings forms, and full-screen views, and consumes a live event stream. This is the substrate that out-of-tree orchestrators like **hera** run on; no orchestrator code ships in this repo, it's all driven over these endpoints.
+Argus can host external programs as **plugins** — a separate process (on `127.0.0.1`) that registers MCP tools, Settings forms, and full-screen views, and consumes a live event stream. This is the substrate for out-of-tree orchestrators and tools driven entirely over these endpoints. **Hera** now also ships *natively* in-tree (default — see the [Hera](#hera-native-multi-agent-coordination) section); the plugin substrate remains the path for the external Hera plugin when `hera.enabled = false`, and for any other third-party orchestrator.
 
 Plugins authenticate with a **scope token** (`X-Argus-Auth: scope:<name>`), a third tier alongside master and device tokens. Scope tokens are minted programmatically by the daemon (not over HTTP). A scope token may only register/unregister tools, sections, and views under **its own scope** — cross-scope access returns `403`. Revoking a scope token cascades: every tool, section, and view registered under that scope is dropped. Scope tokens are still blocked from the master-only denylist (token mint/revoke, backends CRUD, self-update, sandbox settings).
 
@@ -664,6 +713,12 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Run the HTTP REST API + PWA for remote control. |
 | `http_port` | int | `7743` | API port (binds `127.0.0.1` + the Tailscale IP only — never `0.0.0.0`). |
+
+#### `[hera]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` | Enable [native Hera](#hera-native-multi-agent-coordination) — the `hera_*` MCP tools and the native Hera second tab, backed by the `hera_*` tables in `data.sql`. Set `false` to fall back to the legacy DAG-only second tab and the external Hera *plugin* (its `~/.hera` state is independent; no migration is performed). |
 
 #### `[supervisor]`
 
