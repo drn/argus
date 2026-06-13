@@ -654,8 +654,8 @@ func TestArrowTabNavigation(t *testing.T) {
 	if result != nil {
 		t.Error("right arrow should be consumed (return nil)")
 	}
-	if app.header.ActiveTab() != widget.TabDAG {
-		t.Errorf("tab = %v, want widget.TabDAG", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabHera {
+		t.Errorf("tab = %v, want widget.TabHera", app.header.ActiveTab())
 	}
 
 	// Right arrow → Settings (rail focus initially).
@@ -698,8 +698,8 @@ func TestArrowTabNavigation(t *testing.T) {
 	if result != nil {
 		t.Error("left arrow on rail should be consumed")
 	}
-	if app.header.ActiveTab() != widget.TabDAG {
-		t.Errorf("tab = %v, want widget.TabDAG", app.header.ActiveTab())
+	if app.header.ActiveTab() != widget.TabHera {
+		t.Errorf("tab = %v, want widget.TabHera", app.header.ActiveTab())
 	}
 
 	// Left arrow → Tasks.
@@ -1196,7 +1196,7 @@ func TestCloseHelpRestoresActiveTab(t *testing.T) {
 		tab  widget.Tab
 	}{
 		{"tasks", widget.TabTasks},
-		{"DAG", widget.TabDAG},
+		{"hera", widget.TabHera},
 		{"settings", widget.TabSettings},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
