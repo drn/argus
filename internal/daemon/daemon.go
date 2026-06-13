@@ -84,13 +84,19 @@ func (e ExitInfo) CleanExit() bool {
 }
 
 // Daemon manages agent sessions and exposes them over a Unix socket.
+//
+// The session-serving substrate (runner, stream-conn registry, exit-info cache,
+// and the session-scoped RPC + stream handler) lives in the embedded
+// *sessionCore, mounted here today and by the session-supervisor in P1 (see
+// context/plans/session-supervisor.md). Promotion keeps every existing
+// `d.runner`/`d.mu`/`d.streams`/`d.exitInfos`/`d.registerStream` call site and
+// the session RPC methods byte-identical. `d.mu` (the core's mutex) guards the
+// core's maps AND the daemon-local mcpPort/apiPort/listener fields below — one
+// mutex, exactly as before the extraction.
 type Daemon struct {
+	*sessionCore
 	db        *db.DB
-	runner    *agent.Runner
 	listener  net.Listener
-	streams   map[string][]net.Conn // taskID → connected stream clients
-	exitInfos map[string]ExitInfo   // taskID → cached exit info (brief)
-	mu        sync.Mutex
 	done      chan struct{}
 	ready     chan struct{}        // closed when Serve has set listener (or failed)
 	sockPath  string               // set by Serve, used by cleanup
@@ -131,8 +137,6 @@ type Daemon struct {
 func New(database *db.DB) *Daemon {
 	d := &Daemon{
 		db:        database,
-		streams:   make(map[string][]net.Conn),
-		exitInfos: make(map[string]ExitInfo),
 		done:      make(chan struct{}),
 		ready:     make(chan struct{}),
 		bootedAt:  time.Now(),
@@ -155,7 +159,10 @@ func New(database *db.DB) *Daemon {
 
 	// Create runner with onFinish callback that caches exit info, flips
 	// the DB status, and notifies stream clients by closing their connections.
-	d.runner = agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
+	// The closure reads promoted core fields (d.exitInfos/d.streams/d.mu) and
+	// d.runner; it only fires after a session exits (post-Serve), by which time
+	// d.sessionCore is set just below — so the promotion targets are live.
+	runner := agent.NewRunner(func(taskID string, err error, stopped bool, lastOutput []byte) {
 		slog.Info("session exited", "task", taskID, "stopped", stopped, "err", err, "lastOutputBytes", len(lastOutput))
 
 		var errStr string
@@ -224,6 +231,11 @@ func New(database *db.DB) *Daemon {
 			"pending_restart": pending,
 		})
 	})
+
+	// Mount the session-serving substrate. The daemon owns the runner (and thus
+	// the onFinish wiring above); the core owns the stream registry, exit cache,
+	// and the session RPC + stream handler, all promoted onto *Daemon.
+	d.sessionCore = newSessionCore(runner, d.db.Config, d.done)
 
 	return d
 }
@@ -457,9 +469,12 @@ func (d *Daemon) Clipboard() *clipboard.Store {
 // Serve starts listening on the given socket path and accepts connections.
 // Blocks until Shutdown is called or the listener is closed.
 func (d *Daemon) Serve(sockPath string) error {
-	// Derive PID path from socket path so tests using temp dirs don't
-	// touch ~/.argus/ and accidentally kill a real running daemon.
-	pidPath := filepath.Join(filepath.Dir(sockPath), "daemon.pid")
+	// Derive the singleton trio (sock/pid/lock) from the socket path so tests
+	// using temp dirs don't touch ~/.argus/ and accidentally kill a real
+	// running daemon. For ".../daemon.sock" this yields ".../daemon.pid" and
+	// ".../daemon.lock" — byte-identical to the prior hard-wired derivation.
+	sp := singletonPathsForSock(sockPath)
+	pidPath := sp.pid
 	d.sockPath = sockPath
 	d.pidPath = pidPath
 
@@ -474,7 +489,7 @@ func (d *Daemon) Serve(sockPath string) error {
 	// TUI's input/stream RPCs land on another, so keyboard input vanishes and
 	// StartSession reports "session already exists". The flock makes the loser
 	// of any such race exit cleanly. See gotchas/daemon-rpc.md.
-	lockFile, lerr := acquireSingletonLock(daemonLockPath(sockPath), daemonLockTimeout)
+	lockFile, lerr := acquireSingletonLock(sp.lock, daemonLockTimeout)
 	if lerr != nil {
 		close(d.ready) // unblock Shutdown waiters even on early return
 		if errors.Is(lerr, ErrDaemonAlreadyRunning) {
@@ -772,7 +787,9 @@ func (d *Daemon) Serve(sockPath string) error {
 	}
 
 	// Register RPC service.
-	svc := &RPCService{daemon: d}
+	// Embed the same *sessionCore so the session-scoped RPC methods (promoted
+	// from the core) register under "Daemon" exactly as before.
+	svc := &RPCService{sessionCore: d.sessionCore, daemon: d}
 	server := rpc.NewServer()
 	if err := server.RegisterName("Daemon", svc); err != nil {
 		ln.Close()
@@ -834,26 +851,6 @@ func (d *Daemon) handleConn(conn net.Conn, server *rpc.Server) {
 		d.handleStream(conn)
 	default:
 		slog.Warn("conn: unknown prefix byte", "byte", fmt.Sprintf("0x%02x", prefix[0]))
-	}
-}
-
-// registerStream registers a stream connection for a task.
-func (d *Daemon) registerStream(taskID string, conn net.Conn) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.streams[taskID] = append(d.streams[taskID], conn)
-}
-
-// unregisterStream removes a stream connection for a task.
-func (d *Daemon) unregisterStream(taskID string, conn net.Conn) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	conns := d.streams[taskID]
-	for i, c := range conns {
-		if c == conn {
-			d.streams[taskID] = append(conns[:i], conns[i+1:]...)
-			return
-		}
 	}
 }
 

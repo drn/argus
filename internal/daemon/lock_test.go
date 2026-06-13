@@ -14,6 +14,62 @@ func TestDaemonLockPath(t *testing.T) {
 	testutil.Equal(t, got, "/some/dir/daemon.lock")
 }
 
+// TestSingletonPathsForSock pins the trio derivation for both the daemon and a
+// second singleton (the session-supervisor, P1): swapping the ".sock" suffix
+// yields sibling ".pid" and ".lock" paths. The daemon row must be byte-identical
+// to the prior hard-wired derivation (daemon.pid / daemon.lock).
+func TestSingletonPathsForSock(t *testing.T) {
+	tests := []struct {
+		name           string
+		sock           string
+		wantPid, wantL string
+	}{
+		{"daemon", "/d/daemon.sock", "/d/daemon.pid", "/d/daemon.lock"},
+		{"supervisor", "/d/supervisor.sock", "/d/supervisor.pid", "/d/supervisor.lock"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sp := singletonPathsForSock(tt.sock)
+			testutil.Equal(t, sp.sock, tt.sock)
+			testutil.Equal(t, sp.pid, tt.wantPid)
+			testutil.Equal(t, sp.lock, tt.wantL)
+		})
+	}
+}
+
+// TestSingletonPaths_IndependentLocks proves two singletons can coexist: the
+// daemon's lock and the supervisor's lock are distinct files, so both acquire
+// at once. This is what lets the session-supervisor (P1) run alongside the
+// daemon without either's singleton guard rejecting the other — while a second
+// acquire of the SAME lock still reports already-running.
+func TestSingletonPaths_IndependentLocks(t *testing.T) {
+	dir := t.TempDir()
+	dsp := singletonPathsForSock(filepath.Join(dir, "daemon.sock"))
+	ssp := singletonPathsForSock(filepath.Join(dir, "supervisor.sock"))
+
+	// Distinct lock files.
+	if dsp.lock == ssp.lock {
+		t.Fatalf("daemon and supervisor share a lock path: %q", dsp.lock)
+	}
+
+	// Both acquire simultaneously — independent singletons.
+	dl, err := acquireSingletonLock(dsp.lock, 50*time.Millisecond)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { dl.Close() }) //nolint:errcheck
+	sl, err := acquireSingletonLock(ssp.lock, 50*time.Millisecond)
+	testutil.NoError(t, err)
+	t.Cleanup(func() { sl.Close() }) //nolint:errcheck
+
+	// A second acquire of the supervisor's own lock still contends.
+	dup, err := acquireSingletonLock(ssp.lock, 50*time.Millisecond)
+	if !errors.Is(err, ErrDaemonAlreadyRunning) {
+		t.Fatalf("expected ErrDaemonAlreadyRunning on same-lock re-acquire, got %v", err)
+	}
+	if dup != nil {
+		t.Fatal("expected nil handle on contention")
+	}
+}
+
 // TestAcquireSingletonLock_Contention is the core of the split-brain fix:
 // while one holder has the lock, a second acquire must fail (so the losing
 // daemon exits instead of binding the socket). After the holder releases,
