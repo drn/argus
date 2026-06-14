@@ -121,22 +121,33 @@ func TestDetails_ContentHeight(t *testing.T) {
 // TestDetails_ContentHeightMatchesDraw pins the contract that ContentHeight is
 // the EXACT minimum height at which Draw renders the full roster: at h ==
 // ContentHeight the last worker is visible; at h-1 it is truncated. This guards
-// the formula against drifting from Draw's actual row budget.
+// the formula against drifting from Draw's actual row budget. Both the
+// coordinator-present (content=5) and coordinator-absent (content=4, the W1 fix)
+// branches are exercised, since they have different row budgets.
 func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
-	orch := &OrchView{
-		ID:   1,
-		Name: "o",
-		Roles: []RoleView{
+	tests := []struct {
+		name  string
+		roles []RoleView
+	}{
+		{"with coord role", []RoleView{
 			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator},
 			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
 			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
-		},
+		}},
+		{"no coord role", []RoleView{
+			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
+			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
+		}},
 	}
-	d := NewDetailsView()
-	d.SetOrch(orch, nil)
-	ch := d.ContentHeight()
-	testutil.Equal(t, rosterContains(t, d, ch, "zlast"), true)    // fits exactly
-	testutil.Equal(t, rosterContains(t, d, ch-1, "zlast"), false) // one short → truncated
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDetailsView()
+			d.SetOrch(&OrchView{ID: 1, Name: "o", Roles: tc.roles}, nil)
+			ch := d.ContentHeight()
+			testutil.Equal(t, rosterContains(t, d, ch, "zlast"), true)    // fits exactly
+			testutil.Equal(t, rosterContains(t, d, ch-1, "zlast"), false) // one short → truncated
+		})
+	}
 }
 
 func TestCoordStatusLabel(t *testing.T) {

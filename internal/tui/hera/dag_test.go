@@ -169,6 +169,12 @@ func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
 	ev := tcell.NewEventMouse(110, 1, tcell.Button1, tcell.ModNone)
 	consumed, _ := mh(tview.MouseLeftClick, ev, noFocus)
 	testutil.Equal(t, consumed, false)
+
+	// Heights below the roster's min-floor (h<3) exercise the clamp interaction
+	// (max(_,3)→min(_,h)) with dagH==0 — must not panic.
+	for h := 1; h <= 3; h++ {
+		drawnPageText(t, p, 120, h)
+	}
 }
 
 // TestDetailsDAG_WorkerSelectionUnaffected: a worker selection shows its AGENT
