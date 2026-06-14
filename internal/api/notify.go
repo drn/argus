@@ -33,52 +33,52 @@ type cancelNotifyResp struct {
 // handleNotify handles POST /api/tasks/{id}/notify.
 func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 	if s.notifier == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "reliable delivery not available"})
+		writeErr(w, http.StatusServiceUnavailable, "reliable delivery not available", nil)
 		return
 	}
 
 	taskID := r.PathValue("id")
 	task, err := s.db.Get(taskID)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	var req notifyReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 
 	if req.Text == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
+		writeErr(w, http.StatusBadRequest, "text is required", nil)
 		return
 	}
 	if req.Submit == nil || !*req.Submit {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "submit must be true"})
+		writeErr(w, http.StatusBadRequest, "submit must be true", nil)
 		return
 	}
 	if req.DeliveryID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "delivery_id is required"})
+		writeErr(w, http.StatusBadRequest, "delivery_id is required", nil)
 		return
 	}
 	if len(req.DeliveryID) > 128 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "delivery_id too long (max 128 bytes)"})
+		writeErr(w, http.StatusBadRequest, "delivery_id too long (max 128 bytes)", nil)
 		return
 	}
 	if !reDeliveryID.MatchString(req.DeliveryID) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "delivery_id must contain only alphanumeric characters, hyphens, or underscores"})
+		writeErr(w, http.StatusBadRequest, "delivery_id must contain only alphanumeric characters, hyphens, or underscores", nil)
 		return
 	}
 	// deadline_ms=0 means "use the default (5 minutes)". Any explicit value
 	// must be between 1000ms (1 second) and 3600000ms (1 hour).
 	if req.DeadlineMS != 0 && req.DeadlineMS < 1000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deadline_ms minimum is 1000 (1 second); use 0 for the default (5 minutes)"})
+		writeErr(w, http.StatusBadRequest, "deadline_ms minimum is 1000 (1 second); use 0 for the default (5 minutes)", nil)
 		return
 	}
 	if req.DeadlineMS > 3_600_000 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "deadline_ms exceeds maximum of 3600000 (1 hour)"})
+		writeErr(w, http.StatusBadRequest, "deadline_ms exceeds maximum of 3600000 (1 hour)", nil)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 // handleCancelNotify handles DELETE /api/tasks/{id}/notify/{delivery_id}.
 func (s *Server) handleCancelNotify(w http.ResponseWriter, r *http.Request) {
 	if s.notifier == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "reliable delivery not available"})
+		writeErr(w, http.StatusServiceUnavailable, "reliable delivery not available", nil)
 		return
 	}
 

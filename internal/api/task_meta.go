@@ -60,17 +60,17 @@ func (s *Server) handleGetMeta(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	namespace := r.URL.Query().Get("namespace")
 	rows, err := s.db.ListMeta(id, namespace)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	entries := make([]metaEntryJSON, 0, len(rows))
@@ -115,17 +115,17 @@ func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, taskMetaMaxBodyBytes)
 	var req metaPutReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
 		req.Namespace = scope
 	}
 	if req.Namespace == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "namespace is required"})
+		writeErr(w, http.StatusBadRequest, "namespace is required", nil)
 		return
 	}
 
@@ -151,14 +151,14 @@ func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
 	batchSet := len(req.Entries) > 0
 	switch {
 	case !singleSet && !batchSet:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "either {key,value} or {entries} is required"})
+		writeErr(w, http.StatusBadRequest, "either {key,value} or {entries} is required", nil)
 		return
 	case singleSet && batchSet:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "set either {key,value} or {entries}, not both"})
+		writeErr(w, http.StatusBadRequest, "set either {key,value} or {entries}, not both", nil)
 		return
 	case singleSet:
 		if req.Key == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "key is required"})
+			writeErr(w, http.StatusBadRequest, "key is required", nil)
 			return
 		}
 		// SetMeta's only validation (ErrMetaInvalidKey on empty task_id /
@@ -166,17 +166,17 @@ func (s *Server) handlePutMeta(w http.ResponseWriter, r *http.Request) {
 		// above already enforce all three are non-empty. So any error
 		// returned is a SQL-tier failure and maps to 500.
 		if err := s.db.SetMeta(id, req.Namespace, req.Key, req.Value); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"written": 1})
 	case batchSet:
 		if err := s.db.SetMetaBatch(id, req.Namespace, req.Entries); err != nil {
 			if errors.Is(err, db.ErrMetaInvalidKey) {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeErr(w, http.StatusBadRequest, "", err)
 				return
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"written": len(req.Entries)})

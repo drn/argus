@@ -18,13 +18,13 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	arts, err := s.db.Artifacts(id)
 	if err != nil {
 		uxlog.Log("[api] artifacts list failed: id=%s err=%v", id, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if arts == nil {
@@ -55,20 +55,20 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	art, err := s.db.GetArtifact(id, filename)
 	if err != nil {
 		uxlog.Log("[api] artifact lookup failed: id=%s file=%q err=%v", id, filename, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if art == nil {
 		// Unregistered filename (or path-traversal attempt) — no row, no serve.
 		uxlog.Log("[api] artifact 404 (no manifest row): id=%s file=%q", id, filename)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact not found"})
+		writeErr(w, http.StatusNotFound, "artifact not found", nil)
 		return
 	}
 
 	full, ok := resolveArtifactPath(id, art.Filename)
 	if !ok {
 		uxlog.Log("[api] artifact path escaped dir, refusing: id=%s file=%q", id, art.Filename)
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid artifact path"})
+		writeErr(w, http.StatusForbidden, "invalid artifact path", nil)
 		return
 	}
 
@@ -76,14 +76,14 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Row exists but bytes are gone (manual deletion / disk loss).
 		uxlog.Log("[api] artifact open failed: id=%s file=%q err=%v", id, art.Filename, err)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "artifact bytes not found"})
+		writeErr(w, http.StatusNotFound, "artifact bytes not found", nil)
 		return
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 

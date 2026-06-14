@@ -55,25 +55,25 @@ func authScope(r *http.Request) string {
 func (s *Server) handleRegisterPluginSection(w http.ResponseWriter, r *http.Request) {
 	scope := authScope(r)
 	if scope == "" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "plugin-scoped token required"})
+		writeErr(w, http.StatusForbidden, "plugin-scoped token required", nil)
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, pluginSectionMaxBodyBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read body: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "read body", err)
 		return
 	}
 
 	sec, err := settings.ParseSection(scope, body)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 
 	pluginRow, err := db.FromSection(sec)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 
@@ -89,7 +89,7 @@ func (s *Server) handleRegisterPluginSection(w http.ResponseWriter, r *http.Requ
 
 	id, err := s.db.UpsertPluginSection(pluginRow)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if s.pluginSections != nil {
@@ -120,28 +120,28 @@ func (s *Server) handleUnregisterPluginSection(w http.ResponseWriter, r *http.Re
 	pathScope := r.PathValue("scope")
 	pathTitle := r.PathValue("title")
 	if pathScope == "" || pathTitle == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scope and title path segments are required"})
+		writeErr(w, http.StatusBadRequest, "scope and title path segments are required", nil)
 		return
 	}
 
 	caller := authScope(r)
 	master := r.Header.Get("X-Argus-Auth") == "master"
 	if !master && caller != pathScope {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "cannot unregister another plugin's section"})
+		writeErr(w, http.StatusForbidden, "cannot unregister another plugin's section", nil)
 		return
 	}
 
 	removed, err := s.db.DeletePluginSection(pathScope, pathTitle)
 	if err != nil {
 		if errors.Is(err, db.ErrPluginSectionInvalid) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusBadRequest, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if !removed {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "section not found"})
+		writeErr(w, http.StatusNotFound, "section not found", nil)
 		return
 	}
 	if s.pluginSections != nil {
@@ -169,7 +169,7 @@ type pluginSectionJSON struct {
 func (s *Server) handleListPluginSections(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.ListPluginSections()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	out := make([]pluginSectionJSON, 0, len(rows))
@@ -208,26 +208,26 @@ func (s *Server) handleSubmitPluginSectionValues(w http.ResponseWriter, r *http.
 	scope := r.PathValue("scope")
 	title := r.PathValue("title")
 	if scope == "" || title == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scope and title path segments are required"})
+		writeErr(w, http.StatusBadRequest, "scope and title path segments are required", nil)
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, pluginSectionMaxBodyBytes))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "read body: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "read body", err)
 		return
 	}
 	// Validate JSON well-formedness up front so a malformed body doesn't get
 	// forwarded to the plugin (which would have to reject it itself).
 	var probe map[string]any
 	if err := json.Unmarshal(body, &probe); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body must be a JSON object: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "body must be a JSON object", err)
 		return
 	}
 
 	rows, err := s.db.ListPluginSections()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	var (
@@ -244,7 +244,7 @@ func (s *Server) handleSubmitPluginSectionValues(w http.ResponseWriter, r *http.
 		}
 	}
 	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "section not found"})
+		writeErr(w, http.StatusNotFound, "section not found", nil)
 		return
 	}
 
@@ -255,7 +255,7 @@ func (s *Server) handleSubmitPluginSectionValues(w http.ResponseWriter, r *http.
 	}
 	statusCode, respBody, perr := submit(r.Context(), callbackURL, authHeader, body)
 	if perr != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": perr.Error()})
+		writeErr(w, http.StatusBadGateway, "", perr)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

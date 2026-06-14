@@ -43,12 +43,12 @@ func (s *Server) handleSetSourcePath(w http.ResponseWriter, r *http.Request) {
 	var req sourcePathReq
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	path := strings.TrimSpace(req.Path)
 	if err := s.db.SetConfigValue("argus.source_path", path); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})

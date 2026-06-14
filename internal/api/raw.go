@@ -43,7 +43,7 @@ func worktreeWithinRoot(p string) bool {
 func (s *Server) handleListTasksRaw(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.db.Tasks()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if tasks == nil {
@@ -58,7 +58,7 @@ func (s *Server) handleGetTaskRaw(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, task)
@@ -79,11 +79,11 @@ func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
 	var task model.Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if task.ID != id {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body id does not match path id"})
+		writeErr(w, http.StatusBadRequest, "body id does not match path id", nil)
 		return
 	}
 	// Pin worktree-related fields to the DB's existing values. A master
@@ -91,7 +91,7 @@ func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	// `git worktree remove` at an arbitrary path.
 	existing, err := s.db.Get(id)
 	if err != nil || existing == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	task.Worktree = existing.Worktree
@@ -99,10 +99,10 @@ func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	task.BaseBranch = existing.BaseBranch
 	if err := s.db.Update(&task); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, &task)
@@ -117,7 +117,7 @@ func (s *Server) handleAddTaskRaw(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
 	var task model.Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	// The body is untrusted (single-tier auth opens this to any token). Unlike
@@ -127,11 +127,11 @@ func (s *Server) handleAddTaskRaw(w http.ResponseWriter, r *http.Request) {
 	// new-task path, fork, schedule-fire) leave it empty or supply an in-root
 	// path.
 	if task.Worktree != "" && !worktreeWithinRoot(task.Worktree) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "worktree must be within the worktrees root"})
+		writeErr(w, http.StatusBadRequest, "worktree must be within the worktrees root", nil)
 		return
 	}
 	if err := s.db.Add(&task); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, &task)
@@ -144,10 +144,10 @@ func (s *Server) handleGetScheduleRaw(w http.ResponseWriter, r *http.Request) {
 	sched, err := s.db.GetSchedule(id)
 	if err != nil {
 		if errors.Is(err, db.ErrScheduleNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, sched)

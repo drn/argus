@@ -37,18 +37,18 @@ const maxRegisterMCPToolBytes = 256 * 1024
 // caller's scope, so a master credential has no scope to enforce against.
 func (s *Server) handleRegisterMCPTool(w http.ResponseWriter, r *http.Request) {
 	if s.mcpRegistry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp registry not configured"})
+		writeErr(w, http.StatusServiceUnavailable, "mcp registry not configured", nil)
 		return
 	}
 	scope := pluginScopeFromAuth(r)
 	if scope == "" {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "plugin-scoped token required"})
+		writeErr(w, http.StatusForbidden, "plugin-scoped token required", nil)
 		return
 	}
 	var body registerMCPToolReq
 	r.Body = http.MaxBytesReader(w, r.Body, maxRegisterMCPToolBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	err := s.mcpRegistry.Register(scope, mcp.ToolRegistration{
@@ -59,7 +59,7 @@ func (s *Server) handleRegisterMCPTool(w http.ResponseWriter, r *http.Request) {
 		AuthHeader:  body.AuthHeader,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	uxlog.Log("[plugin] mcp tool registered: scope=%s name=%s", scope, body.Name)
@@ -71,12 +71,12 @@ func (s *Server) handleRegisterMCPTool(w http.ResponseWriter, r *http.Request) {
 // cleanup). A device token cannot — device tokens have no plugin namespace.
 func (s *Server) handleUnregisterMCPTool(w http.ResponseWriter, r *http.Request) {
 	if s.mcpRegistry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "mcp registry not configured"})
+		writeErr(w, http.StatusServiceUnavailable, "mcp registry not configured", nil)
 		return
 	}
 	name := r.PathValue("name")
 	if strings.TrimSpace(name) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name required"})
+		writeErr(w, http.StatusBadRequest, "name required", nil)
 		return
 	}
 	authTag := r.Header.Get("X-Argus-Auth")
@@ -86,7 +86,7 @@ func (s *Server) handleUnregisterMCPTool(w http.ResponseWriter, r *http.Request)
 		// Master removes anything — pass empty scope, Registry interprets
 		// that as the cleanup-credential.
 		if err := s.mcpRegistry.Unregister("", name); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusBadRequest, "", err)
 			return
 		}
 	case scope != "":
@@ -95,14 +95,14 @@ func (s *Server) handleUnregisterMCPTool(w http.ResponseWriter, r *http.Request)
 			// errors.New — string-match the substring so a 403 (vs 400)
 			// is returned for the cross-scope rejection.
 			if strings.Contains(err.Error(), "not owned") {
-				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				writeErr(w, http.StatusForbidden, "", err)
 				return
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusBadRequest, "", err)
 			return
 		}
 	default:
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "plugin-scoped or master token required"})
+		writeErr(w, http.StatusForbidden, "plugin-scoped or master token required", nil)
 		return
 	}
 	uxlog.Log("[plugin] mcp tool unregistered: auth=%s scope=%s name=%s", authTag, scope, name)

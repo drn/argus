@@ -234,7 +234,7 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	task, err := s.db.Get(id)
 	if err != nil || task == nil || task.Worktree == "" {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task or worktree not found"})
+		writeErr(w, http.StatusNotFound, "task or worktree not found", nil)
 		return
 	}
 
@@ -242,11 +242,11 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 	atts, err := parseUploadOnlyForm(r)
 	if err != nil {
 		uxlog.Log("[uploads] parse failed task=%s err=%v", id, err)
-		writeJSON(w, statusForUploadErr(err), map[string]string{"error": err.Error()})
+		writeErr(w, statusForUploadErr(err), "", err)
 		return
 	}
 	if len(atts) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no files provided"})
+		writeErr(w, http.StatusBadRequest, "no files provided", nil)
 		return
 	}
 
@@ -256,7 +256,7 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // path constant + worktree
 		uxlog.Log("[uploads] mkdir failed task=%s dir=%s err=%v", id, dir, err)
 		// Don't echo the absolute path back to the client — uxlog has it.
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create attachments directory"})
+		writeErr(w, http.StatusInternalServerError, "could not create attachments directory", nil)
 		return
 	}
 
@@ -265,14 +265,14 @@ func (s *Server) handleUploadFiles(w http.ResponseWriter, r *http.Request) {
 		final, ferr := uniquePath(dir, a.Name)
 		if ferr != nil {
 			uxlog.Log("[uploads] uniquePath failed task=%s name=%q err=%v", id, a.Name, ferr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not allocate filename"})
+			writeErr(w, http.StatusInternalServerError, "could not allocate filename", nil)
 			return
 		}
 		// Names are sanitized by parseUploadOnlyForm (filepath.Base + ASCII filter)
 		// and written under the worktree-relative `dir`; `final` cannot escape.
 		if werr := os.WriteFile(final, a.Data, 0o600); werr != nil { //nolint:gosec // path validated above
 			uxlog.Log("[uploads] write failed task=%s path=%s err=%v", id, final, werr)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not save attachment"})
+			writeErr(w, http.StatusInternalServerError, "could not save attachment", nil)
 			return
 		}
 		saved = append(saved, "./"+agent.AttachmentsDir+"/"+filepath.Base(final))

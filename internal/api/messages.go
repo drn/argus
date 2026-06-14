@@ -26,10 +26,10 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -54,7 +54,7 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 			// Fall back to second-precision RFC3339 before bailing.
 			t, err = time.Parse(time.RFC3339, since)
 			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since (must be RFC3339): " + err.Error()})
+				writeErr(w, http.StatusBadRequest, "invalid since (must be RFC3339)", err)
 				return
 			}
 		}
@@ -63,7 +63,7 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 	if l := q.Get("limit"); l != "" {
 		n, err := strconv.Atoi(l)
 		if err != nil || n < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			writeErr(w, http.StatusBadRequest, "invalid limit", nil)
 			return
 		}
 		filter.Limit = n
@@ -71,7 +71,7 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 
 	msgs, err := s.db.Inbox(id, filter)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if msgs == nil {
@@ -80,7 +80,7 @@ func (s *Server) handleListInbox(w http.ResponseWriter, r *http.Request) {
 
 	unreadCount, err := s.db.UnreadCount(id)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -106,10 +106,10 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("id")
 	if _, err := s.db.Get(from); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 
@@ -121,15 +121,15 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		InReplyTo string `json:"in_reply_to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.To == "" || req.Body == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "to and body are required"})
+		writeErr(w, http.StatusBadRequest, "to and body are required", nil)
 		return
 	}
 	if _, err := s.db.Get(req.To); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "recipient task not found: " + req.To})
+		writeErr(w, http.StatusNotFound, "recipient task not found: "+req.To, nil)
 		return
 	}
 
@@ -140,7 +140,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	// Validate at the handler so an unknown kind returns 400, not the 500
 	// the default branch would produce from a generic Validate() error.
 	if !model.ValidMessageKind(kind) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid kind %q (want note|question|answer)", req.Kind)})
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("invalid kind %q (want note|question|answer)", req.Kind), nil)
 		return
 	}
 
@@ -157,9 +157,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, db.ErrMessageSelfSend),
 			errors.Is(err, db.ErrMessageInboxFull),
 			errors.Is(err, db.ErrMessageRateLimited):
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusBadRequest, "", err)
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 		}
 		return
 	}
@@ -186,10 +186,10 @@ func (s *Server) handleAckInbox(w http.ResponseWriter, r *http.Request) {
 	// with handleListInbox which does the same check up front.
 	if _, err := s.db.Get(id); err != nil {
 		if errors.Is(err, db.ErrTaskNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusNotFound, "", err)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
@@ -200,7 +200,7 @@ func (s *Server) handleAckInbox(w http.ResponseWriter, r *http.Request) {
 		MessageIDs []string `json:"message_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	ids := req.IDs
@@ -208,20 +208,20 @@ func (s *Server) handleAckInbox(w http.ResponseWriter, r *http.Request) {
 		ids = req.MessageIDs
 	}
 	if len(ids) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ids is required"})
+		writeErr(w, http.StatusBadRequest, "ids is required", nil)
 		return
 	}
 	// Cap mirrors the MCP `task_message_ack` surface (maxAckIDsPerCall).
 	// Above 500 we'd start brushing against SQLite's 999-variable cap on
 	// the IN-clause `AckMessages` builds, surfacing as a 500.
 	if len(ids) > db.MaxInboxLimit {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("too many ids (max %d per call)", db.MaxInboxLimit)})
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("too many ids (max %d per call)", db.MaxInboxLimit), nil)
 		return
 	}
 
 	n, err := s.db.AckMessages(id, ids)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"acked": n})

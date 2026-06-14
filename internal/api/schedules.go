@@ -97,7 +97,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	// covers backends CRUD, self-update, and token mint/revoke).
 	schedules, err := s.db.Schedules()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load schedules: " + err.Error()})
+		writeErr(w, http.StatusInternalServerError, "failed to load schedules", err)
 		return
 	}
 	out := make([]scheduleJSON, 0, len(schedules))
@@ -111,24 +111,24 @@ func (s *Server) handleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxScheduleBodyBytes)
 	var req scheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	sched := &model.ScheduledTask{
 		Enabled: true, // default new schedules to enabled
 	}
 	if err := applyScheduleRequest(sched, req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	if err := sched.Validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	// Pre-populate NextRunAt so the UI shows it before the first tick lands.
 	sched.NextRunAt = sched.NextFire(time.Now())
 	if err := s.db.AddSchedule(sched); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	uxlog.Log("[schedules] created %s (%s) schedule=%q run_once_at=%s project=%q enabled=%v", sched.ID, sched.Name, sched.Schedule, formatRunOnce(sched.RunOnceAt), sched.Project, sched.Enabled)
@@ -147,30 +147,30 @@ func formatRunOnce(t time.Time) string {
 func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
+		writeErr(w, http.StatusBadRequest, "id required", nil)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxScheduleBodyBytes)
 	var req scheduleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	sched, err := s.db.GetSchedule(id)
 	if err != nil {
 		if errors.Is(err, db.ErrScheduleNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+			writeErr(w, http.StatusNotFound, "schedule not found", nil)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	if err := applyScheduleRequest(sched, req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	if err := sched.Validate(); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	if req.Schedule != nil || req.RunOnceAt != nil {
@@ -193,7 +193,7 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 	// parse error is stale by definition once Validate passes here.
 	sched.LastError = ""
 	if err := s.db.UpdateSchedule(sched); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	uxlog.Log("[schedules] updated %s (%s) schedule=%q enabled=%v", sched.ID, sched.Name, sched.Schedule, sched.Enabled)
@@ -203,15 +203,15 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
+		writeErr(w, http.StatusBadRequest, "id required", nil)
 		return
 	}
 	if err := s.db.DeleteSchedule(id); err != nil {
 		if errors.Is(err, db.ErrScheduleNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+			writeErr(w, http.StatusNotFound, "schedule not found", nil)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	uxlog.Log("[schedules] deleted %s", id)
@@ -220,21 +220,21 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRunSchedule(w http.ResponseWriter, r *http.Request) {
 	if s.scheduler == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scheduler not running"})
+		writeErr(w, http.StatusServiceUnavailable, "scheduler not running", nil)
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
+		writeErr(w, http.StatusBadRequest, "id required", nil)
 		return
 	}
 	task, err := s.scheduler.RunNow(id)
 	if err != nil {
 		if errors.Is(err, db.ErrScheduleNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "schedule not found"})
+			writeErr(w, http.StatusNotFound, "schedule not found", nil)
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	uxlog.Log("[schedules] run-now %s -> task %s", id, task.ID)

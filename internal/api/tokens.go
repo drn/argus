@@ -28,7 +28,7 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	tokens, err := s.db.APITokens()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	out := make([]tokenView, 0, len(tokens))
@@ -63,7 +63,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	// Empty body is allowed (label defaults to "device"); reject other decode errors.
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.Label == "" {
@@ -71,7 +71,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 	plain, id, err := MintToken(s.db, req.Label)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -87,7 +87,7 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		writeErr(w, http.StatusBadRequest, "invalid id", nil)
 		return
 	}
 	// Snapshot the scope before revoke so the plugin-MCP cascade can target
@@ -98,7 +98,7 @@ func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
 	// DefaultIdleWindow.
 	tok, _ := s.db.FindAPITokenByID(id)
 	if err := s.db.RevokeAPIToken(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusNotFound, "", err)
 		return
 	}
 	if tok != nil && tok.Scope != "" && s.mcpRegistry != nil {

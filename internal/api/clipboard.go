@@ -36,7 +36,7 @@ func (s *Server) handleClipboardGet(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	text, ok := s.clipboard.Get(id)
@@ -52,12 +52,12 @@ func (s *Server) handleClipboardGet(w http.ResponseWriter, r *http.Request) {
 // instead. Reuses the daemon's clipboard.Store so size limits and TTL apply.
 func (s *Server) handleClipboardSet(w http.ResponseWriter, r *http.Request) {
 	if s.clipboard == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "clipboard unavailable"})
+		writeErr(w, http.StatusServiceUnavailable, "clipboard unavailable", nil)
 		return
 	}
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	// Cap body before json.Decode to prevent a streamed multi-MiB payload
@@ -67,12 +67,12 @@ func (s *Server) handleClipboardSet(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, clipboard.MaxTextSize+4096)
 	var req clipboardSetReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", nil)
 		return
 	}
 	if err := s.clipboard.Set(id, req.Text); err != nil {
 		uxlog.Log("[clipboard] set rejected: task=%s err=%v", id, err)
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, "", err)
 		return
 	}
 	uxlog.Log("[clipboard] set: task=%s bytes=%d", id, len(req.Text))
@@ -84,12 +84,12 @@ func (s *Server) handleClipboardSet(w http.ResponseWriter, r *http.Request) {
 // Copy button hides everywhere.
 func (s *Server) handleClipboardClear(w http.ResponseWriter, r *http.Request) {
 	if s.clipboard == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "clipboard unavailable"})
+		writeErr(w, http.StatusServiceUnavailable, "clipboard unavailable", nil)
 		return
 	}
 	id := r.PathValue("id")
 	if _, err := s.db.Get(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "task not found"})
+		writeErr(w, http.StatusNotFound, "task not found", nil)
 		return
 	}
 	s.clipboard.Clear(id)

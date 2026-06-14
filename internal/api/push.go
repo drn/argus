@@ -25,7 +25,7 @@ type pushSubscribeReq struct {
 
 func (s *Server) handleVapidPublicKey(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
+		writeErr(w, http.StatusServiceUnavailable, "push not available", nil)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"public_key": s.push.PublicKey()})
@@ -33,17 +33,17 @@ func (s *Server) handleVapidPublicKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
+		writeErr(w, http.StatusServiceUnavailable, "push not available", nil)
 		return
 	}
 	var req pushSubscribeReq
 	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	if req.Endpoint == "" || req.Keys.P256dh == "" || req.Keys.Auth == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "endpoint and keys required"})
+		writeErr(w, http.StatusBadRequest, "endpoint and keys required", nil)
 		return
 	}
 	id, err := s.db.AddPushSubscription(db.PushSubscription{
@@ -54,7 +54,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		uxlog.Log("[push] subscribe failed: %v", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	uxlog.Log("[push] subscribed id=%d label=%q", id, req.Label)
@@ -64,7 +64,7 @@ func (s *Server) handlePushSubscribe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePushList(w http.ResponseWriter, r *http.Request) {
 	subs, err := s.db.PushSubscriptions()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	type subView struct {
@@ -92,11 +92,11 @@ func (s *Server) handlePushList(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		writeErr(w, http.StatusBadRequest, "invalid id", nil)
 		return
 	}
 	if err := s.db.DeletePushSubscription(id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusNotFound, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"deleted": id})
@@ -108,7 +108,7 @@ func (s *Server) handlePushUnsubscribe(w http.ResponseWriter, r *http.Request) {
 // notification to your own devices — no RCE/credential risk).
 func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 	if s.push == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "push not available"})
+		writeErr(w, http.StatusServiceUnavailable, "push not available", nil)
 		return
 	}
 	uxlog.Log("[push] test push triggered")

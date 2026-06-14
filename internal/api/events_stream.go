@@ -111,7 +111,7 @@ func (s *Server) emitForTest(ev model.Event) model.Event {
 func (s *Server) handleEventsStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+		writeErr(w, http.StatusInternalServerError, "streaming not supported", nil)
 		return
 	}
 

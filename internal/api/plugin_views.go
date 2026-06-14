@@ -55,7 +55,7 @@ func (s *Server) handleCreatePluginView(w http.ResponseWriter, r *http.Request) 
 	var req pluginViewCreateReq
 	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+		writeErr(w, http.StatusBadRequest, "invalid JSON", err)
 		return
 	}
 	reg := views.New(s.db)
@@ -64,11 +64,11 @@ func (s *Server) handleCreatePluginView(w http.ResponseWriter, r *http.Request) 
 		switch {
 		case errors.Is(err, views.ErrTitleRequired),
 			errors.Is(err, views.ErrCallbackURLRequired):
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusBadRequest, "", err)
 		case errors.Is(err, views.ErrViewExists):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusConflict, "", err)
 		default:
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeErr(w, http.StatusInternalServerError, "", err)
 		}
 		return
 	}
@@ -117,12 +117,12 @@ func (s *Server) handleDeletePluginView(w http.ResponseWriter, r *http.Request) 
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		writeErr(w, http.StatusBadRequest, "invalid id", nil)
 		return
 	}
 	all, err := s.db.PluginViews()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	var match *pluginViewJSON
@@ -137,16 +137,16 @@ func (s *Server) handleDeletePluginView(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if match == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "view not found"})
+		writeErr(w, http.StatusNotFound, "view not found", nil)
 		return
 	}
 	if hasScope && match.Scope != scope {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "view belongs to a different scope"})
+		writeErr(w, http.StatusForbidden, "view belongs to a different scope", nil)
 		return
 	}
 	reg := views.New(s.db)
 	if err := reg.Unregister(match.Scope, match.Title); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, "", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": match.ID})
