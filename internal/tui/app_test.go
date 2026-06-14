@@ -698,6 +698,16 @@ func TestArrowKeysDoNotSwitchTabs(t *testing.T) {
 	if app.header.ActiveTab() != widget.TabSettings {
 		t.Errorf("tab = %v, want widget.TabSettings (settings consumes left)", app.header.ActiveTab())
 	}
+	// Left AGAIN, now from the rail (left-most) → NOT consumed (settings
+	// declines), falls through to tview, and crucially does NOT switch to the
+	// previous tab the way the old arrow-nav did. This is the one intentional
+	// behavior change for Settings.
+	if result := app.handleGlobalKey(left); result != left {
+		t.Error("left arrow on settings rail should fall through, not switch tabs")
+	}
+	if app.header.ActiveTab() != widget.TabSettings {
+		t.Errorf("tab = %v, want widget.TabSettings (left from rail must NOT switch to previous tab)", app.header.ActiveTab())
+	}
 	// Right from the rail → focus the pane; consumed, tab unchanged.
 	if result := app.handleGlobalKey(right); result != nil {
 		t.Error("right arrow on settings rail should be consumed by settings")

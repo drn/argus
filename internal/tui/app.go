@@ -2177,9 +2177,10 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// NOTE: Left/Right are intentionally NOT handled here. They used to cycle
 	// the top-level tabs, but that collided with horizontal navigation inside
 	// views (e.g. the Hera rail's rail↔coord↔details movement). Tab switching
-	// is now via 1/2/3 only; Left/Right fall through to the focused view. The
-	// Settings tab still consumes Left/Right for its rail↔pane focus via the
-	// settings routing below.
+	// is now via 1/2/3 only; Left/Right fall through to the focused view. On the
+	// Settings tab the settings routing below consumes the directions it uses
+	// for rail↔pane focus (Right from the rail, Left from the pane); the
+	// others (e.g. Left from the rail) simply fall through and never switch tabs.
 	case tcell.KeyRune:
 		// When the task list filter or settings prompt editor is active,
 		// let all rune keys through instead of handling global shortcuts.
