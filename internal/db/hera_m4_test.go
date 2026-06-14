@@ -221,7 +221,9 @@ func TestRollHeraWorkerToReview(t *testing.T) {
 	// (inert here — a disjoint table that cannot affect archive/resolution), then
 	// RollHeraWorkerToReview. No write on that path may stamp hera_roles.archived_at,
 	// or the coordinator's name-keyed recipient lookup (HeraRoleByName,
-	// archived_at IS NULL) silently bounces a live worker.
+	// archived_at IS NULL) silently bounces a live worker. The boundary
+	// counterpart — explicit archive DOES block resolution — lives in
+	// TestHeraRoleArchiveBlocksRecipientResolution.
 	t.Run("worker done keeps role active + messageable (no auto-archive)", func(t *testing.T) {
 		d := heraTestDB(t)
 		o := mkOrch(t, d, "o")
@@ -247,22 +249,27 @@ func TestRollHeraWorkerToReview(t *testing.T) {
 		_, err = d.SendHeraMessage(coord.ID, got.ID, "ping", "ping", nil)
 		testutil.NoError(t, err) // not ErrHeraMessageRecipientInvalid
 	})
+}
 
-	// Contrast / boundary guard: an EXPLICIT archive (the sole native trigger —
-	// the TUI rail 'a' key) DOES remove the role from recipient resolution. This
-	// pins the boundary so a future "fix" can't over-correct by making archived
-	// roles messageable again — done must not archive; explicit archive must.
-	t.Run("explicit archive removes role from recipient resolution", func(t *testing.T) {
-		d := heraTestDB(t)
-		o := mkOrch(t, d, "o")
-		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
-		worker := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+// TestHeraRoleArchiveBlocksRecipientResolution is the boundary counterpart to
+// TestRollHeraWorkerToReview's "worker done keeps role active" guard. Those two
+// pin opposite sides of the same invariant: a worker reporting done must NOT
+// archive its role (stays messageable), but an EXPLICIT archive — the sole
+// native trigger, the TUI rail 'a' key — MUST remove the role from recipient
+// resolution. This guard exercises ArchiveHeraRole + resolution directly (not
+// RollHeraWorkerToReview), so it lives in its own function rather than as a
+// subtest of the roll test. It stops a future "fix" from over-correcting a
+// recipient bounce by making archived roles messageable again.
+func TestHeraRoleArchiveBlocksRecipientResolution(t *testing.T) {
+	d := heraTestDB(t)
+	o := mkOrch(t, d, "o")
+	coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+	worker := mkRole(t, d, o.ID, "worker", HeraKindWorker)
 
-		testutil.NoError(t, d.ArchiveHeraRole(worker.ID))
+	testutil.NoError(t, d.ArchiveHeraRole(worker.ID))
 
-		_, err := d.HeraRoleByName(o.ID, "worker")
-		testutil.ErrorIs(t, err, ErrHeraNotFound)
-		_, err = d.SendHeraMessage(coord.ID, worker.ID, "ping", "ping", nil)
-		testutil.ErrorIs(t, err, ErrHeraMessageRecipientInvalid)
-	})
+	_, err := d.HeraRoleByName(o.ID, "worker")
+	testutil.ErrorIs(t, err, ErrHeraNotFound)
+	_, err = d.SendHeraMessage(coord.ID, worker.ID, "ping", "ping", nil)
+	testutil.ErrorIs(t, err, ErrHeraMessageRecipientInvalid)
 }
