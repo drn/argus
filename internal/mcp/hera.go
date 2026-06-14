@@ -138,7 +138,7 @@ var heraToolDefs = []Tool{
 	},
 	{
 		Name:        "hera_spawn_worker",
-		Description: "Spawn a new born-bound worker task under this orchestrator. Caller must hold a live coordinator binding. Creates an argus task (worktree + session) and, transactionally, a worker role + binding pre-bound to it. An orientation prefix naming the coordinator + orchestrator is prepended to the prompt; the verbatim prompt is stored on the role. Defaults the project to the coordinator's own.",
+		Description: "Spawn a new born-bound worker task under this orchestrator. Caller must hold a live coordinator binding. Creates an argus task (worktree + session) and, transactionally, a worker role + binding pre-bound to it. An orientation prefix naming the coordinator + orchestrator is prepended to the prompt; the verbatim prompt is stored on the role. Defaults the project to the coordinator's own. Pass `model` to match the worker's model to its task complexity (e.g. a strong model for a hard refactor, a cheaper/faster one for mechanical work).",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -149,6 +149,7 @@ var heraToolDefs = []Tool{
 				"project":      map[string]interface{}{"type": "string", "description": "(optional) Override the argus project. Defaults to the coordinator's own project"},
 				"branch":       map[string]interface{}{"type": "string", "description": "(optional) Branch passed to argus CreateTask. Defaults to project default"},
 				"backend":      map[string]interface{}{"type": "string", "description": "(optional) Backend passed to argus CreateTask. Defaults to project default"},
+				"model":        map[string]interface{}{"type": "string", "description": "(optional) Per-worker model override; choose by task complexity. Must be valid for the worker's resolved backend (claude: opus/sonnet/haiku; codex: e.g. gpt-5; pi: its model ids). Empty = backend default. Only claude/codex/pi backends receive --model; ignored if the backend command already hard-codes --model"},
 			},
 			"required": []string{"cwd", "prompt"},
 		},
@@ -719,6 +720,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		Project      string `json:"project"`
 		Branch       string `json:"branch"`
 		Backend      string `json:"backend"`
+		Model        string `json:"model"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -771,6 +773,7 @@ func (s *Server) toolHeraSpawnWorker(id interface{}, args json.RawMessage) *Resp
 		RolePrompt:     prompt,
 		Branch:         p.Branch,
 		Backend:        p.Backend,
+		Model:          strings.TrimSpace(p.Model),
 		OrchestratorID: caller.orch.ID,
 	})
 	if err != nil {

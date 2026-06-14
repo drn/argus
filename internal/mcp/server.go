@@ -75,6 +75,7 @@ type HeraSpawnInput struct {
 	RolePrompt     string // verbatim user prompt, stored on the role row for the Details pane
 	Branch         string // optional base branch passed through to CreateAndStart
 	Backend        string // optional backend override
+	Model          string // optional per-worker model override (empty = backend default)
 	OrchestratorID int64  // orchestrator the new worker role + binding belong to
 }
 

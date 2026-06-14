@@ -391,7 +391,7 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hera_new_orchestrator` | Bootstrap a new orchestrator and claim its `coordinator` role for the calling task.                                                               |
 | `hera_join`             | Claim the calling task's existing role + unread count, or (with `role_name` + `kind`) attach a new `worker`/`freelance` role under an orchestrator. |
-| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding).                            |
+| `hera_spawn_worker`     | Spawn a born-bound worker task + session under the caller's orchestrator (caller must hold a live coordinator binding). Optional `model` picks the worker's model by task complexity (backend-scoped; empty = backend default). |
 | `hera_send`             | Send a role-addressed message; workers/freelancers default to the coordinator when `to` is omitted, coordinators must name a recipient.           |
 | `hera_inbox`            | Fetch the caller role's unread messages (oldest first), cancel their pending pane deliveries, and mark them read.                                 |
 | `hera_mark_read`        | Mark a specific list of message IDs read and cancel their pending deliveries.                                                                     |
