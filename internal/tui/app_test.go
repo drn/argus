@@ -638,80 +638,72 @@ func TestTcellKeyToBytes(t *testing.T) {
 	}
 }
 
-func TestArrowTabNavigation(t *testing.T) {
+// TestArrowKeysDoNotSwitchTabs pins the removal of arrow-key tab navigation.
+// Left/Right no longer cycle the top-level tabs (they conflicted with horizontal
+// navigation inside views like the Hera rail); tab switching is via 1/2/3 only.
+// Settings retains Left/Right for its own rail↔pane navigation.
+func TestArrowKeysDoNotSwitchTabs(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
 
-	// Start on Tasks tab
 	if app.header.ActiveTab() != widget.TabTasks {
 		t.Fatalf("initial tab = %v, want widget.TabTasks", app.header.ActiveTab())
 	}
 
-	// Right arrow → DAG (newly inserted between Tasks and Settings).
-	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
-	result := app.handleGlobalKey(ev)
-	if result != nil {
-		t.Error("right arrow should be consumed (return nil)")
+	// Right arrow on Tasks → does NOT advance the tab, and is not consumed
+	// globally (returned to tview for the focused view to handle).
+	right := tcell.NewEventKey(tcell.KeyRight, 0, 0)
+	if result := app.handleGlobalKey(right); result != right {
+		t.Error("right arrow should fall through (return the event), not be consumed for tab switching")
+	}
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Errorf("tab = %v, want widget.TabTasks (right must not switch tabs)", app.header.ActiveTab())
+	}
+
+	// Left arrow on Tasks → no tab change, falls through.
+	left := tcell.NewEventKey(tcell.KeyLeft, 0, 0)
+	if result := app.handleGlobalKey(left); result != left {
+		t.Error("left arrow should fall through, not be consumed for tab switching")
+	}
+	if app.header.ActiveTab() != widget.TabTasks {
+		t.Errorf("tab = %v, want widget.TabTasks (left must not switch tabs)", app.header.ActiveTab())
+	}
+
+	// 1/2/3 remain the way to switch tabs.
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '2', 0))
+	if app.header.ActiveTab() != widget.TabHera {
+		t.Errorf("tab = %v, want widget.TabHera after '2'", app.header.ActiveTab())
+	}
+
+	// Right/Left on the Hera tab do not switch tabs either (freed for the rail).
+	if result := app.handleGlobalKey(right); result != right {
+		t.Error("right arrow on Hera tab should fall through")
 	}
 	if app.header.ActiveTab() != widget.TabHera {
-		t.Errorf("tab = %v, want widget.TabHera", app.header.ActiveTab())
+		t.Errorf("tab = %v, want widget.TabHera (right must not switch tabs)", app.header.ActiveTab())
 	}
 
-	// Right arrow → Settings (rail focus initially).
-	result = app.handleGlobalKey(ev)
-	if result != nil {
-		t.Error("right arrow should be consumed (return nil)")
+	// On the Settings tab, Left/Right still drive the settings rail↔pane focus
+	// (consumed via the settings routing) without switching tabs. A fresh
+	// SettingsView starts focused on the pane (settings.go).
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '3', 0))
+	if app.header.ActiveTab() != widget.TabSettings {
+		t.Fatalf("tab = %v, want widget.TabSettings after '3'", app.header.ActiveTab())
+	}
+	// Left from the pane → back to the rail; consumed, tab unchanged.
+	if result := app.handleGlobalKey(left); result != nil {
+		t.Error("left arrow on settings pane should be consumed by settings")
 	}
 	if app.header.ActiveTab() != widget.TabSettings {
-		t.Errorf("tab = %v, want widget.TabSettings", app.header.ActiveTab())
+		t.Errorf("tab = %v, want widget.TabSettings (settings consumes left)", app.header.ActiveTab())
 	}
-
-	// Right arrow on Settings rail → moves focus to right pane, stays on Settings.
-	result = app.handleGlobalKey(ev)
-	if result != nil {
-		t.Error("right arrow on settings rail should be consumed")
+	// Right from the rail → focus the pane; consumed, tab unchanged.
+	if result := app.handleGlobalKey(right); result != nil {
+		t.Error("right arrow on settings rail should be consumed by settings")
 	}
 	if app.header.ActiveTab() != widget.TabSettings {
-		t.Errorf("tab = %v, want widget.TabSettings (right consumed by settings rail)", app.header.ActiveTab())
-	}
-
-	// Right arrow on Settings pane — stays on Settings (rightmost tab, no wrap).
-	_ = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != widget.TabSettings {
-		t.Errorf("tab = %v, want widget.TabSettings (no wrap)", app.header.ActiveTab())
-	}
-
-	// Left arrow on Settings pane → moves focus back to rail, stays on Settings.
-	ev = tcell.NewEventKey(tcell.KeyLeft, 0, 0)
-	result = app.handleGlobalKey(ev)
-	if result != nil {
-		t.Error("left arrow on settings pane should be consumed")
-	}
-	if app.header.ActiveTab() != widget.TabSettings {
-		t.Errorf("tab = %v, want widget.TabSettings (left consumed by settings pane)", app.header.ActiveTab())
-	}
-
-	// Left arrow on Settings rail → switches to DAG (the previous tab now
-	// that DAG sits between Tasks and Settings).
-	result = app.handleGlobalKey(ev)
-	if result != nil {
-		t.Error("left arrow on rail should be consumed")
-	}
-	if app.header.ActiveTab() != widget.TabHera {
-		t.Errorf("tab = %v, want widget.TabHera", app.header.ActiveTab())
-	}
-
-	// Left arrow → Tasks.
-	_ = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != widget.TabTasks {
-		t.Errorf("tab = %v, want widget.TabTasks", app.header.ActiveTab())
-	}
-
-	// Left arrow at Tasks — stays on Tasks (no wrap).
-	_ = app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != widget.TabTasks {
-		t.Errorf("tab = %v, want widget.TabTasks (no wrap)", app.header.ActiveTab())
+		t.Errorf("tab = %v, want widget.TabSettings (settings consumes right)", app.header.ActiveTab())
 	}
 }
 
