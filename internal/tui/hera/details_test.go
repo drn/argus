@@ -82,6 +82,74 @@ func TestDetails_TinyRectNoPanic(t *testing.T) {
 	d.Draw(sim, 0, 0, 6, 4, true) // focused border path
 }
 
+// rosterContains reports whether any row of a DetailsView drawn at the given
+// height contains sub (scans the full inner width).
+func rosterContains(t *testing.T, d *DetailsView, h int, sub string) bool {
+	t.Helper()
+	for y := range h {
+		if testContains(drawnText(t, func(s tcell.Screen) { d.Draw(s, 0, 0, 40, h, false) }, 1, y, 36), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDetails_ContentHeight(t *testing.T) {
+	coord := RoleView{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator}
+	wkr := func(id int64, name string) RoleView {
+		return RoleView{RoleID: id, OrchID: 1, Name: name, Kind: db.HeraKindWorker}
+	}
+	tests := []struct {
+		name string
+		orch *OrchView
+		want int
+	}{
+		{"nil orch", nil, 3}, // border + placeholder line
+		{"coord, no workers", &OrchView{ID: 1, Roles: []RoleView{coord}}, 8},                           // 2 + (4+1) + 1(none)
+		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 9}, // 2 + 5 + 2
+		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 8}, // 2 + 4 + 2 (no coord line)
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDetailsView()
+			d.SetOrch(tc.orch, nil)
+			testutil.Equal(t, d.ContentHeight(), tc.want)
+		})
+	}
+}
+
+// TestDetails_ContentHeightMatchesDraw pins the contract that ContentHeight is
+// the EXACT minimum height at which Draw renders the full roster: at h ==
+// ContentHeight the last worker is visible; at h-1 it is truncated. This guards
+// the formula against drifting from Draw's actual row budget. Both the
+// coordinator-present (content=5) and coordinator-absent (content=4, the W1 fix)
+// branches are exercised, since they have different row budgets.
+func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
+	tests := []struct {
+		name  string
+		roles []RoleView
+	}{
+		{"with coord role", []RoleView{
+			{RoleID: 1, OrchID: 1, Name: "coord", Kind: db.HeraKindCoordinator},
+			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
+			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
+		}},
+		{"no coord role", []RoleView{
+			{RoleID: 2, OrchID: 1, Name: "alpha", Kind: db.HeraKindWorker},
+			{RoleID: 3, OrchID: 1, Name: "zlast", Kind: db.HeraKindWorker},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDetailsView()
+			d.SetOrch(&OrchView{ID: 1, Name: "o", Roles: tc.roles}, nil)
+			ch := d.ContentHeight()
+			testutil.Equal(t, rosterContains(t, d, ch, "zlast"), true)    // fits exactly
+			testutil.Equal(t, rosterContains(t, d, ch-1, "zlast"), false) // one short → truncated
+		})
+	}
+}
+
 func TestCoordStatusLabel(t *testing.T) {
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "working")
 	testutil.Equal(t, coordStatusLabel(&RoleView{Live: true}), "live")

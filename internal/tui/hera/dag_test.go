@@ -21,9 +21,10 @@ func dagProviderByOrchName(o *OrchView) []dagview.Node {
 	return []dagview.Node{{ID: o.Name, Name: o.Name, Status: "in_progress"}}
 }
 
-// drawnPage renders the whole page to a fresh sim screen and returns the full
-// text of row y (so a test can find a centered border title anywhere on it).
-func drawnPageRow(t *testing.T, p *HeraPage, w, h, y int) string {
+// drawnPageText renders the whole page to a fresh sim screen and returns its
+// full text (all rows joined by newlines), so a test can find a centered border
+// title on any row.
+func drawnPageText(t *testing.T, p *HeraPage, w, h int) string {
 	t.Helper()
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
@@ -33,14 +34,17 @@ func drawnPageRow(t *testing.T, p *HeraPage, w, h, y int) string {
 	p.Draw(sim)
 	sim.Show()
 	cells, _, _ := sim.GetContents()
-	runes := make([]rune, 0, w)
-	for i := 0; i < w; i++ {
-		c := cells[(y*w)+i]
-		if len(c.Runes) > 0 {
-			runes = append(runes, c.Runes[0])
+	var b strings.Builder
+	for y := range h {
+		for i := range w {
+			c := cells[(y*w)+i]
+			if len(c.Runes) > 0 {
+				b.WriteRune(c.Runes[0])
+			}
 		}
+		b.WriteByte('\n')
 	}
-	return string(runes)
+	return b.String()
 }
 
 // dagPageWithProvider seeds an orch (coord+worker), wires a live resolver + the
@@ -78,28 +82,17 @@ func toAgentFocus(p *HeraPage) {
 	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
 }
 
-// TestDetailsDAG_ToggleViaKey: with a coordinator selected, `g` (in the Details
-// region) toggles roster ↔ DAG and projects the provider's nodes.
-func TestDetailsDAG_ToggleViaKey(t *testing.T) {
+// TestDetailsDAG_ProjectedOnCoordSelect: selecting a coordinator immediately
+// projects the provider's nodes into the embedded DAG — no toggle needed.
+func TestDetailsDAG_ProjectedOnCoordSelect(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 	testutil.Equal(t, p.detailsMode, true)
-	testutil.Equal(t, p.DetailsSubMode(), subModeRoster)
-
-	toAgentFocus(p)
-	testutil.Equal(t, p.Machine().State(), FocusAgent)
-
-	h := p.InputHandler()
-	h(tcell.NewEventKey(tcell.KeyRune, 'g', tcell.ModNone), noFocus)
-	testutil.Equal(t, p.DetailsSubMode(), subModeDAG)
 	testutil.Equal(t, p.DAG().CurrentTask(), "orch") // provider keyed nodes by orch name
-
-	h(tcell.NewEventKey(tcell.KeyRune, 'g', tcell.ModNone), noFocus)
-	testutil.Equal(t, p.DetailsSubMode(), subModeRoster)
 }
 
-// TestDetailsDAG_RebuildOnCoordChange: in DAG sub-mode, selecting a different
-// coordinator reprojects the graph for the new orchestrator (sub-mode sticky).
+// TestDetailsDAG_RebuildOnCoordChange: selecting a different coordinator
+// reprojects the graph for the new orchestrator.
 func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 	d := memDB(t)
 	a := seedOrch(t, d, "orch-a")
@@ -111,9 +104,8 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 	p.SetDAGNodeProvider(dagProviderByOrchName)
 	p.Refresh()
 
-	// Land on orch-a's coordinator and switch to DAG.
+	// Land on orch-a's coordinator; the DAG projects for orch-a.
 	testutil.Equal(t, selectRoleByName(p, "coord"), true) // first "coord" is orch-a's
-	p.toggleDetailsSubMode()
 	testutil.Equal(t, p.DAG().CurrentTask(), "orch-a")
 
 	// Navigate to orch-b's coordinator; applySelection reprojects.
@@ -128,50 +120,80 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 	testutil.Equal(t, p.DAG().CurrentTask(), "orch-b")
 }
 
-// TestDetailsDAG_NilProviderEmpty: with no provider (remote-style), toggling to
-// DAG yields an empty graph (no panic, no cursor).
+// TestDetailsDAG_NilProviderEmpty: with no provider (remote-style), a coordinator
+// selection yields an empty graph (no panic, no cursor).
 func TestDetailsDAG_NilProviderEmpty(t *testing.T) {
 	p := dagPageWithProvider(t, nil) // provider intentionally unset
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	p.toggleDetailsSubMode()
-	testutil.Equal(t, p.DetailsSubMode(), subModeDAG)
 	testutil.Equal(t, p.DAG().CurrentTask(), "")
 }
 
-// TestDetailsDAG_DrawShowsDependenciesTitle: in DAG sub-mode the right region
-// draws the retitled " Dependencies " panel, NOT the " Details " roster; the
-// legacy " DAG " title never appears (embedding caveat handled).
-func TestDetailsDAG_DrawShowsDependenciesTitle(t *testing.T) {
+// TestDetailsDAG_DrawStacksBothPanels: with a coordinator selected the right
+// region stacks the " Details " roster over the " Dependencies " DAG — both
+// titles render at once; the legacy " DAG " title never appears.
+func TestDetailsDAG_DrawStacksBothPanels(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 
-	// Roster mode first: the right region is " Details ".
-	testutil.Equal(t, strings.Contains(drawnPageRow(t, p, 120, 30, 0), "Details"), true)
-
-	p.toggleDetailsSubMode()
-	row := drawnPageRow(t, p, 120, 30, 0)
-	testutil.Equal(t, strings.Contains(row, "Dependencies"), true)
-	testutil.Equal(t, strings.Contains(row, "Details"), false)
-	testutil.Equal(t, strings.Contains(row, " DAG "), false)
+	text := drawnPageText(t, p, 120, 30)
+	di := strings.Index(text, "Details")
+	pi := strings.Index(text, "Dependencies")
+	testutil.Equal(t, di >= 0, true)
+	testutil.Equal(t, pi >= 0, true)
+	testutil.Equal(t, di < pi, true) // roster stacked ABOVE the DAG, not below
+	testutil.Equal(t, strings.Contains(text, " DAG "), false)
 }
 
-// TestDetailsDAG_WorkerSelectionUnaffected: even with DAG sub-mode active, a
-// worker selection shows its AGENT terminal (detailsMode false → no DAG).
+// TestDetailsDAG_TinyPaneRosterOnly: on a pane too short to fit both panels the
+// roster still renders, the DAG is skipped, and its rect is zeroed so a stale
+// rect from a prior taller frame can't catch a mouse event over the roster.
+func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
+	p := dagPageWithProvider(t, dagProviderByOrchName)
+	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+
+	// Draw tall first so the DAG gets a real rect, then redraw very short.
+	drawnPageText(t, p, 120, 30)
+	_, _, dw, dh := p.DAG().GetRect()
+	testutil.Equal(t, dw > 0 && dh > 0, true) // armed by the tall frame
+
+	// h=4 → rosterH clamps to 3, dagH=1 (<2) → DAG skipped, rect zeroed.
+	text := drawnPageText(t, p, 120, 4)
+	testutil.Equal(t, strings.Contains(text, "Details"), true)
+	testutil.Equal(t, strings.Contains(text, "Dependencies"), false)
+	_, _, zw, zh := p.DAG().GetRect()
+	testutil.Equal(t, zw == 0 && zh == 0, true) // stale rect cleared
+
+	// A click over the (now DAG-less) agent region must not be consumed by the
+	// zeroed DAG rect.
+	mh := p.MouseHandler()
+	ev := tcell.NewEventMouse(110, 1, tcell.Button1, tcell.ModNone)
+	consumed, _ := mh(tview.MouseLeftClick, ev, noFocus)
+	testutil.Equal(t, consumed, false)
+
+	// Heights below the roster's min-floor (h<3) exercise the clamp interaction
+	// (max(_,3)→min(_,h)) with dagH==0 — must not panic.
+	for h := 1; h <= 3; h++ {
+		drawnPageText(t, p, 120, h)
+	}
+}
+
+// TestDetailsDAG_WorkerSelectionUnaffected: a worker selection shows its AGENT
+// terminal (detailsMode false → no stacked Details/DAG region).
 func TestDetailsDAG_WorkerSelectionUnaffected(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	p.toggleDetailsSubMode() // sub-mode now DAG, but sticky in the background
-	testutil.Equal(t, p.DetailsSubMode(), subModeDAG)
+	testutil.Equal(t, p.detailsMode, true)
 
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 	testutil.Equal(t, p.detailsMode, false)
 	// Worker terminal is bound; the Dependencies panel is not drawn.
 	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
-	testutil.Equal(t, strings.Contains(drawnPageRow(t, p, 120, 30, 0), "Dependencies"), false)
+	testutil.Equal(t, strings.Contains(drawnPageText(t, p, 120, 30), "Dependencies"), false)
 }
 
-// TestDetailsDAG_KeyForwardsToWidget: in DAG sub-mode, l/L/h forward to the
-// embedded widget and fire its callbacks with the cursor task.
+// TestDetailsDAG_KeyForwardsToWidget: with a coordinator selected, l/L/h forward
+// to the embedded DAG (the interactive surface of the stacked region) and fire
+// its callbacks with the cursor task.
 func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	var linked, unlinked, halted string
@@ -181,10 +203,9 @@ func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
 
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 	toAgentFocus(p)
-	h := p.InputHandler()
-	h(tcell.NewEventKey(tcell.KeyRune, 'g', tcell.ModNone), noFocus) // → DAG
 	testutil.Equal(t, p.DAG().CurrentTask(), "orch")
 
+	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyRune, 'L', tcell.ModNone), noFocus)
 	h(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone), noFocus)
@@ -193,11 +214,10 @@ func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
 	testutil.Equal(t, halted, "orch")
 }
 
-// TestDetailsDAG_NoSyncOnDraw pins the UX-rendering rule for the DAG sub-mode.
+// TestDetailsDAG_NoSyncOnDraw pins the UX-rendering rule for the stacked region.
 func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	p.toggleDetailsSubMode()
 
 	base := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, base.Init())
@@ -209,15 +229,14 @@ func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
 	testutil.Equal(t, sc.syncCount, 0)
 }
 
-// TestDetailsDAG_MouseRoutesToWidget: a click in the agent region in DAG mode is
-// handled by the embedded widget (no panic; consumed path).
+// TestDetailsDAG_MouseRoutesToWidget: a click in the agent region (within the
+// DAG sub-rect) is handled by the embedded widget (no panic; consumed path).
 func TestDetailsDAG_MouseRoutesToWidget(t *testing.T) {
 	p := dagPageWithProvider(t, dagProviderByOrchName)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	p.toggleDetailsSubMode()
-	// Click near the right region; regionAt maps it to FocusAgent.
+	// Click low in the right region — inside the DAG (bottom of the stack).
 	mh := p.MouseHandler()
-	ev := tcell.NewEventMouse(110, 5, tcell.Button1, tcell.ModNone)
+	ev := tcell.NewEventMouse(110, 20, tcell.Button1, tcell.ModNone)
 	mh(tview.MouseLeftClick, ev, noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }

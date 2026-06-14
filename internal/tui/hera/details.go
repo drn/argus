@@ -36,6 +36,31 @@ func (d *DetailsView) SetOrch(o *OrchView, prMeta map[string]map[string]string) 
 	d.prMeta = prMeta
 }
 
+// ContentHeight returns the natural height (including the 2-row border) the
+// coordinator summary needs to render without truncation. It mirrors Draw's row
+// budget EXACTLY so the stacked Details region can size the roster before
+// handing the remainder to the DAG. With no orchestrator selected it is just the
+// border plus the "(no coordinator selected)" line.
+func (d *DetailsView) ContentHeight() int {
+	const border = 2
+	if d.orch == nil {
+		return border + 1
+	}
+	// Draw's fixed rows: title + spacer + spacer + "Agents (N):" header = 4
+	// (the coord status line, when present, sits between the two spacers). The
+	// coordinator status line is drawn only when a coordinator role exists, so
+	// count it conditionally to match Draw (which skips it when coordRole==nil).
+	content := 4
+	if d.coordRole() != nil {
+		content++
+	}
+	workerRows := len(d.workers())
+	if workerRows == 0 {
+		workerRows = 1 // the "(none)" line
+	}
+	return border + content + workerRows
+}
+
 // Draw paints the coordinator summary inside a bordered panel covering the full
 // bounding rect (DrawBorderedPanel blanks the interior) so no stale cells
 // survive — per the CLAUDE.md UX-rendering rules (no Sync; full-rect coverage).
