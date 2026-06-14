@@ -46,7 +46,8 @@ func (d *DetailsView) ContentHeight() int {
 	if d.orch == nil {
 		return border + 1
 	}
-	// title + spacer + spacer + "Agents (N):" header = 4 content rows; the
+	// Draw's fixed rows: title + spacer + spacer + "Agents (N):" header = 4
+	// (the coord status line, when present, sits between the two spacers). The
 	// coordinator status line is drawn only when a coordinator role exists, so
 	// count it conditionally to match Draw (which skips it when coordRole==nil).
 	content := 4

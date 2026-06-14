@@ -245,13 +245,13 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 // drawDetailsRegion stacks the read-only roster (top) over the embedded
 // dependency DAG (bottom) for a selected coordinator — both render at once,
 // no toggle. The roster is sized to its natural content height, capped at half
-// the region so the DAG always keeps the larger share; the DAG fills the
+// the region so the DAG always keeps at least half; the DAG fills the
 // remainder. Each widget draws its own bordered panel covering its full
 // sub-rect, so no stale cells survive (no Sync — CLAUDE.md UX-rendering rules).
 // The DAG is the interactive surface, so it owns the focused border.
 func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
 	// Roster sized to its content, capped at half the region so the DAG keeps
-	// the larger share, then clamped to the region height for tiny panes.
+	// at least half, then clamped to the region height for tiny panes.
 	rosterH := min(p.details.ContentHeight(), h/2)
 	rosterH = max(rosterH, 3)
 	rosterH = min(rosterH, h)
@@ -293,7 +293,8 @@ func (p *HeraPage) drawRemoteBanner(screen tcell.Screen, x, y, w, h int) {
 // receives forwarded keystrokes (interactive) and PgUp/PgDn scrollback. Left/
 // Right are no longer eaten by the global handler (tab nav is 1/2/3 only), so
 // they now reach this handler: in a focused terminal pane they forward to the
-// PTY like any other key; rail-focused they currently fall through unused.
+// PTY like any other key; in coordinator-details mode they drive the embedded
+// DAG's cursor (via handleDetailsKey); rail-focused they fall through unused.
 func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		if p.remote {
