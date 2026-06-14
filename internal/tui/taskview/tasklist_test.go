@@ -602,6 +602,64 @@ func TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR(t *testing.T) {
 	testutil.Equal(t, startWithout, prCellCol)
 }
 
+// TestDrawTaskRow_CoordinatorIndicator pins the coordinator glyph: a task that
+// holds a hera coordinator role renders theme.IconCoordinator in the cell after
+// the status glyph (no PR present, so it reclaims prCellCol), and the name
+// shifts right by one cell.
+func TestDrawTaskRow_CoordinatorIndicator(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "orchestrate", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotStr, gotStyle, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotStr), theme.IconCoordinator)
+	testutil.Equal(t, gotStyle, theme.StyleCoordinator)
+
+	// Name starts after the coordinator cell.
+	nameRun := ""
+	for col := prNameCol; col < 60; col++ {
+		s, _, _ := sim.Get(col, 0)
+		nameRun += s
+	}
+	testutil.Contains(t, strings.TrimSpace(nameRun), "orchestrate")
+}
+
+// TestDrawTaskRow_CoordinatorIndicator_ReclaimsSpaceWhenAbsent pins that a
+// non-coordinator task does not consume the cell: the name reclaims prCellCol.
+func TestDrawTaskRow_CoordinatorIndicator_ReclaimsSpaceWhenAbsent(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotFirst, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotFirst), 'f')
+}
+
+// TestDrawTaskRow_PRAndCoordinator pins that the PR and coordinator indicators
+// stack: PR glyph at prCellCol, coordinator glyph at the next cell, name after.
+func TestDrawTaskRow_PRAndCoordinator(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "orchestrate", Project: "p", Status: model.StatusInReview}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	prStr, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(prStr), theme.IconPRApproved)
+	coordStr, _, _ := sim.Get(prNameCol, 0)
+	testutil.Equal(t, firstRune(coordStr), theme.IconCoordinator)
+}
+
 func TestSetPRStates_NilSafe(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})

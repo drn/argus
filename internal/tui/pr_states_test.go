@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/agent"
+	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
@@ -55,4 +56,49 @@ func TestRefreshTasks_WiresPRStatesIntoTaskList(t *testing.T) {
 	app.refreshTasks()
 
 	testutil.Equal(t, app.tasklist.PRStateFor("t1"), model.PRAwaitingReview)
+}
+
+func TestReadHeraCoordinators_SelectsCoordinatorRole(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	testutil.NoError(t, d.SetMeta("coord", db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)))
+	testutil.NoError(t, d.SetMeta("worker", db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)))
+	// A different namespace must not leak in.
+	testutil.NoError(t, d.SetMeta("other", "pr", "state", "approved"))
+
+	got := app.readHeraCoordinators()
+	testutil.Equal(t, got["coord"], true)
+	_, hasWorker := got["worker"]
+	testutil.Equal(t, hasWorker, false)
+	_, hasOther := got["other"]
+	testutil.Equal(t, hasOther, false)
+}
+
+func TestReadHeraCoordinators_EmptyReturnsNil(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	got := app.readHeraCoordinators()
+	testutil.Nil(t, got)
+}
+
+func TestReadHeraCoordinators_QueryErrorReturnsNil(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	testutil.NoError(t, d.Close()) // subsequent meta query errors
+	got := app.readHeraCoordinators()
+	testutil.Nil(t, got)
+}
+
+// TestRefreshTasks_WiresHeraCoordinatorsIntoTaskList confirms the tick wiring:
+// a coordinator role meta row flows through refreshTasks → SetHeraCoordinators.
+func TestRefreshTasks_WiresHeraCoordinatorsIntoTaskList(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "coordinator", Project: "p", Status: model.StatusInProgress, Branch: "argus/t1"}))
+	testutil.NoError(t, d.SetMeta("t1", db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)))
+
+	app := New(d, agent.NewRunner(nil), false)
+	app.refreshTasks()
+
+	testutil.Equal(t, app.tasklist.IsHeraCoordinator("t1"), true)
 }

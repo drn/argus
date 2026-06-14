@@ -60,3 +60,29 @@ func TestSetHeraWorkers_NilClears(t *testing.T) {
 	tl.SetHeraWorkers(nil)
 	testutil.Equal(t, tl.isHeraSpawnedWorker(&model.Task{ID: "w"}), false)
 }
+
+func TestSetHeraCoordinators_SetAndCheck(t *testing.T) {
+	tl := NewTaskListView()
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "c"}), false)
+	tl.SetHeraCoordinators(map[string]bool{"c": true})
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "c"}), true)
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "other"}), false)
+}
+
+func TestSetHeraCoordinators_NilClears(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetHeraCoordinators(map[string]bool{"c": true})
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "c"}), true)
+	tl.SetHeraCoordinators(nil)
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "c"}), false)
+}
+
+// Coordinator status is independent of worker status: a task flagged a
+// coordinator is not hidden as a worker, and the two sets don't bleed.
+func TestHeraCoordinator_OrthogonalToWorker(t *testing.T) {
+	tl := NewTaskListView()
+	tl.SetHeraWorkers(map[string]bool{"w": true})
+	tl.SetHeraCoordinators(map[string]bool{"c": true})
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "w"}), false)
+	testutil.Equal(t, tl.isHeraSpawnedWorker(&model.Task{ID: "c"}), false)
+}

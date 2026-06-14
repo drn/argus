@@ -1833,6 +1833,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
 	a.tasklist.SetHeraWorkers(a.readHeraWorkers())
+	a.tasklist.SetHeraCoordinators(a.readHeraCoordinators())
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
@@ -1908,6 +1909,30 @@ func (a *App) readHeraWorkers() map[string]bool {
 	out := make(map[string]bool, len(raw))
 	for taskID, kv := range raw {
 		if kv[db.HeraMetaKeyRole] == string(db.HeraKindWorker) {
+			out[taskID] = true
+		}
+	}
+	return out
+}
+
+// readHeraCoordinators reads the task_meta "hera" namespace and returns the set
+// of task IDs that hold a coordinator role (meta:hera.role=coordinator, stamped
+// when an orchestrator is created or a coordinator joins). The task list draws
+// a coordinator glyph for these rows. Pure cache read; works in both modes via
+// the store.Store interface (remote mode returns no "hera" rows, so nothing is
+// marked — a safe degradation). A read error logs and marks nothing.
+func (a *App) readHeraCoordinators() map[string]bool {
+	raw, err := a.db.ListMetaByNamespace(db.HeraMetaNamespace)
+	if err != nil {
+		uxlog.Log("[hera-view] read hera meta failed: %v", err)
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(raw))
+	for taskID, kv := range raw {
+		if kv[db.HeraMetaKeyRole] == string(db.HeraKindCoordinator) {
 			out[taskID] = true
 		}
 	}

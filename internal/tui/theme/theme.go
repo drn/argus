@@ -51,6 +51,11 @@ const (
 	IconPRAwaiting = rune(0xF407)  //  nf-oct-git_pull_request — open PR awaiting review
 	IconPRChanges  = rune(0xF09D8) // 󰧘 nf-md-source_pull (changes requested overlay)
 	IconPRApproved = rune(0xF0DDF) // 󰷟 nf-md-source_branch_check (approved overlay)
+
+	// IconCoordinator marks a task that holds a Hera coordinator role
+	// (meta:hera.role=coordinator). Shares the orchestrator glyph used by the
+	// native Hera rail so the two surfaces read consistently.
+	IconCoordinator = rune(0x0F0E7B) // 󰹻 nf-md — Hera coordinator / orchestrator marker
 )
 
 // Styles for common UI elements.
@@ -76,6 +81,10 @@ var (
 	StylePRAwaiting = tcell.StyleDefault.Foreground(ColorPRAwaiting).Bold(true)
 	StylePRChanges  = tcell.StyleDefault.Foreground(ColorPRChanges).Bold(true)
 	StylePRApproved = tcell.StyleDefault.Foreground(ColorPRApproved).Bold(true)
+
+	// StyleCoordinator renders the task-row coordinator indicator. Cyan (the
+	// project color) reads as "structural/orchestration" rather than a status.
+	StyleCoordinator = tcell.StyleDefault.Foreground(ColorProject).Bold(true)
 )
 
 // PRGlyph maps a PR review state to the glyph and style its task-row
