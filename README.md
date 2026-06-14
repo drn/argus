@@ -165,7 +165,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings); `Tab` / `Shift+Tab` cycle. The `2` tab shows **Hera** by default; with `hera.enabled = false` it falls back to the legacy **DAG** view |
+| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings). The `2` tab shows **Hera** by default; with `hera.enabled = false` it falls back to the legacy **DAG** view |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 

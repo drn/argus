@@ -2174,30 +2174,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			a.pruneCompletedTasks()
 			return nil
 		}
-	case tcell.KeyLeft:
-		if a.mode != modeAgent {
-			// Settings consumes left/right to navigate its rail↔pane; only
-			// fall through to tab switching when the rail (left-most pane) is focused.
-			if a.header.ActiveTab() == widget.TabSettings && a.settings.HandleKey(event) {
-				return nil
-			}
-			cur := a.header.ActiveTab()
-			if cur > widget.TabTasks {
-				a.switchTab(cur - 1)
-			}
-			return nil
-		}
-	case tcell.KeyRight:
-		if a.mode != modeAgent {
-			if a.header.ActiveTab() == widget.TabSettings && a.settings.HandleKey(event) {
-				return nil
-			}
-			cur := a.header.ActiveTab()
-			if cur < widget.TabSettings {
-				a.switchTab(cur + 1)
-			}
-			return nil
-		}
+	// NOTE: Left/Right are intentionally NOT handled here. They used to cycle
+	// the top-level tabs, but that collided with horizontal navigation inside
+	// views (e.g. the Hera rail's rail↔coord↔details movement). Tab switching
+	// is now via 1/2/3 only; Left/Right fall through to the focused view. On the
+	// Settings tab the settings routing below consumes the directions it uses
+	// for rail↔pane focus (Right from the rail, Left from the pane); the
+	// others (e.g. Left from the rail) simply fall through and never switch tabs.
 	case tcell.KeyRune:
 		// When the task list filter or settings prompt editor is active,
 		// let all rune keys through instead of handling global shortcuts.

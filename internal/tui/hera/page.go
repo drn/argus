@@ -284,8 +284,9 @@ func (p *HeraPage) drawRemoteBanner(screen tcell.Screen, x, y, w, h int) {
 // ladder (rail→coord→agent, skipping absent regions); Ctrl+Q escapes back to
 // the rail. Rail-focused input drives cursor/collapse; a focused terminal pane
 // receives forwarded keystrokes (interactive) and PgUp/PgDn scrollback. Left/
-// Right are intentionally NOT consumed — the global handler uses them for tab
-// switching on the Hera tab.
+// Right are no longer eaten by the global handler (tab nav is 1/2/3 only), so
+// they now reach this handler: in a focused terminal pane they forward to the
+// PTY like any other key; rail-focused they currently fall through unused.
 func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		if p.remote {

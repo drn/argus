@@ -1772,9 +1772,9 @@ func TestSmoke_HeraTabRoutesAndRenders(t *testing.T) {
 		return string(b)
 	}
 
-	// Switch to the Hera tab via the global Right arrow.
+	// Switch to the Hera tab via the '2' hotkey.
 	prior := strings.Count(readLog(), "force redraw: pages changed")
-	sim.InjectKey(tcell.KeyRight, 0, 0)
+	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 
 	// Hera tab active + "hera" page front + focus on the HeraPage.

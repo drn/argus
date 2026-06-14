@@ -541,10 +541,10 @@ func statusIcon(role *RoleView, dim bool) (rune, tcell.Style) {
 	return glyph, style
 }
 
-// InputHandler routes navigation keys. Left/Right are intentionally NOT handled
-// — the global key handler consumes them for tab switching on the Hera tab, so
-// the rail must not depend on them. Space toggles collapse; j/k and the arrow
-// keys move the cursor.
+// InputHandler routes navigation keys. Left/Right are currently unused here
+// (Up/Down/j/k drive the cursor, Space toggles collapse); they are free for
+// future horizontal navigation now that the global handler no longer consumes
+// them for tab switching (tab nav is 1/2/3 only).
 func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return r.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {
 		switch event.Key() {
