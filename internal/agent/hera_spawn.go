@@ -25,6 +25,7 @@ type HeraWorkerSpawnInput struct {
 	Project        string // resolved argus project
 	Branch         string // optional base branch
 	Backend        string // optional backend override
+	Model          string // optional per-worker model override (empty = backend default)
 }
 
 // HeraWorkerSpawnResult is the success payload from SpawnHeraWorker.
@@ -61,6 +62,7 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 		Prompt:     in.TaskPrompt,
 		Project:    in.Project,
 		Backend:    in.Backend,
+		Model:      in.Model,
 		BaseBranch: in.Branch,
 		AutoName:   false, // name is the meaningful role slug — no Haiku rename
 		AfterPersist: func(t *model.Task) (func(), error) {

@@ -76,6 +76,52 @@ func TestSpawnHeraWorker_HappyPath(t *testing.T) {
 	testutil.Equal(t, found, true)
 }
 
+// TestSpawnHeraWorker_ModelPropagates asserts a per-worker Model override flows
+// into CreateInput and is persisted on the spawned task row (the per-task model
+// that ResolveModel/BuildCmd later inject as --model at session start).
+func TestSpawnHeraWorker_ModelPropagates(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "modelled",
+		TaskPrompt:     "body",
+		Project:        "proj",
+		Model:          "opus",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Model, "opus")
+}
+
+// TestSpawnHeraWorker_EmptyModelDefaults asserts an unset Model leaves the task
+// model empty (backend default — no --model injection).
+func TestSpawnHeraWorker_EmptyModelDefaults(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+	orch, err := d.CreateHeraOrchestrator("orch")
+	testutil.NoError(t, err)
+
+	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
+		OrchestratorID: orch.ID,
+		BaseName:       "plain",
+		TaskPrompt:     "body",
+		Project:        "proj",
+	})
+	testutil.NoError(t, err)
+
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Model, "")
+}
+
 // TestSpawnHeraWorker_UniquifiesName verifies a second spawn of the same base
 // name lands on base-2 (the role-name uniquifier).
 func TestSpawnHeraWorker_UniquifiesName(t *testing.T) {

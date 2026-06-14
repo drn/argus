@@ -52,6 +52,7 @@ func fakeHeraSpawn(d *db.DB) HeraSpawner {
 			Project:  in.Project,
 			Worktree: "/wt/spawn-" + name,
 			Prompt:   in.TaskPrompt,
+			Model:    in.Model, // mirrors agent.SpawnHeraWorker → CreateInput.Model
 		}
 		if err := d.Add(task); err != nil {
 			return nil, err
@@ -1291,6 +1292,40 @@ func TestHera_SpawnWorker_ProjectOverride(t *testing.T) {
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, false)
 	testutil.Contains(t, cr.Content[0].Text, "**project**: other-project")
+}
+
+// TestHera_SpawnWorker_ModelArg asserts the optional `model` argument is read
+// from the tool call and threaded into the spawner input (and onto the task).
+func TestHera_SpawnWorker_ModelArg(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"cwd": %q, "prompt": "hard refactor", "role_name": "refactor", "model": "opus"}`, coord.Worktree)),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "refactor")
+	testutil.Equal(t, wt.Model, "opus")
+}
+
+// TestHera_SpawnWorker_ModelOmittedDefaults asserts omitting `model` leaves the
+// spawned task model empty (backend default).
+func TestHera_SpawnWorker_ModelOmittedDefaults(t *testing.T) {
+	s, d := testHeraServer(t)
+	coord := seedCoordinator(t, s, d, "myorch", "/wt/coord")
+	resp := doRequest(t, s, "tools/call", ToolCallParams{
+		Name:      "hera_spawn_worker",
+		Arguments: spawnArgs(coord.Worktree, "mechanical work", "plain", "", ""),
+	})
+	testutil.NoError(t, respErr(resp))
+	cr := callResult(t, resp)
+	testutil.Equal(t, cr.IsError, false)
+
+	wt := workerTaskByName(t, d, "plain")
+	testutil.Equal(t, wt.Model, "")
 }
 
 func TestHera_SpawnWorker_MissingArgs(t *testing.T) {
