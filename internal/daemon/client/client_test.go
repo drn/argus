@@ -777,11 +777,24 @@ func TestC_CallNoRPC(t *testing.T) {
 		// Daemon.WriteInput on a client with no rpc. Pre-fix this SIGSEGV'd the
 		// process from the dispatch goroutine; post-fix the call soft-fails.
 		c := &Client{closed: make(chan struct{}), sessions: map[string]*RemoteSession{}}
-		rs := newRemoteSession("norpc", c) // starts inputLoop
-		n, err := rs.WriteInput([]byte("x"))
+		rs := newRemoteSession("norpc", c)   // starts inputLoop
+		t.Cleanup(func() { rs.close() })     // stop the inputLoop goroutine (no leak)
+		n, err := rs.WriteInput([]byte("x")) // enqueues; inputLoop dispatches the RPC
 		testutil.NoError(t, err)
 		testutil.Equal(t, n, 1)
-		time.Sleep(100 * time.Millisecond) // let inputLoop dispatch; must not crash
+		time.Sleep(50 * time.Millisecond) // let inputLoop run the doomed dispatch
+		// Positive proof the process survived AND the dispatch path stays safe:
+		// the client is still usable and the guard keeps returning ErrClientClosed
+		// (a crashed binary would never reach this assertion).
+		err = c.callWithTimeout("Daemon.Ping", &daemon.Empty{}, &daemon.PongResp{}, time.Second)
+		testutil.ErrorIs(t, err, ErrClientClosed)
+	})
+
+	t.Run("Close on an rpc-less client does not panic", func(t *testing.T) {
+		// Symmetry with the dispatch guard: Close() must tolerate a nil rpc too.
+		c := &Client{closed: make(chan struct{}), sessions: map[string]*RemoteSession{}}
+		testutil.NoError(t, c.Close())
+		testutil.NoError(t, c.Close()) // idempotent
 	})
 }
 

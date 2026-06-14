@@ -145,7 +145,12 @@ func (c *Client) Close() error {
 		for _, rs := range sessions {
 			rs.close()
 		}
-		c.closeErr = c.rpc.Close()
+		// Symmetry with callWithTimeout's guard: a partially-constructed client
+		// (rpc never set) must not panic here either. The normal Connect'd path
+		// always has a non-nil rpc, so this is unchanged in production.
+		if c.rpc != nil {
+			c.closeErr = c.rpc.Close()
+		}
 	})
 	return c.closeErr
 }
