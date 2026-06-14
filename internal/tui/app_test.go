@@ -676,7 +676,14 @@ func TestArrowKeysDoNotSwitchTabs(t *testing.T) {
 		t.Errorf("tab = %v, want widget.TabHera after '2'", app.header.ActiveTab())
 	}
 
-	// Right/Left on the Hera tab do not switch tabs either (freed for the rail).
+	// Right AND Left on the Hera tab do not switch tabs either (freed for the
+	// rail). In the old scheme Left from TabHera switched to TabTasks.
+	if result := app.handleGlobalKey(left); result != left {
+		t.Error("left arrow on Hera tab should fall through")
+	}
+	if app.header.ActiveTab() != widget.TabHera {
+		t.Errorf("tab = %v, want widget.TabHera (left must not switch tabs)", app.header.ActiveTab())
+	}
 	if result := app.handleGlobalKey(right); result != right {
 		t.Error("right arrow on Hera tab should fall through")
 	}
