@@ -66,6 +66,7 @@ type TaskListView struct {
 	needsInput    map[string]bool          // task IDs whose agent appears blocked on a user prompt
 	prStates      map[string]model.PRState // task ID → cached GitHub PR review state (from task_meta "pr")
 	heraWorkers   map[string]bool          // task IDs that are hera-spawned workers (task_meta hera.role=worker)
+	heraCoords    map[string]bool          // task IDs that hold a hera coordinator role (task_meta hera.role=coordinator)
 	animFrame     int                      // current spinner frame (time-based, updated in Draw)
 
 	cursor          int
@@ -134,6 +135,7 @@ func NewTaskListView() *TaskListView {
 		needsInput:      make(map[string]bool),
 		prStates:        make(map[string]model.PRState),
 		heraWorkers:     make(map[string]bool),
+		heraCoords:      make(map[string]bool),
 		hideHeraWorkers: true,       // hera-spawned workers live in the Hera tab by default
 		lastRowsSig:     ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}
@@ -239,6 +241,30 @@ func (tl *TaskListView) SetHeraWorkers(ids map[string]bool) {
 // isHeraSpawnedWorker reports whether a task is a hera-spawned worker.
 func (tl *TaskListView) isHeraSpawnedWorker(t *model.Task) bool {
 	return tl.heraWorkers[t.ID]
+}
+
+// SetHeraCoordinators updates the set of task IDs that hold a hera coordinator
+// role (meta:hera.role=coordinator). The App feeds this from the task_meta
+// "hera" namespace on the tick; drawTaskRow renders a coordinator glyph for
+// these rows. A nil map clears the set.
+func (tl *TaskListView) SetHeraCoordinators(ids map[string]bool) {
+	if ids == nil {
+		tl.heraCoords = make(map[string]bool)
+		return
+	}
+	tl.heraCoords = ids
+}
+
+// isHeraCoordinator reports whether a task holds a hera coordinator role.
+func (tl *TaskListView) isHeraCoordinator(t *model.Task) bool {
+	return tl.heraCoords[t.ID]
+}
+
+// IsHeraCoordinator reports whether a task ID holds a hera coordinator role.
+// Exported for cross-package callers (and tests) that need to inspect the
+// rendered indicator without reaching into unexported fields.
+func (tl *TaskListView) IsHeraCoordinator(taskID string) bool {
+	return tl.heraCoords[taskID]
 }
 
 // HideHeraWorkers reports whether hera-spawned workers are currently hidden
@@ -1247,6 +1273,14 @@ func (tl *TaskListView) drawTaskRow(screen tcell.Screen, x, y, w int, task *mode
 	if prChar, prStyle, ok := theme.PRGlyph(tl.prStates[task.ID]); ok {
 		screen.SetContent(col, y, prChar, nil, prStyle)
 		col += 2 // PR indicator + space
+	}
+
+	// Coordinator indicator cell. Only consumes width when the task holds a
+	// Hera coordinator role; otherwise the cell is skipped and the name column
+	// reclaims the space. Orthogonal to the status and PR glyphs above.
+	if tl.isHeraCoordinator(task) {
+		screen.SetContent(col, y, theme.IconCoordinator, nil, theme.StyleCoordinator)
+		col += 2 // coordinator indicator + space
 	}
 
 	// Name gets priority; elapsed is right-aligned.

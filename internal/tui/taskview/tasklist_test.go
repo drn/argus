@@ -602,6 +602,104 @@ func TestDrawTaskRow_PRIndicator_NameReclaimsSpaceWhenNoPR(t *testing.T) {
 	testutil.Equal(t, startWithout, prCellCol)
 }
 
+// TestDrawTaskRow_CoordinatorIndicator pins the coordinator glyph: a task that
+// holds a hera coordinator role renders theme.IconCoordinator in the cell after
+// the status glyph (no PR present, so it reclaims prCellCol), and the name
+// shifts right by one cell.
+func TestDrawTaskRow_CoordinatorIndicator(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "orchestrate", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotStr, gotStyle, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotStr), theme.IconCoordinator)
+	testutil.Equal(t, gotStyle, theme.StyleCoordinator)
+
+	// Name starts after the coordinator cell.
+	nameRun := ""
+	for col := prNameCol; col < 60; col++ {
+		s, _, _ := sim.Get(col, 0)
+		nameRun += s
+	}
+	testutil.Contains(t, strings.TrimSpace(nameRun), "orchestrate")
+}
+
+// TestDrawTaskRow_CoordinatorIndicator_ReclaimsSpaceWhenAbsent pins that a
+// non-coordinator task does not consume the cell: the name reclaims prCellCol.
+func TestDrawTaskRow_CoordinatorIndicator_ReclaimsSpaceWhenAbsent(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "fix-bug", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	gotFirst, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotFirst), 'f')
+}
+
+// TestDrawTaskRow_PRAndCoordinator pins that the PR and coordinator indicators
+// stack: PR glyph at prCellCol, coordinator glyph (with its style) at the next
+// cell, and the name shifts right past both (to prNameCol+2).
+func TestDrawTaskRow_PRAndCoordinator(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "orchestrate", Project: "p", Status: model.StatusInReview}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, false)
+
+	prStr, _, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(prStr), theme.IconPRApproved)
+	// Coordinator glyph AND its style must survive the stacked layout.
+	coordStr, coordStyle, _ := sim.Get(prNameCol, 0)
+	testutil.Equal(t, firstRune(coordStr), theme.IconCoordinator)
+	testutil.Equal(t, coordStyle, theme.StyleCoordinator)
+	// Name starts past both indicator cells (prNameCol + 2).
+	nameStart := -1
+	for col := prNameCol; col < 60; col++ {
+		s, _, _ := sim.Get(col, 0)
+		if firstRune(s) == 'o' {
+			nameStart = col
+			break
+		}
+	}
+	testutil.Equal(t, nameStart, prNameCol+2)
+}
+
+// TestDrawTaskRow_CoordinatorIndicator_CursorRow pins that on the cursor row
+// the coordinator glyph keeps its own StyleCoordinator (the cursor fill must
+// not overwrite the painted glyph cell).
+func TestDrawTaskRow_CoordinatorIndicator_CursorRow(t *testing.T) {
+	sim := newSim(t, 60, 5)
+	tl := NewTaskListView()
+	task := &model.Task{ID: "1", Name: "orchestrate", Project: "p", Status: model.StatusInProgress}
+	tl.SetTasks([]*model.Task{task})
+	tl.SetHeraCoordinators(map[string]bool{"1": true})
+
+	tl.drawTaskRow(sim, 0, 0, 60, task, true) // cursor=true
+
+	gotStr, gotStyle, _ := sim.Get(prCellCol, 0)
+	testutil.Equal(t, firstRune(gotStr), theme.IconCoordinator)
+	testutil.Equal(t, gotStyle, theme.StyleCoordinator)
+}
+
+// TestIsHeraCoordinator_NilSafeBeforeSet pins that a freshly constructed view
+// reports false for any task before SetHeraCoordinators is ever called (the
+// constructor initializes the map; this guards against a regression to a nil
+// map that would still read false but breaks the established invariant).
+func TestIsHeraCoordinator_NilSafeBeforeSet(t *testing.T) {
+	tl := NewTaskListView()
+	testutil.Equal(t, tl.IsHeraCoordinator("anything"), false)
+	testutil.Equal(t, tl.isHeraCoordinator(&model.Task{ID: "anything"}), false)
+}
+
 func TestSetPRStates_NilSafe(t *testing.T) {
 	tl := NewTaskListView()
 	tl.SetPRStates(map[string]model.PRState{"1": model.PRApproved})
