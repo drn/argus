@@ -27,12 +27,12 @@ const rpcTimeout = 2 * time.Second
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
 
 // ErrClientClosed is returned by callWithTimeout when the client has no usable
-// rpc transport — a nil receiver or an unset/torn-down c.rpc. It exists so the
-// detached dispatch goroutine never dereferences a nil rpc (an unrecoverable
-// SIGSEGV from a background goroutine); callers already treat any error as an
-// ordinary RPC failure (log + safe default; removeSession forces StreamLost,
-// preserving #707).
-var ErrClientClosed = errors.New("daemon client closed or not connected")
+// rpc transport — a nil receiver or a nil c.rpc (the field is never set; it is
+// NOT nilled on close, see Close). It exists so the detached dispatch goroutine
+// never dereferences a nil rpc (an unrecoverable SIGSEGV from a background
+// goroutine); callers already treat any error as an ordinary RPC failure (log +
+// safe default; removeSession forces StreamLost, preserving #707).
+var ErrClientClosed = errors.New("daemon client not connected")
 
 // ErrTestBinary is returned by AutoStart when invoked from a Go test binary.
 // AutoStart fork/execs os.Executable() with "daemon start" — under `go test`
@@ -468,7 +468,8 @@ func (c *Client) call(method string, args, reply any) error {
 func (c *Client) callWithTimeout(method string, args, reply any, timeout time.Duration) error {
 	// Guard the dispatch goroutine below against a client with no usable rpc
 	// transport. The normal Connect'd client always has a non-nil c.rpc, but a
-	// partially-constructed or torn-down client (rpc never set) would make the
+	// partially-constructed client (rpc never set — e.g. a test scaffold or a
+	// lingering background goroutine from a teardown race) would make the
 	// DETACHED goroutine deref a nil c.rpc — an unrecoverable SIGSEGV that no
 	// recover can catch, surfacing as an intermittent `panic: nil pointer
 	// dereference` at this line that reds-out CI. Returning an error here keeps

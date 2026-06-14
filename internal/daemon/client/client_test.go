@@ -782,10 +782,10 @@ func TestC_CallNoRPC(t *testing.T) {
 		n, err := rs.WriteInput([]byte("x")) // enqueues; inputLoop dispatches the RPC
 		testutil.NoError(t, err)
 		testutil.Equal(t, n, 1)
-		time.Sleep(50 * time.Millisecond) // let inputLoop run the doomed dispatch
-		// Positive proof the process survived AND the dispatch path stays safe:
-		// the client is still usable and the guard keeps returning ErrClientClosed
-		// (a crashed binary would never reach this assertion).
+		time.Sleep(50 * time.Millisecond) // give inputLoop time to run the doomed dispatch
+		// Best-effort liveness check: a SIGSEGV in the background dispatch would
+		// kill the whole process, so reaching this line at all is the real signal.
+		// The follow-up call additionally confirms the client is still usable.
 		err = c.callWithTimeout("Daemon.Ping", &daemon.Empty{}, &daemon.PongResp{}, time.Second)
 		testutil.ErrorIs(t, err, ErrClientClosed)
 	})
