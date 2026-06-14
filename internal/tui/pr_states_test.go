@@ -58,7 +58,7 @@ func TestRefreshTasks_WiresPRStatesIntoTaskList(t *testing.T) {
 	testutil.Equal(t, app.tasklist.PRStateFor("t1"), model.PRAwaitingReview)
 }
 
-func TestReadHeraCoordinators_SelectsCoordinatorRole(t *testing.T) {
+func TestReadHeraRoles_PartitionsWorkersAndCoordinators(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
 
@@ -67,27 +67,37 @@ func TestReadHeraCoordinators_SelectsCoordinatorRole(t *testing.T) {
 	// A different namespace must not leak in.
 	testutil.NoError(t, d.SetMeta("other", "pr", "state", "approved"))
 
-	got := app.readHeraCoordinators()
-	testutil.Equal(t, got["coord"], true)
-	_, hasWorker := got["worker"]
-	testutil.Equal(t, hasWorker, false)
-	_, hasOther := got["other"]
-	testutil.Equal(t, hasOther, false)
+	workers, coords := app.readHeraRoles()
+	// Coordinator partition holds only the coordinator.
+	testutil.Equal(t, coords["coord"], true)
+	_, coordHasWorker := coords["worker"]
+	testutil.Equal(t, coordHasWorker, false)
+	// Worker partition holds only the worker.
+	testutil.Equal(t, workers["worker"], true)
+	_, workerHasCoord := workers["coord"]
+	testutil.Equal(t, workerHasCoord, false)
+	// Other namespace leaks into neither set.
+	_, wOther := workers["other"]
+	_, cOther := coords["other"]
+	testutil.Equal(t, wOther, false)
+	testutil.Equal(t, cOther, false)
 }
 
-func TestReadHeraCoordinators_EmptyReturnsNil(t *testing.T) {
+func TestReadHeraRoles_EmptyReturnsNil(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
-	got := app.readHeraCoordinators()
-	testutil.Nil(t, got)
+	workers, coords := app.readHeraRoles()
+	testutil.Nil(t, workers)
+	testutil.Nil(t, coords)
 }
 
-func TestReadHeraCoordinators_QueryErrorReturnsNil(t *testing.T) {
+func TestReadHeraRoles_QueryErrorReturnsNil(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
 	testutil.NoError(t, d.Close()) // subsequent meta query errors
-	got := app.readHeraCoordinators()
-	testutil.Nil(t, got)
+	workers, coords := app.readHeraRoles()
+	testutil.Nil(t, workers)
+	testutil.Nil(t, coords)
 }
 
 // TestRefreshTasks_WiresHeraCoordinatorsIntoTaskList confirms the tick wiring:

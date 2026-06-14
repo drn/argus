@@ -135,6 +135,7 @@ func NewTaskListView() *TaskListView {
 		needsInput:      make(map[string]bool),
 		prStates:        make(map[string]model.PRState),
 		heraWorkers:     make(map[string]bool),
+		heraCoords:      make(map[string]bool),
 		hideHeraWorkers: true,       // hera-spawned workers live in the Hera tab by default
 		lastRowsSig:     ^uint64(0), // sentinel — first build always fires OnLayoutChange
 	}

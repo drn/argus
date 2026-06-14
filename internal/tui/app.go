@@ -1832,8 +1832,9 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
-	a.tasklist.SetHeraWorkers(a.readHeraWorkers())
-	a.tasklist.SetHeraCoordinators(a.readHeraCoordinators())
+	heraWorkers, heraCoordinators := a.readHeraRoles()
+	a.tasklist.SetHeraWorkers(heraWorkers)
+	a.tasklist.SetHeraCoordinators(heraCoordinators)
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
@@ -1890,53 +1891,42 @@ func (a *App) readPRStates() map[string]model.PRState {
 	return out
 }
 
-// readHeraWorkers reads the task_meta "hera" namespace and returns the set of
-// task IDs that are hera-spawned workers (meta:hera.role=worker, stamped at
-// born-bound spawn / auto-adopt in M4). The task list hides these by default
-// so the normal Tasks tab stays clean — they live in the Hera tab — with a
-// reveal toggle (the `H` key). Pure cache read; works in both modes via the
-// store.Store interface (remote mode returns no "hera" rows, so nothing is
-// hidden — a safe degradation). A read error logs and hides nothing.
-func (a *App) readHeraWorkers() map[string]bool {
+// readHeraRoles reads the task_meta "hera" namespace ONCE and partitions bound
+// tasks into the worker set (meta:hera.role=worker, stamped at born-bound spawn
+// / auto-adopt in M4 — the task list hides these by default so the Tasks tab
+// stays clean, with the `H` reveal toggle) and the coordinator set
+// (meta:hera.role=coordinator, stamped when an orchestrator is created or a
+// coordinator joins — the task list draws a coordinator glyph for these rows).
+//
+// A single query feeds both consumers so the tick doesn't hit the same
+// namespace twice. Pure cache read; works in both modes via the store.Store
+// interface (remote mode returns no "hera" rows, so both sets are empty — a
+// safe degradation). A read error logs and returns nil, nil so nothing is
+// hidden or marked.
+func (a *App) readHeraRoles() (workers, coordinators map[string]bool) {
 	raw, err := a.db.ListMetaByNamespace(db.HeraMetaNamespace)
 	if err != nil {
 		uxlog.Log("[hera-view] read hera meta failed: %v", err)
-		return nil
+		return nil, nil
 	}
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
-	out := make(map[string]bool, len(raw))
 	for taskID, kv := range raw {
-		if kv[db.HeraMetaKeyRole] == string(db.HeraKindWorker) {
-			out[taskID] = true
+		switch kv[db.HeraMetaKeyRole] {
+		case string(db.HeraKindWorker):
+			if workers == nil {
+				workers = make(map[string]bool)
+			}
+			workers[taskID] = true
+		case string(db.HeraKindCoordinator):
+			if coordinators == nil {
+				coordinators = make(map[string]bool)
+			}
+			coordinators[taskID] = true
 		}
 	}
-	return out
-}
-
-// readHeraCoordinators reads the task_meta "hera" namespace and returns the set
-// of task IDs that hold a coordinator role (meta:hera.role=coordinator, stamped
-// when an orchestrator is created or a coordinator joins). The task list draws
-// a coordinator glyph for these rows. Pure cache read; works in both modes via
-// the store.Store interface (remote mode returns no "hera" rows, so nothing is
-// marked — a safe degradation). A read error logs and marks nothing.
-func (a *App) readHeraCoordinators() map[string]bool {
-	raw, err := a.db.ListMetaByNamespace(db.HeraMetaNamespace)
-	if err != nil {
-		uxlog.Log("[hera-view] read hera meta failed: %v", err)
-		return nil
-	}
-	if len(raw) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(raw))
-	for taskID, kv := range raw {
-		if kv[db.HeraMetaKeyRole] == string(db.HeraKindCoordinator) {
-			out[taskID] = true
-		}
-	}
-	return out
+	return workers, coordinators
 }
 
 // pluginFailsafeWindow is the maximum gap between two Ctrl+Q presses for the
