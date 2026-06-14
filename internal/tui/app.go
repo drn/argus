@@ -3939,6 +3939,9 @@ func (a *App) openTaskSwitcher() {
 // Only callable from modeAgent — close always restores modeAgent.
 func (a *App) openTaskSwitcherModal(entries []taskSwitcherEntry) {
 	a.taskSwitcherModal = NewTaskSwitcherModal(entries)
+	// The Ctrl+K switcher mirrors the task list: tasks nested under project
+	// folders, with task-list-style (whitespace-split substring) search.
+	a.taskSwitcherModal.SetGrouped(true)
 	a.mode = modeTaskSwitcher
 	a.pages.AddPage("taskswitcher", a.taskSwitcherModal, true, true)
 	a.tapp.SetFocus(a.taskSwitcherModal)
