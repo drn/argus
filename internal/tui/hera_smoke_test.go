@@ -162,7 +162,7 @@ func TestSmoke_HideHeraWorkersInTasksTab(t *testing.T) {
 	testutil.NoError(t, d.SetMeta("worker", db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)))
 
 	app := New(d, agent.NewRunner(nil), false)
-	app.refreshTasks() // feeds SetHeraWorkers from the "hera" meta namespace
+	app.refreshTasks() // feeds SetHeraWorkers + SetHeraCoordinators from the "hera" meta namespace
 	sim, stop := wireApp(t, app)
 	defer stop()
 
