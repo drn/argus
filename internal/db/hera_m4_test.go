@@ -207,4 +207,62 @@ func TestRollHeraWorkerToReview(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.Equal(t, flipped, false)
 	})
+
+	// Regression guard for the native-Hera worker-role auto-archive defect.
+	//
+	// The EXTERNAL hera plugin's hera_status("done") handler deliberately
+	// auto-archives the worker role (Roles.Archive + AutoArchived:true). Native
+	// deliberately did NOT port that: a worker reporting done must stay an
+	// addressable hera_send recipient while its bound task is live, because the
+	// M1 invariant is "archive is non-destructive; only DELETE ends bindings;
+	// task.archived -> no-op on bindings." The native done path the MCP handler
+	// runs (internal/mcp/hera.go toolHeraStatus) is three writes:
+	// UpsertHeraRoleStatus(done), a best-effort task_meta thread_status mirror
+	// (inert here — a disjoint table that cannot affect archive/resolution), then
+	// RollHeraWorkerToReview. No write on that path may stamp hera_roles.archived_at,
+	// or the coordinator's name-keyed recipient lookup (HeraRoleByName,
+	// archived_at IS NULL) silently bounces a live worker.
+	t.Run("worker done keeps role active + messageable (no auto-archive)", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		worker := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+		task := &model.Task{Name: "t", Status: model.StatusInProgress, Project: "p"}
+		testutil.NoError(t, d.Add(task))
+		mkBinding(t, d, worker.ID, task.ID, "/wt/t")
+
+		// Replay the native done path the MCP handler runs, in order.
+		testutil.NoError(t, d.UpsertHeraRoleStatus(worker.ID, HeraStatusDone))
+		testutil.NoError(t, d.SetMeta(task.ID, HeraMetaNamespace, HeraMetaKeyThreadStatus, string(HeraStatusDone)))
+		flipped, err := d.RollHeraWorkerToReview(task.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, flipped, true) // task rolled to in_review...
+
+		// ...but the ROLE must remain active (archived_at unset).
+		got, err := d.HeraRoleByName(o.ID, "worker")
+		testutil.NoError(t, err) // not ErrHeraNotFound: name still resolves
+		testutil.Nil(t, got.ArchivedAt)
+
+		// And the coordinator can still send to the live worker by name.
+		_, err = d.SendHeraMessage(coord.ID, got.ID, "ping", "ping", nil)
+		testutil.NoError(t, err) // not ErrHeraMessageRecipientInvalid
+	})
+
+	// Contrast / boundary guard: an EXPLICIT archive (the sole native trigger —
+	// the TUI rail 'a' key) DOES remove the role from recipient resolution. This
+	// pins the boundary so a future "fix" can't over-correct by making archived
+	// roles messageable again — done must not archive; explicit archive must.
+	t.Run("explicit archive removes role from recipient resolution", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "o")
+		coord := mkRole(t, d, o.ID, "coord", HeraKindCoordinator)
+		worker := mkRole(t, d, o.ID, "worker", HeraKindWorker)
+
+		testutil.NoError(t, d.ArchiveHeraRole(worker.ID))
+
+		_, err := d.HeraRoleByName(o.ID, "worker")
+		testutil.ErrorIs(t, err, ErrHeraNotFound)
+		_, err = d.SendHeraMessage(coord.ID, worker.ID, "ping", "ping", nil)
+		testutil.ErrorIs(t, err, ErrHeraMessageRecipientInvalid)
+	})
 }

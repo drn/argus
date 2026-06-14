@@ -169,3 +169,19 @@ true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
   the hera doorbell `[hera from <role-name>] msg #<id> — <tldr>` contains user-
   supplied text. Acceptable under the cooperative single-user local threat model,
   but do NOT copy this pattern to the task_messages nudge format.
+- **A worker reporting `done` must NOT archive its role — native deliberately
+  diverges from the external hera plugin here.** The external plugin's
+  `hera_status("done")` handler auto-archives the worker role (`Roles.Archive` +
+  `AutoArchived:true`); native's done path (`hera_status` → `UpsertHeraRoleStatus`
+  + `RollHeraWorkerToReview`) flips the bound task to `in_review` + stamps
+  `ready_to_close` and touches `archived_at` on NO role. This is load-bearing for
+  messaging: recipient resolution (`HeraRoleByName`, and the recipient check in
+  `SendHeraMessage`) filters `archived_at IS NULL`, so auto-archiving a
+  still-live worker would make the coordinator's name-keyed `hera_send` silently
+  bounce (`ErrHeraNotFound` / `ErrHeraMessageRecipientInvalid`). The ONLY native
+  path that stamps a role's `archived_at` is the deliberate TUI rail `a` key
+  (`internal/tui/hera/ops.go`) — no finish hook, watcher (`heraadopt`), lifecycle
+  mirror, or DB cascade does. Guarded by `TestRollHeraWorkerToReview` ("worker
+  done keeps role active + messageable" / "explicit archive removes role from
+  recipient resolution"). Do NOT "fix" a recipient bounce by making archived
+  roles messageable — done must not archive; explicit archive must.
