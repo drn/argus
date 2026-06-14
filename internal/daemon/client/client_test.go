@@ -752,6 +752,39 @@ func TestC_CallTO(t *testing.T) {
 	testutil.True(t, errors.Is(err, ErrRPCTimeout))
 }
 
+// TestC_CallNoRPC pins the guard against the intermittent SIGSEGV at client.go's
+// callWithTimeout dispatch goroutine: a client whose rpc transport was never set
+// (a partially-constructed or torn-down client — the shape a teardown race leaves
+// a lingering background goroutine holding) must NOT dereference a nil rpc from
+// the DETACHED dispatch goroutine (which would crash the whole process,
+// unrecoverably). It must return ErrClientClosed instead, which every caller
+// already handles as an ordinary RPC failure.
+func TestC_CallNoRPC(t *testing.T) {
+	t.Run("direct call returns error not panic", func(t *testing.T) {
+		c := &Client{closed: make(chan struct{}), sessions: map[string]*RemoteSession{}}
+		err := c.callWithTimeout("Daemon.Ping", &daemon.Empty{}, &daemon.PongResp{}, time.Second)
+		testutil.ErrorIs(t, err, ErrClientClosed)
+	})
+
+	t.Run("nil receiver returns error not panic", func(t *testing.T) {
+		var c *Client
+		err := c.callWithTimeout("Daemon.Ping", &daemon.Empty{}, &daemon.PongResp{}, time.Second)
+		testutil.ErrorIs(t, err, ErrClientClosed)
+	})
+
+	t.Run("background inputLoop on an rpc-less client never crashes", func(t *testing.T) {
+		// The real-world shape: a RemoteSession's inputLoop goroutine fires
+		// Daemon.WriteInput on a client with no rpc. Pre-fix this SIGSEGV'd the
+		// process from the dispatch goroutine; post-fix the call soft-fails.
+		c := &Client{closed: make(chan struct{}), sessions: map[string]*RemoteSession{}}
+		rs := newRemoteSession("norpc", c) // starts inputLoop
+		n, err := rs.WriteInput([]byte("x"))
+		testutil.NoError(t, err)
+		testutil.Equal(t, n, 1)
+		time.Sleep(100 * time.Millisecond) // let inputLoop dispatch; must not crash
+	})
+}
+
 // TestC_AddWriterCalls hits the no-op writer methods.
 func TestC_WriterNoop(t *testing.T) {
 	_, sockPath, _ := testSetup(t)
