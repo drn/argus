@@ -26,6 +26,14 @@ const rpcTimeout = 2 * time.Second
 // ErrRPCTimeout is returned when an RPC call exceeds rpcTimeout.
 var ErrRPCTimeout = errors.New("daemon RPC call timed out")
 
+// ErrClientClosed is returned by callWithTimeout when the client has no usable
+// rpc transport — a nil receiver or a nil c.rpc (the field is never set; it is
+// NOT nilled on close, see Close). It exists so the detached dispatch goroutine
+// never dereferences a nil rpc (an unrecoverable SIGSEGV from a background
+// goroutine); callers already treat any error as an ordinary RPC failure (log +
+// safe default; removeSession forces StreamLost, preserving #707).
+var ErrClientClosed = errors.New("daemon client not connected")
+
 // ErrTestBinary is returned by AutoStart when invoked from a Go test binary.
 // AutoStart fork/execs os.Executable() with "daemon start" — under `go test`
 // that re-runs the entire test package as an orphaned child process, which
@@ -137,7 +145,12 @@ func (c *Client) Close() error {
 		for _, rs := range sessions {
 			rs.close()
 		}
-		c.closeErr = c.rpc.Close()
+		// Symmetry with callWithTimeout's guard: a partially-constructed client
+		// (rpc never set) must not panic here either. The normal Connect'd path
+		// always has a non-nil rpc, so this is unchanged in production.
+		if c.rpc != nil {
+			c.closeErr = c.rpc.Close()
+		}
 	})
 	return c.closeErr
 }
@@ -453,8 +466,21 @@ func (c *Client) call(method string, args, reply any) error {
 // for legitimately long-running RPCs (e.g. UpdateSelf, which shells out to
 // `go install`).
 func (c *Client) callWithTimeout(method string, args, reply any, timeout time.Duration) error {
+	// Guard the dispatch goroutine below against a client with no usable rpc
+	// transport. The normal Connect'd client always has a non-nil c.rpc, but a
+	// partially-constructed client (rpc never set — e.g. a test scaffold or a
+	// lingering background goroutine from a teardown race) would make the
+	// DETACHED goroutine deref a nil c.rpc — an unrecoverable SIGSEGV that no
+	// recover can catch, surfacing as an intermittent `panic: nil pointer
+	// dereference` at this line that reds-out CI. Returning an error here keeps
+	// the failure on the caller's goroutine where it's handled gracefully.
+	// (`||` short-circuits, so c.rpc is only read when c is non-nil.)
+	if c == nil || c.rpc == nil {
+		return ErrClientClosed
+	}
+	rpc := c.rpc
 	ch := make(chan error, 1)
-	go func() { ch <- c.rpc.Call(method, args, reply) }()
+	go func() { ch <- rpc.Call(method, args, reply) }()
 	select {
 	case err := <-ch:
 		return err
