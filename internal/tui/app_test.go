@@ -981,7 +981,14 @@ func TestFilePanelMouseFocus(t *testing.T) {
 	}
 }
 
-func TestArrowsIgnoredInAgentMode(t *testing.T) {
+// TestArrowsRoutedToAgentInAgentMode pins that in agent mode Left/Right are NOT
+// consumed for tab switching but are routed to handleAgentKey (which forwards
+// them to the PTY when a session is live). With no live session here,
+// handleAgentKey returns the event — so handleGlobalKey returns it too, proving
+// the global handler did not swallow the key. This was byte-identical before and
+// after removing the global arrow tab-nav (the old KeyLeft/KeyRight cases only
+// acted when mode != modeAgent), and the assertion makes that contract explicit.
+func TestArrowsRoutedToAgentInAgentMode(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -989,11 +996,18 @@ func TestArrowsIgnoredInAgentMode(t *testing.T) {
 	app.mode = modeAgent
 	app.agentState.Reset("t1", "test")
 
-	// Right arrow should NOT switch tabs in agent mode
-	ev := tcell.NewEventKey(tcell.KeyRight, 0, 0)
-	app.handleGlobalKey(ev)
-	if app.header.ActiveTab() != widget.TabTasks {
-		t.Errorf("tab changed in agent mode: %v", app.header.ActiveTab())
+	for _, k := range []tcell.Key{tcell.KeyRight, tcell.KeyLeft} {
+		ev := tcell.NewEventKey(k, 0, 0)
+		got := app.handleGlobalKey(ev)
+		// Not consumed by global tab nav — falls through to handleAgentKey,
+		// which (no live session) returns the event unchanged.
+		if got != ev {
+			t.Errorf("key %v: handleGlobalKey should route to agent (return event), got %v", k, got)
+		}
+		// And the tab must not change.
+		if app.header.ActiveTab() != widget.TabTasks {
+			t.Errorf("key %v: tab changed in agent mode: %v", k, app.header.ActiveTab())
+		}
 	}
 }
 
