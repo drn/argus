@@ -277,9 +277,9 @@ func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 
 // TestSmoke_HeraDetailsDAGModeAndLinkPicker drives the M7 flow end-to-end
 // through the real event loop: Hera tab → coordinator selected → Tab into the
-// Details region → `g` enters the DAG render mode (showing the orchestrator's
-// dependency subgraph) → `l` opens the link parent-picker. Proves the global
-// key routing, focus ladder, and DAG-mode key wiring all compose.
+// Details region (which stacks the roster over the orchestrator's dependency
+// DAG) → `l` opens the link parent-picker. Proves the global key routing, focus
+// ladder, and DAG key wiring all compose without any toggle.
 func TestSmoke_HeraDetailsDAGModeAndLinkPicker(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
@@ -299,14 +299,13 @@ func TestSmoke_HeraDetailsDAGModeAndLinkPicker(t *testing.T) {
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true) })
 
-	// Tab into the Details region (rail → coord → agent), then `g` → DAG mode.
+	// Tab into the Details region (rail → coord → agent). The DAG is stacked
+	// under the roster and already projected — no toggle.
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'g', 0)
-	syncUI(t, app.tapp)
-	// The embedded DAG has nodes (cursor non-empty) and is the active sub-mode.
+	// The embedded DAG has nodes (cursor non-empty).
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.DAG().CurrentTask() != "", true) })
 
 	// `l` on a DAG node opens the link parent-picker.
