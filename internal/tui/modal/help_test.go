@@ -59,6 +59,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "new task")
 	testutil.Contains(t, body, "fork task")
 	testutil.Contains(t, body, "task switcher")
+	testutil.Contains(t, body, "show/hide hera workers")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {
