@@ -2,15 +2,18 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/drn/argus/internal/daemon"
+	"github.com/drn/argus/internal/testutil"
 )
 
 // TestConfigureProcessLogging_DoesNotReachStderr is the regression guard for
@@ -124,3 +127,50 @@ func TestStaleDecision(t *testing.T) {
 		})
 	}
 }
+
+type fakeBootInfo struct {
+	resp daemon.BootInfoResp
+	err  error
+}
+
+func (f fakeBootInfo) BootInfo() (daemon.BootInfoResp, error) { return f.resp, f.err }
+
+// TestIsDaemonStale exercises the full wiring (BootInfo → os.Executable →
+// BinaryHashFile/stat → staleDecision) against the running test binary, which
+// is what os.Executable() resolves to under `go test`.
+func TestIsDaemonStale(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable unavailable: %v", err)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	selfHash, err := daemon.BinaryHashFile(exe)
+	testutil.NoError(t, err)
+	st, err := os.Stat(exe)
+	testutil.NoError(t, err)
+	selfMtime := st.ModTime()
+
+	tests := []struct {
+		name string
+		prov fakeBootInfo
+		want bool
+	}{
+		{"BootInfo error → not stale", fakeBootInfo{err: errSentinel}, false},
+		{"matching hash → not stale", fakeBootInfo{resp: daemon.BootInfoResp{BinaryHash: selfHash}}, false},
+		{"different hash → stale", fakeBootInfo{resp: daemon.BootInfoResp{BinaryHash: "deadbeef"}}, true},
+		{"no hash, matching mtime → not stale", fakeBootInfo{resp: daemon.BootInfoResp{BinaryMtime: selfMtime}}, false},
+		{"no hash, different mtime → stale", fakeBootInfo{resp: daemon.BootInfoResp{BinaryMtime: selfMtime.Add(time.Hour)}}, true},
+		{"no hash, zero mtime → not stale", fakeBootInfo{resp: daemon.BootInfoResp{}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isDaemonStale(tt.prov); got != tt.want {
+				t.Errorf("isDaemonStale = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+var errSentinel = errors.New("boom")

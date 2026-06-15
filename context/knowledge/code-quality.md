@@ -231,7 +231,7 @@
 
 **To restart:** `kill -TERM $(cat ~/.argus/daemon.pid)` — the TUI auto-restarts via `autoStartDaemon()`.
 
-**To diagnose staleness:** Compare `ps -p $(cat ~/.argus/daemon.pid) -o lstart` (daemon start time) against `ls -la /path/to/argus` (binary mtime). If binary is newer, daemon is stale.
+**To diagnose staleness:** The TUI compares the daemon's boot-time SHA-256 (`BootInfoResp.BinaryHash`) against the current on-disk binary's hash (`daemon.BinaryHashFile`); they differ only on a real code change, not a no-op `go install`. (Historically this was an mtime compare, which false-fired on every deterministic rebuild.)
 
 **To verify active profile:** The daemon logs the `.sb` path in `~/.argus/daemon.log` as `-f '/var/folders/.../T/argus-sandbox-NNNN.sb'`. While the sandboxed process is running, `cat <path>` shows the exact SBPL rules in effect. Compare against `sandboxProfileBase` to confirm match.
 

@@ -51,9 +51,7 @@ func TestBinaryHashFile(t *testing.T) {
 		testutil.NoError(t, err)
 		hb, err := BinaryHashFile(b)
 		testutil.NoError(t, err)
-		if ha == hb {
-			t.Fatalf("expected different hashes, both = %s", ha)
-		}
+		testutil.NotEqual(t, ha, hb)
 	})
 
 	t.Run("missing file errors", func(t *testing.T) {
