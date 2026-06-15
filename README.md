@@ -274,13 +274,25 @@ Argus splits agent supervision across **two** background processes:
 
 Because the supervisor — not the daemon — is the agent's parent process, **bouncing the daemon no longer interrupts agents.** A daemon restart re-attaches to the still-running sessions (the in-flight turn continues); only restarting the *supervisor* interrupts agents (they get SIGHUP when their PTY master closes), which is why the supervisor's interface is kept strict and it almost never needs to restart. Self-update therefore restarts the daemon, not the supervisor — your agents keep running across the swap.
 
-The daemon auto-starts a supervisor on its own startup if none is answering on the socket (Setsid-detached, so it outlives daemon bounces). You rarely need to drive it by hand, but the subcommands exist:
+**Cycling the daemon (the safe, common case — agents survive):**
+
+```bash
+argus daemon restart   # stop + wait for socket cleanup + start a fresh daemon
+argus daemon stop      # graceful shutdown
+argus daemon start     # start (auto-starts a supervisor too if none is answering)
+```
+
+A daemon restart is the path you want for an upgrade or config change: the supervisor keeps the PTYs alive and the new daemon re-attaches to the still-running sessions. You can also trigger it from **Settings → System → Restart Daemon** (Enter).
+
+**Cycling the supervisor (rare — this interrupts agents):** the daemon auto-starts a supervisor on its own startup if none is answering on the socket (Setsid-detached, so it outlives daemon bounces), so you rarely drive it by hand. When you must — e.g. to load a new supervisor binary — the subcommands exist:
 
 ```bash
 argus session-supervisor start    # start the supervisor (auto-started by the daemon if absent)
 argus session-supervisor stop     # stop it — INTERRUPTS all agents (they re-resume on next start)
 argus session-supervisor status   # show supervisor pid/socket/protocol state
 ```
+
+Or use **Settings → System → Restart Session Supervisor** (Enter), which is gated behind a confirmation prompt because it SIGHUPs every running agent. Under the hood it stops the supervisor and then restarts the daemon, since the daemon holds the supervisor connection and has no mid-life reconnect — bouncing the daemon is how it picks up the freshly-started supervisor. Active tasks are interrupted and flip to **In Review**. The row only appears when supervisor mode is on.
 
 **Supervisor mode is ON by default** (`supervisor.enabled`, see the config table below). To **roll back** to the legacy in-process path — where the daemon owns the PTYs itself, exactly as before the supervisor existed — set `supervisor.enabled = false` (config.toml or the DB) and restart the daemon. The in-process path is retained as a supported fallback for one release.
 

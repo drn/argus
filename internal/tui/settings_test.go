@@ -507,6 +507,86 @@ func TestSettingsView_DaemonRestart(t *testing.T) {
 	}
 }
 
+func TestSettingsView_SupervisorRestart(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.setCategory(catSystem)
+
+	// Not connected — no supervisor row (gated like the daemon row).
+	sv.SetDaemonConnected(false)
+	for _, row := range sv.rows {
+		if row.kind == srSupervisor {
+			t.Fatal("supervisor row should not appear when daemon not connected")
+		}
+	}
+
+	// Connected + supervisor enabled (default) — row should appear.
+	sv.SetDaemonConnected(true)
+	found := false
+	for _, row := range sv.rows {
+		if row.kind == srSupervisor {
+			found = true
+			if row.label != "Restart Session Supervisor" {
+				t.Errorf("supervisor row label = %q, want 'Restart Session Supervisor'", row.label)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("supervisor row should appear when connected + enabled")
+	}
+
+	// Enter fires the callback but must NOT optimistically flip
+	// supervisorRestarting (the app gates the bounce behind a confirm modal).
+	called := 0
+	sv.OnRestartSupervisor = func() { called++ }
+	for i, row := range sv.rows {
+		if row.kind == srSupervisor {
+			sv.cursor = i
+			break
+		}
+	}
+	sv.handleEnter()
+	if called != 1 {
+		t.Errorf("OnRestartSupervisor calls = %d, want 1", called)
+	}
+	if sv.supervisorRestarting {
+		t.Error("supervisorRestarting must stay false until the app confirms")
+	}
+
+	// App marks it in-flight after confirmation: label changes, enter no-ops.
+	sv.SetSupervisorRestarting(true)
+	for _, row := range sv.rows {
+		if row.kind == srSupervisor && row.label != "Restarting supervisor..." {
+			t.Errorf("supervisor label while restarting = %q, want 'Restarting supervisor...'", row.label)
+		}
+	}
+	called = 0
+	sv.handleEnter()
+	if called != 0 {
+		t.Error("OnRestartSupervisor should not fire while restarting")
+	}
+
+	sv.SetSupervisorRestarting(false)
+	if sv.supervisorRestarting {
+		t.Error("supervisorRestarting should be false after SetSupervisorRestarting(false)")
+	}
+}
+
+// TestSettingsView_SupervisorRowHiddenWhenDisabled pins that the row is omitted
+// in the legacy in-process runner path (Supervisor.Enabled=false), where there
+// is no separate supervisor process to bounce.
+func TestSettingsView_SupervisorRowHiddenWhenDisabled(t *testing.T) {
+	sv := testSettingsView(t)
+	sv.SetDaemonConnected(true)
+	sv.supervisorEnabled = false
+	sv.setCategory(catSystem)
+	sv.rebuildRows()
+	for _, row := range sv.rows {
+		if row.kind == srSupervisor {
+			t.Fatal("supervisor row should be hidden when Supervisor.Enabled is false")
+		}
+	}
+}
+
 func TestSettingsView_UpdateArgusRow(t *testing.T) {
 	sv := testSettingsView(t)
 	sv.SetDaemonConnected(true)

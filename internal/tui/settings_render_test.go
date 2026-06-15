@@ -128,6 +128,7 @@ func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
 	// remote mode below, never asserted present here.
 	sv.setCategory(catSystem)
 	testutil.Equal(t, hasRowKind(sv, srDaemon), true)
+	testutil.Equal(t, hasRowKind(sv, srSupervisor), true)
 	testutil.Equal(t, hasRowKind(sv, srSourcePath), true)
 	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), true)
 
@@ -136,6 +137,7 @@ func TestSettings_RemoteHidesDaemonAdmin(t *testing.T) {
 	sv.SetRemote(true)
 	sv.setCategory(catSystem)
 	testutil.Equal(t, hasRowKind(sv, srDaemon), false)
+	testutil.Equal(t, hasRowKind(sv, srSupervisor), false)
 	testutil.Equal(t, hasRowKind(sv, srSourcePath), false)
 	testutil.Equal(t, hasRowKind(sv, srUpdateArgus), false)
 	testutil.Equal(t, hasRowKind(sv, srAutoStart), false)
@@ -154,6 +156,23 @@ func TestSettings_RenderDaemonDetail_Restarting(t *testing.T) {
 	sv.SetDaemonConnected(true)
 	sv.SetDaemonRestarting(true)
 	selectRowInCategory(t, sv, catSystem, srDaemon, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+}
+
+func TestSettings_RenderSupervisorDetail(t *testing.T) {
+	sv := makeSettings(t)
+	sv.SetDaemonConnected(true)
+	selectRowInCategory(t, sv, catSystem, srSupervisor, "")
+	sv.SetRect(0, 0, 100, 30)
+	sv.Draw(drawSim(t))
+}
+
+func TestSettings_RenderSupervisorDetail_Restarting(t *testing.T) {
+	sv := makeSettings(t)
+	sv.SetDaemonConnected(true)
+	sv.SetSupervisorRestarting(true)
+	selectRowInCategory(t, sv, catSystem, srSupervisor, "")
 	sv.SetRect(0, 0, 100, 30)
 	sv.Draw(drawSim(t))
 }
