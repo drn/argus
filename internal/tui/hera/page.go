@@ -288,18 +288,27 @@ func (p *HeraPage) drawRemoteBanner(screen tcell.Screen, x, y, w, h int) {
 }
 
 // InputHandler routes keys by the focused region. Tab/BackTab walk the focus
-// ladder (rail→coord→agent, skipping absent regions); Ctrl+Q escapes back to
-// the rail. Rail-focused input drives cursor/collapse; a focused terminal pane
-// receives forwarded keystrokes (interactive) and PgUp/PgDn scrollback. Left/
-// Right are no longer eaten by the global handler (tab nav is 1/2/3 only), so
-// they now reach this handler: in a focused terminal pane they forward to the
-// PTY like any other key; in coordinator-details mode they drive the embedded
-// DAG's cursor (via handleDetailsKey); rail-focused they fall through unused.
+// ladder (rail→coord→agent, skipping absent regions); Ctrl+Alt+Left/Right walk
+// the same ladder (Retreat/Advance) so the focus can move between the rail,
+// coordinator, and subagent regions without stealing a plain arrow key from a
+// focused terminal pane (it mirrors the main agent view's Ctrl+Alt+arrow pane
+// switch); Ctrl+Q escapes back to the rail. Rail-focused input drives
+// cursor/collapse; a focused terminal pane receives forwarded keystrokes
+// (interactive) and PgUp/PgDn scrollback. Plain Left/Right are no longer eaten
+// by the global handler (tab nav is 1/2/3 only), so they now reach this handler:
+// in a focused terminal pane they forward to the PTY like any other key; in
+// coordinator-details mode they drive the embedded DAG's cursor (via
+// handleDetailsKey); rail-focused they fall through unused.
 func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		if p.remote {
 			return
 		}
+		// Match the main agent view's Ctrl+Alt+arrow pane switch (app.go): accept
+		// EITHER modifier, not strictly both — terminals are inconsistent about
+		// which of Ctrl/Alt they report for this chord, and the loose check is the
+		// proven pattern already wired for the agent view's pane navigation.
+		ctrlAlt := event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0
 		switch event.Key() {
 		case tcell.KeyTab:
 			p.focus.Advance()
@@ -310,6 +319,16 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		case tcell.KeyCtrlQ:
 			p.focus.ToRail()
 			return
+		case tcell.KeyLeft:
+			if ctrlAlt {
+				p.focus.Retreat()
+				return
+			}
+		case tcell.KeyRight:
+			if ctrlAlt {
+				p.focus.Advance()
+				return
+			}
 		}
 		switch p.focus.State() {
 		case FocusRail:

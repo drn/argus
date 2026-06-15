@@ -48,6 +48,48 @@ func TestPage_InputHandlerDelegatesToRail(t *testing.T) {
 	testutil.Equal(t, p.Rail().CursorIndex(), 1)
 }
 
+// TestPage_CtrlAltArrowWalksFocus pins the Ctrl+Alt+Left/Right focus ladder:
+// Right advances rail→coord→agent and Left retreats, mirroring Tab/BackTab so
+// the regions can be reached without stealing a plain arrow from a focused pane.
+func TestPage_CtrlAltArrowWalksFocus(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "o")
+	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "t")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t2")
+	p := NewHeraPage(d)
+	p.Refresh()
+	h := p.InputHandler()
+	mod := tcell.ModCtrl | tcell.ModAlt
+
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+	h(tcell.NewEventKey(tcell.KeyRight, 0, mod), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyRight, 0, mod), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	h(tcell.NewEventKey(tcell.KeyRight, 0, mod), noFocus) // right-most, no-op
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, mod), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, mod), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, mod), noFocus) // left-most, no-op
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+
+	// A bare arrow (no Ctrl+Alt) must NOT walk the ladder — it falls through to
+	// the focused region instead.
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+
+	// EITHER modifier alone also walks the ladder — terminals are inconsistent
+	// about which of Ctrl/Alt they report for this chord, so the loose check
+	// accepts Ctrl-only and Alt-only too (mirrors the agent view's pane switch).
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+}
+
 func TestPage_PasteHandlerNoOp(t *testing.T) {
 	p := NewHeraPage(nil)
 	ph := p.PasteHandler()
