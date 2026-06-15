@@ -43,6 +43,7 @@ const (
 	srAPI
 	srHera
 	srDaemon
+	srSupervisor
 	srSpinner
 	srAgentZoom
 	srVaultPath
@@ -244,6 +245,14 @@ type SettingsView struct {
 	// Daemon.
 	daemonConnected  bool
 	daemonRestarting bool
+
+	// Session-supervisor. supervisorEnabled mirrors cfg.Supervisor.Enabled —
+	// the row only appears when the daemon drives agents through the
+	// out-of-process supervisor (the row is meaningless in the legacy
+	// in-process runner path). supervisorRestarting drives the "Restarting..."
+	// label while the bounce is in flight.
+	supervisorEnabled    bool
+	supervisorRestarting bool
 	// remote is true when the TUI runs in --remote mode (a.db is an
 	// *apistore.Store). Daemon-admin actions (Restart Daemon, Update Argus,
 	// LaunchAgent auto-start) manage the OS install on the *local* machine,
@@ -310,7 +319,13 @@ type SettingsView struct {
 	OnStreamBlur func(scope, title string)
 
 	// Callbacks.
-	OnRestartDaemon          func()
+	OnRestartDaemon func()
+	// OnRestartSupervisor fires when the user activates the "Restart Session
+	// Supervisor" row. The app wires this to a confirmation gate (the bounce
+	// SIGHUPs every running agent), so the row handler does NOT optimistically
+	// flip supervisorRestarting — the app calls SetSupervisorRestarting(true)
+	// only after the user confirms.
+	OnRestartSupervisor      func()
 	OnUpdateArgus            func()                        // triggered by the "Update Argus" row
 	OnToggleAutoStart        func(currentlyInstalled bool) // dispatched off the UI thread by app.go
 	OnNewProject             func()
@@ -463,6 +478,10 @@ func (sv *SettingsView) Refresh() {
 
 	// Hera.
 	sv.heraEnabled = cfg.Hera.Enabled
+
+	// Session-supervisor (controls whether the Restart Session Supervisor row
+	// is offered — see the System category in rebuildRows).
+	sv.supervisorEnabled = cfg.Supervisor.Enabled
 
 	// Spinner.
 	sv.spinnerStyle = cfg.UI.SpinnerStyle
@@ -803,6 +822,18 @@ func (sv *SettingsView) rebuildRows() {
 				label = "Restarting..."
 			}
 			sv.rows = append(sv.rows, settingsRow{kind: srDaemon, label: label, key: "_daemon_restart"})
+
+			// Restart Session Supervisor — only when the daemon drives agents
+			// through the out-of-process supervisor. Restarting it SIGHUPs every
+			// running agent, so the detail panel flags the caution and the
+			// activation is gated behind a confirmation modal (see app.go).
+			if sv.supervisorEnabled {
+				supLabel := "Restart Session Supervisor"
+				if sv.supervisorRestarting {
+					supLabel = "Restarting supervisor..."
+				}
+				sv.rows = append(sv.rows, settingsRow{kind: srSupervisor, label: supLabel, key: "_supervisor_restart"})
+			}
 
 			sourceLabel := "Source path: " + sv.argusSourcePath
 			if sv.editingSource {
@@ -1453,6 +1484,15 @@ func (sv *SettingsView) handleEnter() bool {
 			sv.daemonRestarting = true
 			sv.rebuildRows()
 			sv.OnRestartDaemon()
+		}
+		return true
+	case srSupervisor:
+		// Don't flip supervisorRestarting here — the app gates the bounce
+		// behind a confirm modal and only marks it in-flight on accept (via
+		// SetSupervisorRestarting). Flipping it now would leave a stuck
+		// "Restarting supervisor..." label if the user cancels.
+		if !sv.supervisorRestarting && sv.OnRestartSupervisor != nil {
+			sv.OnRestartSupervisor()
 		}
 		return true
 	case srSourcePath:
@@ -2111,6 +2151,8 @@ func (sv *SettingsView) renderRowDetail(screen tcell.Screen, x, y, w, h int, row
 		sv.renderLogsDetail(screen, x, y, w, h, row)
 	case srDaemon:
 		sv.renderDaemonDetail(screen, x, y, w, h)
+	case srSupervisor:
+		sv.renderSupervisorDetail(screen, x, y, w, h)
 	case srSourcePath:
 		sv.renderSourcePathDetail(screen, x, y, w, h)
 	case srUpdateArgus:
@@ -2774,6 +2816,62 @@ func (sv *SettingsView) renderDaemonDetail(screen tcell.Screen, x, y, w, h int) 
 		r += 2
 		widget.DrawText(screen, x, y+r, w, "[enter] restart daemon", theme.StyleDimmed)
 	}
+}
+
+// renderSupervisorDetail draws the session-supervisor restart block, leading
+// with the caution: the supervisor owns the agent PTYs, so bouncing it
+// interrupts every running agent (unlike a daemon restart, which re-attaches).
+func (sv *SettingsView) renderSupervisorDetail(screen tcell.Screen, x, y, w, h int) {
+	widget.DrawText(screen, x, y, w, "Session Supervisor", theme.StyleTitle)
+	r := 2
+
+	if sv.supervisorRestarting {
+		widget.DrawText(screen, x, y+r, w, "Restarting supervisor...", tcell.StyleDefault.Foreground(theme.ColorInProgress))
+		return
+	}
+
+	// Bottom-anchor the hint (y+h-1) and clip body lines to the pane so a short
+	// detail region never overruns into the items list above it.
+	dim := theme.StyleDimmed
+	warn := tcell.StyleDefault.Foreground(theme.ColorError)
+	lines := []struct {
+		text  string
+		style tcell.Style
+	}{
+		{"Owns the agent PTYs. The daemon can", dim},
+		{"bounce without touching agents — but", dim},
+		{"restarting the supervisor does not.", dim},
+		{"", dim},
+		{"⚠ Caution: this SIGHUPs every running", warn},
+		{"  agent. Active tasks are interrupted", warn},
+		{"  and flip to In Review. Only needed to", warn},
+		{"  load a new supervisor binary.", warn},
+	}
+	for _, ln := range lines {
+		if y+r >= y+h-1 { // leave the last row for the hint
+			break
+		}
+		if ln.text != "" {
+			widget.DrawText(screen, x, y+r, w, ln.text, ln.style)
+		}
+		r++
+	}
+
+	if h > 1 {
+		widget.DrawText(screen, x, y+h-1, w, "[enter] restart (confirm required)", dim)
+	}
+}
+
+// SetSupervisorRestarting updates the supervisor-restarting state from the app.
+// Mirrors SetDaemonRestarting: clearing it re-captures boot state so the
+// API/vault "restart required" hints re-evaluate against the new process.
+func (sv *SettingsView) SetSupervisorRestarting(restarting bool) {
+	sv.supervisorRestarting = restarting
+	if !restarting {
+		sv.apiBootRecorded = false
+		sv.vaultBootRecorded = false
+	}
+	sv.rebuildRows()
 }
 
 // SetDaemonRestarting updates the restarting state from the app.

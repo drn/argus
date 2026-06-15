@@ -68,6 +68,7 @@ const (
 	modeQuickAdd
 	modeConfirmDeleteProject
 	modeRestartDaemonPrompt
+	modeConfirmRestartSupervisor // Settings → "Restart Session Supervisor" caution gate
 	modeAppleEventsPicker
 	modeHelp
 	modeErrorModal
@@ -159,6 +160,11 @@ type App struct {
 	restartDaemonModal *modal.RestartDaemonModal
 	daemonStale        bool
 
+	// Session-supervisor restart caution gate (Settings → System). Created on
+	// demand when the user activates the row; the bounce SIGHUPs every agent,
+	// so it is always confirmed before running.
+	restartSupervisorModal *modal.ConfirmModal
+
 	// Link picker modals (created on demand)
 	linkPickerModal      *LinkPickerModal
 	linkPickerPrevPage   string
@@ -225,6 +231,12 @@ type App struct {
 	// to avoid forking the test binary as a fake daemon (see ErrTestBinary
 	// in internal/daemon/client/client.go for the failure mode).
 	restartDaemonFn func()
+
+	// restartSupervisorFn is the function invoked to bounce the session-
+	// supervisor. Defaults to a.restartSupervisor. Tests override it to avoid
+	// forking the test binary as a fake supervisor (same ErrTestBinary failure
+	// mode as restartDaemonFn).
+	restartSupervisorFn func()
 
 	// Tick control
 	tickDone            chan struct{}
@@ -408,6 +420,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		app.daemonClient = dc
 	}
 	app.restartDaemonFn = app.restartDaemon
+	app.restartSupervisorFn = app.restartSupervisor
 
 	app.settings = NewSettingsView(database)
 	app.settings.SetDaemonConnected(daemonConnected)
@@ -423,6 +436,7 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 		app.mu.Unlock()
 		go app.restartDaemonFn()
 	}
+	app.settings.OnRestartSupervisor = func() { app.openRestartSupervisorPrompt() }
 	app.settings.OnUpdateArgus = func() { go app.updateArgus() }
 	app.settings.OnToggleAutoStart = func(installed bool) { go app.toggleAutoStart(installed) }
 	app.settings.OnNewProject = func() { app.openProjectForm(false, "", config.Project{}) }
@@ -854,6 +868,66 @@ func (a *App) handleRestartDaemonKey(event *tcell.EventKey) {
 	}
 }
 
+// openRestartSupervisorPrompt shows the caution confirm before bouncing the
+// session-supervisor. Unlike a daemon restart, this interrupts every running
+// agent, so it is always gated. Idempotent.
+func (a *App) openRestartSupervisorPrompt() {
+	if a.restartSupervisorModal != nil {
+		return
+	}
+	a.restartSupervisorModal = modal.NewConfirmModal(
+		"Restart Session Supervisor?",
+		"This SIGHUPs every running agent — active tasks flip to In Review.",
+	)
+	a.mode = modeConfirmRestartSupervisor
+	a.pages.AddPage("restartsupervisor", a.restartSupervisorModal, true, true)
+	a.pages.SwitchToPage("restartsupervisor")
+	a.tapp.SetFocus(a.restartSupervisorModal)
+}
+
+// closeRestartSupervisorPrompt dismisses the modal and returns to the settings
+// view (the row lives in Settings → System).
+func (a *App) closeRestartSupervisorPrompt() {
+	// The settings view runs under modeTaskList with the active tab tracked
+	// separately by the header; the supervisor row is only reachable from the
+	// Settings tab, so return focus there. Mirrors closeErrorModal.
+	a.mode = modeTaskList
+	a.restartSupervisorModal = nil
+	a.pages.RemovePage("restartsupervisor")
+	a.pages.SwitchToPage("settings")
+	a.tapp.SetFocus(a.settings)
+}
+
+// handleRestartSupervisorKey dispatches keys to the confirm modal and bounces
+// the supervisor when the user accepts.
+func (a *App) handleRestartSupervisorKey(event *tcell.EventKey) {
+	if a.restartSupervisorModal == nil {
+		return
+	}
+	a.restartSupervisorModal.InputHandler()(event, func(tview.Primitive) {})
+	if a.restartSupervisorModal.Confirmed() {
+		a.closeRestartSupervisorPrompt()
+		uxlog.Log("[tui] user confirmed session-supervisor restart")
+		// The bounce restarts the daemon too (restartSupervisor → restartDaemon).
+		// Mark daemonRestarting BEFORE launching the goroutine so the tick-loop
+		// health check doesn't see the ~6s daemon-down window, conclude the
+		// daemon is dead, and spawn a SECOND concurrent restartDaemon. Mirrors
+		// handleRestartDaemonKey; restartDaemon clears the flag when it settles.
+		a.mu.Lock()
+		a.daemonRestarting = true
+		a.lastDaemonRestart = time.Now()
+		a.mu.Unlock()
+		a.settings.SetDaemonRestarting(true)
+		a.settings.SetSupervisorRestarting(true)
+		go a.restartSupervisorFn()
+		return
+	}
+	if a.restartSupervisorModal.Canceled() {
+		uxlog.Log("[tui] user canceled session-supervisor restart")
+		a.closeRestartSupervisorPrompt()
+	}
+}
+
 // Run starts the application event loop.
 func (a *App) Run() error {
 	// Wrap the tcell screen in lazyScreen. The wrapper is a passthrough
@@ -1252,6 +1326,42 @@ func (a *App) restartDaemon() {
 		// still warming up.
 		a.refreshTasksLocal()
 	})
+}
+
+// restartSupervisor bounces the out-of-process session-supervisor: it stops
+// the running supervisor (which SIGHUPs every agent PTY it owns) and then
+// restarts the daemon, whose connectSupervisor finds no live supervisor on the
+// socket and auto-starts a fresh one. Restarting the daemon is required because
+// the daemon holds the SupervisorClient connection — there is no mid-life
+// reconnect, so the clean way to pick up the new supervisor is a daemon bounce.
+// Must be called from a goroutine (not the UI thread).
+func (a *App) restartSupervisor() {
+	uxlog.Log("[tui] restarting session-supervisor (agents will be interrupted)...")
+
+	supSock := daemon.DefaultSupervisorSocketPath()
+	// Stop the live supervisor over its own socket. Connect dials + best-effort
+	// Pings; Shutdown is the same "Daemon.Shutdown" RPC the CLI `argus
+	// session-supervisor stop` uses. A connect failure just means none is
+	// running — proceed to the daemon restart, which will auto-start one.
+	if c, err := dclient.Connect(supSock); err == nil {
+		if serr := c.Shutdown(); serr != nil {
+			uxlog.Log("[tui] supervisor shutdown RPC error: %v", serr)
+		}
+		c.Close() //nolint:errcheck // short-lived shutdown client; close error is non-actionable
+	} else {
+		uxlog.Log("[tui] supervisor not reachable for shutdown (will auto-start fresh): %v", err)
+	}
+	dclient.WaitForShutdown(supSock, 3*time.Second)
+
+	// Restart the daemon so it reconnects and auto-starts a fresh supervisor.
+	// restartDaemon settles by clearing daemonRestarting (App field + the
+	// settings daemon flag) — it does NOT touch supervisorRestarting, which is a
+	// distinct field, so clear that one explicitly once the daemon is back.
+	a.restartDaemon()
+	a.tapp.QueueUpdateDraw(func() {
+		a.settings.SetSupervisorRestarting(false)
+	})
+	uxlog.Log("[tui] session-supervisor restart complete")
 }
 
 // RestartedClient returns the new daemon client after a daemon restart, or nil.
@@ -2022,6 +2132,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Restart-daemon prompt — shown on startup when daemon binary is stale.
 	if a.mode == modeRestartDaemonPrompt && a.restartDaemonModal != nil {
 		a.handleRestartDaemonKey(event)
+		return nil
+	}
+
+	// Restart-supervisor caution gate (Settings → System).
+	if a.mode == modeConfirmRestartSupervisor && a.restartSupervisorModal != nil {
+		a.handleRestartSupervisorKey(event)
 		return nil
 	}
 

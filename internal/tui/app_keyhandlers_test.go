@@ -371,6 +371,86 @@ func TestApp_HandleRestartDaemonKey_NilModal(t *testing.T) {
 	testutil.Equal(t, app.mode, modeTaskList)
 }
 
+// --- session-supervisor restart caution gate ---
+
+func TestApp_RestartSupervisor_ConfirmRunsBounce(t *testing.T) {
+	// HOME redirect keeps the override-bypass path away from the real socket.
+	t.Setenv("HOME", t.TempDir())
+
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	// Override so the goroutine doesn't actually stop the supervisor / fork.
+	var calls atomic.Int32
+	done := make(chan struct{}, 1)
+	app.restartSupervisorFn = func() {
+		calls.Add(1)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+
+	app.openRestartSupervisorPrompt()
+	testutil.Equal(t, app.mode, modeConfirmRestartSupervisor)
+	// Confirm with Enter.
+	app.handleRestartSupervisorKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList) // modal dismissed
+	testutil.Equal(t, app.settings.supervisorRestarting, true)
+	// The bounce restarts the daemon too, so daemonRestarting must be set
+	// BEFORE the goroutine launches — this is what stops the tick-loop health
+	// check from spawning a SECOND concurrent restartDaemon during the window.
+	app.mu.Lock()
+	dr := app.daemonRestarting
+	app.mu.Unlock()
+	testutil.Equal(t, dr, true)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("restartSupervisorFn was not invoked after confirm")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("restartSupervisorFn invocations = %d, want 1", got)
+	}
+}
+
+func TestApp_RestartSupervisor_CancelDoesNotBounce(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	var calls atomic.Int32
+	app.restartSupervisorFn = func() { calls.Add(1) }
+
+	app.openRestartSupervisorPrompt()
+	// Cancel with Esc.
+	app.handleRestartSupervisorKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+	testutil.Equal(t, app.settings.supervisorRestarting, false)
+	// Cancel must not arm the daemon-restart guard either.
+	app.mu.Lock()
+	dr := app.daemonRestarting
+	app.mu.Unlock()
+	testutil.Equal(t, dr, false)
+	if got := calls.Load(); got != 0 {
+		t.Errorf("restartSupervisorFn invocations = %d, want 0 on cancel", got)
+	}
+}
+
+func TestApp_RestartSupervisor_NilModalNoOp(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.handleRestartSupervisorKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestApp_OpenRestartSupervisorPrompt_Idempotent(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.openRestartSupervisorPrompt()
+	first := app.restartSupervisorModal
+	app.openRestartSupervisorPrompt() // second call must not replace the modal
+	testutil.Equal(t, app.restartSupervisorModal, first)
+}
+
 // (Tests for the removed pendingNarrowRestart / reapStaleNarrowRestart
 // fields were dropped here when master moved that responsibility into the
 // daemon's KickRerender path. The new behavior is covered by
