@@ -504,8 +504,8 @@ func runDaemonStop() {
 // reinstalls habitually — even though the deterministic Go build produced a
 // byte-identical binary. Hashing only differs on a real code change. mtime
 // remains a fallback for an older daemon that predates the BinaryHash field.
-// bootInfoProvider is the slice of *dclient.Client that isDaemonStale needs.
-// Narrowing to an interface lets tests drive the full wiring (os.Executable →
+// bootInfoProvider is the subset of *dclient.Client's API that isDaemonStale
+// needs. Narrowing to an interface lets tests drive the full wiring (os.Executable →
 // BinaryHashFile → staleDecision) against the test binary with a fake
 // BootInfoResp, without a live daemon.
 type bootInfoProvider interface {

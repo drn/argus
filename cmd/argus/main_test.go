@@ -86,9 +86,7 @@ func TestShortHash(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := shortHash(tt.in); got != tt.want {
-				t.Errorf("shortHash(%q) = %q, want %q", tt.in, got, tt.want)
-			}
+			testutil.Equal(t, shortHash(tt.in), tt.want)
 		})
 	}
 }
@@ -120,10 +118,7 @@ func TestStaleDecision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := staleDecision(tt.info, tt.tuiHash, tt.tuiHashErr, tt.tuiMtime, tt.tuiMtimeErr)
-			if got != tt.want {
-				t.Errorf("staleDecision = %v, want %v", got, tt.want)
-			}
+			testutil.Equal(t, staleDecision(tt.info, tt.tuiHash, tt.tuiHashErr, tt.tuiMtime, tt.tuiMtimeErr), tt.want)
 		})
 	}
 }
@@ -166,9 +161,7 @@ func TestIsDaemonStale(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isDaemonStale(tt.prov); got != tt.want {
-				t.Errorf("isDaemonStale = %v, want %v", got, tt.want)
-			}
+			testutil.Equal(t, isDaemonStale(tt.prov), tt.want)
 		})
 	}
 }
