@@ -117,9 +117,11 @@ func TestDaemon_BootInfo(t *testing.T) {
 			if resp.BinaryMtime.IsZero() {
 				t.Error("expected BinaryMtime to be populated when binary exists")
 			}
-			if resp.BinaryHash == "" {
-				t.Error("expected BinaryHash to be populated when binary exists")
-			}
+			// Verify the reported hash actually matches the on-disk binary,
+			// not just that it is non-empty.
+			want, herr := BinaryHashFile(resp.BinaryPath)
+			testutil.NoError(t, herr)
+			testutil.Equal(t, resp.BinaryHash, want)
 		}
 	}
 }

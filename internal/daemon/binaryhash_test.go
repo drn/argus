@@ -58,8 +58,6 @@ func TestBinaryHashFile(t *testing.T) {
 
 	t.Run("missing file errors", func(t *testing.T) {
 		_, err := BinaryHashFile(filepath.Join(t.TempDir(), "does-not-exist"))
-		if err == nil {
-			t.Fatal("expected error for missing file")
-		}
+		testutil.Error(t, err)
 	})
 }

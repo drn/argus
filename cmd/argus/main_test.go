@@ -8,6 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/drn/argus/internal/daemon"
 )
 
 // TestConfigureProcessLogging_DoesNotReachStderr is the regression guard for
@@ -82,6 +85,41 @@ func TestShortHash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := shortHash(tt.in); got != tt.want {
 				t.Errorf("shortHash(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStaleDecision(t *testing.T) {
+	const hashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const hashB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	t0 := time.Unix(1_700_000_000, 0)
+	t1 := time.Unix(1_700_000_500, 0)
+
+	tests := []struct {
+		name        string
+		info        daemon.BootInfoResp
+		tuiHash     string
+		tuiHashErr  bool
+		tuiMtime    time.Time
+		tuiMtimeErr bool
+		want        bool
+	}{
+		// Hash path (daemon reported a hash).
+		{"hash equal → not stale", daemon.BootInfoResp{BinaryHash: hashA}, hashA, false, time.Time{}, false, false},
+		{"hash differ → stale", daemon.BootInfoResp{BinaryHash: hashA}, hashB, false, time.Time{}, false, true},
+		{"hash read error → not stale", daemon.BootInfoResp{BinaryHash: hashA}, "", true, time.Time{}, false, false},
+		// Mtime fallback (daemon reported no hash).
+		{"mtime zero → not stale", daemon.BootInfoResp{}, "", false, t0, false, false},
+		{"mtime equal → not stale", daemon.BootInfoResp{BinaryMtime: t0}, "", false, t0, false, false},
+		{"mtime differ → stale", daemon.BootInfoResp{BinaryMtime: t0}, "", false, t1, false, true},
+		{"mtime stat error → not stale", daemon.BootInfoResp{BinaryMtime: t0}, "", false, time.Time{}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := staleDecision(tt.info, tt.tuiHash, tt.tuiHashErr, tt.tuiMtime, tt.tuiMtimeErr)
+			if got != tt.want {
+				t.Errorf("staleDecision = %v, want %v", got, tt.want)
 			}
 		})
 	}

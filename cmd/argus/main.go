@@ -518,33 +518,56 @@ func isDaemonStale(client *dclient.Client) bool {
 		exe = resolved
 	}
 
+	// Read the TUI binary's identity (hash when the daemon reported one, else
+	// mtime for the pre-BinaryHash fallback). The pure decision lives in
+	// staleDecision so its branches are unit-testable without a daemon.
+	var (
+		tuiHash     string
+		tuiHashErr  bool
+		tuiMtime    time.Time
+		tuiMtimeErr bool
+	)
 	if info.BinaryHash != "" {
-		h, err := daemon.BinaryHashFile(exe)
-		if err != nil {
-			return false // can't hash our own binary — don't nag on a benign error
-		}
-		if h == info.BinaryHash {
-			return false
-		}
-		uxlog.Log("[tui] daemon binary stale: daemon hash=%s tui hash=%s",
-			shortHash(info.BinaryHash), shortHash(h))
-		return true
+		tuiHash, err = daemon.BinaryHashFile(exe)
+		tuiHashErr = err != nil
+	} else if st, serr := os.Stat(exe); serr == nil {
+		tuiMtime = st.ModTime()
+	} else {
+		tuiMtimeErr = true
 	}
 
-	// Fallback: pre-BinaryHash daemon. Compare mtime.
-	if info.BinaryMtime.IsZero() {
-		return false // older daemon without BootInfo, or stat failed at boot
-	}
-	st, err := os.Stat(exe)
-	if err != nil {
+	if !staleDecision(info, tuiHash, tuiHashErr, tuiMtime, tuiMtimeErr) {
 		return false
 	}
-	if st.ModTime().Equal(info.BinaryMtime) {
-		return false
+	if info.BinaryHash != "" {
+		uxlog.Log("[tui] daemon binary stale: daemon hash=%s tui hash=%s",
+			shortHash(info.BinaryHash), shortHash(tuiHash))
+	} else {
+		uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
+			info.BinaryMtime.Format(time.RFC3339), tuiMtime.Format(time.RFC3339))
 	}
-	uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
-		info.BinaryMtime.Format(time.RFC3339), st.ModTime().Format(time.RFC3339))
 	return true
+}
+
+// staleDecision is the pure core of isDaemonStale: given the daemon's boot
+// identity and the TUI binary's already-read current identity, it decides
+// staleness. Split out from the I/O so every branch (hash match/mismatch,
+// hash-read failure, mtime fallback, mtime-read failure) is unit-testable
+// without a live daemon client or a real executable. A read failure of the
+// TUI's own binary (tuiHashErr / tuiMtimeErr) yields "not stale" — a benign
+// local error must never nag the user into a needless restart.
+func staleDecision(info daemon.BootInfoResp, tuiHash string, tuiHashErr bool, tuiMtime time.Time, tuiMtimeErr bool) bool {
+	if info.BinaryHash != "" {
+		if tuiHashErr {
+			return false
+		}
+		return tuiHash != info.BinaryHash
+	}
+	// Fallback: pre-BinaryHash daemon. Compare mtime.
+	if info.BinaryMtime.IsZero() || tuiMtimeErr {
+		return false // older daemon without BootInfo, or stat failed.
+	}
+	return !tuiMtime.Equal(info.BinaryMtime)
 }
 
 // shortHash truncates a hex digest for compact logging.

@@ -51,10 +51,16 @@ func SupervisorProtocolMatch(hello HelloResp) bool {
 }
 
 // HelloResp is the session-supervisor's handshake reply. ProtocolVersion lets
-// the daemon (P2) decide which RPCs/fields it may use against this supervisor;
-// the binary identity mirrors BootInfoResp so a future daemon can also reason
-// about supervisor staleness (a stale supervisor is NOT auto-restarted — that
-// would interrupt agents; see the design doc §4.4).
+// the daemon (P2) decide which RPCs/fields it may use against this supervisor.
+//
+// It carries the supervisor's binary path/mtime so a future daemon could
+// reason about supervisor staleness (a stale supervisor is NOT auto-restarted —
+// that would interrupt agents; see the design doc §4.4). It deliberately does
+// NOT yet carry the SHA-256 BinaryHash that BootInfoResp gained: no consumer
+// compares supervisor binaries for staleness today, and adding the field would
+// force a ProtocolVersion bump (logging skew against every already-running
+// supervisor) for data nothing reads. When supervisor-staleness checking is
+// actually implemented, add BinaryHash here and bump ProtocolVersion then.
 type HelloResp struct {
 	ProtocolVersion int
 	BinaryPath      string    // resolved path of the supervisor executable at boot
