@@ -1,6 +1,7 @@
 package modal
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -93,7 +94,7 @@ func TestConfirmModal_LongMessageWraps(t *testing.T) {
 func TestConfirmModal_TinyTerminal(t *testing.T) {
 	msg := "Removes the orchestrator and all its roles and cannot be undone."
 	for _, h := range []int{1, 2, 3, 4, 5, 6, 7} {
-		t.Run("height-"+string(rune('0'+h)), func(t *testing.T) {
+		t.Run(fmt.Sprintf("height-%d", h), func(t *testing.T) {
 			sim := tcell.NewSimulationScreen("UTF-8")
 			testutil.NoError(t, sim.Init())
 			defer sim.Fini()
