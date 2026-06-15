@@ -157,6 +157,8 @@ The reference helpers live in `internal/tui/smoke_test.go`:
 
 For mouse-focus regressions: inject a click on a non-interactive panel and assert `app.GetFocus()` stayed on the interactive widget. See `TestSmoke_Click*` for the pattern.
 
+**When asserting on rendered cells, call `sim.Show()` before `sim.GetContents()`.** A widget's `Draw` writes the back buffer; `GetContents()` returns the *front* buffer, which is only synced on `Show()`. Drawing then reading back without `Show()` yields an all-blank grid (silent false negative — the test "passes" the panic check but sees no content). See `TestConfirmModal_LongMessageWraps` in `internal/tui/modal/confirm_test.go`.
+
 ## Mocking the Daemon
 
 The TUI's `Client` and `RemoteSession` (`internal/daemon/client/`) talk to the daemon via a Unix socket. Tests start a tiny in-process daemon-like listener that:
