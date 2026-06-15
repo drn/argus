@@ -237,6 +237,24 @@ func TestSwitcherGrouped_BuildsFolderRows(t *testing.T) {
 	testutil.Equal(t, m.SelectedTask(), "1")
 }
 
+func TestSwitcherGrouped_EmptyEntriesInert(t *testing.T) {
+	// SetGrouped on a zero-entry modal (e.g. a single-task worktree where the
+	// current task is the only one and gets excluded) must not panic and must
+	// leave selection inert — cursor parks at 0, not the -1 sentinel.
+	m := NewTaskSwitcherModal(nil)
+	m.SetGrouped(true)
+	testutil.Equal(t, len(m.rows), 0)
+	testutil.Equal(t, m.cursor, 0)
+	testutil.Equal(t, m.SelectedTask(), "")
+	h := m.InputHandler()
+	// Down / Up / Enter on an empty grouped list are all no-ops.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.Selected(), false)
+	testutil.Equal(t, m.SelectedTask(), "")
+}
+
 func TestSwitcherGrouped_EmptyProjectFolder(t *testing.T) {
 	m := NewTaskSwitcherModal([]taskSwitcherEntry{{ID: "x", Name: "Solo", Project: ""}})
 	m.SetGrouped(true)

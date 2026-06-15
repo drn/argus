@@ -39,7 +39,7 @@ type switcherRow struct {
 	kind    switcherRowKind
 	project string
 	entry   taskSwitcherEntry // valid when kind == switcherRowTaskItem
-	count   int               // task count, valid when kind == switcherRowProjectHeader
+	count   int               // tasks in this project in the current (filtered) view; valid when kind == switcherRowProjectHeader
 }
 
 // TaskSwitcherModal presents a filterable list of tasks for jumping directly to
@@ -320,8 +320,15 @@ func (m *TaskSwitcherModal) buildGroupedRows() {
 
 // skipToTaskRow advances the cursor in direction dir until it lands on a task
 // row, then falls back the other way if it ran off the end. Mirrors
-// TaskListView.skipToTask.
+// TaskListView.skipToTask. With no rows at all the cursor parks at 0 (the
+// inert empty-state index) rather than the -1 the two-loop fallthrough would
+// otherwise leave behind — every reader guards `cursor >= 0 && < len(rows)`,
+// so 0 and -1 are both safe, but 0 keeps the sentinel uniform with flat mode.
 func (m *TaskSwitcherModal) skipToTaskRow(dir int) {
+	if len(m.rows) == 0 {
+		m.cursor = 0
+		return
+	}
 	for m.cursor >= 0 && m.cursor < len(m.rows) {
 		if m.rows[m.cursor].kind == switcherRowTaskItem {
 			return
@@ -432,7 +439,10 @@ func (m *TaskSwitcherModal) restoreGroupedCursor(target switcherRow) {
 // autoExpandGrouped rebuild may have shrunk m.rows, so a raw `prev` can be
 // stale (out of range or pointing at a header). Routing every prev-fallback
 // through here guarantees the cursor lands on a real task, never off the list
-// or on a header.
+// or on a header. It uses m.cursor as scratch (skipToTaskRow mutates it) and
+// restores it before returning — safe because all navigation runs on the
+// single tview goroutine, so there is no concurrent reader to observe the
+// transient value.
 func (m *TaskSwitcherModal) clampToTaskRow(idx int) int {
 	if len(m.rows) == 0 {
 		return 0
