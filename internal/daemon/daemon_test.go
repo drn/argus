@@ -109,11 +109,17 @@ func TestDaemon_BootInfo(t *testing.T) {
 	if resp.BootedAt.Before(bootStart.Add(-time.Second)) || resp.BootedAt.After(time.Now().Add(time.Second)) {
 		t.Errorf("BootedAt %v outside expected range", resp.BootedAt)
 	}
-	// BinaryMtime is best-effort; if the test binary exists, it should be
-	// non-zero. If not, that's a pre-existing environment issue, not a bug.
+	// BinaryMtime and BinaryHash are best-effort; if the test binary exists,
+	// both should be populated. If not, that's a pre-existing environment
+	// issue, not a bug.
 	if resp.BinaryPath != "" {
-		if _, err := os.Stat(resp.BinaryPath); err == nil && resp.BinaryMtime.IsZero() {
-			t.Error("expected BinaryMtime to be populated when binary exists")
+		if _, err := os.Stat(resp.BinaryPath); err == nil {
+			if resp.BinaryMtime.IsZero() {
+				t.Error("expected BinaryMtime to be populated when binary exists")
+			}
+			if resp.BinaryHash == "" {
+				t.Error("expected BinaryHash to be populated when binary exists")
+			}
 		}
 	}
 }

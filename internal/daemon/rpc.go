@@ -43,6 +43,7 @@ func logRPCErr(method string, err error) string {
 func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	resp.BinaryPath = s.daemon.binaryPath
 	resp.BinaryMtime = s.daemon.binaryMtime
+	resp.BinaryHash = s.daemon.binaryHash
 	resp.BootedAt = s.daemon.bootedAt
 	return nil
 }

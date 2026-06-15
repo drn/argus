@@ -66,3 +66,23 @@ func TestConfigureProcessLogging_DoesNotReachStderr(t *testing.T) {
 		}
 	}
 }
+
+func TestShortHash(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"long digest truncated to 12", "0123456789abcdef0123", "0123456789ab"},
+		{"exactly 12 unchanged", "0123456789ab", "0123456789ab"},
+		{"short unchanged", "abc", "abc"},
+		{"empty unchanged", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shortHash(tt.in); got != tt.want {
+				t.Errorf("shortHash(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

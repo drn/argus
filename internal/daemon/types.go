@@ -12,6 +12,7 @@ import (
 type BootInfoResp struct {
 	BinaryPath  string    // resolved path of the daemon executable at boot
 	BinaryMtime time.Time // mtime of the binary at boot (zero if stat failed)
+	BinaryHash  string    // SHA-256 of the binary at boot (empty if hashing failed)
 	BootedAt    time.Time // wall-clock time the daemon started
 }
 

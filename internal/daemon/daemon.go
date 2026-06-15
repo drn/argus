@@ -116,6 +116,7 @@ type Daemon struct {
 	// on-disk binary has been rebuilt since the daemon started.
 	binaryPath  string
 	binaryMtime time.Time
+	binaryHash  string
 	bootedAt    time.Time
 
 	// prFetch is the injectable seam the PR-status poller calls to resolve a
@@ -195,6 +196,9 @@ func New(database *db.DB) *Daemon {
 		d.binaryPath = exe
 		if st, err := os.Stat(exe); err == nil {
 			d.binaryMtime = st.ModTime()
+		}
+		if h, err := BinaryHashFile(exe); err == nil {
+			d.binaryHash = h
 		}
 	}
 
