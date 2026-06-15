@@ -56,22 +56,36 @@ func (m *ConfirmModal) Draw(screen tcell.Screen) {
 	}
 
 	formW := min(64, width-4)
-	formH := 8
-	formX := x + (width-formW)/2
-	formY := y + (height-formH)/2
-	if formY < y {
-		formY = y
+	if formW < 12 {
+		formW = width
 	}
+
+	// Word-wrap the message so it never overflows the border (the title and
+	// footer stay single-line; only the body grows).
+	lines := wrapErrorBody(m.message, formW-4)
+	// The modal has 6 rows of fixed chrome (top border, title, blank, blank,
+	// footer, bottom border); the body fills whatever height is left. Floor at
+	// 0 — not 1 — so a terminal too short to hold even one body row drops the
+	// message rather than overlapping the footer onto it.
+	maxBody := max(height-6, 0)
+	if len(lines) > maxBody {
+		lines = lines[:maxBody]
+	}
+	formH := min(6+len(lines), height)
+	formX := x + (width-formW)/2
+	formY := max(y+(height-formH)/2, y)
 
 	// Clear the modal area so no stale cells survive (no Sync — full-rect cover).
 	for row := formY; row < formY+formH && row < y+height; row++ {
-		for col := formX; col < formX+formW; col++ {
+		for col := formX; col < formX+formW && col < x+width; col++ {
 			screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
 		}
 	}
 
 	widget.DrawBorder(screen, formX, formY, formW, formH, theme.StyleFocusedBorder)
 	widget.DrawText(screen, formX+2, formY+1, formW-4, m.title, theme.StyleTitle)
-	widget.DrawText(screen, formX+2, formY+3, formW-4, m.message, theme.StyleNormal)
+	for i, line := range lines {
+		widget.DrawText(screen, formX+2, formY+3+i, formW-4, line, theme.StyleNormal)
+	}
 	widget.DrawText(screen, formX+2, formY+formH-2, formW-4, "Enter / y = confirm    Esc / n = cancel", theme.StyleDimmed)
 }
