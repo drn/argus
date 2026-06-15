@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net"
 	"net/rpc/jsonrpc"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -35,10 +34,16 @@ func testSetup(t *testing.T) (*daemon.Daemon, string, *db.DB) {
 	go d.Serve(sockPath)
 	t.Cleanup(func() { d.Shutdown() })
 
-	// Wait for socket.
+	// Wait for the daemon to actually accept connections. A created socket
+	// file (os.Stat) does NOT guarantee the accept loop is ready — dialing in
+	// that window returns "connection refused", which flaked Connect-based
+	// tests (and amplified into a nil-Client deref panic when a non-fatal
+	// assertion let execution continue past the failed Connect). Poll a real
+	// dial instead so testSetup only returns once the socket is serving.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(sockPath); err == nil {
+		if conn, err := net.Dial("unix", sockPath); err == nil {
+			conn.Close()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)

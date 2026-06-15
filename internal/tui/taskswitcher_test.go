@@ -209,6 +209,219 @@ func TestTaskSwitcher_DrawNoMatches(t *testing.T) {
 	testutil.Contains(t, out, "No matches")
 }
 
+// groupedSwitcher returns a grouped switcher over the sample entries (argus: 2
+// tasks, cortex: 1), with the cursor parked on the first task.
+func groupedSwitcher() *TaskSwitcherModal {
+	m := NewTaskSwitcherModal(sampleSwitcherEntries())
+	m.SetGrouped(true)
+	return m
+}
+
+func TestSwitcherGrouped_BuildsFolderRows(t *testing.T) {
+	m := groupedSwitcher()
+	// argus (expanded, 2 tasks) sorts before cortex (collapsed).
+	// rows: [header argus, id1, id2, header cortex]
+	testutil.Equal(t, len(m.rows), 4)
+	testutil.Equal(t, m.rows[0].kind, switcherRowProjectHeader)
+	testutil.Equal(t, m.rows[0].project, "argus")
+	testutil.Equal(t, m.rows[0].count, 2)
+	testutil.Equal(t, m.rows[1].kind, switcherRowTaskItem)
+	testutil.Equal(t, m.rows[1].entry.ID, "1") // needs-input first within project
+	testutil.Equal(t, m.rows[2].entry.ID, "2")
+	testutil.Equal(t, m.rows[3].kind, switcherRowProjectHeader)
+	testutil.Equal(t, m.rows[3].project, "cortex")
+	// cortex is collapsed, so its task is not emitted.
+	testutil.Equal(t, m.expanded, "argus")
+	// Cursor parked on the first task, not the header.
+	testutil.Equal(t, m.cursor, 1)
+	testutil.Equal(t, m.SelectedTask(), "1")
+}
+
+func TestSwitcherGrouped_EmptyEntriesInert(t *testing.T) {
+	// SetGrouped on a zero-entry modal (e.g. a single-task worktree where the
+	// current task is the only one and gets excluded) must not panic and must
+	// leave selection inert — cursor parks at 0, not the -1 sentinel.
+	m := NewTaskSwitcherModal(nil)
+	m.SetGrouped(true)
+	testutil.Equal(t, len(m.rows), 0)
+	testutil.Equal(t, m.cursor, 0)
+	testutil.Equal(t, m.SelectedTask(), "")
+	h := m.InputHandler()
+	// Down / Up / Enter on an empty grouped list are all no-ops.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.Selected(), false)
+	testutil.Equal(t, m.SelectedTask(), "")
+}
+
+func TestSwitcherGrouped_EmptyProjectFolder(t *testing.T) {
+	m := NewTaskSwitcherModal([]taskSwitcherEntry{{ID: "x", Name: "Solo", Project: ""}})
+	m.SetGrouped(true)
+	testutil.Equal(t, m.rows[0].project, "(no project)")
+}
+
+func TestSwitcherGrouped_SearchMultiTermSubstring(t *testing.T) {
+	m := groupedSwitcher()
+	// Two terms, AND across name+project — exactly like the task list.
+	// "argus" matches the project of id1 and id2; "resume" only matches id2's
+	// name, so only id2 survives.
+	m.query = []rune("argus resume")
+	m.qCursor = len(m.query)
+	m.refilter()
+	testutil.Equal(t, len(m.filtered), 1)
+	testutil.Equal(t, m.filtered[0].ID, "2")
+	// Filter active → every matching folder is expanded.
+	// rows: [header argus, id2]
+	testutil.Equal(t, len(m.rows), 2)
+	testutil.Equal(t, m.rows[1].entry.ID, "2")
+	testutil.Equal(t, m.SelectedTask(), "2")
+}
+
+func TestSwitcherGrouped_SearchAcrossProjects(t *testing.T) {
+	m := groupedSwitcher()
+	// A bare project term expands only that folder's tasks.
+	m.query = []rune("cortex")
+	m.qCursor = len(m.query)
+	m.refilter()
+	testutil.Equal(t, len(m.filtered), 1)
+	testutil.Equal(t, m.filtered[0].ID, "3")
+}
+
+func TestSwitcherGrouped_NavigateDownAcrossFoldersAutoExpands(t *testing.T) {
+	m := groupedSwitcher()
+	h := m.InputHandler()
+	// id1 → id2 (within argus)
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "2")
+	// id2 → crossing into cortex auto-expands it (collapsing argus) and lands
+	// on cortex's first task.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.expanded, "cortex")
+	testutil.Equal(t, m.SelectedTask(), "3")
+}
+
+func TestSwitcherGrouped_NavigateUpAcrossFoldersAutoExpands(t *testing.T) {
+	m := groupedSwitcher()
+	h := m.InputHandler()
+	// Walk down into cortex...
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "3")
+	// ...then back up: re-expands argus and lands on its last task (id2).
+	h(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.expanded, "argus")
+	testutil.Equal(t, m.SelectedTask(), "2")
+}
+
+func TestSwitcherGrouped_DownAtBottomStaysOnLastTask(t *testing.T) {
+	m := groupedSwitcher()
+	h := m.InputHandler()
+	// Walk to the last task (id3 in cortex)...
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "3")
+	// ...pressing Down again clamps and stays on the last task (never strands
+	// on a header where Enter would no-op).
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "3")
+	testutil.Equal(t, m.rows[m.cursor].kind, switcherRowTaskItem)
+}
+
+func TestSwitcherGrouped_SingleProjectNavigation(t *testing.T) {
+	m := NewTaskSwitcherModal([]taskSwitcherEntry{
+		{ID: "a", Name: "First", Project: "solo"},
+		{ID: "b", Name: "Second", Project: "solo"},
+	})
+	m.SetGrouped(true)
+	// rows: [header solo, a, b]; cursor parked on first task.
+	testutil.Equal(t, m.SelectedTask(), "a")
+	h := m.InputHandler()
+	// Up at the top stays on the first task (not the header).
+	h(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "a")
+	// Down to the last, then Down again clamps on the last task.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "b")
+	h(tcell.NewEventKey(tcell.KeyDown, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "b")
+	testutil.Equal(t, m.rows[m.cursor].kind, switcherRowTaskItem)
+}
+
+func TestSwitcherGrouped_Paste(t *testing.T) {
+	m := groupedSwitcher()
+	paste := m.PasteHandler()
+	paste("cortex", func(tview.Primitive) {})
+	testutil.Equal(t, string(m.query), "cortex")
+	testutil.Equal(t, len(m.filtered), 1)
+	testutil.Equal(t, m.SelectedTask(), "3")
+}
+
+func TestSwitcherGrouped_UpAtTopStaysOnFirstTask(t *testing.T) {
+	m := groupedSwitcher()
+	h := m.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.SelectedTask(), "1")
+}
+
+func TestSwitcherGrouped_EnterSelectsTask(t *testing.T) {
+	m := groupedSwitcher()
+	h := m.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.Selected(), true)
+	testutil.Equal(t, m.SelectedTask(), "1")
+}
+
+func TestSwitcherGrouped_EnterNoMatchesIsNoop(t *testing.T) {
+	m := groupedSwitcher()
+	m.query = []rune("zzznope")
+	m.qCursor = len(m.query)
+	m.refilter()
+	testutil.Equal(t, len(m.rows), 0)
+	h := m.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, 0), func(tview.Primitive) {})
+	testutil.Equal(t, m.Selected(), false)
+	testutil.Equal(t, m.SelectedTask(), "")
+}
+
+func TestSwitcherGrouped_DrawRendersFolders(t *testing.T) {
+	out := drawSwitcherToString(t, groupedSwitcher(), 100, 24)
+	testutil.Contains(t, out, "Switch task")
+	testutil.Contains(t, out, "argus")  // expanded folder header
+	testutil.Contains(t, out, "cortex") // collapsed folder header
+	testutil.Contains(t, out, "▾")      // expanded chevron
+	testutil.Contains(t, out, "▸")      // collapsed chevron
+	testutil.Contains(t, out, "Blocked on prompt")
+	testutil.Contains(t, out, "Fix the resume bug")
+	// cortex collapsed → its task is hidden.
+	if strings.Contains(out, "Review handoff docs") {
+		t.Fatalf("collapsed cortex folder should hide its task:\n%s", out)
+	}
+	// Needs-input marker present for the blocked task.
+	testutil.Contains(t, out, string(theme.IconNeedsInput))
+}
+
+func TestSwitcherGrouped_DrawNoMatches(t *testing.T) {
+	m := groupedSwitcher()
+	m.query = []rune("zzznope")
+	m.qCursor = len(m.query)
+	m.refilter()
+	out := drawSwitcherToString(t, m, 80, 20)
+	testutil.Contains(t, out, "No matches")
+}
+
+func TestSwitcherGrouped_DrawVariousSizesNoPanic(t *testing.T) {
+	cases := []struct{ w, h int }{{1, 10}, {5, 20}, {8, 20}, {9, 20}, {12, 20}, {30, 5}, {80, 24}, {200, 60}, {0, 0}}
+	for _, tc := range cases {
+		m := groupedSwitcher()
+		m.SetRect(0, 0, tc.w, tc.h)
+		screen := tcell.NewSimulationScreen("")
+		testutil.NoError(t, screen.Init())
+		screen.SetSize(tc.w, tc.h)
+		m.Draw(screen) // must not panic
+	}
+}
+
 func TestTaskSwitcher_DrawVariousSizesNoPanic(t *testing.T) {
 	// Widths 1–9 produce a sub-zero filter-field width; the Draw must clamp
 	// it rather than panic on the scroll-truncation slice.
