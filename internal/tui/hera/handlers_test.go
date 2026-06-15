@@ -80,6 +80,14 @@ func TestPage_CtrlAltArrowWalksFocus(t *testing.T) {
 	// the focused region instead.
 	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusRail)
+
+	// EITHER modifier alone also walks the ladder — terminals are inconsistent
+	// about which of Ctrl/Alt they report for this chord, so the loose check
+	// accepts Ctrl-only and Alt-only too (mirrors the agent view's pane switch).
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModAlt), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
 }
 
 func TestPage_PasteHandlerNoOp(t *testing.T) {
