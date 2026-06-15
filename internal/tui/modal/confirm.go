@@ -63,8 +63,11 @@ func (m *ConfirmModal) Draw(screen tcell.Screen) {
 	// Word-wrap the message so it never overflows the border (the title and
 	// footer stay single-line; only the body grows).
 	lines := wrapErrorBody(m.message, formW-4)
-	// Cap body lines so a pathological message can't exceed the screen.
-	maxBody := max(height-6, 1)
+	// The modal has 6 rows of fixed chrome (top border, title, blank, blank,
+	// footer, bottom border); the body fills whatever height is left. Floor at
+	// 0 — not 1 — so a terminal too short to hold even one body row drops the
+	// message rather than overlapping the footer onto it.
+	maxBody := max(height-6, 0)
 	if len(lines) > maxBody {
 		lines = lines[:maxBody]
 	}

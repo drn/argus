@@ -86,3 +86,22 @@ func TestConfirmModal_LongMessageWraps(t *testing.T) {
 	}
 	testutil.Equal(t, found, true)
 }
+
+// TestConfirmModal_TinyTerminal pins the height-clamp bounds: a terminal too
+// short for the 6-row chrome must drop body lines (maxBody floors at 0) rather
+// than panic on a negative slice index or overlap the footer onto the body.
+func TestConfirmModal_TinyTerminal(t *testing.T) {
+	msg := "Removes the orchestrator and all its roles and cannot be undone."
+	for _, h := range []int{1, 2, 3, 4, 5, 6, 7} {
+		t.Run("height-"+string(rune('0'+h)), func(t *testing.T) {
+			sim := tcell.NewSimulationScreen("UTF-8")
+			testutil.NoError(t, sim.Init())
+			defer sim.Fini()
+			const w = 40
+			sim.SetSize(w, h)
+			m := NewConfirmModal("Delete orchestrator?", msg)
+			m.SetRect(0, 0, w, h)
+			m.Draw(sim) // must not panic at any small height
+		})
+	}
+}
