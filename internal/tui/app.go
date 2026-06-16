@@ -72,8 +72,9 @@ const (
 	modeHelp
 	modeErrorModal
 	modePluginView
-	modeHeraInput   // Hera-view rename / spawn-prompt input modal
-	modeHeraConfirm // Hera-view archive-of-live / delete confirmation modal
+	modeHeraInput      // Hera-view rename / spawn-prompt input modal
+	modeHeraConfirm    // Hera-view archive-of-live / delete confirmation modal
+	modeHeraOrchPicker // Hera-view `J` adopt/reparent orchestrator picker
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -126,6 +127,14 @@ type App struct {
 	heraConfirmModal *modal.ConfirmModal
 	heraInputSubmit  func(string) // called with the field value on input-modal submit
 	heraConfirmDo    func()       // called on confirm-modal accept
+
+	// `J` adopt/reparent layer + its orchestrator picker. heraAdoptOps is nil in
+	// remote mode (no local *db.DB) so the `J` key is inert. heraOrchPicker is
+	// created on demand; heraOrchPickerPick captures the chosen-orchestrator
+	// callback (adopt freelancer vs reparent coordinator).
+	heraAdoptOps       *hera.AdoptOps
+	heraOrchPicker     *OrchPickerModal
+	heraOrchPickerPick func(*db.HeraOrchestrator)
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -629,6 +638,7 @@ func (a *App) buildUI() {
 	// spawn reuses the shared agent.SpawnHeraWorker primitive.
 	if d, ok := a.db.(*db.DB); ok {
 		a.heraOps = hera.NewOps(d)
+		a.heraAdoptOps = hera.NewAdoptOps(d)
 		a.heraPage.OnSpawnWorker = a.heraSpawnWorker
 		a.heraPage.OnRename = a.heraOpenRename
 		a.heraPage.OnArchiveToggle = a.heraArchiveToggle
@@ -637,6 +647,7 @@ func (a *App) buildUI() {
 		a.heraPage.OnStatusRevert = func(sel hera.Selection) { a.heraStatusStep(sel, -1) }
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
+		a.heraPage.OnAdopt = a.heraOpenAdopt
 
 		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
 		// a node's agent view) is wired — the legacy link/unlink/halt actions are
@@ -2179,6 +2190,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Hera-view confirm modal (archive-of-live / delete) — delegate to the modal.
 	if a.mode == modeHeraConfirm && a.heraConfirmModal != nil {
 		a.handleHeraConfirmKey(event)
+		return nil
+	}
+
+	// Hera-view `J` adopt/reparent orchestrator picker — delegate to the modal.
+	if a.mode == modeHeraOrchPicker && a.heraOrchPicker != nil {
+		a.handleHeraOrchPickerKey(event)
 		return nil
 	}
 

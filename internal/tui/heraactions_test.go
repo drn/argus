@@ -244,6 +244,163 @@ func TestHeraActions_CoordRoleName(t *testing.T) {
 	testutil.Equal(t, heraCoordRoleName(&hera.OrchView{Roles: []hera.RoleView{{Name: "w", Kind: db.HeraKindWorker}}}), "coordinator")
 }
 
+func TestHeraCoordReparentTarget(t *testing.T) {
+	t.Run("coordinator role row qualifies", func(t *testing.T) {
+		sel := hera.Selection{
+			Role: &hera.RoleView{Kind: db.HeraKindCoordinator, Name: "c", TaskID: "ct"},
+			Orch: &hera.OrchView{ID: 7, Name: "orch-c"},
+		}
+		id, name, task, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, id, int64(7))
+		testutil.Equal(t, name, "c") // the coordinator role's name
+		testutil.Equal(t, task, "ct")
+	})
+	t.Run("orchestrator header with a coordinator role qualifies", func(t *testing.T) {
+		sel := hera.Selection{Orch: &hera.OrchView{
+			ID: 8, Name: "o",
+			Roles: []hera.RoleView{{Kind: db.HeraKindCoordinator, TaskID: "ct", Live: true}},
+		}}
+		id, name, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, true)
+		testutil.Equal(t, id, int64(8))
+		testutil.Equal(t, name, "o")
+	})
+	t.Run("worker role does not qualify", func(t *testing.T) {
+		sel := hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}, Orch: &hera.OrchView{ID: 1}}
+		_, _, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, false)
+	})
+	t.Run("archived coordinator does not qualify", func(t *testing.T) {
+		sel := hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindCoordinator, Archived: true}, Orch: &hera.OrchView{ID: 1}}
+		_, _, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, false)
+	})
+	t.Run("orchestrator header without a coordinator role does not qualify", func(t *testing.T) {
+		sel := hera.Selection{Orch: &hera.OrchView{ID: 1, Roles: []hera.RoleView{{Kind: db.HeraKindWorker}}}}
+		_, _, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, false)
+	})
+	t.Run("empty selection does not qualify", func(t *testing.T) {
+		_, _, _, ok := heraCoordReparentTarget(hera.Selection{})
+		testutil.Equal(t, ok, false)
+	})
+}
+
+func TestHeraActions_OpenAdoptNoOpAndFeedbackBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Remote mode (heraAdoptOps nil) → fully inert.
+	app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: "x"}})
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+
+	// Empty selection → feedback, no picker.
+	app.heraOpenAdopt(hera.Selection{})
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Managed worker role → feedback, no picker.
+	app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}, Orch: &hera.OrchView{ID: 1}})
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Freelancer with no task id → feedback, no picker.
+	app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: ""}})
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Freelancer with a task but NO active orchestrators → feedback, no picker.
+	testutil.NoError(t, d.Add(&model.Task{ID: "tf", Name: "tf", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: "tf", Name: "tf"}})
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Coordinator with NO other orchestrator to nest under → feedback, no picker.
+	orch := seedHeraOrch(t, d, "only")
+	seedHeraBoundRole(t, d, orch, "only", db.HeraKindCoordinator, "tc")
+	app.heraOpenAdopt(hera.Selection{
+		Role: &hera.RoleView{Kind: db.HeraKindCoordinator, TaskID: "tc", Name: "only"},
+		Orch: &hera.OrchView{ID: orch, Name: "only"},
+	})
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestSmoke_HeraAdoptFreelancerThroughPicker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	target := seedHeraOrch(t, d, "target")
+	testutil.NoError(t, d.Add(&model.Task{ID: "tf", Name: "freelancer", Status: model.StatusInProgress, Project: "p", Worktree: "/wt/tf", CreatedAt: time.Now()}))
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Open the adopt picker for a freelancer on the tview thread.
+	sel := hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: "tf", Name: "freelancer"}}
+	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	// Enter selects the (single) orchestrator → adopt runs.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	live, err := d.HeraLiveBindingByTaskAndOrchestrator("tf", target)
+	testutil.NoError(t, err)
+	testutil.Equal(t, live.WorktreePath, "/wt/tf")
+}
+
+func TestSmoke_HeraReparentCoordinatorThroughPicker(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	child := seedHeraOrch(t, d, "child")
+	seedHeraBoundRole(t, d, child, "child", db.HeraKindCoordinator, "child-coord")
+	parent := seedHeraOrch(t, d, "parent")
+	seedHeraBoundRole(t, d, parent, "parent", db.HeraKindCoordinator, "parent-coord")
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	sel := hera.Selection{
+		Role: &hera.RoleView{Kind: db.HeraKindCoordinator, TaskID: "child-coord", Name: "child"},
+		Orch: &hera.OrchView{ID: child, Name: "child"},
+	}
+	readUI(t, app.tapp, func() { app.heraOpenAdopt(sel) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	// The picker excludes the child itself, so only "parent" remains; Enter picks it.
+	sim.InjectKey(tcell.KeyEnter, 0, 0)
+	syncUI(t, app.tapp)
+
+	link, err := d.HeraLiveBindingByTaskAndOrchestrator("child-coord", parent)
+	testutil.NoError(t, err)
+	testutil.Equal(t, link.OrchestratorID, parent)
+}
+
+func TestSmoke_HeraAdoptPickerEscCancels(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraAdoptOps = hera.NewAdoptOps(d)
+	seedHeraOrch(t, d, "target")
+	testutil.NoError(t, d.Add(&model.Task{ID: "tf", Name: "tf", Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	readUI(t, app.tapp, func() {
+		app.heraOpenAdopt(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindFreelance, TaskID: "tf", Name: "tf"}})
+	})
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraOrchPicker) })
+
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
+
+	// Esc made no change — no binding created.
+	_, err := d.HeraLiveBindingByTask("tf")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
 // --- real-repo integration (spawn + reattach through the event loop) --------
 
 // heraRepoApp sets HOME to a temp dir, builds a one-commit git repo, and seeds
