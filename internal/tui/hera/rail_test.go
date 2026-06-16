@@ -107,13 +107,14 @@ func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
 	}}}})
 	r.SetRect(0, 0, 40, 10)
 	r.Draw(sim)
+	sim.Show()
 
 	// The coordinator's blocked glyph must appear somewhere on the header row.
 	wantGlyph, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusBlocked, Live: true}, false, 0)
 	found := false
 	for x := 0; x < 40; x++ {
-		primary, _, _, _ := sim.GetContent(x, 1) // row 1 = first content row inside the border
-		if primary == wantGlyph {
+		s, _, _ := sim.Get(x, 1) // row 1 = first content row inside the border
+		if s == string(wantGlyph) {
 			found = true
 			break
 		}
@@ -315,12 +316,13 @@ func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
 	sim.SetSize(40, 10)
 	r.SetRect(0, 0, 40, 10)
 	r.Draw(sim)
+	sim.Show()
 	found := false
 	for y := 0; y < 10 && !found; y++ {
 		for x := 0; x+1 < 40; x++ {
-			a, _, _, _ := sim.GetContent(x, y)
-			b, _, _, _ := sim.GetContent(x+1, y)
-			if a == 'P' && b == 'R' {
+			a, _, _ := sim.Get(x, y)
+			b, _, _ := sim.Get(x+1, y)
+			if a == "P" && b == "R" {
 				found = true
 				break
 			}

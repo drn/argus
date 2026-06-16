@@ -41,5 +41,5 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 7. Validate
 
-- [ ] 7.1 `openspec validate --strict` (LOCAL only — never wired into CI/make).
-- [ ] 7.2 `make pre-pr` green.
+- [x] 7.1 `openspec validate --strict` (LOCAL only — never wired into CI/make).
+- [x] 7.2 `make pre-pr` green.
