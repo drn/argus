@@ -78,3 +78,61 @@ func TestFocusMachine_SetPresentNoChangeReturnsFalse(t *testing.T) {
 	// Removing the agent while focused on the rail does not move focus.
 	testutil.Equal(t, f.SetAgentPresent(false), false)
 }
+
+func TestFocusMachine_FullscreenToggleAndCarry(t *testing.T) {
+	f := NewFocusMachine()
+	// Rail toggle is a consumed no-op: fullscreen never turns on.
+	f.ToggleFullscreen()
+	testutil.Equal(t, f.Fullscreen(), false)
+
+	f.Advance() // → coord
+	f.ToggleFullscreen()
+	testutil.Equal(t, f.Fullscreen(), true)
+	// Advancing carries fullscreen to the next pane.
+	f.Advance() // → agent
+	testutil.Equal(t, f.State(), FocusAgent)
+	testutil.Equal(t, f.Fullscreen(), true)
+	// Toggle off again.
+	f.ToggleFullscreen()
+	testutil.Equal(t, f.Fullscreen(), false)
+}
+
+func TestFocusMachine_FullscreenClearsOnReturnToRail(t *testing.T) {
+	t.Run("retreat to rail", func(t *testing.T) {
+		f := NewFocusMachine()
+		f.Advance() // → coord
+		f.ToggleFullscreen()
+		testutil.Equal(t, f.Fullscreen(), true)
+		f.Retreat() // coord → rail
+		testutil.Equal(t, f.State(), FocusRail)
+		testutil.Equal(t, f.Fullscreen(), false)
+	})
+	t.Run("ctrl+q to rail", func(t *testing.T) {
+		f := NewFocusMachine()
+		f.Advance()
+		f.Advance() // → agent
+		f.ToggleFullscreen()
+		testutil.Equal(t, f.Fullscreen(), true)
+		f.ToRail()
+		testutil.Equal(t, f.Fullscreen(), false)
+	})
+	t.Run("rebalance off disappearing pane", func(t *testing.T) {
+		f := NewFocusMachine()
+		f.Advance() // → coord
+		f.ToggleFullscreen()
+		testutil.Equal(t, f.Fullscreen(), true)
+		// Both panes vanish (narrow terminal) → focus bumps to rail, fullscreen off.
+		f.SetAgentPresent(false)
+		f.SetCoordPresent(false)
+		testutil.Equal(t, f.State(), FocusRail)
+		testutil.Equal(t, f.Fullscreen(), false)
+	})
+	t.Run("click rail clears fullscreen", func(t *testing.T) {
+		f := NewFocusMachine()
+		f.Advance() // → coord
+		f.ToggleFullscreen()
+		testutil.Equal(t, f.Fullscreen(), true)
+		f.SetRegion(FocusRail)
+		testutil.Equal(t, f.Fullscreen(), false)
+	})
+}

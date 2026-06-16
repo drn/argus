@@ -73,3 +73,53 @@ func TestHeraPage_FocusBorderReflectsState(t *testing.T) {
 	p.Machine().Advance()
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
 }
+
+func TestHeraPage_CtrlZTogglesFullscreen(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t-w")
+	p := NewHeraPage(d)
+	p.Refresh()
+	h := p.InputHandler()
+
+	// On the rail, Ctrl+Z is a consumed no-op — fullscreen stays off.
+	h(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().Fullscreen(), false)
+
+	// Move focus into the coordinator pane, then Ctrl+Z fullscreens it.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().Fullscreen(), true)
+	// And off again.
+	h(tcell.NewEventKey(tcell.KeyCtrlZ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().Fullscreen(), false)
+}
+
+func TestHeraPage_FullscreenDrawRendersSinglePane(t *testing.T) {
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(100, 30)
+
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t-w")
+	p := NewHeraPage(d)
+	p.Refresh()
+	p.SetRect(0, 0, 100, 30)
+
+	// Focus the coordinator pane and fullscreen it.
+	p.Machine().Advance() // → coord
+	p.Machine().ToggleFullscreen()
+	p.Draw(sim) // fullscreen path, must not panic
+
+	// The coordinator pane fills the area right of the rail; the agent pane's
+	// hit-test rect collapsed to zero width.
+	testutil.Equal(t, p.agentW, 0)
+	if p.coordW <= 0 {
+		t.Fatalf("expected fullscreen coord pane to have positive width, got %d", p.coordW)
+	}
+}
