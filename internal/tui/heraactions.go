@@ -281,44 +281,97 @@ func (a *App) heraCascadeDeleteSubtree(childID int64) {
 	if a.heraOps == nil {
 		return
 	}
+	// The subtree snapshot is captured point-in-time (modal-open). The app tick
+	// can rebuild the rail model while the confirm is open, but every destructive
+	// op below re-validates against the LIVE DB (heraTaskBoundOutside re-queries,
+	// deleteTask re-fetches, DeleteOrchestrator keys on the stable id), so a stale
+	// pointer never destroys the wrong row — at worst a role added after modal-open
+	// keeps its task (recoverable from the Tasks tab), matching orchestrator-delete.
 	subtree := a.heraPage.Rail().Model().BridgeSubtree(childID)
 	if len(subtree) == 0 {
 		return
 	}
-	agents, worktrees := 0, 0
+	subtreeIDs := make(map[int64]bool, len(subtree))
+	for _, o := range subtree {
+		subtreeIDs[o.ID] = true
+	}
+	// Count distinct managed tasks and, accurately, how many worktrees the cascade
+	// destroys: a task is destroyed iff it has NO live binding OUTSIDE the subtree
+	// (an internal bridge task between two subtree orchestrators counts as
+	// in-subtree and IS destroyed). This matches the action below exactly, so the
+	// modal never undercounts internal-bridge worktrees in a deep (≥2 level) subtree.
+	agents, worktrees, preserved := 0, 0, 0
+	seen := make(map[string]bool)
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
-			if r.Kind == db.HeraKindCoordinator || !r.Live {
+			if !r.Live || r.TaskID == "" {
 				continue
 			}
-			agents++
-			if a.heraTaskSolelyBoundTo(r) {
+			if r.Kind != db.HeraKindCoordinator {
+				agents++
+			}
+			if seen[r.TaskID] {
+				continue
+			}
+			seen[r.TaskID] = true
+			if a.heraTaskBoundOutside(r.TaskID, subtreeIDs) {
+				preserved++
+			} else {
 				worktrees++
 			}
 		}
 	}
 	title := "Delete sub-team " + subtree[0].Name + "?"
 	msg := fmt.Sprintf(
-		"This removes %d orchestrator(s) and %d agent(s), stops their sessions, and deletes %d worktree(s) + branch(es). Tasks bound in another orchestrator are preserved.",
-		len(subtree), agents, worktrees)
-	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeDelete(subtree) })
+		"This removes %d orchestrator(s) and %d agent(s), stops their sessions, and deletes %d worktree(s) + branch(es). %d task(s) bound in another orchestrator are preserved.",
+		len(subtree), agents, worktrees, preserved)
+	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeDelete(subtree, subtreeIDs) })
+}
+
+// heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
+// an orchestrator NOT in the subtree set — i.e. it must be preserved on cascade
+// (multi-binding safety). A task bound only within the subtree (including an
+// internal bridge between two subtree orchestrators) returns false and is
+// destroyed. A query error errs on the side of preserving (returns true).
+func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool) bool {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return true
+	}
+	live, err := d.ListHeraLiveBindingsByTask(taskID)
+	if err != nil {
+		return true
+	}
+	for _, b := range live {
+		if !subtreeIDs[b.OrchestratorID] {
+			return true
+		}
+	}
+	return false
 }
 
 // heraDoCascadeDelete performs the destructive subtree teardown after the
-// operator confirms. For each orchestrator it first destroys every sole-bound
-// managed task (stops the session, removes worktree + branch, ends the binding),
-// then deletes the orchestrator (cascading its remaining roles/bindings). A task
-// bound elsewhere (e.g. a bridge task still held by a parent) is preserved; its
-// binding under this subtree just ends with the orchestrator delete.
-func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView) {
+// operator confirms. For each orchestrator it destroys every managed task whose
+// live bindings are ALL within the subtree (stops the session, removes worktree +
+// branch — deleteTask ends all the task's bindings), then deletes the
+// orchestrator (cascading its remaining roles/bindings). A task bound OUTSIDE the
+// subtree (e.g. a bridge task still held by a non-subtree parent) is preserved.
+// The destroyed set guards against double-deleting a task reached via two roles.
+func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView, subtreeIDs map[int64]bool) {
+	destroyed := make(map[string]bool)
 	for _, o := range subtree {
 		for i := range o.Roles {
 			r := &o.Roles[i]
-			if r.Live && r.TaskID != "" && a.heraTaskSolelyBoundTo(r) {
-				if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
-					a.deleteTask(t)
-				}
+			if !r.Live || r.TaskID == "" || destroyed[r.TaskID] {
+				continue
+			}
+			if a.heraTaskBoundOutside(r.TaskID, subtreeIDs) {
+				continue // bound elsewhere — preserve
+			}
+			destroyed[r.TaskID] = true
+			if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
+				a.deleteTask(t)
 			}
 		}
 		if err := a.heraOps.DeleteOrchestrator(o.ID); err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
+	"github.com/drn/argus/internal/uxlog"
 )
 
 // RoleView is the read-only render projection of one hera role plus the live
@@ -324,6 +325,10 @@ func BuildModel(r HeraReader) (Model, error) {
 		for _, b := range latest {
 			roleToLatest[b.RoleID] = b
 		}
+	} else {
+		// This read failing silently reverts the headline latest-binding nesting to
+		// live-only, so log it (CLAUDE.md: log guards that silently skip work).
+		uxlog.Log("[hera-view] latest-binding read failed, falling back to live bridge: %v", lerr)
 	}
 
 	// meta:hera.ready_to_close lives in the task-addressed task_meta sidecar.

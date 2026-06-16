@@ -275,6 +275,65 @@ func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 	testutil.Nil(t, gotCW)
 }
 
+// TestSmoke_HeraCascadeDeleteDepth2Count pins the accurate worktree count for a
+// 2-level subtree: an INTERNAL bridge task (bound under two subtree
+// orchestrators) is destroyed and MUST be counted, while a task bound under a
+// non-subtree parent is preserved and excluded. Guards against the count
+// undercounting internal-bridge worktrees.
+func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
+	d := testDB(t)
+	a := seedHeraOrch(t, d, "orch-a") // root (alpha-first)
+	c := seedHeraOrch(t, d, "orch-c") // nested under a (bridge task tc)
+	g := seedHeraOrch(t, d, "orch-g") // nested under c (bridge task tg)
+
+	mk := func(orch int64, name string, kind db.HeraRoleKind, task string) {
+		r, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orch, Name: name, Kind: kind, ArgusProject: "p"})
+		testutil.NoError(t, err)
+		if _, err := d.Get(task); err != nil {
+			testutil.NoError(t, d.Add(&model.Task{ID: task, Name: task, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		}
+		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: r.ID, ArgusTaskID: task, WorktreePath: "/" + name})
+		testutil.NoError(t, err)
+	}
+	mk(a, "coordA", db.HeraKindCoordinator, "ta")
+	mk(a, "workerR", db.HeraKindWorker, "tc") // bridges orch-c (tc is c's coord)
+	mk(c, "coordC", db.HeraKindCoordinator, "tc")
+	mk(c, "workerC", db.HeraKindWorker, "tg") // bridges orch-g (tg is g's coord) — INTERNAL bridge
+	mk(g, "coordG", db.HeraKindCoordinator, "tg")
+	mk(g, "workerG", db.HeraKindWorker, "twg") // sole-bound leaf
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+	// Row 1 is orch-a's workerR (bridges orch-c); cascade subtree = {orch-c, orch-g}.
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
+	syncUI(t, app.tapp)
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
+	syncUI(t, app.tapp)
+
+	// tg (internal bridge c↔g) + twg (leaf) = 2 worktrees; tc preserved (bound
+	// under orch-a, outside the subtree). The count must NOT undercount tg.
+	readUI(t, app.tapp, func() {
+		testutil.Contains(t, app.heraConfirmModal.Message(), "2 worktree(s)")
+	})
+	sim.InjectKey(tcell.KeyRune, 'y', 0)
+	syncUI(t, app.tapp)
+
+	_, err := d.HeraOrchestratorByName("orch-c")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	_, err = d.HeraOrchestratorByName("orch-g")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	gotTg, _ := d.Get("tg")
+	testutil.Nil(t, gotTg) // internal bridge destroyed
+	gotTwg, _ := d.Get("twg")
+	testutil.Nil(t, gotTwg) // leaf destroyed
+	gotTc, err := d.Get("tc")
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotTc != nil, true) // bound under orch-a → preserved
+}
+
 // TestSmoke_HeraTabKeysDoNotBreakTabSwitchOrQuit audits the key-collision
 // surface: 1/2/3 still switch tabs while the Hera tab is focused.
 func TestSmoke_HeraTabKeysDoNotBreakTabSwitch(t *testing.T) {

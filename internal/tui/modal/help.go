@@ -78,7 +78,7 @@ var HelpSections = []HelpSection{
 			{"a", "toggle archive"},
 			{"P", "toggle pin"},
 			{"s / S", "advance / revert status"},
-			{"ctrl+d", "delete role/orchestrator"},
+			{"ctrl+d", "delete role/orchestrator (whole sub-team on a nested row)"},
 		},
 	},
 	{

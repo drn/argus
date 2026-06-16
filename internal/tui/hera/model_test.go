@@ -182,6 +182,58 @@ func TestBuildModel_BridgeTaskID(t *testing.T) {
 	})
 }
 
+func TestOrchView_CoordBridgeTaskID(t *testing.T) {
+	t.Run("live coordinator returns its task", func(t *testing.T) {
+		o := OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc", BridgeTaskID: "tc"},
+		}}
+		testutil.Equal(t, o.CoordBridgeTaskID(), "tc")
+	})
+	t.Run("ended-non-teardown coordinator still bridges via BridgeTaskID", func(t *testing.T) {
+		o := OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindCoordinator, Live: false, TaskID: "", BridgeTaskID: "tc", LinkEndReason: "argus_deleted"},
+		}}
+		testutil.Equal(t, o.CoordBridgeTaskID(), "tc")
+	})
+	t.Run("no coordinator role yields empty", func(t *testing.T) {
+		o := OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindWorker, Live: true, TaskID: "tw", BridgeTaskID: "tw"},
+		}}
+		testutil.Equal(t, o.CoordBridgeTaskID(), "")
+	})
+	t.Run("first coordinator wins", func(t *testing.T) {
+		o := OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindCoordinator, Live: true, TaskID: "t1", BridgeTaskID: "t1"},
+			{Kind: db.HeraKindCoordinator, Live: true, TaskID: "t2", BridgeTaskID: "t2"},
+		}}
+		testutil.Equal(t, o.CoordBridgeTaskID(), "t1")
+	})
+}
+
+func TestSelection_FocusTaskID(t *testing.T) {
+	coordOrch := &OrchView{Roles: []RoleView{
+		{Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+	}}
+	t.Run("worker selection returns the worker task", func(t *testing.T) {
+		s := Selection{Role: &RoleView{Kind: db.HeraKindWorker, TaskID: "tw"}, Orch: coordOrch}
+		testutil.Equal(t, s.FocusTaskID(), "tw")
+	})
+	t.Run("coordinator header (no role) returns the coordinator task", func(t *testing.T) {
+		s := Selection{Role: nil, Orch: coordOrch}
+		testutil.Equal(t, s.IsCoordinator(), true)
+		testutil.Equal(t, s.FocusTaskID(), "tc")
+	})
+	t.Run("coordinator-less header returns empty", func(t *testing.T) {
+		s := Selection{Role: nil, Orch: &OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindWorker, Live: true, TaskID: "tw"},
+		}}}
+		testutil.Equal(t, s.FocusTaskID(), "")
+	})
+	t.Run("empty selection returns empty", func(t *testing.T) {
+		testutil.Equal(t, Selection{}.FocusTaskID(), "")
+	})
+}
+
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel
 // surfaces read errors rather than swallowing them.
 type errReader struct{ HeraReader }

@@ -93,7 +93,7 @@ JOIN latest child_coord_bnd
 JOIN latest parent_bnd
     ON parent_bnd.argus_task_id = child_coord_bnd.argus_task_id
     AND parent_bnd.orchestrator_id IN (%s)
-    AND (parent_bnd.ended_at IS NULL OR parent_bnd.end_reason NOT IN ('reparented', 'user_deleted'))
+    AND (parent_bnd.ended_at IS NULL OR COALESCE(parent_bnd.end_reason, '') NOT IN ('reparented', 'user_deleted'))
 WHERE child_orch.archived_at IS NULL`, strings.Join(placeholders, ","))
 
 		rows, err := d.conn.Query(query, args...)
