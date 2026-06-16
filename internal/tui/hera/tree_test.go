@@ -104,6 +104,30 @@ func TestHeraTreeNodes(t *testing.T) {
 		testutil.Equal(t, ids["ta"] && ids["tb"], true)
 	})
 
+	t.Run("archived sub-orchestrator is pruned from the subtree", func(t *testing.T) {
+		// A (active): coord=ta, worker=tb. B (archived): coord=tb, worker=tc.
+		// B bridges off A via tb, but B is archived — its branch (tc) must NOT
+		// appear, mirroring SubtreeOrchIDs pruning archived descendants. tb still
+		// renders as A's worker.
+		a := orchView(1, "A", "ta", wk("w", "tb"))
+		b := orchView(2, "B", "tb", wk("w", "tc"))
+		b.Archived = true
+		m := Model{Active: []OrchView{a}, Archived: []OrchView{b}}
+		nodes := heraTreeNodes(m, &m.Active[0])
+		ids := nodeIDs(nodes)
+		testutil.Equal(t, ids["ta"] && ids["tb"], true)
+		testutil.Equal(t, ids["tc"], false) // archived sub-orch branch pruned
+		testutil.Equal(t, len(nodes), 2)
+	})
+
+	t.Run("root resolves from the Pinned section", func(t *testing.T) {
+		root := orchView(1, "orch", "tc", wk("w1", "ta"))
+		m := Model{Pinned: []OrchView{root}}
+		nodes := heraTreeNodes(m, &m.Pinned[0])
+		testutil.Equal(t, len(nodes), 2)
+		testutil.DeepEqual(t, depsByID(nodes, "ta"), []string{"tc"})
+	})
+
 	t.Run("archived roles are skipped", func(t *testing.T) {
 		root := orchView(1, "orch", "tc", wk("w1", "ta"))
 		root.Roles = append(root.Roles, RoleView{

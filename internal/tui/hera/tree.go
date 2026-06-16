@@ -27,6 +27,9 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 	}
 
 	// Index every orchestrator in the model by ID (pinned + active + archived).
+	// Archived orchestrators are kept in the index only so the root can be
+	// resolved when the user selects an archived orchestrator directly; they are
+	// PRUNED as BFS descendants below (see the archived-skip in the child walk).
 	all := make(map[int64]*OrchView)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
 		for i := range sec {
@@ -40,7 +43,11 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 	}
 
 	// BFS the subtree from root. A child is reached via the multi-binding bridge:
-	// its coordinator task appears in some ancestor's worker-task set.
+	// its coordinator task appears in some ancestor's worker-task set. Archived
+	// orchestrators are pruned as descendants — and because nesting flows THROUGH
+	// them, their whole branch drops out — mirroring the DB-side SubtreeOrchIDs
+	// (`child_orch.archived_at IS NULL`). The root is always included even if it
+	// is itself archived (the user selected it explicitly).
 	subtree := make([]*OrchView, 0, len(all))
 	visited := map[int64]bool{root.ID: true}
 	queue := []*OrchView{root}
@@ -50,7 +57,7 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 		subtree = append(subtree, p)
 		workers := workerTaskSet(p)
 		for id, c := range all {
-			if visited[id] {
+			if visited[id] || c.Archived {
 				continue
 			}
 			if ct := c.CoordTaskID(); ct != "" && workers[ct] {
