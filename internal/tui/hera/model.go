@@ -121,6 +121,81 @@ func (o *OrchView) CoordBridgeTaskID() string {
 	return ""
 }
 
+// bridgeIndex maps each orchestrator's coordinator bridge task to the
+// orchestrator it coordinates (first wins — a coord task is unique to one
+// orchestrator in practice). A worker whose bridge task matches a key IS that
+// orchestrator's coordinator, so the keyed orchestrator nests under the worker.
+// Pointers index into the receiver's backing arrays (shared with the caller's
+// model), so the result is stable for synchronous use on the UI thread.
+func (m Model) bridgeIndex() map[string]*OrchView {
+	idx := make(map[string]*OrchView)
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			if k := sec[i].CoordBridgeTaskID(); k != "" {
+				if _, dup := idx[k]; !dup {
+					idx[k] = &sec[i]
+				}
+			}
+		}
+	}
+	return idx
+}
+
+// consumedSet marks every orchestrator that is bridged as a child by some OTHER
+// orchestrator's (non-teardown) worker, so the rail's top-level passes skip it
+// (it renders nested instead).
+func (m Model) consumedSet(bridge map[string]*OrchView) map[int64]bool {
+	consumed := make(map[int64]bool)
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			p := &sec[i]
+			for j := range p.Roles {
+				w := &p.Roles[j]
+				if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+					continue
+				}
+				if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != p.ID {
+					consumed[c.ID] = true
+				}
+			}
+		}
+	}
+	return consumed
+}
+
+// BridgeSubtree returns the orchestrator with id rootID and every orchestrator
+// nested beneath it through the worker→coordinator bridge, inclusive, in
+// pre-order. Cycle-safe (visited set). Used by the rail's Ctrl+D cascade to tear
+// down a whole nested sub-team. Empty when rootID is unknown.
+func (m Model) BridgeSubtree(rootID int64) []*OrchView {
+	start := m.OrchByID(rootID)
+	if start == nil {
+		return nil
+	}
+	bridge := m.bridgeIndex()
+	var out []*OrchView
+	visited := make(map[int64]bool)
+	var walk func(o *OrchView)
+	walk = func(o *OrchView) {
+		if o == nil || visited[o.ID] {
+			return
+		}
+		visited[o.ID] = true
+		out = append(out, o)
+		for i := range o.Roles {
+			w := &o.Roles[i]
+			if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+				continue
+			}
+			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID {
+				walk(c)
+			}
+		}
+	}
+	walk(start)
+	return out
+}
+
 // bridgeTaskID returns a role's structural bridge key: its latest-binding task
 // (BridgeTaskID), falling back to the live TaskID when the model did not
 // populate the bridge field (older callers / hand-built test fixtures). In
@@ -161,6 +236,11 @@ func (o *OrchView) CoordRole() *RoleView {
 type Selection struct {
 	Role *RoleView // selected role; nil when the cursor is on an orch header
 	Orch *OrchView // selected/containing orchestrator; nil when the rail is empty
+	// BridgeChildOrchID is the id of the sub-orchestrator nested under this row
+	// when the selected worker bridges one (0 otherwise). Pane binding and most
+	// mutations ignore it (they act on the worker Role), but Ctrl+D uses it to
+	// cascade-tear-down the whole nested sub-team rooted at this child.
+	BridgeChildOrchID int64
 }
 
 // TaskID returns the selected role's bound argus task, or "" when none.

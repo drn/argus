@@ -221,6 +221,76 @@ func TestRail_ArchivedBridgeNestsDimmedInPlace(t *testing.T) {
 	}
 }
 
+func TestRail_PerCoordinatorArchiveExpando(t *testing.T) {
+	o := OrchView{ID: 1, Name: "o", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+		{RoleID: 12, Name: "active-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t12"},
+		{RoleID: 13, Name: "old-wkr", Kind: db.HeraKindWorker, Archived: true, TaskID: "t13"},
+	}}
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{o}})
+
+	// header(0) + active-wkr(1) + per-coord "Archive (1)" expando(2); the archived
+	// role is hidden under the collapsed-by-default expando.
+	testutil.Equal(t, r.Rows(), 3)
+	testutil.Equal(t, r.depthOf("old-wkr"), -1)
+	var expando *railRow
+	for i := range r.rows {
+		if r.rows[i].kind == rrArchiveExpando && r.rows[i].archiveOwner == 1 {
+			expando = &r.rows[i]
+		}
+	}
+	testutil.Equal(t, expando != nil, true)
+	testutil.Contains(t, expando.label, "Archive (1)")
+
+	// Move cursor to the expando and expand it → the archived role appears dimmed.
+	for r.rows[r.cursor].archiveOwner != 1 {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	testutil.Equal(t, r.Rows(), 4)
+	for i := range r.rows {
+		if r.rows[i].role != nil && r.rows[i].role.Name == "old-wkr" {
+			testutil.Equal(t, r.rows[i].dim, true)
+		}
+	}
+}
+
+func TestModel_BridgeSubtree(t *testing.T) {
+	// R → C → G chain plus an unrelated orchestrator. BridgeSubtree(C) returns
+	// {C, G}; BridgeSubtree(R) returns {R, C, G}; an unknown id returns nil.
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "tg"))
+	g := orchView(3, "G", "tg", wk("wg", "twg"))
+	other := orchView(9, "Other", "to", wk("wo", "two"))
+	m := Model{Active: []OrchView{r, c, g, other}}
+
+	names := func(os []*OrchView) []string {
+		out := make([]string, len(os))
+		for i, o := range os {
+			out[i] = o.Name
+		}
+		return out
+	}
+	testutil.DeepEqual(t, names(m.BridgeSubtree(2)), []string{"C", "G"})
+	testutil.DeepEqual(t, names(m.BridgeSubtree(1)), []string{"R", "C", "G"})
+	testutil.Nil(t, m.BridgeSubtree(999))
+}
+
+func TestRail_SelectionCarriesBridgeChild(t *testing.T) {
+	root := orchView(1, "R", "tr", wk("w", "tc"))
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root, child}})
+
+	// Cursor on the bridging worker row → Selection carries the child orch id so
+	// Ctrl+D can cascade; a non-bridging row carries 0.
+	r.cursor = 1 // the "w" bridging row
+	testutil.Equal(t, r.Selection().BridgeChildOrchID, child.ID)
+	r.cursor = 2 // "wc" leaf (no bridge)
+	testutil.Equal(t, r.Selection().BridgeChildOrchID, int64(0))
+}
+
 func TestRail_FreelanceSectionCollapses(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{

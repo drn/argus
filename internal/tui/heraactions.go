@@ -203,6 +203,12 @@ func (a *App) heraOpenDelete(sel hera.Selection) {
 		return
 	}
 	switch {
+	case sel.Role != nil && sel.BridgeChildOrchID != 0:
+		// The selected row bridges a nested sub-team — Ctrl+D tears down the whole
+		// subtree (the child orchestrator and every orchestrator nested beneath
+		// it), confirm-gated with a destructive warning that enumerates how many
+		// orchestrators / agents / worktrees go away.
+		a.heraCascadeDeleteSubtree(sel.BridgeChildOrchID)
 	case sel.Role != nil:
 		r := sel.Role
 		msg := "Removes the role and ends its binding"
@@ -261,6 +267,63 @@ func (a *App) heraDeleteRole(r *hera.RoleView) {
 func (a *App) heraDeleteOrchestrator(orchID int64) {
 	if err := a.heraOps.DeleteOrchestrator(orchID); err != nil {
 		a.statusbar.SetError("Delete orchestrator failed: " + err.Error())
+	}
+	a.heraRefresh()
+}
+
+// heraCascadeDeleteSubtree confirms then tears down the entire nested sub-team
+// rooted at childID (the orchestrator nested under the selected bridging worker
+// row, plus every orchestrator nested beneath it). The confirm modal is
+// explicitly destructive: it tells the operator how many orchestrators and
+// agents are removed and how many worktrees+branches are destroyed. Tasks bound
+// in another (non-subtree) orchestrator are preserved — multi-binding safety.
+func (a *App) heraCascadeDeleteSubtree(childID int64) {
+	if a.heraOps == nil {
+		return
+	}
+	subtree := a.heraPage.Rail().Model().BridgeSubtree(childID)
+	if len(subtree) == 0 {
+		return
+	}
+	agents, worktrees := 0, 0
+	for _, o := range subtree {
+		for i := range o.Roles {
+			r := &o.Roles[i]
+			if r.Kind == db.HeraKindCoordinator || !r.Live {
+				continue
+			}
+			agents++
+			if a.heraTaskSolelyBoundTo(r) {
+				worktrees++
+			}
+		}
+	}
+	title := "Delete sub-team " + subtree[0].Name + "?"
+	msg := fmt.Sprintf(
+		"This removes %d orchestrator(s) and %d agent(s), stops their sessions, and deletes %d worktree(s) + branch(es). Tasks bound in another orchestrator are preserved.",
+		len(subtree), agents, worktrees)
+	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeDelete(subtree) })
+}
+
+// heraDoCascadeDelete performs the destructive subtree teardown after the
+// operator confirms. For each orchestrator it first destroys every sole-bound
+// managed task (stops the session, removes worktree + branch, ends the binding),
+// then deletes the orchestrator (cascading its remaining roles/bindings). A task
+// bound elsewhere (e.g. a bridge task still held by a parent) is preserved; its
+// binding under this subtree just ends with the orchestrator delete.
+func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView) {
+	for _, o := range subtree {
+		for i := range o.Roles {
+			r := &o.Roles[i]
+			if r.Live && r.TaskID != "" && a.heraTaskSolelyBoundTo(r) {
+				if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
+					a.deleteTask(t)
+				}
+			}
+		}
+		if err := a.heraOps.DeleteOrchestrator(o.ID); err != nil {
+			a.statusbar.SetError("Delete sub-team failed: " + err.Error())
+		}
 	}
 	a.heraRefresh()
 }

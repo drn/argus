@@ -25,9 +25,9 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 4. Per-coordinator Archive (N) expando
 
-- [ ] 4.1 Render archived roles under each coordinator's agents in a collapsed-by-default expando (separate from the bottom archived-orchestrator section).
-- [ ] 4.2 Carry the GUARD-destructive lessons on the archive path (confirm before archiving live work; teardown ends ALL prior links by role id).
-- [ ] 4.3 Tests: expando renders + collapses; live-work archive is confirm-gated.
+- [x] 4.1 Render archived roles under each coordinator's agents in a collapsed-by-default expando (separate from the bottom archived-orchestrator section).
+- [x] 4.2 Carry the GUARD-destructive lessons on the archive path (confirm before archiving live work; teardown ends ALL prior links by role id).
+- [x] 4.3 Tests: expando renders + collapses; live-work archive is confirm-gated.
 
 ## 5. Spinner
 

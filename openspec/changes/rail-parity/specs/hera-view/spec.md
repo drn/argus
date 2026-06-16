@@ -99,6 +99,22 @@ Derived from: `internal/tui/hera/rail.go` (PR cell in `drawRoleRow`), `internal/
 - **WHEN** a managed role's bound task has a non-empty "pr" url
 - **THEN** its rail row renders a `PR` indicator
 
+### Requirement: Ctrl+D on a bridging row cascades the nested sub-team (area 7)
+
+The system SHALL, when Ctrl+D is pressed on a worker row that bridges a nested sub-orchestrator, tear down the WHOLE nested sub-team rooted at that child — the child orchestrator and every orchestrator nested beneath it — behind a confirmation modal. The modal MUST be explicitly destructive: it states how many orchestrators and agents are removed and how many worktrees + branches are destroyed. On confirm, each orchestrator's sole-bound managed tasks are destroyed (session stopped, worktree + branch removed, binding ended) and the orchestrator is deleted (cascading its roles/bindings); a task bound in another (non-subtree) orchestrator — e.g. a bridge task still held by the parent — is PRESERVED (multi-binding safety). A non-bridging row keeps the conservative single-role delete.
+
+Derived from: `internal/tui/hera/rail.go` (`Selection.BridgeChildOrchID`), `internal/tui/hera/model.go` (`BridgeSubtree`), `internal/tui/heraactions.go` (`heraCascadeDeleteSubtree`, `heraDoCascadeDelete`).
+
+#### Scenario: Cascade warns and tears down the subtree
+
+- **WHEN** Ctrl+D is pressed on a worker row that nests a sub-team and the operator confirms
+- **THEN** the confirm modal states the number of orchestrators/agents/worktrees affected, the child orchestrator and its sole-bound tasks are destroyed, and a bridge task still bound under the parent is preserved
+
+#### Scenario: Non-bridging row keeps conservative delete
+
+- **WHEN** Ctrl+D is pressed on a worker row that nests no sub-team
+- **THEN** only that role is removed (the underlying task is destroyed only if sole-bound), with no subtree cascade
+
 ## MODIFIED Requirements
 
 ### Requirement: Orchestration tree projects the role hierarchy in-memory (area 6)

@@ -37,13 +37,14 @@ type railRow struct {
 	// Collapse target (only one is set, and only when collapsible).
 	collOrchID    int64 // >0 → toggle collapsed[collOrchID]
 	collFreelance bool
-	collArchive   bool
+	collArchive   bool  // bottom Archive section (archived ROOT orchestrators)
+	archiveOwner  int64 // >0 → per-coordinator Archive expando for this orch's archived roles
 }
 
 func (r railRow) selectable() bool {
 	switch r.kind {
 	case rrOrch, rrRole, rrFreelanceRole, rrArchiveExpando:
-		return true
+		return true // both the bottom Archive section and per-coordinator expandos
 	case rrSectionHeader:
 		// The Freelance fold header is selectable so the cursor can land on it
 		// to collapse/expand; the plain "Pinned" label is not.
@@ -74,6 +75,9 @@ type Rail struct {
 	collapsed        map[int64]bool
 	freelanceCollap  bool
 	archiveCollapsed bool
+	// coordArchiveOpen tracks per-coordinator Archive expandos (keyed by orch id).
+	// Absent/false → collapsed (the default), matching the bottom Archive section.
+	coordArchiveOpen map[int64]bool
 
 	focused bool // drives the border-highlight style
 
@@ -90,6 +94,7 @@ func NewRail() *Rail {
 		Box:              tview.NewBox(),
 		collapsed:        make(map[int64]bool),
 		archiveCollapsed: true,
+		coordArchiveOpen: make(map[int64]bool),
 	}
 }
 
@@ -230,44 +235,11 @@ func (r *Rail) buildRows() {
 	}
 }
 
-// bridgeIndex maps each orchestrator's coordinator bridge task to the
-// orchestrator it coordinates (first wins — a coord task is unique to one
-// orchestrator in practice). A worker whose bridge task matches a key IS that
-// orchestrator's coordinator, so the keyed orchestrator nests under the worker.
-func (r *Rail) bridgeIndex() map[string]*OrchView {
-	idx := make(map[string]*OrchView)
-	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
-		for i := range sec {
-			if k := sec[i].CoordBridgeTaskID(); k != "" {
-				if _, dup := idx[k]; !dup {
-					idx[k] = &sec[i]
-				}
-			}
-		}
-	}
-	return idx
-}
-
-// consumedSet marks every orchestrator that is bridged as a child by some OTHER
-// orchestrator's (non-teardown) worker, so the top-level passes skip it (it
-// renders nested instead).
-func (r *Rail) consumedSet(bridge map[string]*OrchView) map[int64]bool {
-	consumed := make(map[int64]bool)
-	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
-		for i := range sec {
-			p := &sec[i]
-			for j := range p.Roles {
-				w := &p.Roles[j]
-				if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
-					continue
-				}
-				if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != p.ID {
-					consumed[c.ID] = true
-				}
-			}
-		}
-	}
-	return consumed
+// bridgeIndex / consumedSet delegate to the Model so the rail and the delete
+// cascade share one bridge definition.
+func (r *Rail) bridgeIndex() map[string]*OrchView { return r.model.bridgeIndex() }
+func (r *Rail) consumedSet(b map[string]*OrchView) map[int64]bool {
+	return r.model.consumedSet(b)
 }
 
 // appendOrch emits an orchestrator HEADER (the folded coordinator) and, when
@@ -304,30 +276,59 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*O
 // under o): nesting is purely visual, so mutations (notably Ctrl+D) act on the
 // worker role, never the child orchestrator — conservative multi-binding safety.
 func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	var archived []*RoleView
 	for i := range o.Roles {
 		w := &o.Roles[i]
 		if w.Kind == db.HeraKindCoordinator {
 			continue // folded into the header / the bridging row above
 		}
-		childDim := dim || w.Archived
+		if w.Archived {
+			archived = append(archived, w) // hoisted into the per-coordinator expando
+			continue
+		}
+		r.appendWorkerRow(o.ID, w, depth, dim, bridge, placed)
+	}
 
-		var child *OrchView
-		if roleBridges(w) {
-			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID && !placed[c.ID] {
-				child = c
+	// Per-coordinator Archive (N) expando: archived roles fold under their
+	// coordinator's active agents, collapsed by default. Distinct from the bottom
+	// Archive section (archived ROOT orchestrators). Archived roles render dimmed
+	// and still nest any sub-team they bridge (forced-dim down the subtree).
+	if len(archived) > 0 {
+		r.rows = append(r.rows, railRow{
+			kind:         rrArchiveExpando,
+			archiveOwner: o.ID,
+			depth:        depth,
+			dim:          dim,
+			label:        fmt.Sprintf("Archive (%d)", len(archived)),
+		})
+		if r.coordArchiveOpen[o.ID] {
+			for _, w := range archived {
+				r.appendWorkerRow(o.ID, w, depth+1, true, bridge, placed)
 			}
 		}
-		collID := int64(0)
-		if child != nil {
-			collID = child.ID
-		}
-		r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: childDim, collOrchID: collID})
+	}
+}
 
-		if child != nil {
-			placed[child.ID] = true
-			if !r.collapsed[child.ID] {
-				r.appendOrchWorkers(child, depth+1, childDim || child.Archived, bridge, placed)
-			}
+// appendWorkerRow emits one worker role row at `depth` and, when it bridges a
+// not-yet-placed child orchestrator, nests the child's workers one level deeper.
+// dim forces the dimmed style (archived placement propagates down the subtree).
+func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	childDim := dim || w.Archived
+	var child *OrchView
+	if roleBridges(w) {
+		if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != ownerID && !placed[c.ID] {
+			child = c
+		}
+	}
+	collID := int64(0)
+	if child != nil {
+		collID = child.ID
+	}
+	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: childDim, collOrchID: collID})
+	if child != nil {
+		placed[child.ID] = true
+		if !r.collapsed[child.ID] {
+			r.appendOrchWorkers(child, depth+1, childDim || child.Archived, bridge, placed)
 		}
 	}
 }
@@ -405,6 +406,8 @@ func (r *Rail) ToggleCollapse() {
 	switch {
 	case row.collOrchID > 0:
 		r.collapsed[row.collOrchID] = !r.collapsed[row.collOrchID]
+	case row.archiveOwner > 0:
+		r.coordArchiveOpen[row.archiveOwner] = !r.coordArchiveOpen[row.archiveOwner]
 	case row.collFreelance:
 		r.freelanceCollap = !r.freelanceCollap
 	case row.collArchive:
@@ -447,7 +450,15 @@ func (r *Rail) Selection() Selection {
 	if orch == nil && role != nil {
 		orch = r.model.OrchByID(role.OrchID)
 	}
-	return Selection{Role: role, Orch: orch}
+	sel := Selection{Role: role, Orch: orch}
+	// A role row whose collOrchID is set is a bridging sub-coordinator row; carry
+	// the child orchestrator id so Ctrl+D can cascade the nested sub-team.
+	if r.cursor >= 0 && r.cursor < len(r.rows) {
+		if row := r.rows[r.cursor]; row.role != nil && row.collOrchID > 0 {
+			sel.BridgeChildOrchID = row.collOrchID
+		}
+	}
+	return sel
 }
 
 // Rows returns the flattened row count (test seam).
@@ -539,7 +550,13 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 		if selected {
 			style = theme.StyleSelected
 		}
-		widget.DrawText(screen, textX, y, textW, chevron(r.archiveCollapsed)+" "+row.label, style)
+		// Per-coordinator expandos fold via coordArchiveOpen; the bottom Archive
+		// section folds via archiveCollapsed.
+		collapsed := r.archiveCollapsed
+		if row.archiveOwner > 0 {
+			collapsed = !r.coordArchiveOpen[row.archiveOwner]
+		}
+		widget.DrawText(screen, textX, y, textW, chevron(collapsed)+" "+row.label, style)
 	case rrOrch:
 		r.drawOrchRow(screen, textX, y, textW, row, selected)
 	case rrRole, rrFreelanceRole:

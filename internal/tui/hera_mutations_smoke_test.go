@@ -181,9 +181,13 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 	orchA := seedHeraOrch(t, d, "orch-a")
 	orchB := seedHeraOrch(t, d, "orch-b")
 	const shared = "shared"
+	// Both bindings are WORKER-kind (neither orchestrator's coordinator), so the
+	// shared task is NOT a bridge — no nesting — and Ctrl+D on orch-a's worker row
+	// is the conservative single-role delete (the cascade only fires on a bridging
+	// row). The shared task is preserved because it stays bound under orch-b.
 	rA, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orchA, Name: "wkr", Kind: db.HeraKindWorker, ArgusProject: "p"})
 	testutil.NoError(t, err)
-	rB, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orchB, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	rB, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orchB, Name: "wkr-b", Kind: db.HeraKindWorker, ArgusProject: "p"})
 	testutil.NoError(t, err)
 	testutil.NoError(t, d.Add(&model.Task{ID: shared, Name: shared, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
 	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: rA.ID, ArgusTaskID: shared, WorktreePath: "/a"})
@@ -214,6 +218,61 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 	gotTask, err := d.Get(shared)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotTask != nil, true)
+}
+
+// TestSmoke_HeraCascadeDeleteSubtree drives Ctrl+D on a bridging worker row: the
+// confirm modal warns about the destructive cascade and, on confirm, the nested
+// child orchestrator and its sole-bound agent task are torn down while the
+// multi-bound bridge task is preserved.
+func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
+	d := testDB(t)
+	parent := seedHeraOrch(t, d, "orch-a") // alpha-first → root
+	child := seedHeraOrch(t, d, "orch-c")
+	const shared = "shared" // worker in parent AND coordinator of child (the bridge)
+	const childWorkerTask = "twc"
+
+	pWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: parent, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	cCoord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: child, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	cWorker, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: child, Name: "wc", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	testutil.NoError(t, d.Add(&model.Task{ID: shared, Name: shared, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	testutil.NoError(t, d.Add(&model.Task{ID: childWorkerTask, Name: childWorkerTask, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: pWorker.ID, ArgusTaskID: shared, WorktreePath: "/p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: cCoord.ID, ArgusTaskID: shared, WorktreePath: "/c"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: cWorker.ID, ArgusTaskID: childWorkerTask, WorktreePath: "/cw"})
+	testutil.NoError(t, err)
+
+	app := New(d, agent.NewRunner(nil), false)
+	sim, stop := wireApp(t, app)
+	defer stop()
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+	// orch-c nests under orch-a's "w" row (row 1, the bridge).
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
+	syncUI(t, app.tapp)
+
+	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
+	syncUI(t, app.tapp)
+	// The confirm modal must spell out the destructive cascade.
+	readUI(t, app.tapp, func() {
+		testutil.Contains(t, app.heraConfirmModal.Message(), "removes")
+	})
+	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
+	syncUI(t, app.tapp)
+
+	// Child orchestrator gone; its sole-bound worker task destroyed; the
+	// multi-bound bridge task preserved (still bound under the parent).
+	_, err = d.HeraOrchestratorByName("orch-c")
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	gotShared, err := d.Get(shared)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotShared != nil, true)
+	gotCW, _ := d.Get(childWorkerTask) // deleted → nil task (Get reports missing)
+	testutil.Nil(t, gotCW)
 }
 
 // TestSmoke_HeraTabKeysDoNotBreakTabSwitchOrQuit audits the key-collision
