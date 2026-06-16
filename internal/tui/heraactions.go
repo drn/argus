@@ -7,6 +7,7 @@ import (
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/modal"
 	"github.com/drn/argus/internal/uxlog"
@@ -265,9 +266,18 @@ func (a *App) heraDeleteOrchestrator(orchID int64) {
 	a.heraRefresh()
 }
 
-// heraReattach restarts the dead session backing the selected role's task. The
-// page only fires this when the task has no live session, so this is the
-// existing-task restart path (startSession).
+// heraReattach revives the session backing the selected role's task. The page
+// fires it on Enter for a dead session (any role) or a live worker/freelance
+// role. Two branches:
+//
+//   - DEAD session (runner has no live session) → restart it via startSession
+//     (resumes via --session-id when a SessionID exists). Same as before, and
+//     the only path used for coordinators.
+//   - LIVE worker/freelance session → it may be SIGTSTP-suspended or otherwise
+//     stuck while still "alive" (Alive() can't tell a stopped process from a
+//     running one). Revive it the same way the Tasks pane reconnects a live
+//     session: an idle-gated in-place stop+resume (reviveHeraWorker). A busy
+//     worker, or one parked at a user prompt, is left untouched.
 func (a *App) heraReattach(sel hera.Selection) {
 	taskID := sel.TaskID()
 	if taskID == "" {
@@ -278,9 +288,81 @@ func (a *App) heraReattach(sel hera.Selection) {
 		uxlog.Log("[hera-view] reattach: task %s not found: %v", taskID, err)
 		return
 	}
-	uxlog.Log("[hera-view] reattach: restarting session for task %s (%s)", t.ID, t.Name)
-	a.startSession(t)
-	a.heraRefresh()
+	sess := a.runner.Get(taskID)
+	if sess == nil || !sess.Alive() {
+		uxlog.Log("[hera-view] reattach: restarting dead session for task %s (%s)", t.ID, t.Name)
+		a.startSession(t)
+		a.heraRefresh()
+		return
+	}
+	// Live coordinator: navigate-only (operator-interactive), never auto-restart.
+	if sel.IsCoordinator() {
+		uxlog.Log("[hera-view] reattach: live coordinator task %s — navigate only", t.ID)
+		return
+	}
+	a.reviveHeraWorker(t, sess)
+}
+
+// reviveHeraWorker brings a live-but-stuck worker session back. A SIGTSTP'd or
+// otherwise stalled agent is idle (no recent output) and not parked at a user
+// prompt; that is the signature we revive. The revive reuses the runner's
+// KickRerender — the SAME stop-and-resume primitive the Tasks pane's rerender
+// path uses — which owns the stop + resume entirely inside the runner/daemon.
+// We deliberately do NOT reuse the TUI-side pendingRerenderRestart path
+// (handleSessionExitUI), because that only restarts while the operator is
+// viewing the task in the agent view; from the Hera tab it would settle the
+// worker at InReview instead of resuming it. KickRerender resumes regardless of
+// which tab is active, so the worker comes straight back via --session-id.
+//
+// A busy worker (still producing output) or one parked at a user prompt is left
+// alone, so we never interrupt real work or dismiss a pending question. The
+// liveness/idle reads hit the daemon over RPC, so they run on a background
+// goroutine and the decision is dispatched back via QueueUpdateDraw — never
+// block the tview main goroutine (mirrors maybeKickRerender).
+func (a *App) reviveHeraWorker(task *model.Task, sess agent.SessionHandle) {
+	if task == nil || sess == nil || !sess.Alive() {
+		return
+	}
+	if task.SessionID == "" {
+		uxlog.Log("[hera-view] revive: task %s has no session ID — cannot resume in place", task.ID)
+		return
+	}
+	runner, ok := a.runner.(agent.SessionRunner)
+	if !ok {
+		uxlog.Log("[hera-view] revive: runner has no KickRerender (remote?) — skipping task %s", task.ID)
+		return
+	}
+	if runner.HasPendingRestart(task.ID) {
+		return // a kick is already in flight
+	}
+	taskID := task.ID
+	cfg := a.db.Config()
+	rows, cols := a.computePTYSize()
+	go func() {
+		idle := sess.IsIdle()
+		blocked := sessionBlockedOnPrompt(taskID, idle)
+		a.tapp.QueueUpdateDraw(func() {
+			if !sess.Alive() || runner.HasPendingRestart(taskID) {
+				return
+			}
+			if !idle {
+				uxlog.Log("[hera-view] revive: task=%s busy — not interrupting", taskID)
+				return
+			}
+			if blocked {
+				uxlog.Log("[hera-view] revive: task=%s blocked on prompt — preserving question", taskID)
+				return
+			}
+			uxlog.Log("[hera-view] revive: kicking suspended/stuck session task=%s session=%s", taskID, task.SessionID)
+			a.statusbar.SetInfo("Reviving session…")
+			if err := runner.KickRerender(task, cfg, rows, cols); err != nil {
+				a.statusbar.SetError("Revive failed: " + err.Error())
+				uxlog.Log("[hera-view] revive: kick failed task=%s: %v", taskID, err)
+			} else {
+				a.heraRefresh()
+			}
+		})
+	}()
 }
 
 // --- modal plumbing ---------------------------------------------------------

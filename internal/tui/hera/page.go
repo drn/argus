@@ -201,16 +201,46 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 		coordW = rw / 2
 		agentW = rw - coordW
 	}
-	// Record region rects + reconcile focus-machine present flags BEFORE
-	// drawing, so Tab traversal and mouse hit-testing see the live layout.
-	p.coordX, p.coordW = rx, coordW
-	p.agentX, p.agentW = rx+coordW, agentW
+	// Reconcile focus-machine present flags from the NORMAL split geometry —
+	// independent of fullscreen — so Tab traversal can still walk to the hidden
+	// pane while one pane is zoomed.
 	p.focus.SetCoordPresent(coordW >= 2)
 	p.focus.SetAgentPresent(agentW >= 2)
 
 	p.rail.SetFocused(p.focus.State() == FocusRail)
 	p.rail.SetRect(x, y, railW, h)
 	p.rail.Draw(screen)
+
+	// Fullscreen: the rail stays put and the single focused content pane fills
+	// the entire area to its right. The other content region is not drawn and
+	// its hit-test rect collapses to zero so a stale click/scroll can't land on
+	// it. Same full-rect coverage + no-Sync rules as the split path.
+	if p.focus.Fullscreen() && rw > 0 && p.focus.State() != FocusRail {
+		switch p.focus.State() {
+		case FocusCoord:
+			p.coordX, p.coordW = rx, rw
+			p.agentX, p.agentW = rx+rw, 0
+			p.coordPane.SetFocused(true)
+			p.coordPane.SetRect(rx, y, rw, h)
+			p.coordPane.Draw(screen)
+		case FocusAgent:
+			p.agentX, p.agentW = rx, rw
+			p.coordX, p.coordW = rx, 0
+			if p.detailsMode {
+				p.drawDetailsRegion(screen, y, rw, h)
+			} else {
+				p.agentPane.SetFocused(true)
+				p.agentPane.SetRect(p.agentX, y, rw, h)
+				p.agentPane.Draw(screen)
+			}
+		}
+		return
+	}
+
+	// Normal split. Record region rects so Tab traversal and mouse hit-testing
+	// see the live layout.
+	p.coordX, p.coordW = rx, coordW
+	p.agentX, p.agentW = rx+coordW, agentW
 
 	if coordW >= 2 {
 		p.coordPane.SetFocused(p.focus.State() == FocusCoord)
@@ -296,6 +326,14 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		// proven pattern already wired for the agent view's pane navigation.
 		ctrlAlt := event.Modifiers()&(tcell.ModCtrl|tcell.ModAlt) != 0
 		switch event.Key() {
+		case tcell.KeyCtrlZ:
+			// Fullscreen the focused content pane (plugin parity). ALWAYS consume
+			// — even when this is a no-op on the rail — so the 0x1A byte can never
+			// fall through to a focused pane's PTY and SIGTSTP-suspend its agent.
+			// That silent fall-through was the footgun this binding closes.
+			p.focus.ToggleFullscreen()
+			uxlog.Log("[hera-view] ctrl+z fullscreen toggle: state=%d fullscreen=%v", p.focus.State(), p.focus.Fullscreen())
+			return
 		case tcell.KeyTab:
 			p.focus.Advance()
 			return
@@ -374,13 +412,22 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	case tcell.KeyCtrlD:
 		return p.fire(p.OnDelete, sel)
 	case tcell.KeyEnter:
-		// Enter "enters" the selected role: restart a dead session (reattach)
-		// then move focus into the pane to interact. A live row just advances
-		// focus. An empty selection only advances focus.
+		// Enter "enters" the selected role and revives its session first, then
+		// moves focus into the pane. Reattach fires for:
+		//   * a DEAD session (no live session in the runner) — any role; or
+		//   * a LIVE worker/freelance role — the App then revives it ONLY if it
+		//     looks suspended/stuck (idle, not parked at a prompt), so a
+		//     SIGTSTP'd worker can be brought back from the Hera view. A live
+		//     COORDINATOR is navigate-only (operator-interactive), so Enter never
+		//     restarts a healthy coordinator.
+		// An empty selection only advances focus.
 		taskID := sel.TaskID()
-		if taskID != "" && p.OnReattach != nil && (p.resolve == nil || p.resolve(taskID) == nil) {
-			uxlog.Log("[hera-view] reattach key on task=%s (no live session)", taskID)
-			p.OnReattach(sel)
+		if taskID != "" && p.OnReattach != nil {
+			live := p.resolve != nil && p.resolve(taskID) != nil
+			if !live || !sel.IsCoordinator() {
+				uxlog.Log("[hera-view] reattach key on task=%s (live=%v coordinator=%v)", taskID, live, sel.IsCoordinator())
+				p.OnReattach(sel)
+			}
 		}
 		p.focus.Advance()
 		return true

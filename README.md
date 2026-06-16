@@ -194,7 +194,8 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `j` / `k`       | Move the rail cursor down / up                                                          |
 | `Space`         | Collapse / expand an orchestrator, or the Freelance / Archive section                  |
 | `Tab` / `Shift+Tab` | Cycle focus across rail → coordinator pane → details region                        |
-| `Enter`         | Re-attach a dead session for the selected role, then move focus into its pane          |
+| `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
+| `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected orchestrator                                          |
 | `r`             | Rename the selected role / orchestrator                                                 |
 | `a`             | Archive / unarchive the selected role / orchestrator                                    |

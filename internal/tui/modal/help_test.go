@@ -60,6 +60,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "fork task")
 	testutil.Contains(t, body, "task switcher")
 	testutil.Contains(t, body, "show/hide hera workers")
+	// Hera rail Ctrl+Z fullscreen binding (closes the suspend footgun) must be
+	// discoverable — fail the build if it's ever silently dropped.
+	testutil.Contains(t, body, "fullscreen pane")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {
