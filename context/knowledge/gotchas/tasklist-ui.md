@@ -45,6 +45,7 @@
 - **String slicing for backspace must use `utf8.DecodeLastRuneInString`, not `len()-1`.** `len()` counts bytes, not runes — slicing mid-rune corrupts multi-byte UTF-8 characters. Same applies to cursor column positioning: use `ansi.StringWidth()` for display width, not `len()`.
 - **`drawTaskRow` cursor fill must not overwrite elapsed time.** The fill loop extends the highlight to the row edge, but elapsed time is drawn right-aligned first. Compute `elapsedCol` once and use it as the fill boundary — filling past it overwrites the duration indicator.
 - **`moveCursor` must not fire `OnCursorChange` when clamped at boundaries.** When pressing up at the top or down at the bottom, `tl.cursor` is clamped to the same value — firing the callback triggers unnecessary git diff refreshes and preview fetches. Use a deferred guard comparing `tl.cursor != prev`.
+- **The freelancers-only filter (`f`) is binding-derived, not task_meta-derived, and intentionally diverges from the `H` toggle.** `H` reads `task_meta` `hera.role=worker` (the sidecar stamped at spawn, never cleared); `f` reads `hera_bindings` live (ended_at IS NULL, kind in {coordinator,worker}), so a worker whose binding ended is immediately reclassified as a freelancer. `--remote` mode has no binding-query endpoint, so it falls back to the `readHeraRoles()` union (possibly stale — ended workers/coordinators stay "managed" until the next full-row refresh).
 
 ## Modal Forms (`handle*FormKey`)
 

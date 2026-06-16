@@ -2137,3 +2137,77 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestSmoke_FreelancersOnlyFilter verifies that pressing `f` on the Tasks tab
+// toggles the freelancers-only filter: managed tasks disappear from
+// VisibleTaskIDs and the FreelancersOnly indicator flips true, then pressing
+// `f` again restores all tasks and clears the indicator.
+func TestSmoke_FreelancersOnlyFilter(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	managed := &model.Task{ID: "managed-1", Name: "managed task", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}
+	freelancer := &model.Task{ID: "free-1", Name: "freelancer task", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}
+	testutil.NoError(t, d.Add(managed))
+	testutil.NoError(t, d.Add(freelancer))
+	app.refreshTasks()
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Seed the managed set directly — no need for a live hera binding, as the
+	// design allows direct SetManagedTasks calls (the app refresh tick is the
+	// production feed; here we drive it via the test seam).
+	readUI(t, app.tapp, func() {
+		app.tasklist.SetManagedTasks(map[string]bool{managed.ID: true})
+	})
+
+	// Verify initial state: both tasks visible, filter off.
+	var ids []string
+	var active bool
+	readUI(t, app.tapp, func() {
+		ids = app.tasklist.VisibleTaskIDs()
+		active = app.tasklist.FreelancersOnly()
+	})
+	if !containsString(ids, managed.ID) {
+		t.Fatalf("before toggle: managed task %q should be visible, got %v", managed.ID, ids)
+	}
+	if !containsString(ids, freelancer.ID) {
+		t.Fatalf("before toggle: freelancer task %q should be visible, got %v", freelancer.ID, ids)
+	}
+	testutil.Equal(t, active, false)
+
+	// Press `f` to activate freelancers-only filter. Key is handled by the tasklist
+	// InputHandler while in modeTaskList (the default starting mode).
+	sim.InjectKey(tcell.KeyRune, 'f', 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		ids = app.tasklist.VisibleTaskIDs()
+		active = app.tasklist.FreelancersOnly()
+	})
+	testutil.Equal(t, active, true)
+	if containsString(ids, managed.ID) {
+		t.Errorf("after f: managed task %q should be hidden, got %v", managed.ID, ids)
+	}
+	if !containsString(ids, freelancer.ID) {
+		t.Errorf("after f: freelancer task %q should be visible, got %v", freelancer.ID, ids)
+	}
+
+	// Press `f` again to deactivate: managed task should reappear.
+	sim.InjectKey(tcell.KeyRune, 'f', 0)
+	syncUI(t, app.tapp)
+
+	readUI(t, app.tapp, func() {
+		ids = app.tasklist.VisibleTaskIDs()
+		active = app.tasklist.FreelancersOnly()
+	})
+	testutil.Equal(t, active, false)
+	if !containsString(ids, managed.ID) {
+		t.Errorf("after second f: managed task %q should be visible again, got %v", managed.ID, ids)
+	}
+	if !containsString(ids, freelancer.ID) {
+		t.Errorf("after second f: freelancer task %q should still be visible, got %v", freelancer.ID, ids)
+	}
+}

@@ -474,6 +474,10 @@ func (a *App) buildUI() {
 		uxlog.Log("[hera-view] tasklist hide-hera-workers toggled: hidden=%v", hidden)
 		a.forceRedraw("tasklist hera-workers toggled")
 	}
+	a.tasklist.OnFreelancersOnlyToggle = func(active bool) {
+		uxlog.Log("[tui] tasklist freelancers-only toggled: active=%v", active)
+		a.forceRedraw("tasklist freelancers-only toggled")
+	}
 	a.tasklist.OnStatusChange = func(t *model.Task) {
 		uxlog.Log("[tui] manual status change: task %s (%s) → %s", t.ID, t.Name, t.Status)
 		// Route through SetStatus (partial column update) not Update: the
@@ -1898,6 +1902,7 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	heraWorkers, heraCoordinators := a.readHeraRoles()
 	a.tasklist.SetHeraWorkers(heraWorkers)
 	a.tasklist.SetHeraCoordinators(heraCoordinators)
+	a.tasklist.SetManagedTasks(a.readManagedTasks())
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
@@ -1991,6 +1996,45 @@ func (a *App) readHeraRoles() (workers, coordinators map[string]bool) {
 		}
 	}
 	return workers, coordinators
+}
+
+// readManagedTasks returns the set of task IDs that currently hold at least one
+// live hera binding (ended_at IS NULL) to a coordinator- or worker-kind role.
+// Freelance-kind bindings do NOT count — a task is "managed" only when it is
+// actively coordinated.
+//
+// Local mode: type-asserts a.db to *db.DB and queries ManagedTaskIDs()
+// (authoritative; binding table is the single source of truth).
+//
+// Remote mode (--remote, a.db is *apistore.Store): no binding-query endpoint
+// exists, so we fall back to the UNION of the worker + coordinator sets from
+// readHeraRoles(). This is best-effort — task_meta hera.role is never cleared
+// on binding end, so ended workers/coordinators may appear managed until the
+// next full-row refresh. Documented in gotchas/tasklist-ui.md.
+func (a *App) readManagedTasks() map[string]bool {
+	if d, ok := a.db.(*db.DB); ok {
+		ids, err := d.ManagedTaskIDs()
+		if err != nil {
+			uxlog.Log("[tui] readManagedTasks: query failed: %v", err)
+			return nil
+		}
+		uxlog.Log("[tui] readManagedTasks: %d managed task(s)", len(ids))
+		return ids
+	}
+	// Remote fallback: union worker + coordinator meta maps.
+	uxlog.Log("[tui] readManagedTasks: remote mode, falling back to task_meta union")
+	workers, coordinators := a.readHeraRoles()
+	if len(workers) == 0 && len(coordinators) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(workers)+len(coordinators))
+	for id := range workers {
+		out[id] = true
+	}
+	for id := range coordinators {
+		out[id] = true
+	}
+	return out
 }
 
 // pluginFailsafeWindow is the maximum gap between two Ctrl+Q presses for the

@@ -53,6 +53,7 @@ var HelpSections = []HelpSection{
 			{"a", "toggle archive"},
 			{"P", "toggle pin"},
 			{"H", "show/hide hera workers"},
+			{"f", "freelancers only"},
 			{"r", "rename"},
 			{"c", "copy prompt"},
 			{"/", "filter"},
