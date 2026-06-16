@@ -566,7 +566,7 @@ func (c *Client) Ping() error {
 	return c.call("Daemon.Ping", &daemon.Empty{}, &resp)
 }
 
-// BootInfo returns the daemon's boot-time identity (binary path + mtime).
+// BootInfo returns the daemon's boot-time identity (binary path, content hash, and mtime).
 func (c *Client) BootInfo() (daemon.BootInfoResp, error) {
 	var resp daemon.BootInfoResp
 	if err := c.call("Daemon.BootInfo", &daemon.Empty{}, &resp); err != nil {

@@ -33,9 +33,9 @@ func logRPCErr(method string, err error) string {
 	return err.Error()
 }
 
-// BootInfo returns the daemon's boot-time identity (binary path + mtime).
-// The TUI uses this to detect when the on-disk binary has been rebuilt since
-// the daemon started, and prompt the user to restart.
+// BootInfo returns the daemon's boot-time identity (binary path, content hash,
+// and mtime). The TUI uses this to detect when the on-disk binary has been
+// rebuilt since the daemon started, and prompt the user to restart.
 //
 // The fields read here are written once in Daemon.New() and never mutated
 // afterward, so reading without a lock is safe — the goroutine spawn that
@@ -43,6 +43,7 @@ func logRPCErr(method string, err error) string {
 func (s *RPCService) BootInfo(_ *Empty, resp *BootInfoResp) error {
 	resp.BinaryPath = s.daemon.binaryPath
 	resp.BinaryMtime = s.daemon.binaryMtime
+	resp.BinaryHash = s.daemon.binaryHash
 	resp.BootedAt = s.daemon.bootedAt
 	return nil
 }

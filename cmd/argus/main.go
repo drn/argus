@@ -490,20 +490,33 @@ func runDaemonStop() {
 	}
 }
 
-// isDaemonStale returns true when the running daemon's binary mtime differs
-// from the TUI's on-disk binary — typically because argus was rebuilt while
-// the daemon kept running, but it also fires on rollbacks or any other case
-// where the two files differ. Detection is best-effort: if any step fails
-// (older daemon without BootInfo, RPC error, missing binary, stat error),
-// we return false to avoid nagging the user over benign issues.
-func isDaemonStale(client *dclient.Client) bool {
+// isDaemonStale returns true when the running daemon's binary differs from the
+// TUI's on-disk binary — typically because argus was rebuilt while the daemon
+// kept running, but it also fires on rollbacks or any other case where the two
+// files differ. Detection is best-effort: if any step fails (older daemon
+// without BootInfo, RPC error, missing binary, stat/hash error), we return
+// false to avoid nagging the user over benign issues.
+//
+// The signal is a content hash, NOT mtime. `go install` rewrites the binary
+// (bumping its mtime) on every run even when the source is unchanged, and
+// because ~/.argus/argusd symlinks to the same file the TUI runs, an mtime
+// comparison flagged the daemon stale on every launch for anyone who
+// reinstalls habitually — even though the deterministic Go build produced a
+// byte-identical binary. Hashing only differs on a real code change. mtime
+// remains a fallback for an older daemon that predates the BinaryHash field.
+// bootInfoProvider is the subset of *dclient.Client's API that isDaemonStale
+// needs. Narrowing to an interface lets tests drive the full wiring (os.Executable →
+// BinaryHashFile → staleDecision) against the test binary with a fake
+// BootInfoResp, without a live daemon.
+type bootInfoProvider interface {
+	BootInfo() (daemon.BootInfoResp, error)
+}
+
+func isDaemonStale(client bootInfoProvider) bool {
 	info, err := client.BootInfo()
 	if err != nil {
 		uxlog.Log("[tui] BootInfo failed: %v", err)
 		return false
-	}
-	if info.BinaryMtime.IsZero() {
-		return false // older daemon without BootInfo, or stat failed at boot
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -512,16 +525,65 @@ func isDaemonStale(client *dclient.Client) bool {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	st, err := os.Stat(exe)
-	if err != nil {
+
+	// Read the TUI binary's identity (hash when the daemon reported one, else
+	// mtime for the pre-BinaryHash fallback). The pure decision lives in
+	// staleDecision so its branches are unit-testable without a daemon.
+	var (
+		tuiHash     string
+		tuiHashErr  bool
+		tuiMtime    time.Time
+		tuiMtimeErr bool
+	)
+	if info.BinaryHash != "" {
+		tuiHash, err = daemon.BinaryHashFile(exe)
+		tuiHashErr = err != nil
+	} else if st, serr := os.Stat(exe); serr == nil {
+		tuiMtime = st.ModTime()
+	} else {
+		tuiMtimeErr = true
+	}
+
+	if !staleDecision(info, tuiHash, tuiHashErr, tuiMtime, tuiMtimeErr) {
 		return false
 	}
-	if st.ModTime().Equal(info.BinaryMtime) {
-		return false
+	if info.BinaryHash != "" {
+		uxlog.Log("[tui] daemon binary stale: daemon hash=%s tui hash=%s",
+			shortHash(info.BinaryHash), shortHash(tuiHash))
+	} else {
+		uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
+			info.BinaryMtime.Format(time.RFC3339), tuiMtime.Format(time.RFC3339))
 	}
-	uxlog.Log("[tui] daemon binary stale: daemon mtime=%s tui mtime=%s",
-		info.BinaryMtime.Format(time.RFC3339), st.ModTime().Format(time.RFC3339))
 	return true
+}
+
+// staleDecision is the pure core of isDaemonStale: given the daemon's boot
+// identity and the TUI binary's already-read current identity, it decides
+// staleness. Split out from the I/O so every branch (hash match/mismatch,
+// hash-read failure, mtime fallback, mtime-read failure) is unit-testable
+// without a live daemon client or a real executable. A read failure of the
+// TUI's own binary (tuiHashErr / tuiMtimeErr) yields "not stale" — a benign
+// local error must never nag the user into a needless restart.
+func staleDecision(info daemon.BootInfoResp, tuiHash string, tuiHashErr bool, tuiMtime time.Time, tuiMtimeErr bool) bool {
+	if info.BinaryHash != "" {
+		if tuiHashErr {
+			return false
+		}
+		return tuiHash != info.BinaryHash
+	}
+	// Fallback: pre-BinaryHash daemon. Compare mtime.
+	if info.BinaryMtime.IsZero() || tuiMtimeErr {
+		return false // older daemon without BootInfo, or stat failed.
+	}
+	return !tuiMtime.Equal(info.BinaryMtime)
+}
+
+// shortHash truncates a hex digest for compact logging.
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }
 
 // runDaemonInstall installs the LaunchAgent so the daemon auto-starts at user

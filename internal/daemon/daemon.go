@@ -113,9 +113,12 @@ type Daemon struct {
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
-	// on-disk binary has been rebuilt since the daemon started.
+	// on-disk binary has been rebuilt since the daemon started. binaryHash is
+	// the primary staleness signal (see isDaemonStale); binaryMtime is kept
+	// for the pre-BinaryHash fallback.
 	binaryPath  string
 	binaryMtime time.Time
+	binaryHash  string
 	bootedAt    time.Time
 
 	// prFetch is the injectable seam the PR-status poller calls to resolve a
@@ -185,9 +188,10 @@ func New(database *db.DB) *Daemon {
 		prFetch:   gitutil.FetchPRState,
 	}
 
-	// Capture the binary path + mtime at startup. The on-disk binary may be
-	// rebuilt while the daemon keeps running with the old in-memory image —
-	// the TUI compares its current binary mtime against this snapshot.
+	// Capture the binary path, hash, and mtime at startup. The on-disk binary
+	// may be rebuilt while the daemon keeps running with the old in-memory
+	// image — the TUI compares its current binary's content hash against this
+	// snapshot (mtime is the pre-BinaryHash fallback).
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = resolved
@@ -195,6 +199,9 @@ func New(database *db.DB) *Daemon {
 		d.binaryPath = exe
 		if st, err := os.Stat(exe); err == nil {
 			d.binaryMtime = st.ModTime()
+		}
+		if h, err := BinaryHashFile(exe); err == nil {
+			d.binaryHash = h
 		}
 	}
 
