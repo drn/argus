@@ -76,6 +76,34 @@ func TestAdoptTaskIntoOrchestrator(t *testing.T) {
 		testutil.Contains(t, errStr(err), "already bound")
 	})
 
+	t.Run("a worktree-orchestrator collision rolls the role back (no orphan)", func(t *testing.T) {
+		d := memDB(t)
+		target := seedOrch(t, d, "target")
+		// An existing live binding already occupies (worktree, orchestrator).
+		occupant := seedBoundRole(t, d, target, "occupant", db.HeraKindWorker, "")
+		_, err := d.CreateHeraBinding(db.CreateHeraBindingInput{
+			RoleID: occupant.ID, ArgusTaskID: "occupant-task", WorktreePath: "/wt/shared",
+		})
+		testutil.NoError(t, err)
+		addTask(t, d, "occupant-task")
+		addTask(t, d, "tf")
+
+		before, err := d.ListHeraRoles(target, true)
+		testutil.NoError(t, err)
+
+		// Adopting a DIFFERENT task with the SAME worktree under the same
+		// orchestrator collides on idx_hera_bindings_live_worktree_orch. The
+		// transactional create must roll the worker role back.
+		_, err = NewAdoptOps(d).AdoptTaskIntoOrchestrator(AdoptInput{
+			ArgusTaskID: "tf", OrchestratorID: target, RoleName: "tf", WorktreePath: "/wt/shared",
+		})
+		testutil.Equal(t, err != nil, true)
+
+		after, err := d.ListHeraRoles(target, true)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(after), len(before)) // no orphan role left behind
+	})
+
 	t.Run("rejects an unknown orchestrator", func(t *testing.T) {
 		d := memDB(t)
 		addTask(t, d, "free-4")
