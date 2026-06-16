@@ -2,6 +2,7 @@ package hera
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/tui/theme"
@@ -79,7 +80,8 @@ type Rail struct {
 	// Absent/false → collapsed (the default), matching the bottom Archive section.
 	coordArchiveOpen map[int64]bool
 
-	focused bool // drives the border-highlight style
+	focused   bool // drives the border-highlight style
+	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
 	// onSelectionChanged fires (with the selected row's ref) whenever the
 	// cursor lands on a different selectable row. 6b binds the panes off it;
@@ -474,6 +476,7 @@ func (r *Rail) CursorIndex() int { return r.cursor }
 // the CLAUDE.md UX-rendering rules (no Sync; full-rect coverage instead).
 func (r *Rail) Draw(screen tcell.Screen) {
 	r.DrawForSubclass(screen, r)
+	r.animFrame = spinnerFrame()
 	x, y, w, h := r.GetRect()
 	if w <= 0 || h <= 0 {
 		return
@@ -579,7 +582,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	// rows; the glyph keeps its own status style even when the row is selected
 	// (the glyph never lies). Worker-less / coordinator-less orchestrators skip it.
 	if coord := o.CoordRole(); coord != nil {
-		glyph, gstyle := statusIcon(coord, row.dim)
+		glyph, gstyle := statusIcon(coord, row.dim, r.animFrame)
 		screen.SetContent(col, y, glyph, nil, gstyle)
 		col += 2
 	}
@@ -610,7 +613,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 
 func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, selected bool, _ tcell.Style) {
 	role := row.role
-	icon, iconStyle := statusIcon(role, row.dim)
+	icon, iconStyle := statusIcon(role, row.dim, r.animFrame)
 	nameStyle := theme.StyleNormal
 	if row.dim {
 		nameStyle = theme.StyleDimmed
@@ -648,6 +651,18 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 	widget.DrawText(screen, col, y, remaining, role.Name, nameStyle)
 }
 
+// spinnerFrame computes the current spinner animation frame from wall-clock
+// time, mirroring the task list's updateSpinnerFrame. Recomputed on each Draw so
+// a WORKING role's glyph advances as long as the spinner loop keeps redrawing
+// (it does while any session is actively running).
+func spinnerFrame() int {
+	interval := widget.SpinnerTickInterval()
+	if interval <= 0 {
+		return 0
+	}
+	return int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
+}
+
 // chevron returns the fold glyph for a collapsed/expanded state.
 func chevron(collapsed bool) string {
 	if collapsed {
@@ -674,7 +689,11 @@ func liveRoleCount(o *OrchView) int {
 // hera role status (idle/working/blocked/done) drives the glyph, falling back
 // to binding presence when no status row exists. dim forces the dimmed style
 // for archived placement (the glyph never lies — only the style dims).
-func statusIcon(role *RoleView, dim bool) (rune, tcell.Style) {
+//
+// frame is the current spinner animation frame: a WORKING (in-motion) role
+// renders the active spinner's frame so it animates, distinguishing a live agent
+// from a static idle/done one. Non-working states are static (frame ignored).
+func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	if role.ReadyToClose {
 		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
 		if dim {
@@ -686,7 +705,7 @@ func statusIcon(role *RoleView, dim bool) (rune, tcell.Style) {
 	var style tcell.Style
 	switch {
 	case role.HasStatus && role.Status == db.HeraStatusWorking:
-		glyph, style = theme.IconMoonStars, theme.StyleInProgress
+		glyph, style = widget.SpinnerFrame(frame), theme.StyleInProgress
 	case role.HasStatus && role.Status == db.HeraStatusBlocked:
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
 	case role.HasStatus && role.Status == db.HeraStatusDone:

@@ -95,10 +95,11 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	draw(inner.X, d.orch.Name, theme.StyleTitle)
 	row++ // blank spacer
 
+	frame := spinnerFrame()
 	// Coordinator status line — reuse the rail's coordinator glyph so the
 	// Details status never disagrees with the rail header.
 	if coord := d.coordRole(); coord != nil {
-		glyph, gstyle := statusIcon(coord, d.orch.Archived)
+		glyph, gstyle := statusIcon(coord, d.orch.Archived, frame)
 		if row < maxRow {
 			screen.SetContent(inner.X, row, glyph, nil, gstyle)
 			widget.DrawText(screen, inner.X+2, row, inner.W-2, "coordinator: "+coordStatusLabel(coord), theme.StyleDimmed)
@@ -119,7 +120,7 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		if row >= maxRow {
 			break
 		}
-		glyph, gstyle := statusIcon(w, d.orch.Archived)
+		glyph, gstyle := statusIcon(w, d.orch.Archived, frame)
 		screen.SetContent(inner.X+2, row, glyph, nil, gstyle)
 		label := w.Name
 		if mark := d.roleMark(w); mark != "" {

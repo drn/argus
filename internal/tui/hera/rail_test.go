@@ -6,6 +6,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -91,8 +92,9 @@ func TestRail_CoordinatorFoldsIntoHeader(t *testing.T) {
 }
 
 func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
-	// The header status glyph reflects the coordinator's status (working here),
-	// distinct from the unbound/idle fallback.
+	// The header status glyph reflects the coordinator's status. Use blocked
+	// (a static glyph) rather than working (an animated spinner whose frame
+	// depends on wall-clock time) so the assertion is deterministic.
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
 	defer sim.Fini()
@@ -101,13 +103,13 @@ func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
 	r := NewRail()
 	r.SetFocused(true)
 	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
-		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, HasStatus: true, Status: db.HeraStatusWorking, TaskID: "tc"},
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, HasStatus: true, Status: db.HeraStatusBlocked, TaskID: "tc"},
 	}}}})
 	r.SetRect(0, 0, 40, 10)
 	r.Draw(sim)
 
-	// The coordinator's working glyph must appear somewhere on the header row.
-	wantGlyph, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true}, false)
+	// The coordinator's blocked glyph must appear somewhere on the header row.
+	wantGlyph, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusBlocked, Live: true}, false, 0)
 	found := false
 	for x := 0; x < 40; x++ {
 		primary, _, _, _ := sim.GetContent(x, 1) // row 1 = first content row inside the border
@@ -347,7 +349,7 @@ func TestRail_CursorRestoredAcrossRebuild(t *testing.T) {
 
 func TestStatusIcon_ReadyToCloseWins(t *testing.T) {
 	// ready_to_close overrides the role status with the distinct review mark.
-	icon, _ := statusIcon(&RoleView{ReadyToClose: true, HasStatus: true, Status: db.HeraStatusWorking}, false)
+	icon, _ := statusIcon(&RoleView{ReadyToClose: true, HasStatus: true, Status: db.HeraStatusWorking}, false, 0)
 	testutil.Equal(t, icon, theme.IconReview)
 }
 
@@ -362,21 +364,43 @@ func TestStatusIcon_StatusMapping(t *testing.T) {
 	}
 	for _, c := range cases {
 		// Each known status yields a non-zero glyph without panicking.
-		icon, _ := statusIcon(&RoleView{HasStatus: true, Status: c.status}, false)
+		icon, _ := statusIcon(&RoleView{HasStatus: true, Status: c.status}, false, 0)
 		if icon == 0 {
 			t.Errorf("status %q produced zero glyph", c.status)
 		}
 	}
 	// No status, no binding → falls back to a dimmed moon.
-	icon, _ := statusIcon(&RoleView{}, false)
+	icon, _ := statusIcon(&RoleView{}, false, 0)
 	if icon == 0 {
 		t.Error("fallback produced zero glyph")
 	}
 	// Bound but statusless → distinct glyph.
-	icon2, _ := statusIcon(&RoleView{Live: true}, false)
+	icon2, _ := statusIcon(&RoleView{Live: true}, false, 0)
 	if icon2 == 0 {
 		t.Error("live-statusless produced zero glyph")
 	}
+}
+
+func TestStatusIcon_WorkingAnimatesSpinner(t *testing.T) {
+	widget.SetActiveSpinner("progress")
+	defer widget.SetActiveSpinner("progress")
+	working := &RoleView{HasStatus: true, Status: db.HeraStatusWorking}
+
+	// A working role's glyph is the active spinner's frame and advances with the
+	// frame counter (distinct frames produce distinct glyphs).
+	f0, _ := statusIcon(working, false, 0)
+	f1, _ := statusIcon(working, false, 1)
+	testutil.Equal(t, f0, widget.SpinnerFrame(0))
+	testutil.Equal(t, f1, widget.SpinnerFrame(1))
+	if f0 == f1 {
+		t.Error("working glyph did not advance between frames")
+	}
+
+	// A non-working (idle) role is static across frames.
+	idle := &RoleView{HasStatus: true, Status: db.HeraStatusIdle}
+	i0, _ := statusIcon(idle, false, 0)
+	i1, _ := statusIcon(idle, false, 5)
+	testutil.Equal(t, i0, i1)
 }
 
 // TestRail_DrawDoesNotPanic exercises every drawRow branch against a real

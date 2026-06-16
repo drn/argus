@@ -31,8 +31,8 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 5. Spinner
 
-- [ ] 5.1 `statusIcon` returns an animated `widget.SpinnerFrame` glyph for a running (working) agent; static otherwise.
-- [ ] 5.2 Tests: working role yields a spinner frame that advances with the frame counter; non-working roles stay static.
+- [x] 5.1 `statusIcon` returns an animated `widget.SpinnerFrame` glyph for a running (working) agent; static otherwise.
+- [x] 5.2 Tests: working role yields a spinner frame that advances with the frame counter; non-working roles stay static.
 
 ## 6. PR indicator on rail rows
 
