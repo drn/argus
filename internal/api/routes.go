@@ -38,6 +38,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("GET /api/skills", s.handleListSkills)
+	// Hera orchestration roster — orchestrators → roles (coordinator/worker)
+	// plus freelance roles. Read-only; feeds the webapp's Hera tab.
+	mux.HandleFunc("GET /api/hera", s.handleHera)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/stop", s.handleStopTask)
 	mux.HandleFunc("POST /api/tasks/{id}/restart", s.handleRestartTask)

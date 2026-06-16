@@ -662,6 +662,44 @@ button:disabled { opacity: 0.5; cursor: default; }
 /* Pull to refresh indicator */
 .refresh-hint { text-align: center; padding: 8px; color: var(--text-dim); font-size: 12px; display: none; }
 
+/* Hera View — read-only orchestration roster. Mirrors the TUI rail: each
+   orchestrator card lists its coordinator + workers; a separate Freelance
+   section aggregates freelance roles. Tapping a bound role drills into that
+   task's terminal (openTaskById). */
+#hera-view { display: none; padding: 12px; padding-bottom: 80px; }
+.hera-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.hera-toolbar .primary { background: var(--accent); color: var(--bg); border: none; border-radius: 6px; padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.hera-status { flex: 1; font-size: 12px; color: var(--text-dim); min-height: 16px; }
+.hera-status.error { color: var(--red); }
+.hera-section-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 2px 6px; }
+.hera-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
+}
+.hera-card.archived { opacity: 0.55; }
+.hera-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.hera-card-name { font-weight: 600; font-size: 14px; }
+.hera-tag { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #30363d; color: var(--text-dim); text-transform: uppercase; }
+.hera-tag.pinned { background: #1a2a3a; color: var(--accent); }
+.hera-role {
+  display: flex; align-items: center; gap: 8px; padding: 6px 6px;
+  border-radius: 6px; font-size: 13px;
+}
+.hera-role.live { cursor: pointer; }
+.hera-role.live:hover { background: var(--bg); }
+.hera-role.archived { opacity: 0.5; }
+.hera-role-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-dim); }
+.hera-role-dot.working { background: var(--green); }
+.hera-role-dot.idle { background: var(--text-dim); }
+.hera-role-dot.blocked { background: var(--red); }
+.hera-role-dot.done { background: var(--accent); }
+.hera-kind { font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; flex-shrink: 0; min-width: 64px; }
+.hera-role-name { font-weight: 600; flex-shrink: 0; }
+.hera-task { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.hera-task.unbound { font-style: italic; }
+.hera-rtc { font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; background: #2d2000; color: var(--yellow); flex-shrink: 0; }
+.hera-empty { color: var(--text-dim); text-align: center; padding: 32px 12px; font-size: 13px; }
+
 /* Settings */
 #settings-view { display: none; padding: 12px; padding-bottom: 80px; }
 .settings-section {
@@ -959,6 +997,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
 
   <div class="tabs">
     <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">Tasks</div>
+    <div class="tab" data-tab="hera" onclick="switchTab('hera')">Hera</div>
     <div class="tab" data-tab="create" onclick="switchTab('create')">+ New</div>
     <div class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</div>
   </div>
@@ -1075,6 +1114,16 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
     <div class="artifact-fs-body" id="artifact-fs-body"></div>
   </div>
 
+  <!-- Hera View — read-only orchestration roster (replaces the retired DAG
+       tab). Renders the orchestrator → role hierarchy returned by /api/hera;
+       tapping a role with a live binding drills into that task's terminal. -->
+  <div id="hera-view">
+    <div class="hera-toolbar">
+      <div id="hera-status" class="hera-status"></div>
+      <button type="button" class="primary" onclick="loadHera()">↻</button>
+    </div>
+    <div id="hera-body"></div>
+  </div>
 
   <!-- Settings View -->
   <div id="settings-view">
@@ -1436,6 +1485,7 @@ textarea.settings-input { min-height: 70px; resize: vertical; }
       <div class="hotkeys-list">
         <div class="hotkeys-row"><kbd>n</kbd><span>New task</span></div>
         <div class="hotkeys-row"><kbd>t</kbd><span>Tasks tab</span></div>
+        <div class="hotkeys-row"><kbd>g</kbd><span>Hera tab</span></div>
         <div class="hotkeys-row"><kbd>,</kbd><span>Settings tab</span></div>
         <div class="hotkeys-row"><kbd>/</kbd><span>Focus search (Tasks tab)</span></div>
         <div class="hotkeys-row"><kbd>a</kbd><span>Toggle Active / Archived (Tasks tab)</span></div>
@@ -1957,6 +2007,10 @@ function startRefreshTimer() {
   // wrong subset.
   refreshTimer = setInterval(() => {
     if (openTaskByIdInFlight) return;
+    // Keep the Hera roster live while its tab is foregrounded; otherwise poll
+    // the task list as usual. The detail overlay (opened from a Hera role)
+    // sits on top of whichever tab is active, so a refresh here is harmless.
+    if (document.querySelector('.tab.active')?.dataset.tab === 'hera') { loadHera(); return; }
     refresh();
   }, 5000);
 }
@@ -2147,7 +2201,13 @@ async function retryConnection() {
       return;
     }
     const ok = await refresh();
-    if (ok) loadProjects();
+    if (ok) {
+      loadProjects();
+      // refresh() drives the task list + offline-hide; if the user was sitting
+      // on the Hera tab, pull its roster too so it isn't stale until the next
+      // 5s tick.
+      if (document.querySelector('.tab.active')?.dataset.tab === 'hera') loadHera();
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
   }
@@ -3410,6 +3470,10 @@ document.addEventListener('keydown', e => {
     case 't':
       e.preventDefault();
       switchTab('tasks');
+      return;
+    case 'g':
+      e.preventDefault();
+      switchTab('hera');
       return;
     case ',':
       e.preventDefault();
@@ -4764,6 +4828,7 @@ async function createTask() {
 function switchTab(tab) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   document.getElementById('tasks-view').style.display = tab === 'tasks' ? 'block' : 'none';
+  document.getElementById('hera-view').style.display = tab === 'hera' ? 'block' : 'none';
   document.getElementById('create-view').style.display = tab === 'create' ? 'block' : 'none';
   document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
   const dv = document.getElementById('detail-view');
@@ -4782,6 +4847,7 @@ function switchTab(tab) {
   closeStream();
   destroyTerm();
   if (tab === 'tasks') refresh();
+  if (tab === 'hera') loadHera();
   if (tab === 'create') applyCreateDefaults();
   if (tab === 'settings') loadSettings();
 }
@@ -4824,6 +4890,106 @@ function applyCreateDefaults() {
     // time the user opens the New Task tab.
     loadBackends();
   }
+}
+
+// --- Hera tab: orchestration roster ---
+//
+// Fetches /api/hera and renders the orchestrator → role hierarchy as cards,
+// mirroring the TUI rail: Pinned / Active / Archived orchestrator sections plus
+// a Freelance section. Each role row shows a status dot (idle/working/blocked/
+// done), the role kind + name, and — when the role holds a live binding — the
+// bound task's name and workflow badge. Tapping a live role drills into that
+// task's terminal via openTaskById (the same overlay the task list uses).
+async function loadHera() {
+  const statusEl = document.getElementById('hera-status');
+  const body = document.getElementById('hera-body');
+  statusEl.classList.remove('error');
+  let data;
+  try {
+    const r = await api('/api/hera');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    data = await r.json();
+    // Drive the same connection-tracking machinery refresh() does. Because
+    // the 5s poll tick calls loadHera() (not refresh()) while this tab is
+    // foregrounded, the offline screen + conn-dot would otherwise never
+    // update here — a dead daemon would leave a stale green dot.
+    onConnectSuccess();
+    document.getElementById('conn-dot').className = 'status-dot ok';
+  } catch (e) {
+    document.getElementById('conn-dot').className = 'status-dot err';
+    onConnectFailure();
+    statusEl.classList.add('error');
+    statusEl.textContent = 'Failed to load Hera: ' + e.message;
+    return;
+  }
+
+  const orchs = (data && data.orchestrators) || [];
+  const freelance = (data && data.freelance) || [];
+  if (orchs.length === 0 && freelance.length === 0) {
+    statusEl.textContent = '';
+    body.innerHTML = '<div class="hera-empty">No orchestrators yet. Hera roles appear here once a coordinator is running.</div>';
+    return;
+  }
+
+  const pinned = orchs.filter(o => o.pinned && !o.archived);
+  const active = orchs.filter(o => !o.pinned && !o.archived);
+  const archived = orchs.filter(o => o.archived);
+
+  let totalRoles = freelance.length;
+  for (const o of orchs) totalRoles += (o.roles || []).length;
+  statusEl.textContent = orchs.length + ' orchestrator' + (orchs.length === 1 ? '' : 's') +
+    ' · ' + totalRoles + ' role' + (totalRoles === 1 ? '' : 's');
+
+  let html = '';
+  html += renderHeraSection('Pinned', pinned.map(renderHeraOrch));
+  html += renderHeraSection('Active', active.map(renderHeraOrch));
+  if (freelance.length) {
+    html += renderHeraSection('Freelance',
+      ['<div class="hera-card">' + freelance.map(renderHeraRole).join('') + '</div>']);
+  }
+  html += renderHeraSection('Archived', archived.map(renderHeraOrch));
+  body.innerHTML = html;
+}
+
+function renderHeraSection(title, cardsHtml) {
+  if (!cardsHtml.length) return '';
+  return '<div class="hera-section-title">' + esc(title) + '</div>' + cardsHtml.join('');
+}
+
+function renderHeraOrch(o) {
+  const tags = [];
+  if (o.pinned) tags.push('<span class="hera-tag pinned">pinned</span>');
+  if (o.archived) tags.push('<span class="hera-tag">archived</span>');
+  const roles = (o.roles || []);
+  // Coordinators first, then everything else (matches the TUI rail ordering).
+  roles.sort((a, b) => (a.kind === 'coordinator' ? 0 : 1) - (b.kind === 'coordinator' ? 0 : 1));
+  const rolesHtml = roles.length
+    ? roles.map(renderHeraRole).join('')
+    : '<div class="hera-role"><span class="hera-task unbound">no roles</span></div>';
+  return '<div class="hera-card' + (o.archived ? ' archived' : '') + '">' +
+    '<div class="hera-card-header"><span class="hera-card-name">' + esc(o.name) + '</span>' +
+    tags.join('') + '</div>' + rolesHtml + '</div>';
+}
+
+function renderHeraRole(role) {
+  const live = !!role.live && !!role.task_id;
+  const dotCls = role.status || '';
+  let task;
+  if (live) {
+    const badge = role.task_status
+      ? '<span class="task-badge badge-' + escAttr(role.task_status) + '">' + esc(statusLabel(role.task_status)) + '</span>'
+      : '';
+    const rtc = role.ready_to_close ? '<span class="hera-rtc">ready</span>' : '';
+    task = '<span class="hera-task">' + esc(role.task_name || role.task_id) + '</span>' + badge + rtc;
+  } else {
+    task = '<span class="hera-task unbound">unbound</span>';
+  }
+  const click = live ? ' onclick="openTaskById(\'' + escAttr(role.task_id) + '\')"' : '';
+  return '<div class="hera-role' + (live ? ' live' : '') + (role.archived ? ' archived' : '') + '"' + click + '>' +
+    '<span class="hera-role-dot ' + escAttr(dotCls) + '"></span>' +
+    '<span class="hera-kind">' + esc(role.kind) + '</span>' +
+    '<span class="hera-role-name">' + esc(role.name) + '</span>' +
+    task + '</div>';
 }
 
 // --- Settings tab: tokens + push + sandbox + KB + projects/backends + logs ---
@@ -6243,6 +6409,9 @@ window.addEventListener('online', () => {
   }
   if (TOKEN && document.getElementById('main-app').style.display !== 'none') {
     refresh();
+    // Mirror the poll tick: refresh the Hera roster on reconnect if it's the
+    // foregrounded tab (refresh() only repaints the task list).
+    if (document.querySelector('.tab.active')?.dataset.tab === 'hera') loadHera();
     if (currentTask && currentTask.status === 'in_progress' && !evtSource) {
       // Re-attach via attachTerminal so the disk-log replay + ?since cursor
       // path runs on reconnect too. A bare openStream here would skip the

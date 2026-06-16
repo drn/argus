@@ -500,6 +500,12 @@ Every authenticated token has the same permissions **except** a small master-onl
 | `DELETE` | `/api/backends/{name}` | Delete. **Master token required.**                                                                                                                                                  |
 | `GET`    | `/api/skills`          | Skill autocomplete. Filter: `?project=`, `?filter=` (case-insensitive substring)                                                                                                    |
 
+#### Hera orchestration
+
+| Method | Endpoint    | Description                                                                                                                                                                                                                            |
+| ------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/hera` | Read-only orchestration roster. Returns `{orchestrators:[{id,name,pinned,archived,roles:[…]}], freelance:[…]}`. Each role carries `kind` (coordinator/worker/freelance), `status`, bound `task_id`/`task_name`/`task_status`, `live`, and `ready_to_close`. Feeds the webapp's **Hera** tab. |
+
 #### Push notifications (Web Push, VAPID)
 
 | Method   | Endpoint                     | Description                                                                    |
