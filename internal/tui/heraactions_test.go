@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -151,6 +152,48 @@ func settleReviveNoKick(t *testing.T, app *App) {
 		testutil.Equal(t, app.statusbar.Error(), "")
 		testutil.Equal(t, app.statusbar.Info(), "")
 	})
+}
+
+func TestHeraPaneFocused_GlobalKeySurrender(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Tasks tab → never "hera pane focused".
+	testutil.Equal(t, app.heraPaneFocused(), false)
+
+	// Hera tab but the RAIL holds focus → globals still apply (rail is not a
+	// content pane), so heraPaneFocused stays false.
+	app.header.SetTab(widget.TabHera)
+	testutil.Equal(t, app.heraPaneFocused(), false)
+
+	// Hera tab with a content pane focused → true.
+	app.heraPage.Machine().Advance() // rail → coordinator pane
+	testutil.Equal(t, app.heraPaneFocused(), true)
+
+	// With a Hera pane focused, the global handler must NOT consume the keys it
+	// otherwise would (BUG-001): each returns the event (fall-through to the page,
+	// which forwards it to the pane PTY) rather than nil (consumed).
+	keys := []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone), // would quit argus
+		tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '2', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '3', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone), // would open help
+		tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone),  // would quit argus
+		tcell.NewEventKey(tcell.KeyCtrlL, 0, tcell.ModNone),  // would Sync
+	}
+	for _, ev := range keys {
+		if got := app.handleGlobalKey(ev); got == nil {
+			t.Fatalf("key %q was consumed while a Hera pane was focused; expected fall-through to the pane", ev.Name())
+		}
+	}
+
+	// Back on the rail, `?` is once again a global (opens help, consumed).
+	app.heraPage.Machine().ToRail()
+	testutil.Equal(t, app.heraPaneFocused(), false)
+	if got := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone)); got != nil {
+		t.Fatalf("? on the rail should be consumed (open help), got fall-through")
+	}
 }
 
 func TestHeraActions_ArchivingLive(t *testing.T) {
