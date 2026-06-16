@@ -690,6 +690,38 @@ func (d *DB) TaskHoldsLiveHeraWorkerBinding(taskID string) (bool, error) {
 	return n > 0, nil
 }
 
+// ManagedTaskIDs returns the set of argus task IDs that currently hold at least
+// one live hera binding (ended_at IS NULL) to a coordinator- or worker-kind
+// role. Freelance-kind bindings do NOT count. Used by the Tasks tab
+// freelancers-only filter to identify tasks that are managed (and therefore
+// not freelancers). Returns a non-nil map even when no rows match.
+func (d *DB) ManagedTaskIDs() (map[string]bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(
+		`SELECT DISTINCT b.argus_task_id
+		 FROM hera_bindings b
+		 JOIN hera_roles r ON r.id = b.role_id
+		 WHERE b.ended_at IS NULL AND r.kind IN (?, ?)`,
+		string(HeraKindCoordinator), string(HeraKindWorker))
+	if err != nil {
+		return nil, fmt.Errorf("managed task ids: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("managed task ids: %w", err)
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("managed task ids: %w", err)
+	}
+	return out, nil
+}
+
 // RollHeraWorkerToReview implements the BUG-050 worker close-out roll: it moves
 // a worker-bound task to in_review and stamps meta:hera.ready_to_close=true. It
 // is the SINGLE shared helper behind BOTH close-out triggers — the session-exit
