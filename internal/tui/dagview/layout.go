@@ -28,7 +28,8 @@ type Placed struct {
 }
 
 // Edge represents a parent → child relationship in the laid-out graph. Layout
-// emits one Edge per actual depends_on link; coordinates are grid cells, not
+// emits one Edge per Node.DependsOn entry (the generic parent-edge list — the
+// Hera tree feeds it role-hierarchy edges); coordinates are grid cells, not
 // pixel/cell positions — the renderer translates them.
 type Edge struct {
 	From string // parent task ID

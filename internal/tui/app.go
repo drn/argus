@@ -1902,9 +1902,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	// Keep the Hera rail fresh while its tab is active (debounced inside the
 	// page so rapid ticks coalesce to one rebuild). DB reads are mutex-guarded
 	// and fast, so this is safe on the tview thread; we never run git here.
-	// Guard on cfg.Hera.Enabled: when disabled the tab shows the dag page and
-	// there is no need to drive the hera page's refresh/reconcile loop.
-	if a.header.ActiveTab() == widget.TabHera && a.db.Config().Hera.Enabled {
+	// The second tab is ALWAYS the native Hera view now (cfg.Hera.Enabled only
+	// gates daemon-side MCP tool registration), so this must NOT be gated on
+	// that flag — doing so froze the rail/reconcile loop when hera.enabled=false.
+	if a.header.ActiveTab() == widget.TabHera {
 		a.heraPage.ScheduleRefresh()
 		// Late-bind any coordinator/worker session that came up after the pane
 		// was bound (main thread — SetSession is main-goroutine-only).

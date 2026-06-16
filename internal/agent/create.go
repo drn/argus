@@ -60,10 +60,10 @@ type CreateInput struct {
 	OnWorktreeCreated func(wtPath string) error
 
 	// AfterPersist runs after the task row is persisted (task.ID populated)
-	// and the session ID is reserved, but BEFORE the agent session starts and
-	// before the DependsOn short-circuit. It is the hook hera born-bound spawn
-	// uses to insert the role+binding while the task exists but is not yet
-	// running — so the worker is bound the instant it exists ("born bound").
+	// and the session ID is reserved, but BEFORE the agent session starts. It
+	// is the hook hera born-bound spawn uses to insert the role+binding while
+	// the task exists but is not yet running — so the worker is bound the
+	// instant it exists ("born bound").
 	//
 	// Contract:
 	//   - Returns an error → CreateAndStart runs the unwind chain (removing the

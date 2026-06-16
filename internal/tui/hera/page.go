@@ -229,12 +229,12 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 }
 
 // drawDetailsRegion stacks the read-only roster (top) over the embedded
-// dependency DAG (bottom) for a selected coordinator — both render at once,
+// orchestration tree (bottom) for a selected coordinator — both render at once,
 // no toggle. The roster is sized to its natural content height, capped at half
-// the region so the DAG always keeps at least half; the DAG fills the
+// the region so the tree always keeps at least half; the tree fills the
 // remainder. Each widget draws its own bordered panel covering its full
 // sub-rect, so no stale cells survive (no Sync — CLAUDE.md UX-rendering rules).
-// The DAG is the interactive surface, so it owns the focused border.
+// The tree is the interactive surface, so it owns the focused border.
 func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
 	// Roster sized to its content, capped at half the region so the DAG keeps
 	// at least half, then clamped to the region height for tiny panes.
@@ -335,10 +335,10 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 }
 
 // handleDetailsKey routes keys for a focused Details region (coordinator
-// selected). The region stacks the read-only roster over the embedded DAG, so
-// the DAG is the only interactive surface: every key forwards to it (cursor nav
-// + l/L/h/Enter, which fire the OnLink/OnUnlink/OnHalt/OnEnter callbacks the App
-// wired). The dagview keyset is arrows/hjkl/l/L/h/Enter and the global handler
+// selected). The region stacks the read-only roster over the embedded
+// orchestration tree, so the tree is the only interactive surface: every key
+// forwards to it (cursor nav j/k/arrows + Enter, which fires the OnEnter
+// callback the App wired — jump to the node's agent view). The global handler
 // reserves only 1/2/3/q/? — see gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
 	p.dag.InputHandler()(event, setFocus)

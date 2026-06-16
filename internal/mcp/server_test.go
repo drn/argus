@@ -2788,11 +2788,9 @@ func (e *errDB) KBDocumentCount() int { return 0 }
 
 // --- Orchestration tool tests ---
 
-// TestTaskCreate_BaseBranchAndDependsOn covers the additive arguments the
-// stacked-PR flow needs: base_branch threads through to the creator, and
-// depends_on after validating each referenced ID exists. The creator stub
-// (in testServerWithTasks) leaves depends_on tasks in StatusPending, which
-// the formatted output should advertise.
+// TestTaskCreate_IdempotencyError covers the default (name, project) collision:
+// a non-archived task with the same slug errors instead of duplicating, and the
+// error surfaces the existing task's ID.
 func TestTaskCreate_IdempotencyError(t *testing.T) {
 	s, _, _ := testServerWithTasks()
 
@@ -2996,9 +2994,10 @@ func TestTaskCreate_IdempotencyClosesTOCTOURace(t *testing.T) {
 	<-first
 }
 
-// TestTaskCreate_DetectsSelfLoop covers a one-node cycle (a persisted task
-// whose DependsOn includes its own ID). The new task depends on that
-// self-referencing task; detectCycle must return the cycle.
+// TestTaskCreate_CreatingKeysCleanedUpAfterSuccess verifies the in-flight
+// (project,name) reservation slot is released after a successful create, so a
+// later create with the same key hits the DB duplicate check, not the
+// concurrent-in-flight error.
 func TestTaskCreate_CreatingKeysCleanedUpAfterSuccess(t *testing.T) {
 	s, _, _ := testServerWithTasks()
 
@@ -3032,14 +3031,9 @@ func TestTaskCreate_CreatingKeysCleanedUpAfterSuccess(t *testing.T) {
 	testutil.Contains(t, cr2.Content[0].Text, "already exists")
 }
 
-// TestDetectCycle_CapExhaustionStillRefusesEvenWithSecondDep documents
-// the safety property reviewers Alpha and Bravo were concerned about:
-// when the first dep's subtree exhausts the visit budget AND a second dep
-// in the same call references a graph whose cycle would be reachable via
-// nodes the budget couldn't fully explore, the function MUST still refuse
-// the create. We don't care whether the refusal cites "cycle" or
-// "validation cap" — only that we don't silently allow a graph that
-// hasn't been verified acyclic.
+// TestTaskCreate_LookupErrorPropagates verifies a FindByNameProject error
+// during the idempotency check aborts the create (the creator must NOT be
+// invoked) and surfaces the lookup error rather than silently proceeding.
 func TestTaskCreate_LookupErrorPropagates(t *testing.T) {
 	s := testServer()
 	taskDB := &errTaskDBWrapper{findByNameProjectErr: errors.New("disk on fire")}

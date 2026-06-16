@@ -180,7 +180,7 @@ func (c *Client) PruneCompleted(ctx context.Context) (*PruneReport, error) {
 
 // ListTasksRaw returns every task as a full model.Task. Use this in the TUI
 // store adapter where lossy TaskJSON would drop fields like SessionID,
-// DependsOn, Result, AgentPID, Pinned, etc. Open to any authenticated token.
+// Result, AgentPID, Pinned, etc. Open to any authenticated token.
 // Added in phase 3 (gap fill for tui store interface).
 func (c *Client) ListTasksRaw(ctx context.Context) ([]*model.Task, error) {
 	var resp struct {
