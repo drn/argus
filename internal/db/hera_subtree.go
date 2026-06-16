@@ -36,12 +36,15 @@ const HeraTreeUpdatesLimit = 200
 // including the root itself, deduped and in stable BFS-discovery order.
 //
 // Nesting semantics (ported from Hera's subtree.go): a sub-orchestrator hangs
-// off its parent because its COORDINATOR role is bound to an argus task that
-// ALSO holds a live binding under the parent orchestrator (the multi-binding
-// shape — one task is a worker/coordinator in the parent AND the coordinator of
-// the child). So from a frontier orchestrator we reach a child orchestrator
-// when: the child has a live, non-archived coordinator role whose bound task
-// also has a live binding under the frontier.
+// off its parent because its COORDINATOR role's argus task is ALSO bound under
+// the parent orchestrator (the multi-binding shape — one task is a
+// worker/coordinator in the parent AND the coordinator of the child). The bridge
+// keys off each role's LATEST binding regardless of liveness (the `latest` CTE =
+// max binding id per role), NOT live bindings alone, so a child whose
+// coordinator session has finished still nests under its parent. The parent link
+// is honoured unless its latest binding was an operator TEARDOWN
+// (end_reason reparented / user_deleted), which marks a stale link that must not
+// nest; every other end reason leaves the structural link intact.
 //
 // Archived orchestrators are EXCLUDED from the subtree (WHERE child_orch
 // archived_at IS NULL) and archived coordinator roles do not bridge — mirroring
@@ -73,19 +76,24 @@ func (d *DB) heraSubtreeOrchIDs(rootOrchID int64) ([]int64, error) {
 		}
 		//nolint:gosec // G201: placeholders are a fixed list of `?` literals; ids are bound params.
 		query := fmt.Sprintf(`
+WITH latest AS (
+    SELECT b.id, b.role_id, b.orchestrator_id, b.argus_task_id, b.ended_at, b.end_reason
+    FROM hera_bindings b
+    JOIN (SELECT role_id, MAX(id) AS max_id FROM hera_bindings GROUP BY role_id) m
+        ON m.role_id = b.role_id AND m.max_id = b.id
+)
 SELECT DISTINCT child_orch.id
 FROM hera_orchestrators child_orch
 JOIN hera_roles child_coord
     ON child_coord.orchestrator_id = child_orch.id
     AND child_coord.kind = 'coordinator'
     AND child_coord.archived_at IS NULL
-JOIN hera_bindings child_coord_bnd
+JOIN latest child_coord_bnd
     ON child_coord_bnd.role_id = child_coord.id
-    AND child_coord_bnd.ended_at IS NULL
-JOIN hera_bindings parent_bnd
+JOIN latest parent_bnd
     ON parent_bnd.argus_task_id = child_coord_bnd.argus_task_id
     AND parent_bnd.orchestrator_id IN (%s)
-    AND parent_bnd.ended_at IS NULL
+    AND (parent_bnd.ended_at IS NULL OR COALESCE(parent_bnd.end_reason, '') NOT IN ('reparented', 'user_deleted'))
 WHERE child_orch.archived_at IS NULL`, strings.Join(placeholders, ","))
 
 		rows, err := d.conn.Query(query, args...)

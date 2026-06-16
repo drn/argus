@@ -28,6 +28,9 @@ func NewConfirmModal(title, message string) *ConfirmModal {
 func (m *ConfirmModal) Confirmed() bool { return m.confirmed }
 func (m *ConfirmModal) Canceled() bool  { return m.canceled }
 
+// Message returns the dialog's body text (test/inspection seam).
+func (m *ConfirmModal) Message() string { return m.message }
+
 // InputHandler handles key events for the confirm dialog.
 func (m *ConfirmModal) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return m.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {

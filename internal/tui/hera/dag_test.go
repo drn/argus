@@ -74,7 +74,7 @@ func toAgentFocus(p *HeraPage) {
 // task is the root node, so the cursor lands on it (layer 0).
 func TestDetailsDAG_ProjectedOnCoordSelect(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	testutil.Equal(t, p.detailsMode, true)
 	testutil.Equal(t, p.DAG().CurrentTask(), "t-coord") // coordinator is the tree root
 }
@@ -84,7 +84,7 @@ func TestDetailsDAG_ProjectedOnCoordSelect(t *testing.T) {
 // the coord.
 func TestDetailsDAG_WorkerHangsOffCoordinator(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	nodes := heraTreeNodes(p.Rail().Model(), p.SelectionContext().Orch)
 	testutil.Equal(t, len(nodes), 2)
 	for _, n := range nodes {
@@ -109,18 +109,12 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-a": {id: "t-a", alive: true}, "t-b": {id: "t-b", alive: true}}))
 	p.Refresh()
 
-	// Land on orch-a's coordinator; the DAG projects for orch-a.
-	testutil.Equal(t, selectRoleByName(p, "coord"), true) // first "coord" is orch-a's
+	// Land on orch-a's header (its coordinator is folded in); DAG projects orch-a.
+	testutil.Equal(t, selectOrchByName(p, "orch-a"), true)
 	testutil.Equal(t, p.DAG().CurrentTask(), "t-a")
 
-	// Navigate to orch-b's coordinator; applySelection reprojects.
-	r := p.Rail()
-	for i := 0; i < r.Rows(); i++ {
-		r.CursorDown()
-		if sel := r.Selected(); sel != nil && sel.OrchID == b {
-			break
-		}
-	}
+	// Navigate to orch-b's header; applySelection reprojects.
+	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
 	testutil.Equal(t, p.SelectionContext().Orch.ID, b)
 	testutil.Equal(t, p.DAG().CurrentTask(), "t-b")
 }
@@ -130,7 +124,7 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 // both titles render at once; the legacy " DAG " title never appears.
 func TestDetailsDAG_DrawStacksBothPanels(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 
 	text := drawnPageText(t, p, 120, 30)
 	di := strings.Index(text, "Details")
@@ -146,7 +140,7 @@ func TestDetailsDAG_DrawStacksBothPanels(t *testing.T) {
 // rect from a prior taller frame can't catch a mouse event over the roster.
 func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 
 	// Draw tall first so the tree gets a real rect, then redraw very short.
 	drawnPageText(t, p, 120, 30)
@@ -178,7 +172,7 @@ func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
 // terminal (detailsMode false → no stacked Details/tree region).
 func TestDetailsDAG_WorkerSelectionUnaffected(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	testutil.Equal(t, p.detailsMode, true)
 
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
@@ -193,7 +187,7 @@ func TestDetailsDAG_WorkerSelectionUnaffected(t *testing.T) {
 // and move its cursor between nodes.
 func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	toAgentFocus(p)
 	testutil.Equal(t, p.DAG().CurrentTask(), "t-coord")
 
@@ -207,7 +201,7 @@ func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
 // TestDetailsDAG_NoSyncOnDraw pins the UX-rendering rule for the stacked region.
 func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 
 	base := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, base.Init())
@@ -223,7 +217,7 @@ func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
 // tree sub-rect) is handled by the embedded widget (no panic; consumed path).
 func TestDetailsDAG_MouseRoutesToWidget(t *testing.T) {
 	p := dagPage(t)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	// Click low in the right region — inside the tree (bottom of the stack).
 	mh := p.MouseHandler()
 	ev := tcell.NewEventMouse(110, 20, tcell.Button1, tcell.ModNone)

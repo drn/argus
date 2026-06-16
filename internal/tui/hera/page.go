@@ -162,6 +162,9 @@ func (p *HeraPage) doRefresh() {
 			p.prMeta = pr
 		}
 	}
+	// Feed the same PR cache to the rail so managed rows render a PR indicator
+	// (best-effort; nil just leaves the cells off).
+	p.rail.SetPRMeta(p.prMeta)
 	// SetModel rebuilt the model's backing arrays, so the prior Selection
 	// pointers are stale — re-derive and rebind (task IDs usually unchanged, so
 	// bindPane is a no-op and the emulators are preserved).
@@ -376,8 +379,11 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	case tcell.KeyEnter:
 		// Enter "enters" the selected role: restart a dead session (reattach)
 		// then move focus into the pane to interact. A live row just advances
-		// focus. An empty selection only advances focus.
-		taskID := sel.TaskID()
+		// focus. An empty selection only advances focus. On a coordinator (the
+		// folded orchestrator header) the selected role is nil, so fall back to
+		// the orchestrator's coordinator task — Enter on a header reattaches the
+		// coordinator session.
+		taskID := sel.FocusTaskID()
 		if taskID != "" && p.OnReattach != nil && (p.resolve == nil || p.resolve(taskID) == nil) {
 			uxlog.Log("[hera-view] reattach key on task=%s (no live session)", taskID)
 			p.OnReattach(sel)

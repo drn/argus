@@ -115,6 +115,89 @@ func TestSubtreeOrchIDs_CycleGuard(t *testing.T) {
 	testutil.DeepEqual(t, ids, []int64{a.ID, b.ID}) // terminates, root included once
 }
 
+func TestListHeraLatestBindings(t *testing.T) {
+	d := heraTestDB(t)
+	orch := mkOrch(t, d, "o")
+	role := mkRole(t, d, orch.ID, "w", HeraKindWorker)
+
+	t.Run("no bindings yields none", func(t *testing.T) {
+		got, err := d.ListHeraLatestBindings()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+
+	t.Run("latest of several rebinds wins", func(t *testing.T) {
+		b1 := bind(t, d, role.ID, "t1")
+		testutil.NoError(t, d.EndHeraBinding(b1.ID, "argus_deleted"))
+		b2 := bind(t, d, role.ID, "t2") // newer, live
+
+		got, err := d.ListHeraLatestBindings()
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 1)
+		testutil.Equal(t, got[0].ID, b2.ID)
+		testutil.Equal(t, got[0].ArgusTaskID, "t2")
+		testutil.Nil(t, got[0].EndedAt) // live latest
+	})
+
+	t.Run("ended latest carries end_reason", func(t *testing.T) {
+		role2 := mkRole(t, d, orch.ID, "w2", HeraKindWorker)
+		b := bind(t, d, role2.ID, "tx")
+		testutil.NoError(t, d.EndHeraBinding(b.ID, HeraEndReasonUserDeleted))
+
+		got, err := d.ListHeraLatestBindings()
+		testutil.NoError(t, err)
+		var found *HeraBinding
+		for _, x := range got {
+			if x.RoleID == role2.ID {
+				found = x
+			}
+		}
+		testutil.Equal(t, found != nil, true)
+		testutil.Equal(t, found.EndReason, HeraEndReasonUserDeleted)
+	})
+}
+
+func TestSubtreeOrchIDs_BridgesOverEndedNonTeardown(t *testing.T) {
+	d := heraTestDB(t)
+	root := mkOrch(t, d, "root")
+	rootCoord := mkRole(t, d, root.ID, "coord", HeraKindCoordinator)
+	bind(t, d, rootCoord.ID, "t-root")
+
+	// Child sub bridges off root via t-sub, but the child's COORDINATOR binding
+	// has ended for a non-teardown reason (its task finished). The parent worker
+	// binding stays live. The bridge must still nest (latest-binding semantics).
+	sub := mkOrch(t, d, "sub")
+	subCoord := mkRole(t, d, sub.ID, "coord", HeraKindCoordinator)
+	subBnd := bind(t, d, subCoord.ID, "t-sub")
+	testutil.NoError(t, d.EndHeraBinding(subBnd.ID, "argus_deleted")) // non-teardown
+	parentWorker := mkRole(t, d, root.ID, "w-sub", HeraKindWorker)
+	bind(t, d, parentWorker.ID, "t-sub")
+
+	ids, err := d.SubtreeOrchIDs(root.ID)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, ids, []int64{root.ID, sub.ID})
+}
+
+func TestSubtreeOrchIDs_TeardownLinkDoesNotBridge(t *testing.T) {
+	d := heraTestDB(t)
+	root := mkOrch(t, d, "root")
+	rootCoord := mkRole(t, d, root.ID, "coord", HeraKindCoordinator)
+	bind(t, d, rootCoord.ID, "t-root")
+
+	sub := mkOrch(t, d, "sub")
+	subCoord := mkRole(t, d, sub.ID, "coord", HeraKindCoordinator)
+	bind(t, d, subCoord.ID, "t-sub") // live child coord
+	// The PARENT worker link was torn down (operator reparent/delete): its latest
+	// binding ended with a teardown reason, so it must NOT bridge the child.
+	parentWorker := mkRole(t, d, root.ID, "w-sub", HeraKindWorker)
+	pwBnd := bind(t, d, parentWorker.ID, "t-sub")
+	testutil.NoError(t, d.EndHeraBinding(pwBnd.ID, HeraEndReasonReparented))
+
+	ids, err := d.SubtreeOrchIDs(root.ID)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, ids, []int64{root.ID}) // sub not reached
+}
+
 func TestHeraTreeUpdatesSince(t *testing.T) {
 	d := heraTestDB(t)
 	root := mkOrch(t, d, "root")

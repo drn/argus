@@ -174,6 +174,34 @@ func TestHeraTreeNodes(t *testing.T) {
 		testutil.Equal(t, nodes[0].ID, "tc")
 	})
 
+	t.Run("bridges over an ended-but-not-torn-down worker link", func(t *testing.T) {
+		// A: coord=ta (live), worker bridges tb but its binding ENDED for a
+		// non-teardown reason (the task finished). B: coord=tb (live), worker=tc.
+		// The broadened bridge must still discover B's subtree through the ended link.
+		a := OrchView{ID: 1, Name: "A", Roles: []RoleView{
+			{Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "ta", BridgeTaskID: "ta"},
+			{Name: "w", Kind: db.HeraKindWorker, Live: false, BridgeTaskID: "tb", LinkEndReason: "argus_deleted"},
+		}}
+		b := orchView(2, "B", "tb", wk("w", "tc"))
+		m := Model{Active: []OrchView{a, b}}
+		nodes := heraTreeNodes(m, &m.Active[0])
+		ids := nodeIDs(nodes)
+		testutil.Equal(t, ids["ta"] && ids["tb"] && ids["tc"], true) // B discovered
+	})
+
+	t.Run("torn-down worker link does not bridge", func(t *testing.T) {
+		a := OrchView{ID: 1, Name: "A", Roles: []RoleView{
+			{Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "ta", BridgeTaskID: "ta"},
+			{Name: "w", Kind: db.HeraKindWorker, Live: false, BridgeTaskID: "tb", LinkEndReason: db.HeraEndReasonUserDeleted},
+		}}
+		b := orchView(2, "B", "tb", wk("w", "tc"))
+		m := Model{Active: []OrchView{a, b}}
+		nodes := heraTreeNodes(m, &m.Active[0])
+		ids := nodeIDs(nodes)
+		testutil.Equal(t, ids["ta"], true)
+		testutil.Equal(t, ids["tb"] || ids["tc"], false) // B not reached (stale link)
+	})
+
 	t.Run("node carries the bound task's status and result", func(t *testing.T) {
 		root := OrchView{ID: 1, Name: "orch", Roles: []RoleView{
 			{Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc",
