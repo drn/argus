@@ -2,73 +2,11 @@
 
 ## Purpose
 
-This capability owns two user-facing surfaces and explicitly does NOT own the dependency-graph engine (that is `task-orchestration`).
+This capability owns the **terminal-output URL feature**: extracting followable URLs from agent terminal output, rejecting malformed ones, opening only http/https schemes, and the link-picker selection UI. The URL picker is a terminal-side affordance for following links an agent has printed.
 
-First, it owns the **REST/HTTP contract** for managing task-to-task dependency links: creating a link, removing a link, and inspecting a task's immediate dependencies. It specifies the contract as it is observable over HTTP — request/response shapes, status codes (including the cycle→409 rejection), and the guarantee that dependency state is left unchanged when an operation fails. It deliberately does not restate the graph algorithm (cycle detection, neighbour computation, unlink semantics); those engine invariants live in `task-orchestration`. The HTTP surface is reachable from both the master token and per-device tokens so the mobile client can manage dependencies.
-
-Second, it owns the **terminal-output URL feature**: extracting followable URLs from agent terminal output, rejecting malformed ones, opening only http/https schemes, and the link-picker selection UI. The URL picker is a terminal-side affordance for following links an agent has printed.
+> **Retired:** this capability previously also owned a **REST/HTTP dependency-linking contract** (create/remove a `depends_on` link, inspect a task's neighbours, cycle→409 mapping). That surface — and the `task-orchestration` graph engine beneath it — was removed when the `depends_on` DAG was retired in favor of Hera (coordinator-driven worker spawning). See `task-orchestration` (retired) for the full removal note.
 
 ## Requirements
-
-### Requirement: Create a dependency link between two tasks
-
-The system SHALL attach a parent task to a child task via the child's dependency list. On success it SHALL persist the parent's id in the child's `DependsOn` set and report success. The endpoint SHALL be reachable without master privileges (same tier as archive/rename) so device tokens can manage dependencies.
-
-#### Scenario: Linking a child to an existing parent
-
-- **WHEN** a request supplies a valid parent id for an existing child task
-- **THEN** the parent id is added to the child's `DependsOn` list and the response reports a linked status
-
-#### Scenario: Linking to a non-existent parent
-
-- **WHEN** the supplied parent id does not correspond to any task
-- **THEN** the request is rejected as not found and the child's dependency list is unchanged
-
-#### Scenario: Malformed link request body
-
-- **WHEN** the request body is not valid JSON
-- **THEN** the request is rejected as a bad request and no dependency is created
-
-### Requirement: Reject cycle-forming links over HTTP with a 409
-
-When the orchestration engine reports that a link would form a cycle, the HTTP endpoint SHALL translate that into a conflict response whose body carries the cycle path the engine reported, so the client can render the offending chain inline. The endpoint SHALL leave the response indicating that no dependency state changed. (The graph-level definition of "cycle" and the path-ordering semantics are owned by `task-orchestration`; this requirement only fixes how that outcome is surfaced over HTTP.)
-
-#### Scenario: Linking would close a cycle
-
-- **WHEN** a link request is one the engine rejects as cycle-forming
-- **THEN** the request is answered with a conflict status and a response body containing a non-empty cycle path field, and the response indicates no dependency was added
-
-### Requirement: Remove a dependency link over HTTP
-
-The unlink endpoint SHALL identify both the child and the parent from the request path so it works with no request body (browser-friendly DELETE). On a successful unlink it SHALL report an unlinked status. The endpoint SHALL be reachable without master privileges. (The graph effect of removal — and its no-op-when-absent behaviour — is owned by `task-orchestration`.)
-
-#### Scenario: Unlinking via a no-body DELETE
-
-- **WHEN** a DELETE request names a child and a parent entirely in its path with no body
-- **THEN** the request succeeds and the response reports an unlinked status
-
-### Requirement: Expose a task's immediate dependencies over HTTP
-
-The dependency-inspection endpoint SHALL return, in its response body, the one-hop upstream and downstream neighbours the engine computes for a task. This read SHALL be available to device tokens so the dependency view can render on mobile. (The definition of "one-hop neighbour" is owned by `task-orchestration`; this requirement only fixes that the read is exposed over HTTP and reachable by device tokens.)
-
-#### Scenario: Reading neighbours over HTTP
-
-- **WHEN** a device-token request inspects a task that two others declare as a parent and that itself has no parents
-- **THEN** the response succeeds and its body reports zero upstream neighbours and two downstream neighbours
-
-### Requirement: Map dependency and graph errors to HTTP statuses
-
-The system SHALL translate dependency operation failures to stable HTTP statuses: an empty/invalid task id SHALL be a bad request, an unknown task SHALL be not found, a cycle SHALL be a conflict, and any unrecognised failure SHALL be an internal server error so unexpected conditions surface rather than masquerading as client errors.
-
-#### Scenario: Operation references an unknown task
-
-- **WHEN** a dependency operation targets a task id that does not exist
-- **THEN** the request is rejected as not found
-
-#### Scenario: Unexpected backend failure
-
-- **WHEN** a dependency operation fails for a reason that is neither a missing task, an empty id, nor a cycle
-- **THEN** the request is rejected as an internal server error
 
 ### Requirement: Extract followable URLs from terminal output
 

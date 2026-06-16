@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The MCP server exposes Argus capabilities to LLM agents over the Model Context Protocol (Streamable HTTP transport). It surfaces a knowledge-base tool set and, when the daemon wires them in, tools for task lifecycle management, dependency linking, inter-task messaging, recurring schedules, clipboard staging, and viewable artifacts. The server lets an agent (or an orchestrator agent) drive Argus programmatically without going through the TUI or web UI.
+The MCP server exposes Argus capabilities to LLM agents over the Model Context Protocol (Streamable HTTP transport). It surfaces a knowledge-base tool set and, when the daemon wires them in, tools for task lifecycle management, inter-task messaging, recurring schedules, clipboard staging, and viewable artifacts. The server lets an agent (or an orchestrator agent) drive Argus programmatically without going through the TUI or web UI.
 
 ## Requirements
 
@@ -87,9 +87,9 @@ The server SHALL expose tools to search, read, list, ingest, and delete knowledg
 - **WHEN** `kb_ingest` is called without a path or without content
 - **THEN** the response is a tool error reporting path and content are required
 
-### Requirement: Task creation with worktree and orchestration fields
+### Requirement: Task creation with worktree
 
-`task_create` SHALL require a project and a prompt, derive the name from the prompt when omitted, create a worktree, start the agent session, and return a summary including the task ID, name, status, and project. It MUST cap concurrent creations and reject when the limit is exceeded. When `name` is supplied, it SHALL be idempotent on the `(name, project)` pair: an existing non-archived match errors unless `upsert: true` is passed, in which case the existing task is returned unchanged. `depends_on` entries MUST reference real, non-archived tasks, MUST be capped in count, and MUST be rejected when they would form a cycle in the persisted dependency graph or when the graph is too large to verify acyclic.
+`task_create` SHALL require a project and a prompt, derive the name from the prompt when omitted, create a worktree, start the agent session immediately, and return a summary including the task ID, name, status, and project. It MAY accept an optional `base_branch` start point (for stacked-PR workflows). It MUST cap concurrent creations and reject when the limit is exceeded. When `name` is supplied, it SHALL be idempotent on the `(name, project)` pair: an existing non-archived match errors unless `upsert: true` is passed, in which case the existing task is returned unchanged.
 
 #### Scenario: Missing required fields
 
@@ -105,11 +105,6 @@ The server SHALL expose tools to search, read, list, ingest, and delete knowledg
 
 - **WHEN** `task_create` is called with a duplicate `(name, project)` and `upsert: true`
 - **THEN** the existing task is returned unchanged with a summary indicating it already exists
-
-#### Scenario: Dependency on unknown or archived task rejected
-
-- **WHEN** `task_create` declares a `depends_on` entry that does not exist or is archived
-- **THEN** the response is a tool error identifying the offending dependency
 
 #### Scenario: Concurrent-create limit enforced
 

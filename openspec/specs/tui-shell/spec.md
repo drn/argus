@@ -22,12 +22,12 @@ The shell SHALL present a fixed vertical layout: a single-row header (tab bar) a
 
 ### Requirement: Top-level tab navigation
 
-The shell SHALL expose three top-level tabs in order — Tasks, DAG, Settings — and SHALL switch among them in response to global keys. Tab switching SHALL update both the header's active tab and the status bar's tab context, and SHALL move focus to the newly activated view.
+The shell SHALL expose three top-level tabs in order — Tasks, Hera, Settings — and SHALL switch among them in response to global keys. Tab switching SHALL update both the header's active tab and the status bar's tab context, and SHALL move focus to the newly activated view.
 
 #### Scenario: Numeric keys select tabs by position
 
 - **WHEN** the user presses `1`, `2`, or `3` while not in the agent view
-- **THEN** the active tab becomes Tasks, DAG, or Settings respectively and that view is shown with focus
+- **THEN** the active tab becomes Tasks, Hera, or Settings respectively and that view is shown with focus
 
 #### Scenario: Arrow keys step between adjacent tabs
 
@@ -36,7 +36,7 @@ The shell SHALL expose three top-level tabs in order — Tasks, DAG, Settings �
 
 #### Scenario: Switching to a tab refreshes its content
 
-- **WHEN** the user switches to the DAG tab or the Settings tab
+- **WHEN** the user switches to the Hera tab or the Settings tab
 - **THEN** the shell refreshes that view's content before showing it
 
 ### Requirement: Application quit

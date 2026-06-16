@@ -618,10 +618,9 @@ func (a *App) buildUI() {
 	a.heraPage.CoordPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
 	a.heraPage.AgentPane().OnBranchChange = func() { a.forceRedraw("hera agent pane branch changed") }
 	a.heraPage.AgentPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
-	// M7: the embedded Details-pane DAG (coordinator selection) shares the legacy
-	// DAG tab's widget callbacks. OnBranchChange stays log-only (never Sync) — the
-	// cursor-highlight ghost-prevention contract, identical to the standalone tab.
-	a.heraPage.DAG().OnBranchChange = func() { a.forceRedraw("hera dag branch changed") }
+	// The embedded Details-pane orchestration-tree widget. OnBranchChange stays
+	// log-only (never Sync) — the cursor-highlight ghost-prevention contract.
+	a.heraPage.DAG().OnBranchChange = func() { a.forceRedraw("hera tree branch changed") }
 
 	// M6c: thin mutation layer + rail keyset. Wired only in local mode (heraReader
 	// is the same *db.DB; remote mode leaves heraOps nil and the callbacks unwired,
