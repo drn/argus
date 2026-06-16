@@ -12,6 +12,8 @@
 
 The system SHALL build the rail as a nested tree of display rows from the read-only model. Each root orchestrator (one with no bridging parent in the rendered set) renders at depth 0; an expanded orchestrator's directly-bound roles render at `depth+1`; and a sub-orchestrator renders indented beneath the parent worker row that bridges it (its coordinator's bridge task equals that worker's bridge task), recursively. Nesting consumes the corrected subtree (see "Multi-binding bridge keys off the latest binding"). A visited-orchestrator set guards cycles so each orchestrator is placed at most once. An archived sub-orchestrator reached through a bridge renders dimmed in place (it is NOT dropped from its parent's subtree, distinct from the bottom Archive section which lists archived ROOT orchestrators).
 
+A PINNED orchestrator is ALWAYS a top-level root (rendered in the Pinned section), even when a worker bridges it — user pin intent wins over nesting. After the root pass, a safety sweep places any active orchestrator left unplaced by a pure bridge cycle as a top-level root, so a cycle-orphaned orchestrator never vanishes from the rail.
+
 Derived from: `internal/tui/hera/rail.go` (`buildRows`, `appendOrch`), `docs/OLD-RAIL-SNAPSHOT.md` (target layout: 6 roots / 19 nested).
 
 #### Scenario: Sub-orchestrator nests under its bridging worker
@@ -23,6 +25,16 @@ Derived from: `internal/tui/hera/rail.go` (`buildRows`, `appendOrch`), `docs/OLD
 
 - **WHEN** two orchestrators bridge each other (a cycle)
 - **THEN** the visited-set places each orchestrator exactly once and the rail build terminates
+
+#### Scenario: Pure-cycle orphan still surfaces as a root
+
+- **WHEN** every orchestrator in a bridge cycle is consumed (bridged by another) so none qualifies as a root
+- **THEN** the safety sweep renders the unplaced orchestrators as top-level roots — nothing vanishes from the rail
+
+#### Scenario: Pinned orchestrator stays top-level when bridged
+
+- **WHEN** a pinned orchestrator's coordinator task is also a worker under another orchestrator (it is bridged)
+- **THEN** it still renders in the Pinned section at depth 0, not nested under the bridging worker
 
 #### Scenario: Archived bridge renders dimmed in place
 
@@ -117,9 +129,37 @@ Derived from: `internal/tui/hera/rail.go` (`Selection.BridgeChildOrchID`), `inte
 
 ## MODIFIED Requirements
 
+### Requirement: Status-icon precedence on role rows (area 3)
+
+The system SHALL choose a role row's status glyph by this precedence: (1) `ready_to_close` wins over everything with a distinct review glyph; otherwise (2) the hera role status when present — `working` renders the ACTIVE SPINNER's animated frame (see "Running agents animate a spinner glyph"), while `blocked`, `done`, and `idle` each map to a distinct STATIC glyph/style; otherwise (3) binding presence (`Live`) renders a "live" glyph; otherwise (4) an unbound/dimmed glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
+
+Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`buildRoleView` reads `ready_to_close`).
+
+#### Scenario: ready_to_close overrides status
+
+- **WHEN** a role's bound task carries `meta:hera.ready_to_close=true` AND the role status is working
+- **THEN** the row renders the review/ready glyph, not the working spinner
+
+#### Scenario: Working renders the animated spinner
+
+- **WHEN** a role has a status of `working` and is not ready_to_close
+- **THEN** the row renders the active spinner's frame (animated), not a static glyph
+
+#### Scenario: Hera role status drives the glyph
+
+- **WHEN** a role has a status row of `blocked` and is not ready_to_close
+- **THEN** the row renders the needs-input/blocked glyph (static)
+
+#### Scenario: Live-but-statusless role
+
+- **WHEN** a role holds a live binding but has no status row and is not ready_to_close
+- **THEN** the row renders the in-review "live" glyph rather than the unbound glyph
+
 ### Requirement: Orchestration tree projects the role hierarchy in-memory (area 6)
 
 The system SHALL project the embedded graph's nodes from the rail's already-built model via `heraTreeNodes` — a pure in-memory read with no DB call and no provider seam. The graph renders the role hierarchy (coordinator → workers → sub-coordinators), NOT the retired `depends_on` edges. Each worker gets a synthetic edge to its orchestrator's coordinator; a sub-coordinator collapses to one node keyed by task ID, carrying both a parent edge (its worker role under the parent) and child edges (its own workers). The subtree is discovered by multi-binding BFS keyed off the LATEST binding with the teardown guard: orchestrator C is a child of P when C's coordinator's bridge task is bound as a non-coordinator worker (by bridge task, live or ended-but-not-torn-down) under P. Archived orchestrators are pruned as descendants; the coordinator root takes no self-edge (cycle-safe). Node colour comes from the bound task's argus status/result.
+
+Node DISCOVERY uses the broadened latest-binding bridge, but node EMISSION is intentionally LIVE-only: only roles with a live binding become graph nodes, and a worker's synthetic edge targets its orchestrator's LIVE coordinator task. So a descendant discovered solely through an ended (non-torn-down) coordinator binding contributes no node until it regains a live coordinator — the graph shows live structure, while the rail (which renders finished rows read-only) shows the fuller bridged tree. This live-only emission is deliberate, not a discovery/render mismatch.
 
 Derived from: `internal/tui/hera/tree.go` (`heraTreeNodes`, `workerTaskSet`), `internal/tui/hera/page.go` (`rebuildDAG`), `internal/tui/hera/model.go` (`BridgeTaskID`/`CoordBridgeTaskID`, `TaskStatus`/`TaskResult`).
 
