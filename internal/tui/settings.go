@@ -1446,7 +1446,8 @@ func (sv *SettingsView) handleEnter() bool {
 		sv.rebuildRows()
 		return true
 	case srHera:
-		// Toggle Hera native view.
+		// Toggle native-Hera MCP tool registration (daemon-side, applied on next
+		// daemon start). The TUI's second tab is always the native Hera view.
 		sv.heraEnabled = !sv.heraEnabled
 		val := "false"
 		if sv.heraEnabled {

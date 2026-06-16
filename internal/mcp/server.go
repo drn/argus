@@ -31,9 +31,8 @@ type KBQuerier interface {
 }
 
 // TaskCreateInput is the payload the MCP server hands to the daemon-injected
-// task creator. Adding orchestration fields (BaseBranch, DependsOn, …) here
-// extends what the MCP `task_create` tool can pass through without churning
-// any function signatures.
+// task creator. Adding fields (BaseBranch, …) here extends what the MCP
+// `task_create` tool can pass through without churning any function signatures.
 type TaskCreateInput struct {
 	Name     string
 	Prompt   string
@@ -50,16 +49,6 @@ type TaskCreateInput struct {
 	// for stacked-PR workflows where each sub-task branches off the previous
 	// task's branch.
 	BaseBranch string
-
-	// DependsOn is the list of task IDs whose status must reach `complete`
-	// before this task's agent session is auto-started. Empty / nil starts
-	// the session immediately (legacy behaviour).
-	DependsOn []string
-
-	// PlanSlug is the orchestrator-supplied grouping label so the DAG view
-	// can scope a stack without traversing depends_on reachability. Opaque
-	// to the daemon — same contract as Result.
-	PlanSlug string
 }
 
 // HeraSpawnInput is the payload the MCP hera_spawn_worker arm hands to the
@@ -116,12 +105,9 @@ type TaskStore interface {
 	// section so a duplicate detection doesn't need to scan every task in
 	// memory each call. Backed by an indexed SQL query in db.DB.
 	FindByNameProject(name, project string) (*model.Task, error)
-	// SetDependsOn, SetPlanSlug, and SetArchived are partial-column writes
-	// used by orch.Link / Unlink / SetPlanSlug / HaltDownstream to avoid
-	// clobbering a concurrent status flip via a stale full-row Update.
-	// Same pattern as SetResult / Rename. *db.DB satisfies all three.
-	SetDependsOn(id string, deps []string) error
-	SetPlanSlug(id, slug string) error
+	// SetArchived is a partial-column write (used by task archival) that avoids
+	// clobbering a concurrent status flip via a stale full-row Update. Same
+	// pattern as SetResult / Rename. *db.DB satisfies it.
 	SetArchived(id string, archived bool) error
 }
 
@@ -160,19 +146,6 @@ const maxConcurrentCreates = 5
 // the request body limit (4 MiB) would let pathologically long names through;
 // 200 runes comfortably covers any human-typeable name across every UI.
 const maxTaskNameRunes = 200
-
-// maxDependsOnEntries caps how many upstream task IDs a single task_create
-// may declare. A misbehaving orchestrator submitting tens of thousands of
-// IDs would force one DB Get per entry at validation time and again on
-// every task_get for the duplicated unresolvedDeps loop. 100 is two orders
-// of magnitude above any reasonable stacked-PR plan.
-const maxDependsOnEntries = 100
-
-// maxDepGraphTraversal bounds the DFS used to detect cycles in the deps
-// graph at task_create time. A real DAG visits each task at most once;
-// the cap exists to bound a misbehaving DB (impossible cycles in already-
-// persisted rows) so the validation can't hang the create path.
-const maxDepGraphTraversal = 10000
 
 // Server is the MCP HTTP server.
 type Server struct {
@@ -587,7 +560,7 @@ var taskToolDefs = []Tool{
 		Name: "task_create",
 		Description: `Create a new Argus task with a git worktree and start an agent session. Returns task ID, name, and status.
 
-Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (stacked-PR workflows), and ` + "`depends_on`" + ` to declare a list of upstream task IDs that must reach status=complete before this task's agent session is auto-started. While blocked, the task stays in ` + "`pending`" + ` with its worktree already prepared; the depswatcher inside the daemon starts the session within one tick of every dep completing.
+Orchestration: pass ` + "`base_branch`" + ` to branch off a non-default ref (stacked-PR workflows where each sub-task branches off the previous task's branch). The session starts immediately — task sequencing is the coordinator's job (spawn the next worker when the prior one is done), not a declarative dependency.
 
 Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) and a non-archived task with the same (name, project) already exists, the call errors unless ` + "`upsert: true`" + ` is set — in which case the existing task is returned unchanged. This keeps an orchestrator that restarts mid-loop from double-firing sub-tasks.`,
 		InputSchema: map[string]interface{}{
@@ -597,8 +570,6 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 				"prompt":      map[string]interface{}{"type": "string", "description": "Instructions for the agent"},
 				"project":     map[string]interface{}{"type": "string", "description": "Project name (must exist in Argus config)"},
 				"base_branch": map[string]interface{}{"type": "string", "description": "Optional. Start point for the new worktree's branch (e.g. 'argus/parent-task'). Resolves to origin/<ref> / upstream/<ref> if no local match. Empty = project default (master/main)."},
-				"depends_on":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional. Upstream task IDs whose status must reach 'complete' before this task's agent starts. The worktree is still created immediately."},
-				"plan_slug":   map[string]interface{}{"type": "string", "description": "Optional. Orchestrator grouping label for the DAG view; opaque to the daemon. Tasks sharing the same plan_slug render as one stack."},
 				"model":       map[string]interface{}{"type": "string", "description": "Optional. Model override for the agent session (e.g. 'sonnet', 'opus', 'gpt-5'), passed to the backend CLI as --model. Empty = the backend's configured default."},
 				"upsert":      map[string]interface{}{"type": "boolean", "description": "Optional. If true and a non-archived task with the same (name, project) exists, return that task instead of erroring."},
 			},
@@ -607,13 +578,12 @@ Idempotency: when ` + "`name`" + ` is supplied (not auto-generated from prompt) 
 	},
 	{
 		Name:        "task_list",
-		Description: "List Argus tasks, optionally filtered by status, project, and/or plan_slug. Returned rows include the plan_slug column for DAG-view scoping.",
+		Description: "List Argus tasks, optionally filtered by status and/or project.",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"status":    map[string]interface{}{"type": "string", "description": "Filter by status: pending, in_progress, in_review, complete"},
-				"project":   map[string]interface{}{"type": "string", "description": "Filter by project name"},
-				"plan_slug": map[string]interface{}{"type": "string", "description": "Filter by orchestrator stack label (set on each sub-task via task_create / task_set_plan_slug)"},
+				"status":  map[string]interface{}{"type": "string", "description": "Filter by status: pending, in_progress, in_review, complete"},
+				"project": map[string]interface{}{"type": "string", "description": "Filter by project name"},
 			},
 		},
 	},
@@ -690,7 +660,7 @@ The agent process must identify itself by passing either ` + "`id`" + ` (sub-tas
 Conventional shape for stacked-PR flows:
 ` + "```json\n{\n  \"pr_url\": \"https://github.com/org/repo/pull/123\",\n  \"pr_number\": 123,\n  \"branch_sha\": \"abc1234\",\n  \"milestone\": \"M3\"\n}\n```" + `
 
-Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` before calling ` + "`task_complete`" + ` so the orchestrator can intervene. depswatcher does NOT auto-cascade failures — it only starts dependents whose deps are all status=complete, so a failed-but-complete dep WILL unblock its children on the next watcher tick (up to ~1 minute later). The orchestrator interprets ` + "`failed`" + ` and stops the rest of the stack: use ` + "`task_stop`" + ` for any downstream task that has already started (depswatcher beat the orchestrator to it) and ` + "`task_archive`" + ` for any downstream task still in ` + "`pending`" + ` (no live session yet — ` + "`task_stop`" + ` would error with session-not-found).`,
+Failure convention: write ` + "`{\"failed\": true, \"reason\": \"...\"}`" + ` so a coordinator polling this result can intervene before sequencing further work. A coordinator interprets ` + "`failed`" + ` and decides how to proceed (stop / archive downstream tasks, retry, or escalate) — there is no automatic dependency cascade.`,
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -823,7 +793,6 @@ func (s *Server) handleToolsList(req *Request) *Response {
 	copy(tools, toolDefs)
 	if s.taskMgmtEnabled() {
 		tools = append(tools, taskToolDefs...)
-		tools = append(tools, linkingToolDefs...)
 	}
 	if s.clipboardEnabled() {
 		tools = append(tools, clipboardToolDefs...)
@@ -903,16 +872,6 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolTaskComplete(req.ID, params.Arguments)
 	case "task_set_result":
 		return s.toolTaskSetResult(req.ID, params.Arguments)
-	case "task_link":
-		return s.toolTaskLink(req.ID, params.Arguments)
-	case "task_unlink":
-		return s.toolTaskUnlink(req.ID, params.Arguments)
-	case "task_deps":
-		return s.toolTaskDeps(req.ID, params.Arguments)
-	case "task_halt_downstream":
-		return s.toolTaskHaltDownstream(req.ID, params.Arguments)
-	case "task_set_plan_slug":
-		return s.toolTaskSetPlanSlug(req.ID, params.Arguments)
 	case "argus_clipboard_set":
 		return s.toolClipboardSet(req.ID, params.Arguments)
 	case "schedule_list":
@@ -1162,14 +1121,12 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 
 	var p struct {
-		Name       string   `json:"name"`
-		Prompt     string   `json:"prompt"`
-		Project    string   `json:"project"`
-		BaseBranch string   `json:"base_branch"`
-		DependsOn  []string `json:"depends_on"`
-		PlanSlug   string   `json:"plan_slug"`
-		Model      string   `json:"model"`
-		Upsert     bool     `json:"upsert"`
+		Name       string `json:"name"`
+		Prompt     string `json:"prompt"`
+		Project    string `json:"project"`
+		BaseBranch string `json:"base_branch"`
+		Model      string `json:"model"`
+		Upsert     bool   `json:"upsert"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1178,47 +1135,6 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 	}
 	if p.Prompt == "" {
 		return toolError(id, "prompt is required")
-	}
-
-	// Cap depends_on at create time. The 4 MiB request body limit would
-	// otherwise let an array of tens of thousands of IDs through, and the
-	// per-tick unresolvedDeps loop in task_get would then linear-scan that
-	// list on every read. 100 is well above any realistic stacked-PR plan.
-	if len(p.DependsOn) > maxDependsOnEntries {
-		return toolError(id, fmt.Sprintf("depends_on exceeds %d entries (got %d)", maxDependsOnEntries, len(p.DependsOn)))
-	}
-
-	// Validate depends_on entries reference real, non-archived tasks before
-	// we spawn a worktree. An archived dep that never reached complete
-	// would block the dependent permanently; rejecting at create time gives
-	// the orchestrator a clear error instead of a mystery hang.
-	for _, depID := range p.DependsOn {
-		if strings.TrimSpace(depID) == "" {
-			return toolError(id, "depends_on contains an empty task ID")
-		}
-		dep, err := s.taskDB.Get(depID)
-		if err != nil || dep == nil {
-			return toolError(id, fmt.Sprintf("depends_on references unknown task: %s", depID))
-		}
-		if dep.Archived {
-			return toolError(id, fmt.Sprintf("depends_on references archived task: %s (%s)", depID, dep.Name))
-		}
-	}
-
-	// Cycle check: DFS the transitive dep graph from each direct dep. The
-	// new task has no ID yet, so only a cycle in the persisted rows can be
-	// reachable. Defensive: cycles shouldn't exist if every prior create
-	// passed this check, but a direct DB write or future task-update path
-	// could introduce one. We refuse the create on EITHER a found cycle
-	// OR an unverifiable graph (more nodes than maxDepGraphTraversal can
-	// walk), so a pathological graph cannot bypass validation by being
-	// large enough to exhaust the visit budget.
-	cyclePath, cycleErr := s.detectCycle(p.DependsOn)
-	if cycleErr != nil {
-		return toolError(id, fmt.Sprintf("depends_on validation: %v", cycleErr))
-	}
-	if cyclePath != nil {
-		return toolError(id, fmt.Sprintf("depends_on would form a cycle: %s", strings.Join(cyclePath, " -> ")))
 	}
 
 	autoName := p.Name == ""
@@ -1280,7 +1196,7 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		s.createMu.Unlock()
 	}()
 
-	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q deps=%v", name, p.Project, autoName, p.BaseBranch, p.DependsOn)
+	log.Printf("[mcp] task_create name=%q project=%q auto=%v base=%q", name, p.Project, autoName, p.BaseBranch)
 	task, err := s.createTask(TaskCreateInput{
 		Name:       name,
 		Prompt:     p.Prompt,
@@ -1288,15 +1204,13 @@ func (s *Server) toolTaskCreate(id interface{}, args json.RawMessage) *Response 
 		AutoName:   autoName,
 		Model:      strings.TrimSpace(p.Model),
 		BaseBranch: strings.TrimSpace(p.BaseBranch),
-		DependsOn:  p.DependsOn,
-		PlanSlug:   strings.TrimSpace(p.PlanSlug),
 	})
 	if err != nil {
 		log.Printf("[mcp] task_create failed: %v", err)
 		return toolError(id, fmt.Sprintf("Failed to create task: %v", err))
 	}
 
-	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s deps=%v", task.ID, task.Name, task.Status, task.DependsOn)
+	log.Printf("[mcp] task_create ok: id=%s name=%s status=%s", task.ID, task.Name, task.Status)
 	return toolResult(id, formatTaskCreatedSummary(task, "Task created"))
 }
 
@@ -1311,98 +1225,10 @@ func (s *Server) lookupExistingTaskLocked(name, project string) (*model.Task, er
 	return s.taskDB.FindByNameProject(name, project)
 }
 
-// detectCycle DFS-walks the transitive dep graph starting from depIDs.
-// Returns:
-//   - (path, nil) when a cycle is found — path is "A -> B -> ... -> A" style.
-//   - (nil, nil)  when the reachable graph is acyclic and small enough to
-//     fully validate.
-//   - (nil, err)  when validation could not complete because the visit
-//     budget (maxDepGraphTraversal) was exhausted before exploring every
-//     reachable node. The caller MUST refuse the create on err — silently
-//     allowing it would let a pathological graph bypass the cycle gate.
-//
-// The new task is not yet persisted, so the only cycles detectable are
-// ones already in the stored graph. Defensive against direct DB tampering
-// or a future task-update path that doesn't re-validate.
-//
-// Algorithm: standard DFS with a per-node visited set + a recursion-stack
-// set. The order of checks inside dfs is intentional:
-//  1. inStack first — a true cycle is detected immediately, never
-//     suppressed by the visit cap.
-//  2. visited second — already-explored subgraphs short-circuit (diamond
-//     DAGs visit shared descendants once).
-//  3. visit-budget last — applies only to genuinely new nodes; bounds
-//     worst-case work without preempting cycle detection.
-//
-// The returned cycle path is a defensive copy so sibling descents on a
-// non-fully-explored graph cannot corrupt it via shared slice backing.
-func (s *Server) detectCycle(depIDs []string) ([]string, error) {
-	visited := make(map[string]bool)
-	inStack := make(map[string]bool)
-	var visits int
-	var capExceeded bool
-
-	var dfs func(id string, path []string) []string
-	dfs = func(id string, path []string) []string {
-		if inStack[id] {
-			// Cycle: clone the path + duplicate id so the returned slice
-			// cannot alias the recursion's shared backing array.
-			cycle := make([]string, len(path)+1)
-			copy(cycle, path)
-			cycle[len(path)] = id
-			return cycle
-		}
-		if visited[id] {
-			return nil
-		}
-		visits++
-		if visits > maxDepGraphTraversal {
-			capExceeded = true
-			return nil
-		}
-		inStack[id] = true
-		visited[id] = true
-		task, err := s.taskDB.Get(id)
-		if err == nil && task != nil {
-			for _, next := range task.DependsOn {
-				if cycle := dfs(next, append(path, id)); cycle != nil {
-					return cycle
-				}
-			}
-		}
-		inStack[id] = false
-		return nil
-	}
-
-	for _, depID := range depIDs {
-		if cycle := dfs(depID, nil); cycle != nil {
-			return cycle, nil
-		}
-		// Once the visit budget is exhausted, every later dfs call would
-		// either short-circuit on `visited` (for nodes touched by the
-		// exhausted subtree) or trip `visits > maxDepGraphTraversal` on
-		// its very first new node. Either way no useful work is possible
-		// and we will return the cap-exceeded error below — break out so
-		// the refusal path is reached without burning bookkeeping. This
-		// is a semantic narrowing: a cycle reachable ONLY from a later
-		// dep is no longer detected, but the create is still refused
-		// (capExceeded triggers the error), so the safety invariant
-		// "never approve an unverified graph" holds.
-		if capExceeded {
-			break
-		}
-	}
-	if capExceeded {
-		return nil, fmt.Errorf("dependency graph exceeds %d-node validation cap; refusing to create without verifying acyclicity", maxDepGraphTraversal)
-	}
-	return nil, nil
-}
-
 // formatTaskCreatedSummary renders the task_create response in a stable
 // markdown shape so both the create path and the upsert path produce
-// matching output. Surfaces orchestration fields (base_branch, depends_on,
-// status) so the orchestrator can verify what landed without a follow-up
-// task_get.
+// matching output. Surfaces the key fields (base_branch, status) so the
+// orchestrator can verify what landed without a follow-up task_get.
 func formatTaskCreatedSummary(task *model.Task, heading string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s.\n\n", heading)
@@ -1416,10 +1242,6 @@ func formatTaskCreatedSummary(task *model.Task, heading string) string {
 	if task.BaseBranch != "" {
 		fmt.Fprintf(&b, "- **Base branch**: %s\n", task.BaseBranch)
 	}
-	if len(task.DependsOn) > 0 {
-		fmt.Fprintf(&b, "- **Depends on**: %s\n", strings.Join(task.DependsOn, ", "))
-		fmt.Fprintf(&b, "- **Note**: blocked until every dep reaches status=complete; depswatcher will auto-start the agent.\n")
-	}
 	return b.String()
 }
 
@@ -1429,9 +1251,8 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 	}
 
 	var p struct {
-		Status   string `json:"status"`
-		Project  string `json:"project"`
-		PlanSlug string `json:"plan_slug"`
+		Status  string `json:"status"`
+		Project string `json:"project"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -1451,16 +1272,10 @@ func (s *Server) toolTaskList(id interface{}, args json.RawMessage) *Response {
 		if p.Project != "" && t.Project != p.Project {
 			continue
 		}
-		if p.PlanSlug != "" && t.PlanSlug != p.PlanSlug {
-			continue
-		}
 		count++
 		fmt.Fprintf(&sb, "- **%s** `%s` [%s] (%s)", t.Name, t.ID, t.Status.String(), t.Project)
 		if t.Branch != "" {
 			fmt.Fprintf(&sb, " branch:%s", t.Branch)
-		}
-		if t.PlanSlug != "" {
-			fmt.Fprintf(&sb, " plan:%s", t.PlanSlug)
 		}
 		if elapsed := t.ElapsedString(); elapsed != "" {
 			fmt.Fprintf(&sb, " %s", elapsed)
@@ -1510,17 +1325,6 @@ func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
 	if elapsed := task.ElapsedString(); elapsed != "" {
 		fmt.Fprintf(&sb, "- **Elapsed**: %s\n", elapsed)
 	}
-	// Surface dependency state so the orchestrator can poll one task and
-	// see whether it's stuck waiting on upstream sub-tasks. blocked_by is
-	// the live subset of depends_on that has not yet reached complete;
-	// when empty (or DependsOn was empty to begin with), nothing renders.
-	if len(task.DependsOn) > 0 {
-		fmt.Fprintf(&sb, "- **Depends on**: %s\n", strings.Join(task.DependsOn, ", "))
-		blocked := s.unresolvedDeps(task.DependsOn)
-		if len(blocked) > 0 {
-			fmt.Fprintf(&sb, "- **Blocked by**: %s\n", strings.Join(blocked, ", "))
-		}
-	}
 	if task.Result != "" {
 		fmt.Fprintf(&sb, "\n**Result**:\n```json\n%s\n```\n", task.Result)
 	}
@@ -1528,27 +1332,6 @@ func (s *Server) toolTaskGet(id interface{}, args json.RawMessage) *Response {
 		fmt.Fprintf(&sb, "\n**Prompt**: %s\n", task.Prompt)
 	}
 	return toolResult(id, sb.String())
-}
-
-// unresolvedDeps returns the subset of depIDs whose tasks have not reached
-// status=complete. Missing tasks (deleted while a dependent waited) are
-// also considered unresolved so the orchestrator sees the broken link
-// instead of silently treating the dep as satisfied. Errors enumerating
-// individual tasks are swallowed — the dep stays listed as blocking so
-// the caller errs on the safe side.
-func (s *Server) unresolvedDeps(depIDs []string) []string {
-	var blocked []string
-	for _, depID := range depIDs {
-		dep, err := s.taskDB.Get(depID)
-		if err != nil || dep == nil {
-			blocked = append(blocked, depID+" (missing)")
-			continue
-		}
-		if dep.Status != model.StatusComplete {
-			blocked = append(blocked, depID)
-		}
-	}
-	return blocked
 }
 
 func (s *Server) toolTaskStop(id interface{}, args json.RawMessage) *Response {

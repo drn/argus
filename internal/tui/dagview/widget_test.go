@@ -261,25 +261,6 @@ func TestWidget_KeyEnterFiresOnEnter(t *testing.T) {
 	testutil.Equal(t, got, "A")
 }
 
-func TestWidget_LinkUnlinkHaltCallbacks(t *testing.T) {
-	w := New()
-	w.SetNodes([]Node{{ID: "A"}})
-	var linkID, unlinkID, haltID string
-	w.OnLink = func(id string) { linkID = id }
-	w.OnUnlink = func(id string) { unlinkID = id }
-	w.OnHalt = func(id string) { haltID = id }
-	handler := w.InputHandler()
-
-	handler(runeKey('l'), noFocus)
-	testutil.Equal(t, linkID, "A")
-
-	handler(runeKey('L'), noFocus)
-	testutil.Equal(t, unlinkID, "A")
-
-	handler(runeKey('h'), noFocus)
-	testutil.Equal(t, haltID, "A")
-}
-
 func TestWidget_KeyJKMovesCursor(t *testing.T) {
 	w := New()
 	w.SetNodes([]Node{

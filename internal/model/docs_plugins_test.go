@@ -48,8 +48,6 @@ func TestDocsPlugins_ExistsAndCoversContract(t *testing.T) {
 			"task.forked",
 			"message.sent",
 			"message.acked",
-			"link.created",
-			"link.removed",
 			"session.started",
 			"session.exited",
 			"session.idle",

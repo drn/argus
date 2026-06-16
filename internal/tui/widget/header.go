@@ -45,9 +45,8 @@ type Header struct {
 	activeTab Tab
 
 	// tabLabels holds the per-slot display text. Initialized from TabLabels;
-	// individual slots are overridden via SetTabLabel (e.g. "DAG" when Hera is
-	// disabled). Width computations and Draw both consume this field so the
-	// label and centering always agree.
+	// individual slots can be overridden via SetTabLabel. Width computations and
+	// Draw both consume this field so the label and centering always agree.
 	tabLabels [len(TabLabels)]string
 
 	// Notice: general-purpose status indicator (left side of header).

@@ -275,19 +275,17 @@ func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 	testutil.Equal(t, found, true)
 }
 
-// TestSmoke_HeraDetailsDAGModeAndLinkPicker drives the M7 flow end-to-end
-// through the real event loop: Hera tab → coordinator selected → Tab into the
-// Details region (which stacks the roster over the orchestrator's dependency
-// DAG) → `l` opens the link parent-picker. Proves the global key routing, focus
-// ladder, and DAG key wiring all compose without any toggle.
-func TestSmoke_HeraDetailsDAGModeAndLinkPicker(t *testing.T) {
+// TestSmoke_HeraDetailsTreeMode drives the flow end-to-end through the real
+// event loop: Hera tab → coordinator selected → Tab into the Details region
+// (which stacks the roster over the orchestration-tree graph) → the embedded
+// tree is projected with nodes. Proves the global key routing, focus ladder, and
+// tree projection compose without any toggle. The tree edges come from the role
+// hierarchy (coordinator → worker), NOT depends_on.
+func TestSmoke_HeraDetailsTreeMode(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
-	// An edge so the orchestrator-scoped DAG has nodes (orphan filter keeps a
-	// referenced source + its child).
-	testutil.NoError(t, d.SetDependsOn("tw", []string{"tc"}))
 
 	app := New(d, agent.NewRunner(nil), false)
 	sim, stop := wireApp(t, app)
@@ -299,22 +297,12 @@ func TestSmoke_HeraDetailsDAGModeAndLinkPicker(t *testing.T) {
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true) })
 
-	// Tab into the Details region (rail → coord → agent). The DAG is stacked
+	// Tab into the Details region (rail → coord → agent). The tree is stacked
 	// under the roster and already projected — no toggle.
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
-	// The embedded DAG has nodes (cursor non-empty).
+	// The embedded tree has nodes (cursor non-empty — lands on the coordinator).
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.DAG().CurrentTask() != "", true) })
-
-	// `l` on a DAG node opens the link parent-picker.
-	sim.InjectKey(tcell.KeyRune, 'l', 0)
-	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraPicker) })
-
-	// Esc closes the picker and returns to the task-list mode on the Hera page.
-	sim.InjectKey(tcell.KeyEscape, 0, 0)
-	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
 }

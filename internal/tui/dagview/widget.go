@@ -15,17 +15,16 @@ import (
 // SetNodes is called (cheap at Argus scale).
 type Widget struct {
 	*tview.Box
-	layout   Layout
-	cursor   string
-	focused  bool
-	failed   map[string]bool
-	title    string // bordered-panel title; " DAG " by default, retitled when embedded
-	OnClick  func() // optional; fires when the widget gains focus via click
-	OnEnter  func(id string)
-	OnLink   func(child string)
-	OnUnlink func(child string)
-	OnHalt   func(id string)
-	OnFocus  func() // setFocus hook the page uses on mouse click
+	layout  Layout
+	cursor  string
+	focused bool
+	failed  map[string]bool
+	title   string // bordered-panel title; " DAG " by default, retitled when embedded
+	OnClick func() // optional; fires when the widget gains focus via click
+	// OnEnter fires on Enter with the highlighted node's ID. The embedded Hera
+	// tree wires it to "jump to this task's agent view".
+	OnEnter func(id string)
+	OnFocus func() // setFocus hook the page uses on mouse click
 
 	// OnBranchChange fires when Draw will paint a structurally different
 	// frame than the previous one (node count, layer count, edge count, or
@@ -47,11 +46,10 @@ func New() *Widget {
 	}
 }
 
-// SetTitle overrides the bordered-panel title. The standalone DAG tab keeps the
-// default " DAG "; the native Hera view retitles it (e.g. " Dependencies ")
-// when the widget is embedded as the Details-pane DAG render mode, so the title
-// doesn't read as a second top-level tab. Pass "" to suppress the title text
-// (the border still draws). See gotchas/dag-rendering.md.
+// SetTitle overrides the bordered-panel title. The native Hera view retitles it
+// to " Orchestration Tree " when the widget is embedded as the Details-pane
+// render mode. Pass "" to suppress the title text (the border still draws).
+// See gotchas/hera-view.md.
 func (w *Widget) SetTitle(title string) { w.title = title }
 
 // SetNodes installs a new snapshot. Recomputes layout, repopulates the
@@ -94,9 +92,9 @@ func (w *Widget) CurrentTask() string {
 // of a layer or below the last layer is a no-op rather than wrapping.
 //
 // Movement treats every node in `layout.Nodes` uniformly — filtering
-// (archived, orphan, etc.) is the caller's responsibility. The TUI's
-// `dagNodesFromTasks` drops archived rows before `SetNodes`, so in
-// practice archived nodes never reach this code path from the TUI.
+// (archived, etc.) is the caller's responsibility. The Hera tree projection
+// (`heraTreeNodes`) drops archived roles before `SetNodes`, so in practice
+// archived nodes never reach this code path.
 //
 // Fires maybeNotifyBranchChange when the cursor actually changes. The
 // branch-change contract is mandatory for this widget: the cursor box
@@ -164,7 +162,7 @@ func (w *Widget) Draw(screen tcell.Screen) {
 	}
 
 	if len(w.layout.Nodes) == 0 {
-		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No tasks in DAG. Link tasks with `l` from the task list.", theme.StyleDimmed)
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No orchestration tree — spawn a worker under this coordinator.", theme.StyleDimmed)
 		return
 	}
 
@@ -172,9 +170,9 @@ func (w *Widget) Draw(screen tcell.Screen) {
 	Draw(screen, inner.X, inner.Y, w.layout, w.cursor, w.focused, failedFn)
 }
 
-// InputHandler routes hjkl / arrow keys to MoveCursor and dispatches Enter
-// / l / L / h to the corresponding callbacks. Unknown keys are passed
-// through to the default tview.Box handler, which is a no-op.
+// InputHandler routes j/k / arrow keys to MoveCursor and dispatches Enter to
+// OnEnter. Unknown keys are passed through to the default tview.Box handler,
+// which is a no-op.
 func (w *Widget) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return w.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		switch event.Key() {
@@ -192,22 +190,10 @@ func (w *Widget) InputHandler() func(event *tcell.EventKey, setFocus func(p tvie
 			}
 		case tcell.KeyRune:
 			switch event.Rune() {
-			case 'h':
-				if w.OnHalt != nil && w.cursor != "" {
-					w.OnHalt(w.cursor)
-				}
 			case 'j':
 				w.MoveCursor(0, 1)
 			case 'k':
 				w.MoveCursor(0, -1)
-			case 'l':
-				if w.OnLink != nil && w.cursor != "" {
-					w.OnLink(w.cursor)
-				}
-			case 'L':
-				if w.OnUnlink != nil && w.cursor != "" {
-					w.OnUnlink(w.cursor)
-				}
 			}
 		}
 	})

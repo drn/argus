@@ -55,8 +55,6 @@ func (stubStore) Backends() (map[string]config.Backend, error) {
 }
 func (stubStore) SetBackend(string, config.Backend) error { return nil }
 func (stubStore) DeleteBackend(string) error              { return nil }
-func (stubStore) SetDependsOn(string, []string) error     { return nil }
-func (stubStore) SetPlanSlug(string, string) error        { return nil }
 func (stubStore) SetArchived(string, bool) error          { return nil }
 func (stubStore) SetPinned(string, bool) error            { return nil }
 func (stubStore) SetStatus(string, model.Status) error    { return nil }

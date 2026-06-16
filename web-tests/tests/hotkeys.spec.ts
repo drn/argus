@@ -17,9 +17,7 @@ test.describe('hotkeys', () => {
     await expect(page.locator('#create-view')).toBeVisible();
   });
 
-  test('t / g / , navigate to Tasks / DAG / Settings tabs', async ({ page }) => {
-    await page.locator('body').press('g');
-    await expect(page.locator('.tab[data-tab="dag"]')).toHaveClass(/active/);
+  test('t / , navigate to Tasks / Settings tabs', async ({ page }) => {
     await page.locator('body').press(',');
     await expect(page.locator('.tab[data-tab="settings"]')).toHaveClass(/active/);
     await page.locator('body').press('t');

@@ -51,7 +51,7 @@ func DefaultSupervisorPIDPath() string {
 //     killExistingDaemon(sp.pid) here targets ONLY the supervisor pid; it can
 //     never signal the daemon, and vice-versa — no split-brain.
 //   - It owns none of the daemon's coordination machinery (scheduler, MCP, API,
-//     depswatcher, hera-adopt, push). It does ONLY PTY supervision, keeping its
+//     hera-adopt reconciliation, push). It does ONLY PTY supervision, keeping its
 //     code surface tiny so it almost never needs a restart (a supervisor
 //     restart is the one event that still interrupts agents).
 //

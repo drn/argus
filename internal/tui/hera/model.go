@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 )
 
 // RoleView is the read-only render projection of one hera role plus the live
@@ -22,6 +23,12 @@ type RoleView struct {
 	Live         bool   // has a live binding
 	ReadyToClose bool   // bound task carries meta:hera.ready_to_close=true
 	Archived     bool   // role archived_at set
+	// TaskStatus / TaskResult are the bound argus task's workflow status
+	// ("in_progress"/"complete"/…) and opaque result JSON. They feed the
+	// orchestration-tree DAG's node colour + failed glyph (the rail's own status
+	// icons use the hera role Status above, not these). Empty when unbound.
+	TaskStatus string
+	TaskResult string
 }
 
 // OrchView is the render projection of one orchestrator and its non-freelance
@@ -156,6 +163,16 @@ func BuildModel(r HeraReader) (Model, error) {
 	// (the flag just won't render).
 	heraMeta, _ := r.ListMetaByNamespace(db.HeraMetaNamespace)
 
+	// Task snapshot keyed by ID so each bound role can carry its argus task's
+	// status + result (the orchestration-tree DAG colours nodes by task
+	// progress). A read error is non-fatal — nodes just render uncoloured.
+	taskByID := make(map[string]*model.Task)
+	if tasks, terr := r.Tasks(); terr == nil {
+		for _, t := range tasks {
+			taskByID[t.ID] = t
+		}
+	}
+
 	for _, o := range orchs {
 		ov := OrchView{
 			ID:       o.ID,
@@ -168,7 +185,7 @@ func BuildModel(r HeraReader) (Model, error) {
 			return Model{}, err
 		}
 		for _, role := range roles {
-			rv := buildRoleView(r, role, roleToTask, heraMeta)
+			rv := buildRoleView(r, role, roleToTask, heraMeta, taskByID)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -194,7 +211,7 @@ func BuildModel(r HeraReader) (Model, error) {
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToTask map[int64]string, heraMeta map[string]map[string]string) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToTask map[int64]string, heraMeta map[string]map[string]string, taskByID map[string]*model.Task) RoleView {
 	rv := RoleView{
 		RoleID:   role.ID,
 		OrchID:   role.OrchestratorID,
@@ -207,6 +224,10 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToTask map[int64]string,
 		rv.Live = true
 		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
 			rv.ReadyToClose = true
+		}
+		if t := taskByID[taskID]; t != nil {
+			rv.TaskStatus = t.Status.String()
+			rv.TaskResult = t.Result
 		}
 	}
 	if st, err := r.HeraRoleStatusFor(role.ID); err == nil {

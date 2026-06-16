@@ -21,7 +21,7 @@ Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of ag
 Coding agents are cheap to start and expensive to babysit. Five `claude` tabs become five forgotten branches. A `codex` you fire off at lunch is a black box until you `cmd-tab` back. Argus replaces that pile of terminals with a persistent orchestrator that knows what every agent is doing, where its worktree lives, when it goes idle, and who needs your attention next.
 
 - **One keystroke** spins up an isolated worktree, a fresh branch, and a fresh agent, all wired into a live dashboard.
-- **Native multi-agent coordination.** A dedicated **Hera** tab turns one agent into a team: a coordinator delegates to workers it spawns, an idle-gated message bus passes work between them, and a dependency DAG tracks what blocks what — all first-class in the same UI, no separate tool.
+- **Native multi-agent coordination.** A dedicated **Hera** tab turns one agent into a team: a coordinator delegates to workers it spawns, an idle-gated message bus passes work between them, and an orchestration tree shows the whole team at a glance — all first-class in the same UI, no separate tool.
 - **A persistent daemon** keeps PTYs alive across TUI restarts and laptop reboots — and a separate session-supervisor keeps them alive across *daemon* restarts too, so you can upgrade Argus mid-flight without interrupting a single agent. Your sessions outlive your terminal.
 - **An idle detector** quietly promotes any agent waiting for input to "in review" — so a glance at the list tells you who needs you.
 - **A built-in HTTP API + PWA** mirrors every keystroke from your phone, so the dashboard travels with you.
@@ -165,7 +165,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 | `ctrl+o`  | Open the project's GitHub repo in browser (via `gh repo view --web`) |
 | `ctrl+r`  | Prune completed tasks                                           |
 | `j` / `k` | Navigate up/down                                                |
-| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings). The `2` tab shows **Hera** by default; with `hera.enabled = false` it falls back to the legacy **DAG** view |
+| `1` / `2` / `3` | Switch tabs (Tasks / Hera / Settings) |
 | `ctrl+l`  | Refresh screen (wipe ghost cells; works in every non-agent tab) |
 | `q`       | Quit                                                            |
 
@@ -187,7 +187,7 @@ The sections below are the dense usage docs — keybindings, REST endpoints, con
 
 #### Hera Tab
 
-The Hera tab (`2`, when `hera.enabled`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
+The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pane**, and a right **details** region. The rail lists active orchestrators with their coordinator/worker roles, plus **Pinned**, **Freelance**, and a collapsed **Archive** section. Keys act on the rail selection:
 
 | Key             | Action                                                                                 |
 | --------------- | -------------------------------------------------------------------------------------- |
@@ -201,10 +201,9 @@ The Hera tab (`2`, when `hera.enabled`) has three regions: a left **rail**, a mi
 | `P`             | Pin / unpin the selected role / orchestrator                                            |
 | `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
 | `ctrl+d`        | Delete the selected role / orchestrator                                                 |
-| `g`             | (coordinator selected) Toggle the details region between the **roster** and the **dependency DAG** |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
-When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it shows a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks), and `g` flips it to the embedded dependency DAG — where the standard DAG-view navigation (arrows / `hjkl`, `l`/`L` link/unlink, `h` halt, `Enter`) applies. New-orchestrator creation has no key (use the `hera_new_orchestrator` MCP tool).
+When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view. New-orchestrator creation has no key (use the `hera_new_orchestrator` MCP tool).
 
 #### File Panel
 
@@ -248,7 +247,7 @@ argus --remote https://mbp-2026.tail1efd7.ts.net --token "$ARGUS_TOKEN"
 
 Launches the TUI pointed at a remote argus daemon instead of the local one. No local SQLite is opened, no daemon socket is contacted — every persistence call goes through the REST API the daemon already serves on port 7743 (the same surface the PWA uses). `--token` falls back to `ARGUS_TOKEN`.
 
-A few local-only operations gracefully degrade in remote mode: spawning a fresh task via the new-task form, forking, schedule fires, and prune-completed all require local worktree access. The status bar surfaces the equivalent REST endpoint when these are attempted remotely. Everything else — task list, attach, input, resize, archive/rename/status flips, settings, DAG, links — works identically against the remote.
+A few local-only operations gracefully degrade in remote mode: spawning a fresh task via the new-task form, forking, schedule fires, and prune-completed all require local worktree access. The status bar surfaces the equivalent REST endpoint when these are attempted remotely. Everything else — task list, attach, input, resize, archive/rename/status flips, settings — works identically against the remote.
 
 ### Self-Update
 
@@ -256,14 +255,14 @@ From the **Settings tab** (Status section, when the daemon is connected) the **S
 
 ### Hera (native multi-agent coordination)
 
-Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and their dependencies render as a DAG folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the whole team renders as an **orchestration tree** (coordinator → workers → sub-coordinators) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
 
 **Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
 
 - **`hera.enabled = true` (default)** — native Hera is active. It stores its state in the same `~/.argus/data.sql` (the `hera_*` tables), exposes the `hera_*` MCP tools in-process, and owns the second tab. The legacy Hera plugin's tools are suppressed so they never double-register.
-- **`hera.enabled = false`** — native Hera is off: the second tab falls back to the legacy **DAG-only** view, the `hera_*` tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus.
+- **`hera.enabled = false`** — the native `hera_*` MCP tools are not served, and you can instead run the external **Hera plugin** over the [plugin substrate](#plugin-substrate). The plugin keeps its own `~/.hera` state and plugin view, entirely unaffected by Argus. The TUI's second tab is always the native Hera view regardless of this flag.
 
-The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB; the second tab's label updates live.
+The two run **independently and share no state.** Switching to native Hera performs **no migration** of any prior `~/.hera` data — native Hera starts fresh. Set the flag in `config.toml` (`[hera] enabled = …`) or the DB.
 
 ### Daemon & session-supervisor
 
@@ -370,18 +369,13 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 
 | Tool                   | Description                                                                                                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`, `model` (optional `--model` override). Orchestration: `base_branch`, `depends_on`, `plan_slug`, `upsert`. |
-| `task_list`            | List tasks, filtered by `status` and/or `project`. Returned task objects include `plan_slug` for DAG-view filtering.                                               |
+| `task_create`          | Create a task with worktree and start an agent. Params: `name`, `prompt`, `project`, `model` (optional `--model` override), `base_branch` (stacked-PR start point), `upsert`. The session starts immediately. |
+| `task_list`            | List tasks, filtered by `status` and/or `project`.                                                                                                                |
 | `task_get`             | Get task details by `id`                                                                                                                                           |
 | `task_stop`            | Stop a running agent (moves task to "in review")                                                                                                                   |
 | `task_archive`         | Archive or unarchive a task. Pass `cwd` (from the agent's `pwd`) to resolve by worktree, or `id`. Omit `archived` to toggle.                                       |
 | `task_rename`          | Rename a task. Updates only the display name (branch and worktree paths stay locked to the original slug). Pass `cwd` or `id` plus `name`.                         |
 | `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
-| `task_link`            | Add a dependency edge. Params: `child_id`, `parent_id`. Cycle attempts return the offending path so the UI can render `"A → B → A"`.                               |
-| `task_unlink`          | Remove a dependency edge. Params: `child_id`, `parent_id`. No-op when the edge does not exist.                                                                     |
-| `task_deps`            | Return one-hop upstream + downstream neighbours of a task. Used by the DAG view's task detail panel.                                                               |
-| `task_halt_downstream` | Cascade stop/archive through every transitive descendant of a task. Used after a milestone fails so the rest of the stack doesn't waste effort. Seed is untouched. |
-| `task_set_plan_slug`   | Stamp the orchestrator grouping label. Opaque to the daemon; tasks sharing the same slug render as one stack in the DAG view.                                      |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 
 Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-complete/SKILL.md` let an agent finalize its own task at the end of a session via `cwd` resolution. Completing and archiving are independent axes.
@@ -484,19 +478,6 @@ Every authenticated token has the same permissions **except** a small master-onl
 | ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/tasks/{id}/artifacts`               | List artifacts the agent registered via `artifact_register` (name, title, type, size)                                |
 | `GET`  | `/api/tasks/{id}/artifacts/{filename}`    | Serve one artifact's raw bytes. Scoped to the registered manifest set (no path traversal); HTML served in a sandbox. |
-
-#### Task dependencies / DAG
-
-These mirror the `task_link` / `task_unlink` / `task_deps` / `task_halt_downstream` / `task_set_plan_slug` MCP tools so scripts and the DAG view can drive orchestration over REST.
-
-| Method   | Endpoint                                | Description                                                              |
-| -------- | --------------------------------------- | ------------------------------------------------------------------------ |
-| `GET`    | `/api/dag`                              | Full DAG snapshot for the DAG view                                       |
-| `GET`    | `/api/tasks/{id}/deps`                  | One-hop upstream + downstream neighbours of a task                       |
-| `POST`   | `/api/tasks/{id}/deps`                  | Add a dependency edge. Body: `{"parent_id":"..."}`                       |
-| `DELETE` | `/api/tasks/{id}/deps/{parent_id}`      | Remove a dependency edge                                                 |
-| `POST`   | `/api/tasks/{id}/halt-downstream`       | Cascade stop/archive through every transitive descendant (seed untouched) |
-| `POST`   | `/api/tasks/{id}/plan-slug`             | Stamp the orchestrator grouping label. Body: `{"plan_slug":"..."}`       |
 
 #### Maintenance
 
@@ -730,7 +711,7 @@ Full enable/verify walkthrough: **[docs/knowledge-base.md](docs/knowledge-base.m
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `true` | Enable [native Hera](#hera-native-multi-agent-coordination) — the `hera_*` MCP tools and the native Hera second tab, backed by the `hera_*` tables in `data.sql`. Set `false` to fall back to the legacy DAG-only second tab and the external Hera *plugin* (its `~/.hera` state is independent; no migration is performed). |
+| `enabled` | bool | `true` | Enable [native Hera](#hera-native-multi-agent-coordination) — serves the `hera_*` MCP tools in-process, backed by the `hera_*` tables in `data.sql`. Set `false` to serve the external Hera *plugin*'s tools instead (its `~/.hera` state is independent; no migration is performed). The TUI's second tab is always the native Hera view regardless of this flag. |
 
 #### `[supervisor]`
 

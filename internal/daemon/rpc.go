@@ -1,13 +1,10 @@
 package daemon
 
 import (
-	"errors"
 	"log/slog"
 	"time"
 
-	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/kb"
-	"github.com/drn/argus/internal/orch"
 	"github.com/drn/argus/internal/selfupdate"
 )
 
@@ -187,99 +184,6 @@ func (s *RPCService) ClipboardGet(req *ClipboardGetReq, resp *ClipboardGetResp) 
 func (s *RPCService) ClipboardClear(req *ClipboardClearReq, resp *StatusResp) error {
 	slog.Info("rpc.ClipboardClear", "task", req.TaskID)
 	s.daemon.clipboard.Clear(req.TaskID)
-	resp.OK = true
-	return nil
-}
-
-// LinkTasks adds ParentID to ChildID's depends_on list. Delegates to orch.Link
-// so the HTTP API path runs the same cycle DFS without going through net/rpc.
-func (s *RPCService) LinkTasks(req *LinkTasksReq, resp *LinkTasksResp) error {
-	slog.Info("rpc.LinkTasks", "child", req.ChildID, "parent", req.ParentID)
-	err := orch.Link(s.daemon.db, req.ChildID, req.ParentID)
-	var ce *orch.CycleError
-	if errors.As(err, &ce) {
-		resp.Cycle = ce.Path
-		resp.Error = ce.Error()
-		return nil
-	}
-	if err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.OK = true
-	return nil
-}
-
-// UnlinkTasks removes ParentID from ChildID's depends_on. No-op if the edge
-// does not exist; cannot induce a cycle.
-func (s *RPCService) UnlinkTasks(req *UnlinkTasksReq, resp *LinkTasksResp) error {
-	slog.Info("rpc.UnlinkTasks", "child", req.ChildID, "parent", req.ParentID)
-	if err := orch.Unlink(s.daemon.db, req.ChildID, req.ParentID); err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.OK = true
-	return nil
-}
-
-// GetDeps returns the one-hop neighbours of TaskID in both directions.
-func (s *RPCService) GetDeps(req *DepsReq, resp *DepsResp) error {
-	view, err := orch.Deps(s.daemon.db, req.TaskID)
-	if err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.Upstream = view.Upstream
-	resp.Downstream = view.Downstream
-	return nil
-}
-
-// ListDAG returns a minimal projection of every task matching the supplied
-// filters. The client materializes edges from each node's DependsOn array.
-func (s *RPCService) ListDAG(req *DAGReq, resp *DAGResp) error {
-	nodes, err := orch.ListDAG(s.daemon.db, orch.DAGFilter{
-		Project:         req.Project,
-		PlanSlug:        req.PlanSlug,
-		IncludeArchived: req.IncludeArchived,
-	})
-	if err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.Nodes = make([]DAGNode, 0, len(nodes))
-	for _, n := range nodes {
-		resp.Nodes = append(resp.Nodes, DAGNode(n))
-	}
-	return nil
-}
-
-// HaltDownstream stops in_progress descendants of TaskID and archives pending
-// ones. The seed task is NOT halted — see orch.HaltDownstream for the
-// depswatcher-race contract.
-func (s *RPCService) HaltDownstream(req *HaltDownstreamReq, resp *HaltDownstreamResp) error {
-	slog.Info("rpc.HaltDownstream", "task", req.TaskID)
-	report, err := orch.HaltDownstream(s.daemon.db, s.daemon.runner, req.TaskID, func(err error) bool {
-		return errors.Is(err, agent.ErrSessionNotFound)
-	})
-	if err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
-	resp.Stopped = report.Stopped
-	resp.Archived = report.Archived
-	resp.NotFound = report.NotFound
-	slog.Info("rpc.HaltDownstream ok", "task", req.TaskID, "stopped", len(resp.Stopped), "archived", len(resp.Archived))
-	return nil
-}
-
-// SetPlanSlug writes the orchestrator grouping label for a task. The daemon
-// does not interpret the value — same opacity contract as Result.
-func (s *RPCService) SetPlanSlug(req *SetPlanSlugReq, resp *StatusResp) error {
-	slog.Info("rpc.SetPlanSlug", "task", req.TaskID, "slug", req.PlanSlug)
-	if err := orch.SetPlanSlug(s.daemon.db, req.TaskID, req.PlanSlug); err != nil {
-		resp.Error = err.Error()
-		return nil
-	}
 	resp.OK = true
 	return nil
 }

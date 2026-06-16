@@ -36,10 +36,10 @@ func worktreeWithinRoot(p string) bool {
 // taskJSON shape /api/tasks emits for the SPA). The remote-TUI store adapter
 // in internal/apistore uses this to mirror *db.DB.Tasks() faithfully.
 //
-// Exposes SessionID, AgentPID, Sandboxed, Result blob, BaseBranch, DependsOn,
-// PlanSlug that the lossy /api/tasks deliberately strips. The SPA keeps using
-// /api/tasks; the remote-TUI store adapter uses this. Single-tier auth: any
-// authenticated token may read it (no credentials in the model.Task shape).
+// Exposes SessionID, AgentPID, Sandboxed, Result blob, BaseBranch that the
+// lossy /api/tasks deliberately strips. The SPA keeps using /api/tasks; the
+// remote-TUI store adapter uses this. Single-tier auth: any authenticated
+// token may read it (no credentials in the model.Task shape).
 func (s *Server) handleListTasksRaw(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.db.Tasks()
 	if err != nil {
@@ -72,8 +72,8 @@ func (s *Server) handleGetTaskRaw(w http.ResponseWriter, r *http.Request) {
 // so the caller can't poison the path with something outside the configured
 // worktrees root. Same for Branch and BaseBranch — those would let the next
 // delete operate on the wrong git repo. Status/Prompt/Result/Pinned/Archived/
-// DependsOn/PlanSlug/AgentPID/SessionID etc. flow through because those are
-// the fields the TUI legitimately updates.
+// AgentPID/SessionID etc. flow through because those are the fields the TUI
+// legitimately updates.
 func (s *Server) handleUpdateTaskRaw(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
