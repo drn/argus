@@ -117,6 +117,11 @@ func main() {
 	}); err != nil {
 		log.Fatalf("seed pr meta: %v", err)
 	}
+	// Seed a Hera orchestrator with a coordinator role bound to the task so the
+	// Hera-tab PWA spec can render a populated roster and drill into a live role.
+	if err := seedHera(d, task); err != nil {
+		log.Fatalf("seed hera: %v", err)
+	}
 
 	creator := func(name, prompt, project, backend, taskModel string, _ bool) (*model.Task, error) {
 		if backend == "" {
@@ -180,6 +185,10 @@ func main() {
 			"state": model.PRAwaitingReview.String(),
 			"url":   "https://github.com/example/repo/pull/1",
 		})
+		if err := seedHera(d, nt); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"reset":true,"task":%q}`, nt.ID) //nolint:errcheck
 	})
@@ -205,6 +214,32 @@ func main() {
 	defer cancel()
 	srv.Shutdown(ctx) //nolint:errcheck
 	log.Printf("shut down")
+}
+
+// seedHera (re)creates a single "demo-orch" orchestrator with one coordinator
+// role bound to the given task, so the Hera-tab PWA spec has a populated roster
+// to render and a live role to drill into. Idempotent across /test/reset: any
+// prior demo-orch (and its now-stale roles) is dropped first via the cascade.
+func seedHera(d *db.DB, task *model.Task) error {
+	if existing, err := d.HeraOrchestratorByName("demo-orch"); err == nil && existing != nil {
+		if err := d.DeleteHeraOrchestrator(existing.ID); err != nil {
+			return err
+		}
+	}
+	orch, err := d.CreateHeraOrchestrator("demo-orch")
+	if err != nil {
+		return err
+	}
+	role, _, err := d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID,
+		Name:           "coordinator",
+		Kind:           db.HeraKindCoordinator,
+		ArgusProject:   task.Project,
+	}, task.ID, task.Worktree)
+	if err != nil {
+		return err
+	}
+	return d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking)
 }
 
 func envOr(key, fallback string) string {

@@ -24,6 +24,15 @@ test.describe('hotkeys', () => {
     await expect(page.locator('.tab[data-tab="tasks"]')).toHaveClass(/active/);
   });
 
+  test('g switches to the Hera tab', async ({ page }) => {
+    await page.locator('body').press('g');
+    await expect(page.locator('.tab[data-tab="hera"]')).toHaveClass(/active/);
+    await expect(page.locator('#hera-view')).toBeVisible();
+    // Roster status bar renders (populated by the seeded orchestrator); the
+    // roster content itself is asserted in hera.spec.ts.
+    await expect(page.locator('#hera-status')).toContainText('orchestrator');
+  });
+
   test('/ focuses the task search input', async ({ page }) => {
     await page.locator('body').press('/');
     await expect(page.locator('#task-search-input')).toBeFocused();
