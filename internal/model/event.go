@@ -33,8 +33,6 @@ const (
 	EventTypeTaskForked        = "task.forked"
 	EventTypeMessageSent       = "message.sent"
 	EventTypeMessageAcked      = "message.acked"
-	EventTypeLinkCreated       = "link.created"
-	EventTypeLinkRemoved       = "link.removed"
 	EventTypeSessionStarted    = "session.started"
 	EventTypeSessionExited     = "session.exited"
 	EventTypeSessionIdle       = "session.idle"

@@ -192,24 +192,10 @@ Tools invoked by an agent that does not know its own task ID (archive, rename, c
 - **WHEN** the canonically-serialized result exceeds the size cap
 - **THEN** the response is a tool error reporting the size limit
 
-### Requirement: Dependency linking and cascade control
-
-`task_link` SHALL add a dependency edge (child depends on parent), be idempotent for an existing edge, and reject any edge that would close a cycle, returning the offending path. `task_unlink` SHALL remove an edge and be a no-op when the edge is absent. `task_deps` SHALL return the one-hop upstream and downstream neighbours. `task_halt_downstream` SHALL stop running descendants and archive still-pending descendants of a seed task (without halting the seed itself), and return a per-row summary of stopped, archived, and not-found IDs. `task_set_plan_slug` SHALL stamp (or, with an empty string, clear) the orchestrator grouping label.
-
-#### Scenario: Cycle-forming link rejected
-
-- **WHEN** `task_link` would create a dependency cycle
-- **THEN** the response is a tool error reporting the cycle and its path
-
-#### Scenario: Deps returns upstream and downstream
-
-- **WHEN** `task_deps` is called for a task
-- **THEN** the result lists the task's direct dependencies (upstream) and the tasks depending on it (downstream)
-
-#### Scenario: Halt cascade summarizes outcomes
-
-- **WHEN** `task_halt_downstream` is called for a seed task with descendants
-- **THEN** running descendants are stopped, pending descendants are archived, and the result summarizes which IDs were stopped, archived, or not found
+> Note: the `task_link` / `task_unlink` / `task_deps` / `task_halt_downstream` /
+> `task_set_plan_slug` dependency-linking tools were retired together with the
+> `depends_on` DAG; Hera (coordinator-driven worker spawning) is the single
+> orchestration model. See the hera-coordination spec.
 
 ### Requirement: Inter-task messaging
 

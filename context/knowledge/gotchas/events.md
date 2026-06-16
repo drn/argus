@@ -8,9 +8,9 @@
 
 `internal/api/events_stream.go:handleEventsStream` subscribes to the bus first, then captures `replayEnd := db.LatestEventID()`, then replays `EventsSince(since, 0)`, then drains live events skipping any `ev.ID <= replayEnd`. Reversing the order (snapshot-then-subscribe) opens a window where an event committed mid-snapshot would be delivered twice (replay tail + live) or land out of order. The fence is the only thing keeping the stream lossless and dupe-free; don't reorder it.
 
-## Do NOT build a hera adopt/reconcile loop on the events ring
+## Do NOT build a hera reconcile loop on the events ring
 
-The DB events ring is populated ONLY by the `api.Server` sink installed via `events.SetSink(apiSrv)` in `daemon.Serve` — and that runs only under `cfg.API.Enabled`. With the REST API disabled, `events.Emit` is a no-op (atomic nil sink) and `link.created` is never persisted. So a consumer that reads `link.created` from the ring silently sees nothing whenever the API is off. The hera auto-adopt watcher (`internal/heraadopt`) deliberately re-derives adoption from task+link+binding ground truth each tick (the depswatcher model) instead of consuming the ring — independent of API state, inherently at-least-once and idempotent. There is no `events.Ring.Subscribe`; the only live consumer is the SSE handler in `internal/api`, which reads the DB ring via `EventsSince`.
+The DB events ring is populated ONLY by the `api.Server` sink installed via `events.SetSink(apiSrv)` in `daemon.Serve` — and that runs only under `cfg.API.Enabled`. With the REST API disabled, `events.Emit` is a no-op (atomic nil sink), so any consumer reading from the ring silently sees nothing whenever the API is off. This is why `internal/heraadopt` re-derives from task + binding ground truth (its startup `ReconcileBindings` sweep keyed on task-row existence) instead of consuming the ring — independent of API state, inherently at-least-once and idempotent. There is no `events.Ring.Subscribe`; the only live consumer is the SSE handler in `internal/api`, which reads the DB ring via `EventsSince`. (The retired `depends_on` auto-adopt watcher consumed `link.created`-style events; it and `link.created` are both gone.)
 
 ## `events.SetSink` is global; tests must save/restore
 

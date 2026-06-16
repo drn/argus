@@ -83,9 +83,9 @@ table and the four MCP tools that ride on top of it.
 ## Archive and delete cleanup
 
 - **Every archive/destroy path must drop the task's queued messages.**
-  Today four entrypoints can archive a task (MCP `task_archive`, REST
-  `POST /archive`, TUI 'a' keybinding, orch.HaltDownstream via
-  `db.SetArchived`) and two can destroy (REST `DELETE /api/tasks/{id}`,
+  Today three entrypoints can archive a task (MCP `task_archive`, REST
+  `POST /archive`, TUI 'a' keybinding — all via `db.SetArchived`) and two
+  can destroy (REST `DELETE /api/tasks/{id}`,
   TUI delete). The DB layer guarantees cleanup for `db.SetArchived(_,
 true)` and `db.Delete(id)`; entrypoints that go through `db.Update`
   with `archived=true` (REST archive, TUI archive, MCP archive) call

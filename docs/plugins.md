@@ -134,8 +134,6 @@ Argus sends `: ping` lines every 30 seconds so proxies and clients can detect de
 | `task.forked`           | `{"from_task_id":"<id>","to_task_id":"<id>"}`        | `POST /api/tasks/:id/fork`                   |
 | `message.sent`          | `{"id":<n>,"from":"<id>","to":"<id>","kind":"..."}`  | `db.SendMessage`                             |
 | `message.acked`         | `{"count":<n>}`                                      | `db.AckMessages`                             |
-| `link.created`          | `{"child":"<id>","parent":"<id>"}`                   | `orch.Link`                                  |
-| `link.removed`          | `{"child":"<id>","parent":"<id>"}`                   | `orch.Unlink`                                |
 | `session.started`       | `{"pid":<n>,"resume":<bool>}`                        | `agent.Runner.Start`                         |
 | `session.exited`        | `{"stopped":<bool>,"err":"<str>","pending_restart":<bool>}` | session readLoop exit                  |
 | `session.idle`          | `null`                                               | push idle watcher                            |

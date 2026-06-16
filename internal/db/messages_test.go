@@ -420,9 +420,9 @@ func TestDB_Delete_CascadesMessages(t *testing.T) {
 }
 
 // TestDB_SetArchived_CascadesMessages confirms the partial-update archive
-// path (used by orch.HaltDownstream) also wipes queued messages. The
+// path (the narrow SetArchived column write) also wipes queued messages. The
 // archive entry-points that go through db.Update call
-// DeleteMessagesForTask explicitly — this test covers the third path.
+// DeleteMessagesForTask explicitly — this test covers the SetArchived path.
 func TestDB_SetArchived_CascadesMessages(t *testing.T) {
 	d := testDB(t)
 	task := &model.Task{Name: "to-archive"}
