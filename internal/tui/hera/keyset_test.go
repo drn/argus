@@ -140,7 +140,7 @@ func TestKeyset_EnterLiveCoordinatorDoesNotReattach(t *testing.T) {
 func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	h := p.InputHandler()
-	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord row
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord header
 	// No resolver wired → coordinator treated as dead → Enter reattaches it.
 	var got Selection
 	called := false
@@ -149,7 +149,9 @@ func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 
 	testutil.Equal(t, called, true)
-	testutil.Equal(t, got.TaskID(), "tc")
+	// The coordinator is folded into the orchestrator header (rail-nesting), so the
+	// reattached selection carries no Role row; its task resolves via FocusTaskID.
+	testutil.Equal(t, got.FocusTaskID(), "tc")
 }
 
 func TestKeyset_RemoteModeMutationKeysInert(t *testing.T) {

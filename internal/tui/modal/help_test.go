@@ -63,6 +63,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Hera rail Ctrl+Z fullscreen binding (closes the suspend footgun) must be
 	// discoverable — fail the build if it's ever silently dropped.
 	testutil.Contains(t, body, "fullscreen pane")
+	// Hera rail Enter label must advertise reviving a dead/suspended session —
+	// fail the build if the revive wording is silently reverted (tasks.md 4.1).
+	testutil.Contains(t, body, "revive dead/suspended session")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {
