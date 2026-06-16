@@ -83,6 +83,11 @@ type Rail struct {
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
+	// prMeta is the daemon-populated "pr" namespace cache (taskID -> {state,url}),
+	// the same best-effort source the Details roster reads. A managed role whose
+	// bound task has a non-empty "url" renders a PR indicator. nil → no PR cells.
+	prMeta map[string]map[string]string
+
 	// onSelectionChanged fires (with the selected row's ref) whenever the
 	// cursor lands on a different selectable row. 6b binds the panes off it;
 	// 6a wires it only for the focus-guard smoke test. May be nil.
@@ -106,6 +111,20 @@ func (r *Rail) SetOnSelectionChanged(fn func()) { r.onSelectionChanged = fn }
 // SetFocused records whether the rail holds keyboard focus, switching its
 // border between the focused and unfocused palette.
 func (r *Rail) SetFocused(v bool) { r.focused = v }
+
+// SetPRMeta wires the best-effort "pr" namespace cache so managed rail rows can
+// render a PR indicator. Pass nil to clear it (the indicator just won't render).
+func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
+
+// rolePR reports whether the role's bound task has a non-empty "pr" url in the
+// cache (an open pull request worth flagging on the rail row).
+func (r *Rail) rolePR(role *RoleView) bool {
+	if role == nil || role.TaskID == "" || r.prMeta == nil {
+		return false
+	}
+	kv := r.prMeta[role.TaskID]
+	return kv != nil && kv["url"] != ""
+}
 
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
 // selectable target where possible.
@@ -646,6 +665,19 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	remaining := w - (col - x)
 	if remaining <= 0 {
+		return
+	}
+	// PR indicator: a managed row whose bound task has an open PR renders a
+	// right-aligned "PR" tag, reserving space so the name truncates instead of
+	// overwriting it. Mirrors the Details roster's PR mark, on the rail row.
+	const prTag = "PR"
+	if r.rolePR(role) && remaining > len(prTag)+1 {
+		widget.DrawText(screen, col, y, remaining-len(prTag)-1, role.Name, nameStyle)
+		prStyle := theme.StyleInReview
+		if row.dim {
+			prStyle = theme.StyleDimmed
+		}
+		widget.DrawText(screen, x+w-len(prTag), y, len(prTag), prTag, prStyle)
 		return
 	}
 	widget.DrawText(screen, col, y, remaining, role.Name, nameStyle)

@@ -293,6 +293,42 @@ func TestRail_SelectionCarriesBridgeChild(t *testing.T) {
 	testutil.Equal(t, r.Selection().BridgeChildOrchID, int64(0))
 }
 
+func TestRail_PRIndicatorOnManagedRow(t *testing.T) {
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "o", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+		{RoleID: 12, Name: "wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "twk"},
+	}}}})
+
+	// No PR cache → no indicator.
+	testutil.Equal(t, r.rolePR(&r.model.Active[0].Roles[1]), false)
+
+	// A "pr" url on the worker's task flags it; a task without one does not.
+	r.SetPRMeta(map[string]map[string]string{"twk": {"url": "https://example/pr/1"}})
+	testutil.Equal(t, r.rolePR(&r.model.Active[0].Roles[1]), true)
+	testutil.Equal(t, r.rolePR(&RoleView{TaskID: "other"}), false)
+
+	// Render must draw the "PR" tag somewhere on the worker row without panicking.
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+	found := false
+	for y := 0; y < 10 && !found; y++ {
+		for x := 0; x+1 < 40; x++ {
+			a, _, _, _ := sim.GetContent(x, y)
+			b, _, _, _ := sim.GetContent(x+1, y)
+			if a == 'P' && b == 'R' {
+				found = true
+				break
+			}
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
 func TestRail_FreelanceSectionCollapses(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{

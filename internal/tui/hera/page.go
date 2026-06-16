@@ -162,6 +162,9 @@ func (p *HeraPage) doRefresh() {
 			p.prMeta = pr
 		}
 	}
+	// Feed the same PR cache to the rail so managed rows render a PR indicator
+	// (best-effort; nil just leaves the cells off).
+	p.rail.SetPRMeta(p.prMeta)
 	// SetModel rebuilt the model's backing arrays, so the prior Selection
 	// pointers are stale — re-derive and rebind (task IDs usually unchanged, so
 	// bindPane is a no-op and the emulators are preserved).

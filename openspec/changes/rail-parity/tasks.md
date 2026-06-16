@@ -36,8 +36,8 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 6. PR indicator on rail rows
 
-- [ ] 6.1 Thread `prMeta` into the rail; render a `PR` cell on managed role rows from the "pr" namespace url.
-- [ ] 6.2 Tests: role with a "pr" url renders the PR cell; without, no cell (no name shift).
+- [x] 6.1 Thread `prMeta` into the rail; render a `PR` cell on managed role rows from the "pr" namespace url.
+- [x] 6.2 Tests: role with a "pr" url renders the PR cell; without, no cell (no name shift).
 
 ## 7. Validate
 
