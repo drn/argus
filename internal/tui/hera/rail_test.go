@@ -119,6 +119,108 @@ func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
 	testutil.Equal(t, found, true)
 }
 
+// depthOf returns the depth of the first row whose role/orch name matches, or -1.
+func (r *Rail) depthOf(name string) int {
+	for _, row := range r.rows {
+		switch {
+		case row.role != nil && row.role.Name == name:
+			return row.depth
+		case row.orch != nil && row.orch.Name == name:
+			return row.depth
+		}
+	}
+	return -1
+}
+
+func (r *Rail) hasOrchHeader(name string) bool {
+	for _, row := range r.rows {
+		if row.kind == rrOrch && row.orch != nil && row.orch.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRail_NestsSubOrchestratorUnderBridgingWorker(t *testing.T) {
+	// Root R has worker w bound to tc; child C's coordinator is also tc, so C
+	// nests under w. C's own worker wc renders one level deeper still.
+	root := orchView(1, "R", "tr", wk("w", "tc"))
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root, child}})
+
+	// R header(0), w(1, bridges C), wc(2). C never renders as a top-level header.
+	testutil.Equal(t, r.Rows(), 3)
+	testutil.Equal(t, r.depthOf("R"), 0)
+	testutil.Equal(t, r.depthOf("w"), 1)
+	testutil.Equal(t, r.depthOf("wc"), 2)
+	testutil.Equal(t, r.hasOrchHeader("C"), false) // consumed → nested, not a root
+
+	// The bridging worker row keeps its PARENT context (conservative selection):
+	// it is the worker role (not a coordinator), so mutations act on the worker,
+	// not the child orchestrator. Nesting is purely visual.
+	r.cursor = 1
+	sel := r.Selection()
+	testutil.Equal(t, sel.Role != nil, true)
+	testutil.Equal(t, sel.Role.Name, "w")
+	testutil.Equal(t, sel.IsCoordinator(), false)
+}
+
+func TestRail_NestingCollapseFoldsChildSubtree(t *testing.T) {
+	root := orchView(1, "R", "tr", wk("w", "tc"))
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root, child}})
+	testutil.Equal(t, r.Rows(), 3)
+
+	// Cursor on the bridging worker row → Space folds the child subtree (wc hides).
+	r.cursor = 1
+	r.ToggleCollapse()
+	testutil.Equal(t, r.Rows(), 2) // R header + w (child's wc folded away)
+	testutil.Equal(t, r.depthOf("wc"), -1)
+}
+
+func TestRail_NestingCycleTerminatesAndPlacesOnce(t *testing.T) {
+	// A↔B mutually bridge (A's worker→B's coord task, B's worker→A's coord task).
+	// Both are consumed; the safety sweep + placed guard must render each once
+	// without hanging.
+	a := orchView(1, "A", "ta", wk("wa", "tb"))
+	b := orchView(2, "B", "tb", wk("wb", "ta"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{a, b}})
+
+	// A as root, wa bridges B (nested), wb nested under B; B's wb bridges A but A
+	// is already placed → no further nesting. 1 header + 2 worker rows.
+	testutil.Equal(t, r.Rows(), 3)
+	headers := 0
+	for _, row := range r.rows {
+		if row.kind == rrOrch {
+			headers++
+		}
+	}
+	testutil.Equal(t, headers, 1) // each orchestrator placed once
+}
+
+func TestRail_ArchivedBridgeNestsDimmedInPlace(t *testing.T) {
+	// Active root R bridges archived child C via worker w. C must nest dimmed
+	// under w (not dropped, not hoisted to the bottom Archive section).
+	root := orchView(1, "R", "tr", wk("w", "tc"))
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	child.Archived = true
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root}, Archived: []OrchView{child}})
+
+	// wc nests under w (depth 2) and is dimmed; no bottom Archive expando (C is
+	// placed via the bridge, so it is not an archived root).
+	testutil.Equal(t, r.depthOf("wc"), 2)
+	for _, row := range r.rows {
+		if row.role != nil && row.role.Name == "wc" {
+			testutil.Equal(t, row.dim, true) // archived placement dims the subtree
+		}
+		testutil.Equal(t, row.kind == rrArchiveExpando, false) // no bottom archive section
+	}
+}
+
 func TestRail_FreelanceSectionCollapses(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{

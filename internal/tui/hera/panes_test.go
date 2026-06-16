@@ -179,20 +179,16 @@ func TestPanes_MultiBindingFeedsCorrectContext(t *testing.T) {
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-a-coord": acSess, "shared": sharedSess}))
 	p.Refresh()
 
-	// Select the A-worker role: shared task feeds the AGENT pane; A's
-	// coordinator feeds the HERA pane.
+	// orch-b's coordinator IS the shared task, which is also a-worker under A, so
+	// orch-b nests under A's a-worker row. The bridging row keeps its PARENT
+	// worker context (conservative — so Ctrl+D deletes the worker role, never the
+	// child orchestrator): selecting it feeds the AGENT pane with the shared task
+	// and the HERA pane with A's coordinator.
 	testutil.Equal(t, selectRoleByName(p, "a-worker"), true)
 	testutil.Equal(t, p.detailsMode, false)
+	testutil.Equal(t, p.SelectionContext().Orch.Name, "orch-a")
 	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "shared")
 	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-a-coord")
-
-	// Select orchestrator B's header (its coordinator is folded in): the SAME
-	// shared task now feeds the HERA pane (B's coordinator = the task itself) and
-	// the right region is details.
-	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
-	testutil.Equal(t, p.detailsMode, true)
-	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "shared")
-	testutil.Nil(t, p.AgentPane().Session())
 }
 
 // TestPanes_RemoteModeNeverFeeds proves remote-mode panes stay unavailable: no

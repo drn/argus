@@ -19,9 +19,9 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 3. Nest the rail
 
-- [ ] 3.1 Rewrite `buildRows`/`appendOrch` to nest sub-orchestrators under their bridging worker row, recursively, consuming the corrected subtree. Cycle guard (visited set) + archived-bridge traversal (dim, don't drop).
-- [ ] 3.2 Verify the Details DAG still resolves orchs by ID (untouched).
-- [ ] 3.3 Tests: SimulationScreen + structural assertions against `docs/OLD-RAIL-SNAPSHOT.md` shape (roots vs nested, cycle-prune, archived-dim).
+- [x] 3.1 Rewrite `buildRows`/`appendOrch` to nest sub-orchestrators under their bridging worker row, recursively, consuming the corrected subtree. Cycle guard (visited set) + archived-bridge traversal (dim, don't drop).
+- [x] 3.2 Verify the Details DAG still resolves orchs by ID (untouched).
+- [x] 3.3 Tests: SimulationScreen + structural assertions against `docs/OLD-RAIL-SNAPSHOT.md` shape (roots vs nested, cycle-prune, archived-dim).
 
 ## 4. Per-coordinator Archive (N) expando
 

@@ -157,18 +157,38 @@ func (r *Rail) buildRows() {
 		return
 	}
 
-	// 1. Pinned section.
+	// Nesting machinery: a worker whose bridge task is some other orchestrator's
+	// coordinator bridge task IS that child orchestrator's coordinator, so the
+	// child nests under the worker row. `bridge` maps a coordinator's bridge task
+	// to its orchestrator; `consumed` marks every orchestrator reachable as a
+	// child so it does NOT also render as a top-level root; `placed` guards
+	// single-placement + cycles across the whole build (an orchestrator is
+	// rendered at most once, breaking any bridge cycle).
+	bridge := r.bridgeIndex()
+	consumed := r.consumedSet(bridge)
+	placed := make(map[int64]bool)
+
+	// 1. Pinned section. Pinned orchestrators are always top-level roots
+	// (user intent), even if some worker bridges them.
 	if len(r.model.Pinned) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
-			r.appendOrch(&r.model.Pinned[i], 0, false)
+			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, bridge, placed)
 		}
 	}
 
-	// 2. Active orchestrators (no section header, like the task list's active
-	// section).
+	// 2. Active orchestrators (no section header). Render roots (not consumed as
+	// a child) first; then a safety sweep places any active orchestrator left
+	// unplaced by a pure bridge cycle so nothing ever vanishes from the rail.
 	for i := range r.model.Active {
-		r.appendOrch(&r.model.Active[i], 0, false)
+		if !consumed[r.model.Active[i].ID] {
+			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+		}
+	}
+	for i := range r.model.Active {
+		if !placed[r.model.Active[i].ID] {
+			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+		}
 	}
 
 	// 3. Freelance section.
@@ -186,27 +206,79 @@ func (r *Rail) buildRows() {
 		}
 	}
 
-	// 4. Archive section (collapsed by default).
-	if len(r.model.Archived) > 0 {
+	// 4. Archive section (collapsed by default): archived orchestrators not
+	// already nested under a live parent (placed). A consumed-but-unplaced
+	// archived orphan (pure cycle) still surfaces here.
+	var archivedRoots []*OrchView
+	for i := range r.model.Archived {
+		if !placed[r.model.Archived[i].ID] {
+			archivedRoots = append(archivedRoots, &r.model.Archived[i])
+		}
+	}
+	if len(archivedRoots) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrRule})
 		r.rows = append(r.rows, railRow{
 			kind:        rrArchiveExpando,
-			label:       fmt.Sprintf("Archive (%d)", len(r.model.Archived)),
+			label:       fmt.Sprintf("Archive (%d)", len(archivedRoots)),
 			collArchive: true,
 		})
 		if !r.archiveCollapsed {
-			for i := range r.model.Archived {
-				r.appendOrch(&r.model.Archived[i], 1, true)
+			for _, o := range archivedRoots {
+				r.appendOrch(o, 1, true, bridge, placed)
 			}
 		}
 	}
 }
 
-// appendOrch emits an orchestrator header and, when expanded, its NON-coordinator
-// roles. The coordinator-kind role is NOT rendered as its own child row — the
-// orchestrator header IS the coordinator and carries its status glyph (see
-// drawOrchRow). A worker-less orchestrator therefore renders header-only.
-func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
+// bridgeIndex maps each orchestrator's coordinator bridge task to the
+// orchestrator it coordinates (first wins — a coord task is unique to one
+// orchestrator in practice). A worker whose bridge task matches a key IS that
+// orchestrator's coordinator, so the keyed orchestrator nests under the worker.
+func (r *Rail) bridgeIndex() map[string]*OrchView {
+	idx := make(map[string]*OrchView)
+	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for i := range sec {
+			if k := sec[i].CoordBridgeTaskID(); k != "" {
+				if _, dup := idx[k]; !dup {
+					idx[k] = &sec[i]
+				}
+			}
+		}
+	}
+	return idx
+}
+
+// consumedSet marks every orchestrator that is bridged as a child by some OTHER
+// orchestrator's (non-teardown) worker, so the top-level passes skip it (it
+// renders nested instead).
+func (r *Rail) consumedSet(bridge map[string]*OrchView) map[int64]bool {
+	consumed := make(map[int64]bool)
+	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for i := range sec {
+			p := &sec[i]
+			for j := range p.Roles {
+				w := &p.Roles[j]
+				if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+					continue
+				}
+				if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != p.ID {
+					consumed[c.ID] = true
+				}
+			}
+		}
+	}
+	return consumed
+}
+
+// appendOrch emits an orchestrator HEADER (the folded coordinator) and, when
+// expanded, its non-coordinator roles nested via appendOrchWorkers. The header
+// is rendered once per build (placed guard). dim propagates an archived
+// placement down the whole subtree.
+func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	if placed[o.ID] {
+		return
+	}
+	placed[o.ID] = true
 	r.rows = append(r.rows, railRow{
 		kind:       rrOrch,
 		orch:       o,
@@ -217,11 +289,46 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
 	if r.collapsed[o.ID] {
 		return
 	}
+	r.appendOrchWorkers(o, depth+1, dim, bridge, placed)
+}
+
+// appendOrchWorkers emits o's non-coordinator role rows at `depth`. A worker
+// that bridges a not-yet-placed child orchestrator nests that child's workers
+// one level deeper, immediately under the worker row (the worker row IS the
+// child's coordinator — same multi-binding task — so no separate child header is
+// drawn). The bridging row carries collOrchID = child.ID so Space folds the
+// nested subtree, and a chevron marks it foldable. The placed guard breaks any
+// bridge cycle and guarantees single placement.
+//
+// The bridging row keeps its PARENT worker selection context (a worker role
+// under o): nesting is purely visual, so mutations (notably Ctrl+D) act on the
+// worker role, never the child orchestrator — conservative multi-binding safety.
+func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
 	for i := range o.Roles {
-		if o.Roles[i].Kind == db.HeraKindCoordinator {
-			continue // folded into the header
+		w := &o.Roles[i]
+		if w.Kind == db.HeraKindCoordinator {
+			continue // folded into the header / the bridging row above
 		}
-		r.rows = append(r.rows, railRow{kind: rrRole, role: &o.Roles[i], depth: depth + 1, dim: dim})
+		childDim := dim || w.Archived
+
+		var child *OrchView
+		if roleBridges(w) {
+			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID && !placed[c.ID] {
+				child = c
+			}
+		}
+		collID := int64(0)
+		if child != nil {
+			collID = child.ID
+		}
+		r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: childDim, collOrchID: collID})
+
+		if child != nil {
+			placed[child.ID] = true
+			if !r.collapsed[child.ID] {
+				r.appendOrchWorkers(child, depth+1, childDim || child.Archived, bridge, placed)
+			}
+		}
 	}
 }
 
@@ -497,6 +604,26 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 	col := x
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2
+	// A bridging sub-coordinator row (collOrchID set) reads like a nested
+	// orchestrator header: a fold chevron + the coordinator marker before the
+	// name, so the operator can tell it carries (and folds) a child subtree.
+	if row.collOrchID > 0 {
+		if col < x+w {
+			markerStyle := nameStyle
+			if !selected {
+				markerStyle = theme.StyleProject
+				if row.dim {
+					markerStyle = theme.StyleDimmed
+				}
+			}
+			screen.SetContent(col, y, []rune(chevron(r.collapsed[row.collOrchID]))[0], nil, markerStyle)
+			col += 2
+			if col < x+w {
+				screen.SetContent(col, y, heraIconCoord, nil, markerStyle)
+				col += 2
+			}
+		}
+	}
 	remaining := w - (col - x)
 	if remaining <= 0 {
 		return
