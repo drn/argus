@@ -43,6 +43,28 @@ const heraEndReasonTaskDeleted = "argus_deleted"
 // row was deleted while the daemon was down so the delete-cascade never fired.
 const HeraEndReasonTaskMissing = "task_missing"
 
+// HeraEndReasonReparented / HeraEndReasonUserDeleted are the operator-TEARDOWN
+// end reasons (ported from Hera's ops.EndReasonReparented/UserDeleted). They
+// mark a parent→child link the operator explicitly tore down — re-parenting the
+// child under a different coordinator, or deleting the link/subtree. The rail
+// bridge (SubtreeOrchIDs / workerTaskSet) treats these as STALE: a binding ended
+// for one of these reasons must NOT nest its child, whereas every OTHER end
+// reason (argus_deleted / task_missing / normal session end) is a task-lifecycle
+// event that leaves the structural parent link intact, so the child still nests.
+// Native has no reparent/teardown path that stamps these today; the constants
+// exist so the bridge guard is faithful to the plugin and forward-compatible.
+const (
+	HeraEndReasonReparented  = "reparented"
+	HeraEndReasonUserDeleted = "user_deleted"
+)
+
+// HeraEndReasonIsTeardown reports whether an ended binding's end_reason marks an
+// operator-teardown link (reparented / user_deleted) that must not bridge its
+// child orchestrator. Every other reason leaves the structural link intact.
+func HeraEndReasonIsTeardown(reason string) bool {
+	return reason == HeraEndReasonReparented || reason == HeraEndReasonUserDeleted
+}
+
 // Task-meta mirror keys (namespace "hera"). The role layer mirrors a small
 // amount of state into the task_meta sidecar (best-effort, soft-fail) so
 // display predicates and other plugins can read it without joining the hera
@@ -784,6 +806,25 @@ func (d *DB) ListHeraLiveBindings() ([]*HeraBinding, error) {
 	return d.heraListBindings(
 		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
 		 FROM hera_bindings WHERE ended_at IS NULL ORDER BY started_at ASC, id ASC`)
+}
+
+// ListHeraLatestBindings returns the single most-recent binding per role across
+// all roles, regardless of liveness — one row per role, the one with the highest
+// id (autoincrement, monotonic with creation order, so "highest id" == "latest
+// binding"). Used to compute the structural rail bridge off a role's LATEST
+// binding (live OR ended-but-not-torn-down), distinct from ListHeraLiveBindings
+// which only sees live bindings. A live binding is always its role's latest (the
+// partial unique index forbids two live bindings per role), so a live role's
+// latest row carries its live task and an empty end_reason.
+func (d *DB) ListHeraLatestBindings() ([]*HeraBinding, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.heraListBindings(
+		`SELECT b.id, b.role_id, b.orchestrator_id, b.argus_task_id, b.worktree_path, b.started_at, b.ended_at, b.end_reason
+		 FROM hera_bindings b
+		 JOIN (SELECT role_id, MAX(id) AS max_id FROM hera_bindings GROUP BY role_id) latest
+		   ON latest.role_id = b.role_id AND latest.max_id = b.id
+		 ORDER BY b.role_id ASC`)
 }
 
 // ListHeraBindingsByRole returns every binding for a role — live and ended —

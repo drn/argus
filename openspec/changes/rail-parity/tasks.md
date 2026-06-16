@@ -5,11 +5,11 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 1. Bridging breadth (load-bearing prerequisite)
 
-- [ ] 1.1 Add `HeraEndReasonReparented`/`HeraEndReasonUserDeleted` constants and a `ListHeraLatestBindings()` (one binding per role, max id) method to `internal/db/hera.go`.
-- [ ] 1.2 Rewrite `internal/db/hera_subtree.go` `heraSubtreeOrchIDs` SQL to bridge on each role's LATEST binding (not live-only), excluding teardown reasons; keep the archived-orch prune + cycle guard.
-- [ ] 1.3 Add `ListHeraLatestBindings` to `internal/tui/hera/reader.go`; add `BridgeTaskID`/`LinkEndReason` to `RoleView` and `CoordBridgeTaskID()` to `OrchView` in `model.go`; populate from latest bindings in `BuildModel`.
-- [ ] 1.4 Port `internal/tui/hera/tree.go` `workerTaskSet`/`heraTreeNodes` to bridge on `BridgeTaskID` + teardown guard + `CoordBridgeTaskID`.
-- [ ] 1.5 Tests: db subtree latest-binding bridge + teardown exclusion; tree.go bridge over ended-but-not-torn-down bindings.
+- [x] 1.1 Add `HeraEndReasonReparented`/`HeraEndReasonUserDeleted` constants and a `ListHeraLatestBindings()` (one binding per role, max id) method to `internal/db/hera.go`.
+- [x] 1.2 Rewrite `internal/db/hera_subtree.go` `heraSubtreeOrchIDs` SQL to bridge on each role's LATEST binding (not live-only), excluding teardown reasons; keep the archived-orch prune + cycle guard.
+- [x] 1.3 Add `ListHeraLatestBindings` to `internal/tui/hera/reader.go`; add `BridgeTaskID`/`LinkEndReason` to `RoleView` and `CoordBridgeTaskID()` to `OrchView` in `model.go`; populate from latest bindings in `BuildModel`.
+- [x] 1.4 Port `internal/tui/hera/tree.go` `workerTaskSet`/`heraTreeNodes` to bridge on `BridgeTaskID` + teardown guard + `CoordBridgeTaskID`.
+- [x] 1.5 Tests: db subtree latest-binding bridge + teardown exclusion; tree.go bridge over ended-but-not-torn-down bindings.
 
 ## 2. Fold coordinator into the orchestrator header
 

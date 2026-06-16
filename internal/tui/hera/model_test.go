@@ -140,6 +140,48 @@ func TestBuildModel_ReadyToCloseAndStatus(t *testing.T) {
 	testutil.Equal(t, rv.Status, db.HeraStatusWorking)
 }
 
+func TestBuildModel_BridgeTaskID(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+
+	t.Run("live role: bridge equals live task", func(t *testing.T) {
+		role := seedBoundRole(t, d, orch, "live", db.HeraKindWorker, "t-live")
+		_ = role
+		m, err := BuildModel(d)
+		testutil.NoError(t, err)
+		var rv *RoleView
+		for i := range m.Active[0].Roles {
+			if m.Active[0].Roles[i].Name == "live" {
+				rv = &m.Active[0].Roles[i]
+			}
+		}
+		testutil.Equal(t, rv != nil, true)
+		testutil.Equal(t, rv.BridgeTaskID, "t-live")
+		testutil.Equal(t, rv.LinkEndReason, "")
+	})
+
+	t.Run("ended role: bridge is latest task + end_reason, not live", func(t *testing.T) {
+		role := seedBoundRole(t, d, orch, "ended", db.HeraKindWorker, "t-ended")
+		bnd, err := d.HeraLiveBindingByRole(role.ID)
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(bnd.ID, db.HeraEndReasonUserDeleted))
+
+		m, err := BuildModel(d)
+		testutil.NoError(t, err)
+		var rv *RoleView
+		for i := range m.Active[0].Roles {
+			if m.Active[0].Roles[i].Name == "ended" {
+				rv = &m.Active[0].Roles[i]
+			}
+		}
+		testutil.Equal(t, rv != nil, true)
+		testutil.Equal(t, rv.Live, false)
+		testutil.Equal(t, rv.TaskID, "")              // no live binding
+		testutil.Equal(t, rv.BridgeTaskID, "t-ended") // latest binding still bridges
+		testutil.Equal(t, rv.LinkEndReason, db.HeraEndReasonUserDeleted)
+	})
+}
+
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel
 // surfaces read errors rather than swallowing them.
 type errReader struct{ HeraReader }
