@@ -11,7 +11,7 @@ The plugin also carried a load-bearing teardown invariant (BUG-026): re-parentin
 - **Coordinator selection** (a coordinator role row, or an orchestrator header whose orchestrator has a coordinator role) → open a picker of the OTHER active orchestrators; `Enter` re-parents the coordinator under the chosen parent as a sub-coordinator (the multi-binding the orchestration tree already nests). Self-adoption and descendant cycles are rejected with visible feedback.
 - **BUG-026 teardown:** re-parenting ends EVERY prior parent-link of the coordinator's task by ROLE id (live bindings ended with reason `reparented`, then the link role deleted so its bindings cascade), leaving exactly one clean link.
 - **Already-bound guard / dedupe:** reject creating a second live binding for the same task under the chosen orchestrator (the per-`(task, orchestrator)` unique index); de-collide default role names.
-- The picker and the role/binding writes run off the tview event loop; a second adopt while one is in flight no-ops with feedback. Every not-applicable selection gets visible feedback, never a silent no-op.
+- The role+binding writes are cheap local SQLite mutations and run synchronously on the tview event loop, consistent with the other rail mutations (they touch no worktree/session, so they never perceptibly block — unlike worker spawn, which is dispatched off-thread). The picker is a modal: while it is open the rail is not focused, so a second `J` cannot fire concurrently. Every not-applicable selection gets visible feedback, never a silent no-op.
 
 ## Capabilities
 
