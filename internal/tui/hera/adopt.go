@@ -37,9 +37,11 @@ type AdoptStore interface {
 	ListHeraBindingsByTask(taskID string) ([]*db.HeraBinding, error)
 	UniqueHeraRoleName(orchID int64, base string) (string, error)
 
-	// Mutations.
-	CreateHeraRole(in db.CreateHeraRoleInput) (*db.HeraRole, error)
-	CreateHeraBinding(in db.CreateHeraBindingInput) (*db.HeraBinding, error)
+	// Mutations. Role+binding creation goes through the TRANSACTIONAL
+	// CreateHeraRoleWithBinding (same DAO hera_join attach-mode + born-bound
+	// spawn use), so a binding-insert failure (e.g. a worktree-orchestrator
+	// uniqueness collision) rolls the freshly-created role back — no orphan role.
+	CreateHeraRoleWithBinding(roleIn db.CreateHeraRoleInput, taskID, worktreePath string) (*db.HeraRole, *db.HeraBinding, error)
 	EndHeraBinding(bindingID int64, reason string) error
 	DeleteHeraRole(id int64) error
 	SetMeta(taskID, namespace, key, value string) error
@@ -115,24 +117,17 @@ func (o *AdoptOps) AdoptTaskIntoOrchestrator(in AdoptInput) (*AdoptResult, error
 		return nil, err
 	}
 
-	role, err := o.store.CreateHeraRole(db.CreateHeraRoleInput{
+	// Transactional create: if the binding insert violates a live-uniqueness
+	// index (e.g. the worktree-orchestrator index, which the guard above does
+	// NOT pre-check), the role insert is rolled back too — no orphan role.
+	role, bnd, err := o.store.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 		OrchestratorID: in.OrchestratorID,
 		Name:           name,
 		Kind:           db.HeraKindWorker,
 		ArgusProject:   strings.TrimSpace(in.ArgusProject),
-	})
+	}, taskID, strings.TrimSpace(in.WorktreePath))
 	if err != nil {
-		return nil, fmt.Errorf("hera.AdoptTaskIntoOrchestrator: create role: %w", err)
-	}
-
-	bnd, err := o.store.CreateHeraBinding(db.CreateHeraBindingInput{
-		RoleID:         role.ID,
-		OrchestratorID: in.OrchestratorID,
-		ArgusTaskID:    taskID,
-		WorktreePath:   strings.TrimSpace(in.WorktreePath),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("hera.AdoptTaskIntoOrchestrator: create binding: %w", err)
+		return nil, fmt.Errorf("hera.AdoptTaskIntoOrchestrator: create role+binding: %w", err)
 	}
 
 	// Mirror meta:hera.role=worker. Best-effort: a transient failure must not
@@ -292,24 +287,16 @@ func (o *AdoptOps) ReparentCoordinator(in ReparentInput) (*ReparentResult, error
 		return nil, err
 	}
 
-	role, err := o.store.CreateHeraRole(db.CreateHeraRoleInput{
+	// Transactional create (same rationale as adopt) — a binding-insert failure
+	// rolls the new link role back rather than leaving an orphan.
+	role, bnd, err := o.store.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
 		OrchestratorID: in.ParentOrchestratorID,
 		Name:           name,
 		Kind:           db.HeraKindWorker,
 		ArgusProject:   strings.TrimSpace(in.ArgusProject),
-	})
+	}, taskID, coordWorktree)
 	if err != nil {
-		return nil, fmt.Errorf("hera.ReparentCoordinator: create role: %w", err)
-	}
-
-	bnd, err := o.store.CreateHeraBinding(db.CreateHeraBindingInput{
-		RoleID:         role.ID,
-		OrchestratorID: in.ParentOrchestratorID,
-		ArgusTaskID:    taskID,
-		WorktreePath:   coordWorktree,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("hera.ReparentCoordinator: create binding: %w", err)
+		return nil, fmt.Errorf("hera.ReparentCoordinator: create role+binding: %w", err)
 	}
 
 	uxlog.Log("[hera-view] reparent: child=%q (task=%s) under parent=%q → role %d (%s)",

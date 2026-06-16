@@ -59,7 +59,7 @@ The picker SHALL be a themed, focusable, dismissable modal in which typed charac
 
 #### Adopt (freelancer → worker)
 
-Selecting an orchestrator for a freelancer SHALL adopt the freelancer's argus task into it by creating, server-side and without any agent action, through the SAME DAO path `hera_join`'s attach-mode uses (`CreateHeraRole` + `CreateHeraBinding`, not a duplicate implementation):
+Selecting an orchestrator for a freelancer SHALL adopt the freelancer's argus task into it by creating, server-side and without any agent action, through the SAME transactional DAO `hera_join`'s attach-mode and the born-bound spawn use (`CreateHeraRoleWithBinding`, not a duplicate implementation), so a binding-insert failure (e.g. a worktree-orchestrator uniqueness collision) rolls the freshly-created worker role back — no orphan role:
 
 - a `worker` role under the chosen orchestrator whose name defaults to the freelancer's name and is de-collided (a numeric suffix appended) when an active role of that name already exists; the role SHALL record the freelancer's argus repo as its `argus_project`; and
 - a live binding from the freelancer's argus task to that role, recording the freelancer's argus-task worktree path.

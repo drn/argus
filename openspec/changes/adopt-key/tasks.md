@@ -21,7 +21,7 @@ Restore the `J` adopt/reparent key to the native Hera rail (parity with the plug
 **Depends on:** Stage 2
 
 - [x] 3.1 `internal/tui/hera/adopt.go`: `AdoptStore` interface (the read+write DAOs the ops need), `AdoptOps` + `NewAdoptOps(AdoptStore)`.
-- [x] 3.2 `AdoptInput`/`AdoptResult` + `AdoptTaskIntoOrchestrator`: already-bound-under-orch guard, `uniqueRoleName` de-collide, `CreateHeraRole` + `CreateHeraBinding`, best-effort `SetMeta`.
+- [x] 3.2 `AdoptInput`/`AdoptResult` + `AdoptTaskIntoOrchestrator`: already-bound-under-orch guard, `uniqueRoleName` de-collide, transactional `CreateHeraRoleWithBinding` (no orphan role on a worktree-orch collision), best-effort `SetMeta`.
 - [x] 3.3 `ReparentInput`/`ReparentResult` + `ReparentCoordinator`: self/cycle guards, latest-binding resolution, BUG-026 teardown (end live links `reparented`, delete all link roles by id), new link create.
 - [x] 3.4 `ListActiveOrchestrators()` for the picker; `uniqueRoleName` helper over `UniqueHeraRoleName`.
 

@@ -323,7 +323,9 @@ func heraCoordReparentTarget(sel hera.Selection) (childOrchID int64, name, coord
 	}
 	if o := sel.Orch; o != nil && !o.Archived {
 		for i := range o.Roles {
-			if o.Roles[i].Kind == db.HeraKindCoordinator {
+			// Skip an archived coordinator role for symmetry with the role-row
+			// branch above (BuildModel includes archived roles in OrchView.Roles).
+			if o.Roles[i].Kind == db.HeraKindCoordinator && !o.Roles[i].Archived {
 				return o.ID, o.Name, o.CoordTaskID(), true
 			}
 		}

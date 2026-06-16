@@ -137,6 +137,14 @@ func TestHeraCoordReparentTarget(t *testing.T) {
 		_, _, _, ok := heraCoordReparentTarget(sel)
 		testutil.Equal(t, ok, false)
 	})
+	t.Run("orchestrator header whose only coordinator role is archived does not qualify", func(t *testing.T) {
+		// Symmetry with the role-row branch (which guards !Archived).
+		sel := hera.Selection{Orch: &hera.OrchView{ID: 1, Roles: []hera.RoleView{
+			{Kind: db.HeraKindCoordinator, Archived: true},
+		}}}
+		_, _, _, ok := heraCoordReparentTarget(sel)
+		testutil.Equal(t, ok, false)
+	})
 	t.Run("empty selection does not qualify", func(t *testing.T) {
 		_, _, _, ok := heraCoordReparentTarget(hera.Selection{})
 		testutil.Equal(t, ok, false)
