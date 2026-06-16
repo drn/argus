@@ -201,6 +201,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `P`             | Pin / unpin the selected role / orchestrator                                            |
 | `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
 | `ctrl+d`        | Delete the selected role / orchestrator                                                 |
+| `J`             | Adopt a freelancer into, or re-parent a coordinator under, a chosen orchestrator (type-to-filter picker) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
 When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view. New-orchestrator creation has no key (use the `hera_new_orchestrator` MCP tool).

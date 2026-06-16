@@ -283,6 +283,167 @@ func (a *App) heraReattach(sel hera.Selection) {
 	a.heraRefresh()
 }
 
+// --- `J` adopt / reparent ---------------------------------------------------
+
+// heraOpenAdopt is the `J` key: adopt a freelancer into, or re-parent a
+// coordinator under, a chosen orchestrator. It dispatches on the current rail
+// selection (coordinator first, then freelancer), opens the orchestrator
+// picker, and runs the mutation on selection. Every non-adoptable selection
+// gets visible statusbar feedback — never a silent no-op. Inert in remote mode
+// (heraAdoptOps is nil).
+func (a *App) heraOpenAdopt(sel hera.Selection) {
+	if a.heraAdoptOps == nil {
+		return
+	}
+	// Coordinator selection (role row OR orchestrator header) → re-parent.
+	if childOrchID, name, coordTaskID, ok := heraCoordReparentTarget(sel); ok {
+		a.heraAdoptCoordinator(childOrchID, name, coordTaskID)
+		return
+	}
+	// Freelancer selection → adopt as a worker.
+	if r := sel.Role; r != nil && r.Kind == db.HeraKindFreelance && !r.Archived {
+		a.heraAdoptFreelancer(r)
+		return
+	}
+	a.statusbar.SetError("J: select a freelancer or a coordinator to adopt")
+}
+
+// heraCoordReparentTarget reports whether sel is a coordinator that `J` can
+// re-parent, returning the child orchestrator id, a display name, and the
+// coordinator's argus task hint (may be empty for a dormant coordinator — the
+// op resolves it from the coord role's latest binding). Two shapes qualify: a
+// coordinator-kind role row, or a non-archived orchestrator header whose
+// orchestrator has a coordinator role.
+func heraCoordReparentTarget(sel hera.Selection) (childOrchID int64, name, coordTaskID string, ok bool) {
+	if r := sel.Role; r != nil {
+		if r.Kind == db.HeraKindCoordinator && !r.Archived && sel.Orch != nil && !sel.Orch.Archived {
+			return sel.Orch.ID, r.Name, r.TaskID, true
+		}
+		return 0, "", "", false
+	}
+	if o := sel.Orch; o != nil && !o.Archived {
+		for i := range o.Roles {
+			if o.Roles[i].Kind == db.HeraKindCoordinator {
+				return o.ID, o.Name, o.CoordTaskID(), true
+			}
+		}
+	}
+	return 0, "", "", false
+}
+
+// heraAdoptFreelancer opens the orchestrator picker for a freelancer and, on
+// selection, creates the worker role + binding. Project + worktree are resolved
+// from the freelancer's task row (authoritative — matches heraSpawnWorker).
+func (a *App) heraAdoptFreelancer(r *hera.RoleView) {
+	if r.TaskID == "" {
+		a.statusbar.SetError("J: this freelancer has no argus task to adopt")
+		return
+	}
+	project, worktree := "", ""
+	if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
+		project, worktree = t.Project, t.Worktree
+	}
+	orchs, err := a.heraAdoptOps.ListActiveOrchestrators()
+	if err != nil {
+		a.statusbar.SetError("Adopt failed: " + err.Error())
+		return
+	}
+	if len(orchs) == 0 {
+		a.statusbar.SetError("J: no active coordinators to adopt into — create one with hera_new_orchestrator first")
+		return
+	}
+	name, taskID := r.Name, r.TaskID
+	a.openHeraOrchPicker(fmt.Sprintf("Adopt %q into…", name), orchs, func(o *db.HeraOrchestrator) {
+		if _, err := a.heraAdoptOps.AdoptTaskIntoOrchestrator(hera.AdoptInput{
+			ArgusTaskID:    taskID,
+			OrchestratorID: o.ID,
+			RoleName:       name,
+			ArgusProject:   project,
+			WorktreePath:   worktree,
+		}); err != nil {
+			a.statusbar.SetError("Adopt failed: " + err.Error())
+			return
+		}
+		a.heraRefresh()
+	})
+}
+
+// heraAdoptCoordinator opens the orchestrator picker (excluding the coordinator
+// itself) and, on selection, re-parents the coordinator under the chosen parent.
+// Descendant cycles are rejected authoritatively by ReparentCoordinator.
+func (a *App) heraAdoptCoordinator(childOrchID int64, name, coordTaskID string) {
+	project := ""
+	if coordTaskID != "" {
+		if t, err := a.db.Get(coordTaskID); err == nil && t != nil {
+			project = t.Project
+		}
+	}
+	orchs, err := a.heraAdoptOps.ListActiveOrchestrators()
+	if err != nil {
+		a.statusbar.SetError("Adopt failed: " + err.Error())
+		return
+	}
+	targets := make([]*db.HeraOrchestrator, 0, len(orchs))
+	for _, o := range orchs {
+		if o.ID != childOrchID {
+			targets = append(targets, o)
+		}
+	}
+	if len(targets) == 0 {
+		a.statusbar.SetError("J: no other active coordinator to adopt this coordinator under — create one with hera_new_orchestrator first")
+		return
+	}
+	a.openHeraOrchPicker(fmt.Sprintf("Adopt coordinator %q under…", name), targets, func(o *db.HeraOrchestrator) {
+		if _, err := a.heraAdoptOps.ReparentCoordinator(hera.ReparentInput{
+			ChildOrchestratorID:  childOrchID,
+			CoordTaskID:          coordTaskID,
+			ParentOrchestratorID: o.ID,
+			RoleName:             name,
+			ArgusProject:         project,
+		}); err != nil {
+			a.statusbar.SetError("Adopt failed: " + err.Error())
+			return
+		}
+		a.heraRefresh()
+	})
+}
+
+// openHeraOrchPicker shows the `J` orchestrator picker; pick is called with the
+// chosen orchestrator on Enter (Esc cancels with no change).
+func (a *App) openHeraOrchPicker(title string, orchs []*db.HeraOrchestrator, pick func(*db.HeraOrchestrator)) {
+	a.heraOrchPicker = NewOrchPickerModal(title, orchs)
+	a.heraOrchPickerPick = pick
+	a.mode = modeHeraOrchPicker
+	a.pages.AddPage("heraorchpicker", a.heraOrchPicker, true, true)
+	a.pages.SwitchToPage("heraorchpicker")
+	a.tapp.SetFocus(a.heraOrchPicker)
+}
+
+func (a *App) handleHeraOrchPickerKey(event *tcell.EventKey) {
+	a.heraOrchPicker.InputHandler()(event, func(tview.Primitive) {})
+	if a.heraOrchPicker.Canceled() {
+		a.closeHeraOrchPicker()
+		return
+	}
+	if a.heraOrchPicker.Selected() {
+		chosen := a.heraOrchPicker.SelectedOrch()
+		pick := a.heraOrchPickerPick
+		a.closeHeraOrchPicker()
+		if pick != nil && chosen != nil {
+			pick(chosen)
+		}
+	}
+}
+
+func (a *App) closeHeraOrchPicker() {
+	a.mode = modeTaskList
+	a.heraOrchPicker = nil
+	a.heraOrchPickerPick = nil
+	a.pages.RemovePage("heraorchpicker")
+	a.pages.SwitchToPage("hera")
+	a.tapp.SetFocus(a.heraPage)
+}
+
 // --- modal plumbing ---------------------------------------------------------
 
 // openHeraInput shows a single-field input modal (rename / spawn prompt). submit

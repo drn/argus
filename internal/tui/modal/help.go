@@ -79,6 +79,7 @@ var HelpSections = []HelpSection{
 			{"P", "toggle pin"},
 			{"s / S", "advance / revert status"},
 			{"ctrl+d", "delete role/orchestrator"},
+			{"J", "adopt freelancer / reparent coordinator"},
 		},
 	},
 	{

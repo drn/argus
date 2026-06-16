@@ -60,6 +60,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "fork task")
 	testutil.Contains(t, body, "task switcher")
 	testutil.Contains(t, body, "show/hide hera workers")
+	// The `J` adopt/reparent rail key must be discoverable in the overlay so a
+	// future removal of the binding fails the build (keybinding-help contract).
+	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

@@ -39,6 +39,7 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 	p.OnStatusAdvance = record("adv")
 	p.OnStatusRevert = record("rev")
 	p.OnDelete = record("delete")
+	p.OnAdopt = record("adopt")
 
 	h := p.InputHandler()
 	cases := []struct {
@@ -52,6 +53,7 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 		{tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone), "adv"},
 		{tcell.NewEventKey(tcell.KeyRune, 'S', tcell.ModNone), "rev"},
 		{tcell.NewEventKey(tcell.KeyCtrlD, 0, tcell.ModNone), "delete"},
+		{tcell.NewEventKey(tcell.KeyRune, 'J', tcell.ModNone), "adopt"},
 	}
 	for _, c := range cases {
 		got = ""

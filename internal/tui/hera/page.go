@@ -75,6 +75,7 @@ type HeraPage struct {
 	OnStatusRevert  func(Selection) // `S` — revert selected role status one rung
 	OnDelete        func(Selection) // ctrl+d — delete selected role/orchestrator (confirm)
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
+	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
 
 	// Region rects from the last Draw (mouse hit-testing in regionAt).
 	coordX, coordW int
@@ -398,6 +399,12 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			return p.fire(p.OnStatusAdvance, sel)
 		case 'S':
 			return p.fire(p.OnStatusRevert, sel)
+		case 'J':
+			// Adopt a freelancer into / re-parent a coordinator under a chosen
+			// orchestrator. Rail-focus-only (a focused pane forwards `J` to the
+			// PTY via forwardKey, never reaching here). The handler sorts out
+			// freelance vs coordinator vs not-applicable and surfaces feedback.
+			return p.fire(p.OnAdopt, sel)
 		}
 	}
 	return false
