@@ -234,6 +234,36 @@ func TestSelection_FocusTaskID(t *testing.T) {
 	})
 }
 
+// TestBuildModel_PopulatesDetailsFields proves the additive coordinator-Details
+// projection inputs (orch + role creation, the live binding's worktree + start,
+// the role-status update time, and the bound task name) flow into the model.
+func TestBuildModel_PopulatesDetailsFields(t *testing.T) {
+	d := memDB(t)
+	orchID := seedOrch(t, d, "orch")
+	role := seedBoundRole(t, d, orchID, "coord", db.HeraKindCoordinator, "t-c")
+	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking))
+
+	m, err := BuildModel(d)
+	testutil.NoError(t, err)
+	ov := m.Active[0]
+	testutil.Equal(t, ov.CreatedAt.IsZero(), false)
+	rv := ov.Roles[0]
+	testutil.Equal(t, rv.CreatedAt.IsZero(), false)
+	testutil.Equal(t, rv.ArgusProject, "p")
+	testutil.Equal(t, rv.WorktreePath, "/wt/t-c")
+	testutil.Equal(t, rv.BindingStartedAt.IsZero(), false)
+	testutil.Equal(t, rv.StatusUpdatedAt.IsZero(), false)
+	testutil.Equal(t, rv.TaskName, "t-c")
+
+	// Derived metadata over the real projection: repos-in-scope is the role's
+	// project and last activity is at/after the orchestrator creation.
+	meta := deriveCoordMeta(&ov)
+	testutil.DeepEqual(t, meta.Repos, []string{"p"})
+	testutil.Equal(t, meta.AgentName, "t-c")
+	testutil.Equal(t, meta.Worktree, "/wt/t-c")
+	testutil.Equal(t, meta.LastActivity.Before(ov.CreatedAt), false)
+}
+
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel
 // surfaces read errors rather than swallowing them.
 type errReader struct{ HeraReader }
