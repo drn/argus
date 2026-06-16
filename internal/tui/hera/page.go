@@ -132,6 +132,11 @@ func (p *HeraPage) Rail() *Rail { return p.rail }
 // remote mode (the rail exists but is never focused).
 func (p *HeraPage) RailFiltering() bool { return p.rail.Filtering() }
 
+// SetRailStateStore wires the rail's persistence seam (BUG-002), restoring the
+// saved fold/selection state immediately. The App calls it once with the local
+// *db.DB; remote mode never calls it, so persistence stays off.
+func (p *HeraPage) SetRailStateStore(s RailStateStore) { p.rail.SetStateStore(s) }
+
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).
 func (p *HeraPage) Machine() *FocusMachine { return p.focus }

@@ -609,6 +609,12 @@ func (a *App) buildUI() {
 		heraReader = d
 	}
 	a.heraPage = hera.NewHeraPage(heraReader)
+	if d, ok := a.db.(*db.DB); ok {
+		// Persist + restore the rail's fold/selection state across restarts
+		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
+		// so persistence stays off. Mirrors the heraReader / heraOps type-assert.
+		a.heraPage.SetRailStateStore(d)
+	}
 	if heraReader != nil {
 		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
 		// a.runner at call time on the main thread — applySelection/refresh and

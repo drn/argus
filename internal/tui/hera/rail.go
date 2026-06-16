@@ -1,7 +1,9 @@
 package hera
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +14,27 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
+
+// RailStateStore persists the rail's UI state (fold/collapse + selection) across
+// argus / daemon restarts. *db.DB satisfies it implicitly (LoadRailState /
+// SaveRailState over the config table); remote mode passes nil and persistence
+// is simply off. See BUG-002 / openspec/changes/rail-state-persist.
+type RailStateStore interface {
+	LoadRailState() (string, error)
+	SaveRailState(state string) error
+}
+
+// railViewState is the JSON shape persisted under the store's single key. Only
+// NON-default fold entries are listed (orchestrators default expanded, per-coord
+// Archive expandos default closed), so an absent/empty blob restores all
+// defaults. Filter state is transient and deliberately absent.
+type railViewState struct {
+	Collapsed        []int64 `json:"collapsed"`          // orchestrator ids currently collapsed
+	CoordArchiveOpen []int64 `json:"coord_archive_open"` // orch ids whose per-coord Archive expando is open
+	FreelanceCollap  bool    `json:"freelance_collapsed"`
+	ArchiveCollapsed bool    `json:"archive_collapsed"`
+	SelectionRef     int64   `json:"selection_ref"` // currentRef() identity: role id, or -orch id for a header
+}
 
 // railRowKind enumerates the flattened display-row types. uint8 keeps it small;
 // there are only a handful of values.
@@ -105,6 +128,14 @@ type Rail struct {
 	// cursor lands on a different selectable row. 6b binds the panes off it;
 	// 6a wires it only for the focus-guard smoke test. May be nil.
 	onSelectionChanged func()
+
+	// store persists fold/selection state across restarts (BUG-002). nil in
+	// remote mode (and until SetStateStore wires it) → persistence off.
+	// pendingSelRef holds a persisted selection ref to apply on the FIRST model
+	// build (rows don't exist at load time); it is consumed once, after which the
+	// live cursor wins.
+	store         RailStateStore
+	pendingSelRef int64
 }
 
 // NewRail builds an empty rail. Archive starts collapsed (matches the task
@@ -145,12 +176,99 @@ func (r *Rail) SetModel(m Model) {
 	prev := r.currentRef()
 	r.model = m
 	r.buildRows()
+	// A persisted selection (BUG-002) takes precedence on the FIRST build after a
+	// restore — the rows didn't exist when SetStateStore ran. It is one-shot:
+	// once applied here it's zeroed, so later rebuilds keep the live cursor. The
+	// cursor is written directly (not via setCursor), so the restore never
+	// re-persists.
+	if r.pendingSelRef != 0 {
+		prev = r.pendingSelRef
+		r.pendingSelRef = 0
+	}
 	r.restoreCursor(prev)
 	r.clampCursor()
 }
 
 // Model returns the current snapshot (read-only; for tests/inspection).
 func (r *Rail) Model() Model { return r.model }
+
+// --- persistence (BUG-002) ---
+
+// SetStateStore wires the persistence seam and immediately restores the saved
+// state: the fold maps and section booleans (keyed by stable DB ids, valid
+// before any model loads) are applied now; the selection ref is stashed and
+// applied on the first model build (rows don't exist yet). A nil store, a read
+// error, or a malformed/empty blob all leave the rail at its defaults (logged,
+// never fatal) — matching the no-legacy-migration policy. Call once at
+// construction, before the first Refresh.
+func (r *Rail) SetStateStore(s RailStateStore) {
+	r.store = s
+	if s == nil {
+		return
+	}
+	raw, err := s.LoadRailState()
+	if err != nil {
+		uxlog.Log("[hera-view] rail state load failed: %v", err)
+		return
+	}
+	if strings.TrimSpace(raw) == "" {
+		return // nothing persisted yet — keep defaults
+	}
+	var st railViewState
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		uxlog.Log("[hera-view] rail state parse failed (keeping defaults): %v", err)
+		return
+	}
+	for _, id := range st.Collapsed {
+		r.collapsed[id] = true
+	}
+	for _, id := range st.CoordArchiveOpen {
+		r.coordArchiveOpen[id] = true
+	}
+	r.freelanceCollap = st.FreelanceCollap
+	r.archiveCollapsed = st.ArchiveCollapsed
+	r.pendingSelRef = st.SelectionRef
+}
+
+// persist serializes the live fold maps + current selection and writes them
+// through the store. nil store → no-op; a write error is logged, never fatal.
+// The rail hands the store a fully-serialized immutable string, so a store impl
+// is free to write it asynchronously without racing the UI thread (shipped
+// synchronously here — a local SQLite upsert is sub-millisecond).
+func (r *Rail) persist() {
+	if r.store == nil {
+		return
+	}
+	st := railViewState{
+		Collapsed:        trueKeys(r.collapsed),
+		CoordArchiveOpen: trueKeys(r.coordArchiveOpen),
+		FreelanceCollap:  r.freelanceCollap,
+		ArchiveCollapsed: r.archiveCollapsed,
+		SelectionRef:     r.currentRef(),
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		uxlog.Log("[hera-view] rail state marshal failed: %v", err)
+		return
+	}
+	if err := r.store.SaveRailState(string(b)); err != nil {
+		uxlog.Log("[hera-view] rail state save failed: %v", err)
+	}
+}
+
+// trueKeys returns the sorted ids whose value is true (the non-default fold
+// entries). Sorted so the serialized blob is stable across saves (no spurious
+// rewrites from Go's randomized map iteration).
+func trueKeys(m map[int64]bool) []int64 {
+	var out []int64
+	for k, v := range m {
+		if v {
+			out = append(out, k)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
 
 // --- filter ---
 
@@ -690,6 +808,10 @@ func (r *Rail) setCursor(i int) {
 	if r.onSelectionChanged != nil {
 		r.onSelectionChanged()
 	}
+	// Persist the new selection (BUG-002). setCursor is the single funnel for
+	// user-driven cursor moves (via step); the load-restore and filter rebuilds
+	// write r.cursor directly (not through here), so neither persists.
+	r.persist()
 }
 
 func (r *Rail) clampCursor() {
@@ -743,6 +865,7 @@ func (r *Rail) ToggleCollapse() {
 	r.buildRows()
 	r.restoreCursor(ref)
 	r.clampCursor()
+	r.persist() // fold change (BUG-002)
 }
 
 // Selected returns the RoleView under the cursor, or nil when the cursor is on
