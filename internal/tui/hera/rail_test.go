@@ -27,40 +27,39 @@ func TestRail_BuildRowsAndCursorNav(t *testing.T) {
 	r := NewRail()
 	r.SetModel(twoOrchModel())
 
-	// 2 orch headers + 3 roles = 5 selectable rows, all selectable here.
-	testutil.Equal(t, r.Rows(), 5)
+	// The coordinator folds into its orchestrator header, so orch-1 renders a
+	// header + its single worker, and orch-2 (coordinator-only) is header-only:
+	// 2 headers + 1 worker = 3 selectable rows.
+	testutil.Equal(t, r.Rows(), 3)
 
 	// Cursor starts at 0 (first orch header).
 	testutil.Equal(t, r.CursorIndex(), 0)
 	testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
 
-	r.CursorDown() // → role coord
-	testutil.Equal(t, r.Selected().Name, "coord")
-	r.CursorDown() // → role wkr
+	r.CursorDown() // → worker wkr (coord folded into the header)
 	testutil.Equal(t, r.Selected().Name, "wkr")
-	r.CursorDown() // → orch-2 header
+	r.CursorDown() // → orch-2 header (coordinator-only)
 	testutil.Equal(t, r.SelectedOrch().Name, "orch-2")
-	r.CursorDown() // → coord2
-	testutil.Equal(t, r.Selected().Name, "coord2")
-	r.CursorDown() // at bottom, no move
-	testutil.Equal(t, r.Selected().Name, "coord2")
+	testutil.Nil(t, r.Selected()) // header carries no role
+	r.CursorDown()                // at bottom, no move
+	testutil.Equal(t, r.SelectedOrch().Name, "orch-2")
 
 	r.CursorUp()
-	testutil.Equal(t, r.SelectedOrch().Name, "orch-2")
+	testutil.Equal(t, r.Selected().Name, "wkr")
 }
 
 func TestRail_ToggleCollapseHidesRoles(t *testing.T) {
 	r := NewRail()
 	r.SetModel(twoOrchModel())
-	testutil.Equal(t, r.Rows(), 5)
+	testutil.Equal(t, r.Rows(), 3)
 
-	// Cursor on orch-1 header; collapse it → its 2 roles vanish.
+	// Cursor on orch-1 header; collapse it → its worker row vanishes.
 	r.ToggleCollapse()
-	testutil.Equal(t, r.Rows(), 3) // orch-1 (collapsed) + orch-2 + coord2
+	testutil.Equal(t, r.Rows(), 2) // orch-1 (collapsed) + orch-2 header
 
 	// Expand again.
 	r.ToggleCollapse()
-	testutil.Equal(t, r.Rows(), 5)
+	testutil.Equal(t, r.Rows(), 3)
 }
 
 func TestRail_SelectionChangedFires(t *testing.T) {
@@ -71,6 +70,53 @@ func TestRail_SelectionChangedFires(t *testing.T) {
 	r.CursorDown()
 	r.CursorDown()
 	testutil.Equal(t, fired, 2)
+}
+
+func TestRail_CoordinatorFoldsIntoHeader(t *testing.T) {
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+
+	// No row is the coordinator role itself — the only child row is the worker.
+	for i := 0; i < r.Rows(); i++ {
+		row := r.rows[i]
+		if row.role != nil {
+			testutil.Equal(t, row.role.Kind == db.HeraKindCoordinator, false)
+		}
+	}
+	// orch-1 expanded shows exactly its worker (no coord child row).
+	testutil.Equal(t, r.Rows(), 3)
+
+	// liveRoleCount excludes the folded coordinator: orch-1 has 1 live worker.
+	testutil.Equal(t, liveRoleCount(&r.model.Active[0]), 1)
+}
+
+func TestRail_OrchHeaderCarriesCoordinatorGlyph(t *testing.T) {
+	// The header status glyph reflects the coordinator's status (working here),
+	// distinct from the unbound/idle fallback.
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(40, 10)
+
+	r := NewRail()
+	r.SetFocused(true)
+	r.SetModel(Model{Active: []OrchView{{ID: 1, Name: "orch", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, HasStatus: true, Status: db.HeraStatusWorking, TaskID: "tc"},
+	}}}})
+	r.SetRect(0, 0, 40, 10)
+	r.Draw(sim)
+
+	// The coordinator's working glyph must appear somewhere on the header row.
+	wantGlyph, _ := statusIcon(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true}, false)
+	found := false
+	for x := 0; x < 40; x++ {
+		primary, _, _, _ := sim.GetContent(x, 1) // row 1 = first content row inside the border
+		if primary == wantGlyph {
+			found = true
+			break
+		}
+	}
+	testutil.Equal(t, found, true)
 }
 
 func TestRail_FreelanceSectionCollapses(t *testing.T) {
@@ -119,8 +165,7 @@ func TestRail_EmptyModel(t *testing.T) {
 func TestRail_CursorRestoredAcrossRebuild(t *testing.T) {
 	r := NewRail()
 	r.SetModel(twoOrchModel())
-	r.CursorDown()
-	r.CursorDown()
+	r.CursorDown() // coord folds into the header, so one step lands on wkr
 	testutil.Equal(t, r.Selected().Name, "wkr")
 
 	// Rebuild with the same model — cursor should stay on role 12 (wkr).

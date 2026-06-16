@@ -13,9 +13,9 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 ## 2. Fold coordinator into the orchestrator header
 
-- [ ] 2.1 `appendOrch` SKIPS the coordinator-kind role when listing children.
-- [ ] 2.2 `drawOrchRow` carries the coordinator's status glyph (the header IS the coordinator).
-- [ ] 2.3 Tests: no `coord` child row renders; header shows the coordinator status glyph.
+- [x] 2.1 `appendOrch` SKIPS the coordinator-kind role when listing children.
+- [x] 2.2 `drawOrchRow` carries the coordinator's status glyph (the header IS the coordinator).
+- [x] 2.3 Tests: no `coord` child row renders; header shows the coordinator status glyph.
 
 ## 3. Nest the rail
 

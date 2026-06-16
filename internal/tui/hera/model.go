@@ -171,11 +171,31 @@ func (s Selection) TaskID() string {
 	return s.Role.TaskID
 }
 
-// IsCoordinator reports whether the selected role is a coordinator. The right
-// region renders the coordinator details summary (not a terminal) for a
-// coordinator selection.
+// FocusTaskID returns the argus task the selection's pane/reattach acts on: the
+// selected role's bound task, or — for a coordinator header with no role row
+// (the folded coordinator) — the orchestrator's coordinator task. "" when
+// neither resolves.
+func (s Selection) FocusTaskID() string {
+	if t := s.TaskID(); t != "" {
+		return t
+	}
+	if s.IsCoordinator() {
+		return s.CoordTaskID()
+	}
+	return ""
+}
+
+// IsCoordinator reports whether the selection represents a coordinator. The
+// right region renders the coordinator details summary (not a terminal) for a
+// coordinator selection. Since the coordinator role is folded into the
+// orchestrator HEADER (no separate child row), a header selection (Role nil,
+// Orch set) IS a coordinator selection; an explicit coordinator-kind role still
+// counts too (defensive — coordinators no longer render as their own rows).
 func (s Selection) IsCoordinator() bool {
-	return s.Role != nil && s.Role.Kind == db.HeraKindCoordinator
+	if s.Role != nil {
+		return s.Role.Kind == db.HeraKindCoordinator
+	}
+	return s.Orch != nil
 }
 
 // CoordTaskID returns the live coordinator task of the selected orchestrator,

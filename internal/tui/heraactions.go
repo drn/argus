@@ -269,7 +269,9 @@ func (a *App) heraDeleteOrchestrator(orchID int64) {
 // page only fires this when the task has no live session, so this is the
 // existing-task restart path (startSession).
 func (a *App) heraReattach(sel hera.Selection) {
-	taskID := sel.TaskID()
+	// FocusTaskID resolves the coordinator task for a header (folded coordinator)
+	// selection, where the selected role is nil.
+	taskID := sel.FocusTaskID()
 	if taskID == "" {
 		return
 	}

@@ -14,14 +14,13 @@ import (
 )
 
 // heraTabCursorOnWorker switches to the Hera tab and moves the cursor onto the
-// worker role (row 2: orch header=0, coord=1, worker=2).
+// worker role. After the coordinator fold the rows are orch header=0 (the
+// coordinator) and worker=1, so a single Down lands on the worker.
 func heraTabCursorOnWorker(t *testing.T, app *App, sim tcell.SimulationScreen) {
 	t.Helper()
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'j', 0) // → coord
-	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'j', 0) // → worker
+	sim.InjectKey(tcell.KeyRune, 'j', 0) // → worker (coord folded into header)
 	syncUI(t, app.tapp)
 }
 
@@ -291,9 +290,9 @@ func TestSmoke_HeraDetailsTreeMode(t *testing.T) {
 	sim, stop := wireApp(t, app)
 	defer stop()
 
+	// The cursor lands on the orch header, which IS the coordinator (folded in),
+	// so no extra navigation is needed to select the coordinator.
 	sim.InjectKey(tcell.KeyRune, '2', 0) // → Hera tab (cursor lands on orch header)
-	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'j', 0) // → coordinator role
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true) })
 

@@ -376,8 +376,11 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	case tcell.KeyEnter:
 		// Enter "enters" the selected role: restart a dead session (reattach)
 		// then move focus into the pane to interact. A live row just advances
-		// focus. An empty selection only advances focus.
-		taskID := sel.TaskID()
+		// focus. An empty selection only advances focus. On a coordinator (the
+		// folded orchestrator header) the selected role is nil, so fall back to
+		// the orchestrator's coordinator task — Enter on a header reattaches the
+		// coordinator session.
+		taskID := sel.FocusTaskID()
 		if taskID != "" && p.OnReattach != nil && (p.resolve == nil || p.resolve(taskID) == nil) {
 			uxlog.Log("[hera-view] reattach key on task=%s (no live session)", taskID)
 			p.OnReattach(sel)

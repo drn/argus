@@ -118,7 +118,7 @@ func TestSmoke_HeraRailCursorNavAndCollapse(t *testing.T) {
 		rowsExpanded = app.heraPage.Rail().Rows()
 		testutil.Equal(t, app.heraPage.Rail().CursorIndex(), 0)
 	})
-	testutil.Equal(t, rowsExpanded, 3) // orch + 2 roles
+	testutil.Equal(t, rowsExpanded, 2) // orch header (coord folded in) + 1 worker
 
 	sim.InjectKey(tcell.KeyRune, 'j', 0) // cursor down to a role
 	syncUI(t, app.tapp)
@@ -227,11 +227,9 @@ func TestSmoke_HeraTabSelectionThreadsThroughRunner(t *testing.T) {
 		}
 	})
 
-	// Navigate: orch header (row 0) → coord role (1) → worker role (2).
-	for i := 0; i < 2; i++ {
-		sim.InjectKey(tcell.KeyRune, 'j', 0)
-		syncUI(t, app.tapp)
-	}
+	// Navigate: orch header (row 0, the folded coordinator) → worker role (1).
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
+	syncUI(t, app.tapp)
 	var sel hera.Selection
 	readUI(t, app.tapp, func() { sel = app.heraPage.SelectionContext() })
 	testutil.Equal(t, sel.TaskID(), "t-worker")

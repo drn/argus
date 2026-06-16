@@ -202,7 +202,10 @@ func (r *Rail) buildRows() {
 	}
 }
 
-// appendOrch emits an orchestrator header and, when expanded, its roles.
+// appendOrch emits an orchestrator header and, when expanded, its NON-coordinator
+// roles. The coordinator-kind role is NOT rendered as its own child row — the
+// orchestrator header IS the coordinator and carries its status glyph (see
+// drawOrchRow). A worker-less orchestrator therefore renders header-only.
 func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
 	r.rows = append(r.rows, railRow{
 		kind:       rrOrch,
@@ -215,6 +218,9 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
 		return
 	}
 	for i := range o.Roles {
+		if o.Roles[i].Kind == db.HeraKindCoordinator {
+			continue // folded into the header
+		}
 		r.rows = append(r.rows, railRow{kind: rrRole, role: &o.Roles[i], depth: depth + 1, dim: dim})
 	}
 }
@@ -444,9 +450,20 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 		nameStyle = theme.StyleSelected
 	}
 	col := x
+	// Coordinator status glyph first (the header IS the coordinator — folded
+	// from a redundant child row). It reads with the same vocabulary as worker
+	// rows; the glyph keeps its own status style even when the row is selected
+	// (the glyph never lies). Worker-less / coordinator-less orchestrators skip it.
+	if coord := o.CoordRole(); coord != nil {
+		glyph, gstyle := statusIcon(coord, row.dim)
+		screen.SetContent(col, y, glyph, nil, gstyle)
+		col += 2
+	}
 	// chevron
-	screen.SetContent(col, y, []rune(chevron(r.collapsed[o.ID]))[0], nil, nameStyle)
-	col += 2
+	if col < x+w {
+		screen.SetContent(col, y, []rune(chevron(r.collapsed[o.ID]))[0], nil, nameStyle)
+		col += 2
+	}
 	// coordinator marker
 	if col < x+w {
 		screen.SetContent(col, y, heraIconCoord, nil, nameStyle)
@@ -495,11 +512,13 @@ func chevron(collapsed bool) string {
 	return "▾"
 }
 
-// liveRoleCount counts roles with a live binding (shown on the orch header).
+// liveRoleCount counts live, non-coordinator roles (the agents shown under the
+// header). The coordinator is folded into the header itself, so it never inflates
+// the (N) child count.
 func liveRoleCount(o *OrchView) int {
 	n := 0
 	for i := range o.Roles {
-		if o.Roles[i].Live {
+		if o.Roles[i].Live && o.Roles[i].Kind != db.HeraKindCoordinator {
 			n++
 		}
 	}
