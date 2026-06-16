@@ -80,6 +80,7 @@ var HelpSections = []HelpSection{
 			{"P", "toggle pin"},
 			{"s / S", "advance / revert status"},
 			{"ctrl+d", "delete role/orchestrator (whole sub-team on a nested row)"},
+			{"J", "adopt freelancer / reparent coordinator"},
 		},
 	},
 	{
