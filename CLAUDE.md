@@ -6,6 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Argus is a terminal-native LLM code orchestrator built with Go + tcell/tview. It manages multiple Claude Code / Codex sessions with task tracking, git worktree isolation, and keyboard-driven workflow.
 
+## Spec-Driven Development (OpenSpec)
+
+**Route every spec-worthy change through the OpenSpec workflow in `openspec/`.** Any behavioral change — new features, changed behavior, new endpoints/keybindings/MCP tools, altered invariants — gets a change folder *before* you write code:
+
+1. Create `openspec/changes/<name>/` with a `proposal.md`, delta specs under `specs/<capability>/spec.md`, and a `tasks.md`.
+2. Get the change approved before implementing.
+3. Implement against the tasks, keeping deltas in sync as requirements shift.
+4. `openspec archive <name>` once shipped — this merges the deltas into the base specs under `openspec/specs/<capability>/`.
+
+Skip the change folder only for genuinely non-behavioral work: docs, comments, formatting, test-only edits, and mechanical refactors that don't alter behavior. When unsure, write the change.
+
+**These specs are LOCAL DOCS only** (see `openspec/project.md`) — nothing in CI, the Makefile, or the Go build reads them, and that stays true. Never wire `openspec validate` (or any spec tooling) into Go CI or a `make` target. The quality gate is and stays `make pre-pr`.
+
 ## Build & Run
 
 ```bash
