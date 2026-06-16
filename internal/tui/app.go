@@ -2035,6 +2035,15 @@ func (a *App) readManagedTasks() map[string]bool {
 	// Remote fallback: union worker + coordinator meta maps.
 	uxlog.Log("[tui] readManagedTasks: remote mode, falling back to task_meta union")
 	workers, coordinators := a.readHeraRoles()
+	return mergeManagedFromMeta(workers, coordinators)
+}
+
+// mergeManagedFromMeta builds the managed-task set from the worker and
+// coordinator maps returned by readHeraRoles(). It is the pure union of both
+// maps and is the sole logic path for the remote fallback in readManagedTasks.
+// Extracted so it can be unit-tested without wiring a full App or a remote
+// store.
+func mergeManagedFromMeta(workers, coordinators map[string]bool) map[string]bool {
 	if len(workers) == 0 && len(coordinators) == 0 {
 		return nil
 	}

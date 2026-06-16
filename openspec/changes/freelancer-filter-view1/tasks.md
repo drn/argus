@@ -46,4 +46,4 @@ TDD throughout (Red → Green → Refactor). Use `internal/testutil` assertions.
 ## 8. Gate + review
 
 - [x] 8.1 `make fmt` then `make pre-pr` — green before reporting (stdlib-only `vuln` findings non-blocking).
-- [ ] 8.2 `/ralph-review` (impl vs this change's deltas) and `/spec-audit` on the branch; auto-fix confident issues, park questions.
+- [x] 8.2 `/ralph-review` (impl vs this change's deltas) and `/spec-audit` on the branch; auto-fix confident issues, park questions.
