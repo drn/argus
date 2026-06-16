@@ -23,9 +23,7 @@ func (d *DB) createTables() error {
 			archived    INTEGER NOT NULL DEFAULT 0,
 			pinned      INTEGER NOT NULL DEFAULT 0,
 			base_branch TEXT NOT NULL DEFAULT '',
-			depends_on  TEXT NOT NULL DEFAULT '',
 			result      TEXT NOT NULL DEFAULT '',
-			plan_slug   TEXT NOT NULL DEFAULT '',
 			created_at  TEXT NOT NULL,
 			started_at  TEXT NOT NULL DEFAULT '',
 			ended_at    TEXT NOT NULL DEFAULT ''
@@ -78,22 +76,12 @@ func (d *DB) createTables() error {
 	// Add sandboxed column to existing tasks tables.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN sandboxed INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 
-	// Orchestration columns for stacked-PR / DAG workflows: base_branch
-	// records the start point so the worktree's history can be inspected
-	// without re-deriving it; depends_on holds a JSON array of task IDs that
-	// must reach status=complete before this task's session is started; result
-	// holds an opaque JSON blob the agent writes via task_set_result for the
-	// orchestrator to read. All three are idempotent ADDs.
+	// Orchestration columns: base_branch records the worktree's start point so
+	// its history can be inspected without re-deriving it (stacked-PR workflows);
+	// result holds an opaque JSON blob the agent writes via task_set_result for a
+	// coordinator to read. Both are idempotent ADDs.
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN base_branch TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN depends_on  TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN result      TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
-
-	// plan_slug groups tasks belonging to the same orchestrator stack. Like
-	// result, it's opaque to the daemon: the orchestrator sets it on every
-	// sub-task it creates, and the DAG view uses it as a filter so multiple
-	// stacks within a project render as separate graphs rather than one big
-	// disconnected blob.
-	d.conn.Exec(`ALTER TABLE tasks ADD COLUMN plan_slug TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
 
 	// Index for FindByNameProject (task_create idempotency check inside
 	// createMu). The query filters by all three columns; SQLite uses a
@@ -111,6 +99,12 @@ func (d *DB) createTables() error {
 	d.conn.Exec(`ALTER TABLE tasks DROP COLUMN pr_url`)                  //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE tasks DROP COLUMN waiting_review`)          //nolint:errcheck
 	d.conn.Exec(`DELETE FROM config WHERE key='defaults.review_prompt'`) //nolint:errcheck
+
+	// Retired with the legacy depends_on DAG (Hera orchestration replaced it):
+	// drop the two columns from existing databases. Idempotent and safe on fresh
+	// DBs (the columns were never created there).
+	d.conn.Exec(`ALTER TABLE tasks DROP COLUMN depends_on`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE tasks DROP COLUMN plan_slug`)  //nolint:errcheck
 
 	// Add resume_command column to existing backends tables.
 	d.conn.Exec(`ALTER TABLE backends ADD COLUMN resume_command TEXT NOT NULL DEFAULT ''`) //nolint:errcheck

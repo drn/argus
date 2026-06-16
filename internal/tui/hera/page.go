@@ -14,14 +14,6 @@ import (
 // Hera's RailWidth ballpark, trimmed for Argus chrome).
 const heraRailWidth = 34
 
-// DAGNodeProvider returns the dagview nodes scoped to the given orchestrator's
-// live-bound tasks, projected through Argus's `dagNodesFromTasks` (archived-drop
-// + orphan-filter). The App wires it (it owns db.Tasks() + the shared
-// projection); remote mode never sets it, so the DAG render mode shows an empty
-// graph there. Keeping the projection in the App avoids forking dagNodesFromTasks
-// into the hera package (web/TUI parity) and a Tasks() seam onto HeraReader.
-type DAGNodeProvider func(orch *OrchView) []dagview.Node
-
 // HeraPage is the top-level Hera-view page added to the App's Pages. It lays
 // out the three Hera regions — rail | coordinator (HERA) pane | agent/details
 // pane. 6b makes the two right regions REAL: the middle pane and the agent pane
@@ -55,12 +47,12 @@ type HeraPage struct {
 	resolve   SessionResolver        // runner seam; nil in remote mode
 	prMeta    map[string]map[string]string
 
-	// M7 DAG render mode of the Details region (coordinator selection only).
-	// When a coordinator is selected the Details region stacks the read-only
-	// roster (top) over this embedded dependency graph (bottom) — both render
-	// at once, no toggle.
-	dag         *dagview.Widget // embedded dependency graph; reused from the legacy DAG tab
-	dagProvider DAGNodeProvider // scoped-node projection seam (nil in remote mode)
+	// DAG render mode of the Details region (coordinator selection only). When a
+	// coordinator is selected the Details region stacks the read-only roster
+	// (top) over this embedded orchestration-tree graph (bottom) — both render at
+	// once, no toggle. Nodes are projected in-process from the rail's model by
+	// heraTreeNodes (the role hierarchy), so there is no provider seam.
+	dag *dagview.Widget // embedded orchestration-tree graph
 
 	// Selection + per-pane bound task (so SetSession only fires on change).
 	sel         Selection
@@ -103,9 +95,9 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		dag:       dagview.New(),
 	}
 	p.coordPane.SetBorderTitle(" Coordinator ")
-	// Retitle the embedded DAG so it reads as the coordinator's dependency graph,
-	// not a second top-level " DAG " tab (gotchas/dag-rendering.md).
-	p.dag.SetTitle(" Dependencies ")
+	// Retitle the embedded graph so it reads as the orchestration tree, not a
+	// second top-level " DAG " tab (gotchas/hera-view.md).
+	p.dag.SetTitle(" Orchestration Tree ")
 	p.rail.SetFocused(true)
 	// Rebind the panes whenever the rail cursor lands on a different role.
 	p.rail.SetOnSelectionChanged(p.applySelection)
@@ -124,17 +116,11 @@ func (p *HeraPage) Reconcile() { p.reconcileSessions() }
 func (p *HeraPage) CoordPane() *terminal.TerminalPane { return p.coordPane }
 func (p *HeraPage) AgentPane() *terminal.TerminalPane { return p.agentPane }
 
-// DAG exposes the embedded DAG widget so the App can wire its callbacks
-// (OnEnter/OnLink/OnUnlink/OnHalt/OnBranchChange) exactly as it wires the legacy
-// DAG tab's widget — the link/unlink/halt handlers are shared between the two
-// surfaces. The page owns the widget's rect, focus, and node set; the App owns
-// what its callbacks do.
+// DAG exposes the embedded orchestration-tree widget so the App can wire its
+// OnEnter (jump to a node's agent view) and OnBranchChange (log-only forceRedraw)
+// callbacks. The page owns the widget's rect, focus, and node set (projected by
+// heraTreeNodes from the rail model); the App owns what OnEnter does.
 func (p *HeraPage) DAG() *dagview.Widget { return p.dag }
-
-// SetDAGNodeProvider wires the orchestrator-scoped node projection. Called once
-// by the App in local mode; left nil in remote mode (the DAG render mode then
-// shows an empty graph).
-func (p *HeraPage) SetDAGNodeProvider(fn DAGNodeProvider) { p.dagProvider = fn }
 
 // Rail exposes the inner rail (test seam + 6b wiring).
 func (p *HeraPage) Rail() *Rail { return p.rail }
@@ -358,18 +344,19 @@ func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.P
 	p.dag.InputHandler()(event, setFocus)
 }
 
-// rebuildDAG reprojects the selected orchestrator's dependency subgraph into the
-// embedded widget. A nil provider (remote mode) or no orchestrator selection
-// yields an empty graph. MUST run on the tview main thread (SetNodes recomputes
-// layout but touches no I/O).
+// rebuildDAG reprojects the selected orchestrator's orchestration SUBTREE (the
+// role hierarchy — coordinator → workers → sub-coordinators → their workers)
+// into the embedded widget. No orchestrator selection yields an empty graph.
+// MUST run on the tview main thread (heraTreeNodes is a pure read over the
+// rail's already-built model; SetNodes recomputes layout but touches no I/O).
 func (p *HeraPage) rebuildDAG() {
-	if p.dagProvider == nil || p.sel.Orch == nil {
+	if p.sel.Orch == nil {
 		p.dag.SetNodes(nil)
 		return
 	}
-	nodes := p.dagProvider(p.sel.Orch)
+	nodes := heraTreeNodes(p.rail.Model(), p.sel.Orch)
 	p.dag.SetNodes(nodes)
-	uxlog.Log("[hera-view] DAG render mode: orch=%s nodes=%d", p.sel.Orch.Name, len(nodes))
+	uxlog.Log("[hera-view] tree render: orch=%s nodes=%d", p.sel.Orch.Name, len(nodes))
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation

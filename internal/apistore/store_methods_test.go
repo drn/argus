@@ -320,60 +320,6 @@ func TestStore_SetArchived(t *testing.T) {
 	testutil.Equal(t, atomic.LoadInt32(&unarcHits), int32(1))
 }
 
-func TestStore_SetPlanSlug(t *testing.T) {
-	var captured string
-	s, _ := newStore(t, func(mux *http.ServeMux) {
-		mux.HandleFunc("/api/tasks/t1/plan-slug", func(w http.ResponseWriter, r *http.Request) {
-			body, _ := readAll(r)
-			captured = body
-			w.WriteHeader(http.StatusOK)
-		})
-	})
-	testutil.NoError(t, s.SetPlanSlug("t1", "feature-x"))
-	testutil.Contains(t, captured, "feature-x")
-}
-
-func TestStore_SetDependsOn_DiffsCurrentVsTarget(t *testing.T) {
-	var linkCalls, unlinkCalls []string
-	s, _ := newStore(t, func(mux *http.ServeMux) {
-		mux.HandleFunc("/api/tasks/child/deps", func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case "GET":
-				_, _ = w.Write([]byte(`{"parents":[{"id":"p1"},{"id":"p2"}]}`))
-			case "POST":
-				body, _ := readAll(r)
-				linkCalls = append(linkCalls, body)
-				w.WriteHeader(http.StatusOK)
-			}
-		})
-		mux.HandleFunc("/api/tasks/child/deps/p1", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "DELETE" {
-				unlinkCalls = append(unlinkCalls, "p1")
-				w.WriteHeader(http.StatusOK)
-			}
-		})
-		mux.HandleFunc("/api/tasks/child/deps/p2", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "DELETE" {
-				unlinkCalls = append(unlinkCalls, "p2")
-				w.WriteHeader(http.StatusOK)
-			}
-		})
-		mux.HandleFunc("/api/tasks/child/deps/p3", func(w http.ResponseWriter, r *http.Request) {})
-	})
-
-	// Target: keep p1, drop p2, add p3.
-	testutil.NoError(t, s.SetDependsOn("child", []string{"p1", "p3"}))
-
-	// p3 added (POST), p2 removed (DELETE), p1 untouched.
-	if len(linkCalls) != 1 {
-		t.Fatalf("expected 1 link call (p3), got %d", len(linkCalls))
-	}
-	testutil.Contains(t, linkCalls[0], "p3")
-	if len(unlinkCalls) != 1 || unlinkCalls[0] != "p2" {
-		t.Fatalf("expected unlink p2, got %v", unlinkCalls)
-	}
-}
-
 func TestStore_DeleteMessagesForTask_ReturnsError(t *testing.T) {
 	s, _ := newStore(t, func(mux *http.ServeMux) {})
 	n, err := s.DeleteMessagesForTask("t1")

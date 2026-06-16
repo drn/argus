@@ -32,7 +32,6 @@ import (
 	"github.com/drn/argus/internal/macapps"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/scheduler"
-	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/gitpanel"
 	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/keyenc"
@@ -75,7 +74,6 @@ const (
 	modePluginView
 	modeHeraInput   // Hera-view rename / spawn-prompt input modal
 	modeHeraConfirm // Hera-view archive-of-live / delete confirmation modal
-	modeHeraPicker  // Hera-view DAG link/unlink parent picker (task list modal)
 )
 
 // agentFocus tracks which panel has focus in the agent view.
@@ -112,15 +110,10 @@ type App struct {
 	settings     *SettingsView
 	settingsPage *SettingsPage
 
-	// DAG tab (created at construction; populated by refreshDAG on tab
-	// entry and after a halt cascade — the tick loop does NOT refresh it).
-	dagWidget *dagview.Widget
-	dagPage   *DAGPage
-
 	// Hera tab (created at construction; rail rebuilt by refreshHera on tab
-	// entry and on the tick while the Hera tab is active). The legacy dagPage
-	// stays registered for the M8 disabled-fallback route. heraPage may render
-	// a remote-mode "unavailable" banner when a.db is not a local *db.DB.
+	// entry and on the tick while the Hera tab is active). The second tab is
+	// always the native Hera view. heraPage may render a remote-mode
+	// "unavailable" banner when a.db is not a local *db.DB.
 	heraPage *hera.HeraPage
 
 	// Hera-view mutation layer (M6c) + its modal state. heraOps is nil in
@@ -133,12 +126,6 @@ type App struct {
 	heraConfirmModal *modal.ConfirmModal
 	heraInputSubmit  func(string) // called with the field value on input-modal submit
 	heraConfirmDo    func()       // called on confirm-modal accept
-
-	// Hera-view DAG link/unlink parent picker (M7). The modal is a reused
-	// TaskSwitcherModal retitled for the link/unlink flow; heraPickerSubmit
-	// captures the child task so the chosen parent ID routes to orch.Link/Unlink.
-	heraPickerModal  *TaskSwitcherModal
-	heraPickerSubmit func(parentID string)
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
@@ -452,15 +439,10 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	app.settings.OnRunSchedule = func(id string) { app.runScheduleNow(id) }
 	app.settings.OnBranchChange = func() { app.forceRedraw("settings branch changed") }
 	app.settings.OnHeraToggle = func(enabled bool) {
-		// Update the tab label immediately, even when not on the Hera tab.
-		app.header.SetTabLabel(widget.TabHera, heraTab2Label(enabled))
-		// If the user toggled while on the Hera tab (e.g. via a future global
-		// keybinding), re-route the second tab without switching away from it.
-		if app.header.ActiveTab() == widget.TabHera {
-			app.tapp.QueueUpdateDraw(func() {
-				app.switchToHeraTab2()
-			})
-		}
+		// The second tab is always the native Hera view now, so the toggle no
+		// longer relabels or re-routes it; it only flips cfg.Hera.Enabled, which
+		// gates daemon-side behaviour (MCP native-vs-plugin tools, the auto-adopt
+		// watcher) on the next daemon start.
 		uxlog.Log("[hera-view] hera.enabled toggled to %v", enabled)
 	}
 	app.settings.OnStreamFocus = app.openStreamSection
@@ -472,10 +454,6 @@ func New(database store.Store, runner agent.SessionProvider, daemonConnected boo
 	widget.SetActiveSpinner(cfg.UI.SpinnerStyle)
 
 	app.buildUI()
-	// Set the initial second-tab label based on the current hera.enabled setting.
-	// buildUI() creates the header with the default "Hera" label; override to
-	// "DAG" here when hera is disabled so the label is correct before the first Draw.
-	app.header.SetTabLabel(widget.TabHera, heraTab2Label(cfg.Hera.Enabled))
 	app.refreshTasks()
 
 	return app
@@ -608,16 +586,6 @@ func (a *App) buildUI() {
 		AddItem(a.agentHeader, 1, 0, false).
 		AddItem(a.agentPanels, 0, 1, true)
 
-	// DAG view — owned by the App so the tick loop can refresh node snapshots
-	// and key handlers can dispatch link/unlink/halt back into the daemon.
-	a.dagWidget = dagview.New()
-	a.dagWidget.OnBranchChange = func() { a.forceRedraw("dag branch changed") }
-	a.dagWidget.OnEnter = func(id string) { a.openAgentForTask(id) }
-	a.dagWidget.OnLink = func(child string) { a.openLinkPickerForTask(child) }
-	a.dagWidget.OnUnlink = func(child string) { a.openUnlinkPickerForTask(child) }
-	a.dagWidget.OnHalt = func(id string) { a.confirmHaltDownstream(id) }
-	a.dagPage = NewDAGPage(a.dagWidget)
-
 	// Native Hera view (M6a). The rail reads the local *db.DB hera store; in
 	// --remote mode (a.db is *apistore.Store, which has no hera methods) the
 	// reader is nil and the page renders an "unavailable" banner — it never
@@ -671,30 +639,16 @@ func (a *App) buildUI() {
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
 
-		// M7: DAG render mode of the Details pane. The dependency-action callbacks
-		// are shared with the legacy DAG tab (openLinkPickerForTask etc.); the node
-		// provider scopes the graph to the selected orchestrator's live-bound tasks
-		// and reuses dagNodesFromTasks (no layout fork — web/TUI parity holds).
+		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
+		// a node's agent view) is wired — the legacy link/unlink/halt actions are
+		// gone with depends_on. The node set is projected in-process by the hera
+		// package (heraTreeNodes over the rail model), so there is no provider seam.
 		a.heraPage.DAG().OnEnter = func(id string) { a.openAgentForTask(id) }
-		a.heraPage.DAG().OnLink = func(child string) { a.openLinkPickerForTask(child) }
-		a.heraPage.DAG().OnUnlink = func(child string) { a.openUnlinkPickerForTask(child) }
-		a.heraPage.DAG().OnHalt = func(id string) { a.confirmHaltDownstream(id) }
-		a.heraPage.SetDAGNodeProvider(func(o *hera.OrchView) []dagview.Node {
-			tasks, err := a.db.Tasks()
-			if err != nil {
-				uxlog.Log("[hera-view] DAG provider: db.Tasks failed: %v", err)
-				return nil
-			}
-			return dagNodesFromTasks(scopeTasksToOrch(tasks, o))
-		})
 	}
 
 	a.pages = tview.NewPages().
 		AddPage("tasks", a.taskPage, true, true).
 		AddPage("agent", a.agentPage, true, false).
-		// "dag" stays registered for the M8 disabled-fallback route; 6a always
-		// routes the second tab to "hera".
-		AddPage("dag", a.dagPage, true, false).
 		AddPage("hera", a.heraPage, true, false).
 		AddPage("settings", a.settingsPage, true, false)
 	a.loadPluginViews()
@@ -2213,12 +2167,6 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Hera-view DAG link/unlink parent picker — delegate to the modal.
-	if a.mode == modeHeraPicker && a.heraPickerModal != nil {
-		a.handleHeraPickerKey(event)
-		return nil
-	}
-
 	switch event.Key() {
 	case tcell.KeyCtrlC:
 		if a.mode == modeAgent {
@@ -2874,9 +2822,6 @@ func (a *App) switchTab(t widget.Tab) {
 	a.header.SetTab(t)
 	a.statusbar.SetTab(t)
 
-	// The legacy DAG widget renders only when Hera is disabled; keep its
-	// border in the unfocused palette until we explicitly re-focus it below.
-	a.dagWidget.SetFocused(false)
 	switch t {
 	case widget.TabTasks:
 		if a.mode == modeAgent {
@@ -2900,48 +2845,23 @@ func (a *App) switchTab(t widget.Tab) {
 	}
 }
 
-// heraTab2Label returns the display label for the second tab based on the
-// current hera.enabled setting.
-func heraTab2Label(enabled bool) string {
-	if enabled {
-		return "Hera"
-	}
-	return "DAG"
-}
-
-// switchToHeraTab2 routes the second tab slot to "hera" or "dag" depending on
-// cfg.Hera.Enabled, updates the tab label, and refreshes the visible content.
-// Called both from switchTab and from the settings OnHeraToggle live re-route.
-// Must run on the tview main goroutine.
+// switchToHeraTab2 routes the second tab slot to the native Hera view, updates
+// the tab label, and refreshes the rail. Called from switchTab. Must run on the
+// tview main goroutine.
 func (a *App) switchToHeraTab2() {
-	cfg := a.db.Config()
-	a.header.SetTabLabel(widget.TabHera, heraTab2Label(cfg.Hera.Enabled))
-	if cfg.Hera.Enabled {
-		a.heraPage.Refresh()
-		a.pages.SwitchToPage("hera")
-		a.tapp.SetFocus(a.heraPage)
-		uxlog.Log("[hera-view] tab 2 routed to hera (enabled)")
-	} else {
-		a.dagWidget.SetFocused(true)
-		go a.refreshDAG()
-		a.pages.SwitchToPage("dag")
-		a.tapp.SetFocus(a.dagPage)
-		uxlog.Log("[hera-view] tab 2 routed to dag (hera disabled)")
-	}
+	a.header.SetTabLabel(widget.TabHera, "Hera")
+	a.heraPage.Refresh()
+	a.pages.SwitchToPage("hera")
+	a.tapp.SetFocus(a.heraPage)
+	uxlog.Log("[hera-view] tab 2 routed to hera")
 }
 
-// focusHeraTab2Page switches to the correct second-tab page (hera or dag)
-// without triggering a refresh. Used by modal-close paths that need to restore
-// the page after closing a modal while on the Hera tab.
+// focusHeraTab2Page switches to the Hera page without triggering a refresh.
+// Used by modal-close paths that need to restore the page after closing a
+// modal while on the Hera tab.
 func (a *App) focusHeraTab2Page() {
-	cfg := a.db.Config()
-	if cfg.Hera.Enabled {
-		a.pages.SwitchToPage("hera")
-		a.tapp.SetFocus(a.heraPage)
-	} else {
-		a.pages.SwitchToPage("dag")
-		a.tapp.SetFocus(a.dagPage)
-	}
+	a.pages.SwitchToPage("hera")
+	a.tapp.SetFocus(a.heraPage)
 }
 
 // forceRedraw logs the named transition. It does NOT trigger a tcell Sync
@@ -4229,8 +4149,8 @@ func (a *App) closeHelp() {
 	case widget.TabSettings:
 		a.tapp.SetFocus(a.settings)
 	case widget.TabHera:
-		// The second tab may show "hera" or "dag" depending on cfg.Hera.Enabled;
-		// focusHeraTab2Page routes to the correct one without a content refresh.
+		// The second tab is always the native Hera view; focusHeraTab2Page
+		// restores it without a content refresh.
 		a.focusHeraTab2Page()
 	default:
 		a.tapp.SetFocus(a.tasklist)

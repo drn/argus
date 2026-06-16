@@ -6,20 +6,9 @@ import (
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
-	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
-
-// dagProviderByOrchName is a test DAGNodeProvider returning a single node whose
-// ID is the orchestrator's name, so a test can assert which orchestrator the
-// embedded DAG was (re)projected for via dag.CurrentTask().
-func dagProviderByOrchName(o *OrchView) []dagview.Node {
-	if o == nil {
-		return nil
-	}
-	return []dagview.Node{{ID: o.Name, Name: o.Name, Status: "in_progress"}}
-}
 
 // drawnPageText renders the whole page to a fresh sim screen and returns its
 // full text (all rows joined by newlines), so a test can find a centered border
@@ -47,10 +36,11 @@ func drawnPageText(t *testing.T, p *HeraPage, w, h int) string {
 	return b.String()
 }
 
-// dagPageWithProvider seeds an orch (coord+worker), wires a live resolver + the
-// node provider, draws once so the focus machine learns both right regions are
-// present, then returns the page.
-func dagPageWithProvider(t *testing.T, prov DAGNodeProvider) *HeraPage {
+// dagPage seeds an orch (coord t-coord + worker t-wkr), wires a live resolver,
+// draws once so the focus machine learns both right regions are present, then
+// returns the page. The embedded tree projects from the rail model via
+// heraTreeNodes (no provider seam).
+func dagPage(t *testing.T) *HeraPage {
 	t.Helper()
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
@@ -61,9 +51,6 @@ func dagPageWithProvider(t *testing.T, prov DAGNodeProvider) *HeraPage {
 		"t-coord": {id: "t-coord", alive: true},
 		"t-wkr":   {id: "t-wkr", alive: true},
 	}))
-	if prov != nil {
-		p.SetDAGNodeProvider(prov)
-	}
 	p.Refresh()
 
 	sim := tcell.NewSimulationScreen("UTF-8")
@@ -83,12 +70,31 @@ func toAgentFocus(p *HeraPage) {
 }
 
 // TestDetailsDAG_ProjectedOnCoordSelect: selecting a coordinator immediately
-// projects the provider's nodes into the embedded DAG — no toggle needed.
+// projects the orchestration tree into the embedded DAG — the coordinator's
+// task is the root node, so the cursor lands on it (layer 0).
 func TestDetailsDAG_ProjectedOnCoordSelect(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 	testutil.Equal(t, p.detailsMode, true)
-	testutil.Equal(t, p.DAG().CurrentTask(), "orch") // provider keyed nodes by orch name
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-coord") // coordinator is the tree root
+}
+
+// TestDetailsDAG_WorkerHangsOffCoordinator: the worker node carries a synthetic
+// edge to the coordinator, so the graph has both nodes and the worker depends on
+// the coord.
+func TestDetailsDAG_WorkerHangsOffCoordinator(t *testing.T) {
+	p := dagPage(t)
+	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	nodes := heraTreeNodes(p.Rail().Model(), p.SelectionContext().Orch)
+	testutil.Equal(t, len(nodes), 2)
+	for _, n := range nodes {
+		if n.ID == "t-wkr" {
+			testutil.DeepEqual(t, n.DependsOn, []string{"t-coord"})
+		}
+		if n.ID == "t-coord" {
+			testutil.Equal(t, len(n.DependsOn), 0) // root has no parent
+		}
+	}
 }
 
 // TestDetailsDAG_RebuildOnCoordChange: selecting a different coordinator
@@ -101,12 +107,11 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 	seedBoundRole(t, d, b, "coord", db.HeraKindCoordinator, "t-b")
 	p := NewHeraPage(d)
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-a": {id: "t-a", alive: true}, "t-b": {id: "t-b", alive: true}}))
-	p.SetDAGNodeProvider(dagProviderByOrchName)
 	p.Refresh()
 
 	// Land on orch-a's coordinator; the DAG projects for orch-a.
 	testutil.Equal(t, selectRoleByName(p, "coord"), true) // first "coord" is orch-a's
-	testutil.Equal(t, p.DAG().CurrentTask(), "orch-a")
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-a")
 
 	// Navigate to orch-b's coordinator; applySelection reprojects.
 	r := p.Rail()
@@ -117,53 +122,45 @@ func TestDetailsDAG_RebuildOnCoordChange(t *testing.T) {
 		}
 	}
 	testutil.Equal(t, p.SelectionContext().Orch.ID, b)
-	testutil.Equal(t, p.DAG().CurrentTask(), "orch-b")
-}
-
-// TestDetailsDAG_NilProviderEmpty: with no provider (remote-style), a coordinator
-// selection yields an empty graph (no panic, no cursor).
-func TestDetailsDAG_NilProviderEmpty(t *testing.T) {
-	p := dagPageWithProvider(t, nil) // provider intentionally unset
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	testutil.Equal(t, p.DAG().CurrentTask(), "")
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-b")
 }
 
 // TestDetailsDAG_DrawStacksBothPanels: with a coordinator selected the right
-// region stacks the " Details " roster over the " Dependencies " DAG — both
-// titles render at once; the legacy " DAG " title never appears.
+// region stacks the " Details " roster over the " Orchestration Tree " graph —
+// both titles render at once; the legacy " DAG " title never appears.
 func TestDetailsDAG_DrawStacksBothPanels(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 
 	text := drawnPageText(t, p, 120, 30)
 	di := strings.Index(text, "Details")
-	pi := strings.Index(text, "Dependencies")
+	pi := strings.Index(text, "Orchestration Tree")
 	testutil.Equal(t, di >= 0, true)
 	testutil.Equal(t, pi >= 0, true)
-	testutil.Equal(t, di < pi, true) // roster stacked ABOVE the DAG, not below
+	testutil.Equal(t, di < pi, true) // roster stacked ABOVE the tree, not below
 	testutil.Equal(t, strings.Contains(text, " DAG "), false)
 }
 
 // TestDetailsDAG_TinyPaneRosterOnly: on a pane too short to fit both panels the
-// roster still renders, the DAG is skipped, and its rect is zeroed so a stale
+// roster still renders, the tree is skipped, and its rect is zeroed so a stale
 // rect from a prior taller frame can't catch a mouse event over the roster.
 func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 
-	// Draw tall first so the DAG gets a real rect, then redraw very short.
+	// Draw tall first so the tree gets a real rect, then redraw very short.
 	drawnPageText(t, p, 120, 30)
 	_, _, dw, dh := p.DAG().GetRect()
 	testutil.Equal(t, dw > 0 && dh > 0, true) // armed by the tall frame
 
-	// h=4 → rosterH clamps to 3, dagH=1 (<2) → DAG skipped, rect zeroed.
+	// h=4 → rosterH clamps to 3, dagH=1 (<2) → tree skipped, rect zeroed.
 	text := drawnPageText(t, p, 120, 4)
 	testutil.Equal(t, strings.Contains(text, "Details"), true)
-	testutil.Equal(t, strings.Contains(text, "Dependencies"), false)
+	testutil.Equal(t, strings.Contains(text, "Orchestration Tree"), false)
 	_, _, zw, zh := p.DAG().GetRect()
 	testutil.Equal(t, zw == 0 && zh == 0, true) // stale rect cleared
 
-	// A click over the (now DAG-less) agent region must not be consumed by the
+	// A click over the (now tree-less) agent region must not be consumed by the
 	// zeroed DAG rect.
 	mh := p.MouseHandler()
 	ev := tcell.NewEventMouse(110, 1, tcell.Button1, tcell.ModNone)
@@ -178,45 +175,38 @@ func TestDetailsDAG_TinyPaneRosterOnly(t *testing.T) {
 }
 
 // TestDetailsDAG_WorkerSelectionUnaffected: a worker selection shows its AGENT
-// terminal (detailsMode false → no stacked Details/DAG region).
+// terminal (detailsMode false → no stacked Details/tree region).
 func TestDetailsDAG_WorkerSelectionUnaffected(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 	testutil.Equal(t, p.detailsMode, true)
 
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 	testutil.Equal(t, p.detailsMode, false)
-	// Worker terminal is bound; the Dependencies panel is not drawn.
+	// Worker terminal is bound; the tree panel is not drawn.
 	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
-	testutil.Equal(t, strings.Contains(drawnPageText(t, p, 120, 30), "Dependencies"), false)
+	testutil.Equal(t, strings.Contains(drawnPageText(t, p, 120, 30), "Orchestration Tree"), false)
 }
 
-// TestDetailsDAG_KeyForwardsToWidget: with a coordinator selected, l/L/h forward
-// to the embedded DAG (the interactive surface of the stacked region) and fire
-// its callbacks with the cursor task.
+// TestDetailsDAG_KeyForwardsToWidget: with a coordinator selected, j/k forward
+// to the embedded tree widget (the interactive surface of the stacked region)
+// and move its cursor between nodes.
 func TestDetailsDAG_KeyForwardsToWidget(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
-	var linked, unlinked, halted string
-	p.DAG().OnLink = func(c string) { linked = c }
-	p.DAG().OnUnlink = func(c string) { unlinked = c }
-	p.DAG().OnHalt = func(c string) { halted = c }
-
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 	toAgentFocus(p)
-	testutil.Equal(t, p.DAG().CurrentTask(), "orch")
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-coord")
 
 	h := p.InputHandler()
-	h(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'L', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone), noFocus)
-	testutil.Equal(t, linked, "orch")
-	testutil.Equal(t, unlinked, "orch")
-	testutil.Equal(t, halted, "orch")
+	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-wkr") // moved down to the worker
+	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-coord")
 }
 
 // TestDetailsDAG_NoSyncOnDraw pins the UX-rendering rule for the stacked region.
 func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
 
 	base := tcell.NewSimulationScreen("UTF-8")
@@ -230,11 +220,11 @@ func TestDetailsDAG_NoSyncOnDraw(t *testing.T) {
 }
 
 // TestDetailsDAG_MouseRoutesToWidget: a click in the agent region (within the
-// DAG sub-rect) is handled by the embedded widget (no panic; consumed path).
+// tree sub-rect) is handled by the embedded widget (no panic; consumed path).
 func TestDetailsDAG_MouseRoutesToWidget(t *testing.T) {
-	p := dagPageWithProvider(t, dagProviderByOrchName)
+	p := dagPage(t)
 	testutil.Equal(t, selectRoleByName(p, "coord"), true)
-	// Click low in the right region — inside the DAG (bottom of the stack).
+	// Click low in the right region — inside the tree (bottom of the stack).
 	mh := p.MouseHandler()
 	ev := tcell.NewEventMouse(110, 20, tcell.Button1, tcell.ModNone)
 	mh(tview.MouseLeftClick, ev, noFocus)

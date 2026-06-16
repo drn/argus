@@ -2,7 +2,6 @@ package apiclient
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/drn/argus/internal/model"
 )
@@ -148,74 +147,6 @@ func (c *Client) ForkTask(ctx context.Context, srcID string, req ForkReq) (*Crea
 		return nil, err
 	}
 	return &resp, nil
-}
-
-// SetPlanSlug stamps a task with the orchestrator grouping label. Empty
-// string clears it.
-func (c *Client) SetPlanSlug(ctx context.Context, id, slug string) error {
-	return c.doJSON(ctx, "POST", "/api/tasks/"+id+"/plan-slug", map[string]string{"plan_slug": slug}, nil)
-}
-
-// LinkTask attaches a parent task to a child via depends_on. Returns
-// *Error{Status: 409} when the link would create a cycle.
-func (c *Client) LinkTask(ctx context.Context, childID, parentID string) error {
-	return c.doJSON(ctx, "POST", "/api/tasks/"+childID+"/deps", map[string]string{"parent_id": parentID}, nil)
-}
-
-// UnlinkTask removes a parent from a child's depends_on.
-func (c *Client) UnlinkTask(ctx context.Context, childID, parentID string) error {
-	return c.doJSON(ctx, "DELETE", fmt.Sprintf("/api/tasks/%s/deps/%s", childID, parentID), nil, nil)
-}
-
-// GetDeps returns the one-hop upstream + downstream view for a task.
-// Returned shape is opaque map — the TUI only renders it through the
-// existing orch package via /api/dag, so a thin map is enough.
-func (c *Client) GetDeps(ctx context.Context, id string) (map[string]any, error) {
-	out := make(map[string]any)
-	if err := c.doJSON(ctx, "GET", "/api/tasks/"+id+"/deps", nil, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// HaltDownstreamReport is the per-row summary returned by halt-downstream.
-type HaltDownstreamReport struct {
-	Halted   int      `json:"halted"`
-	Stopped  int      `json:"stopped"`
-	Archived int      `json:"archived"`
-	IDs      []string `json:"ids,omitempty"`
-}
-
-// HaltDownstream cascades stop/archive through a task's descendants.
-func (c *Client) HaltDownstream(ctx context.Context, id string) (*HaltDownstreamReport, error) {
-	var resp HaltDownstreamReport
-	if err := c.doJSON(ctx, "POST", "/api/tasks/"+id+"/halt-downstream", nil, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// DAGFilter mirrors orch.DAGFilter query params.
-type DAGFilter struct {
-	Project         string
-	PlanSlug        string
-	IncludeArchived bool
-}
-
-// GetDAG returns the full DAG node list for rendering.
-func (c *Client) GetDAG(ctx context.Context, f DAGFilter) ([]map[string]any, error) {
-	arch := ""
-	if f.IncludeArchived {
-		arch = "1"
-	}
-	path := "/api/dag" + query("project", f.Project, "plan", f.PlanSlug, "archived", arch)
-	var resp struct {
-		Nodes []map[string]any `json:"nodes"`
-	}
-	if err := c.doJSON(ctx, "GET", path, nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Nodes, nil
 }
 
 // StopAll stops every running session and marks all in_progress tasks

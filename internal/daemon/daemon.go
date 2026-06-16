@@ -22,11 +22,9 @@ import (
 	"github.com/drn/argus/internal/api"
 	"github.com/drn/argus/internal/clipboard"
 	"github.com/drn/argus/internal/db"
-	"github.com/drn/argus/internal/depswatcher"
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/hera"
-	"github.com/drn/argus/internal/heraadopt"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -108,8 +106,6 @@ type Daemon struct {
 	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
-	deps      *depswatcher.Watcher // depends_on auto-resolver; always started
-	heraAdopt *heraadopt.Watcher   // hera auto-adopt watcher (M4); always started
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
@@ -168,7 +164,7 @@ type SupervisorClient interface {
 // supervisor-client as d.runner — replacing the dormant in-process runner New
 // created — and wires the client's exit relay to handleSessionExit so the #707
 // status flip still runs against the daemon's DB. Call BEFORE Serve so every
-// consumer (sessionCore RPC, depswatcher, scheduler, MCP, API server, notifier)
+// consumer (sessionCore RPC, scheduler, MCP, API server, notifier)
 // captures the client. The in-process runner created in New is left unused; its
 // onFinish never fires because it never starts a session.
 func (d *Daemon) UseSupervisorRunner(c SupervisorClient) {
@@ -652,33 +648,6 @@ func (d *Daemon) Serve(sockPath string) error {
 		}
 	}()
 
-	// Start the depends_on watcher. Always-on — empty pending pool is a
-	// no-op tick. Push fires the same channel as the scheduler so the
-	// orchestrator user sees "stacked task started" notifications without
-	// needing to keep the PWA open.
-	dw := depswatcher.New(d.db, d.runner)
-	if pushMgr != nil {
-		dw.SetOnStart(func(task *model.Task) {
-			name := task.Name
-			if name == "" {
-				name = task.ID
-			}
-			pushMgr.Notify("", name, "Blocked task started (deps resolved)", task.ID)
-		})
-	}
-	d.deps = dw
-	go dw.Start()
-
-	// Start the hera auto-adopt watcher (M4), gated on cfg.Hera.Enabled.
-	// When disabled, d.heraAdopt stays nil and the Stop() guard at shutdown
-	// is a no-op. When enabled, it re-derives rule D4 each tick and only
-	// ever writes hera binding rows — never a task session or status (race d).
-	// Modeled on the depswatcher loop; see internal/heraadopt for the rationale.
-	if cfg.Hera.Enabled {
-		d.heraAdopt = heraadopt.New(d.db)
-		go d.heraAdopt.Start()
-	}
-
 	// Reliable pane-delivery: create the FocusTracker and Notifier before
 	// the MCP and API servers so both can be wired at construction.
 	d.focusTracker = notify.NewFocusTracker(func(taskID string, focused bool) {
@@ -740,8 +709,6 @@ func (d *Daemon) Serve(sockPath string) error {
 					Model:      input.Model,
 					AutoName:   input.AutoName,
 					BaseBranch: input.BaseBranch,
-					DependsOn:  input.DependsOn,
-					PlanSlug:   input.PlanSlug,
 				})
 			},
 			d.db,
@@ -961,16 +928,6 @@ func (d *Daemon) cleanup() {
 	// Stop the scheduler if running.
 	if d.scheduler != nil {
 		d.scheduler.Stop()
-	}
-
-	// Stop the depends_on watcher if running.
-	if d.deps != nil {
-		d.deps.Stop()
-	}
-
-	// Stop the hera auto-adopt watcher if running.
-	if d.heraAdopt != nil {
-		d.heraAdopt.Stop()
 	}
 
 	// Stop the KB indexer if running.

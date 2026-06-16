@@ -79,40 +79,28 @@ func TestDB_RenameIfName_RowGone(t *testing.T) {
 	testutil.Error(t, err)
 }
 
-// TestDB_OrchestrationFields exercises the BaseBranch / DependsOn / Result
-// round-trip through Add → Get → Update → Get. DependsOn in particular
-// runs through encodeDependsOn JSON serialization and the scan-side
-// json.Unmarshal so any drift between writer and reader trips this test.
+// TestDB_OrchestrationFields exercises the BaseBranch / Result round-trip
+// through Add → Get → Update → Get.
 func TestDB_OrchestrationFields(t *testing.T) {
 	d := testDB(t)
 	task := &model.Task{
 		Name:       "stacked-m2",
 		BaseBranch: "argus/m1",
-		DependsOn:  []string{"id-a", "id-b"},
 		Result:     `{"pr_url":"https://x/pull/1"}`,
-		PlanSlug:   "thanxai-marketplace-mcp-v1",
 	}
 	testutil.NoError(t, d.Add(task))
 
 	got, err := d.Get(task.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, got.BaseBranch, "argus/m1")
-	testutil.DeepEqual(t, got.DependsOn, []string{"id-a", "id-b"})
 	testutil.Equal(t, got.Result, `{"pr_url":"https://x/pull/1"}`)
-	testutil.Equal(t, got.PlanSlug, "thanxai-marketplace-mcp-v1")
 
-	// Updating clears DependsOn (orchestrator transferred control), rewrites
-	// Result, and re-stamps PlanSlug.
-	got.DependsOn = nil
 	got.Result = `{"pr_url":"https://x/pull/2"}`
-	got.PlanSlug = "retry-1"
 	testutil.NoError(t, d.Update(got))
 
 	got2, err := d.Get(task.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, len(got2.DependsOn), 0)
 	testutil.Equal(t, got2.Result, `{"pr_url":"https://x/pull/2"}`)
-	testutil.Equal(t, got2.PlanSlug, "retry-1")
 }
 
 // TestDB_SetResult exercises the partial-update path used by task_set_result.
@@ -142,62 +130,6 @@ func TestDB_SetResult(t *testing.T) {
 
 	// Missing row surfaces an error so callers don't silently no-op.
 	testutil.Error(t, d.SetResult("does-not-exist", "{}"))
-}
-
-// TestDB_SetDependsOn exercises the partial-update path used by orch.Link /
-// Unlink. Like SetResult, the column write must not clobber concurrent
-// status changes from the agent's task_complete call.
-func TestDB_SetDependsOn(t *testing.T) {
-	d := testDB(t)
-	a := &model.Task{Name: "A"}
-	b := &model.Task{Name: "B", DependsOn: []string{"a-id"}}
-	testutil.NoError(t, d.Add(a))
-	testutil.NoError(t, d.Add(b))
-
-	// Simulate a concurrent status flip — orch.Link's caller may have read
-	// the task while the agent was in_progress; the agent then completed.
-	b.SetStatus(model.StatusComplete)
-	testutil.NoError(t, d.Update(b))
-
-	testutil.NoError(t, d.SetDependsOn(b.ID, []string{a.ID, "extra-id"}))
-
-	got, err := d.Get(b.ID)
-	testutil.NoError(t, err)
-	testutil.DeepEqual(t, got.DependsOn, []string{a.ID, "extra-id"})
-	testutil.Equal(t, got.Status, model.StatusComplete) // not clobbered
-
-	// Empty slice clears the column.
-	testutil.NoError(t, d.SetDependsOn(b.ID, nil))
-	got2, _ := d.Get(b.ID)
-	testutil.Equal(t, len(got2.DependsOn), 0)
-
-	// Missing row surfaces ErrTaskNotFound.
-	err = d.SetDependsOn("ghost", nil)
-	if !errors.Is(err, ErrTaskNotFound) {
-		t.Fatalf("expected ErrTaskNotFound, got %v", err)
-	}
-}
-
-// TestDB_SetPlanSlug — partial update of the orchestrator grouping label.
-func TestDB_SetPlanSlug(t *testing.T) {
-	d := testDB(t)
-	task := &model.Task{Name: "t"}
-	testutil.NoError(t, d.Add(task))
-	task.SetStatus(model.StatusInReview)
-	testutil.NoError(t, d.Update(task))
-
-	testutil.NoError(t, d.SetPlanSlug(task.ID, "my-stack"))
-	got, _ := d.Get(task.ID)
-	testutil.Equal(t, got.PlanSlug, "my-stack")
-	testutil.Equal(t, got.Status, model.StatusInReview) // not clobbered
-
-	testutil.NoError(t, d.SetPlanSlug(task.ID, ""))
-	got2, _ := d.Get(task.ID)
-	testutil.Equal(t, got2.PlanSlug, "")
-
-	if err := d.SetPlanSlug("ghost", "x"); !errors.Is(err, ErrTaskNotFound) {
-		t.Fatalf("expected ErrTaskNotFound, got %v", err)
-	}
 }
 
 // TestDB_Update_EmitsArchivedOnTransition pins the regression: when Update

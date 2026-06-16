@@ -45,7 +45,7 @@ func TestStore_Tasks(t *testing.T) {
 	f := newFakeAPI(t)
 	f.cannedTasks = []*model.Task{
 		{ID: "t1", Name: "alpha", Status: model.StatusInProgress, Project: "proj1"},
-		{ID: "t2", Name: "beta", Status: model.StatusComplete, Project: "proj2", DependsOn: []string{"t1"}},
+		{ID: "t2", Name: "beta", Status: model.StatusComplete, Project: "proj2", BaseBranch: "argus/t1"},
 	}
 	f.mux.HandleFunc("/api/tasks-raw", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -57,7 +57,7 @@ func TestStore_Tasks(t *testing.T) {
 	testutil.Equal(t, len(got), 2)
 	testutil.Equal(t, got[0].ID, "t1")
 	testutil.Equal(t, got[1].ID, "t2")
-	testutil.DeepEqual(t, got[1].DependsOn, []string{"t1"})
+	testutil.Equal(t, got[1].BaseBranch, "argus/t1")
 }
 
 func TestStore_Get(t *testing.T) {

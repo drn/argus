@@ -56,15 +56,6 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/tasks/{id}/status", s.handleSetStatus)
 	mux.HandleFunc("POST /api/tasks/{id}/fork", s.handleForkTask)
 
-	// Task linking / DAG endpoints. {id}/deps mirrors the task_link MCP tool;
-	// {id}/halt-downstream cascades stop/archive through transitive children;
-	// /api/dag returns the snapshot for the DAG view.
-	mux.HandleFunc("GET /api/tasks/{id}/deps", s.handleGetDeps)
-	mux.HandleFunc("POST /api/tasks/{id}/deps", s.handleLinkTask)
-	mux.HandleFunc("DELETE /api/tasks/{id}/deps/{parent_id}", s.handleUnlinkTask)
-	mux.HandleFunc("POST /api/tasks/{id}/halt-downstream", s.handleHaltDownstream)
-	mux.HandleFunc("POST /api/tasks/{id}/plan-slug", s.handleSetPlanSlug)
-	mux.HandleFunc("GET /api/dag", s.handleDAG)
 	mux.HandleFunc("POST /api/sessions/stop-all", s.handleStopAll)
 	mux.HandleFunc("POST /api/maintenance/prune-completed", s.handlePruneCompleted)
 	mux.HandleFunc("GET /api/projects/full", s.handleListProjectsFull)
@@ -83,7 +74,7 @@ func (s *Server) routes() *http.ServeMux {
 	// (vs the lossy taskJSON / scheduleJSON used by the SPA). Added in
 	// phase 2/3 of the remote-TUI work so apistore can faithfully
 	// implement the tui store.Store interface without dropping fields like
-	// DependsOn, BaseBranch, Result, PlanSlug, AgentPID, SessionID, etc.
+	// BaseBranch, Result, AgentPID, SessionID, etc.
 	mux.HandleFunc("GET /api/tasks-raw", s.handleListTasksRaw)
 	mux.HandleFunc("GET /api/tasks/{id}/raw", s.handleGetTaskRaw)
 	mux.HandleFunc("PUT /api/tasks/{id}/raw", s.handleUpdateTaskRaw)

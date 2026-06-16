@@ -1,6 +1,9 @@
 package hera
 
-import "github.com/drn/argus/internal/db"
+import (
+	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
+)
 
 // HeraReader is the narrow, READ-ONLY data-access seam the rail builds from.
 // It lists exactly the methods BuildModel calls on the M1 hera store.
@@ -22,4 +25,8 @@ type HeraReader interface {
 	ListHeraLiveBindings() ([]*db.HeraBinding, error)
 	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
 	ListMetaByNamespace(namespace string) (map[string]map[string]string, error)
+	// Tasks supplies the argus task snapshot so BuildModel can stamp each bound
+	// role's TaskStatus/TaskResult (the orchestration-tree DAG colours nodes by
+	// task progress). *db.DB satisfies this; remote mode passes a nil reader.
+	Tasks() ([]*model.Task, error)
 }

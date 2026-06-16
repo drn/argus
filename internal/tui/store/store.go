@@ -25,7 +25,7 @@ import (
 // Method signatures intentionally mirror *db.DB exactly so future callers
 // in the TUI don't need to know which backend they're hitting. Anything that
 // can't be expressed in a single round trip lives outside this interface
-// (e.g., the depswatcher tick loop runs in the daemon, not the TUI).
+// (e.g., the scheduler tick loop runs in the daemon, not the TUI).
 type Store interface {
 	// Tasks returns every task row, both active and archived.
 	Tasks() ([]*model.Task, error)
@@ -85,16 +85,6 @@ type Store interface {
 
 	// DeleteBackend removes a backend from config.
 	DeleteBackend(name string) error
-
-	// orch.Store methods — required so dagactions can pass the store
-	// through to orch.HaltDownstream / orch.Link / orch.Unlink without a
-	// separate adapter.
-
-	// SetDependsOn writes the depends_on column.
-	SetDependsOn(id string, deps []string) error
-
-	// SetPlanSlug writes the plan_slug column.
-	SetPlanSlug(id, slug string) error
 
 	// SetArchived flips the archived column.
 	SetArchived(id string, archived bool) error

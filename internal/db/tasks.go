@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -20,7 +19,7 @@ var ErrTaskNotFound = errors.New("task not found")
 
 // taskColumns is the canonical column list for task queries. Order MUST
 // match scanTask's Scan call and the INSERT/UPDATE statements below.
-const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, depends_on, result, plan_slug, created_at, started_at, ended_at`
+const taskColumns = `id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, created_at, started_at, ended_at`
 
 // scanner is implemented by both *sql.Row and *sql.Rows.
 type scanner interface {
@@ -30,40 +29,19 @@ type scanner interface {
 // scanTask reads a task from a row using the canonical column order.
 func scanTask(row scanner) (*model.Task, error) {
 	t := &model.Task{}
-	var status, createdAt, startedAt, endedAt, dependsOn string
+	var status, createdAt, startedAt, endedAt string
 	var sandboxed, archived, pinned int
-	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &dependsOn, &t.Result, &t.PlanSlug, &createdAt, &startedAt, &endedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &status, &t.Project, &t.Branch, &t.Prompt, &t.Backend, &t.Model, &t.Worktree, &t.AgentPID, &t.SessionID, &sandboxed, &archived, &pinned, &t.BaseBranch, &t.Result, &createdAt, &startedAt, &endedAt); err != nil {
 		return nil, err
 	}
 	t.Status, _ = model.ParseStatus(status)
 	t.Sandboxed = sandboxed != 0
 	t.Archived = archived != 0
 	t.Pinned = pinned != 0
-	// depends_on is stored as a JSON array string; empty means no deps.
-	// A malformed value would prevent the task from loading, so on parse
-	// error we leave DependsOn empty rather than failing the scan — the
-	// worst case is a once-blocked task starts immediately on next tick.
-	if dependsOn != "" {
-		_ = json.Unmarshal([]byte(dependsOn), &t.DependsOn) //nolint:errcheck
-	}
 	t.CreatedAt = parseTime(createdAt)
 	t.StartedAt = parseTime(startedAt)
 	t.EndedAt = parseTime(endedAt)
 	return t, nil
-}
-
-// encodeDependsOn returns the JSON-array representation stored in the
-// depends_on column. Empty / nil slice maps to empty string so the column
-// default lines up with the in-memory zero value.
-func encodeDependsOn(deps []string) string {
-	if len(deps) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(deps)
-	if err != nil {
-		return ""
-	}
-	return string(b)
 }
 
 func (d *DB) Tasks() ([]*model.Task, error) {
@@ -122,9 +100,9 @@ func (d *DB) addLocked(t *model.Task) error {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, depends_on, result, plan_slug, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := d.conn.Exec(`INSERT INTO tasks (id, name, status, project, branch, prompt, backend, model, worktree, agent_pid, session_id, sandboxed, archived, pinned, base_branch, result, created_at, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Model, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
-		t.BaseBranch, encodeDependsOn(t.DependsOn), t.Result, t.PlanSlug,
+		t.BaseBranch, t.Result,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt))
 	return err
 }
@@ -190,9 +168,9 @@ func (d *DB) updateLocked(t *model.Task) (model.Status, bool, bool, error) {
 	if t.Pinned {
 		pinnedInt = 1
 	}
-	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, model=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, base_branch=?, depends_on=?, result=?, plan_slug=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
+	res, err := d.conn.Exec(`UPDATE tasks SET name=?, status=?, project=?, branch=?, prompt=?, backend=?, model=?, worktree=?, agent_pid=?, session_id=?, sandboxed=?, archived=?, pinned=?, base_branch=?, result=?, created_at=?, started_at=?, ended_at=? WHERE id=?`,
 		t.Name, t.Status.String(), t.Project, t.Branch, t.Prompt, t.Backend, t.Model, t.Worktree, t.AgentPID, t.SessionID, sandboxedInt, archivedInt, pinnedInt,
-		t.BaseBranch, encodeDependsOn(t.DependsOn), t.Result, t.PlanSlug,
+		t.BaseBranch, t.Result,
 		formatTime(t.CreatedAt), formatTime(t.StartedAt), formatTime(t.EndedAt), t.ID)
 	if err != nil {
 		return oldStatus, oldArchived, hadOld, err
@@ -298,49 +276,11 @@ func (d *DB) SetResult(id, result string) error {
 	return nil
 }
 
-// SetPlanSlug writes only the orchestrator grouping label. Same partial-update
-// pattern as SetResult — bypasses the full-row Update so a concurrent agent
-// status flip (in_progress → in_review on session exit) is not clobbered by
-// a stale read-then-write round trip. Empty string clears the slug.
-func (d *DB) SetPlanSlug(id, slug string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	res, err := d.conn.Exec(`UPDATE tasks SET plan_slug=? WHERE id=?`, slug, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
-	}
-	return nil
-}
-
-// SetDependsOn writes only the depends_on column. Used by orch.Link / Unlink
-// so the read-modify-write cycle does not need to take the full-row Update
-// path. The encoded JSON empty array is stored as the empty string by
-// encodeDependsOn so the migrated/fresh-DB defaults line up.
-func (d *DB) SetDependsOn(id string, deps []string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	res, err := d.conn.Exec(`UPDATE tasks SET depends_on=? WHERE id=?`, encodeDependsOn(deps), id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("%w: %s", ErrTaskNotFound, id)
-	}
-	return nil
-}
-
 // SetArchived writes only the archived column (plus the pinned-clearing leg
-// of the mutual-exclusivity invariant when archived=true). Used by
-// orch.HaltDownstream so archiving a pending or in-review descendant cannot
-// clobber a concurrent status flip from the depswatcher (e.g. pending →
-// in_progress between the halt loop's Get and Update).
+// of the mutual-exclusivity invariant when archived=true). Used by task
+// archival so archiving a pending or in-review task cannot clobber a
+// concurrent status flip (e.g. in_progress → in_review on session exit)
+// between a caller's Get and Update.
 //
 // pinned must be cleared when archived flips true because the rest of the
 // codebase relies on the invariant "at most one of {Pinned, Archived} is

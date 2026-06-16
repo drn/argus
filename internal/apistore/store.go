@@ -480,51 +480,6 @@ func (s *Store) DeleteBackend(name string) error {
 	return s.c.DeleteBackend(context.Background(), name)
 }
 
-// SetDependsOn writes the depends_on column via orchestrator linking endpoints.
-// No single REST endpoint covers "replace the whole list" — we read the
-// current deps and apply diff (Link new, Unlink removed). Best-effort.
-func (s *Store) SetDependsOn(id string, deps []string) error {
-	ctx := context.Background()
-	cur, err := s.c.GetDeps(ctx, id)
-	if err != nil {
-		return err
-	}
-	curSet := make(map[string]bool)
-	if parents, ok := cur["parents"].([]any); ok {
-		for _, p := range parents {
-			if m, ok := p.(map[string]any); ok {
-				if pid, ok := m["id"].(string); ok {
-					curSet[pid] = true
-				}
-			}
-		}
-	}
-	want := make(map[string]bool, len(deps))
-	for _, d := range deps {
-		want[d] = true
-	}
-	for d := range want {
-		if !curSet[d] {
-			if err := s.c.LinkTask(ctx, id, d); err != nil {
-				return err
-			}
-		}
-	}
-	for d := range curSet {
-		if !want[d] {
-			if err := s.c.UnlinkTask(ctx, id, d); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// SetPlanSlug calls /api/tasks/{id}/plan-slug.
-func (s *Store) SetPlanSlug(id, slug string) error {
-	return s.c.SetPlanSlug(context.Background(), id, slug)
-}
-
 // SetArchived calls archive/unarchive.
 func (s *Store) SetArchived(id string, archived bool) error {
 	if archived {

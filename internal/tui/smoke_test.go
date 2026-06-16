@@ -1747,11 +1747,9 @@ func TestSmoke_SettingsPagePasteRouting(t *testing.T) {
 	}
 }
 
-// TestSmoke_HeraTabRoutesAndRenders exercises the M6a tab swap end-to-end:
-// the second tab now routes to the native Hera view ("hera" page, not "dag"),
-// focus lands on the HeraPage, and the page-change forceRedraw fires. The DAG
-// page stays registered for the M8 disabled-fallback but is no longer the
-// second-tab route.
+// TestSmoke_HeraTabRoutesAndRenders exercises the tab swap end-to-end: the
+// second tab routes to the native Hera view ("hera" page), focus lands on the
+// HeraPage, and the page-change forceRedraw fires.
 func TestSmoke_HeraTabRoutesAndRenders(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "ux.log")
 	if err := uxlog.Init(logPath); err != nil {
@@ -1789,9 +1787,9 @@ func TestSmoke_HeraTabRoutesAndRenders(t *testing.T) {
 		if app.tapp.GetFocus() != app.heraPage {
 			t.Errorf("expected focus on heraPage, got %T", app.tapp.GetFocus())
 		}
-		// The "dag" page is still registered (M8 fallback) but not routed.
-		if !app.pages.HasPage("dag") {
-			t.Error("dag page should remain registered for the M8 fallback")
+		// The legacy "dag" page is gone — the second tab is always native Hera.
+		if app.pages.HasPage("dag") {
+			t.Error("legacy dag page should no longer be registered")
 		}
 	})
 
@@ -1802,11 +1800,10 @@ func TestSmoke_HeraTabRoutesAndRenders(t *testing.T) {
 }
 
 // TestSmoke_NumericTabKeysRouteCorrectly guards the keybinding bug where
-// `case '2'` continued to route to TabSettings after TabDAG was inserted
-// between Tasks and Settings, so the statusbar advertised "2=DAG, 3=settings"
+// `case '2'` continued to route to TabSettings after a second tab was inserted
+// between Tasks and Settings, so the statusbar advertised "2=Hera, 3=settings"
 // but actual keystrokes landed on the wrong tabs. This test exercises the
-// exact path the user takes — number-key shortcut — rather than the arrow-key
-// path the original DAG smoke test happened to use.
+// exact path the user takes — the number-key shortcut.
 func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
@@ -1822,12 +1819,12 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 		}
 	})
 
-	// `2` → DAG.
+	// `2` → Hera.
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() {
 		if app.header.ActiveTab() != widget.TabHera {
-			t.Errorf("'2' routed to %v, want TabDAG", app.header.ActiveTab())
+			t.Errorf("'2' routed to %v, want TabHera", app.header.ActiveTab())
 		}
 	})
 

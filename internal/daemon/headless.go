@@ -7,10 +7,9 @@ import (
 )
 
 // HeadlessInput captures every field a non-TUI caller (HTTP API, MCP, the
-// scheduler) needs to pass to agent.CreateAndStart. Existing single-task
-// callers leave the orchestration fields (BaseBranch, DependsOn) at zero and
-// behave exactly as before. Adding more orchestration fields here does not
-// break the three call sites in daemon.go that wrap this entry point.
+// scheduler) needs to pass to agent.CreateAndStart. Callers that don't stack
+// leave BaseBranch at zero and behave exactly as before. Adding more fields
+// here does not break the call sites in daemon.go that wrap this entry point.
 type HeadlessInput struct {
 	Name       string
 	Prompt     string
@@ -19,8 +18,6 @@ type HeadlessInput struct {
 	Model      string // optional per-task model override (empty = backend default)
 	AutoName   bool
 	BaseBranch string
-	DependsOn  []string
-	PlanSlug   string // optional orchestrator grouping label; opaque to daemon
 }
 
 // HeadlessCreateTask creates a task, its worktree, and starts an agent session
@@ -35,9 +32,8 @@ type HeadlessInput struct {
 // Name was synthesized from Prompt (vs typed by a user or derived from a
 // meaningful slug like "<src>-fork").
 //
-// When DependsOn is non-empty, the task is persisted in Pending state and no
-// agent process is spawned — internal/depswatcher will start the session
-// once every listed dep reports complete.
+// The agent session starts immediately on creation (the legacy depends_on
+// auto-gating was retired — sequencing is a coordinator's job now).
 //
 // BeforeStart/AfterStart hooks are intentionally nil — those are for the TUI's
 // startGen tick-reconciliation counter, which has no analogue in headless mode.
@@ -50,8 +46,6 @@ func HeadlessCreateTask(database *db.DB, runner agent.SessionProvider, in Headle
 		Model:      in.Model,
 		AutoName:   in.AutoName,
 		BaseBranch: in.BaseBranch,
-		DependsOn:  in.DependsOn,
-		PlanSlug:   in.PlanSlug,
 	})
 	return task, err
 }
