@@ -2,6 +2,10 @@ package hera
 
 import (
 	"fmt"
+	"path/filepath"
+	"sort"
+	"time"
+	"unicode/utf8"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/tui/theme"
@@ -23,6 +27,57 @@ import (
 type DetailsView struct {
 	orch   *OrchView
 	prMeta map[string]map[string]string // taskID -> pr meta (namespace "pr")
+	meta   coordMeta                    // derived once in SetOrch (pure over orch)
+}
+
+// coordMeta is the rich metadata block the Details pane renders for a selected
+// coordinator, derived purely from the rail's OrchView projection (no DB read).
+// It is the native port of the plugin's coordDetails metadata fields (created /
+// last-activity / repos-in-scope / agent / worktree).
+type coordMeta struct {
+	Created      time.Time // orchestrator creation time
+	LastActivity time.Time // max over orch+role creation, binding start, status update
+	AgentName    string    // coordinator role's bound argus task name ("" when unbound)
+	Worktree     string    // coordinator role's live-binding worktree ("" when absent)
+	Repos        []string  // distinct argus projects across roster roles, sorted
+}
+
+// deriveCoordMeta computes the coordinator Details metadata from an OrchView.
+// It is a pure projection (no I/O), so it is unit-testable from a constructed
+// OrchView and safe to call on the tview main thread. Last-activity is the max
+// over the orchestrator's creation time and every role's creation time, live-
+// binding start, and status-update time. Repos-in-scope are the distinct argus
+// projects across the orchestrator's roster roles (the same role set the roster
+// shows — hoisted freelance roles are not included), sorted. Agent + Worktree
+// come from the coordinator role.
+func deriveCoordMeta(o *OrchView) coordMeta {
+	m := coordMeta{Created: o.CreatedAt, LastActivity: o.CreatedAt}
+	bump := func(t time.Time) {
+		if t.After(m.LastActivity) {
+			m.LastActivity = t
+		}
+	}
+	repoSet := map[string]struct{}{}
+	for i := range o.Roles {
+		r := &o.Roles[i]
+		if r.ArgusProject != "" {
+			repoSet[r.ArgusProject] = struct{}{}
+		}
+		bump(r.CreatedAt)
+		bump(r.BindingStartedAt)
+		bump(r.StatusUpdatedAt)
+		if r.Kind == db.HeraKindCoordinator {
+			m.AgentName = r.TaskName
+			m.Worktree = r.WorktreePath
+		}
+	}
+	repos := make([]string, 0, len(repoSet))
+	for p := range repoSet {
+		repos = append(repos, p)
+	}
+	sort.Strings(repos)
+	m.Repos = repos
+	return m
 }
 
 // NewDetailsView builds an empty details view.
@@ -31,9 +86,16 @@ func NewDetailsView() *DetailsView { return &DetailsView{} }
 // SetOrch sets the orchestrator whose coordinator summary is rendered. prMeta
 // is the daemon-populated "pr" namespace cache (taskID -> {state,url}); pass
 // nil when unavailable — the PR mark just won't render (best-effort, no fetch).
+// The rich metadata block is derived once here so Draw + ContentHeight share
+// the same (immutable) inputs and never drift.
 func (d *DetailsView) SetOrch(o *OrchView, prMeta map[string]map[string]string) {
 	d.orch = o
 	d.prMeta = prMeta
+	if o != nil {
+		d.meta = deriveCoordMeta(o)
+	} else {
+		d.meta = coordMeta{}
+	}
 }
 
 // ContentHeight returns the natural height (including the 2-row border) the
@@ -46,19 +108,30 @@ func (d *DetailsView) ContentHeight() int {
 	if d.orch == nil {
 		return border + 1
 	}
-	// Draw's fixed rows: title + spacer + spacer + "Agents (N):" header = 4
-	// (the coord status line, when present, sits between the two spacers). The
-	// coordinator status line is drawn only when a coordinator role exists, so
-	// count it conditionally to match Draw (which skips it when coordRole==nil).
-	content := 4
+	// Always-present content rows (see Draw): title, blank, Created, Last
+	// activity, blank, "Repos in scope:" header, blank, "Agents (N):" header,
+	// blank, "Summary:" header, summary placeholder = 11.
+	content := 11
+	// The coordinator status line is drawn only when a coordinator role exists.
 	if d.coordRole() != nil {
 		content++
+	}
+	// Agent / Worktree are conditional on the coordinator being bound.
+	if d.meta.AgentName != "" {
+		content++
+	}
+	if d.meta.Worktree != "" {
+		content++
+	}
+	reposRows := len(d.meta.Repos)
+	if reposRows == 0 {
+		reposRows = 1 // the "(none)" line
 	}
 	workerRows := len(d.workers())
 	if workerRows == 0 {
 		workerRows = 1 // the "(none)" line
 	}
-	return border + content + workerRows
+	return border + content + reposRows + workerRows
 }
 
 // Draw paints the coordinator summary inside a bordered panel covering the full
@@ -90,6 +163,18 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		widget.DrawText(screen, col, row, inner.X+inner.W-col, text, st)
 		row++
 	}
+	// field draws a "Label: value" row — the label dimmed, the value normal.
+	field := func(label, value string) {
+		if row >= maxRow {
+			return
+		}
+		lbl := label + ": "
+		widget.DrawText(screen, inner.X, row, inner.W, lbl, theme.StyleDimmed)
+		if n := utf8.RuneCountInString(lbl); n < inner.W {
+			widget.DrawText(screen, inner.X+n, row, inner.W-n, value, theme.StyleNormal)
+		}
+		row++
+	}
 
 	// Title — orchestrator name.
 	draw(inner.X, d.orch.Name, theme.StyleTitle)
@@ -104,6 +189,27 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 			widget.DrawText(screen, inner.X+2, row, inner.W-2, "coordinator: "+coordStatusLabel(coord), theme.StyleDimmed)
 			row++
 		}
+	}
+
+	// Rich metadata block (native port of the plugin's coord_details fields).
+	meta := d.meta
+	field("Created", fmtDetailTime(meta.Created))
+	field("Last activity", fmtDetailTime(meta.LastActivity))
+	if meta.AgentName != "" {
+		field("Agent", meta.AgentName)
+	}
+	if meta.Worktree != "" {
+		field("Worktree", worktreeDisplay(meta.Worktree, inner.W))
+	}
+	row++ // blank spacer
+
+	// Repos in scope — the distinct argus projects across the roster roles.
+	draw(inner.X, "Repos in scope:", theme.StyleDimmed)
+	if len(meta.Repos) == 0 {
+		draw(inner.X+2, "(none)", theme.StyleDimmed)
+	}
+	for _, r := range meta.Repos {
+		draw(inner.X+2, "• "+r, theme.StyleNormal)
 	}
 	row++ // blank spacer
 
@@ -128,6 +234,36 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		widget.DrawText(screen, inner.X+4, row, inner.W-4, label, theme.StyleNormal)
 		row++
 	}
+	row++ // blank spacer
+
+	// Reserved Summary placeholder (the inferred living-summary is not yet
+	// implemented — mirrors the plugin's reserved field).
+	draw(inner.X, "Summary:", theme.StyleDimmed)
+	draw(inner.X+2, "(auto-generated overview coming soon)", theme.StyleDimmed)
+}
+
+// fmtDetailTime formats a timestamp for the Details pane in local time, or an
+// en-dash placeholder when zero.
+func fmtDetailTime(t time.Time) string {
+	if t.IsZero() {
+		return "–"
+	}
+	return t.Local().Format("2006-01-02 15:04")
+}
+
+// worktreeDisplay formats a worktree path for the Details pane. When the full
+// path fits in availWidth it is returned verbatim; otherwise the last two path
+// components are shown (e.g. "Hera/the-hera-foo") so the meaningful project/task
+// portion stays visible, falling back to the base name when even that overflows.
+func worktreeDisplay(path string, availWidth int) string {
+	if availWidth <= 0 || utf8.RuneCountInString(path) <= availWidth {
+		return path
+	}
+	short := filepath.Base(filepath.Dir(path)) + "/" + filepath.Base(path)
+	if utf8.RuneCountInString(short) <= availWidth {
+		return short
+	}
+	return filepath.Base(path)
 }
 
 // coordRole returns the orchestrator's coordinator role, or nil.

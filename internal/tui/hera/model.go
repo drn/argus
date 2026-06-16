@@ -3,6 +3,7 @@ package hera
 import (
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
@@ -29,17 +30,29 @@ type RoleView struct {
 	// icons use the hera role Status above, not these). Empty when unbound.
 	TaskStatus string
 	TaskResult string
+
+	// The following fields feed the coordinator Details metadata block
+	// (deriveCoordMeta). They are additive projection inputs read straight from
+	// the hera store at BuildModel time, so the Details pane stays a pure
+	// projection renderer (no Draw-time I/O). The rail itself ignores them.
+	CreatedAt        time.Time // role creation time
+	ArgusProject     string    // role's argus project (repos-in-scope input)
+	WorktreePath     string    // live binding's worktree path ("" when unbound)
+	BindingStartedAt time.Time // live binding's start time (zero when unbound)
+	StatusUpdatedAt  time.Time // role-status row's last update (zero when none)
+	TaskName         string    // bound argus task's name ("" when unbound)
 }
 
 // OrchView is the render projection of one orchestrator and its non-freelance
 // roles (coordinator + worker). Freelance-kind roles are hoisted into the
 // Model's Freelance section rather than nested here.
 type OrchView struct {
-	ID       int64
-	Name     string
-	Pinned   bool
-	Archived bool
-	Roles    []RoleView
+	ID        int64
+	Name      string
+	Pinned    bool
+	Archived  bool
+	CreatedAt time.Time // orchestrator creation time (coordinator Details "Created")
+	Roles     []RoleView
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are
@@ -153,9 +166,12 @@ func BuildModel(r HeraReader) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
-	roleToTask := make(map[int64]string, len(bindings))
+	// Keyed by role, carrying the whole live binding so buildRoleView can read
+	// the bound task ID, the worktree path, and the binding start time (the
+	// coordinator Details "Worktree" + "Last activity" inputs).
+	roleToBinding := make(map[int64]*db.HeraBinding, len(bindings))
 	for _, b := range bindings {
-		roleToTask[b.RoleID] = b.ArgusTaskID
+		roleToBinding[b.RoleID] = b
 	}
 
 	// meta:hera.ready_to_close lives in the task-addressed task_meta sidecar.
@@ -175,17 +191,18 @@ func BuildModel(r HeraReader) (Model, error) {
 
 	for _, o := range orchs {
 		ov := OrchView{
-			ID:       o.ID,
-			Name:     o.Name,
-			Pinned:   o.PinnedAt != nil,
-			Archived: o.ArchivedAt != nil,
+			ID:        o.ID,
+			Name:      o.Name,
+			Pinned:    o.PinnedAt != nil,
+			Archived:  o.ArchivedAt != nil,
+			CreatedAt: o.CreatedAt,
 		}
 		roles, err := r.ListHeraRoles(o.ID, true) // include archived roles
 		if err != nil {
 			return Model{}, err
 		}
 		for _, role := range roles {
-			rv := buildRoleView(r, role, roleToTask, heraMeta, taskByID)
+			rv := buildRoleView(r, role, roleToBinding, heraMeta, taskByID)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -211,28 +228,35 @@ func BuildModel(r HeraReader) (Model, error) {
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToTask map[int64]string, heraMeta map[string]map[string]string, taskByID map[string]*model.Task) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task) RoleView {
 	rv := RoleView{
-		RoleID:   role.ID,
-		OrchID:   role.OrchestratorID,
-		Name:     role.Name,
-		Kind:     role.Kind,
-		Archived: role.ArchivedAt != nil,
+		RoleID:       role.ID,
+		OrchID:       role.OrchestratorID,
+		Name:         role.Name,
+		Kind:         role.Kind,
+		Archived:     role.ArchivedAt != nil,
+		CreatedAt:    role.CreatedAt,
+		ArgusProject: role.ArgusProject,
 	}
-	if taskID, ok := roleToTask[role.ID]; ok {
+	if b := roleToBinding[role.ID]; b != nil {
+		taskID := b.ArgusTaskID
 		rv.TaskID = taskID
 		rv.Live = true
+		rv.WorktreePath = b.WorktreePath
+		rv.BindingStartedAt = b.StartedAt
 		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
 			rv.ReadyToClose = true
 		}
 		if t := taskByID[taskID]; t != nil {
 			rv.TaskStatus = t.Status.String()
 			rv.TaskResult = t.Result
+			rv.TaskName = t.Name
 		}
 	}
 	if st, err := r.HeraRoleStatusFor(role.ID); err == nil {
 		rv.Status = st.Status
 		rv.HasStatus = true
+		rv.StatusUpdatedAt = st.UpdatedAt
 	} else if !errors.Is(err, db.ErrHeraNotFound) {
 		// A non-"missing" status error is unusual; leave status zero rather
 		// than aborting the whole rebuild for one role.

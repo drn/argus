@@ -2,6 +2,7 @@ package hera
 
 import (
 	"testing"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/testutil"
@@ -104,10 +105,14 @@ func TestDetails_ContentHeight(t *testing.T) {
 		orch *OrchView
 		want int
 	}{
+		// Row budget: border(2) + always(11) + coord(0/1) + agent(0) + worktree(0)
+		// + reposRows(1 "(none)") + workerRows(max(n,1)). The test roles carry no
+		// ArgusProject and the coord is unbound, so agent/worktree are omitted and
+		// repos is the "(none)" line.
 		{"nil orch", nil, 3}, // border + placeholder line
-		{"coord, no workers", &OrchView{ID: 1, Roles: []RoleView{coord}}, 8},                           // 2 + (4+1) + 1(none)
-		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 9}, // 2 + 5 + 2
-		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 8}, // 2 + 4 + 2 (no coord line)
+		{"coord, no workers", &OrchView{ID: 1, Roles: []RoleView{coord}}, 16},                           // 2 + 11 + 1 + 1(repos none) + 1(workers none)
+		{"coord + 2 workers", &OrchView{ID: 1, Roles: []RoleView{coord, wkr(2, "a"), wkr(3, "b")}}, 17}, // 2 + 11 + 1 + 1 + 2
+		{"no coord role, 2 workers", &OrchView{ID: 1, Roles: []RoleView{wkr(2, "a"), wkr(3, "b")}}, 16}, // 2 + 11 + 0 + 1 + 2
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -119,10 +124,10 @@ func TestDetails_ContentHeight(t *testing.T) {
 }
 
 // TestDetails_ContentHeightMatchesDraw pins the contract that ContentHeight is
-// the EXACT minimum height at which Draw renders the full roster: at h ==
-// ContentHeight the last worker is visible; at h-1 it is truncated. This guards
-// the formula against drifting from Draw's actual row budget. Both the
-// coordinator-present (content=5) and coordinator-absent (content=4, the W1 fix)
+// the EXACT minimum height at which Draw renders the full pane. The Summary
+// placeholder is the LAST line Draw emits, so at h == ContentHeight it is
+// visible; at h-1 it is truncated. This guards the formula against drifting from
+// Draw's actual row budget. Both the coordinator-present and coordinator-absent
 // branches are exercised, since they have different row budgets.
 func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 	tests := []struct {
@@ -144,10 +149,162 @@ func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 			d := NewDetailsView()
 			d.SetOrch(&OrchView{ID: 1, Name: "o", Roles: tc.roles}, nil)
 			ch := d.ContentHeight()
-			testutil.Equal(t, rosterContains(t, d, ch, "zlast"), true)    // fits exactly
-			testutil.Equal(t, rosterContains(t, d, ch-1, "zlast"), false) // one short → truncated
+			// The Summary placeholder is the final rendered line; the last worker
+			// row sits above it and must always be visible at full height.
+			testutil.Equal(t, rosterContains(t, d, ch, "zlast"), true)
+			testutil.Equal(t, rosterContains(t, d, ch, "auto-generated"), true)    // fits exactly
+			testutil.Equal(t, rosterContains(t, d, ch-1, "auto-generated"), false) // one short → truncated
 		})
 	}
+}
+
+func TestDeriveCoordMeta_LastActivityMax(t *testing.T) {
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	orch := &OrchView{
+		ID:        1,
+		CreatedAt: base,
+		Roles: []RoleView{
+			// Coordinator: created later than the orch, with a still-later status
+			// update — the status update is the global max.
+			{
+				RoleID: 1, Kind: db.HeraKindCoordinator,
+				CreatedAt:        base.Add(1 * time.Hour),
+				BindingStartedAt: base.Add(2 * time.Hour),
+				StatusUpdatedAt:  base.Add(9 * time.Hour), // <- max
+			},
+			// Worker: every timestamp earlier than the coordinator's status update.
+			{
+				RoleID: 2, Kind: db.HeraKindWorker,
+				CreatedAt:        base.Add(3 * time.Hour),
+				BindingStartedAt: base.Add(4 * time.Hour),
+				StatusUpdatedAt:  base.Add(5 * time.Hour),
+			},
+		},
+	}
+	m := deriveCoordMeta(orch)
+	testutil.Equal(t, m.Created.Equal(base), true)
+	testutil.Equal(t, m.LastActivity.Equal(base.Add(9*time.Hour)), true)
+}
+
+func TestDeriveCoordMeta_LastActivityFallsBackToCreated(t *testing.T) {
+	base := time.Date(2026, 6, 2, 8, 30, 0, 0, time.UTC)
+	// All role timestamps zero (unbound, no status) → last activity == orch created.
+	orch := &OrchView{
+		ID:        1,
+		CreatedAt: base,
+		Roles:     []RoleView{{RoleID: 1, Kind: db.HeraKindCoordinator}},
+	}
+	m := deriveCoordMeta(orch)
+	testutil.Equal(t, m.LastActivity.Equal(base), true)
+}
+
+func TestDeriveCoordMeta_ReposDistinctSorted(t *testing.T) {
+	orch := &OrchView{
+		ID: 1,
+		Roles: []RoleView{
+			{RoleID: 1, Kind: db.HeraKindCoordinator, ArgusProject: "b"},
+			{RoleID: 2, Kind: db.HeraKindWorker, ArgusProject: "a"},
+			{RoleID: 3, Kind: db.HeraKindWorker, ArgusProject: "a"}, // dup
+			{RoleID: 4, Kind: db.HeraKindWorker, ArgusProject: ""},  // blank skipped
+		},
+	}
+	m := deriveCoordMeta(orch)
+	testutil.DeepEqual(t, m.Repos, []string{"a", "b"})
+}
+
+func TestDeriveCoordMeta_AgentAndWorktreeFromCoord(t *testing.T) {
+	orch := &OrchView{
+		ID: 1,
+		Roles: []RoleView{
+			{
+				RoleID: 1, Kind: db.HeraKindCoordinator,
+				TaskName:     "the-hera-detail",
+				WorktreePath: "/home/u/.argus/worktrees/Hera/the-hera-detail",
+			},
+			{RoleID: 2, Kind: db.HeraKindWorker, TaskName: "wk", WorktreePath: "/x/wk"},
+		},
+	}
+	m := deriveCoordMeta(orch)
+	testutil.Equal(t, m.AgentName, "the-hera-detail")
+	testutil.Equal(t, m.Worktree, "/home/u/.argus/worktrees/Hera/the-hera-detail")
+}
+
+// TestDetails_RendersMetadataBlock asserts the restored metadata fields render
+// for a bound coordinator (Created, Last activity, Agent, Worktree, Repos in
+// scope, and the Summary placeholder), alongside the existing roster.
+func TestDetails_RendersMetadataBlock(t *testing.T) {
+	base := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
+	orch := &OrchView{
+		ID:        1,
+		Name:      "my-orch",
+		CreatedAt: base,
+		Roles: []RoleView{
+			{
+				RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator, Live: true,
+				TaskID: "t-c", TaskName: "coord-task", ArgusProject: "repo-z",
+				WorktreePath: "/wt/coord-task", CreatedAt: base,
+				StatusUpdatedAt: base.Add(2 * time.Hour),
+			},
+			{RoleID: 2, Name: "alpha", Kind: db.HeraKindWorker, Live: true, TaskID: "t-a", ArgusProject: "repo-a"},
+		},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+
+	want := []string{
+		"my-orch",         // title
+		"Created:",        // metadata
+		"Last activity:",  //
+		"Agent:",          //
+		"coord-task",      // agent value
+		"Worktree:",       //
+		"Repos in scope:", //
+		"repo-a",          // sorted before repo-z
+		"repo-z",          //
+		"Agents (1)",      // roster header (coord excluded)
+		"alpha",           // worker
+		"Summary:",        // reserved placeholder
+		"auto-generated",  //
+	}
+	for _, sub := range want {
+		if !rosterContains(t, d, 40, sub) {
+			t.Errorf("expected Details render to contain %q", sub)
+		}
+	}
+}
+
+// TestDetails_UnboundCoordOmitsAgentWorktree pins that Agent/Worktree are
+// dropped when the coordinator has no live binding, while the rest renders.
+func TestDetails_UnboundCoordOmitsAgentWorktree(t *testing.T) {
+	orch := &OrchView{
+		ID:   1,
+		Name: "o",
+		Roles: []RoleView{
+			{RoleID: 1, Name: "coord", Kind: db.HeraKindCoordinator}, // unbound: no TaskName/WorktreePath
+		},
+	}
+	d := NewDetailsView()
+	d.SetOrch(orch, nil)
+	h := d.ContentHeight()
+	testutil.Equal(t, rosterContains(t, d, h, "Agent:"), false)
+	testutil.Equal(t, rosterContains(t, d, h, "Worktree:"), false)
+	testutil.Equal(t, rosterContains(t, d, h, "Created:"), true)
+	testutil.Equal(t, rosterContains(t, d, h, "auto-generated"), true)
+}
+
+func TestFmtDetailTime(t *testing.T) {
+	testutil.Equal(t, fmtDetailTime(time.Time{}), "–")
+	got := fmtDetailTime(time.Date(2026, 6, 1, 14, 5, 0, 0, time.UTC).Local())
+	// Format is "YYYY-MM-DD HH:MM" — assert the shape, not the local offset.
+	testutil.Equal(t, len(got), len("2026-06-01 14:05"))
+}
+
+func TestWorktreeDisplay(t *testing.T) {
+	full := "/home/u/.argus/worktrees/Hera/the-task"
+	testutil.Equal(t, worktreeDisplay(full, 100), full)           // fits → verbatim
+	testutil.Equal(t, worktreeDisplay(full, 20), "Hera/the-task") // overflow → last two
+	testutil.Equal(t, worktreeDisplay(full, 8), "the-task")       // still overflow → base
+	testutil.Equal(t, worktreeDisplay(full, 0), full)             // nonpositive width → verbatim
 }
 
 func TestCoordStatusLabel(t *testing.T) {
