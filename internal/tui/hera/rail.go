@@ -2,11 +2,13 @@ package hera
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -80,6 +82,17 @@ type Rail struct {
 	// Absent/false → collapsed (the default), matching the bottom Archive section.
 	coordArchiveOpen map[int64]bool
 
+	// Filter state (the `/` rail name filter). filterInput is true while the
+	// operator is TYPING (drives the `/ <query>` line, the key routing, and the
+	// global-handler guard); filterQuery is the active query — non-empty NARROWS
+	// the rail (ancestry-preserving) and survives leaving input mode (Enter
+	// accepts). Filter state is transient and is NOT persisted. filterVis is the
+	// per-build visibility memo (orch id → visible), recomputed each filtered
+	// buildRows and nil when no filter is active.
+	filterInput bool
+	filterQuery string
+	filterVis   map[int64]bool
+
 	focused   bool // drives the border-highlight style
 	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
 
@@ -138,6 +151,156 @@ func (r *Rail) SetModel(m Model) {
 
 // Model returns the current snapshot (read-only; for tests/inspection).
 func (r *Rail) Model() Model { return r.model }
+
+// --- filter ---
+
+// Filtering reports whether the rail is in search INPUT mode (the operator is
+// typing a query). page.go skips rail mutations while this holds, and app.go
+// lets the global rune shortcuts (1/2/3/q/?) fall through to the rail as filter
+// input. It is FALSE once a filter is accepted (Enter) even though the query
+// stays applied — accepted-but-not-typing resumes normal key handling.
+func (r *Rail) Filtering() bool { return r.filterInput }
+
+// filterActive reports whether the rail rows are NARROWED (a non-empty query is
+// applied), regardless of input mode. An empty/all-whitespace query narrows
+// nothing.
+func (r *Rail) filterActive() bool { return strings.TrimSpace(r.filterQuery) != "" }
+
+// filterMatches reports whether name satisfies the current query: every
+// whitespace-separated term must be a case-insensitive substring. An empty
+// query matches everything (so narrowing only begins once a real term is typed).
+func (r *Rail) filterMatches(name string) bool {
+	terms := strings.Fields(strings.ToLower(r.filterQuery))
+	if len(terms) == 0 {
+		return true
+	}
+	ln := strings.ToLower(name)
+	for _, t := range terms {
+		if !strings.Contains(ln, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// computeVisible builds the orchestrator-visibility memo for the active filter:
+// an orchestrator is visible when its own name matches, OR any of its roles
+// matches, OR any sub-orchestrator it bridges (recursively) is visible —
+// ancestry-preserving so a matching nested agent always keeps its parents.
+// Cycle-safe via an in-progress set (a cycle edge contributes nothing rather
+// than recursing forever), mirroring BridgeSubtree's visited guard.
+func (r *Rail) computeVisible(bridge map[string]*OrchView) map[int64]bool {
+	vis := make(map[int64]bool)
+	inProgress := make(map[int64]bool)
+	var visit func(o *OrchView) bool
+	visit = func(o *OrchView) bool {
+		if v, ok := vis[o.ID]; ok {
+			return v
+		}
+		if inProgress[o.ID] {
+			return false // cycle edge: break recursion, contribute nothing
+		}
+		inProgress[o.ID] = true
+		v := r.filterMatches(o.Name)
+		for i := range o.Roles {
+			if r.filterMatches(o.Roles[i].Name) {
+				v = true
+			}
+		}
+		for i := range o.Roles {
+			w := &o.Roles[i]
+			if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+				continue
+			}
+			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID {
+				if visit(c) {
+					v = true
+				}
+			}
+		}
+		inProgress[o.ID] = false
+		vis[o.ID] = v
+		return v
+	}
+	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for i := range sec {
+			visit(&sec[i])
+		}
+	}
+	return vis
+}
+
+// isCollapsed / isCoordArchiveOpen apply the auto-expand rule: while a filter is
+// active every node renders EXPANDED so matching rows are never hidden behind a
+// fold. The persisted fold maps are read (not mutated), so clearing the filter
+// restores the operator's folds untouched.
+func (r *Rail) isCollapsed(id int64) bool {
+	if r.filterActive() {
+		return false
+	}
+	return r.collapsed[id]
+}
+
+func (r *Rail) isCoordArchiveOpen(id int64) bool {
+	if r.filterActive() {
+		return true
+	}
+	return r.coordArchiveOpen[id]
+}
+
+// orchVisible reports whether the orchestrator should render under the active
+// filter (always true when no filter is active).
+func (r *Rail) orchVisible(id int64) bool {
+	return !r.filterActive() || r.filterVis[id]
+}
+
+// anyOrchVisible reports whether any orchestrator in the section is visible
+// under the active filter (used to prune an empty section header). True for any
+// non-empty section when no filter is active.
+func (r *Rail) anyOrchVisible(secs []OrchView) bool {
+	if !r.filterActive() {
+		return len(secs) > 0
+	}
+	for i := range secs {
+		if r.filterVis[secs[i].ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// anyFreelanceVisible reports whether any freelance role matches the active
+// filter (prunes the Freelance section header). True for any non-empty set when
+// no filter is active.
+func (r *Rail) anyFreelanceVisible() bool {
+	if !r.filterActive() {
+		return len(r.model.Freelance) > 0
+	}
+	for i := range r.model.Freelance {
+		if r.filterMatches(r.model.Freelance[i].Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// workerRowVisible reports whether a worker row should render under the active
+// filter: its own name matches, OR it bridges a visible sub-orchestrator (so the
+// bridge parent is kept for a nested match). Always true when no filter active.
+// The bridge child is resolved through the canonical parent (the same primitive
+// placement uses) so visibility and nesting agree.
+func (r *Rail) workerRowVisible(ownerID int64, w *RoleView, canonical map[int64]canonParent, placed map[int64]bool) bool {
+	if !r.filterActive() {
+		return true
+	}
+	if r.filterMatches(w.Name) {
+		return true
+	}
+	if c := r.workerBridgeChild(ownerID, w, canonical, placed); c != nil && r.filterVis[c.ID] {
+		return true
+	}
+	return false
+}
 
 // currentRef returns a stable identity for the row under the cursor so the
 // cursor can be re-pinned after a rebuild. RoleID for roles, OrchID (negated
@@ -205,9 +368,20 @@ func (r *Rail) buildRows() {
 	// (a chain that loops without ever reaching a root) get rescued.
 	structReach := r.structuralReach(canonical)
 
+	// Filter visibility memo (ancestry-preserving). nil when no filter is active,
+	// so every non-filtered path below short-circuits to today's behaviour. The
+	// raw bridge index (every bridge, not just canonical parents) drives the memo
+	// so a match anywhere in a multi-bridge subtree keeps its ancestors visible.
+	if r.filterActive() {
+		r.filterVis = r.computeVisible(r.model.bridgeIndex())
+	} else {
+		r.filterVis = nil
+	}
+
 	// 1. Pinned section. Pinned orchestrators are always top-level roots
-	// (user intent), even if some bridge would otherwise consume them.
-	if len(r.model.Pinned) > 0 {
+	// (user intent), even if some worker bridges them. The header is pruned when
+	// no pinned orchestrator is visible under the active filter.
+	if r.anyOrchVisible(r.model.Pinned) {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
 			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, canonical, placed)
@@ -231,16 +405,20 @@ func (r *Rail) buildRows() {
 		}
 	}
 
-	// 3. Freelance section.
-	if len(r.model.Freelance) > 0 {
+	// 3. Freelance section. The header + separator are pruned when no freelance
+	// role matches the active filter; the section auto-expands while filtering.
+	if r.anyFreelanceVisible() {
 		r.rows = append(r.rows, railRow{kind: rrRule})
 		r.rows = append(r.rows, railRow{
 			kind:          rrSectionHeader,
 			label:         fmt.Sprintf("Freelance (%d)", len(r.model.Freelance)),
 			collFreelance: true,
 		})
-		if !r.freelanceCollap {
+		if !r.freelanceCollap || r.filterActive() {
 			for i := range r.model.Freelance {
+				if r.filterActive() && !r.filterMatches(r.model.Freelance[i].Name) {
+					continue
+				}
 				r.rows = append(r.rows, railRow{kind: rrFreelanceRole, role: &r.model.Freelance[i], depth: 1})
 			}
 		}
@@ -248,12 +426,17 @@ func (r *Rail) buildRows() {
 
 	// 4. Archive section (collapsed by default): archived orchestrators not
 	// already nested under a live parent (placed). A consumed-but-unplaced
-	// archived orphan (pure cycle) still surfaces here.
+	// archived orphan (pure cycle) still surfaces here. Under an active filter
+	// only visible archived roots are listed, and the section auto-expands.
 	var archivedRoots []*OrchView
 	for i := range r.model.Archived {
-		if !placed[r.model.Archived[i].ID] {
-			archivedRoots = append(archivedRoots, &r.model.Archived[i])
+		if placed[r.model.Archived[i].ID] {
+			continue
 		}
+		if !r.orchVisible(r.model.Archived[i].ID) {
+			continue
+		}
+		archivedRoots = append(archivedRoots, &r.model.Archived[i])
 	}
 	if len(archivedRoots) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrRule})
@@ -262,7 +445,7 @@ func (r *Rail) buildRows() {
 			label:       fmt.Sprintf("Archive (%d)", len(archivedRoots)),
 			collArchive: true,
 		})
-		if !r.archiveCollapsed {
+		if !r.archiveCollapsed || r.filterActive() {
 			for _, o := range archivedRoots {
 				r.appendOrch(o, 1, true, canonical, placed)
 			}
@@ -311,6 +494,11 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 	if placed[o.ID] {
 		return
 	}
+	// Filter: an orchestrator with no match anywhere in its subtree is not placed
+	// (left unplaced so the bottom-Archive / safety passes also skip it).
+	if !r.orchVisible(o.ID) {
+		return
+	}
 	placed[o.ID] = true
 	r.rows = append(r.rows, railRow{
 		kind:       rrOrch,
@@ -319,7 +507,7 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]
 		dim:        dim,
 		collOrchID: o.ID,
 	})
-	if r.collapsed[o.ID] {
+	if r.isCollapsed(o.ID) {
 		return
 	}
 	r.appendOrchWorkers(o, depth+1, dim, canonical, placed)
@@ -355,6 +543,9 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 			archived = append(archived, w)
 			continue
 		}
+		if !r.workerRowVisible(o.ID, w, canonical, placed) {
+			continue // filtered out (no name match, bridges no visible child)
+		}
 		r.appendWorkerRow(o.ID, w, depth, dim, canonical, placed)
 	}
 
@@ -378,8 +569,19 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 	// Per-coordinator Archive (N) expando: archived roles fold under their
 	// coordinator's active agents, collapsed by default. Distinct from the bottom
 	// Archive section (archived ROOT orchestrators). Archived roles render dimmed
-	// and still nest any sub-team they bridge (forced-dim down the subtree).
-	if len(archived) > 0 {
+	// and still nest any sub-team they bridge (forced-dim down the subtree). Under
+	// an active filter only visible archived roles list (the expando is pruned
+	// when none match), and the expando auto-expands.
+	visibleArchived := archived
+	if r.filterActive() {
+		visibleArchived = visibleArchived[:0:0]
+		for _, w := range archived {
+			if r.workerRowVisible(o.ID, w, canonical, placed) {
+				visibleArchived = append(visibleArchived, w)
+			}
+		}
+	}
+	if len(visibleArchived) > 0 {
 		r.rows = append(r.rows, railRow{
 			kind:         rrArchiveExpando,
 			archiveOwner: o.ID,
@@ -387,8 +589,8 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 			dim:          dim,
 			label:        fmt.Sprintf("Archive (%d)", len(archived)),
 		})
-		if r.coordArchiveOpen[o.ID] {
-			for _, w := range archived {
+		if r.isCoordArchiveOpen(o.ID) {
+			for _, w := range visibleArchived {
 				r.appendWorkerRow(o.ID, w, depth+1, true, canonical, placed)
 			}
 		}
@@ -437,6 +639,11 @@ func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, canonical map[int64
 func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
 	rowDim := dim || w.Archived
 	child := r.workerBridgeChild(ownerID, w, canonical, placed)
+	// Under an active filter, only bridge a VISIBLE child: a non-matching subtree
+	// must not surface (and the bridging row drops its chevron).
+	if child != nil && r.filterActive() && !r.filterVis[child.ID] {
+		child = nil
+	}
 	collID := int64(0)
 	if child != nil {
 		collID = child.ID
@@ -444,7 +651,7 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: rowDim, collOrchID: collID})
 	if child != nil {
 		placed[child.ID] = true
-		if !r.collapsed[child.ID] {
+		if !r.isCollapsed(child.ID) {
 			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed)
 		}
 	}
@@ -600,17 +807,35 @@ func (r *Rail) Draw(screen tcell.Screen) {
 	if r.focused {
 		borderStyle = theme.StyleFocusedBorder
 	}
-	inner := widget.DrawBorderedPanel(screen, x, y, w, h, " Hera ", borderStyle)
+	// Reflect an applied query in the border title (while typing AND after Enter).
+	title := " Hera "
+	if r.filterActive() {
+		title = " Hera /" + r.filterQuery + " "
+	}
+	inner := widget.DrawBorderedPanel(screen, x, y, w, h, title, borderStyle)
 	if inner.W <= 0 || inner.H <= 0 {
 		return
 	}
-	r.adjustOffset(inner.H)
-	for vis := 0; vis < inner.H; vis++ {
+	// While typing, a `/ <query>` input line takes the top row; the rows render
+	// below it over the reduced viewport. DrawBorderedPanel already blanked the
+	// interior, so no stale cells survive (no Sync — CLAUDE.md UX rules).
+	rowY := inner.Y
+	rowH := inner.H
+	if r.filterInput {
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "/ "+r.filterQuery+"▌", theme.StyleSelected)
+		rowY = inner.Y + 1
+		rowH = inner.H - 1
+		if rowH <= 0 {
+			return
+		}
+	}
+	r.adjustOffset(rowH)
+	for vis := 0; vis < rowH; vis++ {
 		idx := r.offset + vis
 		if idx >= len(r.rows) {
 			break
 		}
-		r.drawRow(screen, inner.X, inner.Y+vis, inner.W, r.rows[idx], idx == r.cursor)
+		r.drawRow(screen, inner.X, rowY+vis, inner.W, r.rows[idx], idx == r.cursor)
 	}
 }
 
@@ -660,7 +885,7 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 		}
 		label := row.label
 		if row.collFreelance {
-			label = chevron(r.freelanceCollap) + " " + label
+			label = chevron(r.freelanceCollap && !r.filterActive()) + " " + label
 		}
 		widget.DrawText(screen, textX, y, textW, label, style)
 	case rrArchiveExpando:
@@ -669,10 +894,11 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 			style = theme.StyleSelected
 		}
 		// Per-coordinator expandos fold via coordArchiveOpen; the bottom Archive
-		// section folds via archiveCollapsed.
-		collapsed := r.archiveCollapsed
+		// section folds via archiveCollapsed. While filtering both auto-expand, so
+		// the chevron reads expanded to match the rendered rows.
+		collapsed := r.archiveCollapsed && !r.filterActive()
 		if row.archiveOwner > 0 {
-			collapsed = !r.coordArchiveOpen[row.archiveOwner]
+			collapsed = !r.isCoordArchiveOpen(row.archiveOwner)
 		}
 		widget.DrawText(screen, textX, y, textW, chevron(collapsed)+" "+row.label, style)
 	case rrOrch:
@@ -703,7 +929,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 	}
 	// chevron
 	if col < x+w {
-		screen.SetContent(col, y, []rune(chevron(r.collapsed[o.ID]))[0], nil, nameStyle)
+		screen.SetContent(col, y, []rune(chevron(r.isCollapsed(o.ID)))[0], nil, nameStyle)
 		col += 2
 	}
 	// coordinator marker
@@ -751,7 +977,7 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 					markerStyle = theme.StyleDimmed
 				}
 			}
-			screen.SetContent(col, y, []rune(chevron(r.collapsed[row.collOrchID]))[0], nil, markerStyle)
+			screen.SetContent(col, y, []rune(chevron(r.isCollapsed(row.collOrchID)))[0], nil, markerStyle)
 			col += 2
 			if col < x+w {
 				screen.SetContent(col, y, heraIconCoord, nil, markerStyle)
@@ -867,6 +1093,13 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 // them for tab switching (tab nav is 1/2/3 only).
 func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return r.WrapInputHandler(func(event *tcell.EventKey, _ func(p tview.Primitive)) {
+		// While typing a filter every keystroke is filter input — nav and mutation
+		// keys are suppressed (page.handleRailMutation already bailed; app.go let
+		// the global rune shortcuts through). See handleFilterKey.
+		if r.filterInput {
+			r.handleFilterKey(event)
+			return
+		}
 		switch event.Key() {
 		case tcell.KeyDown:
 			r.CursorDown()
@@ -880,7 +1113,56 @@ func (r *Rail) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.
 				r.CursorUp()
 			case ' ':
 				r.ToggleCollapse()
+			case '/':
+				r.enterFilter()
 			}
 		}
 	})
+}
+
+// enterFilter switches the rail into search INPUT mode, preserving any current
+// query so re-pressing `/` after acceptance lets the operator edit/extend it
+// (then Esc clears). The rows already reflect the (unchanged) query, so no
+// rebuild is needed here.
+func (r *Rail) enterFilter() {
+	r.filterInput = true
+	uxlog.Log("[hera-view] rail filter: input mode (query=%q)", r.filterQuery)
+}
+
+// handleFilterKey routes a keystroke while in search INPUT mode. Esc clears and
+// restores the full rail; Enter accepts (query stays, input mode off so j/k
+// navigate the filtered set); Backspace trims a rune; any other rune extends the
+// query. Every query change rebuilds + re-pins the cursor onto a visible row.
+func (r *Rail) handleFilterKey(event *tcell.EventKey) {
+	switch event.Key() {
+	case tcell.KeyEscape:
+		r.filterInput = false
+		r.filterQuery = ""
+		r.rebuildAfterFilter()
+		uxlog.Log("[hera-view] rail filter: cleared")
+	case tcell.KeyEnter:
+		r.filterInput = false
+		uxlog.Log("[hera-view] rail filter: accepted (query=%q)", r.filterQuery)
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if r.filterQuery != "" {
+			runes := []rune(r.filterQuery)
+			r.filterQuery = string(runes[:len(runes)-1])
+			r.rebuildAfterFilter()
+		}
+	case tcell.KeyRune:
+		r.filterQuery += string(event.Rune())
+		r.rebuildAfterFilter()
+	}
+}
+
+// rebuildAfterFilter rebuilds the rows for the current query and re-pins the
+// cursor onto a still-visible selectable row. It writes the cursor directly
+// (restoreCursor/clampCursor), never via setCursor, so a filter change neither
+// fires the selection callback nor (per BUG-002) persists rail state — the
+// filter is transient.
+func (r *Rail) rebuildAfterFilter() {
+	ref := r.currentRef()
+	r.buildRows()
+	r.restoreCursor(ref)
+	r.clampCursor()
 }

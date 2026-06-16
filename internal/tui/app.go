@@ -2367,6 +2367,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		if a.heraPaneFocused() {
 			break
 		}
+		// While the Hera rail is in `/` search input mode, every rune is filter
+		// input — don't run the 1/2/3 tab-switch, q quit, or ? help shortcuts.
+		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera && a.heraPage.RailFiltering() {
+			break
+		}
 		switch event.Rune() {
 		case 'q':
 			if a.mode == modeTaskList {

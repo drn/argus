@@ -70,6 +70,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	// future removal of the binding fails the build (keybinding-help contract).
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
 	testutil.Contains(t, body, "freelancers only")
+	testutil.Contains(t, body, "filter rail by name") // Hera rail `/` filter
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

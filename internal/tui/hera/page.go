@@ -126,6 +126,12 @@ func (p *HeraPage) DAG() *dagview.Widget { return p.dag }
 // Rail exposes the inner rail (test seam + 6b wiring).
 func (p *HeraPage) Rail() *Rail { return p.rail }
 
+// RailFiltering reports whether the rail is in `/` search INPUT mode. The App's
+// global key handler consults it so the global rune shortcuts (1/2/3/q/?) fall
+// through to the rail as filter input while the operator is typing. Safe in
+// remote mode (the rail exists but is never focused).
+func (p *HeraPage) RailFiltering() bool { return p.rail.Filtering() }
+
 // Machine exposes the focus machine (test seam + 6b wiring). Not named Focus()
 // because that collides with tview.Primitive's Focus(func(tview.Primitive)).
 func (p *HeraPage) Machine() *FocusMachine { return p.focus }
@@ -411,6 +417,13 @@ func (p *HeraPage) rebuildDAG() {
 // Ctrl+Q (focus ladder) are handled by the caller before this; nav keys
 // (j/k/↑/↓/space) fall through to the rail.
 func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
+	// While the rail is in `/` search INPUT mode every keystroke is filter input,
+	// not a command: return false so the key falls through to rail.InputHandler
+	// (which appends it to the query / handles Esc·Enter·Backspace). This also
+	// suppresses the Enter-reattach and Ctrl+D paths below while typing.
+	if p.rail.Filtering() {
+		return false
+	}
 	sel := p.rail.Selection()
 	switch event.Key() {
 	case tcell.KeyCtrlD:
