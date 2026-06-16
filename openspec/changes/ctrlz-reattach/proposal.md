@@ -24,11 +24,13 @@ that silent omission created the suspend footgun.
   focused), so `0x1A` can never again reach a pane PTY and suspend an agent.
   This both restores the feature and closes the footgun.
 - **Revive a STOPPED (suspended) worker pane from the Hera view, not just a dead
-  one.** `Enter` on a live worker/freelance role now reuses the Tasks pane's
-  in-place reconnect (the `pendingRerenderRestart` + `runner.Stop` stop-and-resume
-  path that session-switch and rerender already use): if the worker's session is
-  idle and not blocked on a prompt — the signature of a suspended/stuck agent —
-  it is restarted in place and resumed losslessly via `--session-id`. A
+  one.** `Enter` on a live worker/freelance role now triggers an in-place
+  stop-and-resume via the runner's `KickRerender` (NOT the TUI-side
+  `pendingRerenderRestart`, which only restarts while the operator is viewing the
+  agent tab and would otherwise settle the worker at `InReview` from the Hera
+  tab): if the worker's session is idle and not blocked on a prompt — the
+  signature of a suspended/stuck agent — it is restarted in place and resumed
+  losslessly via `--session-id`. A
   busy worker, or one parked at a user prompt, is left untouched (pure
   navigation). Dead sessions still restart via `startSession` as before. A live
   coordinator is navigate-only (it is operator-interactive) — only its dead
