@@ -249,7 +249,7 @@ func (tp *TaskPreviewPanel) RefreshOutput(taskID string, tail []byte, totalWritt
 			style := tcell.StyleDefault
 			if cell != nil {
 				ch = cellRune(cell)
-				style = desaturateStyle(terminal.UvCellToTcellStyle(cell))
+				style = terminal.DesaturateStyle(terminal.UvCellToTcellStyle(cell))
 			}
 			grid[vy][vx] = previewCell{ch: ch, style: style}
 		}
@@ -291,44 +291,6 @@ func (tp *TaskPreviewPanel) publishStatus(msg string) {
 	if changed {
 		tp.notifyBranchChange()
 	}
-}
-
-// desaturateStyle drains all color from a cell style, mapping both foreground
-// and background to luminance-matched grays. The task-list preview renders the
-// selected agent's output identically to the live agent view, so the central
-// block of text is the same in both — the only signal of "which view am I in?"
-// is a thin top-edge tab bar that's easy to miss. Painting the preview in
-// grayscale makes it read pre-attentively as an inactive snapshot, not the
-// live, full-color terminal, which is the fix for accidentally firing
-// task-list hotkeys (archive, status-cycle) while believing focus is in the
-// agent. ColorDefault passes through unchanged so the panel keeps the
-// terminal's own background.
-func desaturateStyle(style tcell.Style) tcell.Style {
-	fg, bg, _ := style.Decompose()
-	style = style.Foreground(grayscaleColor(fg)).Background(grayscaleColor(bg))
-	// Decompose() returns only fg/bg/attrs — the underline color is a separate
-	// channel. Gray it too (when set) so a colored underline (SGR 58) doesn't
-	// leak through the otherwise-grayscale preview. Passing a lone Color to
-	// Underline() touches only ulColor, leaving the underline style/flag intact.
-	if ulc := style.GetUnderlineColor(); ulc.Valid() {
-		style = style.Underline(grayscaleColor(ulc))
-	}
-	return style
-}
-
-// grayscaleColor maps a color to its Rec. 601 luminance gray. Invalid/default
-// colors (ColorDefault) pass through unchanged so the terminal's own default
-// foreground/background is preserved rather than forced to a hard gray.
-func grayscaleColor(c tcell.Color) tcell.Color {
-	if !c.Valid() {
-		return c
-	}
-	r, g, b := c.RGB()
-	if r < 0 {
-		return c
-	}
-	l := (299*r + 587*g + 114*b) / 1000
-	return tcell.NewRGBColor(l, l, l)
 }
 
 // cellRune extracts the display rune from a uv.Cell.
