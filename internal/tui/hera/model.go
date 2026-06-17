@@ -245,6 +245,97 @@ func (m Model) coordBridgeChildren(o *OrchView) []*OrchView {
 	return out
 }
 
+// canonParent identifies a child orchestrator's SINGLE canonical parent for rail
+// nesting: the orchestrator id that renders it, plus whether the relationship is
+// the coordinator-spawn shape (child nests as its own header via
+// coordBridgeChildren) or the worker-bridge shape (child nests under a worker row).
+type canonParent struct {
+	orchID     int64
+	coordSpawn bool
+}
+
+// canonicalParents assigns every child orchestrator ONE deterministic parent,
+// independent of rail collapse state and sibling render order. A child reachable
+// from more than one bridge-parent (the multi-binding case where a coordinator
+// session is BOTH a worker under one orchestrator and the coordinator-spawn of
+// another) would otherwise render under whichever parent the build reached first,
+// so folding that parent relocated the whole subtree to the other parent. Fixing
+// the parent up front makes placement fold-independent — folding a non-canonical
+// parent never migrates the child, and folding the canonical parent just hides it.
+//
+// The rule (stable, order-free): prefer a coordinator-spawn parent over a
+// worker-bridge parent; among coordinator-spawn candidates the EARLIEST
+// coordinator role id wins (the root of the shared-coordinator clique, matching
+// coordBridgeParentOf's direction); among worker-bridge candidates the lowest
+// orchestrator id wins. The result is a function (one parent per child), so the
+// render can never put a child under two parents or migrate it between them.
+//
+// This is purely a RENDER-placement decision: it does not change which
+// orchestrators are reachable in a subtree (consumedSet / BridgeSubtree still walk
+// every bridge for root selection and the Ctrl+D cascade), only which single
+// parent row hosts a multi-parent child.
+func (m Model) canonicalParents() map[int64]canonParent {
+	var all []*OrchView
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			all = append(all, &sec[i])
+		}
+	}
+	out := make(map[int64]canonParent)
+	for _, c := range all {
+		// 1. Coordinator-spawn parent (preferred): the earliest-coordinator-role-id
+		// orchestrator sharing c's coordinator bridge task.
+		var coordParent *OrchView
+		var coordParentRole int64
+		for _, p := range all {
+			if p.ID == c.ID || !coordBridgeParentOf(p, c) {
+				continue
+			}
+			if _, pid := p.coordBridge(); coordParent == nil || pid < coordParentRole {
+				coordParent, coordParentRole = p, pid
+			}
+		}
+		if coordParent != nil {
+			out[c.ID] = canonParent{orchID: coordParent.ID, coordSpawn: true}
+			continue
+		}
+		// 2. Worker-bridge parent: the lowest-orchestrator-id orchestrator with a
+		// worker role bridging c's coordinator bridge task.
+		ck := c.CoordBridgeTaskID()
+		if ck == "" {
+			continue
+		}
+		var workerParent *OrchView
+		for _, p := range all {
+			if p.ID == c.ID || !p.hasWorkerBridging(ck) {
+				continue
+			}
+			if workerParent == nil || p.ID < workerParent.ID {
+				workerParent = p
+			}
+		}
+		if workerParent != nil {
+			out[c.ID] = canonParent{orchID: workerParent.ID, coordSpawn: false}
+		}
+	}
+	return out
+}
+
+// hasWorkerBridging reports whether the orchestrator has a non-coordinator role
+// whose structurally-intact bridge task equals ck (the worker-bridge nesting key).
+func (o *OrchView) hasWorkerBridging(ck string) bool {
+	for i := range o.Roles {
+		w := &o.Roles[i]
+		if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+			continue
+		}
+		if bridgeTaskID(w) == ck {
+			return true
+		}
+	}
+	return false
+}
+
 // BridgeSubtree returns the orchestrator with id rootID and every orchestrator
 // nested beneath it through the worker→coordinator bridge, inclusive, in
 // pre-order. Cycle-safe (visited set). Used by the rail's Ctrl+D cascade to tear
