@@ -234,6 +234,89 @@ func TestSelection_FocusTaskID(t *testing.T) {
 	})
 }
 
+// coordOf builds an orchestrator whose coordinator role has an explicit RoleID
+// and bridge task (the coord-of-both fixtures need distinct coordinator role ids
+// to exercise the earliest-id=parent rule).
+func coordOf(id int64, name string, coordRoleID int64, coordTask string, workers ...RoleView) OrchView {
+	o := OrchView{ID: id, Name: name, Roles: []RoleView{
+		{RoleID: coordRoleID, OrchID: id, Name: "coord", Kind: db.HeraKindCoordinator,
+			Live: true, TaskID: coordTask, BridgeTaskID: coordTask},
+	}}
+	for i := range workers {
+		workers[i].OrchID = id
+		o.Roles = append(o.Roles, workers[i])
+	}
+	return o
+}
+
+// TestModel_CoordSpawnedSubteamBridge covers the real under-nesting bug: one
+// coordinator task coordinates BOTH a parent and a child orchestrator (the
+// coordinator-spawned sub-team shape that hera_new_orchestrator creates). The
+// in-memory bridge must nest the LATER-coordinator-role-id orchestrator under
+// the earlier one, matching db.SubtreeOrchIDs (whose parent-side join matches
+// ANY non-teardown binding — coordinator OR worker).
+func TestModel_CoordSpawnedSubteamBridge(t *testing.T) {
+	// Task T coordinates P (coord role 100) and Q (coord role 200). P is the
+	// earlier-id parent; Q nests under P.
+	p := coordOf(1, "P", 100, "T",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	m := Model{Active: []OrchView{p, q}}
+
+	t.Run("consumed set nests the later-id orchestrator only", func(t *testing.T) {
+		consumed := m.consumedSet(m.bridgeIndex())
+		testutil.Equal(t, consumed[2], true)  // Q nested under P
+		testutil.Equal(t, consumed[1], false) // P stays a root
+	})
+
+	t.Run("coordBridgeChildren is asymmetric by coordinator role id", func(t *testing.T) {
+		pc := m.coordBridgeChildren(&m.Active[0])
+		testutil.Equal(t, len(pc), 1)
+		testutil.Equal(t, pc[0].Name, "Q")
+		// Q is the later id, so it parents nothing (no A↔B cycle).
+		testutil.Equal(t, len(m.coordBridgeChildren(&m.Active[1])), 0)
+	})
+
+	t.Run("coordBridgeParentOf direction", func(t *testing.T) {
+		testutil.Equal(t, coordBridgeParentOf(&m.Active[0], &m.Active[1]), true)
+		testutil.Equal(t, coordBridgeParentOf(&m.Active[1], &m.Active[0]), false)
+	})
+}
+
+// TestCoordBridge_UnifiedResolution: in the defensive multi-coordinator case
+// (first coord role unbound, a later one bound), coordBridgeParentOf must key off
+// the SAME coordinator role that CoordBridgeTaskID/bridgeIndex use — the first
+// with a non-empty bridge task — so the worker path and coord path never resolve
+// different coordinator tasks/ids.
+func TestCoordBridge_UnifiedResolution(t *testing.T) {
+	// P: first coord role (id 90) is UNBOUND; second coord role (id 100) carries
+	// task T. Q: coord role 200 carries T. P must parent Q off role 100 (< 200).
+	p := OrchView{ID: 1, Name: "P", Roles: []RoleView{
+		{RoleID: 90, Name: "coord-dead", Kind: db.HeraKindCoordinator}, // no binding
+		{RoleID: 100, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "T", BridgeTaskID: "T"},
+	}}
+	q := coordOf(2, "Q", 200, "T")
+	task, role := p.coordBridge()
+	testutil.Equal(t, task, "T")
+	testutil.Equal(t, role, int64(100)) // the BOUND coord, not the dead first one
+	testutil.Equal(t, p.CoordBridgeTaskID(), "T")
+	m := Model{Active: []OrchView{p, q}}
+	testutil.Equal(t, coordBridgeParentOf(&m.Active[0], &m.Active[1]), true)
+	testutil.Equal(t, coordBridgeParentOf(&m.Active[1], &m.Active[0]), false)
+}
+
+// TestModel_CoordBridgeNoFalsePositives: orchestrators with DIFFERENT coordinator
+// tasks never coord-bridge each other (only the shared-coordinator shape nests).
+func TestModel_CoordBridgeNoFalsePositives(t *testing.T) {
+	a := coordOf(1, "A", 100, "ta")
+	b := coordOf(2, "B", 200, "tb")
+	m := Model{Active: []OrchView{a, b}}
+	testutil.Equal(t, coordBridgeParentOf(&m.Active[0], &m.Active[1]), false)
+	testutil.Equal(t, len(m.coordBridgeChildren(&m.Active[0])), 0)
+	testutil.Equal(t, len(m.consumedSet(m.bridgeIndex())), 0)
+}
+
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel
 // surfaces read errors rather than swallowing them.
 type errReader struct{ HeraReader }

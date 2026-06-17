@@ -43,3 +43,16 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 - [x] 7.1 `openspec validate --strict` (LOCAL only — never wired into CI/make).
 - [x] 7.2 `make pre-pr` green.
+
+## 8. Bridge-fix follow-up: nest done sub-teams (rail under-nesting)
+
+The rail still rendered ~24 top-level coordinators on real data because the
+in-memory bridge consumed children via roles the rail never nested under. Two
+causes, both in the same class (consume ≠ place → safety-swept flat), neither a
+liveness/teardown issue:
+
+- [x] 8.1 Coordinator-spawned sub-teams: `coordBridgeParentOf` + `Model.coordBridgeChildren` (shared coord bridge task, earlier coord role id = parent); fold into `consumedSet` and `BridgeSubtree`. `appendOrchWorkers` nests coord-spawned children under the parent header. `tree.go` BFS reaches them too.
+- [x] 8.2 Archived bridging workers: an archived worker bridging a not-yet-placed child renders in place (dimmed) via `workerBridgeChild` instead of hoisting to the per-coordinator Archive expando, so its live child nests; archived leaf workers still fold. Active child subtree stays non-dimmed.
+- [x] 8.3 Tests: coord-spawned nest + cycle direction (model + rail render + tree); archived-bridging-worker in-place nest + archived-leaf still hoists; ≥20-nested-under-6-roots large-shape regression. All prior rail-nesting tests stay green.
+- [x] 8.4 Verified against a COPY of live `~/.argus/data.sql`: rail renders 7 roots (was ~24), deeply nested — no data migration.
+- [x] 8.5 `openspec validate --strict` + `make pre-pr` green.

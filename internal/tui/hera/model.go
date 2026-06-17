@@ -112,14 +112,25 @@ func (o *OrchView) CoordTaskID() string {
 // a sub-orchestrator still nests under its parent after the coordinator's task
 // completed (the bridging-breadth rule). First coordinator role wins.
 func (o *OrchView) CoordBridgeTaskID() string {
+	t, _ := o.coordBridge()
+	return t
+}
+
+// coordBridge returns the structural bridge task AND the role id of the SAME
+// coordinator role that supplies it — the first coordinator with a non-empty
+// bridge task. Both coordinator-resolution callers (CoordBridgeTaskID and
+// coordBridgeParentOf) go through this so the bridge task and the cycle-break
+// role id never come from different coordinator roles in the (defensive)
+// multi-coordinator case. Returns ("", 0) when no coordinator ever bound.
+func (o *OrchView) coordBridge() (taskID string, roleID int64) {
 	for i := range o.Roles {
 		if o.Roles[i].Kind == db.HeraKindCoordinator {
 			if k := bridgeTaskID(&o.Roles[i]); k != "" {
-				return k
+				return k, o.Roles[i].RoleID
 			}
 		}
 	}
-	return ""
+	return "", 0
 }
 
 // bridgeIndex maps each orchestrator's coordinator bridge task to the
@@ -143,8 +154,19 @@ func (m Model) bridgeIndex() map[string]*OrchView {
 }
 
 // consumedSet marks every orchestrator that is bridged as a child by some OTHER
-// orchestrator's (non-teardown) worker, so the rail's top-level passes skip it
-// (it renders nested instead).
+// orchestrator, so the rail's top-level passes skip it (it renders nested
+// instead). Two bridge shapes consume a child:
+//   - worker bridge: a parent WORKER role whose (non-teardown) latest binding
+//     task equals the child's coordinator bridge task (a spawned worker that
+//     became a sub-coordinator);
+//   - coordinator-spawned sub-team: parent and child share the SAME coordinator
+//     bridge task (one coordinator agent runs both — what hera_new_orchestrator
+//     creates), with the earlier coordinator-role-id orchestrator the parent.
+//
+// The coordinator path is the fix for the rail under-nesting bug: db.SubtreeOrchIDs
+// matches ANY non-teardown parent-side binding (coordinator OR worker), but the
+// in-memory bridge previously only honoured worker rows, so coordinator-spawned
+// sub-teams rendered flat as extra top-level roots.
 func (m Model) consumedSet(bridge map[string]*OrchView) map[int64]bool {
 	consumed := make(map[int64]bool)
 	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
@@ -159,9 +181,53 @@ func (m Model) consumedSet(bridge map[string]*OrchView) map[int64]bool {
 					consumed[c.ID] = true
 				}
 			}
+			for _, c := range m.coordBridgeChildren(p) {
+				consumed[c.ID] = true
+			}
 		}
 	}
 	return consumed
+}
+
+// coordBridgeParentOf reports whether parent nests child via the
+// coordinator-spawned sub-team shape: both orchestrators' coordinator roles
+// bridge the SAME argus task (one coordinator agent runs both — the multi-orch
+// coordinator that hera_new_orchestrator creates), and parent's coordinator role
+// was created first (lower role id = the parent; the later one is the spawned
+// sub-team). This breaks the A↔B symmetry of the shared-task bridge — db.SubtreeOrchIDs
+// would include each from the other, so the rail picks the earliest coordinator
+// role id as the single root. A non-teardown latest binding is implied by
+// CoordBridgeTaskID using bridgeTaskID; a torn-down coordinator yields an empty
+// bridge task and so cannot match.
+func coordBridgeParentOf(parent, child *OrchView) bool {
+	pt, pid := parent.coordBridge()
+	ct, cid := child.coordBridge()
+	if pt == "" || pt != ct {
+		return false
+	}
+	return pid < cid
+}
+
+// coordBridgeChildren returns the orchestrators that nest directly under o
+// because o is the earliest-coordinator-role-id member of a set sharing o's
+// coordinator bridge task. Archived children are excluded (mirroring
+// db.SubtreeOrchIDs' `child_orch.archived_at IS NULL` prune — they surface in
+// the bottom Archive section instead, distinct from worker-bridged archived
+// children which nest dimmed in place for backward compatibility).
+func (m Model) coordBridgeChildren(o *OrchView) []*OrchView {
+	var out []*OrchView
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			c := &sec[i]
+			if c.ID == o.ID || c.Archived {
+				continue
+			}
+			if coordBridgeParentOf(o, c) {
+				out = append(out, c)
+			}
+		}
+	}
+	return out
 }
 
 // BridgeSubtree returns the orchestrator with id rootID and every orchestrator
@@ -191,6 +257,9 @@ func (m Model) BridgeSubtree(rootID int64) []*OrchView {
 			if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != o.ID {
 				walk(c)
 			}
+		}
+		for _, c := range m.coordBridgeChildren(o) {
+			walk(c)
 		}
 	}
 	walk(start)

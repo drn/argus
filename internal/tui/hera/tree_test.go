@@ -81,6 +81,26 @@ func TestHeraTreeNodes(t *testing.T) {
 		testutil.DeepEqual(t, depsByID(nodes, "tc"), []string{"tb"}) // worker-in-B edge
 	})
 
+	t.Run("coordinator-spawned sub-team stitches into the tree", func(t *testing.T) {
+		// Coordinator task T coordinates BOTH P (coord role 100) and Q (coord role
+		// 200) — hera_new_orchestrator's coordinator-spawned sub-team. From root P,
+		// Q's worker must appear, hanging off the SHARED coordinator node T (the
+		// parent-side bridge is the coordinator, not a worker row).
+		p := OrchView{ID: 1, Name: "P", Roles: []RoleView{
+			{RoleID: 100, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "T", BridgeTaskID: "T"},
+		}}
+		q := OrchView{ID: 2, Name: "Q", Roles: []RoleView{
+			{RoleID: 200, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "T", BridgeTaskID: "T"},
+			{Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw"},
+		}}
+		m := Model{Active: []OrchView{p, q}}
+		nodes := heraTreeNodes(m, &m.Active[0]) // root = P
+		ids := nodeIDs(nodes)
+		testutil.Equal(t, ids["T"] && ids["tqw"], true)
+		testutil.Equal(t, len(nodes), 2)                             // T deduped to one node
+		testutil.DeepEqual(t, depsByID(nodes, "tqw"), []string{"T"}) // worker hangs off shared coord
+	})
+
 	t.Run("scoped to subtree: a sibling orchestrator is excluded", func(t *testing.T) {
 		a := orchView(1, "A", "ta", wk("w", "tb"))
 		other := orchView(9, "Other", "tz", wk("w", "ty")) // not reachable from A

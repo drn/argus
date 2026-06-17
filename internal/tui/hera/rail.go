@@ -303,11 +303,32 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[st
 		if w.Kind == db.HeraKindCoordinator {
 			continue // folded into the header / the bridging row above
 		}
-		if w.Archived {
-			archived = append(archived, w) // hoisted into the per-coordinator expando
+		// An archived worker that BRIDGES a not-yet-placed child is a structural
+		// sub-coordinator, not a finished leaf: it renders in place (dimmed) so its
+		// child sub-team still nests. Hoisting it into the collapsed Archive expando
+		// would consume the child (consumedSet) without ever placing it, leaving the
+		// child to be safety-swept flat to the top level — the archived-worker
+		// under-nesting bug. Only archived LEAF workers (no live child to bridge)
+		// fold into the expando. db.SubtreeOrchIDs nests the child regardless of the
+		// parent-side role's archived state, so this mirrors it.
+		if w.Archived && r.workerBridgeChild(o.ID, w, bridge, placed) == nil {
+			archived = append(archived, w)
 			continue
 		}
 		r.appendWorkerRow(o.ID, w, depth, dim, bridge, placed)
+	}
+
+	// Coordinator-spawned sub-teams: a child orchestrator whose coordinator is the
+	// SAME agent as o's (the multi-orch coordinator hera_new_orchestrator creates)
+	// has no worker row to nest under — the parent's coordinator IS the bridge. It
+	// nests as its own sub-orchestrator header directly under o, recursively, at
+	// the worker depth. The placed guard breaks the shared-task A↔B symmetry (only
+	// the earliest-coordinator-id parent reaches it; see coordBridgeParentOf).
+	for _, child := range r.model.coordBridgeChildren(o) {
+		if placed[child.ID] {
+			continue
+		}
+		r.appendOrch(child, depth, dim, bridge, placed)
 	}
 
 	// Per-coordinator Archive (N) expando: archived roles fold under their
@@ -330,26 +351,39 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[st
 	}
 }
 
+// workerBridgeChild returns the not-yet-placed child orchestrator a worker
+// bridges (its latest-binding task is that child's coordinator bridge task), or
+// nil. Coordinator-kind, torn-down, same-orchestrator, and already-placed links
+// do not bridge. Shared by appendOrchWorkers (hoist-vs-nest decision) and
+// appendWorkerRow (the nest itself) so both agree.
+func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, bridge map[string]*OrchView, placed map[int64]bool) *OrchView {
+	if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+		return nil
+	}
+	if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != ownerID && !placed[c.ID] {
+		return c
+	}
+	return nil
+}
+
 // appendWorkerRow emits one worker role row at `depth` and, when it bridges a
 // not-yet-placed child orchestrator, nests the child's workers one level deeper.
-// dim forces the dimmed style (archived placement propagates down the subtree).
+// The worker ROW dims when the worker itself is archived (an honest per-node
+// signal); the child subtree dims only from inherited dim or the CHILD's own
+// archived state — an active child under an archived bridging worker stays
+// normal (it is live work, not archived placement).
 func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
-	childDim := dim || w.Archived
-	var child *OrchView
-	if roleBridges(w) {
-		if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != ownerID && !placed[c.ID] {
-			child = c
-		}
-	}
+	rowDim := dim || w.Archived
+	child := r.workerBridgeChild(ownerID, w, bridge, placed)
 	collID := int64(0)
 	if child != nil {
 		collID = child.ID
 	}
-	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: childDim, collOrchID: collID})
+	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: rowDim, collOrchID: collID})
 	if child != nil {
 		placed[child.ID] = true
 		if !r.collapsed[child.ID] {
-			r.appendOrchWorkers(child, depth+1, childDim || child.Archived, bridge, placed)
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, bridge, placed)
 		}
 	}
 }

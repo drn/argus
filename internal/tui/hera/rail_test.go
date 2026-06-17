@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/drn/argus/internal/db"
@@ -204,6 +205,156 @@ func TestRail_NestingCycleTerminatesAndPlacesOnce(t *testing.T) {
 	testutil.Equal(t, headers, 1) // each orchestrator placed once
 }
 
+func TestRail_NestsCoordinatorSpawnedSubteam(t *testing.T) {
+	// Coordinator task T coordinates BOTH P (coord role 100) and Q (coord role
+	// 200) — the coordinator-spawned sub-team shape. Q has no worker row in P to
+	// bridge it (the parent's coordinator IS the bridge), so it must nest as its
+	// own sub-orchestrator header directly under P. This is the real under-nesting
+	// bug: before the fix Q renders as a second top-level root.
+	p := coordOf(1, "P", 100, "T",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q}})
+
+	// P header(0), pw worker(1), Q nested header(1), qw worker(2).
+	testutil.Equal(t, r.Rows(), 4)
+	testutil.Equal(t, r.depthOf("P"), 0)
+	testutil.Equal(t, r.depthOf("pw"), 1)
+	testutil.Equal(t, r.depthOf("Q"), 1) // nested under P, NOT a top-level root
+	testutil.Equal(t, r.depthOf("qw"), 2)
+	testutil.Equal(t, r.hasOrchHeader("Q"), true) // renders as a collapsible sub-orch header
+
+	// Exactly one depth-0 root header (P); Q is nested.
+	roots := 0
+	for _, row := range r.rows {
+		if row.kind == rrOrch && row.depth == 0 {
+			roots++
+		}
+	}
+	testutil.Equal(t, roots, 1)
+}
+
+func TestRail_CoordSpawnedSubteamCollapses(t *testing.T) {
+	p := coordOf(1, "P", 100, "T")
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q}})
+	// P header(0), Q nested header(1), qw(2).
+	testutil.Equal(t, r.Rows(), 3)
+
+	// Move the cursor onto the nested Q header and fold it → qw hides.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "Q" {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("qw"), -1)
+}
+
+func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
+	// Mirror the real rail shape: 6 roots, each with 3 worker-bridged children
+	// and 1 coordinator-spawned sub-team = 24 nested orchestrators. The bug made
+	// all 30 render as top-level roots; after the fix exactly 6 are roots.
+	var active []OrchView
+	var roleID int64 = 1000
+	nextRole := func() int64 { roleID++; return roleID }
+	var orchID int64
+	nextOrch := func() int64 { orchID++; return orchID }
+
+	for k := 0; k < 6; k++ {
+		rootCoordTask := fmt.Sprintf("rootcoord-%d", k)
+		rootCoordID := nextRole()
+		root := OrchView{ID: nextOrch(), Name: fmt.Sprintf("root-%d", k), Roles: []RoleView{
+			{RoleID: rootCoordID, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: rootCoordTask, BridgeTaskID: rootCoordTask},
+		}}
+		for c := 0; c < 3; c++ {
+			childTask := fmt.Sprintf("wkrchild-%d-%d", k, c)
+			root.Roles = append(root.Roles, RoleView{
+				RoleID: nextRole(), Name: fmt.Sprintf("w-%d-%d", k, c), Kind: db.HeraKindWorker,
+				Live: true, TaskID: childTask, BridgeTaskID: childTask,
+			})
+			active = append(active, OrchView{ID: nextOrch(), Name: childTask, Roles: []RoleView{
+				{RoleID: nextRole(), Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: childTask, BridgeTaskID: childTask},
+			}})
+		}
+		// Coordinator-spawned sub-team: the SAME root coordinator task, later id.
+		active = append(active, OrchView{ID: nextOrch(), Name: fmt.Sprintf("coordchild-%d", k), Roles: []RoleView{
+			{RoleID: nextRole(), Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: rootCoordTask, BridgeTaskID: rootCoordTask},
+		}})
+		active = append(active, root)
+	}
+	m := Model{Active: active}
+
+	// 6 roots, 24 nested.
+	consumed := m.consumedSet(m.bridgeIndex())
+	testutil.Equal(t, len(consumed), 24)
+
+	r := NewRail()
+	r.SetModel(m)
+	roots := 0
+	for _, row := range r.rows {
+		if row.kind == rrOrch && row.depth == 0 {
+			roots++
+		}
+	}
+	testutil.Equal(t, roots, 6)
+}
+
+func TestRail_ArchivedBridgingWorkerNestsActiveChild(t *testing.T) {
+	// Root R (active) has an ARCHIVED worker w that bridges an ACTIVE child C.
+	// w must render in place (dimmed) — NOT hoisted into the collapsed Archive
+	// expando — so C nests under it instead of being safety-swept flat to a
+	// top-level root. C stays NORMAL (only the archived worker row dims). This is
+	// the archived-worker half of the under-nesting bug (done sub-teams flat).
+	root := OrchView{ID: 1, Name: "R", Roles: []RoleView{
+		{RoleID: 10, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tr", BridgeTaskID: "tr"},
+		{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, Archived: true, TaskID: "tc", BridgeTaskID: "tc"},
+	}}
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root, child}})
+
+	testutil.Equal(t, r.depthOf("w"), 1)
+	testutil.Equal(t, r.depthOf("wc"), 2)
+	testutil.Equal(t, r.hasOrchHeader("C"), false) // nested, not a top-level root
+	roots := 0
+	for _, row := range r.rows {
+		if row.kind == rrOrch && row.depth == 0 {
+			roots++
+		}
+		if row.role != nil && row.role.Name == "w" {
+			testutil.Equal(t, row.dim, true) // archived worker row dims (honest)
+		}
+		if row.role != nil && row.role.Name == "wc" {
+			testutil.Equal(t, row.dim, false) // active child subtree stays normal
+		}
+		testutil.Equal(t, row.kind == rrArchiveExpando, false) // bridging worker not hoisted
+	}
+	testutil.Equal(t, roots, 1) // only R is a root
+}
+
+func TestRail_ArchivedLeafWorkerStillHoistsToExpando(t *testing.T) {
+	// An archived worker that bridges NOTHING is a finished leaf and still folds
+	// into the per-coordinator Archive expando (the in-place rule is only for
+	// archived workers that bridge a live child).
+	o := OrchView{ID: 1, Name: "o", Roles: []RoleView{
+		{RoleID: 11, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"},
+		{RoleID: 13, Name: "old-leaf", Kind: db.HeraKindWorker, Archived: true, Live: true, TaskID: "t13", BridgeTaskID: "t13"},
+	}}
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{o}})
+	testutil.Equal(t, r.depthOf("old-leaf"), -1) // hidden under collapsed expando
+	found := false
+	for i := range r.rows {
+		if r.rows[i].kind == rrArchiveExpando && r.rows[i].archiveOwner == 1 {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
 func TestRail_ArchivedBridgeNestsDimmedInPlace(t *testing.T) {
 	// Active root R bridges archived child C via worker w. C must nest dimmed
 	// under w (not dropped, not hoisted to the bottom Archive section).
@@ -278,6 +429,24 @@ func TestModel_BridgeSubtree(t *testing.T) {
 	testutil.DeepEqual(t, names(m.BridgeSubtree(2)), []string{"C", "G"})
 	testutil.DeepEqual(t, names(m.BridgeSubtree(1)), []string{"R", "C", "G"})
 	testutil.Nil(t, m.BridgeSubtree(999))
+}
+
+func TestModel_BridgeSubtreeIncludesCoordSpawnedChild(t *testing.T) {
+	// P coordinates a worker-bridged child C and a coordinator-spawned sub-team S
+	// (shared coord task T, later coord id). The Ctrl+D cascade must reach both.
+	p := coordOf(1, "P", 100, "T",
+		RoleView{RoleID: 101, Name: "w", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	s := coordOf(3, "S", 300, "T")
+	m := Model{Active: []OrchView{p, c, s}}
+	names := func(os []*OrchView) []string {
+		out := make([]string, len(os))
+		for i, o := range os {
+			out[i] = o.Name
+		}
+		return out
+	}
+	testutil.DeepEqual(t, names(m.BridgeSubtree(1)), []string{"P", "C", "S"})
 }
 
 func TestRail_SelectionCarriesBridgeChild(t *testing.T) {

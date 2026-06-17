@@ -10,11 +10,18 @@
 
 ### Requirement: Rail nests sub-orchestrators under their bridging worker row (area 1)
 
-The system SHALL build the rail as a nested tree of display rows from the read-only model. Each root orchestrator (one with no bridging parent in the rendered set) renders at depth 0; an expanded orchestrator's directly-bound roles render at `depth+1`; and a sub-orchestrator renders indented beneath the parent worker row that bridges it (its coordinator's bridge task equals that worker's bridge task), recursively. Nesting consumes the corrected subtree (see "Multi-binding bridge keys off the latest binding"). A visited-orchestrator set guards cycles so each orchestrator is placed at most once. An archived sub-orchestrator reached through a bridge renders dimmed in place (it is NOT dropped from its parent's subtree, distinct from the bottom Archive section which lists archived ROOT orchestrators).
+The system SHALL build the rail as a nested tree of display rows from the read-only model. Each root orchestrator (one with no bridging parent in the rendered set) renders at depth 0; an expanded orchestrator's directly-bound roles render at `depth+1`; and a sub-orchestrator renders indented beneath the row that bridges it, recursively. There are two nesting shapes:
+
+- **Worker-bridged child:** when a parent WORKER row's bridge task equals the child's coordinator bridge task, the child's workers nest one level beneath that worker row (the worker row IS the child's coordinator surrogate — no separate child header).
+- **Coordinator-spawned child:** when the parent's COORDINATOR is also the child's coordinator (the shared-coordinator shape — there is no worker row to host it), the child nests as its OWN collapsible sub-orchestrator header directly under the parent, at the worker depth, recursively.
+
+Nesting consumes the corrected subtree (see "Multi-binding bridge keys off the latest binding"). A visited-orchestrator (`placed`) set guards cycles so each orchestrator is placed at most once. An archived sub-orchestrator reached through a bridge renders dimmed in place (it is NOT dropped from its parent's subtree, distinct from the bottom Archive section which lists archived ROOT orchestrators).
+
+An archived WORKER that bridges a not-yet-placed child renders in place (its row dimmed) rather than being hoisted into the per-coordinator Archive expando, so its child sub-team still nests — a done sub-coordinator must not strand its live subtree at the top level. Only archived LEAF workers (bridging no unplaced child) fold into the expando. The archived bridging worker's ROW dims, but its child subtree dims only from inherited dim or the child's own archived state (an active child under an archived bridging worker stays normal).
 
 A PINNED orchestrator is ALWAYS a top-level root (rendered in the Pinned section), even when a worker bridges it — user pin intent wins over nesting. After the root pass, a safety sweep places any active orchestrator left unplaced by a pure bridge cycle as a top-level root, so a cycle-orphaned orchestrator never vanishes from the rail.
 
-Derived from: `internal/tui/hera/rail.go` (`buildRows`, `appendOrch`), `docs/OLD-RAIL-SNAPSHOT.md` (target layout: 6 roots / 19 nested).
+Derived from: `internal/tui/hera/rail.go` (`buildRows`, `appendOrch`, `appendOrchWorkers`, `appendWorkerRow`, `workerBridgeChild`), `internal/tui/hera/model.go` (`coordBridgeChildren`), `docs/OLD-RAIL-SNAPSHOT.md` (target layout: 6 roots / 19 nested).
 
 #### Scenario: Sub-orchestrator nests under its bridging worker
 
@@ -41,11 +48,30 @@ Derived from: `internal/tui/hera/rail.go` (`buildRows`, `appendOrch`), `docs/OLD
 - **WHEN** a sub-orchestrator reached through a bridge is archived
 - **THEN** it renders nested under its parent in the dimmed style rather than being dropped or hoisted to the bottom Archive section
 
+#### Scenario: Coordinator-spawned sub-team nests as a sub-header
+
+- **WHEN** the parent's coordinator is also the child's coordinator (no worker row bridges the child)
+- **THEN** the child renders as its own collapsible sub-orchestrator header indented under the parent, foldable with Space, and not as a top-level root
+
+#### Scenario: Archived bridging worker nests its live child in place
+
+- **WHEN** a parent worker is archived but still bridges a not-yet-placed (live) child orchestrator
+- **THEN** the worker row renders in place dimmed (not hoisted into the Archive expando) and its child nests beneath it, with the live child subtree rendered in the normal (non-dimmed) style
+
+#### Scenario: Archived leaf worker folds into the expando
+
+- **WHEN** an archived worker bridges no unplaced child orchestrator
+- **THEN** it still folds into the per-coordinator `Archive (N)` expando rather than rendering in place
+
 ### Requirement: Multi-binding bridge keys off the latest binding with a teardown guard (area 1)
 
-The system SHALL determine the parent→child bridge from each role's LATEST binding regardless of liveness, not the live binding alone. A worker bridges a child orchestrator when the worker's latest-binding task equals that child's coordinator's latest-binding task. An ended binding still bridges UNLESS its `end_reason` is an operator-teardown reason (`reparented` or `user_deleted`); every other end reason (`argus_deleted`, `task_missing`, normal session end) leaves the structural link intact. This rule is applied identically by the DB-side `SubtreeOrchIDs` (TLDR roll-up) and the in-memory `workerTaskSet`/`heraTreeNodes` (rail + Details tree). Archived orchestrators are still pruned as descendants in `SubtreeOrchIDs`.
+The system SHALL determine the parent→child bridge from each role's LATEST binding regardless of liveness, not the live binding alone. The in-memory rail/tree bridge SHALL match `db.SubtreeOrchIDs` exactly: a parent orchestrator P nests a child orchestrator C when C's coordinator's latest-binding task ALSO has a non-teardown latest binding under P through ANY of P's roles — a WORKER role (a spawned worker that became a sub-coordinator) OR P's own COORDINATOR role (the coordinator-spawned sub-team that `hera_new_orchestrator` creates, where one coordinator agent runs both P and C). The earlier in-memory bridge honoured only worker roles, so coordinator-spawned sub-teams rendered flat as extra top-level roots; matching `SubtreeOrchIDs`' ANY-parent-side-binding join closes that gap.
 
-Derived from: `internal/db/hera_subtree.go` (`heraSubtreeOrchIDs`), `internal/db/hera.go` (`ListHeraLatestBindings`, teardown-reason constants), `internal/tui/hera/tree.go` (`workerTaskSet`, `heraTreeNodes`), `internal/tui/hera/model.go` (`RoleView.BridgeTaskID`/`LinkEndReason`, `OrchView.CoordBridgeTaskID`).
+When P and C share the SAME coordinator bridge task (so `SubtreeOrchIDs` would symmetrically include each from the other — an A↔B cycle), the rail breaks the symmetry deterministically: the orchestrator whose coordinator role has the LOWER role id is the parent (it was created first), and the later one is the spawned sub-team that nests under it.
+
+An ended binding still bridges UNLESS its `end_reason` is an operator-teardown reason (`reparented` or `user_deleted`); every other end reason (`argus_deleted`, `task_missing`, normal session end) leaves the structural link intact. The parent-side role's ARCHIVED state does NOT break the bridge (`SubtreeOrchIDs` has no archived-role filter on the parent side) — an archived worker that bridges a live child still nests it (see the rail-nesting requirement). This rule is applied identically by the DB-side `SubtreeOrchIDs` (TLDR roll-up) and the in-memory `workerTaskSet`/`heraTreeNodes`/`coordBridgeParentOf` (rail + Details tree). Archived CHILD orchestrators are still pruned as descendants in `SubtreeOrchIDs` and in the coordinator-bridge path.
+
+Derived from: `internal/db/hera_subtree.go` (`heraSubtreeOrchIDs`), `internal/db/hera.go` (`ListHeraLatestBindings`, teardown-reason constants), `internal/tui/hera/tree.go` (`workerTaskSet`, `heraTreeNodes`), `internal/tui/hera/model.go` (`RoleView.BridgeTaskID`/`LinkEndReason`, `OrchView.CoordBridgeTaskID`, `coordBridgeParentOf`, `coordBridgeChildren`, `consumedSet`).
 
 #### Scenario: Ended-but-not-torn-down bridge still nests
 
@@ -56,6 +82,16 @@ Derived from: `internal/db/hera_subtree.go` (`heraSubtreeOrchIDs`), `internal/db
 
 - **WHEN** a parent worker's latest binding ended with reason `reparented` or `user_deleted`
 - **THEN** that worker does NOT bridge the child orchestrator (the link is stale)
+
+#### Scenario: Coordinator-spawned sub-team nests under the parent
+
+- **WHEN** one coordinator agent's task is the coordinator of BOTH orchestrator P and orchestrator C (P's coordinator role id is lower than C's)
+- **THEN** C nests under P as a sub-orchestrator and is NOT also rendered as a top-level root
+
+#### Scenario: Shared-coordinator cycle is broken by earliest role id
+
+- **WHEN** orchestrators P and C share a coordinator bridge task (a symmetric A↔B link)
+- **THEN** only the orchestrator with the lower coordinator role id is a root and the other nests under it (never both as co-roots, never a hang)
 
 ### Requirement: Coordinator folds into the orchestrator header (area 3)
 

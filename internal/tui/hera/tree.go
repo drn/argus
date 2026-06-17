@@ -60,7 +60,16 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 			if visited[id] || c.Archived {
 				continue
 			}
+			// Worker bridge: c's coordinator task is a (non-teardown) worker task
+			// under p. Coordinator-spawned sub-team: p and c share a coordinator
+			// agent (p the earlier-id parent). Either reaches c as a descendant —
+			// matching db.SubtreeOrchIDs' ANY-parent-side-binding join.
 			if ct := c.CoordBridgeTaskID(); ct != "" && workers[ct] {
+				visited[id] = true
+				queue = append(queue, c)
+				continue
+			}
+			if coordBridgeParentOf(p, c) {
 				visited[id] = true
 				queue = append(queue, c)
 			}
