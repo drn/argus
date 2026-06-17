@@ -377,6 +377,21 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 				p.focus.Advance()
 				return
 			}
+		// Cmd+Up / Cmd+Down (tcell: KeyUp/KeyDown + ModCtrl|ModAlt, the mod-7
+		// encoding iTerm2 maps Cmd+arrow onto) move the rail selection without
+		// changing pane focus. They are intercepted here — BEFORE the
+		// per-region forward — so the mod-7 escape sequence never reaches the
+		// focused pane's PTY (BUG-002).
+		case tcell.KeyUp:
+			if ctrlAlt {
+				p.rail.CursorUp()
+				return
+			}
+		case tcell.KeyDown:
+			if ctrlAlt {
+				p.rail.CursorDown()
+				return
+			}
 		}
 		switch p.focus.State() {
 		case FocusRail:

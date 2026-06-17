@@ -97,6 +97,49 @@ func TestHeraPage_CtrlZTogglesFullscreen(t *testing.T) {
 	testutil.Equal(t, p.Machine().Fullscreen(), false)
 }
 
+// TestHeraPage_CmdArrowMovesRailSelectionWithoutChangingFocus verifies that
+// Cmd+Down / Cmd+Up (tcell: KeyDown/KeyUp + ModCtrl|ModAlt) move the rail
+// cursor regardless of which pane is focused, and do NOT change focus.
+// This is BUG-002: the keys must be intercepted BEFORE forwardKey sends the
+// mod-7 escape sequence to the pane PTY.
+func TestHeraPage_CmdArrowMovesRailSelectionWithoutChangingFocus(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t-w")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	// Cursor starts on the orchestrator header (row 0 = the coordinator).
+	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+
+	// Move focus into the coordinator pane — simulating the user typing while
+	// watching the coordinator's output.
+	p.Machine().Advance()
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+
+	h := p.InputHandler()
+
+	// Cmd+Down must move the rail cursor to the worker row without changing focus.
+	cmdDown := tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl|tcell.ModAlt)
+	h(cmdDown, noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus unchanged
+
+	// Cmd+Up must move the rail cursor back to the header.
+	cmdUp := tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl|tcell.ModAlt)
+	h(cmdUp, noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus still unchanged
+
+	// Same behaviour when focused on the agent pane.
+	p.Machine().Advance() // coord → agent
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	h(cmdDown, noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+}
+
 func TestHeraPage_FullscreenDrawRendersSinglePane(t *testing.T) {
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
