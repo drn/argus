@@ -35,6 +35,7 @@ const acMaxVisible = 6
 // NewTaskForm is a modal form for creating new tasks in the tcell runtime.
 type NewTaskForm struct {
 	*tview.Box
+	title        string // modal title (defaults to " New Task "); set via SetTitle
 	projectNames []string
 	backendNames []string
 	backendIdx   int
@@ -121,6 +122,7 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 
 	f := &NewTaskForm{
 		Box:             tview.NewBox(),
+		title:           " New Task ",
 		projectNames:    projNames,
 		projInput:       []rune(defaultProject),
 		projCursorPos:   len([]rune(defaultProject)),
@@ -136,6 +138,15 @@ func NewNewTaskForm(projects map[string]config.Project, defaultProject string, b
 	// Load skills for the default project
 	f.loadSkills()
 	return f
+}
+
+// SetTitle overrides the modal title (e.g. "Spawn worker", "New coordinator"
+// when the Hera tab reuses this form). An empty value falls back to " New Task ".
+func (f *NewTaskForm) SetTitle(title string) {
+	if title == "" {
+		title = " New Task "
+	}
+	f.title = title
 }
 
 // Done returns true if the form was submitted.
@@ -1314,7 +1325,10 @@ func (f *NewTaskForm) Draw(screen tcell.Screen) {
 	widget.DrawBorder(screen, mx, my, modalW, modalH, theme.StyleFocusedBorder)
 
 	// Title
-	title := " New Task "
+	title := f.title
+	if title == "" {
+		title = " New Task "
+	}
 	titleX := mx + (modalW-utf8.RuneCountInString(title))/2
 	titleStyle := tcell.StyleDefault.Foreground(theme.ColorTitle).Bold(true).Background(modalBG)
 	for i, r := range title {

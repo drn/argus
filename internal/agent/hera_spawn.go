@@ -101,6 +101,127 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 	return &HeraWorkerSpawnResult{Task: task, Role: role, Binding: binding}, nil
 }
 
+// HeraCoordinatorSpawnInput is the resolved payload for a born-bound ROOT
+// coordinator spawn (the rail `n` key). It creates a brand-new top-level
+// orchestrator, a coordinator role + binding, and the argus task that backs
+// them — `hera_new_orchestrator` semantics, but starting from a fresh task. The
+// caller owns name/project/prompt resolution; this primitive owns the
+// transactional orchestrator + task + role + binding creation with full unwind.
+type HeraCoordinatorSpawnInput struct {
+	OrchestratorBaseName string // base orchestrator name; de-collided to a fresh active name
+	CoordRoleName        string // coordinator role name (defaults to "coord")
+	TaskName             string // argus task name (defaults to the unique orchestrator name)
+	TaskPrompt           string // orientation-prefixed prompt delivered to the session
+	RolePrompt           string // verbatim user prompt, stored on the coordinator role row
+	Project              string // resolved argus project
+	Branch               string // optional base branch
+	Backend              string // optional backend override
+	Model                string // optional model override (empty = backend default)
+}
+
+// HeraCoordinatorSpawnResult is the success payload from SpawnHeraCoordinator.
+type HeraCoordinatorSpawnResult struct {
+	Orchestrator *db.HeraOrchestrator
+	Task         *model.Task
+	Role         *db.HeraRole
+	Binding      *db.HeraBinding
+}
+
+// SpawnHeraCoordinator creates a NEW top-level orchestrator + coordinator role
+// bound to a freshly created argus task (the rail `n` key; BUG-006). It mirrors
+// SpawnHeraWorker's transactional discipline:
+//   - the orchestrator name is de-collided up front so a genuinely new
+//     orchestrator is created (CreateHeraOrchestrator is idempotent by name);
+//   - the coordinator role + binding write is an AfterPersist hook inside
+//     CreateAndStart, joining its LIFO compensating stack (a role/binding insert
+//     failure unwinds the task+worktree; a later session-start failure unwinds
+//     the role+binding too);
+//   - the orchestrator was created BEFORE CreateAndStart, so any failure removes
+//     it explicitly — no orphan empty orchestrator is ever left behind.
+//
+// meta:hera.role=coordinator is stamped inside the hook (rail rendering keys on
+// it), before the session starts. Shared by the native Hera view; the MCP arm
+// (hera_new_orchestrator) keeps its own task-resolution path because it binds an
+// EXISTING task rather than creating one.
+func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordinatorSpawnInput) (*HeraCoordinatorSpawnResult, error) {
+	orchName, err := database.UniqueHeraOrchestratorName(in.OrchestratorBaseName)
+	if err != nil {
+		return nil, err
+	}
+	orch, err := database.CreateHeraOrchestrator(orchName)
+	if err != nil {
+		return nil, err
+	}
+	coordName := in.CoordRoleName
+	if coordName == "" {
+		coordName = "coord"
+	}
+	taskName := in.TaskName
+	if taskName == "" {
+		taskName = orchName
+	}
+
+	var role *db.HeraRole
+	var binding *db.HeraBinding
+	task, _, err := CreateAndStart(database, runner, CreateInput{
+		Name:       taskName,
+		Prompt:     in.TaskPrompt,
+		Project:    in.Project,
+		Backend:    in.Backend,
+		Model:      in.Model,
+		BaseBranch: in.Branch,
+		AutoName:   false, // name is the orchestrator slug — no Haiku rename
+		AfterPersist: func(t *model.Task) (func(), error) {
+			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindCoordinator)); mErr != nil {
+				slog.Warn("[hera] coordinator spawn: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
+			}
+			r, b, cErr := database.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+				OrchestratorID: orch.ID,
+				Name:           coordName,
+				Kind:           db.HeraKindCoordinator,
+				ArgusProject:   in.Project,
+				Prompt:         in.RolePrompt,
+			}, t.ID, t.Worktree)
+			if cErr != nil {
+				return nil, cErr
+			}
+			role, binding = r, b
+			cleanup := func() {
+				if dErr := database.DeleteHeraRole(r.ID); dErr != nil {
+					slog.Warn("[hera] coordinator spawn unwind: delete role failed", "role_id", r.ID, "err", dErr)
+				}
+			}
+			return cleanup, nil
+		},
+	})
+	if err != nil {
+		// The orchestrator was created before CreateAndStart; remove it so a
+		// failed spawn never leaks an empty orchestrator. DeleteHeraOrchestrator
+		// cascades any leftover role/binding (the LIFO cleanup already removed the
+		// role on a start failure, so this is usually a bare-orchestrator delete).
+		if dErr := database.DeleteHeraOrchestrator(orch.ID); dErr != nil {
+			slog.Warn("[hera] coordinator spawn unwind: delete orchestrator failed", "orch_id", orch.ID, "err", dErr)
+		}
+		return nil, err
+	}
+	return &HeraCoordinatorSpawnResult{Orchestrator: orch, Task: task, Role: role, Binding: binding}, nil
+}
+
+// HeraCoordinatorOrientation is the orientation prefix prepended to a new root
+// coordinator's prompt. It names the orchestrator and points at the coordination
+// tools (spawn / status / inbox / send) plus the iris PR convention. Shared by
+// the native Hera view's `n` key.
+func HeraCoordinatorOrientation(orchestrator string) string {
+	return fmt.Sprintf(
+		"You are the coordinator of hera orchestrator %q. Dispatch work with "+
+			"hera_spawn_worker(project=\"...\", prompt=\"...\"), track roles via hera_status / "+
+			"hera_inbox / hera_get_messages, and message roles with hera_send. If you need a "+
+			"sub-team in another repo, call hera_new_orchestrator to become a sub-coordinator. "+
+			"When opening pull requests, use mcp__argus__iris_gh_pr_create (not gh pr create directly) "+
+			"so argus records the PR URL and the hera rail shows the PR indicator.",
+		orchestrator)
+}
+
 // heraWorkerNameRe matches runs of ASCII lowercase letters and digits, used to
 // build a URL-slug-style role name from a prompt.
 var heraWorkerNameRe = regexp.MustCompile(`[a-z0-9]+`)

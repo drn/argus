@@ -66,6 +66,72 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 	}
 }
 
+func TestKeyset_EOLKeysFire(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	var got string
+	p.OnRetire = func(Selection) { got = "retire" }
+	p.OnPruneDescendants = func(Selection) { got = "prune-desc" }
+	p.OnNewCoordinator = func(Selection) { got = "new-coord" }
+	p.OnPruneDone = func() { got = "prune-done" }
+
+	h := p.InputHandler()
+	cases := []struct {
+		ev   *tcell.EventKey
+		want string
+	}{
+		{tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), "retire"},
+		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "prune-desc"},
+		{tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), "new-coord"},
+		{tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), "prune-done"},
+	}
+	for _, c := range cases {
+		got = ""
+		h(c.ev, noFocus)
+		testutil.Equal(t, got, c.want)
+	}
+}
+
+// TestKeyset_NewCoordAndPruneDoneFireOnEmptySelection verifies the
+// selection-INDEPENDENT keys fire even when nothing is selected (n is the
+// bootstrap key; Ctrl+R is rail-wide).
+func TestKeyset_NewCoordAndPruneDoneFireOnEmptySelection(t *testing.T) {
+	d := memDB(t)
+	p := NewHeraPage(d) // empty rail, no orchestrators
+	p.Refresh()
+	var fired []string
+	p.OnNewCoordinator = func(Selection) { fired = append(fired, "new-coord") }
+	p.OnPruneDone = func() { fired = append(fired, "prune-done") }
+	// Selection-gated keys should NOT fire on the empty rail.
+	p.OnRetire = func(Selection) { fired = append(fired, "retire") }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
+
+	testutil.Equal(t, len(fired), 2)
+	testutil.Equal(t, fired[0], "new-coord")
+	testutil.Equal(t, fired[1], "prune-done")
+}
+
+// TestKeyset_EOLKeysSuppressedWhileFiltering verifies that while the rail is in
+// `/` filter INPUT mode, the EOL keys are treated as filter input, not commands.
+func TestKeyset_EOLKeysSuppressedWhileFiltering(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	fired := false
+	p.OnNewCoordinator = func(Selection) { fired = true }
+	p.OnPruneDone = func() { fired = true }
+	p.OnRetire = func(Selection) { fired = true }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus) // enter filter input
+	testutil.Equal(t, p.RailFiltering(), true)
+	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, fired, false)
+}
+
 func TestKeyset_NilCallbacksAreNoOps(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	h := p.InputHandler()

@@ -55,8 +55,11 @@ func (a *App) heraSpawnWorker(sel hera.Selection) {
 	}
 	orchID, orchName := orch.ID, orch.Name
 	coordName := heraCoordRoleName(orch)
-	a.openHeraInput(fmt.Sprintf("Spawn worker under %s", orchName), "", func(prompt string) {
-		a.heraDoSpawnWorker(orchID, orchName, coordName, project, prompt)
+	// BUG-005: spawn from the FULL new-task modal (project/branch/backend/model/
+	// prompt), project defaulting to the coordinator's. On submit, spawn a
+	// born-bound worker under the current coordinator via the shared primitive.
+	a.openHeraNewTaskForm(fmt.Sprintf(" Spawn worker under %s ", orchName), project, func(task *model.Task, _ string) {
+		a.heraDoSpawnWorker(orchID, orchName, coordName, task)
 	})
 }
 
@@ -72,20 +75,25 @@ func heraCoordRoleName(o *hera.OrchView) string {
 }
 
 // heraDoSpawnWorker runs the transactional spawn off the main thread (worktree +
-// session creation can take a second), then refreshes on the main thread.
-func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName, project, prompt string) {
+// session creation can take a second), then refreshes on the main thread. The
+// task carries the new-task form's project/branch/backend/model/prompt.
+func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName string, task *model.Task) {
 	d, ok := a.db.(*db.DB)
 	if !ok {
 		return
 	}
-	uxlog.Log("[hera-view] spawn worker: orch=%d (%s) project=%s", orchID, orchName, project)
+	prompt := task.Prompt
+	uxlog.Log("[hera-view] spawn worker: orch=%d (%s) project=%s", orchID, orchName, task.Project)
 	go func() {
 		res, err := agent.SpawnHeraWorker(d, a.runner, agent.HeraWorkerSpawnInput{
 			OrchestratorID: orchID,
 			BaseName:       agent.DeriveHeraWorkerName(prompt),
 			TaskPrompt:     agent.HeraWorkerOrientation(orchName, coordName) + "\n\n---\n\n" + prompt,
 			RolePrompt:     prompt,
-			Project:        project,
+			Project:        task.Project,
+			Branch:         task.Branch,
+			Backend:        task.Backend,
+			Model:          task.Model,
 		})
 		a.tapp.QueueUpdateDraw(func() {
 			if err != nil {
@@ -95,6 +103,62 @@ func (a *App) heraDoSpawnWorker(orchID int64, orchName, coordName, project, prom
 			}
 			a.recentStarts[res.Task.ID] = a.nowFn()
 			uxlog.Log("[hera-view] spawn worker ok: role=%s task=%s", res.Role.Name, res.Task.ID)
+			a.heraRefresh()
+		})
+	}()
+}
+
+// --- `n` new root coordinator (BUG-006) -------------------------------------
+
+// heraNewCoordinator opens the full new-task modal (independent of the current
+// selection) to create a NEW top-level orchestrator + coordinator. The project
+// defaults to the current selection's coordinator project when resolvable, else
+// the last-selected Tasks-tab project.
+func (a *App) heraNewCoordinator(sel hera.Selection) {
+	if a.heraOps == nil {
+		return
+	}
+	project := a.tasklist.SelectedProject()
+	if ct := sel.CoordTaskID(); ct != "" {
+		if t, err := a.db.Get(ct); err == nil && t != nil && t.Project != "" {
+			project = t.Project
+		}
+	}
+	a.openHeraNewTaskForm(" New coordinator ", project, func(task *model.Task, _ string) {
+		a.heraDoNewCoordinator(task)
+	})
+}
+
+// heraDoNewCoordinator runs the transactional root-coordinator spawn off the
+// main thread, then refreshes. The new orchestrator's name is derived from the
+// prompt (de-collided); the coordinator role is named "coord".
+func (a *App) heraDoNewCoordinator(task *model.Task) {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return
+	}
+	prompt := task.Prompt
+	base := agent.DeriveHeraWorkerName(prompt)
+	uxlog.Log("[hera-view] new coordinator: base=%s project=%s", base, task.Project)
+	go func() {
+		res, err := agent.SpawnHeraCoordinator(d, a.runner, agent.HeraCoordinatorSpawnInput{
+			OrchestratorBaseName: base,
+			CoordRoleName:        "coord",
+			TaskPrompt:           agent.HeraCoordinatorOrientation(base) + "\n\n---\n\n" + prompt,
+			RolePrompt:           prompt,
+			Project:              task.Project,
+			Branch:               task.Branch,
+			Backend:              task.Backend,
+			Model:                task.Model,
+		})
+		a.tapp.QueueUpdateDraw(func() {
+			if err != nil {
+				uxlog.Log("[hera-view] new coordinator failed: %v", err)
+				a.statusbar.SetError("New coordinator failed: " + err.Error())
+				return
+			}
+			a.recentStarts[res.Task.ID] = a.nowFn()
+			uxlog.Log("[hera-view] new coordinator ok: orch=%s role=%s task=%s", res.Orchestrator.Name, res.Role.Name, res.Task.ID)
 			a.heraRefresh()
 		})
 	}()
@@ -380,6 +444,274 @@ func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView, subtreeIDs map[int64
 		}
 	}
 	a.heraRefresh()
+}
+
+// --- `R` retire worker (BUG-010) --------------------------------------------
+
+// heraRetireWorker confirms then retires the selected WORKER role: a unified
+// end-of-life that stops the session, archives the underlying argus task (the
+// worktree is KEPT — retire is reversible; prune reclaims later), ends this
+// role's binding, sets status done, and archives the role row. For a multi-bound
+// task the task + worktree are preserved and only this role's binding/row end
+// (same isolation as conservative delete). On a coordinator/header selection it
+// surfaces feedback and is a no-op.
+func (a *App) heraRetireWorker(sel hera.Selection) {
+	if a.heraOps == nil {
+		return
+	}
+	r := sel.Role
+	if r == nil || r.Kind != db.HeraKindWorker {
+		a.statusbar.SetError("Retire applies to workers")
+		return
+	}
+	sole := r.Live && a.heraTaskSolelyBoundTo(r)
+	msg := "Archives the role (no live session)"
+	switch {
+	case sole:
+		msg = "Stops the session, archives the task (worktree kept), and archives the role"
+	case r.Live:
+		msg = "Ends this role's binding and archives the role; the task stays (bound elsewhere)"
+	}
+	a.openHeraConfirm("Retire worker "+r.Name+"?", msg+".", func() {
+		a.heraDoRetire(r, sole)
+	})
+}
+
+// heraDoRetire performs the retire after the operator confirms. The sole-bound
+// path stops the session and archives the argus task (keeping the worktree); the
+// hera-side status/binding/role-archive happens in Ops.RetireRole either way.
+func (a *App) heraDoRetire(r *hera.RoleView, sole bool) {
+	if sole && r.TaskID != "" {
+		if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
+			if a.runner.HasSession(t.ID) {
+				if sErr := a.runner.Stop(t.ID); sErr != nil {
+					uxlog.Log("[hera-view] retire: stop session failed task=%s: %v", t.ID, sErr)
+				}
+			}
+			if aErr := a.db.SetArchived(t.ID, true); aErr != nil {
+				uxlog.Log("[hera-view] retire: archive task failed task=%s: %v", t.ID, aErr)
+			}
+		}
+	}
+	if err := a.heraOps.RetireRole(r, sole); err != nil {
+		a.statusbar.SetError("Retire failed: " + err.Error())
+	}
+	a.heraRefresh()
+}
+
+// --- `C` / `Ctrl+R` prune (BUG-011 / BUG-012) -------------------------------
+
+// heraTaskReclaimable reports whether a task can be completed + its worktree
+// reclaimed during a prune: it is reclaimable iff no LIVE binding belongs to a
+// DIFFERENT role (so a task still bound live elsewhere — multi-binding — is
+// preserved). A query error errs on the side of preserving (returns false).
+func (a *App) heraTaskReclaimable(taskID string, roleID int64) bool {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return false
+	}
+	live, err := d.ListHeraLiveBindingsByTask(taskID)
+	if err != nil {
+		return false
+	}
+	for _, b := range live {
+		if b.RoleID != roleID {
+			return false
+		}
+	}
+	return true
+}
+
+// roleReclaimTask returns the role's reclaim-target task id (its latest binding
+// task, covering archived roles whose live binding already ended), or "".
+func roleReclaimTask(r *hera.RoleView) string {
+	if r.BridgeTaskID != "" {
+		return r.BridgeTaskID
+	}
+	return r.TaskID
+}
+
+// heraCountReclaimable splits roles into those whose task will be completed +
+// worktree reclaimed vs those preserved because the task is bound live
+// elsewhere. Roles with no task are neither (just a role-row removal).
+func (a *App) heraCountReclaimable(roles []hera.RoleView) (reclaim, preserved int) {
+	for i := range roles {
+		tid := roleReclaimTask(&roles[i])
+		if tid == "" {
+			continue
+		}
+		if a.heraTaskReclaimable(tid, roles[i].RoleID) {
+			reclaim++
+		} else {
+			preserved++
+		}
+	}
+	return
+}
+
+// heraReclaimRole completes the role's task and reclaims its worktree+branch when
+// the task is solely bound to this role, then removes the role row. A task bound
+// live elsewhere keeps its task/worktree (only the role row is removed —
+// multi-binding isolation). Worktree teardown runs in the background (git is
+// slow). Returns whether a worktree reclaim was kicked off.
+func (a *App) heraReclaimRole(r *hera.RoleView) (reclaimed bool) {
+	taskID := roleReclaimTask(r)
+	if taskID != "" && a.heraTaskReclaimable(taskID, r.RoleID) {
+		if t, err := a.db.Get(taskID); err == nil && t != nil {
+			if a.runner.HasSession(t.ID) {
+				if sErr := a.runner.Stop(t.ID); sErr != nil {
+					uxlog.Log("[hera-view] reclaim: stop session failed task=%s: %v", t.ID, sErr)
+				}
+			}
+			t.SetStatus(model.StatusComplete)
+			if sErr := a.db.SetStatus(t.ID, model.StatusComplete); sErr != nil {
+				uxlog.Log("[hera-view] reclaim: set complete failed task=%s: %v", t.ID, sErr)
+			}
+			cfg := a.db.Config()
+			repoDir := agent.ResolveDir(t, cfg)
+			wt, br := t.Worktree, t.Branch
+			if wt != "" {
+				reclaimed = true
+				go func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) }()
+			} else if br != "" && repoDir != "" {
+				go func() {
+					agent.DeleteBranch(repoDir, br)
+					agent.DeleteRemoteBranch(repoDir, br)
+				}()
+			}
+		}
+	}
+	if err := a.heraOps.DeleteRole(r.RoleID); err != nil {
+		uxlog.Log("[hera-view] reclaim: delete role %d failed: %v", r.RoleID, err)
+	}
+	return reclaimed
+}
+
+// heraPruneDescendants (`C`) confirms then prunes the selected coordinator's
+// ARCHIVED descendant workers: each is completed, its worktree+branch reclaimed
+// (unless bound live elsewhere), and its role row removed. Scoped to the
+// selected orchestrator's subtree. An empty set surfaces "nothing to prune".
+func (a *App) heraPruneDescendants(sel hera.Selection) {
+	if a.heraOps == nil {
+		return
+	}
+	orch := sel.Orch
+	if orch == nil {
+		a.statusbar.SetError("Prune: select a coordinator")
+		return
+	}
+	workers := a.heraPage.Rail().Model().SubtreeArchivedWorkers(orch.ID)
+	if len(workers) == 0 {
+		a.statusbar.SetInfo("Nothing to prune")
+		return
+	}
+	reclaim, preserved := a.heraCountReclaimable(workers)
+	msg := fmt.Sprintf(
+		"Completes %d archived worker(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere).",
+		len(workers), reclaim, preserved)
+	a.openHeraConfirm("Prune archived agents under "+orch.Name+"?", msg, func() {
+		a.heraDoPrune(workers)
+	})
+}
+
+// heraDoPrune reclaims each role in the set and refreshes.
+func (a *App) heraDoPrune(roles []hera.RoleView) {
+	n, wt := 0, 0
+	for i := range roles {
+		if a.heraReclaimRole(&roles[i]) {
+			wt++
+		}
+		n++
+	}
+	uxlog.Log("[hera-view] prune descendants: %d role(s), %d worktree(s) reclaimed", n, wt)
+	a.heraRefresh()
+}
+
+// heraPruneDone (`Ctrl+R`) confirms then prunes ALL finished roles rail-wide
+// (archived, status done, or ready_to_close): each is completed, its
+// worktree+branch reclaimed (unless bound live elsewhere), and its role row
+// removed; orchestrators whose every role is finished are then deleted. An empty
+// set surfaces "nothing to prune". This is the rail's OWN handler, so it never
+// collides with the agent-view Ctrl+R (Claude session switcher).
+func (a *App) heraPruneDone() {
+	if a.heraOps == nil {
+		return
+	}
+	m := a.heraPage.Rail().Model()
+	orchIDs := m.FullyFinishedOrchestratorIDs()
+	fully := make(map[int64]bool, len(orchIDs))
+	for _, id := range orchIDs {
+		fully[id] = true
+	}
+	// Reclaim finished worker/freelance roles anywhere; reclaim a finished
+	// COORDINATOR only when its whole orchestrator is finished — never behead an
+	// orchestrator that still has live workers.
+	var reclaim []hera.RoleView
+	for _, r := range m.FinishedRoles() {
+		if r.Kind == db.HeraKindCoordinator && !fully[r.OrchID] {
+			continue
+		}
+		reclaim = append(reclaim, r)
+	}
+	if len(reclaim) == 0 && len(orchIDs) == 0 {
+		a.statusbar.SetInfo("Nothing to prune")
+		return
+	}
+	rc, preserved := a.heraCountReclaimable(reclaim)
+	msg := fmt.Sprintf(
+		"Completes %d finished role(s), reclaims %d worktree(s)+branch(es), and closes %d orchestrator(s). %d preserved (bound elsewhere).",
+		len(reclaim), rc, len(orchIDs), preserved)
+	a.openHeraConfirm("Prune all finished coordinators + agents?", msg, func() {
+		a.heraDoPruneDone(reclaim, orchIDs)
+	})
+}
+
+// heraDoPruneDone reclaims every finished role, then deletes the fully-finished
+// orchestrators whose roles are now all gone. The post-reclaim live-binding
+// guard means an orchestrator that still holds a live binding (e.g. a surviving
+// freelance role hoisted out of its managed-role set) is kept, never wiped.
+func (a *App) heraDoPruneDone(roles []hera.RoleView, orchIDs []int64) {
+	n, wt := 0, 0
+	for i := range roles {
+		if a.heraReclaimRole(&roles[i]) {
+			wt++
+		}
+		n++
+	}
+	closed := 0
+	for _, id := range orchIDs {
+		if a.heraOrchHasLiveBinding(id) {
+			uxlog.Log("[hera-view] prune done: keeping orch %d (a live binding survived)", id)
+			continue
+		}
+		if err := a.heraOps.DeleteOrchestrator(id); err != nil {
+			uxlog.Log("[hera-view] prune done: delete orch %d failed: %v", id, err)
+		} else {
+			closed++
+		}
+	}
+	uxlog.Log("[hera-view] prune done: %d role(s), %d worktree(s) reclaimed, %d orch(s) closed", n, wt, closed)
+	a.heraRefresh()
+}
+
+// heraOrchHasLiveBinding reports whether any LIVE binding still points at the
+// orchestrator — the post-reclaim guard before deleting it. A query error errs
+// on the side of keeping the orchestrator (returns true).
+func (a *App) heraOrchHasLiveBinding(orchID int64) bool {
+	d, ok := a.db.(*db.DB)
+	if !ok {
+		return true
+	}
+	live, err := d.ListHeraLiveBindings()
+	if err != nil {
+		return true
+	}
+	for _, b := range live {
+		if b.OrchestratorID == orchID {
+			return true
+		}
+	}
+	return false
 }
 
 // heraReattach revives the session backing the selected role's task. The page

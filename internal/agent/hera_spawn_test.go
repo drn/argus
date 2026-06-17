@@ -30,6 +30,108 @@ func TestHeraWorkerOrientation_NamesOrchAndCoord(t *testing.T) {
 	testutil.Equal(t, strings.Contains(got, `"coord"`), true)
 }
 
+func TestHeraCoordinatorOrientation_NamesOrch(t *testing.T) {
+	got := HeraCoordinatorOrientation("my-orch")
+	testutil.Equal(t, strings.Contains(got, `"my-orch"`), true)
+}
+
+// TestSpawnHeraCoordinator_HappyPath drives the root-coordinator spawner: it
+// creates a fresh orchestrator + coordinator role + binding to a new task,
+// stamps meta:hera.role=coordinator, and carries the model override.
+func TestSpawnHeraCoordinator_HappyPath(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 4242}
+
+	res, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "ship-feature",
+		TaskPrompt:           "oriented body",
+		RolePrompt:           "verbatim user prompt",
+		Project:              "proj",
+		Model:                "opus",
+	})
+	testutil.NoError(t, err)
+
+	testutil.Equal(t, res.Orchestrator.Name, "ship-feature")
+	testutil.Equal(t, res.Role.Name, "coord")
+	testutil.Equal(t, res.Role.Kind, db.HeraKindCoordinator)
+	testutil.Equal(t, res.Role.Prompt, "verbatim user prompt")
+	testutil.Equal(t, res.Binding.ArgusTaskID, res.Task.ID)
+	testutil.Equal(t, fr.startCalls, 1)
+
+	// Task persisted with the oriented prompt body + model override.
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, "oriented body")
+	testutil.Equal(t, got.Model, "opus")
+	testutil.Equal(t, got.Name, "ship-feature")
+
+	// Live coordinator binding under the new orchestrator.
+	bnd, err := d.HeraLiveBindingByTaskAndOrchestrator(res.Task.ID, res.Orchestrator.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bnd.ID, res.Binding.ID)
+
+	// meta:hera.role=coordinator stamped.
+	meta, _ := d.ListMeta(res.Task.ID, db.HeraMetaNamespace)
+	found := false
+	for _, e := range meta {
+		if e.Key == db.HeraMetaKeyRole && e.Value == string(db.HeraKindCoordinator) {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
+// TestSpawnHeraCoordinator_DeCollidesOrchName verifies a second spawn with the
+// same base name lands on base-2 (the orchestrator-name de-collide), creating a
+// genuinely new orchestrator rather than re-fetching the existing one.
+func TestSpawnHeraCoordinator_DeCollidesOrchName(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{}
+
+	first, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "dup", TaskPrompt: "b", Project: "proj",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, first.Orchestrator.Name, "dup")
+
+	second, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "dup", TaskPrompt: "b", Project: "proj",
+	})
+	testutil.NoError(t, err)
+	testutil.Equal(t, second.Orchestrator.Name, "dup-2")
+	if first.Orchestrator.ID == second.Orchestrator.ID {
+		t.Fatal("expected two distinct orchestrators")
+	}
+}
+
+// TestSpawnHeraCoordinator_StartFailureUnwinds forces runner.Start to fail and
+// asserts NO orphan orchestrator / role / binding / task is left behind.
+func TestSpawnHeraCoordinator_StartFailureUnwinds(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{startErr: errors.New("boom")}
+
+	beforeTasks, _ := d.Tasks()
+	beforeOrchs, _ := d.ListHeraOrchestrators(true)
+
+	_, err := SpawnHeraCoordinator(d, fr, HeraCoordinatorSpawnInput{
+		OrchestratorBaseName: "doomed", TaskPrompt: "b", Project: "proj",
+	})
+	if err == nil {
+		t.Fatal("expected spawn to fail when runner.Start errors")
+	}
+
+	afterTasks, _ := d.Tasks()
+	testutil.Equal(t, len(afterTasks), len(beforeTasks))
+	afterOrchs, _ := d.ListHeraOrchestrators(true)
+	testutil.Equal(t, len(afterOrchs), len(beforeOrchs))
+	live, err := d.ListHeraLiveBindings()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(live), 0)
+}
+
 // TestSpawnHeraWorker_HappyPath drives the shared transactional spawner: it
 // creates the task (worktree + echo session), stamps meta:hera.role=worker,
 // uniquifies the role name, and writes the role+binding.

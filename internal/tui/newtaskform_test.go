@@ -1791,6 +1791,43 @@ func simRowText(sim tcell.SimulationScreen, row int) string {
 	return b.String()
 }
 
+// TestNewTaskForm_SetTitle verifies the custom title renders (Hera tab reuses
+// this modal for "Spawn worker" / "New coordinator").
+func TestNewTaskForm_SetTitle(t *testing.T) {
+	f := NewNewTaskForm(
+		map[string]config.Project{"p": {}}, "p",
+		map[string]config.Backend{"b": {Command: "claude"}}, "b",
+	)
+	f.SetRect(0, 0, 80, 24)
+	sim := drawSim(t)
+
+	// Default title.
+	f.Draw(sim)
+	found := false
+	_, h := sim.Size()
+	for row := 0; row < h; row++ {
+		if strings.Contains(simRowText(sim, row), "New Task") {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+
+	// Custom title.
+	f.SetTitle(" Spawn worker ")
+	f.Draw(sim)
+	found = false
+	for row := 0; row < h; row++ {
+		if strings.Contains(simRowText(sim, row), "Spawn worker") {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+
+	// Empty falls back to the default.
+	f.SetTitle("")
+	testutil.Equal(t, f.title, " New Task ")
+}
+
 // Draw smoke for the model field: the label renders, the placeholder shows
 // the backend's default model when unfocused+empty, typed text renders when
 // focused, and the row sits between Backend and Prompt.

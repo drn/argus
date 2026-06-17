@@ -83,6 +83,44 @@ func TestTaskHoldsLiveHeraWorkerBinding(t *testing.T) {
 	})
 }
 
+func TestUniqueHeraOrchestratorName(t *testing.T) {
+	t.Run("free base returned unchanged", func(t *testing.T) {
+		d := heraTestDB(t)
+		got, err := d.UniqueHeraOrchestratorName("fix-bug")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "fix-bug")
+	})
+
+	t.Run("empty base defaults to orchestrator", func(t *testing.T) {
+		d := heraTestDB(t)
+		got, err := d.UniqueHeraOrchestratorName("")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "orchestrator")
+	})
+
+	t.Run("collision suffixes -2 then -3", func(t *testing.T) {
+		d := heraTestDB(t)
+		mkOrch(t, d, "fix-bug")
+		got, err := d.UniqueHeraOrchestratorName("fix-bug")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "fix-bug-2")
+
+		mkOrch(t, d, "fix-bug-2")
+		got, err = d.UniqueHeraOrchestratorName("fix-bug")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "fix-bug-3")
+	})
+
+	t.Run("archived orchestrator does not block reuse", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "fix-bug")
+		testutil.NoError(t, d.ArchiveHeraOrchestrator(o.ID))
+		got, err := d.UniqueHeraOrchestratorName("fix-bug")
+		testutil.NoError(t, err)
+		testutil.Equal(t, got, "fix-bug")
+	})
+}
+
 func TestUniqueHeraRoleName(t *testing.T) {
 	t.Run("free base returned unchanged", func(t *testing.T) {
 		d := heraTestDB(t)

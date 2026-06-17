@@ -71,6 +71,13 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
 	testutil.Contains(t, body, "freelancers only")
 	testutil.Contains(t, body, "filter rail by name") // Hera rail `/` filter
+	// Rail key family (BUG-005/006/010/011/012): every new/changed rail key must
+	// be discoverable in the overlay.
+	testutil.Contains(t, body, "spawn worker under coordinator (new-task modal)")
+	testutil.Contains(t, body, "new coordinator (new-task modal)")
+	testutil.Contains(t, body, "retire worker (archive task, keep worktree)")
+	testutil.Contains(t, body, "prune coordinator's archived descendants")
+	testutil.Contains(t, body, "prune all finished coords + agents")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

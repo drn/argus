@@ -206,4 +206,57 @@ func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	testutil.ErrorIs(t, ops.ArchiveToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.PinToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.Rename(Selection{}, "x"), errNoTarget)
+	testutil.ErrorIs(t, ops.RetireRole(nil, true), errNoTarget)
+}
+
+// TestOps_RetireRole_SoleBound verifies retire sets status done, rolls the
+// worker task to in_review, ends the role's live binding, and archives the role.
+func TestOps_RetireRole_SoleBound(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
+	ops := NewOps(d)
+
+	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
+	testutil.NoError(t, ops.RetireRole(rv, true))
+
+	// Status is done.
+	st, err := d.HeraRoleStatusFor(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, st.Status, db.HeraStatusDone)
+	// Binding ended (no live binding for the role).
+	_, err = d.HeraLiveBindingByRole(role.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	// Role archived.
+	got, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ArchivedAt != nil, true)
+	// Worker task rolled to in_review.
+	task, err := d.Get("t1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Status, model.StatusInReview)
+}
+
+// TestOps_RetireRole_MultiBoundDoesNotRoll verifies that with rollTask=false
+// (multi-bound) the task status is NOT changed, only this role's binding ends
+// and the role archives.
+func TestOps_RetireRole_MultiBoundDoesNotRoll(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
+	ops := NewOps(d)
+
+	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
+	testutil.NoError(t, ops.RetireRole(rv, false))
+
+	// Task status unchanged (still in_progress from the seed).
+	task, err := d.Get("t1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Status, model.StatusInProgress)
+	// Role still archived + binding ended.
+	got, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ArchivedAt != nil, true)
+	_, err = d.HeraLiveBindingByRole(role.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
 }
