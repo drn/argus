@@ -475,7 +475,7 @@ func TestGrayscaleColor(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			testutil.Equal(t, grayscaleColor(tc.in), tc.want)
+			testutil.Equal(t, terminal.GrayscaleColor(tc.in), tc.want)
 		})
 	}
 }
@@ -483,7 +483,7 @@ func TestGrayscaleColor(t *testing.T) {
 func TestGrayscaleColor_PaletteResolvesToGray(t *testing.T) {
 	// A 256-palette color must resolve through Hex() to a true gray (r==g==b),
 	// not pass through as a still-colored palette index.
-	got := grayscaleColor(tcell.PaletteColor(196)) // bright red
+	got := terminal.GrayscaleColor(tcell.PaletteColor(196)) // bright red
 	r, g, b := got.RGB()
 	if r < 0 || r != g || g != b {
 		t.Fatalf("expected gray (r==g==b), got rgb(%d,%d,%d)", r, g, b)
@@ -495,7 +495,7 @@ func TestDesaturateStyle_GraysBothChannelsKeepsAttrs(t *testing.T) {
 		Foreground(tcell.NewRGBColor(200, 30, 30)).
 		Background(tcell.NewRGBColor(20, 20, 220)).
 		Bold(true)
-	out := desaturateStyle(style)
+	out := terminal.DesaturateStyle(style)
 
 	fg, bg, attr := out.Decompose()
 	assertGray(t, fg)
@@ -512,7 +512,7 @@ func TestDesaturateStyle_GraysUnderlineColor(t *testing.T) {
 	style := tcell.StyleDefault.
 		Foreground(tcell.NewRGBColor(200, 30, 30)).
 		Underline(tcell.UnderlineStyleCurly, tcell.NewRGBColor(0, 200, 0))
-	out := desaturateStyle(style)
+	out := terminal.DesaturateStyle(style)
 
 	assertGray(t, out.GetUnderlineColor())
 	// The underline STYLE (curly) must survive — only its color is grayed.
@@ -523,7 +523,7 @@ func TestDesaturateStyle_DefaultUnderlineColorUntouched(t *testing.T) {
 	// A cell with an underline but no explicit color: ulColor is ColorDefault
 	// (invalid), so it must pass through unchanged rather than become hard gray.
 	style := tcell.StyleDefault.Underline(true)
-	out := desaturateStyle(style)
+	out := terminal.DesaturateStyle(style)
 	testutil.Equal(t, out.GetUnderlineColor(), tcell.ColorDefault)
 }
 
@@ -531,7 +531,7 @@ func TestDesaturateStyle_DefaultForegroundColoredBackground(t *testing.T) {
 	// The common terminal pattern: default fg, colored bg. The default fg must
 	// stay default (terminal's own), the bg grays.
 	style := tcell.StyleDefault.Background(tcell.NewRGBColor(20, 20, 220))
-	out := desaturateStyle(style)
+	out := terminal.DesaturateStyle(style)
 
 	fg, bg, _ := out.Decompose()
 	testutil.Equal(t, fg, tcell.ColorDefault)
@@ -546,7 +546,7 @@ func TestDesaturateStyle_ReverseAttrSurvives(t *testing.T) {
 		Foreground(tcell.NewRGBColor(200, 30, 30)).
 		Background(tcell.NewRGBColor(20, 20, 220)).
 		Reverse(true)
-	out := desaturateStyle(style)
+	out := terminal.DesaturateStyle(style)
 
 	fg, bg, attr := out.Decompose()
 	assertGray(t, fg)

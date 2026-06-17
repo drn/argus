@@ -399,9 +399,13 @@ func (tp *TerminalPane) SyncPTYSize() {
 	sess.Resize(rows, cols)
 }
 
-// SetFocused sets the focus state for border rendering.
+// SetFocused sets the focus state for border rendering and grayscale paint.
+// Invalidates the paint cache so the next Draw re-renders with the new color mode.
 func (tp *TerminalPane) SetFocused(f bool) {
-	tp.focused = f
+	if tp.focused != f {
+		tp.focused = f
+		tp.paintCacheValid = false
+	}
 }
 
 // SetBorderTitle overrides the bordered-panel title (default " Agent "). Used
@@ -1054,7 +1058,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 				tp.replayPaintCache(screen)
 				return
 			}
-			tp.paintEmu(screen, x, y, width, height, emu, ptyCols, ptyRows, tp.scrollOffset == 0, curVis)
+			tp.paintEmu(screen, x, y, width, height, emu, ptyCols, ptyRows, tp.scrollOffset == 0, curVis, !tp.focused)
 			return
 		}
 
@@ -1112,7 +1116,7 @@ func (tp *TerminalPane) Draw(screen tcell.Screen) {
 			// fresh emulator arrives with more scrollback.
 			savedScroll := tp.scrollOffset
 			savedAnchor := tp.anchorTotalLines
-			tp.paintEmu(screen, x, y, width, height, fallbackEmu, ptyCols, ptyRows, tp.scrollOffset == 0, fallbackCurVis)
+			tp.paintEmu(screen, x, y, width, height, fallbackEmu, ptyCols, ptyRows, tp.scrollOffset == 0, fallbackCurVis, !tp.focused)
 			tp.scrollOffset = savedScroll
 			tp.anchorTotalLines = savedAnchor
 			return
@@ -1360,11 +1364,11 @@ func (tp *TerminalPane) renderLive(screen tcell.Screen, x, y, w, h int, ptyCols,
 	}
 	// Cache miss or stale — fall through to full paintEmu.
 
-	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible)
+	tp.paintEmu(screen, x, y, w, h, tp.emu, ptyCols, ptyRows, true, tp.cursorVisible, !tp.focused)
 }
 
 // paintEmu renders x/vt emulator cells to the tcell screen with content trimming and scrollback.
-func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor, cursorVisible bool) {
+func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.SafeEmulator, emuCols, emuRows int, showCursor, cursorVisible, grayscale bool) {
 	cur := emu.CursorPosition()
 	sbLen := emu.ScrollbackLen()
 	// Find content bounds in the main screen area.
@@ -1464,9 +1468,14 @@ func (tp *TerminalPane) paintEmu(screen tcell.Screen, x, y, w, h int, emu *xvt.S
 					}
 				}
 				style = UvCellToTcellStyle(cell)
+				if grayscale {
+					style = DesaturateStyle(style)
+				}
 			}
 
 			// Match the emulator's cursor visibility instead of forcing an Argus-owned cursor.
+			// Cursor uses hard-coded high-contrast colors regardless of grayscale mode so it
+			// remains visible even when the pane is unfocused.
 			if showCursor && cursorVisible && isMainScreen && mainRow == cur.Y && col == cur.X {
 				style = tcell.StyleDefault.Foreground(cursorFG).Background(cursorBG)
 			}

@@ -518,7 +518,7 @@ func TestPaintEmu_HiddenCursorNoContentExtension(t *testing.T) {
 
 	// Paint with cursorVisible=false — the cursor at (0,9) should NOT
 	// cause content to extend to row 9.
-	tp.paintEmu(screen, 0, 0, 20, 10, emu, 20, 10, true, false)
+	tp.paintEmu(screen, 0, 0, 20, 10, emu, 20, 10, true, false, false)
 
 	// Row 9 col 0 should NOT have cursor styling.
 	_, _, style, _ := screen.GetContent(0, 9)
@@ -542,12 +542,137 @@ func TestPaintEmu_HiddenCursorNotRendered(t *testing.T) {
 	})
 	emu.Write([]byte("hello\x1b[?25l"))
 
-	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, true, cursorVisible)
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, true, cursorVisible, false)
 
 	_, _, style, _ := screen.GetContent(5, 0)
 	fg, bg, _ := style.Decompose()
 	if fg == cursorFG || bg == cursorBG {
 		t.Fatalf("hidden cursor should not be painted with cursor style: fg=%v bg=%v", fg, bg)
+	}
+}
+
+// isGray returns true when r==g==b (within floating-point tolerance — we use
+// Rec. 601 integer arithmetic so the three channels are always identical).
+func isGray(c tcell.Color) bool {
+	if !c.Valid() {
+		return true // default passes through unchanged; treated as "not colored"
+	}
+	r, g, b := c.RGB()
+	if r < 0 {
+		return true
+	}
+	return r == g && g == b
+}
+
+func TestPaintEmu_GrayscaleModePaintsGrayCells(t *testing.T) {
+	// Write red-on-blue text; grayscale=true must produce r==g==b channels.
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 5)
+
+	tp := NewTerminalPane()
+	emu := tp.newTrackedEmulator(20, 5)
+	// SGR 31 = red fg, 44 = blue bg.
+	emu.Write([]byte("\x1b[31;44mA\x1b[0m")) //nolint:errcheck
+
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false, true /* grayscale */)
+
+	_, style, _ := screen.Get(0, 0)
+	fg, bg, _ := style.Decompose()
+	if !isGray(fg) {
+		t.Errorf("grayscale mode: foreground not gray, got %v", fg)
+	}
+	if !isGray(bg) {
+		t.Errorf("grayscale mode: background not gray, got %v", bg)
+	}
+}
+
+func TestPaintEmu_FullColorModePaintsColoredCells(t *testing.T) {
+	// Same red-on-blue text; grayscale=false must preserve the original colors.
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 5)
+
+	tp := NewTerminalPane()
+	emu := tp.newTrackedEmulator(20, 5)
+	emu.Write([]byte("\x1b[31;44mA\x1b[0m")) //nolint:errcheck
+
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false, false /* full color */)
+
+	_, style, _ := screen.Get(0, 0)
+	fg, _, _ := style.Decompose()
+	// Red fg must NOT be achromatic (r==g==b after grayscale would make it so).
+	if isGray(fg) && fg.Valid() {
+		t.Errorf("full-color mode: foreground was desaturated to gray, got %v", fg)
+	}
+}
+
+func TestPaintEmu_GrayscaleCursorRemainsHighContrast(t *testing.T) {
+	// Even in grayscale mode the cursor cell must keep the hard-coded
+	// cursorFG/cursorBG so it remains visible in an unfocused pane.
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	screen.SetSize(20, 5)
+
+	tp := NewTerminalPane()
+	cursorVisible := false
+	emu := tp.newTrackedEmulatorWithCallback(20, 5, func(vis bool) {
+		cursorVisible = vis
+	})
+	// x/vt's CursorVisibility callback only fires on state CHANGES. The emulator
+	// starts with cursor visible (Hidden=false) but the tracking callback was
+	// primed to false. Hide first (\e[?25l changes emulator → callback fires),
+	// then show (\e[?25h changes emulator again → callback fires with true).
+	emu.Write([]byte("\x1b[?25l\x1b[?25h\x1b[31;44mA")) //nolint:errcheck
+
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, true, cursorVisible, true /* grayscale */)
+
+	// Col 0 is the 'A' — must be gray.
+	_, styleA, _ := screen.Get(0, 0)
+	fgA, bgA, _ := styleA.Decompose()
+	if !isGray(fgA) || !isGray(bgA) {
+		t.Errorf("grayscale mode: 'A' cell not gray: fg=%v bg=%v", fgA, bgA)
+	}
+
+	// Col 1 is the cursor position — must be cursorFG/cursorBG regardless of grayscale.
+	_, styleCur, _ := screen.Get(1, 0)
+	fgCur, bgCur, _ := styleCur.Decompose()
+	if fgCur != cursorFG || bgCur != cursorBG {
+		t.Errorf("grayscale mode: cursor cell lost high-contrast color: fg=%v (want %v) bg=%v (want %v)",
+			fgCur, cursorFG, bgCur, cursorBG)
+	}
+}
+
+func TestTerminalPane_SetFocused_InvalidatesPaintCache(t *testing.T) {
+	// Changing the focus state must invalidate paintCacheValid so the next
+	// Draw re-renders with the new color mode instead of replaying stale cells.
+	tp := NewTerminalPane()
+	tp.focused = true
+	tp.paintCacheValid = true
+
+	// Focus → no-op when state unchanged.
+	tp.SetFocused(true)
+	if !tp.paintCacheValid {
+		t.Error("SetFocused with unchanged state must not invalidate cache")
+	}
+
+	// Focus change → cache invalidated.
+	tp.SetFocused(false)
+	if tp.paintCacheValid {
+		t.Error("SetFocused with changed state must invalidate paint cache")
+	}
+
+	// Another no-op round-trip.
+	tp.paintCacheValid = true
+	tp.SetFocused(false)
+	if !tp.paintCacheValid {
+		t.Error("second SetFocused(false) with unchanged state must not invalidate cache")
 	}
 }
 
@@ -648,7 +773,7 @@ func TestTerminalPane_AnchorLock(t *testing.T) {
 	// First paint establishes anchorTotalLines.
 	tp.scrollOffset = 5
 	tp.anchorTotalLines = 0
-	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false, false)
 	firstAnchor := tp.anchorTotalLines
 	if firstAnchor == 0 {
 		t.Fatal("anchorTotalLines should be set after first paint")
@@ -659,7 +784,7 @@ func TestTerminalPane_AnchorLock(t *testing.T) {
 		emu.Write([]byte("new output line!!!!\n"))
 	}
 	oldOffset := tp.scrollOffset
-	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false)
+	tp.paintEmu(screen, 0, 0, 20, 5, emu, 20, 5, false, false, false)
 
 	// scrollOffset should have increased by the delta.
 	if tp.scrollOffset <= oldOffset {
@@ -1431,7 +1556,7 @@ func TestTerminalPane_FallbackPrefersStaleReplay(t *testing.T) {
 	// We call paintEmu directly since Draw() has complex session setup.
 	savedScroll := tp.scrollOffset
 	savedAnchor := tp.anchorTotalLines
-	tp.paintEmu(screen, 0, 0, 40, 10, staleEmu, 40, 10, false, false)
+	tp.paintEmu(screen, 0, 0, 40, 10, staleEmu, 40, 10, false, false, false)
 	tp.scrollOffset = savedScroll
 	tp.anchorTotalLines = savedAnchor
 
@@ -2542,7 +2667,7 @@ func TestPaintEmu_BlanksRowsBelowContent(t *testing.T) {
 	// trailing rows must be blanked.
 	emu := NewDrainedEmulator(20, 10)
 	_, _ = SafeEmuWrite(emu, []byte("hi\r\n"))
-	tp.paintEmu(sim, 0, 0, 20, 10, emu, 20, 10, true, false)
+	tp.paintEmu(sim, 0, 0, 20, 10, emu, 20, 10, true, false, false)
 
 	// After paintEmu, the bottom rows should be blanks (' '), NOT 'X'.
 	// Skip the very top rows that have content and the very bottom row
@@ -2575,7 +2700,7 @@ func TestPaintEmu_CacheReservesIndicatorRoom(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		_, _ = SafeEmuWrite(emu, []byte("filler line\r\n"))
 	}
-	tp.paintEmu(sim, 0, 0, 50, 5, emu, 50, 5, false, false)
+	tp.paintEmu(sim, 0, 0, 50, 5, emu, 50, 5, false, false, false)
 
 	// cap should be ≥ h*renderCols + scrollIndicatorCells.
 	wantCap := 5*50 + scrollIndicatorCells
