@@ -52,7 +52,7 @@ func TestPanes_PasteRouting(t *testing.T) {
 
 	// Coordinator selected → details mode → agent paste is a no-op (no terminal).
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	testutil.Equal(t, p.detailsMode, true)
 	p.PasteHandler()("ignored", noFocus)
 }
@@ -107,7 +107,7 @@ func TestPanes_ForwardKeyDeadAndDetails(t *testing.T) {
 	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyPgDn, 0, tcell.ModNone))
 
 	// InputHandler in FocusAgent + details mode ignores keystrokes.
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	p.Machine().Advance()
 	p.Machine().Advance()
 	h := p.InputHandler()

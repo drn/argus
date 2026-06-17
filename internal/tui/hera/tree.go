@@ -60,7 +60,16 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 			if visited[id] || c.Archived {
 				continue
 			}
-			if ct := c.CoordTaskID(); ct != "" && workers[ct] {
+			// Worker bridge: c's coordinator task is a (non-teardown) worker task
+			// under p. Coordinator-spawned sub-team: p and c share a coordinator
+			// agent (p the earlier-id parent). Either reaches c as a descendant —
+			// matching db.SubtreeOrchIDs' ANY-parent-side-binding join.
+			if ct := c.CoordBridgeTaskID(); ct != "" && workers[ct] {
+				visited[id] = true
+				queue = append(queue, c)
+				continue
+			}
+			if coordBridgeParentOf(p, c) {
 				visited[id] = true
 				queue = append(queue, c)
 			}
@@ -102,15 +111,22 @@ func heraTreeNodes(m Model, root *OrchView) []dagview.Node {
 	return out
 }
 
-// workerTaskSet returns the set of live, non-coordinator task IDs bound under o.
-// Used to test whether a candidate sub-orchestrator's coordinator bridges into
-// this orchestrator (the multi-binding parent→child relationship).
+// workerTaskSet returns the set of STRUCTURAL bridge task IDs for the
+// non-coordinator roles under o — each role's latest-binding task regardless of
+// liveness, EXCLUDING roles whose latest binding was an operator teardown
+// (reparented / user_deleted). Used to test whether a candidate
+// sub-orchestrator's coordinator bridges into this orchestrator (the
+// multi-binding parent→child relationship). Broadened from live-only so an
+// ended-but-not-torn-down link still nests its child (the bridging-breadth rule).
 func workerTaskSet(o *OrchView) map[string]bool {
 	set := make(map[string]bool, len(o.Roles))
 	for i := range o.Roles {
 		r := &o.Roles[i]
-		if r.Kind != db.HeraKindCoordinator && r.Live && r.TaskID != "" {
-			set[r.TaskID] = true
+		if r.Kind == db.HeraKindCoordinator || !roleBridges(r) {
+			continue
+		}
+		if k := bridgeTaskID(r); k != "" {
+			set[k] = true
 		}
 	}
 	return set

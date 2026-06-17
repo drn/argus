@@ -151,7 +151,16 @@ func TestDetails_ContentHeightMatchesDraw(t *testing.T) {
 }
 
 func TestCoordStatusLabel(t *testing.T) {
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "working")
+	// A genuinely active coordinator (live binding + bound task in_progress) reads
+	// "working".
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
+	// BUG-003: a STALE "working" role-status that isn't backed by real activity
+	// must not claim "working". A dead/stopped binding reads "stopped"; a live
+	// binding no longer in_progress reads "live".
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live")
+	// Non-working role-status assertions pass through unchanged.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
 	testutil.Equal(t, coordStatusLabel(&RoleView{Live: true}), "live")
 	testutil.Equal(t, coordStatusLabel(&RoleView{}), "—")
 }
