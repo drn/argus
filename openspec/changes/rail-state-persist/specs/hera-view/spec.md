@@ -17,7 +17,17 @@ TUI restart and a daemon restart or crash. The persisted state SHALL include:
 Persistence SHALL use the existing `config` key-value table under a single key
 (`hera.rail_view_state`), serialized as JSON — NO new table and NO schema migration.
 Only non-default fold entries SHALL be serialized (orchestrators default expanded,
-expandos default closed), so an absent or empty value restores all defaults.
+expandos default closed), so a saved value can always round-trip correctly.
+
+**First-run (no saved state):** When the stored blob is absent or empty, the rail
+SHALL start FULLY COLLAPSED on the first non-empty model build — all orchestrators
+collapsed, Archive section collapsed (existing default). This one-shot seed fires
+only once; after the first model build the live cursor and toggle state take over.
+Subsequent model rebuilds SHALL NOT re-collapse orchestrators the operator expanded.
+
+A malformed blob (present but not parseable as JSON) keeps the expanded default
+(NOT the first-run collapse) — malformed data is treated as a corruption, not a
+first launch. A load error also keeps defaults, logged but never fatal.
 
 Restore SHALL apply the fold maps and section booleans immediately on construction
 (they key off stable database ids, valid before any model is loaded) and SHALL apply
@@ -25,11 +35,10 @@ the selection after the first model build, reusing the rail's existing cursor-re
 machinery. The selection restore SHALL be ONE-SHOT: once applied (or once the operator
 moves the cursor), later rebuilds keep the live cursor, not the stale persisted ref.
 
-Saving SHALL occur on every fold toggle and selection move. A malformed or absent
-persisted value SHALL be tolerated (fall back to defaults), never fatal. In remote mode
-(no local database) the persistence seam SHALL be absent and the rail SHALL operate
-normally without persisting. Transient FILTER state (the `/` query and input mode) is
-NOT part of the persisted state, and a filter-driven rebuild SHALL NOT trigger a save.
+Saving SHALL occur on every fold toggle and selection move. In remote mode (no local
+database) the persistence seam SHALL be absent and the rail SHALL operate normally
+without persisting. Transient FILTER state (the `/` query and input mode) is NOT part
+of the persisted state, and a filter-driven rebuild SHALL NOT trigger a save.
 
 Derived from: `internal/tui/hera/rail.go` (`RailStateStore` seam, `railViewState`,
 load-on-store-set, one-shot pending-selection restore, save-on-change), `internal/db/hera_rail_state.go`
@@ -41,10 +50,17 @@ load-on-store-set, one-shot pending-selection restore, save-on-change), `interna
 - **WHEN** the operator collapses some orchestrators, opens a per-coordinator Archive expando, folds the Freelance section, and selects a row, then argus restarts and reopens the Hera tab
 - **THEN** the rail MUST restore exactly those collapsed orchestrators, that open expando, the Freelance fold, and the selected row
 
-#### Scenario: Defaults restore from an absent or malformed value
+#### Scenario: First run starts fully collapsed
 
-- **WHEN** no persisted rail state exists, or the stored value is malformed
+- **WHEN** no persisted rail state exists (absent or empty stored blob) and the first model with orchestrators is loaded
+- **THEN** the rail MUST start fully collapsed — all orchestrators collapsed, Archive section collapsed
+- **AND** the fully-collapsed state MUST be one-shot: subsequent model rebuilds MUST keep the live fold state, not re-collapse
+
+#### Scenario: Malformed value falls back to defaults
+
+- **WHEN** the stored value is present but not valid JSON (malformed or truncated)
 - **THEN** the rail MUST fall back to its defaults (orchestrators expanded, expandos closed, Freelance expanded, Archive collapsed) without error
+- **AND** the first-run collapse MUST NOT fire (malformed data is treated as prior state, not first launch)
 
 #### Scenario: Selection restore is one-shot
 
