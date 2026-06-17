@@ -39,11 +39,11 @@ func TestHelpModal_InputHandler(t *testing.T) {
 
 func TestHelpModal_Draw(t *testing.T) {
 	// Height must clear the full section list (the modal scrolls when it
-	// can't); 64 leaves headroom so every section header — including the last
+	// can't); 80 leaves headroom so every section header — including the last
 	// one, Settings — renders without scrolling.
-	sim := drawAt(t, 100, 64)
+	sim := drawAt(t, 100, 80)
 	m := NewHelpModal()
-	m.SetRect(0, 0, 100, 64)
+	m.SetRect(0, 0, 100, 80)
 	m.Draw(sim)
 	sim.Sync()
 
@@ -78,6 +78,8 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "retire worker (archive task, keep worktree)")
 	testutil.Contains(t, body, "prune coordinator's archived descendants")
 	testutil.Contains(t, body, "prune all finished coords + agents")
+	// BUG-002: Cmd+Up/Down rail-selection key must be discoverable in the overlay.
+	testutil.Contains(t, body, "move rail selection (stay focused in pane)")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

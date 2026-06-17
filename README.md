@@ -209,6 +209,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `C`             | Prune the selected coordinator's **archived** descendant workers (confirm): complete their tasks and reclaim their worktrees + branches |
 | `ctrl+r`        | Prune **all** finished coordinators + agents rail-wide (confirm): complete their tasks, reclaim worktrees, and close fully-finished orchestrators. Rail-scoped — never collides with the agent-view `ctrl+r` session switcher |
 | `ctrl+d`        | Delete the selected role / orchestrator; on a nested sub-coordinator row, cascade-delete the whole sub-team (confirm-gated) |
+| `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
 When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view.
