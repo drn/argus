@@ -75,6 +75,32 @@ func TestHeraActions_RetireWorkerBranches(t *testing.T) {
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 }
 
+// BUG-014: `s`/`S` on a COORDINATOR HEADER selection (Role nil) steps the
+// folded coordinator role's hera status, so a finished coordinator's `done` (the
+// rail ✓) can be reverted. A header with no coordinator role is a silent no-op.
+func TestHeraActions_StatusStepCoordinatorHeader(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "o")
+	coord := seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	testutil.NoError(t, d.UpsertHeraRoleStatus(coord.ID, db.HeraStatusDone))
+
+	sel := hera.Selection{Orch: &hera.OrchView{
+		ID: orch, Name: "o",
+		Roles: []hera.RoleView{{RoleID: coord.ID, OrchID: orch, Name: "coord", Kind: db.HeraKindCoordinator, TaskID: "tc", Live: true, HasStatus: true, Status: db.HeraStatusDone}},
+	}}
+	// `S` (revert) steps the coordinator role done → blocked.
+	app.heraStatusStep(sel, -1)
+	st, _ := d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusBlocked)
+	testutil.Equal(t, app.statusbar.Error(), "")
+
+	// A header with NO coordinator role is a silent no-op (no panic, no error).
+	app.heraStatusStep(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}}, -1)
+	testutil.Equal(t, app.statusbar.Error(), "")
+}
+
 func TestHeraActions_PruneDescendantsBranches(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)

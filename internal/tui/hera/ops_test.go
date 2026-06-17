@@ -24,6 +24,20 @@ func orchSel(orchID int64, name string) Selection {
 	return Selection{Orch: &OrchView{ID: orchID, Name: name}}
 }
 
+// coordHeaderSel builds a COORDINATOR HEADER selection: Role nil, Orch carrying
+// the folded coordinator role (with its persisted status read back), mirroring
+// what the rail hands the mutation layer when the cursor rests on an orchestrator
+// header. Used to exercise the BUG-014 coordinator status-step path.
+func coordHeaderSel(t *testing.T, d *db.DB, orchID int64, coord *db.HeraRole) Selection {
+	t.Helper()
+	rv := RoleView{RoleID: coord.ID, OrchID: orchID, Name: coord.Name, Kind: coord.Kind, TaskID: "tc", Live: true}
+	if st, err := d.HeraRoleStatusFor(coord.ID); err == nil {
+		rv.Status = st.Status
+		rv.HasStatus = true
+	}
+	return Selection{Orch: &OrchView{ID: orchID, Name: "o", Roles: []RoleView{rv}}}
+}
+
 func TestOps_ArchiveToggle_Role(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "o")
@@ -143,8 +157,56 @@ func TestOps_StepStatus_OrchHeaderNoop(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "o")
 	ops := NewOps(d)
+	// A header selection with NO coordinator role has nothing to step → no-op.
 	err := ops.StepStatus(orchSel(o, "o"), +1)
 	testutil.ErrorIs(t, err, errNoTarget)
+}
+
+// BUG-014: a COORDINATOR HEADER selection (Role nil, Orch carrying the folded
+// coordinator role) steps the coordinator's hera status — so `S` can move a
+// finished coordinator's `done` back down and the rail ✓ clears.
+func TestOps_StepStatus_CoordinatorHeader(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	coord := seedBoundRole(t, d, o, "coord", db.HeraKindCoordinator, "tc")
+	testutil.NoError(t, d.UpsertHeraRoleStatus(coord.ID, db.HeraStatusDone))
+	ops := NewOps(d)
+
+	// The rail ✓ comes from role.Status == done; confirm it before reverting.
+	doneGlyph, _ := statusIcon(coordHeaderSel(t, d, o, coord).Orch.CoordRole(), false, 0)
+	testutil.Equal(t, doneGlyph, '✓')
+
+	// `S` (revert) on the header steps the COORDINATOR role done → blocked.
+	testutil.NoError(t, ops.StepStatus(coordHeaderSel(t, d, o, coord), -1))
+	st, _ := d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusBlocked)
+
+	// The ✓ is gone now that the coordinator role is no longer done.
+	glyph, _ := statusIcon(coordHeaderSel(t, d, o, coord).Orch.CoordRole(), false, 0)
+	testutil.Equal(t, glyph != '✓', true)
+
+	// `s` (advance) steps it back up blocked → done, restoring the ✓.
+	testutil.NoError(t, ops.StepStatus(coordHeaderSel(t, d, o, coord), +1))
+	st, _ = d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusDone)
+}
+
+// BUG-014: stepping a COORDINATOR role to `done` must NOT roll any task to
+// in_review — the worker-roll is guarded on r.Kind == worker. The coordinator's
+// task stays in_progress (worker behavior is unchanged).
+func TestOps_StepStatus_CoordinatorDoneDoesNotRollTask(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	coord := seedBoundRole(t, d, o, "coord", db.HeraKindCoordinator, "tc")
+	testutil.NoError(t, d.UpsertHeraRoleStatus(coord.ID, db.HeraStatusBlocked))
+	ops := NewOps(d)
+
+	testutil.NoError(t, ops.StepStatus(coordHeaderSel(t, d, o, coord), +1))
+	st, _ := d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusDone)
+
+	got, _ := d.Get("tc")
+	testutil.Equal(t, got.Status, model.StatusInProgress) // NOT rolled to in_review
 }
 
 func TestOps_DeleteRole(t *testing.T) {

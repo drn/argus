@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/gdamore/tcell/v2"
 )
@@ -309,17 +310,46 @@ func TestWorktreeDisplay(t *testing.T) {
 
 func TestCoordStatusLabel(t *testing.T) {
 	// A genuinely active coordinator (live binding + bound task in_progress) reads
-	// "working".
+	// "working" — an ongoing task adds no task suffix (BUG-015: only terminal task
+	// states are surfaced).
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
 	// BUG-003: a STALE "working" role-status that isn't backed by real activity
-	// must not claim "working". A dead/stopped binding reads "stopped"; a live
-	// binding no longer in_progress reads "live".
+	// must not claim "working". A dead/stopped binding reads "stopped".
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live")
-	// Non-working role-status assertions pass through unchanged.
+	// Non-working role-status assertions pass through unchanged when the task is
+	// ongoing/unbound.
 	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
 	testutil.Equal(t, coordStatusLabel(&RoleView{Live: true}), "live")
 	testutil.Equal(t, coordStatusLabel(&RoleView{}), "—")
+}
+
+// BUG-015: the coordinator Details status line is TASK-AWARE — a notable
+// terminal task status (in_review / complete / failed) is surfaced alongside the
+// role status so the Details line never disagrees with the rail (a finished
+// coordinator whose stale role-status would otherwise read "live").
+func TestCoordStatusLabel_TaskAware(t *testing.T) {
+	// A live binding whose task is complete: role status reads "live" but the task
+	// is done — surface BOTH so completion is visible (the BUG-015 case).
+	testutil.Equal(t,
+		coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: model.StatusComplete.String()}),
+		"live · task complete")
+	// A live, no-longer-in_progress binding parked at in_review surfaces the
+	// hand-off (was just "live" before BUG-015).
+	testutil.Equal(t,
+		coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: model.StatusInReview.String()}),
+		"live · task in review")
+	// Role status `done` + task complete: both shown, agreeing with the rail ✓.
+	testutil.Equal(t,
+		coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusDone, Live: true, TaskStatus: model.StatusComplete.String()}),
+		"done · task complete")
+	// A failed result is surfaced even on an in_review task.
+	testutil.Equal(t,
+		coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle, Live: true, TaskStatus: model.StatusInReview.String(), TaskResult: `{"failed":true}`}),
+		"idle · task failed")
+	// taskResultFailed tolerates empty / malformed JSON (never panics, reads false).
+	testutil.Equal(t, taskResultFailed(""), false)
+	testutil.Equal(t, taskResultFailed("not json"), false)
+	testutil.Equal(t, taskResultFailed(`{"failed":true}`), true)
 }
 
 // testContains is a tiny substring helper (avoids importing strings just here).

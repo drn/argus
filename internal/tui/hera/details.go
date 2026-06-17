@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
@@ -308,14 +310,33 @@ func (d *DetailsView) roleMark(r *RoleView) string {
 	return mark
 }
 
-// coordStatusLabel renders a human label for a coordinator role's status. A
+// coordStatusLabel renders a TASK-AWARE human label for a coordinator role's
+// status (BUG-015). It combines the hera ROLE status (the manual/MCP-set ladder
+// value the rail icon renders) with the bound argus TASK status, so the Details
+// line surfaces a completion/failure the role status alone hides and never
+// disagrees with the rail (e.g. a finished coordinator's task is `complete` but
+// its stale role-status would otherwise read "live"). When the task is in a
+// notable terminal state (in_review / complete / failed) that the role status
+// doesn't already convey, BOTH are shown as "<role> · task <state>"; otherwise
+// the role status reads alone (an ongoing in_progress/pending task adds no
+// signal the role status lacks).
+func coordStatusLabel(r *RoleView) string {
+	role := coordRoleStatusLabel(r)
+	task := coordTaskStatusLabel(r)
+	if task == "" || task == role {
+		return role
+	}
+	return role + " · task " + task
+}
+
+// coordRoleStatusLabel renders the role-status half of the coordinator label. A
 // STALE "working" role-status (the manual/MCP-set ladder value that never
 // reconciles down after a session idles/stops/dies) is not reported as
 // "working" unless it is backed by real activity (role.IsActive) — the same
-// honesty the rail spinner now enforces (BUG-003). A stale-working role reads
-// "live" when its binding is still alive (just not in_progress) and "stopped"
-// when the binding is gone; every other role-status passes through verbatim.
-func coordStatusLabel(r *RoleView) string {
+// honesty the rail spinner enforces (BUG-003). A stale-working role reads "live"
+// when its binding is still alive (just not in_progress) and "stopped" when the
+// binding is gone; every other role-status passes through verbatim.
+func coordRoleStatusLabel(r *RoleView) string {
 	switch {
 	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
 		if r.Live {
@@ -329,4 +350,40 @@ func coordStatusLabel(r *RoleView) string {
 	default:
 		return "—"
 	}
+}
+
+// coordTaskStatusLabel renders the bound argus TASK status when it is a notable
+// terminal state worth surfacing in the coordinator Details line (BUG-015): a
+// failed result, an in_review hand-off, or a complete task. An ongoing task
+// (pending / in_progress) and an unbound coordinator return "" — the role status
+// is the live signal there, so appending the task state would just be noise.
+func coordTaskStatusLabel(r *RoleView) string {
+	if taskResultFailed(r.TaskResult) {
+		return "failed"
+	}
+	switch r.TaskStatus {
+	case model.StatusComplete.String():
+		return "complete"
+	case model.StatusInReview.String():
+		return "in review"
+	default:
+		return ""
+	}
+}
+
+// taskResultFailed reports whether an opaque task-result JSON blob carries
+// {"failed": true}. It mirrors dagview's parseFailed (the orchestration tree's
+// failed-node detector) so the Details line and the tree agree on failure. A
+// malformed or empty blob is treated as not-failed.
+func taskResultFailed(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var v struct {
+		Failed bool `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return false
+	}
+	return v.Failed
 }

@@ -244,13 +244,16 @@ func (a *App) heraPinToggle(sel hera.Selection) {
 	a.heraRefresh()
 }
 
-// heraStatusStep advances/reverts the selected role's status (no confirm).
+// heraStatusStep advances/reverts the selected role's status (no confirm). The
+// target is resolved via Selection.StatusRole, so a COORDINATOR HEADER selection
+// steps its folded coordinator role too (BUG-014) — only a header with no
+// coordinator role is a silent no-op.
 func (a *App) heraStatusStep(sel hera.Selection, dir int) {
 	if a.heraOps == nil {
 		return
 	}
-	if sel.Role == nil {
-		return // orchestrator header has no status
+	if sel.StatusRole() == nil {
+		return // no role and no coordinator role to step
 	}
 	if err := a.heraOps.StepStatus(sel, dir); err != nil {
 		a.statusbar.SetError("Status step failed: " + err.Error())

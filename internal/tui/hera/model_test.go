@@ -234,6 +234,32 @@ func TestSelection_FocusTaskID(t *testing.T) {
 	})
 }
 
+// BUG-014: StatusRole resolves the role whose hera status `s`/`S` steps —
+// the selected role directly, the folded coordinator role for a header
+// selection, or nil for a coordinator-less header / empty selection.
+func TestSelection_StatusRole(t *testing.T) {
+	coord := RoleView{RoleID: 7, Kind: db.HeraKindCoordinator, Live: true, TaskID: "tc"}
+	coordOrch := &OrchView{Roles: []RoleView{coord}}
+	t.Run("role selection returns that role", func(t *testing.T) {
+		w := &RoleView{RoleID: 3, Kind: db.HeraKindWorker}
+		testutil.Equal(t, Selection{Role: w, Orch: coordOrch}.StatusRole(), w)
+	})
+	t.Run("coordinator header returns the coordinator role", func(t *testing.T) {
+		got := Selection{Role: nil, Orch: coordOrch}.StatusRole()
+		testutil.Equal(t, got != nil, true)
+		testutil.Equal(t, got.RoleID, int64(7))
+	})
+	t.Run("coordinator-less header returns nil", func(t *testing.T) {
+		s := Selection{Role: nil, Orch: &OrchView{Roles: []RoleView{
+			{Kind: db.HeraKindWorker},
+		}}}
+		testutil.Nil(t, s.StatusRole())
+	})
+	t.Run("empty selection returns nil", func(t *testing.T) {
+		testutil.Nil(t, Selection{}.StatusRole())
+	})
+}
+
 // coordOf builds an orchestrator whose coordinator role has an explicit RoleID
 // and bridge task (the coord-of-both fixtures need distinct coordinator role ids
 // to exercise the earliest-id=parent rule).
