@@ -253,6 +253,68 @@ func TestRail_CoordSpawnedSubteamCollapses(t *testing.T) {
 	testutil.Equal(t, r.depthOf("qw"), -1)
 }
 
+// rootHeaderCount counts depth-0 orchestrator headers (top-level roots).
+func rootHeaderCount(r *Rail) int {
+	n := 0
+	for _, row := range r.rows {
+		if row.kind == rrOrch && row.depth == 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRail_CollapsedParentDoesNotLeakCoordChildToTop is the regression for the
+// rail under-nesting bug: collapsing a PARENT orchestrator must FOLD its
+// coordinator-spawned child away, NOT leak the child to a depth-0 root. Before
+// the structuralReach guard, the child — left unplaced because its parent was
+// collapsed — fell through the safety sweep (loop 2 keyed only on `!placed`) and
+// was re-placed at depth 0. It reproduces ONLY with the parent collapsed, which
+// is why expanded-fold renders looked correct and masked the bug for sessions.
+func TestRail_CollapsedParentDoesNotLeakCoordChildToTop(t *testing.T) {
+	p := coordOf(1, "P", 100, "T")
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tqw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q}})
+
+	// Expanded: Q nests under P (depth 1); exactly one depth-0 root.
+	testutil.Equal(t, r.depthOf("Q"), 1)
+	testutil.Equal(t, rootHeaderCount(r), 1)
+
+	// Collapse the PARENT P.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "P" {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+
+	// Q must stay folded away — not leaked to a depth-0 root.
+	testutil.Equal(t, r.depthOf("Q"), -1)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only P
+}
+
+// TestRail_CollapsedParentDoesNotLeakWorkerBridgedChild covers the same leak via
+// the worker→coordinator bridge shape: collapsing the parent root must fold the
+// bridged child's subtree, not surface the child as a new depth-0 header.
+func TestRail_CollapsedParentDoesNotLeakWorkerBridgedChild(t *testing.T) {
+	root := orchView(1, "R", "tr", wk("w", "tc"))
+	child := orchView(2, "C", "tc", wk("wc", "twc"))
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{root, child}})
+	testutil.Equal(t, r.hasOrchHeader("C"), false) // nested under w when expanded
+
+	// Collapse the parent root R.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "R" {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+
+	// The child subtree folds; C must NOT leak to a top-level header.
+	testutil.Equal(t, r.depthOf("w"), -1)
+	testutil.Equal(t, r.hasOrchHeader("C"), false)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only R
+}
+
 func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	// Mirror the real rail shape: 6 roots, each with 3 worker-bridged children
 	// and 1 coordinator-spawned sub-team = 24 nested orchestrators. The bug made

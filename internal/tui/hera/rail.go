@@ -193,6 +193,13 @@ func (r *Rail) buildRows() {
 	bridge := r.bridgeIndex()
 	consumed := r.consumedSet(bridge)
 	placed := make(map[int64]bool)
+	// Structural reachability under FULL expansion (collapse/archive fold
+	// IGNORED). An orchestrator reachable as a bridged child from a true root is
+	// not a genuine top-level root — it is merely hidden when an ancestor is
+	// folded. The safety sweep below consults this so collapse/archive-HIDDEN
+	// children stay folded instead of leaking to the top; only true cycle-orphans
+	// (consumed but unreachable from any root) get rescued.
+	structReach := r.structuralReach(bridge)
 
 	// 1. Pinned section. Pinned orchestrators are always top-level roots
 	// (user intent), even if some worker bridges them.
@@ -204,15 +211,18 @@ func (r *Rail) buildRows() {
 	}
 
 	// 2. Active orchestrators (no section header). Render roots (not consumed as
-	// a child) first; then a safety sweep places any active orchestrator left
-	// unplaced by a pure bridge cycle so nothing ever vanishes from the rail.
+	// a child) first; then a safety sweep rescues only TRUE cycle-orphans — an
+	// orchestrator left unplaced AND not structurally reachable from any root.
+	// A child that is merely hidden because an ancestor is collapsed/archived is
+	// structurally reachable, so it stays folded instead of leaking to the top.
 	for i := range r.model.Active {
 		if !consumed[r.model.Active[i].ID] {
 			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
 		}
 	}
 	for i := range r.model.Active {
-		if !placed[r.model.Active[i].ID] {
+		id := r.model.Active[i].ID
+		if !placed[id] && !structReach[id] {
 			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
 		}
 	}
@@ -261,6 +271,34 @@ func (r *Rail) buildRows() {
 func (r *Rail) bridgeIndex() map[string]*OrchView { return r.model.bridgeIndex() }
 func (r *Rail) consumedSet(b map[string]*OrchView) map[int64]bool {
 	return r.model.consumedSet(b)
+}
+
+// structuralReach returns every orchestrator reachable as a bridged child from a
+// true root (pinned, or active-and-not-consumed) under FULL expansion — i.e.
+// with collapse/archive fold IGNORED. It unions Model.BridgeSubtree over each
+// true root, so it mirrors EXACTLY the two nesting paths the render uses
+// (worker→child bridges AND coordinator-spawned sub-teams) and can never drift
+// from them. The render passes respect fold; structuralReach deliberately does
+// not, so a child merely hidden behind a collapsed or archived ancestor is still
+// "reachable" here and is therefore NOT re-leaked to the top by the safety
+// sweep — only a true cycle-orphan (consumed but reachable from no root) is.
+func (r *Rail) structuralReach(bridge map[string]*OrchView) map[int64]bool {
+	consumed := r.consumedSet(bridge)
+	reach := make(map[int64]bool)
+	addSubtree := func(rootID int64) {
+		for _, o := range r.model.BridgeSubtree(rootID) {
+			reach[o.ID] = true
+		}
+	}
+	for i := range r.model.Pinned {
+		addSubtree(r.model.Pinned[i].ID)
+	}
+	for i := range r.model.Active {
+		if !consumed[r.model.Active[i].ID] {
+			addSubtree(r.model.Active[i].ID)
+		}
+	}
+	return reach
 }
 
 // appendOrch emits an orchestrator HEADER (the folded coordinator) and, when
