@@ -103,18 +103,55 @@ func TestKeyset_EnterReattachOnDeadSessionThenFocus(t *testing.T) {
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
 }
 
-func TestKeyset_EnterLiveSessionDoesNotReattach(t *testing.T) {
+func TestKeyset_EnterLiveWorkerFiresReattach(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
-	// Resolver returns a live session for the worker → Enter must NOT reattach.
+	// Resolver returns a live session for the worker. Enter STILL fires reattach
+	// for a live worker — a SIGTSTP'd worker is "alive" but suspended, so the
+	// App-side handler is what decides whether to actually revive it.
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tw": {id: "tw", alive: true}}))
+	var got Selection
 	called := false
-	p.OnReattach = func(Selection) { called = true }
+	p.OnReattach = func(s Selection) { got = s; called = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 
+	testutil.Equal(t, called, true)
+	testutil.Equal(t, got.TaskID(), "tw")
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+}
+
+func TestKeyset_EnterLiveCoordinatorDoesNotReattach(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	// Move the cursor up to the coordinator role (row 1).
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	// Coordinator has a live session → Enter must NOT reattach (navigate-only).
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tc": {id: "tc", alive: true}}))
+	called := false
+	p.OnReattach = func(Selection) { called = true }
+
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+
 	testutil.Equal(t, called, false)
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
+}
+
+func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus) // → coord header
+	// No resolver wired → coordinator treated as dead → Enter reattaches it.
+	var got Selection
+	called := false
+	p.OnReattach = func(s Selection) { got = s; called = true }
+
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+
+	testutil.Equal(t, called, true)
+	// The coordinator is folded into the orchestrator header (rail-nesting), so the
+	// reattached selection carries no Role row; its task resolves via FocusTaskID.
+	testutil.Equal(t, got.FocusTaskID(), "tc")
 }
 
 func TestKeyset_RemoteModeMutationKeysInert(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 	"github.com/drn/argus/internal/tui/hera"
+	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -50,6 +51,149 @@ func TestHeraActions_ReattachNoopBranches(t *testing.T) {
 	app.heraReattach(hera.Selection{})                                      // empty taskID → no-op
 	app.heraReattach(hera.Selection{Role: &hera.RoleView{TaskID: "ghost"}}) // missing task → no-op
 	testutil.Equal(t, app.mode, modeTaskList)
+}
+
+func TestReviveHeraWorker_GuardsAreNoops(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	live := &fakeKickSession{alive: true, idle: true}
+
+	// nil task, nil session, dead session, and empty-SessionID all return before
+	// any kick is attempted — no panic, no error surfaced.
+	app.reviveHeraWorker(nil, live)
+	app.reviveHeraWorker(&model.Task{ID: "x", SessionID: "s"}, nil)
+	app.reviveHeraWorker(&model.Task{ID: "x", SessionID: "s"}, &fakeKickSession{alive: false})
+	app.reviveHeraWorker(&model.Task{ID: "x", SessionID: ""}, live) // no session id → cannot resume
+	testutil.Equal(t, app.statusbar.Error(), "")
+
+	// A kick already pending for the task short-circuits.
+	runner.SetPendingRestartForTest("busy-task", true)
+	app.reviveHeraWorker(&model.Task{ID: "busy-task", SessionID: "s"}, live)
+	testutil.Equal(t, app.statusbar.Error(), "")
+}
+
+func TestReviveHeraWorker_GatingViaEventLoop(t *testing.T) {
+	t.Run("busy worker is not kicked", func(t *testing.T) {
+		_, app := newReviveApp(t)
+		_, stop := wireApp(t, app)
+		defer stop()
+		sess := &fakeKickSession{alive: true, idle: false} // busy
+		readUI(t, app.tapp, func() {
+			app.reviveHeraWorker(&model.Task{ID: "busy", SessionID: "sid"}, sess)
+		})
+		settleReviveNoKick(t, app)
+	})
+
+	t.Run("worker blocked on prompt is not kicked", func(t *testing.T) {
+		_, app := newReviveApp(t)
+		// A prompt in the session log → sessionBlockedOnPrompt true → preserve.
+		writeReviveSessionLog(t, "blocked", "Do you want to proceed?\n❯ 1. Yes\n  2. No\n")
+		_, stop := wireApp(t, app)
+		defer stop()
+		sess := &fakeKickSession{alive: true, idle: true}
+		readUI(t, app.tapp, func() {
+			app.reviveHeraWorker(&model.Task{ID: "blocked", SessionID: "sid"}, sess)
+		})
+		settleReviveNoKick(t, app)
+	})
+
+	t.Run("idle non-blocked worker is kicked", func(t *testing.T) {
+		_, app := newReviveApp(t)
+		// No prompt → idle + not-blocked → revive attempted. With no real session
+		// in the runner, KickRerender returns ErrSessionNotFound, surfaced as a
+		// statusbar error — a durable signal that the gate passed and the kick ran.
+		writeReviveSessionLog(t, "stuck", "working on it...\n")
+		_, stop := wireApp(t, app)
+		defer stop()
+		sess := &fakeKickSession{alive: true, idle: true}
+		readUI(t, app.tapp, func() {
+			app.reviveHeraWorker(&model.Task{ID: "stuck", SessionID: "sid"}, sess)
+		})
+		deadline := time.Now().Add(uiTimeout)
+		kicked := false
+		for time.Now().Before(deadline) {
+			readUI(t, app.tapp, func() { kicked = app.statusbar.Error() != "" })
+			if kicked {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		testutil.Equal(t, kicked, true)
+	})
+}
+
+// newReviveApp builds an App on a temp HOME (so session logs land under the temp
+// dir) with an in-process runner that satisfies agent.SessionRunner.
+func newReviveApp(t *testing.T) (*db.DB, *App) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	d := testDB(t)
+	return d, New(d, agent.NewRunner(nil), false)
+}
+
+func writeReviveSessionLog(t *testing.T, taskID, body string) {
+	t.Helper()
+	p := agent.SessionLogPath(taskID)
+	testutil.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	testutil.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+}
+
+// settleReviveNoKick gives the revive goroutine a moment to run and asserts it
+// did NOT attempt a kick (no info/error surfaced).
+func settleReviveNoKick(t *testing.T, app *App) {
+	t.Helper()
+	for i := 0; i < 10; i++ {
+		syncUI(t, app.tapp)
+		time.Sleep(10 * time.Millisecond)
+	}
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.statusbar.Error(), "")
+		testutil.Equal(t, app.statusbar.Info(), "")
+	})
+}
+
+func TestHeraPaneFocused_GlobalKeySurrender(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Tasks tab → never "hera pane focused".
+	testutil.Equal(t, app.heraPaneFocused(), false)
+
+	// Hera tab but the RAIL holds focus → globals still apply (rail is not a
+	// content pane), so heraPaneFocused stays false.
+	app.header.SetTab(widget.TabHera)
+	testutil.Equal(t, app.heraPaneFocused(), false)
+
+	// Hera tab with a content pane focused → true.
+	app.heraPage.Machine().Advance() // rail → coordinator pane
+	testutil.Equal(t, app.heraPaneFocused(), true)
+
+	// With a Hera pane focused, the global handler must NOT consume the keys it
+	// otherwise would (BUG-001): each returns the event (fall-through to the page,
+	// which forwards it to the pane PTY) rather than nil (consumed).
+	keys := []*tcell.EventKey{
+		tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone), // would quit argus
+		tcell.NewEventKey(tcell.KeyRune, '1', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '2', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '3', tcell.ModNone), // would switch tab
+		tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone), // would open help
+		tcell.NewEventKey(tcell.KeyCtrlC, 0, tcell.ModNone),  // would quit argus
+		tcell.NewEventKey(tcell.KeyCtrlL, 0, tcell.ModNone),  // would Sync
+	}
+	for _, ev := range keys {
+		if got := app.handleGlobalKey(ev); got == nil {
+			t.Fatalf("key %q was consumed while a Hera pane was focused; expected fall-through to the pane", ev.Name())
+		}
+	}
+
+	// Back on the rail, `?` is once again a global (opens help, consumed).
+	app.heraPage.Machine().ToRail()
+	testutil.Equal(t, app.heraPaneFocused(), false)
+	if got := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone)); got != nil {
+		t.Fatalf("? on the rail should be consumed (open help), got fall-through")
+	}
 }
 
 func TestHeraActions_ArchivingLive(t *testing.T) {
