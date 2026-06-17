@@ -69,6 +69,7 @@ func TestHelpModal_Draw(t *testing.T) {
 	// The `J` adopt/reparent rail key must be discoverable in the overlay so a
 	// future removal of the binding fails the build (keybinding-help contract).
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")
+	testutil.Contains(t, body, "freelancers only")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {

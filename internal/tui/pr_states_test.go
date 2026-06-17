@@ -112,3 +112,57 @@ func TestRefreshTasks_WiresHeraCoordinatorsIntoTaskList(t *testing.T) {
 
 	testutil.Equal(t, app.tasklist.IsHeraCoordinator("t1"), true)
 }
+
+// Tests for mergeManagedFromMeta — the extracted pure helper that implements
+// the remote fallback branch of readManagedTasks (approach 2: helper extraction
+// so the union logic can be tested without wiring a full remote App or store).
+
+func TestMergeManagedFromMeta_WorkerAndCoordinatorBothManaged(t *testing.T) {
+	// Tasks with worker or coordinator meta are managed; freelance-kind is absent
+	// from these maps so it is not included.
+	workers := map[string]bool{"w1": true, "w2": true}
+	coordinators := map[string]bool{"c1": true}
+
+	got := mergeManagedFromMeta(workers, coordinators)
+
+	testutil.Equal(t, got["w1"], true)
+	testutil.Equal(t, got["w2"], true)
+	testutil.Equal(t, got["c1"], true)
+	_, hasFreelance := got["freelance-task"]
+	testutil.Equal(t, hasFreelance, false)
+}
+
+func TestMergeManagedFromMeta_FreelanceRoleNotIncluded(t *testing.T) {
+	// readHeraRoles only populates the worker/coordinator maps; freelance-kind
+	// tasks never appear in either map and therefore must NOT appear in the result.
+	workers := map[string]bool{"w1": true}
+	coordinators := map[string]bool{}
+
+	got := mergeManagedFromMeta(workers, coordinators)
+
+	testutil.Equal(t, got["w1"], true)
+	testutil.Equal(t, len(got), 1)
+}
+
+func TestMergeManagedFromMeta_BothEmptyReturnsNil(t *testing.T) {
+	// When both maps are empty the remote fallback must return nil (same as the
+	// local path returning nil on an empty binding table).
+	got := mergeManagedFromMeta(nil, nil)
+	testutil.Nil(t, got)
+
+	got = mergeManagedFromMeta(map[string]bool{}, map[string]bool{})
+	testutil.Nil(t, got)
+}
+
+func TestMergeManagedFromMeta_OverlapDeduplicates(t *testing.T) {
+	// A task ID present in both maps (e.g. a task that is both a coordinator and
+	// a worker in different orchestrators) must appear exactly once.
+	workers := map[string]bool{"overlap": true}
+	coordinators := map[string]bool{"overlap": true, "coord-only": true}
+
+	got := mergeManagedFromMeta(workers, coordinators)
+
+	testutil.Equal(t, got["overlap"], true)
+	testutil.Equal(t, got["coord-only"], true)
+	testutil.Equal(t, len(got), 2)
+}
