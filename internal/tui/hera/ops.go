@@ -38,6 +38,9 @@ type MutateStore interface {
 	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
 	RollHeraWorkerToReview(taskID string) (bool, error)
+
+	HeraLiveBindingByRole(roleID int64) (*db.HeraBinding, error)
+	EndHeraBinding(bindingID int64, reason string) error
 }
 
 // Ops is the thin in-process mutation layer the Hera-view rail keys drive. Each
@@ -198,6 +201,37 @@ func (o *Ops) StepStatus(sel Selection, dir int) error {
 		}
 	}
 	return nil
+}
+
+// RetireRole performs the hera-side end-of-life for a worker role (`R` key,
+// BUG-010): it sets the role status to `done`, ends THIS role's live binding
+// (stamped user_deleted so a retired worker never bridges a child), and archives
+// the role row. When rollTask is set (the task is solely bound to this role) it
+// also rolls the worker's task to in_review + ready_to_close, mirroring
+// hera_status("done"). The App owns the argus-task side (stop session + archive
+// task when sole-bound) BEFORE calling this. Each step is soft-fail except the
+// final archive, so a transient binding/status error still lands the archive.
+func (o *Ops) RetireRole(r *RoleView, rollTask bool) error {
+	if r == nil {
+		return errNoTarget
+	}
+	if err := o.store.UpsertHeraRoleStatus(r.RoleID, db.HeraStatusDone); err != nil {
+		uxlog.Log("[hera-view] retire role %d: status set failed: %v", r.RoleID, err)
+	}
+	if rollTask && r.Kind == db.HeraKindWorker && r.TaskID != "" {
+		if flipped, rErr := o.store.RollHeraWorkerToReview(r.TaskID); rErr != nil {
+			uxlog.Log("[hera-view] retire role %d: worker roll failed for %s: %v", r.RoleID, r.TaskID, rErr)
+		} else if flipped {
+			uxlog.Log("[hera-view] retire role %d: rolled worker task %s to in_review", r.RoleID, r.TaskID)
+		}
+	}
+	if b, err := o.store.HeraLiveBindingByRole(r.RoleID); err == nil && b != nil {
+		if eErr := o.store.EndHeraBinding(b.ID, db.HeraEndReasonUserDeleted); eErr != nil {
+			uxlog.Log("[hera-view] retire role %d: end binding %d failed: %v", r.RoleID, b.ID, eErr)
+		}
+	}
+	uxlog.Log("[hera-view] retire role %d (%s) orch=%d (rollTask=%v)", r.RoleID, r.Name, r.OrchID, rollTask)
+	return o.store.ArchiveHeraRole(r.RoleID)
 }
 
 // DeleteRole removes a role row (its bindings + status cascade in M1). The

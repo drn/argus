@@ -198,16 +198,22 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `Tab` / `Shift+Tab` | Cycle focus across rail → coordinator pane → details region                        |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
-| `w`             | Spawn a worker under the selected orchestrator                                          |
+| `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
+| `n`             | Create a new top-level coordinator (same new-task modal); bootstraps a fresh orchestrator + `coord` role bound to a new task. Works on an empty rail |
 | `r`             | Rename the selected role / orchestrator                                                 |
 | `a`             | Archive / unarchive the selected role / orchestrator                                    |
 | `P`             | Pin / unpin the selected role / orchestrator                                            |
 | `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
-| `ctrl+d`        | Delete the selected role / orchestrator; on a nested sub-coordinator row, cascade-delete the whole sub-team (confirm-gated) |
 | `J`             | Adopt a freelancer into, or re-parent a coordinator under, a chosen orchestrator (type-to-filter picker) |
+| `R`             | Retire the selected worker (confirm): stop the session, archive the task (worktree **kept** — reversible), end this role's binding, archive the role. Multi-bound tasks are preserved |
+| `C`             | Prune the selected coordinator's **archived** descendant workers (confirm): complete their tasks and reclaim their worktrees + branches |
+| `ctrl+r`        | Prune **all** finished coordinators + agents rail-wide (confirm): complete their tasks, reclaim worktrees, and close fully-finished orchestrators. Rail-scoped — never collides with the agent-view `ctrl+r` session switcher |
+| `ctrl+d`        | Delete the selected role / orchestrator; on a nested sub-coordinator row, cascade-delete the whole sub-team (confirm-gated) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
-When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view. New-orchestrator creation has no key (use the `hera_new_orchestrator` MCP tool).
+When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view.
+
+The end-of-life ladder is **retire → prune**: `R` archives a finished worker (reversible, keeps the worktree); `C` and `ctrl+r` reclaim the worktrees of already-archived / finished work. Every destructive key is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never destroyed).
 
 #### File Panel
 

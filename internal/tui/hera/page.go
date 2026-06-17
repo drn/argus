@@ -77,6 +77,15 @@ type HeraPage struct {
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
 	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
 
+	// EOL / creation keys (BUG-005/006/010/011/012). OnNewCoordinator and
+	// OnPruneDone are selection-INDEPENDENT — they fire even on an empty rail, so
+	// they are dispatched directly (not via the selection-gated `fire`). OnRetire
+	// and OnPruneDescendants act on the current Selection.
+	OnNewCoordinator   func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
+	OnRetire           func(Selection) // `R` — retire the selected worker (confirm)
+	OnPruneDescendants func(Selection) // `C` — prune the selected coordinator's archived descendants (confirm)
+	OnPruneDone        func()          // ctrl+R — rail-wide prune of finished coords + agents (confirm)
+
 	// Region rects from the last Draw (mouse hit-testing in regionAt).
 	coordX, coordW int
 	agentX, agentW int
@@ -433,6 +442,15 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	switch event.Key() {
 	case tcell.KeyCtrlD:
 		return p.fire(p.OnDelete, sel)
+	case tcell.KeyCtrlR:
+		// Rail-wide prune of finished coords + agents (BUG-012). Rail-scoped: this
+		// runs only while FocusRail, so it never collides with the agent-view
+		// Ctrl+R (Claude session switcher) which lives in modeAgent. Fires even on
+		// an empty rail (selection-independent), so it bypasses `fire`.
+		if p.OnPruneDone != nil {
+			p.OnPruneDone()
+		}
+		return true
 	case tcell.KeyEnter:
 		// Enter "enters" the selected role and revives its session first, then
 		// moves focus into the pane. Reattach fires for:
@@ -476,6 +494,20 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 			// PTY via forwardKey, never reaching here). The handler sorts out
 			// freelance vs coordinator vs not-applicable and surfaces feedback.
 			return p.fire(p.OnAdopt, sel)
+		case 'n':
+			// New top-level coordinator (BUG-006). Selection-INDEPENDENT — it is
+			// the bootstrap affordance, so it fires even on an empty rail and does
+			// NOT route through the selection-gated `fire`.
+			if p.OnNewCoordinator != nil {
+				p.OnNewCoordinator(sel)
+			}
+			return true
+		case 'R':
+			// Retire the selected worker (BUG-010). Acts on the selection.
+			return p.fire(p.OnRetire, sel)
+		case 'C':
+			// Prune the selected coordinator's archived descendants (BUG-011).
+			return p.fire(p.OnPruneDescendants, sel)
 		}
 	}
 	return false

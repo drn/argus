@@ -809,6 +809,47 @@ func (d *DB) UniqueHeraRoleName(orchID int64, base string) (string, error) {
 	return fmt.Sprintf("%s-%d", base, len(used)+3), nil
 }
 
+// UniqueHeraOrchestratorName returns base when no ACTIVE orchestrator already
+// holds it, otherwise the first free `base-N` suffix (N starting at 2). Only
+// active orchestrators occupy names (CreateHeraOrchestrator's idempotency check
+// keys on the active-name index), so an archived orchestrator never blocks
+// reuse. Empty base defaults to "orchestrator". This lets the rail `n` key
+// create a genuinely NEW top-level orchestrator instead of idempotently
+// re-fetching an existing one with the same name.
+func (d *DB) UniqueHeraOrchestratorName(base string) (string, error) {
+	if base == "" {
+		base = "orchestrator"
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, err := d.conn.Query(`SELECT name FROM hera_orchestrators WHERE archived_at IS NULL`)
+	if err != nil {
+		return "", fmt.Errorf("unique hera orchestrator name: %w", err)
+	}
+	defer rows.Close()
+	used := make(map[string]bool)
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return "", fmt.Errorf("unique hera orchestrator name: scan: %w", err)
+		}
+		used[n] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("unique hera orchestrator name: rows: %w", err)
+	}
+	if !used[base] {
+		return base, nil
+	}
+	for i := 2; i <= len(used)+2; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if !used[cand] {
+			return cand, nil
+		}
+	}
+	return fmt.Sprintf("%s-%d", base, len(used)+3), nil
+}
+
 // HeraLiveBindingByRole returns the live binding for a role, or ErrHeraNotFound.
 func (d *DB) HeraLiveBindingByRole(roleID int64) (*HeraBinding, error) {
 	d.mu.Lock()

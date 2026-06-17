@@ -138,6 +138,16 @@ type App struct {
 
 	// New task form (created on demand)
 	newTaskForm *NewTaskForm
+	// newTaskOnDone, when non-nil, OVERRIDES handleNewTaskKey's default
+	// create-and-start path: it is called with the assembled task + resolved
+	// project on submit (the form is already closed). The Hera rail's `w`/`n`
+	// keys use it to spawn a born-bound worker / new root coordinator from the
+	// SAME modal as the new-argus-task popup. nil = the default Tasks-tab path.
+	newTaskOnDone func(task *model.Task, project string)
+	// newTaskReturnPage is the page closeNewTaskForm switches back to (and which
+	// primitive it focuses). Defaults to "tasks"; the Hera rail sets "hera" so the
+	// shared modal returns to the Hera tab on submit/cancel.
+	newTaskReturnPage string
 
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal        *modal.ConfirmDeleteModal
@@ -658,6 +668,12 @@ func (a *App) buildUI() {
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
 		a.heraPage.OnAdopt = a.heraOpenAdopt
+		// Rail key family (BUG-005/006/010/011/012): full new-task modal for w/n,
+		// retire R, prune-descendants C, rail-wide prune Ctrl+R.
+		a.heraPage.OnNewCoordinator = a.heraNewCoordinator
+		a.heraPage.OnRetire = a.heraRetireWorker
+		a.heraPage.OnPruneDescendants = a.heraPruneDescendants
+		a.heraPage.OnPruneDone = a.heraPruneDone
 
 		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
 		// a node's agent view) is wired — the legacy link/unlink/halt actions are
@@ -3417,15 +3433,13 @@ func (a *App) reapStaleRerenderRestart(taskID string, sess agent.SessionHandle) 
 	a.statusbar.ClearInfo()
 }
 
-// onNewTask opens the new task form.
-func (a *App) onNewTask() {
+// buildNewTaskForm constructs a NewTaskForm defaulted to defaultProject and
+// wires its async branch loader. Shared by the Tasks-tab new-task flow and the
+// Hera rail's `w`/`n` keys (which reuse the SAME modal).
+func (a *App) buildNewTaskForm(defaultProject string) *NewTaskForm {
 	cfg := a.db.Config()
-
-	a.newTaskForm = NewNewTaskForm(
-		cfg.Projects, a.tasklist.SelectedProject(),
-		cfg.Backends, cfg.Defaults.Backend,
-	)
-	a.newTaskForm.OnBranchFocus = func(path string) {
+	f := NewNewTaskForm(cfg.Projects, defaultProject, cfg.Backends, cfg.Defaults.Backend)
+	f.OnBranchFocus = func(path string) {
 		go func() {
 			branches := gitutil.ListRemoteBranches(path)
 			uxlog.Log("[newtask] loaded %d branches for %s", len(branches), path)
@@ -3436,7 +3450,31 @@ func (a *App) onNewTask() {
 			})
 		}()
 	}
+	return f
+}
+
+// onNewTask opens the new task form (Tasks tab, default create-and-start path).
+func (a *App) onNewTask() {
+	a.newTaskForm = a.buildNewTaskForm(a.tasklist.SelectedProject())
+	a.newTaskReturnPage = "tasks"
 	// Trigger initial branch load for the default project.
+	a.newTaskForm.maybeLoadBranches()
+
+	a.mode = modeNewTask
+	a.pages.AddPage("newtask", a.newTaskForm, true, true)
+	a.pages.SwitchToPage("newtask")
+	a.tapp.SetFocus(a.newTaskForm)
+}
+
+// openHeraNewTaskForm opens the shared new-task modal for the Hera tab. title
+// labels the modal (e.g. "Spawn worker"); defaultProject pre-fills the project;
+// onDone runs with the assembled task + resolved project on submit (the form is
+// already closed and focus has returned to the Hera tab).
+func (a *App) openHeraNewTaskForm(title, defaultProject string, onDone func(task *model.Task, project string)) {
+	a.newTaskForm = a.buildNewTaskForm(defaultProject)
+	a.newTaskForm.SetTitle(title)
+	a.newTaskOnDone = onDone
+	a.newTaskReturnPage = "hera"
 	a.newTaskForm.maybeLoadBranches()
 
 	a.mode = modeNewTask
@@ -3464,13 +3502,22 @@ func (a *App) handleNewTaskKey(event *tcell.EventKey) {
 
 		// Capture form data before closing.
 		proj := a.newTaskForm.SelectedProject()
+		onDone := a.newTaskOnDone
 		var projCfg config.Project
 		if p, ok := a.db.Config().Projects[proj]; ok {
 			projCfg = p
 		}
 
-		// Close form immediately so the UI feels responsive.
+		// Close form immediately so the UI feels responsive. closeNewTaskForm
+		// clears newTaskOnDone (captured above) and returns to the correct tab.
 		a.closeNewTaskForm()
+
+		// Hera-tab override (rail `w`/`n`): spawn worker / new coordinator from the
+		// shared modal instead of the default Tasks-tab create-and-start path.
+		if onDone != nil {
+			onDone(task, proj)
+			return
+		}
 
 		if projCfg.Path == "" {
 			// No project path — no worktree needed, persist and start inline.
@@ -3839,7 +3886,15 @@ func (a *App) startAgentRedrawLoop(taskID string, sess agent.SessionHandle) {
 func (a *App) closeNewTaskForm() {
 	a.mode = modeTaskList
 	a.newTaskForm = nil
+	a.newTaskOnDone = nil
+	page := a.newTaskReturnPage
+	a.newTaskReturnPage = ""
 	a.pages.RemovePage("newtask")
+	if page == "hera" {
+		a.pages.SwitchToPage("hera")
+		a.tapp.SetFocus(a.heraPage)
+		return
+	}
 	a.pages.SwitchToPage("tasks")
 	a.tapp.SetFocus(a.tasklist)
 }

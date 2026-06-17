@@ -19,6 +19,238 @@ import (
 
 // --- fast direct-call branch coverage (no event loop) -----------------------
 
+// heraSel builds a Selection whose orchestrator has a live coordinator bound to
+// coordTaskID (project "p"), with the cursor conceptually on the orchestrator
+// header. Used by the rail-key handler tests.
+func heraCoordSel(orchID int64, coordTaskID string) hera.Selection {
+	return hera.Selection{Orch: &hera.OrchView{
+		ID: orchID, Name: "o",
+		Roles: []hera.RoleView{{RoleID: 1, OrchID: orchID, Name: "coord", Kind: db.HeraKindCoordinator, TaskID: coordTaskID, Live: true}},
+	}}
+}
+
+func TestHeraActions_SpawnWorkerOpensFullModal(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir()}))
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "o")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+
+	app.heraSpawnWorker(heraCoordSel(orch, "tc"))
+
+	// The full new-task modal is open, defaulted to the coordinator's project,
+	// returning to the Hera tab, with the worker-spawn override wired.
+	testutil.Equal(t, app.mode, modeNewTask)
+	testutil.Equal(t, app.newTaskReturnPage, "hera")
+	testutil.Equal(t, app.newTaskOnDone != nil, true)
+	testutil.Equal(t, app.newTaskForm.SelectedProject(), "p")
+}
+
+func TestHeraActions_NewCoordinatorOpensFullModal(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Even with an empty selection, `n` opens the modal (bootstrap affordance).
+	app.heraNewCoordinator(hera.Selection{})
+	testutil.Equal(t, app.mode, modeNewTask)
+	testutil.Equal(t, app.newTaskReturnPage, "hera")
+	testutil.Equal(t, app.newTaskOnDone != nil, true)
+}
+
+func TestHeraActions_RetireWorkerBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Coordinator/header selection → feedback, no confirm.
+	app.heraRetireWorker(heraCoordSel(1, "tc"))
+	testutil.Contains(t, app.statusbar.Error(), "Retire applies to workers")
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Worker selection → confirm modal opens.
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}}
+	app.heraRetireWorker(sel)
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+}
+
+func TestHeraActions_PruneDescendantsBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+
+	orch := seedHeraOrch(t, d, "o")
+	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	app.heraPage.Refresh()
+
+	// No archived descendant workers → "nothing to prune", no modal.
+	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
+	testutil.Contains(t, app.statusbar.Info(), "Nothing to prune")
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// Archive a worker so the subtree has an archived descendant.
+	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
+	app.heraPage.Refresh()
+	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+}
+
+func TestHeraActions_PruneDoneBranches(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraPage.Refresh()
+
+	// Empty rail → "nothing to prune".
+	app.heraPruneDone()
+	testutil.Contains(t, app.statusbar.Info(), "Nothing to prune")
+	testutil.Equal(t, app.mode, modeTaskList)
+
+	// A finished (archived) role exists → confirm opens.
+	orch := seedHeraOrch(t, d, "o")
+	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
+	app.heraPage.Refresh()
+	app.heraPruneDone()
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+}
+
+// TestHeraActions_NewTaskOverrideInvokesOnDone drives the shared new-task modal
+// through submit and asserts the Hera override (newTaskOnDone) runs instead of
+// the default create path, the form returns to the Hera tab, and state is reset.
+func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
+	d := testDB(t)
+	testutil.NoError(t, d.SetProject("p", config.Project{Path: t.TempDir()}))
+	app := New(d, agent.NewRunner(nil), false)
+
+	var gotTask *model.Task
+	var gotProj string
+	app.openHeraNewTaskForm(" Test ", "p", func(task *model.Task, project string) {
+		gotTask = task
+		gotProj = project
+	})
+	testutil.Equal(t, app.mode, modeNewTask)
+
+	app.newTaskForm.focused = ntFieldPrompt
+	for _, r := range "do it" {
+		app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyRune, r, tcell.ModNone))
+	}
+	app.handleNewTaskKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	testutil.Equal(t, gotTask != nil, true)
+	testutil.Equal(t, gotProj, "p")
+	testutil.Equal(t, gotTask.Prompt, "do it")
+	// Form closed, override cleared, return page reset.
+	testutil.Equal(t, app.mode, modeTaskList)
+	testutil.Equal(t, app.newTaskOnDone == nil, true)
+	testutil.Equal(t, app.newTaskReturnPage, "")
+}
+
+// TestHeraActions_DoRetireSoleBound exercises the retire execution: task
+// archived, role archived + status done, binding ended (worktree kept).
+func TestHeraActions_DoRetireSoleBound(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
+	app.heraDoRetire(rv, true)
+
+	task, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Archived, true)
+	got, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ArchivedAt != nil, true)
+	_, err = d.HeraLiveBindingByRole(role.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// TestHeraActions_ReclaimRoleCompletesAndDeletes exercises reclaim of a
+// sole-bound role: task completed, role row removed.
+func TestHeraActions_ReclaimRoleCompletesAndDeletes(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	orch := seedHeraOrch(t, d, "o")
+	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Kind: db.HeraKindWorker, TaskID: "tw", BridgeTaskID: "tw", Live: true}
+	app.heraReclaimRole(rv)
+
+	task, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Status, model.StatusComplete)
+	_, err = d.HeraRole(role.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+}
+
+// TestHeraActions_ReclaimRoleMultiBoundPreservesTask verifies a task bound live
+// under another orchestrator is preserved — only this role row is removed.
+func TestHeraActions_ReclaimRoleMultiBoundPreservesTask(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	a := seedHeraOrch(t, d, "A")
+	b := seedHeraOrch(t, d, "B")
+	roleA := seedHeraBoundRole(t, d, a, "w", db.HeraKindWorker, "shared")
+	roleB, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: b, Name: "c", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: roleB.ID, ArgusTaskID: "shared", WorktreePath: "/wt/shared2"})
+	testutil.NoError(t, err)
+
+	rv := &hera.RoleView{RoleID: roleA.ID, OrchID: a, Kind: db.HeraKindWorker, TaskID: "shared", BridgeTaskID: "shared", Live: true}
+	reclaimed := app.heraReclaimRole(rv)
+
+	testutil.Equal(t, reclaimed, false) // bound elsewhere → worktree not reclaimed
+	task, err := d.Get("shared")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Status, model.StatusInProgress) // preserved
+	_, err = d.HeraRole(roleA.ID)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound) // this role row removed
+	gotB, err := d.HeraRole(roleB.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotB.OrchestratorID, b) // other orchestrator's role intact
+}
+
+// TestHeraActions_DoPruneDoneClosesFinishedOrch verifies a fully-finished
+// orchestrator is closed and its roles reclaimed.
+func TestHeraActions_DoPruneDoneClosesFinishedOrch(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	orch := seedHeraOrch(t, d, "o")
+	coord := seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.ArchiveHeraRole(coord.ID))
+	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
+	app.heraPage.Refresh()
+
+	m := app.heraPage.Rail().Model()
+	orchIDs := m.FullyFinishedOrchestratorIDs()
+	testutil.Equal(t, len(orchIDs), 1)
+	reclaim := m.FinishedRoles()
+	app.heraDoPruneDone(reclaim, orchIDs)
+
+	// Orchestrator deleted (its bindings cascaded away on role delete).
+	_, err := d.HeraOrchestrator(orch)
+	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	// Tasks completed.
+	tc, _ := d.Get("tc")
+	testutil.Equal(t, tc.Status, model.StatusComplete)
+}
+
+func TestHeraActions_EOLKeysRemoteInert(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = nil // simulate remote mode
+
+	app.heraNewCoordinator(hera.Selection{})
+	app.heraRetireWorker(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}})
+	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: 1}})
+	app.heraPruneDone()
+	// No modal opened, no panic.
+	testutil.Equal(t, app.mode, modeTaskList)
+}
+
 func TestHeraActions_SpawnWorkerValidationBranches(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
@@ -456,12 +688,12 @@ func TestSmoke_HeraSpawnWorkerCreatesRoleAndTask(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp) // → Hera tab, cursor on orch header
 
-	// `w` opens the spawn prompt modal.
+	// `w` opens the FULL new-task modal (project defaulted to the coordinator's).
 	sim.InjectKey(tcell.KeyRune, 'w', 0)
 	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraInput) })
+	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeNewTask) })
 
-	// Type a prompt and submit.
+	// The prompt field is focused by default — type a prompt and submit.
 	for _, r := range "do work" {
 		sim.InjectKey(tcell.KeyRune, r, 0)
 	}
