@@ -837,6 +837,20 @@ func (d *DB) ListHeraBindingsByRole(roleID int64) ([]*HeraBinding, error) {
 		 FROM hera_bindings WHERE role_id=? ORDER BY started_at DESC, id DESC`, roleID)
 }
 
+// ListHeraBindingsByTask returns every binding pointing at the given argus task
+// — live AND ended — most recent first. The `J` re-parent teardown (BUG-026)
+// needs the full set so it can delete EVERY prior parent-link role of a
+// coordinator's task by role id, not just the live ones; an ended link role
+// left behind by the resync reconciler would otherwise force the next
+// re-parent's de-collide into a duplicate "name-2" link.
+func (d *DB) ListHeraBindingsByTask(taskID string) ([]*HeraBinding, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.heraListBindings(
+		`SELECT id, role_id, orchestrator_id, argus_task_id, worktree_path, started_at, ended_at, end_reason
+		 FROM hera_bindings WHERE argus_task_id=? ORDER BY started_at DESC, id DESC`, taskID)
+}
+
 // heraSingleLiveBinding runs a live-binding query expected to match at most one
 // row, mapping zero rows to ErrHeraNotFound and 2+ rows to ErrHeraAmbiguous.
 // query is always a package-internal constant (callers above), never derived

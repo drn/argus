@@ -406,6 +406,43 @@ func TestHeraBindingLifecycle(t *testing.T) {
 	})
 }
 
+func TestListHeraBindingsByTask(t *testing.T) {
+	t.Run("returns live and ended for a task, newest first", func(t *testing.T) {
+		d := heraTestDB(t)
+		oa := mkOrch(t, d, "A")
+		ob := mkOrch(t, d, "B")
+		ra := mkRole(t, d, oa.ID, "ra", HeraKindWorker)
+		rb := mkRole(t, d, ob.ID, "rb", HeraKindWorker)
+
+		// First binding under A, then end it.
+		b1, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: ra.ID, ArgusTaskID: "shared", WorktreePath: "/wt",
+		})
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.EndHeraBinding(b1.ID, "reparented"))
+		// Second binding under B, still live.
+		b2, err := d.CreateHeraBinding(CreateHeraBindingInput{
+			RoleID: rb.ID, ArgusTaskID: "shared", WorktreePath: "/wt",
+		})
+		testutil.NoError(t, err)
+
+		all, err := d.ListHeraBindingsByTask("shared")
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(all), 2) // live AND ended
+		// Newest first (id DESC tiebreak): b2 before b1.
+		testutil.Equal(t, all[0].ID, b2.ID)
+		testutil.Equal(t, all[1].ID, b1.ID)
+		testutil.Equal(t, all[1].EndReason, "reparented")
+	})
+
+	t.Run("empty for unknown task", func(t *testing.T) {
+		d := heraTestDB(t)
+		got, err := d.ListHeraBindingsByTask("nope")
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(got), 0)
+	})
+}
+
 func TestHeraMultiBinding(t *testing.T) {
 	t.Run("same task live in two orchestrators is allowed", func(t *testing.T) {
 		d := heraTestDB(t)
