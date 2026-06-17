@@ -72,6 +72,7 @@ var HelpSections = []HelpSection{
 		Bindings: []HelpBinding{
 			{"j / k", "navigate up/down"},
 			{"space", "collapse/expand"},
+			{"/", "filter rail by name (Esc clears, Enter accepts)"},
 			{"Tab / Ctrl+Q", "focus pane / back to rail"},
 			{"ctrl+z", "fullscreen pane"},
 			{"Enter", "enter pane (revive dead/suspended session)"},

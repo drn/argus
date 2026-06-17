@@ -1847,6 +1847,72 @@ func TestSmoke_NumericTabKeysRouteCorrectly(t *testing.T) {
 	})
 }
 
+// TestSmoke_HeraRailFilterSuppressesGlobalShortcuts guards the global rune
+// guard for the `/` rail filter: while the Hera rail is in search input mode,
+// `1`/`2`/`q` must be filter input, NOT global tab-switch/quit shortcuts. Without
+// the `RailFiltering()` guard in handleGlobalKey, typing those runes would jump
+// tabs or quit instead of building the query.
+func TestSmoke_HeraRailFilterSuppressesGlobalShortcuts(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Go to the Hera tab (focus lands on heraPage / FocusRail).
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.header.ActiveTab() != widget.TabHera {
+			t.Fatalf("setup: tab = %v, want TabHera", app.header.ActiveTab())
+		}
+	})
+
+	// `/` enters rail filter input mode.
+	sim.InjectKey(tcell.KeyRune, '/', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if !app.heraPage.RailFiltering() {
+			t.Fatal("'/' did not enter rail filter input mode")
+		}
+	})
+
+	// `1` would normally switch to Tasks; while filtering it must be swallowed as
+	// filter input and the tab must stay on Hera.
+	sim.InjectKey(tcell.KeyRune, '1', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.header.ActiveTab() != widget.TabHera {
+			t.Errorf("'1' while filtering switched tab to %v, want TabHera", app.header.ActiveTab())
+		}
+		if !app.heraPage.RailFiltering() {
+			t.Error("'1' while filtering exited filter mode")
+		}
+	})
+
+	// `Esc` clears the filter and exits input mode (tab still Hera).
+	sim.InjectKey(tcell.KeyEscape, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.heraPage.RailFiltering() {
+			t.Error("Esc did not exit filter input mode")
+		}
+		if app.header.ActiveTab() != widget.TabHera {
+			t.Errorf("tab changed after Esc: %v", app.header.ActiveTab())
+		}
+	})
+
+	// After clearing, `1` switches tabs again (normal routing resumed).
+	sim.InjectKey(tcell.KeyRune, '1', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.header.ActiveTab() != widget.TabTasks {
+			t.Errorf("'1' after clearing filter routed to %v, want TabTasks", app.header.ActiveTab())
+		}
+	})
+}
+
 // TestSmoke_ClickHeraPageDoesNotStealFocus enforces the CLAUDE.md page-wrapper
 // rule for the native Hera view: clicking on any non-interactive area —
 // including the placeholder coordinator/agent panes (which have no

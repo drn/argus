@@ -609,6 +609,12 @@ func (a *App) buildUI() {
 		heraReader = d
 	}
 	a.heraPage = hera.NewHeraPage(heraReader)
+	if d, ok := a.db.(*db.DB); ok {
+		// Persist + restore the rail's fold/selection state across restarts
+		// (BUG-002). Local-only: remote mode (apistore) has no config table seam,
+		// so persistence stays off. Mirrors the heraReader / heraOps type-assert.
+		a.heraPage.SetRailStateStore(d)
+	}
 	if heraReader != nil {
 		// In-process runner feed seam (replaces Hera's proxy/ SSE fan-out). Read
 		// a.runner at call time on the main thread — applySelection/refresh and
@@ -2365,6 +2371,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		// ? help) while a Hera content pane holds focus (BUG-001). The rail still
 		// gets these globals because heraPaneFocused() is false on the rail.
 		if a.heraPaneFocused() {
+			break
+		}
+		// While the Hera rail is in `/` search input mode, every rune is filter
+		// input — don't run the 1/2/3 tab-switch, q quit, or ? help shortcuts.
+		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabHera && a.heraPage.RailFiltering() {
 			break
 		}
 		switch event.Rune() {

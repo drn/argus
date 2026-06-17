@@ -3283,3 +3283,41 @@ func TestHandleSessionExitUI_HeraWorkerFinishPolicy(t *testing.T) {
 		testutil.Equal(t, readyToClose(task.ID), false)
 	})
 }
+
+// TestHandleGlobalKey_HeraRailFilterSwallowsQuitAndHelp pins the global-handler
+// guard for the Hera rail `/` filter: while the rail is in search input mode,
+// the global rune shortcuts `q` (quit) and `?` (help) must NOT fire — they are
+// filter input. The `1` tab-switch case is covered by the smoke test; this adds
+// direct coverage of the higher-stakes quit/help paths (a leaked `q` would quit
+// the app mid-filter). The control assertions prove the guard is what suppressed
+// them: with filtering off, `?` opens help again.
+func TestHandleGlobalKey_HeraRailFilterSwallowsQuitAndHelp(t *testing.T) {
+	d := testDB(t)
+	app := New(d, agent.NewRunner(nil), false)
+	app.header.SetTab(widget.TabHera)
+	app.mode = modeTaskList
+
+	// Enter rail filter input mode (the rail is the FocusRail region).
+	app.heraPage.Rail().InputHandler()(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, app.heraPage.RailFiltering(), true)
+
+	// `q` while filtering is NOT consumed as the global quit — handleGlobalKey
+	// returns the event (passed through to the view as filter input), no Stop().
+	gotQ := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'q', tcell.ModNone))
+	testutil.Equal(t, gotQ != nil, true)
+	testutil.Equal(t, app.mode != modeHelp, true)
+
+	// `?` while filtering does NOT open the help modal.
+	gotHelp := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
+	testutil.Equal(t, gotHelp != nil, true)
+	testutil.Equal(t, app.mode != modeHelp, true)
+	testutil.Nil(t, app.helpModal)
+
+	// Control: clear the filter (Esc) → with filtering off, `?` is consumed
+	// globally and opens help, proving the guard suppressed it above.
+	app.heraPage.Rail().InputHandler()(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), func(tview.Primitive) {})
+	testutil.Equal(t, app.heraPage.RailFiltering(), false)
+	gotHelp2 := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone))
+	testutil.Nil(t, gotHelp2) // consumed globally
+	testutil.Equal(t, app.mode == modeHelp, true)
+}
