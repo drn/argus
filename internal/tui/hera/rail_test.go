@@ -346,6 +346,130 @@ func TestRail_CollapsedGrandparentFoldsWholeSubtree(t *testing.T) {
 	testutil.Equal(t, rootHeaderCount(r), 1) // only P
 }
 
+// seekCursor parks the cursor on the first row matching pred (for fold tests).
+func (r *Rail) seekCursor(t *testing.T, pred func(railRow) bool) {
+	t.Helper()
+	for i := range r.rows {
+		if pred(r.rows[i]) {
+			r.cursor = i
+			return
+		}
+	}
+	t.Fatalf("no row matched the predicate")
+}
+
+// collOrchIDForRole returns the collOrchID of the first role row with the given
+// name, or 0 (so a test can prove which worker row actually hosts a bridged child).
+func (r *Rail) collOrchIDForRole(name string) int64 {
+	for _, row := range r.rows {
+		if row.role != nil && row.role.Name == name {
+			return row.collOrchID
+		}
+	}
+	return 0
+}
+
+// TestRail_MultiParentChildNestsDeterministically is the multi-parent fold-
+// migration regression (the live native-hera-parity quirk). One coordinator task T
+// coordinates BOTH update-argus (coord role 20) and native-hera-parity (coord role
+// 30) AND is the rail-debug worker under hera-rail — so native-hera-parity is
+// reachable via a coordinator-spawn parent (update-argus) AND, transitively, the
+// worker-bridge under hera-rail. Before the canonical-parent fix the child rendered
+// under whichever path the build reached first, so folding one parent relocated the
+// whole subtree to the other. The canonical rule (prefer coordinator-spawn; the
+// worker-bridge resolves to the shared-coordinator clique root) pins ONE structure:
+// hera-rail → rail-debug → update-argus → native-hera-parity, fold-independent.
+func TestRail_MultiParentChildNestsDeterministically(t *testing.T) {
+	heraRail := coordOf(1, "hera-rail", 10, "t-hr",
+		RoleView{RoleID: 11, Name: "rail-debug", Kind: db.HeraKindWorker, Live: true, TaskID: "T", BridgeTaskID: "T"})
+	updateArgus := coordOf(2, "update-argus", 20, "T",
+		RoleView{RoleID: 21, Name: "ua-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-ua", BridgeTaskID: "t-ua"})
+	nativeParity := coordOf(3, "native-hera-parity", 30, "T",
+		RoleView{RoleID: 31, Name: "np-wkr", Kind: db.HeraKindWorker, Live: true, TaskID: "t-np", BridgeTaskID: "t-np"})
+	// native-hera-parity precedes update-argus in the slice so the OLD first-wins
+	// bridge index would point the rail-debug worker straight at native-hera-parity
+	// (the migration trigger); the canonical rule must ignore slice order.
+	m := Model{Active: []OrchView{heraRail, nativeParity, updateArgus}}
+
+	r := NewRail()
+	r.SetModel(m)
+
+	// (1) Expanded: native-hera-parity nests under its CANONICAL coordinator-spawn
+	// parent update-argus, which itself worker-bridges under hera-rail's rail-debug
+	// row. Exactly one root; update-argus has no header (it IS the rail-debug row).
+	testutil.Equal(t, rootHeaderCount(r), 1)
+	testutil.Equal(t, r.hasOrchHeader("hera-rail"), true)
+	testutil.Equal(t, r.hasOrchHeader("update-argus"), false) // worker-bridged → no header
+	testutil.Equal(t, r.hasOrchHeader("native-hera-parity"), true)
+	testutil.Equal(t, r.depthOf("native-hera-parity"), 2)
+	testutil.Equal(t, r.depthOf("np-wkr"), 3)
+	// The rail-debug worker row carries update-argus as its bridged child.
+	testutil.Equal(t, r.collOrchIDForRole("rail-debug"), updateArgus.ID)
+
+	// (2) Collapse the CANONICAL parent (update-argus, folded on the rail-debug
+	// row): the child folds away and does NOT reappear as a root or elsewhere.
+	r.seekCursor(t, func(row railRow) bool { return row.collOrchID == updateArgus.ID && row.role != nil })
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("native-hera-parity"), -1)
+	testutil.Equal(t, r.depthOf("np-wkr"), -1)
+	testutil.Equal(t, rootHeaderCount(r), 1) // still only hera-rail, no leak
+
+	// Re-expand and confirm it returns to the same place (not a new parent).
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("native-hera-parity"), 2)
+	testutil.Equal(t, rootHeaderCount(r), 1)
+
+	// (3) Collapse the worker-bridge ancestor (hera-rail): the whole chain folds;
+	// native-hera-parity must NOT leak to a top-level root.
+	r.seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "hera-rail" })
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("native-hera-parity"), -1)
+	testutil.Equal(t, r.hasOrchHeader("native-hera-parity"), false)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only hera-rail
+}
+
+// TestRail_MultiWorkerBridgeParentsPickLowestOrchID covers the sibling form of the
+// multi-parent quirk: a child whose coordinator task is bridged by a worker in TWO
+// separate root orchestrators. The canonical rule picks the lowest orchestrator id
+// deterministically (not the slice-order-first one), so collapsing the OTHER parent
+// never moves the child.
+func TestRail_MultiWorkerBridgeParentsPickLowestOrchID(t *testing.T) {
+	c := orchView(2, "C", "tc", wk("cw", "tcw"))
+	pw1 := coordOf(5, "Pw1", 50, "t-pw1",
+		RoleView{RoleID: 51, Name: "w1", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+	pw2 := coordOf(3, "Pw2", 30, "t-pw2",
+		RoleView{RoleID: 31, Name: "w2", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+	// Pw1 (id 5) precedes Pw2 (id 3): the OLD first-reached-wins logic nested C
+	// under Pw1; the canonical rule must pick Pw2 (lowest orchestrator id).
+	build := func() *Rail {
+		r := NewRail()
+		r.SetModel(Model{Active: []OrchView{pw1, pw2, c}})
+		return r
+	}
+
+	// (1) Expanded: C's worker nests under Pw2's worker (lowest id), not Pw1's.
+	r := build()
+	testutil.Equal(t, rootHeaderCount(r), 2)               // Pw1 + Pw2 are both roots
+	testutil.Equal(t, r.collOrchIDForRole("w2"), c.ID)     // Pw2's worker hosts C
+	testutil.Equal(t, r.collOrchIDForRole("w1"), int64(0)) // Pw1's worker hosts nothing
+	testutil.Equal(t, r.depthOf("cw"), 2)
+
+	// (2) Collapse the CANONICAL parent Pw2 → C folds away (and does not migrate
+	// to the non-canonical Pw1).
+	r.seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "Pw2" })
+	r.ToggleCollapse()
+	testutil.Equal(t, r.depthOf("cw"), -1)
+	testutil.Equal(t, r.collOrchIDForRole("w1"), int64(0)) // still not under Pw1
+
+	// (3) On a fresh rail, collapse the NON-canonical parent Pw1 → C stays put
+	// under Pw2, unaffected.
+	r2 := build()
+	r2.seekCursor(t, func(row railRow) bool { return row.orch != nil && row.orch.Name == "Pw1" })
+	r2.ToggleCollapse()
+	testutil.Equal(t, r2.depthOf("cw"), 2)              // unchanged
+	testutil.Equal(t, r2.collOrchIDForRole("w2"), c.ID) // still under Pw2
+}
+
 // TestRail_CollapsedParentDoesNotLeakArchivedBridgedChild is the exact live
 // repro (rail-debug review): a child bridged by an ARCHIVED (finished) worker —
 // which renders in place rather than folding into the Archive expando — must

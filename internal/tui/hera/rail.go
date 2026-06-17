@@ -183,47 +183,51 @@ func (r *Rail) buildRows() {
 		return
 	}
 
-	// Nesting machinery: a worker whose bridge task is some other orchestrator's
-	// coordinator bridge task IS that child orchestrator's coordinator, so the
-	// child nests under the worker row. `bridge` maps a coordinator's bridge task
-	// to its orchestrator; `consumed` marks every orchestrator reachable as a
-	// child so it does NOT also render as a top-level root; `placed` guards
-	// single-placement + cycles across the whole build (an orchestrator is
-	// rendered at most once, breaking any bridge cycle).
-	bridge := r.bridgeIndex()
-	consumed := r.consumedSet(bridge)
+	// Nesting machinery: each child orchestrator's SINGLE canonical parent is
+	// precomputed once (`canonical`) so placement is deterministic and
+	// FOLD-INDEPENDENT — a child with two valid bridge-parents (coordinator-spawn
+	// and worker-bridge) renders under exactly one of them regardless of which is
+	// collapsed (the multi-parent fold-migration quirk). `consumed` = has a
+	// canonical parent, so it nests rather than rendering as a top-level root;
+	// `placed` guards single-placement + cycles across the whole build (an
+	// orchestrator is rendered at most once, breaking any bridge cycle).
+	canonical := r.model.canonicalParents()
+	consumed := make(map[int64]bool, len(canonical))
+	for id := range canonical {
+		consumed[id] = true
+	}
 	placed := make(map[int64]bool)
 	// Structural reachability under FULL expansion (collapse/archive fold
-	// IGNORED). An orchestrator reachable as a bridged child from a true root is
+	// IGNORED): an orchestrator whose canonical-parent chain reaches a true root is
 	// not a genuine top-level root — it is merely hidden when an ancestor is
 	// folded. The safety sweep below consults this so collapse/archive-HIDDEN
 	// children stay folded instead of leaking to the top; only true cycle-orphans
-	// (consumed but unreachable from any root) get rescued.
-	structReach := r.structuralReach(bridge)
+	// (a chain that loops without ever reaching a root) get rescued.
+	structReach := r.structuralReach(canonical)
 
 	// 1. Pinned section. Pinned orchestrators are always top-level roots
-	// (user intent), even if some worker bridges them.
+	// (user intent), even if some bridge would otherwise consume them.
 	if len(r.model.Pinned) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
-			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, bridge, placed)
+			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, canonical, placed)
 		}
 	}
 
-	// 2. Active orchestrators (no section header). Render roots (not consumed as
-	// a child) first; then a safety sweep rescues only TRUE cycle-orphans — an
-	// orchestrator left unplaced AND not structurally reachable from any root.
-	// A child that is merely hidden because an ancestor is collapsed/archived is
+	// 2. Active orchestrators (no section header). Render roots (no canonical
+	// parent) first; then a safety sweep rescues only TRUE cycle-orphans — an
+	// orchestrator left unplaced AND whose canonical chain reaches no root. A child
+	// that is merely hidden because an ancestor is collapsed/archived is
 	// structurally reachable, so it stays folded instead of leaking to the top.
 	for i := range r.model.Active {
 		if !consumed[r.model.Active[i].ID] {
-			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
 		}
 	}
 	for i := range r.model.Active {
 		id := r.model.Active[i].ID
 		if !placed[id] && !structReach[id] {
-			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+			r.appendOrch(&r.model.Active[i], 0, false, canonical, placed)
 		}
 	}
 
@@ -260,42 +264,40 @@ func (r *Rail) buildRows() {
 		})
 		if !r.archiveCollapsed {
 			for _, o := range archivedRoots {
-				r.appendOrch(o, 1, true, bridge, placed)
+				r.appendOrch(o, 1, true, canonical, placed)
 			}
 		}
 	}
 }
 
-// bridgeIndex / consumedSet delegate to the Model so the rail and the delete
-// cascade share one bridge definition.
-func (r *Rail) bridgeIndex() map[string]*OrchView { return r.model.bridgeIndex() }
-func (r *Rail) consumedSet(b map[string]*OrchView) map[int64]bool {
-	return r.model.consumedSet(b)
-}
-
-// structuralReach returns every orchestrator reachable as a bridged child from a
-// true root (pinned, or active-and-not-consumed) under FULL expansion — i.e.
-// with collapse/archive fold IGNORED. It unions Model.BridgeSubtree over each
-// true root, so it mirrors EXACTLY the two nesting paths the render uses
-// (worker→child bridges AND coordinator-spawned sub-teams) and can never drift
-// from them. The render passes respect fold; structuralReach deliberately does
-// not, so a child merely hidden behind a collapsed or archived ancestor is still
-// "reachable" here and is therefore NOT re-leaked to the top by the safety
-// sweep — only a true cycle-orphan (consumed but reachable from no root) is.
-func (r *Rail) structuralReach(bridge map[string]*OrchView) map[int64]bool {
-	consumed := r.consumedSet(bridge)
-	reach := make(map[int64]bool)
-	addSubtree := func(rootID int64) {
-		for _, o := range r.model.BridgeSubtree(rootID) {
-			reach[o.ID] = true
+// structuralReach returns every orchestrator whose CANONICAL-parent chain reaches
+// a true root (an orchestrator with no canonical parent) under FULL expansion —
+// collapse/archive fold IGNORED. Because canonical placement is exactly what the
+// render nests (both the worker-bridge and coordinator-spawn shapes flow through
+// canonicalParents), this can never drift from what is actually drawn. The render
+// passes respect fold; structuralReach deliberately does not, so a child merely
+// hidden behind a collapsed or archived ancestor is still "reachable" here and is
+// therefore NOT re-leaked to the top by the safety sweep — only a true
+// cycle-orphan (a chain that loops without ever reaching a root) is.
+func (r *Rail) structuralReach(canonical map[int64]canonParent) map[int64]bool {
+	var resolves func(id int64, seen map[int64]bool) bool
+	resolves = func(id int64, seen map[int64]bool) bool {
+		cp, ok := canonical[id]
+		if !ok {
+			return true // no canonical parent → a top-level root → reachable
 		}
+		if seen[id] {
+			return false // chain cycles without reaching a root
+		}
+		seen[id] = true
+		return resolves(cp.orchID, seen)
 	}
-	for i := range r.model.Pinned {
-		addSubtree(r.model.Pinned[i].ID)
-	}
-	for i := range r.model.Active {
-		if !consumed[r.model.Active[i].ID] {
-			addSubtree(r.model.Active[i].ID)
+	reach := make(map[int64]bool)
+	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for i := range sec {
+			if resolves(sec[i].ID, map[int64]bool{}) {
+				reach[sec[i].ID] = true
+			}
 		}
 	}
 	return reach
@@ -305,7 +307,7 @@ func (r *Rail) structuralReach(bridge map[string]*OrchView) map[int64]bool {
 // expanded, its non-coordinator roles nested via appendOrchWorkers. The header
 // is rendered once per build (placed guard). dim propagates an archived
 // placement down the whole subtree.
-func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
 	if placed[o.ID] {
 		return
 	}
@@ -320,7 +322,7 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*O
 	if r.collapsed[o.ID] {
 		return
 	}
-	r.appendOrchWorkers(o, depth+1, dim, bridge, placed)
+	r.appendOrchWorkers(o, depth+1, dim, canonical, placed)
 }
 
 // appendOrchWorkers emits o's non-coordinator role rows at `depth`. A worker
@@ -334,7 +336,7 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*O
 // The bridging row keeps its PARENT worker selection context (a worker role
 // under o): nesting is purely visual, so mutations (notably Ctrl+D) act on the
 // worker role, never the child orchestrator — conservative multi-binding safety.
-func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
 	var archived []*RoleView
 	for i := range o.Roles {
 		w := &o.Roles[i]
@@ -349,24 +351,28 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[st
 		// under-nesting bug. Only archived LEAF workers (no live child to bridge)
 		// fold into the expando. db.SubtreeOrchIDs nests the child regardless of the
 		// parent-side role's archived state, so this mirrors it.
-		if w.Archived && r.workerBridgeChild(o.ID, w, bridge, placed) == nil {
+		if w.Archived && r.workerBridgeChild(o.ID, w, canonical, placed) == nil {
 			archived = append(archived, w)
 			continue
 		}
-		r.appendWorkerRow(o.ID, w, depth, dim, bridge, placed)
+		r.appendWorkerRow(o.ID, w, depth, dim, canonical, placed)
 	}
 
 	// Coordinator-spawned sub-teams: a child orchestrator whose coordinator is the
 	// SAME agent as o's (the multi-orch coordinator hera_new_orchestrator creates)
 	// has no worker row to nest under — the parent's coordinator IS the bridge. It
 	// nests as its own sub-orchestrator header directly under o, recursively, at
-	// the worker depth. The placed guard breaks the shared-task A↔B symmetry (only
-	// the earliest-coordinator-id parent reaches it; see coordBridgeParentOf).
+	// the worker depth, ONLY when o is its canonical coordinator-spawn parent. The
+	// canonical guard (plus the placed guard) breaks the shared-task symmetry so a
+	// multi-parent child renders under exactly one parent regardless of fold.
 	for _, child := range r.model.coordBridgeChildren(o) {
 		if placed[child.ID] {
 			continue
 		}
-		r.appendOrch(child, depth, dim, bridge, placed)
+		if cp, ok := canonical[child.ID]; !ok || !cp.coordSpawn || cp.orchID != o.ID {
+			continue
+		}
+		r.appendOrch(child, depth, dim, canonical, placed)
 	}
 
 	// Per-coordinator Archive (N) expando: archived roles fold under their
@@ -383,23 +389,41 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[st
 		})
 		if r.coordArchiveOpen[o.ID] {
 			for _, w := range archived {
-				r.appendWorkerRow(o.ID, w, depth+1, true, bridge, placed)
+				r.appendWorkerRow(o.ID, w, depth+1, true, canonical, placed)
 			}
 		}
 	}
 }
 
-// workerBridgeChild returns the not-yet-placed child orchestrator a worker
-// bridges (its latest-binding task is that child's coordinator bridge task), or
-// nil. Coordinator-kind, torn-down, same-orchestrator, and already-placed links
-// do not bridge. Shared by appendOrchWorkers (hoist-vs-nest decision) and
-// appendWorkerRow (the nest itself) so both agree.
-func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, bridge map[string]*OrchView, placed map[int64]bool) *OrchView {
+// workerBridgeChild returns the not-yet-placed child orchestrator that nests under
+// worker w — the orchestrator whose CANONICAL parent is ownerID via the
+// worker-bridge shape AND whose coordinator bridge task matches w's bridge task —
+// or nil. Resolving through the precomputed canonical parent (NOT a first-wins
+// bridge-index lookup) is what makes a multi-parent child render under one
+// deterministic parent regardless of fold/order: when the same coordinator task
+// coordinates two orchestrators, the bridge index would pick whichever appears
+// first, but only the canonical assignment is honoured here. Coordinator-kind,
+// torn-down, and already-placed links do not bridge. Shared by appendOrchWorkers
+// (hoist-vs-nest decision) and appendWorkerRow (the nest itself) so both agree.
+func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, canonical map[int64]canonParent, placed map[int64]bool) *OrchView {
 	if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
 		return nil
 	}
-	if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != ownerID && !placed[c.ID] {
-		return c
+	ck := bridgeTaskID(w)
+	if ck == "" {
+		return nil
+	}
+	for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+		for i := range sec {
+			c := &sec[i]
+			cp, ok := canonical[c.ID]
+			if !ok || cp.coordSpawn || cp.orchID != ownerID || placed[c.ID] {
+				continue
+			}
+			if c.CoordBridgeTaskID() == ck {
+				return c
+			}
+		}
 	}
 	return nil
 }
@@ -410,9 +434,9 @@ func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, bridge map[string]*
 // signal); the child subtree dims only from inherited dim or the CHILD's own
 // archived state — an active child under an archived bridging worker stays
 // normal (it is live work, not archived placement).
-func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, canonical map[int64]canonParent, placed map[int64]bool) {
 	rowDim := dim || w.Archived
-	child := r.workerBridgeChild(ownerID, w, bridge, placed)
+	child := r.workerBridgeChild(ownerID, w, canonical, placed)
 	collID := int64(0)
 	if child != nil {
 		collID = child.ID
@@ -421,7 +445,7 @@ func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, 
 	if child != nil {
 		placed[child.ID] = true
 		if !r.collapsed[child.ID] {
-			r.appendOrchWorkers(child, depth+1, dim || child.Archived, bridge, placed)
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, canonical, placed)
 		}
 	}
 }
