@@ -315,6 +315,67 @@ func TestRail_CollapsedParentDoesNotLeakWorkerBridgedChild(t *testing.T) {
 	testutil.Equal(t, rootHeaderCount(r), 1) // only R
 }
 
+// TestRail_CollapsedGrandparentFoldsWholeSubtree covers multi-level nesting
+// (rail-debug review edge #2): collapsing a GRANDPARENT must fold the ENTIRE
+// subtree — neither the child nor the grandchild may leak to the top. P
+// coord-spawns Q; Q's worker bridges R (mixing both nesting paths).
+func TestRail_CollapsedGrandparentFoldsWholeSubtree(t *testing.T) {
+	p := coordOf(1, "P", 100, "T")
+	q := coordOf(2, "Q", 200, "T",
+		RoleView{RoleID: 201, Name: "qw", Kind: db.HeraKindWorker, Live: true, TaskID: "tqw", BridgeTaskID: "tr"})
+	rr := coordOf(3, "R", 300, "tr",
+		RoleView{RoleID: 301, Name: "rw", Kind: db.HeraKindWorker, Live: true, TaskID: "trw", BridgeTaskID: "trw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, q, rr}})
+
+	// Expanded: P(0) → Q(1, coord-spawned) → qw(2, bridges R) → rw(3). One root.
+	testutil.Equal(t, r.depthOf("Q"), 1)
+	testutil.Equal(t, r.depthOf("rw"), 3)
+	testutil.Equal(t, rootHeaderCount(r), 1)
+
+	// Collapse the grandparent P.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "P" {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+
+	// Entire subtree folds — neither Q, qw, R, nor rw leaks to the top.
+	testutil.Equal(t, r.depthOf("Q"), -1)
+	testutil.Equal(t, r.depthOf("rw"), -1)
+	testutil.Equal(t, r.hasOrchHeader("R"), false)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only P
+}
+
+// TestRail_CollapsedParentDoesNotLeakArchivedBridgedChild is the exact live
+// repro (rail-debug review): a child bridged by an ARCHIVED (finished) worker —
+// which renders in place rather than folding into the Archive expando — must
+// still stay folded when its parent is collapsed, not leak to the top (the
+// 0e-team-under-collapsed-sherlock-mvp shape).
+func TestRail_CollapsedParentDoesNotLeakArchivedBridgedChild(t *testing.T) {
+	p := coordOf(1, "P", 100, "tp",
+		RoleView{RoleID: 101, Name: "aw", Kind: db.HeraKindWorker, Archived: true, Live: false,
+			BridgeTaskID: "tc", LinkEndReason: ""}) // ended, non-teardown → still bridges
+	c := coordOf(2, "C", 200, "tc",
+		RoleView{RoleID: 201, Name: "cw", Kind: db.HeraKindWorker, Live: true, TaskID: "tcw", BridgeTaskID: "tcw"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, c}})
+
+	// Expanded: the archived bridging worker renders in place and nests C.
+	testutil.Equal(t, r.depthOf("aw"), 1)
+	testutil.Equal(t, r.depthOf("cw"), 2)
+	testutil.Equal(t, rootHeaderCount(r), 1)
+
+	// Collapse the parent P — C must stay folded, not leak.
+	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "P" {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+
+	testutil.Equal(t, r.depthOf("cw"), -1)
+	testutil.Equal(t, r.hasOrchHeader("C"), false)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only P
+}
+
 func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	// Mirror the real rail shape: 6 roots, each with 3 worker-bridged children
 	// and 1 coordinator-spawned sub-team = 24 nested orchestrators. The bug made
