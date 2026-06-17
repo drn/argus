@@ -2,6 +2,7 @@ package hera
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/tui/theme"
@@ -37,13 +38,14 @@ type railRow struct {
 	// Collapse target (only one is set, and only when collapsible).
 	collOrchID    int64 // >0 → toggle collapsed[collOrchID]
 	collFreelance bool
-	collArchive   bool
+	collArchive   bool  // bottom Archive section (archived ROOT orchestrators)
+	archiveOwner  int64 // >0 → per-coordinator Archive expando for this orch's archived roles
 }
 
 func (r railRow) selectable() bool {
 	switch r.kind {
 	case rrOrch, rrRole, rrFreelanceRole, rrArchiveExpando:
-		return true
+		return true // both the bottom Archive section and per-coordinator expandos
 	case rrSectionHeader:
 		// The Freelance fold header is selectable so the cursor can land on it
 		// to collapse/expand; the plain "Pinned" label is not.
@@ -74,8 +76,17 @@ type Rail struct {
 	collapsed        map[int64]bool
 	freelanceCollap  bool
 	archiveCollapsed bool
+	// coordArchiveOpen tracks per-coordinator Archive expandos (keyed by orch id).
+	// Absent/false → collapsed (the default), matching the bottom Archive section.
+	coordArchiveOpen map[int64]bool
 
-	focused bool // drives the border-highlight style
+	focused   bool // drives the border-highlight style
+	animFrame int  // spinner frame for in-motion role glyphs (recomputed each Draw)
+
+	// prMeta is the daemon-populated "pr" namespace cache (taskID -> {state,url}),
+	// the same best-effort source the Details roster reads. A managed role whose
+	// bound task has a non-empty "url" renders a PR indicator. nil → no PR cells.
+	prMeta map[string]map[string]string
 
 	// onSelectionChanged fires (with the selected row's ref) whenever the
 	// cursor lands on a different selectable row. 6b binds the panes off it;
@@ -90,6 +101,7 @@ func NewRail() *Rail {
 		Box:              tview.NewBox(),
 		collapsed:        make(map[int64]bool),
 		archiveCollapsed: true,
+		coordArchiveOpen: make(map[int64]bool),
 	}
 }
 
@@ -99,6 +111,20 @@ func (r *Rail) SetOnSelectionChanged(fn func()) { r.onSelectionChanged = fn }
 // SetFocused records whether the rail holds keyboard focus, switching its
 // border between the focused and unfocused palette.
 func (r *Rail) SetFocused(v bool) { r.focused = v }
+
+// SetPRMeta wires the best-effort "pr" namespace cache so managed rail rows can
+// render a PR indicator. Pass nil to clear it (the indicator just won't render).
+func (r *Rail) SetPRMeta(m map[string]map[string]string) { r.prMeta = m }
+
+// rolePR reports whether the role's bound task has a non-empty "pr" url in the
+// cache (an open pull request worth flagging on the rail row).
+func (r *Rail) rolePR(role *RoleView) bool {
+	if role == nil || role.TaskID == "" || r.prMeta == nil {
+		return false
+	}
+	kv := r.prMeta[role.TaskID]
+	return kv != nil && kv["url"] != ""
+}
 
 // SetModel replaces the snapshot and rebuilds rows, preserving the cursor's
 // selectable target where possible.
@@ -157,18 +183,38 @@ func (r *Rail) buildRows() {
 		return
 	}
 
-	// 1. Pinned section.
+	// Nesting machinery: a worker whose bridge task is some other orchestrator's
+	// coordinator bridge task IS that child orchestrator's coordinator, so the
+	// child nests under the worker row. `bridge` maps a coordinator's bridge task
+	// to its orchestrator; `consumed` marks every orchestrator reachable as a
+	// child so it does NOT also render as a top-level root; `placed` guards
+	// single-placement + cycles across the whole build (an orchestrator is
+	// rendered at most once, breaking any bridge cycle).
+	bridge := r.bridgeIndex()
+	consumed := r.consumedSet(bridge)
+	placed := make(map[int64]bool)
+
+	// 1. Pinned section. Pinned orchestrators are always top-level roots
+	// (user intent), even if some worker bridges them.
 	if len(r.model.Pinned) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrSectionHeader, label: "Pinned"})
 		for i := range r.model.Pinned {
-			r.appendOrch(&r.model.Pinned[i], 0, false)
+			r.appendOrch(&r.model.Pinned[i], 0, r.model.Pinned[i].Archived, bridge, placed)
 		}
 	}
 
-	// 2. Active orchestrators (no section header, like the task list's active
-	// section).
+	// 2. Active orchestrators (no section header). Render roots (not consumed as
+	// a child) first; then a safety sweep places any active orchestrator left
+	// unplaced by a pure bridge cycle so nothing ever vanishes from the rail.
 	for i := range r.model.Active {
-		r.appendOrch(&r.model.Active[i], 0, false)
+		if !consumed[r.model.Active[i].ID] {
+			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+		}
+	}
+	for i := range r.model.Active {
+		if !placed[r.model.Active[i].ID] {
+			r.appendOrch(&r.model.Active[i], 0, false, bridge, placed)
+		}
 	}
 
 	// 3. Freelance section.
@@ -186,24 +232,46 @@ func (r *Rail) buildRows() {
 		}
 	}
 
-	// 4. Archive section (collapsed by default).
-	if len(r.model.Archived) > 0 {
+	// 4. Archive section (collapsed by default): archived orchestrators not
+	// already nested under a live parent (placed). A consumed-but-unplaced
+	// archived orphan (pure cycle) still surfaces here.
+	var archivedRoots []*OrchView
+	for i := range r.model.Archived {
+		if !placed[r.model.Archived[i].ID] {
+			archivedRoots = append(archivedRoots, &r.model.Archived[i])
+		}
+	}
+	if len(archivedRoots) > 0 {
 		r.rows = append(r.rows, railRow{kind: rrRule})
 		r.rows = append(r.rows, railRow{
 			kind:        rrArchiveExpando,
-			label:       fmt.Sprintf("Archive (%d)", len(r.model.Archived)),
+			label:       fmt.Sprintf("Archive (%d)", len(archivedRoots)),
 			collArchive: true,
 		})
 		if !r.archiveCollapsed {
-			for i := range r.model.Archived {
-				r.appendOrch(&r.model.Archived[i], 1, true)
+			for _, o := range archivedRoots {
+				r.appendOrch(o, 1, true, bridge, placed)
 			}
 		}
 	}
 }
 
-// appendOrch emits an orchestrator header and, when expanded, its roles.
-func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
+// bridgeIndex / consumedSet delegate to the Model so the rail and the delete
+// cascade share one bridge definition.
+func (r *Rail) bridgeIndex() map[string]*OrchView { return r.model.bridgeIndex() }
+func (r *Rail) consumedSet(b map[string]*OrchView) map[int64]bool {
+	return r.model.consumedSet(b)
+}
+
+// appendOrch emits an orchestrator HEADER (the folded coordinator) and, when
+// expanded, its non-coordinator roles nested via appendOrchWorkers. The header
+// is rendered once per build (placed guard). dim propagates an archived
+// placement down the whole subtree.
+func (r *Rail) appendOrch(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	if placed[o.ID] {
+		return
+	}
+	placed[o.ID] = true
 	r.rows = append(r.rows, railRow{
 		kind:       rrOrch,
 		orch:       o,
@@ -214,8 +282,109 @@ func (r *Rail) appendOrch(o *OrchView, depth int, dim bool) {
 	if r.collapsed[o.ID] {
 		return
 	}
+	r.appendOrchWorkers(o, depth+1, dim, bridge, placed)
+}
+
+// appendOrchWorkers emits o's non-coordinator role rows at `depth`. A worker
+// that bridges a not-yet-placed child orchestrator nests that child's workers
+// one level deeper, immediately under the worker row (the worker row IS the
+// child's coordinator — same multi-binding task — so no separate child header is
+// drawn). The bridging row carries collOrchID = child.ID so Space folds the
+// nested subtree, and a chevron marks it foldable. The placed guard breaks any
+// bridge cycle and guarantees single placement.
+//
+// The bridging row keeps its PARENT worker selection context (a worker role
+// under o): nesting is purely visual, so mutations (notably Ctrl+D) act on the
+// worker role, never the child orchestrator — conservative multi-binding safety.
+func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	var archived []*RoleView
 	for i := range o.Roles {
-		r.rows = append(r.rows, railRow{kind: rrRole, role: &o.Roles[i], depth: depth + 1, dim: dim})
+		w := &o.Roles[i]
+		if w.Kind == db.HeraKindCoordinator {
+			continue // folded into the header / the bridging row above
+		}
+		// An archived worker that BRIDGES a not-yet-placed child is a structural
+		// sub-coordinator, not a finished leaf: it renders in place (dimmed) so its
+		// child sub-team still nests. Hoisting it into the collapsed Archive expando
+		// would consume the child (consumedSet) without ever placing it, leaving the
+		// child to be safety-swept flat to the top level — the archived-worker
+		// under-nesting bug. Only archived LEAF workers (no live child to bridge)
+		// fold into the expando. db.SubtreeOrchIDs nests the child regardless of the
+		// parent-side role's archived state, so this mirrors it.
+		if w.Archived && r.workerBridgeChild(o.ID, w, bridge, placed) == nil {
+			archived = append(archived, w)
+			continue
+		}
+		r.appendWorkerRow(o.ID, w, depth, dim, bridge, placed)
+	}
+
+	// Coordinator-spawned sub-teams: a child orchestrator whose coordinator is the
+	// SAME agent as o's (the multi-orch coordinator hera_new_orchestrator creates)
+	// has no worker row to nest under — the parent's coordinator IS the bridge. It
+	// nests as its own sub-orchestrator header directly under o, recursively, at
+	// the worker depth. The placed guard breaks the shared-task A↔B symmetry (only
+	// the earliest-coordinator-id parent reaches it; see coordBridgeParentOf).
+	for _, child := range r.model.coordBridgeChildren(o) {
+		if placed[child.ID] {
+			continue
+		}
+		r.appendOrch(child, depth, dim, bridge, placed)
+	}
+
+	// Per-coordinator Archive (N) expando: archived roles fold under their
+	// coordinator's active agents, collapsed by default. Distinct from the bottom
+	// Archive section (archived ROOT orchestrators). Archived roles render dimmed
+	// and still nest any sub-team they bridge (forced-dim down the subtree).
+	if len(archived) > 0 {
+		r.rows = append(r.rows, railRow{
+			kind:         rrArchiveExpando,
+			archiveOwner: o.ID,
+			depth:        depth,
+			dim:          dim,
+			label:        fmt.Sprintf("Archive (%d)", len(archived)),
+		})
+		if r.coordArchiveOpen[o.ID] {
+			for _, w := range archived {
+				r.appendWorkerRow(o.ID, w, depth+1, true, bridge, placed)
+			}
+		}
+	}
+}
+
+// workerBridgeChild returns the not-yet-placed child orchestrator a worker
+// bridges (its latest-binding task is that child's coordinator bridge task), or
+// nil. Coordinator-kind, torn-down, same-orchestrator, and already-placed links
+// do not bridge. Shared by appendOrchWorkers (hoist-vs-nest decision) and
+// appendWorkerRow (the nest itself) so both agree.
+func (r *Rail) workerBridgeChild(ownerID int64, w *RoleView, bridge map[string]*OrchView, placed map[int64]bool) *OrchView {
+	if w.Kind == db.HeraKindCoordinator || !roleBridges(w) {
+		return nil
+	}
+	if c := bridge[bridgeTaskID(w)]; c != nil && c.ID != ownerID && !placed[c.ID] {
+		return c
+	}
+	return nil
+}
+
+// appendWorkerRow emits one worker role row at `depth` and, when it bridges a
+// not-yet-placed child orchestrator, nests the child's workers one level deeper.
+// The worker ROW dims when the worker itself is archived (an honest per-node
+// signal); the child subtree dims only from inherited dim or the CHILD's own
+// archived state — an active child under an archived bridging worker stays
+// normal (it is live work, not archived placement).
+func (r *Rail) appendWorkerRow(ownerID int64, w *RoleView, depth int, dim bool, bridge map[string]*OrchView, placed map[int64]bool) {
+	rowDim := dim || w.Archived
+	child := r.workerBridgeChild(ownerID, w, bridge, placed)
+	collID := int64(0)
+	if child != nil {
+		collID = child.ID
+	}
+	r.rows = append(r.rows, railRow{kind: rrRole, role: w, depth: depth, dim: rowDim, collOrchID: collID})
+	if child != nil {
+		placed[child.ID] = true
+		if !r.collapsed[child.ID] {
+			r.appendOrchWorkers(child, depth+1, dim || child.Archived, bridge, placed)
+		}
 	}
 }
 
@@ -292,6 +461,8 @@ func (r *Rail) ToggleCollapse() {
 	switch {
 	case row.collOrchID > 0:
 		r.collapsed[row.collOrchID] = !r.collapsed[row.collOrchID]
+	case row.archiveOwner > 0:
+		r.coordArchiveOpen[row.archiveOwner] = !r.coordArchiveOpen[row.archiveOwner]
 	case row.collFreelance:
 		r.freelanceCollap = !r.freelanceCollap
 	case row.collArchive:
@@ -334,7 +505,15 @@ func (r *Rail) Selection() Selection {
 	if orch == nil && role != nil {
 		orch = r.model.OrchByID(role.OrchID)
 	}
-	return Selection{Role: role, Orch: orch}
+	sel := Selection{Role: role, Orch: orch}
+	// A role row whose collOrchID is set is a bridging sub-coordinator row; carry
+	// the child orchestrator id so Ctrl+D can cascade the nested sub-team.
+	if r.cursor >= 0 && r.cursor < len(r.rows) {
+		if row := r.rows[r.cursor]; row.role != nil && row.collOrchID > 0 {
+			sel.BridgeChildOrchID = row.collOrchID
+		}
+	}
+	return sel
 }
 
 // Rows returns the flattened row count (test seam).
@@ -350,6 +529,7 @@ func (r *Rail) CursorIndex() int { return r.cursor }
 // the CLAUDE.md UX-rendering rules (no Sync; full-rect coverage instead).
 func (r *Rail) Draw(screen tcell.Screen) {
 	r.DrawForSubclass(screen, r)
+	r.animFrame = spinnerFrame()
 	x, y, w, h := r.GetRect()
 	if w <= 0 || h <= 0 {
 		return
@@ -426,7 +606,13 @@ func (r *Rail) drawRow(screen tcell.Screen, x, y, w int, row railRow, selected b
 		if selected {
 			style = theme.StyleSelected
 		}
-		widget.DrawText(screen, textX, y, textW, chevron(r.archiveCollapsed)+" "+row.label, style)
+		// Per-coordinator expandos fold via coordArchiveOpen; the bottom Archive
+		// section folds via archiveCollapsed.
+		collapsed := r.archiveCollapsed
+		if row.archiveOwner > 0 {
+			collapsed = !r.coordArchiveOpen[row.archiveOwner]
+		}
+		widget.DrawText(screen, textX, y, textW, chevron(collapsed)+" "+row.label, style)
 	case rrOrch:
 		r.drawOrchRow(screen, textX, y, textW, row, selected)
 	case rrRole, rrFreelanceRole:
@@ -444,9 +630,20 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 		nameStyle = theme.StyleSelected
 	}
 	col := x
+	// Coordinator status glyph first (the header IS the coordinator — folded
+	// from a redundant child row). It reads with the same vocabulary as worker
+	// rows; the glyph keeps its own status style even when the row is selected
+	// (the glyph never lies). Worker-less / coordinator-less orchestrators skip it.
+	if coord := o.CoordRole(); coord != nil {
+		glyph, gstyle := statusIcon(coord, row.dim, r.animFrame)
+		screen.SetContent(col, y, glyph, nil, gstyle)
+		col += 2
+	}
 	// chevron
-	screen.SetContent(col, y, []rune(chevron(r.collapsed[o.ID]))[0], nil, nameStyle)
-	col += 2
+	if col < x+w {
+		screen.SetContent(col, y, []rune(chevron(r.collapsed[o.ID]))[0], nil, nameStyle)
+		col += 2
+	}
 	// coordinator marker
 	if col < x+w {
 		screen.SetContent(col, y, heraIconCoord, nil, nameStyle)
@@ -469,7 +666,7 @@ func (r *Rail) drawOrchRow(screen tcell.Screen, x, y, w int, row railRow, select
 
 func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, selected bool, _ tcell.Style) {
 	role := row.role
-	icon, iconStyle := statusIcon(role, row.dim)
+	icon, iconStyle := statusIcon(role, row.dim, r.animFrame)
 	nameStyle := theme.StyleNormal
 	if row.dim {
 		nameStyle = theme.StyleDimmed
@@ -480,11 +677,56 @@ func (r *Rail) drawRoleRow(screen tcell.Screen, x, y, w int, row railRow, select
 	col := x
 	screen.SetContent(col, y, icon, nil, iconStyle)
 	col += 2
+	// A bridging sub-coordinator row (collOrchID set) reads like a nested
+	// orchestrator header: a fold chevron + the coordinator marker before the
+	// name, so the operator can tell it carries (and folds) a child subtree.
+	if row.collOrchID > 0 {
+		if col < x+w {
+			markerStyle := nameStyle
+			if !selected {
+				markerStyle = theme.StyleProject
+				if row.dim {
+					markerStyle = theme.StyleDimmed
+				}
+			}
+			screen.SetContent(col, y, []rune(chevron(r.collapsed[row.collOrchID]))[0], nil, markerStyle)
+			col += 2
+			if col < x+w {
+				screen.SetContent(col, y, heraIconCoord, nil, markerStyle)
+				col += 2
+			}
+		}
+	}
 	remaining := w - (col - x)
 	if remaining <= 0 {
 		return
 	}
+	// PR indicator: a managed row whose bound task has an open PR renders a
+	// right-aligned "PR" tag, reserving space so the name truncates instead of
+	// overwriting it. Mirrors the Details roster's PR mark, on the rail row.
+	const prTag = "PR"
+	if r.rolePR(role) && remaining > len(prTag)+1 {
+		widget.DrawText(screen, col, y, remaining-len(prTag)-1, role.Name, nameStyle)
+		prStyle := theme.StyleInReview
+		if row.dim {
+			prStyle = theme.StyleDimmed
+		}
+		widget.DrawText(screen, x+w-len(prTag), y, len(prTag), prTag, prStyle)
+		return
+	}
 	widget.DrawText(screen, col, y, remaining, role.Name, nameStyle)
+}
+
+// spinnerFrame computes the current spinner animation frame from wall-clock
+// time, mirroring the task list's updateSpinnerFrame. Recomputed on each Draw so
+// a WORKING role's glyph advances as long as the spinner loop keeps redrawing
+// (it does while any session is actively running).
+func spinnerFrame() int {
+	interval := widget.SpinnerTickInterval()
+	if interval <= 0 {
+		return 0
+	}
+	return int(time.Now().UnixMilli()/interval.Milliseconds()) % widget.SpinnerFrameCount()
 }
 
 // chevron returns the fold glyph for a collapsed/expanded state.
@@ -495,11 +737,13 @@ func chevron(collapsed bool) string {
 	return "▾"
 }
 
-// liveRoleCount counts roles with a live binding (shown on the orch header).
+// liveRoleCount counts live, non-coordinator roles (the agents shown under the
+// header). The coordinator is folded into the header itself, so it never inflates
+// the (N) child count.
 func liveRoleCount(o *OrchView) int {
 	n := 0
 	for i := range o.Roles {
-		if o.Roles[i].Live {
+		if o.Roles[i].Live && o.Roles[i].Kind != db.HeraKindCoordinator {
 			n++
 		}
 	}
@@ -507,11 +751,21 @@ func liveRoleCount(o *OrchView) int {
 }
 
 // statusIcon picks the glyph + style for a role row. ready_to_close (M4) wins
-// over everything else with a distinct "ready to check off" mark; otherwise the
-// hera role status (idle/working/blocked/done) drives the glyph, falling back
-// to binding presence when no status row exists. dim forces the dimmed style
-// for archived placement (the glyph never lies — only the style dims).
-func statusIcon(role *RoleView, dim bool) (rune, tcell.Style) {
+// over everything else with a distinct "ready to check off" mark; an
+// operator/agent-set blocked or done assertion is honoured next; then GENUINE
+// activity (a live binding whose bound argus task is in_progress — role.IsActive)
+// animates the spinner; otherwise the hera role status / binding presence drives
+// a static glyph. dim forces the dimmed style for archived placement (the glyph
+// never lies — only the style dims).
+//
+// frame is the current spinner animation frame: only a genuinely-active role
+// renders the active spinner's frame so it animates. The animated "working"
+// glyph is sourced from REAL session activity (role.IsActive), NOT the hera role
+// Status "working" field — that field is a manual/MCP-set ladder value that goes
+// stale (it stays "working" after a session idles, stops, or dies), so binding
+// the spinner to it made idle/stopped/dead roles animate. Mirrors the plugin's
+// stateGlyph (spinner on in_progress + running). See BUG-003.
+func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	if role.ReadyToClose {
 		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
 		if dim {
@@ -522,12 +776,16 @@ func statusIcon(role *RoleView, dim bool) (rune, tcell.Style) {
 	var glyph rune
 	var style tcell.Style
 	switch {
-	case role.HasStatus && role.Status == db.HeraStatusWorking:
-		glyph, style = theme.IconMoonStars, theme.StyleInProgress
 	case role.HasStatus && role.Status == db.HeraStatusBlocked:
+		// A deliberate "I'm blocked" assertion must not be masked by the activity
+		// spinner even while the task is technically still in_progress (waiting).
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
 	case role.HasStatus && role.Status == db.HeraStatusDone:
 		glyph, style = '✓', theme.StyleComplete
+	case role.IsActive():
+		// Genuinely producing output → animate. Sourced from real task activity,
+		// never the stale hera role-status (BUG-003).
+		glyph, style = widget.SpinnerFrame(frame), theme.StyleInProgress
 	case role.HasStatus && role.Status == db.HeraStatusIdle:
 		glyph, style = theme.IconMoonOutline, theme.StyleInReview
 	case role.Live:

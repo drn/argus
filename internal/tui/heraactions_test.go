@@ -191,7 +191,9 @@ func TestSmoke_HeraReattachRestartsSession(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'j', 0) // → coord role
+	// The orch header IS the coordinator (folded), so it is already selected; the
+	// j is a no-op here (no worker rows), and Enter reattaches the coordinator.
+	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyEnter, 0, 0) // Enter → reattach (no live session)
 

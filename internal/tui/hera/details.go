@@ -95,10 +95,11 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 	draw(inner.X, d.orch.Name, theme.StyleTitle)
 	row++ // blank spacer
 
+	frame := spinnerFrame()
 	// Coordinator status line — reuse the rail's coordinator glyph so the
 	// Details status never disagrees with the rail header.
 	if coord := d.coordRole(); coord != nil {
-		glyph, gstyle := statusIcon(coord, d.orch.Archived)
+		glyph, gstyle := statusIcon(coord, d.orch.Archived, frame)
 		if row < maxRow {
 			screen.SetContent(inner.X, row, glyph, nil, gstyle)
 			widget.DrawText(screen, inner.X+2, row, inner.W-2, "coordinator: "+coordStatusLabel(coord), theme.StyleDimmed)
@@ -119,7 +120,7 @@ func (d *DetailsView) Draw(screen tcell.Screen, x, y, w, h int, focused bool) {
 		if row >= maxRow {
 			break
 		}
-		glyph, gstyle := statusIcon(w, d.orch.Archived)
+		glyph, gstyle := statusIcon(w, d.orch.Archived, frame)
 		screen.SetContent(inner.X+2, row, glyph, nil, gstyle)
 		label := w.Name
 		if mark := d.roleMark(w); mark != "" {
@@ -171,9 +172,20 @@ func (d *DetailsView) roleMark(r *RoleView) string {
 	return mark
 }
 
-// coordStatusLabel renders a human label for a coordinator role's status.
+// coordStatusLabel renders a human label for a coordinator role's status. A
+// STALE "working" role-status (the manual/MCP-set ladder value that never
+// reconciles down after a session idles/stops/dies) is not reported as
+// "working" unless it is backed by real activity (role.IsActive) — the same
+// honesty the rail spinner now enforces (BUG-003). A stale-working role reads
+// "live" when its binding is still alive (just not in_progress) and "stopped"
+// when the binding is gone; every other role-status passes through verbatim.
 func coordStatusLabel(r *RoleView) string {
 	switch {
+	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
+		if r.Live {
+			return "live"
+		}
+		return "stopped"
 	case r.HasStatus && r.Status != "":
 		return string(r.Status)
 	case r.Live:

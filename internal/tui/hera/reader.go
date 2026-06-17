@@ -23,6 +23,10 @@ type HeraReader interface {
 	ListHeraOrchestrators(includeArchived bool) ([]*db.HeraOrchestrator, error)
 	ListHeraRoles(orchID int64, includeArchived bool) ([]*db.HeraRole, error)
 	ListHeraLiveBindings() ([]*db.HeraBinding, error)
+	// ListHeraLatestBindings returns the most-recent binding per role regardless
+	// of liveness — the structural rail bridge keys off it so an ended-but-not-
+	// torn-down link still nests its child sub-orchestrator.
+	ListHeraLatestBindings() ([]*db.HeraBinding, error)
 	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
 	ListMetaByNamespace(namespace string) (map[string]map[string]string, error)
 	// Tasks supplies the argus task snapshot so BuildModel can stamp each bound

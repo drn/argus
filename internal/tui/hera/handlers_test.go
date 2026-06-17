@@ -26,13 +26,14 @@ func TestRail_InputHandlerKeys(t *testing.T) {
 	h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
 	testutil.Equal(t, r.CursorIndex(), 0)
 
-	// Space on the orch header collapses it (roles vanish).
+	// Space on the orch header collapses it (worker row vanishes); orch-1
+	// collapsed header + orch-2 (coordinator-only) header = 2 rows.
 	h(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Rows(), 3)
+	testutil.Equal(t, r.Rows(), 2)
 
 	// An unhandled key is a no-op.
 	h(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), noFocus)
-	testutil.Equal(t, r.Rows(), 3)
+	testutil.Equal(t, r.Rows(), 2)
 }
 
 func TestPage_InputHandlerDelegatesToRail(t *testing.T) {

@@ -71,6 +71,32 @@ func selectRoleByName(p *HeraPage, name string) bool {
 	return false
 }
 
+// selectOrchByName lands the rail cursor on the orchestrator header with the
+// given name. After the coordinator fold a header selection IS the coordinator
+// selection (details mode), so tests that exercise coordinator behaviour select
+// the header here rather than a (no-longer-rendered) coord child row.
+func selectOrchByName(p *HeraPage, name string) bool {
+	r := p.Rail()
+	for r.CursorIndex() > 0 {
+		before := r.CursorIndex()
+		r.CursorUp()
+		if r.CursorIndex() == before {
+			break
+		}
+	}
+	for i := 0; i < r.Rows()+1; i++ {
+		if o := r.SelectedOrch(); o != nil && o.Name == name && r.Selected() == nil {
+			return true
+		}
+		before := r.CursorIndex()
+		r.CursorDown()
+		if r.CursorIndex() == before {
+			return false
+		}
+	}
+	return false
+}
+
 // TestPanes_WorkerSelectionFeedsAgentPane is a locked must-have: selecting a
 // worker role feeds the AGENT pane from that task's runner session, and the
 // HERA pane from the orchestrator's coordinator.
@@ -108,7 +134,7 @@ func TestPanes_CoordinatorSelectionShowsDetails(t *testing.T) {
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess}))
 	p.Refresh()
 
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	testutil.Equal(t, p.detailsMode, true)
 	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-coord")
 	// Agent pane is unbound in details mode.
@@ -153,19 +179,16 @@ func TestPanes_MultiBindingFeedsCorrectContext(t *testing.T) {
 	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-a-coord": acSess, "shared": sharedSess}))
 	p.Refresh()
 
-	// Select the A-worker role: shared task feeds the AGENT pane; A's
-	// coordinator feeds the HERA pane.
+	// orch-b's coordinator IS the shared task, which is also a-worker under A, so
+	// orch-b nests under A's a-worker row. The bridging row keeps its PARENT
+	// worker context (conservative — so Ctrl+D deletes the worker role, never the
+	// child orchestrator): selecting it feeds the AGENT pane with the shared task
+	// and the HERA pane with A's coordinator.
 	testutil.Equal(t, selectRoleByName(p, "a-worker"), true)
 	testutil.Equal(t, p.detailsMode, false)
+	testutil.Equal(t, p.SelectionContext().Orch.Name, "orch-a")
 	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "shared")
 	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-a-coord")
-
-	// Select the B-coordinator role: the SAME shared task now feeds the HERA
-	// pane (B's coordinator = the task itself) and the right region is details.
-	testutil.Equal(t, selectRoleByName(p, "b-coord"), true)
-	testutil.Equal(t, p.detailsMode, true)
-	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "shared")
-	testutil.Nil(t, p.AgentPane().Session())
 }
 
 // TestPanes_RemoteModeNeverFeeds proves remote-mode panes stay unavailable: no
@@ -304,7 +327,7 @@ func TestPanes_NoSyncOnDraw(t *testing.T) {
 	// mode) — both draw paths.
 	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
 	p.Draw(sc)
-	testutil.Equal(t, selectRoleByName(p, "coord"), true)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
 	p.Draw(sc)
 	testutil.Equal(t, sc.syncCount, 0)
 }
