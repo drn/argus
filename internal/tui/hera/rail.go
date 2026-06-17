@@ -136,6 +136,11 @@ type Rail struct {
 	// live cursor wins.
 	store         RailStateStore
 	pendingSelRef int64
+	// firstRunCollapse is true when no saved rail state exists (first run). On
+	// the first non-empty model build, ALL orchestrators are seeded as collapsed
+	// so the rail starts fully collapsed instead of fully expanded. One-shot:
+	// cleared after the seed, just like pendingSelRef.
+	firstRunCollapse bool
 }
 
 // NewRail builds an empty rail. Archive starts collapsed (matches the task
@@ -212,7 +217,10 @@ func (r *Rail) SetStateStore(s RailStateStore) {
 		return
 	}
 	if strings.TrimSpace(raw) == "" {
-		return // nothing persisted yet — keep defaults
+		// Nothing persisted yet (first run) — start fully collapsed on the
+		// first model build instead of defaulting to fully expanded.
+		r.firstRunCollapse = true
+		return
 	}
 	var st railViewState
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
@@ -462,6 +470,17 @@ func (r *Rail) buildRows() {
 	if r.model.IsEmpty() {
 		r.rows = append(r.rows, railRow{kind: rrEmpty, label: "No hera orchestrators"})
 		return
+	}
+
+	// On first run (no saved state) collapse ALL orchestrators so the rail
+	// opens in a tidy summary view. One-shot: cleared after the seed.
+	if r.firstRunCollapse {
+		for _, sec := range [][]OrchView{r.model.Pinned, r.model.Active, r.model.Archived} {
+			for _, o := range sec {
+				r.collapsed[o.ID] = true
+			}
+		}
+		r.firstRunCollapse = false
 	}
 
 	// Nesting machinery: each child orchestrator's SINGLE canonical parent is
@@ -910,6 +929,9 @@ func (r *Rail) Selection() Selection {
 
 // Rows returns the flattened row count (test seam).
 func (r *Rail) Rows() int { return len(r.rows) }
+
+// OrchCollapsed reports whether the given orchestrator ID is folded (test seam).
+func (r *Rail) OrchCollapsed(id int64) bool { return r.collapsed[id] }
 
 // CursorIndex returns the cursor's row index (test seam).
 func (r *Rail) CursorIndex() int { return r.cursor }

@@ -53,14 +53,22 @@ func TestRail_StateStoreRestores(t *testing.T) {
 }
 
 func TestRail_StateStoreMalformedKeepsDefaults(t *testing.T) {
-	for _, blob := range []string{"", "   ", "not json", "{"} {
+	// Malformed blobs keep the expanded default (not the first-run-collapse
+	// path). Empty/whitespace-only blobs are the first-run case and trigger
+	// collapse; genuinely malformed JSON does not.
+	for _, blob := range []string{"not json", "{"} {
 		t.Run("blob="+blob, func(t *testing.T) {
 			fs := &fakeStore{load: blob}
 			r := NewRail()
 			r.SetStateStore(fs)
-			testutil.Equal(t, r.archiveCollapsed, true) // default preserved
-			testutil.Equal(t, len(r.collapsed), 0)
+			testutil.Equal(t, r.archiveCollapsed, true)
+			testutil.Equal(t, len(r.collapsed), 0) // no collapse seeded yet
 			testutil.Equal(t, r.pendingSelRef, int64(0))
+			testutil.Equal(t, r.firstRunCollapse, false) // NOT first-run path
+			// After model load, orchestrators stay expanded (malformed ≠ first run).
+			r.SetModel(twoOrchModel())
+			testutil.Equal(t, r.collapsed[1], false)
+			testutil.Equal(t, r.collapsed[2], false)
 		})
 	}
 	// A load error also keeps defaults (logged, not fatal).
@@ -68,12 +76,60 @@ func TestRail_StateStoreMalformedKeepsDefaults(t *testing.T) {
 	r := NewRail()
 	r.SetStateStore(fs)
 	testutil.Equal(t, r.archiveCollapsed, true)
+	testutil.Equal(t, r.firstRunCollapse, false)
+}
+
+func TestRail_FirstRunFullyCollapsed(t *testing.T) {
+	// No saved state (empty blob) → rail starts fully collapsed on first model
+	// build (BUG-009 fix). Both empty string and whitespace-only trigger this.
+	for _, blob := range []string{"", "   "} {
+		t.Run("blob="+blob, func(t *testing.T) {
+			fs := &fakeStore{load: blob}
+			r := NewRail()
+			r.SetStateStore(fs)
+			testutil.Equal(t, r.firstRunCollapse, true)
+			testutil.Equal(t, len(r.collapsed), 0) // not yet seeded (no model)
+
+			r.SetModel(twoOrchModel())
+			// Both orchestrators from twoOrchModel (ids 1 and 2) must be collapsed.
+			testutil.Equal(t, r.collapsed[1], true)
+			testutil.Equal(t, r.collapsed[2], true)
+			testutil.Equal(t, r.firstRunCollapse, false) // one-shot: consumed
+		})
+	}
+}
+
+func TestRail_FirstRunCollapseIsOneShot(t *testing.T) {
+	// After the first non-empty model build, later rebuilds do NOT re-collapse
+	// orchestrators that the user expanded.
+	fs := &fakeStore{load: ""}
+	r := NewRail()
+	r.SetStateStore(fs)
+	r.SetModel(twoOrchModel())
+	testutil.Equal(t, r.collapsed[1], true) // seeded on first build
+
+	// User expands orch-1.
+	delete(r.collapsed, 1)
+	// Rebuild (e.g. a tick refresh) must NOT re-collapse orch-1.
+	r.SetModel(twoOrchModel())
+	testutil.Equal(t, r.collapsed[1], false) // stays expanded
+	testutil.Equal(t, r.collapsed[2], true)  // untouched
+}
+
+func TestRail_FirstRunNoStoreNoCollapse(t *testing.T) {
+	// Without a store, no first-run collapse fires (remote mode / unset store).
+	r := NewRail()
+	r.SetModel(twoOrchModel())
+	testutil.Equal(t, r.collapsed[1], false)
+	testutil.Equal(t, r.collapsed[2], false)
 }
 
 func TestRail_PersistsOnToggleAndCursorMove(t *testing.T) {
-	fs := &fakeStore{}
+	// Use a non-empty blob (valid prior state) so this is NOT a first-run — both
+	// orchestrators start expanded and we test the toggle/cursor persist paths.
+	fs := &fakeStore{load: `{"archive_collapsed":true}`}
 	r := NewRail()
-	r.SetStateStore(fs) // empty load → defaults; store wired
+	r.SetStateStore(fs) // restores archive_collapsed=true, no first-run flag
 	r.SetModel(twoOrchModel())
 	testutil.Equal(t, len(fs.saved), 0) // SetModel/restore never persists
 
@@ -143,6 +199,14 @@ func TestPage_RailStatePersistsAcrossPages(t *testing.T) {
 	seedBoundRole(t, d, o1, "wkr", db.HeraKindWorker, "tw")
 	o2 := seedOrch(t, d, "orch-b")
 	seedBoundRole(t, d, o2, "coord", db.HeraKindCoordinator, "tb")
+
+	// Pre-seed a minimal prior-session blob so this test exercises the
+	// restore-and-persist path, not first-run behaviour (first-run collapse is
+	// covered by TestRail_FirstRunFullyCollapsed and
+	// TestRail_FirstRunCollapseIsOneShot).
+	if err := d.SaveRailState(`{"archive_collapsed":true}`); err != nil {
+		t.Fatal(err)
+	}
 
 	// Page 1: wire the real *db.DB store, collapse the first orchestrator.
 	p1 := NewHeraPage(d)

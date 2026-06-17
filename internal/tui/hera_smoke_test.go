@@ -113,15 +113,24 @@ func TestSmoke_HeraRailCursorNavAndCollapse(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
 
-	var rowsExpanded, cursorAfterJ int
+	// First-run (no saved state): the orchestrator starts fully collapsed — only
+	// the header row is visible. Space expands it to show the worker.
 	readUI(t, app.tapp, func() {
-		rowsExpanded = app.heraPage.Rail().Rows()
-		testutil.Equal(t, app.heraPage.Rail().CursorIndex(), 0)
+		testutil.Equal(t, app.heraPage.Rail().Rows(), 1)        // collapsed: only header
+		testutil.Equal(t, app.heraPage.Rail().CursorIndex(), 0) // cursor on header
+		testutil.Equal(t, app.heraPage.Rail().OrchCollapsed(orch), true)
 	})
-	testutil.Equal(t, rowsExpanded, 2) // orch header (coord folded in) + 1 worker
+
+	sim.InjectKey(tcell.KeyRune, ' ', 0) // expand
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.heraPage.Rail().Rows(), 2) // header + worker
+		testutil.Equal(t, app.heraPage.Rail().OrchCollapsed(orch), false)
+	})
 
 	sim.InjectKey(tcell.KeyRune, 'j', 0) // cursor down to a role
 	syncUI(t, app.tapp)
+	var cursorAfterJ int
 	readUI(t, app.tapp, func() { cursorAfterJ = app.heraPage.Rail().CursorIndex() })
 	testutil.Equal(t, cursorAfterJ, 1)
 
@@ -228,6 +237,17 @@ func TestSmoke_HeraTabSelectionThreadsThroughRunner(t *testing.T) {
 	})
 
 	// Navigate: orch header (row 0, the folded coordinator) → worker role (1).
+	// First run starts collapsed — expand the orch before navigating down.
+	var collapsed bool
+	readUI(t, app.tapp, func() {
+		if o := app.heraPage.Rail().SelectedOrch(); o != nil {
+			collapsed = app.heraPage.Rail().OrchCollapsed(o.ID)
+		}
+	})
+	if collapsed {
+		sim.InjectKey(tcell.KeyRune, ' ', 0)
+		syncUI(t, app.tapp)
+	}
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
 	var sel hera.Selection

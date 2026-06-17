@@ -16,10 +16,23 @@ import (
 // heraTabCursorOnWorker switches to the Hera tab and moves the cursor onto the
 // worker role. After the coordinator fold the rows are orch header=0 (the
 // coordinator) and worker=1, so a single Down lands on the worker.
+// On first run the orchestrator starts collapsed — this helper expands it first.
 func heraTabCursorOnWorker(t *testing.T, app *App, sim tcell.SimulationScreen) {
 	t.Helper()
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
+	// Expand the orchestrator if it started collapsed (first-run default).
+	// After the expand the header is still row 0, and the single worker is row 1.
+	var collapsed bool
+	readUI(t, app.tapp, func() {
+		if o := app.heraPage.Rail().SelectedOrch(); o != nil {
+			collapsed = app.heraPage.Rail().OrchCollapsed(o.ID)
+		}
+	})
+	if collapsed {
+		sim.InjectKey(tcell.KeyRune, ' ', 0) // expand
+		syncUI(t, app.tapp)
+	}
 	sim.InjectKey(tcell.KeyRune, 'j', 0) // → worker (coord folded into header)
 	syncUI(t, app.tapp)
 }
@@ -200,6 +213,17 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 	defer stop()
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
+	// Expand orch-a if it started collapsed (first-run default).
+	var collapsed bool
+	readUI(t, app.tapp, func() {
+		if o := app.heraPage.Rail().SelectedOrch(); o != nil {
+			collapsed = app.heraPage.Rail().OrchCollapsed(o.ID)
+		}
+	})
+	if collapsed {
+		sim.InjectKey(tcell.KeyRune, ' ', 0) // expand orch-a
+		syncUI(t, app.tapp)
+	}
 	// orch-a is first (alpha order); its worker role is row 1.
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
@@ -251,6 +275,17 @@ func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 	defer stop()
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
+	// Expand orch-a if collapsed (first-run default) so its bridge worker is visible.
+	var collapsed bool
+	readUI(t, app.tapp, func() {
+		if o := app.heraPage.Rail().SelectedOrch(); o != nil {
+			collapsed = app.heraPage.Rail().OrchCollapsed(o.ID)
+		}
+	})
+	if collapsed {
+		sim.InjectKey(tcell.KeyRune, ' ', 0)
+		syncUI(t, app.tapp)
+	}
 	// orch-c nests under orch-a's "w" row (row 1, the bridge).
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
@@ -307,6 +342,17 @@ func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
 	defer stop()
 	sim.InjectKey(tcell.KeyRune, '2', 0)
 	syncUI(t, app.tapp)
+	// Expand orch-a if collapsed (first-run default) so its bridge worker is visible.
+	var collapsed bool
+	readUI(t, app.tapp, func() {
+		if o := app.heraPage.Rail().SelectedOrch(); o != nil {
+			collapsed = app.heraPage.Rail().OrchCollapsed(o.ID)
+		}
+	})
+	if collapsed {
+		sim.InjectKey(tcell.KeyRune, ' ', 0)
+		syncUI(t, app.tapp)
+	}
 	// Row 1 is orch-a's workerR (bridges orch-c); cascade subtree = {orch-c, orch-g}.
 	sim.InjectKey(tcell.KeyRune, 'j', 0)
 	syncUI(t, app.tapp)
