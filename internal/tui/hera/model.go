@@ -41,6 +41,21 @@ type RoleView struct {
 	TaskResult string
 }
 
+// IsActive reports whether the role is genuinely producing output right now: it
+// holds a live binding AND its bound argus task is in_progress. This is the
+// honest "working" signal the rail spinner animates on — NOT the hera role
+// Status field, which is a manual/MCP-set ladder value that goes stale (it stays
+// "working" after the session idles, stops, or dies, because nothing reconciles
+// it down). Mirrors the plugin's stateGlyph, which animates the spinner only on
+// a KNOWN in_progress + running argus state. Native has no per-task idle /
+// needs-input flag (the plugin sourced those from the API), so a live in_progress
+// task that is sitting idle still counts as active; the stale-status cases the
+// bug reported (stopped / dead / days-old sessions) are excluded because they
+// are either not Live or no longer in_progress. See BUG-003.
+func (r *RoleView) IsActive() bool {
+	return r.Live && r.TaskStatus == model.StatusInProgress.String()
+}
+
 // OrchView is the render projection of one orchestrator and its non-freelance
 // roles (coordinator + worker). Freelance-kind roles are hoisted into the
 // Model's Freelance section rather than nested here.

@@ -172,9 +172,20 @@ func (d *DetailsView) roleMark(r *RoleView) string {
 	return mark
 }
 
-// coordStatusLabel renders a human label for a coordinator role's status.
+// coordStatusLabel renders a human label for a coordinator role's status. A
+// STALE "working" role-status (the manual/MCP-set ladder value that never
+// reconciles down after a session idles/stops/dies) is not reported as
+// "working" unless it is backed by real activity (role.IsActive) — the same
+// honesty the rail spinner now enforces (BUG-003). A stale-working role reads
+// "live" when its binding is still alive (just not in_progress) and "stopped"
+// when the binding is gone; every other role-status passes through verbatim.
 func coordStatusLabel(r *RoleView) string {
 	switch {
+	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
+		if r.Live {
+			return "live"
+		}
+		return "stopped"
 	case r.HasStatus && r.Status != "":
 		return string(r.Status)
 	case r.Live:

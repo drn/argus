@@ -33,6 +33,8 @@ each stage (TDD: red → green). `make pre-pr` must pass before pushing.
 
 - [x] 5.1 `statusIcon` returns an animated `widget.SpinnerFrame` glyph for a running (working) agent; static otherwise.
 - [x] 5.2 Tests: working role yields a spinner frame that advances with the frame counter; non-working roles stay static.
+- [x] 5.3 BUG-003: source the spinner from REAL session activity (`RoleView.IsActive` — live binding + bound task `in_progress`), NOT the stale hera `working` role-status; `blocked`/`done` outrank it. Make the Details coordinator label honest (`live`/`stopped`, not stale `working`).
+- [x] 5.4 Tests: stale-working stopped/idle/live-but-not-in_progress roles stay static; genuinely-active role animates even when role-status disagrees; blocked outranks activity; `coordStatusLabel` honesty cases.
 
 ## 6. PR indicator on rail rows
 

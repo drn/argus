@@ -588,26 +588,89 @@ func TestStatusIcon_StatusMapping(t *testing.T) {
 	}
 }
 
-func TestStatusIcon_WorkingAnimatesSpinner(t *testing.T) {
+// TestStatusIcon_ActiveAnimatesSpinner pins BUG-003: the rail spinner animates
+// on REAL session activity (a live binding whose bound argus task is
+// in_progress), NOT on the manual/MCP-set hera role-status "working" field
+// (which goes stale — it stays "working" after the session idles, stops, or
+// dies). A genuinely-active role animates; a stale-working / stopped / idle /
+// dead role is static.
+func TestStatusIcon_ActiveAnimatesSpinner(t *testing.T) {
 	widget.SetActiveSpinner("progress")
 	defer widget.SetActiveSpinner("progress")
-	working := &RoleView{HasStatus: true, Status: db.HeraStatusWorking}
 
-	// A working role's glyph is the active spinner's frame and advances with the
-	// frame counter (distinct frames produce distinct glyphs).
-	f0, _ := statusIcon(working, false, 0)
-	f1, _ := statusIcon(working, false, 1)
+	// A genuinely active role (live binding + bound task in_progress) renders the
+	// active spinner's frame and advances with the frame counter.
+	active := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusWorking}
+	f0, _ := statusIcon(active, false, 0)
+	f1, _ := statusIcon(active, false, 1)
 	testutil.Equal(t, f0, widget.SpinnerFrame(0))
 	testutil.Equal(t, f1, widget.SpinnerFrame(1))
 	if f0 == f1 {
-		t.Error("working glyph did not advance between frames")
+		t.Error("active glyph did not advance between frames")
 	}
 
-	// A non-working (idle) role is static across frames.
+	// Real activity drives the spinner even when the stale role-status disagrees
+	// (here it claims idle): the bound task is genuinely in_progress.
+	activeStaleStatus := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusIdle}
+	a0, _ := statusIcon(activeStaleStatus, false, 0)
+	testutil.Equal(t, a0, widget.SpinnerFrame(0))
+
+	// STALE working role-status with NO live binding (a stopped/dead session
+	// showing "claude --resume …") must NOT animate — this is the bug.
+	staleStopped := &RoleView{HasStatus: true, Status: db.HeraStatusWorking}
+	s0, _ := statusIcon(staleStopped, false, 0)
+	s1, _ := statusIcon(staleStopped, false, 7)
+	testutil.Equal(t, s0, s1)
+	if s0 == widget.SpinnerFrame(0) {
+		t.Error("stale-working stopped role animated the spinner (BUG-003 regression)")
+	}
+
+	// A live role whose bound task already left in_progress (e.g. auto-completed
+	// coordinator) is NOT producing → static, even with stale Status==working.
+	staleLiveDone := &RoleView{Live: true, TaskStatus: "in_review", HasStatus: true, Status: db.HeraStatusWorking}
+	d0, _ := statusIcon(staleLiveDone, false, 0)
+	d1, _ := statusIcon(staleLiveDone, false, 3)
+	testutil.Equal(t, d0, d1)
+	if d0 == widget.SpinnerFrame(0) {
+		t.Error("live-but-not-in_progress role animated the spinner (BUG-003 regression)")
+	}
+
+	// A non-active (idle) role is static across frames.
 	idle := &RoleView{HasStatus: true, Status: db.HeraStatusIdle}
 	i0, _ := statusIcon(idle, false, 0)
 	i1, _ := statusIcon(idle, false, 5)
 	testutil.Equal(t, i0, i1)
+}
+
+// TestRoleView_IsActive isolates the activity predicate that sources the spinner.
+func TestRoleView_IsActive(t *testing.T) {
+	cases := []struct {
+		name string
+		role RoleView
+		want bool
+	}{
+		{"live in_progress", RoleView{Live: true, TaskStatus: "in_progress"}, true},
+		{"live in_review", RoleView{Live: true, TaskStatus: "in_review"}, false},
+		{"live complete", RoleView{Live: true, TaskStatus: "complete"}, false},
+		{"live no task snapshot", RoleView{Live: true, TaskStatus: ""}, false},
+		{"not live but in_progress task", RoleView{Live: false, TaskStatus: "in_progress"}, false},
+		{"stale working status only", RoleView{HasStatus: true, Status: db.HeraStatusWorking}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			testutil.Equal(t, c.role.IsActive(), c.want)
+		})
+	}
+}
+
+// TestStatusIcon_BlockedOutranksActivity confirms an operator/agent "blocked"
+// assertion still shows the needs-input glyph even when the bound task is
+// technically still in_progress (alive, waiting) — blocked is a deliberate
+// signal that must not be masked by the activity spinner.
+func TestStatusIcon_BlockedOutranksActivity(t *testing.T) {
+	blocked := &RoleView{Live: true, TaskStatus: "in_progress", HasStatus: true, Status: db.HeraStatusBlocked}
+	icon, _ := statusIcon(blocked, false, 0)
+	testutil.Equal(t, icon, theme.IconNeedsInput)
 }
 
 // TestRail_DrawDoesNotPanic exercises every drawRow branch against a real

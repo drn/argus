@@ -751,14 +751,20 @@ func liveRoleCount(o *OrchView) int {
 }
 
 // statusIcon picks the glyph + style for a role row. ready_to_close (M4) wins
-// over everything else with a distinct "ready to check off" mark; otherwise the
-// hera role status (idle/working/blocked/done) drives the glyph, falling back
-// to binding presence when no status row exists. dim forces the dimmed style
-// for archived placement (the glyph never lies — only the style dims).
+// over everything else with a distinct "ready to check off" mark; an
+// operator/agent-set blocked or done assertion is honoured next; then GENUINE
+// activity (a live binding whose bound argus task is in_progress — role.IsActive)
+// animates the spinner; otherwise the hera role status / binding presence drives
+// a static glyph. dim forces the dimmed style for archived placement (the glyph
+// never lies — only the style dims).
 //
-// frame is the current spinner animation frame: a WORKING (in-motion) role
-// renders the active spinner's frame so it animates, distinguishing a live agent
-// from a static idle/done one. Non-working states are static (frame ignored).
+// frame is the current spinner animation frame: only a genuinely-active role
+// renders the active spinner's frame so it animates. The animated "working"
+// glyph is sourced from REAL session activity (role.IsActive), NOT the hera role
+// Status "working" field — that field is a manual/MCP-set ladder value that goes
+// stale (it stays "working" after a session idles, stops, or dies), so binding
+// the spinner to it made idle/stopped/dead roles animate. Mirrors the plugin's
+// stateGlyph (spinner on in_progress + running). See BUG-003.
 func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	if role.ReadyToClose {
 		st := tcell.StyleDefault.Foreground(theme.ColorComplete).Bold(true)
@@ -770,12 +776,16 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	var glyph rune
 	var style tcell.Style
 	switch {
-	case role.HasStatus && role.Status == db.HeraStatusWorking:
-		glyph, style = widget.SpinnerFrame(frame), theme.StyleInProgress
 	case role.HasStatus && role.Status == db.HeraStatusBlocked:
+		// A deliberate "I'm blocked" assertion must not be masked by the activity
+		// spinner even while the task is technically still in_progress (waiting).
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
 	case role.HasStatus && role.Status == db.HeraStatusDone:
 		glyph, style = '✓', theme.StyleComplete
+	case role.IsActive():
+		// Genuinely producing output → animate. Sourced from real task activity,
+		// never the stale hera role-status (BUG-003).
+		glyph, style = widget.SpinnerFrame(frame), theme.StyleInProgress
 	case role.HasStatus && role.Status == db.HeraStatusIdle:
 		glyph, style = theme.IconMoonOutline, theme.StyleInReview
 	case role.Live:

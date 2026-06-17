@@ -120,21 +120,38 @@ Derived from: `internal/tui/hera/rail.go` (per-orchestrator archive expando in `
 - **WHEN** an orchestrator has active workers and archived workers
 - **THEN** an `Archive (N)` expando renders under the active workers, collapsed by default, listing the archived roles dimmed when expanded
 
-### Requirement: Running agents animate a spinner glyph (area 3)
+### Requirement: Active agents animate a spinner glyph (area 3)
 
-The system SHALL render a running (hera status `working`) role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. Non-running states (idle, blocked, done, ready_to_close, unbound) remain static. `ready_to_close` still takes precedence over the spinner.
+The system SHALL render a genuinely-active role's status glyph as an animated spinner frame from the active spinner (`widget.SpinnerFrame`), advancing with the wall-clock frame counter, rather than a static glyph. A role is genuinely active (`RoleView.IsActive`) when it holds a live binding AND its bound argus task is `in_progress` — sourced from REAL session activity, NOT the hera role `working` status field. The hera role status is a manual/MCP-set ladder value that never reconciles down (it stays `working` after a session idles, stops, or dies), so it MUST NOT drive the spinner: a stale-`working` role whose binding is gone, dead, or no longer `in_progress` is static (BUG-003). This mirrors the plugin's `stateGlyph`, which animates only on a known `in_progress` + running argus state.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon` spinner branch), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
+An operator/agent-set `blocked` assertion takes precedence over the spinner (the needs-input glyph renders even while the task is still `in_progress`), as does `done` and `ready_to_close`. Non-active states (idle, blocked, done, ready_to_close, unbound, stopped) remain static.
 
-#### Scenario: Working role spins
+Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`), `internal/tui/widget/spinnerstate.go` (`SpinnerFrame`).
 
-- **WHEN** a role's hera status is `working` and it is not ready_to_close
+#### Scenario: Genuinely active role spins
+
+- **WHEN** a role holds a live binding and its bound argus task is `in_progress`, and it is not blocked/done/ready_to_close
 - **THEN** its status glyph is the active spinner's frame for the current animation frame, and the glyph differs across frames
 
-#### Scenario: Non-working role is static
+#### Scenario: Stale-working stopped role is static
 
-- **WHEN** a role's hera status is `idle` or `done`
+- **WHEN** a role's hera status is `working` but it holds no live binding (a stopped/dead session)
 - **THEN** its status glyph does not animate
+
+#### Scenario: Live-but-not-in_progress role is static
+
+- **WHEN** a role holds a live binding but its bound argus task has left `in_progress` (e.g. an auto-completed coordinator now `in_review`), even with a stale `working` hera status
+- **THEN** its status glyph does not animate
+
+#### Scenario: Blocked outranks activity
+
+- **WHEN** a role's hera status is `blocked` and its bound argus task is still `in_progress`
+- **THEN** its status glyph is the needs-input glyph, not the spinner
+
+#### Scenario: Details coordinator label is honest about stale working
+
+- **WHEN** the Details pane renders a coordinator whose hera status is `working` but which is not genuinely active
+- **THEN** the label reads `live` (binding still alive) or `stopped` (binding gone), not `working`
 
 ### Requirement: PR indicator on rail role rows (area 3)
 
@@ -167,24 +184,29 @@ Derived from: `internal/tui/hera/rail.go` (`Selection.BridgeChildOrchID`), `inte
 
 ### Requirement: Status-icon precedence on role rows (area 3)
 
-The system SHALL choose a role row's status glyph by this precedence: (1) `ready_to_close` wins over everything with a distinct review glyph; otherwise (2) the hera role status when present — `working` renders the ACTIVE SPINNER's animated frame (see "Running agents animate a spinner glyph"), while `blocked`, `done`, and `idle` each map to a distinct STATIC glyph/style; otherwise (3) binding presence (`Live`) renders a "live" glyph; otherwise (4) an unbound/dimmed glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
+The system SHALL choose a role row's status glyph by this precedence: (1) `ready_to_close` wins over everything with a distinct review glyph; otherwise (2) an operator/agent-set `blocked` or `done` hera role status renders its distinct static glyph; otherwise (3) GENUINE activity (`RoleView.IsActive` — a live binding whose bound argus task is `in_progress`) renders the ACTIVE SPINNER's animated frame (see "Active agents animate a spinner glyph"); otherwise (4) an `idle` hera role status renders the static idle glyph; otherwise (5) binding presence (`Live`) renders a "live" glyph; otherwise (6) an unbound/dimmed glyph. The spinner is sourced from REAL session activity, never the stale `working` hera role status (BUG-003): a `working` role that is not genuinely active falls through to (5)/(6) and renders a static glyph. `ready_to_close` is read from the task-addressed `task_meta` "hera" namespace, not the hera tables.
 
-Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`buildRoleView` reads `ready_to_close`).
+Derived from: `internal/tui/hera/rail.go` (`statusIcon`), `internal/tui/hera/model.go` (`RoleView.IsActive`, `buildRoleView` reads `ready_to_close`).
 
 #### Scenario: ready_to_close overrides status
 
 - **WHEN** a role's bound task carries `meta:hera.ready_to_close=true` AND the role status is working
 - **THEN** the row renders the review/ready glyph, not the working spinner
 
-#### Scenario: Working renders the animated spinner
+#### Scenario: Genuine activity renders the animated spinner
 
-- **WHEN** a role has a status of `working` and is not ready_to_close
+- **WHEN** a role holds a live binding whose bound argus task is `in_progress` and is not blocked/done/ready_to_close
 - **THEN** the row renders the active spinner's frame (animated), not a static glyph
 
-#### Scenario: Hera role status drives the glyph
+#### Scenario: Stale working role-status does not animate
 
-- **WHEN** a role has a status row of `blocked` and is not ready_to_close
-- **THEN** the row renders the needs-input/blocked glyph (static)
+- **WHEN** a role's hera status is `working` but it is not genuinely active (no live binding, or its bound task is no longer `in_progress`)
+- **THEN** the row renders a static glyph (live or dimmed-unbound), not the spinner
+
+#### Scenario: Blocked outranks activity
+
+- **WHEN** a role has a status row of `blocked` and is not ready_to_close (even while its bound task is still `in_progress`)
+- **THEN** the row renders the needs-input/blocked glyph (static), not the spinner
 
 #### Scenario: Live-but-statusless role
 
