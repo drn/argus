@@ -35,6 +35,13 @@ type FocusMachine struct {
 	state        Focus
 	coordPresent bool
 	agentPresent bool
+
+	// fullscreen reports whether the focused content pane is zoomed to fill the
+	// whole area right of the rail (Ctrl+Z, plugin parity). It is an attribute
+	// of the FOCUSED pane: Advance carries it to the next pane, but any path that
+	// lands focus back on the rail clears it (the rail has no fullscreen mode).
+	// Always false while state == FocusRail.
+	fullscreen bool
 }
 
 // NewFocusMachine starts focused on the rail with both panes present (the
@@ -81,7 +88,25 @@ func (f *FocusMachine) rebalance() bool {
 			f.state = FocusRail
 		}
 	}
+	if f.state == FocusRail {
+		f.fullscreen = false // the rail is never fullscreen
+	}
 	return f.state != prev
+}
+
+// Fullscreen reports whether the focused content pane is zoomed.
+func (f *FocusMachine) Fullscreen() bool { return f.fullscreen }
+
+// ToggleFullscreen flips pane-fullscreen for the focused content pane. It is a
+// no-op (and forces fullscreen OFF) while the rail is focused — the rail has no
+// fullscreen mode. The page wires Ctrl+Z to this and ALWAYS consumes the key,
+// so the 0x1A byte can never reach a pane PTY and SIGTSTP-suspend its agent.
+func (f *FocusMachine) ToggleFullscreen() {
+	if f.state == FocusRail {
+		f.fullscreen = false
+		return
+	}
+	f.fullscreen = !f.fullscreen
 }
 
 // Advance moves focus one region to the right, skipping absent regions. No-op
@@ -120,10 +145,14 @@ func (f *FocusMachine) Retreat() {
 	case FocusRail:
 		// already left-most
 	}
+	if f.state == FocusRail {
+		f.fullscreen = false // retreating to the rail exits fullscreen
+	}
 }
 
-// ToRail forces focus back to the rail (Hera's Ctrl+Q "escape to rail").
-func (f *FocusMachine) ToRail() { f.state = FocusRail }
+// ToRail forces focus back to the rail (Hera's Ctrl+Q "escape to rail"). Always
+// clears fullscreen — the rail has no fullscreen mode.
+func (f *FocusMachine) ToRail() { f.state = FocusRail; f.fullscreen = false }
 
 // SetRegion focuses the target region directly (used by mouse clicks), but only
 // if that region is present — clicks on an absent region are ignored so focus
@@ -132,6 +161,7 @@ func (f *FocusMachine) SetRegion(target Focus) {
 	switch target {
 	case FocusRail:
 		f.state = FocusRail
+		f.fullscreen = false // clicking the rail exits fullscreen
 	case FocusCoord:
 		if f.coordPresent {
 			f.state = FocusCoord

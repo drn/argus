@@ -1999,6 +1999,21 @@ func (a *App) readHeraRoles() (workers, coordinators map[string]bool) {
 const pluginFailsafeWindow = 400 * time.Millisecond
 
 // handleGlobalKey processes key events at the application level.
+// heraPaneFocused reports whether the Hera tab is active AND focus is inside one
+// of its content panes (coordinator or agent/details), not the rail. When true,
+// the global key handler must surrender the keys it would otherwise consume
+// (`q` quit, `1`/`2`/`3` tab-switch, `?` help, `Ctrl+C` quit, `Ctrl+L` Sync) so
+// they fall through to HeraPage.InputHandler, which forwards them to the focused
+// pane's PTY. Without this, typing into a focused Hera worker/coordinator pane
+// leaks rail/global shortcuts — e.g. `q` quits all of argus (BUG-001). The rail
+// itself is NOT a content pane, so those globals still work while the rail holds
+// focus. Mirrors how modeAgent fully surrenders these keys to the agent PTY.
+func (a *App) heraPaneFocused() bool {
+	return a.header.ActiveTab() == widget.TabHera &&
+		a.heraPage != nil && !a.heraPage.IsRemote() &&
+		a.heraPage.Machine().State() != hera.FocusRail
+}
+
 func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 	// Plugin-view mode — full surrender. While a plugin has the ball, argus
 	// reserves NO key for its own navigation: Esc, Ctrl+C, `?`, tab-switch
@@ -2178,6 +2193,11 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		}
+		// A focused Hera pane must receive ^C (interrupt the agent), not quit
+		// argus — fall through to HeraPage so it forwards 0x03 to the pane PTY.
+		if a.heraPaneFocused() {
+			break
+		}
 		a.tapp.Stop()
 		return nil
 	case tcell.KeyCtrlL:
@@ -2185,8 +2205,9 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		// cells that the diff-based Show() failed to overwrite. Only
 		// active outside agent view; in agent mode we fall through so
 		// handleAgentKey's Ctrl+L → link-picker binding runs instead.
-		// User-initiated; one CSI 2J flash is the expected cost.
-		if a.mode != modeAgent {
+		// User-initiated; one CSI 2J flash is the expected cost. A focused Hera
+		// pane also falls through so ^L reaches its PTY.
+		if a.mode != modeAgent && !a.heraPaneFocused() {
 			uxlog.Log("[tui] ctrl+l — Sync")
 			a.screen.Sync()
 			return nil
@@ -2267,6 +2288,13 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 			break
 		}
 		if a.mode == modeTaskList && a.settings.IsEditing() {
+			break
+		}
+		// A focused Hera pane is a live terminal — every rune must reach its PTY,
+		// so don't intercept any global rune shortcut (q quit / 1·2·3 tab-switch /
+		// ? help) while a Hera content pane holds focus (BUG-001). The rail still
+		// gets these globals because heraPaneFocused() is false on the rail.
+		if a.heraPaneFocused() {
 			break
 		}
 		switch event.Rune() {
