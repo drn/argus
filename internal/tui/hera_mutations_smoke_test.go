@@ -159,8 +159,13 @@ func TestSmoke_HeraDeleteRoleConfirmCancelKeepsIt(t *testing.T) {
 	testutil.NoError(t, err) // still present
 }
 
-func TestSmoke_HeraDeleteOrchestratorCascadesPreservesTask(t *testing.T) {
+// TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask pins BUG-017 (Option A):
+// Ctrl+D on an orchestrator HEADER runs the full-subtree cascade, which ARCHIVES
+// the orchestrator + role + task rows (NO hard deletes) and reclaims the
+// sole-bound task's worktree. Nothing is removed from the DB.
+func TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask(t *testing.T) {
 	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
 	orch := seedHeraOrch(t, d, "orch")
 	role := seedHeraBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "tw")
 
@@ -176,14 +181,17 @@ func TestSmoke_HeraDeleteOrchestratorCascadesPreservesTask(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	_, err := d.HeraOrchestrator(orch)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	_, err = d.HeraRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	// Argus task preserved.
-	got, err := d.Get("tw")
+	// Orchestrator + role ARCHIVED (still present), not hard-deleted.
+	gotOrch, err := d.HeraOrchestrator(orch)
 	testutil.NoError(t, err)
-	testutil.Equal(t, got != nil, true)
+	testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+	gotRole, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+	// Argus task ARCHIVED (sole-bound → worktree reclaimed, row kept).
+	task, err := d.Get("tw")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task.Archived, true)
 }
 
 // TestSmoke_HeraDeleteRoleMultiBindingIsolation is the locked must-have:
@@ -233,22 +241,28 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	// Role in A gone; role in B (same task) intact; task preserved.
-	_, err = d.HeraRole(rA.ID)
+	// Role in A ARCHIVED (not hard-deleted) + binding ended; role in B (same task)
+	// fully intact; multi-bound task preserved (not archived — bound under B).
+	gotA, err := d.HeraRole(rA.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotA.ArchivedAt != nil, true)
+	_, err = d.HeraLiveBindingByRole(rA.ID)
 	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
 	gotB, err := d.HeraRole(rB.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotB.OrchestratorID, orchB)
+	testutil.Equal(t, gotB.ArchivedAt == nil, true)
 	gotTask, err := d.Get(shared)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotTask != nil, true)
+	testutil.Equal(t, gotTask.Archived, false)
 }
 
 // TestSmoke_HeraCascadeDeleteSubtree drives Ctrl+D on a bridging worker row: the
-// confirm modal warns about the destructive cascade and, on confirm, the nested
-// child orchestrator and its sole-bound agent task are torn down while the
-// multi-bound bridge task is preserved.
+// confirm modal warns about the cascade and, on confirm, the nested child
+// orchestrator + its roles + its sole-bound agent task are ARCHIVED (no hard
+// deletes, worktree reclaimed) while the multi-bound bridge task is preserved.
 func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
 	parent := seedHeraOrch(t, d, "orch-a") // alpha-first → root
 	child := seedHeraOrch(t, d, "orch-c")
@@ -292,31 +306,36 @@ func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
 	syncUI(t, app.tapp)
-	// The confirm modal must spell out the destructive cascade.
+	// The confirm modal must spell out the cascade (archive DB rows, reclaim worktrees).
 	readUI(t, app.tapp, func() {
-		testutil.Contains(t, app.heraConfirmModal.Message(), "removes")
+		testutil.Contains(t, app.heraConfirmModal.Message(), "archives")
+		testutil.Contains(t, app.heraConfirmModal.Message(), "reclaims")
 	})
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	// Child orchestrator gone; its sole-bound worker task destroyed; the
-	// multi-bound bridge task preserved (still bound under the parent).
-	_, err = d.HeraOrchestratorByName("orch-c")
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	// Child orchestrator ARCHIVED (still present), not hard-deleted; its sole-bound
+	// worker task archived (worktree reclaimed); the multi-bound bridge task
+	// preserved (still bound under the parent — not archived).
+	gotChild, err := d.HeraOrchestrator(child)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotChild.ArchivedAt != nil, true)
 	gotShared, err := d.Get(shared)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotShared != nil, true)
-	gotCW, _ := d.Get(childWorkerTask) // deleted → nil task (Get reports missing)
-	testutil.Nil(t, gotCW)
+	testutil.Equal(t, gotShared.Archived, false)
+	gotCW, err := d.Get(childWorkerTask) // archived, not deleted → row survives
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotCW.Archived, true)
 }
 
 // TestSmoke_HeraCascadeDeleteDepth2Count pins the accurate worktree count for a
 // 2-level subtree: an INTERNAL bridge task (bound under two subtree
-// orchestrators) is destroyed and MUST be counted, while a task bound under a
-// non-subtree parent is preserved and excluded. Guards against the count
+// orchestrators) is reclaimed + archived and MUST be counted, while a task bound
+// under a non-subtree parent is preserved and excluded. Guards against the count
 // undercounting internal-bridge worktrees.
 func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
 	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
 	a := seedHeraOrch(t, d, "orch-a") // root (alpha-first)
 	c := seedHeraOrch(t, d, "orch-c") // nested under a (bridge task tc)
 	g := seedHeraOrch(t, d, "orch-g") // nested under c (bridge task tg)
@@ -367,17 +386,22 @@ func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0)
 	syncUI(t, app.tapp)
 
-	_, err := d.HeraOrchestratorByName("orch-c")
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	_, err = d.HeraOrchestratorByName("orch-g")
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	gotTg, _ := d.Get("tg")
-	testutil.Nil(t, gotTg) // internal bridge destroyed
-	gotTwg, _ := d.Get("twg")
-	testutil.Nil(t, gotTwg) // leaf destroyed
+	// orch-c + orch-g ARCHIVED (still present), not hard-deleted.
+	gotC, err := d.HeraOrchestrator(c)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotC.ArchivedAt != nil, true)
+	gotG, err := d.HeraOrchestrator(g)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotG.ArchivedAt != nil, true)
+	gotTg, err := d.Get("tg") // internal bridge archived (worktree reclaimed)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotTg.Archived, true)
+	gotTwg, err := d.Get("twg") // leaf archived
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotTwg.Archived, true)
 	gotTc, err := d.Get("tc")
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotTc != nil, true) // bound under orch-a → preserved
+	testutil.Equal(t, gotTc.Archived, false) // bound under orch-a → preserved
 }
 
 // TestSmoke_HeraTabKeysDoNotBreakTabSwitchOrQuit audits the key-collision

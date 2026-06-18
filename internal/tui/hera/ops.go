@@ -246,11 +246,24 @@ func (o *Ops) DeleteRole(roleID int64) error {
 	return o.store.DeleteHeraRole(roleID)
 }
 
+// ArchiveOrchestrator archives an orchestrator row (NOT a hard delete) — the
+// terminal DB op for the Ctrl+D cascade (BUG-017). Per the Hera delete model
+// ("the database doesn't get any deletes"), delete ARCHIVES every DB record and
+// reclaims only the real resources (worktree/branch/session); the orchestrator
+// and its roles persist in the Archive section as history. Its roles are
+// archived + their bindings ended individually by the caller (RetireRole); the
+// argus tasks are archived (sole-bound) or preserved (multi-bound). Unconditional
+// archive (unlike ArchiveToggle, which flips on current state).
+func (o *Ops) ArchiveOrchestrator(orchID int64) error {
+	uxlog.Log("[hera-view] archive orchestrator %d (cascade delete; no hard deletes)", orchID)
+	return o.store.ArchiveHeraOrchestrator(orchID)
+}
+
 // DeleteOrchestrator removes an orchestrator and (via M1 cascade) all its roles,
-// bindings, and status rows. The underlying argus tasks are deliberately NOT
-// deleted — they are first-class Argus entities and survive as unbound tasks
-// (delete them individually from the Tasks tab). This keeps one rail keystroke
-// from wiping multiple live worktrees.
+// bindings, and status rows. Used ONLY by the prune paths (`C`/`Ctrl+R`), which
+// COMPLETE finished work and close emptied orchestrators — distinct from Ctrl+D
+// delete, which archives (never hard-deletes). The underlying argus tasks are
+// deliberately NOT deleted — they survive as unbound tasks.
 func (o *Ops) DeleteOrchestrator(orchID int64) error {
 	uxlog.Log("[hera-view] delete orchestrator %d (cascades roles+bindings; argus tasks preserved)", orchID)
 	return o.store.DeleteHeraOrchestrator(orchID)
