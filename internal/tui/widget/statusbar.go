@@ -219,7 +219,7 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 		// Key names match modal/help.go "Hera View (rail)" exactly.
 		if sb.heraFocus == 0 {
 			hints = []hint{
-				{"j/k", "nav"}, {"SP", "fold"}, {"/", "filter"},
+				{"j/k", "nav"}, {"SP", "fold"}, {"←", "parent"}, {"/", "filter"},
 				{"Tab", "pane"}, {"w", "spawn"}, {"n", "coord"},
 				{"s/S", "status"}, {"R", "retire"}, {"C", "prune"},
 				{"^r", "prune-all"}, {"^d", "del"},

@@ -197,6 +197,68 @@ func TestHeraPage_OnFocusChange_FiresOnTabAdvance(t *testing.T) {
 	testutil.Equal(t, got[len(got)-1], FocusRail)
 }
 
+// TestHeraPage_LeftArrowMovesSelectionToParentOnRailFocus verifies BUG-016:
+// when the rail is focused, Left arrow moves the cursor to the parent coordinator
+// row (no-op at the root). Crucially it does NOT change the focused region.
+func TestHeraPage_LeftArrowMovesSelectionToParentOnRailFocus(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "o")
+	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "tc")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	h := p.InputHandler()
+	// Start: cursor row 0 = orch header; row 1 = worker.
+	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+
+	// Move to the worker row.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+
+	// Left on the worker → should jump to orch header (row 0).
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+	testutil.Equal(t, p.Machine().State(), FocusRail) // focus unchanged
+
+	// Left again on the orch header (depth 0) → no-op.
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 0)
+}
+
+// TestHeraPage_LeftArrowFromPaneDoesNotMoveRail verifies that Left from a
+// focused pane is NOT intercepted by the rail's parent-nav logic — it passes
+// through to the PTY unchanged, keeping the rail cursor where it was.
+func TestHeraPage_LeftArrowFromPaneDoesNotMoveRail(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "o")
+	seedBoundRole(t, d, orch, "c", db.HeraKindCoordinator, "tc")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	h := p.InputHandler()
+	// Move rail cursor to the worker.
+	h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1)
+
+	// Move focus to the coordinator pane.
+	p.Machine().Advance()
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+
+	// Left while pane is focused — must NOT move rail cursor.
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1)       // cursor unchanged
+	testutil.Equal(t, p.Machine().State(), FocusCoord) // focus unchanged
+
+	// Same for FocusAgent.
+	p.Machine().Advance()
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Rail().CursorIndex(), 1) // still unchanged
+}
+
 // TestHeraPage_OnFocusChange_FiresOnEveryKey asserts that OnFocusChange fires
 // on every key (including non-focus-changing keys) so the hint set stays current
 // without a separate polling mechanism.

@@ -1232,6 +1232,32 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	return glyph, style
 }
 
+// CursorToParent moves the cursor to the nearest parent-coordinator row — the
+// closest rrOrch header or bridging rrRole (collOrchID > 0) with a strictly
+// smaller depth than the current row. No-op when the cursor is at the root
+// (depth 0 with no qualifying ancestor) or on a section that has no coordinator
+// parent (e.g. a freelance role). Called by the page's Left-arrow handler when
+// the rail is focused (BUG-016).
+func (r *Rail) CursorToParent() {
+	if r.cursor <= 0 || r.cursor >= len(r.rows) {
+		return
+	}
+	cur := r.rows[r.cursor]
+	for i := r.cursor - 1; i >= 0; i-- {
+		row := r.rows[i]
+		if row.depth >= cur.depth {
+			continue
+		}
+		// Only land on rows that represent a coordinator: an orchestrator header
+		// (rrOrch) or a bridging worker row whose collOrchID marks it as the
+		// coordinator of a nested sub-team (rrRole with collOrchID > 0).
+		if row.kind == rrOrch || (row.kind == rrRole && row.collOrchID > 0) {
+			r.setCursor(i)
+			return
+		}
+	}
+}
+
 // InputHandler routes navigation keys. Left/Right are currently unused here
 // (Up/Down/j/k drive the cursor, Space toggles collapse); they are free for
 // future horizontal navigation now that the global handler no longer consumes
