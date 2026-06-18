@@ -755,3 +755,155 @@ func TestSmoke_HeraReattachRestartsSession(t *testing.T) {
 	}
 	testutil.Equal(t, started, true)
 }
+
+// --- BUG-017: coord/orchestrator HEADER delete cascades the full subtree ------
+
+// seedHeraRoleOnTask binds a NEW role under orchID to an ALREADY-EXISTING argus
+// task (no task Add). Used to build worker→coordinator bridges and the
+// multi-binding case (the same task bound under several orchestrators).
+func seedHeraRoleOnTask(t *testing.T, d *db.DB, orchID int64, name string, kind db.HeraRoleKind, taskID, wt string) *db.HeraRole {
+	t.Helper()
+	role, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: orchID, Name: name, Kind: kind, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: role.ID, ArgusTaskID: taskID, WorktreePath: wt})
+	testutil.NoError(t, err)
+	return role
+}
+
+// TestHeraActions_OrchHeaderDeleteCascadesSingleOrch verifies BUG-017 (Option A):
+// Ctrl+D on a coordinator/orchestrator HEADER opens the COUNT-bearing cascade
+// confirm and, on accept, ARCHIVES the orchestrator + roles + tasks (NO hard
+// deletes) and reclaims their worktrees — even with no nested sub-coordinators.
+func TestHeraActions_OrchHeaderDeleteCascadesSingleOrch(t *testing.T) {
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false)
+	orch := seedHeraOrch(t, d, "solo")
+	coord := seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
+	wkr := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	app.heraPage.Refresh()
+
+	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
+
+	// The count-bearing cascade confirm opens, worded "archives" + "reclaims".
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	msg := app.heraConfirmModal.Message()
+	testutil.Contains(t, msg, "archives")
+	testutil.Contains(t, msg, "reclaims")
+	testutil.Contains(t, msg, "1 orchestrator(s)")
+	testutil.Contains(t, msg, "1 agent(s)")      // the worker (coordinator not counted)
+	testutil.Contains(t, msg, "2 worktree(s)")   // coord task + worker task
+	testutil.Contains(t, msg, "0 task(s) bound") // none preserved
+
+	// Accept → cascade ARCHIVES the orchestrator + roles + tasks (no hard deletes).
+	app.heraConfirmDo()
+
+	gotOrch, err := d.HeraOrchestrator(orch) // still exists, archived
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+	for _, role := range []*db.HeraRole{coord, wkr} {
+		gotRole, rErr := d.HeraRole(role.ID) // role row archived, not deleted
+		testutil.NoError(t, rErr)
+		testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+		_, bErr := d.HeraLiveBindingByRole(role.ID) // binding ended
+		testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
+	}
+	for _, id := range []string{"tc", "tw"} {
+		task, tErr := d.Get(id) // task row archived, not deleted
+		testutil.NoError(t, tErr)
+		testutil.Equal(t, task.Archived, true)
+	}
+}
+
+// TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree verifies the deep case:
+// deleting a TOP-LEVEL coordinator ARCHIVES the coordinator, its agents, AND every
+// nested sub-coordinator + their agents (no hard deletes), reclaiming worktrees.
+// The internal-bridge worktree (the task bridging two subtree orchestrators) is
+// counted + archived; a task also bound live in an orchestrator OUTSIDE the
+// subtree is PRESERVED (left fully alone — not archived).
+//
+//	P (top-level) ── worker→tC ──▶ C (sub-coord) ── worker→tShared ─┐
+//	  coord→tP                       coord→tC                        │
+//	                                                  O (outside): worker→tShared, coord→tO
+func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
+	d := testDB(t)
+	t.Setenv("HOME", t.TempDir())
+	app := New(d, agent.NewRunner(nil), false)
+
+	// Tasks (one row each; bridges/multi-binding reuse them across orchestrators).
+	for _, id := range []string{"tP", "tC", "tShared", "tO"} {
+		testutil.NoError(t, d.Add(&model.Task{ID: id, Name: id, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+	}
+	p := seedHeraOrch(t, d, "P")
+	c := seedHeraOrch(t, d, "C")
+	o := seedHeraOrch(t, d, "O")
+	// P: coordinator tP, plus a worker bound to tC (= C's coordinator → C nests under P).
+	seedHeraRoleOnTask(t, d, p, "coord", db.HeraKindCoordinator, "tP", "/wt/tP")
+	wP := seedHeraRoleOnTask(t, d, p, "wP", db.HeraKindWorker, "tC", "/wt/tC-p")
+	// C: coordinator tC, plus a worker bound to tShared.
+	seedHeraRoleOnTask(t, d, c, "coord", db.HeraKindCoordinator, "tC", "/wt/tC")
+	wC := seedHeraRoleOnTask(t, d, c, "wC", db.HeraKindWorker, "tShared", "/wt/tShared-c")
+	// O (outside the subtree): its OWN coordinator tO, plus a worker on the shared
+	// task — so tShared is bound live OUTSIDE {P,C} and must be preserved. O's coord
+	// task (tO) is bridged by nobody in {P,C}, so O stays a separate top-level orch.
+	seedHeraRoleOnTask(t, d, o, "coord", db.HeraKindCoordinator, "tO", "/wt/tO")
+	wO := seedHeraRoleOnTask(t, d, o, "wO", db.HeraKindWorker, "tShared", "/wt/tShared-o")
+	app.heraPage.Refresh()
+
+	// BridgeSubtree rooted at the TOP-LEVEL coordinator P sees the full nested chain.
+	subtree := app.heraPage.Rail().Model().BridgeSubtree(p)
+	names := make([]string, len(subtree))
+	for i, ov := range subtree {
+		names[i] = ov.Name
+	}
+	testutil.DeepEqual(t, names, []string{"P", "C"})
+
+	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
+	testutil.Equal(t, app.mode, modeHeraConfirm)
+	msg := app.heraConfirmModal.Message()
+	testutil.Contains(t, msg, "2 orchestrator(s)")
+	testutil.Contains(t, msg, "2 agent(s)")      // wP + wC
+	testutil.Contains(t, msg, "2 worktree(s)")   // tP + tC (internal bridge); tShared preserved
+	testutil.Contains(t, msg, "1 task(s) bound") // tShared preserved
+
+	app.heraConfirmDo()
+
+	// Both subtree orchestrators ARCHIVED (still present); the outside one untouched.
+	for _, id := range []int64{p, c} {
+		gotOrch, oErr := d.HeraOrchestrator(id)
+		testutil.NoError(t, oErr)
+		testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+	}
+	oOrch, err := d.HeraOrchestrator(o)
+	testutil.NoError(t, err)
+	testutil.Equal(t, oOrch.ArchivedAt == nil, true) // outside orchestrator untouched
+
+	// Subtree worker roles archived + bindings ended; the OUTSIDE worker untouched.
+	for _, role := range []*db.HeraRole{wP, wC} {
+		gotRole, rErr := d.HeraRole(role.ID)
+		testutil.NoError(t, rErr)
+		testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+		_, bErr := d.HeraLiveBindingByRole(role.ID)
+		testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
+	}
+	gotWO, err := d.HeraRole(wO.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotWO.ArchivedAt == nil, true) // outside role untouched
+	wob, err := d.HeraLiveBindingByRole(wO.ID)
+	testutil.NoError(t, err) // outside binding still live
+	testutil.Equal(t, wob != nil, true)
+
+	// Subtree-only tasks ARCHIVED (incl. the internal bridge tC); preserved task kept.
+	for _, id := range []string{"tP", "tC"} {
+		task, tErr := d.Get(id)
+		testutil.NoError(t, tErr)
+		testutil.Equal(t, task.Archived, true)
+	}
+	shared, err := d.Get("tShared")
+	testutil.NoError(t, err)
+	testutil.Equal(t, shared.Archived, false) // preserved — left fully alone
+	testutil.Equal(t, shared.Status, model.StatusInProgress)
+	to, err := d.Get("tO")
+	testutil.NoError(t, err)
+	testutil.Equal(t, to.Archived, false)
+}
