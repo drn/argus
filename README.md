@@ -195,7 +195,8 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `j` / `k`       | Move the rail cursor down / up                                                          |
 | `Space`         | Collapse / expand an orchestrator, or the Freelance / Archive section                  |
 | `/`             | Filter the rail by name (substring, ancestry-preserving); `↑`/`↓` navigate the filtered rows while typing, `Enter` accepts, `Esc` clears |
-| `Tab` / `Shift+Tab` | Cycle focus across rail → coordinator pane → details region                        |
+| `Tab`           | Enter a pane from the rail. **Once a terminal pane is focused, `Tab` / `Shift+Tab` pass through to the agent's PTY** so its autocomplete works (e.g. `/plugi`+`Tab` → `/plugin`) — they no longer cycle focus |
+| `ctrl+alt+←` / `ctrl+alt+→` | Move focus between panes once you're in one (the focus ladder; `Tab` is reserved for the agent there). `ctrl+q` steps back to the rail |
 | `ctrl+z`        | Fullscreen the focused content pane (rail stays; the other pane hides). Also traps `^Z` so it can never suspend the pane's agent |
 | `Enter`         | Enter the selected role's pane, reviving its session first — a dead session is restarted, and a suspended/stuck worker is resumed in place via `--session-id` |
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
