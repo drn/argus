@@ -249,8 +249,8 @@ func (a *App) heraStatusStep(sel hera.Selection, dir int) {
 	if a.heraOps == nil {
 		return
 	}
-	if sel.Role == nil {
-		return // orchestrator header has no status
+	if sel.StatusRole() == nil {
+		return // empty selection, or a header over a coordinator-less orchestrator
 	}
 	if err := a.heraOps.StepStatus(sel, dir); err != nil {
 		a.statusbar.SetError("Status step failed: " + err.Error())

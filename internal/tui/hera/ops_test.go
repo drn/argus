@@ -139,12 +139,51 @@ func TestOps_StepStatus_WorkerDoneRollsToReview(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInReview)
 }
 
-func TestOps_StepStatus_OrchHeaderNoop(t *testing.T) {
+// A header over an orchestrator with no coordinator role has no status to step.
+func TestOps_StepStatus_CoordinatorLessHeaderNoop(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "o")
 	ops := NewOps(d)
 	err := ops.StepStatus(orchSel(o, "o"), +1)
 	testutil.ErrorIs(t, err, errNoTarget)
+}
+
+// coordHeaderSel builds a HEADER selection (Role nil) whose orchestrator's
+// folded coordinator role is role — what the rail hands the mutation layer when
+// the cursor lands on an orchestrator header.
+func coordHeaderSel(t *testing.T, d *db.DB, orchID int64, role *db.HeraRole, taskID string) Selection {
+	t.Helper()
+	rv := RoleView{RoleID: role.ID, OrchID: orchID, Name: role.Name, Kind: role.Kind, TaskID: taskID, Live: taskID != ""}
+	if st, err := d.HeraRoleStatusFor(role.ID); err == nil {
+		rv.Status = st.Status
+		rv.HasStatus = true
+	}
+	return Selection{Orch: &OrchView{ID: orchID, Name: "o", Roles: []RoleView{rv}}}
+}
+
+// BUG-014: s/S cycle the coordinator's hera status from a header selection, and
+// stepping a coordinator to done never rolls its task.
+func TestOps_StepStatus_CoordinatorHeaderCycles(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	coord := seedBoundRole(t, d, o, "coord", db.HeraKindCoordinator, "tc")
+	testutil.NoError(t, d.UpsertHeraRoleStatus(coord.ID, db.HeraStatusDone))
+	ops := NewOps(d)
+
+	// S (revert) on the header: done → blocked (the rail ✓ clears).
+	testutil.NoError(t, ops.StepStatus(coordHeaderSel(t, d, o, coord, "tc"), -1))
+	st, _ := d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusBlocked)
+
+	// s (advance) back: blocked → done.
+	testutil.NoError(t, ops.StepStatus(coordHeaderSel(t, d, o, coord, "tc"), +1))
+	st, _ = d.HeraRoleStatusFor(coord.ID)
+	testutil.Equal(t, st.Status, db.HeraStatusDone)
+
+	// Stepping a COORDINATOR to done must NOT roll its task to in_review — the
+	// roll is worker-only.
+	got, _ := d.Get("tc")
+	testutil.Equal(t, got.Status, model.StatusInProgress)
 }
 
 func TestOps_DeleteRole(t *testing.T) {
