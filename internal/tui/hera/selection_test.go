@@ -58,6 +58,29 @@ func TestSelection_Accessors(t *testing.T) {
 	testutil.Equal(t, empty.CoordTaskID(), "")
 }
 
+// BUG-014: StatusRole resolves the role the s/S keys step — the selected role,
+// else the orchestrator's folded coordinator, else nil.
+func TestSelection_StatusRole(t *testing.T) {
+	m := sampleModel()
+	coord := &m.Active[0].Roles[0]
+	wkr := &m.Active[0].Roles[1]
+	orch := &m.Active[0]
+
+	// Explicit role selection → that role.
+	testutil.Equal(t, Selection{Role: wkr, Orch: orch}.StatusRole().RoleID, int64(11))
+
+	// Header selection (Role nil) → the orchestrator's folded coordinator.
+	testutil.Equal(t, Selection{Orch: orch}.StatusRole().RoleID, int64(10))
+	_ = coord
+
+	// Header over a coordinator-less orchestrator → nil.
+	noCoord := &OrchView{ID: 9, Name: "x", Roles: []RoleView{{RoleID: 90, Kind: db.HeraKindWorker}}}
+	testutil.Nil(t, Selection{Orch: noCoord}.StatusRole())
+
+	// Empty selection → nil.
+	testutil.Nil(t, Selection{}.StatusRole())
+}
+
 func TestRail_SelectionResolvesOrch(t *testing.T) {
 	r := NewRail()
 	r.SetModel(sampleModel())

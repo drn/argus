@@ -307,18 +307,50 @@ func TestWorktreeDisplay(t *testing.T) {
 	testutil.Equal(t, worktreeDisplay(full, 0), full)             // nonpositive width → verbatim
 }
 
-func TestCoordStatusLabel(t *testing.T) {
+func TestCoordRoleStatusLabel(t *testing.T) {
 	// A genuinely active coordinator (live binding + bound task in_progress) reads
 	// "working".
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
 	// BUG-003: a STALE "working" role-status that isn't backed by real activity
 	// must not claim "working". A dead/stopped binding reads "stopped"; a live
 	// binding no longer in_progress reads "live".
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking}), "stopped")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live")
 	// Non-working role-status assertions pass through unchanged.
-	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
-	testutil.Equal(t, coordStatusLabel(&RoleView{Live: true}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle}), "idle")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{Live: true}), "live")
+	testutil.Equal(t, coordRoleStatusLabel(&RoleView{}), "—")
+}
+
+// BUG-015: the Details coordinator status line is task-aware — it appends a
+// terminal bound-task state (in_review / complete / failed) to the role-status
+// label, while ongoing/unbound tasks add no suffix.
+func TestCoordTaskStatusLabel(t *testing.T) {
+	// Terminal task states surface.
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete"}), "complete")
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_review"}), "in_review")
+	// failed (from the opaque result blob) wins over the workflow status.
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{"failed":true}`}), "failed")
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_review", TaskResult: `{"failed":true}`}), "failed")
+	// Ongoing / unbound add no signal.
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "in_progress"}), "")
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "pending"}), "")
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{}), "")
+	// A non-failed or malformed result blob is tolerated (no failed suffix).
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{"failed":false}`}), "complete")
+	testutil.Equal(t, coordTaskStatusLabel(&RoleView{TaskStatus: "complete", TaskResult: `{not json`}), "complete")
+}
+
+func TestCoordStatusLabel_Combined(t *testing.T) {
+	// Active coordinator, ongoing task → role status only.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_progress"}), "working")
+	// Role + terminal task signal combine.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusDone, Live: true, TaskStatus: "complete"}), "done · task complete")
+	// Stale-working honesty preserved AND the terminal task state appended.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusWorking, Live: true, TaskStatus: "in_review"}), "live · task in_review")
+	// failed result blob.
+	testutil.Equal(t, coordStatusLabel(&RoleView{HasStatus: true, Status: db.HeraStatusIdle, Live: true, TaskStatus: "complete", TaskResult: `{"failed":true}`}), "idle · task failed")
+	// Unbound coordinator → no suffix.
 	testutil.Equal(t, coordStatusLabel(&RoleView{}), "—")
 }
 

@@ -448,7 +448,9 @@ func TestHeraActions_StatusStepNilRoleNoop(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
 	app.heraOps = hera.NewOps(d)
-	app.heraStatusStep(hera.Selection{Orch: &hera.OrchView{ID: 1}}, +1) // orch header → no-op
+	// Coordinator-less header → StatusRole() nil → no-op (BUG-014: a header WITH a
+	// coordinator does step it; that path is covered in ops_test.go).
+	app.heraStatusStep(hera.Selection{Orch: &hera.OrchView{ID: 1}}, +1)
 	testutil.Equal(t, app.mode, modeTaskList)
 }
 

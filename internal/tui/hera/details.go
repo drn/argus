@@ -1,6 +1,7 @@
 package hera
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/gdamore/tcell/v2"
@@ -308,14 +310,29 @@ func (d *DetailsView) roleMark(r *RoleView) string {
 	return mark
 }
 
-// coordStatusLabel renders a human label for a coordinator role's status. A
-// STALE "working" role-status (the manual/MCP-set ladder value that never
-// reconciles down after a session idles/stops/dies) is not reported as
+// coordStatusLabel renders the coordinator status line for the Details pane. It
+// combines the coordinator's hera ROLE status with any TERMINAL bound-task
+// signal: "<role> · task <state>" (e.g. "live · task complete") when the task
+// adds a signal, else just the role-status label. The argus workflow status is
+// owned by the session lifecycle, not the manual hera ladder, so a coordinator
+// whose task has finished (in_review / complete / failed) otherwise gives no
+// hint in the Details pane (BUG-015). One row — ContentHeight is unaffected.
+func coordStatusLabel(r *RoleView) string {
+	label := coordRoleStatusLabel(r)
+	if task := coordTaskStatusLabel(r); task != "" {
+		label += " · task " + task
+	}
+	return label
+}
+
+// coordRoleStatusLabel renders a human label for a coordinator role's hera
+// status. A STALE "working" role-status (the manual/MCP-set ladder value that
+// never reconciles down after a session idles/stops/dies) is not reported as
 // "working" unless it is backed by real activity (role.IsActive) — the same
 // honesty the rail spinner now enforces (BUG-003). A stale-working role reads
 // "live" when its binding is still alive (just not in_progress) and "stopped"
 // when the binding is gone; every other role-status passes through verbatim.
-func coordStatusLabel(r *RoleView) string {
+func coordRoleStatusLabel(r *RoleView) string {
 	switch {
 	case r.HasStatus && r.Status == db.HeraStatusWorking && !r.IsActive():
 		if r.Live {
@@ -329,4 +346,39 @@ func coordStatusLabel(r *RoleView) string {
 	default:
 		return "—"
 	}
+}
+
+// coordTaskStatusLabel surfaces ONLY terminal bound-task states (in_review,
+// complete, or failed) — the signals the manual hera role status can't convey.
+// "failed" is derived from the task's opaque result blob {"failed":true},
+// mirroring dagview.parseFailed and winning over the workflow status. Ongoing
+// (pending / in_progress) or unbound tasks add no signal (returns "").
+func coordTaskStatusLabel(r *RoleView) string {
+	if coordTaskFailed(r.TaskResult) {
+		return "failed"
+	}
+	switch r.TaskStatus {
+	case model.StatusComplete.String():
+		return "complete"
+	case model.StatusInReview.String():
+		return "in_review"
+	default:
+		return ""
+	}
+}
+
+// coordTaskFailed reports whether the agent-supplied result blob set
+// `failed: true`. A malformed/empty blob is tolerated as not-failed. Mirrors
+// dagview.parseFailed (unexported there, so re-stated rather than imported).
+func coordTaskFailed(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var v struct {
+		Failed bool `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return false
+	}
+	return v.Failed
 }

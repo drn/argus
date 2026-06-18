@@ -163,13 +163,17 @@ func (o *Ops) Rename(sel Selection, newName string) error {
 }
 
 // StepStatus advances (dir>0) or reverts (dir<0) the selected role's hera
-// status one rung along heraStatusLadder, clamping at the ends. Only roles have
-// a status — an orchestrator-header selection is a no-op. When a WORKER role
-// reaches `done` the bound task is rolled to in_review + stamped
+// status one rung along heraStatusLadder, clamping at the ends. The target is
+// sel.StatusRole(): the selected role, or — for a coordinator header selection
+// (the folded coordinator has no child row) — the orchestrator's coordinator
+// role, so a coordinator's `✓` cycles from the header (BUG-014). An empty
+// selection or a coordinator-less header resolves to nil and is a no-op. When a
+// WORKER role reaches `done` the bound task is rolled to in_review + stamped
 // ready_to_close (BUG-050 parity with hera_status("done")); that roll is
-// soft-fail so the status update always lands.
+// soft-fail so the status update always lands, and it is GUARDED on Kind ==
+// worker so stepping a coordinator to `done` never rolls a task.
 func (o *Ops) StepStatus(sel Selection, dir int) error {
-	r := sel.Role
+	r := sel.StatusRole()
 	if r == nil {
 		return errNoTarget
 	}

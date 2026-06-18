@@ -454,6 +454,23 @@ func (s Selection) FocusTaskID() string {
 	return ""
 }
 
+// StatusRole resolves the role whose hera status the `s`/`S` keys step. It is
+// the selected role when one is selected; otherwise — for a coordinator HEADER
+// selection (Role nil, Orch set), since the coordinator is folded into the
+// header and has no child row — the orchestrator's coordinator role. Returns
+// nil when neither resolves (empty rail, or a header over a coordinator-less
+// orchestrator), in which case the status step is a silent no-op. This is why a
+// coordinator's `✓` can be cycled with `s`/`S` from the header (BUG-014).
+func (s Selection) StatusRole() *RoleView {
+	if s.Role != nil {
+		return s.Role
+	}
+	if s.Orch != nil {
+		return s.Orch.CoordRole()
+	}
+	return nil
+}
+
 // IsCoordinator reports whether the selection represents a coordinator. The
 // right region renders the coordinator details summary (not a terminal) for a
 // coordinator selection. Since the coordinator role is folded into the
