@@ -344,7 +344,8 @@ func (p *HeraPage) drawRemoteBanner(screen tcell.Screen, x, y, w, h int) {
 // by the global handler (tab nav is 1/2/3 only), so they now reach this handler:
 // in a focused terminal pane they forward to the PTY like any other key; in
 // coordinator-details mode they drive the embedded DAG's cursor (via
-// handleDetailsKey); rail-focused they fall through unused.
+// handleDetailsKey); rail-focused, Left moves the cursor to the parent
+// coordinator row (BUG-016) and Right is unused.
 func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 		// Fire OnFocusChange on every exit so callers (e.g. the status bar) see
@@ -380,6 +381,14 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		case tcell.KeyLeft:
 			if ctrlAlt {
 				p.focus.Retreat()
+				return
+			}
+			// Rail-focused Left: move the selection up to the parent coordinator row
+			// (nearest rrOrch header or bridging row with smaller depth). Scoped to
+			// FocusRail only — when a pane is focused, Left passes through to the PTY
+			// unchanged via the per-region dispatch below (BUG-016).
+			if p.focus.State() == FocusRail {
+				p.rail.CursorToParent()
 				return
 			}
 		case tcell.KeyRight:

@@ -87,6 +87,7 @@ var HelpSections = []HelpSection{
 			{"C", "prune coordinator's archived descendants"},
 			{"ctrl+r", "prune all finished coords + agents"},
 			{"ctrl+d", "delete role/orchestrator (whole sub-team on a nested row)"},
+			{"←", "move to parent coordinator (rail focused)"},
 			{"Cmd+↑ / Cmd+↓", "move rail selection (stay focused in pane)"},
 		},
 	},

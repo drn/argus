@@ -209,6 +209,7 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `C`             | Prune the selected coordinator's **archived** descendant workers (confirm): complete their tasks and reclaim their worktrees + branches |
 | `ctrl+r`        | Prune **all** finished coordinators + agents rail-wide (confirm): complete their tasks, reclaim worktrees, and close fully-finished orchestrators. Rail-scoped — never collides with the agent-view `ctrl+r` session switcher |
 | `ctrl+d`        | Delete the selected role; on a coordinator / orchestrator header (or a nested sub-coordinator row), cascade the whole subtree — every nested sub-coordinator + their agents. Delete **archives** the role / orchestrator / task rows (kept in the Archive, inbox retained — no DB deletes) and reclaims only the worktree + branch + session (count-bearing confirm). A task bound live in another orchestrator is preserved. (vs `a`, which archives but keeps the worktree/session) |
+| `←`             | Move to parent coordinator (rail focused only — passes through to the PTY when a pane is focused) |
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 

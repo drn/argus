@@ -238,6 +238,8 @@ func TestStatusBar_HeraFocus_RailHints(t *testing.T) {
 	testutil.Contains(t, row, "filter")
 	testutil.Contains(t, row, "fold")
 	testutil.Contains(t, row, "retire")
+	// BUG-016: Left parent-nav must appear in the rail hint bar — fail if dropped.
+	testutil.Contains(t, row, "parent")
 }
 
 // TestStatusBar_HeraFocus_PaneHints asserts that SetHeraFocus(1) (coord pane)
