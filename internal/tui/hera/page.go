@@ -369,11 +369,22 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			p.focus.ToggleFullscreen()
 			uxlog.Log("[hera-view] ctrl+z fullscreen toggle: state=%d fullscreen=%v", p.focus.State(), p.focus.Fullscreen())
 			return
-		case tcell.KeyTab:
-			p.focus.Advance()
-			return
-		case tcell.KeyBacktab:
-			p.focus.Retreat()
+		case tcell.KeyTab, tcell.KeyBacktab:
+			// Tab / Shift-Tab walk the focus ladder ONLY from the rail (entering a
+			// pane) and from the read-only Details/tree region. Once a TERMINAL pane
+			// is focused they must pass THROUGH to the agent PTY so the agent's own
+			// autocomplete works (e.g. `/plugi`+Tab → `/plugin`) — BUG-019. The TUI
+			// can't tell whether the agent consumed Tab, so it can't be smart about
+			// it; it forwards unconditionally. Escape a pane without Tab via Ctrl+Q
+			// or the Ctrl+Alt+←/→ ladder below, so the operator is never trapped.
+			if p.terminalPaneFocused() {
+				break // fall through to the per-region forwardKey (PTY)
+			}
+			if event.Key() == tcell.KeyTab {
+				p.focus.Advance()
+			} else {
+				p.focus.Retreat()
+			}
 			return
 		case tcell.KeyCtrlQ:
 			p.focus.ToRail()
@@ -428,6 +439,22 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 			}
 		}
 	})
+}
+
+// terminalPaneFocused reports whether the focused region forwards keystrokes to
+// a live agent PTY: the coordinator pane (always a terminal), or the agent pane
+// in terminal mode (a worker/leaf selection — NOT the coordinator Details/tree
+// region, which has no PTY). When true, Tab/Shift-Tab pass THROUGH to the PTY so
+// the agent's autocomplete works instead of walking the focus ladder (BUG-019).
+func (p *HeraPage) terminalPaneFocused() bool {
+	switch p.focus.State() {
+	case FocusCoord:
+		return true
+	case FocusAgent:
+		return !p.detailsMode
+	default:
+		return false
+	}
 }
 
 // handleDetailsKey routes keys for a focused Details region (coordinator

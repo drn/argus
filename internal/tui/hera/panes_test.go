@@ -443,8 +443,10 @@ func TestPanes_ForwardKeyDropsWhenNoLiveSession(t *testing.T) {
 	testutil.Equal(t, len(dead.wrote), 0) // dropped, not delivered to a dead handle
 }
 
-// TestPanes_FocusTraversal walks rail→coord→agent and back via the page's Tab /
-// BackTab / Ctrl+Q input handling.
+// TestPanes_FocusTraversal walks rail→coord→agent and back. Entering a pane
+// from the rail is still Tab; once a terminal pane is focused the focus ladder
+// is Ctrl+Alt+←/→ (Tab/Shift-Tab now pass through to the PTY — BUG-019), and
+// Ctrl+Q escapes back to the rail.
 func TestPanes_FocusTraversal(t *testing.T) {
 	d := memDB(t)
 	orch := seedOrch(t, d, "orch")
@@ -463,14 +465,104 @@ func TestPanes_FocusTraversal(t *testing.T) {
 
 	h := p.InputHandler()
 	testutil.Equal(t, p.Machine().State(), FocusRail)
+	// Rail-focused Tab still ENTERS a pane (the entry affordance is preserved).
 	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
-	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	// Once in a pane, pane↔pane movement is Ctrl+Alt+→ / Ctrl+Alt+← (Tab now
+	// reaches the PTY instead of walking the ladder).
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
-	h(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyLeft, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	// Ctrl+Q always escapes back to the rail — the no-trap guarantee.
 	h(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusRail)
+}
+
+// TestPanes_TabPassesThroughToFocusedPane is the BUG-019 regression: once a
+// terminal pane is focused, Tab and Shift-Tab must reach the agent PTY (so the
+// agent's own autocomplete works, e.g. `/plugi`+Tab → `/plugin`) instead of
+// walking the focus ladder. The keystroke bytes are the standard HT / CSI Z.
+func TestPanes_TabPassesThroughToFocusedPane(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	wkrSess := &fakeSession{id: "t-wkr", alive: true}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess, "t-wkr": wkrSess}))
+	p.Refresh()
+
+	// Select a worker so the agent pane is a terminal (not details) and the
+	// coordinator pane feeds the orchestrator's coordinator session.
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	testutil.Equal(t, p.detailsMode, false)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+
+	h := p.InputHandler()
+	// Enter the coordinator pane from the rail.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+
+	// Tab and Shift-Tab now pass THROUGH to the coordinator PTY; focus stays put.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	h(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	testutil.Equal(t, string(coordSess.wrote), "\t\x1b[Z")
+
+	// Move to the agent pane via the focus ladder, then confirm passthrough there.
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	testutil.Equal(t, string(wkrSess.wrote), "\t\x1b[Z")
+}
+
+// TestPanes_TabWalksLadderInDetailsMode proves the passthrough is scoped to
+// TERMINAL panes: when a coordinator is selected the agent region renders the
+// read-only Details/tree (no PTY), so Tab/Shift-Tab keep walking the focus
+// ladder rather than being swallowed by a non-existent terminal.
+func TestPanes_TabWalksLadderInDetailsMode(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true)
+
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	defer sim.Fini()
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+
+	h := p.InputHandler()
+	// rail → coord (Tab enters), coord → agent (Tab advances: coord pane is a
+	// terminal so Tab there passes through, but the FIRST Tab from the rail still
+	// enters). Then from the details (FocusAgent) region Backtab retreats — the
+	// details region is not a terminal, so the ladder still works.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	// Advance to the details (agent) region via the ladder.
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	// In details mode Backtab is NOT swallowed by a PTY — it retreats to coord.
+	h(tcell.NewEventKey(tcell.KeyBacktab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
 }
 
 // TestPanes_ForwardKeyToFocusedSession proves keystrokes routed to a focused

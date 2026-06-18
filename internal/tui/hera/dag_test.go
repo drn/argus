@@ -63,10 +63,13 @@ func dagPage(t *testing.T) *HeraPage {
 }
 
 // toAgentFocus walks the focus ladder rail→coord→agent via the page handler.
+// Tab enters a pane from the rail; once in the coord pane (a terminal) Tab now
+// passes through to the PTY (BUG-019), so the pane→pane hop uses the
+// Ctrl+Alt+→ ladder instead.
 func toAgentFocus(p *HeraPage) {
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRight, 0, tcell.ModCtrl|tcell.ModAlt), noFocus)
 }
 
 // TestDetailsDAG_ProjectedOnCoordSelect: selecting a coordinator immediately

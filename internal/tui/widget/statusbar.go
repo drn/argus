@@ -226,9 +226,11 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 				{"?", "help"}, {"q", "quit"},
 			}
 		} else {
-			// Coord or agent pane focused. q/1/2/3 go to the PTY, so omit them.
+			// Coord or agent pane focused. q/1/2/3 AND Tab/Shift-Tab go to the
+			// PTY (so the agent's autocomplete works — BUG-019), so omit them.
+			// Pane↔pane movement is the Ctrl+Alt+←/→ ladder; ^Q escapes to rail.
 			hints = []hint{
-				{"^Q", "rail"}, {"Tab", "pane"}, {"^Z", "fullscreen"},
+				{"^Q", "rail"}, {"^⌥←→", "pane"}, {"^Z", "fullscreen"},
 				{"Cmd+↑↓", "rail nav"}, {"Sh+↑↓", "scroll"},
 				{"?", "help"},
 			}

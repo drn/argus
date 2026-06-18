@@ -82,6 +82,11 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "move rail selection (stay focused in pane)")
 	// BUG-016: Left rail parent-nav must be discoverable — fail if dropped.
 	testutil.Contains(t, body, "move to parent coordinator (rail focused)")
+	// BUG-019: once a pane is focused, Tab/Shift-Tab pass through to the agent PTY
+	// (autocomplete) and the focus ladder is Ctrl+Alt+←/→. Both must be
+	// discoverable so the no-Tab-ladder semantics aren't silently reverted.
+	testutil.Contains(t, body, "agent autocomplete")
+	testutil.Contains(t, body, "move between panes")
 	// The `/` filter must advertise that ↑/↓ navigate the filtered set while
 	// typing — fail the build if that discoverability is dropped (the fix that
 	// made the filtered list selectable).
