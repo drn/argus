@@ -61,22 +61,63 @@ func (p *HeraPage) applySelection() {
 		return
 	}
 	p.sel = p.rail.Selection()
-	p.detailsMode = p.sel.IsCoordinator()
 
-	// HERA (middle) pane: the selected orchestrator's coordinator session.
-	p.bindPane(p.coordPane, &p.coordBound, p.sel.CoordTaskID(), "coord")
+	// detailsOrch resolves the orchestrator whose Details (roster + tree) and HERA
+	// coordinator pane this selection drives, or nil for a plain worker/leaf (which
+	// renders the agent terminal). It treats a worker-bridge sub-coordinator as the
+	// coordinator it really is — see BUG-004.
+	detailsOrch := p.detailsOrch()
+	p.detailsMode = detailsOrch != nil
 
-	// AGENT (right) region: terminal for a worker, Details for a coordinator.
+	// AGENT (right) region: terminal for a worker, Details for a coordinator (top-
+	// level OR a worker-bridge sub-coord). The HERA (middle) pane always feeds from
+	// the coordinator session in view: for Details mode that is the resolved
+	// orchestrator's coordinator (== the sub-coord's own session for a bridge row),
+	// for a worker it is the selected orchestrator's coordinator.
 	if p.detailsMode {
+		p.bindPane(p.coordPane, &p.coordBound, detailsOrch.CoordTaskID(), "coord")
 		p.bindPane(p.agentPane, &p.agentBound, "", "agent")
-		p.details.SetOrch(p.sel.Orch, p.prMeta)
+		p.details.SetOrch(detailsOrch, p.prMeta)
 		// The Details region stacks the roster over the DAG, so reproject this
-		// coordinator's dependency subgraph on every selection (the roster reads
+		// coordinator's orchestration subtree on every selection (the roster reads
 		// straight from the model; the DAG needs the scoped node set rebuilt).
-		p.rebuildDAG()
+		p.rebuildDAG(detailsOrch)
 	} else {
+		p.bindPane(p.coordPane, &p.coordBound, p.sel.CoordTaskID(), "coord")
 		p.bindPane(p.agentPane, &p.agentBound, p.sel.TaskID(), "agent")
 	}
+}
+
+// detailsOrch resolves the orchestrator whose Details pane (roster + orchestration
+// tree) and HERA coordinator pane the current selection should drive, or nil when
+// the selection is a plain worker/leaf that renders the agent terminal instead.
+//
+//   - top-level coordinator (an orch header row, or an explicit coordinator-kind
+//     role): the selected orchestrator itself (Selection.Orch).
+//   - worker-bridge sub-coordinator (a worker ROW that bridges a child
+//     orchestrator — Selection.BridgeChildOrchID != 0): the CHILD orchestrator.
+//     The bridging worker IS the child's coordinator (it holds the same argus task
+//     the child's coordinator role is bound to), so its Details view must reflect
+//     the child's roster + subtree, exactly like any other coordinator — never the
+//     agent terminal. This is the BUG-004 fix.
+//
+// Selection.BridgeChildOrchID is set by Rail.Selection when the cursor rests on a
+// bridging worker row (its collOrchID). Coordinator-spawned sub-teams already
+// select as their OWN header row, so they hit the first case and are unaffected.
+//
+// Only the pane/details/tree ROUTING follows the child; p.sel (the mutation
+// context read via SelectionContext) is left pointing at the parent worker role,
+// so Ctrl+D and the other mutations still act on the worker, never the child
+// orchestrator — the conservative multi-binding safety the rail nesting documents.
+func (p *HeraPage) detailsOrch() *OrchView {
+	if p.sel.IsCoordinator() {
+		return p.sel.Orch
+	}
+	if p.sel.BridgeChildOrchID != 0 {
+		m := p.rail.Model()
+		return m.OrchByID(p.sel.BridgeChildOrchID)
+	}
+	return nil
 }
 
 // bindPane feeds tp from the runner session for taskID (or unbinds it when

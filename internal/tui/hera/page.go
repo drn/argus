@@ -421,19 +421,21 @@ func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.P
 	p.dag.InputHandler()(event, setFocus)
 }
 
-// rebuildDAG reprojects the selected orchestrator's orchestration SUBTREE (the
-// role hierarchy — coordinator → workers → sub-coordinators → their workers)
-// into the embedded widget. No orchestrator selection yields an empty graph.
-// MUST run on the tview main thread (heraTreeNodes is a pure read over the
-// rail's already-built model; SetNodes recomputes layout but touches no I/O).
-func (p *HeraPage) rebuildDAG() {
-	if p.sel.Orch == nil {
+// rebuildDAG reprojects the given orchestrator's orchestration SUBTREE (the role
+// hierarchy — coordinator → workers → sub-coordinators → their workers) into the
+// embedded widget. `root` is the orchestrator in Details view — the selected one
+// for a top-level coordinator, or the bridged CHILD for a worker-bridge sub-coord
+// (BUG-004). A nil root yields an empty graph. MUST run on the tview main thread
+// (heraTreeNodes is a pure read over the rail's already-built model; SetNodes
+// recomputes layout but touches no I/O).
+func (p *HeraPage) rebuildDAG(root *OrchView) {
+	if root == nil {
 		p.dag.SetNodes(nil)
 		return
 	}
-	nodes := heraTreeNodes(p.rail.Model(), p.sel.Orch)
+	nodes := heraTreeNodes(p.rail.Model(), root)
 	p.dag.SetNodes(nodes)
-	uxlog.Log("[hera-view] tree render: orch=%s nodes=%d", p.sel.Orch.Name, len(nodes))
+	uxlog.Log("[hera-view] tree render: orch=%s nodes=%d", root.Name, len(nodes))
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation

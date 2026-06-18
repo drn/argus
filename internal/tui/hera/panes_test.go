@@ -8,6 +8,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -146,10 +147,14 @@ func TestPanes_CoordinatorSelectionShowsDetails(t *testing.T) {
 	testutil.Equal(t, p.SelectionContext().IsCoordinator(), true)
 }
 
-// TestPanes_MultiBindingFeedsCorrectContext is THE locked must-have: one task
-// that is a worker in orchestrator A and a coordinator in orchestrator B feeds
-// the AGENT pane when its A-role is selected and the HERA pane (details mode)
-// when its B-role is selected — disambiguated purely by the role's orchestrator.
+// TestPanes_MultiBindingFeedsCorrectContext is THE locked must-have for the
+// multi-binding disambiguator AND the BUG-004 fix: one task that is a worker in
+// orchestrator A and the coordinator of orchestrator B nests B's header under
+// A's a-worker row (the bridge). Selecting that bridging row is a SUB-COORDINATOR
+// selection — Details mode for orchestrator B, NOT the agent terminal — while the
+// MUTATION context still points at the parent worker role under A (so Ctrl+D
+// deletes the worker, never the child orchestrator). The disambiguator that keeps
+// these two facts separate is the orchestrator, never the bare task id.
 func TestPanes_MultiBindingFeedsCorrectContext(t *testing.T) {
 	d := memDB(t)
 	orchA := seedOrch(t, d, "orch-a")
@@ -184,15 +189,87 @@ func TestPanes_MultiBindingFeedsCorrectContext(t *testing.T) {
 	p.Refresh()
 
 	// orch-b's coordinator IS the shared task, which is also a-worker under A, so
-	// orch-b nests under A's a-worker row. The bridging row keeps its PARENT
-	// worker context (conservative — so Ctrl+D deletes the worker role, never the
-	// child orchestrator): selecting it feeds the AGENT pane with the shared task
-	// and the HERA pane with A's coordinator.
+	// orch-b nests under A's a-worker row. That bridging row is a sub-coordinator:
+	// selecting it shows orch-b's Details (no agent terminal), and the HERA pane
+	// feeds from the sub-coord's OWN session (orch-b's coordinator = shared).
 	testutil.Equal(t, selectRoleByName(p, "a-worker"), true)
-	testutil.Equal(t, p.detailsMode, false)
+	testutil.Equal(t, p.detailsMode, true)
+	// The mutation context is unchanged — still the parent worker role under A.
 	testutil.Equal(t, p.SelectionContext().Orch.Name, "orch-a")
-	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "shared")
-	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-a-coord")
+	testutil.Equal(t, p.SelectionContext().BridgeChildOrchID, orchB)
+	// HERA pane shows the sub-coord's own session; the agent terminal is unbound.
+	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "shared")
+	testutil.Nil(t, p.AgentPane().Session())
+}
+
+// TestPanes_SubCoordSelectionShowsDetails is the BUG-004 regression: a worker
+// that became a sub-coordinator (it spawned a child orchestrator, so its worker
+// row bridges that child) must render the child's Details pane — roster +
+// orchestration tree — NOT the agent terminal. Before the fix the sub-coord was
+// treated as a plain worker (Role.Kind==worker → IsCoordinator()==false) so it
+// only ever showed in the agent pane and its detail view was unreachable.
+func TestPanes_SubCoordSelectionShowsDetails(t *testing.T) {
+	d := memDB(t)
+	parent := seedOrch(t, d, "parent")
+	child := seedOrch(t, d, "child")
+
+	seedBoundRole(t, d, parent, "p-coord", db.HeraKindCoordinator, "t-pcoord")
+	// The sub-coord task is bound BOTH as a worker under the parent and as the
+	// coordinator of the child orchestrator (born-bound sub-coordinator spawn).
+	subRole, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: parent, Name: "sub", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	childCoord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: child, Name: "c-coord", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	// And the child has its own plain worker, so the tree has a real subtree.
+	seedBoundRole(t, d, child, "c-wkr", db.HeraKindWorker, "t-cwkr")
+
+	addTask(t, d, "t-sub")
+	for _, b := range []struct {
+		role int64
+		task string
+	}{
+		{subRole.ID, "t-sub"},
+		{childCoord.ID, "t-sub"},
+	} {
+		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: b.role, ArgusTaskID: b.task, WorktreePath: "/wt/" + b.task})
+		testutil.NoError(t, err)
+	}
+
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-pcoord": {id: "t-pcoord", alive: true},
+		"t-sub":    {id: "t-sub", alive: true},
+		"t-cwkr":   {id: "t-cwkr", alive: true},
+	}))
+	p.Refresh()
+
+	testutil.Equal(t, selectRoleByName(p, "sub"), true)
+	// Sub-coord selection → Details mode (roster + tree), not the agent terminal.
+	testutil.Equal(t, p.detailsMode, true)
+	testutil.Nil(t, p.AgentPane().Session())
+	// HERA pane shows the sub-coord's OWN session (== the child's coordinator).
+	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-sub")
+	// The Details + tree reflect the CHILD orchestrator: the page rebuilt the DAG
+	// with the child's coordinator as the tree root (CurrentTask), and the child's
+	// projected subtree includes its own worker but not the parent coordinator.
+	testutil.Equal(t, p.DAG().CurrentTask(), "t-sub") // child's coordinator is the tree root
+	m := p.Rail().Model()
+	ids := dagTaskIDs(heraTreeNodes(m, m.OrchByID(child)))
+	testutil.Equal(t, ids["t-sub"], true)
+	testutil.Equal(t, ids["t-cwkr"], true)    // child's worker is in the subtree
+	testutil.Equal(t, ids["t-pcoord"], false) // the PARENT coordinator is not
+	// Mutation context stays on the parent worker role (Ctrl+D safety preserved).
+	testutil.Equal(t, p.SelectionContext().Orch.Name, "parent")
+	testutil.Equal(t, p.SelectionContext().BridgeChildOrchID, child)
+}
+
+// dagTaskIDs collapses a node set to a task-id presence map for assertions.
+func dagTaskIDs(nodes []dagview.Node) map[string]bool {
+	out := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		out[n.ID] = true
+	}
+	return out
 }
 
 // TestPanes_RemoteModeNeverFeeds proves remote-mode panes stay unavailable: no
