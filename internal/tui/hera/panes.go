@@ -117,11 +117,10 @@ func (p *HeraPage) bindPane(tp *terminal.TerminalPane, bound *string, taskID, la
 	*bound = taskID
 }
 
-// reconcileSessions late-binds a live session that started after the pane was
-// bound (e.g. a coordinator/worker whose session came up a tick later), mirror
-// of the main agent view's tick re-resolution. MUST run on the tview main
-// thread. A pane that already holds a (live or dead) session is left alone — a
-// fresh selection or refresh rebinds it.
+// reconcileSessions (re)resolves the live session for each fed pane on the tick,
+// mirror of the main agent view's tick re-resolution. MUST run on the tview main
+// thread. It covers both late-bind (a session that came up after selection) and
+// the BUG-013 dead-handle case (see reconcileOne).
 func (p *HeraPage) reconcileSessions() {
 	if p.remote {
 		return
@@ -132,15 +131,59 @@ func (p *HeraPage) reconcileSessions() {
 	}
 }
 
+// reconcileOne (re)resolves the live session for a pane. It handles two cases a
+// one-shot bind misses:
+//
+//   - LATE BIND: the pane is bound to a task (taskID != "") but holds no session
+//     yet — the coordinator/worker session came up a tick after selection.
+//
+//   - DEAD HANDLE (BUG-013): the pane holds a session whose stream the daemon
+//     tore down (StreamLost relay / daemon bounce) while the agent PROCESS is
+//     still alive, so Session().Alive() is false. Without re-resolution the dead
+//     handle is never replaced (bindPane no-ops on the unchanged taskID) and
+//     forwardKey silently drops every keystroke until a full TUI restart re-dials
+//     the stream. Re-resolving asks the provider for a fresh handle — the daemon
+//     client re-dials a new stream on a cache-miss Get when the daemon still
+//     reports the process alive — and swaps it in, restoring input WITHOUT a
+//     restart.
+//
+// A live, present session is left alone. A dead handle is replaced ONLY by a
+// genuinely live, DIFFERENT handle: when the provider yields nothing (process
+// really gone → fall back to on-disk log replay) or the same dead handle (client
+// cache not yet evicted → retry next tick) the pane is left untouched, so the
+// emulator is never needlessly reset. MUST run on the tview main thread
+// (SetSession is main-goroutine-only).
 func (p *HeraPage) reconcileOne(tp *terminal.TerminalPane, taskID, label string) {
-	if taskID == "" || p.resolve == nil || tp.Session() != nil {
+	if taskID == "" || p.resolve == nil {
 		return
 	}
-	if sess := p.resolve(taskID); sess != nil {
-		tp.SetSession(sess)
-		tp.ForceResyncPTY()
-		uxlog.Log("[hera-view] %s pane feed-start task=%s (late bind)", label, taskID)
+	cur := tp.Session()
+	if cur != nil && cur.Alive() {
+		return // live session already bound
 	}
+	sess := p.resolve(taskID)
+	if sess == nil {
+		return // no session available (process gone → replay handles it)
+	}
+	if cur != nil && (sess == cur || !sess.Alive()) {
+		return // replacing a dead handle: only a fresh, live, distinct one qualifies
+	}
+	tp.SetSession(sess)
+	tp.ForceResyncPTY()
+	if cur == nil {
+		uxlog.Log("[hera-view] %s pane feed-start task=%s (late bind)", label, taskID)
+	} else {
+		uxlog.Log("[hera-view] %s pane re-resolve task=%s (replaced dead session)", label, taskID)
+	}
+}
+
+// paneBinding maps a pane back to its tracked bound task ID and a log label, so
+// forwardKey can re-resolve a dead handle without threading extra state.
+func (p *HeraPage) paneBinding(tp *terminal.TerminalPane) (boundID, label string) {
+	if tp == p.coordPane {
+		return p.coordBound, "coord"
+	}
+	return p.agentBound, "agent"
 }
 
 // SyncPanes applies any pending PTY resizes for both panes. Called from the app
@@ -180,7 +223,20 @@ func (p *HeraPage) forwardKey(tp *terminal.TerminalPane, ev *tcell.EventKey) {
 	}
 	sess := tp.Session()
 	if sess == nil || !sess.Alive() {
-		return
+		// BUG-013: the bound session is missing, or its stream died while the agent
+		// process is still alive (daemon tore the stream down on a StreamLost relay
+		// or bounce). This used to drop the keystroke SILENTLY and the pane stayed
+		// frozen until a full TUI restart. Log it, then attempt an immediate
+		// re-resolve — the daemon client re-dials a fresh stream when the process is
+		// still alive — and retry the write on the fresh handle.
+		boundID, label := p.paneBinding(tp)
+		uxlog.Log("[hera-view] forwardKey: %s pane session dead/nil (task=%s) — re-resolving", label, boundID)
+		p.reconcileOne(tp, boundID, label)
+		sess = tp.Session()
+		if sess == nil || !sess.Alive() {
+			uxlog.Log("[hera-view] forwardKey: %s pane re-resolve found no live session (task=%s) — keystroke dropped", label, boundID)
+			return
+		}
 	}
 	if b := keyenc.Encode(ev); len(b) > 0 {
 		if _, err := sess.WriteInput(b); err != nil {

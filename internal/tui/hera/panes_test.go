@@ -17,12 +17,16 @@ type fakeSession struct {
 	id     string
 	alive  bool
 	resize [2]uint16 // last (rows, cols) passed to Resize
+	wrote  []byte    // bytes received via WriteInput (for forwardKey assertions)
 }
 
-func (f *fakeSession) WriteInput(p []byte) (int, error) { return len(p), nil }
-func (f *fakeSession) Resize(rows, cols uint16) error   { f.resize = [2]uint16{rows, cols}; return nil }
-func (f *fakeSession) RecentOutput() []byte             { return nil }
-func (f *fakeSession) RecentOutputTail(int) []byte      { return nil }
+func (f *fakeSession) WriteInput(p []byte) (int, error) {
+	f.wrote = append(f.wrote, p...)
+	return len(p), nil
+}
+func (f *fakeSession) Resize(rows, cols uint16) error { f.resize = [2]uint16{rows, cols}; return nil }
+func (f *fakeSession) RecentOutput() []byte           { return nil }
+func (f *fakeSession) RecentOutputTail(int) []byte    { return nil }
 func (f *fakeSession) RecentOutputTailWithTotal(int) ([]byte, uint64) {
 	return nil, 0
 }
@@ -253,6 +257,113 @@ func TestPanes_ReconcileLateBind(t *testing.T) {
 	sessions["t-wkr"] = &fakeSession{id: "t-wkr", alive: true}
 	p.Reconcile()
 	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
+}
+
+// TestPanes_ReconcileReplacesDeadSession is the BUG-013 regression: a pane
+// holding a present-but-DEAD session (the daemon tore the stream down on a
+// StreamLost relay / bounce while the agent process stayed alive, flipping
+// Alive() false) MUST be re-resolved to a fresh live handle on the next tick —
+// not left frozen until a full TUI restart. reconcileOne previously bailed on
+// any present session and only ever late-bound a nil one.
+func TestPanes_ReconcileReplacesDeadSession(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	live1 := &fakeSession{id: "t-wkr", alive: true}
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	sessions := map[string]*fakeSession{"t-coord": coordSess, "t-wkr": live1}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(sessions))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
+
+	// The stream dies while the agent process lives, then the provider re-dials a
+	// FRESH live handle (distinct pointer) — exactly what the daemon client does
+	// on a cache-miss Get after eviction.
+	live1.alive = false
+	live2 := &fakeSession{id: "t-wkr", alive: true}
+	sessions["t-wkr"] = live2
+
+	p.Reconcile()
+	got := p.AgentPane().Session().(*fakeSession)
+	testutil.Equal(t, got, live2) // dead handle replaced, not left frozen
+}
+
+// TestPanes_ReconcileLeavesDeadSessionWhenNoLiveReplacement proves the pane is
+// NOT thrashed when no live replacement exists: a finished session (provider
+// returns nil, process really gone) keeps its dead handle so its buffered final
+// output still backs log replay, and a not-yet-evicted identical handle is left
+// for a later tick rather than needlessly resetting the emulator.
+func TestPanes_ReconcileLeavesDeadSessionWhenNoLiveReplacement(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	dead := &fakeSession{id: "t-wkr", alive: true}
+	sessions := map[string]*fakeSession{"t-coord": {id: "t-coord", alive: true}, "t-wkr": dead}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(sessions))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	// Process really gone: handle dead AND provider yields nothing live.
+	dead.alive = false
+	delete(sessions, "t-wkr")
+	p.Reconcile()
+	testutil.Equal(t, p.AgentPane().Session().(*fakeSession), dead) // dead handle retained
+
+	// Provider returns the SAME dead handle (cache not yet evicted) — also retained.
+	sessions["t-wkr"] = dead
+	p.Reconcile()
+	testutil.Equal(t, p.AgentPane().Session().(*fakeSession), dead)
+}
+
+// TestPanes_ForwardKeyReResolvesDeadSession proves the dropped-keystroke path is
+// no longer a silent dead end: a keystroke into a pane whose session went dead
+// re-resolves a fresh live handle and the keystroke reaches it.
+func TestPanes_ForwardKeyReResolvesDeadSession(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	live1 := &fakeSession{id: "t-wkr", alive: true}
+	sessions := map[string]*fakeSession{"t-wkr": live1}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(sessions))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	// Stream dies; provider re-dials a fresh live handle.
+	live1.alive = false
+	live2 := &fakeSession{id: "t-wkr", alive: true}
+	sessions["t-wkr"] = live2
+
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	// The keystroke reached the FRESH handle, not the dead one.
+	testutil.Equal(t, string(live2.wrote), "x")
+	testutil.Equal(t, len(live1.wrote), 0)
+}
+
+// TestPanes_ForwardKeyDropsWhenNoLiveSession proves a keystroke into a pane with
+// no live session and no live replacement is dropped without panic (and the dead
+// handle is left untouched).
+func TestPanes_ForwardKeyDropsWhenNoLiveSession(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	dead := &fakeSession{id: "t-wkr", alive: false}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-wkr": dead}))
+	p.Refresh()
+	testutil.Equal(t, selectRoleByName(p, "wkr"), true)
+
+	p.forwardKey(p.AgentPane(), tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone))
+	testutil.Equal(t, len(dead.wrote), 0) // dropped, not delivered to a dead handle
 }
 
 // TestPanes_FocusTraversal walks rail→coord→agent and back via the page's Tab /
