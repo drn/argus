@@ -960,3 +960,92 @@ func TestRail_DrawDoesNotPanic(t *testing.T) {
 	r.SetRect(0, 0, 1, 24)
 	r.Draw(sim)
 }
+
+// TestRail_CursorToParent covers BUG-016: the Left-arrow parent-nav helper.
+func TestRail_CursorToParent(t *testing.T) {
+	t.Run("worker to orch header", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(twoOrchModel()) // orch-1 header (0) | wkr (1) | orch-2 header (2)
+		r.CursorDown()             // cursor → worker (row 1)
+		testutil.Equal(t, r.rows[r.cursor].role.Name, "wkr")
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 0)
+		testutil.Equal(t, r.SelectedOrch().Name, "orch-1")
+	})
+
+	t.Run("root orch header no-op", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(twoOrchModel()) // cursor starts at row 0 (orch-1 header)
+		testutil.Equal(t, r.CursorIndex(), 0)
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 0) // no-op — depth 0
+	})
+
+	t.Run("second orch header no-op", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(twoOrchModel()) // orch-1 header (0) | wkr (1) | orch-2 header (2)
+		r.CursorDown()
+		r.CursorDown() // cursor → orch-2 header (row 2, depth 0)
+		testutil.Equal(t, r.SelectedOrch().Name, "orch-2")
+		r.CursorToParent()
+		testutil.Equal(t, r.SelectedOrch().Name, "orch-2") // no-op — depth 0
+	})
+
+	t.Run("freelance role no-op", func(t *testing.T) {
+		r := NewRail()
+		r.SetModel(Model{
+			Freelance: []RoleView{
+				{RoleID: 1, Name: "free", Kind: db.HeraKindFreelance},
+			},
+		})
+		// Rail: rrRule | rrSectionHeader(Freelance) | rrFreelanceRole
+		// The section header is selectable (collFreelance:true) — cursor starts
+		// there; step down to the freelance role row.
+		for r.cursor < r.Rows()-1 && r.rows[r.cursor].kind != rrFreelanceRole {
+			r.CursorDown()
+		}
+		prev := r.CursorIndex()
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), prev) // no-op — no rrOrch/bridging row above
+	})
+
+	t.Run("nested coord-spawn child to root header", func(t *testing.T) {
+		// Build a model where orch-B is a coord-spawn child of orch-A: both share
+		// the same coordinator bridge task, and A's coordinator role was created first.
+		r := NewRail()
+		// Direct row manipulation: force a three-depth structure
+		// root header(depth 0) | child header(depth 1) | grandchild role(depth 2)
+		r.rows = []railRow{
+			{kind: rrOrch, orch: &OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
+			{kind: rrOrch, orch: &OrchView{ID: 2, Name: "child"}, depth: 1, collOrchID: 2},
+			{kind: rrRole, role: &RoleView{RoleID: 10, Name: "worker"}, depth: 2},
+		}
+		// cursor on grandchild role → CursorToParent → child header
+		r.cursor = 2
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 1)
+		testutil.Equal(t, r.rows[r.cursor].orch.Name, "child")
+		// cursor on child header → CursorToParent → root header
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 0)
+		testutil.Equal(t, r.rows[r.cursor].orch.Name, "root")
+		// cursor on root header → no-op
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 0)
+	})
+
+	t.Run("bridging role as parent", func(t *testing.T) {
+		// A bridging worker row (rrRole with collOrchID set) acts as the parent
+		// coordinator for the worker rows nested under it.
+		r := NewRail()
+		r.rows = []railRow{
+			{kind: rrOrch, orch: &OrchView{ID: 1, Name: "root"}, depth: 0, collOrchID: 1},
+			{kind: rrRole, role: &RoleView{RoleID: 5, Name: "bridge"}, depth: 1, collOrchID: 99},
+			{kind: rrRole, role: &RoleView{RoleID: 6, Name: "nested-worker"}, depth: 2},
+		}
+		r.cursor = 2 // nested-worker
+		r.CursorToParent()
+		testutil.Equal(t, r.CursorIndex(), 1) // lands on the bridging row
+		testutil.Equal(t, r.rows[r.cursor].role.Name, "bridge")
+	})
+}
