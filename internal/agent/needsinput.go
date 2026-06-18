@@ -9,6 +9,14 @@ import (
 	"github.com/drn/argus/internal/sanitize"
 )
 
+// needsInputChooserFooterRe matches the footer line of Claude Code's
+// AskUserQuestion chooser widget. The footer always renders "Enter to select"
+// and "Esc to cancel" on the same line, separated by navigation hints
+// ("↑/↓ to navigate" and middle-dot separators). Both phrases must appear on
+// the same line — [^\n\r]* explicitly bars newlines — so an isolated
+// "Esc to cancel" elsewhere in the output doesn't trigger it.
+var needsInputChooserFooterRe = regexp.MustCompile(`Enter to select[^\n\r]*Esc to cancel`)
+
 // needsInputSelectionRe is the visible-text signature of Claude Code's
 // selection UI: U+276F (❯) followed (after zero or more horizontal whitespace
 // characters) by "1.". The same widget renders AskUserQuestion overlays,
@@ -39,12 +47,15 @@ var needsInputSelectionRe = regexp.MustCompile(`❯[ \t]*1\.`)
 const needsInputTailWindow = 16 * 1024
 
 // DetectNeedsInput returns true if the tail of `buf` indicates the agent is
-// blocked waiting for the user. Two signals fire:
+// blocked waiting for the user. Three signals fire:
 //
-//  1. Claude's numbered-selection prompt UI (`❯ 1.`) — AskUserQuestion overlays,
-//     permission prompts, and plan-mode confirms all render through this widget.
-//  2. The assistant's most recent text response ends with `?` — captures
-//     plain-text questions where Claude stops generating without invoking the
+//  1. Claude's numbered-selection prompt UI (`❯ 1.`) — permission prompts and
+//     plan-mode confirms render through this widget.
+//  2. The AskUserQuestion chooser footer (`Enter to select … Esc to cancel`) —
+//     the full-screen chooser widget clears the viewport so earlier ❯ 1. rows
+//     are gone; the footer line is the reliable signature.
+//  3. The assistant's most recent text response ends with `?` — captures
+//     plain-text questions where Claude stops generating without invoking a
 //     selection widget (e.g. "Want me to ship it?").
 //
 // Pair with an "is idle" check at the call site — a prompt the agent is still
@@ -59,6 +70,9 @@ func DetectNeedsInput(buf []byte) bool {
 	}
 	stripped := sanitize.StripANSI(string(tail))
 	if needsInputSelectionRe.MatchString(stripped) {
+		return true
+	}
+	if needsInputChooserFooterRe.MatchString(stripped) {
 		return true
 	}
 	return endsInQuestion(stripped)

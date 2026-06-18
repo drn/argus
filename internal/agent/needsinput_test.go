@@ -167,6 +167,49 @@ func TestDetectNeedsInput(t *testing.T) {
 			"❯\u00a0 \r\r⏺ Shipped it.\r✻ Brewed for 3s\r\r❯\u00a0 \r\r",
 			false,
 		},
+
+		// AskUserQuestion chooser — footer signature
+		{
+			// AskUserQuestion renders a full-screen chooser widget. The distinctive
+			// signature is the footer line containing both "Enter to select" and
+			// "Esc to cancel". The ❯ cursor on the option does NOT follow the "❯ 1."
+			// numbered format, so the existing selection regex doesn't catch it.
+			"askuserquestion chooser footer fires",
+			"  ❯  Execute in this session\n     Copy to clipboard\n\n  Enter to select · \u2191/\u2193 to navigate · Esc to cancel\n",
+			true,
+		},
+		{
+			// AskUserQuestion with a box border — footer inside a box still fires
+			"askuserquestion chooser in box fires",
+			"\u256d\u2500 How should we proceed? \u256e\n\u2502 ❯  Execute in this session  \u2502\n\u2502    Copy to clipboard          \u2502\n\u251c\u2500\u2500\u2500\u251e\n\u2502  Enter to select · \u2191/\u2193 to navigate · Esc to cancel \u2502\n\u2570\u2500\u2500\u2500\u256f\n",
+			true,
+		},
+		{
+			// Real ANSI-wrapped footer: each phrase in dim SGR pairs, separated
+			// by middle-dot separators. After ANSI strip it collapses to plain text.
+			"askuserquestion chooser with ANSI-wrapped footer fires",
+			"\x1b[2mEnter to select\x1b[0m · \x1b[2m\u2191/\u2193 to navigate\x1b[0m · \x1b[2mEsc to cancel\x1b[0m",
+			true,
+		},
+		{
+			// Only "Esc to cancel" present — not enough without "Enter to select"
+			"esc-to-cancel alone does not fire",
+			"Press Esc to cancel the current operation.\n❯\u00a0 \r\r",
+			false,
+		},
+		{
+			// Only "Enter to select" present — not enough without "Esc to cancel"
+			"enter-to-select alone does not fire",
+			"Press Enter to select a file from the list.\n❯\u00a0 \r\r",
+			false,
+		},
+		{
+			// Both phrases on separate lines — must NOT match; chooser footer is
+			// always a single continuous line with both phrases.
+			"chooser phrases on separate lines do not fire",
+			"Enter to select.\nPress Esc to cancel.\n❯\u00a0 \r\r",
+			false,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
