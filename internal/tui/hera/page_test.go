@@ -166,3 +166,48 @@ func TestHeraPage_FullscreenDrawRendersSinglePane(t *testing.T) {
 		t.Fatalf("expected fullscreen coord pane to have positive width, got %d", p.coordW)
 	}
 }
+
+// TestHeraPage_OnFocusChange_FiresOnTabAdvance asserts that pressing Tab (which
+// calls focus.Advance) triggers OnFocusChange with the new focus state. This is
+// the wiring that lets the status bar update its hint set on every focus change.
+func TestHeraPage_OnFocusChange_FiresOnTabAdvance(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "w", db.HeraKindWorker, "t-w")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	var got []Focus
+	p.OnFocusChange = func(f Focus) { got = append(got, f) }
+
+	h := p.InputHandler()
+
+	// Tab from rail → coord pane.
+	h(tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	if len(got) == 0 {
+		t.Fatal("OnFocusChange not called after Tab")
+	}
+	testutil.Equal(t, got[len(got)-1], FocusCoord)
+
+	// Ctrl+Q → back to rail.
+	h(tcell.NewEventKey(tcell.KeyCtrlQ, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.Machine().State(), FocusRail)
+	testutil.Equal(t, got[len(got)-1], FocusRail)
+}
+
+// TestHeraPage_OnFocusChange_FiresOnEveryKey asserts that OnFocusChange fires
+// on every key (including non-focus-changing keys) so the hint set stays current
+// without a separate polling mechanism.
+func TestHeraPage_OnFocusChange_FiresOnEveryKey(t *testing.T) {
+	p := NewHeraPage(nil) // remote — OnFocusChange is still called (callback is nil-safe)
+
+	called := 0
+	p.OnFocusChange = func(f Focus) { called++ }
+
+	h := p.InputHandler()
+	// Key event in remote mode returns immediately; defer still fires.
+	h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+	testutil.Equal(t, called, 1)
+}

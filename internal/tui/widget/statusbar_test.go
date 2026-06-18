@@ -217,6 +217,97 @@ func TestStatusBar_PluginMode_ZeroWidthIsNoOp(t *testing.T) {
 	sb.Draw(screen) // width<=0 → early return, no panic
 }
 
+// TestStatusBar_HeraFocus_RailHints asserts that SetHeraFocus(0) (rail focus)
+// renders rail-specific mutation hints (spawn, filter, retire).
+func TestStatusBar_HeraFocus_RailHints(t *testing.T) {
+	const w = 240
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, w, 1)
+	sb.SetTab(TabHera)
+	sb.SetHeraFocus(0) // 0 = FocusRail
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(w, 1)
+	defer screen.Fini()
+
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, w)
+	testutil.Contains(t, row, "spawn")
+	testutil.Contains(t, row, "filter")
+	testutil.Contains(t, row, "fold")
+	testutil.Contains(t, row, "retire")
+}
+
+// TestStatusBar_HeraFocus_PaneHints asserts that SetHeraFocus(1) (coord pane)
+// renders pane hints (rail, scroll) and NOT rail-only keys (spawn, filter).
+func TestStatusBar_HeraFocus_PaneHints(t *testing.T) {
+	const w = 240
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, w, 1)
+	sb.SetTab(TabHera)
+	sb.SetHeraFocus(1) // 1 = FocusCoord
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(w, 1)
+	defer screen.Fini()
+
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, w)
+	testutil.Contains(t, row, "rail")
+	testutil.Contains(t, row, "scroll")
+	if contains(row, "spawn") {
+		t.Fatalf("rail key 'spawn' shown in pane hints: %q", row)
+	}
+	if contains(row, "filter") {
+		t.Fatalf("rail key 'filter' shown in pane hints: %q", row)
+	}
+}
+
+// TestStatusBar_HeraFocus_AgentPaneHints asserts that SetHeraFocus(2) (agent pane)
+// shows the same pane hints as FocusCoord.
+func TestStatusBar_HeraFocus_AgentPaneHints(t *testing.T) {
+	const w = 240
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, w, 1)
+	sb.SetTab(TabHera)
+	sb.SetHeraFocus(2) // 2 = FocusAgent
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(w, 1)
+	defer screen.Fini()
+
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, w)
+	testutil.Contains(t, row, "rail")
+	testutil.Contains(t, row, "scroll")
+}
+
+// TestStatusBar_HeraFocus_DefaultIsRail asserts that a fresh StatusBar on the
+// Hera tab (heraFocus zero value) shows rail hints.
+func TestStatusBar_HeraFocus_DefaultIsRail(t *testing.T) {
+	const w = 240
+	sb := NewStatusBar()
+	sb.SetRect(0, 0, w, 1)
+	sb.SetTab(TabHera)
+	// No SetHeraFocus call — should default to 0 (FocusRail).
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, screen.Init())
+	screen.SetSize(w, 1)
+	defer screen.Fini()
+
+	sb.Draw(screen)
+	screen.Show()
+	row := readScreenRow(screen, 0, w)
+	testutil.Contains(t, row, "spawn")
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
