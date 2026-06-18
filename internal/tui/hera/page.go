@@ -86,6 +86,12 @@ type HeraPage struct {
 	OnPruneDescendants func(Selection) // `C` — prune the selected coordinator's archived descendants (confirm)
 	OnPruneDone        func()          // ctrl+R — rail-wide prune of finished coords + agents (confirm)
 
+	// OnFocusChange is called whenever the focused Hera region changes so the
+	// app can update focus-aware UI (e.g. the bottom status bar hint set). It
+	// receives the new focus state and fires on both keyboard and mouse changes.
+	// nil-safe: unwired in remote mode, never panics.
+	OnFocusChange func(Focus)
+
 	// Region rects from the last Draw (mouse hit-testing in regionAt).
 	coordX, coordW int
 	agentX, agentW int
@@ -341,6 +347,10 @@ func (p *HeraPage) drawRemoteBanner(screen tcell.Screen, x, y, w, h int) {
 // handleDetailsKey); rail-focused they fall through unused.
 func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
 	return p.WrapInputHandler(func(event *tcell.EventKey, setFocus func(p tview.Primitive)) {
+		// Fire OnFocusChange on every exit so callers (e.g. the status bar) see
+		// the updated focus region on the same frame as the change. Deferred so
+		// it fires even on early returns (Tab, CtrlQ, Enter, …).
+		defer p.notifyFocusChange()
 		if p.remote {
 			return
 		}
@@ -528,6 +538,16 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	return false
 }
 
+// notifyFocusChange fires OnFocusChange with the current focus state. Called
+// after any keyboard or mouse event that may have shifted which region holds
+// focus so callers (e.g. the status bar) can refresh focus-aware displays on
+// the same frame as the change.
+func (p *HeraPage) notifyFocusChange() {
+	if p.OnFocusChange != nil {
+		p.OnFocusChange(p.focus.State())
+	}
+}
+
 // fire invokes a mutation callback when it is wired and the selection has a
 // target, returning whether the key was consumed. A wired callback always
 // consumes its key (even on an empty selection) so the keystroke never leaks
@@ -573,6 +593,11 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 	return p.WrapMouseHandler(func(action tview.MouseAction, event *tcell.EventMouse, setFocus func(p tview.Primitive)) (bool, tview.Primitive) {
 		consumed := false
 		click := action == tview.MouseLeftClick || action == tview.MouseLeftDown
+		// Notify focus change after any click that may have moved the focused
+		// region so callers see the updated state on the same frame.
+		if click {
+			defer p.notifyFocusChange()
+		}
 		if !p.remote {
 			x, _ := event.Position()
 			switch p.regionAt(x) {

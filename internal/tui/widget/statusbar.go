@@ -27,6 +27,11 @@ type StatusBar struct {
 	infoMsg   string
 	activeTab Tab
 
+	// heraFocus tracks which Hera region has focus (0=rail, 1=coord, 2=agent),
+	// matching hera.Focus iota order. Used to pick focus-aware hint sets while
+	// TabHera is active. Zero value (FocusRail) is the correct default.
+	heraFocus int
+
 	// Plugin-view state. When pluginActive is true, Draw renders the plugin's
 	// bar hints plus a reserved, non-displaceable exit hint instead of the
 	// tab-hints branch.
@@ -73,6 +78,19 @@ func (sb *StatusBar) SetRunning(ids []string) {
 // SetTab updates which tab is active (changes hint display).
 func (sb *StatusBar) SetTab(t Tab) {
 	sb.activeTab = t
+}
+
+// SetHeraFocus updates which Hera region holds focus, switching the hint set
+// shown while TabHera is active. f matches hera.Focus iota: 0=rail, 1=coord,
+// 2=agent. The caller converts before passing so widget never imports hera.
+func (sb *StatusBar) SetHeraFocus(f int) {
+	sb.heraFocus = f
+}
+
+// HeraFocus returns the current Hera focus state (0=rail, 1=coord, 2=agent).
+// Exposed for tests that assert wiring without scraping the rendered row.
+func (sb *StatusBar) HeraFocus() int {
+	return sb.heraFocus
 }
 
 // SetPluginMode toggles the plugin-view bottom bar. When active, Draw renders
@@ -196,9 +214,24 @@ func (sb *StatusBar) Draw(screen tcell.Screen) {
 			{"1", "tasks"}, {"2", "hera"}, {"?", "help"}, {"q", "quit"},
 		}
 	case TabHera:
-		hints = []hint{
-			{"j/k", "nav"}, {"SP", "fold"},
-			{"1", "tasks"}, {"3", "settings"}, {"?", "help"}, {"q", "quit"},
+		// Focus-aware: rail focus shows mutation keys; pane focus shows pane keys.
+		// heraFocus == 0 → rail (default); 1 → coord pane; 2 → agent pane.
+		// Key names match modal/help.go "Hera View (rail)" exactly.
+		if sb.heraFocus == 0 {
+			hints = []hint{
+				{"j/k", "nav"}, {"SP", "fold"}, {"/", "filter"},
+				{"Tab", "pane"}, {"w", "spawn"}, {"n", "coord"},
+				{"s/S", "status"}, {"R", "retire"}, {"C", "prune"},
+				{"^r", "prune-all"}, {"^d", "del"},
+				{"?", "help"}, {"q", "quit"},
+			}
+		} else {
+			// Coord or agent pane focused. q/1/2/3 go to the PTY, so omit them.
+			hints = []hint{
+				{"^Q", "rail"}, {"Tab", "pane"}, {"^Z", "fullscreen"},
+				{"Cmd+↑↓", "rail nav"}, {"Sh+↑↓", "scroll"},
+				{"?", "help"},
+			}
 		}
 	default:
 		hints = []hint{

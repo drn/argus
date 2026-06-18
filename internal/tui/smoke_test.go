@@ -14,6 +14,7 @@ import (
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 	"github.com/drn/argus/internal/tui/widget"
 	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
@@ -1909,6 +1910,57 @@ func TestSmoke_HeraRailFilterSuppressesGlobalShortcuts(t *testing.T) {
 	readUI(t, app.tapp, func() {
 		if app.header.ActiveTab() != widget.TabTasks {
 			t.Errorf("'1' after clearing filter routed to %v, want TabTasks", app.header.ActiveTab())
+		}
+	})
+}
+
+// TestSmoke_HeraFocusChangesStatusBarHints guards BUG-007: the bottom status
+// bar must show focus-aware hints while the Hera tab is active. On the rail
+// (default) it shows rail mutation keys (spawn, filter); when Tab advances focus
+// into the coordinator pane it switches to pane keys (rail, scroll).
+func TestSmoke_HeraFocusChangesStatusBarHints(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+
+	sim, stop := wireApp(t, app)
+	defer stop()
+
+	// Switch to the Hera tab.
+	sim.InjectKey(tcell.KeyRune, '2', 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.header.ActiveTab() != widget.TabHera {
+			t.Fatalf("setup: expected TabHera, got %v", app.header.ActiveTab())
+		}
+		// Rail focused by default → heraFocus should be 0 (FocusRail).
+		if app.statusbar.HeraFocus() != 0 {
+			t.Errorf("expected heraFocus=0 (rail) after tab switch, got %d", app.statusbar.HeraFocus())
+		}
+	})
+
+	// Tab key advances to the coordinator pane.
+	sim.InjectKey(tcell.KeyTab, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.heraPage.Machine().State() != hera.FocusCoord {
+			t.Errorf("expected FocusCoord after Tab, got %v", app.heraPage.Machine().State())
+		}
+		// Focus changed → heraFocus should be 1 (FocusCoord).
+		if app.statusbar.HeraFocus() != 1 {
+			t.Errorf("expected heraFocus=1 (coord) after Tab, got %d", app.statusbar.HeraFocus())
+		}
+	})
+
+	// Ctrl+Q returns focus to the rail.
+	sim.InjectKey(tcell.KeyCtrlQ, 0, 0)
+	syncUI(t, app.tapp)
+	readUI(t, app.tapp, func() {
+		if app.heraPage.Machine().State() != hera.FocusRail {
+			t.Errorf("expected FocusRail after Ctrl+Q, got %v", app.heraPage.Machine().State())
+		}
+		if app.statusbar.HeraFocus() != 0 {
+			t.Errorf("expected heraFocus=0 (rail) after Ctrl+Q, got %d", app.statusbar.HeraFocus())
 		}
 	})
 }

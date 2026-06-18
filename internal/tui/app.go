@@ -640,6 +640,14 @@ func (a *App) buildUI() {
 			return sess
 		})
 	}
+	// Focus-aware status bar: update heraFocus whenever the Hera focus machine
+	// changes state (keyboard or mouse). The statusbar renders different hint
+	// sets for rail vs pane focus so the operator always sees relevant keys.
+	// The int passed matches hera.Focus iota: 0=rail, 1=coord, 2=agent.
+	a.heraPage.OnFocusChange = func(f hera.Focus) {
+		a.statusbar.SetHeraFocus(int(f))
+	}
+
 	// Wire the hera panes' redraw callbacks exactly like the main agent pane:
 	// OnBranchChange is log-only (forceRedraw never Syncs), OnNeedRedraw bounces
 	// a QueueUpdateDraw for async replay-rebuild completion.
@@ -2975,6 +2983,10 @@ func (a *App) switchTab(t widget.Tab) {
 // tview main goroutine.
 func (a *App) switchToHeraTab2() {
 	a.header.SetTabLabel(widget.TabHera, "Hera")
+	// Tab entry always starts with the rail focused; reset the statusbar hint
+	// set so the operator sees rail hints immediately (the rail is the default
+	// region — no focus-machine state persists across tab switches).
+	a.statusbar.SetHeraFocus(0)
 	a.heraPage.Refresh()
 	a.pages.SwitchToPage("hera")
 	a.tapp.SetFocus(a.heraPage)
