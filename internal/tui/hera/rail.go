@@ -1276,8 +1276,11 @@ func (r *Rail) enterFilter() {
 
 // handleFilterKey routes a keystroke while in search INPUT mode. Esc clears and
 // restores the full rail; Enter accepts (query stays, input mode off so j/k
-// navigate the filtered set); Backspace trims a rune; any other rune extends the
-// query. Every query change rebuilds + re-pins the cursor onto a visible row.
+// navigate the filtered set); Up/Down move the cursor WITHIN the filtered rows
+// without leaving input mode (so the operator can select a row while still
+// typing/editing the query — matching the Tasks-tab `/` filter); Backspace trims
+// a rune; any other rune extends the query. Every query change rebuilds + re-pins
+// the cursor onto a visible row.
 func (r *Rail) handleFilterKey(event *tcell.EventKey) {
 	switch event.Key() {
 	case tcell.KeyEscape:
@@ -1288,6 +1291,13 @@ func (r *Rail) handleFilterKey(event *tcell.EventKey) {
 	case tcell.KeyEnter:
 		r.filterInput = false
 		uxlog.Log("[hera-view] rail filter: accepted (query=%q)", r.filterQuery)
+	case tcell.KeyDown:
+		// Navigate the filtered set while typing — step() only lands on selectable
+		// rows, and a narrowed buildRows contains only visible rows, so the cursor
+		// can never reach a filtered-out row.
+		r.CursorDown()
+	case tcell.KeyUp:
+		r.CursorUp()
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if r.filterQuery != "" {
 			runes := []rune(r.filterQuery)

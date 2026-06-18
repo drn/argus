@@ -200,6 +200,56 @@ func TestRail_FilterEscClearsEnterAccepts(t *testing.T) {
 	testutil.Equal(t, r.depthOf("gamma") >= 0, true) // full rail restored
 }
 
+func TestRail_FilterArrowsNavigateWhileTyping(t *testing.T) {
+	r := NewRail()
+	r.SetModel(filterModel())
+	h := r.InputHandler()
+
+	// Enter filter mode and type a query that keeps MULTIPLE selectable rows
+	// visible: "co" matches the "coord" role in both orchestrators, so their
+	// headers (ancestry) plus the matching roles all survive the narrow.
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "co" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	testutil.Equal(t, r.Filtering(), true)
+	if r.Rows() < 2 {
+		t.Fatalf("filtered set too small to navigate: %d rows", r.Rows())
+	}
+
+	// The cursor starts on a visible, selectable filtered-in row.
+	testutil.Equal(t, r.rows[r.CursorIndex()].selectable(), true)
+
+	// Down arrow navigates WITHIN the filtered set without leaving input mode —
+	// this is the fix (previously Down was ignored while typing, so the operator
+	// could never move the selection into the filtered list).
+	moved := false
+	for i := 0; i < r.Rows(); i++ {
+		before := r.CursorIndex()
+		h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+		if r.CursorIndex() != before {
+			moved = true
+		}
+		// Input mode stays active (query remains editable) and the cursor only
+		// ever rests on a selectable row that survived the filter.
+		testutil.Equal(t, r.Filtering(), true)
+		testutil.Equal(t, r.rows[r.CursorIndex()].selectable(), true)
+	}
+	testutil.Equal(t, moved, true)
+
+	// Up arrow likewise navigates back up while still typing.
+	atBottom := r.CursorIndex()
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	if r.CursorIndex() == atBottom {
+		t.Error("Up did not move the cursor within the filtered set")
+	}
+	testutil.Equal(t, r.Filtering(), true)
+
+	// Typing still extends the query after navigating (arrows didn't break input).
+	h(tcell.NewEventKey(tcell.KeyRune, 'x', tcell.ModNone), noFocus)
+	testutil.Equal(t, r.filterQuery, "cox")
+}
+
 func TestRail_FilterInputLineAndTitleRender(t *testing.T) {
 	sim := tcell.NewSimulationScreen("UTF-8")
 	testutil.NoError(t, sim.Init())
@@ -268,6 +318,52 @@ func TestPage_MutationKeysAreFilterInputWhileTyping(t *testing.T) {
 	// Enter accepts — normal mutation routing resumes.
 	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
 	testutil.Equal(t, p.RailFiltering(), false)
+}
+
+func TestPage_FilterArrowNavigateThenEnterSelects(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "team")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkalpha", db.HeraKindWorker, "t-alpha")
+	seedBoundRole(t, d, orch, "wkbeta", db.HeraKindWorker, "t-beta")
+	p := NewHeraPage(d)
+	p.Refresh()
+
+	var reattached Selection
+	gotReattach := 0
+	p.OnReattach = func(s Selection) { reattached = s; gotReattach++ }
+
+	h := p.InputHandler()
+	// Enter filter mode; "wk" narrows to the two workers (plus their orch
+	// ancestry header) — "coord" does not match.
+	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus)
+	for _, ru := range "wk" {
+		h(tcell.NewEventKey(tcell.KeyRune, ru, tcell.ModNone), noFocus)
+	}
+	testutil.Equal(t, p.RailFiltering(), true)
+
+	// Down arrow walks the filtered rows WHILE typing until the selection lands
+	// on a worker role — the previously-impossible "navigate into the filtered
+	// list" path.
+	for i := 0; i < p.Rail().Rows(); i++ {
+		if role := p.Rail().Selection().Role; role != nil && role.Kind == db.HeraKindWorker {
+			break
+		}
+		h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+	}
+	sel := p.Rail().Selection()
+	testutil.Equal(t, sel.Role != nil, true)
+	testutil.Equal(t, sel.Role.Kind, db.HeraKindWorker)
+	// Navigating did not exit input mode (query stays editable).
+	testutil.Equal(t, p.RailFiltering(), true)
+
+	// Enter commits the filter (exits input mode); a SECOND Enter acts on the
+	// navigated row (reattach), mirroring the Tasks-tab `/` filter.
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, p.RailFiltering(), false)
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, gotReattach, 1)
+	testutil.Equal(t, reattached.Role != nil && reattached.Role.Kind == db.HeraKindWorker, true)
 }
 
 func TestRail_FilterMatchesBridgeWorkerOnly(t *testing.T) {

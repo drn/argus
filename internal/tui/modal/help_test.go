@@ -80,6 +80,10 @@ func TestHelpModal_Draw(t *testing.T) {
 	testutil.Contains(t, body, "prune all finished coords + agents")
 	// BUG-002: Cmd+Up/Down rail-selection key must be discoverable in the overlay.
 	testutil.Contains(t, body, "move rail selection (stay focused in pane)")
+	// The `/` filter must advertise that ↑/↓ navigate the filtered set while
+	// typing — fail the build if that discoverability is dropped (the fix that
+	// made the filtered list selectable).
+	testutil.Contains(t, body, "↑/↓ navigate")
 }
 
 func TestHelpModal_DrawZeroSizeNoOp(t *testing.T) {
