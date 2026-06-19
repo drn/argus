@@ -912,6 +912,12 @@ func (s *Server) handleToolsCall(req *Request) *Response {
 		return s.toolHeraTreeUpdates(req.ID, params.Arguments)
 	case "hera_get_messages":
 		return s.toolHeraGetMessages(req.ID, params.Arguments)
+	case "hera_plan_node":
+		return s.toolHeraPlanNode(req.ID, params.Arguments)
+	case "hera_block":
+		return s.toolHeraBlock(req.ID, params.Arguments)
+	case "hera_plan":
+		return s.toolHeraPlan(req.ID, params.Arguments)
 	default:
 		// Plugin-registered tool? PR 4 — dispatch into the registry which
 		// HTTP-POSTs to the plugin's callback_url and returns the response

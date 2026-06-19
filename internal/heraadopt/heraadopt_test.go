@@ -135,3 +135,31 @@ func TestReconcileBindings_RealDB(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(live), 0)
 }
+
+// TestReconcileBindings_LeavesPlannedRoleIntact pins the add-hera-plan-substrate
+// invariant: a planned node is a worker role with NO binding, so the
+// binding-keyed reconcile sweep must never see it, end it, or mangle it.
+func TestReconcileBindings_LeavesPlannedRoleIntact(t *testing.T) {
+	d, err := db.OpenInMemory()
+	testutil.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	o, err := d.CreateHeraOrchestrator("orch")
+	testutil.NoError(t, err)
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: o.ID, Name: "2c-planned", ArgusProject: "proj", Prompt: "later",
+	})
+	testutil.NoError(t, err)
+
+	n, err := ReconcileBindings(d)
+	testutil.NoError(t, err)
+	testutil.Equal(t, n, 0) // no live bindings to reconcile
+
+	// The planned role still exists and is still a planned node.
+	got, err := d.HeraRole(planned.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, planned.ID)
+	nodes, err := d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(nodes), 1)
+}

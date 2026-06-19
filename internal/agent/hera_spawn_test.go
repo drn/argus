@@ -273,6 +273,117 @@ func TestSpawnHeraWorker_RoleBindingFailureUnwinds(t *testing.T) {
 	testutil.Equal(t, len(live), 0)
 }
 
+func TestHeraCheckInOrientation_NamesAndInstructsPoll(t *testing.T) {
+	got := HeraCheckInOrientation("orch", "coord")
+	testutil.Equal(t, strings.Contains(got, `"orch"`), true)
+	testutil.Equal(t, strings.Contains(got, `"coord"`), true)
+	// The standing order: check in via hera_send, then POLL hera_inbox (pulled,
+	// not pushed) for go/wait before real work.
+	testutil.Equal(t, strings.Contains(got, "hera_send"), true)
+	testutil.Equal(t, strings.Contains(got, "hera_inbox"), true)
+	testutil.Equal(t, strings.Contains(strings.ToLower(got), "poll"), true)
+	testutil.Equal(t, strings.Contains(strings.ToLower(got), "go"), true)
+	testutil.Equal(t, strings.Contains(strings.ToLower(got), "wait"), true)
+}
+
+// TestMaterializeHeraWorker_BindsPreCreatedRole asserts materialization binds and
+// starts the EXISTING planned role (no second role/agent), resolves the worktree
+// + base_branch at materialize time, and delivers the check-in-prefixed prompt.
+func TestMaterializeHeraWorker_BindsPreCreatedRole(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{sessionPID: 99}
+	orch, err := d.CreateHeraOrchestrator("orch")
+	testutil.NoError(t, err)
+
+	// Pre-create the planned role (no binding).
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "2b-impl", ArgusProject: "proj", Prompt: "verbatim",
+	})
+	testutil.NoError(t, err)
+
+	rolesBefore, err := d.ListHeraRoles(orch.ID, true)
+	testutil.NoError(t, err)
+
+	checkInPrompt := HeraCheckInOrientation("orch", "coord") + "\n\n---\n\nverbatim"
+	res, err := MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role:       planned,
+		TaskPrompt: checkInPrompt,
+		Project:    "proj",
+		// Branch left empty: resolution from blocker branches is the gater's
+		// job (TestGater_* exercises it against real blocker branches); the
+		// project default (HEAD) is used here.
+	})
+	testutil.NoError(t, err)
+
+	// Bound the SAME role (no new role minted).
+	testutil.Equal(t, res.Role.ID, planned.ID)
+	rolesAfter, err := d.ListHeraRoles(orch.ID, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(rolesAfter), len(rolesBefore))
+	testutil.Equal(t, fr.startCalls, 1)
+
+	// A live binding now exists for the planned role.
+	bnd, err := d.HeraLiveBindingByRole(planned.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, bnd.ArgusTaskID, res.Task.ID)
+
+	// The task carries the check-in-prefixed prompt.
+	got, err := d.Get(res.Task.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Prompt, checkInPrompt)
+
+	// It is no longer a planned node (it has a binding now).
+	planNodes, err := d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(planNodes), 0)
+}
+
+// TestMaterializeHeraWorker_NilRole guards the nil-role input.
+func TestMaterializeHeraWorker_NilRole(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	_, err := MaterializeHeraWorker(d, &fakeRunner{}, HeraMaterializeInput{Role: nil, Project: "proj"})
+	if err == nil {
+		t.Fatal("expected error on nil role")
+	}
+}
+
+// TestMaterializeHeraWorker_StartFailureEndsBindingNotRole forces runner.Start to
+// fail and asserts the compensating cleanup ENDS the binding but LEAVES the
+// planned role intact (authored data must survive a failed materialize).
+func TestMaterializeHeraWorker_StartFailureEndsBindingNotRole(t *testing.T) {
+	repo := initGitRepo(t)
+	d := createTestDB(t, repo)
+	fr := &fakeRunner{startErr: errors.New("boom")}
+	orch, err := d.CreateHeraOrchestrator("orch")
+	testutil.NoError(t, err)
+	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
+		OrchestratorID: orch.ID, Name: "2b-impl", ArgusProject: "proj", Prompt: "v",
+	})
+	testutil.NoError(t, err)
+	before, _ := d.Tasks()
+
+	_, err = MaterializeHeraWorker(d, fr, HeraMaterializeInput{
+		Role: planned, TaskPrompt: "body", Project: "proj",
+	})
+	if err == nil {
+		t.Fatal("expected materialize to fail when runner.Start errors")
+	}
+
+	// No orphan task.
+	after, _ := d.Tasks()
+	testutil.Equal(t, len(after), len(before))
+	// The role survives (authored data).
+	got, err := d.HeraRole(planned.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ID, planned.ID)
+	// No live binding left.
+	live, err := d.ListHeraLiveBindings()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(live), 0)
+}
+
 // TestSpawnHeraWorker_StartFailureUnwindsRoleAndBinding forces runner.Start to
 // fail AFTER the role+binding are written and asserts the compensating cleanup
 // removes the role (cascading the binding) — no orphan role/binding/task.

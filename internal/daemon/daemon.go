@@ -25,6 +25,7 @@ import (
 	"github.com/drn/argus/internal/events"
 	"github.com/drn/argus/internal/gitutil"
 	"github.com/drn/argus/internal/hera"
+	"github.com/drn/argus/internal/heragater"
 	"github.com/drn/argus/internal/inject"
 	injectcodex "github.com/drn/argus/internal/inject/codex"
 	"github.com/drn/argus/internal/kb"
@@ -106,6 +107,7 @@ type Daemon struct {
 	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
+	heraGater *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the
@@ -440,6 +442,22 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 	return &mcp.HeraSpawnResult{Task: res.Task, Role: res.Role, Binding: res.Binding}, nil
 }
 
+// heraGaterMaterialize is the gater's Materializer adapter (add-hera-plan-substrate):
+// it binds + starts a pre-created planned role via the shared
+// agent.MaterializeHeraWorker primitive. The gater resolves project / base_branch /
+// the check-in-prefixed prompt; this adapter just plumbs them into the agent layer.
+func (d *Daemon) heraGaterMaterialize(role *db.HeraRole, taskPrompt, project, branch, backend, model string) error {
+	_, err := agent.MaterializeHeraWorker(d.db, d.runner, agent.HeraMaterializeInput{
+		Role:       role,
+		TaskPrompt: taskPrompt,
+		Project:    project,
+		Branch:     branch,
+		Backend:    backend,
+		Model:      model,
+	})
+	return err
+}
+
 // pollPRStatesOnce runs a single PR-status refresh pass over every eligible
 // task. Eligible = not archived AND has a non-empty Branch AND its cached PR
 // state (task_meta namespace "pr", key "state") is not terminal (merged/closed).
@@ -728,6 +746,25 @@ func (d *Daemon) Serve(sockPath string) error {
 	// directly instead of racing the ticker.
 	go d.runPRPoller()
 
+	// Hera plan-DAG gater (add-hera-plan-substrate). Runs whenever hera is
+	// enabled, independent of the KB/MCP server: it materializes already-authored
+	// planned nodes whose blockers have all reached role-status done. Inert when no
+	// plan exists (empty planned-node list every tick). The ping adapter sends the
+	// failure-hold notice over the same hera.Service / notifier the MCP tools use.
+	if cfg.Hera.Enabled {
+		gaterSvc := hera.New(d.db, d.notifier)
+		d.heraGater = heragater.New(d.db, d.heraGaterMaterialize,
+			func(fromRoleID, coordRoleID int64, body, tldr string) error {
+				// The held planned node (fromRoleID) is the sender, so Service.Send's
+				// self-send guard never trips — it reads as "the node telling its
+				// coordinator it cannot start". Delivery is best-effort (the node has
+				// no live binding, so only the durable store write matters).
+				_, err := gaterSvc.Send(fromRoleID, coordRoleID, body, tldr, nil)
+				return err
+			})
+		go d.heraGater.Start()
+	}
+
 	// Start MCP HTTP server and KB indexer (only when KB is enabled in settings).
 	if cfg.KB.Enabled {
 		mcpSrv := mcp.New(d.db, cfg.KB.HTTPPort, cfg.KB.MetisVaultPath)
@@ -959,6 +996,11 @@ func (d *Daemon) cleanup() {
 	// Stop the scheduler if running.
 	if d.scheduler != nil {
 		d.scheduler.Stop()
+	}
+
+	// Stop the hera plan-DAG gater if running.
+	if d.heraGater != nil {
+		d.heraGater.Stop()
 	}
 
 	// Stop the KB indexer if running.

@@ -101,6 +101,102 @@ func SpawnHeraWorker(database *db.DB, runner SessionProvider, in HeraWorkerSpawn
 	return &HeraWorkerSpawnResult{Task: task, Role: role, Binding: binding}, nil
 }
 
+// HeraMaterializeInput is the payload for materializing a PRE-CREATED planned
+// role into a live worker (add-hera-plan-substrate). Unlike SpawnHeraWorker
+// (which mints a fresh role), this binds and starts the supplied planned role.
+// The role's name/project/prompt are already persisted on the row; the gater
+// resolves Project and Branch (base_branch from the blocker branches) and the
+// check-in-prefixed TaskPrompt before calling.
+type HeraMaterializeInput struct {
+	Role       *db.HeraRole // the pre-created planned role to bind + start
+	TaskPrompt string       // check-in-prefixed prompt delivered to the session
+	Project    string       // resolved argus project
+	Branch     string       // optional base branch (resolved from blockers)
+	Backend    string       // optional backend override
+	Model      string       // optional per-worker model override
+}
+
+// MaterializeHeraWorker binds and starts a PRE-CREATED planned role, reusing the
+// EXACT same agent.CreateAndStart + AfterPersist + LIFO-cleanup machinery as
+// born-bound spawn. The ONLY difference from SpawnHeraWorker is that the role
+// already exists (created earlier via the plan-authoring tools): instead of
+// CreateHeraRoleWithBinding (which inserts a fresh role+binding), the hook inserts
+// ONLY the binding (CreateHeraBinding) against in.Role.ID. Materialization is the
+// only way a planned node acquires a binding, agent, worktree, and inbox.
+//
+// The compensating cleanup ends the binding (NOT DeleteHeraRole — the planned
+// role is authored data that must survive a failed materialize so the gater can
+// retry). A binding-insert failure unwinds the task+worktree; a later
+// runner.Start failure ends the binding so no orphan binding is left.
+func MaterializeHeraWorker(database *db.DB, runner SessionProvider, in HeraMaterializeInput) (*HeraWorkerSpawnResult, error) {
+	if in.Role == nil {
+		return nil, fmt.Errorf("materialize: nil role")
+	}
+	var binding *db.HeraBinding
+	task, _, err := CreateAndStart(database, runner, CreateInput{
+		Name:       in.Role.Name,
+		Prompt:     in.TaskPrompt,
+		Project:    in.Project,
+		Backend:    in.Backend,
+		Model:      in.Model,
+		BaseBranch: in.Branch,
+		AutoName:   false, // name is the planner-assigned short-id slug — never rename
+		AfterPersist: func(t *model.Task) (func(), error) {
+			if mErr := database.SetMeta(t.ID, db.HeraMetaNamespace, db.HeraMetaKeyRole, string(db.HeraKindWorker)); mErr != nil {
+				slog.Warn("[hera] materialize: meta role stamp failed (continuing)", "task", t.ID, "err", mErr)
+			}
+			b, cErr := database.CreateHeraBinding(db.CreateHeraBindingInput{
+				RoleID:         in.Role.ID,
+				OrchestratorID: in.Role.OrchestratorID,
+				ArgusTaskID:    t.ID,
+				WorktreePath:   t.Worktree,
+			})
+			if cErr != nil {
+				return nil, cErr
+			}
+			binding = b
+			// Compensating cleanup for a LATER failure (runner.Start): END the
+			// binding (do NOT delete the role — the planned node is authored data
+			// the gater retries against). Ending the binding makes the role a
+			// planned node again (no live binding), but ListHeraPlannedNodes keys
+			// on "no binding EVER", so a once-materialized role won't re-fire; that
+			// is the correct semantics for a failed start (it is held, not retried,
+			// matching the never-double-spawn guard).
+			cleanup := func() {
+				if eErr := database.EndHeraBinding(b.ID, "materialize_failed"); eErr != nil {
+					slog.Warn("[hera] materialize unwind: end binding failed", "binding_id", b.ID, "err", eErr)
+				}
+			}
+			return cleanup, nil
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &HeraWorkerSpawnResult{Task: task, Role: in.Role, Binding: binding}, nil
+}
+
+// HeraCheckInOrientation is the standing-order prefix prepended to a
+// gater-materialized worker's prompt. It instructs the worker to FIRST message
+// its coordinator that it has started, then POLL hera_inbox in a loop for a
+// go/wait decision before doing real work. Worker-PULLED, never a passive push:
+// mid-flight pushed doorbells to a busy/fresh worker are unreliable (a known
+// hera gotcha), so the worker reads its durable inbox rather than waiting to be
+// told. Building this as "wait to be told" would hang the worker on a go that
+// silently never arrived.
+func HeraCheckInOrientation(orchestrator, coordinator string) string {
+	return fmt.Sprintf(
+		"You are a worker in hera orchestrator %q under coordinator %q. You were "+
+			"materialized automatically because your upstream dependencies finished. "+
+			"BEFORE doing any real work: (1) send a brief check-in to your coordinator "+
+			"with hera_send (say you have started and are awaiting go/wait); (2) then POLL "+
+			"hera_inbox in a loop (re-call it every minute or so) until you READ a 'go' or "+
+			"'wait' reply — do NOT sit idle waiting to be messaged, the reply arrives via "+
+			"your inbox, not a push. On 'go', proceed; on 'wait', keep polling hera_inbox "+
+			"until 'go'. When opening pull requests, use mcp__argus__iris_gh_pr_create.",
+		orchestrator, coordinator)
+}
+
 // HeraCoordinatorSpawnInput is the resolved payload for a born-bound ROOT
 // coordinator spawn (the rail `n` key). It creates a brand-new top-level
 // orchestrator, a coordinator role + binding, and the argus task that backs
