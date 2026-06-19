@@ -32,3 +32,11 @@
 - [x] 6.1 `context/knowledge/gotchas/hera-view.md`: document the needs-input subtree rollup, cross-bridge traversal, and precedence.
 - [x] 6.2 `openspec validate hera-needsinput-rollup --strict` passes.
 - [x] 6.3 `make pre-pr` passes clean.
+
+## 7. Clear-propagation + in_progress gate (BUG-023)
+
+- [x] 7.1 `buildRoleView` gates `rv.NeedsInput = needsInput[taskID] && task.Status==in_progress`, so a finished (in_review/complete) worker stops contributing to the rollup even while the sticky `needsInputIDs` set still flags it; a task missing from the snapshot is treated as not in_progress.
+- [x] 7.2 Confirm the rollup recomputes on every refresh (each tick on the Hera tab; after `s`/`S` via `heraStatusStep`→`heraRefresh`), so clears propagate to the root with no separate clear path.
+- [x] 7.3 `model_test.go`: a finished worker clears its own + ancestor "(?)" while still flagged (`TestBuildModel_NeedsInputClearsWhenWorkerFinishes`); stepping a deep worker off `blocked` clears the root rollup (`TestRollupNeedsInput_BlockedClearsToRoot`); SET path (BUG-018) not regressed.
+- [x] 7.4 `context/knowledge/gotchas/hera-view.md`: document the clear-propagation + in_progress gate + the two independent `(?)` sources.
+- [x] 7.5 Delta added describing the CLEAR requirement; `openspec validate --strict` passes.

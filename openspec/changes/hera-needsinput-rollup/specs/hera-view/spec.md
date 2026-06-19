@@ -62,3 +62,44 @@ needs-input parameter, `rollupNeedsInput`, `orchSubtreeNeedsInput`),
 
 - **WHEN** the bridge graph contains a cycle (A bridges B and B bridges A)
 - **THEN** the rollup terminates and still reports needs-input for the reachable members
+
+### Requirement: Needs-input "(?)" CLEARS and propagates up when a descendant resolves (area rail)
+
+The needs-input "(?)" rollup SHALL clear on every ancestor coordinator,
+transitively to the root, as soon as a descendant's needs-input resolves —
+mirroring the SET propagation in reverse — on the next rail refresh. The system
+SHALL recompute the rollup from the current model on each refresh (each app tick
+while the Hera tab is active, and after each `s`/`S` status step), so a cleared
+descendant clears its ancestors with no stale `SubtreeNeedsInput` carried between
+builds.
+
+Because the authoritative PTY needs-input scan (`App.needsInputIDs`) is STICKY —
+it carries a task forward while the `agent.DetectNeedsInput` marker remains in
+the session log tail and the session is still running — the system SHALL gate the
+per-role PTY needs-input signal on the bound task being `in_progress`. A worker
+whose task has finished (rolled to `in_review`/`complete`) SHALL NOT contribute
+the PTY needs-input signal to the rollup even while its task remains in the
+`needsInputIDs` set, so an ancestor coordinator's "(?)" clears as soon as the
+descendant finishes. A task missing from the task snapshot (read failure) SHALL
+be treated as not in_progress.
+
+The role's own hera `blocked` status SHALL remain an INDEPENDENT, ungated
+needs-input source (it is a deliberate "I'm blocked" assertion, honest even while
+the task is in_progress); it SHALL clear by stepping the role off `blocked`
+(`s`/`S`). The gate SHALL be hera-view-local: the task list's sticky needs-input
+semantics are unchanged.
+
+Derived from: `internal/tui/hera/model.go` (`buildRoleView` gates `RoleView.NeedsInput`
+on `task.Status == in_progress`; `rollupNeedsInput` recomputed per `BuildModel`),
+`internal/tui/heraactions.go` (`heraStatusStep` → `heraRefresh`),
+`internal/tui/app.go` (`SetNeedsInput` + `ScheduleRefresh` each tick).
+
+#### Scenario: A finished worker stops rolling up "(?)" even while still flagged
+
+- **WHEN** a worker that was in needs-input finishes (its bound task rolls to in_review) but the App's needs-input set still flags the task because its final prompt lingers in the log tail
+- **THEN** the worker's own row and every ancestor coordinator stop rendering "(?)" on the next refresh
+
+#### Scenario: Stepping a descendant off `blocked` clears the ancestor rollup
+
+- **WHEN** a deep worker's hera status is stepped off `blocked` (and it has no live PTY needs-input)
+- **THEN** every intervening sub-coordinator AND the root coordinator stop rendering "(?)" on the next refresh
