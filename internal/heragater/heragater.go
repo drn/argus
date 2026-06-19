@@ -244,11 +244,19 @@ func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
 	// Not done. Is the session still alive?
 	binding, err := w.db.HeraLiveBindingByRole(blockerID)
 	if err != nil {
-		// No live binding (ended or never bound) → the session is gone without
-		// reaching done. A never-bound blocker (still a planned node itself) also
-		// lands here: it has not started, let alone finished, so the dependent
-		// is held — never spawn behind an upstream node that has not run.
-		return blockerFailed
+		// No LIVE binding. Two very different cases must NOT be conflated:
+		//   - NEVER bound (no binding ever): the blocker is itself a planned node
+		//     still waiting on its own blockers. It has not failed — it simply has
+		//     not materialized yet. Treat as WORKING so the dependent stays PLANNED.
+		//     (A transitive chain A→B→C must not hold C just because B has not
+		//     materialized while A is still in flight — that was the bug.)
+		//   - HAD a binding that ended without reaching done: its session ran and
+		//     is gone without success → failed.
+		bindings, lErr := w.db.ListHeraBindingsByRole(blockerID)
+		if lErr != nil || len(bindings) == 0 {
+			return blockerWorking // never started yet → pending, not failed
+		}
+		return blockerFailed // ran and ended without done
 	}
 	t, err := w.db.Get(binding.ArgusTaskID)
 	if err != nil || t == nil {
