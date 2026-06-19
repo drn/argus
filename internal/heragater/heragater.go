@@ -25,13 +25,14 @@
 package heragater
 
 import (
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
-	"github.com/drn/argus/internal/uxlog"
 )
 
 // defaultInterval matches the retired depswatcher / cron tick — the workflow is
@@ -82,18 +83,26 @@ func New(database *db.DB, materialize Materializer, ping CoordinatorPinger) *Wat
 	}
 }
 
+// logf routes gater diagnostics to slog (→ the daemon's daemon.log). The gater
+// runs in the daemon process, where uxlog is uninitialized (uxlog is the TUI
+// layer's logger, init'd only in runTUI), so uxlog.Log is a silent no-op here —
+// the gater must use slog like the rest of the daemon's hera code.
+func (w *Watcher) logf(format string, args ...any) {
+	slog.Info(fmt.Sprintf(format, args...))
+}
+
 // Start runs the watcher loop until Stop. Blocks; call in a goroutine. The first
 // tick fires immediately so a node that became ready while the daemon was down
 // materializes without waiting a full interval.
 func (w *Watcher) Start() {
-	uxlog.Log("[heragater] starting (interval=%s)", w.interval)
+	w.logf("[heragater] starting (interval=%s)", w.interval)
 	w.Tick()
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-w.stopCh:
-			uxlog.Log("[heragater] stopped")
+			w.logf("[heragater] stopped")
 			return
 		case <-ticker.C:
 			w.Tick()
@@ -152,7 +161,7 @@ const (
 func (w *Watcher) Tick() {
 	planned, err := w.db.ListHeraPlannedNodes()
 	if err != nil {
-		uxlog.Log("[heragater] list planned nodes: %v", err)
+		w.logf("[heragater] list planned nodes: %v", err)
 		return
 	}
 	for _, node := range planned {
@@ -183,7 +192,7 @@ func (w *Watcher) Tick() {
 func (w *Watcher) classify(node *db.HeraRole) (nodeState, *db.HeraRole) {
 	blockerIDs, err := w.db.HeraBlockersOf(node.ID)
 	if err != nil {
-		uxlog.Log("[heragater] blockers of %d: %v", node.ID, err)
+		w.logf("[heragater] blockers of %d: %v", node.ID, err)
 		return statePlanned, nil // transient: leave planned, retry next tick
 	}
 	if len(blockerIDs) == 0 {
@@ -259,7 +268,7 @@ func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
 func (w *Watcher) materializeNode(node *db.HeraRole) {
 	orch, err := w.db.HeraOrchestrator(node.OrchestratorID)
 	if err != nil {
-		uxlog.Log("[heragater] materialize %d: resolve orch: %v", node.ID, err)
+		w.logf("[heragater] materialize %d: resolve orch: %v", node.ID, err)
 		return
 	}
 	coordName := "coord"
@@ -271,10 +280,10 @@ func (w *Watcher) materializeNode(node *db.HeraRole) {
 	taskPrompt := agent.HeraCheckInOrientation(orch.Name, coordName) + "\n\n---\n\n" + node.Prompt
 
 	if err := w.materialize(node, taskPrompt, project, branch, "", ""); err != nil {
-		uxlog.Log("[heragater] materialize %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
+		w.logf("[heragater] materialize %d (%s) FAILED (stays planned, retry next tick): %v", node.ID, node.Name, err)
 		return
 	}
-	uxlog.Log("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
+	w.logf("[heragater] materialized node %d (%s) in orch %q (base_branch=%q)", node.ID, node.Name, orch.Name, branch)
 	if cb := w.materializeCallback(); cb != nil {
 		cb(node)
 	}
@@ -328,7 +337,7 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 	}
 	coords, err := w.db.ListHeraRolesByKind(node.OrchestratorID, db.HeraKindCoordinator)
 	if err != nil || len(coords) == 0 {
-		uxlog.Log("[heragater] hold %d: no coordinator to ping: %v", node.ID, err)
+		w.logf("[heragater] hold %d: no coordinator to ping: %v", node.ID, err)
 		return
 	}
 	body := "Planned node " + node.Name + " is HELD: its blocker " + failedBlocker.Name +
@@ -340,7 +349,7 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 			// A failed ping must NOT mark the key — leave it unset so the next tick
 			// retries. Otherwise a transient delivery failure would silently swallow
 			// the hold notice, violating the "hold AND notify" contract.
-			uxlog.Log("[heragater] hold %d: ping coordinator failed (will retry next tick): %v", node.ID, pErr)
+			w.logf("[heragater] hold %d: ping coordinator failed (will retry next tick): %v", node.ID, pErr)
 			return
 		}
 	}
@@ -348,5 +357,5 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 	w.mu.Lock()
 	w.heldPings[key] = true
 	w.mu.Unlock()
-	uxlog.Log("[heragater] held node %d (%s) behind failed blocker %s; pinged coordinator", node.ID, node.Name, failedBlocker.Name)
+	w.logf("[heragater] held node %d (%s) behind failed blocker %s; pinged coordinator", node.ID, node.Name, failedBlocker.Name)
 }
