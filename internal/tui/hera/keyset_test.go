@@ -167,8 +167,8 @@ func TestKeyset_EnterReattachOnDeadSessionThenFocus(t *testing.T) {
 
 	testutil.Equal(t, called, true)
 	testutil.Equal(t, reattached.TaskID(), "tw")
-	// Focus advanced into the coord pane (Enter "enters").
-	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	// Enter on a worker row focuses the AGENT (right) pane, not the coord pane.
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }
 
 func TestKeyset_EnterLiveWorkerFiresReattach(t *testing.T) {
@@ -186,7 +186,8 @@ func TestKeyset_EnterLiveWorkerFiresReattach(t *testing.T) {
 
 	testutil.Equal(t, called, true)
 	testutil.Equal(t, got.TaskID(), "tw")
-	testutil.Equal(t, p.Machine().State(), FocusCoord)
+	// Enter on a live worker row focuses the AGENT (right) pane.
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }
 
 func TestKeyset_EnterLiveCoordinatorDoesNotReattach(t *testing.T) {
@@ -220,6 +221,23 @@ func TestKeyset_EnterDeadCoordinatorReattaches(t *testing.T) {
 	// The coordinator is folded into the orchestrator header (rail-nesting), so the
 	// reattached selection carries no Role row; its task resolves via FocusTaskID.
 	testutil.Equal(t, got.FocusTaskID(), "tc")
+	// Enter on a coordinator row focuses the COORD (middle) pane.
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
+}
+
+// TestKeyset_EnterCoordinatorFocusesCoordPane verifies that Enter on a live
+// coordinator header (navigate-only) advances focus to FocusCoord, not FocusAgent.
+func TestKeyset_EnterCoordinatorFocusesCoordPane(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	h := p.InputHandler()
+	// Move cursor back to the orchestrator header (coordinator row 0).
+	h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+	// Wire a live session for the coordinator so it is navigate-only.
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"tc": {id: "tc", alive: true}}))
+
+	h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+
+	testutil.Equal(t, p.Machine().State(), FocusCoord)
 }
 
 func TestKeyset_RemoteModeMutationKeysInert(t *testing.T) {
