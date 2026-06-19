@@ -514,6 +514,23 @@ func (d *DB) createHeraTables() error {
 			cursor     INTEGER NOT NULL,
 			updated_at TEXT NOT NULL
 		);
+
+		-- Plan-DAG blocking edges (add-hera-plan-substrate). A directed edge
+		-- (blocked_role_id, blocker_role_id) means "blocked waits on blocker to
+		-- reach hera role-status done before it materializes". FK CASCADE on both
+		-- endpoints so a role delete prunes its edges (mirroring tree_read_cursors
+		-- BUG-034 — a bare REFERENCES would PIN the role under PRAGMA foreign_keys=ON
+		-- and block role/orchestrator delete with error 787). The composite PK
+		-- guards against duplicate edges. The same-orchestrator endpoint constraint
+		-- and the cycle check are enforced app-side at insert (AddHeraBlock), not in
+		-- the schema, because SQLite cannot express either declaratively.
+		CREATE TABLE IF NOT EXISTS hera_blocks (
+			blocked_role_id INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			blocker_role_id INTEGER NOT NULL REFERENCES hera_roles(id) ON DELETE CASCADE,
+			created_at      TEXT NOT NULL,
+			PRIMARY KEY (blocked_role_id, blocker_role_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_hera_blocks_blocker ON hera_blocks(blocker_role_id);
 	`
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return fmt.Errorf("creating hera tables: %w", err)
