@@ -76,6 +76,7 @@ var HelpSections = []HelpSection{
 			{"Tab", "enter pane (then Tab → agent autocomplete)"},
 			{"ctrl+alt+← / →", "move between panes; ctrl+q back to rail"},
 			{"ctrl+z", "fullscreen pane"},
+			{"ctrl+y", "copy staged text (focused pane)"},
 			{"Enter", "enter pane (revive dead/suspended session)"},
 			{"w", "spawn worker under coordinator (new-task modal)"},
 			{"n", "new coordinator (new-task modal)"},

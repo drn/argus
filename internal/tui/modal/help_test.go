@@ -66,6 +66,9 @@ func TestHelpModal_Draw(t *testing.T) {
 	// Hera rail Enter label must advertise reviving a dead/suspended session —
 	// fail the build if the revive wording is silently reverted (tasks.md 4.1).
 	testutil.Contains(t, body, "revive dead/suspended session")
+	// Hera focused-pane ctrl+y copy-staged-clipboard binding must be discoverable
+	// — fail the build if it's ever silently dropped.
+	testutil.Contains(t, body, "copy staged text (focused pane)")
 	// The `J` adopt/reparent rail key must be discoverable in the overlay so a
 	// future removal of the binding fails the build (keybinding-help contract).
 	testutil.Contains(t, body, "adopt freelancer / reparent coordinator")

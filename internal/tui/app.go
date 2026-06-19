@@ -681,6 +681,10 @@ func (a *App) buildUI() {
 		// (retire `R` and the rail-wide `Ctrl+R` prune were removed).
 		a.heraPage.OnNewCoordinator = a.heraNewCoordinator
 		a.heraPage.OnClearArchive = a.heraClearArchive
+		// ctrl+y copies the agent-staged clipboard payload for the focused pane's
+		// task (resolved by the page from FocusedTerminalTaskID). Daemon-backed
+		// only — the copy method no-ops gracefully under the in-process runner.
+		a.heraPage.OnCopyClipboard = a.copyStagedClipboardForHeraPane
 
 		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
 		// a node's agent view) is wired — the legacy link/unlink/halt actions are
@@ -1959,6 +1963,10 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 		// Late-bind any coordinator/worker session that came up after the pane
 		// was bound (main thread — SetSession is main-goroutine-only).
 		a.heraPage.Reconcile()
+		// Refresh the agent-staged clipboard hint for the focused terminal pane's
+		// task (single RPC, same as the agent view's per-tick poll). Gates the
+		// ctrl+y interception + drives the pane's "(ctrl+y copy)" affordance.
+		a.refreshHeraClipboardHint()
 	}
 	a.updateAttentionBar()
 	a.statusbar.SetTasks(a.tasks)
