@@ -107,7 +107,7 @@ type Daemon struct {
 	kbIndexer *kb.Indexer          // set when KB is enabled, stopped in cleanup
 	apiServer *api.Server          // set when API is enabled, shut down in cleanup
 	scheduler *scheduler.Scheduler // recurring scheduled-task firer; always started
-	heraGater *heragater.Watcher  // hera plan-DAG gater; started when hera enabled
+	heraGater *heragater.Watcher   // hera plan-DAG gater; started when hera enabled
 	clipboard *clipboard.Store     // agent-staged clipboard, in-memory
 
 	// Boot identity — recorded once at New() so the TUI can detect when the

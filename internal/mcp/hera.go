@@ -26,6 +26,11 @@ type HeraStore interface {
 	HeraRoleByName(orchID int64, name string) (*db.HeraRole, error)
 	ListHeraRolesByKind(orchID int64, kind db.HeraRoleKind) ([]*db.HeraRole, error)
 	CreateHeraRoleWithBinding(roleIn db.CreateHeraRoleInput, taskID, worktreePath string) (*db.HeraRole, *db.HeraBinding, error)
+	// Plan-DAG authoring (add-hera-plan-substrate). Coordinator-only at the tool
+	// layer; the store enforces cycle + same-orchestrator constraints.
+	CreateHeraPlannedRole(in db.CreateHeraRoleInput) (*db.HeraRole, error)
+	AddHeraBlock(blockedRoleID, blockerRoleID int64) error
+	UniqueHeraRoleName(orchID int64, base string) (string, error)
 	// Bindings
 	HeraLiveBindingByTask(taskID string) (*db.HeraBinding, error)
 	HeraLiveBindingByTaskAndOrchestrator(taskID string, orchID int64) (*db.HeraBinding, error)
@@ -47,10 +52,12 @@ type HeraStore interface {
 	RollHeraWorkerToReview(taskID string) (bool, error)
 }
 
-// heraToolDefs contains the 9 hera_* tool schemas, ported verbatim from
-// Hera's daemon.toolDefinitions() — same param names, descriptions, and
-// required lists as the external Hera daemon so agents have an identical
-// surface when running natively.
+// heraToolDefs contains the 12 hera_* tool schemas. The first 9 are ported
+// verbatim from Hera's daemon.toolDefinitions() — same param names,
+// descriptions, and required lists as the external Hera daemon so agents have an
+// identical surface when running natively. The last 3 (hera_plan_node /
+// hera_block / hera_plan) are the native plan-DAG authoring tools
+// (add-hera-plan-substrate); they are coordinator-only like hera_spawn_worker.
 var heraToolDefs = []Tool{
 	{
 		Name:        "hera_new_orchestrator",
@@ -178,6 +185,72 @@ var heraToolDefs = []Tool{
 				"ids":          map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "integer"}, "description": "Message IDs to fetch"},
 			},
 			"required": []string{"cwd", "ids"},
+		},
+	},
+	{
+		Name:        "hera_plan_node",
+		Description: "Create a PLANNED node: a worker role with NO live agent, worktree, or inbox yet — a durable plan entry costing one row. Coordinator-only. The node materializes into a live worker automatically once all its blockers (declared via hera_block) reach role-status done. Bake a stable short-id prefix into the name (e.g. '2c-fact-checker': number = serial stage, letter = parallel member). The prompt is delivered to the worker on materialization (a check-in standing-order is prepended automatically).",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"name":         map[string]interface{}{"type": "string", "description": "Short-id-prefixed node name (e.g. '2c-fact-checker'); made unique within the orchestrator automatically"},
+				"prompt":       map[string]interface{}{"type": "string", "description": "Task prompt delivered to the worker when the node materializes"},
+				"project":      map[string]interface{}{"type": "string", "description": "(optional) argus project for the worker. Defaults to the coordinator's own project"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "name", "prompt"},
+		},
+	},
+	{
+		Name:        "hera_block",
+		Description: "Add a blocking edge between two roles in the same orchestrator: `blocked` waits on `blocker` reaching role-status done before it materializes. Coordinator-only. Rejected if it would create a cycle or if the two roles are in different orchestrators (v1 sequences sub-teams at the parent level instead). Roles are addressed by name within the caller's orchestrator.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd":          map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"blocked":      map[string]interface{}{"type": "string", "description": "Name of the role that WAITS (the dependent)"},
+				"blocker":      map[string]interface{}{"type": "string", "description": "Name of the role that must reach role-status done FIRST"},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "blocked", "blocker"},
+		},
+	},
+	{
+		Name:        "hera_plan",
+		Description: "Submit a whole plan graph in one transactional call: a set of planned nodes plus the blocking edges among them. Coordinator-only. Nodes are created first, then edges (cycle-checked, single-orchestrator) reference nodes by name. Either the whole graph is created or, on any cycle/cross-orchestrator/validation error, nothing is. Use this to author a multi-phase plan at once instead of many hera_plan_node + hera_block calls.",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"cwd": map[string]interface{}{"type": "string", "description": "Coordinator's worktree path (use $PWD)"},
+				"nodes": map[string]interface{}{
+					"type":        "array",
+					"description": "Planned nodes. Each: {name (short-id-prefixed), prompt, project (optional)}",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"name":    map[string]interface{}{"type": "string"},
+							"prompt":  map[string]interface{}{"type": "string"},
+							"project": map[string]interface{}{"type": "string"},
+						},
+						"required": []string{"name", "prompt"},
+					},
+				},
+				"edges": map[string]interface{}{
+					"type":        "array",
+					"description": "Blocking edges. Each: {blocked, blocker} naming nodes (by name) in this plan or existing roles in the orchestrator",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"blocked": map[string]interface{}{"type": "string"},
+							"blocker": map[string]interface{}{"type": "string"},
+						},
+						"required": []string{"blocked", "blocker"},
+					},
+				},
+				"orchestrator": map[string]interface{}{"type": "string", "description": "(optional) Disambiguates when the calling task holds multiple live coordinator bindings"},
+			},
+			"required": []string{"cwd", "nodes"},
 		},
 	},
 }

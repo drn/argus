@@ -168,16 +168,18 @@ func (w *Watcher) Tick() {
 	}
 }
 
-// classify computes a node's state from its blockers. Returns the failing
-// blocker role (for the hold ping) when stateHeld. A node with NO blockers is
-// ready (nothing to wait on). The order of checks matters: a single still-working
-// blocker keeps the node planned even if another blocker failed — we only HOLD
-// when a blocker definitively ended without done AND no blocker is still working
-// would be too strict; instead any failed blocker holds (you cannot proceed past
-// dead upstream work), but a working blocker is reported as planned so the ping
-// doesn't fire while work may still complete. We therefore scan all blockers:
-// failed wins over working for the hold decision, but we never materialize unless
-// ALL are done.
+// classify computes a node's state from its blockers, returning the failing
+// blocker role (for the hold ping) when stateHeld. Rules:
+//   - No blockers → ready (nothing to wait on).
+//   - All blockers done → ready (materialize).
+//   - Any blocker failed (session ended without done) → held; you cannot proceed
+//     past dead upstream work. The first failed blocker is reported for the ping.
+//   - Otherwise (some blocker still working, none failed) → planned: keep waiting,
+//     no ping, because the work may still complete.
+//
+// A node is materialized ONLY when every blocker is done; failed beats working for
+// the held-vs-planned decision so a dependent never silently waits forever behind
+// a crashed blocker.
 func (w *Watcher) classify(node *db.HeraRole) (nodeState, *db.HeraRole) {
 	blockerIDs, err := w.db.HeraBlockersOf(node.ID)
 	if err != nil {
