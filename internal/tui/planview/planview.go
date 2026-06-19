@@ -252,6 +252,11 @@ type Widget struct {
 	// [stage, slot]. A group slot is collapsed unless present here (Stage 4).
 	fanned map[[2]int]bool
 
+	// dataSig is the structural signature of the currently-displayed snapshot
+	// (projectionSig). UpdateData no-ops when the incoming signature matches, so a
+	// refresh tick that re-projects an unchanged plan never disturbs the cursor.
+	dataSig uint64
+
 	// navStack holds the parent orchestrators' snapshots saved on drill-in (D6).
 	// Each frame is the full render state to restore on PopOrch; the live fields
 	// (nodes/edges/title/cursor/...) always describe the *current* orchestrator,
@@ -292,23 +297,16 @@ func (w *Widget) SetTitle(title string) { w.title = title }
 
 // SetData installs a new plan snapshot: the node set plus the blocking edges.
 // Recomputes the stage layout (Kahn longest-path over the edges, D3), detects
-// parallel groups (D4), and clamps the cursor to the new node set.
+// parallel groups (D4), and RESETS the cursor + fan-out to stage 0, slot 0.
+//
+// SetData is the full-reset path: it is correct for a genuine selection change
+// (a different coordinator's plan) and for the drill-in PushOrch/PopOrch
+// gestures, where the prior cursor/fan-out is meaningless against the new graph.
+// It is WRONG for the ~1s refresh tick re-projecting the SAME orchestrator's
+// plan — that path must call UpdateData, which preserves the user's cursor and
+// fanned groups. See gotchas/hera-view.md.
 func (w *Widget) SetData(nodes []Node, edges []Edge) {
-	w.nodes = make(map[string]Node, len(nodes))
-	w.order = w.order[:0]
-	for _, n := range nodes {
-		w.nodes[n.ID] = n
-		w.order = append(w.order, n.ID)
-	}
-	w.edges = edges
-
-	// No plan authored: no planned nodes and no edges (D1). Render every node as
-	// one flat edgeless stage.
-	w.noPlan = !hasPlan(nodes, edges)
-
-	w.computeStages(nodes, edges)
-	w.computeLabels(nodes)
-	w.buildSlots(nodes, edges)
+	w.installLayout(nodes, edges)
 	// A fresh snapshot invalidates every prior fan-out and the cursor; reset to
 	// stage 0, slot 0, clamped to the new layout.
 	w.fanned = map[[2]int]bool{}
@@ -318,6 +316,239 @@ func (w *Widget) SetData(nodes []Node, edges []Edge) {
 	uxlog.Log("[planview] SetData: nodes=%d edges=%d stages=%d noPlan=%v",
 		len(nodes), len(edges), len(w.stages), w.noPlan)
 	w.maybeNotifyBranchChange()
+}
+
+// UpdateData re-projects the SAME orchestrator's plan on a refresh tick while
+// PRESERVING the user's UI state. When the projected (nodes, edges) signature is
+// byte-for-byte the structure already displayed, it is a pure no-op (cursor and
+// fanned groups untouched). When the structure changed — a cascade step
+// materialized a planned node, a state flipped, an edge appeared — it recomputes
+// the layout and RE-ANCHORS the cursor to the same node ID (or, on a collapsed
+// group, the same member-id set) when it still exists, clamping when it
+// vanished; it then re-applies fan-out to every group whose member-id set still
+// resolves to a slot.
+//
+// This is the refresh-safe counterpart to SetData: applySelection runs every
+// ~1s tick, so an unconditional SetData there would reset the cursor to
+// stage0/slot0 and collapse a fanned group out from under the operator. See
+// gotchas/hera-view.md.
+func (w *Widget) UpdateData(nodes []Node, edges []Edge) {
+	sig := projectionSig(nodes, edges)
+	if sig == w.dataSig && len(w.order) == len(nodes) {
+		// Structure is identical to what's displayed: nothing to re-layout, so the
+		// cursor and fan-out stay exactly where the user left them.
+		return
+	}
+
+	// Capture the re-anchor targets before the layout is rebuilt: the node ID the
+	// cursor names (lone node or fanned member), the collapsed-group member set the
+	// cursor sits on, and the member-id set of every currently-fanned group.
+	anchorNodeID := w.CurrentNodeID()
+	anchorGroupKey := w.cursorGroupKey()
+	fannedKeys := w.fannedGroupKeys()
+
+	w.installLayout(nodes, edges)
+	w.reanchorCursor(anchorNodeID, anchorGroupKey)
+	w.reapplyFanned(fannedKeys)
+	// If the cursor re-anchored onto a fanned group via a member node ID, restore
+	// the member index so the cursor names the same node it did before (a collapsed
+	// re-anchor leaves Member -1, which would name no node inside a fanned group).
+	w.restoreFannedMember(anchorNodeID)
+	w.clampCursor()
+
+	uxlog.Log("[planview] UpdateData: nodes=%d edges=%d stages=%d noPlan=%v reanchor=%q",
+		len(nodes), len(edges), len(w.stages), w.noPlan, anchorNodeID)
+	w.maybeNotifyBranchChange()
+}
+
+// installLayout rebuilds the node map, edges, stage layout, labels, and slots
+// from a snapshot WITHOUT touching the cursor or fan-out. Shared by SetData
+// (which then resets the cursor) and UpdateData (which re-anchors it).
+func (w *Widget) installLayout(nodes []Node, edges []Edge) {
+	w.nodes = make(map[string]Node, len(nodes))
+	w.order = w.order[:0]
+	for _, n := range nodes {
+		w.nodes[n.ID] = n
+		w.order = append(w.order, n.ID)
+	}
+	w.edges = edges
+	w.dataSig = projectionSig(nodes, edges)
+
+	// No plan authored: no planned nodes and no edges (D1). Render every node as
+	// one flat edgeless stage.
+	w.noPlan = !hasPlan(nodes, edges)
+
+	w.computeStages(nodes, edges)
+	w.computeLabels(nodes)
+	w.buildSlots(nodes, edges)
+}
+
+// projectionSig hashes a snapshot's structure: every node's ID + State +
+// Drillable, and every edge's endpoints. Two snapshots with the same signature
+// render identical cells, so UpdateData can no-op (preserving cursor/fan-out)
+// when the signature is unchanged. Order-sensitive on purpose — the projection
+// is deterministic, so a stable order means a stable signature.
+func projectionSig(nodes []Node, edges []Edge) uint64 {
+	var h uint64 = 1469598103934665603 // FNV-1a offset basis
+	mix := func(s string) {
+		for i := 0; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= 1099511628211
+		}
+		h ^= 0 // field separator
+		h *= 1099511628211
+	}
+	mixByte := func(b byte) {
+		h ^= uint64(b)
+		h *= 1099511628211
+	}
+	for _, n := range nodes {
+		mix(n.ID)
+		mixByte(byte(n.State))
+		if n.Drillable {
+			mixByte(1)
+		} else {
+			mixByte(0)
+		}
+	}
+	mixByte(0xFF) // node/edge boundary
+	for _, e := range edges {
+		mix(e.From)
+		mix(e.To)
+	}
+	return h
+}
+
+// cursorGroupKey returns the stable key (sorted member-id set) of the collapsed
+// group the cursor currently sits on, or "" when the cursor is on a lone node or
+// a fanned member. Used by UpdateData to re-anchor a group-slot cursor across a
+// re-layout when the member identities are unchanged.
+func (w *Widget) cursorGroupKey() string {
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok || sl.group == nil || w.cursor.Member >= 0 {
+		return ""
+	}
+	return groupKey(sl.group.Members)
+}
+
+// fannedGroupKeys returns the stable member-id-set key of every currently
+// fanned-out group, so UpdateData can re-fan the same groups after a re-layout
+// even when their (stage, slot) coordinates shifted.
+func (w *Widget) fannedGroupKeys() map[string]bool {
+	keys := map[string]bool{}
+	for k := range w.fanned {
+		sl, ok := w.slotAt(k[0], k[1])
+		if ok && sl.group != nil {
+			keys[groupKey(sl.group.Members)] = true
+		}
+	}
+	return keys
+}
+
+// groupKey is the stable identity of a group: its member IDs, sorted and joined.
+// A re-layout that preserves a group's membership yields the same key even when
+// the group's (stage, slot) coordinates moved.
+func groupKey(members []string) string {
+	cp := append([]string(nil), members...)
+	sort.Strings(cp)
+	return strings.Join(cp, "\x00")
+}
+
+// reanchorCursor positions the cursor over the same node (or the same collapsed
+// group) it named before a re-layout. anchorNodeID is the node the cursor was
+// on; anchorGroupKey is the member-set key of a collapsed group the cursor sat
+// on (mutually exclusive with anchorNodeID). When neither still resolves, the
+// cursor falls back to stage 0, slot 0 and clampCursor finishes the job.
+func (w *Widget) reanchorCursor(anchorNodeID, anchorGroupKey string) {
+	w.cursor = Cursor{Member: -1}
+	if anchorNodeID != "" {
+		if found := w.locateNode(anchorNodeID); found {
+			return
+		}
+	}
+	if anchorGroupKey != "" {
+		if found := w.locateGroup(anchorGroupKey); found {
+			return
+		}
+	}
+}
+
+// locateNode places the cursor on the node with the given ID: a lone-node slot
+// lands directly on the slot; a node inside a group lands on the group's slot
+// (collapsed, Member -1) so it re-fans cleanly when reapplyFanned runs. Reports
+// whether the node was found.
+func (w *Widget) locateNode(id string) bool {
+	for s := range w.stages {
+		for slotIdx, sl := range w.stages[s] {
+			if sl.group == nil {
+				if sl.nodeID == id {
+					w.cursor = Cursor{Stage: s, Slot: slotIdx, Member: -1}
+					return true
+				}
+				continue
+			}
+			for _, m := range sl.group.Members {
+				if m == id {
+					w.cursor = Cursor{Stage: s, Slot: slotIdx, Member: -1}
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// locateGroup places the cursor on the group slot whose member-id set matches
+// key (the collapsed-group re-anchor). Reports whether the group was found.
+func (w *Widget) locateGroup(key string) bool {
+	for s := range w.stages {
+		for slotIdx, sl := range w.stages[s] {
+			if sl.group != nil && groupKey(sl.group.Members) == key {
+				w.cursor = Cursor{Stage: s, Slot: slotIdx, Member: -1}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// restoreFannedMember sets the cursor's Member index to anchorNodeID's position
+// within the group it now sits on, but only when that slot is a fanned group and
+// anchorNodeID is one of its members. This restores a member-level cursor across
+// a re-layout (the cursor was walking inside a fanned group before the refresh).
+// On a collapsed group or a lone node it leaves Member at -1.
+func (w *Widget) restoreFannedMember(anchorNodeID string) {
+	if anchorNodeID == "" {
+		return
+	}
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok || sl.group == nil || !w.Fanned(w.cursor.Stage, w.cursor.Slot) {
+		return
+	}
+	for i, m := range sl.group.Members {
+		if m == anchorNodeID {
+			w.cursor.Member = i
+			return
+		}
+	}
+}
+
+// reapplyFanned re-fans every group slot whose member-id set is in keys (the
+// set captured before a re-layout). A group that vanished or whose membership
+// changed simply stays collapsed. Run after reanchorCursor so the fan map is
+// rebuilt against the new slot coordinates.
+func (w *Widget) reapplyFanned(keys map[string]bool) {
+	w.fanned = map[[2]int]bool{}
+	if len(keys) == 0 {
+		return
+	}
+	for s := range w.stages {
+		for slotIdx, sl := range w.stages[s] {
+			if sl.group != nil && keys[groupKey(sl.group.Members)] {
+				w.fanned[[2]int{s, slotIdx}] = true
+			}
+		}
+	}
 }
 
 // hasPlan reports whether a snapshot has an authored plan: any planned node or
@@ -1087,17 +1318,48 @@ func (w *Widget) drawHeader(screen tcell.Screen, inner widget.InnerRect) {
 	}
 }
 
-// drawStages paints each stage as a row of chips/group boxes with single-line
-// vertical edges between consecutive stages.
+// chipGap is the blank-column run between two chips/group boxes in a stage row.
+const chipGap = 2
+
+// drawStages paints each stage as a CENTERED row of chips/group boxes with
+// single-line vertical edges between consecutive stages, mirroring the web
+// artifact's tight-tree layout. Each stage row is horizontally centered within
+// the diagram region (rune-aware width math) and the whole block is vertically
+// centered when it is shorter than the region. The chip under the cursor is
+// drawn with a highlight style so the selected node is visible in the diagram,
+// not only in the header (BUG: no selection highlight).
 func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
-	row := inner.Y
+	top := inner.Y
 	if w.noPlan {
-		row++ // leave the hint line above the flat stage
+		top++ // leave the hint line above the flat stage
 	}
+	// Vertically center the block (two rows per stage minus the trailing gap)
+	// within the region below the optional hint line.
+	availH := inner.Y + inner.H - top
+	blockH := len(w.stages)*2 - 1
+	if blockH < 0 {
+		blockH = 0
+	}
+	if availH > blockH {
+		top += (availH - blockH) / 2
+	}
+	row := top
 	for s := 0; s < len(w.stages); s++ {
+		if row >= inner.Y+inner.H {
+			break
+		}
+		// Horizontally center the row: total rendered width is the sum of chip
+		// widths plus a chipGap between each pair (rune-aware).
+		rowW := w.stageRowWidth(s)
 		col := inner.X
-		for _, sl := range w.stages[s] {
+		if inner.W > rowW {
+			col += (inner.W - rowW) / 2
+		}
+		for slotIdx, sl := range w.stages[s] {
 			label, st := w.slotChip(sl)
+			if w.cursor.Stage == s && w.cursor.Slot == slotIdx {
+				st = w.highlightStyle(st)
+			}
 			runes := []rune(label)
 			for i, r := range runes {
 				if col+i >= inner.X+inner.W {
@@ -1105,20 +1367,50 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 				}
 				screen.SetContent(col+i, row, r, nil, st)
 			}
-			col += len(runes) + 2 // chip gap
+			col += len(runes) + chipGap
 			if col >= inner.X+inner.W {
 				break
 			}
 		}
-		// Single-line edge connector between stages (cosmetic).
+		// Single-line edge connector between stages (cosmetic), centered under the
+		// row so the connector tracks the centered chips.
 		if s < len(w.stages)-1 && row+1 < inner.Y+inner.H {
-			screen.SetContent(inner.X, row+1, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
+			ec := inner.X + inner.W/2
+			screen.SetContent(ec, row+1, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
 		}
 		row += 2
-		if row >= inner.Y+inner.H {
-			break
+	}
+}
+
+// stageRowWidth returns the total rendered width (in cells) of a stage's row:
+// the sum of each slot's chip width plus a chipGap between consecutive chips.
+// Rune-aware so multibyte glyphs in a label count as one cell each.
+func (w *Widget) stageRowWidth(s int) int {
+	if s < 0 || s >= len(w.stages) {
+		return 0
+	}
+	total := 0
+	for i, sl := range w.stages[s] {
+		label, _ := w.slotChip(sl)
+		total += len([]rune(label))
+		if i > 0 {
+			total += chipGap
 		}
 	}
+	return total
+}
+
+// highlightStyle returns the cursor-highlight variant of a chip's state style:
+// reverse video (matching dagview's cursor treatment) so the selected node
+// stands out in the diagram regardless of its state colour. When the widget owns
+// focus the highlight is bolded for extra prominence; an unfocused widget still
+// reverses so the last position stays visible.
+func (w *Widget) highlightStyle(st tcell.Style) tcell.Style {
+	st = st.Reverse(true)
+	if w.focused {
+		st = st.Bold(true)
+	}
+	return st
 }
 
 // slotChip returns a slot's rendered label + style: a glyph+short-id chip for a

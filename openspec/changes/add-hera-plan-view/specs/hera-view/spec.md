@@ -123,3 +123,26 @@ When the cursor is on a node whose bound task is the coordinator of a child orch
 
 - **WHEN** the view is showing a drilled-in child plan DAG and the user presses `Esc`
 - **THEN** the diagram returns to the parent orchestrator's plan DAG
+
+### Requirement: Selected plan node is highlighted (area 6)
+
+The plan diagram SHALL render the chip under the cursor with a highlight style (reverse video, more prominent when the widget owns focus) so the selected node is visible in the diagram itself, not only described in the master-detail header. A chip the cursor is not on SHALL render with its plain state style.
+
+#### Scenario: Cursor chip is highlighted
+
+- **WHEN** the cursor is on a plan node
+- **THEN** that node's chip is drawn with the highlight style and a non-cursor chip is not
+
+### Requirement: Plan cursor and fan-out survive a model refresh (area 6)
+
+The Hera view re-projects the selected coordinator's plan on every refresh tick. A re-projection of the SAME orchestrator's plan SHALL preserve the operator's cursor position and fanned-group state: when the projected structure is unchanged the cursor and fan-out are untouched; when the structure changed (a cascade step materialized a node, a state flipped) the cursor SHALL re-anchor to the same node (or collapsed group, by its member set) when it still exists and clamp into the new layout when it vanished, and every still-present fanned group SHALL stay fanned. A genuine selection change (a different coordinator) or a drill-in push/pop SHALL still reset the cursor.
+
+#### Scenario: Refresh preserves the cursor and fanned group
+
+- **WHEN** the operator has moved the plan cursor and fanned out a group, and a refresh tick re-projects the same coordinator's plan
+- **THEN** the cursor stays where the operator put it and the fanned group stays fanned
+
+#### Scenario: Selecting a different coordinator resets the cursor
+
+- **WHEN** the operator selects a different coordinator
+- **THEN** the plan cursor resets to the first stage

@@ -226,3 +226,88 @@ func TestHeraPlanNodes_NilOrchEmpty(t *testing.T) {
 	testutil.Equal(t, len(nodes), 0)
 	testutil.Equal(t, len(edges), 0)
 }
+
+// --- Refresh preserves plan cursor + fanned state (BUG-1/2 page-level) ---
+
+// TestRefresh_PreservesPlanCursorAndFanned is the page-level regression for the
+// dogfood bug: applySelection runs on every ~1s refresh tick and used to call
+// SetData unconditionally, resetting the operator's plan-view cursor to
+// stage0/slot0 and collapsing any fanned group ~1s after they moved. The fix
+// routes a same-orchestrator re-projection through UpdateData. Here we select a
+// coordinator (details mode), drive the plan cursor down and fan out a parallel
+// group, then fire two more refresh cycles and assert the cursor + fanned state
+// survive.
+func TestRefresh_PreservesPlanCursorAndFanned(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	// A two-stage plan: 1a feeds three parallel stage-2 workers (2a/2b/2c) that
+	// share the same blocker, so they collapse into one group at stage 1.
+	a := seedPlannedRole(t, d, orch, "1a-root")
+	b := seedPlannedRole(t, d, orch, "2a-x")
+	c := seedPlannedRole(t, d, orch, "2b-y")
+	e := seedPlannedRole(t, d, orch, "2c-z")
+	for _, blocked := range []*db.HeraRole{b, c, e} {
+		testutil.NoError(t, d.AddHeraBlock(blocked.ID, a.ID))
+	}
+
+	coordSess := &fakeSession{id: "t-coord", alive: true}
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{"t-coord": coordSess}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true)
+
+	pl := p.Plan()
+	// Stage 1 is the parallel group [2a–2c]. Move the cursor there and fan it out,
+	// landing on the first member.
+	pl.MoveStage(1)
+	_, isGroup := pl.GroupAt(pl.CursorPos().Stage, pl.CursorPos().Slot)
+	testutil.Equal(t, isGroup, true)
+	pl.ActivateCursor()      // fan out the group
+	pl.MoveSlot(1)           // walk to the second member
+	before := pl.CursorPos() // {Stage:1, Slot:0, Member:1}
+	testutil.Equal(t, pl.Fanned(before.Stage, before.Slot), true)
+	testutil.Equal(t, before.Member, 1)
+
+	// Two more refresh ticks on the SAME coordinator (no structural change).
+	p.Refresh()
+	p.Refresh()
+
+	testutil.DeepEqual(t, pl.CursorPos(), before)
+	testutil.Equal(t, pl.Fanned(before.Stage, before.Slot), true)
+}
+
+// TestRefresh_DifferentCoordinatorResetsPlanCursor: switching to a DIFFERENT
+// coordinator is a genuine selection change, so the plan cursor resets (SetData,
+// not UpdateData) — the preservation is scoped to same-orchestrator refreshes.
+func TestRefresh_DifferentCoordinatorResetsPlanCursor(t *testing.T) {
+	d := memDB(t)
+	orchA := seedOrch(t, d, "orch-a")
+	orchB := seedOrch(t, d, "orch-b")
+	seedBoundRole(t, d, orchA, "a-coord", db.HeraKindCoordinator, "t-a-coord")
+	seedBoundRole(t, d, orchB, "b-coord", db.HeraKindCoordinator, "t-b-coord")
+	// Each orch gets a two-stage plan so the cursor can leave stage 0.
+	for _, orch := range []int64{orchA, orchB} {
+		root := seedPlannedRole(t, d, orch, "1a-root")
+		leaf := seedPlannedRole(t, d, orch, "2a-leaf")
+		testutil.NoError(t, d.AddHeraBlock(leaf.ID, root.ID))
+	}
+
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-a-coord": {id: "t-a-coord", alive: true},
+		"t-b-coord": {id: "t-b-coord", alive: true},
+	}))
+	p.Refresh()
+
+	testutil.Equal(t, selectOrchByName(p, "orch-a"), true)
+	pl := p.Plan()
+	pl.MoveStage(1)
+	testutil.Equal(t, pl.CursorPos().Stage, 1)
+
+	// Switch coordinators: the plan cursor must reset to stage 0.
+	testutil.Equal(t, selectOrchByName(p, "orch-b"), true)
+	testutil.Equal(t, pl.CursorPos().Stage, 0)
+}

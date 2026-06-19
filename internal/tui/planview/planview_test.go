@@ -616,3 +616,235 @@ func containsAny(s string, subs ...string) bool {
 	}
 	return false
 }
+
+// --- Refresh-safe re-projection (Requirement: cursor + fan-out survive refresh) ---
+
+// TestUpdateData_UnchangedPreservesCursorAndFanned: re-projecting the identical
+// plan on a refresh tick must be a no-op for the cursor and the fanned set —
+// this is the BUG-1/2 root cause (applySelection's unconditional SetData reset
+// the cursor to stage0/slot0 ~1s after every user move).
+func TestUpdateData_UnchangedPreservesCursorAndFanned(t *testing.T) {
+	w := navGraph()
+	// Walk the cursor down to the group at stage 1 and fan it out, landing on a
+	// member, then move to the second member.
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out group [1a–1c]
+	w.MoveSlot(1)      // member 0 -> 1
+	before := w.CursorPos()
+	testutil.Equal(t, w.Fanned(1, 0), true)
+	testutil.Equal(t, before.Member, 1)
+
+	// Re-project the SAME nodes + edges (a refresh tick with no structural change).
+	w.UpdateData(
+		[]Node{node("0a"), node("1a"), node("1b"), node("1c"), node("2a")},
+		[]Edge{
+			{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"},
+			{From: "1a", To: "2a"}, {From: "1b", To: "2a"}, {From: "1c", To: "2a"},
+		},
+	)
+	testutil.DeepEqual(t, w.CursorPos(), before)
+	testutil.Equal(t, w.Fanned(1, 0), true)
+}
+
+// TestUpdateData_StateChangeReanchorsByNodeID: when a node's STATE flips (a
+// cascade step materialized/progressed) but the node IDs are stable, the cursor
+// must re-anchor to the same node ID, not snap back to stage 0.
+func TestUpdateData_StateChangeReanchorsByNodeID(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(2) // land on the lone node 2a at stage 2
+	testutil.Equal(t, w.CurrentNodeID(), "2a")
+
+	// Same structure, but 2a flipped planned -> working (a state-only change).
+	w.UpdateData(
+		[]Node{node("0a"), node("1a"), node("1b"), node("1c"), liveNode("2a", StateWorking)},
+		[]Edge{
+			{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"},
+			{From: "1a", To: "2a"}, {From: "1b", To: "2a"}, {From: "1c", To: "2a"},
+		},
+	)
+	// Cursor still names 2a (re-anchored by ID), not reset to stage 0.
+	testutil.Equal(t, w.CurrentNodeID(), "2a")
+	testutil.Equal(t, w.CursorPos().Stage, 2)
+}
+
+// TestUpdateData_ReanchorsFannedGroupAcrossNewNode: a newly-materialized node
+// elsewhere in the plan changes the structure, but the fanned group the operator
+// was walking must stay fanned and the cursor stay on its member.
+func TestUpdateData_ReanchorsFannedGroupAcrossNewNode(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out [1a–1c]
+	w.MoveSlot(1)      // member 1 (1b)
+	testutil.Equal(t, w.CurrentNodeID(), "1b")
+
+	// A new planned node 0b appears at stage 0 (structure changed); the 1a–1c group
+	// membership is unchanged.
+	w.UpdateData(
+		[]Node{node("0a"), node("0b"), node("1a"), node("1b"), node("1c"), node("2a")},
+		[]Edge{
+			{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"},
+			{From: "1a", To: "2a"}, {From: "1b", To: "2a"}, {From: "1c", To: "2a"},
+		},
+	)
+	// The group still exists (same member set) → still fanned, cursor still on 1b.
+	testutil.Equal(t, w.Fanned(w.CursorPos().Stage, w.CursorPos().Slot), true)
+	testutil.Equal(t, w.CurrentNodeID(), "1b")
+}
+
+// TestUpdateData_ClampsWhenCursorNodeVanishes: when the node under the cursor is
+// gone from the new projection, the cursor clamps into the new layout rather than
+// dangling at an out-of-range position.
+func TestUpdateData_ClampsWhenCursorNodeVanishes(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(2)
+	testutil.Equal(t, w.CurrentNodeID(), "2a")
+
+	// 2a (and its blocking edges) removed: the plan now ends at the stage-1 group.
+	w.UpdateData(
+		[]Node{node("0a"), node("1a"), node("1b"), node("1c")},
+		[]Edge{
+			{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"},
+		},
+	)
+	// Cursor clamped to a valid stage within the smaller layout (no panic, in range).
+	testutil.Equal(t, w.CursorPos().Stage < w.Stages(), true)
+	testutil.Equal(t, w.CursorPos().Stage >= 0, true)
+}
+
+// TestUpdateData_CollapsedGroupCursorReanchors: a cursor resting on a COLLAPSED
+// group re-anchors to that same group (by member-id set) after a structural
+// change, not to stage 0.
+func TestUpdateData_CollapsedGroupCursorReanchors(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(1) // collapsed group [1a–1c] at stage 1, slot 0
+	_, isGroup := w.GroupAt(w.CursorPos().Stage, w.CursorPos().Slot)
+	testutil.Equal(t, isGroup, true)
+
+	w.UpdateData(
+		[]Node{node("0a"), node("0b"), node("1a"), node("1b"), node("1c"), node("2a")},
+		[]Edge{
+			{From: "0a", To: "1a"}, {From: "0a", To: "1b"}, {From: "0a", To: "1c"},
+			{From: "1a", To: "2a"}, {From: "1b", To: "2a"}, {From: "1c", To: "2a"},
+		},
+	)
+	_, stillGroup := w.GroupAt(w.CursorPos().Stage, w.CursorPos().Slot)
+	testutil.Equal(t, stillGroup, true)
+	testutil.Equal(t, w.CursorPos().Stage, 1)
+}
+
+// --- Selection highlight + centering (SimulationScreen Draw tests) ---
+
+// drawToSim renders w into a fresh SimulationScreen sized (cols, rows) and
+// returns the screen for cell inspection.
+func drawToSim(t *testing.T, w *Widget, cols, rows int) tcell.SimulationScreen {
+	t.Helper()
+	sc := tcell.NewSimulationScreen("")
+	if err := sc.Init(); err != nil {
+		t.Fatalf("sim screen init: %v", err)
+	}
+	t.Cleanup(sc.Fini)
+	sc.SetSize(cols, rows)
+	w.SetRect(0, 0, cols, rows)
+	w.Draw(sc)
+	sc.Show()
+	return sc
+}
+
+// findGlyphCell returns the (x, y) and style of the first cell whose primary
+// rune equals r, scanning row-major. ok is false when not found.
+func findGlyphCell(sc tcell.SimulationScreen, r rune) (x, y int, style tcell.Style, ok bool) {
+	cells, w, h := sc.GetContents()
+	for yy := 0; yy < h; yy++ {
+		for xx := 0; xx < w; xx++ {
+			c := cells[yy*w+xx]
+			if len(c.Runes) > 0 && c.Runes[0] == r {
+				return xx, yy, c.Style, true
+			}
+		}
+	}
+	return 0, 0, tcell.StyleDefault, false
+}
+
+// TestDraw_CursorSlotHighlighted: the chip under the cursor carries the reverse-
+// video highlight; a non-cursor chip does not (BUG: no selection highlight in the
+// diagram).
+func TestDraw_CursorSlotHighlighted(t *testing.T) {
+	w := New()
+	// Two lone nodes at stage 0 (no edges → flat, but mark planned so it's a real
+	// plan with chips at stage 0). Use distinct short-ids so the glyphs differ.
+	w.SetData([]Node{node("0a"), node("1a")}, []Edge{{From: "0a", To: "1a"}})
+	w.SetFocused(true)
+	// Cursor starts at stage 0, slot 0 (node 0a).
+	testutil.Equal(t, w.CurrentNodeID(), "0a")
+
+	sc := drawToSim(t, w, 60, 24)
+	// 0a's glyph is the planned ○; find it and assert it is reversed.
+	_, _, cursorStyle, ok := findGlyphCell(sc, '○')
+	testutil.Equal(t, ok, true)
+	_, _, attr := cursorStyle.Decompose()
+	testutil.Equal(t, attr&tcell.AttrReverse != 0, true)
+}
+
+// TestDraw_NonCursorSlotNotHighlighted: a chip the cursor is NOT on renders with
+// its plain state style (no reverse video). Asserts the highlight is scoped to
+// the cursor slot, not painted everywhere.
+func TestDraw_NonCursorSlotNotHighlighted(t *testing.T) {
+	w := New()
+	// stage0 [0a] -> stage1 [1a]. Cursor on 0a; 1a must NOT be highlighted.
+	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateDone)}, []Edge{{From: "0a", To: "1a"}})
+	w.SetFocused(true)
+	testutil.Equal(t, w.CurrentNodeID(), "0a")
+
+	sc := drawToSim(t, w, 60, 24)
+	// 1a is done → ✓ glyph; it is not under the cursor, so no reverse video.
+	_, _, doneStyle, ok := findGlyphCell(sc, '✓')
+	testutil.Equal(t, ok, true)
+	_, _, doneAttr := doneStyle.Decompose()
+	testutil.Equal(t, doneAttr&tcell.AttrReverse != 0, false)
+
+	// 0a is working → ⟳ glyph; it IS under the cursor, so reverse video.
+	_, _, curStyle, ok2 := findGlyphCell(sc, '⟳')
+	testutil.Equal(t, ok2, true)
+	_, _, curAttr := curStyle.Decompose()
+	testutil.Equal(t, curAttr&tcell.AttrReverse != 0, true)
+}
+
+// TestDraw_StageRowCentered: a single-chip stage row starts at a CENTERED column,
+// not the left inner edge (BUG: diagram left-aligned, not centered like the web
+// artifact).
+func TestDraw_StageRowCentered(t *testing.T) {
+	w := New()
+	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
+	w.SetFocused(true)
+
+	cols := 60
+	sc := drawToSim(t, w, cols, 24)
+	// The lone chip "⟳ 0a" — find its glyph column.
+	x, _, _, ok := findGlyphCell(sc, '⟳')
+	testutil.Equal(t, ok, true)
+	// Inner left edge is col 1 (one-cell border). The centered chip must start well
+	// to the right of the left edge — strictly greater than a small left margin.
+	testutil.Equal(t, x > 4, true)
+}
+
+// TestDraw_WiderRegionPushesChipFurtherRight: doubling the region width moves the
+// centered chip's start column further right — proving the start tracks
+// (W - rowWidth)/2 rather than a fixed offset.
+func TestDraw_WiderRegionPushesChipFurtherRight(t *testing.T) {
+	w := New()
+	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
+	w.SetFocused(true)
+
+	narrow := drawToSim(t, w, 40, 24)
+	xNarrow, _, _, ok1 := findGlyphCell(narrow, '⟳')
+	testutil.Equal(t, ok1, true)
+
+	w2 := New()
+	w2.SetData([]Node{liveNode("0a", StateWorking)}, nil)
+	w2.SetFocused(true)
+	wide := drawToSim(t, w2, 80, 24)
+	xWide, _, _, ok2 := findGlyphCell(wide, '⟳')
+	testutil.Equal(t, ok2, true)
+
+	testutil.Equal(t, xWide > xNarrow, true)
+}

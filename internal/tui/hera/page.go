@@ -82,6 +82,13 @@ type HeraPage struct {
 	// provider seam. It replaced the retired orchestration-tree projection.
 	plan *planview.Widget // embedded plan-DAG graph
 
+	// planOrchID is the orchestrator ID whose plan is currently projected into the
+	// plan widget (0 when none). rebuildPlan compares it to the incoming root to
+	// decide SetData (a genuine selection change — full cursor reset) vs UpdateData
+	// (the same orchestrator re-projected on a ~1s refresh tick — preserve the
+	// operator's cursor + fanned groups). See gotchas/hera-view.md.
+	planOrchID int64
+
 	// Selection + per-pane bound task (so SetSession only fires on change).
 	sel         Selection
 	detailsMode bool
@@ -611,19 +618,30 @@ func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.P
 // (heraPlanNodesWithBridge is a pure read over the rail's already-built model;
 // SetData recomputes layout but touches no I/O).
 func (p *HeraPage) rebuildPlan(root *OrchView) {
-	// A new top-level selection abandons any drill-in stack from the previous
-	// coordinator — pop back to root so the fresh SetData below is the visible
-	// plan, not a child frame buried under stale parents.
+	// Same orchestrator as the last projection (and not drilled in) → this is a
+	// refresh tick re-projecting an unchanged-or-evolved plan: route through
+	// UpdateData so the operator's cursor and fanned groups survive. A different
+	// orchestrator (or nil) is a genuine selection change → SetData full-resets.
+	// A drill-in stack from a previous coordinator is abandoned either way (pop to
+	// root) so the visible plan is this root's, not a buried child frame.
+	sameOrch := root != nil && p.planOrchID == root.ID && p.plan.DrillDepth() == 0
 	for p.plan.DrillDepth() > 0 {
 		p.plan.PopOrch()
 	}
 	if root == nil {
+		p.planOrchID = 0
 		p.plan.SetData(nil, nil)
 		return
 	}
 	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().bridgeIndex())
-	p.plan.SetData(nodes, edges)
-	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d", root.Name, len(nodes), len(edges))
+	if sameOrch {
+		p.plan.UpdateData(nodes, edges)
+	} else {
+		p.plan.SetData(nodes, edges)
+	}
+	p.planOrchID = root.ID
+	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d sameOrch=%v",
+		root.Name, len(nodes), len(edges), sameOrch)
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
