@@ -322,7 +322,6 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 	key := [2]int64{node.ID, failedBlocker.ID}
 	w.mu.Lock()
 	already := w.heldPings[key]
-	w.heldPings[key] = true
 	w.mu.Unlock()
 	if already {
 		return
@@ -338,9 +337,16 @@ func (w *Watcher) holdAndPing(node, failedBlocker *db.HeraRole) {
 	tldr := "held: " + node.Name + " blocked by failed " + failedBlocker.Name
 	if w.ping != nil {
 		if pErr := w.ping(node.ID, coords[0].ID, body, tldr); pErr != nil {
-			uxlog.Log("[heragater] hold %d: ping coordinator failed: %v", node.ID, pErr)
+			// A failed ping must NOT mark the key — leave it unset so the next tick
+			// retries. Otherwise a transient delivery failure would silently swallow
+			// the hold notice, violating the "hold AND notify" contract.
+			uxlog.Log("[heragater] hold %d: ping coordinator failed (will retry next tick): %v", node.ID, pErr)
 			return
 		}
 	}
+	// Only dedup AFTER a successful ping (or when there is no pinger wired).
+	w.mu.Lock()
+	w.heldPings[key] = true
+	w.mu.Unlock()
 	uxlog.Log("[heragater] held node %d (%s) behind failed blocker %s; pinged coordinator", node.ID, node.Name, failedBlocker.Name)
 }

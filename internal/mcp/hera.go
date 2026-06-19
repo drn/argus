@@ -30,6 +30,11 @@ type HeraStore interface {
 	// layer; the store enforces cycle + same-orchestrator constraints.
 	CreateHeraPlannedRole(in db.CreateHeraRoleInput) (*db.HeraRole, error)
 	AddHeraBlock(blockedRoleID, blockerRoleID int64) error
+	// CreateHeraPlan creates a whole plan graph (all nodes + all edges) in ONE
+	// transaction — either the whole graph is created or, on any error, nothing
+	// is. Edge endpoints reference in-batch nodes by index or pre-existing roles
+	// by id (see db.HeraBlockSpec).
+	CreateHeraPlan(orchID int64, nodes []db.HeraPlannedNodeSpec, edges []db.HeraBlockSpec) ([]*db.HeraRole, error)
 	UniqueHeraRoleName(orchID int64, base string) (string, error)
 	// Bindings
 	HeraLiveBindingByTask(taskID string) (*db.HeraBinding, error)

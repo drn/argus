@@ -21,6 +21,7 @@ type gaterFixture struct {
 	mat       []*db.HeraRole // roles passed to materialize, in order
 	matBranch map[int64]string
 	matFail   bool // when true, materialize returns an error (HOLD-by-failure)
+	pingFail  bool // when true, ping returns an error (delivery failure)
 	pings     []ping
 }
 
@@ -57,6 +58,9 @@ func newGaterFixture(t *testing.T) *gaterFixture {
 		func(fromRoleID, coordRoleID int64, body, tldr string) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if f.pingFail {
+				return errors.New("ping boom")
+			}
 			f.pings = append(f.pings, ping{coord: coordRoleID, tldr: tldr})
 			return nil
 		},
@@ -213,6 +217,28 @@ func TestGater_HoldPingDedupedAcrossTicks(t *testing.T) {
 	testutil.Equal(t, len(f.materialized()), 0)
 }
 
+func TestGater_FailedHoldPingRetriesNextTick(t *testing.T) {
+	// A failed ping must NOT dedup the held key — the next tick retries so the
+	// "hold AND notify" contract is not silently dropped by a transient failure.
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	crashed := f.boundWorker(t, orch, "1a", model.StatusComplete, db.HeraStatusWorking)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, crashed.ID))
+
+	f.pingFail = true
+	f.w.Tick() // ping fails → no recorded ping, key NOT marked
+	testutil.Equal(t, f.pingCount(), 0)
+
+	f.pingFail = false
+	f.w.Tick() // retry succeeds
+	testutil.Equal(t, f.pingCount(), 1)
+
+	f.w.Tick() // now deduped — no repeat
+	testutil.Equal(t, f.pingCount(), 1)
+	testutil.Equal(t, len(f.materialized()), 0)
+}
+
 func TestGater_Idempotent_NoDoubleSpawnOnStatusFlap(t *testing.T) {
 	f := newGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
@@ -246,6 +272,38 @@ func TestGater_HeldBlockerThatNeverRanHoldsDependent(t *testing.T) {
 	mat := f.materialized()
 	testutil.Equal(t, len(mat), 1)
 	testutil.Equal(t, mat[0].ID, upstream.ID)
+}
+
+func TestGater_MissingBlockerPrunedMakesNodeReady(t *testing.T) {
+	// Gater-level missing-blocker prune: a planned node whose SOLE blocker role is
+	// deleted has no extant blockers (FK cascade removed the edge), so the gater
+	// treats it as ready and materializes it on the next tick.
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	blocker := f.planned(t, orch, "1a") // never materialized; will be deleted
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	// While the blocker exists and never reached done, the node is held (not ready).
+	f.w.Tick()
+	matBefore := f.materialized()
+	for _, r := range matBefore {
+		if r.ID == node.ID {
+			t.Fatal("node should be held while its sole blocker still exists unfinished")
+		}
+	}
+
+	// Delete the blocker — its edge cascades away, so node has no blockers left.
+	testutil.NoError(t, f.d.DeleteHeraRole(blocker.ID))
+
+	f.w.Tick()
+	found := false
+	for _, r := range f.materialized() {
+		if r.ID == node.ID {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
 }
 
 func TestGater_MaterializeFailureLeavesNodePlanned(t *testing.T) {

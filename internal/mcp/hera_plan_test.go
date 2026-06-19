@@ -197,6 +197,7 @@ func TestHeraPlan_WholeGraphInOneCall(t *testing.T) {
 func TestHeraPlan_CycleRejected(t *testing.T) {
 	s, d := testHeraServer(t)
 	coord := seedCoordinator(t, s, d, "orch", "/wt/coord")
+	orch, _ := d.HeraOrchestratorByName("orch")
 	resp := doRequest(t, s, "tools/call", ToolCallParams{
 		Name: "hera_plan",
 		Arguments: json.RawMessage(fmt.Sprintf(`{
@@ -209,7 +210,16 @@ func TestHeraPlan_CycleRejected(t *testing.T) {
 	cr := callResult(t, resp)
 	testutil.Equal(t, cr.IsError, true)
 	testutil.Contains(t, cr.Content[0].Text, "cycle")
-	_ = d
+
+	// Atomic rollback: the cyclic batch must leave ZERO rows — no orphan planned
+	// nodes from the (valid) node inserts that ran before the bad edge.
+	planned, err := d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(planned), 0)
+	_, aErr := d.HeraRoleByName(orch.ID, "a")
+	testutil.ErrorIs(t, aErr, db.ErrHeraNotFound)
+	_, bErr := d.HeraRoleByName(orch.ID, "b")
+	testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
 }
 
 func TestHeraPlan_NonCoordinatorRejected(t *testing.T) {

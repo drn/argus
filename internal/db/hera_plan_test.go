@@ -3,7 +3,6 @@ package db
 import (
 	"testing"
 
-	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
 )
 
@@ -108,6 +107,121 @@ func TestListHeraPlannedNodes_StaysPlannedAfterBindingEnds(t *testing.T) {
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(got), 0)
 	_ = role
+}
+
+func TestPlannedNode_ShortIDIsStableAcrossPlanEdits(t *testing.T) {
+	// The planner-assigned short-id-prefixed name is a durable handle: it is
+	// persisted verbatim and never recomputed by a plan operation (adding or
+	// removing edges, deleting a sibling, etc.).
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	node := plannedRole(t, d, orch, "2c-fact-checker")
+	sibling := plannedRole(t, d, orch, "1a-researcher")
+	testutil.Equal(t, node.Name, "2c-fact-checker") // persisted verbatim
+
+	// Plan edits: add an edge, then delete the sibling (which removes that edge).
+	testutil.NoError(t, d.AddHeraBlock(node.ID, sibling.ID))
+	testutil.NoError(t, d.DeleteHeraRole(sibling.ID))
+
+	// The node's short-id-prefixed name is unchanged after the edits.
+	got, err := d.HeraRole(node.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.Name, "2c-fact-checker")
+	byName, err := d.HeraRoleByName(orch, "2c-fact-checker")
+	testutil.NoError(t, err)
+	testutil.Equal(t, byName.ID, node.ID)
+}
+
+func TestCreateHeraPlan_ValidBatchCreatesAllNodesAndEdges(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+
+	created, err := d.CreateHeraPlan(orch,
+		[]HeraPlannedNodeSpec{
+			{Name: "1a", ArgusProject: "proj", Prompt: "do 1a"},
+			{Name: "1b", ArgusProject: "proj", Prompt: "do 1b"},
+			{Name: "2a", ArgusProject: "proj", Prompt: "do 2a"},
+		},
+		// 2a (idx 2) is blocked by 1a (idx 0) and 1b (idx 1).
+		[]HeraBlockSpec{
+			{BlockedNodeIdx: 2, BlockerNodeIdx: 0},
+			{BlockedNodeIdx: 2, BlockerNodeIdx: 1},
+		})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(created), 3)
+
+	planned, err := d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(planned), 3)
+
+	blockers, err := d.HeraBlockersOf(created[2].ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(blockers), 2)
+}
+
+func TestCreateHeraPlan_PreExistingRoleEndpoint(t *testing.T) {
+	// An edge endpoint may reference a pre-existing role (NodeIdx < 0, RoleID set).
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	existing := plannedRole(t, d, orch, "1a")
+
+	created, err := d.CreateHeraPlan(orch,
+		[]HeraPlannedNodeSpec{{Name: "2a", ArgusProject: "proj", Prompt: "do 2a"}},
+		[]HeraBlockSpec{{BlockedNodeIdx: 0, BlockerNodeIdx: -1, BlockerRoleID: existing.ID}})
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(created), 1)
+
+	blockers, err := d.HeraBlockersOf(created[0].ID)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, blockers, []int64{existing.ID})
+}
+
+func TestCreateHeraPlan_CyclicBatchRollsBackEntirely(t *testing.T) {
+	// A batch whose edges close a cycle must create ZERO rows — no orphan planned
+	// nodes from the (valid) node inserts, no edges. Full rollback.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+
+	created, err := d.CreateHeraPlan(orch,
+		[]HeraPlannedNodeSpec{
+			{Name: "a", ArgusProject: "proj", Prompt: "p"},
+			{Name: "b", ArgusProject: "proj", Prompt: "p"},
+		},
+		// b<-a then a<-b closes a 2-cycle (caught by the tx-scoped check against
+		// the edge inserted earlier in the SAME batch).
+		[]HeraBlockSpec{
+			{BlockedNodeIdx: 1, BlockerNodeIdx: 0},
+			{BlockedNodeIdx: 0, BlockerNodeIdx: 1},
+		})
+	testutil.ErrorIs(t, err, ErrHeraBlockCycle)
+	testutil.Nil(t, created)
+
+	// Nothing persisted: no planned nodes, no roles by name.
+	planned, lErr := d.ListHeraPlannedNodes()
+	testutil.NoError(t, lErr)
+	testutil.Equal(t, len(planned), 0)
+	_, aErr := d.HeraRoleByName(orch, "a")
+	testutil.ErrorIs(t, aErr, ErrHeraNotFound)
+	_, bErr := d.HeraRoleByName(orch, "b")
+	testutil.ErrorIs(t, bErr, ErrHeraNotFound)
+}
+
+func TestCreateHeraPlan_CrossOrchestratorEdgeRollsBack(t *testing.T) {
+	// An edge to a role in a DIFFERENT orchestrator rolls back the whole batch.
+	d := testDB(t)
+	o1 := planTestOrch(t, d, "o1")
+	o2 := planTestOrch(t, d, "o2")
+	foreign := plannedRole(t, d, o2, "foreign")
+
+	created, err := d.CreateHeraPlan(o1,
+		[]HeraPlannedNodeSpec{{Name: "a", ArgusProject: "proj", Prompt: "p"}},
+		[]HeraBlockSpec{{BlockedNodeIdx: 0, BlockerNodeIdx: -1, BlockerRoleID: foreign.ID}})
+	testutil.ErrorIs(t, err, ErrHeraBlockCrossOrchestrator)
+	testutil.Nil(t, created)
+
+	// The valid node "a" was rolled back too.
+	_, aErr := d.HeraRoleByName(o1, "a")
+	testutil.ErrorIs(t, aErr, ErrHeraNotFound)
 }
 
 func TestAddHeraBlock_AndBlockersOf(t *testing.T) {
@@ -252,5 +366,4 @@ func TestHeraRoleHasBinding(t *testing.T) {
 	has, err = d.HeraRoleHasBinding(bound.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, has, true)
-	_ = model.StatusInProgress
 }

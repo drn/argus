@@ -172,14 +172,14 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		return errResp
 	}
 
-	// Create nodes first, recording name → role so edges can reference by name.
-	// On any error after the first node is created we DO NOT roll back the rows
-	// individually — the store has no multi-call tx seam exposed here — but we
-	// fail fast so a partial plan is at least diagnosable. Cycle/cross-orch
-	// rejection happens per-edge below, before any edge is stored, so the only
-	// partial-state risk is a bad edge after good nodes; that is acceptable (the
-	// nodes are valid planned rows the coordinator can edge later or delete).
-	created := map[string]*db.HeraRole{}
+	// Validate and build node specs, mapping the planner's SUPPLIED name → batch
+	// index so edges can reference in-batch nodes (a duplicate name within one
+	// plan is the planner's bug; the last one wins for resolution). The names are
+	// uniquified within the orchestrator up front; the actual node + edge inserts
+	// all happen in ONE store transaction (CreateHeraPlan) so any error rolls the
+	// whole graph back — nothing partial survives.
+	specs := make([]db.HeraPlannedNodeSpec, 0, len(p.Nodes))
+	nameIdx := map[string]int{}
 	for i, n := range p.Nodes {
 		name := strings.TrimSpace(n.Name)
 		if name == "" {
@@ -200,35 +200,33 @@ func (s *Server) toolHeraPlan(id interface{}, args json.RawMessage) *Response {
 		if err != nil {
 			return toolError(id, fmt.Sprintf("nodes[%d] (%s): uniquify: %v", i, name, err))
 		}
-		role, err := s.heraStore.CreateHeraPlannedRole(db.CreateHeraRoleInput{
-			OrchestratorID: caller.orch.ID,
-			Name:           uniqueName,
-			ArgusProject:   project,
-			Prompt:         prompt,
-		})
-		if err != nil {
-			return toolError(id, fmt.Sprintf("nodes[%d] (%s): create: %v", i, name, err))
-		}
-		// Key by the SUPPLIED name (edges reference the planner's names, not the
-		// uniquified form — a duplicate name within one plan is the planner's bug).
-		created[name] = role
+		specs = append(specs, db.HeraPlannedNodeSpec{Name: uniqueName, ArgusProject: project, Prompt: prompt})
+		nameIdx[name] = i
 	}
 
-	// Then edges. A node name resolves first against this plan's created nodes,
-	// then against existing roles in the orchestrator (so an edge can reference a
-	// pre-existing planned/live role).
+	// Resolve edge endpoints to either an in-batch node index or a pre-existing
+	// orchestrator role id (so an edge can reference a pre-existing planned/live
+	// role). This resolution is name → reference only — the actual insert + cycle
+	// check happens inside CreateHeraPlan's transaction.
+	edgeSpecs := make([]db.HeraBlockSpec, 0, len(p.Edges))
 	for i, e := range p.Edges {
-		blocked, errResp := s.resolvePlanRole(id, caller, created, e.Blocked, fmt.Sprintf("edges[%d].blocked", i))
+		blockedIdx, blockedID, errResp := s.resolvePlanEndpoint(id, caller, nameIdx, e.Blocked, fmt.Sprintf("edges[%d].blocked", i))
 		if errResp != nil {
 			return errResp
 		}
-		blocker, errResp := s.resolvePlanRole(id, caller, created, e.Blocker, fmt.Sprintf("edges[%d].blocker", i))
+		blockerIdx, blockerID, errResp := s.resolvePlanEndpoint(id, caller, nameIdx, e.Blocker, fmt.Sprintf("edges[%d].blocker", i))
 		if errResp != nil {
 			return errResp
 		}
-		if err := s.heraStore.AddHeraBlock(blocked.ID, blocker.ID); err != nil {
-			return toolError(id, fmt.Sprintf("edges[%d] (%s<-%s): %s", i, e.Blocked, e.Blocker, heraBlockErrMessage(err)))
-		}
+		edgeSpecs = append(edgeSpecs, db.HeraBlockSpec{
+			BlockedNodeIdx: blockedIdx, BlockedRoleID: blockedID,
+			BlockerNodeIdx: blockerIdx, BlockerRoleID: blockerID,
+		})
+	}
+
+	created, err := s.heraStore.CreateHeraPlan(caller.orch.ID, specs, edgeSpecs)
+	if err != nil {
+		return toolError(id, fmt.Sprintf("submit plan: %s", heraBlockErrMessage(err)))
 	}
 
 	slog.Info("[hera] plan ok", "orch", caller.orch.Name, "nodes", len(p.Nodes), "edges", len(p.Edges))
@@ -253,25 +251,27 @@ func (s *Server) resolveOrchRole(id interface{}, orchID int64, orchName, name st
 	return role, nil
 }
 
-// resolvePlanRole resolves an edge endpoint name within a hera_plan call: first
-// against the just-created nodes (by supplied name), then against existing
-// orchestrator roles.
-func (s *Server) resolvePlanRole(id interface{}, caller *callerRoleResult, created map[string]*db.HeraRole, name, field string) (*db.HeraRole, *Response) {
+// resolvePlanEndpoint resolves an edge endpoint name within a hera_plan call to
+// either an in-batch node (returning its batch index, roleID 0) or a pre-existing
+// orchestrator role (returning index -1 and the role id). In-batch names take
+// precedence so an edge prefers a node created in this same plan. Returns a tool
+// error response when the name is empty or resolves to neither.
+func (s *Server) resolvePlanEndpoint(id interface{}, caller *callerRoleResult, nameIdx map[string]int, name, field string) (int, int64, *Response) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
-		return nil, toolError(id, fmt.Sprintf("%s: name is required", field))
+		return 0, 0, toolError(id, fmt.Sprintf("%s: name is required", field))
 	}
-	if r, ok := created[trimmed]; ok {
-		return r, nil
+	if idx, ok := nameIdx[trimmed]; ok {
+		return idx, 0, nil
 	}
 	role, err := s.heraStore.HeraRoleByName(caller.orch.ID, trimmed)
 	if errors.Is(err, db.ErrHeraNotFound) {
-		return nil, toolError(id, fmt.Sprintf("%s: role %q not found in this plan or orchestrator %q", field, name, caller.orch.Name))
+		return 0, 0, toolError(id, fmt.Sprintf("%s: role %q not found in this plan or orchestrator %q", field, name, caller.orch.Name))
 	}
 	if err != nil {
-		return nil, toolError(id, fmt.Sprintf("%s: resolve role %q: %v", field, name, err))
+		return 0, 0, toolError(id, fmt.Sprintf("%s: resolve role %q: %v", field, name, err))
 	}
-	return role, nil
+	return -1, role.ID, nil
 }
 
 // heraBlockErrMessage maps the store's block sentinels to agent-facing messages.

@@ -57,39 +57,129 @@ func (d *DB) CreateHeraPlannedRole(in CreateHeraRoleInput) (*HeraRole, error) {
 // transaction as the insert so a concurrent edge insert cannot slip a cycle past
 // the check. A duplicate edge (same pair) is idempotent — INSERT OR IGNORE.
 func (d *DB) AddHeraBlock(blockedRoleID, blockerRoleID int64) error {
+	return d.WithTx(func(tx *sql.Tx) error {
+		return insertHeraBlockTx(tx, blockedRoleID, blockerRoleID)
+	})
+}
+
+// insertHeraBlockTx validates and inserts one blocking edge inside an existing
+// transaction. It runs the self-edge, cross-orchestrator, and cycle guards
+// against tx-scoped reads, so an edge inserted earlier in the SAME tx (by a
+// prior call within a batch) is visible to the cycle check — an in-batch cycle
+// is caught. Shared by AddHeraBlock (one edge per tx) and CreateHeraPlan (the
+// whole batch in one tx). The caller owns d.mu via WithTx.
+func insertHeraBlockTx(tx *sql.Tx, blockedRoleID, blockerRoleID int64) error {
 	if blockedRoleID == blockerRoleID {
 		return ErrHeraBlockSelf
 	}
-	return d.WithTx(func(tx *sql.Tx) error {
-		blockedOrch, err := blockOrchOf(tx, blockedRoleID)
-		if err != nil {
-			return err
+	blockedOrch, err := blockOrchOf(tx, blockedRoleID)
+	if err != nil {
+		return err
+	}
+	blockerOrch, err := blockOrchOf(tx, blockerRoleID)
+	if err != nil {
+		return err
+	}
+	if blockedOrch != blockerOrch {
+		return ErrHeraBlockCrossOrchestrator
+	}
+	// Cycle check: an edge blocked->blocker closes a cycle iff blocker is
+	// already (transitively) blocked by blocked. Walk the existing blocking
+	// graph FROM blocker following blocked->blocker edges; if we reach
+	// blocked, the new edge would create a cycle.
+	reaches, err := blockReaches(tx, blockerRoleID, blockedRoleID)
+	if err != nil {
+		return err
+	}
+	if reaches {
+		return ErrHeraBlockCycle
+	}
+	if _, err := tx.Exec(
+		`INSERT OR IGNORE INTO hera_blocks (blocked_role_id, blocker_role_id, created_at) VALUES (?, ?, ?)`,
+		blockedRoleID, blockerRoleID, formatTime(time.Now())); err != nil {
+		return fmt.Errorf("insert hera block: %w", err)
+	}
+	return nil
+}
+
+// HeraPlannedNodeSpec is one planned node in a whole-graph CreateHeraPlan call.
+// It mirrors the fields CreateHeraPlannedRole consumes; Kind is forced to worker.
+type HeraPlannedNodeSpec struct {
+	Name         string
+	ArgusProject string
+	Prompt       string
+}
+
+// HeraBlockSpec is one blocking edge in a whole-graph CreateHeraPlan call. Each
+// endpoint is EITHER an index into the call's nodes slice (NodeIdx >= 0, resolved
+// to the freshly-created role id inside the tx) OR a pre-existing role id
+// (RoleID, used when NodeIdx < 0). This lets a plan edge reference both a node
+// created in the same batch and a role that already exists in the orchestrator.
+type HeraBlockSpec struct {
+	BlockedNodeIdx int
+	BlockedRoleID  int64
+	BlockerNodeIdx int
+	BlockerRoleID  int64
+}
+
+// CreateHeraPlan creates a whole plan graph — every node AND every edge — inside
+// ONE transaction. On ANY error (a cycle, a cross-orchestrator edge, a self-edge,
+// a missing endpoint, or an insert failure) the entire batch is rolled back, so
+// no orphan planned nodes and no partial edges survive: either the whole graph is
+// created or nothing is. Nodes are inserted first (so within-batch edges can
+// reference them by the returned ids), then edges sequentially via the SAME
+// tx-scoped insert+check used by AddHeraBlock — an edge added earlier in the
+// batch is visible to a later edge's cycle check, so an in-batch cycle is caught.
+// Returns the created roles in nodes order. Edges that reference roles outside the
+// returned set (e.g. a pre-existing orchestrator role) must be resolved to ids by
+// the caller. All endpoints must belong to orchID (enforced per edge by the
+// cross-orchestrator guard). The caller uniquifies node names first.
+func (d *DB) CreateHeraPlan(orchID int64, nodes []HeraPlannedNodeSpec, edges []HeraBlockSpec) ([]*HeraRole, error) {
+	var created []*HeraRole
+	err := d.WithTx(func(tx *sql.Tx) error {
+		now := formatTime(time.Now())
+		created = make([]*HeraRole, 0, len(nodes))
+		for _, n := range nodes {
+			role, err := insertHeraRole(tx, CreateHeraRoleInput{
+				OrchestratorID: orchID,
+				Name:           n.Name,
+				Kind:           HeraKindWorker,
+				ArgusProject:   n.ArgusProject,
+				Prompt:         n.Prompt,
+			}, now)
+			if err != nil {
+				return err
+			}
+			created = append(created, role)
 		}
-		blockerOrch, err := blockOrchOf(tx, blockerRoleID)
-		if err != nil {
-			return err
+		resolve := func(nodeIdx int, roleID int64) (int64, error) {
+			if nodeIdx >= 0 {
+				if nodeIdx >= len(created) {
+					return 0, fmt.Errorf("hera plan: edge node index %d out of range: %w", nodeIdx, ErrHeraNotFound)
+				}
+				return created[nodeIdx].ID, nil
+			}
+			return roleID, nil
 		}
-		if blockedOrch != blockerOrch {
-			return ErrHeraBlockCrossOrchestrator
-		}
-		// Cycle check: an edge blocked->blocker closes a cycle iff blocker is
-		// already (transitively) blocked by blocked. Walk the existing blocking
-		// graph FROM blocker following blocked->blocker edges; if we reach
-		// blocked, the new edge would create a cycle.
-		reaches, err := blockReaches(tx, blockerRoleID, blockedRoleID)
-		if err != nil {
-			return err
-		}
-		if reaches {
-			return ErrHeraBlockCycle
-		}
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO hera_blocks (blocked_role_id, blocker_role_id, created_at) VALUES (?, ?, ?)`,
-			blockedRoleID, blockerRoleID, formatTime(time.Now())); err != nil {
-			return fmt.Errorf("insert hera block: %w", err)
+		for _, e := range edges {
+			blocked, err := resolve(e.BlockedNodeIdx, e.BlockedRoleID)
+			if err != nil {
+				return err
+			}
+			blocker, err := resolve(e.BlockerNodeIdx, e.BlockerRoleID)
+			if err != nil {
+				return err
+			}
+			if err := insertHeraBlockTx(tx, blocked, blocker); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 // blockOrchOf returns the orchestrator id of a role within the insert tx.
