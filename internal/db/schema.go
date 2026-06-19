@@ -405,13 +405,21 @@ func (d *DB) createHeraTables() error {
 			name        TEXT NOT NULL,
 			created_at  TEXT NOT NULL,
 			archived_at TEXT,
-			pinned_at   TEXT
+			pinned_at   TEXT,
+			-- nuked_at (BUG-022 two-state EOL): the Tier-2 "nuked" marker. A nuked
+			-- row is REMOVED from the rail entirely (not shown in any archive); its
+			-- worktree/branch are reclaimed and its DB row retained for DB-only
+			-- recovery. nuked rows always also carry archived_at (so they leave the
+			-- active-name index). archived_at-set/nuked_at-NULL is the Tier-1 HIDDEN
+			-- state (reversible, nested in the parent's archive expando).
+			nuked_at    TEXT
 		);
 		-- Partial unique on name scoped to active rows: an archived orchestrator
 		-- may coexist with a fresh active row of the same name (Hera migration 0003).
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_orch_active_name ON hera_orchestrators(name) WHERE archived_at IS NULL;
 		CREATE INDEX IF NOT EXISTS idx_hera_orch_archived ON hera_orchestrators(archived_at);
 		CREATE INDEX IF NOT EXISTS idx_hera_orch_pinned   ON hera_orchestrators(pinned_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_orch_nuked    ON hera_orchestrators(nuked_at);
 
 		CREATE TABLE IF NOT EXISTS hera_roles (
 			id              INTEGER PRIMARY KEY,
@@ -422,12 +430,15 @@ func (d *DB) createHeraTables() error {
 			prompt          TEXT NOT NULL DEFAULT '',
 			created_at      TEXT NOT NULL,
 			archived_at     TEXT,
-			pinned_at       TEXT
+			pinned_at       TEXT,
+			-- nuked_at (BUG-022 two-state EOL): see hera_orchestrators.nuked_at.
+			nuked_at        TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_kind ON hera_roles(orchestrator_id, kind);
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_hera_roles_active_name ON hera_roles(orchestrator_id, name) WHERE archived_at IS NULL;
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_archived ON hera_roles(archived_at);
 		CREATE INDEX IF NOT EXISTS idx_hera_roles_pinned   ON hera_roles(pinned_at);
+		CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked    ON hera_roles(nuked_at);
 
 		CREATE TABLE IF NOT EXISTS hera_bindings (
 			id              INTEGER PRIMARY KEY,
@@ -497,5 +508,13 @@ func (d *DB) createHeraTables() error {
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return fmt.Errorf("creating hera tables: %w", err)
 	}
+
+	// Idempotent ALTER for existing DBs that predate the nuked_at column (BUG-022
+	// two-state EOL). Safe to call repeatedly — the error for an already-existing
+	// column is intentionally ignored, matching the migration block in Init.
+	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN nuked_at TEXT`)                         //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN nuked_at TEXT`)                                 //nolint:errcheck
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_hera_orch_nuked  ON hera_orchestrators(nuked_at)`) //nolint:errcheck
+	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked ON hera_roles(nuked_at)`)         //nolint:errcheck
 	return nil
 }

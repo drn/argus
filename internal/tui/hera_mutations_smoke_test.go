@@ -72,7 +72,11 @@ func TestSmoke_HeraStatusKeyAdvances(t *testing.T) {
 	testutil.Equal(t, st.Status, db.HeraStatusWorking)
 }
 
-func TestSmoke_HeraArchiveLiveConfirmGate(t *testing.T) {
+// TestSmoke_HeraHideNoConfirm pins BUG-022: `a` HIDE on a live worker is
+// IMMEDIATE (no confirm modal) and archives the role as Tier-1 (NOT nuked), so it
+// stays reversible. (The reversible un-hide toggle is unit-tested in
+// TestHeraActions_HideBranches.)
+func TestSmoke_HeraHideNoConfirm(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
@@ -83,27 +87,13 @@ func TestSmoke_HeraArchiveLiveConfirmGate(t *testing.T) {
 	defer stop()
 	heraTabCursorOnWorker(t, app, sim)
 
-	// `a` on a LIVE role opens the confirm modal — no write yet.
+	// `a` on a live worker hides it IMMEDIATELY — no confirm modal.
 	sim.InjectKey(tcell.KeyRune, 'a', 0)
 	syncUI(t, app.tapp)
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeHeraConfirm) })
-	got, _ := d.HeraRole(role.ID)
-	testutil.Equal(t, got.ArchivedAt == nil, true) // not archived yet
-
-	// Cancel → no-op.
-	sim.InjectKey(tcell.KeyEscape, 0, 0)
-	syncUI(t, app.tapp)
-	got, _ = d.HeraRole(role.ID)
-	testutil.Equal(t, got.ArchivedAt == nil, true)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.mode, modeTaskList) })
-
-	// `a` again, confirm with `y` → archived.
-	sim.InjectKey(tcell.KeyRune, 'a', 0)
-	syncUI(t, app.tapp)
-	sim.InjectKey(tcell.KeyRune, 'y', 0)
-	syncUI(t, app.tapp)
-	got, _ = d.HeraRole(role.ID)
-	testutil.Equal(t, got.ArchivedAt != nil, true)
+	got, _ := d.HeraRole(role.ID)
+	testutil.Equal(t, got.ArchivedAt != nil, true) // hidden (archived)
+	testutil.Equal(t, got.NukedAt == nil, true)    // NOT nuked — reversible
 }
 
 func TestSmoke_HeraRenameModalInputAndPaste(t *testing.T) {
@@ -159,10 +149,10 @@ func TestSmoke_HeraDeleteRoleConfirmCancelKeepsIt(t *testing.T) {
 	testutil.NoError(t, err) // still present
 }
 
-// TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask pins BUG-017 (Option A):
-// Ctrl+D on an orchestrator HEADER runs the full-subtree cascade, which ARCHIVES
-// the orchestrator + role + task rows (NO hard deletes) and reclaims the
-// sole-bound task's worktree. Nothing is removed from the DB.
+// TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask pins BUG-022: Ctrl+D on an
+// orchestrator HEADER runs the full-subtree NUKE, which marks the orchestrator +
+// role rows NUKED (NO hard deletes) and reclaims the sole-bound task's worktree
+// (archiving the task row). Nothing is removed from the DB.
 func TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask(t *testing.T) {
 	d := testDB(t)
 	t.Setenv("HOME", t.TempDir())
@@ -181,13 +171,13 @@ func TestSmoke_HeraDeleteOrchestratorCascadesReclaimsTask(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	// Orchestrator + role ARCHIVED (still present), not hard-deleted.
+	// Orchestrator + role NUKED (still present), not hard-deleted.
 	gotOrch, err := d.HeraOrchestrator(orch)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+	testutil.Equal(t, gotOrch.NukedAt != nil, true)
 	gotRole, err := d.HeraRole(role.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+	testutil.Equal(t, gotRole.NukedAt != nil, true)
 	// Argus task ARCHIVED (sole-bound → worktree reclaimed, row kept).
 	task, err := d.Get("tw")
 	testutil.NoError(t, err)
@@ -241,17 +231,17 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	// Role in A ARCHIVED (not hard-deleted) + binding ended; role in B (same task)
+	// Role in A NUKED (not hard-deleted) + binding ended; role in B (same task)
 	// fully intact; multi-bound task preserved (not archived — bound under B).
 	gotA, err := d.HeraRole(rA.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotA.ArchivedAt != nil, true)
+	testutil.Equal(t, gotA.NukedAt != nil, true)
 	_, err = d.HeraLiveBindingByRole(rA.ID)
 	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
 	gotB, err := d.HeraRole(rB.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotB.OrchestratorID, orchB)
-	testutil.Equal(t, gotB.ArchivedAt == nil, true)
+	testutil.Equal(t, gotB.NukedAt == nil, true)
 	gotTask, err := d.Get(shared)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotTask.Archived, false)
@@ -259,8 +249,8 @@ func TestSmoke_HeraDeleteRoleMultiBindingIsolation(t *testing.T) {
 
 // TestSmoke_HeraCascadeDeleteSubtree drives Ctrl+D on a bridging worker row: the
 // confirm modal warns about the cascade and, on confirm, the nested child
-// orchestrator + its roles + its sole-bound agent task are ARCHIVED (no hard
-// deletes, worktree reclaimed) while the multi-bound bridge task is preserved.
+// orchestrator + its roles are NUKED and its sole-bound agent task ARCHIVED (no
+// hard deletes, worktree reclaimed) while the multi-bound bridge task is preserved.
 func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := testDB(t)
@@ -306,20 +296,20 @@ func TestSmoke_HeraCascadeDeleteSubtree(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyCtrlD, 0, 0)
 	syncUI(t, app.tapp)
-	// The confirm modal must spell out the cascade (archive DB rows, reclaim worktrees).
+	// The confirm modal must spell out the cascade (remove from rail, reclaim worktrees).
 	readUI(t, app.tapp, func() {
-		testutil.Contains(t, app.heraConfirmModal.Message(), "archives")
+		testutil.Contains(t, app.heraConfirmModal.Message(), "removes")
 		testutil.Contains(t, app.heraConfirmModal.Message(), "reclaims")
 	})
 	sim.InjectKey(tcell.KeyRune, 'y', 0) // confirm
 	syncUI(t, app.tapp)
 
-	// Child orchestrator ARCHIVED (still present), not hard-deleted; its sole-bound
+	// Child orchestrator NUKED (still present), not hard-deleted; its sole-bound
 	// worker task archived (worktree reclaimed); the multi-bound bridge task
 	// preserved (still bound under the parent — not archived).
 	gotChild, err := d.HeraOrchestrator(child)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotChild.ArchivedAt != nil, true)
+	testutil.Equal(t, gotChild.NukedAt != nil, true)
 	gotShared, err := d.Get(shared)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotShared.Archived, false)
@@ -386,13 +376,13 @@ func TestSmoke_HeraCascadeDeleteDepth2Count(t *testing.T) {
 	sim.InjectKey(tcell.KeyRune, 'y', 0)
 	syncUI(t, app.tapp)
 
-	// orch-c + orch-g ARCHIVED (still present), not hard-deleted.
+	// orch-c + orch-g NUKED (still present), not hard-deleted.
 	gotC, err := d.HeraOrchestrator(c)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotC.ArchivedAt != nil, true)
+	testutil.Equal(t, gotC.NukedAt != nil, true)
 	gotG, err := d.HeraOrchestrator(g)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotG.ArchivedAt != nil, true)
+	testutil.Equal(t, gotG.NukedAt != nil, true)
 	gotTg, err := d.Get("tg") // internal bridge archived (worktree reclaimed)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotTg.Archived, true)

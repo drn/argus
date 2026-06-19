@@ -73,6 +73,58 @@ func TestBuildModel_PartitionsSections(t *testing.T) {
 	testutil.Equal(t, m.Archived[0].Name, "arch-orch")
 }
 
+// TestBuildModel_FiltersNuked pins BUG-022 Tier-2: a NUKED orchestrator and a
+// NUKED role are invisible to every rail section (a HIDDEN/archived row is NOT —
+// it still surfaces, in the Archived section / its coordinator's expando).
+func TestBuildModel_FiltersNuked(t *testing.T) {
+	d := memDB(t)
+
+	keep := seedOrch(t, d, "keep")
+	coord := seedBoundRole(t, d, keep, "coord", db.HeraKindCoordinator, "t-coord")
+	w1 := seedBoundRole(t, d, keep, "w1", db.HeraKindWorker, "t-w1")
+	wNuke := seedBoundRole(t, d, keep, "w-nuke", db.HeraKindWorker, "t-wn")
+	_ = coord
+
+	// A whole nuked orchestrator.
+	gone := seedOrch(t, d, "gone")
+	seedBoundRole(t, d, gone, "coord", db.HeraKindCoordinator, "t-gone")
+
+	testutil.NoError(t, d.NukeHeraRole(wNuke.ID))
+	testutil.NoError(t, d.NukeHeraOrchestrator(gone))
+
+	m, err := BuildModel(d, nil)
+	testutil.NoError(t, err)
+
+	// The nuked orchestrator is in no section.
+	testutil.Nil(t, m.OrchByID(gone))
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for _, o := range sec {
+			if o.ID == gone {
+				t.Fatal("nuked orchestrator should not render in any section")
+			}
+		}
+	}
+
+	// The keep orchestrator still has its coordinator + w1, but NOT w-nuke.
+	kv := m.OrchByID(keep)
+	if kv == nil {
+		t.Fatal("keep orchestrator missing")
+	}
+	for _, r := range kv.Roles {
+		if r.RoleID == wNuke.ID {
+			t.Fatal("nuked role should not render")
+		}
+	}
+	// w1 survives.
+	found := false
+	for _, r := range kv.Roles {
+		if r.RoleID == w1.ID {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
+}
+
 // The locked must-have: a single argus task bound under TWO orchestrators
 // surfaces under EACH of them in the model (via two distinct roles).
 func TestBuildModel_MultiBindingFanOut(t *testing.T) {

@@ -75,9 +75,17 @@ func TestHelpModal_Draw(t *testing.T) {
 	// be discoverable in the overlay.
 	testutil.Contains(t, body, "spawn worker under coordinator (new-task modal)")
 	testutil.Contains(t, body, "new coordinator (new-task modal)")
-	testutil.Contains(t, body, "retire worker (archive task, keep worktree)")
-	testutil.Contains(t, body, "prune coordinator's archived descendants")
-	testutil.Contains(t, body, "prune all finished coords + agents")
+	// BUG-022 two-state EOL: `a` HIDE, `C` clear-archive (nuke), `Ctrl+D` nuke;
+	// `R` retire and the rail-wide `Ctrl+R` prune are GONE.
+	testutil.Contains(t, body, "hide worker in coord's archive (reversible)")
+	testutil.Contains(t, body, "clear coord's archive (nuke hidden agents)")
+	testutil.Contains(t, body, "nuke role/orchestrator")
+	if strings.Contains(body, "retire worker") {
+		t.Errorf("help overlay still lists the removed `R` retire key")
+	}
+	if strings.Contains(body, "prune all finished coords") {
+		t.Errorf("help overlay still lists the removed rail-wide `Ctrl+R` prune")
+	}
 	// BUG-002: Cmd+Up/Down rail-selection key must be discoverable in the overlay.
 	testutil.Contains(t, body, "move rail selection (stay focused in pane)")
 	// BUG-016: Left rail parent-nav must be discoverable — fail if dropped.

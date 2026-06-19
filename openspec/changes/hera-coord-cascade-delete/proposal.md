@@ -1,3 +1,5 @@
+> **SUPERSEDED by `hera-eol-redesign` (BUG-022).** This change made `Ctrl+D` cascade-ARCHIVE the subtree INTO the visible Archive section. BUG-022 recasts `Ctrl+D` as NUKE — the same cascade + worktree reclaim, but the rows are stamped `nuked_at` so they leave the rail ENTIRELY (not shown in any archive) while remaining retained in the DB. The multi-binding safety + count-bearing confirm carry over unchanged. See `hera-eol-redesign` for the live behavior.
+
 ## Why
 
 BUG-017: pressing `Ctrl+D` on a coordinator / orchestrator HEADER in the native Hera rail removed only that orchestrator's hera rows and PRESERVED every underlying argus task — worktrees stayed on disk, sessions kept running, and nested sub-coordinators were left behind entirely. So "delete the coordinator" left orphaned worktrees and stranded sub-teams.

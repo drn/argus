@@ -14,6 +14,12 @@ import (
 // shared agent.SpawnHeraWorker primitive, called by the App directly (it needs
 // the runner + worktree engine, which Ops does not own).
 //
+// BUG-022 BEDROCK RULE: the hard-delete verbs (DeleteHeraRole /
+// DeleteHeraOrchestrator) are DELIBERATELY ABSENT from this interface — the
+// end-of-life surface can never hard-delete a hera row. "Hide" is the archive
+// toggle (reversible) and "nuke" stamps nuked_at (NukeHeraRole /
+// NukeHeraOrchestrator), both of which RETAIN the row.
+//
 // Local mode passes the real *db.DB, which satisfies this implicitly. Remote
 // mode has no *db.DB, so the App never constructs Ops there and the Hera tab's
 // mutation keys are inert (see HeraPage remote-mode guards).
@@ -26,14 +32,14 @@ type MutateStore interface {
 	PinHeraOrchestrator(id int64) error
 	UnpinHeraOrchestrator(id int64) error
 	RenameHeraOrchestrator(id int64, newName string) error
-	DeleteHeraOrchestrator(id int64) error
+	NukeHeraOrchestrator(id int64) error
 
 	ArchiveHeraRole(id int64) error
 	UnarchiveHeraRole(id int64) error
 	PinHeraRole(id int64) error
 	UnpinHeraRole(id int64) error
 	RenameHeraRole(id int64, newName string) error
-	DeleteHeraRole(id int64) error
+	NukeHeraRole(id int64) error
 
 	HeraRoleStatusFor(roleID int64) (*db.HeraRoleStatus, error)
 	UpsertHeraRoleStatus(roleID int64, status db.HeraRoleStatusValue) error
@@ -207,66 +213,37 @@ func (o *Ops) StepStatus(sel Selection, dir int) error {
 	return nil
 }
 
-// RetireRole performs the hera-side end-of-life for a worker role (`R` key,
-// BUG-010): it sets the role status to `done`, ends THIS role's live binding
-// (stamped user_deleted so a retired worker never bridges a child), and archives
-// the role row. When rollTask is set (the task is solely bound to this role) it
-// also rolls the worker's task to in_review + ready_to_close, mirroring
-// hera_status("done"). The App owns the argus-task side (stop session + archive
-// task when sole-bound) BEFORE calling this. Each step is soft-fail except the
-// final archive, so a transient binding/status error still lands the archive.
-func (o *Ops) RetireRole(r *RoleView, rollTask bool) error {
+// NukeRole performs the hera-side Tier-2 end-of-life for a role (BUG-022): it
+// ends THIS role's live binding (stamped user_deleted so a nuked role never
+// bridges a child) and marks the role row NUKED (nuked_at + archived_at) so it
+// leaves the rail entirely — NEVER a hard delete. The role row, its status, its
+// inbox messages, and its bound argus task all survive for DB-only recovery. The
+// App owns the argus-task + worktree side (stop session, reclaim worktree, archive
+// task when sole-bound) BEFORE calling this. The binding-end is soft-fail so a
+// transient error still lands the nuke mark.
+func (o *Ops) NukeRole(r *RoleView) error {
 	if r == nil {
 		return errNoTarget
 	}
-	if err := o.store.UpsertHeraRoleStatus(r.RoleID, db.HeraStatusDone); err != nil {
-		uxlog.Log("[hera-view] retire role %d: status set failed: %v", r.RoleID, err)
-	}
-	if rollTask && r.Kind == db.HeraKindWorker && r.TaskID != "" {
-		if flipped, rErr := o.store.RollHeraWorkerToReview(r.TaskID); rErr != nil {
-			uxlog.Log("[hera-view] retire role %d: worker roll failed for %s: %v", r.RoleID, r.TaskID, rErr)
-		} else if flipped {
-			uxlog.Log("[hera-view] retire role %d: rolled worker task %s to in_review", r.RoleID, r.TaskID)
-		}
-	}
 	if b, err := o.store.HeraLiveBindingByRole(r.RoleID); err == nil && b != nil {
 		if eErr := o.store.EndHeraBinding(b.ID, db.HeraEndReasonUserDeleted); eErr != nil {
-			uxlog.Log("[hera-view] retire role %d: end binding %d failed: %v", r.RoleID, b.ID, eErr)
+			uxlog.Log("[hera-view] nuke role %d: end binding %d failed: %v", r.RoleID, b.ID, eErr)
 		}
 	}
-	uxlog.Log("[hera-view] retire role %d (%s) orch=%d (rollTask=%v)", r.RoleID, r.Name, r.OrchID, rollTask)
-	return o.store.ArchiveHeraRole(r.RoleID)
+	uxlog.Log("[hera-view] nuke role %d (%s) orch=%d", r.RoleID, r.Name, r.OrchID)
+	return o.store.NukeHeraRole(r.RoleID)
 }
 
-// DeleteRole removes a role row (its bindings + status cascade in M1). The
-// App handles the underlying argus task + worktree separately, before calling
-// this, so this is a thin row delete only.
-func (o *Ops) DeleteRole(roleID int64) error {
-	uxlog.Log("[hera-view] delete role row %d", roleID)
-	return o.store.DeleteHeraRole(roleID)
-}
-
-// ArchiveOrchestrator archives an orchestrator row (NOT a hard delete) — the
-// terminal DB op for the Ctrl+D cascade (BUG-017). Per the Hera delete model
-// ("the database doesn't get any deletes"), delete ARCHIVES every DB record and
-// reclaims only the real resources (worktree/branch/session); the orchestrator
-// and its roles persist in the Archive section as history. Its roles are
-// archived + their bindings ended individually by the caller (RetireRole); the
-// argus tasks are archived (sole-bound) or preserved (multi-bound). Unconditional
-// archive (unlike ArchiveToggle, which flips on current state).
-func (o *Ops) ArchiveOrchestrator(orchID int64) error {
-	uxlog.Log("[hera-view] archive orchestrator %d (cascade delete; no hard deletes)", orchID)
-	return o.store.ArchiveHeraOrchestrator(orchID)
-}
-
-// DeleteOrchestrator removes an orchestrator and (via M1 cascade) all its roles,
-// bindings, and status rows. Used ONLY by the prune paths (`C`/`Ctrl+R`), which
-// COMPLETE finished work and close emptied orchestrators — distinct from Ctrl+D
-// delete, which archives (never hard-deletes). The underlying argus tasks are
-// deliberately NOT deleted — they survive as unbound tasks.
-func (o *Ops) DeleteOrchestrator(orchID int64) error {
-	uxlog.Log("[hera-view] delete orchestrator %d (cascades roles+bindings; argus tasks preserved)", orchID)
-	return o.store.DeleteHeraOrchestrator(orchID)
+// NukeOrchestrator marks an orchestrator row NUKED (Tier-2 EOL, BUG-022) — the
+// terminal DB op for the Ctrl+D / C cascade. Per the bedrock rule ("a hera row
+// is never hard-deleted") this stamps nuked_at (+ archived_at), making the
+// orchestrator invisible to the rail while retaining the row for DB-only
+// recovery; its roles are nuked + their bindings ended individually by the
+// caller (NukeRole), and the argus tasks are archived (sole-bound) or preserved
+// (multi-bound). It is the nuke analog of ArchiveOrchestrator — no hard delete.
+func (o *Ops) NukeOrchestrator(orchID int64) error {
+	uxlog.Log("[hera-view] nuke orchestrator %d (cascade; no hard deletes)", orchID)
+	return o.store.NukeHeraOrchestrator(orchID)
 }
 
 // errNoTarget is returned when an op is invoked with an empty selection (no role

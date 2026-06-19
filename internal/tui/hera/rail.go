@@ -668,15 +668,19 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		if w.Kind == db.HeraKindCoordinator {
 			continue // folded into the header / the bridging row above
 		}
-		// An archived worker that BRIDGES a not-yet-placed child is a structural
-		// sub-coordinator, not a finished leaf: it renders in place (dimmed) so its
-		// child sub-team still nests. Hoisting it into the collapsed Archive expando
-		// would consume the child (consumedSet) without ever placing it, leaving the
-		// child to be safety-swept flat to the top level — the archived-worker
-		// under-nesting bug. Only archived LEAF workers (no live child to bridge)
-		// fold into the expando. db.SubtreeOrchIDs nests the child regardless of the
-		// parent-side role's archived state, so this mirrors it.
-		if w.Archived && r.workerBridgeChild(o.ID, w, canonical, placed) == nil {
+		// BUG-022 Q3: HIDING a worker (or a bridging sub-coordinator) folds it into
+		// the per-coordinator Archive expando — and a bridging sub-coord drags its
+		// WHOLE subtree in with it (structure retained INSIDE the expando), NOT
+		// rendered dimmed-in-place. ALL archived workers go to the expando here; the
+		// expando's appendWorkerRow (below) nests any bridged sub-team beneath the
+		// hidden worker when the expando is open. The orphaning hazard the old
+		// in-place rule guarded against (an archived bridging worker hoisted while its
+		// child is left unplaced → safety-swept flat to the top) is now closed by
+		// `structuralReach`: a child whose canonical-parent chain reaches a root is
+		// never re-leaked by the safety sweep, so when the expando is COLLAPSED the
+		// child stays hidden under its hidden parent instead of leaking. See
+		// TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando (both fold states).
+		if w.Archived {
 			archived = append(archived, w)
 			continue
 		}
@@ -703,12 +707,14 @@ func (r *Rail) appendOrchWorkers(o *OrchView, depth int, dim bool, canonical map
 		r.appendOrch(child, depth, dim, canonical, placed)
 	}
 
-	// Per-coordinator Archive (N) expando: archived roles fold under their
+	// Per-coordinator Archive (N) expando: HIDDEN (archived) roles fold under their
 	// coordinator's active agents, collapsed by default. Distinct from the bottom
-	// Archive section (archived ROOT orchestrators). Archived roles render dimmed
-	// and still nest any sub-team they bridge (forced-dim down the subtree). Under
-	// an active filter only visible archived roles list (the expando is pruned
-	// when none match), and the expando auto-expands.
+	// Archive section (archived ROOT orchestrators). Hidden roles render dimmed and
+	// — for a bridging sub-coordinator — still nest their WHOLE bridged sub-team
+	// beneath them INSIDE the expando (forced-dim down the subtree), so hiding a
+	// sub-coord collapses its subtree out of the main view with structure retained
+	// (BUG-022 Q3). Under an active filter only visible hidden roles list (the
+	// expando is pruned when none match), and the expando auto-expands.
 	visibleArchived := archived
 	if r.filterActive() {
 		visibleArchived = visibleArchived[:0:0]

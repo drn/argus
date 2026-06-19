@@ -191,45 +191,35 @@ func (a *App) heraOpenRename(sel hera.Selection) {
 	})
 }
 
-// heraArchiveToggle archives/unarchives the selected row. Archiving a row that
-// currently holds live work (a live role, or an orchestrator with live roles)
-// is confirmed first; unarchiving and archiving dormant rows are immediate.
-func (a *App) heraArchiveToggle(sel hera.Selection) {
+// heraHide is the `a` key: Tier-1 HIDE/unhide of the selected WORKER (BUG-022).
+// Hiding archives the role row so it nests in its PARENT coordinator's "Archive
+// (N)" expando; the session + worktree stay ALIVE (no detach) and it is a
+// reversible toggle (pressing `a` on a hidden worker unhides it exactly), so
+// there is NO confirmation. Hide applies to workers / sub-coordinators only — on
+// a top-level coordinator or orchestrator header (no parent archive to nest
+// under) it surfaces feedback and is a no-op. A sub-coordinator rendered as a
+// bridging worker row is worker-kind, so it hides through this same path; its
+// whole subtree collapses into the parent's Archive expando (Q3 — see rail.go
+// appendOrchWorkers), structure retained.
+//
+// Q2 (LOCKED): HIDE is RAIL-ONLY — it archives the hera ROLE row only and does
+// NOT db.SetArchived the bound argus task. The worker keeps running and still
+// shows in the Tasks tab; only NUKE (Ctrl+D/C) archives the task + reclaims the
+// worktree. Un-hide just clears archived_at and the rail row returns exactly.
+func (a *App) heraHide(sel hera.Selection) {
 	if a.heraOps == nil {
 		return
 	}
-	apply := func() {
-		if err := a.heraOps.ArchiveToggle(sel); err != nil {
-			a.statusbar.SetError("Archive failed: " + err.Error())
-			return
-		}
-		a.heraRefresh()
-	}
-	if a.heraArchivingLive(sel) {
-		name := heraSelName(sel)
-		a.openHeraConfirm("Archive "+name+"?", "It holds live work — archiving hides it but keeps the session running.", apply)
+	r := sel.Role
+	if r == nil || r.Kind != db.HeraKindWorker {
+		a.statusbar.SetError("Hide applies to workers and sub-coordinators")
 		return
 	}
-	apply()
-}
-
-// heraArchivingLive reports whether this toggle would ARCHIVE (not unarchive) a
-// row that currently holds live work.
-func (a *App) heraArchivingLive(sel hera.Selection) bool {
-	if r := sel.Role; r != nil {
-		return !r.Archived && r.Live
+	if err := a.heraOps.ArchiveToggle(sel); err != nil {
+		a.statusbar.SetError("Hide failed: " + err.Error())
+		return
 	}
-	if o := sel.Orch; o != nil {
-		if o.Archived {
-			return false
-		}
-		for i := range o.Roles {
-			if o.Roles[i].Live {
-				return true
-			}
-		}
-	}
-	return false
+	a.heraRefresh()
 }
 
 // heraPinToggle pins/unpins the selected row immediately (no confirm).
@@ -259,18 +249,20 @@ func (a *App) heraStatusStep(sel hera.Selection, dir int) {
 	a.heraRefresh()
 }
 
-// heraOpenDelete confirms then "deletes" the selected role or orchestrator. Per
-// the Hera delete model (BUG-017), delete NEVER hard-deletes a DB row: it
-// ARCHIVES every hera record (role + orchestrator rows, and the argus task row)
-// and reclaims only the real resources — it stops the session and removes the
-// worktree + local AND remote branch. The Archive section keeps the full record
-// (including the role's inbox, which is preserved by archiving rather than
-// deleting the role). The difference from the `a` key: `a` archives but KEEPS the
-// worktree/session alive; Ctrl+D archives AND reclaims them.
+// heraOpenDelete is the `Ctrl+D` key: Tier-2 NUKE of the selected role or
+// orchestrator (BUG-022). Nuke NEVER hard-deletes a DB row: it stamps the hera
+// rows NUKED (nuked_at, so they leave the rail ENTIRELY — not shown in any
+// archive) and reclaims only the real resources — it stops the session and
+// removes the worktree + local AND remote branch, and ARCHIVES the bound argus
+// task. The role/orchestrator rows, the role's inbox, and the task all survive
+// in the DB (recover by re-spinning a fresh worktree). The difference from the
+// `a` HIDE key: `a` archives but KEEPS the worktree/session alive and stays
+// visible in the parent's archive expando (reversible); `Ctrl+D` removes the row
+// from the rail and reclaims the worktree/session.
 //
 // A coordinator / orchestrator HEADER selection — like a nested-bridge worker row
 // — cascades the FULL subtree rooted at it: this orchestrator, every nested
-// sub-coordinator, and all their agents are archived + their worktrees reclaimed,
+// sub-coordinator, and all their agents are nuked + their worktrees reclaimed,
 // preserving any task bound live OUTSIDE the subtree (multi-binding safety — that
 // task is left fully alone, not archived, worktree kept).
 func (a *App) heraOpenDelete(sel hera.Selection) {
@@ -283,28 +275,27 @@ func (a *App) heraOpenDelete(sel hera.Selection) {
 		// subtree (the child orchestrator and every orchestrator nested beneath
 		// it), confirm-gated with a destructive warning that enumerates how many
 		// orchestrators / agents / worktrees go away.
-		a.heraCascadeDeleteFrom(sel.BridgeChildOrchID)
+		a.heraCascadeNukeFrom(sel.BridgeChildOrchID)
 	case sel.Role != nil:
 		r := sel.Role
-		msg := "Archives the role and ends its binding"
+		msg := "Removes the role from the rail and ends its binding (row retained for DB recovery)"
 		if r.Live && a.heraTaskSolelyBoundTo(r) {
 			// Sole binding → reclaim the worktree and archive the task too.
-			msg = "Stops the session, reclaims its worktree + branch, and archives the task + role"
+			msg = "Stops the session, reclaims its worktree + branch, removes the role from the rail, and archives the task (all rows retained for DB recovery)"
 		} else if r.Live {
 			// Multi-bound task → preserve it (archiving/reclaiming it would strand the
 			// SAME task's binding in another orchestrator — violates isolation).
-			msg = "Archives this role + ends its binding; the task stays (it is bound elsewhere)"
+			msg = "Removes this role from the rail + ends its binding; the task stays (it is bound elsewhere)"
 		}
-		a.openHeraConfirm("Delete role "+r.Name+"?", msg+".", func() {
-			a.heraDeleteRole(r)
+		a.openHeraConfirm("Nuke role "+r.Name+"?", msg+".", func() {
+			a.heraNukeRole(r)
 		})
 	case sel.Orch != nil:
-		// BUG-017: a coordinator / orchestrator HEADER delete runs the SAME
-		// full-subtree cascade as a nested-bridge worker row — it must tear down
-		// this coordinator, its agents, AND every nested sub-coordinator + their
-		// agents (stopping sessions, reclaiming worktrees+branches), not just remove
-		// this orchestrator's hera rows while leaving sub-coords and worktrees alive.
-		a.heraCascadeDeleteFrom(sel.Orch.ID)
+		// A coordinator / orchestrator HEADER nuke runs the SAME full-subtree
+		// cascade as a nested-bridge worker row — it tears down this coordinator,
+		// its agents, AND every nested sub-coordinator + their agents (stopping
+		// sessions, reclaiming worktrees+branches, removing them from the rail).
+		a.heraCascadeNukeFrom(sel.Orch.ID)
 	}
 }
 
@@ -323,45 +314,47 @@ func (a *App) heraTaskSolelyBoundTo(r *hera.RoleView) bool {
 	return len(live) == 1
 }
 
-// heraDeleteRole archives a role (NO hard delete). When the role's task is solely
+// heraNukeRole NUKES a role (NO hard delete). When the role's task is solely
 // bound to this role, the App reclaims the real resources — stop session + remove
 // worktree + branch — and ARCHIVES the task row (heraReclaimAndArchiveTask). Then
-// RetireRole archives the role row + ends its binding (the same archive-not-delete
-// primitive the `R` key uses, passing rollTask=false since the task is archived
-// outright). When the task is bound under MULTIPLE orchestrators it is PRESERVED
-// (left fully alone, worktree kept) — only this role's row is archived + its
-// binding ended; the other orchestrator's binding to the SAME task is untouched.
-func (a *App) heraDeleteRole(r *hera.RoleView) {
+// Ops.NukeRole ends the role's binding + stamps the role row NUKED (nuked_at), so
+// it leaves the rail entirely. When the task is bound under MULTIPLE orchestrators
+// it is PRESERVED (left fully alone, worktree kept) — only this role's row is
+// nuked + its binding ended; the other orchestrator's binding to the SAME task is
+// untouched. Zero hard deletes: the role row, its inbox, and the task all survive.
+func (a *App) heraNukeRole(r *hera.RoleView) {
 	if r.Live && r.TaskID != "" && a.heraTaskSolelyBoundTo(r) {
 		a.heraReclaimAndArchiveTask(r.TaskID)
 	}
-	if err := a.heraOps.RetireRole(r, false); err != nil {
-		a.statusbar.SetError("Delete role failed: " + err.Error())
+	if err := a.heraOps.NukeRole(r); err != nil {
+		a.statusbar.SetError("Nuke role failed: " + err.Error())
 	}
 	a.heraRefresh()
 }
 
 // heraReclaimAndArchiveTask reclaims a task's REAL resources and archives its row
-// — the "delete" teardown for a task whose live bindings are all within the
-// subtree (or sole-bound to a single deleted role). It stops the session, removes
-// the worktree + LOCAL and REMOTE branch (background — git is slow), and ARCHIVES
-// the task row (db.SetArchived, NEVER db.Delete). The task survives in the Archive
+// — the nuke teardown for a task whose live bindings are all within the subtree
+// (or sole-bound to a single nuked role). It stops the session, removes the
+// worktree + LOCAL and REMOTE branch (background — git is slow), and ARCHIVES the
+// task row (db.SetArchived, NEVER db.Delete). The task survives in the Archive
 // section as history; only the worktree directory + git branch are reclaimed.
-func (a *App) heraReclaimAndArchiveTask(taskID string) {
+// Returns whether a worktree-removal was kicked off (for the prune count/log).
+func (a *App) heraReclaimAndArchiveTask(taskID string) (reclaimed bool) {
 	t, err := a.db.Get(taskID)
 	if err != nil || t == nil {
-		uxlog.Log("[hera-view] delete: task %s not found, skip reclaim: %v", taskID, err)
-		return
+		uxlog.Log("[hera-view] nuke: task %s not found, skip reclaim: %v", taskID, err)
+		return false
 	}
 	if a.runner.HasSession(t.ID) {
 		if sErr := a.runner.Stop(t.ID); sErr != nil {
-			uxlog.Log("[hera-view] delete: stop session failed task=%s: %v", t.ID, sErr)
+			uxlog.Log("[hera-view] nuke: stop session failed task=%s: %v", t.ID, sErr)
 		}
 	}
 	cfg := a.db.Config()
 	repoDir := agent.ResolveDir(t, cfg)
 	wt, br := t.Worktree, t.Branch
 	if wt != "" {
+		reclaimed = true
 		go func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) }()
 	} else if br != "" && repoDir != "" {
 		go func() {
@@ -370,33 +363,34 @@ func (a *App) heraReclaimAndArchiveTask(taskID string) {
 		}()
 	}
 	if aErr := a.db.SetArchived(t.ID, true); aErr != nil {
-		uxlog.Log("[hera-view] delete: archive task failed task=%s: %v", t.ID, aErr)
+		uxlog.Log("[hera-view] nuke: archive task failed task=%s: %v", t.ID, aErr)
 	} else {
-		uxlog.Log("[hera-view] delete: reclaimed worktree + archived task %s", t.ID)
+		uxlog.Log("[hera-view] nuke: reclaimed worktree + archived task %s", t.ID)
 	}
+	return reclaimed
 }
 
-// heraCascadeDeleteFrom confirms then ARCHIVES the entire subtree rooted at
-// rootID — the orchestrator itself plus every orchestrator nested beneath it
-// through the worker→coordinator bridge — and reclaims their worktrees. rootID
-// may be a TOP-LEVEL coordinator (the Ctrl+D-on-header path, BUG-017) or a nested
-// sub-coordinator reached through a bridging worker row; BridgeSubtree walks the
-// same hierarchy either way. NOTHING is hard-deleted: the orchestrator + role
-// rows are archived (kept in the Archive section, inboxes preserved) and each
-// sole-bound task row is archived; only the worktree + branch are reclaimed. The
-// confirm modal is explicitly destructive about the RECLAIM: it tells the
-// operator how many orchestrators and agents are archived and how many
-// worktrees+branches are reclaimed. Tasks bound in another (non-subtree)
-// orchestrator are preserved — multi-binding safety (left fully alone).
-func (a *App) heraCascadeDeleteFrom(rootID int64) {
+// heraCascadeNukeFrom confirms then NUKES the entire subtree rooted at rootID —
+// the orchestrator itself plus every orchestrator nested beneath it through the
+// worker→coordinator bridge — and reclaims their worktrees. rootID may be a
+// TOP-LEVEL coordinator (the Ctrl+D-on-header path) or a nested sub-coordinator
+// reached through a bridging worker row; BridgeSubtree walks the same hierarchy
+// either way. NOTHING is hard-deleted: the orchestrator + role rows are stamped
+// NUKED (removed from the rail, inboxes preserved, recoverable via the DB) and
+// each sole-bound task row is archived; only the worktree + branch are reclaimed.
+// The confirm modal is explicit about the RECLAIM: it tells the operator how many
+// orchestrators and agents are removed and how many worktrees+branches are
+// reclaimed. Tasks bound in another (non-subtree) orchestrator are preserved —
+// multi-binding safety (left fully alone).
+func (a *App) heraCascadeNukeFrom(rootID int64) {
 	if a.heraOps == nil {
 		return
 	}
 	// The subtree snapshot is captured point-in-time (modal-open). The app tick
 	// can rebuild the rail model while the confirm is open, but every op below
 	// re-validates against the LIVE DB (heraTaskBoundOutside re-queries,
-	// heraReclaimAndArchiveTask re-fetches, ArchiveOrchestrator keys on the stable
-	// id), so a stale pointer never archives the wrong row — at worst a role added
+	// heraReclaimAndArchiveTask re-fetches, NukeOrchestrator keys on the stable
+	// id), so a stale pointer never nukes the wrong row — at worst a role added
 	// after modal-open keeps its task (recoverable from the Tasks tab).
 	subtree := a.heraPage.Rail().Model().BridgeSubtree(rootID)
 	if len(subtree) == 0 {
@@ -433,11 +427,11 @@ func (a *App) heraCascadeDeleteFrom(rootID int64) {
 			}
 		}
 	}
-	title := "Delete " + subtree[0].Name + " and its whole team?"
+	title := "Nuke " + subtree[0].Name + " and its whole team?"
 	msg := fmt.Sprintf(
-		"This archives %d orchestrator(s) and %d agent(s) (kept in the Archive) and reclaims %d worktree(s) + branch(es), stopping their sessions. %d task(s) bound in another orchestrator are preserved.",
+		"This removes %d orchestrator(s) and %d agent(s) from the rail and reclaims %d worktree(s) + branch(es), stopping their sessions. Rows are retained (recoverable via the DB). %d task(s) bound in another orchestrator are preserved.",
 		len(subtree), agents, worktrees, preserved)
-	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeDelete(subtree, subtreeIDs) })
+	a.openHeraConfirm(title, msg, func() { a.heraDoCascadeNuke(subtree, subtreeIDs) })
 }
 
 // heraTaskBoundOutside reports whether taskID holds at least one LIVE binding to
@@ -463,23 +457,23 @@ func (a *App) heraTaskBoundOutside(taskID string, subtreeIDs map[int64]bool) boo
 	return false
 }
 
-// heraDoCascadeDelete performs the subtree teardown after the operator confirms.
+// heraDoCascadeNuke performs the subtree teardown after the operator confirms.
 // NOTHING is hard-deleted. For each orchestrator it:
 //   - reclaims the worktree + branch and ARCHIVES every managed task whose live
 //     bindings are ALL within the subtree (heraReclaimAndArchiveTask: stop session
 //   - RemoveWorktreeAndBranch + db.SetArchived). A task bound OUTSIDE the subtree
 //     (e.g. a bridge task still held by a non-subtree parent) is preserved — left
 //     fully alone (not archived, worktree kept).
-//   - archives every LIVE role row + ends its binding (RetireRole, rollTask=false:
-//     archive-not-delete, the same primitive the `R` key uses);
-//   - archives the orchestrator row (ArchiveOrchestrator — NOT DeleteOrchestrator).
+//   - NUKES every LIVE role row + ends its binding (Ops.NukeRole — stamps nuked_at,
+//     removes the row from the rail; never DeleteHeraRole);
+//   - NUKES the orchestrator row (Ops.NukeOrchestrator — NOT DeleteHeraOrchestrator).
 //
 // The task reclaim decision is made BEFORE ending that role's binding so the
 // multi-binding check sees full binding state. The reclaimed set guards against
-// double-archiving a task reached via two roles. Net: zero hard deletes — the
-// Archive section keeps the full record (roles, orchestrators, inboxes), only the
+// double-archiving a task reached via two roles. Net: zero hard deletes — every
+// role/orchestrator/inbox/task row is retained (recoverable via the DB), only the
 // worktree dir + git branch are reclaimed.
-func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView, subtreeIDs map[int64]bool) {
+func (a *App) heraDoCascadeNuke(subtree []*hera.OrchView, subtreeIDs map[int64]bool) {
 	reclaimed := make(map[string]bool)
 	for _, o := range subtree {
 		for i := range o.Roles {
@@ -489,77 +483,24 @@ func (a *App) heraDoCascadeDelete(subtree []*hera.OrchView, subtreeIDs map[int64
 				a.heraReclaimAndArchiveTask(r.TaskID)
 			}
 			if r.Live {
-				if err := a.heraOps.RetireRole(r, false); err != nil {
-					uxlog.Log("[hera-view] cascade: archive role %d failed: %v", r.RoleID, err)
+				if err := a.heraOps.NukeRole(r); err != nil {
+					uxlog.Log("[hera-view] cascade: nuke role %d failed: %v", r.RoleID, err)
 				}
 			}
 		}
-		if err := a.heraOps.ArchiveOrchestrator(o.ID); err != nil {
-			a.statusbar.SetError("Archive sub-team failed: " + err.Error())
+		if err := a.heraOps.NukeOrchestrator(o.ID); err != nil {
+			a.statusbar.SetError("Nuke sub-team failed: " + err.Error())
 		}
 	}
 	a.heraRefresh()
 }
 
-// --- `R` retire worker (BUG-010) --------------------------------------------
+// --- `C` clear-this-coordinator's-archive (BUG-022) -------------------------
 
-// heraRetireWorker confirms then retires the selected WORKER role: a unified
-// end-of-life that stops the session, archives the underlying argus task (the
-// worktree is KEPT — retire is reversible; prune reclaims later), ends this
-// role's binding, sets status done, and archives the role row. For a multi-bound
-// task the task + worktree are preserved and only this role's binding/row end
-// (same isolation as conservative delete). On a coordinator/header selection it
-// surfaces feedback and is a no-op.
-func (a *App) heraRetireWorker(sel hera.Selection) {
-	if a.heraOps == nil {
-		return
-	}
-	r := sel.Role
-	if r == nil || r.Kind != db.HeraKindWorker {
-		a.statusbar.SetError("Retire applies to workers")
-		return
-	}
-	sole := r.Live && a.heraTaskSolelyBoundTo(r)
-	msg := "Archives the role (no live session)"
-	switch {
-	case sole:
-		msg = "Stops the session, archives the task (worktree kept), and archives the role"
-	case r.Live:
-		msg = "Ends this role's binding and archives the role; the task stays (bound elsewhere)"
-	}
-	a.openHeraConfirm("Retire worker "+r.Name+"?", msg+".", func() {
-		a.heraDoRetire(r, sole)
-	})
-}
-
-// heraDoRetire performs the retire after the operator confirms. The sole-bound
-// path stops the session and archives the argus task (keeping the worktree); the
-// hera-side status/binding/role-archive happens in Ops.RetireRole either way.
-func (a *App) heraDoRetire(r *hera.RoleView, sole bool) {
-	if sole && r.TaskID != "" {
-		if t, err := a.db.Get(r.TaskID); err == nil && t != nil {
-			if a.runner.HasSession(t.ID) {
-				if sErr := a.runner.Stop(t.ID); sErr != nil {
-					uxlog.Log("[hera-view] retire: stop session failed task=%s: %v", t.ID, sErr)
-				}
-			}
-			if aErr := a.db.SetArchived(t.ID, true); aErr != nil {
-				uxlog.Log("[hera-view] retire: archive task failed task=%s: %v", t.ID, aErr)
-			}
-		}
-	}
-	if err := a.heraOps.RetireRole(r, sole); err != nil {
-		a.statusbar.SetError("Retire failed: " + err.Error())
-	}
-	a.heraRefresh()
-}
-
-// --- `C` / `Ctrl+R` prune (BUG-011 / BUG-012) -------------------------------
-
-// heraTaskReclaimable reports whether a task can be completed + its worktree
-// reclaimed during a prune: it is reclaimable iff no LIVE binding belongs to a
-// DIFFERENT role (so a task still bound live elsewhere — multi-binding — is
-// preserved). A query error errs on the side of preserving (returns false).
+// heraTaskReclaimable reports whether a task's worktree can be reclaimed during a
+// nuke: it is reclaimable iff no LIVE binding belongs to a DIFFERENT role (so a
+// task still bound live elsewhere — multi-binding — is preserved). A query error
+// errs on the side of preserving (returns false).
 func (a *App) heraTaskReclaimable(taskID string, roleID int64) bool {
 	d, ok := a.db.(*db.DB)
 	if !ok {
@@ -578,7 +519,7 @@ func (a *App) heraTaskReclaimable(taskID string, roleID int64) bool {
 }
 
 // roleReclaimTask returns the role's reclaim-target task id (its latest binding
-// task, covering archived roles whose live binding already ended), or "".
+// task, covering hidden/archived roles whose live binding already ended), or "".
 func roleReclaimTask(r *hera.RoleView) string {
 	if r.BridgeTaskID != "" {
 		return r.BridgeTaskID
@@ -586,9 +527,9 @@ func roleReclaimTask(r *hera.RoleView) string {
 	return r.TaskID
 }
 
-// heraCountReclaimable splits roles into those whose task will be completed +
-// worktree reclaimed vs those preserved because the task is bound live
-// elsewhere. Roles with no task are neither (just a role-row removal).
+// heraCountReclaimable splits roles into those whose worktree will be reclaimed
+// vs those preserved because the task is bound live elsewhere. Roles with no task
+// are neither (just a role-row nuke).
 func (a *App) heraCountReclaimable(roles []hera.RoleView) (reclaim, preserved int) {
 	for i := range roles {
 		tid := roleReclaimTask(&roles[i])
@@ -604,169 +545,63 @@ func (a *App) heraCountReclaimable(roles []hera.RoleView) (reclaim, preserved in
 	return
 }
 
-// heraReclaimRole completes the role's task and reclaims its worktree+branch when
-// the task is solely bound to this role, then removes the role row. A task bound
-// live elsewhere keeps its task/worktree (only the role row is removed —
-// multi-binding isolation). Worktree teardown runs in the background (git is
-// slow). Returns whether a worktree reclaim was kicked off.
-func (a *App) heraReclaimRole(r *hera.RoleView) (reclaimed bool) {
+// heraNukeArchivedRole NUKES a Tier-1 hidden (archived) role: it reclaims the
+// task's worktree+branch and ARCHIVES the task when reclaimable (no live binding
+// belongs to another role), then stamps the role row NUKED (Ops.NukeRole). A task
+// bound live elsewhere keeps its task/worktree (only this role row is nuked —
+// multi-binding isolation). NO hard delete. Returns whether a worktree reclaim
+// was kicked off (for the count/log).
+func (a *App) heraNukeArchivedRole(r *hera.RoleView) (reclaimed bool) {
 	taskID := roleReclaimTask(r)
 	if taskID != "" && a.heraTaskReclaimable(taskID, r.RoleID) {
-		if t, err := a.db.Get(taskID); err == nil && t != nil {
-			if a.runner.HasSession(t.ID) {
-				if sErr := a.runner.Stop(t.ID); sErr != nil {
-					uxlog.Log("[hera-view] reclaim: stop session failed task=%s: %v", t.ID, sErr)
-				}
-			}
-			t.SetStatus(model.StatusComplete)
-			if sErr := a.db.SetStatus(t.ID, model.StatusComplete); sErr != nil {
-				uxlog.Log("[hera-view] reclaim: set complete failed task=%s: %v", t.ID, sErr)
-			}
-			cfg := a.db.Config()
-			repoDir := agent.ResolveDir(t, cfg)
-			wt, br := t.Worktree, t.Branch
-			if wt != "" {
-				reclaimed = true
-				go func() { agent.RemoveWorktreeAndBranch(wt, br, repoDir) }()
-			} else if br != "" && repoDir != "" {
-				go func() {
-					agent.DeleteBranch(repoDir, br)
-					agent.DeleteRemoteBranch(repoDir, br)
-				}()
-			}
-		}
+		reclaimed = a.heraReclaimAndArchiveTask(taskID)
 	}
-	if err := a.heraOps.DeleteRole(r.RoleID); err != nil {
-		uxlog.Log("[hera-view] reclaim: delete role %d failed: %v", r.RoleID, err)
+	if err := a.heraOps.NukeRole(r); err != nil {
+		uxlog.Log("[hera-view] clear archive: nuke role %d failed: %v", r.RoleID, err)
 	}
 	return reclaimed
 }
 
-// heraPruneDescendants (`C`) confirms then prunes the selected coordinator's
-// ARCHIVED descendant workers: each is completed, its worktree+branch reclaimed
-// (unless bound live elsewhere), and its role row removed. Scoped to the
-// selected orchestrator's subtree. An empty set surfaces "nothing to prune".
-func (a *App) heraPruneDescendants(sel hera.Selection) {
+// heraClearArchive (`C`) confirms then NUKES every Tier-1 hidden (archived)
+// descendant WORKER in the selected coordinator's subtree — equivalent to Ctrl+D
+// on each: reclaim its worktree+branch (unless bound live elsewhere), archive its
+// task, and mark its role row NUKED (removed from the rail, retained in the DB).
+// Scoped to the SELECTED coordinator's archive, never global. An empty archive
+// surfaces "nothing to clear".
+func (a *App) heraClearArchive(sel hera.Selection) {
 	if a.heraOps == nil {
 		return
 	}
 	orch := sel.Orch
 	if orch == nil {
-		a.statusbar.SetError("Prune: select a coordinator")
+		a.statusbar.SetError("Clear archive: select a coordinator")
 		return
 	}
 	workers := a.heraPage.Rail().Model().SubtreeArchivedWorkers(orch.ID)
 	if len(workers) == 0 {
-		a.statusbar.SetInfo("Nothing to prune")
+		a.statusbar.SetInfo("Nothing to clear")
 		return
 	}
 	reclaim, preserved := a.heraCountReclaimable(workers)
 	msg := fmt.Sprintf(
-		"Completes %d archived worker(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere).",
+		"Nukes %d hidden agent(s) and reclaims %d worktree(s)+branch(es). %d preserved (bound elsewhere). Rows are retained (recoverable via the DB).",
 		len(workers), reclaim, preserved)
-	a.openHeraConfirm("Prune archived agents under "+orch.Name+"?", msg, func() {
-		a.heraDoPrune(workers)
+	a.openHeraConfirm("Clear "+orch.Name+"'s archive?", msg, func() {
+		a.heraDoClearArchive(workers)
 	})
 }
 
-// heraDoPrune reclaims each role in the set and refreshes.
-func (a *App) heraDoPrune(roles []hera.RoleView) {
+// heraDoClearArchive nukes each hidden role in the set and refreshes.
+func (a *App) heraDoClearArchive(roles []hera.RoleView) {
 	n, wt := 0, 0
 	for i := range roles {
-		if a.heraReclaimRole(&roles[i]) {
+		if a.heraNukeArchivedRole(&roles[i]) {
 			wt++
 		}
 		n++
 	}
-	uxlog.Log("[hera-view] prune descendants: %d role(s), %d worktree(s) reclaimed", n, wt)
+	uxlog.Log("[hera-view] clear archive: %d hidden role(s) nuked, %d worktree(s) reclaimed", n, wt)
 	a.heraRefresh()
-}
-
-// heraPruneDone (`Ctrl+R`) confirms then prunes ALL finished roles rail-wide
-// (archived, status done, or ready_to_close): each is completed, its
-// worktree+branch reclaimed (unless bound live elsewhere), and its role row
-// removed; orchestrators whose every role is finished are then deleted. An empty
-// set surfaces "nothing to prune". This is the rail's OWN handler, so it never
-// collides with the agent-view Ctrl+R (Claude session switcher).
-func (a *App) heraPruneDone() {
-	if a.heraOps == nil {
-		return
-	}
-	m := a.heraPage.Rail().Model()
-	orchIDs := m.FullyFinishedOrchestratorIDs()
-	fully := make(map[int64]bool, len(orchIDs))
-	for _, id := range orchIDs {
-		fully[id] = true
-	}
-	// Reclaim finished worker/freelance roles anywhere; reclaim a finished
-	// COORDINATOR only when its whole orchestrator is finished — never behead an
-	// orchestrator that still has live workers.
-	var reclaim []hera.RoleView
-	for _, r := range m.FinishedRoles() {
-		if r.Kind == db.HeraKindCoordinator && !fully[r.OrchID] {
-			continue
-		}
-		reclaim = append(reclaim, r)
-	}
-	if len(reclaim) == 0 && len(orchIDs) == 0 {
-		a.statusbar.SetInfo("Nothing to prune")
-		return
-	}
-	rc, preserved := a.heraCountReclaimable(reclaim)
-	msg := fmt.Sprintf(
-		"Completes %d finished role(s), reclaims %d worktree(s)+branch(es), and closes %d orchestrator(s). %d preserved (bound elsewhere).",
-		len(reclaim), rc, len(orchIDs), preserved)
-	a.openHeraConfirm("Prune all finished coordinators + agents?", msg, func() {
-		a.heraDoPruneDone(reclaim, orchIDs)
-	})
-}
-
-// heraDoPruneDone reclaims every finished role, then deletes the fully-finished
-// orchestrators whose roles are now all gone. The post-reclaim live-binding
-// guard means an orchestrator that still holds a live binding (e.g. a surviving
-// freelance role hoisted out of its managed-role set) is kept, never wiped.
-func (a *App) heraDoPruneDone(roles []hera.RoleView, orchIDs []int64) {
-	n, wt := 0, 0
-	for i := range roles {
-		if a.heraReclaimRole(&roles[i]) {
-			wt++
-		}
-		n++
-	}
-	closed := 0
-	for _, id := range orchIDs {
-		if a.heraOrchHasLiveBinding(id) {
-			uxlog.Log("[hera-view] prune done: keeping orch %d (a live binding survived)", id)
-			continue
-		}
-		if err := a.heraOps.DeleteOrchestrator(id); err != nil {
-			uxlog.Log("[hera-view] prune done: delete orch %d failed: %v", id, err)
-		} else {
-			closed++
-		}
-	}
-	uxlog.Log("[hera-view] prune done: %d role(s), %d worktree(s) reclaimed, %d orch(s) closed", n, wt, closed)
-	a.heraRefresh()
-}
-
-// heraOrchHasLiveBinding reports whether any LIVE binding still points at the
-// orchestrator — the post-reclaim guard before deleting it. A query error errs
-// on the side of keeping the orchestrator (returns true).
-func (a *App) heraOrchHasLiveBinding(orchID int64) bool {
-	d, ok := a.db.(*db.DB)
-	if !ok {
-		return true
-	}
-	live, err := d.ListHeraLiveBindings()
-	if err != nil {
-		return true
-	}
-	for _, b := range live {
-		if b.OrchestratorID == orchID {
-			return true
-		}
-	}
-	return false
 }
 
 // heraReattach revives the session backing the selected role's task. The page

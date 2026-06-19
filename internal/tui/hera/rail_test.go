@@ -484,20 +484,70 @@ func TestRail_CollapsedParentDoesNotLeakArchivedBridgedChild(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{Active: []OrchView{p, c}})
 
-	// Expanded: the archived bridging worker renders in place and nests C.
-	testutil.Equal(t, r.depthOf("aw"), 1)
-	testutil.Equal(t, r.depthOf("cw"), 2)
-	testutil.Equal(t, rootHeaderCount(r), 1)
-
-	// Collapse the parent P — C must stay folded, not leak.
-	for r.rows[r.cursor].orch == nil || r.rows[r.cursor].orch.Name != "P" {
-		r.CursorDown()
-	}
-	r.ToggleCollapse()
-
+	// BUG-022 Q3: the HIDDEN (archived) bridging worker folds into P's Archive
+	// expando (collapsed by default), dragging C's subtree in with it — so by
+	// default both are hidden, and C never leaks to a top-level root.
+	testutil.Equal(t, r.depthOf("aw"), -1)
 	testutil.Equal(t, r.depthOf("cw"), -1)
 	testutil.Equal(t, r.hasOrchHeader("C"), false)
 	testutil.Equal(t, rootHeaderCount(r), 1) // only P
+
+	// Open P's Archive expando → aw nests under it and C's worker nests beneath aw,
+	// one level deeper (structure retained inside the expando).
+	for r.rows[r.cursor].archiveOwner != 1 {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	awDepth := r.depthOf("aw")
+	testutil.Equal(t, awDepth > 0, true)
+	testutil.Equal(t, r.depthOf("cw"), awDepth+1)
+	testutil.Equal(t, r.hasOrchHeader("C"), false) // still nested, never a top-level root
+	testutil.Equal(t, rootHeaderCount(r), 1)
+}
+
+// TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando is the explicit BUG-022 Q3
+// ≥2-level case: parent P → hidden sub-coord B (a bridging worker) → agent C.
+// Hiding B collapses B AND C into P's Archive expando — C renders nested beneath
+// B inside the expando when open, is hidden when the expando is collapsed, and is
+// NEVER hoisted to a top-level root in either fold state.
+func TestRail_HiddenSubCoordCollapsesSubtreeIntoExpando(t *testing.T) {
+	// P (root) has a coordinator + an ARCHIVED worker B bridging child orch (B is a
+	// hidden sub-coordinator). The child orch's coordinator task is B's bridge task,
+	// and the child holds agent C.
+	p := coordOf(1, "P", 100, "tp",
+		RoleView{RoleID: 101, Name: "B", Kind: db.HeraKindWorker, Archived: true, Live: true,
+			TaskID: "tb", BridgeTaskID: "tb"})
+	child := coordOf(2, "B", 200, "tb",
+		RoleView{RoleID: 201, Name: "C", Kind: db.HeraKindWorker, Live: true, TaskID: "tc", BridgeTaskID: "tc"})
+	r := NewRail()
+	r.SetModel(Model{Active: []OrchView{p, child}})
+
+	// Collapsed-by-default expando: B and C are both hidden; C is NOT a top-level root.
+	testutil.Equal(t, r.depthOf("B"), -1)
+	testutil.Equal(t, r.depthOf("C"), -1)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only P
+	expandoFound := false
+	for i := range r.rows {
+		if r.rows[i].kind == rrArchiveExpando && r.rows[i].archiveOwner == 1 {
+			expandoFound = true
+		}
+	}
+	testutil.Equal(t, expandoFound, true)
+
+	// Open the expando → B nests under it and C nests one level deeper, both dimmed.
+	for r.rows[r.cursor].archiveOwner != 1 {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	bDepth := r.depthOf("B")
+	testutil.Equal(t, bDepth > 0, true)
+	testutil.Equal(t, r.depthOf("C"), bDepth+1) // C nested beneath B inside the expando
+	testutil.Equal(t, rootHeaderCount(r), 1)    // C never hoisted to a top-level root
+	for i := range r.rows {
+		if r.rows[i].role != nil && (r.rows[i].role.Name == "B" || r.rows[i].role.Name == "C") {
+			testutil.Equal(t, r.rows[i].dim, true) // whole hidden subtree dims
+		}
+	}
 }
 
 func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
@@ -549,12 +599,12 @@ func TestRail_LargeShapeSixRootsManyNested(t *testing.T) {
 	testutil.Equal(t, roots, 6)
 }
 
-func TestRail_ArchivedBridgingWorkerNestsActiveChild(t *testing.T) {
-	// Root R (active) has an ARCHIVED worker w that bridges an ACTIVE child C.
-	// w must render in place (dimmed) — NOT hoisted into the collapsed Archive
-	// expando — so C nests under it instead of being safety-swept flat to a
-	// top-level root. C stays NORMAL (only the archived worker row dims). This is
-	// the archived-worker half of the under-nesting bug (done sub-teams flat).
+func TestRail_ArchivedBridgingWorkerHoistsSubtreeToExpando(t *testing.T) {
+	// BUG-022 Q3: Root R (active) has an ARCHIVED (HIDDEN) worker w bridging an
+	// ACTIVE child C. Hiding w folds it into R's Archive expando and drags C's
+	// subtree in with it; C is NEVER safety-swept to a top-level root. When the
+	// expando is opened, w nests under it and C's worker nests one level deeper,
+	// both dimmed (the whole hidden subtree is de-emphasized inside the expando).
 	root := OrchView{ID: 1, Name: "R", Roles: []RoleView{
 		{RoleID: 10, Name: "coord", Kind: db.HeraKindCoordinator, Live: true, TaskID: "tr", BridgeTaskID: "tr"},
 		{RoleID: 11, Name: "w", Kind: db.HeraKindWorker, Live: true, Archived: true, TaskID: "tc", BridgeTaskID: "tc"},
@@ -563,23 +613,34 @@ func TestRail_ArchivedBridgingWorkerNestsActiveChild(t *testing.T) {
 	r := NewRail()
 	r.SetModel(Model{Active: []OrchView{root, child}})
 
-	testutil.Equal(t, r.depthOf("w"), 1)
-	testutil.Equal(t, r.depthOf("wc"), 2)
-	testutil.Equal(t, r.hasOrchHeader("C"), false) // nested, not a top-level root
-	roots := 0
+	// Collapsed by default: w + wc hidden; C not a top-level root; an expando exists.
+	testutil.Equal(t, r.depthOf("w"), -1)
+	testutil.Equal(t, r.depthOf("wc"), -1)
+	testutil.Equal(t, r.hasOrchHeader("C"), false)
+	expandoFound := false
 	for _, row := range r.rows {
-		if row.kind == rrOrch && row.depth == 0 {
-			roots++
+		if row.kind == rrArchiveExpando && row.archiveOwner == 1 {
+			expandoFound = true
 		}
-		if row.role != nil && row.role.Name == "w" {
-			testutil.Equal(t, row.dim, true) // archived worker row dims (honest)
-		}
-		if row.role != nil && row.role.Name == "wc" {
-			testutil.Equal(t, row.dim, false) // active child subtree stays normal
-		}
-		testutil.Equal(t, row.kind == rrArchiveExpando, false) // bridging worker not hoisted
 	}
-	testutil.Equal(t, roots, 1) // only R is a root
+	testutil.Equal(t, expandoFound, true)
+	testutil.Equal(t, rootHeaderCount(r), 1) // only R is a root
+
+	// Open the expando → w nests, C's worker nests one level deeper, both dimmed.
+	for r.rows[r.cursor].archiveOwner != 1 {
+		r.CursorDown()
+	}
+	r.ToggleCollapse()
+	wDepth := r.depthOf("w")
+	testutil.Equal(t, wDepth > 0, true)
+	testutil.Equal(t, r.depthOf("wc"), wDepth+1)
+	testutil.Equal(t, r.hasOrchHeader("C"), false)
+	testutil.Equal(t, rootHeaderCount(r), 1)
+	for _, row := range r.rows {
+		if row.role != nil && (row.role.Name == "w" || row.role.Name == "wc") {
+			testutil.Equal(t, row.dim, true) // hidden subtree dims inside the expando
+		}
+	}
 }
 
 func TestRail_ArchivedLeafWorkerStillHoistsToExpando(t *testing.T) {

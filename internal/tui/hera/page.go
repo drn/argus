@@ -74,22 +74,21 @@ type HeraPage struct {
 	// unbound action) makes the key an inert no-op — never a panic.
 	OnSpawnWorker   func(Selection) // `w` — spawn worker under selected coordinator's orchestrator
 	OnRename        func(Selection) // `r` — rename selected role/orchestrator (modal)
-	OnArchiveToggle func(Selection) // `a` — archive/unarchive selected role/orchestrator
+	OnArchiveToggle func(Selection) // `a` — HIDE/unhide selected worker (Tier-1 EOL; reversible, keeps session+worktree)
 	OnPinToggle     func(Selection) // `P` — pin/unpin selected role/orchestrator
 	OnStatusAdvance func(Selection) // `s` — advance selected role status one rung
 	OnStatusRevert  func(Selection) // `S` — revert selected role status one rung
-	OnDelete        func(Selection) // ctrl+d — delete selected role/orchestrator (confirm)
+	OnDelete        func(Selection) // ctrl+d — NUKE selected role/orchestrator (Tier-2 EOL; removes from rail + reclaims worktree, confirm)
 	OnReattach      func(Selection) // Enter on a dead-session row — restart its session
 	OnAdopt         func(Selection) // `J` — adopt freelancer / reparent coordinator (orch picker)
 
-	// EOL / creation keys (BUG-005/006/010/011/012). OnNewCoordinator and
-	// OnPruneDone are selection-INDEPENDENT — they fire even on an empty rail, so
-	// they are dispatched directly (not via the selection-gated `fire`). OnRetire
-	// and OnPruneDescendants act on the current Selection.
-	OnNewCoordinator   func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
-	OnRetire           func(Selection) // `R` — retire the selected worker (confirm)
-	OnPruneDescendants func(Selection) // `C` — prune the selected coordinator's archived descendants (confirm)
-	OnPruneDone        func()          // ctrl+R — rail-wide prune of finished coords + agents (confirm)
+	// Creation + EOL keys (BUG-006/022). OnNewCoordinator is selection-INDEPENDENT
+	// — it fires even on an empty rail, so it is dispatched directly (not via the
+	// selection-gated `fire`). OnClearArchive acts on the current Selection.
+	// (BUG-022 removed `R` retire and the rail-wide `Ctrl+R` prune — the two-state
+	// model is `a` HIDE / `Ctrl+D` NUKE / `C` clear-this-coordinator's-archive.)
+	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
+	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
 	// OnFocusChange is called whenever the focused Hera region changes so the
 	// app can update focus-aware UI (e.g. the bottom status bar hint set). It
@@ -528,15 +527,6 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 	switch event.Key() {
 	case tcell.KeyCtrlD:
 		return p.fire(p.OnDelete, sel)
-	case tcell.KeyCtrlR:
-		// Rail-wide prune of finished coords + agents (BUG-012). Rail-scoped: this
-		// runs only while FocusRail, so it never collides with the agent-view
-		// Ctrl+R (Claude session switcher) which lives in modeAgent. Fires even on
-		// an empty rail (selection-independent), so it bypasses `fire`.
-		if p.OnPruneDone != nil {
-			p.OnPruneDone()
-		}
-		return true
 	case tcell.KeyEnter:
 		// Enter "enters" the selected role and revives its session first, then
 		// moves focus into the pane. Reattach fires for:
@@ -597,12 +587,10 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 				p.OnNewCoordinator(sel)
 			}
 			return true
-		case 'R':
-			// Retire the selected worker (BUG-010). Acts on the selection.
-			return p.fire(p.OnRetire, sel)
 		case 'C':
-			// Prune the selected coordinator's archived descendants (BUG-011).
-			return p.fire(p.OnPruneDescendants, sel)
+			// Clear the selected coordinator's archive: NUKE every Tier-1 hidden
+			// item under it (BUG-022). Acts on the selection.
+			return p.fire(p.OnClearArchive, sel)
 		}
 	}
 	return false
