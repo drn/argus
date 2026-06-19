@@ -60,6 +60,87 @@ func TestPollPR_SkipsArchivedAndBranchless(t *testing.T) {
 	testutil.Equal(t, meta["normal"]["url"], "https://example/pr/1")
 }
 
+func TestPollPR_SkipsTerminalCachedState(t *testing.T) {
+	d, _ := testDaemon(t)
+	seedTask(t, d.db, "open", "argus/open", false)
+	seedTask(t, d.db, "merged", "argus/merged", false)
+
+	// "merged" already has a terminal cached state — directly seeded (this also
+	// simulates a daemon restart: the value is in task_meta with no prior poll
+	// this run). A terminal state must exclude the task from the eligible set.
+	testutil.NoError(t, d.db.SetMetaBatch("merged", "pr", map[string]string{
+		"state": model.PRMergedClosed.String(),
+		"url":   "https://example/pr/merged",
+	}))
+
+	var mu sync.Mutex
+	fetched := map[string]bool{}
+	d.prFetch = func(_ context.Context, _, branch string) (model.PRState, string, error) {
+		mu.Lock()
+		fetched[branch] = true
+		mu.Unlock()
+		return model.PRApproved, "https://example/pr/open", nil
+	}
+
+	d.pollPRStatesOnce(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Only the open task is polled; the terminal-state task is skipped.
+	testutil.Equal(t, fetched["argus/open"], true)
+	testutil.Equal(t, fetched["argus/merged"], false)
+	testutil.Equal(t, len(fetched), 1)
+
+	// The terminal task's cached value is untouched (never re-fetched/written).
+	meta, err := d.db.ListMeta("merged", "pr")
+	testutil.NoError(t, err)
+	got := map[string]string{}
+	for _, e := range meta {
+		got[e.Key] = e.Value
+	}
+	testutil.Equal(t, got["state"], "merged-closed")
+	testutil.Equal(t, got["url"], "https://example/pr/merged")
+}
+
+func TestPollPR_PollsNonTerminalCachedStates(t *testing.T) {
+	d, _ := testDaemon(t)
+	// Every non-terminal cached state, plus no-cache, must remain eligible.
+	seedTask(t, d.db, "approved", "argus/approved", false)
+	seedTask(t, d.db, "draft", "argus/draft", false)
+	seedTask(t, d.db, "changes", "argus/changes", false)
+	seedTask(t, d.db, "awaiting", "argus/awaiting", false)
+	seedTask(t, d.db, "noneCached", "argus/none", false)
+	seedTask(t, d.db, "unknownCached", "argus/unknown", false)
+	seedTask(t, d.db, "nocache", "argus/nocache", false)
+
+	for id, st := range map[string]model.PRState{
+		"approved":      model.PRApproved,
+		"draft":         model.PRDraft,
+		"changes":       model.PRChangesRequested,
+		"awaiting":      model.PRAwaitingReview,
+		"noneCached":    model.PRNone,
+		"unknownCached": model.PRUnknown,
+	} {
+		testutil.NoError(t, d.db.SetMetaBatch(id, "pr", map[string]string{"state": st.String()}))
+	}
+
+	var mu sync.Mutex
+	fetched := map[string]bool{}
+	d.prFetch = func(_ context.Context, _, branch string) (model.PRState, string, error) {
+		mu.Lock()
+		fetched[branch] = true
+		mu.Unlock()
+		return model.PRApproved, "u", nil
+	}
+
+	d.pollPRStatesOnce(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	// All seven remain eligible — none is terminal.
+	testutil.Equal(t, len(fetched), 7)
+}
+
 func TestPollPR_WritesStateAndURL(t *testing.T) {
 	d, _ := testDaemon(t)
 	seedTask(t, d.db, "t1", "argus/t1", false)

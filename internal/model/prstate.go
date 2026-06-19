@@ -45,6 +45,17 @@ func (s PRState) String() string {
 	return fmt.Sprintf("unknown(%d)", int(s))
 }
 
+// IsTerminal reports whether the PR state can never change again. A merged or
+// closed PR (both collapse into PRMergedClosed) is terminal; every other state
+// — including PRNone (a branch may yet get a PR) and PRUnknown (gh may become
+// available) — is non-terminal. The daemon PR poller uses this to permanently
+// exclude terminal-state tasks from its eligible set, conserving the GitHub
+// API budget. Centralizing the rule here keeps the terminal definition in one
+// place instead of scattering string compares across callers.
+func (s PRState) IsTerminal() bool {
+	return s == PRMergedClosed
+}
+
 // ParsePRState converts a stable string name (e.g. "awaiting-review") into
 // a PRState. Returns an error for unrecognized values.
 func ParsePRState(str string) (PRState, error) {

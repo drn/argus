@@ -441,8 +441,13 @@ func (d *Daemon) heraSpawnWorker(in mcp.HeraSpawnInput) (*mcp.HeraSpawnResult, e
 }
 
 // pollPRStatesOnce runs a single PR-status refresh pass over every eligible
-// task. Eligible = not archived AND has a non-empty Branch. For each eligible
-// task it calls d.prFetch (the gitutil.FetchPRState seam) under a bounded
+// task. Eligible = not archived AND has a non-empty Branch AND its cached PR
+// state (task_meta namespace "pr", key "state") is not terminal (merged/closed).
+// A terminal state never changes, so once observed the task is excluded from all
+// future polls — this conserves the GitHub API budget that re-polling long-merged
+// PRs would otherwise drain. The skip reads the persisted cache, so it survives a
+// daemon restart. For each eligible task it calls d.prFetch (the
+// gitutil.FetchPRState seam) under a bounded
 // worker pool (prPollConcurrency) and persists a successful result into
 // task_meta namespace "pr" (keys "state" and "url").
 //
@@ -457,15 +462,41 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 		return
 	}
 
-	// Collect eligible tasks up front so the logged count is exact.
+	// Read the persisted PR-state cache once so the eligibility filter can skip
+	// tasks whose PR has already reached a terminal state (merged/closed). The
+	// cache lives in task_meta namespace "pr" (the same place this poller
+	// writes), so a terminal-state skip survives a daemon restart — a bounce
+	// does not re-poll the whole backlog. On a batch-read error, fall back to
+	// polling everything eligible (fail-open) so a transient meta failure never
+	// silently halts all polling.
+	prMeta, err := d.db.ListMetaByNamespace("pr")
+	if err != nil {
+		uxlog.Log("[pr] poll: read cached pr states failed (polling all eligible): %v", err)
+		prMeta = nil
+	}
+
+	// Collect eligible tasks up front so the logged count is exact. A task whose
+	// last-known cached state is terminal is skipped permanently — that state
+	// can never change, so re-polling it can never return anything new.
 	eligible := make([]*model.Task, 0, len(tasks))
+	var skipped int
 	for _, t := range tasks {
 		if t == nil || t.Archived || t.Branch == "" {
 			continue
 		}
+		if raw := prMeta[t.ID]["state"]; raw != "" {
+			if st, perr := model.ParsePRState(raw); perr == nil && st.IsTerminal() {
+				skipped++
+				uxlog.Log("[pr] poll: skip terminal %s (state=%s)", t.ID, raw)
+				continue
+			}
+		}
 		eligible = append(eligible, t)
 	}
 	if len(eligible) == 0 {
+		if skipped > 0 {
+			uxlog.Log("[pr] poll: eligible=0 skipped=%d (all terminal)", skipped)
+		}
 		return
 	}
 
@@ -504,7 +535,7 @@ func (d *Daemon) pollPRStatesOnce(ctx context.Context) {
 	}
 	wg.Wait()
 
-	uxlog.Log("[pr] poll: eligible=%d written=%d errored=%d", len(eligible), written, errored)
+	uxlog.Log("[pr] poll: eligible=%d skipped=%d written=%d errored=%d", len(eligible), skipped, written, errored)
 }
 
 // runPRPoller is the PR-status poller goroutine body. It runs pollPRStatesOnce
