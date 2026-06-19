@@ -263,6 +263,46 @@ func TestGater_MaterializeFailureLeavesNodePlanned(t *testing.T) {
 	testutil.Equal(t, planned[0].ID, node.ID)
 }
 
+// TestGater_HoldNoCoordinatorNoPanic covers the holdAndPing path when no
+// coordinator exists to ping (logged, no panic, no ping recorded).
+func TestGater_HoldNoCoordinatorNoPanic(t *testing.T) {
+	f := newGaterFixture(t)
+	o, err := f.d.CreateHeraOrchestrator("nocoord")
+	testutil.NoError(t, err)
+	crashed := f.boundWorker(t, o.ID, "1a", model.StatusComplete, db.HeraStatusWorking)
+	node := f.planned(t, o.ID, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, crashed.ID))
+
+	f.w.Tick() // must not panic; no coordinator → no ping
+
+	testutil.Equal(t, f.pingCount(), 0)
+	testutil.Equal(t, len(f.materialized()), 0)
+}
+
+// TestGater_BaseBranchFromEndedBlockerBinding covers resolveBaseBranch's
+// fallback to the latest (ended) binding when the blocker has no live binding.
+func TestGater_BaseBranchFromEndedBlockerBinding(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	task := &model.Task{Name: "1a-task", Status: model.StatusInReview, Project: "proj", Branch: "argus/1a"}
+	testutil.NoError(t, f.d.Add(task))
+	blocker, binding, err := f.d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: orch, Name: "1a", Kind: db.HeraKindWorker, ArgusProject: "proj",
+	}, task.ID, "/wt/1a")
+	testutil.NoError(t, err)
+	testutil.NoError(t, f.d.UpsertHeraRoleStatus(blocker.ID, db.HeraStatusDone))
+	testutil.NoError(t, f.d.EndHeraBinding(binding.ID, "done"))
+
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, f.matBranch[node.ID], "argus/1a")
+}
+
 func TestGater_StartStop(t *testing.T) {
 	f := newGaterFixture(t)
 	orch := f.seedCoord(t, "orch")
