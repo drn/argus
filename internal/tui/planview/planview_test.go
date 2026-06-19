@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 // node is a fixture builder for a planned plan node named by its short-id.
@@ -228,9 +230,14 @@ func TestNav_UpDownChangesStageAndCollapses(t *testing.T) {
 
 // TestNav_LeftRightMovesSlot: within a multi-slot stage ←/→ moves between slots.
 func TestNav_LeftRightMovesSlot(t *testing.T) {
-	// stage0 has two independent roots → two slots.
+	// Two same-stage roots that share the EMPTY blocker set collapse into a
+	// single group per D4 — that is spec-compliant, so we can't use two planned
+	// roots here. The no-plan path (live roles, no planned nodes, no edges)
+	// renders each live worker as its own lone-node slot, never grouped, giving a
+	// genuine two-slot stage 0 that preserves this test's intent (←/→ between
+	// slots).
 	w := New()
-	w.SetData([]Node{node("0a"), node("0b")}, nil)
+	w.SetData([]Node{liveNode("w1", StateWorking), liveNode("w2", StateWorking)}, nil)
 	w.SetFocused(true)
 	testutil.Equal(t, w.CursorPos().Slot, 0)
 	w.MoveSlot(1)
@@ -290,6 +297,90 @@ func TestNav_StepOffGroupEdgeExitsAndCollapses(t *testing.T) {
 	w.MoveSlot(1)
 	testutil.Equal(t, w.Fanned(1, 0), false)
 	testutil.Equal(t, w.CursorPos().Member, -1) // no longer inside a group
+}
+
+// TestNav_StepOffGroupLeftEdgeExitsAndCollapses: from the first member, ←
+// collapses the group and clamps at the stage's left edge (no slot to the left).
+func TestNav_StepOffGroupLeftEdgeExitsAndCollapses(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(1)
+	w.ActivateCursor() // fan out, member 0 = 1a (first member)
+	testutil.Equal(t, w.CurrentNodeID(), "1a")
+	w.MoveSlot(-1) // step off the left edge
+	testutil.Equal(t, w.Fanned(1, 0), false)
+	testutil.Equal(t, w.CursorPos().Member, -1)
+	testutil.Equal(t, w.CursorPos().Slot, 0) // clamped: stage 1 has one slot
+}
+
+// TestNav_MoveStageClampsAtEdges: ↑ at stage 0 and ↓ past the last stage clamp.
+func TestNav_MoveStageClampsAtEdges(t *testing.T) {
+	w := navGraph() // stages 0,1,2
+	w.MoveStage(-1) // already at 0
+	testutil.Equal(t, w.CursorPos().Stage, 0)
+	w.MoveStage(5) // past the last stage (2)
+	testutil.Equal(t, w.CursorPos().Stage, 2)
+}
+
+// TestNav_EmptyWidgetNavIsNoop: navigation on an empty widget never panics and
+// leaves the cursor at the origin.
+func TestNav_EmptyWidgetNavIsNoop(t *testing.T) {
+	w := New()
+	w.MoveStage(1)
+	w.MoveSlot(1)
+	w.ActivateCursor()
+	testutil.Equal(t, w.CursorPos().Stage, 0)
+	testutil.Equal(t, w.CursorPos().Slot, 0)
+	testutil.Equal(t, w.CurrentNodeID(), "")
+}
+
+// TestNav_CollapsedGroupCursorHasNoNode: the cursor on a collapsed group names
+// no node (a group is not itself a node).
+func TestNav_CollapsedGroupCursorHasNoNode(t *testing.T) {
+	w := navGraph()
+	w.MoveStage(1) // on the collapsed group at stage 1
+	_, ok := w.GroupAt(1, 0)
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, w.CurrentNodeID(), "") // collapsed group → no node
+}
+
+// TestInputHandler_RoutesKeys exercises the InputHandler key routing: arrows and
+// the j/k/h/l/Space/Enter aliases drive the same cursor moves as the methods.
+func TestInputHandler_RoutesKeys(t *testing.T) {
+	noFocus := func(tview.Primitive) {}
+	t.Run("arrows move stage and slot", func(t *testing.T) {
+		w := navGraph()
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.CursorPos().Stage, 1)
+		h(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.CursorPos().Stage, 0)
+	})
+	t.Run("vim aliases move", func(t *testing.T) {
+		w := navGraph()
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus)
+		testutil.Equal(t, w.CursorPos().Stage, 1)
+		h(tcell.NewEventKey(tcell.KeyRune, 'k', tcell.ModNone), noFocus)
+		testutil.Equal(t, w.CursorPos().Stage, 0)
+	})
+	t.Run("Enter fans out a group", func(t *testing.T) {
+		w := navGraph()
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone), noFocus) // to the group
+		h(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.Fanned(1, 0), true)
+	})
+	t.Run("Space toggles a group and h/l walk members", func(t *testing.T) {
+		w := navGraph()
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyRune, 'j', tcell.ModNone), noFocus) // to the group
+		h(tcell.NewEventKey(tcell.KeyRune, ' ', tcell.ModNone), noFocus) // fan out
+		testutil.Equal(t, w.Fanned(1, 0), true)
+		h(tcell.NewEventKey(tcell.KeyRune, 'l', tcell.ModNone), noFocus) // member 1b
+		testutil.Equal(t, w.CurrentNodeID(), "1b")
+		h(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone), noFocus) // back to 1a
+		testutil.Equal(t, w.CurrentNodeID(), "1a")
+	})
 }
 
 // --- Master-detail header (Requirement: Plan master-detail header) ---

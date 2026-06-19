@@ -247,6 +247,13 @@ type Widget struct {
 	title   string
 	focused bool
 
+	// cursor is the current (stage, slot, member) position. Member is -1 unless
+	// the cursor is inside a fanned-out group (Stage 4).
+	cursor Cursor
+	// fanned tracks which group slots are currently fanned out, keyed by
+	// [stage, slot]. A group slot is collapsed unless present here (Stage 4).
+	fanned map[[2]int]bool
+
 	lastShape uint64
 }
 
@@ -258,6 +265,8 @@ func New() *Widget {
 		nodes:   map[string]Node{},
 		stageOf: map[string]int{},
 		labelOf: map[string]string{},
+		fanned:  map[[2]int]bool{},
+		cursor:  Cursor{Member: -1},
 		title:   " Plan ",
 	}
 }
@@ -285,6 +294,11 @@ func (w *Widget) SetData(nodes []Node, edges []Edge) {
 	w.computeStages(nodes, edges)
 	w.computeLabels(nodes)
 	w.buildSlots(nodes, edges)
+	// A fresh snapshot invalidates every prior fan-out and the cursor; reset to
+	// stage 0, slot 0, clamped to the new layout.
+	w.fanned = map[[2]int]bool{}
+	w.cursor = Cursor{Member: -1}
+	w.clampCursor()
 
 	uxlog.Log("[planview] SetData: nodes=%d edges=%d stages=%d noPlan=%v",
 		len(nodes), len(edges), len(w.stages), w.noPlan)
@@ -629,42 +643,166 @@ type Cursor struct {
 }
 
 // CursorPos returns the current cursor position.
-//
-// Stage 4 implements this.
-func (w *Widget) CursorPos() Cursor { return Cursor{} }
+func (w *Widget) CursorPos() Cursor { return w.cursor }
 
 // CurrentNodeID returns the node ID under the cursor: the lone node at the slot,
 // the fanned-out member, or "" when the cursor is on a collapsed group (a group
 // is not itself a node). Used by tests and OnEnter dispatch.
-//
-// Stage 4 implements this.
-func (w *Widget) CurrentNodeID() string { return "" }
+func (w *Widget) CurrentNodeID() string {
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok {
+		return ""
+	}
+	if sl.group == nil {
+		return sl.nodeID
+	}
+	// On a group: the cursor names a node only when fanned out and pointing at a
+	// member; a collapsed group is not itself a node.
+	if w.cursor.Member >= 0 && w.cursor.Member < len(sl.group.Members) {
+		return sl.group.Members[w.cursor.Member]
+	}
+	return ""
+}
 
 // Fanned reports whether the group at the given (stage, slot) is currently
 // fanned out.
-//
-// Stage 4 implements this.
-func (w *Widget) Fanned(stage, slot int) bool { return false }
+func (w *Widget) Fanned(stage, slot int) bool { return w.fanned[[2]int{stage, slot}] }
 
 // MoveStage moves the cursor by dStage (↑ -1 / ↓ +1), collapsing any fanned-out
 // group on the way (D4 nav). Clamped at the stage edges.
-//
-// Stage 4 implements this.
-func (w *Widget) MoveStage(dStage int) {}
+func (w *Widget) MoveStage(dStage int) {
+	if len(w.stages) == 0 {
+		return
+	}
+	// Leaving a stage always exits + collapses whatever group the cursor was in.
+	w.collapseCursorGroup()
+	ns := w.cursor.Stage + dStage
+	if ns < 0 {
+		ns = 0
+	}
+	if ns >= len(w.stages) {
+		ns = len(w.stages) - 1
+	}
+	w.cursor.Stage = ns
+	w.cursor.Member = -1
+	w.clampCursor()
+	w.maybeNotifyBranchChange()
+}
 
 // MoveSlot moves the cursor by dSlot within a stage (←/→). When the cursor is
 // inside a fanned-out group it walks members; stepping off either edge exits and
 // collapses the group, moving to the adjacent slot (or clamps).
-//
-// Stage 4 implements this.
-func (w *Widget) MoveSlot(dSlot int) {}
+func (w *Widget) MoveSlot(dSlot int) {
+	if len(w.stages) == 0 {
+		return
+	}
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	// Inside a fanned-out group: walk members, exiting off either edge.
+	if ok && sl.group != nil && w.cursor.Member >= 0 && w.Fanned(w.cursor.Stage, w.cursor.Slot) {
+		nm := w.cursor.Member + dSlot
+		if nm >= 0 && nm < len(sl.group.Members) {
+			w.cursor.Member = nm
+			w.maybeNotifyBranchChange()
+			return
+		}
+		// Stepped off the group edge: collapse and move to the adjacent slot
+		// (clamping at the stage edge).
+		w.collapseCursorGroup()
+		w.cursor.Member = -1
+		w.shiftSlot(dSlot)
+		w.maybeNotifyBranchChange()
+		return
+	}
+	// On a slot (lone node or collapsed group): move between slots.
+	w.cursor.Member = -1
+	w.shiftSlot(dSlot)
+	w.maybeNotifyBranchChange()
+}
 
-// ActivateCursor performs the Enter/Space action at the cursor: fan out / collapse
-// a group, drill into a sub-coordinator (fires OnDrillIn), or jump to a plain
-// leaf's agent view (fires OnEnter). Disjoint by the cursor's target type (D6).
-//
-// Stage 4/6 implements this.
-func (w *Widget) ActivateCursor() {}
+// shiftSlot moves the cursor's slot by dSlot within the current stage, clamped
+// to the stage's slot range.
+func (w *Widget) shiftSlot(dSlot int) {
+	n := w.SlotCount(w.cursor.Stage)
+	if n == 0 {
+		w.cursor.Slot = 0
+		return
+	}
+	ns := w.cursor.Slot + dSlot
+	if ns < 0 {
+		ns = 0
+	}
+	if ns >= n {
+		ns = n - 1
+	}
+	w.cursor.Slot = ns
+}
+
+// ActivateCursor performs the Enter/Space action at the cursor. Disjoint by the
+// cursor's target type (D6): on a group it fans out / collapses; Stage 6 adds
+// the sub-coordinator drill-in and plain-leaf OnEnter branches.
+func (w *Widget) ActivateCursor() {
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok {
+		return
+	}
+	// Group target (Stage 4): toggle fan-out / collapse.
+	if sl.group != nil {
+		key := [2]int{w.cursor.Stage, w.cursor.Slot}
+		if w.fanned[key] {
+			delete(w.fanned, key)
+			w.cursor.Member = -1
+		} else {
+			w.fanned[key] = true
+			w.cursor.Member = 0 // land on the first member
+		}
+		w.maybeNotifyBranchChange()
+		return
+	}
+	// Plain-leaf / sub-coordinator targets are Stage 6; left unhandled here.
+}
+
+// slotAt returns the slot at (stage, slotIdx) and whether it exists.
+func (w *Widget) slotAt(stage, slotIdx int) (slot, bool) {
+	if stage < 0 || stage >= len(w.stages) {
+		return slot{}, false
+	}
+	st := w.stages[stage]
+	if slotIdx < 0 || slotIdx >= len(st) {
+		return slot{}, false
+	}
+	return st[slotIdx], true
+}
+
+// collapseCursorGroup collapses the group slot the cursor currently occupies
+// (if any), so leaving the slot never leaves a stale fan-out behind.
+func (w *Widget) collapseCursorGroup() {
+	delete(w.fanned, [2]int{w.cursor.Stage, w.cursor.Slot})
+}
+
+// clampCursor keeps the cursor within the current layout: a valid stage, a valid
+// slot within that stage, and Member -1 unless the slot is a fanned-out group.
+func (w *Widget) clampCursor() {
+	if len(w.stages) == 0 {
+		w.cursor = Cursor{Member: -1}
+		return
+	}
+	if w.cursor.Stage < 0 {
+		w.cursor.Stage = 0
+	}
+	if w.cursor.Stage >= len(w.stages) {
+		w.cursor.Stage = len(w.stages) - 1
+	}
+	n := w.SlotCount(w.cursor.Stage)
+	if w.cursor.Slot < 0 {
+		w.cursor.Slot = 0
+	}
+	if n > 0 && w.cursor.Slot >= n {
+		w.cursor.Slot = n - 1
+	}
+	if !w.Fanned(w.cursor.Stage, w.cursor.Slot) {
+		w.cursor.Member = -1
+	}
+}
 
 // --- Drill-in (Stage 6) ---
 
@@ -786,12 +924,37 @@ func groupCounts(g *Group) string {
 	return strings.Join(parts, " · ")
 }
 
-// InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member),
-// Enter/Space (fan-out/collapse, drill-in, or jump), and Esc (drill-out).
-//
-// Stage 4/6 implements this.
+// InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member) and
+// Enter/Space (fan-out/collapse on a group; Stage 6 adds drill-in/jump and Esc
+// drill-out). Unknown keys fall through to the default tview.Box no-op.
 func (w *Widget) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
-	return w.WrapInputHandler(func(*tcell.EventKey, func(tview.Primitive)) {})
+	return w.WrapInputHandler(func(event *tcell.EventKey, _ func(tview.Primitive)) {
+		switch event.Key() {
+		case tcell.KeyUp:
+			w.MoveStage(-1)
+		case tcell.KeyDown:
+			w.MoveStage(1)
+		case tcell.KeyLeft:
+			w.MoveSlot(-1)
+		case tcell.KeyRight:
+			w.MoveSlot(1)
+		case tcell.KeyEnter:
+			w.ActivateCursor()
+		case tcell.KeyRune:
+			switch event.Rune() {
+			case ' ':
+				w.ActivateCursor()
+			case 'k':
+				w.MoveStage(-1)
+			case 'j':
+				w.MoveStage(1)
+			case 'h':
+				w.MoveSlot(-1)
+			case 'l':
+				w.MoveSlot(1)
+			}
+		}
+	})
 }
 
 // MouseHandler positions the cursor on the clicked slot and yields focus.
@@ -810,7 +973,9 @@ func (w *Widget) PasteHandler() func(string, func(tview.Primitive)) {
 
 // branchShape captures the parts of state that, when changed, mean Draw would
 // paint a structurally different cell set. Folds in node/edge/stage counts, the
-// focus flag, and (Stage 4) the cursor/fanned state. Log-only — no Sync.
+// focus flag, the (stage, slot, member) cursor, the fanned-group state, and the
+// current orchestrator (via the title hash, ghost-prevention across drill-in).
+// Log-only — no Sync (CLAUDE.md UX-rendering rules).
 func (w *Widget) branchShape() uint64 {
 	var shape uint64
 	shape |= uint64(len(w.order) & 0xFFFFFF)
@@ -822,6 +987,20 @@ func (w *Widget) branchShape() uint64 {
 	if w.noPlan {
 		shape |= 1 << 45
 	}
+	// Cursor: stage/slot/member each clamped to a byte (the diagram never has
+	// hundreds of stages/slots, and member tops out at the largest group).
+	shape |= uint64(w.cursor.Stage&0xFF) << 46
+	shape |= uint64(w.cursor.Slot&0x1F) << 54
+	// Member is -1..N; bias by 1 so -1 is distinguishable and fits 5 bits.
+	shape |= uint64((w.cursor.Member+1)&0x1F) << 59
+	// Fold the fanned-slot count and the current-orchestrator title into the
+	// low bits via a small mix, so toggling a fan or drilling in re-fires the
+	// branch-change callback without widening the bitfield.
+	mix := uint64(len(w.fanned))
+	for i := 0; i < len(w.title); i++ {
+		mix = mix*31 + uint64(w.title[i])
+	}
+	shape ^= mix << 12
 	return shape
 }
 

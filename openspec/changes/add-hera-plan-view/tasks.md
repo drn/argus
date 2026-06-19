@@ -33,9 +33,9 @@
 
 **Depends on:** Stage 3
 
-- [ ] 4.1 Cursor over `(stage, slot, member)`; `↑↓` stage (collapse fanned group), `←→` slot move
-- [ ] 4.2 `Enter`/`Space` fan-out/collapse on a group; inside a group `←→` member walk; step-off-edge exits+collapses to the adjacent slot (or clamps)
-- [ ] 4.3 Branch-change signature folds in stage/slot/member cursor + fanned group + current orchestrator (ghost-prevention, log-only, no `Sync`)
+- [x] 4.1 Cursor over `(stage, slot, member)`; `↑↓` stage (collapse fanned group), `←→` slot move
+- [x] 4.2 `Enter`/`Space` fan-out/collapse on a group; inside a group `←→` member walk; step-off-edge exits+collapses to the adjacent slot (or clamps)
+- [x] 4.3 Branch-change signature folds in stage/slot/member cursor + fanned group + current orchestrator (ghost-prevention, log-only, no `Sync`)
 
 ## 5. planview widget — master-detail header
 
