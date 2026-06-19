@@ -310,7 +310,7 @@ func TestHeader_NodeView(t *testing.T) {
 	testutil.Equal(t, w.CurrentNodeID(), "1a")
 	lines := w.HeaderLines()
 	joined := joinLines(lines)
-	testutil.Contains(t, joined, "1a-research")       // name
+	testutil.Contains(t, joined, "1a-research")        // name
 	testutil.Contains(t, joined, "research the topic") // description (prompt first line)
 	testutil.Contains(t, joined, "2a")                 // feeds → 2a
 }
