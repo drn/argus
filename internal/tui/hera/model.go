@@ -727,14 +727,29 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
 			rv.ReadyToClose = true
 		}
-		// Own needs-input from the authoritative App-tick set (keyed by live task).
-		if needsInput[taskID] {
-			rv.NeedsInput = true
-		}
+		taskInProgress := false
 		if t := taskByID[taskID]; t != nil {
 			rv.TaskStatus = t.Status.String()
 			rv.TaskResult = t.Result
 			rv.TaskName = t.Name
+			taskInProgress = t.Status == model.StatusInProgress
+		}
+		// Own needs-input from the authoritative App-tick set (keyed by live task)
+		// — but ONLY while the bound task is actively in_progress (BUG-023). The
+		// App's needsInputIDs scan is STICKY: a finished worker idling at its final
+		// prompt keeps the needs-input marker in its log tail indefinitely, so
+		// without this gate the task would stay flagged forever and pin "(?)" on
+		// every ancestor coordinator permanently — the rollup could never clear.
+		// Gating on in_progress is the "agent resolved" clear condition: when the
+		// worker finishes (rolls to in_review/complete) the signal drops and the
+		// rollup recomputes clear, transitively to the root, on the next refresh.
+		// The deliberate hera `blocked` role status stays an INDEPENDENT, ungated
+		// needs-input source (needsInputOwn), cleared by stepping off `blocked`
+		// (s/S). A task missing from the snapshot (read failure) is treated as not
+		// in_progress — a transient flicker that self-heals next tick, never a
+		// stuck-forever "(?)".
+		if needsInput[taskID] && taskInProgress {
+			rv.NeedsInput = true
 		}
 	}
 	// Structural bridge key: the role's LATEST binding regardless of liveness.

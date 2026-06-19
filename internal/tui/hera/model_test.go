@@ -481,6 +481,31 @@ func TestRollupNeedsInput_BlockedStatusCounts(t *testing.T) {
 	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
 }
 
+// TestRollupNeedsInput_BlockedClearsToRoot proves the source-2 (hera `blocked`
+// status) CLEAR path propagates: a deep worker stepped OFF `blocked` clears the
+// "(?)" on every ancestor coordinator, transitively to the root (BUG-023). This
+// mirrors the SET in TestRollupNeedsInput_BlockedStatusCounts, in reverse.
+func TestRollupNeedsInput_BlockedClearsToRoot(t *testing.T) {
+	// R(coord tr, worker w→tc) → C(coord tc, worker wc→twc).
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	m := Model{Active: []OrchView{r, c}}
+	wc := roleByName(t, &m, 2, "wc")
+	wc.HasStatus = true
+	wc.Status = db.HeraStatusBlocked
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true) // ROOT shows "(?)"
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
+
+	// Step the worker OFF blocked (→ working, as `S` revert does). The rollup
+	// recomputes and the "(?)" clears on the sub-coordinator AND the root.
+	wc.Status = db.HeraStatusWorking
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
+}
+
 // TestRollupNeedsInput_NoFalsePositive: with no needs-input role anywhere, no
 // coordinator rolls up "(?)".
 func TestRollupNeedsInput_NoFalsePositive(t *testing.T) {
@@ -542,6 +567,38 @@ func TestBuildModel_NeedsInputStamped(t *testing.T) {
 
 	// Without the set, nothing flags.
 	m2, err := BuildModel(d, nil)
+	testutil.NoError(t, err)
+	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, false)
+	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), false)
+}
+
+// TestBuildModel_NeedsInputClearsWhenWorkerFinishes is the BUG-023 headline at
+// the BuildModel seam: the App's needsInputIDs scan is STICKY (a finished worker
+// idling at its final prompt keeps the needs-input marker in its log tail
+// forever, so the task stays in the set indefinitely). The hera rollup MUST NOT
+// treat that as live needs-input: the per-role PTY signal is gated on the bound
+// task being in_progress, so as soon as the worker finishes (rolls to in_review)
+// the signal drops and the ancestor coordinator's "(?)" clears on the next
+// refresh — even though the App still reports the task in needsInputIDs. The
+// deliberate hera `blocked` role status is a SEPARATE, ungated source.
+func TestBuildModel_NeedsInputClearsWhenWorkerFinishes(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	// While the worker is in_progress + flagged, the rollup SETs (unchanged).
+	flagged := map[string]bool{"t-wkr": true}
+	m, err := BuildModel(d, flagged)
+	testutil.NoError(t, err)
+	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, true)
+	testutil.Equal(t, coordSubtreeNI(t, &m, orch), true)
+
+	// The worker finishes → in_review. The needsInput set STILL flags the task
+	// (sticky marker lingers in the log tail), but the in_progress gate drops the
+	// signal so the role's own "(?)" and the coordinator rollup both clear.
+	testutil.NoError(t, d.SetStatus("t-wkr", model.StatusInReview))
+	m2, err := BuildModel(d, flagged)
 	testutil.NoError(t, err)
 	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, false)
 	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), false)
