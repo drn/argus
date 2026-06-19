@@ -41,8 +41,8 @@
 
 **Depends on:** Stage 3
 
-- [ ] 5.1 Fixed-height header region above the diagram; exact height budgeting (mirror `DetailsView.ContentHeight` discipline)
-- [ ] 5.2 Node view (name / description = prompt first line / feeds) and group view (range·title / members / downstream)
+- [x] 5.1 Fixed-height header region above the diagram; exact height budgeting (mirror `DetailsView.ContentHeight` discipline)
+- [x] 5.2 Node view (name / description = prompt first line / feeds) and group view (range·title / members / downstream)
 
 ## 6. planview widget — sub-coordinator drill-in
 

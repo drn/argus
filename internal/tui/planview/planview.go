@@ -826,17 +826,137 @@ func (w *Widget) PopOrch() {}
 
 // --- Master-detail header (Stage 5) ---
 
+// headerContentRows is the fixed number of content lines the header strip
+// occupies (D9): three description lines (node → name / description / feeds;
+// group → range·title / members / downstream) plus one separator rule below.
+// Held constant so the diagram budget never drifts with the cursor target.
+const headerContentRows = 3
+
+// headerHeight is the total fixed header height: the three content rows plus a
+// one-row separator rule. The diagram region is the panel inner height minus
+// this, mirroring DetailsView.ContentHeight's exact-budget discipline (D9).
+const headerHeight = headerContentRows + 1
+
 // HeaderLines returns the fixed-height header strip's rendered lines for the
 // current selection: for a node, [name, description, feeds]; for a collapsed
-// group, [range·title, members, downstream] (D9).
-//
-// Stage 5 implements this.
-func (w *Widget) HeaderLines() []string { return nil }
+// group, [range·title, members, downstream] (D9). Always returns exactly
+// headerContentRows lines (padded with "") so the strip's height never depends
+// on the cursor target — the budget stays exact.
+func (w *Widget) HeaderLines() []string {
+	lines := w.headerContent()
+	// Pad/clamp to exactly headerContentRows so the strip is fixed-height.
+	for len(lines) < headerContentRows {
+		lines = append(lines, "")
+	}
+	return lines[:headerContentRows]
+}
+
+// headerContent builds the (unpadded) header lines for the current cursor
+// target: a collapsed group when the cursor sits on a group slot, otherwise the
+// node under the cursor. An empty selection (empty widget) yields no lines.
+func (w *Widget) headerContent() []string {
+	sl, ok := w.slotAt(w.cursor.Stage, w.cursor.Slot)
+	if !ok {
+		return nil
+	}
+	// On a collapsed group (cursor not fanned into a member): group view.
+	if sl.group != nil && w.cursor.Member < 0 {
+		return w.groupHeaderLines(sl.group)
+	}
+	if id := w.CurrentNodeID(); id != "" {
+		return w.nodeHeaderLines(id)
+	}
+	return nil
+}
+
+// nodeHeaderLines renders the node-view header: the role name, its description
+// (the delivery-prompt first line), and what it feeds (the downstream nodes it
+// blocks, by label, from the edge set) (D9).
+func (w *Widget) nodeHeaderLines(id string) []string {
+	n := w.nodes[id]
+	desc := n.Description
+	if desc == "" {
+		desc = "(no description)"
+	}
+	feeds := w.feedLabels(id)
+	feedsLine := "Feeds: " + strings.Join(feeds, ", ")
+	if len(feeds) == 0 {
+		feedsLine = "Feeds: (nothing)"
+	}
+	return []string{
+		n.Name,
+		desc,
+		feedsLine,
+	}
+}
+
+// groupHeaderLines renders the group-view header: the range·title (the group's
+// range-box label), its members (by label), and its downstream target (the
+// nodes any member feeds outside the group) (D9).
+func (w *Widget) groupHeaderLines(g *Group) []string {
+	members := make([]string, 0, len(g.Members))
+	for _, m := range g.Members {
+		members = append(members, w.LabelOf(m))
+	}
+	down := w.groupDownstreamLabels(g)
+	downLine := "Downstream: " + strings.Join(down, ", ")
+	if len(down) == 0 {
+		downLine = "Downstream: (nothing)"
+	}
+	return []string{
+		"Group " + g.Label,
+		"Members: " + strings.Join(members, ", "),
+		downLine,
+	}
+}
+
+// feedLabels returns the labels of the nodes a node feeds (the To-endpoints of
+// its outgoing edges), sorted by short-id for stable presentation.
+func (w *Widget) feedLabels(id string) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, e := range w.edges {
+		if e.From == id && !seen[e.To] {
+			seen[e.To] = true
+			ids = append(ids, e.To)
+		}
+	}
+	w.sortByShortID(ids)
+	labels := make([]string, 0, len(ids))
+	for _, did := range ids {
+		labels = append(labels, w.LabelOf(did))
+	}
+	return labels
+}
+
+// groupDownstreamLabels returns the labels of the nodes the group feeds — the
+// To-endpoints of any member's outgoing edge that lands outside the group —
+// sorted by short-id and de-duplicated.
+func (w *Widget) groupDownstreamLabels(g *Group) []string {
+	memberSet := make(map[string]bool, len(g.Members))
+	for _, m := range g.Members {
+		memberSet[m] = true
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, e := range w.edges {
+		if memberSet[e.From] && !memberSet[e.To] && !seen[e.To] {
+			seen[e.To] = true
+			ids = append(ids, e.To)
+		}
+	}
+	w.sortByShortID(ids)
+	labels := make([]string, 0, len(ids))
+	for _, did := range ids {
+		labels = append(labels, w.LabelOf(did))
+	}
+	return labels
+}
 
 // HeaderHeight returns the fixed header height budgeted above the diagram (D9).
-//
-// Stage 5 implements this.
-func (w *Widget) HeaderHeight() int { return 0 }
+// The diagram region gets the panel inner height minus this value, with no
+// drift across cursor targets.
+func (w *Widget) HeaderHeight() int { return headerHeight }
 
 // --- tview wiring ---
 
@@ -860,10 +980,44 @@ func (w *Widget) Draw(screen tcell.Screen) {
 		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No plan — spawn a worker under this coordinator.", theme.StyleDimmed)
 		return
 	}
-	if w.noPlan {
-		widget.DrawText(screen, inner.X, inner.Y, inner.W, "no plan authored — live roles:", theme.StyleDimmed)
+	// Master-detail header strip above the diagram (D9). Its height is fixed and
+	// budgeted exactly; the diagram gets the remainder. When the panel is too
+	// short to fit even the header, skip it and give the diagram the whole rect.
+	diagram := inner
+	if inner.H > headerHeight {
+		w.drawHeader(screen, inner)
+		diagram = widget.InnerRect{
+			X: inner.X,
+			Y: inner.Y + headerHeight,
+			W: inner.W,
+			H: inner.H - headerHeight,
+		}
 	}
-	w.drawStages(screen, inner)
+	if w.noPlan {
+		widget.DrawText(screen, diagram.X, diagram.Y, diagram.W, "no plan authored — live roles:", theme.StyleDimmed)
+	}
+	w.drawStages(screen, diagram)
+}
+
+// drawHeader paints the fixed-height master-detail header strip at the top of
+// the inner rect: headerContentRows description lines plus a separator rule.
+// DrawBorderedPanel has already blanked the interior, so a shorter selection's
+// padded blank lines keep the strip free of stale cells (no Sync).
+func (w *Widget) drawHeader(screen tcell.Screen, inner widget.InnerRect) {
+	lines := w.HeaderLines()
+	for i, line := range lines {
+		row := inner.Y + i
+		style := theme.StyleNormal
+		if i == 0 {
+			style = theme.StyleTitle // the name / group title line stands out
+		}
+		widget.DrawText(screen, inner.X, row, inner.W, line, style)
+	}
+	// Separator rule below the content, before the diagram.
+	rule := inner.Y + headerContentRows
+	for col := inner.X; col < inner.X+inner.W; col++ {
+		screen.SetContent(col, rule, '─', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
+	}
 }
 
 // drawStages paints each stage as a row of chips/group boxes with single-line
