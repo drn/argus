@@ -399,6 +399,16 @@ func (d *DB) createTables() error {
 // resume. That cleanup is app-level — see Delete in tasks.go, which ends live
 // bindings, while SetArchived leaves them intact (archive is resumable).
 func (d *DB) createHeraTables() error {
+	// Idempotent ADD COLUMN migration for existing DBs that predate the nuked_at
+	// column (BUG-022 two-state EOL). This MUST run BEFORE the DDL block below: the
+	// DDL creates `CREATE INDEX ... ON hera_*(nuked_at)`, and on a pre-existing DB
+	// the `CREATE TABLE IF NOT EXISTS` is a no-op, so without the column the whole
+	// multi-statement Exec aborts with "no such column: nuked_at". On a fresh DB
+	// these ALTERs fail (table doesn't exist yet) and are intentionally ignored —
+	// the CREATE TABLE below then creates the column inline.
+	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN nuked_at TEXT`) //nolint:errcheck
+	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN nuked_at TEXT`)         //nolint:errcheck
+
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
 			id          INTEGER PRIMARY KEY,
@@ -508,13 +518,5 @@ func (d *DB) createHeraTables() error {
 	if _, err := d.conn.Exec(ddl); err != nil {
 		return fmt.Errorf("creating hera tables: %w", err)
 	}
-
-	// Idempotent ALTER for existing DBs that predate the nuked_at column (BUG-022
-	// two-state EOL). Safe to call repeatedly — the error for an already-existing
-	// column is intentionally ignored, matching the migration block in Init.
-	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN nuked_at TEXT`)                         //nolint:errcheck
-	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN nuked_at TEXT`)                                 //nolint:errcheck
-	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_hera_orch_nuked  ON hera_orchestrators(nuked_at)`) //nolint:errcheck
-	d.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_hera_roles_nuked ON hera_roles(nuked_at)`)         //nolint:errcheck
 	return nil
 }

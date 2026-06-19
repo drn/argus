@@ -17,6 +17,58 @@ func heraTestDB(t *testing.T) *DB {
 	return d
 }
 
+// TestCreateHeraTables_MigratesPreNukedAtDB pins the BUG-022 migration-order fix:
+// a DB created before the nuked_at column (hera_orchestrators / hera_roles lacking
+// it) must be migrated in place, not error with "no such column: nuked_at". The
+// nuked_at ADD COLUMN ALTERs run BEFORE the DDL block — the DDL builds
+// `CREATE INDEX ... (nuked_at)` and the `CREATE TABLE IF NOT EXISTS` is a no-op on
+// the pre-existing table, so the column must already be present by then.
+func TestCreateHeraTables_MigratesPreNukedAtDB(t *testing.T) {
+	d := heraTestDB(t)
+
+	// Reset to the pre-BUG-022 shape: drop the current tables and recreate the two
+	// that gained nuked_at WITHOUT the column (and without the nuked indexes). FK
+	// enforcement is off for the destructive reset so dropping parent tables that
+	// child tables (hera_bindings, hera_role_status) still reference doesn't error.
+	_, err := d.conn.Exec(`
+		PRAGMA foreign_keys=off;
+		DROP TABLE IF EXISTS hera_role_status;
+		DROP TABLE IF EXISTS hera_bindings;
+		DROP TABLE IF EXISTS tree_read_cursors;
+		DROP TABLE IF EXISTS hera_roles;
+		DROP TABLE IF EXISTS hera_orchestrators;
+		CREATE TABLE hera_orchestrators (
+			id          INTEGER PRIMARY KEY,
+			name        TEXT NOT NULL,
+			created_at  TEXT NOT NULL,
+			archived_at TEXT,
+			pinned_at   TEXT
+		);
+		CREATE TABLE hera_roles (
+			id              INTEGER PRIMARY KEY,
+			orchestrator_id INTEGER NOT NULL,
+			name            TEXT NOT NULL,
+			kind            TEXT NOT NULL,
+			argus_project   TEXT NOT NULL,
+			prompt          TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL,
+			archived_at     TEXT,
+			pinned_at       TEXT
+		);
+		PRAGMA foreign_keys=on;
+	`)
+	testutil.NoError(t, err)
+
+	// The actual regression: this used to fail with "no such column: nuked_at".
+	testutil.NoError(t, d.createHeraTables())
+
+	// nuked_at is now usable on both tables.
+	_, err = d.conn.Exec(`SELECT nuked_at FROM hera_orchestrators`)
+	testutil.NoError(t, err)
+	_, err = d.conn.Exec(`SELECT nuked_at FROM hera_roles`)
+	testutil.NoError(t, err)
+}
+
 // mkOrch creates an active orchestrator and fails the test on error.
 func mkOrch(t *testing.T, d *DB, name string) *HeraOrchestrator {
 	t.Helper()
