@@ -260,6 +260,19 @@ func (d *DB) HeraBlockersOf(blockedRoleID int64) ([]int64, error) {
 	return out, rows.Err()
 }
 
+// ListHeraBlocks returns every blocking edge whose endpoints both belong to the
+// given orchestrator, as (BlockedRoleID, BlockerRoleID) pairs. It complements
+// the per-role HeraBlockersOf with one bulk read for the whole orchestrator, so
+// the plan view can project all edges without N per-node queries. The result is
+// deterministically ordered by blocked then blocker role id, and excludes edges
+// whose endpoints are archived or nuked roles (consistent with how the view
+// filters roles).
+//
+// Stage 2 implements this.
+func (d *DB) ListHeraBlocks(orchID int64) ([]HeraBlock, error) {
+	return nil, errors.New("not implemented: Stage 2")
+}
+
 // HeraPlannedNode is a worker role with no binding ever (a planned node), joined
 // with its orchestrator id for the gater's per-orchestrator branch resolution.
 type HeraPlannedNode struct {

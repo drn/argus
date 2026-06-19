@@ -58,6 +58,14 @@ type RoleView struct {
 	TaskStatus string
 	TaskResult string
 
+	// Planned discriminates a PLAN node that has never been materialized: a
+	// worker-kind role with no live binding AND no binding ever (BridgeTaskID==""),
+	// i.e. the substrate's planned-vs-materialized split (HeraRoleHasBinding)
+	// projected to the UI. The plan view colours a planned node violet ○ (D7); a
+	// bound-but-finished role (binding ended) keeps its task-status colour and is
+	// NOT planned. Stage 2/3 populates this in buildRoleView.
+	Planned bool
+
 	// The following fields feed the coordinator Details metadata block
 	// (deriveCoordMeta). They are additive projection inputs read straight from
 	// the hera store at BuildModel time, so the Details pane stays a pure
@@ -112,6 +120,11 @@ type OrchView struct {
 	Archived  bool
 	CreatedAt time.Time // orchestrator creation time (coordinator Details "Created")
 	Roles     []RoleView
+	// Blocks are the orchestrator's hera_blocks blocking edges (one bulk read per
+	// BuildModel via HeraReader.ListHeraBlocks). The plan-view projection
+	// (heraPlanNodes) turns these into planview.Edge dependency edges. Stage 2
+	// populates this in BuildModel.
+	Blocks []db.HeraBlock
 }
 
 // Model is the full read-only snapshot the rail renders. Orchestrators are

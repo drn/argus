@@ -33,4 +33,8 @@ type HeraReader interface {
 	// role's TaskStatus/TaskResult (the orchestration-tree DAG colours nodes by
 	// task progress). *db.DB satisfies this; remote mode passes a nil reader.
 	Tasks() ([]*model.Task, error)
+	// ListHeraBlocks returns the orchestrator's blocking edges (the plan DAG's
+	// dependency edges). One bulk read per BuildModel; *db.DB satisfies it,
+	// remote mode's nil reader degrades unchanged. See add-hera-plan-view D8.
+	ListHeraBlocks(orchID int64) ([]db.HeraBlock, error)
 }

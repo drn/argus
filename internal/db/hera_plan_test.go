@@ -351,6 +351,101 @@ func TestAddHeraBlock_UnknownRole(t *testing.T) {
 	testutil.ErrorIs(t, err, ErrHeraNotFound)
 }
 
+// --- ListHeraBlocks (add-hera-plan-view, data-persistence delta) ---
+
+// TestListHeraBlocks_ReturnsAllEdgesDeterministic mirrors the
+// data-persistence scenario "Returns all edges for an orchestrator": every
+// hera_blocks edge in the orchestrator, ordered by blocked then blocker role
+// id.
+func TestListHeraBlocks_ReturnsAllEdgesDeterministic(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	r1a := plannedRole(t, d, orch, "1a")
+	r2a := plannedRole(t, d, orch, "2a")
+	r2b := plannedRole(t, d, orch, "2b")
+	r3a := plannedRole(t, d, orch, "3a")
+
+	// Edges: 3a←2b, 2a←1a (insert out of order to prove the query sorts them).
+	testutil.NoError(t, d.AddHeraBlock(r3a.ID, r2b.ID))
+	testutil.NoError(t, d.AddHeraBlock(r2a.ID, r1a.ID))
+
+	got, err := d.ListHeraBlocks(orch)
+	testutil.NoError(t, err)
+	// Deterministic order: by blocked role id then blocker role id. r2a < r3a, so
+	// the 2a←1a edge sorts before the 3a←2b edge.
+	testutil.DeepEqual(t, got, []HeraBlock{
+		{BlockedRoleID: r2a.ID, BlockerRoleID: r1a.ID},
+		{BlockedRoleID: r3a.ID, BlockerRoleID: r2b.ID},
+	})
+}
+
+// TestListHeraBlocks_EmptyWhenNoPlan mirrors "Empty when no plan authored": an
+// orchestrator with no edges returns an empty slice without error.
+func TestListHeraBlocks_EmptyWhenNoPlan(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	plannedRole(t, d, orch, "lonely") // a role but no edges
+
+	got, err := d.ListHeraBlocks(orch)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(got), 0)
+}
+
+// TestListHeraBlocks_ScopedToOrchestrator: edges from a DIFFERENT orchestrator
+// never leak into the result.
+func TestListHeraBlocks_ScopedToOrchestrator(t *testing.T) {
+	d := testDB(t)
+	o1 := planTestOrch(t, d, "o1")
+	o2 := planTestOrch(t, d, "o2")
+	a1 := plannedRole(t, d, o1, "a")
+	b1 := plannedRole(t, d, o1, "b")
+	a2 := plannedRole(t, d, o2, "a")
+	b2 := plannedRole(t, d, o2, "b")
+	testutil.NoError(t, d.AddHeraBlock(b1.ID, a1.ID))
+	testutil.NoError(t, d.AddHeraBlock(b2.ID, a2.ID))
+
+	got, err := d.ListHeraBlocks(o1)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, []HeraBlock{{BlockedRoleID: b1.ID, BlockerRoleID: a1.ID}})
+}
+
+// TestListHeraBlocks_ExcludesArchivedEndpoints: an edge whose blocked OR blocker
+// role is archived is excluded, matching how the view filters roles.
+func TestListHeraBlocks_ExcludesArchivedEndpoints(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	a := plannedRole(t, d, orch, "a")
+	b := plannedRole(t, d, orch, "b")
+	c := plannedRole(t, d, orch, "c")
+	dd := plannedRole(t, d, orch, "d")
+	// b←a (both live), and d←c. Archive c so the d←c edge drops.
+	testutil.NoError(t, d.AddHeraBlock(b.ID, a.ID))
+	testutil.NoError(t, d.AddHeraBlock(dd.ID, c.ID))
+	testutil.NoError(t, d.ArchiveHeraRole(c.ID))
+
+	got, err := d.ListHeraBlocks(orch)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, []HeraBlock{{BlockedRoleID: b.ID, BlockerRoleID: a.ID}})
+}
+
+// TestListHeraBlocks_ExcludesNukedEndpoints: an edge whose endpoint is nuked
+// (Tier-2 EOL) is excluded just like an archived endpoint.
+func TestListHeraBlocks_ExcludesNukedEndpoints(t *testing.T) {
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	a := plannedRole(t, d, orch, "a")
+	b := plannedRole(t, d, orch, "b")
+	c := plannedRole(t, d, orch, "c")
+	dd := plannedRole(t, d, orch, "d")
+	testutil.NoError(t, d.AddHeraBlock(b.ID, a.ID))
+	testutil.NoError(t, d.AddHeraBlock(dd.ID, c.ID))
+	testutil.NoError(t, d.NukeHeraRole(c.ID))
+
+	got, err := d.ListHeraBlocks(orch)
+	testutil.NoError(t, err)
+	testutil.DeepEqual(t, got, []HeraBlock{{BlockedRoleID: b.ID, BlockerRoleID: a.ID}})
+}
+
 func TestHeraRoleHasBinding(t *testing.T) {
 	d := testDB(t)
 	orch := planTestOrch(t, d, "orch")
