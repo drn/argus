@@ -6,12 +6,10 @@
 // Hera Details pane and reuses dagview's Kahn longest-path layer math for stage
 // placement. See openspec/changes/add-hera-plan-view/design.md.
 //
-// Stage 3 (layout + render) is implemented here: short-id parse + fallback,
-// edge-driven stage placement (via dagview.Compute), parallel-group detection
-// and collapse, chip glyph/colour, the partial-dependency marker, and the
-// degenerate no-plan flat stage. The (stage, slot, member) cursor navigation
-// (Stage 4), the master-detail header (Stage 5), and sub-coordinator drill-in
-// (Stage 6) remain signature-only stubs.
+// Stage 3 (layout + render), Stage 4 (the (stage, slot, member) cursor
+// navigation with group fan-out), Stage 5 (the master-detail header), and
+// Stage 6 (sub-coordinator drill-in via an orchestrator nav stack) are all
+// implemented here.
 package planview
 
 import (
@@ -254,7 +252,24 @@ type Widget struct {
 	// [stage, slot]. A group slot is collapsed unless present here (Stage 4).
 	fanned map[[2]int]bool
 
+	// navStack holds the parent orchestrators' snapshots saved on drill-in (D6).
+	// Each frame is the full render state to restore on PopOrch; the live fields
+	// (nodes/edges/title/cursor/...) always describe the *current* orchestrator,
+	// so DrillDepth is len(navStack).
+	navStack []navFrame
+
 	lastShape uint64
+}
+
+// navFrame is one saved orchestrator render state on the drill-in nav stack
+// (D6). PushOrch saves the current state into a frame before installing the
+// child; PopOrch restores the top frame.
+type navFrame struct {
+	nodes  []Node
+	edges  []Edge
+	title  string
+	cursor Cursor
+	fanned map[[2]int]bool
 }
 
 // New constructs an empty plan-view widget. SetData must be called before the
@@ -758,7 +773,22 @@ func (w *Widget) ActivateCursor() {
 		w.maybeNotifyBranchChange()
 		return
 	}
-	// Plain-leaf / sub-coordinator targets are Stage 6; left unhandled here.
+	// Node target (Stage 6): disjoint by the node's type. A sub-coordinator node
+	// drills into its child orchestrator (the consumer re-projects + pushes via
+	// OnDrillIn); a plain leaf jumps to its agent view via OnEnter.
+	id := w.CurrentNodeID()
+	if id == "" {
+		return
+	}
+	if w.nodes[id].Drillable {
+		if w.OnDrillIn != nil {
+			w.OnDrillIn(id)
+		}
+		return
+	}
+	if w.OnEnter != nil {
+		w.OnEnter(id)
+	}
 }
 
 // slotAt returns the slot at (stage, slotIdx) and whether it exists.
@@ -808,21 +838,58 @@ func (w *Widget) clampCursor() {
 
 // DrillDepth returns the orchestrator nav-stack depth: 0 at the root, ≥1 when
 // drilled into a sub-coordinator (D6).
-//
-// Stage 6 implements this.
-func (w *Widget) DrillDepth() int { return 0 }
+func (w *Widget) DrillDepth() int { return len(w.navStack) }
 
 // PushOrch pushes a child orchestrator's plan snapshot onto the nav stack and
-// re-projects it (the drill-in target). title becomes the header title.
-//
-// Stage 6 implements this.
-func (w *Widget) PushOrch(title string, nodes []Node, edges []Edge) {}
+// re-projects it (the drill-in target). The current orchestrator's full render
+// state (nodes, edges, title, cursor, fan-out) is saved onto the stack first so
+// PopOrch can restore it exactly; the child's nodes/edges then install via the
+// same layout path SetData uses, and title becomes the header title (D6).
+func (w *Widget) PushOrch(title string, nodes []Node, edges []Edge) {
+	w.navStack = append(w.navStack, navFrame{
+		nodes:  w.snapshotNodes(),
+		edges:  w.edges,
+		title:  w.title,
+		cursor: w.cursor,
+		fanned: w.fanned,
+	})
+	w.title = title
+	// Reuse SetData's layout + cursor-reset path; it also fires the branch-change
+	// callback (the title hash folded into branchShape re-fires it for free).
+	w.SetData(nodes, edges)
+}
 
-// PopOrch pops the nav stack back to the parent orchestrator's plan (Esc). No-op
-// at the root.
-//
-// Stage 6 implements this.
-func (w *Widget) PopOrch() {}
+// PopOrch pops the nav stack back to the parent orchestrator's plan (Esc),
+// restoring its saved nodes/edges/title and re-clamping the parent's cursor +
+// fan-out. No-op at the root (D6).
+func (w *Widget) PopOrch() {
+	if len(w.navStack) == 0 {
+		return
+	}
+	top := w.navStack[len(w.navStack)-1]
+	w.navStack = w.navStack[:len(w.navStack)-1]
+	w.title = top.title
+	// Reinstall the parent's snapshot, then restore the saved cursor + fan-out
+	// (SetData resets both, so re-apply after and clamp to the rebuilt layout).
+	w.SetData(top.nodes, top.edges)
+	w.fanned = top.fanned
+	if w.fanned == nil {
+		w.fanned = map[[2]int]bool{}
+	}
+	w.cursor = top.cursor
+	w.clampCursor()
+	w.maybeNotifyBranchChange()
+}
+
+// snapshotNodes copies the current node set back into a []Node in projection
+// order (w.order), so a pushed frame can restore the parent verbatim on pop.
+func (w *Widget) snapshotNodes() []Node {
+	out := make([]Node, 0, len(w.order))
+	for _, id := range w.order {
+		out = append(out, w.nodes[id])
+	}
+	return out
+}
 
 // --- Master-detail header (Stage 5) ---
 
@@ -1094,6 +1161,15 @@ func (w *Widget) InputHandler() func(*tcell.EventKey, func(tview.Primitive)) {
 			w.MoveSlot(1)
 		case tcell.KeyEnter:
 			w.ActivateCursor()
+		case tcell.KeyEscape:
+			// Esc pops the drill-in nav stack back to the parent orchestrator (D6).
+			// At the root it is a no-op here so the key falls through to the page.
+			if w.DrillDepth() > 0 {
+				w.PopOrch()
+				if w.OnDrillOut != nil {
+					w.OnDrillOut()
+				}
+			}
 		case tcell.KeyRune:
 			switch event.Rune() {
 			case ' ':

@@ -48,9 +48,9 @@
 
 **Depends on:** Stage 3, Stage 4
 
-- [ ] 6.1 Detect a sub-coordinator node via the rail bridge (`CoordBridgeTaskID`/`bridgeIndex`); render the drillable marker
-- [ ] 6.2 Orchestrator nav stack: `Enter` on a sub-coord pushes + re-projects the child plan DAG; `Esc` pops; header title reflects the current orch
-- [ ] 6.3 Plain leaf `Enter` keeps the `OnEnter` jump-to-agent-view behaviour (disjoint by cursor target type)
+- [x] 6.1 Detect a sub-coordinator node via the rail bridge (`CoordBridgeTaskID`/`bridgeIndex`); render the drillable marker
+- [x] 6.2 Orchestrator nav stack: `Enter` on a sub-coord pushes + re-projects the child plan DAG; `Esc` pops; header title reflects the current orch
+- [x] 6.3 Plain leaf `Enter` keeps the `OnEnter` jump-to-agent-view behaviour (disjoint by cursor target type)
 
 ## 7. Wire into the Hera view + retire the tree + docs
 
