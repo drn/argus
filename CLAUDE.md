@@ -33,13 +33,14 @@ make fmt            # goimports -w . (format the tree)
 make fmt-check      # fail if any file is not goimports-clean (matches CI)
 make vuln           # govulncheck ./...
 make lint-pr        # golangci-lint --new-from-rev=origin/master (matches CI)
-make pre-pr         # full CI mirror: build+vet+fmt-check+lint-pr+vuln+test-cover-gate
+make docs-check     # enforce line-count caps on always-loaded docs (scripts/docsize)
+make pre-pr         # full CI mirror: build+vet+fmt-check+docs-check+lint-pr+vuln+test-cover-gate
 go build -o argus ./cmd/argus/
 ```
 
 ## Before Opening a PR
 
-**`make pre-pr` must pass clean before opening OR updating any PR — non-negotiable; do not `git push` a PR branch until it does.** It mirrors `.github/workflows/ci.yml` step-for-step (build → vet → fmt-check → lint-pr → vuln → test-cover-gate), so a green `pre-pr` means green CI. Steps short-circuit on first failure, so run the **full** gate locally to surface everything at once. Per-gate failure recipes: `context/knowledge/gotchas/ci-gates.md`.
+**`make pre-pr` must pass clean before opening OR updating any PR — non-negotiable; do not `git push` a PR branch until it does.** It mirrors `.github/workflows/ci.yml` step-for-step (build → vet → fmt-check → docs-check → lint-pr → vuln → test-cover-gate), so a green `pre-pr` means green CI. Steps short-circuit on first failure, so run the **full** gate locally to surface everything at once. Per-gate failure recipes: `context/knowledge/gotchas/ci-gates.md`.
 
 ## Test-Driven Development
 
@@ -91,6 +92,7 @@ Gotcha files hold: invariants that caused bugs when violated, ordering requireme
 ### Documentation Requirements
 
 - **Every new feature documents its non-obvious gotchas** in `context/knowledge/gotchas/*.md` before the session ends — invariants / ordering / quirks / silent-failures, NOT what the code does.
+- **This file is capped at 150 lines by `make docs-check` (`scripts/docsize`, part of `pre-pr`/CI)** — it loads every argus-dev session, so keep it dense. Push detail into `context/knowledge/gotchas/*`; raise the cap only as a deliberate edit to `scripts/docsize`.
 - **Adding, removing, or rebinding ANY TUI key REQUIRES updating the help modal in the same PR.** The `?` overlay renders from `HelpSections` in `internal/tui/modal/help.go` (single source of truth). Any `case '<rune>':` / `tcell.Key*` branch added to a widget's `InputHandler` (anywhere under `internal/tui/**`) needs the matching `{key, action}` entry + an assertion in `help_test.go` (`TestHelpModal_Draw`), then mirror into the README Reference keybinding table.
 - **README.md is marketing, not a changelog.** The top half (hero / Why Argus / pillars / Also In The Box) is positioning — touch it only when a pillar-class capability or a new surface lands, or existing prose is now wrong. The Reference appendix (below `---`) is the dense docs surface — update its tables in place for any factual change (keybindings, MCP tools, REST endpoints, sandbox defaults, spinner styles). Default to silence; a single key/flag/endpoint tweak does not warrant a top-half edit.
 - **Screenshots** (`screenshots/`) are curated for marketing: add one only for a pillar-class, visually-distinct capability; replace stale ones in place; no empty/sparse screens.

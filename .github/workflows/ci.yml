@@ -41,6 +41,9 @@ jobs:
             exit 1
           fi
 
+      - name: Docs Size Check
+        run: go run ./scripts/docsize
+
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:

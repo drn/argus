@@ -1,4 +1,4 @@
-.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln pre-pr plugin-smoke
+.PHONY: build vet test test-watch test-cover test-cover-gate test-pkg lint-pr fmt fmt-check vuln docs-check pre-pr plugin-smoke
 
 build:
 	go build ./...
@@ -9,7 +9,7 @@ build:
 # Note: `vuln` is `continue-on-error` in CI (advisory only — stdlib CVEs
 # need a Go bump), but is fatal here so local runs surface them early.
 # A red `make pre-pr` whose ONLY failure is `vuln` will still pass CI.
-pre-pr: build vet fmt-check lint-pr vuln test-cover-gate
+pre-pr: build vet fmt-check docs-check lint-pr vuln test-cover-gate
 	@echo "✓ pre-pr checks passed — safe to open/update the PR"
 
 vet:
@@ -37,6 +37,12 @@ lint-pr:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "Install: brew install golangci-lint OR go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; exit 1; }
 	@git fetch origin master >/dev/null 2>&1 || true
 	golangci-lint run --new-from-rev=origin/master ./...
+
+# Enforce line-count caps on the always-loaded context docs (CLAUDE.md) so
+# they don't silently regrow into a per-session context tax. Policy + caps
+# live in scripts/docsize.
+docs-check:
+	go run ./scripts/docsize
 
 test:
 	go test -race -count=1 ./...
