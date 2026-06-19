@@ -202,21 +202,19 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `w`             | Spawn a worker under the selected coordinator (opens the full new-task modal: project / branch / backend / model / prompt, project defaulted to the coordinator's) |
 | `n`             | Create a new top-level coordinator (same new-task modal); bootstraps a fresh orchestrator + `coord` role bound to a new task. Works on an empty rail |
 | `r`             | Rename the selected role / orchestrator                                                 |
-| `a`             | Archive / unarchive the selected role / orchestrator                                    |
+| `a`             | **Hide** the selected worker / sub-coordinator into its parent coordinator's nested archive (Tier 1): reversible toggle, **keeps the session + worktree alive**, no confirm. A top-level coordinator has no parent archive, so `a` is a feedback no-op there |
 | `P`             | Pin / unpin the selected role / orchestrator                                            |
 | `s` / `S`       | Advance / revert the selected **Hera role** status (`idle → working → blocked → done`)  |
 | `J`             | Adopt a freelancer into, or re-parent a coordinator under, a chosen orchestrator (type-to-filter picker) |
-| `R`             | Retire the selected worker (confirm): stop the session, archive the task (worktree **kept** — reversible), end this role's binding, archive the role. Multi-bound tasks are preserved |
-| `C`             | Prune the selected coordinator's **archived** descendant workers (confirm): complete their tasks and reclaim their worktrees + branches |
-| `ctrl+r`        | Prune **all** finished coordinators + agents rail-wide (confirm): complete their tasks, reclaim worktrees, and close fully-finished orchestrators. Rail-scoped — never collides with the agent-view `ctrl+r` session switcher |
-| `ctrl+d`        | Delete the selected role; on a coordinator / orchestrator header (or a nested sub-coordinator row), cascade the whole subtree — every nested sub-coordinator + their agents. Delete **archives** the role / orchestrator / task rows (kept in the Archive, inbox retained — no DB deletes) and reclaims only the worktree + branch + session (count-bearing confirm). A task bound live in another orchestrator is preserved. (vs `a`, which archives but keeps the worktree/session) |
+| `C`             | **Clear** the selected coordinator's archive (confirm): NUKE every Tier-1 hidden agent under it — reclaim their worktrees + branches, archive their tasks, remove them from the rail (rows retained for DB recovery). Scoped to the selected coordinator, never global |
+| `ctrl+d`        | **Nuke** the selected role; on a coordinator / orchestrator header (or a nested sub-coordinator row), cascade the whole subtree — every nested sub-coordinator + their agents (Tier 2). Nuke **removes the rows from the rail entirely** (a `nuked_at` mark — no DB deletes; role / orchestrator / inbox / task rows all retained and recoverable via the DB) and reclaims the worktree + branch + session (count-bearing confirm). A task bound live in another orchestrator is preserved. (vs `a`, which hides but keeps the worktree/session) |
 | `←`             | Move to parent coordinator (rail focused only — passes through to the PTY when a pane is focused) |
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
 When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view.
 
-The end-of-life ladder is **retire → prune**: `R` archives a finished worker (reversible, keeps the worktree); `C` and `ctrl+r` reclaim the worktrees of already-archived / finished work. Every destructive key is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never destroyed).
+End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
 
 #### File Panel
 

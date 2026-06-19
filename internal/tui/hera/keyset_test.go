@@ -69,20 +69,16 @@ func TestKeyset_FiresCallbacksOnSelectedRole(t *testing.T) {
 func TestKeyset_EOLKeysFire(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	var got string
-	p.OnRetire = func(Selection) { got = "retire" }
-	p.OnPruneDescendants = func(Selection) { got = "prune-desc" }
+	p.OnClearArchive = func(Selection) { got = "clear-archive" }
 	p.OnNewCoordinator = func(Selection) { got = "new-coord" }
-	p.OnPruneDone = func() { got = "prune-done" }
 
 	h := p.InputHandler()
 	cases := []struct {
 		ev   *tcell.EventKey
 		want string
 	}{
-		{tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), "retire"},
-		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "prune-desc"},
+		{tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), "clear-archive"},
 		{tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), "new-coord"},
-		{tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), "prune-done"},
 	}
 	for _, c := range cases {
 		got = ""
@@ -91,27 +87,42 @@ func TestKeyset_EOLKeysFire(t *testing.T) {
 	}
 }
 
-// TestKeyset_NewCoordAndPruneDoneFireOnEmptySelection verifies the
-// selection-INDEPENDENT keys fire even when nothing is selected (n is the
-// bootstrap key; Ctrl+R is rail-wide).
-func TestKeyset_NewCoordAndPruneDoneFireOnEmptySelection(t *testing.T) {
+// TestKeyset_RetireAndRailPruneUnbound pins BUG-022: `R` and the rail-wide
+// `Ctrl+R` are no longer EOL keys — pressing them fires nothing end-of-life and
+// (for `R`) does not leak into the other selection callbacks.
+func TestKeyset_RetireAndRailPruneUnbound(t *testing.T) {
+	p, _ := railPageWithCursorOnWorker(t)
+	fired := false
+	// Wire every selection callback so a stray dispatch would be caught.
+	p.OnClearArchive = func(Selection) { fired = true }
+	p.OnArchiveToggle = func(Selection) { fired = true }
+	p.OnDelete = func(Selection) { fired = true }
+	p.OnNewCoordinator = func(Selection) { fired = true }
+
+	h := p.InputHandler()
+	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), noFocus)
+	testutil.Equal(t, fired, false)
+}
+
+// TestKeyset_NewCoordFiresOnEmptySelection verifies the selection-INDEPENDENT
+// `n` (bootstrap key) fires even when nothing is selected, while the
+// selection-gated `C` does not.
+func TestKeyset_NewCoordFiresOnEmptySelection(t *testing.T) {
 	d := memDB(t)
 	p := NewHeraPage(d) // empty rail, no orchestrators
 	p.Refresh()
 	var fired []string
 	p.OnNewCoordinator = func(Selection) { fired = append(fired, "new-coord") }
-	p.OnPruneDone = func() { fired = append(fired, "prune-done") }
 	// Selection-gated keys should NOT fire on the empty rail.
-	p.OnRetire = func(Selection) { fired = append(fired, "retire") }
+	p.OnClearArchive = func(Selection) { fired = append(fired, "clear-archive") }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), noFocus)
 
-	testutil.Equal(t, len(fired), 2)
+	testutil.Equal(t, len(fired), 1)
 	testutil.Equal(t, fired[0], "new-coord")
-	testutil.Equal(t, fired[1], "prune-done")
 }
 
 // TestKeyset_EOLKeysSuppressedWhileFiltering verifies that while the rail is in
@@ -120,15 +131,13 @@ func TestKeyset_EOLKeysSuppressedWhileFiltering(t *testing.T) {
 	p, _ := railPageWithCursorOnWorker(t)
 	fired := false
 	p.OnNewCoordinator = func(Selection) { fired = true }
-	p.OnPruneDone = func() { fired = true }
-	p.OnRetire = func(Selection) { fired = true }
+	p.OnClearArchive = func(Selection) { fired = true }
 
 	h := p.InputHandler()
 	h(tcell.NewEventKey(tcell.KeyRune, '/', tcell.ModNone), noFocus) // enter filter input
 	testutil.Equal(t, p.RailFiltering(), true)
 	h(tcell.NewEventKey(tcell.KeyRune, 'n', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyRune, 'R', tcell.ModNone), noFocus)
-	h(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModNone), noFocus)
+	h(tcell.NewEventKey(tcell.KeyRune, 'C', tcell.ModNone), noFocus)
 	testutil.Equal(t, fired, false)
 }
 

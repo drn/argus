@@ -594,6 +594,12 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 	}
 
 	for _, o := range orchs {
+		// Defense-in-depth: a NUKED orchestrator (Tier-2 EOL, BUG-022) is invisible
+		// to the rail. The DB list query already excludes nuked rows, but the model
+		// skips them too so it stays self-contained for any reader that doesn't.
+		if o.NukedAt != nil {
+			continue
+		}
 		ov := OrchView{
 			ID:        o.ID,
 			Name:      o.Name,
@@ -606,6 +612,10 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 			return Model{}, err
 		}
 		for _, role := range roles {
+			// Same Tier-2 guard for roles — a nuked role never renders.
+			if role.NukedAt != nil {
+				continue
+			}
 			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.

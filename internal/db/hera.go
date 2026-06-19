@@ -107,17 +107,22 @@ const (
 
 // HeraOrchestrator is one coordination group. ArchivedAt is non-nil for
 // archived rows; PinnedAt is non-nil for pinned rows. Pin and archive are
-// mutually exclusive — the Pin/Archive verbs clear the other.
+// mutually exclusive — the Pin/Archive verbs clear the other. NukedAt is the
+// Tier-2 end-of-life marker (BUG-022): a nuked orchestrator is REMOVED from the
+// rail entirely (invisible to the rail-feeding lists), its worktrees reclaimed,
+// but its row + inbox + task retained for DB-only recovery. A nuked row always
+// also carries ArchivedAt (so it leaves the active-name index).
 type HeraOrchestrator struct {
 	ID         int64
 	Name       string
 	CreatedAt  time.Time
 	ArchivedAt *time.Time
 	PinnedAt   *time.Time
+	NukedAt    *time.Time
 }
 
 // HeraRole is a participant in an orchestrator. Prompt is the only free-form
-// field. ArchivedAt / PinnedAt mirror HeraOrchestrator.
+// field. ArchivedAt / PinnedAt / NukedAt mirror HeraOrchestrator.
 type HeraRole struct {
 	ID             int64
 	OrchestratorID int64
@@ -128,6 +133,7 @@ type HeraRole struct {
 	CreatedAt      time.Time
 	ArchivedAt     *time.Time
 	PinnedAt       *time.Time
+	NukedAt        *time.Time
 }
 
 // HeraBinding is one (role, argus task) incarnation. OrchestratorID is
@@ -227,9 +233,11 @@ func (d *DB) ListHeraOrchestrators(includeArchived bool) ([]*HeraOrchestrator, e
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	query := `SELECT id, name, created_at, archived_at, pinned_at FROM hera_orchestrators`
+	// Nuked rows (Tier-2 EOL) are invisible to the rail-feeding lists regardless
+	// of includeArchived — they are recoverable only by primary-key id lookup.
+	query := `SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE nuked_at IS NULL`
 	if !includeArchived {
-		query += ` WHERE archived_at IS NULL`
+		query += ` AND archived_at IS NULL`
 	}
 	query += ` ORDER BY name ASC`
 
@@ -281,6 +289,20 @@ func (d *DB) UnpinHeraOrchestrator(id int64) error {
 		heraOrchExistsProbe, id)
 }
 
+// NukeHeraOrchestrator marks an orchestrator NUKED (BUG-022 Tier-2 EOL): it
+// stamps nuked_at (idempotent via COALESCE) AND ensures archived_at is set (so
+// the row leaves the active-name partial unique index and frees its name for
+// reuse), clearing pinned_at. A nuked orchestrator is invisible to the
+// rail-feeding lists (ListHeraOrchestrators) but its row is retained and still
+// returned by id (HeraOrchestrator) for DB-only recovery. NEVER a hard delete.
+// Returns ErrHeraNotFound if no row matches id.
+func (d *DB) NukeHeraOrchestrator(id int64) error {
+	now := formatTime(time.Now())
+	return d.heraSetFlag(
+		`UPDATE hera_orchestrators SET nuked_at=COALESCE(nuked_at, ?), archived_at=COALESCE(archived_at, ?), pinned_at=NULL WHERE id=?`,
+		heraOrchExistsProbe, id, now, now)
+}
+
 // RenameHeraOrchestrator updates the name. The new name must be free among
 // active orchestrators; archived rows with the same name do not block. Returns
 // ErrHeraNotFound if no row matches id, or ErrHeraNameConflict on collision.
@@ -328,13 +350,13 @@ func (d *DB) DeleteHeraOrchestrator(id int64) error {
 }
 
 func (d *DB) heraOrchestratorByID(id int64) (*HeraOrchestrator, error) {
-	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at FROM hera_orchestrators WHERE id=?`, id)
+	row := d.conn.QueryRow(`SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE id=?`, id)
 	return scanHeraOrchestrator(row)
 }
 
 func (d *DB) heraOrchestratorByActiveName(name string) (*HeraOrchestrator, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, name, created_at, archived_at, pinned_at FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
+		`SELECT id, name, created_at, archived_at, pinned_at, nuked_at FROM hera_orchestrators WHERE name=? AND archived_at IS NULL`,
 		name)
 	return scanHeraOrchestrator(row)
 }
@@ -385,8 +407,10 @@ func (d *DB) ListHeraRoles(orchID int64, includeArchived bool) ([]*HeraRole, err
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
-	          FROM hera_roles WHERE orchestrator_id=?`
+	// Nuked roles (Tier-2 EOL) are invisible to the rail-feeding list regardless
+	// of includeArchived — recoverable only by id lookup (HeraRole).
+	query := `SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
+	          FROM hera_roles WHERE orchestrator_id=? AND nuked_at IS NULL`
 	if !includeArchived {
 		query += ` AND archived_at IS NULL`
 	}
@@ -416,7 +440,7 @@ func (d *DB) ListHeraRolesByKind(orchID int64, kind HeraRoleKind) ([]*HeraRole, 
 	defer d.mu.Unlock()
 
 	rows, err := d.conn.Query(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
 		 FROM hera_roles WHERE orchestrator_id=? AND kind=? AND archived_at IS NULL ORDER BY name ASC`,
 		orchID, string(kind))
 	if err != nil {
@@ -461,6 +485,19 @@ func (d *DB) PinHeraRole(id int64) error {
 func (d *DB) UnpinHeraRole(id int64) error {
 	return d.heraSetFlag(`UPDATE hera_roles SET pinned_at=NULL WHERE id=? AND pinned_at IS NOT NULL`,
 		heraRoleExistsProbe, id)
+}
+
+// NukeHeraRole marks a role NUKED (BUG-022 Tier-2 EOL): stamps nuked_at
+// (idempotent via COALESCE) AND ensures archived_at is set (freeing its name in
+// the active-name index), clearing pinned_at. A nuked role is invisible to the
+// rail-feeding lists (ListHeraRoles / ListHeraRolesByKind) but its row, bindings,
+// status, inbox messages, and bound argus task are all retained — recovery is
+// via the DB only. NEVER a hard delete. Returns ErrHeraNotFound if no row matches.
+func (d *DB) NukeHeraRole(id int64) error {
+	now := formatTime(time.Now())
+	return d.heraSetFlag(
+		`UPDATE hera_roles SET nuked_at=COALESCE(nuked_at, ?), archived_at=COALESCE(archived_at, ?), pinned_at=NULL WHERE id=?`,
+		heraRoleExistsProbe, id, now, now)
 }
 
 // RenameHeraRole updates a role's name. The new name must be free among active
@@ -511,14 +548,14 @@ func (d *DB) DeleteHeraRole(id int64) error {
 
 func (d *DB) heraRoleByID(id int64) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
 		 FROM hera_roles WHERE id=?`, id)
 	return scanHeraRole(row)
 }
 
 func (d *DB) heraRoleByActiveName(orchID int64, name string) (*HeraRole, error) {
 	row := d.conn.QueryRow(
-		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at
+		`SELECT id, orchestrator_id, name, kind, argus_project, prompt, created_at, archived_at, pinned_at, nuked_at
 		 FROM hera_roles WHERE orchestrator_id=? AND name=? AND archived_at IS NULL`, orchID, name)
 	return scanHeraRole(row)
 }
@@ -1084,8 +1121,8 @@ type rowScanner interface {
 func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	var o HeraOrchestrator
 	var createdAt string
-	var archivedAt, pinnedAt sql.NullString
-	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt); err != nil {
+	var archivedAt, pinnedAt, nukedAt sql.NullString
+	if err := s.Scan(&o.ID, &o.Name, &createdAt, &archivedAt, &pinnedAt, &nukedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1094,15 +1131,16 @@ func scanHeraOrchestrator(s rowScanner) (*HeraOrchestrator, error) {
 	o.CreatedAt = parseTime(createdAt)
 	o.ArchivedAt = nullTimePtr(archivedAt)
 	o.PinnedAt = nullTimePtr(pinnedAt)
+	o.NukedAt = nullTimePtr(nukedAt)
 	return &o, nil
 }
 
 func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	var r HeraRole
 	var kind, createdAt string
-	var archivedAt, pinnedAt sql.NullString
+	var archivedAt, pinnedAt, nukedAt sql.NullString
 	if err := s.Scan(&r.ID, &r.OrchestratorID, &r.Name, &kind, &r.ArgusProject, &r.Prompt,
-		&createdAt, &archivedAt, &pinnedAt); err != nil {
+		&createdAt, &archivedAt, &pinnedAt, &nukedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrHeraNotFound
 		}
@@ -1112,6 +1150,7 @@ func scanHeraRole(s rowScanner) (*HeraRole, error) {
 	r.CreatedAt = parseTime(createdAt)
 	r.ArchivedAt = nullTimePtr(archivedAt)
 	r.PinnedAt = nullTimePtr(pinnedAt)
+	r.NukedAt = nullTimePtr(nukedAt)
 	return &r, nil
 }
 

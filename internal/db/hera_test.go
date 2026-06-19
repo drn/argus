@@ -752,3 +752,105 @@ func TestHeraTaskDeleteCascadeHook(t *testing.T) {
 		testutil.Equal(t, n, 0)
 	})
 }
+
+// TestNukeHeraRole pins the BUG-022 Tier-2 nuke for a role: nuked_at + archived_at
+// stamped, pinned_at cleared, invisible to ListHeraRoles, still returned by id,
+// idempotent, name freed for reuse, never a hard delete.
+func TestNukeHeraRole(t *testing.T) {
+	t.Run("stamps nuked_at + archived_at, clears pin, hides from list, keeps id lookup", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "alpha")
+		r := mkRole(t, d, o.ID, "w1", HeraKindWorker)
+		testutil.NoError(t, d.PinHeraRole(r.ID))
+
+		testutil.NoError(t, d.NukeHeraRole(r.ID))
+
+		got, err := d.HeraRole(r.ID) // id lookup still returns it
+		testutil.NoError(t, err)
+		if got.NukedAt == nil {
+			t.Fatal("expected nuked_at set")
+		}
+		if got.ArchivedAt == nil {
+			t.Fatal("expected archived_at set on a nuked role")
+		}
+		testutil.Nil(t, got.PinnedAt)
+
+		// Invisible to the rail-feeding list even with includeArchived.
+		list, err := d.ListHeraRoles(o.ID, true)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(list), 0)
+
+		// Invisible to the by-kind list too.
+		byKind, err := d.ListHeraRolesByKind(o.ID, HeraKindWorker)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(byKind), 0)
+	})
+
+	t.Run("frees the active-name index for reuse", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "alpha")
+		r := mkRole(t, d, o.ID, "w1", HeraKindWorker)
+		testutil.NoError(t, d.NukeHeraRole(r.ID))
+
+		// A fresh active role can reuse the nuked role's name.
+		r2, err := d.CreateHeraRole(CreateHeraRoleInput{
+			OrchestratorID: o.ID, Name: "w1", Kind: HeraKindWorker, ArgusProject: "proj",
+		})
+		testutil.NoError(t, err)
+		if r2.ID == r.ID {
+			t.Fatal("expected a distinct new role row, not the nuked one")
+		}
+	})
+
+	t.Run("idempotent and preserves original nuked_at", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "alpha")
+		r := mkRole(t, d, o.ID, "w1", HeraKindWorker)
+		testutil.NoError(t, d.NukeHeraRole(r.ID))
+		first, err := d.HeraRole(r.ID)
+		testutil.NoError(t, err)
+		testutil.NoError(t, d.NukeHeraRole(r.ID)) // second call is a no-op
+		second, err := d.HeraRole(r.ID)
+		testutil.NoError(t, err)
+		testutil.Equal(t, second.NukedAt.Equal(*first.NukedAt), true)
+	})
+
+	t.Run("missing row returns ErrHeraNotFound", func(t *testing.T) {
+		d := heraTestDB(t)
+		testutil.ErrorIs(t, d.NukeHeraRole(9999), ErrHeraNotFound)
+	})
+}
+
+// TestNukeHeraOrchestrator pins the orchestrator-level nuke.
+func TestNukeHeraOrchestrator(t *testing.T) {
+	t.Run("stamps markers, hides from list, keeps id lookup, frees name", func(t *testing.T) {
+		d := heraTestDB(t)
+		o := mkOrch(t, d, "alpha")
+		testutil.NoError(t, d.PinHeraOrchestrator(o.ID))
+
+		testutil.NoError(t, d.NukeHeraOrchestrator(o.ID))
+
+		got, err := d.HeraOrchestrator(o.ID)
+		testutil.NoError(t, err)
+		if got.NukedAt == nil || got.ArchivedAt == nil {
+			t.Fatal("expected nuked_at and archived_at set")
+		}
+		testutil.Nil(t, got.PinnedAt)
+
+		list, err := d.ListHeraOrchestrators(true)
+		testutil.NoError(t, err)
+		testutil.Equal(t, len(list), 0)
+
+		// Name freed: a fresh active orchestrator can reuse it.
+		o2, err := d.CreateHeraOrchestrator("alpha")
+		testutil.NoError(t, err)
+		if o2.ID == o.ID {
+			t.Fatal("expected a distinct new orchestrator, not the nuked one")
+		}
+	})
+
+	t.Run("missing row returns ErrHeraNotFound", func(t *testing.T) {
+		d := heraTestDB(t)
+		testutil.ErrorIs(t, d.NukeHeraOrchestrator(9999), ErrHeraNotFound)
+	})
+}

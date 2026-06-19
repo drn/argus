@@ -58,24 +58,42 @@ func TestHeraActions_NewCoordinatorOpensFullModal(t *testing.T) {
 	testutil.Equal(t, app.newTaskOnDone != nil, true)
 }
 
-func TestHeraActions_RetireWorkerBranches(t *testing.T) {
+// TestHeraActions_HideBranches pins the `a` HIDE key (BUG-022): a coordinator /
+// header selection is a feedback no-op (no parent archive to nest under); a
+// worker selection hides immediately with NO confirmation (reversible toggle).
+func TestHeraActions_HideBranches(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
 
-	// Coordinator/header selection → feedback, no confirm.
-	app.heraRetireWorker(heraCoordSel(1, "tc"))
-	testutil.Contains(t, app.statusbar.Error(), "Retire applies to workers")
+	// Coordinator/header selection → feedback, no-op, no confirm.
+	app.heraHide(heraCoordSel(1, "tc"))
+	testutil.Contains(t, app.statusbar.Error(), "Hide applies to workers")
 	testutil.Equal(t, app.mode, modeTaskList)
 
-	// Worker selection → confirm modal opens.
+	// Worker selection → hides immediately (no confirm modal), role archived.
 	orch := seedHeraOrch(t, d, "o")
 	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	sel := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}}
-	app.heraRetireWorker(sel)
-	testutil.Equal(t, app.mode, modeHeraConfirm)
+	app.heraHide(sel)
+	testutil.Equal(t, app.mode, modeTaskList) // no confirm modal
+	got, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.ArchivedAt != nil, true) // hidden (archived)
+	testutil.Equal(t, got.NukedAt == nil, true)    // NOT nuked — reversible
+
+	// Pressing `a` again unhides it (reversible toggle).
+	sel2 := hera.Selection{Role: &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, Archived: true}}
+	app.heraHide(sel2)
+	got2, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, got2.ArchivedAt == nil, true) // restored
 }
 
-func TestHeraActions_PruneDescendantsBranches(t *testing.T) {
+// TestHeraActions_ClearArchiveBranches pins the `C` clear-this-coordinator's-
+// archive key (BUG-022): no hidden descendants → "nothing to clear"; with a
+// hidden worker → confirm opens.
+func TestHeraActions_ClearArchiveBranches(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
 
@@ -83,35 +101,16 @@ func TestHeraActions_PruneDescendantsBranches(t *testing.T) {
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
 	app.heraPage.Refresh()
 
-	// No archived descendant workers → "nothing to prune", no modal.
-	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
-	testutil.Contains(t, app.statusbar.Info(), "Nothing to prune")
+	// No hidden descendant workers → "nothing to clear", no modal.
+	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
+	testutil.Contains(t, app.statusbar.Info(), "Nothing to clear")
 	testutil.Equal(t, app.mode, modeTaskList)
 
-	// Archive a worker so the subtree has an archived descendant.
+	// Hide a worker so the subtree has a Tier-1 hidden descendant.
 	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
 	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
 	app.heraPage.Refresh()
-	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
-	testutil.Equal(t, app.mode, modeHeraConfirm)
-}
-
-func TestHeraActions_PruneDoneBranches(t *testing.T) {
-	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false)
-	app.heraPage.Refresh()
-
-	// Empty rail → "nothing to prune".
-	app.heraPruneDone()
-	testutil.Contains(t, app.statusbar.Info(), "Nothing to prune")
-	testutil.Equal(t, app.mode, modeTaskList)
-
-	// A finished (archived) role exists → confirm opens.
-	orch := seedHeraOrch(t, d, "o")
-	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
-	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
-	app.heraPage.Refresh()
-	app.heraPruneDone()
+	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "o"}})
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 }
 
@@ -146,50 +145,34 @@ func TestHeraActions_NewTaskOverrideInvokesOnDone(t *testing.T) {
 	testutil.Equal(t, app.newTaskReturnPage, "")
 }
 
-// TestHeraActions_DoRetireSoleBound exercises the retire execution: task
-// archived, role archived + status done, binding ended (worktree kept).
-func TestHeraActions_DoRetireSoleBound(t *testing.T) {
+// TestHeraActions_NukeArchivedRoleSoleBound exercises `C`'s per-role nuke of a
+// sole-bound hidden role: task ARCHIVED (not completed/deleted), role NUKED
+// (nuked_at set, NOT hard-deleted — the row is retained for DB recovery).
+func TestHeraActions_NukeArchivedRoleSoleBound(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
 	orch := seedHeraOrch(t, d, "o")
 	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
+	testutil.NoError(t, d.ArchiveHeraRole(role.ID)) // hidden first
 
-	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Name: "w", Kind: db.HeraKindWorker, TaskID: "tw", Live: true}
-	app.heraDoRetire(rv, true)
+	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Kind: db.HeraKindWorker, TaskID: "tw", BridgeTaskID: "tw", Archived: true}
+	app.heraNukeArchivedRole(rv)
 
 	task, err := d.Get("tw")
 	testutil.NoError(t, err)
-	testutil.Equal(t, task.Archived, true)
-	got, err := d.HeraRole(role.ID)
+	testutil.Equal(t, task.Archived, true) // archived, NOT completed
+	got, err := d.HeraRole(role.ID)        // row RETAINED (no hard delete)
 	testutil.NoError(t, err)
-	testutil.Equal(t, got.ArchivedAt != nil, true)
-	_, err = d.HeraLiveBindingByRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	testutil.Equal(t, got.NukedAt != nil, true)
 }
 
-// TestHeraActions_ReclaimRoleCompletesAndDeletes exercises reclaim of a
-// sole-bound role: task completed, role row removed.
-func TestHeraActions_ReclaimRoleCompletesAndDeletes(t *testing.T) {
+// TestHeraActions_NukeArchivedRoleMultiBoundPreservesTask verifies a task bound
+// live under another orchestrator is preserved — only this role row is nuked.
+func TestHeraActions_NukeArchivedRoleMultiBoundPreservesTask(t *testing.T) {
 	d := testDB(t)
 	app := New(d, agent.NewRunner(nil), false)
-	orch := seedHeraOrch(t, d, "o")
-	role := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
-
-	rv := &hera.RoleView{RoleID: role.ID, OrchID: orch, Kind: db.HeraKindWorker, TaskID: "tw", BridgeTaskID: "tw", Live: true}
-	app.heraReclaimRole(rv)
-
-	task, err := d.Get("tw")
-	testutil.NoError(t, err)
-	testutil.Equal(t, task.Status, model.StatusComplete)
-	_, err = d.HeraRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-}
-
-// TestHeraActions_ReclaimRoleMultiBoundPreservesTask verifies a task bound live
-// under another orchestrator is preserved — only this role row is removed.
-func TestHeraActions_ReclaimRoleMultiBoundPreservesTask(t *testing.T) {
-	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false)
+	app.heraOps = hera.NewOps(d)
 	a := seedHeraOrch(t, d, "A")
 	b := seedHeraOrch(t, d, "B")
 	roleA := seedHeraBoundRole(t, d, a, "w", db.HeraKindWorker, "shared")
@@ -199,43 +182,18 @@ func TestHeraActions_ReclaimRoleMultiBoundPreservesTask(t *testing.T) {
 	testutil.NoError(t, err)
 
 	rv := &hera.RoleView{RoleID: roleA.ID, OrchID: a, Kind: db.HeraKindWorker, TaskID: "shared", BridgeTaskID: "shared", Live: true}
-	reclaimed := app.heraReclaimRole(rv)
+	reclaimed := app.heraNukeArchivedRole(rv)
 
 	testutil.Equal(t, reclaimed, false) // bound elsewhere → worktree not reclaimed
 	task, err := d.Get("shared")
 	testutil.NoError(t, err)
-	testutil.Equal(t, task.Status, model.StatusInProgress) // preserved
-	_, err = d.HeraRole(roleA.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound) // this role row removed
+	testutil.Equal(t, task.Archived, false) // preserved (not archived)
+	gotA, err := d.HeraRole(roleA.ID)       // this role nuked but RETAINED
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotA.NukedAt != nil, true)
 	gotB, err := d.HeraRole(roleB.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotB.OrchestratorID, b) // other orchestrator's role intact
-}
-
-// TestHeraActions_DoPruneDoneClosesFinishedOrch verifies a fully-finished
-// orchestrator is closed and its roles reclaimed.
-func TestHeraActions_DoPruneDoneClosesFinishedOrch(t *testing.T) {
-	d := testDB(t)
-	app := New(d, agent.NewRunner(nil), false)
-	orch := seedHeraOrch(t, d, "o")
-	coord := seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
-	w := seedHeraBoundRole(t, d, orch, "w", db.HeraKindWorker, "tw")
-	testutil.NoError(t, d.ArchiveHeraRole(coord.ID))
-	testutil.NoError(t, d.ArchiveHeraRole(w.ID))
-	app.heraPage.Refresh()
-
-	m := app.heraPage.Rail().Model()
-	orchIDs := m.FullyFinishedOrchestratorIDs()
-	testutil.Equal(t, len(orchIDs), 1)
-	reclaim := m.FinishedRoles()
-	app.heraDoPruneDone(reclaim, orchIDs)
-
-	// Orchestrator deleted (its bindings cascaded away on role delete).
-	_, err := d.HeraOrchestrator(orch)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	// Tasks completed.
-	tc, _ := d.Get("tc")
-	testutil.Equal(t, tc.Status, model.StatusComplete)
 }
 
 func TestHeraActions_EOLKeysRemoteInert(t *testing.T) {
@@ -244,9 +202,9 @@ func TestHeraActions_EOLKeysRemoteInert(t *testing.T) {
 	app.heraOps = nil // simulate remote mode
 
 	app.heraNewCoordinator(hera.Selection{})
-	app.heraRetireWorker(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}})
-	app.heraPruneDescendants(hera.Selection{Orch: &hera.OrchView{ID: 1}})
-	app.heraPruneDone()
+	app.heraHide(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}})
+	app.heraClearArchive(hera.Selection{Orch: &hera.OrchView{ID: 1}})
+	app.heraOpenDelete(hera.Selection{Role: &hera.RoleView{Kind: db.HeraKindWorker}})
 	// No modal opened, no panic.
 	testutil.Equal(t, app.mode, modeTaskList)
 }
@@ -426,22 +384,6 @@ func TestHeraPaneFocused_GlobalKeySurrender(t *testing.T) {
 	if got := app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, '?', tcell.ModNone)); got != nil {
 		t.Fatalf("? on the rail should be consumed (open help), got fall-through")
 	}
-}
-
-func TestHeraActions_ArchivingLive(t *testing.T) {
-	app := New(testDB(t), agent.NewRunner(nil), false)
-	// Live, unarchived role → archiving is "live".
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{Role: &hera.RoleView{Live: true}}), true)
-	// Archived role → not archiving (it'll unarchive).
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{Role: &hera.RoleView{Archived: true, Live: true}}), false)
-	// Orchestrator with a live role → live.
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{Orch: &hera.OrchView{Roles: []hera.RoleView{{Live: true}}}}), true)
-	// Orchestrator with no live role → not live.
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{Orch: &hera.OrchView{Roles: []hera.RoleView{{Live: false}}}}), false)
-	// Archived orchestrator → not live.
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{Orch: &hera.OrchView{Archived: true, Roles: []hera.RoleView{{Live: true}}}}), false)
-	// Empty selection.
-	testutil.Equal(t, app.heraArchivingLive(hera.Selection{}), false)
 }
 
 func TestHeraActions_StatusStepNilRoleNoop(t *testing.T) {
@@ -785,26 +727,27 @@ func TestHeraActions_OrchHeaderDeleteCascadesSingleOrch(t *testing.T) {
 
 	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: orch, Name: "solo"}})
 
-	// The count-bearing cascade confirm opens, worded "archives" + "reclaims".
+	// The count-bearing cascade confirm opens, worded "removes" + "reclaims".
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 	msg := app.heraConfirmModal.Message()
-	testutil.Contains(t, msg, "archives")
+	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "reclaims")
 	testutil.Contains(t, msg, "1 orchestrator(s)")
 	testutil.Contains(t, msg, "1 agent(s)")      // the worker (coordinator not counted)
 	testutil.Contains(t, msg, "2 worktree(s)")   // coord task + worker task
 	testutil.Contains(t, msg, "0 task(s) bound") // none preserved
 
-	// Accept → cascade ARCHIVES the orchestrator + roles + tasks (no hard deletes).
+	// Accept → cascade NUKES the orchestrator + roles (no hard deletes) and
+	// ARCHIVES the tasks.
 	app.heraConfirmDo()
 
-	gotOrch, err := d.HeraOrchestrator(orch) // still exists, archived
+	gotOrch, err := d.HeraOrchestrator(orch) // still exists, NUKED
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+	testutil.Equal(t, gotOrch.NukedAt != nil, true)
 	for _, role := range []*db.HeraRole{coord, wkr} {
-		gotRole, rErr := d.HeraRole(role.ID) // role row archived, not deleted
+		gotRole, rErr := d.HeraRole(role.ID) // role row nuked, not deleted
 		testutil.NoError(t, rErr)
-		testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+		testutil.Equal(t, gotRole.NukedAt != nil, true)
 		_, bErr := d.HeraLiveBindingByRole(role.ID) // binding ended
 		testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
 	}
@@ -816,7 +759,7 @@ func TestHeraActions_OrchHeaderDeleteCascadesSingleOrch(t *testing.T) {
 }
 
 // TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree verifies the deep case:
-// deleting a TOP-LEVEL coordinator ARCHIVES the coordinator, its agents, AND every
+// nuking a TOP-LEVEL coordinator NUKES the coordinator, its agents, AND every
 // nested sub-coordinator + their agents (no hard deletes), reclaiming worktrees.
 // The internal-bridge worktree (the task bridging two subtree orchestrators) is
 // counted + archived; a task also bound live in an orchestrator OUTSIDE the
@@ -861,6 +804,7 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 	app.heraOpenDelete(hera.Selection{Orch: &hera.OrchView{ID: p, Name: "P"}})
 	testutil.Equal(t, app.mode, modeHeraConfirm)
 	msg := app.heraConfirmModal.Message()
+	testutil.Contains(t, msg, "removes")
 	testutil.Contains(t, msg, "2 orchestrator(s)")
 	testutil.Contains(t, msg, "2 agent(s)")      // wP + wC
 	testutil.Contains(t, msg, "2 worktree(s)")   // tP + tC (internal bridge); tShared preserved
@@ -868,27 +812,27 @@ func TestHeraActions_OrchHeaderDeleteCascadesNestedSubtree(t *testing.T) {
 
 	app.heraConfirmDo()
 
-	// Both subtree orchestrators ARCHIVED (still present); the outside one untouched.
+	// Both subtree orchestrators NUKED (still present); the outside one untouched.
 	for _, id := range []int64{p, c} {
 		gotOrch, oErr := d.HeraOrchestrator(id)
 		testutil.NoError(t, oErr)
-		testutil.Equal(t, gotOrch.ArchivedAt != nil, true)
+		testutil.Equal(t, gotOrch.NukedAt != nil, true)
 	}
 	oOrch, err := d.HeraOrchestrator(o)
 	testutil.NoError(t, err)
-	testutil.Equal(t, oOrch.ArchivedAt == nil, true) // outside orchestrator untouched
+	testutil.Equal(t, oOrch.NukedAt == nil, true) // outside orchestrator untouched
 
-	// Subtree worker roles archived + bindings ended; the OUTSIDE worker untouched.
+	// Subtree worker roles nuked + bindings ended; the OUTSIDE worker untouched.
 	for _, role := range []*db.HeraRole{wP, wC} {
 		gotRole, rErr := d.HeraRole(role.ID)
 		testutil.NoError(t, rErr)
-		testutil.Equal(t, gotRole.ArchivedAt != nil, true)
+		testutil.Equal(t, gotRole.NukedAt != nil, true)
 		_, bErr := d.HeraLiveBindingByRole(role.ID)
 		testutil.ErrorIs(t, bErr, db.ErrHeraNotFound)
 	}
 	gotWO, err := d.HeraRole(wO.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, gotWO.ArchivedAt == nil, true) // outside role untouched
+	testutil.Equal(t, gotWO.NukedAt == nil, true) // outside role untouched
 	wob, err := d.HeraLiveBindingByRole(wO.ID)
 	testutil.NoError(t, err) // outside binding still live
 	testutil.Equal(t, wob != nil, true)

@@ -1,3 +1,5 @@
+> **PARTIALLY SUPERSEDED by `hera-eol-redesign` (BUG-022).** The end-of-life keys this change introduced — `R` (retire) and the rail-wide `Ctrl+R` (prune) — were REMOVED, and `C` was repurposed from "prune archived descendants" to "clear this coordinator's archive (nuke)". The two-state hide/nuke model in `hera-eol-redesign` is the current EOL surface; the `w`/`n` new-task-modal parts of this change still stand. See `hera-eol-redesign` for the live behavior.
+
 ## Why
 
 The native Hera rail can spawn and adopt agents but has no first-class way to *create a new top-level coordinator from the TUI*, no rich form for spawning a worker (the `w` key opened a bare single-line prompt, unlike the full new-argus-task popup), and no end-of-life (EOL) affordances. An operator who wanted to retire a finished worker, reclaim the worktrees of a coordinator's archived agents, or sweep the whole rail of done coords had to drop to the Tasks tab or the MCP tools. This is the rail key-family gap tracked by the bug bash (BUG-005/006/010/011/012).

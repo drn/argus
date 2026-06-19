@@ -669,19 +669,18 @@ func (a *App) buildUI() {
 		a.heraAdoptOps = hera.NewAdoptOps(d)
 		a.heraPage.OnSpawnWorker = a.heraSpawnWorker
 		a.heraPage.OnRename = a.heraOpenRename
-		a.heraPage.OnArchiveToggle = a.heraArchiveToggle
+		a.heraPage.OnArchiveToggle = a.heraHide
 		a.heraPage.OnPinToggle = a.heraPinToggle
 		a.heraPage.OnStatusAdvance = func(sel hera.Selection) { a.heraStatusStep(sel, +1) }
 		a.heraPage.OnStatusRevert = func(sel hera.Selection) { a.heraStatusStep(sel, -1) }
 		a.heraPage.OnDelete = a.heraOpenDelete
 		a.heraPage.OnReattach = a.heraReattach
 		a.heraPage.OnAdopt = a.heraOpenAdopt
-		// Rail key family (BUG-005/006/010/011/012): full new-task modal for w/n,
-		// retire R, prune-descendants C, rail-wide prune Ctrl+R.
+		// Rail key family: full new-task modal for w/n (BUG-005/006); the BUG-022
+		// two-state EOL — `a` HIDE, `Ctrl+D` NUKE, `C` clear-this-coord's-archive
+		// (retire `R` and the rail-wide `Ctrl+R` prune were removed).
 		a.heraPage.OnNewCoordinator = a.heraNewCoordinator
-		a.heraPage.OnRetire = a.heraRetireWorker
-		a.heraPage.OnPruneDescendants = a.heraPruneDescendants
-		a.heraPage.OnPruneDone = a.heraPruneDone
+		a.heraPage.OnClearArchive = a.heraClearArchive
 
 		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
 		// a node's agent view) is wired — the legacy link/unlink/halt actions are

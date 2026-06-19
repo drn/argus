@@ -186,36 +186,59 @@ func TestOps_StepStatus_CoordinatorHeaderCycles(t *testing.T) {
 	testutil.Equal(t, got.Status, model.StatusInProgress)
 }
 
-func TestOps_DeleteRole(t *testing.T) {
-	d := memDB(t)
-	o := seedOrch(t, d, "o")
-	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "")
-	ops := NewOps(d)
-	testutil.NoError(t, ops.DeleteRole(role.ID))
-	_, err := d.HeraRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-}
-
-func TestOps_DeleteOrchestrator_CascadesRolesPreservesTask(t *testing.T) {
+// TestOps_NukeRole verifies the Tier-2 nuke: the role's live binding ends, the
+// role row is marked NUKED (nuked_at + archived_at) so it leaves the rail, but
+// the row is RETAINED (HeraRole(id) still returns it) — never a hard delete.
+func TestOps_NukeRole(t *testing.T) {
 	d := memDB(t)
 	o := seedOrch(t, d, "o")
 	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
 	ops := NewOps(d)
 
-	testutil.NoError(t, ops.DeleteOrchestrator(o))
+	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
+	testutil.NoError(t, ops.NukeRole(rv))
 
-	_, err := d.HeraOrchestrator(o)
+	// Binding ended (no live binding for the role).
+	_, err := d.HeraLiveBindingByRole(role.ID)
 	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	_, err = d.HeraRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	// The argus task row is preserved (only the hera grouping was removed).
-	got, err := d.Get("t1")
+	// Row retained but marked nuked + archived; invisible to the rail-feeding list.
+	got, err := d.HeraRole(role.ID)
 	testutil.NoError(t, err)
-	testutil.Equal(t, got != nil, true)
+	testutil.Equal(t, got.NukedAt != nil, true)
+	testutil.Equal(t, got.ArchivedAt != nil, true)
+	list, err := d.ListHeraRoles(o, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(list), 0)
+	// The argus task row is preserved (the App archives it separately).
+	task, err := d.Get("t1")
+	testutil.NoError(t, err)
+	testutil.Equal(t, task != nil, true)
 }
 
-// TestOps_MultiBindingIsolation verifies deleting role R in orchestrator A
-// leaves the SAME task's role in orchestrator B live (distinct role rows).
+// TestOps_NukeOrchestrator marks the orchestrator nuked (retained, invisible).
+func TestOps_NukeOrchestrator(t *testing.T) {
+	d := memDB(t)
+	o := seedOrch(t, d, "o")
+	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
+	ops := NewOps(d)
+
+	testutil.NoError(t, ops.NukeOrchestrator(o))
+
+	got, err := d.HeraOrchestrator(o) // id lookup still returns it
+	testutil.NoError(t, err)
+	testutil.Equal(t, got.NukedAt != nil, true)
+	list, err := d.ListHeraOrchestrators(true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(list), 0)
+	// The role row was NOT hard-deleted (FK cascade would be a delete) — id lookup
+	// still returns it (its orchestrator is nuked, so the rail won't render it).
+	gotRole, err := d.HeraRole(role.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, gotRole != nil, true)
+}
+
+// TestOps_MultiBindingIsolation verifies nuking role R in orchestrator A leaves
+// the SAME task's role in orchestrator B live (distinct role rows).
 func TestOps_MultiBindingIsolation(t *testing.T) {
 	d := memDB(t)
 	a := seedOrch(t, d, "A")
@@ -229,14 +252,18 @@ func TestOps_MultiBindingIsolation(t *testing.T) {
 	testutil.NoError(t, err)
 
 	ops := NewOps(d)
-	testutil.NoError(t, ops.DeleteRole(roleA.ID))
+	rvA := &RoleView{RoleID: roleA.ID, OrchID: a, Name: roleA.Name, Kind: db.HeraKindWorker, TaskID: "shared", Live: true}
+	testutil.NoError(t, ops.NukeRole(rvA))
 
-	// Role in A gone; role in B (same task) untouched.
-	_, err = d.HeraRole(roleA.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	// Role in A nuked (invisible to A's list); role in B (same task) untouched + live.
+	listA, err := d.ListHeraRoles(a, true)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(listA), 0)
 	gotB, err := d.HeraRole(roleB.ID)
 	testutil.NoError(t, err)
 	testutil.Equal(t, gotB.OrchestratorID, b)
+	_, err = d.HeraLiveBindingByRole(roleB.ID)
+	testutil.NoError(t, err) // B's binding to the shared task survives
 }
 
 func TestOps_EmptySelectionNoTarget(t *testing.T) {
@@ -245,57 +272,5 @@ func TestOps_EmptySelectionNoTarget(t *testing.T) {
 	testutil.ErrorIs(t, ops.ArchiveToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.PinToggle(Selection{}), errNoTarget)
 	testutil.ErrorIs(t, ops.Rename(Selection{}, "x"), errNoTarget)
-	testutil.ErrorIs(t, ops.RetireRole(nil, true), errNoTarget)
-}
-
-// TestOps_RetireRole_SoleBound verifies retire sets status done, rolls the
-// worker task to in_review, ends the role's live binding, and archives the role.
-func TestOps_RetireRole_SoleBound(t *testing.T) {
-	d := memDB(t)
-	o := seedOrch(t, d, "o")
-	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
-	ops := NewOps(d)
-
-	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
-	testutil.NoError(t, ops.RetireRole(rv, true))
-
-	// Status is done.
-	st, err := d.HeraRoleStatusFor(role.ID)
-	testutil.NoError(t, err)
-	testutil.Equal(t, st.Status, db.HeraStatusDone)
-	// Binding ended (no live binding for the role).
-	_, err = d.HeraLiveBindingByRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
-	// Role archived.
-	got, err := d.HeraRole(role.ID)
-	testutil.NoError(t, err)
-	testutil.Equal(t, got.ArchivedAt != nil, true)
-	// Worker task rolled to in_review.
-	task, err := d.Get("t1")
-	testutil.NoError(t, err)
-	testutil.Equal(t, task.Status, model.StatusInReview)
-}
-
-// TestOps_RetireRole_MultiBoundDoesNotRoll verifies that with rollTask=false
-// (multi-bound) the task status is NOT changed, only this role's binding ends
-// and the role archives.
-func TestOps_RetireRole_MultiBoundDoesNotRoll(t *testing.T) {
-	d := memDB(t)
-	o := seedOrch(t, d, "o")
-	role := seedBoundRole(t, d, o, "w", db.HeraKindWorker, "t1")
-	ops := NewOps(d)
-
-	rv := &RoleView{RoleID: role.ID, OrchID: o, Name: role.Name, Kind: db.HeraKindWorker, TaskID: "t1", Live: true}
-	testutil.NoError(t, ops.RetireRole(rv, false))
-
-	// Task status unchanged (still in_progress from the seed).
-	task, err := d.Get("t1")
-	testutil.NoError(t, err)
-	testutil.Equal(t, task.Status, model.StatusInProgress)
-	// Role still archived + binding ended.
-	got, err := d.HeraRole(role.ID)
-	testutil.NoError(t, err)
-	testutil.Equal(t, got.ArchivedAt != nil, true)
-	_, err = d.HeraLiveBindingByRole(role.ID)
-	testutil.ErrorIs(t, err, db.ErrHeraNotFound)
+	testutil.ErrorIs(t, ops.NukeRole(nil), errNoTarget)
 }
