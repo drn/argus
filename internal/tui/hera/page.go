@@ -558,7 +558,16 @@ func (p *HeraPage) handleRailMutation(event *tcell.EventKey) bool {
 				p.OnReattach(sel)
 			}
 		}
-		p.focus.Advance()
+		// Land on the AGENT (right) terminal for a plain worker selection so the
+		// user can type into it immediately. For coordinators and worker-bridge
+		// sub-coordinators (detailsMode) the right region is the Details summary,
+		// not a live terminal — advance to the COORD (middle) pane instead.
+		// The empty-rail case (sel.Orch == nil) also advances to coord.
+		if !p.detailsMode && sel.Orch != nil {
+			p.focus.SetRegion(FocusAgent)
+		} else {
+			p.focus.Advance()
+		}
 		return true
 	case tcell.KeyRune:
 		switch event.Rune() {
