@@ -267,10 +267,40 @@ func (d *DB) HeraBlockersOf(blockedRoleID int64) ([]int64, error) {
 // deterministically ordered by blocked then blocker role id, and excludes edges
 // whose endpoints are archived or nuked roles (consistent with how the view
 // filters roles).
-//
-// Stage 2 implements this.
 func (d *DB) ListHeraBlocks(orchID int64) ([]HeraBlock, error) {
-	return nil, errors.New("not implemented: Stage 2")
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	// Join both endpoints to hera_roles so we can scope to the orchestrator and
+	// drop any edge whose blocked OR blocker role is archived/nuked — the same
+	// archived_at IS NULL / nuked_at IS NULL filter the role list applies. Both
+	// endpoints must belong to orchID (a cross-orchestrator edge cannot exist per
+	// AddHeraBlock's guard, but scoping on both is defensive and free).
+	// created_at is intentionally omitted from the projection — the plan view
+	// consumes only the (blocked, blocker) endpoints, so HeraBlock.CreatedAt stays
+	// zero here (mirroring HeraBlockersOf, which returns ids alone).
+	rows, err := d.conn.Query(
+		`SELECT bl.blocked_role_id, bl.blocker_role_id
+		 FROM hera_blocks bl
+		 JOIN hera_roles blocked ON blocked.id = bl.blocked_role_id
+		 JOIN hera_roles blocker ON blocker.id = bl.blocker_role_id
+		 WHERE blocked.orchestrator_id=? AND blocker.orchestrator_id=?
+		   AND blocked.archived_at IS NULL AND blocked.nuked_at IS NULL
+		   AND blocker.archived_at IS NULL AND blocker.nuked_at IS NULL
+		 ORDER BY bl.blocked_role_id ASC, bl.blocker_role_id ASC`,
+		orchID, orchID)
+	if err != nil {
+		return nil, fmt.Errorf("list hera blocks: %w", err)
+	}
+	defer rows.Close()
+	var out []HeraBlock
+	for rows.Next() {
+		var b HeraBlock
+		if err := rows.Scan(&b.BlockedRoleID, &b.BlockerRoleID); err != nil {
+			return nil, fmt.Errorf("list hera blocks scan: %w", err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // HeraPlannedNode is a worker role with no binding ever (a planned node), joined

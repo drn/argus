@@ -66,6 +66,11 @@ type RoleView struct {
 	// NOT planned. Stage 2/3 populates this in buildRoleView.
 	Planned bool
 
+	// Prompt is the role's verbatim delivery prompt (persisted on the hera role at
+	// plan/spawn time). The plan view's master-detail header shows its first line
+	// as the node Description (D9). Empty when the role carries no prompt.
+	Prompt string
+
 	// The following fields feed the coordinator Details metadata block
 	// (deriveCoordMeta). They are additive projection inputs read straight from
 	// the hera store at BuildModel time, so the Details pane stays a pure
@@ -624,6 +629,15 @@ func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 		if err != nil {
 			return Model{}, err
 		}
+		// Plan-DAG edges: one bulk read per orchestrator (D8). A read error is
+		// non-fatal — the plan view just renders nodes with no dependency edges
+		// (the degenerate flat-stage shape), so log and continue rather than abort
+		// the whole rebuild for a missing edge table or transient error.
+		if blocks, berr := r.ListHeraBlocks(o.ID); berr == nil {
+			ov.Blocks = blocks
+		} else {
+			uxlog.Log("[hera-view] list hera blocks failed for orch %d, rendering edgeless: %v", o.ID, berr)
+		}
 		for _, role := range roles {
 			// Same Tier-2 guard for roles — a nuked role never renders.
 			if role.NukedAt != nil {
@@ -730,6 +744,7 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		Archived:     role.ArchivedAt != nil,
 		CreatedAt:    role.CreatedAt,
 		ArgusProject: role.ArgusProject,
+		Prompt:       role.Prompt,
 	}
 	if b := roleToBinding[role.ID]; b != nil {
 		taskID := b.ArgusTaskID
@@ -787,5 +802,10 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		// than aborting the whole rebuild for one role.
 		rv.HasStatus = false
 	}
+	// Planned discriminator (D7): a worker-kind role with no live binding and no
+	// binding EVER (BridgeTaskID is the latest-binding key, "" when never bound).
+	// A bound-but-finished role keeps Live==false but carries a BridgeTaskID, so it
+	// is NOT planned — the gater never re-materializes it.
+	rv.Planned = role.Kind == db.HeraKindWorker && !rv.Live && rv.BridgeTaskID == ""
 	return rv
 }

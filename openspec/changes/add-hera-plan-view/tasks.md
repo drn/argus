@@ -14,10 +14,10 @@
 
 **Depends on:** Stage 1
 
-- [ ] 2.1 Implement `db.ListHeraBlocks(orchID) ([]HeraBlock, error)` in `internal/db/hera_plan.go` (single query, deterministic order, archived/nuked-endpoint exclusion)
-- [ ] 2.2 Add `ListHeraBlocks` to the `HeraReader` interface (`internal/tui/hera/reader.go`); `*db.DB` satisfies it, remote nil-reader degrades unchanged
-- [ ] 2.3 Add `RoleView.Planned` (worker-kind, `!Live`, never-bound) and `OrchView.Blocks []db.HeraBlock`; populate in `BuildModel`/`buildRoleView` (one edge read per build)
-- [ ] 2.4 Write `heraPlanNodes(orch *OrchView) ([]planview.Node, []planview.Edge)` — pure in-memory projection over the built model (parallel to the retired `heraTreeNodes`)
+- [x] 2.1 Implement `db.ListHeraBlocks(orchID) ([]HeraBlock, error)` in `internal/db/hera_plan.go` (single query, deterministic order, archived/nuked-endpoint exclusion)
+- [x] 2.2 Add `ListHeraBlocks` to the `HeraReader` interface (`internal/tui/hera/reader.go`); `*db.DB` satisfies it, remote nil-reader degrades unchanged
+- [x] 2.3 Add `RoleView.Planned` (worker-kind, `!Live`, never-bound) and `OrchView.Blocks []db.HeraBlock`; populate in `BuildModel`/`buildRoleView` (one edge read per build)
+- [x] 2.4 Write `heraPlanNodes(orch *OrchView) ([]planview.Node, []planview.Edge)` — pure in-memory projection over the built model (parallel to the retired `heraTreeNodes`)
 
 ## 3. planview widget — layout + render
 
