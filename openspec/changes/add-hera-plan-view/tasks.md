@@ -23,11 +23,11 @@
 
 **Depends on:** Stage 1
 
-- [ ] 3.1 Create `internal/tui/planview` with `Node`/`Edge` types and a `Widget` (bordered panel, branch-change contract, theme palette), importing `dagview`'s layer-assignment math for stage placement
-- [ ] 3.2 Short-id parse (`name` prefix → stage digits + member letters) with truncated-name fallback
-- [ ] 3.3 Parallel-group detection (same stage, shared blocker set, no internal edges) + collapse to `[first–last]` / `[first–last +N]` with aggregate state counts
-- [ ] 3.4 Render: chips with state glyph/colour (planned violet `○`, live by task status, failed red `✕`), single-line edges, partial-dep `↘` on box and feeding member
-- [ ] 3.5 Degenerate no-plan render: live roles as one flat edgeless stage with a "no plan" hint
+- [x] 3.1 Create `internal/tui/planview` with `Node`/`Edge` types and a `Widget` (bordered panel, branch-change contract, theme palette), importing `dagview`'s layer-assignment math for stage placement
+- [x] 3.2 Short-id parse (`name` prefix → stage digits + member letters) with truncated-name fallback
+- [x] 3.3 Parallel-group detection (same stage, shared blocker set, no internal edges) + collapse to `[first–last]` / `[first–last +N]` with aggregate state counts
+- [x] 3.4 Render: chips with state glyph/colour (planned violet `○`, live by task status, failed red `✕`), single-line edges, partial-dep `↘` on box and feeding member
+- [x] 3.5 Degenerate no-plan render: live roles as one flat edgeless stage with a "no plan" hint
 
 ## 4. planview widget — navigation
 

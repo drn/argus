@@ -6,13 +6,23 @@
 // Hera Details pane and reuses dagview's Kahn longest-path layer math for stage
 // placement. See openspec/changes/add-hera-plan-view/design.md.
 //
-// Stage 1 (this commit) defines the API surface. Production functions are
-// signature-only stubs returning zero values (so the package compiles and the
-// Stage-1 tests fail on assertions — true Red); Stages 3–6 implement the
-// layout, render, navigation, header, and drill-in logic.
+// Stage 3 (layout + render) is implemented here: short-id parse + fallback,
+// edge-driven stage placement (via dagview.Compute), parallel-group detection
+// and collapse, chip glyph/colour, the partial-dependency marker, and the
+// degenerate no-plan flat stage. The (stage, slot, member) cursor navigation
+// (Stage 4), the master-detail header (Stage 5), and sub-coordinator drill-in
+// (Stage 6) remain signature-only stubs.
 package planview
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/drn/argus/internal/tui/dagview"
+	"github.com/drn/argus/internal/tui/theme"
+	"github.com/drn/argus/internal/tui/widget"
+	"github.com/drn/argus/internal/uxlog"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -39,9 +49,46 @@ const (
 )
 
 // Glyph returns the one-rune state indicator drawn inside a chip.
-//
-// Stage 3 implements this.
-func (s State) Glyph() rune { return ' ' }
+func (s State) Glyph() rune {
+	switch s {
+	case StateDone:
+		return '✓'
+	case StateWorking:
+		return '⟳'
+	case StateInReview:
+		return '◔'
+	case StateFailed:
+		return '✕'
+	case StatePending:
+		return '·'
+	default: // StatePlanned
+		return '○'
+	}
+}
+
+// style yields the tcell.Style for a state (D7 palette). Reuses the theme
+// colours where they line up with the artifact; planned is violet.
+func (s State) style() tcell.Style {
+	base := tcell.StyleDefault
+	switch s {
+	case StateDone:
+		return base.Foreground(theme.ColorComplete)
+	case StateWorking:
+		return base.Foreground(theme.ColorInProgress)
+	case StateInReview:
+		return base.Foreground(theme.ColorInReview)
+	case StateFailed:
+		return base.Foreground(theme.ColorError).Bold(true)
+	case StatePending:
+		return base.Foreground(theme.ColorPending)
+	default: // StatePlanned — violet
+		return base.Foreground(colorPlanned)
+	}
+}
+
+// colorPlanned is the violet planned-node colour (matches the PR-awaiting
+// purple already in the palette so the TUI keeps one violet vocabulary).
+var colorPlanned = theme.ColorPRAwaiting
 
 // Node is the input projection for one plan node. Name is the full role name
 // (the short-id is parsed from its prefix at layout time, D3); ID is the stable
@@ -85,13 +132,58 @@ type ShortID struct {
 	OK     bool   // true when the prefix parsed as <digits><letters>
 }
 
+// fallbackLabelRunes caps the truncated-name fallback label width (rune count).
+const fallbackLabelRunes = 12
+
 // ParseShortID parses a role name's short-id prefix (`2c-fact-checker` → {Stage:2,
 // Member:"c", Label:"2c", OK:true}). A name with no parseable prefix yields a
 // truncated-name Label with OK false. The short-id is presentation only; it
 // never drives layout (D3).
-//
-// Stage 3 implements this.
-func ParseShortID(name string) ShortID { return ShortID{} }
+func ParseShortID(name string) ShortID {
+	// The short-id is the prefix up to the first '-'.
+	prefix := name
+	if i := strings.IndexByte(name, '-'); i >= 0 {
+		prefix = name[:i]
+	}
+	// A valid short-id is <digits><letters>: leading ASCII digits then trailing
+	// ASCII letters, nothing else.
+	digits, letters := 0, 0
+	for digits < len(prefix) && prefix[digits] >= '0' && prefix[digits] <= '9' {
+		digits++
+	}
+	for i := digits; i < len(prefix); i++ {
+		c := prefix[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			letters++
+			continue
+		}
+		// A non-letter after the digits disqualifies the prefix.
+		letters = -1
+		break
+	}
+	if digits == 0 || letters <= 0 || digits+letters != len(prefix) {
+		return ShortID{Label: truncateLabel(name), OK: false}
+	}
+	stage := 0
+	for i := 0; i < digits; i++ {
+		stage = stage*10 + int(prefix[i]-'0')
+	}
+	member := prefix[digits:]
+	return ShortID{Stage: stage, Member: member, Label: prefix, OK: true}
+}
+
+// truncateLabel clamps a fallback label to fallbackLabelRunes runes (rune-aware
+// so multibyte names don't over-truncate), appending an ellipsis when clipped.
+func truncateLabel(name string) string {
+	r := []rune(name)
+	if len(r) <= fallbackLabelRunes {
+		return name
+	}
+	if fallbackLabelRunes <= 1 {
+		return string(r[:fallbackLabelRunes])
+	}
+	return string(r[:fallbackLabelRunes-1]) + "…"
+}
 
 // Group is a collapsed parallel group: a maximal set of same-stage nodes that
 // share a blocker set and have no internal edges (D4). It renders as a range
@@ -112,6 +204,13 @@ type Group struct {
 	// FeedingMember is the node ID of the single downstream-feeding member when
 	// PartialFeed (the chip that carries ↘ on fan-out).
 	FeedingMember string
+}
+
+// slot is one rendered column in a stage: either a single lone node (group nil,
+// nodeID set) or a collapsed parallel group (group set, nodeID "").
+type slot struct {
+	nodeID string // set when the slot is a lone node
+	group  *Group // set when the slot is a collapsed group
 }
 
 // Widget renders the plan DAG in a bordered panel with a master-detail header
@@ -136,78 +235,387 @@ type Widget struct {
 	// (node/edge/stage count, cursor, fanned group, or current orchestrator).
 	// Log-only (no Sync), mirroring dagview's contract.
 	OnBranchChange func()
+
+	// nodes is the current snapshot keyed by ID.
+	nodes   map[string]Node
+	order   []string // node IDs in projection order (deterministic)
+	edges   []Edge
+	stageOf map[string]int // computed longest-path stage per node ID
+	labelOf map[string]string
+	stages  [][]slot // stages[stage] = ordered slots
+	noPlan  bool
+	title   string
+	focused bool
+
+	lastShape uint64
 }
 
 // New constructs an empty plan-view widget. SetData must be called before the
 // widget is meaningful.
-//
-// Stage 3 implements this; the Stage-1 stub returns a Box-backed shell so the
-// nav/header/drill-in tests can construct and drive it (and fail on assertions).
 func New() *Widget {
-	return &Widget{Box: tview.NewBox()}
+	return &Widget{
+		Box:     tview.NewBox(),
+		nodes:   map[string]Node{},
+		stageOf: map[string]int{},
+		labelOf: map[string]string{},
+		title:   " Plan ",
+	}
 }
 
 // SetTitle overrides the bordered-panel title (the Hera Details pane sets it to
 // " Plan "). Pass "" to suppress the title text.
-//
-// Stage 3 implements this.
-func (w *Widget) SetTitle(string) {}
+func (w *Widget) SetTitle(title string) { w.title = title }
 
 // SetData installs a new plan snapshot: the node set plus the blocking edges.
 // Recomputes the stage layout (Kahn longest-path over the edges, D3), detects
 // parallel groups (D4), and clamps the cursor to the new node set.
-//
-// Stage 3 implements this.
-func (w *Widget) SetData([]Node, []Edge) {}
+func (w *Widget) SetData(nodes []Node, edges []Edge) {
+	w.nodes = make(map[string]Node, len(nodes))
+	w.order = w.order[:0]
+	for _, n := range nodes {
+		w.nodes[n.ID] = n
+		w.order = append(w.order, n.ID)
+	}
+	w.edges = edges
 
-// Title returns the bordered-panel title for the currently-displayed
-// orchestrator (e.g. "Details ▸ <orch> · Plan" when drilled in, D6).
-//
-// Stage 3/6 implements this.
-func (w *Widget) Title() string { return "" }
+	// No plan authored: no planned nodes and no edges (D1). Render every node as
+	// one flat edgeless stage.
+	w.noPlan = !hasPlan(nodes, edges)
 
-// SetFocused toggles keyboard focus (the cursor renders more prominently when
-// the widget owns focus).
-//
-// Stage 3 implements this.
-func (w *Widget) SetFocused(bool) {}
+	w.computeStages(nodes, edges)
+	w.computeLabels(nodes)
+	w.buildSlots(nodes, edges)
+
+	uxlog.Log("[planview] SetData: nodes=%d edges=%d stages=%d noPlan=%v",
+		len(nodes), len(edges), len(w.stages), w.noPlan)
+	w.maybeNotifyBranchChange()
+}
+
+// hasPlan reports whether a snapshot has an authored plan: any planned node or
+// any blocking edge. The degenerate case (no plan) is its negation (D1).
+func hasPlan(nodes []Node, edges []Edge) bool {
+	if len(edges) > 0 {
+		return true
+	}
+	for _, n := range nodes {
+		if n.Planned {
+			return true
+		}
+	}
+	return false
+}
+
+// computeStages assigns each node its computed longest-path stage. When no plan
+// is authored every node collapses to stage 0 (D1); otherwise stages come from
+// dagview's Kahn longest-path layering over the blocking edges (D3).
+func (w *Widget) computeStages(nodes []Node, edges []Edge) {
+	w.stageOf = make(map[string]int, len(nodes))
+	if w.noPlan {
+		for _, n := range nodes {
+			w.stageOf[n.ID] = 0
+		}
+		return
+	}
+	// Build dagview Nodes with DependsOn = blockers (To depends on From).
+	blockers := make(map[string][]string, len(nodes))
+	for _, e := range edges {
+		blockers[e.To] = append(blockers[e.To], e.From)
+	}
+	dn := make([]dagview.Node, 0, len(nodes))
+	for _, n := range nodes {
+		dn = append(dn, dagview.Node{ID: n.ID, Name: n.Name, DependsOn: blockers[n.ID]})
+	}
+	layout := dagview.Compute(dn)
+	for _, p := range layout.Nodes {
+		w.stageOf[p.ID] = p.Layer
+	}
+}
+
+// computeLabels caches each node's chip label: its short-id, or the truncated
+// name fallback (D3); drillable nodes carry a ▸ marker (D6) so the gesture is
+// discoverable even at Stage 3 render time.
+func (w *Widget) computeLabels(nodes []Node) {
+	w.labelOf = make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		label := ParseShortID(n.Name).Label
+		if n.Drillable {
+			label += "▸"
+		}
+		w.labelOf[n.ID] = label
+	}
+}
 
 // Stages returns the number of computed stages (longest-path layers) in the
 // current layout. 0 when empty.
-//
-// Stage 3 implements this.
-func (w *Widget) Stages() int { return 0 }
+func (w *Widget) Stages() int { return len(w.stages) }
 
 // NoPlan reports whether the current snapshot has no plan authored (no planned
 // nodes and no edges) — the degenerate flat-single-stage render (D1).
-//
-// Stage 3 implements this.
-func (w *Widget) NoPlan() bool { return false }
+func (w *Widget) NoPlan() bool { return w.noPlan }
 
 // StageOf returns the computed longest-path stage of a node by ID, and whether
 // the node is present. Layout truth (edge-driven), independent of the short-id
 // number (D3).
-//
-// Stage 3 implements this.
-func (w *Widget) StageOf(id string) (int, bool) { return 0, false }
+func (w *Widget) StageOf(id string) (int, bool) {
+	s, ok := w.stageOf[id]
+	return s, ok
+}
 
 // LabelOf returns the rendered chip label for a node by ID (its short-id, or
 // the truncated-name fallback). Empty when the node is absent.
-//
-// Stage 3 implements this.
-func (w *Widget) LabelOf(id string) string { return "" }
+func (w *Widget) LabelOf(id string) string { return w.labelOf[id] }
 
 // GroupAt returns the collapsed parallel group occupying (stage, slot), and
 // whether that slot is a group (vs a lone node).
-//
-// Stage 3 implements this.
-func (w *Widget) GroupAt(stage, slot int) (Group, bool) { return Group{}, false }
+func (w *Widget) GroupAt(stage, slot int) (Group, bool) {
+	if stage < 0 || stage >= len(w.stages) {
+		return Group{}, false
+	}
+	st := w.stages[stage]
+	if slot < 0 || slot >= len(st) {
+		return Group{}, false
+	}
+	if st[slot].group == nil {
+		return Group{}, false
+	}
+	return *st[slot].group, true
+}
 
 // SlotCount returns the number of slots (lone nodes + collapsed groups) in a
 // stage.
-//
-// Stage 3 implements this.
-func (w *Widget) SlotCount(stage int) int { return 0 }
+func (w *Widget) SlotCount(stage int) int {
+	if stage < 0 || stage >= len(w.stages) {
+		return 0
+	}
+	return len(w.stages[stage])
+}
+
+// SetFocused toggles keyboard focus (the cursor renders more prominently when
+// the widget owns focus).
+func (w *Widget) SetFocused(f bool) {
+	if w.focused == f {
+		return
+	}
+	w.focused = f
+	w.maybeNotifyBranchChange()
+}
+
+// Title returns the bordered-panel title for the currently-displayed
+// orchestrator (Stage 6 reflects drill-in here).
+func (w *Widget) Title() string { return w.title }
+
+// buildSlots groups each stage's nodes into slots: maximal parallel groups
+// collapse to one slot, everything else is a lone-node slot (D4).
+func (w *Widget) buildSlots(nodes []Node, edges []Edge) {
+	if len(nodes) == 0 {
+		w.stages = nil
+		return
+	}
+	total := 0
+	for _, s := range w.stageOf {
+		if s+1 > total {
+			total = s + 1
+		}
+	}
+	// Blocker set per node (sorted for stable comparison) and the internal-edge
+	// adjacency used to forbid edges inside a group.
+	blockerSet := make(map[string][]string, len(nodes))
+	for _, e := range edges {
+		blockerSet[e.To] = append(blockerSet[e.To], e.From)
+	}
+	for id := range blockerSet {
+		sort.Strings(blockerSet[id])
+	}
+	// internalEdge[a][b] true when an edge connects a and b (either direction);
+	// members of a group must have no edges among themselves.
+	connected := make(map[string]map[string]bool, len(nodes))
+	for _, e := range edges {
+		if connected[e.From] == nil {
+			connected[e.From] = map[string]bool{}
+		}
+		if connected[e.To] == nil {
+			connected[e.To] = map[string]bool{}
+		}
+		connected[e.From][e.To] = true
+		connected[e.To][e.From] = true
+	}
+
+	byStage := make([][]string, total)
+	for _, n := range nodes {
+		s := w.stageOf[n.ID]
+		byStage[s] = append(byStage[s], n.ID)
+	}
+
+	w.stages = make([][]slot, total)
+	for s := 0; s < total; s++ {
+		ids := byStage[s]
+		w.sortByShortID(ids)
+		if w.noPlan {
+			// Degenerate case (D1): live roles render as one flat edgeless stage
+			// of individual chips — never collapsed into a group.
+			lone := make([]slot, 0, len(ids))
+			for _, id := range ids {
+				lone = append(lone, slot{nodeID: id})
+			}
+			w.stages[s] = lone
+			continue
+		}
+		w.stages[s] = w.slotsForStage(ids, blockerSet, connected, edges)
+	}
+}
+
+// slotsForStage partitions a stage's node IDs into slots. A maximal set of nodes
+// sharing the same blocker set with no internal edges collapses into one group
+// slot; everything else is a lone-node slot. A single-node group is not a group.
+func (w *Widget) slotsForStage(ids []string, blockerSet map[string][]string, connected map[string]map[string]bool, edges []Edge) []slot {
+	// Partition by identical blocker-set key.
+	keyOf := func(id string) string { return strings.Join(blockerSet[id], "\x00") }
+	byKey := map[string][]string{}
+	var keyOrder []string
+	for _, id := range ids {
+		k := keyOf(id)
+		if _, seen := byKey[k]; !seen {
+			keyOrder = append(keyOrder, k)
+		}
+		byKey[k] = append(byKey[k], id)
+	}
+	var out []slot
+	for _, k := range keyOrder {
+		members := byKey[k]
+		// A clean group needs ≥2 members with no edges among themselves.
+		if len(members) >= 2 && noInternalEdges(members, connected) {
+			out = append(out, slot{group: w.buildGroup(members, edges)})
+			continue
+		}
+		// Otherwise each member is its own lone-node slot.
+		for _, id := range members {
+			out = append(out, slot{nodeID: id})
+		}
+	}
+	return out
+}
+
+// noInternalEdges reports whether no edge connects any two members.
+func noInternalEdges(members []string, connected map[string]map[string]bool) bool {
+	set := make(map[string]bool, len(members))
+	for _, m := range members {
+		set[m] = true
+	}
+	for _, m := range members {
+		for nb := range connected[m] {
+			if set[nb] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// buildGroup collapses members into a Group: range-box label, aggregate state
+// counts, and the partial-feed marker (D4/D5). Members are already short-id
+// sorted by the caller.
+func (w *Widget) buildGroup(members []string, edges []Edge) *Group {
+	g := &Group{Members: append([]string(nil), members...), Counts: map[State]int{}}
+	g.Stage = w.stageOf[members[0]]
+	for _, m := range members {
+		g.Counts[w.nodes[m].State]++
+	}
+	g.Label = w.groupLabel(members)
+
+	// Partial-feed (D5): a downstream-feeding member is one with an outgoing
+	// edge to a node outside this group's stage (a later stage). If only some
+	// members feed downstream, mark the group and record the single feeder.
+	memberSet := make(map[string]bool, len(members))
+	for _, m := range members {
+		memberSet[m] = true
+	}
+	var feeders []string
+	for _, m := range members {
+		for _, e := range edges {
+			if e.From == m && !memberSet[e.To] {
+				feeders = append(feeders, m)
+				break
+			}
+		}
+	}
+	if len(feeders) > 0 && len(feeders) < len(members) {
+		g.PartialFeed = true
+		g.FeedingMember = feeders[0]
+		// The ↘ goes inside the box per the spec ("[2a–2c ↘]").
+		g.Label = bracketWithMarker(g.Label)
+	}
+	return g
+}
+
+// groupLabel renders the [first–last] / [first–last +N] range box label (D4).
+// N counts members beyond the two span endpoints when the labels are
+// non-contiguous (a gap exists between first and last in the member sequence).
+func (w *Widget) groupLabel(members []string) string {
+	if len(members) == 0 {
+		return "[]"
+	}
+	first := w.LabelOf(members[0])
+	last := w.LabelOf(members[len(members)-1])
+	extra := len(members) - 2 // members beyond the two endpoints
+	if extra > 0 && !contiguous(members, w) {
+		return fmt.Sprintf("[%s–%s +%d]", first, last, extra)
+	}
+	return fmt.Sprintf("[%s–%s]", first, last)
+}
+
+// bracketWithMarker inserts the ↘ inside the closing bracket of a range-box
+// label, e.g. "[2a–2c]" → "[2a–2c ↘]" / "[2a–2f +1]" → "[2a–2f +1 ↘]".
+func bracketWithMarker(label string) string {
+	if strings.HasSuffix(label, "]") {
+		return label[:len(label)-1] + " ↘]"
+	}
+	return label + " ↘"
+}
+
+// contiguous reports whether the members' parsed short-id members form a
+// contiguous run within their shared stage (e.g. a,b,c is contiguous; a,b,f is
+// not). Members with unparseable short-ids are treated as non-contiguous so the
+// +N count surfaces them honestly.
+func contiguous(members []string, w *Widget) bool {
+	if len(members) <= 1 {
+		return true
+	}
+	// Build the single-letter member sequence; multi-letter or unparseable
+	// members force non-contiguous (we can't prove a clean run).
+	letters := make([]rune, 0, len(members))
+	for _, id := range members {
+		sid := ParseShortID(w.nodes[id].Name)
+		if !sid.OK || len([]rune(sid.Member)) != 1 {
+			return false
+		}
+		letters = append(letters, []rune(sid.Member)[0])
+	}
+	for i := 1; i < len(letters); i++ {
+		if letters[i] != letters[i-1]+1 {
+			return false
+		}
+	}
+	return true
+}
+
+// sortByShortID orders a stage's node IDs by parsed short-id (stage then
+// member), falling back to the raw name for unparseable ids, so groups and
+// chips render left-to-right in a stable, human order.
+func (w *Widget) sortByShortID(ids []string) {
+	sort.SliceStable(ids, func(i, j int) bool {
+		a := ParseShortID(w.nodes[ids[i]].Name)
+		b := ParseShortID(w.nodes[ids[j]].Name)
+		if a.OK && b.OK {
+			if a.Stage != b.Stage {
+				return a.Stage < b.Stage
+			}
+			if a.Member != b.Member {
+				return a.Member < b.Member
+			}
+		}
+		return w.nodes[ids[i]].Name < w.nodes[ids[j]].Name
+	})
+}
 
 // --- Navigation (Stage 4) ---
 
@@ -296,9 +704,87 @@ func (w *Widget) HeaderHeight() int { return 0 }
 
 // Draw paints the master-detail header strip then the plan diagram inside a
 // bordered panel. No screen.Sync (CLAUDE.md UX-rendering rules).
-//
-// Stage 3 implements this.
-func (w *Widget) Draw(screen tcell.Screen) { w.DrawForSubclass(screen, w) }
+func (w *Widget) Draw(screen tcell.Screen) {
+	w.DrawForSubclass(screen, w)
+	x, y, wpx, hpx := w.GetInnerRect()
+	if wpx <= 0 || hpx <= 0 {
+		return
+	}
+	borderStyle := theme.StyleBorder
+	if w.focused {
+		borderStyle = theme.StyleFocusedBorder
+	}
+	inner := widget.DrawBorderedPanel(screen, x, y, wpx, hpx, w.title, borderStyle)
+	if inner.W <= 0 || inner.H <= 0 {
+		return
+	}
+	if len(w.stages) == 0 {
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "No plan — spawn a worker under this coordinator.", theme.StyleDimmed)
+		return
+	}
+	if w.noPlan {
+		widget.DrawText(screen, inner.X, inner.Y, inner.W, "no plan authored — live roles:", theme.StyleDimmed)
+	}
+	w.drawStages(screen, inner)
+}
+
+// drawStages paints each stage as a row of chips/group boxes with single-line
+// vertical edges between consecutive stages.
+func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
+	row := inner.Y
+	if w.noPlan {
+		row++ // leave the hint line above the flat stage
+	}
+	for s := 0; s < len(w.stages); s++ {
+		col := inner.X
+		for _, sl := range w.stages[s] {
+			label, st := w.slotChip(sl)
+			runes := []rune(label)
+			for i, r := range runes {
+				if col+i >= inner.X+inner.W {
+					break
+				}
+				screen.SetContent(col+i, row, r, nil, st)
+			}
+			col += len(runes) + 2 // chip gap
+			if col >= inner.X+inner.W {
+				break
+			}
+		}
+		// Single-line edge connector between stages (cosmetic).
+		if s < len(w.stages)-1 && row+1 < inner.Y+inner.H {
+			screen.SetContent(inner.X, row+1, '│', nil, theme.StyleDimmed.Foreground(theme.ColorBorder))
+		}
+		row += 2
+		if row >= inner.Y+inner.H {
+			break
+		}
+	}
+}
+
+// slotChip returns a slot's rendered label + style: a glyph+short-id chip for a
+// lone node, or the range-box label for a collapsed group (with its aggregate
+// counts appended).
+func (w *Widget) slotChip(sl slot) (string, tcell.Style) {
+	if sl.group != nil {
+		return sl.group.Label + " " + groupCounts(sl.group), tcell.StyleDefault.Foreground(theme.ColorNormal)
+	}
+	n := w.nodes[sl.nodeID]
+	return string(n.State.Glyph()) + " " + w.LabelOf(sl.nodeID), n.State.style()
+}
+
+// groupCounts renders the aggregate per-state counts for a collapsed group box,
+// e.g. "3 ✓ · 2 ⟳ · 1 ○". States with a zero count are omitted; the order
+// follows the State enum for stability.
+func groupCounts(g *Group) string {
+	var parts []string
+	for _, s := range []State{StateDone, StateInReview, StateWorking, StatePending, StateFailed, StatePlanned} {
+		if c := g.Counts[s]; c > 0 {
+			parts = append(parts, fmt.Sprintf("%d %c", c, s.Glyph()))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
 
 // InputHandler routes the 4-way navigation (↑↓ stage, ←→ slot/member),
 // Enter/Space (fan-out/collapse, drill-in, or jump), and Esc (drill-out).
@@ -318,8 +804,34 @@ func (w *Widget) MouseHandler() func(tview.MouseAction, *tcell.EventMouse, func(
 }
 
 // PasteHandler is a no-op (the plan view is read-only navigation).
-//
-// Stage 4 implements this.
 func (w *Widget) PasteHandler() func(string, func(tview.Primitive)) {
 	return w.WrapPasteHandler(func(string, func(tview.Primitive)) {})
+}
+
+// branchShape captures the parts of state that, when changed, mean Draw would
+// paint a structurally different cell set. Folds in node/edge/stage counts, the
+// focus flag, and (Stage 4) the cursor/fanned state. Log-only — no Sync.
+func (w *Widget) branchShape() uint64 {
+	var shape uint64
+	shape |= uint64(len(w.order) & 0xFFFFFF)
+	shape |= uint64(len(w.stages)&0xFF) << 24
+	shape |= uint64(len(w.edges)&0xFFF) << 32
+	if w.focused {
+		shape |= 1 << 44
+	}
+	if w.noPlan {
+		shape |= 1 << 45
+	}
+	return shape
+}
+
+func (w *Widget) maybeNotifyBranchChange() {
+	shape := w.branchShape()
+	if shape == w.lastShape {
+		return
+	}
+	w.lastShape = shape
+	if w.OnBranchChange != nil {
+		w.OnBranchChange()
+	}
 }
