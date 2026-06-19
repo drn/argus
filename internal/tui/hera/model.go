@@ -25,6 +25,23 @@ type RoleView struct {
 	Live         bool   // has a live binding
 	ReadyToClose bool   // bound task carries meta:hera.ready_to_close=true
 	Archived     bool   // role archived_at set
+	// NeedsInput is the role's OWN needs-input signal: its live binding's argus
+	// task is currently blocked on a user prompt per the SAME authoritative set
+	// the task list consumes (App.needsInputIDs — the idle-gated, sticky
+	// agent.DetectNeedsInput PTY-tail scan), threaded into BuildModel. Only a live
+	// role can be set (the set is keyed by live task IDs). Native Hera previously
+	// had NO per-role needs-input flag, so a worker genuinely blocked on a prompt
+	// did not even show "(?)" on itself; this restores that and feeds the rollup
+	// below (BUG-018).
+	NeedsInput bool
+	// SubtreeNeedsInput is the needs-input ROLLUP computed by BuildModel's
+	// post-pass: true when this role itself OR any descendant role in its
+	// orchestration subtree (transitively across BRIDGED sub-orchestrators) needs
+	// input. For a coordinator role it covers the whole orchestrator subtree; for
+	// a bridging worker row it covers the bridged child's subtree; for a leaf /
+	// freelance role it equals the role's own needs-input signal. statusIcon reads
+	// it (via ShowsNeedsInput) so it stays a pure projection (BUG-018).
+	SubtreeNeedsInput bool
 	// BridgeTaskID is the role's LATEST binding argus task regardless of liveness
 	// (== TaskID when Live). It is the STRUCTURAL nesting key: a worker bridges a
 	// child orchestrator when its BridgeTaskID equals that child's coordinator's
@@ -66,6 +83,23 @@ type RoleView struct {
 // are either not Live or no longer in_progress. See BUG-003.
 func (r *RoleView) IsActive() bool {
 	return r.Live && r.TaskStatus == model.StatusInProgress.String()
+}
+
+// needsInputOwn reports the role's OWN needs-input signal — what makes a LEAF
+// row render the "(?)" attention glyph: the authoritative per-task needs-input
+// flag (NeedsInput) OR the role's self-asserted hera `blocked` status. This is
+// the unit the BuildModel rollup aggregates over a subtree.
+func (r *RoleView) needsInputOwn() bool {
+	return r.NeedsInput || (r.HasStatus && r.Status == db.HeraStatusBlocked)
+}
+
+// ShowsNeedsInput reports whether this row renders the needs-input "(?)" glyph:
+// the BuildModel subtree rollup (SubtreeNeedsInput, which already folds in this
+// role's own signal) OR — as a safety net for hand-built RoleViews that never
+// ran BuildModel's post-pass — the role's own needs-input signal directly.
+// statusIcon reads this so it stays a pure projection (BUG-018).
+func (r *RoleView) ShowsNeedsInput() bool {
+	return r.SubtreeNeedsInput || r.needsInputOwn()
 }
 
 // OrchView is the render projection of one orchestrator and its non-freelance
@@ -501,7 +535,12 @@ func (s Selection) CoordTaskID() string {
 // Soft-fail discipline: a per-role status lookup that returns ErrHeraNotFound
 // is normal (no status row yet) and leaves Status zero. Any other read error
 // aborts and is returned so the caller can log it and keep the prior model.
-func BuildModel(r HeraReader) (Model, error) {
+// needsInput is the authoritative per-task needs-input set (the App's
+// needsInputIDs — the SAME idle-gated agent.DetectNeedsInput scan the task list
+// consumes), keyed by live argus task ID. nil/empty is fine (no role shows a
+// needs-input flag from this source; the self-asserted hera `blocked` status
+// still drives "(?)"). It feeds RoleView.NeedsInput and the subtree rollup.
+func BuildModel(r HeraReader, needsInput map[string]bool) (Model, error) {
 	var m Model
 	if r == nil {
 		return m, nil
@@ -567,7 +606,7 @@ func BuildModel(r HeraReader) (Model, error) {
 			return Model{}, err
 		}
 		for _, role := range roles {
-			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID)
+			rv := buildRoleView(r, role, roleToBinding, roleToLatest, heraMeta, taskByID, needsInput)
 			if role.Kind == db.HeraKindFreelance && role.ArchivedAt == nil && o.ArchivedAt == nil {
 				// Active freelance roles live in their own top-level section.
 				m.Freelance = append(m.Freelance, rv)
@@ -588,12 +627,78 @@ func BuildModel(r HeraReader) (Model, error) {
 	sort.SliceStable(m.Freelance, func(i, j int) bool {
 		return m.Freelance[i].Name < m.Freelance[j].Name
 	})
+
+	// Needs-input rollup: now that every OrchView/RoleView is assembled, stamp
+	// each role's SubtreeNeedsInput so the rail can project "(?)" up the tree.
+	m.rollupNeedsInput()
 	return m, nil
+}
+
+// rollupNeedsInput populates every role's SubtreeNeedsInput from the per-role
+// own needs-input signals already stamped on the assembled model. It runs as a
+// post-pass (after all orchestrators/roles are built) because the rollup crosses
+// BRIDGED sub-orchestrators, which only exist once the whole model is assembled.
+//
+// Two phases, no read-during-mutate hazard: phase 1 reads only the OWN signals
+// (needsInputOwn) to compute a per-orchestrator subtree rollup; phase 2 writes
+// only SubtreeNeedsInput. The traversal reuses BridgeSubtree (cycle-safe) so it
+// matches rail nesting and the Ctrl+D cascade exactly. See BUG-018.
+func (m *Model) rollupNeedsInput() {
+	// Phase 1: per-orchestrator subtree rollup (transitive across bridges).
+	subtree := make(map[int64]bool)
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			subtree[sec[i].ID] = m.orchSubtreeNeedsInput(sec[i].ID)
+		}
+	}
+	// Phase 2: stamp each role. A coordinator carries its orchestrator's whole
+	// subtree (it is itself in that subtree, so its own signal is included). A
+	// bridging worker row (a nested sub-coordinator) carries its bridged child's
+	// subtree OR'd with its own signal. Every other role (leaf worker) carries
+	// only its own signal.
+	bridge := m.bridgeIndex()
+	for _, sec := range [][]OrchView{m.Pinned, m.Active, m.Archived} {
+		for i := range sec {
+			o := &sec[i]
+			for j := range o.Roles {
+				rv := &o.Roles[j]
+				switch {
+				case rv.Kind == db.HeraKindCoordinator:
+					rv.SubtreeNeedsInput = subtree[o.ID]
+				case roleBridges(rv):
+					if c := bridge[bridgeTaskID(rv)]; c != nil && c.ID != o.ID {
+						rv.SubtreeNeedsInput = rv.needsInputOwn() || subtree[c.ID]
+						continue
+					}
+					rv.SubtreeNeedsInput = rv.needsInputOwn()
+				default:
+					rv.SubtreeNeedsInput = rv.needsInputOwn()
+				}
+			}
+		}
+	}
+	for i := range m.Freelance {
+		m.Freelance[i].SubtreeNeedsInput = m.Freelance[i].needsInputOwn()
+	}
+}
+
+// orchSubtreeNeedsInput reports whether any role in the orchestration subtree
+// rooted at orchID (inclusive, transitively across bridged sub-orchestrators)
+// has an OWN needs-input signal. Walks BridgeSubtree (cycle-safe visited set).
+func (m *Model) orchSubtreeNeedsInput(orchID int64) bool {
+	for _, o := range m.BridgeSubtree(orchID) {
+		for i := range o.Roles {
+			if o.Roles[i].needsInputOwn() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildRoleView projects one db.HeraRole into a RoleView, resolving its live
 // binding's task, status row, and ready_to_close flag.
-func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task) RoleView {
+func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.HeraBinding, roleToLatest map[int64]*db.HeraBinding, heraMeta map[string]map[string]string, taskByID map[string]*model.Task, needsInput map[string]bool) RoleView {
 	rv := RoleView{
 		RoleID:       role.ID,
 		OrchID:       role.OrchestratorID,
@@ -611,6 +716,10 @@ func buildRoleView(r HeraReader, role *db.HeraRole, roleToBinding map[int64]*db.
 		rv.BindingStartedAt = b.StartedAt
 		if kv := heraMeta[taskID]; kv != nil && kv[db.HeraMetaKeyReadyToClose] == "true" {
 			rv.ReadyToClose = true
+		}
+		// Own needs-input from the authoritative App-tick set (keyed by live task).
+		if needsInput[taskID] {
+			rv.NeedsInput = true
 		}
 		if t := taskByID[taskID]; t != nil {
 			rv.TaskStatus = t.Status.String()

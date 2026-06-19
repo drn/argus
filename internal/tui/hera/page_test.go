@@ -21,6 +21,33 @@ func TestHeraPage_LocalRefreshPopulatesRail(t *testing.T) {
 	testutil.Equal(t, p.Rail().Model().Active[0].Name, "orch")
 }
 
+// TestHeraPage_SetNeedsInputThreadsToModel proves the authoritative needs-input
+// set the App pushes each tick reaches BuildModel via doRefresh: a worker in the
+// set carries its own flag and the rollup reaches its coordinator; clearing the
+// set clears the flags on the next refresh (BUG-018).
+func TestHeraPage_SetNeedsInputThreadsToModel(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	p := NewHeraPage(d)
+	p.SetNeedsInput([]string{"t-wkr"})
+	p.Refresh()
+
+	m := p.Rail().Model()
+	o := m.OrchByID(orch)
+	testutil.Equal(t, o.CoordRole().SubtreeNeedsInput, true)
+	testutil.Equal(t, roleByName(t, &m, orch, "wkr").NeedsInput, true)
+
+	// Clearing the set clears the rollup on the next refresh (Refresh always
+	// rebuilds: Schedule fires when due, else the Flush forces the pending build).
+	p.SetNeedsInput(nil)
+	p.Refresh()
+	m2 := p.Rail().Model()
+	testutil.Equal(t, m2.OrchByID(orch).CoordRole().SubtreeNeedsInput, false)
+}
+
 func TestHeraPage_RemoteModeIsBannerOnly(t *testing.T) {
 	p := NewHeraPage(nil) // remote: no hera reader
 	testutil.Equal(t, p.IsRemote(), true)

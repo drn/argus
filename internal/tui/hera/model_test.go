@@ -47,7 +47,7 @@ func seedBoundRole(t *testing.T, d *db.DB, orchID int64, name string, kind db.He
 }
 
 func TestBuildModel_NilReaderEmpty(t *testing.T) {
-	m, err := BuildModel(nil)
+	m, err := BuildModel(nil, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, m.IsEmpty(), true)
 }
@@ -63,7 +63,7 @@ func TestBuildModel_PartitionsSections(t *testing.T) {
 	archID := seedOrch(t, d, "arch-orch")
 	testutil.NoError(t, d.ArchiveHeraOrchestrator(archID))
 
-	m, err := BuildModel(d)
+	m, err := BuildModel(d, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(m.Active), 1)
 	testutil.Equal(t, len(m.Pinned), 1)
@@ -92,7 +92,7 @@ func TestBuildModel_MultiBindingFanOut(t *testing.T) {
 	_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: roleB.ID, ArgusTaskID: sharedTask, WorktreePath: "/wt/b"})
 	testutil.NoError(t, err)
 
-	m, err := BuildModel(d)
+	m, err := BuildModel(d, nil)
 	testutil.NoError(t, err)
 	testutil.Equal(t, len(m.Active), 2)
 
@@ -115,7 +115,7 @@ func TestBuildModel_FreelanceHoisted(t *testing.T) {
 	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
 	seedBoundRole(t, d, orch, "free", db.HeraKindFreelance, "t-free")
 
-	m, err := BuildModel(d)
+	m, err := BuildModel(d, nil)
 	testutil.NoError(t, err)
 	// Coordinator stays under the orchestrator; freelance hoists out.
 	testutil.Equal(t, len(m.Active[0].Roles), 1)
@@ -132,7 +132,7 @@ func TestBuildModel_ReadyToCloseAndStatus(t *testing.T) {
 	testutil.NoError(t, d.SetMeta("t-rc", db.HeraMetaNamespace, db.HeraMetaKeyReadyToClose, "true"))
 	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking))
 
-	m, err := BuildModel(d)
+	m, err := BuildModel(d, nil)
 	testutil.NoError(t, err)
 	rv := m.Active[0].Roles[0]
 	testutil.Equal(t, rv.ReadyToClose, true)
@@ -147,7 +147,7 @@ func TestBuildModel_BridgeTaskID(t *testing.T) {
 	t.Run("live role: bridge equals live task", func(t *testing.T) {
 		role := seedBoundRole(t, d, orch, "live", db.HeraKindWorker, "t-live")
 		_ = role
-		m, err := BuildModel(d)
+		m, err := BuildModel(d, nil)
 		testutil.NoError(t, err)
 		var rv *RoleView
 		for i := range m.Active[0].Roles {
@@ -166,7 +166,7 @@ func TestBuildModel_BridgeTaskID(t *testing.T) {
 		testutil.NoError(t, err)
 		testutil.NoError(t, d.EndHeraBinding(bnd.ID, db.HeraEndReasonUserDeleted))
 
-		m, err := BuildModel(d)
+		m, err := BuildModel(d, nil)
 		testutil.NoError(t, err)
 		var rv *RoleView
 		for i := range m.Active[0].Roles {
@@ -326,7 +326,7 @@ func TestBuildModel_PopulatesDetailsFields(t *testing.T) {
 	role := seedBoundRole(t, d, orchID, "coord", db.HeraKindCoordinator, "t-c")
 	testutil.NoError(t, d.UpsertHeraRoleStatus(role.ID, db.HeraStatusWorking))
 
-	m, err := BuildModel(d)
+	m, err := BuildModel(d, nil)
 	testutil.NoError(t, err)
 	ov := m.Active[0]
 	testutil.Equal(t, ov.CreatedAt.IsZero(), false)
@@ -347,6 +347,154 @@ func TestBuildModel_PopulatesDetailsFields(t *testing.T) {
 	testutil.Equal(t, meta.LastActivity.Before(ov.CreatedAt), false)
 }
 
+// coordSubtreeNI returns the SubtreeNeedsInput flag of the orchestrator's
+// folded coordinator role (the glyph the rail header projects). Fails the test
+// if the orchestrator or its coordinator is missing.
+func coordSubtreeNI(t *testing.T, m *Model, orchID int64) bool {
+	t.Helper()
+	o := m.OrchByID(orchID)
+	if o == nil {
+		t.Fatalf("orchestrator %d not found", orchID)
+	}
+	c := o.CoordRole()
+	if c == nil {
+		t.Fatalf("orchestrator %d has no coordinator role", orchID)
+	}
+	return c.SubtreeNeedsInput
+}
+
+// roleByName returns a pointer to the named role within an orchestrator.
+func roleByName(t *testing.T, m *Model, orchID int64, name string) *RoleView {
+	t.Helper()
+	o := m.OrchByID(orchID)
+	if o == nil {
+		t.Fatalf("orchestrator %d not found", orchID)
+	}
+	for i := range o.Roles {
+		if o.Roles[i].Name == name {
+			return &o.Roles[i]
+		}
+	}
+	t.Fatalf("role %q not found under orchestrator %d", name, orchID)
+	return nil
+}
+
+// TestRollupNeedsInput_BubblesToParentAndRoot is the BUG-018 headline: a leaf
+// worker two bridge levels down (R → C → G) that needs input makes its own row,
+// every intervening sub-coordinator (the bridging worker rows AND the child
+// coordinators), AND the root coordinator all report needs-input — and the whole
+// chain clears when the descendant resolves.
+func TestRollupNeedsInput_BubblesToParentAndRoot(t *testing.T) {
+	// R(coord tr, worker w→tc) → C(coord tc, worker wc→tg) → G(coord tg, worker wg→twg).
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "tg"))
+	g := orchView(3, "G", "tg", wk("wg", "twg"))
+	m := Model{Active: []OrchView{r, c, g}}
+
+	// The deepest leaf needs input.
+	roleByName(t, &m, 3, "wg").NeedsInput = true
+	m.rollupNeedsInput()
+
+	// Every coordinator in the chain, root included, rolls it up.
+	testutil.Equal(t, coordSubtreeNI(t, &m, 3), true) // G (parent of the leaf)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true) // C (sub-coordinator)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true) // R (ROOT)
+	// The bridging worker rows (each IS a nested sub-coordinator) roll up too.
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, true)
+	testutil.Equal(t, roleByName(t, &m, 2, "wc").SubtreeNeedsInput, true)
+	// The leaf shows it on itself.
+	testutil.Equal(t, roleByName(t, &m, 3, "wg").SubtreeNeedsInput, true)
+
+	// Resolve the leaf → the whole chain clears.
+	roleByName(t, &m, 3, "wg").NeedsInput = false
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 3), false)
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
+}
+
+// TestRollupNeedsInput_BlockedStatusCounts proves the role's self-asserted hera
+// `blocked` status is a needs-input source for the rollup too (not only the
+// authoritative NeedsInput flag), so a "blocked" worker bubbles up identically.
+func TestRollupNeedsInput_BlockedStatusCounts(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	m := Model{Active: []OrchView{r, c}}
+	wc := roleByName(t, &m, 2, "wc")
+	wc.HasStatus = true
+	wc.Status = db.HeraStatusBlocked
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
+}
+
+// TestRollupNeedsInput_NoFalsePositive: with no needs-input role anywhere, no
+// coordinator rolls up "(?)".
+func TestRollupNeedsInput_NoFalsePositive(t *testing.T) {
+	r := orchView(1, "R", "tr", wk("w", "tc"))
+	c := orchView(2, "C", "tc", wk("wc", "twc"))
+	m := Model{Active: []OrchView{r, c}}
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), false)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), false)
+	testutil.Equal(t, roleByName(t, &m, 1, "w").SubtreeNeedsInput, false)
+}
+
+// TestRollupNeedsInput_CoordSpawnedSubteam: a coordinator-spawned sub-team
+// (shared coord task, child nests via coordBridgeChildren, NOT a worker bridge)
+// also propagates needs-input across the bridge to the parent coordinator.
+func TestRollupNeedsInput_CoordSpawnedSubteam(t *testing.T) {
+	// Task T coordinates P (coord role 100) and S (coord role 200). S nests under P.
+	p := coordOf(1, "P", 100, "T",
+		RoleView{RoleID: 101, Name: "pw", Kind: db.HeraKindWorker, Live: true, TaskID: "tpw", BridgeTaskID: "tpw"})
+	s := coordOf(2, "S", 200, "T",
+		RoleView{RoleID: 201, Name: "sw", Kind: db.HeraKindWorker, Live: true, TaskID: "tsw", BridgeTaskID: "tsw"})
+	m := Model{Active: []OrchView{p, s}}
+
+	roleByName(t, &m, 2, "sw").NeedsInput = true
+	m.rollupNeedsInput()
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true) // S (the sub-team)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true) // P (the parent) rolls it up
+}
+
+// TestRollupNeedsInput_CycleSafe: a bridge cycle (A↔B) terminates and still
+// reports needs-input for the reachable members.
+func TestRollupNeedsInput_CycleSafe(t *testing.T) {
+	// A(coord ta, worker wa→tb) and B(coord tb, worker wb→ta) bridge each other.
+	a := orchView(1, "A", "ta", wk("wa", "tb"))
+	b := orchView(2, "B", "tb", wk("wb", "ta"))
+	m := Model{Active: []OrchView{a, b}}
+	roleByName(t, &m, 1, "wa").NeedsInput = true
+	m.rollupNeedsInput() // must not hang
+	testutil.Equal(t, coordSubtreeNI(t, &m, 1), true)
+	testutil.Equal(t, coordSubtreeNI(t, &m, 2), true)
+}
+
+// TestBuildModel_NeedsInputStamped proves the end-to-end seam: the authoritative
+// per-task needs-input set threaded into BuildModel stamps the live role's own
+// flag and the rollup reaches its coordinator.
+func TestBuildModel_NeedsInputStamped(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+
+	m, err := BuildModel(d, map[string]bool{"t-wkr": true})
+	testutil.NoError(t, err)
+	wkr := roleByName(t, &m, orch, "wkr")
+	testutil.Equal(t, wkr.NeedsInput, true)
+	testutil.Equal(t, wkr.SubtreeNeedsInput, true)
+	// The coordinator (folded header) rolls it up.
+	testutil.Equal(t, coordSubtreeNI(t, &m, orch), true)
+
+	// Without the set, nothing flags.
+	m2, err := BuildModel(d, nil)
+	testutil.NoError(t, err)
+	testutil.Equal(t, roleByName(t, &m2, orch, "wkr").NeedsInput, false)
+	testutil.Equal(t, coordSubtreeNI(t, &m2, orch), false)
+}
+
 // errReader returns an error from ListHeraOrchestrators to prove BuildModel
 // surfaces read errors rather than swallowing them.
 type errReader struct{ HeraReader }
@@ -356,7 +504,7 @@ func (errReader) ListHeraOrchestrators(bool) ([]*db.HeraOrchestrator, error) {
 }
 
 func TestBuildModel_PropagatesReadError(t *testing.T) {
-	_, err := BuildModel(errReader{})
+	_, err := BuildModel(errReader{}, nil)
 	testutil.Contains(t, errString(err), "boom")
 }
 

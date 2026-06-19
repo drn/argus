@@ -46,6 +46,11 @@ type HeraPage struct {
 	details   *DetailsView           // right: coordinator roster (details mode)
 	resolve   SessionResolver        // runner seam; nil in remote mode
 	prMeta    map[string]map[string]string
+	// needsInput is the authoritative per-task needs-input set the App pushes each
+	// tick (App.needsInputIDs — the SAME idle-gated agent.DetectNeedsInput set the
+	// task list consumes). doRefresh threads it into BuildModel so each live role
+	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
+	needsInput map[string]bool
 
 	// DAG render mode of the Details region (coordinator selection only). When a
 	// coordinator is selected the Details region stacks the read-only roster
@@ -159,6 +164,24 @@ func (p *HeraPage) Machine() *FocusMachine { return p.focus }
 // IsRemote reports whether the page is in the remote-degraded mode.
 func (p *HeraPage) IsRemote() bool { return p.remote }
 
+// SetNeedsInput records the task IDs the App detected as blocked on a user
+// prompt this tick (App.needsInputIDs — the SAME authoritative, idle-gated
+// agent.DetectNeedsInput set the task list consumes). doRefresh threads it into
+// BuildModel so each live role carries its own needs-input flag and the subtree
+// rollup is computed (BUG-018). Pure setter — the tick already schedules the
+// rebuild. MUST run on the tview thread (main-goroutine-only, like SetModel).
+func (p *HeraPage) SetNeedsInput(ids []string) {
+	if len(ids) == 0 {
+		p.needsInput = nil
+		return
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	p.needsInput = m
+}
+
 // ScheduleRefresh requests a debounced rail rebuild. Called from the app tick
 // while the Hera tab is active; bursts coalesce to one rebuild per window.
 // MUST run on the tview thread.
@@ -175,7 +198,7 @@ func (p *HeraPage) Refresh() {
 // remote mode the reader is nil → BuildModel returns an empty model and Draw
 // renders the unavailable banner, so this stays a cheap no-op.
 func (p *HeraPage) doRefresh() {
-	m, err := BuildModel(p.reader)
+	m, err := BuildModel(p.reader, p.needsInput)
 	if err != nil {
 		uxlog.Log("[hera-view] rail refresh failed: %v", err)
 		return
