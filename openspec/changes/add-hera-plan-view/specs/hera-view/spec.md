@@ -133,6 +133,25 @@ The plan diagram SHALL render the chip under the cursor with a highlight style (
 - **WHEN** the cursor is on a plan node
 - **THEN** that node's chip is drawn with the highlight style and a non-cursor chip is not
 
+#### Scenario: Cursor member chip is highlighted in a fanned group
+
+- **WHEN** the cursor is on a member of a fanned-out group
+- **THEN** that member's chip is drawn with the highlight style and the other member chips are not
+
+### Requirement: Fanned group visually expands in the diagram (area 6)
+
+When a parallel group is fanned out, the diagram SHALL render its members as individual chips (glyph + short-id) in place of the collapsed range box, laid out horizontally across that stage row; the row's centering SHALL account for the wider expanded width. A member that partially feeds a downstream node SHALL carry the `↘` partial-feed marker on its expanded chip (D5). A collapsed group SHALL still render as the range box.
+
+#### Scenario: Fanning a group expands the diagram into member chips
+
+- **WHEN** the cursor is on a collapsed group and the user presses `Enter`
+- **THEN** the diagram replaces the range box with one chip per member on that stage row, and the range-box label is no longer drawn for that stage
+
+#### Scenario: A collapsed group stays a range box
+
+- **WHEN** a group is not fanned out
+- **THEN** the diagram renders it as the collapsed range box
+
 ### Requirement: Plan cursor and fan-out survive a model refresh (area 6)
 
 The Hera view re-projects the selected coordinator's plan on every refresh tick. A re-projection of the SAME orchestrator's plan SHALL preserve the operator's cursor position and fanned-group state: when the projected structure is unchanged the cursor and fan-out are untouched; when the structure changed (a cascade step materialized a node, a state flipped) the cursor SHALL re-anchor to the same node (or collapsed group, by its member set) when it still exists and clamp into the new layout when it vanished, and every still-present fanned group SHALL stay fanned. A genuine selection change (a different coordinator) or a drill-in push/pop SHALL still reset the cursor.

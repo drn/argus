@@ -1348,24 +1348,21 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 		if row >= inner.Y+inner.H {
 			break
 		}
+		chips := w.stageRowChips(s)
 		// Horizontally center the row: total rendered width is the sum of chip
-		// widths plus a chipGap between each pair (rune-aware).
-		rowW := w.stageRowWidth(s)
+		// widths plus a chipGap between each pair (rune-aware). A fanned group
+		// contributes its expanded member chips, so this tracks the wider row.
 		col := inner.X
-		if inner.W > rowW {
+		if rowW := rowChipsWidth(chips); inner.W > rowW {
 			col += (inner.W - rowW) / 2
 		}
-		for slotIdx, sl := range w.stages[s] {
-			label, st := w.slotChip(sl)
-			if w.cursor.Stage == s && w.cursor.Slot == slotIdx {
-				st = w.highlightStyle(st)
-			}
-			runes := []rune(label)
+		for _, c := range chips {
+			runes := []rune(c.label)
 			for i, r := range runes {
 				if col+i >= inner.X+inner.W {
 					break
 				}
-				screen.SetContent(col+i, row, r, nil, st)
+				screen.SetContent(col+i, row, r, nil, c.style)
 			}
 			col += len(runes) + chipGap
 			if col >= inner.X+inner.W {
@@ -1382,17 +1379,67 @@ func (w *Widget) drawStages(screen tcell.Screen, inner widget.InnerRect) {
 	}
 }
 
-// stageRowWidth returns the total rendered width (in cells) of a stage's row:
-// the sum of each slot's chip width plus a chipGap between consecutive chips.
-// Rune-aware so multibyte glyphs in a label count as one cell each.
-func (w *Widget) stageRowWidth(s int) int {
+// renderChip is one drawable chip in a stage row: its rendered label and the
+// style to paint it with (already cursor-highlighted when appropriate).
+type renderChip struct {
+	label string
+	style tcell.Style
+}
+
+// stageRowChips builds the ordered drawable chips for a stage, expanding any
+// FANNED group slot into one chip per member (glyph + short-id, with the partial-
+// feed ↘ on the feeding member) instead of the collapsed range box — this is the
+// "Enter fans out a group to SHOW its members" behaviour the web artifact uses.
+// A collapsed group renders as a single range-box chip; a lone node as its
+// glyph+short-id chip. The cursor's slot (lone node / collapsed group) or its
+// member (inside a fanned group) carries the highlight style.
+func (w *Widget) stageRowChips(s int) []renderChip {
 	if s < 0 || s >= len(w.stages) {
-		return 0
+		return nil
 	}
+	var chips []renderChip
+	for slotIdx, sl := range w.stages[s] {
+		onSlot := w.cursor.Stage == s && w.cursor.Slot == slotIdx
+		if sl.group != nil && w.Fanned(s, slotIdx) {
+			// Expanded: one chip per member. Highlight the cursor's member.
+			for memberIdx, id := range sl.group.Members {
+				label, st := w.memberChip(sl.group, id)
+				if onSlot && w.cursor.Member == memberIdx {
+					st = w.highlightStyle(st)
+				}
+				chips = append(chips, renderChip{label: label, style: st})
+			}
+			continue
+		}
+		// Collapsed group or lone node: one chip.
+		label, st := w.slotChip(sl)
+		if onSlot {
+			st = w.highlightStyle(st)
+		}
+		chips = append(chips, renderChip{label: label, style: st})
+	}
+	return chips
+}
+
+// memberChip renders a single fanned-out group member's chip: glyph + short-id in
+// the member's own state style, with the partial-feed ↘ appended on the group's
+// feeding member (D5 — on fan-out the specific feeding member carries the marker
+// the collapsed box otherwise shows).
+func (w *Widget) memberChip(g *Group, id string) (string, tcell.Style) {
+	n := w.nodes[id]
+	label := string(n.State.Glyph()) + " " + w.LabelOf(id)
+	if g.PartialFeed && g.FeedingMember == id {
+		label += " ↘"
+	}
+	return label, n.State.style()
+}
+
+// rowChipsWidth returns the total rendered width (cells) of a row's chips: the
+// sum of each chip's rune width plus a chipGap between consecutive chips.
+func rowChipsWidth(chips []renderChip) int {
 	total := 0
-	for i, sl := range w.stages[s] {
-		label, _ := w.slotChip(sl)
-		total += len([]rune(label))
+	for i, c := range chips {
+		total += len([]rune(c.label))
 		if i > 0 {
 			total += chipGap
 		}
