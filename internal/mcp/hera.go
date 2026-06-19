@@ -18,7 +18,7 @@ import (
 // Defined as an interface so tests can inject a fake without spinning up SQLite.
 type HeraStore interface {
 	// Orchestrators
-	CreateHeraOrchestrator(name string) (*db.HeraOrchestrator, error)
+	CreateHeraOrchestrator(name, baseBranch string) (*db.HeraOrchestrator, error)
 	HeraOrchestrator(id int64) (*db.HeraOrchestrator, error)
 	HeraOrchestratorByName(name string) (*db.HeraOrchestrator, error)
 	// Roles
@@ -74,6 +74,7 @@ var heraToolDefs = []Tool{
 				"name":                  map[string]interface{}{"type": "string", "description": "Orchestrator name (e.g., the project / feature being coordinated)"},
 				"coordinator_role_name": map[string]interface{}{"type": "string", "description": "Name for the coordinator role under the new orchestrator (e.g., 'coord' or 'foo-coordinator')"},
 				"prompt":                map[string]interface{}{"type": "string", "description": "(optional) Coordinator's prompt, free-form prose"},
+				"base_branch":           map[string]interface{}{"type": "string", "description": "(optional) Explicit base branch that this plan-DAG's ROOT nodes stack on. When omitted, root nodes default to the coordinator's own branch (then the project default). Has no effect on nodes that have blockers."},
 			},
 			"required": []string{"cwd", "name", "coordinator_role_name"},
 		},
@@ -371,6 +372,7 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 		Name                string `json:"name"`
 		CoordinatorRoleName string `json:"coordinator_role_name"`
 		Prompt              string `json:"prompt"`
+		BaseBranch          string `json:"base_branch"`
 	}
 	json.Unmarshal(args, &p) //nolint:errcheck
 
@@ -390,7 +392,7 @@ func (s *Server) toolHeraNewOrchestrator(id interface{}, args json.RawMessage) *
 	}
 
 	// Create (or fetch existing) orchestrator — CreateHeraOrchestrator is idempotent.
-	orch, err := s.heraStore.CreateHeraOrchestrator(p.Name)
+	orch, err := s.heraStore.CreateHeraOrchestrator(p.Name, p.BaseBranch)
 	if err != nil {
 		return toolError(id, fmt.Sprintf("create orchestrator: %v", err))
 	}

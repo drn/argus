@@ -408,6 +408,13 @@ func (d *DB) createHeraTables() error {
 	// the CREATE TABLE below then creates the column inline.
 	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN nuked_at TEXT`) //nolint:errcheck
 	d.conn.Exec(`ALTER TABLE hera_roles ADD COLUMN nuked_at TEXT`)         //nolint:errcheck
+	// Idempotent ADD COLUMN migration for the orchestrator-level base_branch
+	// (add-hera-plan-base-branch). Same pattern as nuked_at above: additive,
+	// nullable, no backfill — existing rows read back NULL and root nodes fall
+	// through to the coordinator-branch default. Fails on a fresh DB (table not
+	// yet created) and is intentionally ignored; the CREATE TABLE below carries
+	// the column inline.
+	d.conn.Exec(`ALTER TABLE hera_orchestrators ADD COLUMN base_branch TEXT`) //nolint:errcheck
 
 	ddl := `
 		CREATE TABLE IF NOT EXISTS hera_orchestrators (
@@ -422,7 +429,12 @@ func (d *DB) createHeraTables() error {
 			-- recovery. nuked rows always also carry archived_at (so they leave the
 			-- active-name index). archived_at-set/nuked_at-NULL is the Tier-1 HIDDEN
 			-- state (reversible, nested in the parent's archive expando).
-			nuked_at    TEXT
+			nuked_at    TEXT,
+			-- base_branch (add-hera-plan-base-branch): the explicit base branch a
+			-- plan-DAG's ROOT nodes stack on, set optionally at bootstrap. NULL/empty
+			-- means root nodes default to the coordinator's branch (then the project
+			-- default). Has no effect on blocker-having nodes.
+			base_branch TEXT
 		);
 		-- Partial unique on name scoped to active rows: an archived orchestrator
 		-- may coexist with a fresh active row of the same name (Hera migration 0003).

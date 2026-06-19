@@ -88,7 +88,7 @@ func (f *gaterFixture) pingCount() int {
 // exists to be pinged) and returns the orchestrator id.
 func (f *gaterFixture) seedCoord(t *testing.T, orchName string) int64 {
 	t.Helper()
-	o, err := f.d.CreateHeraOrchestrator(orchName)
+	o, err := f.d.CreateHeraOrchestrator(orchName, "")
 	testutil.NoError(t, err)
 	coordTask := &model.Task{Name: "coord-task", Status: model.StatusInProgress, Project: "proj"}
 	testutil.NoError(t, f.d.Add(coordTask))
@@ -364,7 +364,7 @@ func TestGater_MaterializeFailureLeavesNodePlanned(t *testing.T) {
 // coordinator exists to ping (logged, no panic, no ping recorded).
 func TestGater_HoldNoCoordinatorNoPanic(t *testing.T) {
 	f := newGaterFixture(t)
-	o, err := f.d.CreateHeraOrchestrator("nocoord")
+	o, err := f.d.CreateHeraOrchestrator("nocoord", "")
 	testutil.NoError(t, err)
 	crashed := f.boundWorker(t, o.ID, "1a", model.StatusComplete, db.HeraStatusWorking)
 	node := f.planned(t, o.ID, "2a")
@@ -397,6 +397,93 @@ func TestGater_BaseBranchFromEndedBlockerBinding(t *testing.T) {
 
 	mat := f.materialized()
 	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, f.matBranch[node.ID], "argus/1a")
+}
+
+// seedCoordWithBranch creates an orchestrator + a coordinator role+binding whose
+// bound task carries the given branch (so a root node can resolve the
+// coordinator's branch). Optionally sets an explicit orchestrator base_branch.
+// Returns the orchestrator id.
+func (f *gaterFixture) seedCoordWithBranch(t *testing.T, orchName, baseBranch, coordBranch string) int64 {
+	t.Helper()
+	o, err := f.d.CreateHeraOrchestrator(orchName, baseBranch)
+	testutil.NoError(t, err)
+	coordTask := &model.Task{Name: "coord-task", Status: model.StatusInProgress, Project: "proj", Branch: coordBranch}
+	testutil.NoError(t, f.d.Add(coordTask))
+	_, _, err = f.d.CreateHeraRoleWithBinding(db.CreateHeraRoleInput{
+		OrchestratorID: o.ID, Name: "coord", Kind: db.HeraKindCoordinator, ArgusProject: "proj",
+	}, coordTask.ID, "/wt/coord")
+	testutil.NoError(t, err)
+	return o.ID
+}
+
+// TestGater_RootUsesExplicitOrchestratorBase covers the delta scenario "Root node
+// uses the explicit orchestrator base branch": an explicit base_branch set at
+// bootstrap wins over the coordinator branch.
+func TestGater_RootUsesExplicitOrchestratorBase(t *testing.T) {
+	f := newGaterFixture(t)
+	// Explicit base differs from the coordinator's own branch so we prove the
+	// explicit override wins.
+	orch := f.seedCoordWithBranch(t, "orch", "feature/explicit", "argus/coord")
+	node := f.planned(t, orch, "1a")
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, f.matBranch[node.ID], "feature/explicit")
+}
+
+// TestGater_RootDefaultsToCoordinatorBranch covers "Root node defaults to the
+// coordinator branch": no explicit base → coordinator role's bound-task branch.
+func TestGater_RootDefaultsToCoordinatorBranch(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoordWithBranch(t, "orch", "", "feature/coord-wip")
+	node := f.planned(t, orch, "1a")
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, f.matBranch[node.ID], "feature/coord-wip")
+}
+
+// TestGater_RootFallsBackToProjectDefault covers "Falls back to the project
+// default when no base resolves": no explicit base and no resolvable coordinator
+// branch (coordinator task has empty branch) → resolveBaseBranch returns "" so
+// CreateAndStart applies the project default. This is the backward-compat case,
+// including a coordinator that sits on the project default branch (empty Branch).
+func TestGater_RootFallsBackToProjectDefault(t *testing.T) {
+	f := newGaterFixture(t)
+	// seedCoord binds a coordinator task with NO branch → coordinator branch
+	// unresolvable, no explicit base → "".
+	orch := f.seedCoord(t, "orch")
+	node := f.planned(t, orch, "1a")
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	testutil.Equal(t, f.matBranch[node.ID], "")
+}
+
+// TestGater_BlockerHavingNodeBaseUnchanged is a regression guard for the delta
+// scenario "Blocker-having node base resolution is unchanged": even with an
+// explicit orchestrator base AND a coordinator branch, a node that HAS a blocker
+// still resolves from the most-recently-bound blocker's branch, never the root
+// fallback.
+func TestGater_BlockerHavingNodeBaseUnchanged(t *testing.T) {
+	f := newGaterFixture(t)
+	orch := f.seedCoordWithBranch(t, "orch", "feature/explicit", "argus/coord")
+	blocker := f.boundWorker(t, orch, "1a", model.StatusInReview, db.HeraStatusDone)
+	node := f.planned(t, orch, "2a")
+	testutil.NoError(t, f.d.AddHeraBlock(node.ID, blocker.ID))
+
+	f.w.Tick()
+
+	mat := f.materialized()
+	testutil.Equal(t, len(mat), 1)
+	// Resolves from the blocker's branch, NOT the explicit/coordinator root base.
 	testutil.Equal(t, f.matBranch[node.ID], "argus/1a")
 }
 

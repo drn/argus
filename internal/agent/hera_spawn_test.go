@@ -139,7 +139,7 @@ func TestSpawnHeraWorker_HappyPath(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 4242}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
@@ -185,7 +185,7 @@ func TestSpawnHeraWorker_ModelPropagates(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
@@ -208,7 +208,7 @@ func TestSpawnHeraWorker_EmptyModelDefaults(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	res, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
@@ -230,7 +230,7 @@ func TestSpawnHeraWorker_UniquifiesName(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	first, err := SpawnHeraWorker(d, fr, HeraWorkerSpawnInput{
@@ -293,7 +293,7 @@ func TestMaterializeHeraWorker_BindsPreCreatedRole(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{sessionPID: 99}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	// Pre-create the planned role (no binding).
@@ -356,7 +356,7 @@ func TestMaterializeHeraWorker_StartFailureEndsBindingNotRole(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{startErr: errors.New("boom")}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 	planned, err := d.CreateHeraPlannedRole(db.CreateHeraRoleInput{
 		OrchestratorID: orch.ID, Name: "2b-impl", ArgusProject: "proj", Prompt: "v",
@@ -391,7 +391,7 @@ func TestSpawnHeraWorker_StartFailureUnwindsRoleAndBinding(t *testing.T) {
 	repo := initGitRepo(t)
 	d := createTestDB(t, repo)
 	fr := &fakeRunner{startErr: errors.New("boom")}
-	orch, err := d.CreateHeraOrchestrator("orch")
+	orch, err := d.CreateHeraOrchestrator("orch", "")
 	testutil.NoError(t, err)
 
 	before, _ := d.Tasks()

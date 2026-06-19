@@ -244,7 +244,7 @@ func SpawnHeraCoordinator(database *db.DB, runner SessionProvider, in HeraCoordi
 	if err != nil {
 		return nil, err
 	}
-	orch, err := database.CreateHeraOrchestrator(orchName)
+	orch, err := database.CreateHeraOrchestrator(orchName, "")
 	if err != nil {
 		return nil, err
 	}

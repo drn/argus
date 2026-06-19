@@ -3303,7 +3303,7 @@ func TestHandleSessionExitUI_HeraWorkerFinishPolicy(t *testing.T) {
 	app := New(d, agent.NewRunner(nil), false)
 
 	bind := func(taskID, name string, kind db.HeraRoleKind) {
-		o, err := d.CreateHeraOrchestrator("o-" + taskID)
+		o, err := d.CreateHeraOrchestrator("o-"+taskID, "")
 		testutil.NoError(t, err)
 		r, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: name, Kind: kind, ArgusProject: "p"})
 		testutil.NoError(t, err)

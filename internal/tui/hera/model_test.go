@@ -23,7 +23,7 @@ func memDB(t *testing.T) *db.DB {
 // seedOrch creates an active orchestrator and returns its id.
 func seedOrch(t *testing.T, d *db.DB, name string) int64 {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator(name)
+	o, err := d.CreateHeraOrchestrator(name, "")
 	testutil.NoError(t, err)
 	return o.ID
 }

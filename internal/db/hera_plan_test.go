@@ -9,7 +9,7 @@ import (
 // planTestOrch creates an orchestrator and returns its id.
 func planTestOrch(t *testing.T, d *DB, name string) int64 {
 	t.Helper()
-	o, err := d.CreateHeraOrchestrator(name)
+	o, err := d.CreateHeraOrchestrator(name, "")
 	testutil.NoError(t, err)
 	return o.ID
 }
