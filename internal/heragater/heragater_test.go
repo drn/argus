@@ -274,6 +274,45 @@ func TestGater_HeldBlockerThatNeverRanHoldsDependent(t *testing.T) {
 	testutil.Equal(t, mat[0].ID, upstream.ID)
 }
 
+func TestGater_TransitivePlannedBlockerKeepsDependentPlanned(t *testing.T) {
+	// Regression for the dogfood bug: a never-materialized planned blocker is
+	// PENDING, not FAILED. Chain A→B→C where A is a live, working blocker, B is a
+	// planned node still waiting on A, and C is planned behind B. B has never been
+	// bound. The old blockerOutcome conflated "no live binding" with "failed",
+	// so C was HELD (and the coordinator pinged) the instant the tick ran — even
+	// though B simply had not started yet. This broke every DAG deeper than two
+	// levels. C must stay PLANNED with no ping; only B's genuine non-start gates it.
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	a := f.boundWorker(t, orch, "1a", model.StatusInProgress, db.HeraStatusWorking) // live, working
+	b := f.planned(t, orch, "2a")                                                   // never bound, blocked by A
+	c := f.planned(t, orch, "3a")                                                   // never bound, blocked by B
+	testutil.NoError(t, f.d.AddHeraBlock(b.ID, a.ID))
+	testutil.NoError(t, f.d.AddHeraBlock(c.ID, b.ID))
+
+	f.w.Tick()
+
+	// Nothing materializes (A is still working; B and C wait), and critically no
+	// coordinator ping fires for C — a planned blocker is not a failed blocker.
+	testutil.Equal(t, len(f.materialized()), 0)
+	testutil.Equal(t, f.pingCount(), 0)
+
+	// Both B and C remain planned nodes (neither held nor spawned).
+	planned, err := f.d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	foundB, foundC := false, false
+	for _, p := range planned {
+		if p.ID == b.ID {
+			foundB = true
+		}
+		if p.ID == c.ID {
+			foundC = true
+		}
+	}
+	testutil.Equal(t, foundB, true)
+	testutil.Equal(t, foundC, true)
+}
+
 func TestGater_MissingBlockerPrunedMakesNodeReady(t *testing.T) {
 	// Gater-level missing-blocker prune: a planned node whose SOLE blocker role is
 	// deleted has no extant blockers (FK cascade removed the edge), so the gater

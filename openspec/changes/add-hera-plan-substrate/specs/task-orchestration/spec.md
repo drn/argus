@@ -107,7 +107,7 @@ The system SHALL deliver to every gater-materialized worker a standing instructi
 
 ### Requirement: Gate on role-status done; a failed blocker holds the dependent
 
-The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work. The hold-notification SHALL be sent once per held (dependent, blocker) pair rather than repeated on each evaluation, so the coordinator is alerted without being spammed.
+The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work. A blocker that has **never been bound** (a planned node still waiting on its own blockers) SHALL NOT be treated as failed: it has not started, so the dependent simply stays planned (pending), and the coordinator is NOT notified. The distinction is whether the blocker ever held a binding — never-bound is pending, bound-then-ended-without-done is failed. This MUST hold transitively: in a chain A→B→C where A is still working and B is an unstarted planned node, C stays planned (it is not held behind B), so DAGs deeper than two levels resolve correctly. The hold-notification SHALL be sent once per held (dependent, blocker) pair rather than repeated on each evaluation, so the coordinator is alerted without being spammed.
 
 #### Scenario: Only role-status done opens the gate
 
@@ -123,6 +123,11 @@ The gate SHALL be the blocker's hera **role status** reaching `done` — the wor
 
 - **WHEN** a blocker's session ends without its role reaching `done`
 - **THEN** the dependent is held (not materialized) and the coordinator is notified
+
+#### Scenario: A never-started planned blocker keeps the dependent planned, not held
+
+- **WHEN** a node's blocker is itself an unstarted planned node (never bound) — for example in a chain A→B→C where A is still working and B has not yet materialized
+- **THEN** the dependent (C) stays planned (pending), is not held, and the coordinator is not notified — a planned blocker is not a failed blocker, so transitive DAGs deeper than two levels resolve correctly
 
 ### Requirement: Planner-assigned stable short-id naming
 
