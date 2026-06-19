@@ -56,9 +56,9 @@
 
 **Depends on:** Stage 2, Stage 4, Stage 5, Stage 6
 
-- [ ] 7.1 Re-point `internal/tui/hera/page.go` (`rebuildDAG`/`drawDetailsRegion`/`handleDetailsKey`) at the plan widget fed by `heraPlanNodes`; retitle `" Plan "`; roster stacks over the plan graph (same geometry as roster-over-tree)
-- [ ] 7.2 Retire `internal/tui/hera/tree.go` + `tree_test.go` (and `dag_test.go` references to `heraTreeNodes`); keep `dagview` as the layout library
-- [ ] 7.3 Update the help modal (`internal/tui/modal/help.go`) + assert the new actions in `help_test.go` (`Enter`/`Space` fan-out + drill-in, `Esc` drill-out); mirror into the README Reference keybinding table
-- [ ] 7.4 uxlog the projection build (node/edge counts), drill-in/out, and the degenerate no-plan branch (consistent `[hera]`/`[planview]` prefix)
-- [ ] 7.5 Update `context/knowledge/gotchas/dag-rendering.md` + `gotchas/hera-view.md` for the plan-view projection, grouping, partial-dep, and drill-in
-- [ ] 7.6 `PATH="$HOME/go/bin:$PATH" GIT_CONFIG_GLOBAL=/dev/null make pre-pr` green (vuln stdlib-only OK; run `make test-cover-gate` separately if vuln short-circuits)
+- [x] 7.1 Re-point `internal/tui/hera/page.go` (`rebuildDAG`/`drawDetailsRegion`/`handleDetailsKey`) at the plan widget fed by `heraPlanNodes`; retitle `" Plan "`; roster stacks over the plan graph (same geometry as roster-over-tree)
+- [x] 7.2 Retire `internal/tui/hera/tree.go` + `tree_test.go` (and `dag_test.go` references to `heraTreeNodes`); keep `dagview` as the layout library
+- [x] 7.3 Update the help modal (`internal/tui/modal/help.go`) + assert the new actions in `help_test.go` (`Enter`/`Space` fan-out + drill-in, `Esc` drill-out); mirror into the README Reference keybinding table
+- [x] 7.4 uxlog the projection build (node/edge counts), drill-in/out, and the degenerate no-plan branch (consistent `[hera]`/`[planview]` prefix)
+- [x] 7.5 Update `context/knowledge/gotchas/dag-rendering.md` + `gotchas/hera-view.md` for the plan-view projection, grouping, partial-dep, and drill-in
+- [x] 7.6 `PATH="$HOME/go/bin:$PATH" GIT_CONFIG_GLOBAL=/dev/null make pre-pr` green (vuln stdlib-only OK; run `make test-cover-gate` separately if vuln short-circuits)

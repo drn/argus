@@ -21,7 +21,7 @@ Argus is a terminal-native orchestrator for LLM coding agents. Run a swarm of ag
 Coding agents are cheap to start and expensive to babysit. Five `claude` tabs become five forgotten branches. A `codex` you fire off at lunch is a black box until you `cmd-tab` back. Argus replaces that pile of terminals with a persistent orchestrator that knows what every agent is doing, where its worktree lives, when it goes idle, and who needs your attention next.
 
 - **One keystroke** spins up an isolated worktree, a fresh branch, and a fresh agent, all wired into a live dashboard.
-- **Native multi-agent coordination.** A dedicated **Hera** tab turns one agent into a team: a coordinator delegates to workers it spawns, an idle-gated message bus passes work between them, and an orchestration tree shows the whole team at a glance — all first-class in the same UI, no separate tool.
+- **Native multi-agent coordination.** A dedicated **Hera** tab turns one agent into a team: a coordinator delegates to workers it spawns, an idle-gated message bus passes work between them, and a live plan DAG shows the whole team's order of work at a glance — all first-class in the same UI, no separate tool.
 - **A persistent daemon** keeps PTYs alive across TUI restarts and laptop reboots — and a separate session-supervisor keeps them alive across *daemon* restarts too, so you can upgrade Argus mid-flight without interrupting a single agent. Your sessions outlive your terminal.
 - **An idle detector** quietly promotes any agent waiting for input to "in review" — so a glance at the list tells you who needs you.
 - **A built-in HTTP API + PWA** mirrors every keystroke from your phone, so the dashboard travels with you.
@@ -212,7 +212,15 @@ The Hera tab (`2`) has three regions: a left **rail**, a middle **coordinator pa
 | `Cmd+↑` / `Cmd+↓` | Move the rail cursor up / down without changing the focused pane (the mod-7 escape sequence is consumed — the pane's PTY never sees it) |
 | `ctrl+q`        | Return focus to the rail                                                                |
 
-When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **orchestration tree** (coordinator → workers → sub-coordinators) — both render at once, no toggle. The tree is the interactive surface: arrows / `j`/`k` move the cursor and `Enter` jumps to the selected node's agent view.
+When a **worker** is selected the details region shows its live agent terminal. When a **coordinator** is selected it stacks a read-only roster of that orchestrator's roles (status, ready-to-close, PR marks) over the embedded **plan DAG** — the planned + live worker roles laid out by their `hera_blocks` dependency order (the plan the coordinator authored over the `hera_plan*` MCP tools), with same-stage siblings auto-collapsed into parallel groups and a master-detail header above the diagram. Both render at once, no toggle; the plan graph is the interactive surface (a coordinator with no authored plan shows its live roles flat with a "no plan" hint):
+
+| Key (plan DAG)       | Action                                                                            |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `↑` / `↓` / `j` / `k` | Move between plan stages (collapses any fanned-out group on the way)              |
+| `←` / `→` / `h` / `l` | Move between slots; inside a fanned-out group, walk its members                   |
+| `Enter` / `Space`    | Fan out / collapse a parallel group                                               |
+| `Enter`              | On a sub-coordinator node, drill into its child orchestrator's plan; on a plain leaf, jump to that node's agent view |
+| `Esc`                | Drill out to the parent plan (at the root, returns focus to the rail)             |
 
 End-of-life has **two resting states**, and **no DB row is ever hard-deleted** — "done with" always means gone from the rail + worktree gone from disk, with the role / orchestrator / inbox / task all retained and recoverable: **Hide** (`a`, Tier 1) nests a worker / sub-coordinator in its parent coordinator's archive and keeps its session + worktree alive (reversible — un-hide restores it exactly); **Nuke** (`ctrl+d`, Tier 2; or `C` for a coordinator's whole archive) removes the row from the rail entirely, reclaims its worktree + branch, and stops its session, leaving only the DB rows behind. Every nuke is confirm-gated and honors multi-binding isolation (a task bound live under another orchestrator is never touched).
 
@@ -266,7 +274,7 @@ From the **Settings tab** (Status section, when the daemon is connected) the **S
 
 ### Hera (native multi-agent coordination)
 
-Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the whole team renders as an **orchestration tree** (coordinator → workers → sub-coordinators) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
+Hera is Argus's native layer for running a *team* of agents. It introduces **roles** — a `coordinator` plus the `worker`s and `freelance`rs it spawns — bound to argus tasks and addressed by name. A coordinator delegates work to workers it spawns (`hera_spawn_worker` / the rail's `w` key), they trade messages over the same idle-gated bus that powers inter-task messaging, and the team's work renders as a **plan DAG** (the planned + live worker roles laid out by their `hera_blocks` dependency order, with sub-coordinator drill-in) folded into the Hera tab's details pane. The whole surface is the second tab (`2`) — see the [Hera Tab](#hera-tab) keybindings above. The coordination layer runs in-process in the daemon; the view renders directly in the TUI. Agents drive it over MCP (the [`hera_*` tools](#mcp-tools)).
 
 **Native Hera and the external Hera plugin are mutually exclusive, selected by `hera.enabled` (default ON):**
 

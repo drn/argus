@@ -1,6 +1,7 @@
 package planview
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/drn/argus/internal/testutil"
@@ -503,6 +504,98 @@ func TestDrillIn_DrillableMarkerPresent(t *testing.T) {
 	// The label (or its rendered chip) carries a drillable affordance (▸ / ⊕).
 	hasMarker := containsAny(label, "▸", "⊕")
 	testutil.Equal(t, hasMarker, true)
+}
+
+// TestInputHandler_EscRouting pins the Esc routing contract the page relies on:
+// Esc at DrillDepth>0 pops the nav stack and fires OnDrillOut; at the root it is
+// a no-op so the page-level routing can escape the pane.
+func TestInputHandler_EscRouting(t *testing.T) {
+	noFocus := func(tview.Primitive) {}
+	t.Run("Esc at root no-ops and does not fire OnDrillOut", func(t *testing.T) {
+		w := New()
+		var popped bool
+		w.OnDrillOut = func() { popped = true }
+		w.SetData([]Node{liveNode("1a", StateWorking)}, nil)
+		w.SetFocused(true)
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.DrillDepth(), 0)
+		testutil.Equal(t, popped, false)
+	})
+	t.Run("Esc at drill-depth>0 pops and fires OnDrillOut", func(t *testing.T) {
+		w := New()
+		var popped int
+		w.OnDrillOut = func() { popped++ }
+		w.OnDrillIn = func(string) { w.PushOrch("child", []Node{node("c1")}, nil) }
+		w.SetData([]Node{{ID: "sub", Name: "1a-subcoord", State: StateWorking, Drillable: true}}, nil)
+		w.SetFocused(true)
+		w.ActivateCursor() // drill in → depth 1
+		testutil.Equal(t, w.DrillDepth(), 1)
+		h := w.InputHandler()
+		h(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone), noFocus)
+		testutil.Equal(t, w.DrillDepth(), 0)
+		testutil.Equal(t, popped, 1)
+	})
+}
+
+// TestDrillIn_MultiLevelPushPop exercises a depth≥2 drill stack: pushing two
+// child orchestrators then popping back through both restores each parent in
+// LIFO order.
+func TestDrillIn_MultiLevelPushPop(t *testing.T) {
+	w := New()
+	w.SetData([]Node{node("root1"), node("root2")}, []Edge{{From: "root1", To: "root2"}})
+	w.SetFocused(true)
+	testutil.Equal(t, w.DrillDepth(), 0)
+
+	// Drill two levels deep.
+	w.PushOrch("L1", []Node{node("l1a"), node("l1b")}, []Edge{{From: "l1a", To: "l1b"}})
+	testutil.Equal(t, w.DrillDepth(), 1)
+	testutil.Equal(t, w.Title(), "L1")
+	w.PushOrch("L2", []Node{node("l2a")}, nil)
+	testutil.Equal(t, w.DrillDepth(), 2)
+	testutil.Equal(t, w.Title(), "L2")
+	_, ok := w.StageOf("l2a")
+	testutil.Equal(t, ok, true)
+
+	// Pop back through both levels (LIFO): L2 → L1 → root.
+	w.PopOrch()
+	testutil.Equal(t, w.DrillDepth(), 1)
+	testutil.Equal(t, w.Title(), "L1")
+	_, ok = w.StageOf("l1a")
+	testutil.Equal(t, ok, true)
+	w.PopOrch()
+	testutil.Equal(t, w.DrillDepth(), 0)
+	_, ok = w.StageOf("root1")
+	testutil.Equal(t, ok, true)
+	// Past the root, PopOrch is a no-op.
+	w.PopOrch()
+	testutil.Equal(t, w.DrillDepth(), 0)
+}
+
+// TestHeader_EmptyDescriptionFallback: a node with no Description renders the
+// "(no description)" placeholder in the header.
+func TestHeader_EmptyDescriptionFallback(t *testing.T) {
+	w := New()
+	w.SetData([]Node{{ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true}}, nil)
+	w.SetFocused(true)
+	testutil.Equal(t, w.CurrentNodeID(), "1a")
+	joined := joinLines(w.HeaderLines())
+	testutil.Contains(t, joined, "(no description)")
+}
+
+// TestHeader_LongNameStaysWithinBudget: a node with a very long name still
+// yields exactly headerContentRows lines (the fixed-height budget never grows).
+func TestHeader_LongNameStaysWithinBudget(t *testing.T) {
+	w := New()
+	long := "1a-" + strings.Repeat("verylongsegment-", 12)
+	w.SetData([]Node{{ID: "1a", Name: long, State: StatePlanned, Planned: true, Description: "d"}}, nil)
+	w.SetFocused(true)
+	lines := w.HeaderLines()
+	testutil.Equal(t, len(lines), headerContentRows)
+	testutil.Equal(t, len(lines) <= w.HeaderHeight(), true)
+	// The full (untruncated) name is the header's first line — the strip clips it
+	// at Draw, but HeaderLines reports the content faithfully.
+	testutil.Equal(t, lines[0], long)
 }
 
 func joinLines(lines []string) string {

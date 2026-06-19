@@ -8,7 +8,7 @@ import (
 	"github.com/drn/argus/internal/db"
 	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
-	"github.com/drn/argus/internal/tui/dagview"
+	"github.com/drn/argus/internal/tui/planview"
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -204,10 +204,10 @@ func TestPanes_MultiBindingFeedsCorrectContext(t *testing.T) {
 
 // TestPanes_SubCoordSelectionShowsDetails is the BUG-004 regression: a worker
 // that became a sub-coordinator (it spawned a child orchestrator, so its worker
-// row bridges that child) must render the child's Details pane — roster +
-// orchestration tree — NOT the agent terminal. Before the fix the sub-coord was
-// treated as a plain worker (Role.Kind==worker → IsCoordinator()==false) so it
-// only ever showed in the agent pane and its detail view was unreachable.
+// row bridges that child) must render the child's Details pane — roster + plan
+// graph — NOT the agent terminal. Before the fix the sub-coord was treated as a
+// plain worker (Role.Kind==worker → IsCoordinator()==false) so it only ever
+// showed in the agent pane and its detail view was unreachable.
 func TestPanes_SubCoordSelectionShowsDetails(t *testing.T) {
 	d := memDB(t)
 	parent := seedOrch(t, d, "parent")
@@ -244,27 +244,27 @@ func TestPanes_SubCoordSelectionShowsDetails(t *testing.T) {
 	p.Refresh()
 
 	testutil.Equal(t, selectRoleByName(p, "sub"), true)
-	// Sub-coord selection → Details mode (roster + tree), not the agent terminal.
+	// Sub-coord selection → Details mode (roster + plan), not the agent terminal.
 	testutil.Equal(t, p.detailsMode, true)
 	testutil.Nil(t, p.AgentPane().Session())
 	// HERA pane shows the sub-coord's OWN session (== the child's coordinator).
 	testutil.Equal(t, p.CoordPane().Session().(*fakeSession).id, "t-sub")
-	// The Details + tree reflect the CHILD orchestrator: the page rebuilt the DAG
-	// with the child's coordinator as the tree root (CurrentTask), and the child's
-	// projected subtree includes its own worker but not the parent coordinator.
-	testutil.Equal(t, p.DAG().CurrentTask(), "t-sub") // child's coordinator is the tree root
+	// The Details + plan reflect the CHILD orchestrator: the page rebuilt the plan
+	// for the child, whose worker roles project as plan nodes (the child's own
+	// worker is in; coordinators — including the parent's — are never plan nodes).
 	m := p.Rail().Model()
-	ids := dagTaskIDs(heraTreeNodes(m, m.OrchByID(child)))
-	testutil.Equal(t, ids["t-sub"], true)
-	testutil.Equal(t, ids["t-cwkr"], true)    // child's worker is in the subtree
+	nodes, _ := heraPlanNodesWithBridge(m.OrchByID(child), m.bridgeIndex())
+	ids := planTaskIDs(nodes)
+	testutil.Equal(t, ids["t-cwkr"], true)    // child's worker is a plan node
 	testutil.Equal(t, ids["t-pcoord"], false) // the PARENT coordinator is not
+	testutil.Equal(t, ids["t-sub"], false)    // the child's coordinator is not a plan node
 	// Mutation context stays on the parent worker role (Ctrl+D safety preserved).
 	testutil.Equal(t, p.SelectionContext().Orch.Name, "parent")
 	testutil.Equal(t, p.SelectionContext().BridgeChildOrchID, child)
 }
 
-// dagTaskIDs collapses a node set to a task-id presence map for assertions.
-func dagTaskIDs(nodes []dagview.Node) map[string]bool {
+// planTaskIDs collapses a plan node set to a node-id presence map for assertions.
+func planTaskIDs(nodes []planview.Node) map[string]bool {
 	out := make(map[string]bool, len(nodes))
 	for _, n := range nodes {
 		out[n.ID] = true

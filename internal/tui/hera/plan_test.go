@@ -146,8 +146,33 @@ func TestHeraPlanNodes_PlannedAndLiveWithEdges(t *testing.T) {
 	testutil.Equal(t, seen1a, true)
 	testutil.Equal(t, seen2a, true)
 
-	// Exactly one dependency edge: 2a depends on 1a (To=2a, From=1a).
+	// Exactly one dependency edge: 2a depends on 1a (To=2a, From=1a). Pin the
+	// direction — From is the blocker (1a, upstream), To is the blocked (2a,
+	// downstream) — so the stage layering matches dagview's convention.
 	testutil.Equal(t, len(edges), 1)
+	from2a, _ := findNode(nodes, edges[0].From)
+	to2a, _ := findNode(nodes, edges[0].To)
+	testutil.Equal(t, from2a.Name, "1a-research")
+	testutil.Equal(t, to2a.Name, "2a-write")
+}
+
+// TestHeraPlanNodes_FailedResultIsStateFailed pins that a live node whose bound
+// task reported a {"failed":true} result projects StateFailed (red ✕), winning
+// over the workflow status (D7).
+func TestHeraPlanNodes_FailedResultIsStateFailed(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "boom", db.HeraKindWorker, "t-boom")
+	testutil.NoError(t, d.SetStatus("t-boom", model.StatusInReview))
+	testutil.NoError(t, d.SetResult("t-boom", `{"failed":true}`))
+
+	ov := orchViewByName(t, d, "orch")
+	testutil.Equal(t, ov != nil, true)
+	nodes, _ := heraPlanNodes(ov)
+	n, ok := findNode(nodes, "t-boom")
+	testutil.Equal(t, ok, true)
+	testutil.Equal(t, n.State, planview.StateFailed)
 }
 
 // TestHeraPlanNodes_LiveNodeColoursFromTaskStatus mirrors "a live node by its

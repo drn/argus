@@ -46,10 +46,11 @@ func New() *Widget {
 	}
 }
 
-// SetTitle overrides the bordered-panel title. The native Hera view retitles it
-// to " Orchestration Tree " when the widget is embedded as the Details-pane
-// render mode. Pass "" to suppress the title text (the border still draws).
-// See gotchas/hera-view.md.
+// SetTitle overrides the bordered-panel title. Pass "" to suppress the title
+// text (the border still draws). NOTE: dagview is now used only as a layout
+// library by internal/tui/planview (which calls Compute for stage placement);
+// the standalone widget is no longer embedded in the Hera view — the plan-DAG
+// widget replaced the retired orchestration-tree graph. See gotchas/hera-view.md.
 func (w *Widget) SetTitle(title string) { w.title = title }
 
 // SetNodes installs a new snapshot. Recomputes layout, repopulates the
@@ -92,9 +93,7 @@ func (w *Widget) CurrentTask() string {
 // of a layer or below the last layer is a no-op rather than wrapping.
 //
 // Movement treats every node in `layout.Nodes` uniformly — filtering
-// (archived, etc.) is the caller's responsibility. The Hera tree projection
-// (`heraTreeNodes`) drops archived roles before `SetNodes`, so in practice
-// archived nodes never reach this code path.
+// (archived, etc.) is the caller's responsibility.
 //
 // Fires maybeNotifyBranchChange when the cursor actually changes. The
 // branch-change contract is mandatory for this widget: the cursor box

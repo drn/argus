@@ -657,9 +657,9 @@ func (a *App) buildUI() {
 	a.heraPage.CoordPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
 	a.heraPage.AgentPane().OnBranchChange = func() { a.forceRedraw("hera agent pane branch changed") }
 	a.heraPage.AgentPane().OnNeedRedraw = func() { a.tapp.QueueUpdateDraw(func() {}) }
-	// The embedded Details-pane orchestration-tree widget. OnBranchChange stays
-	// log-only (never Sync) — the cursor-highlight ghost-prevention contract.
-	a.heraPage.DAG().OnBranchChange = func() { a.forceRedraw("hera tree branch changed") }
+	// The embedded Details-pane plan-DAG widget. OnBranchChange stays log-only
+	// (never Sync) — the cursor-highlight ghost-prevention contract.
+	a.heraPage.Plan().OnBranchChange = func() { a.forceRedraw("hera plan branch changed") }
 
 	// M6c: thin mutation layer + rail keyset. Wired only in local mode (heraReader
 	// is the same *db.DB; remote mode leaves heraOps nil and the callbacks unwired,
@@ -688,11 +688,13 @@ func (a *App) buildUI() {
 		// only — the copy method no-ops gracefully under the in-process runner.
 		a.heraPage.OnCopyClipboard = a.copyStagedClipboardForHeraPane
 
-		// Orchestration-tree render mode of the Details pane. Only OnEnter (jump to
-		// a node's agent view) is wired — the legacy link/unlink/halt actions are
-		// gone with depends_on. The node set is projected in-process by the hera
-		// package (heraTreeNodes over the rail model), so there is no provider seam.
-		a.heraPage.DAG().OnEnter = func(id string) { a.openAgentForTask(id) }
+		// Plan-DAG render mode of the Details pane. The App wires only OnEnter
+		// (jump to a leaf node's agent view); OnDrillIn (push the child
+		// orchestrator's plan) is owned by the page itself — it needs the rail
+		// bridge index and the in-package projection. The node/edge set is projected
+		// in-process by the hera package (heraPlanNodesWithBridge over the rail
+		// model), so there is no provider seam.
+		a.heraPage.Plan().OnEnter = func(id string) { a.openAgentForTask(id) }
 	}
 
 	a.pages = tview.NewPages().

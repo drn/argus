@@ -452,13 +452,14 @@ func TestSmoke_HelpListsHeraKeys(t *testing.T) {
 	testutil.Equal(t, found, true)
 }
 
-// TestSmoke_HeraDetailsTreeMode drives the flow end-to-end through the real
+// TestSmoke_HeraDetailsPlanMode drives the flow end-to-end through the real
 // event loop: Hera tab → coordinator selected → Tab into the Details region
-// (which stacks the roster over the orchestration-tree graph) → the embedded
-// tree is projected with nodes. Proves the global key routing, focus ladder, and
-// tree projection compose without any toggle. The tree edges come from the role
-// hierarchy (coordinator → worker), NOT depends_on.
-func TestSmoke_HeraDetailsTreeMode(t *testing.T) {
+// (which stacks the roster over the plan-DAG graph) → the embedded plan is
+// projected with the orchestrator's worker roles. Proves the global key routing,
+// focus ladder, and plan projection compose without any toggle. The seeded orch
+// has a live worker but no authored plan, so the plan renders the degenerate
+// flat single stage with the worker node under the cursor.
+func TestSmoke_HeraDetailsPlanMode(t *testing.T) {
 	d := testDB(t)
 	orch := seedHeraOrch(t, d, "orch")
 	seedHeraBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "tc")
@@ -474,12 +475,15 @@ func TestSmoke_HeraDetailsTreeMode(t *testing.T) {
 	syncUI(t, app.tapp)
 	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.SelectionContext().IsCoordinator(), true) })
 
-	// Tab into the Details region (rail → coord → agent). The tree is stacked
+	// Tab into the Details region (rail → coord → agent). The plan is stacked
 	// under the roster and already projected — no toggle.
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
 	sim.InjectKey(tcell.KeyTab, 0, 0)
 	syncUI(t, app.tapp)
-	// The embedded tree has nodes (cursor non-empty — lands on the coordinator).
-	readUI(t, app.tapp, func() { testutil.Equal(t, app.heraPage.DAG().CurrentTask() != "", true) })
+	// The embedded plan has the worker node (degenerate flat stage, cursor on it).
+	readUI(t, app.tapp, func() {
+		testutil.Equal(t, app.heraPage.Plan().Stages(), 1)
+		testutil.Equal(t, app.heraPage.Plan().CurrentNodeID(), "tw")
+	})
 }

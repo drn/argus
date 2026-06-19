@@ -3,7 +3,7 @@ package hera
 import (
 	"strings"
 
-	"github.com/drn/argus/internal/tui/dagview"
+	"github.com/drn/argus/internal/tui/planview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
 	"github.com/drn/argus/internal/tui/widget"
@@ -73,12 +73,14 @@ type HeraPage struct {
 	// carries its own needs-input flag and the subtree rollup is computed (BUG-018).
 	needsInput map[string]bool
 
-	// DAG render mode of the Details region (coordinator selection only). When a
-	// coordinator is selected the Details region stacks the read-only roster
-	// (top) over this embedded orchestration-tree graph (bottom) — both render at
-	// once, no toggle. Nodes are projected in-process from the rail's model by
-	// heraTreeNodes (the role hierarchy), so there is no provider seam.
-	dag *dagview.Widget // embedded orchestration-tree graph
+	// Plan-DAG render mode of the Details region (coordinator selection only).
+	// When a coordinator is selected the Details region stacks the read-only
+	// roster (top) over this embedded plan graph (bottom) — both render at once,
+	// no toggle. Nodes/edges are projected in-process from the rail's model by
+	// heraPlanNodesWithBridge (the planned + live worker roles and their
+	// hera_blocks edges — the plan a coordinator authored), so there is no
+	// provider seam. It replaced the retired orchestration-tree projection.
+	plan *planview.Widget // embedded plan-DAG graph
 
 	// Selection + per-pane bound task (so SetSession only fires on change).
 	sel         Selection
@@ -149,17 +151,41 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		coordPane: terminal.NewTerminalPane(),
 		agentPane: terminal.NewTerminalPane(),
 		details:   NewDetailsView(),
-		dag:       dagview.New(),
+		plan:      planview.New(),
 	}
 	p.coordPane.SetBorderTitle(coordPaneTitle)
-	// Retitle the embedded graph so it reads as the orchestration tree, not a
-	// second top-level " DAG " tab (gotchas/hera-view.md).
-	p.dag.SetTitle(" Orchestration Tree ")
+	// Retitle the embedded graph so it reads as the plan DAG, not a second
+	// top-level " DAG " tab (gotchas/hera-view.md).
+	p.plan.SetTitle(" Plan ")
 	p.rail.SetFocused(true)
 	// Rebind the panes whenever the rail cursor lands on a different role.
 	p.rail.SetOnSelectionChanged(p.applySelection)
+	// Drill-in (D6) is owned by the page, not the App: it needs the rail bridge
+	// index to resolve the child orchestrator and the in-package projection to
+	// build the child plan. OnEnter (jump-to-agent-view, the App's concern) is
+	// wired separately on the exposed widget via Plan().
+	p.plan.OnDrillIn = p.drillIntoChild
 	p.refresher = NewRefresher(DefaultRefreshDebounce, p.doRefresh)
 	return p
+}
+
+// drillIntoChild is the plan widget's OnDrillIn handler (D6): the cursor sits on
+// a sub-coordinator node whose id is its bound coordinator-bridge task. Resolve
+// the child orchestrator through the rail bridge index, project the child's plan
+// DAG, and push it onto the widget's nav stack with the "Details ▸ <orch> · Plan"
+// title (D6). A bridge miss (the child orchestrator is gone) is a no-op so the
+// widget stays on the parent plan. MUST run on the tview main thread (it reads
+// the rail model and reprojects — pure in-memory, no I/O).
+func (p *HeraPage) drillIntoChild(id string) {
+	child := p.rail.Model().bridgeIndex()[id]
+	if child == nil {
+		uxlog.Log("[hera-view] plan drill-in: no child orch for task=%s", id)
+		return
+	}
+	nodes, edges := heraPlanNodesWithBridge(child, p.rail.Model().bridgeIndex())
+	p.plan.PushOrch("Details ▸ "+child.Name+" · Plan", nodes, edges)
+	uxlog.Log("[hera-view] plan drill-in: task=%s child=%s nodes=%d edges=%d depth=%d",
+		id, child.Name, len(nodes), len(edges), p.plan.DrillDepth())
 }
 
 // Reconcile late-binds live sessions and is the App-tick hook (main thread).
@@ -173,11 +199,13 @@ func (p *HeraPage) Reconcile() { p.reconcileSessions() }
 func (p *HeraPage) CoordPane() *terminal.TerminalPane { return p.coordPane }
 func (p *HeraPage) AgentPane() *terminal.TerminalPane { return p.agentPane }
 
-// DAG exposes the embedded orchestration-tree widget so the App can wire its
-// OnEnter (jump to a node's agent view) and OnBranchChange (log-only forceRedraw)
-// callbacks. The page owns the widget's rect, focus, and node set (projected by
-// heraTreeNodes from the rail model); the App owns what OnEnter does.
-func (p *HeraPage) DAG() *dagview.Widget { return p.dag }
+// Plan exposes the embedded plan-DAG widget so the App can wire its OnEnter
+// (jump to a leaf node's agent view), OnDrillIn (push the child orchestrator's
+// plan), and OnBranchChange (log-only forceRedraw) callbacks. The page owns the
+// widget's rect, focus, and node/edge set (projected by heraPlanNodesWithBridge
+// from the rail model); the App owns what OnEnter does. The page itself wires
+// OnDrillIn (it needs the rail bridge index + the projection) — see applySelection.
+func (p *HeraPage) Plan() *planview.Widget { return p.plan }
 
 // Rail exposes the inner rail (test seam + 6b wiring).
 func (p *HeraPage) Rail() *Rail { return p.rail }
@@ -367,32 +395,32 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	}
 }
 
-// drawDetailsRegion stacks the read-only roster (top) over the embedded
-// orchestration tree (bottom) for a selected coordinator — both render at once,
-// no toggle. The roster is sized to its natural content height, capped at half
-// the region so the tree always keeps at least half; the tree fills the
-// remainder. Each widget draws its own bordered panel covering its full
-// sub-rect, so no stale cells survive (no Sync — CLAUDE.md UX-rendering rules).
-// The tree is the interactive surface, so it owns the focused border.
+// drawDetailsRegion stacks the read-only roster (top) over the embedded plan
+// DAG (bottom) for a selected coordinator — both render at once, no toggle. The
+// roster is sized to its natural content height, capped at half the region so
+// the plan graph always keeps at least half; the plan fills the remainder. Each
+// widget draws its own bordered panel covering its full sub-rect, so no stale
+// cells survive (no Sync — CLAUDE.md UX-rendering rules). The plan graph is the
+// interactive surface, so it owns the focused border.
 func (p *HeraPage) drawDetailsRegion(screen tcell.Screen, y, w, h int) {
-	// Roster sized to its content, capped at half the region so the DAG keeps
-	// at least half, then clamped to the region height for tiny panes.
+	// Roster sized to its content, capped at half the region so the plan graph
+	// keeps at least half, then clamped to the region height for tiny panes.
 	rosterH := min(p.details.ContentHeight(), h/2)
 	rosterH = max(rosterH, 3)
 	rosterH = min(rosterH, h)
 	p.details.Draw(screen, p.agentX, y, w, rosterH, false)
 
-	dagH := h - rosterH
-	if dagH >= 2 {
-		p.dag.SetRect(p.agentX, y+rosterH, w, dagH)
-		p.dag.SetFocused(p.focus.State() == FocusAgent)
-		p.dag.Draw(screen)
+	planH := h - rosterH
+	if planH >= 2 {
+		p.plan.SetRect(p.agentX, y+rosterH, w, planH)
+		p.plan.SetFocused(p.focus.State() == FocusAgent)
+		p.plan.Draw(screen)
 	} else {
-		// Pane too short to show the DAG — zero its rect so a stale rect from a
-		// prior (taller) frame can't catch a click/scroll over the roster area.
-		// MouseHandler always forwards coordinator-region events to p.dag, which
-		// gates on InRect; an empty rect makes that gate reject everything.
-		p.dag.SetRect(0, 0, 0, 0)
+		// Pane too short to show the plan graph — zero its rect so a stale rect
+		// from a prior (taller) frame can't catch a click/scroll over the roster
+		// area. MouseHandler always forwards coordinator-region events to p.plan,
+		// which gates on InRect; an empty rect makes that gate reject everything.
+		p.plan.SetRect(0, 0, 0, 0)
 	}
 }
 
@@ -553,30 +581,49 @@ func (p *HeraPage) terminalPaneFocused() bool {
 }
 
 // handleDetailsKey routes keys for a focused Details region (coordinator
-// selected). The region stacks the read-only roster over the embedded
-// orchestration tree, so the tree is the only interactive surface: every key
-// forwards to it (cursor nav j/k/arrows + Enter, which fires the OnEnter
-// callback the App wired — jump to the node's agent view). The global handler
-// reserves only 1/2/3/q/? — see gotchas/keybindings.md.
+// selected). The region stacks the read-only roster over the embedded plan
+// graph, so the plan widget is the only interactive surface: nav (j/k/h/l +
+// arrows), Enter/Space (fan-out/collapse a group, drill into a sub-coordinator,
+// or jump to a leaf's agent view via the wired OnEnter callback), and Esc
+// (drill out). At drill-depth 0 the widget no-ops Esc, so the page handles it
+// here as a pane-escape back to the rail (otherwise the operator would be
+// trapped in the plan region). The global handler reserves only 1/2/3/q/? — see
+// gotchas/keybindings.md.
 func (p *HeraPage) handleDetailsKey(event *tcell.EventKey, setFocus func(tview.Primitive)) {
-	p.dag.InputHandler()(event, setFocus)
-}
-
-// rebuildDAG reprojects the given orchestrator's orchestration SUBTREE (the role
-// hierarchy — coordinator → workers → sub-coordinators → their workers) into the
-// embedded widget. `root` is the orchestrator in Details view — the selected one
-// for a top-level coordinator, or the bridged CHILD for a worker-bridge sub-coord
-// (BUG-004). A nil root yields an empty graph. MUST run on the tview main thread
-// (heraTreeNodes is a pure read over the rail's already-built model; SetNodes
-// recomputes layout but touches no I/O).
-func (p *HeraPage) rebuildDAG(root *OrchView) {
-	if root == nil {
-		p.dag.SetNodes(nil)
+	if event.Key() == tcell.KeyEscape && p.plan.DrillDepth() == 0 {
+		// Root of the plan nav stack: Esc escapes the pane back to the rail
+		// rather than dead-ending in the widget's root no-op.
+		p.focus.ToRail()
 		return
 	}
-	nodes := heraTreeNodes(p.rail.Model(), root)
-	p.dag.SetNodes(nodes)
-	uxlog.Log("[hera-view] tree render: orch=%s nodes=%d", root.Name, len(nodes))
+	p.plan.InputHandler()(event, setFocus)
+}
+
+// rebuildPlan reprojects the given orchestrator's PLAN DAG — its planned
+// (never-bound) and live worker roles as nodes, its hera_blocks blocking edges
+// as dependency edges — into the embedded plan widget. `root` is the
+// orchestrator in Details view — the selected one for a top-level coordinator,
+// or the bridged CHILD for a worker-bridge sub-coord (BUG-004). A nil root
+// yields an empty graph. The bridge index (Model.bridgeIndex) lets the
+// projection stamp Node.Drillable on a worker whose bound task coordinates a
+// child orchestrator (D6), so the single-arg heraPlanNodes is NOT used here —
+// it leaves Drillable false. MUST run on the tview main thread
+// (heraPlanNodesWithBridge is a pure read over the rail's already-built model;
+// SetData recomputes layout but touches no I/O).
+func (p *HeraPage) rebuildPlan(root *OrchView) {
+	// A new top-level selection abandons any drill-in stack from the previous
+	// coordinator — pop back to root so the fresh SetData below is the visible
+	// plan, not a child frame buried under stale parents.
+	for p.plan.DrillDepth() > 0 {
+		p.plan.PopOrch()
+	}
+	if root == nil {
+		p.plan.SetData(nil, nil)
+		return
+	}
+	nodes, edges := heraPlanNodesWithBridge(root, p.rail.Model().bridgeIndex())
+	p.plan.SetData(nodes, edges)
+	uxlog.Log("[hera-view] plan render: orch=%s nodes=%d edges=%d", root.Name, len(nodes), len(edges))
 }
 
 // handleRailMutation maps the rail-focus mutation keyset to the page's mutation
@@ -744,10 +791,10 @@ func (p *HeraPage) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 				}
 			case FocusAgent:
 				if p.detailsMode {
-					// Coordinator: the DAG (bottom of the stacked region) is the
-					// interactive surface; it ignores clicks outside its own rect,
+					// Coordinator: the plan graph (bottom of the stacked region) is
+					// the interactive surface; it ignores clicks outside its own rect,
 					// so the roster area above it is inert.
-					consumed, _ = p.dag.MouseHandler()(action, event, setFocus)
+					consumed, _ = p.plan.MouseHandler()(action, event, setFocus)
 				} else {
 					consumed, _ = p.agentPane.MouseHandler()(action, event, setFocus)
 				}
