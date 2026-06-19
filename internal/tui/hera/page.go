@@ -1,6 +1,8 @@
 package hera
 
 import (
+	"strings"
+
 	"github.com/drn/argus/internal/tui/dagview"
 	"github.com/drn/argus/internal/tui/terminal"
 	"github.com/drn/argus/internal/tui/theme"
@@ -13,6 +15,25 @@ import (
 // heraRailWidth is the fixed character width of the navigation rail (matches
 // Hera's RailWidth ballpark, trimmed for Argus chrome).
 const heraRailWidth = 34
+
+// Base border titles for the two right-hand panes. Draw appends a clipboard
+// affordance to the focused terminal pane's title when a payload is staged.
+const (
+	coordPaneTitle = " Coordinator "
+	agentPaneTitle = " Agent "
+)
+
+// clipboardHintTitle returns base with a "(ctrl+y copy)" affordance appended
+// when show is true. Kept ASCII so each rune is exactly one terminal cell (the
+// border-title truncation math assumes single-width runes — see the agent
+// header's matching note). The Hera-view analogue of the agent header's
+// "ctrl+y to copy" hint, consistent with how the view labels panes.
+func clipboardHintTitle(base string, show bool) string {
+	if !show {
+		return base
+	}
+	return strings.TrimRight(base, " ") + " (ctrl+y copy) "
+}
 
 // HeraPage is the top-level Hera-view page added to the App's Pages. It lays
 // out the three Hera regions — rail | coordinator (HERA) pane | agent/details
@@ -90,6 +111,22 @@ type HeraPage struct {
 	OnNewCoordinator func(Selection) // `n` — new top-level coordinator (full new-task modal; selection used only to default the project, fires even when empty)
 	OnClearArchive   func(Selection) // `C` — NUKE every Tier-1 hidden item in the selected coordinator's archive (confirm)
 
+	// OnCopyClipboard fires on `ctrl+y` while a TERMINAL pane (coordinator or
+	// worker) is focused AND that pane's task has an agent-staged clipboard
+	// payload, passing the focused pane's bound task ID. The App copies the
+	// staged payload for THAT task to the OS clipboard (the Hera view shows
+	// several tasks at once, so the payload must come from the focused pane, not
+	// a single global active task). nil-safe: unwired in remote mode / when the
+	// runner is not daemon-backed, making `ctrl+y` fall through to the PTY.
+	OnCopyClipboard func(taskID string)
+
+	// clipReady is set by the App each tick (SetClipboardHint): true when the
+	// focused terminal pane's task has an agent-staged clipboard payload. It
+	// gates the `ctrl+y` interception (so ctrl+y still falls through to the PTY
+	// for an in-agent yank when nothing is staged — mirroring the main agent
+	// view) and drives the `(ctrl+y copy)` border-title affordance in Draw.
+	clipReady bool
+
 	// OnFocusChange is called whenever the focused Hera region changes so the
 	// app can update focus-aware UI (e.g. the bottom status bar hint set). It
 	// receives the new focus state and fires on both keyboard and mouse changes.
@@ -114,7 +151,7 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 		details:   NewDetailsView(),
 		dag:       dagview.New(),
 	}
-	p.coordPane.SetBorderTitle(" Coordinator ")
+	p.coordPane.SetBorderTitle(coordPaneTitle)
 	// Retitle the embedded graph so it reads as the orchestration tree, not a
 	// second top-level " DAG " tab (gotchas/hera-view.md).
 	p.dag.SetTitle(" Orchestration Tree ")
@@ -180,6 +217,20 @@ func (p *HeraPage) SetNeedsInput(ids []string) {
 	}
 	p.needsInput = m
 }
+
+// SetClipboardHint toggles whether the focused terminal pane advertises a
+// staged agent clipboard payload via a `(ctrl+y copy)` border-title affordance.
+// The App refreshes it each tick from the daemon for the focused pane's task
+// (refreshHeraClipboardHint), mirroring the main agent view's per-tick
+// refreshClipboardCache. It also gates the `ctrl+y` interception so the key
+// still reaches the PTY for an in-agent yank when nothing is staged. Pure
+// setter; Draw renders it. MUST run on the tview main thread.
+func (p *HeraPage) SetClipboardHint(show bool) { p.clipReady = show }
+
+// ClipboardHint reports whether the focused terminal pane currently advertises a
+// staged clipboard payload (the state SetClipboardHint last set). Exposed for
+// the App's tick wiring + tests, mirroring the agent header's ClipboardHint().
+func (p *HeraPage) ClipboardHint() bool { return p.clipReady }
 
 // ScheduleRefresh requests a debounced rail rebuild. Called from the app tick
 // while the Hera tab is active; bursts coalesce to one rebuild per window.
@@ -258,6 +309,12 @@ func (p *HeraPage) Draw(screen tcell.Screen) {
 	// pane while one pane is zoomed.
 	p.focus.SetCoordPresent(coordW >= 2)
 	p.focus.SetAgentPresent(agentW >= 2)
+
+	// Advertise a staged clipboard payload on the focused terminal pane via a
+	// `(ctrl+y copy)` border-title affordance. clipReady is the focused pane's
+	// hint state (refreshed each tick), so at most one pane shows it.
+	p.coordPane.SetBorderTitle(clipboardHintTitle(coordPaneTitle, p.clipReady && p.focus.State() == FocusCoord))
+	p.agentPane.SetBorderTitle(clipboardHintTitle(agentPaneTitle, p.clipReady && !p.detailsMode && p.focus.State() == FocusAgent))
 
 	p.rail.SetFocused(p.focus.State() == FocusRail)
 	p.rail.SetRect(x, y, railW, h)
@@ -411,6 +468,22 @@ func (p *HeraPage) InputHandler() func(event *tcell.EventKey, setFocus func(p tv
 		case tcell.KeyCtrlQ:
 			p.focus.ToRail()
 			return
+		case tcell.KeyCtrlY:
+			// Copy the agent-staged clipboard payload for the focused TERMINAL
+			// pane's task. Conditional intercept, mirroring the main agent view:
+			// steal ctrl+y from the PTY ONLY when a payload is staged (clipReady,
+			// refreshed each tick for the focused pane's task). When nothing is
+			// staged — or focus is on the rail / coordinator details (no PTY) — fall
+			// through to the per-region dispatch so vim/emacs-style yank still
+			// reaches the agent. The App's callback resolves the payload from
+			// FocusedTerminalTaskID, so the copy is scoped to the focused pane.
+			if p.clipReady && p.terminalPaneFocused() && p.OnCopyClipboard != nil {
+				if id := p.FocusedTerminalTaskID(); id != "" {
+					uxlog.Log("[hera-view] ctrl+y copy staged clipboard: task=%s", id)
+					p.OnCopyClipboard(id)
+					return
+				}
+			}
 		case tcell.KeyLeft:
 			if ctrlAlt {
 				p.focus.Retreat()

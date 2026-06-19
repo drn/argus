@@ -69,6 +69,62 @@ func (a *App) refreshClipboardCache(taskID string) {
 	a.agentHeader.SetClipboardHint(text != "")
 }
 
+// copyStagedClipboardForHeraPane copies the agent-staged clipboard payload for
+// a Hera pane's task to the OS clipboard, then clears the daemon-side slot. It
+// is the Hera-view analogue of copyStagedClipboard (agent view), but there is no
+// single "active" task in the Hera view — it shows several at once — so the
+// caller (HeraPage's ctrl+y) passes the FOCUSED pane's task ID and we look the
+// payload up directly rather than through the activeAgentTaskID cache. A logged
+// no-op when the runner is not daemon-backed (in-process fallback) or nothing is
+// staged for that task. Reuses copyToClipboard so the "Copied" flash and writer
+// contract match the agent view exactly.
+func (a *App) copyStagedClipboardForHeraPane(taskID string) {
+	if taskID == "" {
+		return
+	}
+	acc, ok := a.runner.(clipboardAccessor)
+	if !ok {
+		uxlog.Log("[hera] clipboard copy skipped: runner not daemon-backed (task=%s)", taskID)
+		return
+	}
+	text, present := acc.ClipboardGet(taskID)
+	if !present || text == "" {
+		uxlog.Log("[hera] clipboard copy skipped: nothing staged (task=%s)", taskID)
+		return
+	}
+	a.copyToClipboard(text, "Copied", func() {
+		uxlog.Log("[hera] copied agent-staged clipboard: task %s (%d bytes)", taskID, len(text))
+	})
+	go func() {
+		if err := acc.ClipboardClear(taskID); err != nil {
+			uxlog.Log("[hera] clipboard clear failed: task=%s err=%v", taskID, err)
+		}
+	}()
+}
+
+// refreshHeraClipboardHint polls the agent-staged clipboard for the Hera view's
+// focused terminal pane and toggles the pane's `(ctrl+y copy)` border-title
+// affordance, mirroring refreshClipboardCache for the main agent view. It looks
+// at a single task per tick (the focused pane's), so there is no extra RPC
+// chattiness beyond the agent view's own per-tick poll. The hint also gates the
+// ctrl+y interception in the page, so when it is off ctrl+y falls through to the
+// PTY. No-op (hint off) when no terminal pane is focused or the runner is not
+// daemon-backed.
+func (a *App) refreshHeraClipboardHint() {
+	id := a.heraPage.FocusedTerminalTaskID()
+	if id == "" {
+		a.heraPage.SetClipboardHint(false)
+		return
+	}
+	acc, ok := a.runner.(clipboardAccessor)
+	if !ok {
+		a.heraPage.SetClipboardHint(false)
+		return
+	}
+	text, present := acc.ClipboardGet(id)
+	a.heraPage.SetClipboardHint(present && text != "")
+}
+
 // copyStagedClipboard is the ctrl+y handler. Copies the cached pending
 // payload via `a.clipboardWriter` (the configured OS-clipboard writer),
 // clears the daemon-side state, and flashes "Copied". Returns true if a

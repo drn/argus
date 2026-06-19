@@ -242,6 +242,29 @@ func (p *HeraPage) SyncPanes() {
 	p.agentPane.SyncPTYSize()
 }
 
+// FocusedTerminalTaskID returns the argus task ID feeding the currently-focused
+// TERMINAL pane — the coordinator pane (always a terminal) or a worker/leaf
+// agent pane in terminal mode. It returns "" when the focused region is the rail
+// or the coordinator details/tree region (no PTY, nothing to copy) and in remote
+// mode. The App uses it to (a) poll the agent-staged clipboard for that task on
+// the tick (the discoverability hint) and (b) resolve which task `ctrl+y`
+// copies from — the Hera view shows several tasks at once, so the copy must be
+// scoped to the focused pane, not a single global active task.
+func (p *HeraPage) FocusedTerminalTaskID() string {
+	if p.remote {
+		return ""
+	}
+	switch p.focus.State() {
+	case FocusCoord:
+		return p.coordBound
+	case FocusAgent:
+		if !p.detailsMode {
+			return p.agentBound
+		}
+	}
+	return ""
+}
+
 // SelectionContext returns the current (role, orchestrator, task) selection.
 //
 // 6c EXTENSION POINT: this is the clean seam mutations hang off. A mutation

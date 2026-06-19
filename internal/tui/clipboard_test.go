@@ -9,7 +9,10 @@ import (
 	"github.com/drn/argus/internal/agent"
 	"github.com/drn/argus/internal/apiclient"
 	dclient "github.com/drn/argus/internal/daemon/client"
+	"github.com/drn/argus/internal/db"
+	"github.com/drn/argus/internal/model"
 	"github.com/drn/argus/internal/testutil"
+	"github.com/drn/argus/internal/tui/hera"
 )
 
 // Compile-time assertions: both runner transports that back the agent view
@@ -160,6 +163,130 @@ func TestCopyStagedClipboard_ClearError_LoggedNotPanicked(t *testing.T) {
 	if !app.copyStagedClipboard() {
 		t.Fatal("expected true")
 	}
+}
+
+func TestCopyStagedClipboardForHeraPane_NoTaskOrAccessor(t *testing.T) {
+	d := testDB(t)
+	// Empty task → no-op, no panic.
+	app := New(d, agent.NewRunner(nil), false)
+	app.copyStagedClipboardForHeraPane("")
+	// Plain runner is not a clipboardAccessor → logged no-op, no panic.
+	app.copyStagedClipboardForHeraPane("task1")
+}
+
+func TestCopyStagedClipboardForHeraPane_AbsentNoCopy(t *testing.T) {
+	d := testDB(t)
+	fp := newFakeProvider()
+	fp.setPayload("", false) // nothing staged
+	app := New(d, fp, false)
+	app.clipboardWriter = func(string) error { return nil }
+
+	app.copyStagedClipboardForHeraPane("task1")
+	// Nothing staged → no clear RPC fired.
+	time.Sleep(20 * time.Millisecond)
+	testutil.Equal(t, len(fp.clearedSnapshot()), 0)
+}
+
+func TestCopyStagedClipboardForHeraPane_PresentCopiesAndClears(t *testing.T) {
+	d := testDB(t)
+	fp := newFakeProvider()
+	fp.setPayload("snippet", true)
+	app := New(d, fp, false)
+
+	wrote := make(chan string, 1)
+	app.clipboardWriter = func(s string) error {
+		select {
+		case wrote <- s:
+		default:
+		}
+		return nil
+	}
+
+	app.copyStagedClipboardForHeraPane("wkr-task")
+
+	// The staged text reaches the OS-clipboard writer.
+	select {
+	case s := <-wrote:
+		testutil.Equal(t, s, "snippet")
+	case <-time.After(time.Second):
+		t.Fatal("clipboard writer never called")
+	}
+
+	// Clear RPC fires asynchronously for that task.
+	var seen []string
+	for i := 200; i > 0; i-- {
+		seen = fp.clearedSnapshot()
+		if len(seen) > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(seen) != 1 || seen[0] != "wkr-task" {
+		t.Errorf("expected ClipboardClear(\"wkr-task\") once, got %v", seen)
+	}
+}
+
+// seedHeraCoord seeds an orchestrator with a coordinator bound to "tc" and a
+// worker bound to "tw". The App's rail starts with the cursor on the folded
+// orch header (= the coordinator), so focusing the coord pane yields "tc"
+// without any rail navigation.
+func seedHeraCoord(t *testing.T, d *db.DB) {
+	t.Helper()
+	o, err := d.CreateHeraOrchestrator("o")
+	testutil.NoError(t, err)
+	coord, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "c", Kind: db.HeraKindCoordinator, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	wkr, err := d.CreateHeraRole(db.CreateHeraRoleInput{OrchestratorID: o.ID, Name: "w", Kind: db.HeraKindWorker, ArgusProject: "p"})
+	testutil.NoError(t, err)
+	for _, b := range []struct {
+		role int64
+		task string
+	}{{coord.ID, "tc"}, {wkr.ID, "tw"}} {
+		testutil.NoError(t, d.Add(&model.Task{ID: b.task, Name: b.task, Status: model.StatusInProgress, Project: "p", CreatedAt: time.Now()}))
+		_, err = d.CreateHeraBinding(db.CreateHeraBindingInput{RoleID: b.role, ArgusTaskID: b.task, WorktreePath: "/wt/" + b.task})
+		testutil.NoError(t, err)
+	}
+}
+
+// TestRefreshHeraClipboardHint asserts the per-tick hint reflects whether a
+// payload is staged for the focused pane's task.
+func TestRefreshHeraClipboardHint(t *testing.T) {
+	d := testDB(t)
+	seedHeraCoord(t, d)
+
+	fp := newFakeProvider()
+	app := New(d, fp, false)
+	app.heraPage.Refresh()
+
+	// Cursor rests on the folded orch header (the coordinator); focus its pane.
+	app.heraPage.Machine().SetRegion(hera.FocusCoord)
+	testutil.Equal(t, app.heraPage.FocusedTerminalTaskID(), "tc")
+
+	// Nothing staged → hint off.
+	app.refreshHeraClipboardHint()
+	testutil.Equal(t, app.heraPage.ClipboardHint(), false)
+
+	// Payload staged for the focused pane's task → hint on.
+	fp.setPayload("x", true)
+	app.refreshHeraClipboardHint()
+	testutil.Equal(t, app.heraPage.ClipboardHint(), true)
+
+	// Focus the rail (no terminal) → hint forced off even with a payload staged.
+	app.heraPage.Machine().SetRegion(hera.FocusRail)
+	app.refreshHeraClipboardHint()
+	testutil.Equal(t, app.heraPage.ClipboardHint(), false)
+}
+
+func TestRefreshHeraClipboardHint_NoAccessor(t *testing.T) {
+	d := testDB(t)
+	seedHeraCoord(t, d)
+
+	// Plain runner is not a clipboardAccessor → hint stays off even with a focused pane.
+	app := New(d, agent.NewRunner(nil), false)
+	app.heraPage.Refresh()
+	app.heraPage.Machine().SetRegion(hera.FocusCoord)
+	app.refreshHeraClipboardHint()
+	testutil.Equal(t, app.heraPage.ClipboardHint(), false)
 }
 
 // TestCopyToClipboard_WriterError covers the early-return branch in
