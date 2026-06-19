@@ -920,6 +920,37 @@ func TestStatusIcon_BlockedOutranksActivity(t *testing.T) {
 	testutil.Equal(t, icon, theme.IconNeedsInput)
 }
 
+// TestStatusIcon_NeedsInputSources covers the BUG-018 "(?)" triggers + precedence:
+// the role's own authoritative NeedsInput flag, the subtree rollup, and the
+// precedence against ready_to_close (wins over rollup) and done (loses to rollup).
+func TestStatusIcon_NeedsInputSources(t *testing.T) {
+	t.Run("own needs-input flag shows (?)", func(t *testing.T) {
+		icon, style := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress", NeedsInput: true}, false, 0)
+		testutil.Equal(t, icon, theme.IconNeedsInput)
+		testutil.Equal(t, style, theme.StyleNeedsInput)
+	})
+	t.Run("subtree rollup shows (?) on an otherwise-idle coordinator", func(t *testing.T) {
+		// A coordinator with no own signal (idle/working) but a needs-input
+		// descendant: the rollup must surface "(?)".
+		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusWorking, SubtreeNeedsInput: true}, false, 0)
+		testutil.Equal(t, icon, theme.IconNeedsInput)
+	})
+	t.Run("rollup beats a done coordinator", func(t *testing.T) {
+		icon, _ := statusIcon(&RoleView{Live: true, HasStatus: true, Status: db.HeraStatusDone, SubtreeNeedsInput: true}, false, 0)
+		testutil.Equal(t, icon, theme.IconNeedsInput)
+	})
+	t.Run("ready_to_close still wins over the rollup", func(t *testing.T) {
+		icon, _ := statusIcon(&RoleView{Live: true, ReadyToClose: true, SubtreeNeedsInput: true}, false, 0)
+		testutil.Equal(t, icon, theme.IconReview)
+	})
+	t.Run("no needs-input → not (?)", func(t *testing.T) {
+		icon, _ := statusIcon(&RoleView{Live: true, TaskStatus: "in_progress"}, false, 0)
+		if icon == theme.IconNeedsInput {
+			t.Fatalf("expected a non-needs-input glyph, got %q", icon)
+		}
+	})
+}
+
 // TestRail_DrawDoesNotPanic exercises every drawRow branch against a real
 // SimulationScreen (the required SimulationScreen integration for new widget
 // rendering). It covers orchestrators, roles, freelance, archive, rules, and

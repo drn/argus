@@ -1184,12 +1184,15 @@ func liveRoleCount(o *OrchView) int {
 }
 
 // statusIcon picks the glyph + style for a role row. ready_to_close (M4) wins
-// over everything else with a distinct "ready to check off" mark; an
-// operator/agent-set blocked or done assertion is honoured next; then GENUINE
-// activity (a live binding whose bound argus task is in_progress — role.IsActive)
-// animates the spinner; otherwise the hera role status / binding presence drives
-// a static glyph. dim forces the dimmed style for archived placement (the glyph
-// never lies — only the style dims).
+// over everything else with a distinct "ready to check off" mark; the
+// needs-input "(?)" indicator is honoured next — the role's OWN signal
+// (authoritative needs-input flag or a self-asserted blocked status) OR the
+// subtree ROLLUP (any descendant needs input, transitively across bridges), so
+// attention bubbles up to every ancestor coordinator and the root (BUG-018);
+// then a done assertion, then GENUINE activity (a live binding whose bound argus
+// task is in_progress — role.IsActive) animates the spinner; otherwise the hera
+// role status / binding presence drives a static glyph. dim forces the dimmed
+// style for archived placement (the glyph never lies — only the style dims).
 //
 // frame is the current spinner animation frame: only a genuinely-active role
 // renders the active spinner's frame so it animates. The animated "working"
@@ -1209,9 +1212,16 @@ func statusIcon(role *RoleView, dim bool, frame int) (rune, tcell.Style) {
 	var glyph rune
 	var style tcell.Style
 	switch {
-	case role.HasStatus && role.Status == db.HeraStatusBlocked:
-		// A deliberate "I'm blocked" assertion must not be masked by the activity
-		// spinner even while the task is technically still in_progress (waiting).
+	case role.ShowsNeedsInput():
+		// Needs-input "(?)" — the role's OWN signal (authoritative needs-input flag
+		// OR a deliberate "I'm blocked" hera status) OR the subtree ROLLUP computed
+		// in BuildModel: any descendant role (transitively across bridged
+		// sub-orchestrators) needs input, so the attention bubbles up to every
+		// ancestor coordinator and the root (BUG-018). Precedence: this ranks below
+		// the role's own ready_to_close mark (above) and ABOVE done/active/idle/live
+		// — a descendant needing input surfaces on an idle/working/done ancestor,
+		// because it is the one actionable thing in the subtree. It is never masked
+		// by the activity spinner while the task is technically still in_progress.
 		glyph, style = theme.IconNeedsInput, theme.StyleNeedsInput
 	case role.HasStatus && role.Status == db.HeraStatusDone:
 		glyph, style = '✓', theme.StyleComplete

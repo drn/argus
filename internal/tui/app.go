@@ -1939,6 +1939,11 @@ func (a *App) refreshTasksWithIDs(runningIDs, idleIDs []string) {
 	a.syncIdleUnvisited()
 	a.needsInputIDs = a.detectNeedsInputSticky(idleIDs, runningIDs, prevNeedsInput)
 	a.tasklist.SetNeedsInput(a.needsInputIDs)
+	// Feed the SAME authoritative needs-input set to the Hera rail so a blocked
+	// worker shows "(?)" and the rollup bubbles it up to ancestor coordinators
+	// (BUG-018). Cheap pure setter; the rebuild is scheduled below when the tab is
+	// active. Always non-nil (created at construction); remote mode no-ops.
+	a.heraPage.SetNeedsInput(a.needsInputIDs)
 	a.tasklist.SetPRStates(a.readPRStates())
 	heraWorkers, heraCoordinators := a.readHeraRoles()
 	a.tasklist.SetHeraWorkers(heraWorkers)
