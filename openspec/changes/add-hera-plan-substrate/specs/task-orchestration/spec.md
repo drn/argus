@@ -64,7 +64,7 @@ Each orchestrator SHALL own its own plan DAG (the blocking edges among its own r
 
 ### Requirement: Gater materializes a planned node when its blockers complete
 
-The system SHALL run a hera-native gater that watches role status and, when **all** of a planned node's blockers have reached `done`, materializes that node into a live worker by creating its binding and agent via the existing `agent.CreateAndStart` against the **pre-created** role (not a freshly minted role). Materialization SHALL be idempotent: a node that is already bound, already materializing, or already `ready`-and-claimed SHALL NOT be materialized again. A node with any blocker not yet `done` SHALL remain planned. At materialization the worktree and branch SHALL be created, with `base_branch` resolved from the now-existing blocker branches.
+The system SHALL run a hera-native gater that watches role status and, when **all** of a planned node's blockers have reached `done`, materializes that node into a live worker by creating its binding and agent via the existing `agent.CreateAndStart` against the **pre-created** role (not a freshly minted role). Materialization SHALL be idempotent: a node that is already bound, already materializing, or already `ready`-and-claimed SHALL NOT be materialized again. A node with any blocker not yet `done` SHALL remain planned. At materialization the worktree and branch SHALL be created, with `base_branch` resolved from the now-existing blocker branches; when a node has multiple blockers, `base_branch` SHALL be the branch of the most-recently-bound blocker (the stack tip).
 
 #### Scenario: All blockers done triggers materialization
 
@@ -107,7 +107,7 @@ The system SHALL deliver to every gater-materialized worker a standing instructi
 
 ### Requirement: Gate on role-status done; a failed blocker holds the dependent
 
-The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work.
+The gate SHALL be the blocker's hera **role status** reaching `done` — the worker's explicit declaration that its work is finished. This is distinct from the argus **task status**: a finished hera worker rolls its task to `in_review` (never auto-`complete`), so task status is NOT the gate; only role-status `done` is. A blocker still `working` — for example iterating on CI by pushing PRs — SHALL NOT satisfy the gate, so the next phase does not start under churning work. When a blocker's session ends without its role ever reaching `done` (a crash or other failure), the system SHALL **hold** the dependent (not materialize it) and notify the coordinator, so no worker is spawned and parked behind dead or unfinished work. The hold-notification SHALL be sent once per held (dependent, blocker) pair rather than repeated on each evaluation, so the coordinator is alerted without being spammed.
 
 #### Scenario: Only role-status done opens the gate
 
