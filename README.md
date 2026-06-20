@@ -390,7 +390,7 @@ Argus runs an MCP server on port 7742 and auto-injects it into every agent workt
 | `task_complete`        | Mark a task as complete (sets status, stamps `EndedAt`). Pass `cwd` or `id`. Does NOT stop a running agent — call `task_stop` first if needed.                     |
 | `task_set_result`      | Persist an opaque JSON result blob the orchestrator can read (PR URL, milestone, failure reason). Pass `cwd` or `id` plus `result`. Up to 64 KiB.                  |
 
-Sample skills at `.claude/skills/archive/SKILL.md` and `.claude/skills/argus-complete/SKILL.md` let an agent finalize its own task at the end of a session via `cwd` resolution. Completing and archiving are independent axes.
+The bundled skills (`.claude/skills/{archive,argus-complete,argus-schedule,hera}`, installed via `./install-claude-skills.sh` — see [Agent-facing skills](#agent-facing-skills)) let an agent finalize, schedule, and coordinate its own work via `cwd` resolution. Completing and archiving are independent axes.
 
 **Inter-Task Messaging** (peer-to-peer between live or paused tasks):
 
@@ -438,6 +438,29 @@ If the recipient has a live agent session the daemon also writes a single notifi
 | Tool                | Description                                                                                                                                                                                          |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `artifact_register` | Register a file the agent produced (HTML report, PDF, markdown, image, or text) so it renders in Argus Web. Params: `path` (required), `title`, `type`, `id` or `cwd`. Self-contained files render best; 25 MiB max. |
+
+### Agent-facing skills
+
+A Claude session inside an argus worktree sees the `mcp__argus__*` tool names but not when to reach for them or how they compose. Argus ships that orientation as installable Claude assets, gated at runtime so they stay inert outside argus sandboxes:
+
+- `.claude/skills/hera/SKILL.md` — coordinate multi-agent work over hera's `mcp__argus__hera_*` tools (bootstrap an orchestrator, claim or attach a worker/freelance role, message other roles).
+- `.claude/skills/{archive,argus-complete,argus-schedule}/SKILL.md` — let an agent finalize, archive, and schedule its own argus task via `cwd` resolution.
+- `claude/snippets/*.md` — always-loaded orientation snippets (`hera.md`, `argus-tasks.md`) that point the agent at the skills above.
+
+Install them:
+
+```sh
+./install-claude-skills.sh        # prompts (Y/n) for the skill symlinks, then again for the snippet wiring
+./install-claude-skills.sh --yes  # accept both steps without prompting
+```
+
+This symlinks each `.claude/skills/*` into `~/.claude/skills/<name>` and (optionally) appends each `claude/snippets/*.md` into `~/.claude/CLAUDE.md` between managed markers. It's idempotent — re-runs report what's already current and replace each snippet block in place rather than duplicating it. Remove everything later:
+
+```sh
+./uninstall-claude-skills.sh      # removes repo-owned skill symlinks + strips the snippet blocks
+```
+
+Uninstall only removes a `~/.claude/skills/<name>` symlink when it points back at this repo, and strips snippet blocks by their markers — your own CLAUDE.md content is left intact.
 
 ### Remote Control: REST API
 
