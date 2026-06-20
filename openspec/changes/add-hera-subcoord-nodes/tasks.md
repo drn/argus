@@ -2,11 +2,11 @@
 
 ## 1. Tests (failing first — Prove-It)
 
-- [ ] 1.1 `internal/db`: failing tests for the planned-node kind discriminator — `CreateHeraPlannedRole`/`CreateHeraPlan` persist `subcoord` kind + goal (goal = the existing delivery prompt; NO child-orch/coord-role names stored); `ListHeraPlannedNodes` surfaces kind + goal; absent kind defaults to `worker` (byte-identical to today)
-- [ ] 1.2 `internal/mcp`: failing tests for `hera_plan_node`/`hera_plan` accepting `kind=subcoord` + goal, rejecting a `subcoord` node with no goal, rejecting a non-coordinator caller, and mixing node kinds in a whole-graph `hera_plan`
-- [ ] 1.3 `internal/agent`: failing tests for `MaterializeHeraSubCoordinator` — one new task, parent worker binding against the pre-created role + new child orchestrator with a coordinator role bound to the SAME task; LIFO unwind on `runner.Start` failure ends bindings + deletes child orch/coord role but leaves the planned role; the new task is never the parent coordinator's task
-- [ ] 1.4 `internal/heragater`: failing tests for routing — a ready `subcoord` node calls the coordinator materialize path (not `MaterializeHeraWorker`); a `worker`/absent-kind node still calls the worker path; idempotent (already-bound `subcoord` node not re-materialized); worker-role `done` on a materialized sub-coord still gates the parent's dependents
-- [ ] 1.5 Confirm every `it should X` criterion in `design.md` maps to a failing test (Prove-It Pattern)
+- [x] 1.1 `internal/db`: failing tests for the planned-node kind discriminator — `CreateHeraPlannedRole`/`CreateHeraPlan` persist `subcoord` kind + goal (goal = the existing delivery prompt; NO child-orch/coord-role names stored); `ListHeraPlannedNodes` surfaces kind + goal; absent kind defaults to `worker` (byte-identical to today)
+- [x] 1.2 `internal/mcp`: failing tests for `hera_plan_node`/`hera_plan` accepting `kind=subcoord` + goal, rejecting a `subcoord` node with no goal, rejecting a non-coordinator caller, and mixing node kinds in a whole-graph `hera_plan`
+- [x] 1.3 `internal/agent`: failing tests for `MaterializeHeraSubCoordinator` — one new task, parent worker binding against the pre-created role + new child orchestrator with a coordinator role bound to the SAME task; LIFO unwind on `runner.Start` failure ends bindings + deletes child orch/coord role but leaves the planned role; the new task is never the parent coordinator's task
+- [x] 1.4 `internal/heragater`: failing tests for routing — a ready `subcoord` node calls the coordinator materialize path (not `MaterializeHeraWorker`); a `worker`/absent-kind node still calls the worker path; idempotent (already-bound `subcoord` node not re-materialized); worker-role `done` on a materialized sub-coord still gates the parent's dependents
+- [x] 1.5 Confirm every `it should X` criterion in `design.md` maps to a failing test (Prove-It Pattern)
 
 ## 2. Authoring: store + MCP accept the sub-coordinator node kind
 
