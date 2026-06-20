@@ -688,13 +688,13 @@ func (a *App) buildUI() {
 		// only — the copy method no-ops gracefully under the in-process runner.
 		a.heraPage.OnCopyClipboard = a.copyStagedClipboardForHeraPane
 
-		// Plan-DAG render mode of the Details pane. The App wires only OnEnter
-		// (jump to a leaf node's agent view); OnDrillIn (push the child
-		// orchestrator's plan) is owned by the page itself — it needs the rail
-		// bridge index and the in-package projection. The node/edge set is projected
-		// in-process by the hera package (heraPlanNodesWithBridge over the rail
-		// model), so there is no provider seam.
-		a.heraPage.Plan().OnEnter = func(id string) { a.openAgentForTask(id) }
+		// Plan-DAG Enter/drill-in are BOTH owned by the page (they need the rail +
+		// focus machine and the in-package projection), so the App wires neither:
+		// plain-leaf Enter jumps to the node's role WITHIN the Hera view (rail
+		// select + focus the agent pane — NOT a Tasks-tab switch; BUG-002), and
+		// OnDrillIn pushes the child orchestrator's plan. The node/edge set is
+		// projected in-process by the hera package (heraPlanNodesWithBridge over the
+		// rail model), so there is no provider seam.
 	}
 
 	a.pages = tview.NewPages().

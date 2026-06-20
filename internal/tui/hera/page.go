@@ -169,9 +169,13 @@ func NewHeraPage(reader HeraReader) *HeraPage {
 	p.rail.SetOnSelectionChanged(p.applySelection)
 	// Drill-in (D6) is owned by the page, not the App: it needs the rail bridge
 	// index to resolve the child orchestrator and the in-package projection to
-	// build the child plan. OnEnter (jump-to-agent-view, the App's concern) is
-	// wired separately on the exposed widget via Plan().
+	// build the child plan.
 	p.plan.OnDrillIn = p.drillIntoChild
+	// Plain-leaf Enter jumps to that node's role WITHIN the Hera view (BUG-002):
+	// select the role in the rail by its bound task id + focus the agent pane —
+	// NOT a switch to the Tasks tab. Page-owned (it needs the rail + focus
+	// machine). The App must NOT override Plan().OnEnter with a Tasks-jump.
+	p.plan.OnEnter = p.jumpToLeaf
 	p.refresher = NewRefresher(DefaultRefreshDebounce, p.doRefresh)
 	return p
 }
@@ -193,6 +197,34 @@ func (p *HeraPage) drillIntoChild(id string) {
 	p.plan.PushOrch("Details ▸ "+child.Name+" · Plan", nodes, edges)
 	uxlog.Log("[hera-view] plan drill-in: task=%s child=%s nodes=%d edges=%d depth=%d",
 		id, child.Name, len(nodes), len(edges), p.plan.DrillDepth())
+}
+
+// jumpToLeaf is the plan widget's OnEnter handler for a plain-leaf node
+// (BUG-002): instead of switching to the Tasks tab, it jumps to that node's role
+// WITHIN the Hera view — select the role in the rail by its bound task id (which
+// fires applySelection → rebinds the AGENT pane to that task) and move focus into
+// the agent pane so the operator can type into it immediately. id is the node's
+// bound argus task id. A node whose role has no visible rail row (or remote mode,
+// where the rail is inert) leaves focus on the plan region. MUST run on the tview
+// main thread (rail + focus mutations).
+func (p *HeraPage) jumpToLeaf(id string) {
+	if p.remote || id == "" {
+		return
+	}
+	if !p.rail.SelectByTaskID(id) {
+		uxlog.Log("[hera-view] plan leaf-enter: no rail row for task=%s (focus unchanged)", id)
+		return
+	}
+	// applySelection ran via onSelectionChanged; a plain worker selection feeds the
+	// AGENT pane, so land focus there. (A leaf that resolved to a coordinator/sub-
+	// coord row is detailsMode — advance into the coord pane instead, mirroring the
+	// rail Enter behaviour.)
+	if !p.detailsMode {
+		p.focus.SetRegion(FocusAgent)
+	} else {
+		p.focus.SetRegion(FocusCoord)
+	}
+	uxlog.Log("[hera-view] plan leaf-enter: jumped to task=%s within hera (detailsMode=%v)", id, p.detailsMode)
 }
 
 // Reconcile late-binds live sessions and is the App-tick hook (main thread).

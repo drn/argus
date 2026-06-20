@@ -264,3 +264,81 @@ func TestDetailsPlan_MouseRoutesToWidget(t *testing.T) {
 	mh(tview.MouseLeftClick, ev, noFocus)
 	testutil.Equal(t, p.Machine().State(), FocusAgent)
 }
+
+// leafPlanPage builds a coordinator orchestrator with one LIVE worker leaf bound
+// to a real task, with the coordinator selected (details mode → the plan shows
+// the worker as a leaf node whose node id is its bound task). Returns the page.
+func leafPlanPage(t *testing.T) *HeraPage {
+	t.Helper()
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.SetSessionResolver(resolverFor(map[string]*fakeSession{
+		"t-coord": {id: "t-coord", alive: true},
+		"t-wkr":   {id: "t-wkr", alive: true},
+	}))
+	p.Refresh()
+	sim := tcell.NewSimulationScreen("UTF-8")
+	testutil.NoError(t, sim.Init())
+	t.Cleanup(sim.Fini)
+	sim.SetSize(120, 30)
+	p.SetRect(0, 0, 120, 30)
+	p.Draw(sim)
+	return p
+}
+
+// TestPlanLeafEnter_JumpsWithinHeraNotTasks is BUG-002: Enter on a plain-leaf
+// plan node selects that node's role in the rail and focuses the AGENT pane —
+// staying in the Hera view — instead of switching to the Tasks tab. The page
+// owns Plan().OnEnter (jumpToLeaf); the App wires no Tasks-jump.
+func TestPlanLeafEnter_JumpsWithinHeraNotTasks(t *testing.T) {
+	p := leafPlanPage(t)
+	testutil.Equal(t, selectOrchByName(p, "orch"), true)
+	testutil.Equal(t, p.detailsMode, true) // coordinator selected → details/plan
+
+	// The plan shows the live worker as a leaf node; its node id is the bound task.
+	pl := p.Plan()
+	testutil.Equal(t, pl.CurrentNodeID(), "t-wkr")
+
+	// Enter on the leaf → jump within Hera.
+	pl.ActivateCursor()
+
+	// The rail selection moved to the worker role, and the AGENT pane rebound to it
+	// (applySelection fired via onSelectionChanged); focus is now the agent pane.
+	testutil.Equal(t, p.SelectionContext().TaskID(), "t-wkr")
+	testutil.Equal(t, p.detailsMode, false)
+	testutil.Equal(t, p.Machine().State(), FocusAgent)
+	testutil.Equal(t, p.AgentPane().Session().(*fakeSession).id, "t-wkr")
+}
+
+// TestPlanLeafEnter_OnEnterIsPageOwned: the page wires Plan().OnEnter itself (to
+// jumpToLeaf), so the callback is non-nil even when the App never touches it.
+func TestPlanLeafEnter_OnEnterIsPageOwned(t *testing.T) {
+	p := NewHeraPage(memDB(t))
+	testutil.Equal(t, p.Plan().OnEnter != nil, true)
+}
+
+// TestRailSelectByTaskID finds and selects a role row by its bound task id,
+// firing onSelectionChanged; an unknown id is a no-op returning false.
+func TestRailSelectByTaskID(t *testing.T) {
+	d := memDB(t)
+	orch := seedOrch(t, d, "orch")
+	seedBoundRole(t, d, orch, "coord", db.HeraKindCoordinator, "t-coord")
+	seedBoundRole(t, d, orch, "wkr", db.HeraKindWorker, "t-wkr")
+	p := NewHeraPage(d)
+	p.Refresh()
+	r := p.Rail()
+
+	var fired int
+	r.SetOnSelectionChanged(func() { fired++ })
+	testutil.Equal(t, r.SelectByTaskID("t-wkr"), true)
+	testutil.Equal(t, r.Selected() != nil && r.Selected().TaskID == "t-wkr", true)
+	testutil.Equal(t, fired >= 1, true)
+
+	// Unknown task id: no row, no-op, false.
+	before := r.CursorIndex()
+	testutil.Equal(t, r.SelectByTaskID("nope"), false)
+	testutil.Equal(t, r.CursorIndex(), before)
+}

@@ -9,10 +9,10 @@ For a coordinator selection the system SHALL render BOTH the read-only `" Detail
 - **WHEN** a coordinator is selected and the region is tall enough
 - **THEN** the `" Details "` roster and the `" Plan "` graph both render, with no `" DAG "` or `" Orchestration Tree "` title
 
-#### Scenario: Enter on a plain leaf node opens its agent view
+#### Scenario: Enter on a plain leaf node jumps to its role within the Hera view
 
 - **WHEN** the details region is focused and the user presses Enter on a plain leaf node (not a group, not a sub-coordinator)
-- **THEN** the wired `OnEnter` callback fires to jump to that node's agent view
+- **THEN** the system selects that node's role in the Hera rail (by its bound task id) and moves focus to that role's agent pane, staying on the Hera tab (it SHALL NOT switch to the Tasks view)
 
 ### Requirement: Plan DAG projects blocking edges and planned nodes in-memory (area 6)
 

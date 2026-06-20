@@ -937,11 +937,13 @@ func TestDraw_ScrollKeepsCursorBoxVisible(t *testing.T) {
 	var nodes []Node
 	var edges []Edge
 	ids := []string{"0a", "1a", "2a", "3a", "4a", "5a", "6a", "7a"}
-	for i, id := range ids {
+	prev := ""
+	for _, id := range ids {
 		nodes = append(nodes, node(id))
-		if i > 0 {
-			edges = append(edges, Edge{From: ids[i-1], To: id})
+		if prev != "" {
+			edges = append(edges, Edge{From: prev, To: id})
 		}
+		prev = id
 	}
 	w.SetData(nodes, edges)
 	w.SetFocused(true)

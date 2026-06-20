@@ -398,20 +398,23 @@ func projectionSig(nodes []Node, edges []Edge) uint64 {
 		h ^= 0 // field separator
 		h *= 1099511628211
 	}
-	mixByte := func(b byte) {
-		h ^= uint64(b)
+	mixU := func(v uint64) {
+		h ^= v
 		h *= 1099511628211
 	}
 	for _, n := range nodes {
 		mix(n.ID)
-		mixByte(byte(n.State))
+		// Fold the state via its glyph string (a stable per-state value) so the sig
+		// changes when a node's state flips — reuses the byte mixer, no numeric
+		// conversion gosec would flag (State is a non-negative enum, unprovably so).
+		mix(string(n.State.Glyph()))
 		if n.Drillable {
-			mixByte(1)
+			mixU(1)
 		} else {
-			mixByte(0)
+			mixU(0)
 		}
 	}
-	mixByte(0xFF) // node/edge boundary
+	mixU(0xFF) // node/edge boundary
 	for _, e := range edges {
 		mix(e.From)
 		mix(e.To)
@@ -461,15 +464,11 @@ func groupKey(members []string) string {
 // cursor falls back to stage 0, slot 0 and clampCursor finishes the job.
 func (w *Widget) reanchorCursor(anchorNodeID, anchorGroupKey string) {
 	w.cursor = Cursor{Member: -1}
-	if anchorNodeID != "" {
-		if found := w.locateNode(anchorNodeID); found {
-			return
-		}
+	if anchorNodeID != "" && w.locateNode(anchorNodeID) {
+		return
 	}
-	if anchorGroupKey != "" {
-		if found := w.locateGroup(anchorGroupKey); found {
-			return
-		}
+	if anchorGroupKey != "" && w.locateGroup(anchorGroupKey) {
+		return
 	}
 }
 

@@ -893,6 +893,25 @@ func (r *Rail) ToggleCollapse() {
 	r.persist() // fold change (BUG-002)
 }
 
+// SelectByTaskID moves the cursor to the first selectable role row whose bound
+// task is taskID, firing onSelectionChanged so the panes rebind. Returns true
+// when such a row exists in the CURRENT (built) row set. Used by the plan view's
+// leaf-Enter to jump to a node's role WITHIN the Hera view (BUG-002) — never a
+// Tasks-tab switch. A taskID with no visible row (e.g. under a collapsed branch
+// the plan never surfaces) is a no-op returning false.
+func (r *Rail) SelectByTaskID(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	for i, row := range r.rows {
+		if row.selectable() && row.role != nil && row.role.TaskID == taskID {
+			r.setCursor(i) // funnels through onSelectionChanged + persist
+			return true
+		}
+	}
+	return false
+}
+
 // Selected returns the RoleView under the cursor, or nil when the cursor is on
 // a header/orchestrator. 6b uses this to bind the panes.
 func (r *Rail) Selected() *RoleView {
