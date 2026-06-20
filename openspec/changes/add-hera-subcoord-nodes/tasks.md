@@ -30,6 +30,6 @@
 
 **Depends on:** Stage 3
 
-- [ ] 4.1 `context/knowledge/gotchas/orchestration.md`: add sub-coord-node gotchas — the node stays a WORKER role in the parent (DAG model unchanged); materialize writes two bindings on one task; nesting is the existing `SubtreeOrchIDs` bridge (no new mechanism); LIFO unwind deletes the child orch but leaves the planned role; sub-coord is opt-in (worker default)
-- [ ] 4.2 README Reference: update the MCP `hera_plan_node`/`hera_plan` parameter rows to note the `kind`/`goal` params (Reference appendix only — no top-half marketing edit)
-- [ ] 4.3 Run `make pre-pr` and confirm green before any push
+- [x] 4.1 `context/knowledge/gotchas/orchestration.md`: add sub-coord-node gotchas — the node stays a WORKER role in the parent (DAG model unchanged); materialize writes two bindings on one task; nesting is the existing `SubtreeOrchIDs` bridge (no new mechanism); LIFO unwind deletes the child orch but leaves the planned role; sub-coord is opt-in (worker default)
+- [x] 4.2 README Reference: update the MCP `hera_plan_node`/`hera_plan` parameter rows to note the `kind`/`goal` params (Reference appendix only — no top-half marketing edit)
+- [x] 4.3 Run `make pre-pr` and confirm green before any push

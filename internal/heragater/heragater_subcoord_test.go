@@ -41,7 +41,7 @@ func newExtendedGaterFixture(t *testing.T) *extendedGaterFixture {
 	}
 	// Override the base watcher with a fresh one that includes both seams.
 	// The base materialize seam records worker materializations.
-	d := f.gaterFixture.d
+	d := f.d
 	f.w = New(d,
 		func(role *db.HeraRole, taskPrompt, project, branch, backend, mdl string) error {
 			f.mu.Lock()
@@ -191,7 +191,7 @@ func TestSubCoord_GaterMixedPlanWorkerAndSubCoord(t *testing.T) {
 
 	// Tick 2: subcoord is now ready, routes to subcoord materializer.
 	f.w.Tick()
-	testutil.Equal(t, f.workerMatCalls, 1)  // no extra worker materializations
+	testutil.Equal(t, f.workerMatCalls, 1) // no extra worker materializations
 	testutil.Equal(t, len(f.subCoordMaterialized()), 1)
 	testutil.Equal(t, f.subCoordMaterialized()[0].ID, scNode.ID)
 }

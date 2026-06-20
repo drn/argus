@@ -344,7 +344,8 @@ func (w *Watcher) materializeSubCoord(node *db.HeraRole, parentOrchName, coordNa
 	seam := w.subCoordMaterial
 	w.mu.Unlock()
 	if seam == nil {
-		w.logf("[heragater] subcoord seam unset for node %d (%s); falling back to worker path", node.ID, node.Name)
+		slog.Warn("[heragater] MISCONFIGURATION: subcoord seam not wired (SetSubCoordMaterializer not called before Start); node will materialize as a worker-kind agent instead of a coordinator",
+			"node_id", node.ID, "node_name", node.Name)
 		seam = w.materialize
 	}
 
