@@ -66,6 +66,7 @@ const (
 	modeTaskSwitcher
 	modeQuickAdd
 	modeConfirmDeleteProject
+	modeConfirmPrune // Ctrl+R "prune completed tasks" caution gate
 	modeRestartDaemonPrompt
 	modeConfirmRestartSupervisor // Settings → "Restart Session Supervisor" caution gate
 	modeAppleEventsPicker
@@ -152,6 +153,11 @@ type App struct {
 	// Confirm delete modal (created on demand)
 	confirmDeleteModal        *modal.ConfirmDeleteModal
 	confirmDeleteProjectModal *modal.ConfirmDeleteProjectModal
+
+	// Confirm prune modal (created on demand when Ctrl+R is pressed with at
+	// least one completed task). Pruning deletes every completed task plus
+	// their worktrees and branches, so it is gated behind a y/N confirmation.
+	confirmPruneModal *modal.ConfirmModal
 
 	// Help overlay (created on demand)
 	helpModal    *modal.HelpModal
@@ -2204,6 +2210,12 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Confirm prune-completed modal (Ctrl+R caution gate).
+	if a.mode == modeConfirmPrune && a.confirmPruneModal != nil {
+		a.handleConfirmPruneKey(event)
+		return nil
+	}
+
 	// Restart-daemon prompt — shown on startup when daemon binary is stale.
 	if a.mode == modeRestartDaemonPrompt && a.restartDaemonModal != nil {
 		a.handleRestartDaemonKey(event)
@@ -2383,7 +2395,7 @@ func (a *App) handleGlobalKey(event *tcell.EventKey) *tcell.EventKey {
 		}
 	case tcell.KeyCtrlR:
 		if a.mode == modeTaskList && a.header.ActiveTab() == widget.TabTasks {
-			a.pruneCompletedTasks()
+			a.openConfirmPrune()
 			return nil
 		}
 	// NOTE: Left/Right are intentionally NOT handled here. They used to cycle
@@ -5142,6 +5154,74 @@ func (a *App) deleteTask(t *model.Task) {
 			agent.DeleteRemoteBranch(repoDir, branch)
 		}
 	}()
+}
+
+// openConfirmPrune gates pruning behind a y/N confirmation. Pruning is
+// destructive — it deletes every completed task plus its worktree and branch —
+// so it is never run on a bare Ctrl+R. When no completed tasks exist the modal
+// is skipped and a brief status note explains why.
+func (a *App) openConfirmPrune() {
+	// Re-entrancy guard: a prune is already running (header notice set).
+	if a.header.Notice() != "" {
+		return
+	}
+
+	// Count from the already-loaded task list for the prompt. This is a display
+	// snapshot only — the authoritative set is re-derived by db.PruneCompleted
+	// when the user confirms, so a task completing during modal dwell time can
+	// make the actual deletion count differ from the number shown here. Narrow
+	// (human-speed) window, cosmetic-only, and correctness is unaffected.
+	completed := 0
+	for _, t := range a.tasks {
+		if t != nil && t.Status == model.StatusComplete {
+			completed++
+		}
+	}
+	if completed == 0 {
+		a.statusbar.SetInfo("No completed tasks to prune")
+		uxlog.Log("[tui] prune: no completed tasks, skipping confirmation")
+		return
+	}
+
+	noun := "task"
+	if completed != 1 {
+		noun = "tasks"
+	}
+	msg := fmt.Sprintf(
+		"Delete %d completed %s and remove their worktrees and branches? This cannot be undone.",
+		completed, noun,
+	)
+	a.confirmPruneModal = modal.NewConfirmModal("Prune completed tasks", msg)
+	a.mode = modeConfirmPrune
+	a.pages.AddPage("confirmprune", a.confirmPruneModal, true, true)
+	a.pages.SwitchToPage("confirmprune")
+	a.tapp.SetFocus(a.confirmPruneModal)
+}
+
+// handleConfirmPruneKey processes keys in the confirm prune modal.
+func (a *App) handleConfirmPruneKey(event *tcell.EventKey) {
+	handler := a.confirmPruneModal.InputHandler()
+	handler(event, func(p tview.Primitive) {})
+
+	if a.confirmPruneModal.Canceled() {
+		uxlog.Log("[tui] prune: canceled at confirmation")
+		a.closeConfirmPrune()
+		return
+	}
+
+	if a.confirmPruneModal.Confirmed() {
+		a.closeConfirmPrune()
+		a.pruneCompletedTasks()
+	}
+}
+
+// closeConfirmPrune dismisses the confirm prune modal.
+func (a *App) closeConfirmPrune() {
+	a.mode = modeTaskList
+	a.confirmPruneModal = nil
+	a.pages.RemovePage("confirmprune")
+	a.pages.SwitchToPage("tasks")
+	a.tapp.SetFocus(a.tasklist)
 }
 
 // pruneCompletedTasks removes all completed tasks, cleaning up worktrees and branches.

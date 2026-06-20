@@ -1613,7 +1613,7 @@ func TestApp_RunScheduleNowRemote_SuccessPathRefreshes(t *testing.T) {
 	testutil.Equal(t, errText, "")
 }
 
-func TestCtrlRPrunesCompleted(t *testing.T) {
+func TestCtrlROpensPruneConfirm(t *testing.T) {
 	d := testDB(t)
 	runner := agent.NewRunner(nil)
 	app := New(d, runner, false)
@@ -1629,8 +1629,82 @@ func TestCtrlRPrunesCompleted(t *testing.T) {
 	if result != nil {
 		t.Error("Ctrl+R should be consumed (return nil)")
 	}
+	// Ctrl+R only opens the confirmation gate — it must NOT prune yet.
+	if app.mode != modeConfirmPrune || app.confirmPruneModal == nil {
+		t.Fatalf("expected confirm-prune modal open, got mode=%v modal=%v", app.mode, app.confirmPruneModal)
+	}
+	if len(app.tasks) != 2 {
+		t.Errorf("expected 2 tasks before confirmation, got %d", len(app.tasks))
+	}
+}
+
+func TestPruneConfirm_YPrunes(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.wtRoot = t.TempDir()
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "t2", Name: "done", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+	app.refreshTasks()
+
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, 0))
+	// Confirm with 'y'.
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyRune, 'y', 0))
+
+	if app.mode != modeTaskList || app.confirmPruneModal != nil {
+		t.Fatalf("expected modal dismissed after confirm, got mode=%v modal=%v", app.mode, app.confirmPruneModal)
+	}
 	if len(app.tasks) != 1 {
-		t.Errorf("expected 1 task after Ctrl+R prune, got %d", len(app.tasks))
+		t.Errorf("expected 1 task after confirmed prune, got %d", len(app.tasks))
+	}
+	for _, task := range app.tasks {
+		if task.Status == model.StatusComplete {
+			t.Errorf("completed task %q should have been pruned", task.Name)
+		}
+	}
+}
+
+func TestPruneConfirm_NCancels(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.wtRoot = t.TempDir()
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+	testutil.NoError(t, d.Add(&model.Task{ID: "t2", Name: "done", Status: model.StatusComplete, Project: "p", CreatedAt: time.Now()}))
+	app.refreshTasks()
+
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, 0))
+	// Cancel with Esc.
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
+
+	if app.mode != modeTaskList || app.confirmPruneModal != nil {
+		t.Fatalf("expected modal dismissed after cancel, got mode=%v modal=%v", app.mode, app.confirmPruneModal)
+	}
+	// Nothing pruned — both tasks survive.
+	if len(app.tasks) != 2 {
+		t.Errorf("expected 2 tasks after canceled prune, got %d", len(app.tasks))
+	}
+}
+
+func TestPruneConfirm_NoCompletedSkipsModal(t *testing.T) {
+	d := testDB(t)
+	runner := agent.NewRunner(nil)
+	app := New(d, runner, false)
+	app.wtRoot = t.TempDir()
+
+	testutil.NoError(t, d.Add(&model.Task{ID: "t1", Name: "pending", Status: model.StatusPending, Project: "p", CreatedAt: time.Now()}))
+	app.refreshTasks()
+
+	app.handleGlobalKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, 0))
+
+	// No completed tasks — the modal must not open.
+	if app.mode != modeTaskList || app.confirmPruneModal != nil {
+		t.Fatalf("expected no modal when nothing to prune, got mode=%v modal=%v", app.mode, app.confirmPruneModal)
+	}
+	if len(app.tasks) != 1 {
+		t.Errorf("expected 1 task untouched, got %d", len(app.tasks))
 	}
 }
 
