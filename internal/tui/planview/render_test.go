@@ -155,8 +155,8 @@ func TestDraw_CollapsedGroupStillShowsDashedRangeBox(t *testing.T) {
 }
 
 // TestDraw_FannedMemberCursorBoxSelected: the cursor's member box inside a fanned
-// group carries the selection border (ColorSelected when focused); a different
-// member's box does not. This realizes the member-level box highlight.
+// group carries the subtle selection BACKGROUND fill (primary cue) + the selection
+// border foreground (secondary); a different member's box has neither.
 func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 	w := fanGroup("2a", "2b", "2c")
 	w.SetFocused(true)
@@ -167,18 +167,25 @@ func TestDraw_FannedMemberCursorBoxSelected(t *testing.T) {
 
 	sc := drawToSim(t, w, 70, 18)
 	// Search the box content form "○ 2b" (glyph+id, only in a box — the header
-	// shows the full role name "2b-role", never the box form), so boxCornerStyleNear
-	// resolves the member box, not the panel/header border.
+	// shows the full role name "2b-role", never the box form), so the cell + corner
+	// resolve the member box, not the panel/header.
 	bx, by, ok := findStringCell(sc, "○ 2b")
 	testutil.Equal(t, ok, true)
+	// The 2b content cell carries the selection background (primary cue).
+	cells, scw, _ := sc.GetContents()
+	_, selBg, _ := cells[by*scw+bx].Style.Decompose()
+	testutil.Equal(t, selBg, selectionBG)
+	// And its box border keeps the bright selection foreground (secondary cue).
 	bSel, ok := boxCornerStyleNear(sc, bx, by)
 	testutil.Equal(t, ok, true)
 	bfg, _, _ := bSel.Decompose()
 	testutil.Equal(t, bfg, theme.ColorSelected)
 
-	// 2a's box (non-cursor member) border is NOT the selection colour.
+	// 2a's box (non-cursor member): no selection background, border not selection fg.
 	ax, ay, ok2 := findStringCell(sc, "○ 2a")
 	testutil.Equal(t, ok2, true)
+	_, aBg, _ := cells[ay*scw+ax].Style.Decompose()
+	testutil.Equal(t, aBg == selectionBG, false)
 	aSel, ok := boxCornerStyleNear(sc, ax, ay)
 	testutil.Equal(t, ok, true)
 	afg, _, _ := aSel.Decompose()

@@ -1545,14 +1545,24 @@ func (w *Widget) buildStageBlock(s int) stageBlock {
 }
 
 // layoutNodeBox returns the width/height and a draw closure for a single rounded
-// node box: `╭─╮ / │ <content> │ / ╰─╯`, one space of horizontal padding inside,
-// border painted in the state colour (or the selection border when selected).
+// node box: `╭─╮ / │ <content> │ / ╰─╯`, one space of horizontal padding inside.
+// When selected the WHOLE box (border + interior + content cells) is filled with
+// the subtle selection background (the primary cursor cue, BUG-004) while the
+// border keeps its bright selection foreground and the content its state colour;
+// otherwise the border takes the node's state colour and there is no fill.
 func (w *Widget) layoutNodeBox(content string, contentStyle tcell.Style, selected bool) (int, int, func(tcell.Screen, int, int, clipRect)) {
 	cw := len([]rune(content))
 	innerW := cw + 2*boxHPad
 	boxW := innerW + 2 // borders
 	border := w.boxBorderStyle(contentStyle, selected)
+	if selected {
+		border = border.Background(selectionBG)
+		contentStyle = contentStyle.Background(selectionBG)
+	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		if selected {
+			fillRect(screen, clip, x, y, boxW, nodeBoxH, selectionBG)
+		}
 		w.drawRoundedBox(screen, x, y, boxW, nodeBoxH, border, clip)
 		// Content centered-left after the padding, on the middle row.
 		put(screen, clip, x+1+boxHPad, y+1, content, contentStyle)
@@ -1582,10 +1592,18 @@ func (w *Widget) layoutDashedBox(label, sub, topLabel string, selected bool) (in
 	boxW := innerW + 2
 	boxH := len(lines) + 2
 	border := w.dashedBorderStyle(selected)
+	contentStyle := theme.StyleNormal
+	if selected {
+		border = border.Background(selectionBG)
+		contentStyle = contentStyle.Background(selectionBG)
+	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		if selected {
+			fillRect(screen, clip, x, y, boxW, boxH, selectionBG)
+		}
 		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
 		for i, l := range lines {
-			put(screen, clip, x+1+groupPad, y+1+i, l, theme.StyleNormal)
+			put(screen, clip, x+1+groupPad, y+1+i, l, contentStyle)
 		}
 	}
 	return boxW, boxH, draw
@@ -1623,8 +1641,18 @@ func (w *Widget) layoutFannedGroup(s, slotIdx int, g *Group) (int, int, func(tce
 	boxW := innerW + 2*groupPad + 2
 	boxH := innerH + 2 // dashed top + bottom edges
 	topLabel := w.groupTopLabel(g)
-	border := w.dashedBorderStyle(onSlot && w.cursor.Member < 0)
+	// The enclosure itself is "selected" only when the cursor rests on the group
+	// slot but not on a member (Member < 0); normally a fan-out lands on a member,
+	// so the selection fill rides the member box (layoutNodeBox), not the enclosure.
+	enclosureSel := onSlot && w.cursor.Member < 0
+	border := w.dashedBorderStyle(enclosureSel)
+	if enclosureSel {
+		border = border.Background(selectionBG)
+	}
 	draw := func(screen tcell.Screen, x, y int, clip clipRect) {
+		if enclosureSel {
+			fillRect(screen, clip, x, y, boxW, boxH, selectionBG)
+		}
 		w.drawDashedBox(screen, x, y, boxW, boxH, topLabel, border, clip)
 		cx := x + 1 + groupPad
 		for i, m := range members {
@@ -1695,8 +1723,18 @@ func (w *Widget) dashedBorderStyle(selected bool) tcell.Style {
 	return theme.StyleDimmed.Foreground(theme.ColorBorder)
 }
 
-// selectionBorderStyle is the distinct cursor-box border: bright pink + bold when
-// focused, cyan (dimmer, unbold) when the widget does not own focus.
+// selectionBG is the subtle selection-fill background for the cursor box — the
+// theme's existing `ColorHighlight` (a dark gray only slightly lighter than the
+// default terminal background), reused so the cue reads consistently with the
+// rest of the TUI's cursor/selection highlighting and stays subtle, not garish.
+// It is the PRIMARY cursor cue (BUG-004); the bright border foreground + bold are
+// secondary. Foreground text stays readable because only the background changes.
+var selectionBG = theme.ColorHighlight
+
+// selectionBorderStyle is the distinct cursor-box border foreground: bright pink
+// + bold when focused, cyan (dimmer, unbold) when the widget does not own focus.
+// The subtle background fill (selectionBG) is applied by the box layouts on top
+// of this — together they make the selected box unmistakable.
 func (w *Widget) selectionBorderStyle() tcell.Style {
 	if w.focused {
 		return tcell.StyleDefault.Foreground(theme.ColorSelected).Bold(true)
@@ -1744,6 +1782,20 @@ func drawBoxFrame(screen tcell.Screen, x, y, bw, bh int, style tcell.Style, clip
 func setIf(screen tcell.Screen, clip clipRect, x, y int, r rune, style tcell.Style) {
 	if clip.contains(x, y) {
 		screen.SetContent(x, y, r, nil, style)
+	}
+}
+
+// fillRect paints a blank (space) over every cell of a bw×bh rect with the given
+// background colour, clipped to the region. Used to lay the subtle selection fill
+// under a selected box BEFORE its border + content paint over it (so the interior
+// padding cells, which nothing else writes, also carry the fill). Rune-agnostic —
+// it writes spaces, so it never disturbs wide-rune accounting.
+func fillRect(screen tcell.Screen, clip clipRect, x, y, bw, bh int, bg tcell.Color) {
+	st := tcell.StyleDefault.Background(bg)
+	for j := 0; j < bh; j++ {
+		for i := 0; i < bw; i++ {
+			setIf(screen, clip, x+i, y+j, ' ', st)
+		}
 	}
 }
 

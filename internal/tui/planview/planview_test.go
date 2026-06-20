@@ -846,11 +846,11 @@ func TestDraw_NodeRendersAsRoundedBox(t *testing.T) {
 	testutil.Contains(t, out, "⟳ 0a")
 }
 
-// TestDraw_CursorBoxHasSelectionBorder: the cursor's node box border is painted
-// in the bright selection colour (ColorSelected when focused), NOT reverse-video
-// on the text — the user's "more of a box" ask. A non-cursor box border is in its
-// state colour, not the selection colour.
-func TestDraw_CursorBoxHasSelectionBorder(t *testing.T) {
+// TestDraw_CursorBoxHasSelectionFill is the BUG-004 cue: the cursor's node box is
+// filled with the subtle selection BACKGROUND across its cells (the primary cue),
+// while the border keeps its bright selection foreground (secondary). A non-cursor
+// box has neither the selection background nor the selection-foreground border.
+func TestDraw_CursorBoxHasSelectionFill(t *testing.T) {
 	w := New()
 	// stage0 [0a working] -> stage1 [1a done]. Cursor on 0a.
 	w.SetData([]Node{liveNode("0a", StateWorking), liveNode("1a", StateDone)}, []Edge{{From: "0a", To: "1a"}})
@@ -858,25 +858,33 @@ func TestDraw_CursorBoxHasSelectionBorder(t *testing.T) {
 	testutil.Equal(t, w.CurrentNodeID(), "0a")
 
 	sc := drawToSim(t, w, 60, 18)
-	// 0a glyph (⟳) is under the cursor → its box corner border is ColorSelected.
-	gx, gy, _, ok := findGlyphCell(sc, '⟳')
+	// 0a glyph (⟳) is under the cursor → its cell carries the selection background,
+	// and its box corner border keeps the bright selection foreground (secondary cue).
+	gx, gy, curGlyphStyle, ok := findGlyphCell(sc, '⟳')
 	testutil.Equal(t, ok, true)
+	_, curBg, _ := curGlyphStyle.Decompose()
+	testutil.Equal(t, curBg, selectionBG) // PRIMARY: background fill on the selected box
 	curBorder, ok := boxCornerStyleNear(sc, gx, gy)
 	testutil.Equal(t, ok, true)
-	fg, _, _ := curBorder.Decompose()
-	testutil.Equal(t, fg, theme.ColorSelected)
-	// The glyph text itself is NOT reverse-video (highlight moved to the border).
+	bfg, bbg, _ := curBorder.Decompose()
+	testutil.Equal(t, bfg, theme.ColorSelected) // border foreground (secondary cue)
+	testutil.Equal(t, bbg, selectionBG)         // border carries the fill too
+	// The glyph text is NOT reverse-video (the cue is the fill + border, not reverse).
 	_, gattr := findGlyphCellStyle(sc, '⟳')
 	testutil.Equal(t, gattr&tcell.AttrReverse != 0, false)
 
-	// 1a (✓, done) is NOT the cursor → its border is the done colour, not selection.
-	dx, dy, _, ok2 := findGlyphCell(sc, '✓')
+	// 1a (✓, done) is NOT the cursor → no selection background, border is the done
+	// colour (not the selection foreground).
+	dx, dy, doneGlyphStyle, ok2 := findGlyphCell(sc, '✓')
 	testutil.Equal(t, ok2, true)
+	_, doneBg, _ := doneGlyphStyle.Decompose()
+	testutil.Equal(t, doneBg == selectionBG, false) // no fill on a non-cursor box
 	otherBorder, ok := boxCornerStyleNear(sc, dx, dy)
 	testutil.Equal(t, ok, true)
-	ofg, _, _ := otherBorder.Decompose()
+	ofg, obg, _ := otherBorder.Decompose()
 	testutil.Equal(t, ofg == theme.ColorSelected, false)
 	testutil.Equal(t, ofg, theme.ColorComplete)
+	testutil.Equal(t, obg == selectionBG, false)
 }
 
 // findGlyphCellStyle returns the attr mask of the first cell holding rune r.

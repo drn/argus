@@ -144,19 +144,19 @@ The operator leaves the plan pane via the focus ladder (`Ctrl+Q` / `Tab`), never
 - **WHEN** the cursor is at the root with nothing fanned and the user presses `Esc`
 - **THEN** nothing changes and focus stays in the plan pane (Esc does not reach the rail)
 
-### Requirement: Plan nodes render as boxes with a selection border (area 6)
+### Requirement: Plan nodes render as boxes with a selection fill (area 6)
 
-The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The node under the cursor SHALL carry a distinct selection border (a bright selection colour, more prominent when the widget owns focus) rather than reverse-video text, so the selected node reads as a highlighted box. A node the cursor is not on SHALL keep its state-colour border. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
+The plan diagram SHALL render each node as a padded rounded box (`╭─╮ / │ glyph short-id │ / ╰─╯`) whose border is drawn in the node's state colour. The box under the cursor SHALL be filled across all its cells (border, interior, and content) with a subtle selection background — slightly lighter than the default terminal background — as the primary cursor cue, with the border foreground in a bright selection colour (more prominent when the widget owns focus) as a secondary cue; the cue SHALL NOT rely on reverse-video text. A box the cursor is not on SHALL have no selection background and keep its state-colour border. Each stage's box row SHALL be centered horizontally within the diagram region and the whole block centered vertically when it fits.
 
-#### Scenario: Node is a box and the cursor's box is selection-bordered
+#### Scenario: The cursor's box is filled with the selection background
 
 - **WHEN** the cursor is on a plan node
-- **THEN** that node renders as a box whose border is the selection colour, and a non-cursor node's box border is its state colour
+- **THEN** that node's box cells carry the subtle selection background and its border the selection colour, while a non-cursor box has neither
 
-#### Scenario: Cursor member box is selection-bordered in a fanned group
+#### Scenario: Cursor member box is filled in a fanned group
 
 - **WHEN** the cursor is on a member of a fanned-out group
-- **THEN** that member's box carries the selection border and the other member boxes do not
+- **THEN** that member's box carries the selection background fill and the other member boxes do not
 
 ### Requirement: Fanned group visually expands into member boxes (area 6)
 
