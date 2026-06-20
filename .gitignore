@@ -58,4 +58,4 @@ web-tests/.cache/
 .iris.local.toml
 .claude/reviews/
 .workflow/
-.claude/reviews/
+.bug-bash/
