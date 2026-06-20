@@ -241,6 +241,19 @@ func (w *Watcher) blockerOutcome(blockerID int64) blockerOutcome {
 	if st, err := w.db.HeraRoleStatusFor(blockerID); err == nil && st.Status == db.HeraStatusDone {
 		return blockerDone
 	}
+	// Not done. A COORDINATOR never reaches role-status done — its session is alive
+	// for the whole orchestration (BUG-003). An alive coordinator blocker must NOT
+	// be classified failed (it has not ended); treat it as permanently WORKING so
+	// the dependent stays PLANNED with no false "failed blocker" hold-ping. This is
+	// defense-in-depth: AddHeraBlock now rejects a coordinator-as-blocker edge, but
+	// the gater also protects any such edges already present in the live DB. Only
+	// when the coordinator's session has genuinely ended (no live binding) does it
+	// fall through to the normal had-binding-ended-without-done failure path.
+	if role, rErr := w.db.HeraRole(blockerID); rErr == nil && role.Kind == db.HeraKindCoordinator {
+		if _, lbErr := w.db.HeraLiveBindingByRole(blockerID); lbErr == nil {
+			return blockerWorking
+		}
+	}
 	// Not done. Is the session still alive?
 	binding, err := w.db.HeraLiveBindingByRole(blockerID)
 	if err != nil {

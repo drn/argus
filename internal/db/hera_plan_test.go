@@ -343,6 +343,43 @@ func TestHeraBlock_MissingBlockerPrunedNotFatal(t *testing.T) {
 	testutil.DeepEqual(t, blockers, []int64{b.ID})
 }
 
+func TestAddHeraBlock_RejectsCoordinatorBlocker(t *testing.T) {
+	// BUG-003: a coordinator role never reaches role-status done (its session is
+	// alive for the whole orchestration), so an edge whose BLOCKER is a coordinator
+	// is a permanently-unsatisfiable dependency. Reject it at creation with a clear
+	// error rather than silently planning the dependent forever.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	coord, _, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+		OrchestratorID: orch, Name: "coord", Kind: HeraKindCoordinator, ArgusProject: "proj",
+	}, "coord-task", "/wt/coord")
+	testutil.NoError(t, err)
+	node := plannedRole(t, d, orch, "4a-flex")
+
+	err = d.AddHeraBlock(node.ID, coord.ID)
+	testutil.ErrorIs(t, err, ErrHeraBlockCoordinator)
+
+	// No edge was written — the dependent has no blockers.
+	blockers, err := d.HeraBlockersOf(node.ID)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(blockers), 0)
+}
+
+func TestAddHeraBlock_AcceptsCoordinatorAsBlocked(t *testing.T) {
+	// The rejection is BLOCKER-side only: a coordinator may be the BLOCKED endpoint
+	// (it can wait on a worker, even if that is an unusual plan shape). Only a
+	// coordinator-as-blocker is the never-satisfiable case.
+	d := testDB(t)
+	orch := planTestOrch(t, d, "orch")
+	coord, _, err := d.CreateHeraRoleWithBinding(CreateHeraRoleInput{
+		OrchestratorID: orch, Name: "coord", Kind: HeraKindCoordinator, ArgusProject: "proj",
+	}, "coord-task", "/wt/coord")
+	testutil.NoError(t, err)
+	worker := plannedRole(t, d, orch, "1a")
+
+	testutil.NoError(t, d.AddHeraBlock(coord.ID, worker.ID))
+}
+
 func TestAddHeraBlock_UnknownRole(t *testing.T) {
 	d := testDB(t)
 	orch := planTestOrch(t, d, "orch")

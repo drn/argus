@@ -1,6 +1,7 @@
 package heragater
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"sync"
@@ -120,6 +121,30 @@ func (f *gaterFixture) planned(t *testing.T, orchID int64, name string) *db.Hera
 	})
 	testutil.NoError(t, err)
 	return r
+}
+
+// coordRole returns the coordinator role seedCoord created for an orchestrator.
+func (f *gaterFixture) coordRole(t *testing.T, orchID int64) *db.HeraRole {
+	t.Helper()
+	coords, err := f.d.ListHeraRolesByKind(orchID, db.HeraKindCoordinator)
+	testutil.NoError(t, err)
+	testutil.Equal(t, len(coords), 1)
+	return coords[0]
+}
+
+// insertLegacyBlock writes a hera_blocks edge directly, bypassing AddHeraBlock's
+// validation. Used to simulate edges already present in the live DB before a new
+// validation rule existed (e.g. a coordinator-as-blocker edge, which AddHeraBlock
+// now rejects but the gater must still handle defensively).
+func insertLegacyBlock(t *testing.T, f *gaterFixture, blockedRoleID, blockerRoleID int64) {
+	t.Helper()
+	err := f.d.WithTx(func(tx *sql.Tx) error {
+		_, execErr := tx.Exec(
+			`INSERT INTO hera_blocks (blocked_role_id, blocker_role_id, created_at) VALUES (?, ?, ?)`,
+			blockedRoleID, blockerRoleID, time.Now().UTC().Format(time.RFC3339Nano))
+		return execErr
+	})
+	testutil.NoError(t, err)
 }
 
 func TestGater_MaterializesWhenAllBlockersDone(t *testing.T) {
@@ -311,6 +336,47 @@ func TestGater_TransitivePlannedBlockerKeepsDependentPlanned(t *testing.T) {
 	}
 	testutil.Equal(t, foundB, true)
 	testutil.Equal(t, foundC, true)
+}
+
+func TestGater_AliveCoordinatorBlockerKeepsDependentPlanned(t *testing.T) {
+	// BUG-003: blocking a worker node on the coordinator role must NOT be classified
+	// as a failed blocker. A coordinator's session is alive and never reaches
+	// role-status done, so labelling it "failed" (session-ended-without-done) is
+	// wrong. The dependent stays PLANNED (permanently pending), with NO hold-ping —
+	// the old blockerOutcome held it the moment the coordinator's task left
+	// in_progress (e.g. went in_review while the coordinator kept coordinating).
+	f := newGaterFixture(t)
+	orch := f.seedCoord(t, "orch")
+	coord := f.coordRole(t, orch)
+	// Move the coordinator's bound task to in_review while its binding stays LIVE —
+	// the coordinator is still alive (it never "finishes"), but its task status is
+	// no longer in_progress. This is the exact shape that mis-fired as "failed".
+	bind, err := f.d.HeraLiveBindingByRole(coord.ID)
+	testutil.NoError(t, err)
+	testutil.NoError(t, f.d.SetStatus(bind.ArgusTaskID, model.StatusInReview))
+
+	node := f.planned(t, orch, "4a-flex")
+	// AddHeraBlock now REJECTS a coordinator-as-blocker edge (option a), so insert
+	// the edge directly to simulate a LEGACY edge already present in the live DB
+	// (the bug was observed on such data). The gater's coordinator guard is the
+	// defense-in-depth that keeps this stuck-forever edge from mis-firing as failed.
+	insertLegacyBlock(t, f, node.ID, coord.ID)
+
+	f.w.Tick()
+
+	testutil.Equal(t, len(f.materialized()), 0) // stays planned, never materializes
+	testutil.Equal(t, f.pingCount(), 0)         // NO false "failed blocker" hold-ping
+
+	// Node remains a planned node (neither held-and-pinged nor spawned).
+	planned, err := f.d.ListHeraPlannedNodes()
+	testutil.NoError(t, err)
+	found := false
+	for _, p := range planned {
+		if p.ID == node.ID {
+			found = true
+		}
+	}
+	testutil.Equal(t, found, true)
 }
 
 func TestGater_MissingBlockerPrunedMakesNodeReady(t *testing.T) {
