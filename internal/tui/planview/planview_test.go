@@ -431,6 +431,58 @@ func TestHeader_NodeView(t *testing.T) {
 	testutil.Contains(t, joined, "2a")                 // feeds → 2a
 }
 
+// TestHeader_NodeShowsStatusLine is BUG-006: the single-node header carries a
+// Status line reflecting the node's state — "planned" for a never-bound role,
+// the live worker's state otherwise — with the state glyph.
+func TestHeader_NodeShowsStatusLine(t *testing.T) {
+	t.Run("planned node", func(t *testing.T) {
+		w := New()
+		w.SetData([]Node{{ID: "1a", Name: "1a-research", State: StatePlanned, Planned: true}}, nil)
+		w.SetFocused(true)
+		testutil.Equal(t, w.CurrentNodeID(), "1a")
+		joined := joinLines(w.HeaderLines())
+		testutil.Contains(t, joined, "Status:")
+		testutil.Contains(t, joined, "planned")
+		testutil.Contains(t, joined, string(StatePlanned.Glyph()))
+	})
+	t.Run("live working node", func(t *testing.T) {
+		w := New()
+		w.SetData([]Node{liveNode("1a", StateWorking)}, nil)
+		w.SetFocused(true)
+		joined := joinLines(w.HeaderLines())
+		testutil.Contains(t, joined, "Status:")
+		testutil.Contains(t, joined, "working")
+	})
+	t.Run("done node reflects state", func(t *testing.T) {
+		w := New()
+		w.SetData([]Node{liveNode("1a", StateDone)}, nil)
+		w.SetFocused(true)
+		joined := joinLines(w.HeaderLines())
+		testutil.Contains(t, joined, "done")
+		// The Status line is its own line, distinct from the name line.
+		lines := w.HeaderLines()
+		testutil.Equal(t, lines[0], "1a-role")    // name
+		testutil.Contains(t, lines[1], "Status:") // status on the second line
+	})
+}
+
+// TestState_Label pins the state→word mapping the Status line renders.
+func TestState_Label(t *testing.T) {
+	cases := map[State]string{
+		StatePlanned:  "planned",
+		StateWorking:  "working",
+		StateInReview: "in review",
+		StateDone:     "done",
+		StateFailed:   "failed",
+		StatePending:  "pending",
+	}
+	for st, want := range cases {
+		t.Run(want, func(t *testing.T) {
+			testutil.Equal(t, st.Label(), want)
+		})
+	}
+}
+
 // TestHeader_GroupView mirrors "Header shows the selected group": for a
 // collapsed group the header shows the range/title, members, and downstream.
 func TestHeader_GroupView(t *testing.T) {
@@ -819,21 +871,6 @@ func drawToSim(t *testing.T, w *Widget, cols, rows int) tcell.SimulationScreen {
 	return sc
 }
 
-// findGlyphCell returns the (x, y) and style of the first cell whose primary
-// rune equals r, scanning row-major. ok is false when not found.
-func findGlyphCell(sc tcell.SimulationScreen, r rune) (x, y int, style tcell.Style, ok bool) {
-	cells, w, h := sc.GetContents()
-	for yy := 0; yy < h; yy++ {
-		for xx := 0; xx < w; xx++ {
-			c := cells[yy*w+xx]
-			if len(c.Runes) > 0 && c.Runes[0] == r {
-				return xx, yy, c.Style, true
-			}
-		}
-	}
-	return 0, 0, tcell.StyleDefault, false
-}
-
 // boxCornerStyleNear returns the style of the rounded box top-left corner (`╭`)
 // that sits at-or-left-of the glyph at column gx on the same row's box top (gy-1),
 // i.e. the border of the box whose middle row holds that glyph. ok is false when
@@ -869,6 +906,19 @@ func TestDraw_NodeRendersAsRoundedBox(t *testing.T) {
 	testutil.Contains(t, out, "⟳ 0a")
 }
 
+// boxGlyphCell finds the GLYPH cell of a node box by its content form
+// "<glyph> <shortid>" (e.g. "⟳ 0a"), returning the glyph's (x,y) + style. This
+// skips the header's Status-line glyph (BUG-006 added a second ⟳ to the header),
+// which a bare findGlyphCell would match first. ok false when not found.
+func boxGlyphCell(sc tcell.SimulationScreen, content string) (int, int, tcell.Style, bool) {
+	x, y, ok := findStringCell(sc, content)
+	if !ok {
+		return 0, 0, tcell.StyleDefault, false
+	}
+	cells, w, _ := sc.GetContents()
+	return x, y, cells[y*w+x].Style, true
+}
+
 // TestDraw_CursorBoxHasSelectionFill is the BUG-004 cue: the cursor's node box is
 // filled with the subtle selection BACKGROUND across its cells (the primary cue),
 // while the border keeps its bright selection foreground (secondary). A non-cursor
@@ -880,25 +930,25 @@ func TestDraw_CursorBoxHasSelectionFill(t *testing.T) {
 	w.SetFocused(true)
 	testutil.Equal(t, w.CurrentNodeID(), "0a")
 
-	sc := drawToSim(t, w, 60, 18)
-	// 0a glyph (⟳) is under the cursor → its cell carries the selection background,
-	// and its box corner border keeps the bright selection foreground (secondary cue).
-	gx, gy, curGlyphStyle, ok := findGlyphCell(sc, '⟳')
+	sc := drawToSim(t, w, 60, 20)
+	// 0a's box glyph cell (found by the box content "⟳ 0a", NOT the header's Status
+	// ⟳) carries the selection background, and its corner border keeps the bright
+	// selection foreground (secondary cue).
+	gx, gy, curGlyphStyle, ok := boxGlyphCell(sc, "⟳ 0a")
 	testutil.Equal(t, ok, true)
-	_, curBg, _ := curGlyphStyle.Decompose()
-	testutil.Equal(t, curBg, selectionBG) // PRIMARY: background fill on the selected box
+	cfg, curBg, cattr := curGlyphStyle.Decompose()
+	testutil.Equal(t, curBg, selectionBG)                  // PRIMARY: background fill on the selected box
+	testutil.Equal(t, cattr&tcell.AttrReverse != 0, false) // not reverse-video
+	_ = cfg
 	curBorder, ok := boxCornerStyleNear(sc, gx, gy)
 	testutil.Equal(t, ok, true)
 	bfg, bbg, _ := curBorder.Decompose()
 	testutil.Equal(t, bfg, theme.ColorSelected) // border foreground (secondary cue)
 	testutil.Equal(t, bbg, selectionBG)         // border carries the fill too
-	// The glyph text is NOT reverse-video (the cue is the fill + border, not reverse).
-	_, gattr := findGlyphCellStyle(sc, '⟳')
-	testutil.Equal(t, gattr&tcell.AttrReverse != 0, false)
 
 	// 1a (✓, done) is NOT the cursor → no selection background, border is the done
 	// colour (not the selection foreground).
-	dx, dy, doneGlyphStyle, ok2 := findGlyphCell(sc, '✓')
+	dx, dy, doneGlyphStyle, ok2 := boxGlyphCell(sc, "✓ 1a")
 	testutil.Equal(t, ok2, true)
 	_, doneBg, _ := doneGlyphStyle.Decompose()
 	testutil.Equal(t, doneBg == selectionBG, false) // no fill on a non-cursor box
@@ -910,21 +960,14 @@ func TestDraw_CursorBoxHasSelectionFill(t *testing.T) {
 	testutil.Equal(t, obg == selectionBG, false)
 }
 
-// findGlyphCellStyle returns the attr mask of the first cell holding rune r.
-func findGlyphCellStyle(sc tcell.SimulationScreen, r rune) (tcell.Color, tcell.AttrMask) {
-	_, _, st, _ := findGlyphCell(sc, r)
-	fg, _, attr := st.Decompose()
-	return fg, attr
-}
-
 // TestDraw_StageBoxCentered: a single node box is centered horizontally — its
-// left border sits well right of the inner left edge.
+// box glyph sits well right of the inner left edge.
 func TestDraw_StageBoxCentered(t *testing.T) {
 	w := New()
 	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w.SetFocused(true)
-	sc := drawToSim(t, w, 60, 16)
-	x, _, _, ok := findGlyphCell(sc, '⟳')
+	sc := drawToSim(t, w, 60, 18)
+	x, _, _, ok := boxGlyphCell(sc, "⟳ 0a")
 	testutil.Equal(t, ok, true)
 	testutil.Equal(t, x > 4, true)
 }
@@ -935,15 +978,15 @@ func TestDraw_WiderRegionPushesBoxFurtherRight(t *testing.T) {
 	w := New()
 	w.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w.SetFocused(true)
-	narrow := drawToSim(t, w, 40, 16)
-	xNarrow, _, _, ok1 := findGlyphCell(narrow, '⟳')
+	narrow := drawToSim(t, w, 40, 18)
+	xNarrow, _, _, ok1 := boxGlyphCell(narrow, "⟳ 0a")
 	testutil.Equal(t, ok1, true)
 
 	w2 := New()
 	w2.SetData([]Node{liveNode("0a", StateWorking)}, nil)
 	w2.SetFocused(true)
-	wide := drawToSim(t, w2, 80, 16)
-	xWide, _, _, ok2 := findGlyphCell(wide, '⟳')
+	wide := drawToSim(t, w2, 80, 18)
+	xWide, _, _, ok2 := boxGlyphCell(wide, "⟳ 0a")
 	testutil.Equal(t, ok2, true)
 	testutil.Equal(t, xWide > xNarrow, true)
 }

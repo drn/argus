@@ -64,6 +64,25 @@ func (s State) Glyph() rune {
 	}
 }
 
+// Label returns the human word for a state, shown on the node header's Status
+// line (BUG-006): planned / working / in review / done / failed / pending.
+func (s State) Label() string {
+	switch s {
+	case StateDone:
+		return "done"
+	case StateWorking:
+		return "working"
+	case StateInReview:
+		return "in review"
+	case StateFailed:
+		return "failed"
+	case StatePending:
+		return "pending"
+	default: // StatePlanned
+		return "planned"
+	}
+}
+
 // style yields the tcell.Style for a state (D7 palette). Reuses the theme
 // colours where they line up with the artifact; planned is violet.
 func (s State) style() tcell.Style {
@@ -1162,14 +1181,14 @@ func (w *Widget) snapshotNodes() []Node {
 // --- Master-detail header (Stage 5) ---
 
 // headerContentRows is the fixed number of content lines the header strip
-// occupies (D9): three description lines (node → name / description / feeds;
-// group → range·title / members / downstream) plus one separator rule below.
-// Held constant so the diagram budget never drifts with the cursor target.
-const headerContentRows = 3
+// occupies (D9 + BUG-006): four lines (node → name / status / description / feeds;
+// group → range·title / members / downstream, padded). Held constant so the
+// diagram budget never drifts with the cursor target.
+const headerContentRows = 4
 
-// headerHeight is the total fixed header height: the three content rows plus a
-// one-row separator rule. The diagram region is the panel inner height minus
-// this, mirroring DetailsView.ContentHeight's exact-budget discipline (D9).
+// headerHeight is the total fixed header height: the content rows plus a one-row
+// separator rule. The diagram region is the panel inner height minus this,
+// mirroring DetailsView.ContentHeight's exact-budget discipline (D9).
 const headerHeight = headerContentRows + 1
 
 // HeaderLines returns the fixed-height header strip's rendered lines for the
@@ -1204,9 +1223,10 @@ func (w *Widget) headerContent() []string {
 	return nil
 }
 
-// nodeHeaderLines renders the node-view header: the role name, its description
-// (the delivery-prompt first line), and what it feeds (the downstream nodes it
-// blocks, by label, from the edge set) (D9).
+// nodeHeaderLines renders the node-view header: the role name, its Status (the
+// node's state word + glyph — planned for a never-bound role, else the live
+// worker's state; BUG-006), its description (the delivery-prompt first line), and
+// what it feeds (the downstream nodes it blocks, by label, from the edge set) (D9).
 func (w *Widget) nodeHeaderLines(id string) []string {
 	n := w.nodes[id]
 	desc := n.Description
@@ -1218,8 +1238,10 @@ func (w *Widget) nodeHeaderLines(id string) []string {
 	if len(feeds) == 0 {
 		feedsLine = "Feeds: (nothing)"
 	}
+	statusLine := fmt.Sprintf("Status: %c %s", n.State.Glyph(), n.State.Label())
 	return []string{
 		n.Name,
+		statusLine,
 		desc,
 		feedsLine,
 	}

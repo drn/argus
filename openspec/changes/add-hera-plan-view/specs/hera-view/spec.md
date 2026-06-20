@@ -108,12 +108,17 @@ The plan view SHALL support a cursor over `(stage, slot, member)`: `↑`/`↓` c
 
 ### Requirement: Plan master-detail header (area 6)
 
-Above the plan diagram the system SHALL render a fixed-height header describing the current selection: for a node, its name, a description (the first line of the role's delivery prompt), and what it feeds; for a collapsed group, the group range and title, its members, and its downstream target. The header height is budgeted exactly so the diagram fills the remainder without truncation drift.
+Above the plan diagram the system SHALL render a fixed-height header describing the current selection: for a node, its name, a **status** (the node's state — planned for a never-bound role, else the live worker's state — with the state glyph), a description (the first line of the role's delivery prompt), and what it feeds; for a collapsed group, the group range and title, its members, and its downstream target. The header height is budgeted exactly so the diagram fills the remainder without truncation drift.
 
 #### Scenario: Header shows the selected node
 
 - **WHEN** the cursor is on a node
-- **THEN** the header shows that node's name, description, and feeds
+- **THEN** the header shows that node's name, status, description, and feeds
+
+#### Scenario: Node header status reflects state
+
+- **WHEN** the cursor is on a never-bound planned node
+- **THEN** the header status line reads "planned"; for a live working node it reads "working"
 
 #### Scenario: Header shows the selected group
 
